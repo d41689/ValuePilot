@@ -39,6 +39,7 @@ type DocumentRow = {
   parse_status: string;
   upload_time: string | null;
   page_count: number;
+  parsed_page_count: number;
   companies: Company[];
   company_count: number;
 };
@@ -91,6 +92,12 @@ function formatDate(iso: string | null) {
   const dt = new Date(iso);
   if (Number.isNaN(dt.getTime())) return '—';
   return dt.toLocaleString();
+}
+
+function formatPageCount(total: number, parsed?: number) {
+  if (!total) return '—';
+  const parsedCount = typeof parsed === 'number' ? parsed : 0;
+  return `${parsedCount} / ${total}`;
 }
 
 export default function DocumentsPage() {
@@ -230,7 +237,9 @@ export default function DocumentsPage() {
                       <TableCell className="text-muted-foreground">
                         {formatCompanies(doc.companies)}
                       </TableCell>
-                      <TableCell className="text-muted-foreground">{doc.page_count}</TableCell>
+                      <TableCell className="text-muted-foreground">
+                        {formatPageCount(doc.page_count, doc.parsed_page_count)}
+                      </TableCell>
                       <TableCell>
                         <Badge variant={meta.variant}>{meta.label}</Badge>
                       </TableCell>

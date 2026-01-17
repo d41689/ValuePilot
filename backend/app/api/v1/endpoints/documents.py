@@ -43,6 +43,17 @@ def list_documents(
         ).all()
     )
 
+    parsed_page_counts = dict(
+        session.execute(
+            select(
+                MetricExtraction.document_id,
+                func.count(func.distinct(MetricExtraction.page_number)),
+            )
+            .where(MetricExtraction.document_id.in_(doc_ids))
+            .group_by(MetricExtraction.document_id)
+        ).all()
+    )
+
     parser_versions = dict(
         session.execute(
             select(MetricExtraction.document_id, func.max(MetricExtraction.parser_version))
@@ -103,6 +114,7 @@ def list_documents(
                 "parse_status": doc.parse_status,
                 "upload_time": doc.upload_time.isoformat() if doc.upload_time else None,
                 "page_count": page_counts.get(doc.id, 0),
+                "parsed_page_count": parsed_page_counts.get(doc.id, 0),
                 "companies": companies,
                 "company_count": len(companies),
             }

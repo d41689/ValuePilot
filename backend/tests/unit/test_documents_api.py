@@ -140,10 +140,12 @@ def test_documents_list_returns_companies_and_page_count(client, db_session):
 
     one = doc_map[doc_one.id]
     assert one["page_count"] == 1
+    assert one["parsed_page_count"] == 1
     assert one["companies"] == [{"ticker": "AOS", "company_name": "SMITH (A.O.)"}]
 
     two = doc_map[doc_two.id]
     assert two["page_count"] == 2
+    assert two["parsed_page_count"] == 2
     assert {c["ticker"] for c in two["companies"]} == {"AOS", "MSFT"}
 
 

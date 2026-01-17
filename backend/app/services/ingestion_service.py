@@ -90,7 +90,9 @@ class IngestionService:
 
             for page_num, text, words in pages_data:
                 try:
-                    if not is_value_line_page(text):
+                    parser = ValueLineV1Parser(text, page_words={1: words})
+                    identity_info = parser.extract_identity()
+                    if not is_value_line_page(text) and not identity_info.ticker:
                         page_reports.append(
                             {
                                 "page_number": page_num,
@@ -101,9 +103,6 @@ class IngestionService:
                             }
                         )
                         continue
-
-                    parser = ValueLineV1Parser(text, page_words={1: words})
-                    identity_info = parser.extract_identity()
 
                     try:
                         stock, needs_review, note = self.identity_service.resolve_stock(identity_info)
@@ -320,11 +319,10 @@ class IngestionService:
         parsed_pages = 0
 
         for page_num, text, words in pages_data:
-            if not is_value_line_page(text):
-                continue
-
             parser = ValueLineV1Parser(text, page_words={1: words} if words else {})
             identity_info = parser.extract_identity()
+            if not is_value_line_page(text) and not identity_info.ticker:
+                continue
             try:
                 stock, needs_review, note = self.identity_service.resolve_stock(identity_info)
             except ValueError:

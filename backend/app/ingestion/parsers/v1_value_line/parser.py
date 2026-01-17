@@ -11,50 +11,71 @@ class ValueLineV1Parser(BaseParser):
         """
         Attempts to extract identity info from the first page header text.
         """
-        lines = self.text.split('\n')[:10] # Look at first 10 lines
+        raw_lines = self.text.split('\n')
+        lines = [line.strip() for line in raw_lines if line.strip()]
+        search_lines = lines[:30]  # Look beyond the first 10 lines for multi-page headers
         
         info = IdentityInfo()
         
+        exchange_tokens = r"(NYSE|NASDAQ|NDQ|ASE|AMEX|NAS|NMS|NCM|NGM|OTC)"
+        exchange_map = {
+            "NASDAQ": "NDQ",
+            "NAS": "NDQ",
+            "NMS": "NDQ",
+            "NCM": "NDQ",
+            "NGM": "NDQ",
+        }
+
         # Pattern 1: TICKER (EXCHANGE) e.g. "MSFT (NDQ)"
-        pattern1 = re.compile(r'\b([A-Z]{1,5})\s*\(([A-Z]{3})\)')
-        
-        # Pattern 2: EXCHANGE-TICKER e.g. "NYSE-AOS"
-        pattern2 = re.compile(r'\b(NYSE|NDQ|ASE|NAS)-([A-Z]{1,5})\b')
-        
-        for line in lines:
-            # Try Pattern 1
+        pattern1 = re.compile(rf'\b([A-Z]{{1,5}})\s*\(\s*{exchange_tokens}\s*\)', re.IGNORECASE)
+
+        # Pattern 2: EXCHANGE-TICKER or EXCHANGE:TICKER e.g. "NYSE-ADM" / "NYSE: ADM"
+        pattern2 = re.compile(rf'\b{exchange_tokens}\s*[-:]\s*([A-Z]{{1,5}})\b', re.IGNORECASE)
+
+        # Pattern 3: EXCHANGE TICKER e.g. "NASDAQ AAPL"
+        pattern3 = re.compile(rf'\b{exchange_tokens}\s+([A-Z]{{1,5}})\b', re.IGNORECASE)
+
+        def set_company_name(line: str, match_start: int, line_idx: int) -> None:
+            pre_match = line[:match_start].strip()
+            if len(pre_match) > 3:
+                info.company_name = pre_match
+                return
+            for prev_line in reversed(search_lines[:line_idx]):
+                clean_prev = prev_line.strip()
+                if not clean_prev:
+                    continue
+                upper_prev = clean_prev.upper()
+                if "VALUE LINE" in upper_prev or "PAGE" in upper_prev:
+                    continue
+                if "RECENT" in upper_prev:
+                    info.company_name = clean_prev.split("RECENT")[0].strip()
+                else:
+                    info.company_name = clean_prev
+                break
+
+        for idx, line in enumerate(search_lines):
             match1 = pattern1.search(line)
             if match1:
-                info.ticker = match1.group(1)
-                info.exchange = match1.group(2)
-                
-                # Assume company name is before
-                pre_match = line[:match1.start()].strip()
-                if len(pre_match) > 3:
-                    info.company_name = pre_match
+                info.ticker = match1.group(1).upper()
+                exchange = match1.group(2).upper()
+                info.exchange = exchange_map.get(exchange, exchange)
+                set_company_name(line, match1.start(), idx)
                 break
-            
-            # Try Pattern 2
+
             match2 = pattern2.search(line)
             if match2:
-                info.exchange = match2.group(1)
-                info.ticker = match2.group(2)
-                
-                # Try finding name on the current line first
-                pre_match = line[:match2.start()].strip()
-                if len(pre_match) > 3:
-                    info.company_name = pre_match
-                else:
-                    # Look at previous line(s) for a likely name
-                    for prev_line in lines:
-                        if prev_line == line: break
-                        clean_prev = prev_line.strip()
-                        if clean_prev and "VALUE LINE" not in clean_prev and "PAGE" not in clean_prev:
-                             if "RECENT" in clean_prev:
-                                 info.company_name = clean_prev.split("RECENT")[0].strip()
-                             else:
-                                 info.company_name = clean_prev
-                             break
+                exchange = match2.group(1).upper()
+                info.exchange = exchange_map.get(exchange, exchange)
+                info.ticker = match2.group(2).upper()
+                set_company_name(line, match2.start(), idx)
+                break
+
+            match3 = pattern3.search(line)
+            if match3:
+                exchange = match3.group(1).upper()
+                info.exchange = exchange_map.get(exchange, exchange)
+                info.ticker = match3.group(2).upper()
+                set_company_name(line, match3.start(), idx)
                 break
         
         return info
