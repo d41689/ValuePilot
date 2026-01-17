@@ -61,11 +61,19 @@ def test_upload_writes_annual_facts_latest_actual_and_estimate(client, db_sessio
     assert net_profit_facts, "expected net_profit_usd_millions facts"
 
     actual_fact = next(
-        (f for f in net_profit_facts if f.period_end_date == date(actual_year, 12, 31)),
+        (
+            f
+            for f in net_profit_facts
+            if f.period_end_date == date(actual_year, 12, 31) and f.is_current
+        ),
         None,
     )
     estimate_fact = next(
-        (f for f in net_profit_facts if f.period_end_date == date(estimate_year, 12, 31)),
+        (
+            f
+            for f in net_profit_facts
+            if f.period_end_date == date(estimate_year, 12, 31) and f.is_current
+        ),
         None,
     )
     assert actual_fact is not None
@@ -98,7 +106,11 @@ def test_upload_writes_annual_facts_latest_actual_and_estimate(client, db_sessio
     assert dividend_facts, "expected avg_annual_dividend_yield_pct facts"
 
     actual_dividend = next(
-        (f for f in dividend_facts if f.period_end_date == date(actual_year, 12, 31)),
+        (
+            f
+            for f in dividend_facts
+            if f.period_end_date == date(actual_year, 12, 31) and f.is_current
+        ),
         None,
     )
     assert actual_dividend is not None
@@ -106,7 +118,11 @@ def test_upload_writes_annual_facts_latest_actual_and_estimate(client, db_sessio
     assert actual_dividend.value_numeric == expected_dividend / 100.0
 
     estimate_dividend = next(
-        (f for f in dividend_facts if f.period_end_date == date(estimate_year, 12, 31)),
+        (
+            f
+            for f in dividend_facts
+            if f.period_end_date == date(estimate_year, 12, 31) and f.is_current
+        ),
         None,
     )
     expected_estimate = annual["valuation"]["avg_annual_dividend_yield_pct"][years.index(estimate_year)]
