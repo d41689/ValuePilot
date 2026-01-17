@@ -1,3 +1,4 @@
+import re
 import uuid
 from datetime import datetime, date
 from pathlib import Path
@@ -82,27 +83,31 @@ class IngestionService:
             if is_multi_company_container:
                 doc.stock_id = None
 
-            def is_value_line_page(text: str) -> bool:
+            def is_company_page(text: str) -> bool:
                 upper = (text or "").upper()
-                return ("VALUE LINE" in upper) or ("VALUELINE" in upper)
+                return re.search(r"\bRECENT\s+(?:PRICE\s+)?\d", upper) is not None
 
-            parsed_pages = 0
+            company_pages = 0
+            parsed_company_pages = 0
 
             for page_num, text, words in pages_data:
                 try:
                     parser = ValueLineV1Parser(text, page_words={1: words})
                     identity_info = parser.extract_identity()
-                    if not is_value_line_page(text) and not identity_info.ticker:
+                    is_company_candidate = bool(identity_info.ticker) or is_company_page(text)
+                    if not is_company_candidate:
                         page_reports.append(
                             {
                                 "page_number": page_num,
-                                "status": "failed",
+                                "status": "unsupported_template",
                                 "parser_version": "v1",
                                 "error_code": "unsupported_template",
-                                "error_message": "Page did not match Value Line V1 template.",
+                                "error_message": "Non-company page skipped (Value Line industry summary).",
                             }
                         )
                         continue
+
+                    company_pages += 1
 
                     try:
                         stock, needs_review, note = self.identity_service.resolve_stock(identity_info)
@@ -226,8 +231,9 @@ class IngestionService:
                                 is_current=True,
                             )
                         )
+                        self.db.flush()
 
-                    parsed_pages += 1
+                    parsed_company_pages += 1
                     page_reports.append(
                         {
                             "page_number": page_num,
@@ -250,9 +256,9 @@ class IngestionService:
                     )
                     continue
 
-            if parsed_pages == 0:
+            if parsed_company_pages == 0:
                 doc.parse_status = "failed"
-            elif parsed_pages < len(pages_data):
+            elif parsed_company_pages < company_pages:
                 doc.parse_status = "parsed_partial"
             else:
                 doc.parse_status = "parsed"
@@ -312,17 +318,20 @@ class IngestionService:
         if is_multi_company_container:
             doc.stock_id = None
 
-        def is_value_line_page(text: str) -> bool:
+        def is_company_page(text: str) -> bool:
             upper = (text or "").upper()
-            return ("VALUE LINE" in upper) or ("VALUELINE" in upper)
+            return re.search(r"\bRECENT\s+(?:PRICE\s+)?\d", upper) is not None
 
-        parsed_pages = 0
+        company_pages = 0
+        parsed_company_pages = 0
 
         for page_num, text, words in pages_data:
             parser = ValueLineV1Parser(text, page_words={1: words} if words else {})
             identity_info = parser.extract_identity()
-            if not is_value_line_page(text) and not identity_info.ticker:
+            is_company_candidate = bool(identity_info.ticker) or is_company_page(text)
+            if not is_company_candidate:
                 continue
+            company_pages += 1
             try:
                 stock, needs_review, note = self.identity_service.resolve_stock(identity_info)
             except ValueError:
@@ -435,12 +444,13 @@ class IngestionService:
                         is_current=True,
                     )
                 )
+                self.db.flush()
 
-            parsed_pages += 1
+            parsed_company_pages += 1
 
-        if parsed_pages == 0:
+        if parsed_company_pages == 0:
             doc.parse_status = "failed"
-        elif parsed_pages < len(pages_data):
+        elif parsed_company_pages < company_pages:
             doc.parse_status = "parsed_partial"
         else:
             doc.parse_status = "parsed"

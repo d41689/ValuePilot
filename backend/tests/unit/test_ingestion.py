@@ -55,6 +55,51 @@ def test_parser_identity_extraction():
     assert info.exchange == "NDQ"
     assert info.company_name == "SOME CORP."
 
+@pytest.mark.parametrize(
+    "text, expected_ticker, expected_exchange, expected_company",
+    [
+        (
+            "MAPLE LEAF FOODS\nTSE-MFI.TO\nRECENT PRICE 24.95\nVALUE LINE\n",
+            "MFI.TO",
+            "TSE",
+            "MAPLE LEAF FOODS",
+        ),
+        (
+            "MAPLE LEAF FOODS\nTSX MFI.TO\nRECENT PRICE 24.95\nVALUE LINE\n",
+            "MFI.TO",
+            "TSE",
+            "MAPLE LEAF FOODS",
+        ),
+        (
+            "NESTLE SA (ADR)\nPNK-NSRGY\nRECENT PRICE 99.43\nVALUE LINE\n",
+            "NSRGY",
+            "PNK",
+            "NESTLE SA (ADR)",
+        ),
+        (
+            "ROBLOX CORP.\nNSDQ-RBLX\nRECENT PRICE 81.52\nVALUE LINE\n",
+            "RBLX",
+            "NDQ",
+            "ROBLOX CORP.",
+        ),
+        (
+            "SHOPIFY INC.\nSHOP.TO\nRECENT PRICE 45.12\nVALUE LINE\n",
+            "SHOP.TO",
+            "TSE",
+            "SHOPIFY INC.",
+        ),
+    ],
+)
+def test_parser_identity_extraction_exchange_variants(
+    text, expected_ticker, expected_exchange, expected_company
+):
+    parser = ValueLineV1Parser(text)
+    info = parser.extract_identity()
+
+    assert info.ticker == expected_ticker
+    assert info.exchange == expected_exchange
+    assert info.company_name == expected_company
+
 
 def test_parser_identity_extraction_scans_deeper_and_colon_exchange():
     padding = "\n".join([f"LINE {idx}" for idx in range(1, 12)])

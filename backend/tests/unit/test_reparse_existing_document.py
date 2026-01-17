@@ -137,20 +137,18 @@ def test_reparse_existing_document_multi_page_updates_all_pages(db_session):
     db_session.commit()
 
     pages = [
-        (1, "ALPHA CO\\nNYSE-ZZAQ\\nRECENT PRICE 10\\nVALUE LINE\\n", []),
-        (2, "BETA CO\\nZZBQ (NDQ)\\nRECENT PRICE 20\\nVALUE LINE\\n", []),
+        (1, "ALPHA CO\nNYSE-ZZAQ\nRECENT PRICE 10\nVALUE LINE\n", []),
+        (2, "BETA CO\nZZBQ (NDQ)\nRECENT PRICE 20\nVALUE LINE\n", []),
     ]
 
     with patch(
         "app.services.ingestion_service.PdfExtractor.extract_pages_with_words",
         return_value=pages,
-    ), patch(
-        "app.services.ingestion_service.IdentityService.resolve_stock",
-        side_effect=[(stock_one, False, None), (stock_two, False, None)],
     ):
         service = IngestionService(db_session)
         service.reparse_existing_document(user_id=user.id, document_id=doc.id, reextract_pdf=True)
 
+    db_session.expire_all()
     facts = (
         db_session.query(MetricFact)
         .filter(
@@ -164,3 +162,56 @@ def test_reparse_existing_document_multi_page_updates_all_pages(db_session):
     assert any(f.is_current and f.value_numeric == 10.0 for f in facts)
     assert any(f.is_current and f.value_numeric == 20.0 for f in facts)
     assert doc.stock_id is None
+
+
+def test_reparse_existing_document_ignores_industry_pages_in_status(db_session):
+    user = User(email="reparse_industry@example.com")
+    db_session.add(user)
+    db_session.commit()
+
+    stock_one = Stock(ticker="ALP", exchange="NYSE", company_name="Alpha Co")
+    stock_two = Stock(ticker="BET", exchange="NDQ", company_name="Beta Co")
+    db_session.add_all([stock_one, stock_two])
+    db_session.commit()
+
+    doc = PdfDocument(
+        user_id=user.id,
+        file_name="industry.pdf",
+        source="upload",
+        file_storage_key="/tmp/industry.pdf",
+        parse_status="uploaded",
+        stock_id=None,
+        identity_needs_review=False,
+    )
+    db_session.add(doc)
+    db_session.commit()
+
+    db_session.add_all(
+        [
+            DocumentPage(
+                document_id=doc.id,
+                page_number=1,
+                page_text="ALPHA CO\nNYSE-ALP\nRECENT PRICE 10\nVALUE LINE\n",
+                text_extraction_method="native_text",
+            ),
+            DocumentPage(
+                document_id=doc.id,
+                page_number=2,
+                page_text="INDUSTRY TIMELINESS: 60\nVALUE LINE\n",
+                text_extraction_method="native_text",
+            ),
+            DocumentPage(
+                document_id=doc.id,
+                page_number=3,
+                page_text="BETA CO\nNDQ-BET\nRECENT PRICE 20\nVALUE LINE\n",
+                text_extraction_method="native_text",
+            ),
+        ]
+    )
+    db_session.commit()
+
+    service = IngestionService(db_session)
+    service.reparse_existing_document(user_id=user.id, document_id=doc.id, reextract_pdf=False)
+
+    db_session.refresh(doc)
+    assert doc.parse_status == "parsed"

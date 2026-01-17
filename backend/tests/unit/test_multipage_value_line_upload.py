@@ -65,7 +65,7 @@ def test_upload_multipage_parses_each_page_independently(client, db_session):
     assert ("MSFT", "NDQ") in tickers
 
 
-def test_upload_multipage_partial_failure_reports_page_errors(client, db_session):
+def test_upload_multipage_non_company_pages_do_not_block_parsed_status(client, db_session):
     user = User(email="multipage_partial@example.com")
     db_session.add(user)
     db_session.commit()
@@ -90,7 +90,38 @@ def test_upload_multipage_partial_failure_reports_page_errors(client, db_session
     assert resp.status_code == 200, resp.text
     body = resp.json()
     assert body["page_count"] == 2
+    assert body["status"] == "parsed"
+    assert body["page_reports"][0]["status"] == "parsed"
+    assert body["page_reports"][1]["status"] == "unsupported_template"
+    assert body["page_reports"][1]["error_code"] == "unsupported_template"
+
+
+def test_upload_multipage_identity_unresolved_reports_error_code(client, db_session):
+    user = User(email="multipage_identity@example.com")
+    db_session.add(user)
+    db_session.commit()
+
+    page1_text = "SMITH (A.O.)\nNYSE-AOS\nRECENT PRICE 68.11\nVALUE LINE\n"
+    page2_text = "RECENT PRICE 12.34\nVALUE LINE\n"
+
+    pages = [
+        (1, page1_text, []),
+        (2, page2_text, []),
+    ]
+
+    with patch(
+        "app.services.ingestion_service.PdfExtractor.extract_pages_with_words",
+        return_value=pages,
+    ):
+        resp = client.post(
+            f"/api/v1/documents/upload?user_id={user.id}",
+            files={"file": ("multi.pdf", b"%PDF-1.4\\n%fake\\n", "application/pdf")},
+        )
+
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["page_count"] == 2
     assert body["status"] == "parsed_partial"
     assert body["page_reports"][0]["status"] == "parsed"
     assert body["page_reports"][1]["status"] == "failed"
-    assert body["page_reports"][1]["error_code"] in {"unsupported_template", "identity_unresolved"}
+    assert body["page_reports"][1]["error_code"] == "identity_unresolved"

@@ -17,28 +17,50 @@ class ValueLineV1Parser(BaseParser):
         
         info = IdentityInfo()
         
-        exchange_tokens = r"(NYSE|NASDAQ|NDQ|ASE|AMEX|NAS|NMS|NCM|NGM|OTC)"
+        exchange_codes = [
+            "NYSE",
+            "NASDAQ",
+            "NDQ",
+            "NSDQ",
+            "ASE",
+            "AMEX",
+            "NAS",
+            "NMS",
+            "NCM",
+            "NGM",
+            "OTC",
+            "PNK",
+            "TSE",
+            "TSX",
+        ]
+        exchange_code_set = {code.upper() for code in exchange_codes}
+        exchange_tokens = "(" + "|".join(exchange_codes) + ")"
+        ticker_pattern = r"[A-Z]{1,5}(?:\\.[A-Z]{1,4})?"
         exchange_map = {
             "NASDAQ": "NDQ",
             "NAS": "NDQ",
             "NMS": "NDQ",
             "NCM": "NDQ",
             "NGM": "NDQ",
+            "NSDQ": "NDQ",
+            "TSX": "TSE",
         }
 
         # Pattern 1: TICKER (EXCHANGE) e.g. "MSFT (NDQ)"
-        pattern1 = re.compile(rf'\b([A-Z]{{1,5}})\s*\(\s*{exchange_tokens}\s*\)', re.IGNORECASE)
+        pattern1 = re.compile(rf'\b({ticker_pattern})\s*\(\s*{exchange_tokens}\s*\)', re.IGNORECASE)
 
         # Pattern 2: EXCHANGE-TICKER or EXCHANGE:TICKER e.g. "NYSE-ADM" / "NYSE: ADM"
-        pattern2 = re.compile(rf'\b{exchange_tokens}\s*[-:]\s*([A-Z]{{1,5}})\b', re.IGNORECASE)
+        pattern2 = re.compile(rf'\b{exchange_tokens}\s*[-:]\s*({ticker_pattern})(?=\s|$)', re.IGNORECASE)
 
         # Pattern 3: EXCHANGE TICKER e.g. "NASDAQ AAPL"
-        pattern3 = re.compile(rf'\b{exchange_tokens}\s+([A-Z]{{1,5}})\b', re.IGNORECASE)
+        pattern3 = re.compile(rf'\b{exchange_tokens}\s+({ticker_pattern})(?=\s|$)', re.IGNORECASE)
+        pattern4 = re.compile(r'\b([A-Z]{1,5}\.[A-Z]{1,4})(?=\s|$)', re.IGNORECASE)
 
         def set_company_name(line: str, match_start: int, line_idx: int) -> None:
             pre_match = line[:match_start].strip()
-            if len(pre_match) > 3:
-                info.company_name = pre_match
+            clean_pre = pre_match.rstrip(":-").strip()
+            if len(clean_pre) > 3 and clean_pre.upper() not in exchange_code_set:
+                info.company_name = clean_pre
                 return
             for prev_line in reversed(search_lines[:line_idx]):
                 clean_prev = prev_line.strip()
@@ -76,6 +98,14 @@ class ValueLineV1Parser(BaseParser):
                 info.exchange = exchange_map.get(exchange, exchange)
                 info.ticker = match3.group(2).upper()
                 set_company_name(line, match3.start(), idx)
+                break
+
+            match4 = pattern4.search(line)
+            if match4:
+                info.ticker = match4.group(1).upper()
+                if info.ticker.endswith(".TO"):
+                    info.exchange = "TSE"
+                set_company_name(line, match4.start(), idx)
                 break
         
         return info
