@@ -61,3 +61,5 @@ postgres_data/
 # === ValuePilot Specific ===
 # Ignore local PDF storage if configured to save locally during dev (optional)
 local_storage/
+
+backend/storage/
