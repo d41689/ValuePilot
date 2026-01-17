@@ -1,5 +1,6 @@
-> **Note**: This document is the consolidated PRD for ValuePilot v0.1.  
-> Sections A–G, database schema, and milestones are intentionally kept in a single file for execution clarity.
+> **Note**: This document is the consolidated **schema and execution PRD** for ValuePilot v0.1.  
+> It focuses on parsing boundaries, data models, and execution semantics.  
+> Higher-level product narrative (Background, Milestones) may live in a separate overview doc.
 
 ## B.4 Parsing Boundary (Explicit Scope)
 
@@ -94,6 +95,11 @@ Note:
 - parser_version
 - raw_text (optional cache)
 - notes
+- stock_id (nullable; resolved via Stock Identity Resolution)
+
+Note:
+- For Value Line single-company reports, `pdf_documents.stock_id` SHOULD be populated at ingestion time.
+- This simplifies downstream joins (metrics, prices, alerts) without requiring repeated inference.
 
 #### parser_templates
 - id
@@ -133,6 +139,13 @@ Note:
 - created_at
 - corrected_by_user (bool)
 - corrected_at (nullable)
+
+Correction Semantics (V1):
+- `parsed_value_json` stores the latest parsed value produced by the parser.
+- When a user corrects a value:
+  - The corrected value is written into `metric_facts` (source_type = manual).
+  - The original extraction in `metric_extractions` is preserved for auditability.
+- V1 does NOT overwrite historical parser output.
 
 #### metric_facts (queryable facts for formulas/screeners)
 - id
@@ -177,6 +190,13 @@ Note:
 - is_dirty (bool)
 - created_at
 - updated_at
+
+Note:
+- `calculated_runs` represents execution history and recalculation state.
+- The **authoritative, queryable output** of a formula MUST be written into `metric_facts` with:
+  - source_type = calculated
+  - metric_key = formula-defined output key
+- Screeners MUST operate on `metric_facts`, not directly on `calculated_runs`.
 
 #### stock_pools
 - id
@@ -268,3 +288,243 @@ In V1 (Value Line only), most traceability can be satisfied by (document_id, pag
 ### F.3 Price Semantics (V1)
 
 - Alerts are triggered using `close` price (not adj_close) unless explicitly configured.
+
+### F.4 Alert Trigger Logic (V1)
+
+- An alert is triggered when:
+  abs(close - target_price) <= target_price * tolerance_pct
+- `cooldown_hours` suppresses repeated alerts for the same stock after a trigger.
+- `daily_summary` emails include:
+  - all stocks currently within alert range
+  - regardless of whether a threshold alert was triggered that day
+
+---
+
+## Appendix A: Value Line V1 Field → Metric Mapping Specification
+
+This appendix defines the **authoritative mapping** from Value Line template field keys
+(extracted by the parser) to internal canonical `metric_key` values used by
+`metric_facts`, formulas, screeners, and alerts.
+
+This mapping MUST be treated as versioned contract code.
+
+### A.1 Design Principles
+
+- Parser field keys are **template-facing** (reflect Value Line layout).
+- `metric_key` values are **domain-facing** (stable, canonical, formula-safe).
+- All `metric_key` values:
+  - use `snake_case`
+  - do NOT start with numbers
+- Only `metric_key` values are exposed to:
+  - Formula Engine
+  - Screening Rules
+  - Alert Logic
+
+---
+
+### A.2 Mapping File Structure
+
+Recommended implementation artifact:
+
+```
+value_line_v1_field_map.json
+```
+
+Schema:
+
+```json
+{
+  "template": "value_line_equity_report_v1",
+  "version": "1.0",
+  "fields": {
+    "<field_key>": {
+      "metric_key": "...",
+      "value_type": "number | percent | ratio | integer | string",
+      "unit": "USD | % | null",
+      "numeric": true,
+      "period_type": "FY | Q | TTM | null",
+      "notes": "optional"
+    }
+  }
+}
+```
+
+---
+
+### A.3 Header / Ratings Fields
+
+```json
+{
+  "recent_price": {
+    "metric_key": "price_recent",
+    "value_type": "number",
+    "unit": "USD",
+    "numeric": true
+  },
+  "pe_ratio": {
+    "metric_key": "pe_ratio",
+    "value_type": "ratio",
+    "numeric": true
+  },
+  "relative_pe_ratio": {
+    "metric_key": "pe_ratio_relative",
+    "value_type": "ratio",
+    "numeric": true
+  },
+  "dividend_yield": {
+    "metric_key": "dividend_yield",
+    "value_type": "percent",
+    "numeric": true
+  },
+  "timeliness": {
+    "metric_key": "rating_timeliness",
+    "value_type": "integer",
+    "numeric": true
+  },
+  "safety": {
+    "metric_key": "rating_safety",
+    "value_type": "integer",
+    "numeric": true
+  },
+  "technical": {
+    "metric_key": "rating_technical",
+    "value_type": "integer",
+    "numeric": true
+  },
+  "beta": {
+    "metric_key": "beta",
+    "value_type": "ratio",
+    "numeric": true
+  }
+}
+```
+
+---
+
+### A.4 18‑Month Target Price Fields
+
+```json
+{
+  "18_month_target_low": {
+    "metric_key": "target_18m_low",
+    "value_type": "number",
+    "unit": "USD",
+    "numeric": true
+  },
+  "18_month_target_high": {
+    "metric_key": "target_18m_high",
+    "value_type": "number",
+    "unit": "USD",
+    "numeric": true
+  },
+  "18_month_target_midpoint": {
+    "metric_key": "target_18m_mid",
+    "value_type": "number",
+    "unit": "USD",
+    "numeric": true
+  },
+  "midpoint_pct_to_mid": {
+    "metric_key": "target_18m_upside_pct",
+    "value_type": "percent",
+    "numeric": true
+  }
+}
+```
+
+---
+
+### A.5 2028–2030 Long‑Term Projection Fields
+
+```json
+{
+  "2028_2030_projection_high_price": {
+    "metric_key": "target_long_high",
+    "value_type": "number",
+    "unit": "USD",
+    "numeric": true,
+    "period_type": "FY"
+  },
+  "2028_2030_projection_low_price": {
+    "metric_key": "target_long_low",
+    "value_type": "number",
+    "unit": "USD",
+    "numeric": true,
+    "period_type": "FY"
+  },
+  "2028_2030_projection_high_total_return_pct": {
+    "metric_key": "target_long_total_return_high_pct",
+    "value_type": "percent",
+    "numeric": true
+  },
+  "2028_2030_projection_low_total_return_pct": {
+    "metric_key": "target_long_total_return_low_pct",
+    "value_type": "percent",
+    "numeric": true
+  }
+}
+```
+
+---
+
+### A.6 Quarterly Time‑Series Tables
+
+```json
+{
+  "quarterly_sales": {
+    "metric_key": "revenue",
+    "value_type": "number",
+    "unit": "USD",
+    "numeric": true,
+    "period_type": "Q",
+    "notes": "One metric_facts row per quarter"
+  },
+  "earnings_per_share": {
+    "metric_key": "eps",
+    "value_type": "number",
+    "numeric": true,
+    "period_type": "Q"
+  },
+  "quarterly_dividends": {
+    "metric_key": "dividend_per_share",
+    "value_type": "number",
+    "unit": "USD",
+    "numeric": true,
+    "period_type": "Q"
+  }
+}
+```
+
+---
+
+### A.7 Financial Snapshot Fields
+
+```json
+{
+  "market_cap": {
+    "metric_key": "market_cap",
+    "value_type": "number",
+    "unit": "USD",
+    "numeric": true
+  },
+  "shares_outstanding": {
+    "metric_key": "shares_outstanding",
+    "value_type": "number",
+    "numeric": true
+  },
+  "total_debt": {
+    "metric_key": "total_debt",
+    "value_type": "number",
+    "unit": "USD",
+    "numeric": true
+  }
+}
+```
+
+---
+
+### A.8 Execution Rules
+
+- Parsers MUST emit `metric_extractions.field_key`.
+- Mapping resolves `field_key` → `metric_key`.
+- All persisted, queryable metrics MUST be written to `metric_facts`.
+- Formulas, screeners, and alerts MUST reference `metric_key` only.
