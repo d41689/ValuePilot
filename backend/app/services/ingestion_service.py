@@ -299,33 +299,62 @@ class IngestionService:
                 )
             doc.raw_text = "\n".join(full_text_parts)
         else:
+            pages_data = [(p.page_number, p.page_text or "", []) for p in doc.pages]
             if not doc.raw_text:
                 doc.raw_text = "\n".join([p.page_text or "" for p in doc.pages])
 
-        parser = ValueLineV1Parser(doc.raw_text or "", page_words=page_words)
-        identity_info = parser.extract_identity()
-        self.identity_service.resolve_stock_identity(doc, identity_info)
+        if not pages_data:
+            doc.parse_status = "failed"
+            self.db.commit()
+            self.db.refresh(doc)
+            return doc
 
-        extractions = parser.parse()
-        for ext in extractions:
-            metric_record = MetricExtraction(
-                user_id=user_id,
-                document_id=doc.id,
-                page_number=ext.page_number,
-                field_key=ext.field_key,
-                raw_value_text=ext.raw_value_text,
-                original_text_snippet=ext.original_text_snippet,
-                parsed_value_json=ext.parsed_value_json,
-                confidence_score=ext.confidence_score,
-                bbox_json=ext.bbox_json,
-                parser_template_id=None,
-                parser_version="v1",
-            )
-            self.db.add(metric_record)
-            self.db.flush()
+        is_multi_company_container = len(pages_data) > 1
+        if is_multi_company_container:
+            doc.stock_id = None
 
-            if doc.stock_id:
-                value_type = "number"
+        def is_value_line_page(text: str) -> bool:
+            upper = (text or "").upper()
+            return ("VALUE LINE" in upper) or ("VALUELINE" in upper)
+
+        parsed_pages = 0
+
+        for page_num, text, words in pages_data:
+            if not is_value_line_page(text):
+                continue
+
+            parser = ValueLineV1Parser(text, page_words={1: words} if words else {})
+            identity_info = parser.extract_identity()
+            try:
+                stock, needs_review, note = self.identity_service.resolve_stock(identity_info)
+            except ValueError:
+                continue
+
+            if not is_multi_company_container:
+                doc.stock_id = stock.id
+                doc.identity_needs_review = needs_review
+
+            if needs_review and note:
+                doc.notes = (doc.notes or "") + f"\n[page {page_num}] {note}"
+
+            extractions = parser.parse()
+            for ext in extractions:
+                metric_record = MetricExtraction(
+                    user_id=user_id,
+                    document_id=doc.id,
+                    page_number=page_num,
+                    field_key=ext.field_key,
+                    raw_value_text=ext.raw_value_text,
+                    original_text_snippet=ext.original_text_snippet,
+                    parsed_value_json=ext.parsed_value_json,
+                    confidence_score=ext.confidence_score,
+                    bbox_json=ext.bbox_json,
+                    parser_template_id=None,
+                    parser_version="v1",
+                )
+                self.db.add(metric_record)
+                self.db.flush()
+
                 non_numeric_keys = {
                     "report_date",
                     "analyst_name",
@@ -338,6 +367,7 @@ class IngestionService:
                     "institutional_decisions",
                     "company_financial_strength",
                 }
+                value_type = "number"
                 if "yield" in ext.field_key or "pct" in ext.field_key:
                     value_type = "percent"
                 elif "ratio" in ext.field_key:
@@ -350,6 +380,7 @@ class IngestionService:
                 norm_val, norm_unit = (None, None)
                 if ext.raw_value_text is not None and ext.field_key not in non_numeric_keys:
                     norm_val, norm_unit = Scaler.normalize(ext.raw_value_text, value_type)
+
                 metric_key = ext.field_key
                 period_type = None
                 period_end_date = None
@@ -365,7 +396,7 @@ class IngestionService:
                 update_stmt = (
                     update(MetricFact)
                     .where(
-                        MetricFact.stock_id == doc.stock_id,
+                        MetricFact.stock_id == stock.id,
                         MetricFact.metric_key == metric_key,
                         MetricFact.source_type == "parsed",
                         MetricFact.is_current.is_(True),
@@ -394,7 +425,7 @@ class IngestionService:
                 self.db.add(
                     MetricFact(
                         user_id=user_id,
-                        stock_id=doc.stock_id,
+                        stock_id=stock.id,
                         metric_key=metric_key,
                         value_json=value_json,  # type: ignore[arg-type]
                         value_numeric=norm_val,
@@ -407,7 +438,15 @@ class IngestionService:
                     )
                 )
 
-        doc.parse_status = "parsed"
+            parsed_pages += 1
+
+        if parsed_pages == 0:
+            doc.parse_status = "failed"
+        elif parsed_pages < len(pages_data):
+            doc.parse_status = "parsed_partial"
+        else:
+            doc.parse_status = "parsed"
+
         self.db.commit()
         self.db.refresh(doc)
         return doc
