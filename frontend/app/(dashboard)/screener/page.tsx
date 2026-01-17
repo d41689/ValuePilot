@@ -6,37 +6,70 @@ import apiClient from '@/lib/api/client';
 
 import { Search, Loader2 } from 'lucide-react';
 
-function formatUSD(value: any, digits: number = 2) {
+type HeaderRatingValue = string | number | null;
+type HeaderRatingEntry = { value?: HeaderRatingValue } | HeaderRatingValue;
+
+type HeaderRatings = {
+  timeliness?: HeaderRatingEntry;
+  safety?: HeaderRatingEntry;
+  company_financial_strength?: HeaderRatingValue;
+  stock_price_stability?: HeaderRatingValue;
+  price_growth_persistence?: HeaderRatingValue;
+  earnings_predictability?: HeaderRatingValue;
+};
+
+type StockResult = {
+  id?: number | string;
+  ticker?: string;
+  company_name?: string;
+  metrics?: Record<string, unknown>;
+  header_ratings?: HeaderRatings;
+  [key: string]: unknown;
+};
+
+function unwrapRating(entry: HeaderRatingEntry | undefined) {
+  if (entry && typeof entry === 'object' && 'value' in entry) {
+    return entry.value;
+  }
+  return entry;
+}
+
+function formatUSD(value: unknown, digits: number = 2) {
   const n = Number(value);
   if (!Number.isFinite(n)) return '—';
   return n.toLocaleString(undefined, { minimumFractionDigits: digits, maximumFractionDigits: digits });
 }
 
-function formatUSDMillions(value: any) {
+function formatUSDMillions(value: unknown) {
   const n = Number(value);
   if (!Number.isFinite(n)) return '—';
   return `${n.toLocaleString(undefined, { maximumFractionDigits: 1 })} M`;
 }
 
-function pickFirstDefined<T = any>(...vals: T[]): T | undefined {
+function pickFirstDefined<T>(...vals: Array<T | null | undefined>): T | undefined {
   return vals.find((v) => v !== undefined && v !== null) as T | undefined;
 }
 
-function formatPct(value: any) {
+function formatPct(value: unknown) {
   const n = Number(value);
   if (!Number.isFinite(n)) return '—';
   const pct = n <= 1 ? n * 100 : n;
   return `${pct.toFixed(1)}%`;
 }
 
-function formatMillions(value: any) {
+function formatMillions(value: unknown) {
   const n = Number(value);
   if (!Number.isFinite(n)) return '—';
   return `${n.toLocaleString(undefined, { maximumFractionDigits: 1 })} M`;
 }
 
+function formatText(value: unknown) {
+  if (value === undefined || value === null || value === '') return '—';
+  return String(value);
+}
+
 export default function ScreenerPage() {
-  const [results, setResults] = useState<any[]>([]);
+  const [results, setResults] = useState<StockResult[]>([]);
   
   // Hardcoded rule for V0.1 demo
   const defaultRule = JSON.stringify({
@@ -56,7 +89,7 @@ export default function ScreenerPage() {
       return res.data;
     },
     onSuccess: (data) => {
-      setResults(data);
+      setResults(Array.isArray(data) ? data : []);
     }
   });
 
@@ -111,7 +144,7 @@ export default function ScreenerPage() {
             </thead>
             <tbody className="bg-white divide-y divide-gray-200">
               {results.map((stock) => {
-                const metrics = stock?.metrics ?? {};
+                const metrics = (stock?.metrics ?? {}) as Record<string, unknown>;
                 const netProfit = pickFirstDefined(
                   metrics.net_profit_usd_millions,
                   metrics.net_profit,
@@ -141,13 +174,13 @@ export default function ScreenerPage() {
                 const timeliness = pickFirstDefined(
                   metrics.timeliness,
                   stock.timeliness,
-                  stock.header_ratings?.timeliness?.value
+                  unwrapRating(stock.header_ratings?.timeliness)
                 );
 
                 const safety = pickFirstDefined(
                   metrics.safety,
                   stock.safety,
-                  stock.header_ratings?.safety?.value
+                  unwrapRating(stock.header_ratings?.safety)
                 );
 
                 const avgDivYield = pickFirstDefined(
@@ -189,13 +222,13 @@ export default function ScreenerPage() {
                     <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">{formatUSDMillions(depreciation)}</td>
                     <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">{formatUSD(capexPerSh, 2)}</td>
                     <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">{formatMillions(commonShs)}</td>
-                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">{timeliness ?? '—'}</td>
-                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">{safety ?? '—'}</td>
+                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">{formatText(timeliness)}</td>
+                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">{formatText(safety)}</td>
                     <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">{formatPct(avgDivYield)}</td>
-                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">{finStrength ?? '—'}</td>
-                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">{priceStability ?? '—'}</td>
-                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">{priceGrowthPersistence ?? '—'}</td>
-                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">{earningsPredictability ?? '—'}</td>
+                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">{formatText(finStrength)}</td>
+                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">{formatText(priceStability)}</td>
+                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">{formatText(priceGrowthPersistence)}</td>
+                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">{formatText(earningsPredictability)}</td>
                   </tr>
                 );
               })}

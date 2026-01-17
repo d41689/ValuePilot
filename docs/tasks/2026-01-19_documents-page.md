@@ -53,3 +53,9 @@
 ## Verification
 - `docker compose exec -T api pytest -q tests/unit/test_documents_api.py`
 - `docker compose exec -T api pytest -q`
+
+## Tooling Notes
+- Keep `frontend/package-lock.json` checked in for deterministic installs with npm.
+- Accept `frontend/tsconfig.json` + `frontend/next-env.d.ts` updates from Next/TS tooling to avoid repeat diffs.
+- Add `frontend/.eslintrc.json` with `next/core-web-vitals` so `docker compose exec -T web npm run lint` stays non-interactive.
+- Suggested frontend gate: `docker compose exec -T web npm run lint` (and optionally `docker compose exec -T web npm run build`).

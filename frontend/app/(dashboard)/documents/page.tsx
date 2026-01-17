@@ -61,6 +61,23 @@ const STATUS_META: Record<string, StatusMeta> = {
   failed: { label: 'Failed', variant: 'danger' },
 };
 
+type ApiError = {
+  response?: {
+    data?: {
+      detail?: string;
+    };
+  };
+  message?: string;
+};
+
+function getErrorMessage(error: unknown, fallback: string) {
+  if (typeof error === 'object' && error !== null) {
+    const apiError = error as ApiError;
+    return apiError.response?.data?.detail ?? apiError.message ?? fallback;
+  }
+  return fallback;
+}
+
 function formatCompanies(companies: Company[], max: number = 3) {
   if (!companies || companies.length === 0) return '—';
   const tickers = companies.map((c) => c.ticker).filter(Boolean);
@@ -105,12 +122,9 @@ export default function DocumentsPage() {
         description: 'Latest parsed data is now available in the screener.',
       });
     },
-    onError: (error: any) => {
+    onError: (error: unknown) => {
       setActiveReparseId(null);
-      const message =
-        error?.response?.data?.detail ??
-        error?.message ??
-        'Reparse failed. Please try again.';
+      const message = getErrorMessage(error, 'Reparse failed. Please try again.');
       toast({
         title: 'Reparse failed',
         description: message,
@@ -132,8 +146,8 @@ export default function DocumentsPage() {
         const res = await apiClient.get(`/documents/${doc.id}/raw_text?user_id=${USER_ID}`);
         setDetailData(res.data.raw_text || '');
       }
-    } catch (err: any) {
-      setDetailError(err?.message ?? 'Failed to load document data.');
+    } catch (err: unknown) {
+      setDetailError(getErrorMessage(err, 'Failed to load document data.'));
     } finally {
       setDetailLoading(false);
     }

@@ -51,8 +51,10 @@
 
 ## Verification
 - `docker compose exec -T web npm install --no-fund --no-audit`
-- `docker compose exec -T web npm run lint` (interactive ESLint setup prompt blocked; no config present yet)
+- `docker compose exec -T web npm run lint`
+- `docker compose exec -T web sh -lc "NODE_ENV=production npm run build"`
 
 ## Gotchas
 - `npm run lint` auto-updated `frontend/tsconfig.json` (added target) and touched `frontend/next-env.d.ts`.
 - `npm install` created `frontend/package-lock.json`.
+- `docker compose` sets `NODE_ENV=development`; use `NODE_ENV=production` for `next build` to avoid build-time errors.
