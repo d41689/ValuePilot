@@ -2,8 +2,27 @@
 
 import { useState } from 'react';
 import { useMutation, useQuery } from '@tanstack/react-query';
+import { FileSearch, FileText, Loader2, RefreshCcw, X } from 'lucide-react';
+
 import apiClient from '@/lib/api/client';
-import { Loader2, RefreshCcw, FileText, FileSearch, X } from 'lucide-react';
+import { Badge } from '@/components/ui/badge';
+import { Button } from '@/components/ui/button';
+import {
+  Card,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+} from '@/components/ui/card';
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from '@/components/ui/table';
+import { useToast } from '@/components/ui/use-toast';
 
 const USER_ID = 1;
 
@@ -29,12 +48,17 @@ type DetailView = {
   doc: DocumentRow;
 };
 
-const STATUS_META: Record<string, { label: string; className: string }> = {
-  uploaded: { label: 'Uploaded', className: 'bg-gray-100 text-gray-700' },
-  parsing: { label: 'Parsing...', className: 'bg-blue-100 text-blue-700' },
-  parsed: { label: 'Parsed', className: 'bg-green-100 text-green-700' },
-  parsed_partial: { label: 'Partially Parsed', className: 'bg-orange-100 text-orange-700' },
-  failed: { label: 'Failed', className: 'bg-red-100 text-red-700' },
+type StatusMeta = {
+  label: string;
+  variant: 'default' | 'secondary' | 'success' | 'warning' | 'danger';
+};
+
+const STATUS_META: Record<string, StatusMeta> = {
+  uploaded: { label: 'Uploaded', variant: 'secondary' },
+  parsing: { label: 'Parsing...', variant: 'secondary' },
+  parsed: { label: 'Parsed', variant: 'success' },
+  parsed_partial: { label: 'Partially Parsed', variant: 'warning' },
+  failed: { label: 'Failed', variant: 'danger' },
 };
 
 function formatCompanies(companies: Company[], max: number = 3) {
@@ -53,10 +77,12 @@ function formatDate(iso: string | null) {
 }
 
 export default function DocumentsPage() {
+  const { toast } = useToast();
   const [detail, setDetail] = useState<DetailView | null>(null);
   const [detailData, setDetailData] = useState<string>('');
   const [detailError, setDetailError] = useState<string | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
+  const [activeReparseId, setActiveReparseId] = useState<number | null>(null);
 
   const documentsQuery = useQuery({
     queryKey: ['documents', USER_ID],
@@ -72,7 +98,24 @@ export default function DocumentsPage() {
       return res.data;
     },
     onSuccess: () => {
+      setActiveReparseId(null);
       documentsQuery.refetch();
+      toast({
+        title: 'Reparse complete',
+        description: 'Latest parsed data is now available in the screener.',
+      });
+    },
+    onError: (error: any) => {
+      setActiveReparseId(null);
+      const message =
+        error?.response?.data?.detail ??
+        error?.message ??
+        'Reparse failed. Please try again.';
+      toast({
+        title: 'Reparse failed',
+        description: message,
+        variant: 'destructive',
+      });
     },
   });
 
@@ -99,129 +142,161 @@ export default function DocumentsPage() {
   const documents = documentsQuery.data ?? [];
 
   return (
-    <div className="space-y-6">
-      <div>
-        <h1 className="text-2xl font-bold text-gray-900">Documents</h1>
-        <p className="text-gray-600">Research input registry for uploaded reports and parsing outcomes.</p>
-      </div>
-
-      <div className="bg-white rounded-lg border border-gray-200 overflow-hidden">
-        <div className="p-4 border-b bg-gray-50 font-semibold text-gray-700 flex items-center justify-between">
-          <span>Documents ({documents.length})</span>
+    <div className="space-y-6 animate-in fade-in slide-in-from-bottom-2 duration-500">
+      <div className="flex flex-wrap items-center justify-between gap-4">
+        <div>
+          <h1 className="font-display text-3xl font-semibold tracking-tight">Documents</h1>
+          <p className="text-sm text-muted-foreground">
+            Research input registry for uploaded reports and parsing outcomes.
+          </p>
+        </div>
+        <div className="flex items-center gap-2 rounded-full border border-border/60 bg-card/80 px-4 py-2 text-xs text-muted-foreground">
+          <span className="font-semibold text-foreground">{documents.length}</span>
+          documents tracked
           {documentsQuery.isFetching && (
-            <span className="text-xs text-gray-500 flex items-center gap-2">
-              <Loader2 className="h-4 w-4 animate-spin" />
+            <span className="flex items-center gap-1 text-primary">
+              <Loader2 className="h-3 w-3 animate-spin" />
               Refreshing
             </span>
           )}
         </div>
-        {documentsQuery.isLoading ? (
-          <div className="p-8 text-center text-gray-500 flex items-center justify-center gap-2">
-            <Loader2 className="h-4 w-4 animate-spin" />
-            Loading documents...
-          </div>
-        ) : documents.length === 0 ? (
-          <div className="p-8 text-center text-gray-500">No documents found.</div>
-        ) : (
-          <table className="min-w-full divide-y divide-gray-200">
-            <thead className="bg-gray-50">
-              <tr>
-                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">File Name</th>
-                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Template</th>
-                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Companies</th>
-                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Pages</th>
-                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Status</th>
-                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Uploaded</th>
-                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Actions</th>
-              </tr>
-            </thead>
-            <tbody className="bg-white divide-y divide-gray-200">
-              {documents.map((doc) => {
-                const meta = STATUS_META[doc.parse_status] ?? {
-                  label: doc.parse_status,
-                  className: 'bg-gray-100 text-gray-700',
-                };
-                return (
-                  <tr key={doc.id}>
-                    <td className="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900">{doc.file_name}</td>
-                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-600">{doc.template_label || 'Unknown'}</td>
-                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-600">{formatCompanies(doc.companies)}</td>
-                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-600">{doc.page_count}</td>
-                    <td className="px-6 py-4 whitespace-nowrap text-sm">
-                      <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${meta.className}`}>
-                        {meta.label}
-                      </span>
-                    </td>
-                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">{formatDate(doc.upload_time)}</td>
-                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-600">
-                      <div className="flex flex-wrap items-center gap-2">
-                        <button
-                          className="inline-flex items-center gap-1 rounded-md border border-gray-200 px-2 py-1 text-xs text-gray-700 hover:bg-gray-50"
-                          onClick={() => handleView(doc, 'parsed')}
-                        >
-                          <FileSearch className="h-3 w-3" />
-                          View Parsed Data
-                        </button>
-                        <button
-                          className="inline-flex items-center gap-1 rounded-md border border-gray-200 px-2 py-1 text-xs text-gray-700 hover:bg-gray-50"
-                          onClick={() => handleView(doc, 'raw')}
-                        >
-                          <FileText className="h-3 w-3" />
-                          View Raw Text
-                        </button>
-                        <button
-                          className="inline-flex items-center gap-1 rounded-md border border-blue-200 px-2 py-1 text-xs text-blue-700 hover:bg-blue-50"
-                          onClick={() => reparseMutation.mutate(doc.id)}
-                          disabled={reparseMutation.isPending}
-                        >
-                          {reparseMutation.isPending ? (
-                            <Loader2 className="h-3 w-3 animate-spin" />
-                          ) : (
-                            <RefreshCcw className="h-3 w-3" />
-                          )}
-                          Reparse
-                        </button>
-                      </div>
-                    </td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
-        )}
       </div>
 
-      {detail && (
-        <div className="bg-white border border-gray-200 rounded-lg shadow-sm">
-          <div className="flex items-center justify-between border-b px-4 py-3">
-            <div>
-              <div className="text-sm text-gray-500">{detail.type === 'parsed' ? 'Parsed Data' : 'Raw Text'}</div>
-              <div className="text-base font-semibold text-gray-900">{detail.doc.file_name}</div>
-            </div>
-            <button
-              className="rounded-md border border-gray-200 p-1 text-gray-500 hover:text-gray-700"
-              onClick={() => setDetail(null)}
-            >
-              <X className="h-4 w-4" />
-            </button>
+      <Card className="border-border/60 bg-card/85">
+        <CardHeader className="flex flex-row items-start justify-between">
+          <div>
+            <CardTitle>Document Register</CardTitle>
+            <CardDescription>Container-level view of uploads and parsing health.</CardDescription>
           </div>
-          <div className="p-4">
+          <div className="text-xs text-muted-foreground">
+            {documentsQuery.isLoading ? 'Loading...' : 'Latest snapshot'}
+          </div>
+        </CardHeader>
+        <CardContent>
+          {documentsQuery.isLoading ? (
+            <div className="flex items-center justify-center gap-2 py-10 text-sm text-muted-foreground">
+              <Loader2 className="h-4 w-4 animate-spin" />
+              Loading documents...
+            </div>
+          ) : documents.length === 0 ? (
+            <div className="py-10 text-center text-sm text-muted-foreground">
+              No documents found.
+            </div>
+          ) : (
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>File Name</TableHead>
+                  <TableHead>Template</TableHead>
+                  <TableHead>Companies</TableHead>
+                  <TableHead>Pages</TableHead>
+                  <TableHead>Status</TableHead>
+                  <TableHead>Uploaded</TableHead>
+                  <TableHead>Actions</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {documents.map((doc, index) => {
+                  const meta = STATUS_META[doc.parse_status] ?? {
+                    label: doc.parse_status,
+                    variant: 'secondary',
+                  };
+                  return (
+                    <TableRow
+                      key={doc.id}
+                      className="animate-in fade-in slide-in-from-bottom-1 duration-500"
+                      style={{ animationDelay: `${index * 40}ms` }}
+                    >
+                      <TableCell className="font-medium text-foreground">
+                        {doc.file_name}
+                      </TableCell>
+                      <TableCell className="text-muted-foreground">
+                        {doc.template_label || 'Unknown'}
+                      </TableCell>
+                      <TableCell className="text-muted-foreground">
+                        {formatCompanies(doc.companies)}
+                      </TableCell>
+                      <TableCell className="text-muted-foreground">{doc.page_count}</TableCell>
+                      <TableCell>
+                        <Badge variant={meta.variant}>{meta.label}</Badge>
+                      </TableCell>
+                      <TableCell className="text-muted-foreground">
+                        {formatDate(doc.upload_time)}
+                      </TableCell>
+                      <TableCell>
+                        <div className="flex flex-wrap gap-2">
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            onClick={() => handleView(doc, 'parsed')}
+                          >
+                            <FileSearch className="h-3 w-3" />
+                            View Parsed Data
+                          </Button>
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            onClick={() => handleView(doc, 'raw')}
+                          >
+                            <FileText className="h-3 w-3" />
+                            View Raw Text
+                          </Button>
+                          <Button
+                            size="sm"
+                            onClick={() => {
+                              setActiveReparseId(doc.id);
+                              reparseMutation.mutate(doc.id);
+                            }}
+                            disabled={reparseMutation.isPending && activeReparseId === doc.id}
+                          >
+                            {reparseMutation.isPending && activeReparseId === doc.id ? (
+                              <Loader2 className="h-3 w-3 animate-spin" />
+                            ) : (
+                              <RefreshCcw className="h-3 w-3" />
+                            )}
+                            Reparse
+                          </Button>
+                        </div>
+                      </TableCell>
+                    </TableRow>
+                  );
+                })}
+              </TableBody>
+            </Table>
+          )}
+        </CardContent>
+      </Card>
+
+      {detail && (
+        <Card className="border-border/60 bg-card/90">
+          <CardHeader className="flex flex-row items-start justify-between gap-4">
+            <div>
+              <CardDescription>
+                {detail.type === 'parsed' ? 'Parsed Data' : 'Raw Text'}
+              </CardDescription>
+              <CardTitle>{detail.doc.file_name}</CardTitle>
+            </div>
+            <Button variant="ghost" size="icon" onClick={() => setDetail(null)}>
+              <X className="h-4 w-4" />
+            </Button>
+          </CardHeader>
+          <CardContent>
             {detailLoading ? (
-              <div className="flex items-center gap-2 text-gray-500">
+              <div className="flex items-center gap-2 text-sm text-muted-foreground">
                 <Loader2 className="h-4 w-4 animate-spin" />
                 Loading...
               </div>
             ) : detailError ? (
-              <div className="text-sm text-red-600">{detailError}</div>
+              <div className="text-sm text-destructive">{detailError}</div>
             ) : detailData ? (
-              <pre className="max-h-96 overflow-auto whitespace-pre-wrap rounded-md bg-gray-50 p-4 text-xs text-gray-700">
+              <pre className="max-h-96 overflow-auto whitespace-pre-wrap rounded-xl border border-border/60 bg-muted/30 p-4 text-xs text-foreground">
                 {detailData}
               </pre>
             ) : (
-              <div className="text-sm text-gray-500">No data available.</div>
+              <div className="text-sm text-muted-foreground">No data available.</div>
             )}
-          </div>
-        </div>
+          </CardContent>
+        </Card>
       )}
     </div>
   );

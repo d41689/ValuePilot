@@ -1,15 +1,23 @@
-import type { Metadata } from "next";
-import { Inter } from "next/font/google";
-import "./globals.css";
+import type { Metadata } from 'next';
+import { Fraunces, Manrope } from 'next/font/google';
 
-const inter = Inter({ subsets: ["latin"] });
+import './globals.css';
+import Providers from '@/components/providers';
+
+const manrope = Manrope({
+  subsets: ['latin'],
+  variable: '--font-sans',
+});
+
+const fraunces = Fraunces({
+  subsets: ['latin'],
+  variable: '--font-display',
+});
 
 export const metadata: Metadata = {
-  title: "ValuePilot",
-  description: "Financial Analysis Engine",
+  title: 'ValuePilot',
+  description: 'Financial Analysis Engine',
 };
-
-import Providers from "@/components/providers";
 
 export default function RootLayout({
   children,
@@ -18,7 +26,7 @@ export default function RootLayout({
 }>) {
   return (
     <html lang="en">
-      <body className={inter.className}>
+      <body className={`${manrope.variable} ${fraunces.variable} font-sans antialiased`}>
         <Providers>{children}</Providers>
       </body>
     </html>

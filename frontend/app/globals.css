@@ -2,26 +2,65 @@
 @tailwind components;
 @tailwind utilities;
 
-:root {
-  --foreground-rgb: 0, 0, 0;
-  --background-start-rgb: 214, 219, 220;
-  --background-end-rgb: 255, 255, 255;
-}
-
-@media (prefers-color-scheme: dark) {
+@layer base {
   :root {
-    --foreground-rgb: 255, 255, 255;
-    --background-start-rgb: 0, 0, 0;
-    --background-end-rgb: 0, 0, 0;
+    --background: 30 33% 97%;
+    --foreground: 222 47% 11%;
+    --card: 0 0% 100%;
+    --card-foreground: 222 47% 11%;
+    --popover: 0 0% 100%;
+    --popover-foreground: 222 47% 11%;
+    --primary: 198 69% 32%;
+    --primary-foreground: 210 40% 98%;
+    --secondary: 30 20% 92%;
+    --secondary-foreground: 222 47% 11%;
+    --muted: 30 16% 90%;
+    --muted-foreground: 215 16% 45%;
+    --accent: 44 89% 60%;
+    --accent-foreground: 222 47% 11%;
+    --destructive: 0 72% 51%;
+    --destructive-foreground: 210 40% 98%;
+    --border: 24 20% 87%;
+    --input: 24 20% 87%;
+    --ring: 198 69% 32%;
+    --radius: 0.9rem;
   }
-}
 
-body {
-  color: rgb(var(--foreground-rgb));
-  background: linear-gradient(
-      to bottom,
-      transparent,
-      rgb(var(--background-end-rgb))
-    )
-    rgb(var(--background-start-rgb));
+  .dark {
+    --background: 222 47% 11%;
+    --foreground: 210 40% 98%;
+    --card: 222 47% 13%;
+    --card-foreground: 210 40% 98%;
+    --popover: 222 47% 13%;
+    --popover-foreground: 210 40% 98%;
+    --primary: 198 69% 40%;
+    --primary-foreground: 222 47% 11%;
+    --secondary: 222 24% 20%;
+    --secondary-foreground: 210 40% 98%;
+    --muted: 222 24% 20%;
+    --muted-foreground: 215 16% 65%;
+    --accent: 44 89% 60%;
+    --accent-foreground: 222 47% 11%;
+    --destructive: 0 72% 51%;
+    --destructive-foreground: 210 40% 98%;
+    --border: 222 24% 20%;
+    --input: 222 24% 20%;
+    --ring: 198 69% 40%;
+  }
+
+  * {
+    @apply border-border;
+  }
+
+  body {
+    @apply bg-background text-foreground font-sans;
+    background-image:
+      radial-gradient(700px circle at 10% 0%, hsl(var(--accent) / 0.18), transparent 60%),
+      radial-gradient(600px circle at 85% 20%, hsl(var(--primary) / 0.12), transparent 55%);
+    background-attachment: fixed;
+  }
+
+  ::selection {
+    background: hsl(var(--accent) / 0.4);
+  }
 }
