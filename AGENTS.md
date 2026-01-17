@@ -133,3 +133,203 @@ If tests fail:
 - [ ] `pytest` is green inside container
 - [ ] No raw SQL generation from user input
 - [ ] `metric_facts` remains the only queryable source of truth (Active Value uses `is_current = true`)
+# End-to-End Agent-Driven Development Flow (Authoritative)
+
+This section defines the **canonical development lifecycle** for ValuePilot.
+All human contributors and Agents MUST follow this flow once the PRD is established.
+
+---
+
+## Phase 0: PRD Baseline (Human Only)
+
+**Role**: Tech Lead / Human Owner  
+**Input**: `docs/prd/value-pilot-prd-v0.1.md`  
+**Output**: Approved, frozen PRD
+
+Rules:
+- The PRD is the highest-level contract.
+- No Agent may modify PRD content unless explicitly instructed.
+- All downstream work MUST reference PRD sections explicitly.
+
+---
+
+## Phase 1: Task Creation (Human → Orchestrator Agent)
+
+**Role**: Human (author), Orchestrator Agent (assistant)  
+**Input**: PRD section(s), user intent  
+**Output**: Task file in `docs/tasks/`
+
+### Step 1.1 Create Task File (Human)
+
+Create:
+`docs/tasks/YYYY-MM-DD_<short-task-name>.md`
+
+Minimum required content:
+- Goal / Acceptance Criteria
+- Scope (In / Out)
+- PRD References (exact sections)
+- Test Plan (Docker commands)
+
+### Step 1.2 Task Decomposition (Orchestrator Agent)
+
+The Orchestrator MAY:
+- Propose subtasks
+- Identify risks and contracts touched
+- Suggest verification steps
+
+The Orchestrator MUST NOT:
+- Change scope
+- Invent requirements
+- Modify schema or PRD
+
+---
+
+## Phase 2: Planning (Orchestrator Agent → Human Approval)
+
+**Role**: Orchestrator Agent  
+**Input**: Task file  
+**Output**: Execution Plan (written into task file)
+
+Plan MUST include:
+- Files to be changed
+- Order of execution
+- Contract checks (schema, normalization, safety)
+- Rollback strategy
+
+Human MUST approve the plan before implementation begins.
+
+---
+
+## Phase 3: Test-First Implementation (Agent Execution)
+
+**Role**: Implementation Agent (Parser / Rules / Schema / UI)
+
+### Step 3.1 Write Tests First (Red)
+
+Agent MUST:
+- Write failing tests that encode acceptance criteria
+- Commit test intent clearly (no placeholders)
+
+### Step 3.2 Minimal Implementation (Green)
+
+Agent MUST:
+- Implement only what is required to satisfy tests
+- Avoid opportunistic refactors
+
+### Step 3.3 Refactor Safely (Green)
+
+Agent MAY:
+- Improve structure or readability
+- ONLY if all tests remain green
+
+---
+
+## Phase 4: Verification (Agent + Docker)
+
+**Role**: Implementation Agent  
+**Runtime**: Docker Compose ONLY
+
+Required commands (as applicable):
+- `docker compose exec api pytest -q`
+- `docker compose exec api pytest -q <specific-test>`
+- `docker compose exec api alembic upgrade head`
+
+Agent MUST:
+- Fix all failures
+- Re-run tests until green
+- Record verification results in task file
+
+---
+
+## Phase 5: Contract Gate (Self-Check)
+
+**Role**: Implementation Agent  
+**Output**: Contract checklist in task file
+
+Agent MUST explicitly confirm:
+- `metric_facts` is the only source queried by screeners
+- `value_numeric` is normalized and used for comparisons
+- No raw SQL from user input
+- No eval/exec for formulas
+- Lineage fields are present
+- `is_current` semantics preserved
+
+---
+
+## Phase 6: Human Review & Merge
+
+**Role**: Tech Lead / Human Owner
+
+Human reviews ONLY:
+- Contract adherence
+- Test coverage of critical paths
+- Absence of unnecessary complexity
+
+If approved:
+- Merge changes
+- Mark task as DONE
+
+---
+
+## Phase 7: Post-Merge Recording
+
+**Role**: Human or Agent (if instructed)
+
+Required:
+- Update task file with final notes
+- Update PRD / AGENTS.md if semantics changed
+
+---
+
+# Canonical Prompts by Role (Reference)
+
+## Orchestrator Agent Prompt
+
+"You are the Orchestrator Agent for the ValuePilot project.
+Your job is to decompose approved tasks into executable steps.
+You MUST:
+- Respect the PRD as immutable
+- Propose clear subtasks and verification steps
+You MUST NOT:
+- Modify schema or requirements
+- Invent new functionality
+Output only structured plans."
+
+---
+
+## Implementation Agent Prompt
+
+"You are an Implementation Agent for ValuePilot.
+You MUST:
+- Follow the approved execution plan
+- Use Test-Driven Development
+- Run all verification via Docker Compose
+- Respect all data contracts and safety rules
+You MUST NOT:
+- Modify PRD or schema without approval
+- Use eval, exec, or raw SQL for user input
+- Skip tests or verification steps"
+
+---
+
+## Verifier Agent Prompt
+
+"You are the Verifier Agent for ValuePilot.
+Your job is to ensure correctness, safety, and contract compliance.
+You MUST:
+- Validate behavior against PRD and AGENTS.md
+- Run tests inside Docker containers
+- Flag any contract violations
+You MUST NOT:
+- Suggest scope expansion
+- Modify production code"
+
+---
+
+## Human Review Prompt (Checklist)
+
+"As the Tech Lead, verify:
+- Acceptance criteria satisfied
+- Tests are green in Docker
+- Contracts respected (normalization, lineage, safety)
+- No unnecessary complexity introduced"
