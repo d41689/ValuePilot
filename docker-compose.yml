@@ -1,0 +1,63 @@
+services:
+  web:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: value-pilot-web
+    ports:
+      - "3001:3000"
+    environment:
+      - NODE_ENV=development
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+      - /app/.next
+    command: npm run dev
+    depends_on:
+      - api
+    networks:
+      - vp-network
+
+  api:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: value-pilot-api
+    ports:
+      - "8001:8000"
+    environment:
+      - DATABASE_URL=postgresql://user:password@db:5432/valuepilot
+    volumes:
+      - ./backend:/code
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+    depends_on:
+      db:
+        condition: service_healthy
+    networks:
+      - vp-network
+
+  db:
+    image: postgres:15-alpine
+    container_name: value-pilot-db
+    ports:
+      - "5433:5432"
+    environment:
+      - POSTGRES_USER=user
+      - POSTGRES_PASSWORD=password
+      - POSTGRES_DB=valuepilot
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U user -d valuepilot"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks:
+      - vp-network
+
+networks:
+  vp-network:
+    driver: bridge
+
+volumes:
+  postgres_data:
