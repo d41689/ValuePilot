@@ -1,7 +1,7 @@
 from sqlalchemy.orm import Session
 from app.models.users import User, NotificationSettings
 from app.models.stocks import Stock, StockPrice
-from app.models.artifacts import PdfDocument, ParserTemplate
+from app.models.artifacts import PdfDocument
 from app.models.facts import MetricFact
 
 def test_create_user(db_session: Session):

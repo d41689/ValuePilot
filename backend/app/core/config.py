@@ -12,6 +12,9 @@ class Settings(BaseSettings):
     POSTGRES_PASSWORD: str = "password"
     POSTGRES_DB: str = "valuepilot"
     
+    # Storage
+    UPLOAD_DIR: str = "/code/storage/uploads"
+    
     # Prioritize DATABASE_URL from env, otherwise build it
     SQLALCHEMY_DATABASE_URI: Optional[str] = Field(None, validation_alias="DATABASE_URL")
 
