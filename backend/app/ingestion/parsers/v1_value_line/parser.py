@@ -118,6 +118,53 @@ class ValueLineV1Parser(BaseParser):
                     confidence_score=0.8,
                 ))
 
+        if not any(r.field_key == "safety" for r in results) and 1 in self.page_words:
+            safety_value = self._rating_from_words("SAFETY", self.page_words[1])
+            if safety_value is not None:
+                results.append(ExtractionResult(
+                    field_key="safety",
+                    raw_value_text=str(safety_value),
+                    original_text_snippet="SAFETY (word layout)",
+                    parsed_value_json={"value": safety_value},
+                    confidence_score=0.6,
+                ))
+
+        strength_match = re.search(r'FinancialStrength\s+([A-Z][A-Z+\-]{0,3})', self.text, re.IGNORECASE)
+        if strength_match:
+            results.append(ExtractionResult(
+                field_key="company_financial_strength",
+                raw_value_text=strength_match.group(1),
+                original_text_snippet=strength_match.group(0),
+                confidence_score=0.8,
+            ))
+
+        stability_match = re.search(r"Stock[’']?s?PriceStability\s+(\d{1,3})", self.text, re.IGNORECASE)
+        if stability_match:
+            results.append(ExtractionResult(
+                field_key="stock_price_stability",
+                raw_value_text=stability_match.group(1),
+                original_text_snippet=stability_match.group(0),
+                confidence_score=0.8,
+            ))
+
+        growth_match = re.search(r'PriceGrowthPersistence\s+(\d{1,3})', self.text, re.IGNORECASE)
+        if growth_match:
+            results.append(ExtractionResult(
+                field_key="price_growth_persistence",
+                raw_value_text=growth_match.group(1),
+                original_text_snippet=growth_match.group(0),
+                confidence_score=0.8,
+            ))
+
+        predict_match = re.search(r'EarningsPredictability\s+(\d{1,3})', self.text, re.IGNORECASE)
+        if predict_match:
+            results.append(ExtractionResult(
+                field_key="earnings_predictability",
+                raw_value_text=predict_match.group(1),
+                original_text_snippet=predict_match.group(0),
+                confidence_score=0.8,
+            ))
+
         # Analyst name + report date near the bottom: "NilsC.VanLiew January2,2026"
         m = re.search(
             r'\b([A-Z][A-Za-z.]{2,40})\s*(January|February|March|April|May|June|July|August|September|October|November|December)\s*(\d{1,2})\s*,\s*(\d{4})',
@@ -418,6 +465,8 @@ class ValueLineV1Parser(BaseParser):
                     confidence_score=0.8,
                 ))
 
+        results.extend(self._parse_annual_table_metrics())
+
         # Institutional Decisions (word-layout assisted)
         if 1 in self.page_words:
             inst = self._parse_institutional_decisions_from_words(self.page_words[1])
@@ -425,6 +474,180 @@ class ValueLineV1Parser(BaseParser):
                 results.append(inst)
 
         return results
+
+    def _parse_annual_table_metrics(self) -> list[ExtractionResult]:
+        flat_text = re.sub(r'\s+', ' ', self.text)
+        years = self._find_year_sequence(flat_text)
+        if not years:
+            return []
+
+        value_pat = r'[-+]?\d*\.?\d+%?'
+        value_re = re.compile(rf'^{value_pat}$')
+        tokens = flat_text.split()
+        results: list[ExtractionResult] = []
+
+        def parse_row(label_pat: str, field_key: str, *, scale_token: Optional[str] = None, percent: bool = False):
+            label_idx = next(
+                (idx for idx, token in enumerate(tokens) if re.search(label_pat, token, re.IGNORECASE)),
+                None,
+            )
+            if label_idx is None:
+                return
+            values_raw: list[str] = []
+            for j in range(label_idx - 1, -1, -1):
+                if value_re.match(tokens[j]):
+                    values_raw.append(tokens[j])
+                else:
+                    if values_raw:
+                        break
+            values_raw = list(reversed(values_raw))
+            if not values_raw:
+                return
+            if percent:
+                values_raw = [token for token in values_raw if "%" in token]
+                if not values_raw:
+                    return
+            if len(values_raw) > len(years):
+                values_raw = values_raw[-len(years):]
+            aligned_years = self._align_years(years, values_raw)
+            token_by_year = {year: token for year, token in zip(aligned_years, values_raw)}
+            value_by_year = {year: self._coerce_value(token) for year, token in token_by_year.items()}
+
+            estimate_year = years[-1]
+            estimate_value = value_by_year.get(estimate_year)
+            if estimate_value is not None and len(years) > 1:
+                actual_year = years[-2]
+            else:
+                actual_year = aligned_years[-1] if aligned_years else None
+
+            snippet = " ".join(tokens[max(0, label_idx - 20): label_idx + 5])
+
+            if actual_year is not None:
+                actual_token = token_by_year.get(actual_year)
+                if actual_token is not None and value_by_year.get(actual_year) is not None:
+                    results.append(
+                        self._annual_metric_result(
+                            field_key=field_key,
+                            raw_token=actual_token,
+                            year=actual_year,
+                            is_estimate=False,
+                            snippet=snippet,
+                            scale_token=scale_token,
+                            percent=percent,
+                        )
+                    )
+
+            if estimate_value is not None:
+                estimate_token = token_by_year.get(estimate_year)
+                if estimate_token is not None:
+                    results.append(
+                        self._annual_metric_result(
+                            field_key=field_key,
+                            raw_token=estimate_token,
+                            year=estimate_year,
+                            is_estimate=True,
+                            snippet=snippet,
+                            scale_token=scale_token,
+                            percent=percent,
+                        )
+                    )
+
+        parse_row(r"Cap[’']?lSpendingpersh", "capital_spending_per_share_usd")
+        parse_row(r"AvgAnn[’']?lDiv[’']?dYield", "avg_annual_dividend_yield_pct", percent=True)
+        parse_row(r"Depreciation\(\$?mill\)", "depreciation_usd_millions", scale_token="mill")
+        parse_row(r"NetProfit\(\$?mill\)", "net_profit_usd_millions", scale_token="mill")
+
+        return results
+
+    @staticmethod
+    def _annual_metric_result(
+        *,
+        field_key: str,
+        raw_token: str,
+        year: int,
+        is_estimate: bool,
+        snippet: str,
+        scale_token: Optional[str],
+        percent: bool,
+    ) -> ExtractionResult:
+        raw_value_text = raw_token.strip()
+        if percent and not raw_value_text.endswith("%"):
+            raw_value_text = f"{raw_value_text}%"
+        if scale_token:
+            raw_value_text = f"{raw_value_text} {scale_token}"
+
+        parsed_value_json = {
+            "year": year,
+            "period_type": "FY",
+            "period_end_date": f"{year}-12-31",
+            "is_estimate": is_estimate,
+        }
+
+        return ExtractionResult(
+            field_key=field_key,
+            raw_value_text=raw_value_text,
+            original_text_snippet=snippet,
+            parsed_value_json=parsed_value_json,
+            confidence_score=0.7,
+        )
+
+    @staticmethod
+    def _find_year_sequence(text: str) -> list[int]:
+        candidates: list[list[int]] = []
+        for match in re.finditer(r'(?:20\d{2}\s+){6,}20\d{2}', text):
+            years = [int(y) for y in re.findall(r'20\d{2}', match.group(0))]
+            if years:
+                candidates.append(years)
+        if not candidates:
+            return []
+        return max(candidates, key=len)
+
+    @staticmethod
+    def _align_years(years: list[int], values: list[str]) -> list[int]:
+        if not values:
+            return []
+        if len(values) == len(years):
+            return years
+        if len(values) == len(years) - 1:
+            return years[:-1]
+        if len(values) < len(years):
+            return years[-len(values):]
+        return years
+
+    @staticmethod
+    def _coerce_value(token: str) -> Optional[float]:
+        if token is None:
+            return None
+        cleaned = token.replace("%", "")
+        if cleaned.startswith("."):
+            cleaned = f"0{cleaned}"
+        try:
+            return float(cleaned)
+        except ValueError:
+            return None
+
+    @staticmethod
+    def _rating_from_words(label: str, words: list[dict[str, Any]]) -> Optional[int]:
+        label_upper = label.upper()
+        label_word = next(
+            (w for w in words if str(w.get("text", "")).upper() == label_upper),
+            None,
+        )
+        if not label_word:
+            return None
+
+        base_top = float(label_word.get("top", 0.0))
+        label_x = float(label_word.get("x1", 0.0))
+        candidates = [
+            w
+            for w in words
+            if str(w.get("text", "")).isdigit()
+            and abs(float(w.get("top", 0.0)) - base_top) < 5.0
+        ]
+        if not candidates:
+            return None
+        candidates = sorted(candidates, key=lambda w: abs(float(w.get("x0", 0.0)) - label_x))
+        return int(candidates[0]["text"])
 
     @staticmethod
     def _parse_institutional_decisions_from_words(words: list[dict[str, Any]]) -> Optional[ExtractionResult]:

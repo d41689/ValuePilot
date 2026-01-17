@@ -17,12 +17,12 @@ def load_expected_json() -> dict:
         return json.load(fh)
 
 
-def parse_fixture_pdf() -> dict[str, ValueLineV1Parser]:
+def parse_fixture_pdf() -> list:
     pages = PdfExtractor.extract_pages_with_words(FIXTURE_PDF)
     text = "\n".join(page_text for _, page_text, _ in pages)
     page_words = {page_num: words for page_num, _, words in pages}
     parser = ValueLineV1Parser(text, page_words=page_words)
-    return {res.field_key: res for res in parser.parse()}
+    return parser.parse()
 
 
 def _dig(d: dict, path: list[str]):
@@ -32,11 +32,26 @@ def _dig(d: dict, path: list[str]):
     return current
 
 
+def _first(results, field_key: str):
+    return next((res for res in results if res.field_key == field_key), None)
+
+
+def _all(results, field_key: str):
+    return [res for res in results if res.field_key == field_key]
+
+
 def _normalize_value(result, value_type: str) -> float | None:
     if not result or not result.raw_value_text:
         return None
     normalized, _ = Scaler.normalize(result.raw_value_text, value_type)
     return normalized
+
+
+def _series_value(series: list, years: list[int], target_year: int):
+    try:
+        return series[years.index(target_year)]
+    except ValueError:
+        return None
 
 
 def test_value_line_pdf_matches_expected_fixture():
@@ -137,7 +152,7 @@ def test_value_line_pdf_matches_expected_fixture():
     ]
 
     for field_key, path, value_type in numeric_expectations:
-        result = actual.get(field_key)
+        result = _first(actual, field_key)
         if not result:
             missing.append(f"{field_key} (expected at {'.'.join(path)})")
             continue
@@ -159,7 +174,7 @@ def test_value_line_pdf_matches_expected_fixture():
         ("analyst_name", ["header_ratings", "analyst_name"]),
         ("report_date", ["header_ratings", "report_date"]),
     ):
-        result = actual.get(field_key)
+        result = _first(actual, field_key)
         if not result:
             missing.append(field_key)
             continue
@@ -172,8 +187,9 @@ def test_value_line_pdf_matches_expected_fixture():
     for field_key, path in (
         ("timeliness", ["header_ratings", "timeliness", "value"]),
         ("technical", ["header_ratings", "technical", "value"]),
+        ("safety", ["header_ratings", "safety", "value"]),
     ):
-        result = actual.get(field_key)
+        result = _first(actual, field_key)
         if not result or not result.parsed_value_json:
             missing.append(field_key)
             continue
@@ -184,8 +200,31 @@ def test_value_line_pdf_matches_expected_fixture():
                 f"{field_key} value {actual_value} != expected {expected_value}"
             )
 
+    for field_key, path in (
+        ("company_financial_strength", ["header_ratings", "company_financial_strength"]),
+        ("stock_price_stability", ["header_ratings", "stock_price_stability"]),
+        ("price_growth_persistence", ["header_ratings", "price_growth_persistence"]),
+        ("earnings_predictability", ["header_ratings", "earnings_predictability"]),
+    ):
+        result = _first(actual, field_key)
+        if not result:
+            missing.append(field_key)
+            continue
+        expected_value = _dig(expected, path)
+        if field_key == "company_financial_strength":
+            if result.raw_value_text != expected_value:
+                mismatched.append(
+                    f"{field_key} raw '{result.raw_value_text}' != expected '{expected_value}'"
+                )
+        else:
+            actual_value = _normalize_value(result, "number")
+            if actual_value is None or actual_value != pytest.approx(expected_value):
+                mismatched.append(
+                    f"{field_key} normalized {actual_value} != expected {expected_value}"
+                )
+
     # Target year range
-    yr_result = actual.get("long_term_projection_year_range")
+    yr_result = _first(actual, "long_term_projection_year_range")
     if yr_result:
         expected_year_range = _dig(expected, ["target_price_ranges", "long_term_projection", "year_range"])
         if yr_result.raw_value_text != expected_year_range:
@@ -196,7 +235,7 @@ def test_value_line_pdf_matches_expected_fixture():
         missing.append("long_term_projection_year_range")
 
     # Tables + structured blocks
-    current_position = actual.get("current_position_usd_millions")
+    current_position = _first(actual, "current_position_usd_millions")
     expected_current_position = expected["financial_snapshot_blocks"]["current_position_usd_millions"]
     if not current_position or not current_position.parsed_value_json:
         missing.append("current_position_usd_millions")
@@ -208,7 +247,7 @@ def test_value_line_pdf_matches_expected_fixture():
             if parsed_cp.get(series) != expected_current_position.get(series):
                 mismatched.append(f"current_position_usd_millions.{series} mismatch")
 
-    annual_rates = actual.get("annual_rates_of_change")
+    annual_rates = _first(actual, "annual_rates_of_change")
     expected_annual_rates = expected["financial_snapshot_blocks"]["annual_rates_of_change"]
     if not annual_rates or not annual_rates.parsed_value_json:
         missing.append("annual_rates_of_change")
@@ -237,7 +276,7 @@ def test_value_line_pdf_matches_expected_fixture():
         ("earnings_per_share", "earnings_per_share"),
         ("quarterly_dividends_paid_per_share", "quarterly_dividends_paid_per_share"),
     ):
-        result = actual.get(field_key)
+        result = _first(actual, field_key)
         expected_list = expected["tables_time_series"][expected_list_key]
         if not result or not result.parsed_value_json:
             missing.append(field_key)
@@ -260,7 +299,96 @@ def test_value_line_pdf_matches_expected_fixture():
                         f"{field_key} last entry full_year {parsed_last_full} != expected {expected_last_full}"
                     )
 
-    inst_result = actual.get("institutional_decisions")
+    annual = expected["tables_time_series"]["annual_financials_and_ratios_2015_2026_with_projection_2028_2030"]
+    annual_years = annual["years"]
+    actual_year = annual_years[-2]
+    estimate_year = annual_years[-1]
+
+    annual_specs = [
+        (
+            "net_profit_usd_millions",
+            annual["income_statement_usd_millions"]["net_profit"],
+            "currency",
+            1_000_000.0,
+        ),
+        (
+            "depreciation_usd_millions",
+            annual["income_statement_usd_millions"]["depreciation"],
+            "currency",
+            1_000_000.0,
+        ),
+        (
+            "capital_spending_per_share_usd",
+            annual["per_share"]["capital_spending_per_share_usd"],
+            "currency",
+            1.0,
+        ),
+        (
+            "avg_annual_dividend_yield_pct",
+            annual["valuation"]["avg_annual_dividend_yield_pct"],
+            "percent",
+            1.0,
+        ),
+    ]
+
+    for field_key, series, value_type, scale in annual_specs:
+        results = _all(actual, field_key)
+        actual_result = next(
+            (
+                res
+                for res in results
+                if res.parsed_value_json and not res.parsed_value_json.get("is_estimate", False)
+            ),
+            None,
+        )
+        estimate_result = next(
+            (
+                res
+                for res in results
+                if res.parsed_value_json and res.parsed_value_json.get("is_estimate", False)
+            ),
+            None,
+        )
+
+        expected_actual = _series_value(series, annual_years, actual_year)
+        if expected_actual is None or actual_result is None:
+            missing.append(f"{field_key} latest actual")
+        else:
+            actual_value = _normalize_value(actual_result, value_type)
+            expected_norm = expected_actual * scale
+            if value_type == "percent":
+                expected_norm = expected_actual / 100.0
+            if actual_value is None or actual_value != pytest.approx(expected_norm):
+                mismatched.append(
+                    f"{field_key} actual normalized {actual_value} != expected {expected_norm}"
+                )
+            if actual_result.parsed_value_json.get("period_end_date") != f"{actual_year}-12-31":
+                mismatched.append(f"{field_key} actual period_end_date mismatch")
+            if actual_result.parsed_value_json.get("period_type") != "FY":
+                mismatched.append(f"{field_key} actual period_type mismatch")
+
+        expected_estimate = _series_value(series, annual_years, estimate_year)
+        if expected_estimate is None:
+            if estimate_result is not None:
+                mismatched.append(f"{field_key} estimate should be missing")
+        else:
+            if estimate_result is None:
+                missing.append(f"{field_key} estimate")
+            else:
+                estimate_value = _normalize_value(estimate_result, value_type)
+                expected_norm = expected_estimate * scale
+                if value_type == "percent":
+                    expected_norm = expected_estimate / 100.0
+                if estimate_value is None or estimate_value != pytest.approx(expected_norm):
+                    mismatched.append(
+                        f"{field_key} estimate normalized {estimate_value} != expected {expected_norm}"
+                    )
+                if estimate_result.parsed_value_json.get("period_end_date") != f"{estimate_year}-12-31":
+                    mismatched.append(f"{field_key} estimate period_end_date mismatch")
+                if estimate_result.parsed_value_json.get("period_type") != "FY":
+                    mismatched.append(f"{field_key} estimate period_type mismatch")
+
+    inst_result = _first(actual, "institutional_decisions")
     expected_inst = expected["institutional_decisions"]["quarterly"]
     if not inst_result or not inst_result.parsed_value_json:
         missing.append("institutional_decisions")
@@ -269,7 +397,7 @@ def test_value_line_pdf_matches_expected_fixture():
         if parsed_inst != expected_inst:
             mismatched.append("institutional_decisions quarterly data mismatch")
 
-    business_description = actual.get("business_description")
+    business_description = _first(actual, "business_description")
     expected_description = expected["narrative"]["business_description"]
     if not business_description or not business_description.raw_value_text:
         missing.append("business_description")

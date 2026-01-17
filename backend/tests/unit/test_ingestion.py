@@ -21,6 +21,10 @@ def test_scaler_normalization():
     assert val == 500.0
     assert unit == "USD"
 
+    val, unit = Scaler.normalize("0.75", "currency")
+    assert val == 0.75
+    assert unit == "USD"
+
     # Test Percent
     val, unit = Scaler.normalize("5.4%", "percent")
     assert val == pytest.approx(0.054)

@@ -22,11 +22,14 @@ def run_screen(
     service = ScreenerService(session)
     try:
         results = service.execute_screen(rule)
+        stock_ids = [stock.id for stock in results]
+        metrics_by_stock = service.fetch_metrics_for_stocks(stock_ids)
         return [
             {
                 "id": stock.id,
                 "ticker": stock.ticker,
-                "company_name": stock.company_name
+                "company_name": stock.company_name,
+                "metrics": metrics_by_stock.get(stock.id, {}),
             }
             for stock in results
         ]

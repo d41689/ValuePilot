@@ -1,5 +1,5 @@
 import uuid
-from datetime import datetime
+from datetime import datetime, date
 from pathlib import Path
 from sqlalchemy.orm import Session
 from sqlalchemy import update
@@ -155,6 +155,7 @@ class IngestionService:
                             "earnings_per_share",
                             "quarterly_dividends_paid_per_share",
                             "institutional_decisions",
+                            "company_financial_strength",
                         }
                         value_type = "number"
                         if "yield" in ext.field_key or "pct" in ext.field_key:
@@ -163,14 +164,26 @@ class IngestionService:
                             value_type = "ratio"
                         elif ext.field_key in {"beta", "relative_pe_ratio"}:
                             value_type = "ratio"
+                        elif "_usd" in ext.field_key:
+                            value_type = "currency"
 
                         norm_val, norm_unit = (None, None)
                         if ext.raw_value_text is not None and ext.field_key not in non_numeric_keys:
                             norm_val, norm_unit = Scaler.normalize(ext.raw_value_text, value_type)
 
                         metric_key = ext.field_key
+                        period_type = None
+                        period_end_date = None
+                        if isinstance(ext.parsed_value_json, dict):
+                            period_type = ext.parsed_value_json.get("period_type")
+                            period_end = ext.parsed_value_json.get("period_end_date")
+                            if period_end:
+                                try:
+                                    period_end_date = date.fromisoformat(period_end)
+                                except ValueError:
+                                    period_end_date = None
 
-                        self.db.execute(
+                        update_stmt = (
                             update(MetricFact)
                             .where(
                                 MetricFact.stock_id == stock.id,
@@ -180,6 +193,9 @@ class IngestionService:
                             )
                             .values(is_current=False)
                         )
+                        if period_end_date:
+                            update_stmt = update_stmt.where(MetricFact.period_end_date == period_end_date)
+                        self.db.execute(update_stmt)
 
                         value_json: object = {"raw": ext.raw_value_text, "normalized": norm_val, "unit": norm_unit}
                         if ext.parsed_value_json is not None:
@@ -204,6 +220,8 @@ class IngestionService:
                                 value_json=value_json,  # type: ignore[arg-type]
                                 value_numeric=norm_val,
                                 unit=norm_unit,
+                                period_type=period_type,
+                                period_end_date=period_end_date,
                                 source_type="parsed",
                                 source_ref_id=metric_record.id,
                                 is_current=True,
@@ -312,6 +330,13 @@ class IngestionService:
                     "report_date",
                     "analyst_name",
                     "business_description",
+                    "annual_rates_of_change",
+                    "current_position_usd_millions",
+                    "quarterly_sales_usd_millions",
+                    "earnings_per_share",
+                    "quarterly_dividends_paid_per_share",
+                    "institutional_decisions",
+                    "company_financial_strength",
                 }
                 if "yield" in ext.field_key or "pct" in ext.field_key:
                     value_type = "percent"
@@ -319,12 +344,25 @@ class IngestionService:
                     value_type = "ratio"
                 elif ext.field_key in {"beta", "relative_pe_ratio"}:
                     value_type = "ratio"
+                elif "_usd" in ext.field_key:
+                    value_type = "currency"
 
                 norm_val, norm_unit = (None, None)
                 if ext.raw_value_text is not None and ext.field_key not in non_numeric_keys:
                     norm_val, norm_unit = Scaler.normalize(ext.raw_value_text, value_type)
                 metric_key = ext.field_key
-                self.db.execute(
+                period_type = None
+                period_end_date = None
+                if isinstance(ext.parsed_value_json, dict):
+                    period_type = ext.parsed_value_json.get("period_type")
+                    period_end = ext.parsed_value_json.get("period_end_date")
+                    if period_end:
+                        try:
+                            period_end_date = date.fromisoformat(period_end)
+                        except ValueError:
+                            period_end_date = None
+
+                update_stmt = (
                     update(MetricFact)
                     .where(
                         MetricFact.stock_id == doc.stock_id,
@@ -334,6 +372,9 @@ class IngestionService:
                     )
                     .values(is_current=False)
                 )
+                if period_end_date:
+                    update_stmt = update_stmt.where(MetricFact.period_end_date == period_end_date)
+                self.db.execute(update_stmt)
 
                 value_json: object = {"raw": ext.raw_value_text, "normalized": norm_val, "unit": norm_unit}
                 if ext.parsed_value_json is not None:
@@ -358,6 +399,8 @@ class IngestionService:
                         value_json=value_json,  # type: ignore[arg-type]
                         value_numeric=norm_val,
                         unit=norm_unit,
+                        period_type=period_type,
+                        period_end_date=period_end_date,
                         source_type="parsed",
                         source_ref_id=metric_record.id,
                         is_current=True,

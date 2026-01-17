@@ -50,7 +50,7 @@ class Scaler:
 
         # Handle Currency / Scale
         # Detect currency
-        currency = "USD" if '$' in clean_text else None  # Default assumption for VL V1
+        currency = "USD" if '$' in clean_text or value_type == "currency" else None  # Default assumption for VL V1
         clean_text = clean_text.replace('$', '')
 
         # Detect Scale
