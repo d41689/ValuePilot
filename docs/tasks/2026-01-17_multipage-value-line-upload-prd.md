@@ -60,3 +60,14 @@
    - Always include `page_reports[]` (single-page included), with `parser_version` and `error_code`/`error_message` for failures.
 4. Verify in Docker:
    - `docker compose exec api pytest -q`
+
+## Implementation Notes (Progress)
+
+- Added multi-page parsing loop: each `document_pages.page_text` is parsed independently and facts are written per-page resolved `stock_id`.
+- For multi-page multi-company uploads, `pdf_documents.stock_id` remains NULL (contract).
+- For single-page uploads, `pdf_documents.stock_id` is set to the resolved stock (backward compatible behavior).
+- Upload endpoint now always returns `page_reports[]` (single-page length 1), including `parser_version` and per-page errors.
+
+## Verification Results
+
+- `docker compose exec api pytest -q` (green)

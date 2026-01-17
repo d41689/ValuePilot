@@ -27,12 +27,14 @@ def upload_document(
 
     service = IngestionService(session)
     try:
-        doc = service.process_upload(user_id, file)
+        doc, page_reports = service.process_upload(user_id, file)
         return {
             "id": doc.id,
+            "document_id": doc.id,
             "file_name": doc.file_name,
             "status": doc.parse_status,
-            "page_count": len(doc.pages)
+            "page_count": len(doc.pages),
+            "page_reports": page_reports,
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Ingestion failed: {str(e)}")
