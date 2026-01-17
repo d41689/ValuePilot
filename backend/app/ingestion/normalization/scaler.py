@@ -51,7 +51,6 @@ class Scaler:
 
         # Detect Scale
         scale_multiplier = 1.0
-        found_scale_token = None
         
         # Check for scale tokens at the end or embedded
         for token, factor in cls.SCALE_FACTORS.items():

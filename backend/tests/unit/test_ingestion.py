@@ -1,5 +1,5 @@
 import pytest
-from unittest.mock import MagicMock, patch
+from app.models.users import User
 from app.ingestion.normalization.scaler import Scaler
 from app.ingestion.parsers.v1_value_line.parser import ValueLineV1Parser
 from app.ingestion.parsers.base import IdentityInfo
@@ -71,8 +71,6 @@ def test_parser_metric_extraction():
     # Check Yield
     yld = next(r for r in results if r.field_key == "dividend_yield")
     assert yld.raw_value_text == "2.5%"
-
-from app.models.users import User
 
 def test_identity_service_resolution(db_session):
     service = IdentityService(db_session)
