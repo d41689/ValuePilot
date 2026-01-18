@@ -162,6 +162,8 @@ class IngestionService:
                             "institutional_decisions",
                             "company_financial_strength",
                             "capital_structure_as_of",
+                            "market_cap_as_of",
+                            "pension_assets_as_of",
                             "price_semantics_and_returns",
                             "tables_time_series",
                         }
@@ -379,6 +381,8 @@ class IngestionService:
                     "institutional_decisions",
                     "company_financial_strength",
                     "capital_structure_as_of",
+                    "market_cap_as_of",
+                    "pension_assets_as_of",
                     "price_semantics_and_returns",
                     "tables_time_series",
                 }

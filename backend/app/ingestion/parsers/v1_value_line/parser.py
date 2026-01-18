@@ -1,3 +1,4 @@
+import calendar
 import re
 from typing import Dict, Any, Optional
 from app.ingestion.parsers.base import BaseParser, IdentityInfo, ExtractionResult
@@ -351,15 +352,38 @@ class ValueLineV1Parser(BaseParser):
         if cap_pct:
             results.append(ExtractionResult(field_key="debt_percent_of_capital", raw_value_text=f"{cap_pct.group(1)}%", original_text_snippet=cap_pct.group(0), confidence_score=0.8))
 
-        leases = re.search(r'Leases,UncapitalizedAnnualrentals\s*\$([\d\.]+)\s*(mil|mill|million|bil|billion)\.?\b', self.text, re.IGNORECASE)
+        leases = re.search(
+            r'Leases,?\s*Uncapitalized\s*Annual\s*rentals\s*\$([\d\.]+)\s*(mil|mill|million|bil|billion)\.?\b',
+            self.text,
+            re.IGNORECASE,
+        )
         if leases:
             results.append(ExtractionResult(field_key="leases_uncapitalized_annual_rentals", raw_value_text=_money_from_match(leases), original_text_snippet=leases.group(0), confidence_score=0.8))
 
-        pension_assets = re.search(r'Pension\s*Assets-?\s*\d{1,2}/\d{2}\s*\$([\d\.]+)\s*(mil|mill|million|bil|billion)\.?\b', self.text, re.IGNORECASE)
+        pension_assets = re.search(
+            r'Pension\s*Assets-?\s*(\d{1,2}/\d{2})?\s*\$([\d\.]+)\s*(mil|mill|million|bil|billion)\.?\b',
+            self.text,
+            re.IGNORECASE,
+        )
         if pension_assets:
-            results.append(ExtractionResult(field_key="pension_assets", raw_value_text=_money_from_match(pension_assets), original_text_snippet=pension_assets.group(0), confidence_score=0.8))
+            date_raw = pension_assets.group(1)
+            if date_raw:
+                iso = self._iso_from_month_year(date_raw)
+                results.append(ExtractionResult(
+                    field_key="pension_assets_as_of",
+                    raw_value_text=iso or date_raw,
+                    original_text_snippet=pension_assets.group(0),
+                    parsed_value_json={"iso_date": iso} if iso else None,
+                    confidence_score=0.6,
+                ))
+            results.append(ExtractionResult(
+                field_key="pension_assets",
+                raw_value_text=_money_from_match(pension_assets, num_group=2, scale_group=3),
+                original_text_snippet=pension_assets.group(0),
+                confidence_score=0.8,
+            ))
 
-        oblig = re.search(r'Oblig\.\s*\$([\d\.]+)\s*(mil|mill|million|bil|billion)\.?\b', self.text, re.IGNORECASE)
+        oblig = re.search(r'Oblig\.?\s*\$([\d\.]+)\s*(mil|mill|million|bil|billion)\.?\b', self.text, re.IGNORECASE)
         if oblig:
             results.append(ExtractionResult(field_key="pension_obligations", raw_value_text=_money_from_match(oblig), original_text_snippet=oblig.group(0), confidence_score=0.8))
 
@@ -388,19 +412,30 @@ class ValueLineV1Parser(BaseParser):
         shares_match2 = re.search(r'CommonStock\s*([\d,]+)\s*(?:shares|shs)\.?', self.text, re.IGNORECASE)
         if shares_match2:
             as_of = None
-            tail = self.text[shares_match2.end(): shares_match2.end() + 200]
+            notes = None
+            tail = self.text[shares_match2.end(): shares_match2.end() + 500]
             as_of_match = re.search(r'asof\s*(\d{1,2}/\d{1,2}/\d{2})', tail, re.IGNORECASE)
             if as_of_match:
                 as_of = self._iso_from_mdy(as_of_match.group(1)) or as_of_match.group(1)
+            includes = re.search(r'Includes\s*([\d,]+)\s*Class\s*A\s*shares', tail, re.IGNORECASE)
+            if includes:
+                count = includes.group(1)
+                notes = f"Includes {count} Class A shares"
+                if re.search(r'ClassAshareshave', tail, re.IGNORECASE):
+                    notes += "; Class A has 10x voting power for matters beyond director elections."
             results.append(ExtractionResult(
                 field_key="common_stock_shares_outstanding",
                 raw_value_text=shares_match2.group(1).replace(',', ''),
                 original_text_snippet=shares_match2.group(0),
-                parsed_value_json={"as_of": as_of} if as_of else None,
+                parsed_value_json={k: v for k, v in {"as_of": as_of, "notes": notes}.items() if v},
                 confidence_score=0.9,
             ))
 
-        mkt_match = re.search(r'MARKET\s*CAP\s*:?\s*\$([\d\.]+)\s*(billion|mil|mill|million)\b', self.text, re.IGNORECASE)
+        mkt_match = re.search(
+            r'MARKET\s*CAP\s*:?\s*\$([\d\.]+)\s*(billion|mil|mill|million)\b(?:\(([^)]+)\))?',
+            self.text,
+            re.IGNORECASE,
+        )
         if mkt_match:
             val = mkt_match.group(1)
             token = mkt_match.group(2).lower()
@@ -408,7 +443,28 @@ class ValueLineV1Parser(BaseParser):
                 token = "mill"
             elif token in {"billion"}:
                 token = "billion"
-            results.append(ExtractionResult(field_key="market_cap", raw_value_text=f"${val} {token}", original_text_snippet=mkt_match.group(0), confidence_score=0.9))
+            note_raw = mkt_match.group(3)
+            note = None
+            if note_raw:
+                note = re.sub(r'(?<=[a-z])(?=[A-Z])', ' ', note_raw).strip()
+            results.append(ExtractionResult(
+                field_key="market_cap",
+                raw_value_text=f"${val} {token}",
+                original_text_snippet=mkt_match.group(0),
+                parsed_value_json={"notes": note} if note else None,
+                confidence_score=0.9,
+            ))
+            context = self.text[max(0, mkt_match.start() - 600): mkt_match.end() + 200]
+            mkt_as_of = re.search(r'asof\s*(\d{1,2}/\d{1,2}/\d{2})', context, re.IGNORECASE)
+            if mkt_as_of:
+                iso = self._iso_from_mdy(mkt_as_of.group(1))
+                results.append(ExtractionResult(
+                    field_key="market_cap_as_of",
+                    raw_value_text=iso or mkt_as_of.group(1),
+                    original_text_snippet=mkt_as_of.group(0),
+                    parsed_value_json={"iso_date": iso} if iso else None,
+                    confidence_score=0.6,
+                ))
 
         # --- 4. Narrative ---
         # "BUSINESS:A.O.SmithCorp...."
@@ -437,13 +493,13 @@ class ValueLineV1Parser(BaseParser):
             return self.text[start.end(): start.end() + end.start()]
 
         # Current Position table ($mill.) -> structured JSON
-        cp_block = _slice_between(r'\bCURRENTPOSITION\b', r'\bANNUALRATES\b')
+        cp_block = _slice_between(r'\bCURRENTPOSITION\b', r'\bANNUALRATES')
         if cp_block:
             header = re.search(r'(\d{4})\s+(\d{4})\s+(\d{1,2}/\d{1,2}/\d{2})', cp_block)
             if header:
                 years = [header.group(1), header.group(2), self._iso_from_mdy(header.group(3)) or header.group(3)]
                 def row3(label_pat: str) -> Optional[list[float]]:
-                    m = re.search(rf'{label_pat}\s+([0-9.]+)\s+([0-9.]+)\s+([0-9.]+)', cp_block, re.IGNORECASE)
+                    m = re.search(rf'{label_pat}\s*([0-9.]+)\s+([0-9.]+)\s+([0-9.]+)', cp_block, re.IGNORECASE)
                     if not m:
                         return None
                     return [float(m.group(1)), float(m.group(2)), float(m.group(3))]
@@ -459,7 +515,7 @@ class ValueLineV1Parser(BaseParser):
                     "other_current_liabilities": None,
                     "current_liabilities_total": row3(r'Current\s*Liab\.'),
                 }
-                other_matches = re.findall(r'\bOther\s+([0-9.]+)\s+([0-9.]+)\s+([0-9.]+)', cp_block, re.IGNORECASE)
+                other_matches = re.findall(r'\bOther\s*([0-9.]+)\s+([0-9.]+)\s+([0-9.]+)', cp_block, re.IGNORECASE)
                 if len(other_matches) >= 2:
                     parsed["other_current_assets"] = [float(x) for x in other_matches[0]]
                     parsed["other_current_liabilities"] = [float(x) for x in other_matches[1]]
@@ -519,11 +575,11 @@ class ValueLineV1Parser(BaseParser):
                     ))
 
         # Annual Rates of Change -> structured JSON (ratios)
-        ar_block = _slice_between(r'\bANNUALRATES\b', r'\bQUARTERLYSALES\b')
+        ar_block = _slice_between(r'\bANNUALRATES', r'\bQUARTERLYSALES\b')
         if ar_block:
             def growth_row(label_pat: str) -> Optional[dict[str, float]]:
                 m = re.search(
-                    rf'{label_pat}[^\d%]{{0,20}}([0-9.]+)%\s+([0-9.]+)%\s+([0-9.]+)%',
+                    rf'{label_pat}[^\d%]{{0,20}}([0-9.]+)%?\s+([0-9.]+)%?\s+([0-9.]+)%?',
                     ar_block,
                     re.IGNORECASE,
                 )
@@ -803,6 +859,19 @@ class ValueLineV1Parser(BaseParser):
         return f"{year:04d}-{int(match.group(1)):02d}-{int(match.group(2)):02d}"
 
     @staticmethod
+    def _iso_from_month_year(value: str) -> Optional[str]:
+        match = re.match(r'(\d{1,2})/(\d{2})', value)
+        if not match:
+            return None
+        year = 2000 + int(match.group(2))
+        month = int(match.group(1))
+        try:
+            last_day = calendar.monthrange(year, month)[1]
+        except calendar.IllegalMonthError:
+            return None
+        return f"{year:04d}-{month:02d}-{last_day:02d}"
+
+    @staticmethod
     def _recent_price_from_words(words: list[dict[str, Any]]) -> Optional[str]:
         for w in words:
             text = str(w.get("text", ""))
@@ -909,8 +978,11 @@ class ValueLineV1Parser(BaseParser):
         years = self._find_year_sequence(flat_text)
         if not years:
             return None
+        if len(years) > 12:
+            years = years[-12:]
 
         tokens = flat_text.split()
+        insurance_layout = re.search(r'P/CPremiumsEarned|UnderwritingMargin|LossToPrem|InvInc/TotalInv', flat_text, re.IGNORECASE) is not None
 
         def is_value_token(token: str) -> bool:
             upper = token.upper()
@@ -1019,7 +1091,7 @@ class ValueLineV1Parser(BaseParser):
             projection["common_shares_outstanding_millions"] = proj
 
         valuation = {}
-        series, _ = parse_series(r'PricetoBookValue', percent_ratio=True)
+        series, _ = parse_series(r'PricetoBookValue', percent_ratio=False)
         valuation["price_to_book_value_pct"] = series
 
         series, proj = parse_series(r'AvgAnn.?lP/ERatio', percent_ratio=False)
@@ -1058,7 +1130,7 @@ class ValueLineV1Parser(BaseParser):
         if proj is not None:
             projection["underwriting_margin_pct"] = proj
 
-        series, proj = parse_series(r'IncomeTaxRate', percent_ratio=True)
+        series, proj = parse_series(r'IncomeTaxRate', percent_ratio=insurance_layout)
         income_statement["income_tax_rate_pct"] = series
         if proj is not None:
             projection["income_tax_rate_pct"] = proj
@@ -1066,7 +1138,8 @@ class ValueLineV1Parser(BaseParser):
         series, proj = parse_series(r'NetProfit', percent_ratio=False)
         income_statement["net_profit"] = series
         if proj is not None:
-            projection["net_profit_usd_millions"] = proj
+            proj_key = "net_profit_usd_millions" if insurance_layout else "net_profit"
+            projection[proj_key] = proj
 
         series, proj = parse_series(r'InvInc/TotalInv', percent_ratio=True)
         income_statement["inv_inc_to_total_investments_pct"] = series
@@ -1082,22 +1155,74 @@ class ValueLineV1Parser(BaseParser):
         series, proj = parse_series(r'Shr.?Equity', percent_ratio=False)
         balance_sheet["shareholders_equity"] = series
         if proj is not None:
-            projection["shareholders_equity_usd_millions"] = proj
+            proj_key = "shareholders_equity_usd_millions" if insurance_layout else "shareholders_equity"
+            projection[proj_key] = proj
 
-        series, proj = parse_series(r'ReturnonShr.?Equity', percent_ratio=True)
+        series, proj = parse_series(r'ReturnonShr.?Equity', percent_ratio=insurance_layout)
         balance_sheet["return_on_shareholders_equity_pct"] = series
         if proj is not None:
             projection["return_on_shareholders_equity_pct"] = proj
 
-        series, proj = parse_series(r'RetainedtoComEq', percent_ratio=True)
+        series, proj = parse_series(r'RetainedtoComEq', percent_ratio=insurance_layout)
         balance_sheet["retained_to_common_equity_pct"] = series
         if proj is not None:
             projection["retained_to_common_equity_pct"] = proj
 
-        series, proj = parse_series(r'AllDiv.?dstoNetProf', percent_ratio=True)
+        series, proj = parse_series(r'AllDiv.?dstoNetProf', percent_ratio=insurance_layout)
         balance_sheet["all_dividends_to_net_profit_pct"] = series
         if proj is not None:
             projection["all_dividends_to_net_profit_pct"] = proj
+
+        series, proj = parse_series(r'Sales\s*persh', percent_ratio=False)
+        per_share["sales_per_share_usd"] = series
+        if proj is not None:
+            projection["sales_per_share_usd"] = proj
+
+        series, proj = parse_series(r'Cash\s*Flow[^A-Za-z0-9]*persh', percent_ratio=False)
+        per_share["cash_flow_per_share_usd"] = series
+        if proj is not None:
+            projection["cash_flow_per_share_usd"] = proj
+
+        series, proj = parse_series(r'Cap[’\']?lSpendingpersh', percent_ratio=False)
+        per_share["capital_spending_per_share_usd"] = series
+        if proj is not None:
+            projection["capital_spending_per_share_usd"] = proj
+
+        series, proj = parse_series(r'Depreciation\(\$?mill\)', percent_ratio=False)
+        income_statement["depreciation"] = series
+        if proj is not None:
+            projection["depreciation"] = proj
+
+        series, proj = parse_series(r'Sales\(\$?mill\)', percent_ratio=False)
+        income_statement["sales"] = series
+        if proj is not None:
+            projection["sales"] = proj
+
+        series, proj = parse_series(r'OperatingMargin', percent_ratio=False)
+        income_statement["operating_margin_pct"] = series
+        if proj is not None:
+            projection["operating_margin_pct"] = proj
+
+        series, proj = parse_series(r'NetProfitMargin', percent_ratio=False)
+        income_statement["net_profit_margin_pct"] = series
+        if proj is not None:
+            projection["net_profit_margin_pct"] = proj
+
+        series, proj = parse_series(r'WorkingCap[’\']?l\(\$?mill\)', percent_ratio=False)
+        balance_sheet["working_capital"] = series
+        if proj is not None:
+            projection["working_capital"] = proj
+
+        series, proj = parse_series(r'Long-?TermDebt\(\$?mill\)', percent_ratio=False)
+        balance_sheet["long_term_debt"] = series
+        if proj is not None:
+            projection["long_term_debt"] = proj
+
+        series, proj = parse_series(r'ReturnonTotalCap[’\']?l', percent_ratio=False)
+        balance_sheet["return_on_total_capital_pct"] = series
+        if proj is not None:
+            projection["return_on_total_capital_pct"] = proj
+
 
         return {
             "price_history_high_low": {

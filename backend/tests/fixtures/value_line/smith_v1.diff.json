@@ -7,73 +7,9 @@
     "price history High/Low \u65f6\u95f4\u5e8f\u5217\u5728\u56fe\u8868\u533a\u51fa\u73b0\uff08\u672a\u5e26\u5e74\u4efd\u6807\u7b7e\u5b8c\u6574\u5bf9\u9f50\uff0c\u672a\u5f3a\u884c\u7ed3\u6784\u5316\u4ee5\u907f\u514d\u8bef\u914d\uff09",
     null
   ],
-  "financial_snapshot_blocks.annual_rates_of_change.book_value.est_to_2028_2030": [
-    0.065,
-    null
-  ],
-  "financial_snapshot_blocks.annual_rates_of_change.book_value.past_10y": [
-    0.055,
-    null
-  ],
-  "financial_snapshot_blocks.annual_rates_of_change.book_value.past_5y": [
-    0.045,
-    null
-  ],
-  "financial_snapshot_blocks.annual_rates_of_change.cash_flow_per_share.est_to_2028_2030": [
-    0.075,
-    null
-  ],
-  "financial_snapshot_blocks.annual_rates_of_change.cash_flow_per_share.past_10y": [
-    0.12,
-    null
-  ],
-  "financial_snapshot_blocks.annual_rates_of_change.cash_flow_per_share.past_5y": [
-    0.08,
-    null
-  ],
-  "financial_snapshot_blocks.annual_rates_of_change.dividends.est_to_2028_2030": [
-    0.06,
-    null
-  ],
-  "financial_snapshot_blocks.annual_rates_of_change.dividends.past_10y": [
-    0.18,
-    null
-  ],
-  "financial_snapshot_blocks.annual_rates_of_change.dividends.past_5y": [
-    0.105,
-    null
-  ],
-  "financial_snapshot_blocks.annual_rates_of_change.earnings.est_to_2028_2030": [
-    0.075,
-    null
-  ],
-  "financial_snapshot_blocks.annual_rates_of_change.earnings.past_10y": [
-    0.135,
-    null
-  ],
-  "financial_snapshot_blocks.annual_rates_of_change.earnings.past_5y": [
-    0.09,
-    null
-  ],
-  "financial_snapshot_blocks.annual_rates_of_change.sales.est_to_2028_2030": [
-    0.065,
-    null
-  ],
-  "financial_snapshot_blocks.annual_rates_of_change.sales.past_10y": [
-    0.08,
-    null
-  ],
-  "financial_snapshot_blocks.annual_rates_of_change.sales.past_5y": [
-    0.07,
-    null
-  ],
   "financial_snapshot_blocks.capital_structure.common_stock_shares_outstanding.display": [
     "139,237,818 shares",
     "139237818"
-  ],
-  "financial_snapshot_blocks.capital_structure.common_stock_shares_outstanding.notes": [
-    "Includes 25,865,697 Class A shares; Class A has 10x voting power for matters beyond director elections.",
-    null
   ],
   "financial_snapshot_blocks.capital_structure.debt_due_in_5_years.display": [
     "$90.2 mill.",
@@ -85,15 +21,7 @@
   ],
   "financial_snapshot_blocks.capital_structure.leases_uncapitalized_annual_rentals.display": [
     "$12.4 mill.",
-    null
-  ],
-  "financial_snapshot_blocks.capital_structure.leases_uncapitalized_annual_rentals.normalized": [
-    12400000,
-    null
-  ],
-  "financial_snapshot_blocks.capital_structure.leases_uncapitalized_annual_rentals.unit": [
-    "USD",
-    null
+    "$12.4 mill"
   ],
   "financial_snapshot_blocks.capital_structure.lt_debt.display": [
     "$166.8 mill.",
@@ -103,165 +31,17 @@
     "$10.0 mill.",
     "$10.0 mill"
   ],
-  "financial_snapshot_blocks.capital_structure.market_cap.notes": [
-    "Mid Cap",
-    null
-  ],
-  "financial_snapshot_blocks.capital_structure.market_cap_as_of": [
-    "2025-10-24",
-    null
-  ],
   "financial_snapshot_blocks.capital_structure.pension_assets.display": [
     "$18.6 mill.",
-    null
-  ],
-  "financial_snapshot_blocks.capital_structure.pension_assets.normalized": [
-    18600000,
-    null
-  ],
-  "financial_snapshot_blocks.capital_structure.pension_assets.unit": [
-    "USD",
-    null
-  ],
-  "financial_snapshot_blocks.capital_structure.pension_assets_as_of": [
-    "2024-12-31",
-    null
+    "$18.6 mill"
   ],
   "financial_snapshot_blocks.capital_structure.pension_obligations.display": [
     "$27.7 mill.",
-    null
-  ],
-  "financial_snapshot_blocks.capital_structure.pension_obligations.normalized": [
-    27700000,
-    null
-  ],
-  "financial_snapshot_blocks.capital_structure.pension_obligations.unit": [
-    "USD",
-    null
+    "$27.7 mill"
   ],
   "financial_snapshot_blocks.capital_structure.total_debt.display": [
     "$185.8 mill.",
     "$185.8 mill"
-  ],
-  "financial_snapshot_blocks.current_position_usd_millions.accounts_payable[0]": [
-    600.4,
-    null
-  ],
-  "financial_snapshot_blocks.current_position_usd_millions.accounts_payable[1]": [
-    588.7,
-    null
-  ],
-  "financial_snapshot_blocks.current_position_usd_millions.accounts_payable[2]": [
-    521.4,
-    null
-  ],
-  "financial_snapshot_blocks.current_position_usd_millions.cash_assets[0]": [
-    363.4,
-    null
-  ],
-  "financial_snapshot_blocks.current_position_usd_millions.cash_assets[1]": [
-    276.1,
-    null
-  ],
-  "financial_snapshot_blocks.current_position_usd_millions.cash_assets[2]": [
-    172.8,
-    null
-  ],
-  "financial_snapshot_blocks.current_position_usd_millions.current_assets_total[0]": [
-    1500.3,
-    null
-  ],
-  "financial_snapshot_blocks.current_position_usd_millions.current_assets_total[1]": [
-    1392.9,
-    null
-  ],
-  "financial_snapshot_blocks.current_position_usd_millions.current_assets_total[2]": [
-    1316.1,
-    null
-  ],
-  "financial_snapshot_blocks.current_position_usd_millions.current_liabilities_total[0]": [
-    945.3,
-    null
-  ],
-  "financial_snapshot_blocks.current_position_usd_millions.current_liabilities_total[1]": [
-    897.2,
-    null
-  ],
-  "financial_snapshot_blocks.current_position_usd_millions.current_liabilities_total[2]": [
-    852.5,
-    null
-  ],
-  "financial_snapshot_blocks.current_position_usd_millions.debt_due[0]": [
-    10,
-    null
-  ],
-  "financial_snapshot_blocks.current_position_usd_millions.debt_due[1]": [
-    10,
-    null
-  ],
-  "financial_snapshot_blocks.current_position_usd_millions.debt_due[2]": [
-    19,
-    null
-  ],
-  "financial_snapshot_blocks.current_position_usd_millions.inventory_lifo[0]": [
-    497.4,
-    null
-  ],
-  "financial_snapshot_blocks.current_position_usd_millions.inventory_lifo[1]": [
-    532.1,
-    null
-  ],
-  "financial_snapshot_blocks.current_position_usd_millions.inventory_lifo[2]": [
-    507.3,
-    null
-  ],
-  "financial_snapshot_blocks.current_position_usd_millions.other_current_assets[0]": [
-    43.5,
-    null
-  ],
-  "financial_snapshot_blocks.current_position_usd_millions.other_current_assets[1]": [
-    43.3,
-    null
-  ],
-  "financial_snapshot_blocks.current_position_usd_millions.other_current_assets[2]": [
-    47,
-    null
-  ],
-  "financial_snapshot_blocks.current_position_usd_millions.other_current_liabilities[0]": [
-    334.9,
-    null
-  ],
-  "financial_snapshot_blocks.current_position_usd_millions.other_current_liabilities[1]": [
-    298.5,
-    null
-  ],
-  "financial_snapshot_blocks.current_position_usd_millions.other_current_liabilities[2]": [
-    312.1,
-    null
-  ],
-  "financial_snapshot_blocks.current_position_usd_millions.receivables[0]": [
-    596,
-    null
-  ],
-  "financial_snapshot_blocks.current_position_usd_millions.receivables[1]": [
-    541.4,
-    null
-  ],
-  "financial_snapshot_blocks.current_position_usd_millions.receivables[2]": [
-    589,
-    null
-  ],
-  "financial_snapshot_blocks.current_position_usd_millions.years[0]": [
-    "2023",
-    null
-  ],
-  "financial_snapshot_blocks.current_position_usd_millions.years[1]": [
-    "2024",
-    null
-  ],
-  "financial_snapshot_blocks.current_position_usd_millions.years[2]": [
-    "2025-09-30",
-    null
   ],
   "header_ratings.analyst_name": [
     "Nils C. Van Liew",
@@ -335,328 +115,6 @@
     "\u6570\u503c\u5b57\u6bb5\u540c\u65f6\u63d0\u4f9bdisplay\u4e0enormalized\uff08Appendix B\uff1a\u91d1\u989d\u4e3aUSD\u7edd\u5bf9\u503c\uff1b\u767e\u5206\u6bd4\u4e3a[0,1]\u6bd4\u7387\uff09\u3002",
     null
   ],
-  "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.balance_sheet_and_returns_usd_millions.all_dividends_to_net_profit_pct[0]": [
-    24.0,
-    null
-  ],
-  "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.balance_sheet_and_returns_usd_millions.all_dividends_to_net_profit_pct[1]": [
-    26.0,
-    null
-  ],
-  "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.balance_sheet_and_returns_usd_millions.all_dividends_to_net_profit_pct[2]": [
-    26.0,
-    null
-  ],
-  "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.balance_sheet_and_returns_usd_millions.all_dividends_to_net_profit_pct[3]": [
-    29.0,
-    null
-  ],
-  "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.balance_sheet_and_returns_usd_millions.all_dividends_to_net_profit_pct[4]": [
-    40.0,
-    null
-  ],
-  "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.balance_sheet_and_returns_usd_millions.all_dividends_to_net_profit_pct[5]": [
-    46.0,
-    null
-  ],
-  "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.balance_sheet_and_returns_usd_millions.all_dividends_to_net_profit_pct[6]": [
-    35.0,
-    0.24
-  ],
-  "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.balance_sheet_and_returns_usd_millions.all_dividends_to_net_profit_pct[7]": [
-    36.0,
-    0.26
-  ],
-  "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.balance_sheet_and_returns_usd_millions.all_dividends_to_net_profit_pct[8]": [
-    32.0,
-    0.26
-  ],
-  "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.balance_sheet_and_returns_usd_millions.all_dividends_to_net_profit_pct[9]": [
-    35.0,
-    0.29
-  ],
-  "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.balance_sheet_and_returns_usd_millions.all_dividends_to_net_profit_pct[10]": [
-    37.0,
-    0.4
-  ],
-  "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.balance_sheet_and_returns_usd_millions.all_dividends_to_net_profit_pct[11]": [
-    35.0,
-    0.46
-  ],
-  "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.balance_sheet_and_returns_usd_millions.all_dividends_to_net_profit_pct[12]": [
-    null,
-    0.35
-  ],
-  "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.balance_sheet_and_returns_usd_millions.all_dividends_to_net_profit_pct[13]": [
-    null,
-    0.36
-  ],
-  "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.balance_sheet_and_returns_usd_millions.all_dividends_to_net_profit_pct[14]": [
-    null,
-    0.32
-  ],
-  "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.balance_sheet_and_returns_usd_millions.all_dividends_to_net_profit_pct[15]": [
-    null,
-    0.35
-  ],
-  "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.balance_sheet_and_returns_usd_millions.all_dividends_to_net_profit_pct[16]": [
-    null,
-    0.37
-  ],
-  "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.balance_sheet_and_returns_usd_millions.all_dividends_to_net_profit_pct[17]": [
-    null,
-    0.35
-  ],
-  "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.balance_sheet_and_returns_usd_millions.long_term_debt": [
-    [
-      236.1,
-      316.4,
-      402.9,
-      221.4,
-      277.2,
-      106.4,
-      189.9,
-      334.5,
-      117.3,
-      183.2,
-      185.0,
-      185.0
-    ],
-    null
-  ],
-  "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.balance_sheet_and_returns_usd_millions.retained_to_common_equity_pct[0]": [
-    14.9,
-    null
-  ],
-  "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.balance_sheet_and_returns_usd_millions.retained_to_common_equity_pct[1]": [
-    16.0,
-    null
-  ],
-  "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.balance_sheet_and_returns_usd_millions.retained_to_common_equity_pct[2]": [
-    17.1,
-    null
-  ],
-  "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.balance_sheet_and_returns_usd_millions.retained_to_common_equity_pct[3]": [
-    18.6,
-    null
-  ],
-  "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.balance_sheet_and_returns_usd_millions.retained_to_common_equity_pct[4]": [
-    13.2,
-    null
-  ],
-  "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.balance_sheet_and_returns_usd_millions.retained_to_common_equity_pct[5]": [
-    10.1,
-    null
-  ],
-  "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.balance_sheet_and_returns_usd_millions.retained_to_common_equity_pct[6]": [
-    17.3,
-    0.149
-  ],
-  "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.balance_sheet_and_returns_usd_millions.retained_to_common_equity_pct[7]": [
-    17.8,
-    0.16
-  ],
-  "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.balance_sheet_and_returns_usd_millions.retained_to_common_equity_pct[8]": [
-    21.2,
-    0.171
-  ],
-  "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.balance_sheet_and_returns_usd_millions.retained_to_common_equity_pct[9]": [
-    19.0,
-    0.18600000000000003
-  ],
-  "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.balance_sheet_and_returns_usd_millions.retained_to_common_equity_pct[10]": [
-    18.5,
-    0.132
-  ],
-  "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.balance_sheet_and_returns_usd_millions.retained_to_common_equity_pct[11]": [
-    20.5,
-    0.10099999999999999
-  ],
-  "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.balance_sheet_and_returns_usd_millions.retained_to_common_equity_pct[12]": [
-    null,
-    0.17300000000000001
-  ],
-  "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.balance_sheet_and_returns_usd_millions.retained_to_common_equity_pct[13]": [
-    null,
-    0.17800000000000002
-  ],
-  "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.balance_sheet_and_returns_usd_millions.retained_to_common_equity_pct[14]": [
-    null,
-    0.212
-  ],
-  "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.balance_sheet_and_returns_usd_millions.retained_to_common_equity_pct[15]": [
-    null,
-    0.19
-  ],
-  "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.balance_sheet_and_returns_usd_millions.retained_to_common_equity_pct[16]": [
-    null,
-    0.185
-  ],
-  "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.balance_sheet_and_returns_usd_millions.retained_to_common_equity_pct[17]": [
-    null,
-    0.205
-  ],
-  "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.balance_sheet_and_returns_usd_millions.return_on_shareholders_equity_pct[0]": [
-    19.6,
-    null
-  ],
-  "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.balance_sheet_and_returns_usd_millions.return_on_shareholders_equity_pct[1]": [
-    21.5,
-    null
-  ],
-  "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.balance_sheet_and_returns_usd_millions.return_on_shareholders_equity_pct[2]": [
-    22.9,
-    null
-  ],
-  "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.balance_sheet_and_returns_usd_millions.return_on_shareholders_equity_pct[3]": [
-    26.2,
-    null
-  ],
-  "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.balance_sheet_and_returns_usd_millions.return_on_shareholders_equity_pct[4]": [
-    22.2,
-    null
-  ],
-  "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.balance_sheet_and_returns_usd_millions.return_on_shareholders_equity_pct[5]": [
-    18.7,
-    0.295
-  ],
-  "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.balance_sheet_and_returns_usd_millions.return_on_shareholders_equity_pct[6]": [
-    26.6,
-    0.196
-  ],
-  "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.balance_sheet_and_returns_usd_millions.return_on_shareholders_equity_pct[7]": [
-    28.0,
-    0.215
-  ],
-  "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.balance_sheet_and_returns_usd_millions.return_on_shareholders_equity_pct[8]": [
-    31.2,
-    0.22899999999999998
-  ],
-  "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.balance_sheet_and_returns_usd_millions.return_on_shareholders_equity_pct[9]": [
-    29.1,
-    0.262
-  ],
-  "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.balance_sheet_and_returns_usd_millions.return_on_shareholders_equity_pct[10]": [
-    29.5,
-    0.222
-  ],
-  "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.balance_sheet_and_returns_usd_millions.return_on_shareholders_equity_pct[11]": [
-    31.5,
-    0.187
-  ],
-  "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.balance_sheet_and_returns_usd_millions.return_on_shareholders_equity_pct[12]": [
-    null,
-    0.266
-  ],
-  "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.balance_sheet_and_returns_usd_millions.return_on_shareholders_equity_pct[13]": [
-    null,
-    0.28
-  ],
-  "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.balance_sheet_and_returns_usd_millions.return_on_shareholders_equity_pct[14]": [
-    null,
-    0.312
-  ],
-  "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.balance_sheet_and_returns_usd_millions.return_on_shareholders_equity_pct[15]": [
-    null,
-    0.29100000000000004
-  ],
-  "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.balance_sheet_and_returns_usd_millions.return_on_shareholders_equity_pct[16]": [
-    null,
-    0.295
-  ],
-  "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.balance_sheet_and_returns_usd_millions.return_on_shareholders_equity_pct[17]": [
-    null,
-    0.315
-  ],
-  "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.balance_sheet_and_returns_usd_millions.return_on_total_capital_pct": [
-    [
-      17.1,
-      18.0,
-      18.7,
-      23.4,
-      19.3,
-      17.8,
-      24.2,
-      23.7,
-      29.6,
-      26.7,
-      27.0,
-      29.0
-    ],
-    null
-  ],
-  "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.balance_sheet_and_returns_usd_millions.shareholders_equity[0]": [
-    1442.3,
-    null
-  ],
-  "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.balance_sheet_and_returns_usd_millions.shareholders_equity[1]": [
-    1515.3,
-    null
-  ],
-  "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.balance_sheet_and_returns_usd_millions.shareholders_equity[2]": [
-    1648.8,
-    null
-  ],
-  "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.balance_sheet_and_returns_usd_millions.shareholders_equity[3]": [
-    1717.0,
-    null
-  ],
-  "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.balance_sheet_and_returns_usd_millions.shareholders_equity[4]": [
-    1666.8,
-    null
-  ],
-  "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.balance_sheet_and_returns_usd_millions.shareholders_equity[5]": [
-    1848.3,
-    null
-  ],
-  "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.balance_sheet_and_returns_usd_millions.shareholders_equity[6]": [
-    1832.2,
-    1442.3
-  ],
-  "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.balance_sheet_and_returns_usd_millions.shareholders_equity[7]": [
-    1747.7,
-    1515.3
-  ],
-  "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.balance_sheet_and_returns_usd_millions.shareholders_equity[8]": [
-    1844.4,
-    1648.8
-  ],
-  "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.balance_sheet_and_returns_usd_millions.shareholders_equity[9]": [
-    1883.5,
-    1717.0
-  ],
-  "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.balance_sheet_and_returns_usd_millions.shareholders_equity[10]": [
-    1825.0,
-    1666.8
-  ],
-  "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.balance_sheet_and_returns_usd_millions.shareholders_equity[11]": [
-    1825.0,
-    1848.3
-  ],
-  "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.balance_sheet_and_returns_usd_millions.shareholders_equity[12]": [
-    null,
-    1832.2
-  ],
-  "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.balance_sheet_and_returns_usd_millions.shareholders_equity[13]": [
-    null,
-    1747.7
-  ],
-  "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.balance_sheet_and_returns_usd_millions.shareholders_equity[14]": [
-    null,
-    1844.4
-  ],
-  "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.balance_sheet_and_returns_usd_millions.shareholders_equity[15]": [
-    null,
-    1883.5
-  ],
-  "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.balance_sheet_and_returns_usd_millions.shareholders_equity[16]": [
-    null,
-    1825.0
-  ],
-  "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.balance_sheet_and_returns_usd_millions.shareholders_equity[17]": [
-    null,
-    1825.0
-  ],
   "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.balance_sheet_and_returns_usd_millions.total_assets": [
     null,
     [
@@ -671,48 +129,8 @@
       null,
       null,
       null,
-      null,
-      null,
-      null,
-      null,
-      null,
-      null,
       null
     ]
-  ],
-  "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.balance_sheet_and_returns_usd_millions.working_capital": [
-    [
-      802.1,
-      796.4,
-      978.3,
-      853.2,
-      733.9,
-      731.7,
-      633.8,
-      699.5,
-      555.0,
-      495.7,
-      495.0,
-      515.0
-    ],
-    null
-  ],
-  "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.income_statement_usd_millions.depreciation": [
-    [
-      63.0,
-      65.1,
-      70.1,
-      71.9,
-      78.3,
-      80.0,
-      77.9,
-      76.9,
-      78.3,
-      78.8,
-      80.0,
-      81.0
-    ],
-    null
   ],
   "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.income_statement_usd_millions.expense_to_prem_written": [
     null,
@@ -728,96 +146,12 @@
       null,
       null,
       null,
-      null,
-      null,
-      null,
-      null,
-      null,
-      null,
       null
     ]
-  ],
-  "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.income_statement_usd_millions.income_tax_rate_pct[0]": [
-    29.7,
-    null
-  ],
-  "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.income_statement_usd_millions.income_tax_rate_pct[1]": [
-    29.4,
-    null
-  ],
-  "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.income_statement_usd_millions.income_tax_rate_pct[2]": [
-    27.4,
-    null
-  ],
-  "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.income_statement_usd_millions.income_tax_rate_pct[3]": [
-    20.4,
-    null
-  ],
-  "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.income_statement_usd_millions.income_tax_rate_pct[4]": [
-    21.6,
-    null
-  ],
-  "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.income_statement_usd_millions.income_tax_rate_pct[5]": [
-    22.3,
-    null
-  ],
-  "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.income_statement_usd_millions.income_tax_rate_pct[6]": [
-    22.1,
-    0.297
-  ],
-  "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.income_statement_usd_millions.income_tax_rate_pct[7]": [
-    24.3,
-    0.294
-  ],
-  "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.income_statement_usd_millions.income_tax_rate_pct[8]": [
-    23.5,
-    0.27399999999999997
-  ],
-  "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.income_statement_usd_millions.income_tax_rate_pct[9]": [
-    23.7,
-    0.204
-  ],
-  "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.income_statement_usd_millions.income_tax_rate_pct[10]": [
-    24.0,
-    0.21600000000000003
-  ],
-  "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.income_statement_usd_millions.income_tax_rate_pct[11]": [
-    24.0,
-    0.223
-  ],
-  "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.income_statement_usd_millions.income_tax_rate_pct[12]": [
-    null,
-    0.221
-  ],
-  "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.income_statement_usd_millions.income_tax_rate_pct[13]": [
-    null,
-    0.243
-  ],
-  "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.income_statement_usd_millions.income_tax_rate_pct[14]": [
-    null,
-    0.235
-  ],
-  "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.income_statement_usd_millions.income_tax_rate_pct[15]": [
-    null,
-    0.237
-  ],
-  "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.income_statement_usd_millions.income_tax_rate_pct[16]": [
-    null,
-    0.24
-  ],
-  "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.income_statement_usd_millions.income_tax_rate_pct[17]": [
-    null,
-    0.24
   ],
   "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.income_statement_usd_millions.inv_inc_to_total_investments_pct": [
     null,
     [
-      null,
-      null,
-      null,
-      null,
-      null,
-      null,
       null,
       null,
       null,
@@ -846,120 +180,8 @@
       null,
       null,
       null,
-      null,
-      null,
-      null,
-      null,
-      null,
-      null,
       null
     ]
-  ],
-  "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.income_statement_usd_millions.net_profit[0]": [
-    282.9,
-    null
-  ],
-  "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.income_statement_usd_millions.net_profit[1]": [
-    326.5,
-    null
-  ],
-  "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.income_statement_usd_millions.net_profit[2]": [
-    378.3,
-    null
-  ],
-  "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.income_statement_usd_millions.net_profit[3]": [
-    449.2,
-    null
-  ],
-  "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.income_statement_usd_millions.net_profit[4]": [
-    370.0,
-    null
-  ],
-  "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.income_statement_usd_millions.net_profit[5]": [
-    344.9,
-    null
-  ],
-  "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.income_statement_usd_millions.net_profit[6]": [
-    487.1,
-    282.9
-  ],
-  "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.income_statement_usd_millions.net_profit[7]": [
-    488.7,
-    326.5
-  ],
-  "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.income_statement_usd_millions.net_profit[8]": [
-    574.8,
-    378.3
-  ],
-  "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.income_statement_usd_millions.net_profit[9]": [
-    548.0,
-    449.2
-  ],
-  "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.income_statement_usd_millions.net_profit[10]": [
-    535.0,
-    370.0
-  ],
-  "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.income_statement_usd_millions.net_profit[11]": [
-    575.0,
-    344.9
-  ],
-  "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.income_statement_usd_millions.net_profit[12]": [
-    null,
-    487.1
-  ],
-  "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.income_statement_usd_millions.net_profit[13]": [
-    null,
-    488.7
-  ],
-  "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.income_statement_usd_millions.net_profit[14]": [
-    null,
-    574.8
-  ],
-  "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.income_statement_usd_millions.net_profit[15]": [
-    null,
-    548.0
-  ],
-  "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.income_statement_usd_millions.net_profit[16]": [
-    null,
-    535.0
-  ],
-  "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.income_statement_usd_millions.net_profit[17]": [
-    null,
-    575.0
-  ],
-  "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.income_statement_usd_millions.net_profit_margin_pct": [
-    [
-      11.2,
-      12.2,
-      12.6,
-      14.1,
-      12.4,
-      11.9,
-      13.8,
-      13.0,
-      14.9,
-      14.4,
-      14.0,
-      14.3
-    ],
-    null
-  ],
-  "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.income_statement_usd_millions.operating_margin_pct": [
-    [
-      18.2,
-      19.6,
-      19.7,
-      19.6,
-      18.2,
-      18.0,
-      19.4,
-      19.6,
-      21.7,
-      20.8,
-      20.5,
-      21.0
-    ],
-    null
   ],
   "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.income_statement_usd_millions.pc_premiums_earned": [
     null,
@@ -975,31 +197,8 @@
       null,
       null,
       null,
-      null,
-      null,
-      null,
-      null,
-      null,
-      null,
       null
     ]
-  ],
-  "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.income_statement_usd_millions.sales": [
-    [
-      2536.5,
-      2685.9,
-      2996.7,
-      3187.9,
-      2992.7,
-      2895.3,
-      3538.9,
-      3753.9,
-      3852.8,
-      3818.1,
-      3830.0,
-      4030.0
-    ],
-    null
   ],
   "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.income_statement_usd_millions.underwriting_margin_pct": [
     null,
@@ -1015,346 +214,12 @@
       null,
       null,
       null,
-      null,
-      null,
-      null,
-      null,
-      null,
-      null,
       null
     ]
-  ],
-  "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.per_share.book_value_per_share_usd[0]": [
-    8.2,
-    4.06
-  ],
-  "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.per_share.book_value_per_share_usd[1]": [
-    8.74,
-    4.82
-  ],
-  "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.per_share.book_value_per_share_usd[2]": [
-    9.6,
-    5.89
-  ],
-  "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.per_share.book_value_per_share_usd[3]": [
-    10.21,
-    6.46
-  ],
-  "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.per_share.book_value_per_share_usd[4]": [
-    10.27,
-    7.28
-  ],
-  "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.per_share.book_value_per_share_usd[5]": [
-    11.43,
-    7.73
-  ],
-  "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.per_share.book_value_per_share_usd[6]": [
-    11.62,
-    8.2
-  ],
-  "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.per_share.book_value_per_share_usd[7]": [
-    11.56,
-    8.74
-  ],
-  "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.per_share.book_value_per_share_usd[8]": [
-    12.5,
-    9.6
-  ],
-  "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.per_share.book_value_per_share_usd[9]": [
-    13.05,
-    10.21
-  ],
-  "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.per_share.book_value_per_share_usd[10]": [
-    13.2,
-    10.27
-  ],
-  "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.per_share.book_value_per_share_usd[11]": [
-    13.75,
-    11.43
-  ],
-  "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.per_share.book_value_per_share_usd[12]": [
-    null,
-    11.62
-  ],
-  "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.per_share.book_value_per_share_usd[13]": [
-    null,
-    11.56
-  ],
-  "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.per_share.book_value_per_share_usd[14]": [
-    null,
-    12.5
-  ],
-  "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.per_share.book_value_per_share_usd[15]": [
-    null,
-    13.05
-  ],
-  "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.per_share.book_value_per_share_usd[16]": [
-    null,
-    13.2
-  ],
-  "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.per_share.book_value_per_share_usd[17]": [
-    null,
-    13.75
-  ],
-  "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.per_share.capital_spending_per_share_usd": [
-    [
-      0.41,
-      0.47,
-      0.55,
-      0.51,
-      0.4,
-      0.35,
-      0.48,
-      0.47,
-      0.49,
-      0.75,
-      0.7,
-      0.75
-    ],
-    null
-  ],
-  "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.per_share.cash_flow_per_share_usd": [
-    [
-      1.97,
-      2.26,
-      2.61,
-      3.1,
-      2.76,
-      2.63,
-      3.58,
-      3.74,
-      4.43,
-      4.34,
-      4.4,
-      4.95
-    ],
-    null
-  ],
-  "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.per_share.common_shares_outstanding_millions[0]": [
-    175.9,
-    194.44
-  ],
-  "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.per_share.common_shares_outstanding_millions[1]": [
-    173.44,
-    182.97
-  ],
-  "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.per_share.common_shares_outstanding_millions[2]": [
-    171.66,
-    184.48
-  ],
-  "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.per_share.common_shares_outstanding_millions[3]": [
-    168.16,
-    184.88
-  ],
-  "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.per_share.common_shares_outstanding_millions[4]": [
-    162.37,
-    182.48
-  ],
-  "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.per_share.common_shares_outstanding_millions[5]": [
-    161.77,
-    178.8
-  ],
-  "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.per_share.common_shares_outstanding_millions[6]": [
-    157.65,
-    175.9
-  ],
-  "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.per_share.common_shares_outstanding_millions[7]": [
-    151.18,
-    173.44
-  ],
-  "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.per_share.common_shares_outstanding_millions[8]": [
-    147.53,
-    171.66
-  ],
-  "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.per_share.common_shares_outstanding_millions[9]": [
-    144.32,
-    168.16
-  ],
-  "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.per_share.common_shares_outstanding_millions[10]": [
-    138.2,
-    162.37
-  ],
-  "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.per_share.common_shares_outstanding_millions[11]": [
-    132.8,
-    161.77
-  ],
-  "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.per_share.common_shares_outstanding_millions[12]": [
-    null,
-    157.65
-  ],
-  "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.per_share.common_shares_outstanding_millions[13]": [
-    null,
-    151.18
-  ],
-  "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.per_share.common_shares_outstanding_millions[14]": [
-    null,
-    147.53
-  ],
-  "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.per_share.common_shares_outstanding_millions[15]": [
-    null,
-    144.32
-  ],
-  "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.per_share.common_shares_outstanding_millions[16]": [
-    null,
-    138.2
-  ],
-  "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.per_share.common_shares_outstanding_millions[17]": [
-    null,
-    132.8
-  ],
-  "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.per_share.dividends_declared_per_share_usd[0]": [
-    0.38,
-    0.13
-  ],
-  "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.per_share.dividends_declared_per_share_usd[1]": [
-    0.48,
-    0.14
-  ],
-  "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.per_share.dividends_declared_per_share_usd[2]": [
-    0.56,
-    0.15
-  ],
-  "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.per_share.dividends_declared_per_share_usd[3]": [
-    0.76,
-    0.18
-  ],
-  "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.per_share.dividends_declared_per_share_usd[4]": [
-    0.9,
-    0.23
-  ],
-  "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.per_share.dividends_declared_per_share_usd[5]": [
-    0.98,
-    0.3
-  ],
-  "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.per_share.dividends_declared_per_share_usd[6]": [
-    1.06,
-    0.38
-  ],
-  "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.per_share.dividends_declared_per_share_usd[7]": [
-    1.14,
-    0.48
-  ],
-  "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.per_share.dividends_declared_per_share_usd[8]": [
-    1.22,
-    0.56
-  ],
-  "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.per_share.dividends_declared_per_share_usd[9]": [
-    1.3,
-    0.76
-  ],
-  "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.per_share.dividends_declared_per_share_usd[10]": [
-    1.38,
-    0.9
-  ],
-  "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.per_share.dividends_declared_per_share_usd[11]": [
-    1.46,
-    0.98
-  ],
-  "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.per_share.dividends_declared_per_share_usd[12]": [
-    null,
-    1.06
-  ],
-  "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.per_share.dividends_declared_per_share_usd[13]": [
-    null,
-    1.14
-  ],
-  "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.per_share.dividends_declared_per_share_usd[14]": [
-    null,
-    1.22
-  ],
-  "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.per_share.dividends_declared_per_share_usd[15]": [
-    null,
-    1.3
-  ],
-  "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.per_share.dividends_declared_per_share_usd[16]": [
-    null,
-    1.38
-  ],
-  "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.per_share.dividends_declared_per_share_usd[17]": [
-    null,
-    1.46
-  ],
-  "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.per_share.earnings_per_share_usd[0]": [
-    1.58,
-    0.57
-  ],
-  "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.per_share.earnings_per_share_usd[1]": [
-    1.85,
-    0.43
-  ],
-  "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.per_share.earnings_per_share_usd[2]": [
-    2.17,
-    0.6
-  ],
-  "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.per_share.earnings_per_share_usd[3]": [
-    2.61,
-    0.78
-  ],
-  "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.per_share.earnings_per_share_usd[4]": [
-    2.22,
-    1.03
-  ],
-  "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.per_share.earnings_per_share_usd[5]": [
-    2.12,
-    1.22
-  ],
-  "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.per_share.earnings_per_share_usd[6]": [
-    3.02,
-    1.58
-  ],
-  "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.per_share.earnings_per_share_usd[7]": [
-    3.14,
-    1.85
-  ],
-  "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.per_share.earnings_per_share_usd[8]": [
-    3.81,
-    2.17
-  ],
-  "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.per_share.earnings_per_share_usd[9]": [
-    3.73,
-    2.61
-  ],
-  "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.per_share.earnings_per_share_usd[10]": [
-    3.75,
-    2.22
-  ],
-  "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.per_share.earnings_per_share_usd[11]": [
-    4.2,
-    2.12
-  ],
-  "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.per_share.earnings_per_share_usd[12]": [
-    null,
-    3.02
-  ],
-  "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.per_share.earnings_per_share_usd[13]": [
-    null,
-    3.14
-  ],
-  "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.per_share.earnings_per_share_usd[14]": [
-    null,
-    3.81
-  ],
-  "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.per_share.earnings_per_share_usd[15]": [
-    null,
-    3.73
-  ],
-  "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.per_share.earnings_per_share_usd[16]": [
-    null,
-    3.75
-  ],
-  "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.per_share.earnings_per_share_usd[17]": [
-    null,
-    4.2
   ],
   "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.per_share.investment_income_per_share_usd": [
     null,
     [
-      null,
-      null,
-      null,
-      null,
-      null,
-      null,
       null,
       null,
       null,
@@ -1387,31 +252,8 @@
       null,
       null,
       null,
-      null,
-      null,
-      null,
-      null,
-      null,
-      null,
       null
     ]
-  ],
-  "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.per_share.sales_per_share_usd": [
-    [
-      14.42,
-      15.49,
-      17.46,
-      18.96,
-      18.43,
-      17.9,
-      22.45,
-      24.83,
-      26.12,
-      26.46,
-      27.7,
-      30.35
-    ],
-    null
   ],
   "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.per_share.underwriting_income_per_share_usd": [
     null,
@@ -1427,224 +269,94 @@
       null,
       null,
       null,
-      null,
-      null,
-      null,
-      null,
-      null,
-      null,
       null
     ]
   ],
-  "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.projection_2028_2030.all_dividends_to_net_profit_pct": [
-    31.0,
-    0.31
-  ],
-  "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.projection_2028_2030.capital_spending_per_share_usd": [
-    0.85,
-    null
-  ],
-  "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.projection_2028_2030.cash_flow_per_share_usd": [
-    6.4,
-    null
-  ],
-  "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.projection_2028_2030.depreciation": [
-    85.0,
-    null
-  ],
-  "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.projection_2028_2030.income_tax_rate_pct": [
-    24.0,
-    0.24
-  ],
-  "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.projection_2028_2030.long_term_debt": [
-    185.0,
-    null
-  ],
-  "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.projection_2028_2030.net_profit": [
-    680.0,
-    null
-  ],
-  "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.projection_2028_2030.net_profit_margin_pct": [
-    15.1,
-    null
-  ],
-  "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.projection_2028_2030.net_profit_usd_millions": [
-    null,
-    680.0
-  ],
-  "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.projection_2028_2030.operating_margin_pct": [
-    22.0,
-    null
-  ],
-  "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.projection_2028_2030.retained_to_common_equity_pct": [
-    22.0,
-    0.22
-  ],
-  "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.projection_2028_2030.return_on_shareholders_equity_pct": [
-    32.0,
-    0.32
-  ],
-  "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.projection_2028_2030.return_on_total_capital_pct": [
-    29.5,
-    null
-  ],
-  "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.projection_2028_2030.sales": [
-    4500.0,
-    null
-  ],
-  "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.projection_2028_2030.sales_per_share_usd": [
-    37.6,
-    null
-  ],
-  "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.projection_2028_2030.shareholders_equity": [
-    2135.0,
-    null
-  ],
-  "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.projection_2028_2030.shareholders_equity_usd_millions": [
-    null,
-    2135.0
-  ],
-  "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.projection_2028_2030.working_capital": [
-    570.0,
-    null
-  ],
-  "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.valuation.avg_annual_dividend_yield_pct[1]": [
+  "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.valuation.avg_annual_dividend_yield_pct[0]": [
     1.1,
-    2.2
+    1.2
   ],
   "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.valuation.avg_annual_dividend_yield_pct[2]": [
     1.0,
-    1.6
+    1.1
   ],
   "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.valuation.avg_annual_dividend_yield_pct[3]": [
     1.3,
-    1.5
+    1.0
   ],
   "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.valuation.avg_annual_dividend_yield_pct[4]": [
     1.9,
-    1.4
+    1.3
   ],
   "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.valuation.avg_annual_dividend_yield_pct[5]": [
     2.0,
-    1.1
+    1.9
   ],
   "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.valuation.avg_annual_dividend_yield_pct[6]": [
     1.5,
-    1.2
+    2.0
   ],
   "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.valuation.avg_annual_dividend_yield_pct[7]": [
     1.8,
-    1.1
-  ],
-  "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.valuation.avg_annual_dividend_yield_pct[8]": [
-    1.8,
-    1.1
+    1.5
   ],
   "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.valuation.avg_annual_dividend_yield_pct[9]": [
     1.6,
-    1.0
+    1.8
   ],
   "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.valuation.avg_annual_dividend_yield_pct[10]": [
     2.0,
-    1.3
-  ],
-  "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.valuation.avg_annual_dividend_yield_pct[11]": [
-    null,
-    1.9
-  ],
-  "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.valuation.avg_annual_dividend_yield_pct[12]": [
-    null,
-    2.0
-  ],
-  "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.valuation.avg_annual_dividend_yield_pct[13]": [
-    null,
-    1.5
-  ],
-  "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.valuation.avg_annual_dividend_yield_pct[14]": [
-    null,
-    1.8
-  ],
-  "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.valuation.avg_annual_dividend_yield_pct[15]": [
-    null,
-    1.8
-  ],
-  "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.valuation.avg_annual_dividend_yield_pct[16]": [
-    null,
     1.6
   ],
-  "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.valuation.avg_annual_dividend_yield_pct[17]": [
+  "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.valuation.avg_annual_dividend_yield_pct[11]": [
     null,
     2.0
   ],
   "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.valuation.avg_annual_pe_ratio[0]": [
     21.6,
-    119.65
+    20.3
   ],
   "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.valuation.avg_annual_pe_ratio[1]": [
     23.0,
-    10.1
+    21.6
   ],
   "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.valuation.avg_annual_pe_ratio[2]": [
     25.4,
-    20.3
+    23.0
   ],
   "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.valuation.avg_annual_pe_ratio[3]": [
     22.2,
-    16.6
+    25.4
   ],
   "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.valuation.avg_annual_pe_ratio[4]": [
     21.8,
-    16.4
+    22.2
   ],
   "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.valuation.avg_annual_pe_ratio[5]": [
     22.6,
-    20.2
+    21.8
   ],
   "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.valuation.avg_annual_pe_ratio[6]": [
     22.8,
-    20.3
+    22.6
   ],
   "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.valuation.avg_annual_pe_ratio[7]": [
     19.7,
-    21.6
+    22.8
   ],
   "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.valuation.avg_annual_pe_ratio[8]": [
     18.3,
-    23.0
+    19.7
   ],
   "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.valuation.avg_annual_pe_ratio[9]": [
     21.9,
-    25.4
+    18.3
   ],
   "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.valuation.avg_annual_pe_ratio[10]": [
     18.1,
-    22.2
-  ],
-  "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.valuation.avg_annual_pe_ratio[11]": [
-    null,
-    21.8
-  ],
-  "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.valuation.avg_annual_pe_ratio[12]": [
-    null,
-    22.6
-  ],
-  "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.valuation.avg_annual_pe_ratio[13]": [
-    null,
-    22.8
-  ],
-  "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.valuation.avg_annual_pe_ratio[14]": [
-    null,
-    19.7
-  ],
-  "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.valuation.avg_annual_pe_ratio[15]": [
-    null,
-    18.3
-  ],
-  "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.valuation.avg_annual_pe_ratio[16]": [
-    null,
     21.9
   ],
-  "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.valuation.avg_annual_pe_ratio[17]": [
+  "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.valuation.avg_annual_pe_ratio[11]": [
     null,
     18.1
   ],
@@ -1662,158 +374,52 @@
       null,
       null,
       null,
-      null,
-      null,
-      null,
-      null,
-      null,
-      null,
       null
     ]
   ],
   "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.valuation.relative_pe_ratio[0]": [
     1.09,
-    20.0
+    1.07
   ],
   "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.valuation.relative_pe_ratio[1]": [
     1.21,
-    0.67
+    1.09
   ],
   "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.valuation.relative_pe_ratio[2]": [
     1.28,
-    1.29
+    1.21
   ],
   "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.valuation.relative_pe_ratio[3]": [
     1.2,
-    1.04
+    1.28
   ],
   "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.valuation.relative_pe_ratio[4]": [
     1.16,
-    1.04
-  ],
-  "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.valuation.relative_pe_ratio[5]": [
-    1.16,
-    1.13
+    1.2
   ],
   "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.valuation.relative_pe_ratio[6]": [
     1.23,
-    1.07
+    1.16
   ],
   "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.valuation.relative_pe_ratio[7]": [
     1.14,
-    1.09
+    1.23
   ],
   "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.valuation.relative_pe_ratio[8]": [
     1.02,
-    1.21
+    1.14
   ],
   "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.valuation.relative_pe_ratio[9]": [
     1.15,
-    1.28
+    1.02
   ],
   "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.valuation.relative_pe_ratio[10]": [
     0.91,
-    1.2
+    1.15
   ],
   "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.valuation.relative_pe_ratio[11]": [
     null,
-    1.16
-  ],
-  "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.valuation.relative_pe_ratio[12]": [
-    null,
-    1.16
-  ],
-  "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.valuation.relative_pe_ratio[13]": [
-    null,
-    1.23
-  ],
-  "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.valuation.relative_pe_ratio[14]": [
-    null,
-    1.14
-  ],
-  "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.valuation.relative_pe_ratio[15]": [
-    null,
-    1.02
-  ],
-  "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.valuation.relative_pe_ratio[16]": [
-    null,
-    1.15
-  ],
-  "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.valuation.relative_pe_ratio[17]": [
-    null,
     0.91
-  ],
-  "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.years[0]": [
-    2015,
-    2009
-  ],
-  "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.years[1]": [
-    2016,
-    2010
-  ],
-  "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.years[2]": [
-    2017,
-    2011
-  ],
-  "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.years[3]": [
-    2018,
-    2012
-  ],
-  "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.years[4]": [
-    2019,
-    2013
-  ],
-  "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.years[5]": [
-    2020,
-    2014
-  ],
-  "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.years[6]": [
-    2021,
-    2015
-  ],
-  "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.years[7]": [
-    2022,
-    2016
-  ],
-  "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.years[8]": [
-    2023,
-    2017
-  ],
-  "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.years[9]": [
-    2024,
-    2018
-  ],
-  "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.years[10]": [
-    2025,
-    2019
-  ],
-  "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.years[11]": [
-    2026,
-    2020
-  ],
-  "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.years[12]": [
-    null,
-    2021
-  ],
-  "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.years[13]": [
-    null,
-    2022
-  ],
-  "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.years[14]": [
-    null,
-    2023
-  ],
-  "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.years[15]": [
-    null,
-    2024
-  ],
-  "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.years[16]": [
-    null,
-    2025
-  ],
-  "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.years[17]": [
-    null,
-    2026
   ],
   "tables_time_series.earnings_per_share": [
     [
