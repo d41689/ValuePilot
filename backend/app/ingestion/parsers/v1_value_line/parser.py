@@ -975,9 +975,10 @@ class ValueLineV1Parser(BaseParser):
 
     def _parse_time_series_tables(self) -> Optional[dict[str, Any]]:
         flat_text = re.sub(r'\s+', ' ', self.text)
-        years = self._find_year_sequence(flat_text)
-        if not years:
+        full_years = self._find_year_sequence(flat_text)
+        if not full_years:
             return None
+        years = full_years
         if len(years) > 12:
             years = years[-12:]
 
@@ -999,7 +1000,12 @@ class ValueLineV1Parser(BaseParser):
                     return value / 100.0
             return value
 
-        def parse_series(label_pat: str, *, percent_ratio: bool) -> tuple[list[Optional[float]], Optional[float]]:
+        def parse_series(
+            label_pat: str,
+            *,
+            percent_ratio: bool,
+            missing_last_year: bool = False,
+        ) -> tuple[list[Optional[float]], Optional[float]]:
             label_idx = next(
                 (idx for idx, token in enumerate(tokens) if re.search(label_pat, token, re.IGNORECASE)),
                 None,
@@ -1008,17 +1014,37 @@ class ValueLineV1Parser(BaseParser):
                 return [None for _ in years], None
 
             values_raw: list[str] = []
+            stop_idx = None
             for j in range(label_idx - 1, -1, -1):
                 if is_value_token(tokens[j]):
                     values_raw.append(tokens[j])
                 else:
                     if values_raw:
+                        stop_idx = j
                         break
             values_raw = list(reversed(values_raw))
-            if len(values_raw) > len(years):
-                values_raw = values_raw[-len(years):]
 
-            aligned_years = self._align_years(years, values_raw)
+            def is_row_label(token: str) -> bool:
+                if not re.search(r"[A-Za-z]", token):
+                    return False
+                if re.search(r"VALUELINE", token, re.IGNORECASE):
+                    return False
+                if re.search(r"20\\d{2}", token):
+                    return False
+                return True
+
+            if stop_idx is not None and len(values_raw) > len(years):
+                if is_row_label(tokens[stop_idx]):
+                    values_raw = values_raw[1:]
+
+            if missing_last_year and len(values_raw) > len(years):
+                values_raw = values_raw[-(len(years) - 1):]
+                aligned_years = years[:-1]
+            else:
+                if len(values_raw) > len(years):
+                    values_raw = values_raw[-len(years):]
+                aligned_years = self._align_years(years, values_raw)
+
             values = [coerce(token, percent_ratio) for token in values_raw]
             series = [None for _ in years]
             for year, value in zip(aligned_years, values):
@@ -1094,17 +1120,17 @@ class ValueLineV1Parser(BaseParser):
         series, _ = parse_series(r'PricetoBookValue', percent_ratio=False)
         valuation["price_to_book_value_pct"] = series
 
-        series, proj = parse_series(r'AvgAnn.?lP/ERatio', percent_ratio=False)
+        series, proj = parse_series(r'AvgAnn.?lP/ERatio', percent_ratio=False, missing_last_year=True)
         valuation["avg_annual_pe_ratio"] = series
         if proj is not None:
             projection["avg_annual_pe_ratio"] = proj
 
-        series, proj = parse_series(r'RelativeP/ERatio', percent_ratio=False)
+        series, proj = parse_series(r'RelativeP/ERatio', percent_ratio=False, missing_last_year=True)
         valuation["relative_pe_ratio"] = series
         if proj is not None:
             projection["relative_pe_ratio"] = proj
 
-        series, proj = parse_series(r'AvgAnn.?lDiv.?dYield', percent_ratio=False)
+        series, proj = parse_series(r'AvgAnn.?lDiv.?dYield', percent_ratio=False, missing_last_year=True)
         valuation["avg_annual_dividend_yield_pct"] = series
         if proj is not None:
             projection["avg_annual_dividend_yield_pct"] = proj

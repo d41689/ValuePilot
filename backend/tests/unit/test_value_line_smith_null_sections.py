@@ -136,3 +136,8 @@ def test_smith_tables_time_series_populated():
     expected_balance = expected_annual["balance_sheet_and_returns_usd_millions"]
     for key in ("working_capital", "long_term_debt", "return_on_total_capital_pct"):
         _assert_series(parsed_balance.get(key, []), expected_balance[key])
+
+    parsed_valuation = parsed_annual.get("valuation") or {}
+    expected_valuation = expected_annual["valuation"]
+    for key in ("avg_annual_pe_ratio", "relative_pe_ratio", "avg_annual_dividend_yield_pct"):
+        _assert_series(parsed_valuation.get(key, []), expected_valuation[key])

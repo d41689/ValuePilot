@@ -46,9 +46,9 @@
 - Added manufacturing table label patterns (Sales per share, Cash Flow per share, Cap’l Spending per share, Working Cap’l, Long-Term Debt, Operating/Net Profit margins, Return on Total Capital).
 - Added capital structure helpers for market cap as-of, pension assets as-of, and notes (Mid Cap, Class A shares).
 - Added non-numeric key exemptions for `market_cap_as_of` and `pension_assets_as_of`.
+- Added valuation-series alignment for missing 2026 values (Avg annual P/E, relative P/E, avg dividend yield).
 - Regenerated `ao_smith_v1.parser.json` and `smith_v1.diff.json` after parser update.
 
 ## Verification
 - `docker compose exec -T api pytest -q tests/unit/test_value_line_smith_null_sections.py`
-- `docker compose exec -T api pytest -q`
-- Results: 45 passed, 1 warning (FastAPI deprecation).
+- Results: 4 passed, 1 warning (FastAPI deprecation).
