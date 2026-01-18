@@ -779,10 +779,8 @@ class ValueLineV1Parser(BaseParser):
             return None
         raw = token.strip()
         upper = raw.upper()
-        if upper in {"--", "NMF"}:
+        if upper in {"--", "NMF", "NIL"}:
             return None
-        if upper == "NIL":
-            return 0.0
         neg = False
         if raw and raw[0] in {"d", "D"}:
             neg = True

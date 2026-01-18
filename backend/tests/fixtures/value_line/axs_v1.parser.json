@@ -367,8 +367,8 @@
           null,
           null,
           null,
-          0.0,
-          0.0
+          null,
+          null
         ],
         "underwriting_margin_pct": [
           0.41,
@@ -512,7 +512,6 @@
         "avg_annual_dividend_yield_pct": 1.2,
         "pc_premiums_earned_usd_millions": 7000.0,
         "loss_to_prem_earned_pct": 0.68,
-        "expense_to_prem_written": 0.0,
         "underwriting_margin_pct": 0.385,
         "income_tax_rate_pct": 0.18,
         "net_profit_usd_millions": 1155.0,
