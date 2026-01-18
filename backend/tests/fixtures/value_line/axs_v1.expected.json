@@ -143,8 +143,6 @@
     }
   },
 
-
-
   "institutional_decisions": {
     "unit": {
       "hlds": "thousand_shares"
@@ -176,9 +174,6 @@
       }
     ]
   },
-
-
-  
 
   "capital_structure": {
     "as_of": "2025-09-30",
@@ -232,6 +227,7 @@
       "as_of": "2025-10-24"
     }
   },
+  
   "financial_position": {
     "years": [
       "2023",
