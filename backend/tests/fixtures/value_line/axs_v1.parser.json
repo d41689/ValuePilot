@@ -1,0 +1,688 @@
+{
+  "source": {
+    "document_type": "value_line_equity_report_v1",
+    "pages": 1,
+    "page_parsed": 1,
+    "notes": []
+  },
+  "stocks": {
+    "company_name": "AXIS CAPITAL",
+    "ticker": "AXS",
+    "exchange": "NYSE"
+  },
+  "header_ratings": {
+    "recent_price": {
+      "display": null,
+      "normalized": null,
+      "unit": null
+    },
+    "pe_ratio": {
+      "display": "8.1",
+      "normalized": 8.1,
+      "unit": "ratio"
+    },
+    "pe_ratio_trailing": {
+      "display": "8.6",
+      "normalized": 8.6,
+      "unit": "ratio"
+    },
+    "pe_ratio_median": {
+      "display": "15.0",
+      "normalized": 15.0,
+      "unit": "ratio"
+    },
+    "relative_pe_ratio": {
+      "display": "0.43",
+      "normalized": 0.43,
+      "unit": "ratio"
+    },
+    "dividend_yield": {
+      "display": "1.6%",
+      "normalized": 0.016,
+      "unit": "ratio"
+    },
+    "timeliness": {
+      "value": 3,
+      "notes": "Lowered 8/15/25"
+    },
+    "safety": {
+      "value": 2,
+      "notes": null
+    },
+    "technical": {
+      "value": 4,
+      "notes": "Lowered 1/9/26"
+    },
+    "beta": {
+      "display": "1.00",
+      "normalized": 1.0,
+      "unit": "ratio",
+      "notes": null
+    },
+    "report_date": "2026-01-09",
+    "company_financial_strength": "A",
+    "stock_price_stability": "90",
+    "price_growth_persistence": "35",
+    "earnings_predictability": "10"
+  },
+  "target_price_ranges": {
+    "target_18m": {
+      "low": {
+        "display": "91",
+        "normalized": 91.0,
+        "unit": "USD"
+      },
+      "high": {
+        "display": "168",
+        "normalized": 168.0,
+        "unit": "USD"
+      },
+      "midpoint": {
+        "display": "130",
+        "normalized": 130.0,
+        "unit": "USD"
+      },
+      "pct_to_mid": {
+        "display": "20%",
+        "normalized": 0.2,
+        "unit": "ratio"
+      }
+    },
+    "long_term_projection": {
+      "year_range": "2028-2030",
+      "high": {
+        "price_gain": {
+          "display": "185",
+          "normalized_price": 185.0,
+          "unit": "USD",
+          "price_gain_pct_display": "70%",
+          "price_gain_pct_normalized": 0.7
+        },
+        "annual_total_return": {
+          "display": "15%",
+          "normalized": 0.15,
+          "unit": "ratio"
+        }
+      },
+      "low": {
+        "price_gain": {
+          "display": "135",
+          "normalized_price": 135.0,
+          "unit": "USD",
+          "price_gain_pct_display": "25%",
+          "price_gain_pct_normalized": 0.25
+        },
+        "annual_total_return": {
+          "display": "7%",
+          "normalized": 0.07,
+          "unit": "ratio"
+        }
+      }
+    }
+  },
+  "tables_time_series": {
+    "price_history_high_low": {
+      "high": [
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null
+      ],
+      "low": [
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null
+      ],
+      "notes": null
+    },
+    "annual_financials_and_ratios_2015_2026_with_projection_2028_2030": {
+      "years": [
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null
+      ],
+      "projection_year_range": null,
+      "per_share": {
+        "pc_prem_earned_per_share_usd": [
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null
+        ],
+        "investment_income_per_share_usd": [
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null
+        ],
+        "underwriting_income_per_share_usd": [
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null
+        ],
+        "earnings_per_share_usd": [
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null
+        ],
+        "dividends_declared_per_share_usd": [
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null
+        ],
+        "book_value_per_share_usd": [
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null
+        ],
+        "common_shares_outstanding_millions": [
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null
+        ],
+        "notes": null
+      },
+      "valuation": {
+        "price_to_book_value_pct": [
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null
+        ],
+        "avg_annual_pe_ratio": [
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null
+        ],
+        "relative_pe_ratio": [
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null
+        ],
+        "avg_annual_dividend_yield_pct": [
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null
+        ]
+      },
+      "income_statement_usd_millions": {
+        "pc_premiums_earned": [
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null
+        ],
+        "loss_to_prem_earned_pct": [
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null
+        ],
+        "expense_to_prem_written": [
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null
+        ],
+        "underwriting_margin_pct": [
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null
+        ],
+        "income_tax_rate_pct": [
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null
+        ],
+        "net_profit": [
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null
+        ],
+        "inv_inc_to_total_investments_pct": [
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null
+        ]
+      },
+      "balance_sheet_and_returns_usd_millions": {
+        "total_assets": [
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null
+        ],
+        "shareholders_equity": [
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null
+        ],
+        "return_on_shareholders_equity_pct": [
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null
+        ],
+        "retained_to_common_equity_pct": [
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null
+        ],
+        "all_dividends_to_net_profit_pct": [
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null
+        ]
+      },
+      "projection_2028_2030": {
+        "pc_prem_earned_per_share_usd": null,
+        "investment_income_per_share_usd": null,
+        "underwriting_income_per_share_usd": null,
+        "earnings_per_share_usd": null,
+        "dividends_declared_per_share_usd": null,
+        "book_value_per_share_usd": null,
+        "common_shares_outstanding_millions": null,
+        "avg_annual_pe_ratio": null,
+        "relative_pe_ratio": null,
+        "avg_annual_dividend_yield_pct": null,
+        "pc_premiums_earned_usd_millions": null,
+        "loss_to_prem_earned_pct": null,
+        "expense_to_prem_written": null,
+        "underwriting_margin_pct": null,
+        "income_tax_rate_pct": null,
+        "net_profit_usd_millions": null,
+        "inv_inc_to_total_investments_pct": null,
+        "total_assets_usd_millions": null,
+        "shareholders_equity_usd_millions": null,
+        "return_on_shareholders_equity_pct": null,
+        "retained_to_common_equity_pct": null,
+        "all_dividends_to_net_profit_pct": null
+      }
+    }
+  },
+  "financial_snapshot_blocks": {
+    "capital_structure_as_of": null,
+    "capital_structure": {
+      "total_debt": {
+        "display": "$1316.9 mill",
+        "normalized": 1316900000.0,
+        "unit": "USD"
+      },
+      "debt_due_in_5_years": {
+        "display": "$650.0 mill",
+        "normalized": 650000000.0,
+        "unit": "USD"
+      },
+      "lt_debt": {
+        "display": "$1316.9 mill",
+        "normalized": 1316900000.0,
+        "unit": "USD"
+      },
+      "lt_interest": {
+        "display": "$70.0 mill",
+        "normalized": 70000000.0,
+        "unit": "USD"
+      },
+      "debt_percent_of_capital": {
+        "display": "17%",
+        "normalized": 0.17,
+        "unit": "ratio"
+      },
+      "pension_note": null,
+      "preferred_stock": {
+        "display": null,
+        "normalized": null,
+        "unit": null
+      },
+      "preferred_dividend": {
+        "display": null,
+        "normalized": null,
+        "unit": null
+      },
+      "common_stock_shares_outstanding": {
+        "display": null,
+        "normalized": null,
+        "unit": null,
+        "as_of": null
+      },
+      "market_cap": {
+        "display": "$8.4 billion",
+        "normalized": 8400000000.0,
+        "unit": "USD",
+        "notes": null,
+        "as_of": null
+      }
+    },
+    "financial_position_usd_millions": {
+      "years": [
+        null,
+        null,
+        null
+      ],
+      "notes": null,
+      "assets": {
+        "bonds": [
+          null,
+          null,
+          null
+        ],
+        "stocks": [
+          null,
+          null,
+          null
+        ],
+        "other": [
+          null,
+          null,
+          null
+        ],
+        "total_assets": [
+          null,
+          null,
+          null
+        ]
+      },
+      "liabilities": {
+        "unearned_premiums": [
+          null,
+          null,
+          null
+        ],
+        "reserves": [
+          null,
+          null,
+          null
+        ],
+        "other": [
+          null,
+          null,
+          null
+        ],
+        "total_liabilities": [
+          null,
+          null,
+          null
+        ]
+      }
+    }
+  },
+  "institutional_decisions": {
+    "quarterly": [
+      {
+        "period": "1Q2025",
+        "to_buy": 232,
+        "to_sell": 173,
+        "holds_000": 77989
+      },
+      {
+        "period": "2Q2025",
+        "to_buy": 241,
+        "to_sell": 189,
+        "holds_000": 80483
+      },
+      {
+        "period": "3Q2025",
+        "to_buy": 204,
+        "to_sell": 240,
+        "holds_000": 74403
+      }
+    ]
+  },
+  "price_semantics_and_returns": {
+    "value_line_total_return_as_of": null,
+    "total_return": {
+      "stock": {
+        "1y": null,
+        "3y": null,
+        "5y": null
+      },
+      "index": {
+        "1y": null,
+        "3y": null,
+        "5y": null
+      }
+    },
+    "notes": null
+  },
+  "narrative": {
+    "business_description": null,
+    "commentary": null,
+    "analyst": "CFA",
+    "as_of": "2026-01-09",
+    "footnotes": {
+      "eps_adjustments": null,
+      "dividends_timing": null,
+      "shares_note": null
+    }
+  },
+  "fields_not_fully_extracted": [
+    null,
+    null,
+    null
+  ]
+}
