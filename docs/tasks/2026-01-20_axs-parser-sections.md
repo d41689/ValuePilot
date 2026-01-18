@@ -44,3 +44,13 @@
 
 ## Rollback Strategy
 - Revert parser/test changes and remove `axs_v1.parser.json` if extraction quality regresses.
+
+## Notes / Decisions
+- Added word-based parsing for `RECENT` price and `% TOT. RETURN`.
+- Added structured extraction for capital structure (as-of, preferred stock/dividend, common shares) and financial position block.
+- Added time series extraction covering price history and annual financials/ratios, with projection values.
+
+## Verification
+- `docker compose exec -T api pytest -q tests/unit/test_value_line_axs_parser.py`
+- `docker compose exec -T api pytest -q`
+- Results: 41 passed, 1 warning (FastAPI deprecation).

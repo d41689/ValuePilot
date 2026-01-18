@@ -155,11 +155,15 @@ class IngestionService:
                             "business_description",
                             "annual_rates_of_change",
                             "current_position_usd_millions",
+                            "financial_position_usd_millions",
                             "quarterly_sales_usd_millions",
                             "earnings_per_share",
                             "quarterly_dividends_paid_per_share",
                             "institutional_decisions",
                             "company_financial_strength",
+                            "capital_structure_as_of",
+                            "price_semantics_and_returns",
+                            "tables_time_series",
                         }
                         value_type = "number"
                         if "yield" in ext.field_key or "pct" in ext.field_key:
@@ -368,11 +372,15 @@ class IngestionService:
                     "business_description",
                     "annual_rates_of_change",
                     "current_position_usd_millions",
+                    "financial_position_usd_millions",
                     "quarterly_sales_usd_millions",
                     "earnings_per_share",
                     "quarterly_dividends_paid_per_share",
                     "institutional_decisions",
                     "company_financial_strength",
+                    "capital_structure_as_of",
+                    "price_semantics_and_returns",
+                    "tables_time_series",
                 }
                 value_type = "number"
                 if "yield" in ext.field_key or "pct" in ext.field_key:

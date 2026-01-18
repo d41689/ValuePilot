@@ -126,8 +126,19 @@ class ValueLineV1Parser(BaseParser):
 
         # --- 1. Header Metrics (Expanded) ---
         
-        # Recent Price
-        add_res("recent_price", re.search(r'RECENT\s+(?:PRICE\s+)?(\d+\.?\d*)', self.text, re.IGNORECASE))
+        # Recent Price (text layer or word-merged tokens like "RECENT109.10")
+        recent_match = re.search(r'\bRECENT\s*(?:PRICE\s*)?(\d+\.?\d*)', self.text, re.IGNORECASE)
+        if recent_match:
+            add_res("recent_price", recent_match)
+        elif 1 in self.page_words:
+            recent_from_words = self._recent_price_from_words(self.page_words[1])
+            if recent_from_words:
+                results.append(ExtractionResult(
+                    field_key="recent_price",
+                    raw_value_text=recent_from_words,
+                    original_text_snippet="RECENT (word layout)",
+                    confidence_score=0.7,
+                ))
 
         # P/E Ratio (Current)
         add_res("pe_ratio", re.search(r'P/E\s+(?:RATIO\s+)?(\d+\.?\d*)', self.text, re.IGNORECASE))
@@ -305,6 +316,21 @@ class ValueLineV1Parser(BaseParser):
                 token = "billion"
             return f"${num} {token}"
 
+        cap_as_of = re.search(
+            r'CAPITAL\s*STRUCTURE\s*as\s*of\s*(\d{1,2}/\d{1,2}/\d{2})',
+            self.text,
+            re.IGNORECASE,
+        )
+        if cap_as_of:
+            iso = self._iso_from_mdy(cap_as_of.group(1))
+            results.append(ExtractionResult(
+                field_key="capital_structure_as_of",
+                raw_value_text=iso or cap_as_of.group(1),
+                original_text_snippet=cap_as_of.group(0),
+                parsed_value_json={"iso_date": iso} if iso else None,
+                confidence_score=0.7,
+            ))
+
         total_debt = re.search(r'Total\s*Debt\s*\$([\d\.]+)\s*(mil|mill|million|bil|billion)\.?\b', self.text, re.IGNORECASE)
         if total_debt:
             results.append(ExtractionResult(field_key="total_debt", raw_value_text=_money_from_match(total_debt), original_text_snippet=total_debt.group(0), confidence_score=0.9))
@@ -336,14 +362,43 @@ class ValueLineV1Parser(BaseParser):
         oblig = re.search(r'Oblig\.\s*\$([\d\.]+)\s*(mil|mill|million|bil|billion)\.?\b', self.text, re.IGNORECASE)
         if oblig:
             results.append(ExtractionResult(field_key="pension_obligations", raw_value_text=_money_from_match(oblig), original_text_snippet=oblig.group(0), confidence_score=0.8))
+
+        pfd_stock = re.search(r'Pfd\s*Stock\s*\$([\d\.]+)\s*(mil|mill|million|bil|billion)\.?\b', self.text, re.IGNORECASE)
+        if pfd_stock:
+            results.append(ExtractionResult(
+                field_key="preferred_stock",
+                raw_value_text=_money_from_match(pfd_stock),
+                original_text_snippet=pfd_stock.group(0),
+                confidence_score=0.8,
+            ))
+
+        pfd_div = re.search(r'Pfd\s*Div[^\d$]*\s*\$([\d\.]+)\s*(mil|mill|million|bil|billion)\.?\b', self.text, re.IGNORECASE)
+        if pfd_div:
+            results.append(ExtractionResult(
+                field_key="preferred_dividend",
+                raw_value_text=_money_from_match(pfd_div),
+                original_text_snippet=pfd_div.group(0),
+                confidence_score=0.8,
+            ))
         
         shares_match = re.search(r'Common\s*Stock\s*([\d,]+)\s*shares', self.text, re.IGNORECASE)
         if shares_match:
             results.append(ExtractionResult(field_key="shares_outstanding", raw_value_text=shares_match.group(1).replace(',', ''), original_text_snippet=shares_match.group(0)))
 
-        shares_match2 = re.search(r'CommonStock\s*([\d,]+)\s*shares', self.text, re.IGNORECASE)
+        shares_match2 = re.search(r'CommonStock\s*([\d,]+)\s*(?:shares|shs)\.?', self.text, re.IGNORECASE)
         if shares_match2:
-            results.append(ExtractionResult(field_key="common_stock_shares_outstanding", raw_value_text=shares_match2.group(1).replace(',', ''), original_text_snippet=shares_match2.group(0), confidence_score=0.9))
+            as_of = None
+            tail = self.text[shares_match2.end(): shares_match2.end() + 200]
+            as_of_match = re.search(r'asof\s*(\d{1,2}/\d{1,2}/\d{2})', tail, re.IGNORECASE)
+            if as_of_match:
+                as_of = self._iso_from_mdy(as_of_match.group(1)) or as_of_match.group(1)
+            results.append(ExtractionResult(
+                field_key="common_stock_shares_outstanding",
+                raw_value_text=shares_match2.group(1).replace(',', ''),
+                original_text_snippet=shares_match2.group(0),
+                parsed_value_json={"as_of": as_of} if as_of else None,
+                confidence_score=0.9,
+            ))
 
         mkt_match = re.search(r'MARKET\s*CAP\s*:?\s*\$([\d\.]+)\s*(billion|mil|mill|million)\b', self.text, re.IGNORECASE)
         if mkt_match:
@@ -385,15 +440,8 @@ class ValueLineV1Parser(BaseParser):
         cp_block = _slice_between(r'\bCURRENTPOSITION\b', r'\bANNUALRATES\b')
         if cp_block:
             header = re.search(r'(\d{4})\s+(\d{4})\s+(\d{1,2}/\d{1,2}/\d{2})', cp_block)
-            def _iso_from_mdy2(s: str) -> str:
-                m = re.match(r'(\d{1,2})/(\d{1,2})/(\d{2})', s)
-                if not m:
-                    return s
-                yy = int(m.group(3))
-                year = 2000 + yy
-                return f"{year:04d}-{int(m.group(1)):02d}-{int(m.group(2)):02d}"
             if header:
-                years = [header.group(1), header.group(2), _iso_from_mdy2(header.group(3))]
+                years = [header.group(1), header.group(2), self._iso_from_mdy(header.group(3)) or header.group(3)]
                 def row3(label_pat: str) -> Optional[list[float]]:
                     m = re.search(rf'{label_pat}\s+([0-9.]+)\s+([0-9.]+)\s+([0-9.]+)', cp_block, re.IGNORECASE)
                     if not m:
@@ -421,6 +469,51 @@ class ValueLineV1Parser(BaseParser):
                         field_key="current_position_usd_millions",
                         raw_value_text=None,
                         original_text_snippet="CURRENTPOSITION ...",
+                        parsed_value_json=parsed,
+                        confidence_score=0.7,
+                    ))
+
+        # Financial Position table ($mill.) -> structured JSON
+        fp_match = re.search(r'\bFINANCIALPOSITION\b', self.text, re.IGNORECASE)
+        fp_block = None
+        if fp_match:
+            fp_block = self.text[fp_match.end(): fp_match.end() + 1500]
+        if fp_block:
+            header = re.search(r'(\d{4})\s+(\d{4})\s+(\d{1,2}/\d{1,2}/\d{2})', fp_block)
+            if header:
+                years = [header.group(1), header.group(2), self._iso_from_mdy(header.group(3)) or header.group(3)]
+
+                def row3(label_pat: str) -> Optional[list[float]]:
+                    m = re.search(rf'{label_pat}\s+([0-9.]+)\s+([0-9.]+)\s+([0-9.]+)', fp_block, re.IGNORECASE)
+                    if not m:
+                        return None
+                    return [float(m.group(1)), float(m.group(2)), float(m.group(3))]
+
+                other_matches = re.findall(r'\bOther\s+([0-9.]+)\s+([0-9.]+)\s+([0-9.]+)', fp_block, re.IGNORECASE)
+                assets_other = [float(x) for x in other_matches[0]] if len(other_matches) >= 1 else None
+                liabilities_other = [float(x) for x in other_matches[1]] if len(other_matches) >= 2 else None
+
+                parsed = {
+                    "years": years,
+                    "assets": {
+                        "bonds": row3(r'Bonds'),
+                        "stocks": row3(r'Stocks'),
+                        "other": assets_other,
+                        "total_assets": row3(r'Total\s*Assets'),
+                    },
+                    "liabilities": {
+                        "unearned_premiums": row3(r'Unearned\s*Prems'),
+                        "reserves": row3(r'Reserves'),
+                        "other": liabilities_other,
+                        "total_liabilities": row3(r'Total\s*Liab[^\s]*'),
+                    },
+                }
+
+                if parsed["assets"]["bonds"] and parsed["liabilities"]["unearned_premiums"]:
+                    results.append(ExtractionResult(
+                        field_key="financial_position_usd_millions",
+                        raw_value_text=None,
+                        original_text_snippet="FINANCIALPOSITION ...",
                         parsed_value_json=parsed,
                         confidence_score=0.7,
                     ))
@@ -517,6 +610,21 @@ class ValueLineV1Parser(BaseParser):
                 ))
 
         results.extend(self._parse_annual_table_metrics())
+
+        tables_time_series = self._parse_time_series_tables()
+        if tables_time_series:
+            results.append(ExtractionResult(
+                field_key="tables_time_series",
+                raw_value_text=None,
+                original_text_snippet="TABLES_TIME_SERIES ...",
+                parsed_value_json=tables_time_series,
+                confidence_score=0.6,
+            ))
+
+        if 1 in self.page_words:
+            total_return = self._parse_total_return_from_words(self.page_words[1])
+            if total_return:
+                results.append(total_return)
 
         # Institutional Decisions (word-layout assisted)
         if 1 in self.page_words:
@@ -669,13 +777,346 @@ class ValueLineV1Parser(BaseParser):
     def _coerce_value(token: str) -> Optional[float]:
         if token is None:
             return None
-        cleaned = token.replace("%", "")
+        raw = token.strip()
+        upper = raw.upper()
+        if upper in {"--", "NMF"}:
+            return None
+        if upper == "NIL":
+            return 0.0
+        neg = False
+        if raw and raw[0] in {"d", "D"}:
+            neg = True
+            raw = raw[1:]
+        cleaned = raw.replace("%", "")
         if cleaned.startswith("."):
             cleaned = f"0{cleaned}"
         try:
-            return float(cleaned)
+            value = float(cleaned)
         except ValueError:
             return None
+        return -value if neg else value
+
+    @staticmethod
+    def _iso_from_mdy(value: str) -> Optional[str]:
+        match = re.match(r'(\d{1,2})/(\d{1,2})/(\d{2})', value)
+        if not match:
+            return None
+        year = 2000 + int(match.group(3))
+        return f"{year:04d}-{int(match.group(1)):02d}-{int(match.group(2)):02d}"
+
+    @staticmethod
+    def _recent_price_from_words(words: list[dict[str, Any]]) -> Optional[str]:
+        for w in words:
+            text = str(w.get("text", ""))
+            match = re.search(r'RECENT\s*(\d+\.?\d*)', text, re.IGNORECASE)
+            if match:
+                return match.group(1)
+        for w in words:
+            if str(w.get("text", "")).upper() != "RECENT":
+                continue
+            base_top = float(w.get("top", 0.0))
+            base_x = float(w.get("x0", 0.0))
+            line_words = [
+                x for x in words
+                if abs(float(x.get("top", 0.0)) - base_top) < 1.0
+                and float(x.get("x0", 0.0)) > base_x
+            ]
+            line_words = sorted(line_words, key=lambda x: float(x.get("x0", 0.0)))
+            for candidate in line_words:
+                token = str(candidate.get("text", ""))
+                if re.fullmatch(r'\d+\.?\d*', token):
+                    return token
+        return None
+
+    def _parse_total_return_from_words(self, words: list[dict[str, Any]]) -> Optional[ExtractionResult]:
+        label_word = next(
+            (w for w in words if "TOT.RETURN" in str(w.get("text", "")).upper()),
+            None,
+        )
+        if not label_word:
+            return None
+
+        label_text = str(label_word.get("text", ""))
+        date_match = re.search(r'(\d{1,2}/\d{1,2}/\d{2})', label_text)
+        as_of = self._iso_from_mdy(date_match.group(1)) if date_match else None
+
+        lines: dict[float, list[dict[str, Any]]] = {}
+        for w in words:
+            top = round(float(w.get("top", 0.0)), 1)
+            lines.setdefault(top, []).append(w)
+
+        def line_text(line_words: list[dict[str, Any]]) -> str:
+            ordered = sorted(line_words, key=lambda x: float(x.get("x0", 0.0)))
+            parts: list[str] = []
+            prev_x1 = None
+            for w in ordered:
+                text = str(w.get("text", ""))
+                x0 = float(w.get("x0", 0.0))
+                if prev_x1 is not None and x0 - prev_x1 > 2.0:
+                    parts.append(" ")
+                parts.append(text)
+                prev_x1 = float(w.get("x1", 0.0))
+            return "".join(parts)
+
+        def parse_line(tag: str) -> Optional[tuple[float, float]]:
+            pattern = rf'\b{tag}\.?\s+([0-9.]+)\s+([0-9.]+)'
+            for line_words in lines.values():
+                text = line_text(line_words)
+                match = re.search(pattern, text, re.IGNORECASE)
+                if match:
+                    return float(match.group(1)), float(match.group(2))
+            return None
+
+        returns = {
+            "1y": parse_line("1yr"),
+            "3y": parse_line("3yr"),
+            "5y": parse_line("5yr"),
+        }
+        if not any(returns.values()):
+            return None
+
+        def ratio(value: Optional[float]) -> Optional[float]:
+            if value is None:
+                return None
+            return value / 100.0
+
+        total_return = {
+            "stock": {
+                "1y": ratio(returns["1y"][0]) if returns["1y"] else None,
+                "3y": ratio(returns["3y"][0]) if returns["3y"] else None,
+                "5y": ratio(returns["5y"][0]) if returns["5y"] else None,
+            },
+            "index": {
+                "1y": ratio(returns["1y"][1]) if returns["1y"] else None,
+                "3y": ratio(returns["3y"][1]) if returns["3y"] else None,
+                "5y": ratio(returns["5y"][1]) if returns["5y"] else None,
+            },
+        }
+
+        parsed = {
+            "value_line_total_return_as_of": as_of,
+            "total_return": total_return,
+        }
+
+        return ExtractionResult(
+            field_key="price_semantics_and_returns",
+            raw_value_text=None,
+            original_text_snippet=label_text,
+            parsed_value_json=parsed,
+            confidence_score=0.7,
+        )
+
+    def _parse_time_series_tables(self) -> Optional[dict[str, Any]]:
+        flat_text = re.sub(r'\s+', ' ', self.text)
+        years = self._find_year_sequence(flat_text)
+        if not years:
+            return None
+
+        tokens = flat_text.split()
+
+        def is_value_token(token: str) -> bool:
+            upper = token.upper()
+            if upper in {"--", "NMF", "NIL"}:
+                return True
+            return re.fullmatch(r'[dD]?\d*\.?\d+%?', token) is not None
+
+        def coerce(token: str, percent_ratio: bool) -> Optional[float]:
+            value = self._coerce_value(token)
+            if value is None:
+                return None
+            if percent_ratio:
+                if token.endswith("%") or abs(value) > 1:
+                    return value / 100.0
+            return value
+
+        def parse_series(label_pat: str, *, percent_ratio: bool) -> tuple[list[Optional[float]], Optional[float]]:
+            label_idx = next(
+                (idx for idx, token in enumerate(tokens) if re.search(label_pat, token, re.IGNORECASE)),
+                None,
+            )
+            if label_idx is None:
+                return [None for _ in years], None
+
+            values_raw: list[str] = []
+            for j in range(label_idx - 1, -1, -1):
+                if is_value_token(tokens[j]):
+                    values_raw.append(tokens[j])
+                else:
+                    if values_raw:
+                        break
+            values_raw = list(reversed(values_raw))
+            if len(values_raw) > len(years):
+                values_raw = values_raw[-len(years):]
+
+            aligned_years = self._align_years(years, values_raw)
+            values = [coerce(token, percent_ratio) for token in values_raw]
+            series = [None for _ in years]
+            for year, value in zip(aligned_years, values):
+                series[years.index(year)] = value
+
+            projection = None
+            for k in range(label_idx + 1, len(tokens)):
+                if is_value_token(tokens[k]):
+                    projection = coerce(tokens[k], percent_ratio)
+                    break
+
+            return series, projection
+
+        def parse_price_series(label: str) -> list[Optional[float]]:
+            match = re.search(rf'{label}:\s*([0-9.\s]+)', self.text, re.IGNORECASE)
+            if not match:
+                return [None for _ in range(12)]
+            segment = match.group(1)
+            for stop in ("TargetPriceRange", "Low:", "High:"):
+                if stop in segment:
+                    segment = segment.split(stop)[0]
+            values = [float(v) for v in re.findall(r'\d+\.?\d*', segment)]
+            if len(values) < 12:
+                return values + [None for _ in range(12 - len(values))]
+            return values[:12]
+
+        proj_range = None
+        proj_match = re.search(r'(20\d{2})\s*-\s*(\d{2})', flat_text)
+        if proj_match:
+            start_year = int(proj_match.group(1))
+            end_year = (start_year // 100) * 100 + int(proj_match.group(2))
+            proj_range = f"{start_year}-{end_year}"
+
+        per_share = {}
+        projection = {}
+
+        series, proj = parse_series(r'P/CPremEarnedpersh', percent_ratio=False)
+        per_share["pc_prem_earned_per_share_usd"] = series
+        if proj is not None:
+            projection["pc_prem_earned_per_share_usd"] = proj
+
+        series, proj = parse_series(r'InvestmentIncpersh', percent_ratio=False)
+        per_share["investment_income_per_share_usd"] = series
+        if proj is not None:
+            projection["investment_income_per_share_usd"] = proj
+
+        series, proj = parse_series(r'UnderwritingIncpersh', percent_ratio=False)
+        per_share["underwriting_income_per_share_usd"] = series
+        if proj is not None:
+            projection["underwriting_income_per_share_usd"] = proj
+
+        series, proj = parse_series(r'Earningspersh', percent_ratio=False)
+        per_share["earnings_per_share_usd"] = series
+        if proj is not None:
+            projection["earnings_per_share_usd"] = proj
+
+        series, proj = parse_series(r'Div.?dsDecl.?dpersh', percent_ratio=False)
+        per_share["dividends_declared_per_share_usd"] = series
+        if proj is not None:
+            projection["dividends_declared_per_share_usd"] = proj
+
+        series, proj = parse_series(r'BookValuepersh', percent_ratio=False)
+        per_share["book_value_per_share_usd"] = series
+        if proj is not None:
+            projection["book_value_per_share_usd"] = proj
+
+        series, proj = parse_series(r'CommonShsOutst', percent_ratio=False)
+        per_share["common_shares_outstanding_millions"] = series
+        if proj is not None:
+            projection["common_shares_outstanding_millions"] = proj
+
+        valuation = {}
+        series, _ = parse_series(r'PricetoBookValue', percent_ratio=True)
+        valuation["price_to_book_value_pct"] = series
+
+        series, proj = parse_series(r'AvgAnn.?lP/ERatio', percent_ratio=False)
+        valuation["avg_annual_pe_ratio"] = series
+        if proj is not None:
+            projection["avg_annual_pe_ratio"] = proj
+
+        series, proj = parse_series(r'RelativeP/ERatio', percent_ratio=False)
+        valuation["relative_pe_ratio"] = series
+        if proj is not None:
+            projection["relative_pe_ratio"] = proj
+
+        series, proj = parse_series(r'AvgAnn.?lDiv.?dYield', percent_ratio=False)
+        valuation["avg_annual_dividend_yield_pct"] = series
+        if proj is not None:
+            projection["avg_annual_dividend_yield_pct"] = proj
+
+        income_statement = {}
+        series, proj = parse_series(r'P/CPremiumsEarned', percent_ratio=False)
+        income_statement["pc_premiums_earned"] = series
+        if proj is not None:
+            projection["pc_premiums_earned_usd_millions"] = proj
+
+        series, proj = parse_series(r'LosstoPremEarned', percent_ratio=True)
+        income_statement["loss_to_prem_earned_pct"] = series
+        if proj is not None:
+            projection["loss_to_prem_earned_pct"] = proj
+
+        series, proj = parse_series(r'ExpensetoPremWrit', percent_ratio=True)
+        income_statement["expense_to_prem_written"] = series
+        if proj is not None:
+            projection["expense_to_prem_written"] = proj
+
+        series, proj = parse_series(r'UnderwritingMargin', percent_ratio=True)
+        income_statement["underwriting_margin_pct"] = series
+        if proj is not None:
+            projection["underwriting_margin_pct"] = proj
+
+        series, proj = parse_series(r'IncomeTaxRate', percent_ratio=True)
+        income_statement["income_tax_rate_pct"] = series
+        if proj is not None:
+            projection["income_tax_rate_pct"] = proj
+
+        series, proj = parse_series(r'NetProfit', percent_ratio=False)
+        income_statement["net_profit"] = series
+        if proj is not None:
+            projection["net_profit_usd_millions"] = proj
+
+        series, proj = parse_series(r'InvInc/TotalInv', percent_ratio=True)
+        income_statement["inv_inc_to_total_investments_pct"] = series
+        if proj is not None:
+            projection["inv_inc_to_total_investments_pct"] = proj
+
+        balance_sheet = {}
+        series, proj = parse_series(r'TotalAssets', percent_ratio=False)
+        balance_sheet["total_assets"] = series
+        if proj is not None:
+            projection["total_assets_usd_millions"] = proj
+
+        series, proj = parse_series(r'Shr.?Equity', percent_ratio=False)
+        balance_sheet["shareholders_equity"] = series
+        if proj is not None:
+            projection["shareholders_equity_usd_millions"] = proj
+
+        series, proj = parse_series(r'ReturnonShr.?Equity', percent_ratio=True)
+        balance_sheet["return_on_shareholders_equity_pct"] = series
+        if proj is not None:
+            projection["return_on_shareholders_equity_pct"] = proj
+
+        series, proj = parse_series(r'RetainedtoComEq', percent_ratio=True)
+        balance_sheet["retained_to_common_equity_pct"] = series
+        if proj is not None:
+            projection["retained_to_common_equity_pct"] = proj
+
+        series, proj = parse_series(r'AllDiv.?dstoNetProf', percent_ratio=True)
+        balance_sheet["all_dividends_to_net_profit_pct"] = series
+        if proj is not None:
+            projection["all_dividends_to_net_profit_pct"] = proj
+
+        return {
+            "price_history_high_low": {
+                "high": parse_price_series("High"),
+                "low": parse_price_series("Low"),
+                "notes": None,
+            },
+            "annual_financials_and_ratios_2015_2026_with_projection_2028_2030": {
+                "years": years,
+                "projection_year_range": proj_range,
+                "per_share": {**per_share, "notes": None},
+                "valuation": valuation,
+                "income_statement_usd_millions": income_statement,
+                "balance_sheet_and_returns_usd_millions": balance_sheet,
+                "projection_2028_2030": projection,
+            },
+        }
 
     @staticmethod
     def _rating_from_words(label: str, words: list[dict[str, Any]]) -> Optional[int]:
