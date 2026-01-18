@@ -1,0 +1,438 @@
+{
+  "fields_not_fully_extracted[0]": [
+    "FINANCIAL POSITION\uff082023/2024/9-30-25\uff09\u8868\u683c\u5728PDF\u6587\u672c\u5c42\u88ab\u622a\u65ad\uff0c\u4ec5\u80fd\u786e\u8ba4\u8868\u5934\uff0c\u672a\u80fd\u53ef\u9760\u63d0\u53d6\u6bcf\u884c\u6570\u503c\uff08bonds/stocks/unearned premiums/reserves\u7b49\u9700\u540e\u7eed\u8865OCR\u6216\u7ed3\u6784\u5316\u8868\u683c\u62bd\u53d6\uff09\u3002",
+    null
+  ],
+  "fields_not_fully_extracted[1]": [
+    "price history high/low \u5e8f\u5217\u7f3a\u5c11\u660e\u786e\u7684\u65f6\u95f4\u6807\u7b7e\uff08\u5e74\u4efd/\u6708\u4efd\uff09\uff0c\u672a\u5f3a\u884c\u7ed3\u6784\u5316\u4e3a\u5e26\u65f6\u95f4\u6233\u7684\u70b9\uff0c\u907f\u514d\u8bef\u914d\u3002",
+    null
+  ],
+  "fields_not_fully_extracted[2]": [
+    "narrative.commentary\uff08\u6b63\u6587\u8bc4\u8bba\u533a\uff09\u5728\u5f53\u524d\u6587\u672c\u5c42\u8f93\u51fa\u4e2d\u672a\u5b8c\u6574\u51fa\u73b0\uff1b\u5982\u9700\u540cAOS\u4e00\u6837\u7684 commentary \u6bb5\u843d\uff0c\u5efa\u8bae\u5bf9PDF\u505a\u89c6\u89c9\u533a\u5757OCR\u6216\u63d0\u53d6\u53f3\u4fa7\u6587\u672c\u680f\u3002",
+    null
+  ],
+  "financial_snapshot_blocks.capital_structure.common_stock_shares_outstanding.display": [
+    "77,037,743 shs.",
+    "77037743"
+  ],
+  "financial_snapshot_blocks.capital_structure.debt_due_in_5_years.display": [
+    "$650.0 mill.",
+    "$650.0 mill"
+  ],
+  "financial_snapshot_blocks.capital_structure.debt_percent_of_capital.display": [
+    "17% of Capital",
+    "17%"
+  ],
+  "financial_snapshot_blocks.capital_structure.lt_debt.display": [
+    "$1316.9 mill.",
+    "$1316.9 mill"
+  ],
+  "financial_snapshot_blocks.capital_structure.lt_interest.display": [
+    "$70.0 mill.",
+    "$70.0 mill"
+  ],
+  "financial_snapshot_blocks.capital_structure.market_cap.as_of": [
+    "2025-10-24",
+    null
+  ],
+  "financial_snapshot_blocks.capital_structure.market_cap.notes": [
+    "Mid Cap",
+    null
+  ],
+  "financial_snapshot_blocks.capital_structure.pension_note": [
+    "No Defined Benefit Pension Plan",
+    null
+  ],
+  "financial_snapshot_blocks.capital_structure.preferred_dividend.display": [
+    "$30.3 mill.",
+    "$30.3 mill"
+  ],
+  "financial_snapshot_blocks.capital_structure.preferred_stock.display": [
+    "$550.0 mill.",
+    "$550.0 mill"
+  ],
+  "financial_snapshot_blocks.capital_structure.total_debt.display": [
+    "$1316.9 mill.",
+    "$1316.9 mill"
+  ],
+  "financial_snapshot_blocks.financial_position_usd_millions.notes": [
+    "FINANCIAL POSITION \u8868\u5728\u6587\u672c\u5c42\u4ec5\u622a\u53d6\u5230\u8868\u5934\uff08\u7f3a\u5c11\u5404\u884c\u6570\u503c\uff09\uff0c\u9700\u8981\u4ecePDF\u89c6\u89c9\u5c42/\u7ed3\u6784\u5316\u8868\u683c\u518d\u8865\u9f50\u3002",
+    null
+  ],
+  "header_ratings.beta.notes": [
+    "(1.00 = Market)",
+    null
+  ],
+  "header_ratings.earnings_predictability": [
+    10,
+    "10"
+  ],
+  "header_ratings.price_growth_persistence": [
+    35,
+    "35"
+  ],
+  "header_ratings.safety.notes": [
+    "Raised 1/10/25",
+    null
+  ],
+  "header_ratings.stock_price_stability": [
+    90,
+    "90"
+  ],
+  "narrative.analyst": [
+    "Michael Napoli, CFA",
+    "CFA"
+  ],
+  "narrative.business_description": [
+    "AXIS Capital Holdings Limited provides various insurance and reinsurance products worldwide. AXIS Capital Holdings\u2019 initial public offering occurred in July 2003; the IPO generated proceeds of $462 million (21.5 million shares at $21.50) and was underwritten by Citigroup and Morgan Stanley. The company began operations in November 2001 and was incorporated December 2002. AXIS Specialty Bermuda became a wholly owned subsidiary of AXIS Capital pursuant to an exchange offer consummated in December 2002.",
+    null
+  ],
+  "narrative.commentary": [
+    "Shares of Axis Capital Holdings have advanced nicely in price in recent months. The company reported favorable comparisons for the 2025 third quarter. Net premiums earned increased roughly 6%, on a year-over-year basis. Healthy growth from the insurance segment was partly offset by a modest decline at the reinsurance business. Underwriting income of $541 million marked an increase of 22% on a year-to-year basis. Net investment income decreased somewhat, though, due to lower income from fixed maturities. Earnings per share rose 20%, to $3.25. The company generated a combined ratio of 89.5% for the recent period. A combined ratio of less than 100% generally indicates that an insurance company is earning more in premiums than it is paying out in claims and expenses. Good operating performance likely continued for the fourth quarter, and we expect that premiums and earnings per share advanced 6% and 17%, respectively, for full-year 2025. Solid operating results ought to persist, and we project healthy growth from 2026 onward. The company is a global specialty underwriter, and appears to be well positioned in the insurance and reinsurance markets that it serves. Its \u201cHow We Work\u201d program is driving operational improvements throughout the organization, supported by investments in data, technology, and artificial intelligence. Enhancements to the product portfolio should also continue to bear fruit. The recent introduction of AXIS Capacity Solutions also appears promising. This is a new line that will develop and support structured and multiline portfolio capacity transactions, which will serve the company\u2019s distribution partners, while directly addressing a rising trend across the global specialty insurance market. The multiline market is growing faster than the broader insurance market. Share repurchases ought to support the bottom line, as well. This stock is ranked to track the broader market averages for the coming six to 12 months. We envision solid growth in premiums and earnings for the company over the pull to late decade. From the recent quotation, this stock offers respectable, though not especially compelling, total return potential.",
+    null
+  ],
+  "narrative.footnotes.dividends_timing": [
+    "Dividends historically paid in mid-January, April, July, and October.",
+    null
+  ],
+  "narrative.footnotes.eps_adjustments": [
+    "Operating earnings (excludes capital gains and losses). Excludes nonrecurring gains (losses): \u201915, $2.02; \u201916, $0.60; \u201917, ($1.79); \u201918, ($1.92); \u201919, $0.82; \u201920, $0.28; \u201921, $1.78; \u201922, ($3.56); \u201923, ($1.63); \u201924, $0.76. Earnings may not sum due to rounding. Next earnings report due late January.",
+    null
+  ],
+  "narrative.footnotes.shares_note": [
+    "In millions.",
+    null
+  ],
+  "price_semantics_and_returns.notes": [
+    "Value Line total return \u8868\u4e2d\u6570\u503c\u6309\u767e\u5206\u6bd4\u8f6c\u4e3a\u6bd4\u7387\uff08\u4f8b\u5982 24.4 -> 0.244\uff09\u3002",
+    null
+  ],
+  "price_semantics_and_returns.total_return.index.1y": [
+    0.036,
+    0.036000000000000004
+  ],
+  "price_semantics_and_returns.total_return.stock.5y": [
+    1.502,
+    1.5019999999999998
+  ],
+  "source.notes[0]": [
+    "V1\u4ec5\u652f\u6301Value Line\u5355\u9875\u6807\u51c6\u7248\u5e03\u5c40\uff1b\u672cJSON\u6309PRD\u5b57\u6bb5\u5c3d\u91cf\u63d0\u53d6\u3002",
+    null
+  ],
+  "source.notes[1]": [
+    "\u6570\u503c\u5b57\u6bb5\u540c\u65f6\u63d0\u4f9bdisplay\u4e0enormalized\uff08Appendix B\uff1a\u91d1\u989d\u4e3aUSD\u7edd\u5bf9\u503c\uff1b\u767e\u5206\u6bd4\u4e3a[0,1]\u6bd4\u7387\uff09\u3002",
+    null
+  ],
+  "source.notes[2]": [
+    "\u672c\u62a5\u544a\u4e3a\u4fdd\u9669/\u518d\u4fdd\u9669\u516c\u53f8\uff08P/C\uff09\uff0c\u90e8\u5206\u5b57\u6bb5\u53e3\u5f84\u4e0d\u540c\u4e8e\u5236\u9020\u4e1a\uff08\u4f8b\u5982 Premiums Earned \u4ee3\u66ff Sales\uff09\u3002",
+    null
+  ],
+  "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.balance_sheet_and_returns_usd_millions.retained_to_common_equity_pct[0]": [
+    0.054,
+    0.054000000000000006
+  ],
+  "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.balance_sheet_and_returns_usd_millions.retained_to_common_equity_pct[3]": [
+    0.007,
+    0.006999999999999999
+  ],
+  "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.balance_sheet_and_returns_usd_millions.retained_to_common_equity_pct[9]": [
+    0.144,
+    0.14400000000000002
+  ],
+  "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.balance_sheet_and_returns_usd_millions.return_on_shareholders_equity_pct[3]": [
+    0.041,
+    0.040999999999999995
+  ],
+  "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.income_statement_usd_millions.expense_to_prem_written[10]": [
+    0.0,
+    null
+  ],
+  "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.income_statement_usd_millions.expense_to_prem_written[11]": [
+    0.0,
+    null
+  ],
+  "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.income_statement_usd_millions.income_tax_rate_pct[0]": [
+    0.014,
+    0.013999999999999999
+  ],
+  "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.income_statement_usd_millions.inv_inc_to_total_investments_pct[1]": [
+    0.026,
+    0.026000000000000002
+  ],
+  "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.income_statement_usd_millions.inv_inc_to_total_investments_pct[2]": [
+    0.027,
+    0.027000000000000003
+  ],
+  "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.income_statement_usd_millions.inv_inc_to_total_investments_pct[7]": [
+    0.028,
+    0.027999999999999997
+  ],
+  "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.income_statement_usd_millions.loss_to_prem_earned_pct[3]": [
+    0.666,
+    0.6659999999999999
+  ],
+  "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.income_statement_usd_millions.loss_to_prem_earned_pct[5]": [
+    0.751,
+    0.7509999999999999
+  ],
+  "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.income_statement_usd_millions.underwriting_margin_pct[2]": [
+    0.208,
+    0.20800000000000002
+  ],
+  "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.income_statement_usd_millions.underwriting_margin_pct[3]": [
+    0.334,
+    0.33399999999999996
+  ],
+  "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.income_statement_usd_millions.underwriting_margin_pct[7]": [
+    0.372,
+    0.37200000000000005
+  ],
+  "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.income_statement_usd_millions.underwriting_margin_pct[8]": [
+    0.333,
+    0.33299999999999996
+  ],
+  "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.per_share.book_value_per_share_usd[1]": [
+    60.58,
+    59.54
+  ],
+  "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.per_share.book_value_per_share_usd[2]": [
+    51.09,
+    54.91
+  ],
+  "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.per_share.book_value_per_share_usd[3]": [
+    54.73,
+    49.72
+  ],
+  "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.per_share.book_value_per_share_usd[4]": [
+    62.69,
+    56.8
+  ],
+  "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.per_share.book_value_per_share_usd[5]": [
+    59.32,
+    56.26
+  ],
+  "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.per_share.book_value_per_share_usd[6]": [
+    62.61,
+    57.34
+  ],
+  "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.per_share.common_shares_outstanding_millions[1]": [
+    94.27,
+    86.44
+  ],
+  "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.per_share.common_shares_outstanding_millions[2]": [
+    89.73,
+    83.16
+  ],
+  "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.per_share.common_shares_outstanding_millions[3]": [
+    87.87,
+    85.59
+  ],
+  "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.per_share.common_shares_outstanding_millions[4]": [
+    85.08,
+    83.96
+  ],
+  "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.per_share.common_shares_outstanding_millions[5]": [
+    83.2,
+    84.35
+  ],
+  "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.per_share.common_shares_outstanding_millions[6]": [
+    82.51,
+    84.77
+  ],
+  "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.per_share.dividends_declared_per_share_usd[1]": [
+    1.24,
+    1.43
+  ],
+  "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.per_share.dividends_declared_per_share_usd[2]": [
+    1.24,
+    1.53
+  ],
+  "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.per_share.dividends_declared_per_share_usd[3]": [
+    1.24,
+    1.57
+  ],
+  "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.per_share.dividends_declared_per_share_usd[4]": [
+    1.36,
+    1.61
+  ],
+  "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.per_share.dividends_declared_per_share_usd[5]": [
+    1.44,
+    1.65
+  ],
+  "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.per_share.dividends_declared_per_share_usd[6]": [
+    1.62,
+    1.69
+  ],
+  "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.per_share.earnings_per_share_usd[4]": [
+    2.93,
+    2.52
+  ],
+  "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.per_share.earnings_per_share_usd[5]": [
+    -2.48,
+    -2.07
+  ],
+  "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.per_share.earnings_per_share_usd[6]": [
+    4.44,
+    5.12
+  ],
+  "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.per_share.investment_income_per_share_usd[1]": [
+    3.38,
+    4.09
+  ],
+  "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.per_share.investment_income_per_share_usd[2]": [
+    3.45,
+    4.82
+  ],
+  "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.per_share.investment_income_per_share_usd[3]": [
+    3.47,
+    5.12
+  ],
+  "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.per_share.investment_income_per_share_usd[4]": [
+    3.86,
+    5.7
+  ],
+  "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.per_share.investment_income_per_share_usd[5]": [
+    3.49,
+    4.14
+  ],
+  "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.per_share.investment_income_per_share_usd[6]": [
+    4.19,
+    5.36
+  ],
+  "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.per_share.notes": [
+    "PDF\u4e2d\u4ee5 d \u524d\u7f00\u6807\u8bb0\u7684\u6570\u503c\u6309\u8d1f\u6570\u5904\u7406\uff08\u4f8b\u5982 d3.15 -> -3.15\uff09\u3002",
+    null
+  ],
+  "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.per_share.pc_prem_earned_per_share_usd[1]": [
+    43.21,
+    42.87
+  ],
+  "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.per_share.pc_prem_earned_per_share_usd[2]": [
+    47.34,
+    49.89
+  ],
+  "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.per_share.pc_prem_earned_per_share_usd[3]": [
+    49.5,
+    55.98
+  ],
+  "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.per_share.pc_prem_earned_per_share_usd[4]": [
+    52.76,
+    54.64
+  ],
+  "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.per_share.pc_prem_earned_per_share_usd[5]": [
+    50.26,
+    51.82
+  ],
+  "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.per_share.pc_prem_earned_per_share_usd[6]": [
+    54.95,
+    55.56
+  ],
+  "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.per_share.underwriting_income_per_share_usd[4]": [
+    9.17,
+    6.17
+  ],
+  "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.per_share.underwriting_income_per_share_usd[5]": [
+    2.95,
+    1.9
+  ],
+  "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.per_share.underwriting_income_per_share_usd[6]": [
+    7.97,
+    9.19
+  ],
+  "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.projection_2028_2030.expense_to_prem_written": [
+    null,
+    null
+  ],
+  "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.valuation.avg_annual_pe_ratio[3]": [
+    null,
+    28.6
+  ],
+  "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.valuation.avg_annual_pe_ratio[4]": [
+    28.6,
+    23.6
+  ],
+  "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.valuation.avg_annual_pe_ratio[5]": [
+    23.6,
+    null
+  ],
+  "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.valuation.avg_annual_pe_ratio[6]": [
+    null,
+    10.0
+  ],
+  "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.valuation.avg_annual_pe_ratio[7]": [
+    null,
+    9.4
+  ],
+  "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.valuation.price_to_book_value_pct[2]": [
+    1.0,
+    1.13
+  ],
+  "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.valuation.price_to_book_value_pct[3]": [
+    1.02,
+    1.1
+  ],
+  "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.valuation.price_to_book_value_pct[4]": [
+    0.98,
+    1.05
+  ],
+  "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.valuation.price_to_book_value_pct[5]": [
+    0.89,
+    0.83
+  ],
+  "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.valuation.price_to_book_value_pct[6]": [
+    0.95,
+    0.89
+  ],
+  "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.valuation.relative_pe_ratio[3]": [
+    null,
+    1.54
+  ],
+  "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.valuation.relative_pe_ratio[4]": [
+    1.54,
+    1.26
+  ],
+  "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.valuation.relative_pe_ratio[5]": [
+    1.26,
+    null
+  ],
+  "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.valuation.relative_pe_ratio[6]": [
+    null,
+    0.54
+  ],
+  "tables_time_series.annual_financials_and_ratios_2015_2026_with_projection_2028_2030.valuation.relative_pe_ratio[7]": [
+    null,
+    0.54
+  ],
+  "tables_time_series.price_history_high_low.notes": [
+    "\u9ad8/\u4f4e\u70b9\u5e8f\u5217\u5b58\u5728\u4f46PDF\u6587\u672c\u5c42\u672a\u9644\u5e26\u5e74\u4efd/\u6708\u4efd\u6807\u7b7e\uff0c\u6309\u51fa\u73b0\u987a\u5e8f\u8bb0\u5f55\u4e3a\u6570\u7ec4\u3002",
+    null
+  ],
+  "target_price_ranges.long_term_projection.high.price_gain.display": [
+    "185 (+70%)",
+    "185"
+  ],
+  "target_price_ranges.long_term_projection.high.price_gain.price_gain_pct_display": [
+    "+70%",
+    "70%"
+  ],
+  "target_price_ranges.long_term_projection.low.price_gain.display": [
+    "135 (+25%)",
+    "135"
+  ],
+  "target_price_ranges.long_term_projection.low.price_gain.price_gain_pct_display": [
+    "+25%",
+    "25%"
+  ],
+  "target_price_ranges.target_18m.high.display": [
+    "$168",
+    "168"
+  ],
+  "target_price_ranges.target_18m.low.display": [
+    "$91",
+    "91"
+  ],
+  "target_price_ranges.target_18m.midpoint.display": [
+    "$130",
+    "130"
+  ]
+}

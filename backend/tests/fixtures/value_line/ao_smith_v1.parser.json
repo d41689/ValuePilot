@@ -1,0 +1,856 @@
+{
+  "source": {
+    "document_type": "value_line_equity_report_v1",
+    "pages": 1,
+    "page_parsed": 1,
+    "notes": []
+  },
+  "stocks": {
+    "company_name": "SMITH (A.O.)",
+    "ticker": "AOS",
+    "exchange": "NYSE"
+  },
+  "header_ratings": {
+    "recent_price": {
+      "display": "68.11",
+      "normalized": 68.11,
+      "unit": "USD"
+    },
+    "pe_ratio": {
+      "display": "17.4",
+      "normalized": 17.4,
+      "unit": "ratio",
+      "notes": null
+    },
+    "pe_ratio_trailing": {
+      "display": "17.9",
+      "normalized": 17.9,
+      "unit": "ratio"
+    },
+    "pe_ratio_median": {
+      "display": "22.0",
+      "normalized": 22.0,
+      "unit": "ratio"
+    },
+    "relative_pe_ratio": {
+      "display": "0.93",
+      "normalized": 0.93,
+      "unit": "ratio"
+    },
+    "dividend_yield": {
+      "display": "2.0%",
+      "normalized": 0.02,
+      "unit": "ratio"
+    },
+    "timeliness": {
+      "value": 3,
+      "notes": "Lowered 1/2/26"
+    },
+    "safety": {
+      "value": 3,
+      "notes": null
+    },
+    "technical": {
+      "value": 3,
+      "notes": "Raised 1/2/26"
+    },
+    "beta": {
+      "display": "1.00",
+      "normalized": 1.0,
+      "unit": "ratio",
+      "notes": null
+    },
+    "report_date": "2026-01-02",
+    "analyst_name": null,
+    "company_financial_strength": "B++",
+    "stock_price_stability": "80",
+    "price_growth_persistence": "70",
+    "earnings_predictability": "80"
+  },
+  "target_price_ranges": {
+    "target_18m": {
+      "low": {
+        "display": "55",
+        "normalized": 55.0,
+        "unit": "USD"
+      },
+      "high": {
+        "display": "97",
+        "normalized": 97.0,
+        "unit": "USD"
+      },
+      "midpoint": {
+        "display": "76",
+        "normalized": 76.0,
+        "unit": "USD"
+      },
+      "pct_to_mid": {
+        "display": "10%",
+        "normalized": 0.1,
+        "unit": "ratio"
+      }
+    },
+    "long_term_projection": {
+      "year_range": "2028-2030",
+      "high": {
+        "price_gain": {
+          "display": "130",
+          "normalized_price": 130.0,
+          "unit": "USD",
+          "price_gain_pct_display": "90%",
+          "price_gain_pct_normalized": 0.9
+        },
+        "annual_total_return": {
+          "display": "19%",
+          "normalized": 0.19,
+          "unit": "ratio"
+        }
+      },
+      "low": {
+        "price_gain": {
+          "display": "90",
+          "normalized_price": 90.0,
+          "unit": "USD",
+          "price_gain_pct_display": "30%",
+          "price_gain_pct_normalized": 0.3
+        },
+        "annual_total_return": {
+          "display": "9%",
+          "normalized": 0.09,
+          "unit": "ratio"
+        }
+      }
+    }
+  },
+  "tables_time_series": {
+    "price_history_high_low": {
+      "high": [
+        28.6,
+        40.6,
+        51.5,
+        63.7,
+        68.4,
+        56.7,
+        58.7,
+        86.7,
+        86.1,
+        82.8,
+        92.4,
+        77.3
+      ],
+      "low": [
+        22.1,
+        25.0,
+        30.2,
+        46.4,
+        40.3,
+        40.4,
+        33.8,
+        52.1,
+        46.6,
+        57.4,
+        67.4,
+        58.8
+      ],
+      "notes": null
+    },
+    "annual_financials_and_ratios_2015_2026_with_projection_2028_2030": {
+      "years": [
+        2009,
+        2010,
+        2011,
+        2012,
+        2013,
+        2014,
+        2015,
+        2016,
+        2017,
+        2018,
+        2019,
+        2020,
+        2021,
+        2022,
+        2023,
+        2024,
+        2025,
+        2026
+      ],
+      "projection_year_range": "2028-2030",
+      "per_share": {
+        "pc_prem_earned_per_share_usd": [
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null
+        ],
+        "investment_income_per_share_usd": [
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null
+        ],
+        "underwriting_income_per_share_usd": [
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null
+        ],
+        "earnings_per_share_usd": [
+          0.57,
+          0.43,
+          0.6,
+          0.78,
+          1.03,
+          1.22,
+          1.58,
+          1.85,
+          2.17,
+          2.61,
+          2.22,
+          2.12,
+          3.02,
+          3.14,
+          3.81,
+          3.73,
+          3.75,
+          4.2
+        ],
+        "dividends_declared_per_share_usd": [
+          0.13,
+          0.14,
+          0.15,
+          0.18,
+          0.23,
+          0.3,
+          0.38,
+          0.48,
+          0.56,
+          0.76,
+          0.9,
+          0.98,
+          1.06,
+          1.14,
+          1.22,
+          1.3,
+          1.38,
+          1.46
+        ],
+        "book_value_per_share_usd": [
+          4.06,
+          4.82,
+          5.89,
+          6.46,
+          7.28,
+          7.73,
+          8.2,
+          8.74,
+          9.6,
+          10.21,
+          10.27,
+          11.43,
+          11.62,
+          11.56,
+          12.5,
+          13.05,
+          13.2,
+          13.75
+        ],
+        "common_shares_outstanding_millions": [
+          194.44,
+          182.97,
+          184.48,
+          184.88,
+          182.48,
+          178.8,
+          175.9,
+          173.44,
+          171.66,
+          168.16,
+          162.37,
+          161.77,
+          157.65,
+          151.18,
+          147.53,
+          144.32,
+          138.2,
+          132.8
+        ],
+        "notes": null
+      },
+      "valuation": {
+        "price_to_book_value_pct": [
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null
+        ],
+        "avg_annual_pe_ratio": [
+          119.65,
+          10.1,
+          20.3,
+          16.6,
+          16.4,
+          20.2,
+          20.3,
+          21.6,
+          23.0,
+          25.4,
+          22.2,
+          21.8,
+          22.6,
+          22.8,
+          19.7,
+          18.3,
+          21.9,
+          18.1
+        ],
+        "relative_pe_ratio": [
+          20.0,
+          0.67,
+          1.29,
+          1.04,
+          1.04,
+          1.13,
+          1.07,
+          1.09,
+          1.21,
+          1.28,
+          1.2,
+          1.16,
+          1.16,
+          1.23,
+          1.14,
+          1.02,
+          1.15,
+          0.91
+        ],
+        "avg_annual_dividend_yield_pct": [
+          1.1,
+          2.2,
+          1.6,
+          1.5,
+          1.4,
+          1.1,
+          1.2,
+          1.1,
+          1.1,
+          1.0,
+          1.3,
+          1.9,
+          2.0,
+          1.5,
+          1.8,
+          1.8,
+          1.6,
+          2.0
+        ]
+      },
+      "income_statement_usd_millions": {
+        "pc_premiums_earned": [
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null
+        ],
+        "loss_to_prem_earned_pct": [
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null
+        ],
+        "expense_to_prem_written": [
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null
+        ],
+        "underwriting_margin_pct": [
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null
+        ],
+        "income_tax_rate_pct": [
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          0.297,
+          0.294,
+          0.27399999999999997,
+          0.204,
+          0.21600000000000003,
+          0.223,
+          0.221,
+          0.243,
+          0.235,
+          0.237,
+          0.24,
+          0.24
+        ],
+        "net_profit": [
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          282.9,
+          326.5,
+          378.3,
+          449.2,
+          370.0,
+          344.9,
+          487.1,
+          488.7,
+          574.8,
+          548.0,
+          535.0,
+          575.0
+        ],
+        "inv_inc_to_total_investments_pct": [
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null
+        ]
+      },
+      "balance_sheet_and_returns_usd_millions": {
+        "total_assets": [
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null
+        ],
+        "shareholders_equity": [
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          1442.3,
+          1515.3,
+          1648.8,
+          1717.0,
+          1666.8,
+          1848.3,
+          1832.2,
+          1747.7,
+          1844.4,
+          1883.5,
+          1825.0,
+          1825.0
+        ],
+        "return_on_shareholders_equity_pct": [
+          null,
+          null,
+          null,
+          null,
+          null,
+          0.295,
+          0.196,
+          0.215,
+          0.22899999999999998,
+          0.262,
+          0.222,
+          0.187,
+          0.266,
+          0.28,
+          0.312,
+          0.29100000000000004,
+          0.295,
+          0.315
+        ],
+        "retained_to_common_equity_pct": [
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          0.149,
+          0.16,
+          0.171,
+          0.18600000000000003,
+          0.132,
+          0.10099999999999999,
+          0.17300000000000001,
+          0.17800000000000002,
+          0.212,
+          0.19,
+          0.185,
+          0.205
+        ],
+        "all_dividends_to_net_profit_pct": [
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          0.24,
+          0.26,
+          0.26,
+          0.29,
+          0.4,
+          0.46,
+          0.35,
+          0.36,
+          0.32,
+          0.35,
+          0.37,
+          0.35
+        ]
+      },
+      "projection_2028_2030": {
+        "earnings_per_share_usd": 5.5,
+        "dividends_declared_per_share_usd": 1.74,
+        "book_value_per_share_usd": 17.85,
+        "common_shares_outstanding_millions": 119.65,
+        "avg_annual_pe_ratio": 20.0,
+        "relative_pe_ratio": 1.1,
+        "avg_annual_dividend_yield_pct": 1.6,
+        "income_tax_rate_pct": 0.24,
+        "net_profit_usd_millions": 680.0,
+        "shareholders_equity_usd_millions": 2135.0,
+        "return_on_shareholders_equity_pct": 0.32,
+        "retained_to_common_equity_pct": 0.22,
+        "all_dividends_to_net_profit_pct": 0.31
+      }
+    }
+  },
+  "financial_snapshot_blocks": {
+    "capital_structure_as_of": "2025-09-30",
+    "capital_structure": {
+      "total_debt": {
+        "display": "$185.8 mill",
+        "normalized": 185800000.0,
+        "unit": "USD"
+      },
+      "debt_due_in_5_years": {
+        "display": "$90.2 mill",
+        "normalized": 90200000.0,
+        "unit": "USD"
+      },
+      "lt_debt": {
+        "display": "$166.8 mill",
+        "normalized": 166800000.0,
+        "unit": "USD"
+      },
+      "lt_interest": {
+        "display": "$10.0 mill",
+        "normalized": 10000000.0,
+        "unit": "USD"
+      },
+      "debt_percent_of_capital": {
+        "display": "8%",
+        "normalized": 0.08,
+        "unit": "ratio"
+      },
+      "leases_uncapitalized_annual_rentals": {
+        "display": null,
+        "normalized": null,
+        "unit": null
+      },
+      "pension_assets_as_of": null,
+      "pension_assets": {
+        "display": null,
+        "normalized": null,
+        "unit": null
+      },
+      "pension_obligations": {
+        "display": null,
+        "normalized": null,
+        "unit": null
+      },
+      "common_stock_shares_outstanding": {
+        "display": "139237818",
+        "normalized": 139237818,
+        "unit": "shares",
+        "notes": null
+      },
+      "market_cap_as_of": null,
+      "market_cap": {
+        "display": "$9.5 billion",
+        "normalized": 9500000000.0,
+        "unit": "USD",
+        "notes": null
+      }
+    },
+    "current_position_usd_millions": {
+      "years": [
+        null,
+        null,
+        null
+      ],
+      "cash_assets": [
+        null,
+        null,
+        null
+      ],
+      "receivables": [
+        null,
+        null,
+        null
+      ],
+      "inventory_lifo": [
+        null,
+        null,
+        null
+      ],
+      "other_current_assets": [
+        null,
+        null,
+        null
+      ],
+      "current_assets_total": [
+        null,
+        null,
+        null
+      ],
+      "accounts_payable": [
+        null,
+        null,
+        null
+      ],
+      "debt_due": [
+        null,
+        null,
+        null
+      ],
+      "other_current_liabilities": [
+        null,
+        null,
+        null
+      ],
+      "current_liabilities_total": [
+        null,
+        null,
+        null
+      ]
+    },
+    "annual_rates_of_change": {
+      "sales": {
+        "past_10y": null,
+        "past_5y": null,
+        "est_to_2028_2030": null
+      },
+      "cash_flow_per_share": {
+        "past_10y": null,
+        "past_5y": null,
+        "est_to_2028_2030": null
+      },
+      "earnings": {
+        "past_10y": null,
+        "past_5y": null,
+        "est_to_2028_2030": null
+      },
+      "dividends": {
+        "past_10y": null,
+        "past_5y": null,
+        "est_to_2028_2030": null
+      },
+      "book_value": {
+        "past_10y": null,
+        "past_5y": null,
+        "est_to_2028_2030": null
+      }
+    }
+  },
+  "institutional_decisions": {
+    "quarterly": [
+      {
+        "period": "1Q2025",
+        "to_buy": 340,
+        "to_sell": 324,
+        "holds_000": 111520
+      },
+      {
+        "period": "2Q2025",
+        "to_buy": 299,
+        "to_sell": 361,
+        "holds_000": 109371
+      },
+      {
+        "period": "3Q2025",
+        "to_buy": 299,
+        "to_sell": 303,
+        "holds_000": 107276
+      }
+    ]
+  },
+  "price_semantics_and_returns": {
+    "value_line_total_return_as_of": "2025-12-22",
+    "total_return": {
+      "stock": {
+        "1y": 0.011000000000000001,
+        "3y": 0.27899999999999997,
+        "5y": 0.345
+      },
+      "index": {
+        "1y": 0.036000000000000004,
+        "3y": 0.392,
+        "5y": 0.685
+      }
+    }
+  },
+  "narrative": {
+    "business_description": "A.O.SmithCorp.isaleadingmanufacturerofresiden- eesand28wholly-ownedandleasedmanufacturingfacilities.Smith tial and commercial water heaters, boilers. and water treatment Family Voting Trust owns 96.9% of Class A shares; Officers & Inventory (LIFO) 497.4 532.1 507.3 products.Hastworeportablesegments:NorthAmerica(76%of\u201924 directors,1.7%ofregularcommon;VanguardGroup,11.6%(2/25 sales); and Rest of World (24%), which primarily serves China, proxy).CEO:StephenShafer.Chair.:KevinWheeler.Incorporated: Europe, and India. Brands include A.O. Smith, GSW, Lochinvar, Delaware.Address:11270WestParkPlace,Milwaukee,WI53224. Reliance,andTakagi.Asof12/31/24,hadapprox.12,700employ-",
+    "commentary": null,
+    "analyst": "Nils C. Van Liew",
+    "as_of": "2026-01-02",
+    "footnotes": {
+      "eps_adjustments": null,
+      "dividends_timing": null,
+      "intangibles_note": null,
+      "shares_note": null
+    }
+  },
+  "fields_not_fully_extracted": [
+    null,
+    null
+  ]
+}
