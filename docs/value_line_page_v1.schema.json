@@ -1,0 +1,188 @@
+
+
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "ValueLinePageV1",
+  "description": "Canonical, module-organized JSON output for a single Value Line company page.",
+  "type": "object",
+  "required": [
+    "meta",
+    "identity",
+    "header",
+    "ratings",
+    "targets",
+    "projections",
+    "financials",
+    "performance",
+    "narrative"
+  ],
+  "properties": {
+    "meta": {
+      "type": "object",
+      "description": "Parser and document metadata",
+      "required": ["parser_version", "page_number"],
+      "properties": {
+        "parser_version": { "type": "string" },
+        "page_number": { "type": "integer" },
+        "report_date": { "type": ["string", "null"], "format": "date" },
+        "source": { "type": "string", "enum": ["value_line"] }
+      }
+    },
+
+    "identity": {
+      "type": "object",
+      "description": "Company identity resolved from the page",
+      "required": ["company_name"],
+      "properties": {
+        "company_name": { "type": "string" },
+        "ticker": { "type": ["string", "null"] },
+        "exchange": { "type": ["string", "null"] }
+      }
+    },
+
+    "header": {
+      "type": "object",
+      "description": "Header quote and valuation snapshot",
+      "properties": {
+        "recent_price_usd": { "type": ["number", "null"] },
+        "pe_ratio": { "type": ["number", "null"] },
+        "relative_pe_ratio": { "type": ["number", "null"] },
+        "dividend_yield_pct": { "type": ["number", "null"] }
+      }
+    },
+
+    "ratings": {
+      "type": "object",
+      "description": "Value Line ratings and stability metrics",
+      "properties": {
+        "timeliness": { "type": ["integer", "null"] },
+        "safety": { "type": ["integer", "null"] },
+        "technical": { "type": ["integer", "null"] },
+        "beta": { "type": ["number", "null"] },
+
+        "company_financial_strength": { "type": ["string", "null"] },
+        "stock_price_stability": { "type": ["integer", "null"] },
+        "price_growth_persistence": { "type": ["integer", "null"] },
+        "earnings_predictability": { "type": ["integer", "null"] }
+      }
+    },
+
+    "targets": {
+      "type": "object",
+      "description": "Mid-term target price ranges",
+      "properties": {
+        "target_18m": {
+          "type": "object",
+          "required": ["period_type"],
+          "properties": {
+            "period_type": { "type": "string", "enum": ["target_range"] },
+            "low": { "type": ["number", "null"] },
+            "high": { "type": ["number", "null"] },
+            "midpoint": { "type": ["number", "null"] }
+          }
+        }
+      }
+    },
+
+    "projections": {
+      "type": "object",
+      "description": "Long-term rolling projections",
+      "properties": {
+        "long_term": {
+          "type": "object",
+          "required": ["period_type", "projection_year_range"],
+          "properties": {
+            "period_type": { "type": "string", "enum": ["projection_range"] },
+            "projection_year_range": { "type": "string", "example": "2028-2030" },
+            "high_price": { "type": ["number", "null"] },
+            "low_price": { "type": ["number", "null"] },
+            "annual_total_return_pct": { "type": ["number", "null"] }
+          }
+        }
+      }
+    },
+
+    "financials": {
+      "type": "object",
+      "description": "Time-series financial tables",
+      "properties": {
+        "annual_financials": {
+          "type": "array",
+          "description": "Annual financial facts, one object per metric per year",
+          "items": {
+            "type": "object",
+            "required": ["metric_key", "period_type", "period_end_date"],
+            "properties": {
+              "metric_key": { "type": "string" },
+              "value": { "type": ["number", "null"] },
+              "unit": { "type": ["string", "null"] },
+              "currency": { "type": ["string", "null"] },
+              "period_type": { "type": "string", "enum": ["FY"] },
+              "period_end_date": { "type": "string", "format": "date" }
+            }
+          }
+        },
+
+        "quarterly_financials": {
+          "type": "array",
+          "description": "Quarterly financial facts",
+          "items": {
+            "type": "object",
+            "required": ["metric_key", "period_type", "period_end_date"],
+            "properties": {
+              "metric_key": { "type": "string" },
+              "value": { "type": ["number", "null"] },
+              "unit": { "type": ["string", "null"] },
+              "currency": { "type": ["string", "null"] },
+              "period_type": { "type": "string", "enum": ["Q"] },
+              "period_end_date": { "type": "string", "format": "date" }
+            }
+          }
+        }
+      }
+    },
+
+    "performance": {
+      "type": "object",
+      "description": "Returns and historical price performance",
+      "properties": {
+        "total_return": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["window_years", "period_type"],
+            "properties": {
+              "window_years": { "type": "integer", "enum": [1, 3, 5] },
+              "period_type": { "type": "string", "enum": ["trailing_window"] },
+              "value_pct": { "type": ["number", "null"] }
+            }
+          }
+        },
+
+        "historical_price_range": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["year"],
+            "properties": {
+              "year": { "type": "integer" },
+              "high": { "type": ["number", "null"] },
+              "low": { "type": ["number", "null"] }
+            }
+          }
+        }
+      }
+    },
+
+    "narrative": {
+      "type": "object",
+      "description": "Textual narrative sections",
+      "properties": {
+        "business": { "type": ["string", "null"] },
+        "commentary": { "type": ["string", "null"] },
+        "analyst_name": { "type": ["string", "null"] },
+        "commentary_date": { "type": ["string", "null"], "format": "date" }
+      }
+    }
+  }
+}

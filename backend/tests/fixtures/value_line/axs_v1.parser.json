@@ -683,3 +683,222 @@
     null
   ]
 }
+{
+  "meta": {
+    "parser_version": "value_line_v1",
+    "page_number": 1,
+    "report_date": "2026-01-09",
+    "source": "value_line"
+  },
+  "identity": {
+    "company_name": "AXIS CAPITAL",
+    "ticker": "AXS",
+    "exchange": "NYSE"
+  },
+  "header": {
+    "recent_price_usd": 109.1,
+    "pe_ratio": 8.1,
+    "relative_pe_ratio": 0.43,
+    "dividend_yield_pct": 1.6
+  },
+  "ratings": {
+    "timeliness": 3,
+    "safety": 2,
+    "technical": 4,
+    "beta": 1.0,
+    "company_financial_strength": "A",
+    "stock_price_stability": 90,
+    "price_growth_persistence": 35,
+    "earnings_predictability": 10
+  },
+  "targets": {
+    "target_18m": {
+      "period_type": "target_range",
+      "low": 91.0,
+      "high": 168.0,
+      "midpoint": 130.0
+    }
+  },
+  "projections": {
+    "long_term": {
+      "period_type": "projection_range",
+      "projection_year_range": "2028-2030",
+      "high_price": 185.0,
+      "low_price": 135.0,
+      "annual_total_return_pct": 0.11
+    }
+  },
+  "financials": {
+    "annual_financials": [
+      { "metric_key": "pc_prem_earned_per_share_usd", "value": 38.37, "unit": "USD", "currency": "USD", "period_type": "FY", "period_end_date": "2015-12-31" },
+      { "metric_key": "pc_prem_earned_per_share_usd", "value": 42.87, "unit": "USD", "currency": "USD", "period_type": "FY", "period_end_date": "2016-12-31" },
+      { "metric_key": "pc_prem_earned_per_share_usd", "value": 49.89, "unit": "USD", "currency": "USD", "period_type": "FY", "period_end_date": "2017-12-31" },
+      { "metric_key": "pc_prem_earned_per_share_usd", "value": 55.98, "unit": "USD", "currency": "USD", "period_type": "FY", "period_end_date": "2018-12-31" },
+      { "metric_key": "pc_prem_earned_per_share_usd", "value": 54.64, "unit": "USD", "currency": "USD", "period_type": "FY", "period_end_date": "2019-12-31" },
+      { "metric_key": "pc_prem_earned_per_share_usd", "value": 51.82, "unit": "USD", "currency": "USD", "period_type": "FY", "period_end_date": "2020-12-31" },
+      { "metric_key": "pc_prem_earned_per_share_usd", "value": 55.56, "unit": "USD", "currency": "USD", "period_type": "FY", "period_end_date": "2021-12-31" },
+      { "metric_key": "pc_prem_earned_per_share_usd", "value": 60.95, "unit": "USD", "currency": "USD", "period_type": "FY", "period_end_date": "2022-12-31" },
+      { "metric_key": "pc_prem_earned_per_share_usd", "value": 59.61, "unit": "USD", "currency": "USD", "period_type": "FY", "period_end_date": "2023-12-31" },
+      { "metric_key": "pc_prem_earned_per_share_usd", "value": 63.94, "unit": "USD", "currency": "USD", "period_type": "FY", "period_end_date": "2024-12-31" },
+      { "metric_key": "pc_prem_earned_per_share_usd", "value": 75.35, "unit": "USD", "currency": "USD", "period_type": "FY", "period_end_date": "2025-12-31" },
+      { "metric_key": "pc_prem_earned_per_share_usd", "value": 81.25, "unit": "USD", "currency": "USD", "period_type": "FY", "period_end_date": "2026-12-31" },
+
+      { "metric_key": "investment_income_per_share_usd", "value": 3.18, "unit": "USD", "currency": "USD", "period_type": "FY", "period_end_date": "2015-12-31" },
+      { "metric_key": "investment_income_per_share_usd", "value": 4.09, "unit": "USD", "currency": "USD", "period_type": "FY", "period_end_date": "2016-12-31" },
+      { "metric_key": "investment_income_per_share_usd", "value": 4.82, "unit": "USD", "currency": "USD", "period_type": "FY", "period_end_date": "2017-12-31" },
+      { "metric_key": "investment_income_per_share_usd", "value": 5.12, "unit": "USD", "currency": "USD", "period_type": "FY", "period_end_date": "2018-12-31" },
+      { "metric_key": "investment_income_per_share_usd", "value": 5.7, "unit": "USD", "currency": "USD", "period_type": "FY", "period_end_date": "2019-12-31" },
+      { "metric_key": "investment_income_per_share_usd", "value": 4.14, "unit": "USD", "currency": "USD", "period_type": "FY", "period_end_date": "2020-12-31" },
+      { "metric_key": "investment_income_per_share_usd", "value": 5.36, "unit": "USD", "currency": "USD", "period_type": "FY", "period_end_date": "2021-12-31" },
+      { "metric_key": "investment_income_per_share_usd", "value": 4.95, "unit": "USD", "currency": "USD", "period_type": "FY", "period_end_date": "2022-12-31" },
+      { "metric_key": "investment_income_per_share_usd", "value": 7.17, "unit": "USD", "currency": "USD", "period_type": "FY", "period_end_date": "2023-12-31" },
+      { "metric_key": "investment_income_per_share_usd", "value": 9.15, "unit": "USD", "currency": "USD", "period_type": "FY", "period_end_date": "2024-12-31" },
+      { "metric_key": "investment_income_per_share_usd", "value": 10.65, "unit": "USD", "currency": "USD", "period_type": "FY", "period_end_date": "2025-12-31" },
+      { "metric_key": "investment_income_per_share_usd", "value": 11.8, "unit": "USD", "currency": "USD", "period_type": "FY", "period_end_date": "2026-12-31" },
+
+      { "metric_key": "underwriting_income_per_share_usd", "value": 8.25, "unit": "USD", "currency": "USD", "period_type": "FY", "period_end_date": "2015-12-31" },
+      { "metric_key": "underwriting_income_per_share_usd", "value": 8.73, "unit": "USD", "currency": "USD", "period_type": "FY", "period_end_date": "2016-12-31" },
+      { "metric_key": "underwriting_income_per_share_usd", "value": 0.45, "unit": "USD", "currency": "USD", "period_type": "FY", "period_end_date": "2017-12-31" },
+      { "metric_key": "underwriting_income_per_share_usd", "value": 7.39, "unit": "USD", "currency": "USD", "period_type": "FY", "period_end_date": "2018-12-31" },
+      { "metric_key": "underwriting_income_per_share_usd", "value": 6.17, "unit": "USD", "currency": "USD", "period_type": "FY", "period_end_date": "2019-12-31" },
+      { "metric_key": "underwriting_income_per_share_usd", "value": 1.9, "unit": "USD", "currency": "USD", "period_type": "FY", "period_end_date": "2020-12-31" },
+      { "metric_key": "underwriting_income_per_share_usd", "value": 9.19, "unit": "USD", "currency": "USD", "period_type": "FY", "period_end_date": "2021-12-31" },
+      { "metric_key": "underwriting_income_per_share_usd", "value": 10.58, "unit": "USD", "currency": "USD", "period_type": "FY", "period_end_date": "2022-12-31" },
+      { "metric_key": "underwriting_income_per_share_usd", "value": 8.09, "unit": "USD", "currency": "USD", "period_type": "FY", "period_end_date": "2023-12-31" },
+      { "metric_key": "underwriting_income_per_share_usd", "value": 12.98, "unit": "USD", "currency": "USD", "period_type": "FY", "period_end_date": "2024-12-31" },
+      { "metric_key": "underwriting_income_per_share_usd", "value": 13.5, "unit": "USD", "currency": "USD", "period_type": "FY", "period_end_date": "2025-12-31" },
+      { "metric_key": "underwriting_income_per_share_usd", "value": 14.5, "unit": "USD", "currency": "USD", "period_type": "FY", "period_end_date": "2026-12-31" },
+
+      { "metric_key": "earnings_per_share_usd", "value": 4.02, "unit": "USD", "currency": "USD", "period_type": "FY", "period_end_date": "2015-12-31" },
+      { "metric_key": "earnings_per_share_usd", "value": 4.48, "unit": "USD", "currency": "USD", "period_type": "FY", "period_end_date": "2016-12-31" },
+      { "metric_key": "earnings_per_share_usd", "value": -3.15, "unit": "USD", "currency": "USD", "period_type": "FY", "period_end_date": "2017-12-31" },
+      { "metric_key": "earnings_per_share_usd", "value": 1.92, "unit": "USD", "currency": "USD", "period_type": "FY", "period_end_date": "2018-12-31" },
+      { "metric_key": "earnings_per_share_usd", "value": 2.52, "unit": "USD", "currency": "USD", "period_type": "FY", "period_end_date": "2019-12-31" },
+      { "metric_key": "earnings_per_share_usd", "value": -2.07, "unit": "USD", "currency": "USD", "period_type": "FY", "period_end_date": "2020-12-31" },
+      { "metric_key": "earnings_per_share_usd", "value": 5.12, "unit": "USD", "currency": "USD", "period_type": "FY", "period_end_date": "2021-12-31" },
+      { "metric_key": "earnings_per_share_usd", "value": 5.81, "unit": "USD", "currency": "USD", "period_type": "FY", "period_end_date": "2022-12-31" },
+      { "metric_key": "earnings_per_share_usd", "value": 5.65, "unit": "USD", "currency": "USD", "period_type": "FY", "period_end_date": "2023-12-31" },
+      { "metric_key": "earnings_per_share_usd", "value": 11.18, "unit": "USD", "currency": "USD", "period_type": "FY", "period_end_date": "2024-12-31" },
+      { "metric_key": "earnings_per_share_usd", "value": 13.1, "unit": "USD", "currency": "USD", "period_type": "FY", "period_end_date": "2025-12-31" },
+      { "metric_key": "earnings_per_share_usd", "value": 13.8, "unit": "USD", "currency": "USD", "period_type": "FY", "period_end_date": "2026-12-31" },
+
+      { "metric_key": "dividends_declared_per_share_usd", "value": 1.22, "unit": "USD", "currency": "USD", "period_type": "FY", "period_end_date": "2015-12-31" },
+      { "metric_key": "dividends_declared_per_share_usd", "value": 1.43, "unit": "USD", "currency": "USD", "period_type": "FY", "period_end_date": "2016-12-31" },
+      { "metric_key": "dividends_declared_per_share_usd", "value": 1.53, "unit": "USD", "currency": "USD", "period_type": "FY", "period_end_date": "2017-12-31" },
+      { "metric_key": "dividends_declared_per_share_usd", "value": 1.57, "unit": "USD", "currency": "USD", "period_type": "FY", "period_end_date": "2018-12-31" },
+      { "metric_key": "dividends_declared_per_share_usd", "value": 1.61, "unit": "USD", "currency": "USD", "period_type": "FY", "period_end_date": "2019-12-31" },
+      { "metric_key": "dividends_declared_per_share_usd", "value": 1.65, "unit": "USD", "currency": "USD", "period_type": "FY", "period_end_date": "2020-12-31" },
+      { "metric_key": "dividends_declared_per_share_usd", "value": 1.69, "unit": "USD", "currency": "USD", "period_type": "FY", "period_end_date": "2021-12-31" },
+      { "metric_key": "dividends_declared_per_share_usd", "value": 1.73, "unit": "USD", "currency": "USD", "period_type": "FY", "period_end_date": "2022-12-31" },
+      { "metric_key": "dividends_declared_per_share_usd", "value": 1.76, "unit": "USD", "currency": "USD", "period_type": "FY", "period_end_date": "2023-12-31" },
+      { "metric_key": "dividends_declared_per_share_usd", "value": 1.76, "unit": "USD", "currency": "USD", "period_type": "FY", "period_end_date": "2024-12-31" },
+      { "metric_key": "dividends_declared_per_share_usd", "value": 1.76, "unit": "USD", "currency": "USD", "period_type": "FY", "period_end_date": "2025-12-31" },
+      { "metric_key": "dividends_declared_per_share_usd", "value": 1.8, "unit": "USD", "currency": "USD", "period_type": "FY", "period_end_date": "2026-12-31" },
+
+      { "metric_key": "book_value_per_share_usd", "value": 54.54, "unit": "USD", "currency": "USD", "period_type": "FY", "period_end_date": "2015-12-31" },
+      { "metric_key": "book_value_per_share_usd", "value": 59.54, "unit": "USD", "currency": "USD", "period_type": "FY", "period_end_date": "2016-12-31" },
+      { "metric_key": "book_value_per_share_usd", "value": 54.91, "unit": "USD", "currency": "USD", "period_type": "FY", "period_end_date": "2017-12-31" },
+      { "metric_key": "book_value_per_share_usd", "value": 49.72, "unit": "USD", "currency": "USD", "period_type": "FY", "period_end_date": "2018-12-31" },
+      { "metric_key": "book_value_per_share_usd", "value": 56.8, "unit": "USD", "currency": "USD", "period_type": "FY", "period_end_date": "2019-12-31" },
+      { "metric_key": "book_value_per_share_usd", "value": 56.26, "unit": "USD", "currency": "USD", "period_type": "FY", "period_end_date": "2020-12-31" },
+      { "metric_key": "book_value_per_share_usd", "value": 57.34, "unit": "USD", "currency": "USD", "period_type": "FY", "period_end_date": "2021-12-31" },
+      { "metric_key": "book_value_per_share_usd", "value": 48.31, "unit": "USD", "currency": "USD", "period_type": "FY", "period_end_date": "2022-12-31" },
+      { "metric_key": "book_value_per_share_usd", "value": 55.26, "unit": "USD", "currency": "USD", "period_type": "FY", "period_end_date": "2023-12-31" },
+      { "metric_key": "book_value_per_share_usd", "value": 66.75, "unit": "USD", "currency": "USD", "period_type": "FY", "period_end_date": "2024-12-31" },
+      { "metric_key": "book_value_per_share_usd", "value": 86.0, "unit": "USD", "currency": "USD", "period_type": "FY", "period_end_date": "2025-12-31" },
+      { "metric_key": "book_value_per_share_usd", "value": 97.2, "unit": "USD", "currency": "USD", "period_type": "FY", "period_end_date": "2026-12-31" },
+
+      { "metric_key": "common_shares_outstanding_millions", "value": 96.07, "unit": "millions_shares", "currency": null, "period_type": "FY", "period_end_date": "2015-12-31" },
+      { "metric_key": "common_shares_outstanding_millions", "value": 86.44, "unit": "millions_shares", "currency": null, "period_type": "FY", "period_end_date": "2016-12-31" },
+      { "metric_key": "common_shares_outstanding_millions", "value": 83.16, "unit": "millions_shares", "currency": null, "period_type": "FY", "period_end_date": "2017-12-31" },
+      { "metric_key": "common_shares_outstanding_millions", "value": 85.59, "unit": "millions_shares", "currency": null, "period_type": "FY", "period_end_date": "2018-12-31" },
+      { "metric_key": "common_shares_outstanding_millions", "value": 83.96, "unit": "millions_shares", "currency": null, "period_type": "FY", "period_end_date": "2019-12-31" },
+      { "metric_key": "common_shares_outstanding_millions", "value": 84.35, "unit": "millions_shares", "currency": null, "period_type": "FY", "period_end_date": "2020-12-31" },
+      { "metric_key": "common_shares_outstanding_millions", "value": 84.77, "unit": "millions_shares", "currency": null, "period_type": "FY", "period_end_date": "2021-12-31" },
+      { "metric_key": "common_shares_outstanding_millions", "value": 84.67, "unit": "millions_shares", "currency": null, "period_type": "FY", "period_end_date": "2022-12-31" },
+      { "metric_key": "common_shares_outstanding_millions", "value": 85.29, "unit": "millions_shares", "currency": null, "period_type": "FY", "period_end_date": "2023-12-31" },
+      { "metric_key": "common_shares_outstanding_millions", "value": 82.98, "unit": "millions_shares", "currency": null, "period_type": "FY", "period_end_date": "2024-12-31" },
+      { "metric_key": "common_shares_outstanding_millions", "value": 75.0, "unit": "millions_shares", "currency": null, "period_type": "FY", "period_end_date": "2025-12-31" },
+      { "metric_key": "common_shares_outstanding_millions", "value": 72.0, "unit": "millions_shares", "currency": null, "period_type": "FY", "period_end_date": "2026-12-31" },
+
+      { "metric_key": "avg_annual_dividend_yield_pct", "value": 2.3, "unit": "pct", "currency": null, "period_type": "FY", "period_end_date": "2015-12-31" },
+      { "metric_key": "avg_annual_dividend_yield_pct", "value": 2.6, "unit": "pct", "currency": null, "period_type": "FY", "period_end_date": "2016-12-31" },
+      { "metric_key": "avg_annual_dividend_yield_pct", "value": 2.5, "unit": "pct", "currency": null, "period_type": "FY", "period_end_date": "2017-12-31" },
+      { "metric_key": "avg_annual_dividend_yield_pct", "value": 2.9, "unit": "pct", "currency": null, "period_type": "FY", "period_end_date": "2018-12-31" },
+      { "metric_key": "avg_annual_dividend_yield_pct", "value": 2.7, "unit": "pct", "currency": null, "period_type": "FY", "period_end_date": "2019-12-31" },
+      { "metric_key": "avg_annual_dividend_yield_pct", "value": 3.5, "unit": "pct", "currency": null, "period_type": "FY", "period_end_date": "2020-12-31" },
+      { "metric_key": "avg_annual_dividend_yield_pct", "value": 3.3, "unit": "pct", "currency": null, "period_type": "FY", "period_end_date": "2021-12-31" },
+      { "metric_key": "avg_annual_dividend_yield_pct", "value": 3.2, "unit": "pct", "currency": null, "period_type": "FY", "period_end_date": "2022-12-31" },
+      { "metric_key": "avg_annual_dividend_yield_pct", "value": 3.1, "unit": "pct", "currency": null, "period_type": "FY", "period_end_date": "2023-12-31" },
+      { "metric_key": "avg_annual_dividend_yield_pct", "value": 2.4, "unit": "pct", "currency": null, "period_type": "FY", "period_end_date": "2024-12-31" },
+      { "metric_key": "avg_annual_dividend_yield_pct", "value": 1.8, "unit": "pct", "currency": null, "period_type": "FY", "period_end_date": "2025-12-31" },
+
+      { "metric_key": "net_profit_usd_millions", "value": 440.6, "unit": "usd_millions", "currency": "USD", "period_type": "FY", "period_end_date": "2015-12-31" },
+      { "metric_key": "net_profit_usd_millions", "value": 456.5, "unit": "usd_millions", "currency": "USD", "period_type": "FY", "period_end_date": "2016-12-31" },
+      { "metric_key": "net_profit_usd_millions", "value": -263.3, "unit": "usd_millions", "currency": "USD", "period_type": "FY", "period_end_date": "2017-12-31" },
+      { "metric_key": "net_profit_usd_millions", "value": 204.0, "unit": "usd_millions", "currency": "USD", "period_type": "FY", "period_end_date": "2018-12-31" },
+      { "metric_key": "net_profit_usd_millions", "value": 254.5, "unit": "usd_millions", "currency": "USD", "period_type": "FY", "period_end_date": "2019-12-31" },
+      { "metric_key": "net_profit_usd_millions", "value": -144.0, "unit": "usd_millions", "currency": "USD", "period_type": "FY", "period_end_date": "2020-12-31" },
+      { "metric_key": "net_profit_usd_millions", "value": 466.7, "unit": "usd_millions", "currency": "USD", "period_type": "FY", "period_end_date": "2021-12-31" },
+      { "metric_key": "net_profit_usd_millions", "value": 528.2, "unit": "usd_millions", "currency": "USD", "period_type": "FY", "period_end_date": "2022-12-31" },
+      { "metric_key": "net_profit_usd_millions", "value": 516.4, "unit": "usd_millions", "currency": "USD", "period_type": "FY", "period_end_date": "2023-12-31" },
+      { "metric_key": "net_profit_usd_millions", "value": 982.3, "unit": "usd_millions", "currency": "USD", "period_type": "FY", "period_end_date": "2024-12-31" },
+      { "metric_key": "net_profit_usd_millions", "value": 1020.0, "unit": "usd_millions", "currency": "USD", "period_type": "FY", "period_end_date": "2025-12-31" },
+      { "metric_key": "net_profit_usd_millions", "value": 1035.0, "unit": "usd_millions", "currency": "USD", "period_type": "FY", "period_end_date": "2026-12-31" },
+
+      { "metric_key": "total_assets_usd_millions", "value": 19982.0, "unit": "usd_millions", "currency": "USD", "period_type": "FY", "period_end_date": "2015-12-31" },
+      { "metric_key": "total_assets_usd_millions", "value": 20814.0, "unit": "usd_millions", "currency": "USD", "period_type": "FY", "period_end_date": "2016-12-31" },
+      { "metric_key": "total_assets_usd_millions", "value": 24760.0, "unit": "usd_millions", "currency": "USD", "period_type": "FY", "period_end_date": "2017-12-31" },
+      { "metric_key": "total_assets_usd_millions", "value": 24133.0, "unit": "usd_millions", "currency": "USD", "period_type": "FY", "period_end_date": "2018-12-31" },
+      { "metric_key": "total_assets_usd_millions", "value": 25604.0, "unit": "usd_millions", "currency": "USD", "period_type": "FY", "period_end_date": "2019-12-31" },
+      { "metric_key": "total_assets_usd_millions", "value": 25878.0, "unit": "usd_millions", "currency": "USD", "period_type": "FY", "period_end_date": "2020-12-31" },
+      { "metric_key": "total_assets_usd_millions", "value": 27369.0, "unit": "usd_millions", "currency": "USD", "period_type": "FY", "period_end_date": "2021-12-31" },
+      { "metric_key": "total_assets_usd_millions", "value": 27596.0, "unit": "usd_millions", "currency": "USD", "period_type": "FY", "period_end_date": "2022-12-31" },
+      { "metric_key": "total_assets_usd_millions", "value": 30251.0, "unit": "usd_millions", "currency": "USD", "period_type": "FY", "period_end_date": "2023-12-31" },
+      { "metric_key": "total_assets_usd_millions", "value": 32520.0, "unit": "usd_millions", "currency": "USD", "period_type": "FY", "period_end_date": "2024-12-31" },
+      { "metric_key": "total_assets_usd_millions", "value": 35500.0, "unit": "usd_millions", "currency": "USD", "period_type": "FY", "period_end_date": "2025-12-31" },
+      { "metric_key": "total_assets_usd_millions", "value": 38500.0, "unit": "usd_millions", "currency": "USD", "period_type": "FY", "period_end_date": "2026-12-31" },
+
+      { "metric_key": "shareholders_equity_usd_millions", "value": 5866.9, "unit": "usd_millions", "currency": "USD", "period_type": "FY", "period_end_date": "2015-12-31" },
+      { "metric_key": "shareholders_equity_usd_millions", "value": 6272.4, "unit": "usd_millions", "currency": "USD", "period_type": "FY", "period_end_date": "2016-12-31" },
+      { "metric_key": "shareholders_equity_usd_millions", "value": 5341.3, "unit": "usd_millions", "currency": "USD", "period_type": "FY", "period_end_date": "2017-12-31" },
+      { "metric_key": "shareholders_equity_usd_millions", "value": 5030.1, "unit": "usd_millions", "currency": "USD", "period_type": "FY", "period_end_date": "2018-12-31" },
+      { "metric_key": "shareholders_equity_usd_millions", "value": 5544.0, "unit": "usd_millions", "currency": "USD", "period_type": "FY", "period_end_date": "2019-12-31" },
+      { "metric_key": "shareholders_equity_usd_millions", "value": 5295.7, "unit": "usd_millions", "currency": "USD", "period_type": "FY", "period_end_date": "2020-12-31" },
+      { "metric_key": "shareholders_equity_usd_millions", "value": 5410.7, "unit": "usd_millions", "currency": "USD", "period_type": "FY", "period_end_date": "2021-12-31" },
+      { "metric_key": "shareholders_equity_usd_millions", "value": 4639.9, "unit": "usd_millions", "currency": "USD", "period_type": "FY", "period_end_date": "2022-12-31" },
+      { "metric_key": "shareholders_equity_usd_millions", "value": 5263.2, "unit": "usd_millions", "currency": "USD", "period_type": "FY", "period_end_date": "2023-12-31" },
+      { "metric_key": "shareholders_equity_usd_millions", "value": 6089.4, "unit": "usd_millions", "currency": "USD", "period_type": "FY", "period_end_date": "2024-12-31" },
+      { "metric_key": "shareholders_equity_usd_millions", "value": 6450.0, "unit": "usd_millions", "currency": "USD", "period_type": "FY", "period_end_date": "2025-12-31" },
+      { "metric_key": "shareholders_equity_usd_millions", "value": 7000.0, "unit": "usd_millions", "currency": "USD", "period_type": "FY", "period_end_date": "2026-12-31" }
+    ],
+    "quarterly_financials": []
+  },
+  "performance": {
+    "total_return": [
+      { "window_years": 1, "period_type": "trailing_window", "value_pct": 24.4 },
+      { "window_years": 3, "period_type": "trailing_window", "value_pct": 117.1 },
+      { "window_years": 5, "period_type": "trailing_window", "value_pct": 150.2 }
+    ],
+    "historical_price_range": [
+      { "year": 2015, "high": 52.2, "low": 41.8 },
+      { "year": 2016, "high": 60.0, "low": 47.7 },
+      { "year": 2017, "high": 66.2, "low": 51.0 },
+      { "year": 2018, "high": 71.1, "low": 49.4 },
+      { "year": 2019, "high": 60.7, "low": 47.4 },
+      { "year": 2020, "high": 67.5, "low": 50.7 },
+      { "year": 2021, "high": 66.2, "low": 31.8 },
+      { "year": 2022, "high": 58.6, "low": 44.3 },
+      { "year": 2023, "high": 61.4, "low": 48.3 },
+      { "year": 2024, "high": 64.0, "low": 51.3 },
+      { "year": 2025, "high": 94.9, "low": 53.9 },
+      { "year": 2026, "high": 110.3, "low": 83.9 }
+    ]
+  },
+  "narrative": {
+    "business": null,
+    "commentary": null,
+    "analyst_name": null,
+    "commentary_date": "2026-01-09"
+  }
+}
