@@ -8,13 +8,21 @@ router = APIRouter()
 @router.post("/run", response_model=List[dict])
 def run_screen(
     session: SessionDep,
-    rule: Dict[str, Any] = Body(..., example={
-        "type": "AND",
-        "conditions": [
-            {"metric": "pe_ratio", "operator": "<", "value": 25},
-            {"metric": "dividend_yield", "operator": ">", "value": 0.01}
-        ]
-    })
+    rule: Dict[str, Any] = Body(
+        ...,
+        examples={
+            "basic": {
+                "summary": "Simple AND screen",
+                "value": {
+                    "type": "AND",
+                    "conditions": [
+                        {"metric": "pe_ratio", "operator": "<", "value": 25},
+                        {"metric": "dividend_yield", "operator": ">", "value": 0.01},
+                    ],
+                },
+            },
+        },
+    ),
 ) -> Any:
     """
     Run a stock screen based on dynamic rules.
