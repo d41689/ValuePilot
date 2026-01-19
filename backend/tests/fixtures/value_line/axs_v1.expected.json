@@ -197,7 +197,7 @@
       "normalized": 70000000.0,
       "unit": "USD"
     },
-    "debt_percent_of_capital": {
+    "lt_interest_percent_of_capital": {
       "display": "17%",
       "normalized": 0.17,
       "unit": "ratio"
@@ -213,12 +213,17 @@
       "normalized": 30300000.0,
       "unit": "USD"
     },
-    "common_stock_shares_outstanding": {
-      "display": "77037743",
-      "normalized": 77037743,
-      "unit": "shares",
+
+    "common_stock": {
+      "shares_outstanding": {
+        "display": "77037743",
+        "normalized": 77037743,
+        "unit": "shares"
+      },
+      
       "as_of": "2025-10-24"
     },
+
     "market_cap": {
       "display": "$8.4 billion",
       "normalized": 8400000000.0,
