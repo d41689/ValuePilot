@@ -43,7 +43,7 @@ def test_axs_recent_price_extracted_from_header_words():
     result = _first(results, "recent_price")
     assert result is not None
     normalized = _normalize_value(result, "currency")
-    expected_norm = expected["header_ratings"]["recent_price"]["normalized"]
+    expected_norm = expected["header"]["recent_price"]
     assert normalized == pytest.approx(expected_norm)
 
 
@@ -53,25 +53,25 @@ def test_axs_capital_structure_fields_extracted():
 
     as_of = _first(results, "capital_structure_as_of")
     assert as_of is not None
-    assert as_of.raw_value_text == expected["financial_snapshot_blocks"]["capital_structure_as_of"]
+    assert as_of.raw_value_text == expected["capital_structure"]["as_of"]
 
     preferred_stock = _first(results, "preferred_stock")
     assert preferred_stock is not None
     preferred_stock_norm = _normalize_value(preferred_stock, "currency")
-    expected_stock_norm = expected["financial_snapshot_blocks"]["capital_structure"]["preferred_stock"]["normalized"]
+    expected_stock_norm = expected["capital_structure"]["preferred_stock"]["normalized"]
     assert preferred_stock_norm == pytest.approx(expected_stock_norm)
 
     preferred_div = _first(results, "preferred_dividend")
     assert preferred_div is not None
     preferred_div_norm = _normalize_value(preferred_div, "currency")
-    expected_div_norm = expected["financial_snapshot_blocks"]["capital_structure"]["preferred_dividend"]["normalized"]
+    expected_div_norm = expected["capital_structure"]["preferred_dividend"]["normalized"]
     assert preferred_div_norm == pytest.approx(expected_div_norm)
 
     shares = _first(results, "common_stock_shares_outstanding")
     assert shares is not None
-    assert int(shares.raw_value_text) == expected["financial_snapshot_blocks"]["capital_structure"][
-        "common_stock_shares_outstanding"
-    ]["normalized"]
+    assert int(shares.raw_value_text) == expected["capital_structure"]["common_stock"]["shares_outstanding"][
+        "normalized"
+    ]
 
 
 def test_axs_financial_position_block_extracted():
@@ -81,7 +81,7 @@ def test_axs_financial_position_block_extracted():
     result = _first(results, "financial_position_usd_millions")
     assert result is not None
     parsed = result.parsed_value_json or {}
-    expected_fp = expected["financial_snapshot_blocks"]["financial_position_usd_millions"]
+    expected_fp = expected["financial_position"]
 
     assert parsed.get("years") == expected_fp["years"]
     assert parsed.get("assets", {}).get("bonds") == expected_fp["assets"]["bonds"]
@@ -97,18 +97,21 @@ def test_axs_price_semantics_total_return_extracted():
     result = _first(results, "price_semantics_and_returns")
     assert result is not None
     parsed = result.parsed_value_json or {}
-    expected_price = expected["price_semantics_and_returns"]
+    expected_total = expected["total_return"]
 
-    assert parsed.get("value_line_total_return_as_of") == expected_price["value_line_total_return_as_of"]
+    assert parsed.get("value_line_total_return_as_of") == expected_total["as_of_date"]
     parsed_returns = parsed.get("total_return", {})
-    expected_returns = expected_price["total_return"]
+    expected_returns = {
+        (row["name"], row["window_years"]): row["value_pct"] / 100.0
+        for row in expected_total["series"]
+    }
 
-    for horizon in ("1y", "3y", "5y"):
+    for horizon, window in (("1y", 1), ("3y", 3), ("5y", 5)):
         assert parsed_returns.get("stock", {}).get(horizon) == pytest.approx(
-            expected_returns["stock"][horizon]
+            expected_returns[("this_stock", window)]
         )
         assert parsed_returns.get("index", {}).get(horizon) == pytest.approx(
-            expected_returns["index"][horizon]
+            expected_returns[("vl_arithmetic_index", window)]
         )
 
 
@@ -119,19 +122,22 @@ def test_axs_tables_time_series_extracted():
     result = _first(results, "tables_time_series")
     assert result is not None
     parsed = result.parsed_value_json or {}
-    expected_tables = expected["tables_time_series"]
+    expected_prices = expected["historical_price_range"]
 
     parsed_prices = parsed.get("price_history_high_low", {})
-    expected_prices = expected_tables["price_history_high_low"]
-    assert parsed_prices.get("high") == expected_prices["high"]
-    assert parsed_prices.get("low") == expected_prices["low"]
+    expected_highs = [row["high"] for row in expected_prices]
+    expected_lows = [row["low"] for row in expected_prices]
+    assert parsed_prices.get("high") == expected_highs
+    assert parsed_prices.get("low") == expected_lows
 
     parsed_annual = parsed.get("annual_financials_and_ratios_2015_2026_with_projection_2028_2030", {})
-    expected_annual = expected_tables["annual_financials_and_ratios_2015_2026_with_projection_2028_2030"]
-    assert parsed_annual.get("years") == expected_annual["years"]
-    assert parsed_annual.get("projection_year_range") == expected_annual["projection_year_range"]
+    expected_annual = expected["annual_financials"]
+    years = expected_annual["meta"]["historical_years"]
+    assert parsed_annual.get("years") == years
+    assert parsed_annual.get("projection_year_range") == expected_annual["meta"]["projection_year_range"]
     parsed_eps = parsed_annual.get("per_share", {}).get("earnings_per_share_usd") or []
-    expected_eps = expected_annual["per_share"]["earnings_per_share_usd"]
+    expected_eps_map = expected_annual["per_share_metrics"]["earnings_per_share_usd"]
+    expected_eps = [expected_eps_map[str(year)] for year in years]
     assert len(parsed_eps) == len(expected_eps)
     if parsed_eps and expected_eps:
         assert parsed_eps[0] == pytest.approx(expected_eps[0])

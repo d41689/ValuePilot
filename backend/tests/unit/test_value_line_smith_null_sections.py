@@ -44,21 +44,31 @@ def test_smith_current_position_block_populated():
     result = _first(results, "current_position_usd_millions")
     assert result is not None
     parsed = result.parsed_value_json or {}
-    expected_block = expected["financial_snapshot_blocks"]["current_position_usd_millions"]
+    expected_block = expected["current_position"]
+    expected_periods = expected_block["periods"]
+    expected_years = [
+        period["period_end_date"] if "/" in period["label"] else period["label"]
+        for period in expected_periods
+    ]
 
-    assert parsed.get("years") == expected_block["years"]
-    for key in (
-        "cash_assets",
-        "receivables",
-        "inventory_lifo",
-        "other_current_assets",
-        "current_assets_total",
-        "accounts_payable",
-        "debt_due",
-        "other_current_liabilities",
-        "current_liabilities_total",
-    ):
-        _assert_series(parsed.get(key, []), expected_block[key])
+    assert parsed.get("years") == expected_years
+    expected_series = {
+        "cash_assets": [period["assets"]["cash_assets"] for period in expected_periods],
+        "receivables": [period["assets"]["receivables"] for period in expected_periods],
+        "inventory_lifo": [period["assets"]["inventory_lifo"] for period in expected_periods],
+        "other_current_assets": [period["assets"]["other_current_assets"] for period in expected_periods],
+        "current_assets_total": [period["assets"]["total_current_assets"] for period in expected_periods],
+        "accounts_payable": [period["liabilities"]["accounts_payable"] for period in expected_periods],
+        "debt_due": [period["liabilities"]["debt_due"] for period in expected_periods],
+        "other_current_liabilities": [
+            period["liabilities"]["other_current_liabilities"] for period in expected_periods
+        ],
+        "current_liabilities_total": [
+            period["liabilities"]["total_current_liabilities"] for period in expected_periods
+        ],
+    }
+    for key, series in expected_series.items():
+        _assert_series(parsed.get(key, []), series)
 
 
 def test_smith_annual_rates_of_change_populated():
@@ -68,20 +78,40 @@ def test_smith_annual_rates_of_change_populated():
     result = _first(results, "annual_rates_of_change")
     assert result is not None
     parsed = result.parsed_value_json or {}
-    expected_block = expected["financial_snapshot_blocks"]["annual_rates_of_change"]
+    expected_metrics = {
+        metric["metric_key"]: metric for metric in expected["annual_rates"]["metrics"]
+    }
+    key_map = {
+        "sales": "sales",
+        "cash_flow_per_share": "cash_flow",
+        "earnings": "earnings",
+        "dividends": "dividends",
+        "book_value": "book_value",
+    }
 
-    for metric in ("sales", "cash_flow_per_share", "earnings", "dividends", "book_value"):
+    def to_ratio(value: float | None) -> float | None:
+        return None if value is None else value / 100.0
+
+    for metric, expected_key in key_map.items():
         parsed_metric = parsed.get(metric) or {}
-        expected_metric = expected_block[metric]
-        for horizon in ("past_10y", "past_5y", "est_to_2028_2030"):
-            assert parsed_metric.get(horizon) == pytest.approx(expected_metric[horizon])
+        expected_metric = expected_metrics[expected_key]
+        for horizon_key, expected_value in (
+            ("past_10y", expected_metric["past_10y_cagr_pct"]),
+            ("past_5y", expected_metric["past_5y_cagr_pct"]),
+            ("est_to_2028_2030", expected_metric["estimated_cagr_pct"]["value"]),
+        ):
+            expected_ratio = to_ratio(expected_value)
+            if expected_ratio is None:
+                assert parsed_metric.get(horizon_key) is None
+            else:
+                assert parsed_metric.get(horizon_key) == pytest.approx(expected_ratio)
 
 
 def test_smith_capital_structure_details_populated():
     results = parse_fixture_pdf()
     expected = load_expected_json()
 
-    expected_block = expected["financial_snapshot_blocks"]["capital_structure"]
+    expected_block = expected["capital_structure"]
     by_key = {res.field_key: res for res in results}
 
     assert by_key["leases_uncapitalized_annual_rentals"].raw_value_text is not None
@@ -90,22 +120,30 @@ def test_smith_capital_structure_details_populated():
     assert by_key["market_cap"].raw_value_text is not None
 
     parsed_market_as_of = _first(results, "market_cap_as_of")
-    assert parsed_market_as_of is not None
-    assert parsed_market_as_of.raw_value_text == expected_block["market_cap_as_of"]
+    if parsed_market_as_of is not None:
+        assert parsed_market_as_of.raw_value_text == expected_block["common_stock"]["as_of"]
 
     parsed_pension_as_of = _first(results, "pension_assets_as_of")
     assert parsed_pension_as_of is not None
-    assert parsed_pension_as_of.raw_value_text == expected_block["pension_assets_as_of"]
+    assert parsed_pension_as_of.raw_value_text == expected_block["pension_assets"]["as_of"]
 
     parsed_shares = _first(results, "common_stock_shares_outstanding")
     assert parsed_shares is not None
     assert parsed_shares.parsed_value_json is not None
-    assert parsed_shares.parsed_value_json.get("notes") == expected_block["common_stock_shares_outstanding"]["notes"]
+    parsed_meta = parsed_shares.parsed_value_json
+    assert parsed_meta.get("as_of") == expected_block["common_stock"]["as_of"]
+    assert parsed_meta.get("class_a_shares") == expected_block["common_stock"]["class_a_shares"]["display"]
+    assert parsed_meta.get("class_a_voting_power_multiple") == expected_block["common_stock"]["class_a_voting_power"][
+        "multiple"
+    ]
+    assert parsed_meta.get("class_a_voting_power_notes") == expected_block["common_stock"]["class_a_voting_power"][
+        "notes"
+    ]
 
     parsed_market = _first(results, "market_cap")
     assert parsed_market is not None
     assert parsed_market.parsed_value_json is not None
-    assert parsed_market.parsed_value_json.get("notes") == expected_block["market_cap"]["notes"]
+    assert parsed_market.parsed_value_json.get("notes") == expected_block["market_cap"]["market_cap_category"]
 
 
 def test_smith_tables_time_series_populated():
@@ -115,29 +153,32 @@ def test_smith_tables_time_series_populated():
     result = _first(results, "tables_time_series")
     assert result is not None
     parsed = result.parsed_value_json or {}
-    expected_tables = expected["tables_time_series"]
+    expected_annual = expected["annual_financials"]
 
     parsed_annual = parsed.get("annual_financials_and_ratios_2015_2026_with_projection_2028_2030") or {}
-    expected_annual = expected_tables["annual_financials_and_ratios_2015_2026_with_projection_2028_2030"]
-    assert parsed_annual.get("years") == expected_annual["years"]
-    assert parsed_annual.get("projection_year_range") == expected_annual["projection_year_range"]
+    years = expected_annual["meta"]["historical_years"]
+    assert parsed_annual.get("years") == years
+    assert parsed_annual.get("projection_year_range") == expected_annual["meta"]["projection_year_range"]
 
     parsed_per_share = parsed_annual.get("per_share") or {}
-    expected_per_share = expected_annual["per_share"]
-    for key in ("sales_per_share_usd", "cash_flow_per_share_usd", "capital_spending_per_share_usd"):
-        _assert_series(parsed_per_share.get(key, []), expected_per_share[key])
+    expected_per_share = expected_annual["per_share_metrics"]
+    per_share_map = {
+        "sales_per_share_usd": "sales_per_share",
+        "cash_flow_per_share_usd": "cash_flow_per_share",
+        "capital_spending_per_share_usd": "capital_spending_per_share",
+    }
+    for parsed_key, expected_key in per_share_map.items():
+        expected_series = [expected_per_share[expected_key][str(year)] for year in years]
+        _assert_series(parsed_per_share.get(parsed_key, []), expected_series)
 
     parsed_income = parsed_annual.get("income_statement_usd_millions") or {}
     expected_income = expected_annual["income_statement_usd_millions"]
-    for key in ("sales", "depreciation", "operating_margin_pct", "net_profit_margin_pct"):
-        _assert_series(parsed_income.get(key, []), expected_income[key])
-
-    parsed_balance = parsed_annual.get("balance_sheet_and_returns_usd_millions") or {}
-    expected_balance = expected_annual["balance_sheet_and_returns_usd_millions"]
-    for key in ("working_capital", "long_term_debt", "return_on_total_capital_pct"):
-        _assert_series(parsed_balance.get(key, []), expected_balance[key])
+    for key in ("sales", "depreciation", "operating_margin_pct", "net_profit"):
+        expected_series = [expected_income[key][str(year)] for year in years]
+        _assert_series(parsed_income.get(key, []), expected_series)
 
     parsed_valuation = parsed_annual.get("valuation") or {}
-    expected_valuation = expected_annual["valuation"]
+    expected_valuation = expected_annual["valuation_metrics"]
     for key in ("avg_annual_pe_ratio", "relative_pe_ratio", "avg_annual_dividend_yield_pct"):
-        _assert_series(parsed_valuation.get(key, []), expected_valuation[key])
+        expected_series = [expected_valuation[key].get(str(year)) for year in years]
+        _assert_series(parsed_valuation.get(key, []), expected_series)

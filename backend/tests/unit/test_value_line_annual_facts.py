@@ -24,8 +24,8 @@ def test_upload_writes_annual_facts_latest_actual_and_estimate(client, db_sessio
     db_session.commit()
 
     expected = load_expected_json()
-    annual = expected["tables_time_series"]["annual_financials_and_ratios_2015_2026_with_projection_2028_2030"]
-    years = annual["years"]
+    annual = expected["annual_financials"]
+    years = annual["meta"]["historical_years"]
     actual_year = years[-2]
     estimate_year = years[-1]
 
@@ -81,10 +81,11 @@ def test_upload_writes_annual_facts_latest_actual_and_estimate(client, db_sessio
     assert actual_fact.period_type == "FY"
     assert actual_fact.value_json.get("is_estimate") in (False, None)
 
-    expected_actual = annual["income_statement_usd_millions"]["net_profit"][years.index(actual_year)]
+    net_profit = annual["income_statement_usd_millions"]["net_profit"]
+    expected_actual = net_profit[str(actual_year)]
     assert actual_fact.value_numeric == expected_actual * 1_000_000.0
 
-    expected_estimate = annual["income_statement_usd_millions"]["net_profit"][years.index(estimate_year)]
+    expected_estimate = net_profit.get(str(estimate_year))
     if expected_estimate is None:
         assert estimate_fact is None
     else:
@@ -114,7 +115,7 @@ def test_upload_writes_annual_facts_latest_actual_and_estimate(client, db_sessio
         None,
     )
     assert actual_dividend is not None
-    expected_dividend = annual["valuation"]["avg_annual_dividend_yield_pct"][years.index(actual_year)]
+    expected_dividend = annual["valuation_metrics"]["avg_annual_dividend_yield_pct"][str(actual_year)]
     assert actual_dividend.value_numeric == expected_dividend / 100.0
 
     estimate_dividend = next(
@@ -125,7 +126,7 @@ def test_upload_writes_annual_facts_latest_actual_and_estimate(client, db_sessio
         ),
         None,
     )
-    expected_estimate = annual["valuation"]["avg_annual_dividend_yield_pct"][years.index(estimate_year)]
+    expected_estimate = annual["valuation_metrics"]["avg_annual_dividend_yield_pct"].get(str(estimate_year))
     if expected_estimate is None:
         assert estimate_dividend is None
     else:
