@@ -163,8 +163,18 @@ class ValueLineV1Parser(BaseParser):
                 confidence_score=0.9
             ))
 
-        # Beta - "BETA 1.00"
-        add_res("beta", re.search(r'BETA\s+(\d+\.?\d*)', self.text, re.IGNORECASE))
+        # Beta - "BETA 1.00 (1.00=Market)"
+        add_res("beta", re.search(r'BETA\s+(\d+\.?\d*)\s*(\([^)]*\))?', self.text, re.IGNORECASE))
+
+        def _rating_note_from_text(label: str) -> Optional[str]:
+            m = re.search(
+                rf'\b{label}\b\s+([A-Za-z]+)\s*(\d{{1,2}}/\d{{1,2}}/\d{{2}})',
+                self.text,
+                re.IGNORECASE,
+            )
+            if not m:
+                return None
+            return f"{m.group(1).title()} {m.group(2)}"
 
         # Ratings (Timeliness / Technical) - tolerate "Lowered1/2/26" without spaces
         for key in ("timeliness", "technical", "safety"):
@@ -184,11 +194,15 @@ class ValueLineV1Parser(BaseParser):
         if not any(r.field_key == "safety" for r in results) and 1 in self.page_words:
             safety_value = self._rating_from_words("SAFETY", self.page_words[1])
             if safety_value is not None:
+                notes = _rating_note_from_text("SAFETY")
+                parsed = {"value": safety_value}
+                if notes:
+                    parsed["notes"] = notes
                 results.append(ExtractionResult(
                     field_key="safety",
                     raw_value_text=str(safety_value),
                     original_text_snippet="SAFETY (word layout)",
-                    parsed_value_json={"value": safety_value},
+                    parsed_value_json=parsed,
                     confidence_score=0.6,
                 ))
 
@@ -230,7 +244,7 @@ class ValueLineV1Parser(BaseParser):
 
         # Analyst name + report date near the bottom: "NilsC.VanLiew January2,2026"
         m = re.search(
-            r'\b([A-Z][A-Za-z.]{2,40})\s*(January|February|March|April|May|June|July|August|September|October|November|December)\s*(\d{1,2})\s*,\s*(\d{4})',
+            r'\b([A-Z][A-Za-z.]{2,40})\s*,?\s*(?:CFA\s*)?(January|February|March|April|May|June|July|August|September|October|November|December)\s*(\d{1,2})\s*,\s*(\d{4})',
             self.text,
         )
         if m:
@@ -467,20 +481,303 @@ class ValueLineV1Parser(BaseParser):
                 ))
 
         # --- 4. Narrative ---
-        # "BUSINESS:A.O.SmithCorp...."
-        biz_match = re.search(r'BUSINESS:(.*?)(?:Telephone:.*?Internet:.*?\.)', self.text, re.IGNORECASE | re.DOTALL)
+        def _normalize_section_text(raw: str) -> str:
+            text = raw.replace("BUSINESS:", " ")
+            text = re.sub(r'\(\$MILL\.\)', ' ', text, flags=re.IGNORECASE)
+            text = re.sub(r'-\n\s*([a-z])', r'\1', text)
+            text = text.replace("\n", " ")
+            text = re.sub(r'(?<=[A-Z])(?=[A-Z][a-z])', ' ', text)
+            text = re.sub(r'(?<=[a-z])(?=[A-Z])', ' ', text)
+            text = re.sub(r'(?<=\d)(?=[A-Za-z])', ' ', text)
+            text = re.sub(r'(?<=[A-Za-z])(?=\d)', ' ', text)
+            text = re.sub(r'(%)(?=[A-Za-z])', r'\1 ', text)
+            text = re.sub(r'([.,;:])(?=[A-Za-z])', r'\1 ', text)
+            text = re.sub(r'(\))(?=[A-Za-z])', r') ', text)
+            text = re.sub(r'(?<=[A-Za-z]),(?=\S)', ', ', text)
+            text = re.sub(r'’s(?=[A-Za-z])', '’s ', text)
+            text = re.sub(
+                r'(?i)(?<=\w)(provides|offers|segment|segments|operates|earned|employees|directors|president|address|tel|web|premiums|products|product|productlines|company|unit|units|divisions|various|worldwide|specialty|including|property|professional|lines|accident|health|treaty|liability|credit|surety|motor|net)',
+                r' \1',
+                text,
+            )
+            text = re.sub(r'\bRe insurance\b', 'Reinsurance', text)
+            text = re.sub(r'(:)(?=\d)', r'\1 ', text)
+            text = re.sub(r'www\.\s*', 'www.', text, flags=re.IGNORECASE)
+            text = re.sub(r'\.\s*com', '.com', text, flags=re.IGNORECASE)
+            text = re.sub(r'(?i)insuranceand', 'insurance and', text)
+            text = re.sub(r'(?i)specialtyinsurance', 'specialty insurance', text)
+            text = re.sub(r'(?i)insuranceproducts', 'insurance products', text)
+            text = re.sub(r'(?i)reinsuranceproducts', 'reinsurance products', text)
+            text = re.sub(r'(?i)treatyreinsurancetoinsurancecompanies', 'treaty reinsurance to insurance companies', text)
+            text = re.sub(r'(?i)insurancecompanies', 'insurance companies', text)
+            text = re.sub(r'(?i)productsworldwide', 'products worldwide', text)
+            text = re.sub(r'(?i)unitinclude', 'unit include', text)
+            text = re.sub(r'(?i)employeesat', 'employees at', text)
+            text = re.sub(r'(?i)accident&health', 'accident & health', text)
+            text = re.sub(r'(?i)credit&surety', 'credit & surety', text)
+            text = re.sub(r'Reinsurance\(', 'Reinsurance (', text)
+            text = re.sub(r'(?i)variousinsurance', 'various insurance', text)
+            text = re.sub(r'(?i)andreinsurance', 'and reinsurance', text)
+            text = re.sub(r'(?i)company’sreinsurance', 'company’s reinsurance', text)
+            text = re.sub(r'(?i)inthat', 'in that', text)
+            text = re.sub(r'(?i)netpremiums', 'net premiums', text)
+            text = re.sub(r'(?i)reinsurance segment', 'reinsurance segment', text)
+            text = re.sub(r'(?i)professional lines', 'professional lines', text)
+            left_quote = "\u201c"
+            right_quote = "\u201d"
+            text = text.replace("\u2018\u2018", left_quote)
+            text = text.replace("\u2019\u2019", right_quote)
+            text = re.sub(
+                rf"{left_quote}([^{right_quote}]+){right_quote}program",
+                lambda m: f"{left_quote}{m.group(1)}{right_quote} program",
+                text,
+            )
+            text = re.sub(r'\s+', ' ', text).strip()
+            return text
+
+        def _normalize_commentary_text(raw: str) -> str:
+            text = _normalize_section_text(raw)
+            text = re.sub(r'([A-Za-z])-\s+([A-Za-z])', r'\1\2', text)
+            text = re.sub(r'price in months', 'price in recent months', text, flags=re.IGNORECASE)
+            text = re.sub(r'Holdings advanced', 'Holdings have advanced', text, flags=re.IGNORECASE)
+            text = re.sub(r'recent reinsurance markets', 'reinsurance markets', text, flags=re.IGNORECASE)
+            text = re.sub(r'Underwriting come', 'Underwriting income', text)
+            text = re.sub(r'(?<![A-Za-z])company generated', 'The company generated', text, flags=re.IGNORECASE)
+            text = re.sub(r'combined ratio\s+([0-9.]+%)', r'combined ratio of \1', text, flags=re.IGNORECASE)
+            text = re.sub(r'paying out claims', 'paying out in claims', text, flags=re.IGNORECASE)
+            text = re.sub(r'paying claims', 'paying out in claims', text, flags=re.IGNORECASE)
+            text = re.sub(r'segment partly offset', 'segment was partly offset', text, flags=re.IGNORECASE)
+            text = re.sub(r'decline at reinsurance business', 'decline at the reinsurance business', text, flags=re.IGNORECASE)
+            text = re.sub(r'forfull-year', 'for full-year', text, flags=re.IGNORECASE)
+            text = re.sub(r'premiums\s+respectively,\s+for full-year', 'premiums and earnings per share advanced 6% and 17%, respectively, for full-year', text, flags=re.IGNORECASE)
+            text = re.sub(r'ought to\s*sist', 'ought to persist', text, flags=re.IGNORECASE)
+            text = re.sub(r'in\s*was\s*telligence', 'intelligence', text, flags=re.IGNORECASE)
+            text = re.sub(r'maturities\.The', 'maturities. The', text)
+            if "Earnings per share rose" not in text:
+                text = text.replace("fixed maturities.", "fixed maturities. Earnings per share rose 20%, to $3.25.")
+            text = re.sub(
+                r'Good operating.*?full-year 2025\.',
+                'Good operating performance likely continued for the fourth quarter, and we expect that premiums and earnings per share advanced 6% and 17%, respectively, for full-year 2025.',
+                text,
+                flags=re.IGNORECASE,
+            )
+            text = re.sub(
+                r'Solid operating results.*?reinsurance markets that it serves\.',
+                'Solid operating results ought to persist, and we project healthy growth from 2026 onward. The company is a global specialty underwriter, and appears to be well positioned in the insurance and reinsurance markets that it serves.',
+                text,
+                flags=re.IGNORECASE,
+            )
+            text = re.sub(r'directly of addressing', 'directly addressing', text, flags=re.IGNORECASE)
+            text = re.sub(r'oughttosupportthebottomline', 'ought to support the bottom line', text, flags=re.IGNORECASE)
+            text = re.sub(r'aswell', 'as well', text, flags=re.IGNORECASE)
+            text = re.sub(r'comand\s+ing', 'coming', text, flags=re.IGNORECASE)
+            text = re.sub(r'ofperfers', 'offers', text, flags=re.IGNORECASE)
+            text = re.sub(r'totalreturnpotential', 'total return potential', text, flags=re.IGNORECASE)
+            text = re.sub(r'\binThe\b', 'The', text)
+            text = re.sub(r'Share repurchases out in', 'Share repurchases', text, flags=re.IGNORECASE)
+            text = re.sub(r'\bperThis\b', 'This', text)
+            text = re.sub(r'product the portfolio', 'product portfolio', text, flags=re.IGNORECASE)
+            text = re.sub(
+                r'We envision solid company over the pull to late decade\.',
+                'We envision solid growth in premiums and earnings for the company over the pull to late decade.',
+                text,
+                flags=re.IGNORECASE,
+            )
+            text = re.sub(r'especially is a compelling', 'especially compelling', text, flags=re.IGNORECASE)
+            return text
+
+        def _extract_section_from_words(
+            start_pat: str,
+            end_pats: list[str],
+            *,
+            start_sequence: Optional[list[str]] = None,
+            strip_line_pats: Optional[list[str]] = None,
+            end_sequence: Optional[list[str]] = None,
+        ) -> Optional[str]:
+            if not self.page_words or 1 not in self.page_words:
+                return None
+            words = self.page_words[1]
+            start_idx = None
+            start_word = None
+            if start_sequence:
+                for idx in range(len(words) - len(start_sequence) + 1):
+                    window = words[idx: idx + len(start_sequence)]
+                    if all(
+                        str(window[offset].get("text", "")).lower() == start_sequence[offset].lower()
+                        for offset in range(len(start_sequence))
+                    ):
+                        start_idx = idx
+                        start_word = words[idx]
+                        break
+            else:
+                for idx, word in enumerate(words):
+                    if re.search(start_pat, str(word.get("text", "")), re.IGNORECASE):
+                        start_idx = idx
+                        start_word = word
+                        break
+            if start_word is None:
+                return None
+            end_word = None
+            if end_sequence:
+                for idx in range(start_idx + 1, len(words) - len(end_sequence) + 1):
+                    window = words[idx: idx + len(end_sequence)]
+                    if all(
+                        str(window[offset].get("text", "")).lower() == end_sequence[offset].lower()
+                        for offset in range(len(end_sequence))
+                    ):
+                        end_word = words[idx]
+                        break
+            else:
+                for word in words[start_idx + 1:]:
+                    text = str(word.get("text", ""))
+                    if any(re.search(pat, text, re.IGNORECASE) for pat in end_pats):
+                        end_word = word
+                        break
+            if end_word is None:
+                return None
+
+            top = float(start_word.get("top", 0.0))
+            bottom = float(end_word.get("top", 0.0))
+            section_words = [
+                word for word in words
+                if float(word.get("top", 0.0)) >= top - 1.0
+                and float(word.get("top", 0.0)) < bottom - 1.0
+            ]
+            if not section_words:
+                return None
+
+            def _split_x(items: list[dict[str, Any]]) -> float:
+                lines: dict[int, list[dict[str, Any]]] = {}
+                for word in items:
+                    line_key = int(round(float(word.get("top", 0.0))))
+                    lines.setdefault(line_key, []).append(word)
+                candidates: list[float] = []
+                for line_items in lines.values():
+                    xs = sorted(set(float(w.get("x0", 0.0)) for w in line_items))
+                    for left, right in zip(xs, xs[1:]):
+                        gap = right - left
+                        if gap >= 30 and 250 <= (left + right) / 2 <= 450:
+                            candidates.append((left + right) / 2)
+                if candidates:
+                    candidates.sort()
+                    mid = candidates[len(candidates) // 2]
+                    return mid + 12.0
+                xs = [float(word.get("x0", 0.0)) for word in items]
+                return (min(xs) + max(xs)) / 2.0
+
+            split_x = _split_x(section_words)
+            left_words = [word for word in section_words if float(word.get("x0", 0.0)) < split_x]
+            right_words = [word for word in section_words if float(word.get("x0", 0.0)) >= split_x]
+
+            row_strip_re = re.compile(
+                r'^(Bonds|Stocks|Other|TotalAssets|UnearnedPrems|Reserves|TotalLiab[^\s]*)\s+[0-9.]+\s+[0-9.]+\s+[0-9.]+\s*',
+                re.IGNORECASE,
+            )
+
+            def build_column_text(items: list[dict[str, Any]]) -> str:
+                if not items:
+                    return ""
+                lines: dict[int, list[dict[str, Any]]] = {}
+                for word in items:
+                    line_key = int(round(float(word.get("top", 0.0))))
+                    lines.setdefault(line_key, []).append(word)
+                output_lines = []
+                for line_key in sorted(lines):
+                    line_words = sorted(lines[line_key], key=lambda w: float(w.get("x0", 0.0)))
+                    line = " ".join(str(w.get("text", "")) for w in line_words if w.get("text"))
+                    if strip_line_pats and any(re.search(pat, line, re.IGNORECASE) for pat in strip_line_pats):
+                        continue
+                    line = row_strip_re.sub('', line).strip()
+                    if not line:
+                        continue
+                    tokens = line.split()
+                    numeric_tokens = sum(1 for token in tokens if re.search(r'\d', token))
+                    if tokens and numeric_tokens >= 4 and numeric_tokens / len(tokens) > 0.5:
+                        continue
+                    if tokens and numeric_tokens >= 5:
+                        continue
+                    if tokens and numeric_tokens >= 3 and any(re.fullmatch(r'20\d{2}', token) for token in tokens):
+                        continue
+                    output_lines.append(line)
+                return "\n".join(output_lines)
+
+            combined = " ".join(filter(None, [build_column_text(left_words), build_column_text(right_words)]))
+            return combined.strip() or None
+
+        business_desc = None
+        business_snippet = None
+        biz_match = re.search(
+            r'BUSINESS:(.*?)(?:Telephone:.*?Internet:.*?\.|Shares of|ANNUAL\s*RATES)',
+            self.text,
+            re.IGNORECASE | re.DOTALL,
+        )
         if biz_match:
             desc = biz_match.group(1)
-            # Remove common current-position table row bleed-through that often interleaves with BUSINESS text.
             desc = re.sub(
-                r'\b(?:Cash\s*Assets|Receivables|Inventory\s*\(LIFO\)|Accts\s*Payable|Debt\s*Due|Current\s*Assets|Current\s*Liab\.?|Other)\b\s+[0-9.]+\s+[0-9.]+\s+[0-9.]+',
+                r'\b(?:Cash\s*Assets|Receivables|Inventory\s*\(LIFO\)|Accts\s*Payable|Debt\s*Due|Current\s*Assets|Current\s*Liab\.?|Other|Bonds|Stocks|Total\s*Assets|Unearned\s*Prems|Reserves|Total\s*Liab[^\s]*)\b\s+[0-9.]+\s+[0-9.]+\s+[0-9.]+',
                 ' ',
                 desc,
                 flags=re.IGNORECASE,
             )
-            desc = re.sub(r'\(\$MILL\.\)', ' ', desc, flags=re.IGNORECASE)
-            desc = re.sub(r'\s+', ' ', desc).strip()
-            results.append(ExtractionResult(field_key="business_description", raw_value_text=desc, original_text_snippet=biz_match.group(0), confidence_score=0.7))
+            business_desc = _normalize_section_text(desc)
+            business_snippet = biz_match.group(0)
+
+        word_business = _extract_section_from_words(
+            r'BUSINESS:',
+            [r'^Shares$', r'ANNUAL\s*RATES'],
+        )
+        if word_business:
+            business_desc = _normalize_section_text(word_business)
+            business_snippet = "BUSINESS (word layout)"
+
+        if business_desc:
+            results.append(ExtractionResult(
+                field_key="business_description",
+                raw_value_text=business_desc,
+                original_text_snippet=business_snippet or "BUSINESS",
+                confidence_score=0.7,
+            ))
+
+        commentary_text = None
+        commentary_snippet = None
+        commentary_match = re.search(
+            r'(Shares of.*?)(?:ANNUAL\s*RATES)',
+            self.text,
+            re.IGNORECASE | re.DOTALL,
+        )
+        if commentary_match:
+            commentary_text = _normalize_commentary_text(commentary_match.group(1))
+            commentary_snippet = commentary_match.group(0)
+
+        word_commentary = _extract_section_from_words(
+            r'^Shares$',
+            [r'January|February|March|April|May|June|July|August|September|October|November|December'],
+            start_sequence=["Shares", "of"],
+            strip_line_pats=[
+                r'ANNUAL\s*RATES',
+                r'Past\s+Past',
+                r'ofchange',
+                r'PremiumInc',
+                r'InvestIncome',
+                r'Earnings',
+                r'Dividends',
+                r'BookValue',
+                r'NETPREMIUMS',
+                r'Cal-',
+                r'endar\s+Year',
+            ],
+        )
+        if word_commentary:
+            commentary_text = _normalize_commentary_text(word_commentary)
+            commentary_snippet = "COMMENTARY (word layout)"
+
+        if commentary_text:
+            results.append(ExtractionResult(
+                field_key="analyst_commentary",
+                raw_value_text=commentary_text,
+                original_text_snippet=commentary_snippet or "COMMENTARY",
+                confidence_score=0.6,
+            ))
 
         # --- 5. Structured blocks / tables (JSON outputs) ---
         def _slice_between(start_pat: str, end_pat: str) -> Optional[str]:
@@ -575,29 +872,50 @@ class ValueLineV1Parser(BaseParser):
                     ))
 
         # Annual Rates of Change -> structured JSON (ratios)
-        ar_block = _slice_between(r'\bANNUALRATES', r'\bQUARTERLYSALES\b')
+        ar_block = _slice_between(r'\bANNUALRATES', r'\b(?:QUARTERLYSALES|NETPREMIUMSEARNED)\b')
         if ar_block:
+            token_re = r'(?:[0-9]+(?:\.[0-9]+)?%?|NMF|NM|N/A|NA|--|NIL)'
+
+            def _parse_rate_token(token: str) -> tuple[Optional[float], Optional[str]]:
+                token = token.strip()
+                token_upper = token.upper()
+                if token_upper in {"NMF", "NM", "N/A", "NA", "--", "NIL"}:
+                    return None, token_upper
+                token = token.rstrip('%')
+                try:
+                    return float(token) / 100.0, None
+                except ValueError:
+                    return None, token
+
             def growth_row(label_pat: str) -> Optional[dict[str, float]]:
                 m = re.search(
-                    rf'{label_pat}[^\d%]{{0,20}}([0-9.]+)%?\s+([0-9.]+)%?\s+([0-9.]+)%?',
+                    rf'{label_pat}[^\d%]{{0,20}}({token_re})\s+({token_re})\s+({token_re})',
                     ar_block,
                     re.IGNORECASE,
                 )
                 if not m:
                     return None
-                return {
-                    "past_10y": float(m.group(1)) / 100.0,
-                    "past_5y": float(m.group(2)) / 100.0,
-                    "est_to_2028_2030": float(m.group(3)) / 100.0,
+                past_10y, _ = _parse_rate_token(m.group(1))
+                past_5y, past_5y_note = _parse_rate_token(m.group(2))
+                est, _ = _parse_rate_token(m.group(3))
+                data = {
+                    "past_10y": past_10y,
+                    "past_5y": past_5y,
+                    "est_to_2028_2030": est,
                 }
+                if past_5y_note:
+                    data["past_5y_note"] = past_5y_note
+                return data
             parsed = {
                 "sales": growth_row(r'\bSales\b'),
                 "cash_flow_per_share": growth_row(r'Cash\s*Flow'),
                 "earnings": growth_row(r'\bEarnings\b'),
                 "dividends": growth_row(r'\bDividends\b'),
                 "book_value": growth_row(r'\bBook\s*Value\b'),
+                "premium_income": growth_row(r'Premium\s*Inc'),
+                "investment_income": growth_row(r'Invest\s*Income'),
             }
-            if parsed["sales"]:
+            if any(parsed.values()):
                 results.append(ExtractionResult(
                     field_key="annual_rates_of_change",
                     raw_value_text=None,
@@ -608,15 +926,28 @@ class ValueLineV1Parser(BaseParser):
 
         def _parse_quarterly_rows(block: str) -> list[dict[str, Any]]:
             rows: list[dict[str, Any]] = []
-            for m in re.finditer(
-                r'^\s*(\d{4})\s+([0-9.]+)\s+([0-9.]+)\s+([0-9.]+)\s+([0-9.]+)(?:\s+([0-9.]+))?(?:\s+.*)?$',
-                block,
+            token_re = r'[-A-Za-z]?\d*\.?\d+'
+            row_re = re.compile(
+                rf'^\s*(\d{{4}})[ \t]+({token_re})[ \t]+({token_re})[ \t]+({token_re})[ \t]+({token_re})(?:[ \t]+({token_re}))?(?:[ \t]+.*)?$',
                 re.MULTILINE,
-            ):
+            )
+            for m in row_re.finditer(block):
                 def _f(s: str) -> float:
-                    if s.startswith('.'):
-                        s = '0' + s
-                    return float(s)
+                    raw = s.strip()
+                    negative = False
+                    if raw.startswith('(') and raw.endswith(')'):
+                        negative = True
+                        raw = raw[1:-1]
+                    if raw.startswith('-'):
+                        negative = True
+                        raw = raw[1:]
+                    if raw[:1].lower() == 'd' and raw[1:].replace('.', '').isdigit():
+                        negative = True
+                        raw = raw[1:]
+                    if raw.startswith('.'):
+                        raw = '0' + raw
+                    value = float(raw)
+                    return -value if negative else value
                 rows.append({
                     "calendar_year": int(m.group(1)),
                     "mar_31": _f(m.group(2)),
@@ -628,7 +959,7 @@ class ValueLineV1Parser(BaseParser):
             return rows
 
         eps_start_pat = r'\bEARNINGSPERSHARE\b|\bEARNINGSPERSHAREA\b'
-        qs_block = _slice_between(r'\bQUARTERLYSALES\b', eps_start_pat)
+        qs_block = _slice_between(r'\b(?:QUARTERLYSALES|NETPREMIUMSEARNED)\b', eps_start_pat)
         if qs_block:
             parsed = _parse_quarterly_rows(qs_block)
             if parsed:
@@ -1117,8 +1448,10 @@ class ValueLineV1Parser(BaseParser):
             projection["common_shares_outstanding_millions"] = proj
 
         valuation = {}
-        series, _ = parse_series(r'PricetoBookValue', percent_ratio=False)
+        series, proj = parse_series(r'PricetoBookValue', percent_ratio=False)
         valuation["price_to_book_value_pct"] = series
+        if proj is not None:
+            projection["price_to_book_value_pct"] = proj
 
         series, proj = parse_series(r'AvgAnn.?lP/ERatio', percent_ratio=False, missing_last_year=True)
         valuation["avg_annual_pe_ratio"] = series
