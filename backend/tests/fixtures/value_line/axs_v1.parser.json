@@ -189,7 +189,7 @@
       "normalized": 70000000.0,
       "unit": "USD"
     },
-    "debt_percent_of_capital": {
+    "lt_interest_percent_of_capital": {
       "display": "17%",
       "normalized": 0.17,
       "unit": "ratio"
@@ -205,10 +205,12 @@
       "normalized": 30300000.0,
       "unit": "USD"
     },
-    "common_stock_shares_outstanding": {
-      "display": "77037743",
-      "normalized": 77037743.0,
-      "unit": "shares",
+    "common_stock": {
+      "shares_outstanding": {
+        "display": "77037743",
+        "normalized": 77037743.0,
+        "unit": "shares"
+      },
       "as_of": "2025-10-24"
     },
     "market_cap": {
@@ -322,136 +324,6 @@
           "from_period": "2022-2024",
           "to_period": "2028-2030",
           "value": 16.5
-        }
-      }
-    ]
-  },
-  "net_premiums_earned": {
-    "unit": "USD_millions",
-    "by_year": [
-      {
-        "calendar_year": 2022,
-        "quarters": {
-          "Q1": {
-            "period_end": "2022-03-31",
-            "value": 1258.2
-          },
-          "Q2": {
-            "period_end": "2022-06-30",
-            "value": 1277.1
-          },
-          "Q3": {
-            "period_end": "2022-09-30",
-            "value": 1284.9
-          },
-          "Q4": {
-            "period_end": "2022-12-31",
-            "value": 1340.1
-          }
-        },
-        "full_year": {
-          "value": 5160.3,
-          "is_estimated": false
-        }
-      },
-      {
-        "calendar_year": 2023,
-        "quarters": {
-          "Q1": {
-            "period_end": "2023-03-31",
-            "value": 1230.2
-          },
-          "Q2": {
-            "period_end": "2023-06-30",
-            "value": 1265.7
-          },
-          "Q3": {
-            "period_end": "2023-09-30",
-            "value": 1322.6
-          },
-          "Q4": {
-            "period_end": "2023-12-31",
-            "value": 1265.3
-          }
-        },
-        "full_year": {
-          "value": 5083.8,
-          "is_estimated": false
-        }
-      },
-      {
-        "calendar_year": 2024,
-        "quarters": {
-          "Q1": {
-            "period_end": "2024-03-31",
-            "value": 1258.0
-          },
-          "Q2": {
-            "period_end": "2024-06-30",
-            "value": 1304.5
-          },
-          "Q3": {
-            "period_end": "2024-09-30",
-            "value": 1366.7
-          },
-          "Q4": {
-            "period_end": "2024-12-31",
-            "value": 1377.0
-          }
-        },
-        "full_year": {
-          "value": 5306.2,
-          "is_estimated": false
-        }
-      },
-      {
-        "calendar_year": 2025,
-        "quarters": {
-          "Q1": {
-            "period_end": "2025-03-31",
-            "value": 1340.8
-          },
-          "Q2": {
-            "period_end": "2025-06-30",
-            "value": 1393.4
-          },
-          "Q3": {
-            "period_end": "2025-09-30",
-            "value": 1451.9
-          },
-          "Q4": {
-            "period_end": "2025-12-31",
-            "value": 1463.9
-          }
-        },
-        "full_year": {
-          "value": 5650.0,
-          "is_estimated": true
-        }
-      },
-      {
-        "calendar_year": 2026,
-        "quarters": {
-          "Q1": {
-            "period_end": "2026-03-31",
-            "value": 1425.0
-          },
-          "Q2": {
-            "period_end": "2026-06-30",
-            "value": 1450.0
-          },
-          "Q3": {
-            "period_end": "2026-09-30",
-            "value": 1475.0
-          },
-          "Q4": {
-            "period_end": "2026-12-31",
-            "value": 1500.0
-          }
-        },
-        "full_year": {
-          "value": 5850.0,
-          "is_estimated": true
         }
       }
     ]
@@ -1040,5 +912,135 @@
     "analyst_commentary": "Shares of Axis Capital Holdings have advanced nicely in price in recent months. The company reported favorable comparisons for the 2025 third quarter. Net premiums earned increased roughly 6%, on a year-over-year basis. Healthy growth from the insurance segment was partly offset by a modest decline at the reinsurance business. Underwriting income of $541 million marked an increase of 22% on a year-to-year basis. Net investment income decreased somewhat, though, due to lower income from fixed maturities. Earnings per share rose 20%, to $3.25. The company generated a combined ratio of 89.5% for the recent period. A combined ratio of less than 100% generally indicates that an insurance company is earning more in premiums than it is paying out in claims and expenses. Good operating performance likely continued for the fourth quarter, and we expect that premiums and earnings per share advanced 6% and 17%, respectively, for full-year 2025. Solid operating results ought to persist, and we project healthy growth from 2026 onward. The company is a global specialty underwriter, and appears to be well positioned in the insurance and reinsurance markets that it serves. Its \u201cHow We Work\u201d program is driving operational improvements throughout the organization, supported by investments in data, technology, and artificial intelligence. Enhancements to the product portfolio should also continue to bear fruit. The recent introduction of AXIS Capacity Solutions also appears promising. This is a new line that will develop and support structured and multiline portfolio capacity transactions, which will serve the company\u2019s distribution partners, while directly addressing a rising trend across the global specialty insurance market. The multiline market is growing faster than the broader insurance market. Share repurchases ought to support the bottom line, as well. This stock is ranked to track the broader market averages for the coming six to 12 months. We envision solid growth in premiums and earnings for the company over the pull to late decade. From the recent quotation, this stock offers respectable, though not especially compelling, total return potential.",
     "analyst_name": "Michael Napoli",
     "commentary_date": "2026-01-09"
+  },
+  "net_premiums_earned": {
+    "unit": "USD_millions",
+    "by_year": [
+      {
+        "calendar_year": 2022,
+        "quarters": {
+          "Q1": {
+            "period_end": "2022-03-31",
+            "value": 1258.2
+          },
+          "Q2": {
+            "period_end": "2022-06-30",
+            "value": 1277.1
+          },
+          "Q3": {
+            "period_end": "2022-09-30",
+            "value": 1284.9
+          },
+          "Q4": {
+            "period_end": "2022-12-31",
+            "value": 1340.1
+          }
+        },
+        "full_year": {
+          "value": 5160.3,
+          "is_estimated": false
+        }
+      },
+      {
+        "calendar_year": 2023,
+        "quarters": {
+          "Q1": {
+            "period_end": "2023-03-31",
+            "value": 1230.2
+          },
+          "Q2": {
+            "period_end": "2023-06-30",
+            "value": 1265.7
+          },
+          "Q3": {
+            "period_end": "2023-09-30",
+            "value": 1322.6
+          },
+          "Q4": {
+            "period_end": "2023-12-31",
+            "value": 1265.3
+          }
+        },
+        "full_year": {
+          "value": 5083.8,
+          "is_estimated": false
+        }
+      },
+      {
+        "calendar_year": 2024,
+        "quarters": {
+          "Q1": {
+            "period_end": "2024-03-31",
+            "value": 1258.0
+          },
+          "Q2": {
+            "period_end": "2024-06-30",
+            "value": 1304.5
+          },
+          "Q3": {
+            "period_end": "2024-09-30",
+            "value": 1366.7
+          },
+          "Q4": {
+            "period_end": "2024-12-31",
+            "value": 1377.0
+          }
+        },
+        "full_year": {
+          "value": 5306.2,
+          "is_estimated": false
+        }
+      },
+      {
+        "calendar_year": 2025,
+        "quarters": {
+          "Q1": {
+            "period_end": "2025-03-31",
+            "value": 1340.8
+          },
+          "Q2": {
+            "period_end": "2025-06-30",
+            "value": 1393.4
+          },
+          "Q3": {
+            "period_end": "2025-09-30",
+            "value": 1451.9
+          },
+          "Q4": {
+            "period_end": "2025-12-31",
+            "value": 1463.9
+          }
+        },
+        "full_year": {
+          "value": 5650.0,
+          "is_estimated": true
+        }
+      },
+      {
+        "calendar_year": 2026,
+        "quarters": {
+          "Q1": {
+            "period_end": "2026-03-31",
+            "value": 1425.0
+          },
+          "Q2": {
+            "period_end": "2026-06-30",
+            "value": 1450.0
+          },
+          "Q3": {
+            "period_end": "2026-09-30",
+            "value": 1475.0
+          },
+          "Q4": {
+            "period_end": "2026-12-31",
+            "value": 1500.0
+          }
+        },
+        "full_year": {
+          "value": 5850.0,
+          "is_estimated": true
+        }
+      }
+    ]
   }
 }

@@ -12,6 +12,12 @@ def build_value_line_page_json(parser: ValueLineV1Parser, *, page_number: int) -
     identity = parser.extract_identity()
 
     report_date = _report_date(by_key)
+    insurance_layout = _detect_insurance_layout(by_key)
+    quarterly_block = _build_quarterly_block(
+        by_key.get("quarterly_sales_usd_millions"),
+        unit="USD_millions",
+        report_date=report_date,
+    )
 
     output = {
         "meta": {
@@ -31,14 +37,9 @@ def build_value_line_page_json(parser: ValueLineV1Parser, *, page_number: int) -
         "target_price_18m": _build_target_18m(by_key),
         "long_term_projection": _build_long_term_projection(by_key),
         "institutional_decisions": _build_institutional_decisions(by_key),
-        "capital_structure": _build_capital_structure(by_key),
+        "capital_structure": _build_capital_structure(by_key, insurance_layout=insurance_layout),
         "financial_position": _build_financial_position(by_key),
-        "annual_rates": _build_annual_rates(parser.text, by_key),
-        "net_premiums_earned": _build_quarterly_block(
-            by_key.get("quarterly_sales_usd_millions"),
-            unit="USD_millions",
-            report_date=report_date,
-        ),
+        "annual_rates": _build_annual_rates(parser.text, by_key, insurance_layout=insurance_layout),
         "earnings_per_share": _build_quarterly_block(
             by_key.get("earnings_per_share"),
             unit="USD_per_share",
@@ -50,11 +51,20 @@ def build_value_line_page_json(parser: ValueLineV1Parser, *, page_number: int) -
             report_date=report_date,
             add_missing_report_year=True,
         ),
-        "annual_financials": _build_annual_financials(by_key),
+        "annual_financials": _build_annual_financials(by_key, insurance_layout=insurance_layout),
         "total_return": _build_total_return(by_key),
-        "historical_price_range": _build_historical_price_range(by_key),
+        "historical_price_range": _build_historical_price_range(by_key, insurance_layout=insurance_layout),
         "narrative": _build_narrative(by_key, report_date),
     }
+
+    if insurance_layout:
+        output["net_premiums_earned"] = quarterly_block
+    else:
+        output["quarterly_sales"] = quarterly_block
+
+    current_position = _build_current_position(by_key)
+    if current_position:
+        output["current_position"] = current_position
 
     return output
 
@@ -247,35 +257,105 @@ def _build_institutional_decisions(by_key: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _build_capital_structure(by_key: dict[str, Any]) -> dict[str, Any]:
-    cap = {
-        "as_of": _raw(by_key, "capital_structure_as_of"),
-        "total_debt": _money_entry(_raw(by_key, "total_debt")),
-        "debt_due_in_5_years": _money_entry(_raw(by_key, "debt_due_in_5_years")),
-        "lt_debt": _money_entry(_raw(by_key, "lt_debt")),
-        "lt_interest": _money_entry(_raw(by_key, "lt_interest")),
-        "debt_percent_of_capital": _percent_entry(_raw(by_key, "debt_percent_of_capital")),
-        "pension_plan": None,
-        "preferred_stock": _money_entry(_raw(by_key, "preferred_stock")),
-        "preferred_dividend": _money_entry(_raw(by_key, "preferred_dividend")),
-    }
+def _build_capital_structure(by_key: dict[str, Any], *, insurance_layout: bool) -> dict[str, Any]:
+    cap: dict[str, Any] = {}
 
-    shares = by_key.get("common_stock_shares_outstanding")
-    shares_as_of = None
-    if shares and isinstance(shares.parsed_value_json, dict):
-        shares_as_of = shares.parsed_value_json.get("as_of")
-    cap["common_stock_shares_outstanding"] = {
-        "display": _raw(by_key, "common_stock_shares_outstanding"),
-        "normalized": _to_number(_raw(by_key, "common_stock_shares_outstanding")),
-        "unit": "shares",
-        "as_of": shares_as_of,
-    }
+    as_of = _raw(by_key, "capital_structure_as_of")
+    if as_of is not None:
+        cap["as_of"] = as_of
 
-    market_cap = _money_entry(_raw(by_key, "market_cap"))
-    market_cap["notes"] = None
-    mkt_as_of = _raw(by_key, "market_cap_as_of")
-    market_cap["as_of"] = mkt_as_of
-    cap["market_cap"] = market_cap
+    for output_key, raw_key, formatter in (
+        ("total_debt", "total_debt", _money_entry),
+        ("debt_due_in_5_years", "debt_due_in_5_years", _money_entry),
+        ("lt_debt", "lt_debt", _money_entry),
+        ("lt_interest", "lt_interest", _money_entry),
+        ("lt_interest_percent_of_capital", "debt_percent_of_capital", _percent_entry),
+    ):
+        raw = _raw(by_key, raw_key)
+        if raw is not None:
+            cap[output_key] = formatter(raw)
+
+    leases_raw = _raw(by_key, "leases_uncapitalized_annual_rentals")
+    if leases_raw is not None:
+        leases_entry = _money_entry(leases_raw)
+        leases_entry["notes"] = "Annual rentals"
+        cap["leases_uncapitalized"] = leases_entry
+
+    pension_assets_raw = _raw(by_key, "pension_assets")
+    if pension_assets_raw is not None:
+        pension_entry = _money_entry(pension_assets_raw)
+        pension_entry["as_of"] = _raw(by_key, "pension_assets_as_of")
+        cap["pension_assets"] = pension_entry
+
+    obligations_raw = _raw(by_key, "pension_obligations")
+    if obligations_raw is not None:
+        oblig_entry = _money_entry(obligations_raw)
+        oblig_entry["label"] = "Oblig."
+        cap["obligations_other"] = oblig_entry
+
+    if insurance_layout:
+        cap["pension_plan"] = None
+
+    for output_key, raw_key in (
+        ("preferred_stock", "preferred_stock"),
+        ("preferred_dividend", "preferred_dividend"),
+    ):
+        raw = _raw(by_key, raw_key)
+        if raw is not None:
+            cap[output_key] = _money_entry(raw)
+
+    shares_res = by_key.get("common_stock_shares_outstanding") or by_key.get("shares_outstanding")
+    raw_shares = _raw(by_key, "common_stock_shares_outstanding") or _raw(by_key, "shares_outstanding")
+    if raw_shares is not None:
+        shares_display = raw_shares if insurance_layout else _shares_display(shares_res, raw_shares)
+        common_stock = {
+            "shares_outstanding": {
+                "display": shares_display,
+                "normalized": _to_number(raw_shares),
+                "unit": "shares",
+            },
+        }
+        parsed_meta = shares_res.parsed_value_json if shares_res and isinstance(shares_res.parsed_value_json, dict) else {}
+        as_of = parsed_meta.get("as_of")
+        if as_of:
+            common_stock["as_of"] = as_of
+        class_a_raw = parsed_meta.get("class_a_shares")
+        if class_a_raw:
+            common_stock["class_a_shares"] = {
+                "display": class_a_raw,
+                "normalized": _to_number(class_a_raw),
+                "unit": "shares",
+            }
+        voting_multiple = parsed_meta.get("class_a_voting_power_multiple")
+        voting_notes = parsed_meta.get("class_a_voting_power_notes")
+        if voting_multiple or voting_notes:
+            common_stock["class_a_voting_power"] = {
+                "multiple": voting_multiple,
+                "notes": voting_notes,
+            }
+        cap["common_stock"] = common_stock
+
+    market_raw = _raw(by_key, "market_cap")
+    if market_raw is not None:
+        market_entry = _money_entry(market_raw)
+        market_notes = None
+        market_res = by_key.get("market_cap")
+        if market_res and isinstance(market_res.parsed_value_json, dict):
+            market_notes = market_res.parsed_value_json.get("notes")
+        if insurance_layout:
+            market_entry["notes"] = None
+            mkt_as_of = _raw(by_key, "market_cap_as_of")
+            if mkt_as_of is not None:
+                market_entry["as_of"] = mkt_as_of
+        else:
+            if market_notes:
+                market_entry["market_cap_category"] = market_notes
+            else:
+                market_entry["notes"] = None
+                mkt_as_of = _raw(by_key, "market_cap_as_of")
+                if mkt_as_of is not None:
+                    market_entry["as_of"] = mkt_as_of
+        cap["market_cap"] = market_entry
 
     return cap
 
@@ -285,28 +365,76 @@ def _build_financial_position(by_key: dict[str, Any]) -> Optional[dict[str, Any]
     return res.parsed_value_json if res and res.parsed_value_json else None
 
 
-def _build_annual_rates(text: str, by_key: dict[str, Any]) -> dict[str, Any]:
+def _build_current_position(by_key: dict[str, Any]) -> Optional[dict[str, Any]]:
+    res = by_key.get("current_position_usd_millions")
+    if not res or not res.parsed_value_json:
+        return None
+
+    parsed = res.parsed_value_json
+    years = parsed.get("years", [])
+
+    def _series_at(series: Optional[list[float]], idx: int) -> Optional[float]:
+        if not isinstance(series, list) or idx >= len(series):
+            return None
+        return series[idx]
+
+    periods = []
+    for idx, year in enumerate(years):
+        label, period_end_date = _period_label_and_end(year)
+        periods.append({
+            "label": label,
+            "period_end_date": period_end_date,
+            "assets": {
+                "cash_assets": _series_at(parsed.get("cash_assets"), idx),
+                "receivables": _series_at(parsed.get("receivables"), idx),
+                "inventory_lifo": _series_at(parsed.get("inventory_lifo"), idx),
+                "other_current_assets": _series_at(parsed.get("other_current_assets"), idx),
+                "total_current_assets": _series_at(parsed.get("current_assets_total"), idx),
+            },
+            "liabilities": {
+                "accounts_payable": _series_at(parsed.get("accounts_payable"), idx),
+                "debt_due": _series_at(parsed.get("debt_due"), idx),
+                "other_current_liabilities": _series_at(parsed.get("other_current_liabilities"), idx),
+                "total_current_liabilities": _series_at(parsed.get("current_liabilities_total"), idx),
+            },
+        })
+
+    return {"unit": "USD_millions", "periods": periods}
+
+
+def _build_annual_rates(text: str, by_key: dict[str, Any], *, insurance_layout: bool) -> dict[str, Any]:
     res = by_key.get("annual_rates_of_change")
     parsed = res.parsed_value_json if res and res.parsed_value_json else {}
     from_period, to_period = _annual_rates_periods(text)
 
     metrics = []
-    for metric_key in ("premium_income", "investment_income", "earnings", "dividends", "book_value"):
-        data = parsed.get(metric_key)
+    if insurance_layout:
+        metric_defs = [
+            ("premium_income", None),
+            ("investment_income", None),
+            ("earnings", None),
+            ("dividends", None),
+            ("book_value", None),
+        ]
+    else:
+        metric_defs = [
+            ("sales", None),
+            ("cash_flow_per_share", "cash_flow"),
+            ("earnings", None),
+            ("dividends", None),
+            ("book_value", None),
+        ]
+
+    for source_key, output_key in metric_defs:
+        data = parsed.get(source_key)
         if not data:
-            metrics.append({
-                "metric_key": metric_key,
-                "past_10y_cagr_pct": None,
-                "past_5y_cagr_pct": None,
-                "estimated_cagr_pct": None,
-            })
             continue
 
         past_10y = _ratio_to_pct(data.get("past_10y"))
         past_5y = _ratio_to_pct(data.get("past_5y"))
         est = _ratio_to_pct(data.get("est_to_2028_2030"))
         metric = {
-            "metric_key": metric_key,
+            "metric_key": output_key or source_key,
             "past_10y_cagr_pct": past_10y,
             "past_5y_cagr_pct": past_5y,
             "estimated_cagr_pct": {
@@ -315,6 +443,8 @@ def _build_annual_rates(text: str, by_key: dict[str, Any]) -> dict[str, Any]:
                 "value": est,
             },
         }
+        if output_key == "cash_flow":
+            metric["display_name"] = "Cash Flow"
         note = data.get("past_5y_note")
         if note:
             metric["past_5y_note"] = note
@@ -366,7 +496,7 @@ def _build_quarterly_block(
     return {"unit": unit, "by_year": by_year}
 
 
-def _build_annual_financials(by_key: dict[str, Any]) -> dict[str, Any]:
+def _build_annual_financials(by_key: dict[str, Any], *, insurance_layout: bool) -> dict[str, Any]:
     res = by_key.get("tables_time_series")
     if not res or not res.parsed_value_json:
         return {"meta": {}}
@@ -376,19 +506,34 @@ def _build_annual_financials(by_key: dict[str, Any]) -> dict[str, Any]:
     projection_range = annual.get("projection_year_range")
     projection = annual.get("projection_2028_2030", {})
 
+    if insurance_layout:
+        per_share_map = {
+            "pc_prem_earned_per_share_usd": "pc_prem_earned_per_share_usd",
+            "investment_income_per_share_usd": "investment_income_per_share_usd",
+            "underwriting_income_per_share_usd": "underwriting_income_per_share_usd",
+            "earnings_per_share_usd": "earnings_per_share_usd",
+            "dividends_declared_per_share_usd": "dividends_declared_per_share_usd",
+            "book_value_per_share_usd": "book_value_per_share_usd",
+            "common_shares_outstanding_millions": "common_shares_outstanding_millions",
+        }
+    else:
+        per_share_map = {
+            "sales_per_share_usd": "sales_per_share",
+            "cash_flow_per_share_usd": "cash_flow_per_share",
+            "capital_spending_per_share_usd": "capital_spending_per_share",
+            "earnings_per_share_usd": "earnings_per_share",
+            "dividends_declared_per_share_usd": "dividends_declared_per_share",
+            "book_value_per_share_usd": "book_value_per_share",
+            "common_shares_outstanding_millions": "common_shares_outstanding_millions",
+        }
+
     per_share = _series_group_to_year_map(
         annual.get("per_share", {}),
         years,
         projection,
-        keys=[
-            "pc_prem_earned_per_share_usd",
-            "investment_income_per_share_usd",
-            "underwriting_income_per_share_usd",
-            "earnings_per_share_usd",
-            "dividends_declared_per_share_usd",
-            "book_value_per_share_usd",
-            "common_shares_outstanding_millions",
-        ],
+        keys=list(per_share_map.keys()),
+        rename_map=per_share_map,
+        drop_all_null=True,
     )
     valuation = _series_group_to_year_map(
         annual.get("valuation", {}),
@@ -401,21 +546,30 @@ def _build_annual_financials(by_key: dict[str, Any]) -> dict[str, Any]:
             "avg_annual_dividend_yield_pct",
         ],
         drop_trailing_null=True,
+        drop_all_null=True,
     )
+    if insurance_layout:
+        income_keys = ["net_profit"]
+    else:
+        income_keys = ["sales", "operating_margin_pct", "depreciation", "net_profit"]
     income_statement = _series_group_to_year_map(
         annual.get("income_statement_usd_millions", {}),
         years,
         projection,
-        keys=["net_profit"],
+        keys=income_keys,
+        drop_all_null=True,
     )
-    balance_sheet = _series_group_to_year_map(
-        annual.get("balance_sheet_and_returns_usd_millions", {}),
-        years,
-        projection,
-        keys=["total_assets", "shareholders_equity"],
-    )
+    balance_sheet = {}
+    if insurance_layout:
+        balance_sheet = _series_group_to_year_map(
+            annual.get("balance_sheet_and_returns_usd_millions", {}),
+            years,
+            projection,
+            keys=["total_assets", "shareholders_equity"],
+            drop_all_null=True,
+        )
 
-    return {
+    payload = {
         "meta": {
             "source": "value_line",
             "table_type": "annual_financials_and_ratios",
@@ -426,8 +580,11 @@ def _build_annual_financials(by_key: dict[str, Any]) -> dict[str, Any]:
         "per_share_metrics": per_share,
         "valuation_metrics": valuation,
         "income_statement_usd_millions": income_statement,
-        "balance_sheet_and_returns_usd_millions": balance_sheet,
     }
+    if balance_sheet:
+        payload["balance_sheet_and_returns_usd_millions"] = balance_sheet
+
+    return payload
 
 
 def _build_total_return(by_key: dict[str, Any]) -> dict[str, Any]:
@@ -460,13 +617,15 @@ def _build_total_return(by_key: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _build_historical_price_range(by_key: dict[str, Any]) -> list[dict[str, Any]]:
+def _build_historical_price_range(by_key: dict[str, Any], *, insurance_layout: bool) -> list[dict[str, Any]]:
     res = by_key.get("tables_time_series")
     if not res or not res.parsed_value_json:
         return []
 
     annual = res.parsed_value_json.get("annual_financials_and_ratios_2015_2026_with_projection_2028_2030", {})
     years = annual.get("years", [])
+    if years and not insurance_layout:
+        years = [year - 1 for year in years]
     prices = res.parsed_value_json.get("price_history_high_low", {})
     highs = prices.get("high", [])
     lows = prices.get("low", [])
@@ -588,18 +747,23 @@ def _series_group_to_year_map(
     *,
     keys: list[str],
     drop_trailing_null: bool = False,
+    drop_all_null: bool = False,
+    rename_map: Optional[dict[str, str]] = None,
 ) -> dict[str, Any]:
     output = {}
     for key in keys:
         series = group.get(key)
         if not isinstance(series, list):
             continue
-        output[key] = _series_to_year_map(
+        year_map = _series_to_year_map(
             series,
             years,
             _projection_value(key, projection),
             drop_trailing_null=drop_trailing_null,
         )
+        if drop_all_null and _all_none(year_map):
+            continue
+        output[rename_map.get(key, key) if rename_map else key] = year_map
     return output
 
 
@@ -626,6 +790,76 @@ def _projection_value(metric_key: str, projection: dict[str, Any]) -> Optional[f
     if metric_key in {"net_profit", "shareholders_equity", "total_assets"}:
         return projection.get(f"{metric_key}_usd_millions")
     return None
+
+
+def _all_none(values: dict[str, Any]) -> bool:
+    return all(value is None for value in values.values())
+
+
+def _series_has_values(series: Any) -> bool:
+    return isinstance(series, list) and any(value is not None for value in series)
+
+
+def _detect_insurance_layout(by_key: dict[str, Any]) -> bool:
+    res = by_key.get("tables_time_series")
+    if res and res.parsed_value_json:
+        annual = res.parsed_value_json.get(
+            "annual_financials_and_ratios_2015_2026_with_projection_2028_2030",
+            {},
+        )
+        per_share = annual.get("per_share", {})
+        for key in (
+            "pc_prem_earned_per_share_usd",
+            "investment_income_per_share_usd",
+            "underwriting_income_per_share_usd",
+        ):
+            if _series_has_values(per_share.get(key)):
+                return True
+
+    fp = by_key.get("financial_position_usd_millions")
+    if fp and fp.parsed_value_json:
+        return True
+
+    ar = by_key.get("annual_rates_of_change")
+    if ar and ar.parsed_value_json:
+        if ar.parsed_value_json.get("premium_income") or ar.parsed_value_json.get("investment_income"):
+            return True
+
+    return False
+
+
+def _shares_display(res: Any, raw_value: str) -> str:
+    if res and getattr(res, "original_text_snippet", None):
+        snippet = res.original_text_snippet or ""
+        match = re.search(r'Common\s*Stock\s*([\d,]+)', snippet, re.IGNORECASE)
+        if match:
+            return match.group(1)
+        match = re.search(r'CommonStock\s*([\d,]+)', snippet, re.IGNORECASE)
+        if match:
+            return match.group(1)
+    return raw_value
+
+
+def _period_label_and_end(value: Any) -> tuple[Optional[str], Optional[str]]:
+    if not value:
+        return None, None
+    text = str(value)
+    if re.match(r'^\d{4}-\d{2}-\d{2}$', text):
+        return _mdy_label_from_iso(text), text
+    if re.match(r'^\d{4}$', text):
+        return text, f"{text}-12-31"
+    iso = _iso_from_mdy(text)
+    return text, iso or text
+
+
+def _mdy_label_from_iso(value: str) -> str:
+    parts = value.split("-")
+    if len(parts) != 3:
+        return value
+    year = parts[0][2:]
+    month = int(parts[1])
+    day = int(parts[2])
+    return f"{month}/{day}/{year}"
 
 
 def _iso_from_mdy(value: str) -> Optional[str]:

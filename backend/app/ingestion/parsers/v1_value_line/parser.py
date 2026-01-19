@@ -427,6 +427,9 @@ class ValueLineV1Parser(BaseParser):
         if shares_match2:
             as_of = None
             notes = None
+            class_a_shares = None
+            voting_multiple = None
+            voting_notes = None
             tail = self.text[shares_match2.end(): shares_match2.end() + 500]
             as_of_match = re.search(r'asof\s*(\d{1,2}/\d{1,2}/\d{2})', tail, re.IGNORECASE)
             if as_of_match:
@@ -435,13 +438,29 @@ class ValueLineV1Parser(BaseParser):
             if includes:
                 count = includes.group(1)
                 notes = f"Includes {count} Class A shares"
+                class_a_shares = count
+                voting_match = re.search(r'(\d+)\s*x\s*voting', tail, re.IGNORECASE)
+                if voting_match:
+                    voting_multiple = int(voting_match.group(1))
                 if re.search(r'ClassAshareshave', tail, re.IGNORECASE):
                     notes += "; Class A has 10x voting power for matters beyond director elections."
+                    voting_multiple = voting_multiple or 10
+                    voting_notes = "Super voting power beyond director elections"
             results.append(ExtractionResult(
                 field_key="common_stock_shares_outstanding",
                 raw_value_text=shares_match2.group(1).replace(',', ''),
                 original_text_snippet=shares_match2.group(0),
-                parsed_value_json={k: v for k, v in {"as_of": as_of, "notes": notes}.items() if v},
+                parsed_value_json={
+                    k: v
+                    for k, v in {
+                        "as_of": as_of,
+                        "notes": notes,
+                        "class_a_shares": class_a_shares,
+                        "class_a_voting_power_multiple": voting_multiple,
+                        "class_a_voting_power_notes": voting_notes,
+                    }.items()
+                    if v
+                },
                 confidence_score=0.9,
             ))
 
@@ -730,6 +749,13 @@ class ValueLineV1Parser(BaseParser):
             business_desc = _normalize_section_text(word_business)
             business_snippet = "BUSINESS (word layout)"
 
+        if business_desc and re.search(
+            r'\b(Cash\s*Assets|Receivables|Inventory\s*\(LIFO\)|Accts\s*Payable|Debt\s*Due|Current\s*Assets|Current\s*Liab\.?|Bonds|Stocks|Total\s*Assets|Unearned\s*Prems|Reserves|Total\s*Liab[^\s]*)\b',
+            business_desc,
+            re.IGNORECASE,
+        ):
+            business_desc = None
+
         if business_desc:
             results.append(ExtractionResult(
                 field_key="business_description",
@@ -770,6 +796,13 @@ class ValueLineV1Parser(BaseParser):
         if word_commentary:
             commentary_text = _normalize_commentary_text(word_commentary)
             commentary_snippet = "COMMENTARY (word layout)"
+
+        if commentary_text and re.search(
+            r'\b(Cash\s*Assets|Receivables|Inventory\s*\(LIFO\)|Accts\s*Payable|Debt\s*Due|Current\s*Assets|Current\s*Liab\.?|Bonds|Stocks|Total\s*Assets|Unearned\s*Prems|Reserves|Total\s*Liab[^\s]*)\b',
+            commentary_text,
+            re.IGNORECASE,
+        ):
+            commentary_text = None
 
         if commentary_text:
             results.append(ExtractionResult(

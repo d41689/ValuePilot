@@ -50,8 +50,8 @@ def test_axs_capital_structure_as_of_fields():
 
     assert actual["capital_structure"]["as_of"] == expected["capital_structure"]["as_of"]
     assert (
-        actual["capital_structure"]["common_stock_shares_outstanding"]["as_of"]
-        == expected["capital_structure"]["common_stock_shares_outstanding"]["as_of"]
+        actual["capital_structure"]["common_stock"]["as_of"]
+        == expected["capital_structure"]["common_stock"]["as_of"]
     )
     assert (
         actual["capital_structure"]["market_cap"]["as_of"]
