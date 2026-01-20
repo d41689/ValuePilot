@@ -1,3 +1,4 @@
+import logging
 import re
 import uuid
 from datetime import datetime, date
@@ -15,7 +16,12 @@ from app.services.file_storage import FileStorageService
 from app.services.identity_service import IdentityService
 from app.ingestion.pdf_extractor import PdfExtractor
 from app.ingestion.parsers.v1_value_line.parser import ValueLineV1Parser
+from app.ingestion.parsers.v1_value_line.page_json import build_value_line_page_json
 from app.ingestion.normalization.scaler import Scaler
+from app.services.mapping_spec import MappingSpec
+
+
+LOGGER = logging.getLogger(__name__)
 
 class IngestionService:
     NON_NUMERIC_KEYS = {
@@ -82,6 +88,9 @@ class IngestionService:
         self.db = db
         self.storage = FileStorageService()
         self.identity_service = IdentityService(db)
+        self.mapping_spec = MappingSpec.load(
+            Path(__file__).resolve().parents[2] / "docs" / "metric_facts_mapping_spec.yml"
+        )
 
     def process_upload(self, user_id: int, file: UploadFile) -> tuple[PdfDocument, list[dict]]:
         """
@@ -196,9 +205,11 @@ class IngestionService:
                     report_date = self._report_date_from_extractions(extractions)
                     if report_date is None:
                         raise ValueError("missing_commentary_date")
-                    rating_event_dates = self._rating_event_dates(extractions)
-                    as_of_dates = self._as_of_dates_from_extractions(extractions)
-                    has_tables_time_series = any(ext.field_key == "tables_time_series" for ext in extractions)
+                    page_json = build_value_line_page_json(
+                        parser,
+                        page_number=page_num,
+                        results=extractions,
+                    )
 
                     for ext in extractions:
                         metric_record = MetricExtraction(
@@ -217,44 +228,25 @@ class IngestionService:
                         self.db.add(metric_record)
                         self.db.flush()
 
-                        for fact in self._expand_time_series_facts(ext, report_date):
-                            self._insert_metric_fact(
-                                user_id=user_id,
-                                stock_id=stock.id,
-                                metric_key=fact["metric_key"],
-                                raw_value_text=fact.get("raw_value_text"),
-                                parsed_value_json=fact.get("parsed_value_json"),
-                                period_type=fact.get("period_type"),
-                                period_end_date=fact.get("period_end_date"),
-                                period_end_date_is_derived=False,
-                                source_ref_id=metric_record.id,
-                                source_document_id=doc.id,
-                                value_type_override=fact.get("value_type"),
-                                force_numeric=True,
-                            )
-
-                        skip_annual = has_tables_time_series and ext.field_key in self.ANNUAL_TABLE_METRIC_KEYS
-                        if ext.field_key in self.SKIP_FACT_KEYS or skip_annual:
-                            continue
-
-                        metric_key = ext.field_key
-                        period_end_date, period_type, period_end_date_is_derived = self._resolve_period_end_date(
-                            metric_key,
-                            ext.parsed_value_json,
-                            report_date,
-                            rating_event_dates,
-                            as_of_dates,
+                    facts, _, unmapped = self.mapping_spec.generate_facts(page_json)
+                    for path in sorted(unmapped):
+                        LOGGER.warning(
+                            "Unmapped page_json path: %s (document_id=%s page=%s)",
+                            path,
+                            doc.id,
+                            page_num,
                         )
-                        self._insert_metric_fact(
+                    for fact in facts:
+                        self._insert_metric_fact_from_mapping(
                             user_id=user_id,
                             stock_id=stock.id,
-                            metric_key=metric_key,
-                            raw_value_text=ext.raw_value_text,
-                            parsed_value_json=ext.parsed_value_json,
-                            period_type=period_type,
-                            period_end_date=period_end_date,
-                            period_end_date_is_derived=period_end_date_is_derived,
-                            source_ref_id=metric_record.id,
+                            metric_key=fact["metric_key"],
+                            value_numeric=fact.get("value_numeric"),
+                            value_text=fact.get("value_text"),
+                            value_json=fact.get("value_json"),
+                            unit=fact.get("unit"),
+                            period_type=fact.get("period_type"),
+                            period_end_date=fact.get("period_end_date"),
                             source_document_id=doc.id,
                         )
 
@@ -373,9 +365,11 @@ class IngestionService:
             report_date = self._report_date_from_extractions(extractions)
             if report_date is None:
                 continue
-            rating_event_dates = self._rating_event_dates(extractions)
-            as_of_dates = self._as_of_dates_from_extractions(extractions)
-            has_tables_time_series = any(ext.field_key == "tables_time_series" for ext in extractions)
+            page_json = build_value_line_page_json(
+                parser,
+                page_number=page_num,
+                results=extractions,
+            )
             for ext in extractions:
                 metric_record = MetricExtraction(
                     user_id=user_id,
@@ -393,44 +387,25 @@ class IngestionService:
                 self.db.add(metric_record)
                 self.db.flush()
 
-                for fact in self._expand_time_series_facts(ext, report_date):
-                    self._insert_metric_fact(
-                        user_id=user_id,
-                        stock_id=stock.id,
-                        metric_key=fact["metric_key"],
-                        raw_value_text=fact.get("raw_value_text"),
-                        parsed_value_json=fact.get("parsed_value_json"),
-                        period_type=fact.get("period_type"),
-                        period_end_date=fact.get("period_end_date"),
-                        period_end_date_is_derived=False,
-                        source_ref_id=metric_record.id,
-                        source_document_id=doc.id,
-                        value_type_override=fact.get("value_type"),
-                        force_numeric=True,
-                    )
-
-                skip_annual = has_tables_time_series and ext.field_key in self.ANNUAL_TABLE_METRIC_KEYS
-                if ext.field_key in self.SKIP_FACT_KEYS or skip_annual:
-                    continue
-
-                metric_key = ext.field_key
-                period_end_date, period_type, period_end_date_is_derived = self._resolve_period_end_date(
-                    metric_key,
-                    ext.parsed_value_json,
-                    report_date,
-                    rating_event_dates,
-                    as_of_dates,
+            facts, _, unmapped = self.mapping_spec.generate_facts(page_json)
+            for path in sorted(unmapped):
+                LOGGER.warning(
+                    "Unmapped page_json path: %s (document_id=%s page=%s)",
+                    path,
+                    doc.id,
+                    page_num,
                 )
-                self._insert_metric_fact(
+            for fact in facts:
+                self._insert_metric_fact_from_mapping(
                     user_id=user_id,
                     stock_id=stock.id,
-                    metric_key=metric_key,
-                    raw_value_text=ext.raw_value_text,
-                    parsed_value_json=ext.parsed_value_json,
-                    period_type=period_type,
-                    period_end_date=period_end_date,
-                    period_end_date_is_derived=period_end_date_is_derived,
-                    source_ref_id=metric_record.id,
+                    metric_key=fact["metric_key"],
+                    value_numeric=fact.get("value_numeric"),
+                    value_text=fact.get("value_text"),
+                    value_json=fact.get("value_json"),
+                    unit=fact.get("unit"),
+                    period_type=fact.get("period_type"),
+                    period_end_date=fact.get("period_end_date"),
                     source_document_id=doc.id,
                 )
 
@@ -827,6 +802,72 @@ class IngestionService:
                 "period_type": period_type,
                 "period_end_date": period_end_date,
                 "source_ref_id": source_ref_id,
+                "is_current": True,
+            },
+        )
+        self.db.execute(insert_stmt)
+        self.db.flush()
+
+    def _insert_metric_fact_from_mapping(
+        self,
+        *,
+        user_id: int,
+        stock_id: int,
+        metric_key: str,
+        value_numeric: Optional[float],
+        value_text: Optional[str],
+        value_json: Optional[dict],
+        unit: Optional[str],
+        period_type: Optional[str],
+        period_end_date: Optional[date],
+        source_document_id: Optional[int],
+    ) -> None:
+        update_stmt = (
+            update(MetricFact)
+            .where(
+                MetricFact.stock_id == stock_id,
+                MetricFact.metric_key == metric_key,
+                MetricFact.source_type == "parsed",
+                MetricFact.is_current.is_(True),
+            )
+            .values(is_current=False)
+        )
+        if period_type:
+            update_stmt = update_stmt.where(MetricFact.period_type == period_type)
+        if period_end_date:
+            update_stmt = update_stmt.where(MetricFact.period_end_date == period_end_date)
+        self.db.execute(update_stmt)
+
+        insert_stmt = insert(MetricFact).values(
+            user_id=user_id,
+            stock_id=stock_id,
+            metric_key=metric_key,
+            value_json=value_json,  # type: ignore[arg-type]
+            value_numeric=value_numeric,
+            value_text=value_text,
+            unit=unit,
+            period_type=period_type,
+            period_end_date=period_end_date,
+            source_type="parsed",
+            source_ref_id=None,
+            source_document_id=source_document_id,
+            is_current=True,
+        )
+        insert_stmt = insert_stmt.on_conflict_do_update(
+            index_elements=[
+                "stock_id",
+                "metric_key",
+                "period_type",
+                "period_end_date",
+                "source_document_id",
+            ],
+            set_={
+                "value_json": value_json,
+                "value_numeric": value_numeric,
+                "value_text": value_text,
+                "unit": unit,
+                "period_type": period_type,
+                "period_end_date": period_end_date,
                 "is_current": True,
             },
         )

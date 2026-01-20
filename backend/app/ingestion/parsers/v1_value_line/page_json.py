@@ -6,8 +6,14 @@ from app.ingestion.normalization.scaler import Scaler
 from app.ingestion.parsers.v1_value_line.parser import ValueLineV1Parser
 
 
-def build_value_line_page_json(parser: ValueLineV1Parser, *, page_number: int) -> dict[str, Any]:
-    results = parser.parse()
+def build_value_line_page_json(
+    parser: ValueLineV1Parser,
+    *,
+    page_number: int,
+    results: Optional[list] = None,
+) -> dict[str, Any]:
+    if results is None:
+        results = parser.parse()
     by_key = {res.field_key: res for res in results}
     identity = parser.extract_identity()
 

@@ -1,3 +1,5 @@
+from datetime import date
+
 from app.models.users import User
 from app.models.stocks import Stock
 from app.models.artifacts import PdfDocument, DocumentPage
@@ -43,10 +45,12 @@ def test_reparse_existing_document_deactivates_prior_parsed_facts(db_session):
     old = MetricFact(
         user_id=user.id,
         stock_id=stock.id,
-        metric_key="recent_price",
+        metric_key="mkt.price",
         value_json={"raw": "68.11", "normalized": 68.11, "unit": "USD"},
         value_numeric=68.11,
         unit="USD",
+        period_type="AS_OF",
+        period_end_date=date(2026, 1, 2),
         source_type="parsed",
         source_ref_id=None,
         is_current=True,
@@ -59,7 +63,7 @@ def test_reparse_existing_document_deactivates_prior_parsed_facts(db_session):
 
     facts = (
         db_session.query(MetricFact)
-        .filter(MetricFact.user_id == user.id, MetricFact.metric_key == "recent_price")
+        .filter(MetricFact.user_id == user.id, MetricFact.metric_key == "mkt.price")
         .order_by(MetricFact.id)
         .all()
     )
@@ -113,10 +117,12 @@ def test_reparse_existing_document_multi_page_updates_all_pages(db_session):
             MetricFact(
                 user_id=user.id,
                 stock_id=stock_one.id,
-                metric_key="recent_price",
+                metric_key="mkt.price",
                 value_json={"raw": "5", "normalized": 5, "unit": "USD"},
                 value_numeric=5.0,
                 unit="USD",
+                period_type="AS_OF",
+                period_end_date=date(2026, 1, 2),
                 source_type="parsed",
                 source_ref_id=None,
                 is_current=True,
@@ -124,10 +130,12 @@ def test_reparse_existing_document_multi_page_updates_all_pages(db_session):
             MetricFact(
                 user_id=user.id,
                 stock_id=stock_two.id,
-                metric_key="recent_price",
+                metric_key="mkt.price",
                 value_json={"raw": "6", "normalized": 6, "unit": "USD"},
                 value_numeric=6.0,
                 unit="USD",
+                period_type="AS_OF",
+                period_end_date=date(2026, 1, 2),
                 source_type="parsed",
                 source_ref_id=None,
                 is_current=True,
@@ -153,7 +161,7 @@ def test_reparse_existing_document_multi_page_updates_all_pages(db_session):
         db_session.query(MetricFact)
         .filter(
             MetricFact.user_id == user.id,
-            MetricFact.metric_key == "recent_price",
+            MetricFact.metric_key == "mkt.price",
         )
         .order_by(MetricFact.id)
         .all()

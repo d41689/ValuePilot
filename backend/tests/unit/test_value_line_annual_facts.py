@@ -53,12 +53,12 @@ def test_upload_writes_annual_facts_latest_actual_and_estimate(client, db_sessio
         db_session.query(MetricFact)
         .filter(
             MetricFact.stock_id == stock.id,
-            MetricFact.metric_key == "net_profit_usd_millions",
+            MetricFact.metric_key == "is.net_income",
             MetricFact.source_type == "parsed",
         )
         .all()
     )
-    assert net_profit_facts, "expected net_profit_usd_millions facts"
+    assert net_profit_facts, "expected is.net_income facts"
 
     actual_fact = next(
         (
@@ -79,7 +79,8 @@ def test_upload_writes_annual_facts_latest_actual_and_estimate(client, db_sessio
     assert actual_fact is not None
     assert actual_fact.is_current is True
     assert actual_fact.period_type == "FY"
-    assert actual_fact.value_json.get("is_estimate") in (False, None)
+    actual_is_estimate = actual_fact.value_json.get("is_estimate") if actual_fact.value_json else None
+    assert actual_is_estimate in (False, None)
 
     net_profit = annual["income_statement_usd_millions"]["net_profit"]
     expected_actual = net_profit[str(actual_year)]
@@ -92,19 +93,20 @@ def test_upload_writes_annual_facts_latest_actual_and_estimate(client, db_sessio
         assert estimate_fact is not None
         assert estimate_fact.is_current is True
         assert estimate_fact.period_type == "FY"
-        assert estimate_fact.value_json.get("is_estimate") is True
+        estimate_is_estimate = estimate_fact.value_json.get("is_estimate") if estimate_fact.value_json else None
+        assert estimate_is_estimate is True
         assert estimate_fact.value_numeric == expected_estimate * 1_000_000.0
 
     dividend_facts = (
         db_session.query(MetricFact)
         .filter(
             MetricFact.stock_id == stock.id,
-            MetricFact.metric_key == "avg_annual_dividend_yield_pct",
+            MetricFact.metric_key == "val.avg_dividend_yield",
             MetricFact.source_type == "parsed",
         )
         .all()
     )
-    assert dividend_facts, "expected avg_annual_dividend_yield_pct facts"
+    assert dividend_facts, "expected val.avg_dividend_yield facts"
 
     actual_dividend = next(
         (
@@ -132,4 +134,5 @@ def test_upload_writes_annual_facts_latest_actual_and_estimate(client, db_sessio
     else:
         assert estimate_dividend is not None
         assert estimate_dividend.value_numeric == expected_estimate / 100.0
-        assert estimate_dividend.value_json.get("is_estimate") is True
+        dividend_is_estimate = estimate_dividend.value_json.get("is_estimate") if estimate_dividend.value_json else None
+        assert dividend_is_estimate is True

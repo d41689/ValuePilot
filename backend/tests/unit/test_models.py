@@ -74,7 +74,7 @@ def test_create_metric_fact(db_session: Session):
     fact = MetricFact(
         user_id=user.id,
         stock_id=stock.id,
-        metric_key="pe_ratio",
+        metric_key="val.pe",
         value_json={"value": 30.5},
         value_numeric=30.5,
         source_type="manual"

@@ -9,25 +9,33 @@ class ScreenerService:
         self.db = db
 
     METRIC_OUTPUT_SPECS: dict[str, dict[str, Any]] = {
-        "net_profit_usd_millions": {"keys": ["net_profit_usd_millions", "net_profit"]},
-        "depreciation_usd_millions": {"keys": ["depreciation_usd_millions", "depreciation"]},
-        "capital_spending_per_share_usd": {"keys": ["capital_spending_per_share_usd", "capex_per_share_usd"]},
-        "common_shares_outstanding_millions": {
-            "keys": [
-                "common_shares_outstanding_millions",
-                "common_shs_outstg_millions",
-                "common_stock_shares_outstanding",
-            ]
-        },
-        "timeliness": {"keys": ["timeliness", "rating_timeliness"]},
-        "safety": {"keys": ["safety", "rating_safety"]},
-        "avg_annual_dividend_yield_pct": {
-            "keys": ["avg_annual_dividend_yield_pct", "avg_annl_divd_yield_pct"]
-        },
-        "company_financial_strength": {"keys": ["company_financial_strength"]},
-        "stock_price_stability": {"keys": ["stock_price_stability"]},
-        "price_growth_persistence": {"keys": ["price_growth_persistence"]},
-        "earnings_predictability": {"keys": ["earnings_predictability"]},
+        "net_profit_usd_millions": {"keys": ["is.net_income"], "period_type": "FY"},
+        "depreciation_usd_millions": {"keys": ["is.depreciation"], "period_type": "FY"},
+        "capital_spending_per_share_usd": {"keys": ["per_share.capital_spending"], "period_type": "FY"},
+        "common_shares_outstanding_millions": {"keys": ["equity.shares_outstanding"], "period_type": "AS_OF"},
+        "timeliness": {"keys": ["rating.timeliness"], "period_type": "AS_OF"},
+        "safety": {"keys": ["rating.safety"], "period_type": "AS_OF"},
+        "avg_annual_dividend_yield_pct": {"keys": ["val.avg_dividend_yield"], "period_type": "FY"},
+        "company_financial_strength": {"keys": ["quality.financial_strength"], "period_type": "AS_OF"},
+        "stock_price_stability": {"keys": ["quality.stock_price_stability"], "period_type": "AS_OF"},
+        "price_growth_persistence": {"keys": ["quality.price_growth_persistence"], "period_type": "AS_OF"},
+        "earnings_predictability": {"keys": ["quality.earnings_predictability"], "period_type": "AS_OF"},
+    }
+
+    LEGACY_METRIC_KEY_MAP: dict[str, str] = {
+        "pe_ratio": "val.pe",
+        "dividend_yield": "val.dividend_yield",
+        "net_profit_usd_millions": "is.net_income",
+        "depreciation_usd_millions": "is.depreciation",
+        "capital_spending_per_share_usd": "per_share.capital_spending",
+        "common_stock_shares_outstanding": "equity.shares_outstanding",
+        "timeliness": "rating.timeliness",
+        "safety": "rating.safety",
+        "avg_annual_dividend_yield_pct": "val.avg_dividend_yield",
+        "company_financial_strength": "quality.financial_strength",
+        "stock_price_stability": "quality.stock_price_stability",
+        "price_growth_persistence": "quality.price_growth_persistence",
+        "earnings_predictability": "quality.earnings_predictability",
     }
 
     @classmethod
@@ -37,10 +45,16 @@ class ScreenerService:
             keys.update(spec["keys"])
         return keys
 
+    @classmethod
+    def _canonical_metric_key(cls, key: str) -> str:
+        return cls.LEGACY_METRIC_KEY_MAP.get(key, key)
+
     @staticmethod
     def _extract_value(fact: MetricFact) -> Any:
         if fact.value_numeric is not None:
             return fact.value_numeric
+        if fact.value_text is not None:
+            return fact.value_text
         if fact.value_json is None:
             return None
         if isinstance(fact.value_json, dict):
@@ -63,23 +77,36 @@ class ScreenerService:
         )
         facts = self.db.scalars(stmt).all()
 
-        facts_by_stock: dict[int, dict[str, MetricFact]] = {}
+        facts_by_stock: dict[int, dict[str, list[MetricFact]]] = {}
         for fact in facts:
-            facts_by_stock.setdefault(fact.stock_id, {})[fact.metric_key] = fact
+            facts_by_stock.setdefault(fact.stock_id, {}).setdefault(fact.metric_key, []).append(fact)
 
         metrics_by_stock: dict[int, dict[str, Any]] = {}
         for stock_id in stock_ids:
             stock_metrics: dict[str, Any] = {}
             fact_map = facts_by_stock.get(stock_id, {})
             for output_key, spec in self.METRIC_OUTPUT_SPECS.items():
+                desired_period_type = spec.get("period_type")
                 for key in spec["keys"]:
-                    fact = fact_map.get(key)
-                    if not fact:
+                    facts_for_key = fact_map.get(key, [])
+                    if desired_period_type:
+                        facts_for_key = [
+                            fact for fact in facts_for_key if fact.period_type == desired_period_type
+                        ]
+                    if not facts_for_key:
                         continue
+                    fact = max(
+                        facts_for_key,
+                        key=lambda f: (
+                            f.period_end_date.toordinal() if f.period_end_date else -1,
+                            f.created_at.timestamp() if f.created_at else 0.0,
+                            f.id or 0,
+                        ),
+                    )
                     value = self._extract_value(fact)
                     if value is None:
                         continue
-                    if key == "common_stock_shares_outstanding":
+                    if key == "equity.shares_outstanding":
                         try:
                             value = float(value) / 1_000_000.0
                         except (TypeError, ValueError):
@@ -137,7 +164,7 @@ class ScreenerService:
 
     def _build_and_query(self, query, conditions: List[Dict[str, Any]]):
         for cond in conditions:
-            metric_key = cond["metric"]
+            metric_key = self._canonical_metric_key(cond["metric"])
             operator = cond["operator"]
             target_value = cond["value"]
             

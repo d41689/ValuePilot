@@ -78,7 +78,12 @@ def test_metric_facts_use_rating_event_dates(client, db_session):
 
     for key in ("timeliness", "safety", "technical"):
         event_date = date.fromisoformat(expected["ratings"][key]["event"]["date"])
-        fact = _fact(db_session, stock_id=stock.id, metric_key=key, period_type="EVENT")
+        fact = _fact(
+            db_session,
+            stock_id=stock.id,
+            metric_key=f"rating.{key}_change",
+            period_type="EVENT",
+        )
         assert fact.period_end_date == event_date
         assert fact.period_type == "EVENT"
 
@@ -90,16 +95,26 @@ def test_metric_facts_use_capital_structure_as_of_dates(client, db_session):
     market_as_of = date.fromisoformat(expected["capital_structure"]["market_cap"]["as_of"])
     shares_as_of = date.fromisoformat(expected["capital_structure"]["common_stock"]["as_of"])
 
-    total_debt = _fact(db_session, stock_id=stock.id, metric_key="total_debt", period_end_date=cap_as_of)
+    total_debt = _fact(
+        db_session,
+        stock_id=stock.id,
+        metric_key="cap.total_debt",
+        period_end_date=cap_as_of,
+    )
     assert total_debt.period_end_date == cap_as_of
 
-    market_cap = _fact(db_session, stock_id=stock.id, metric_key="market_cap", period_end_date=market_as_of)
+    market_cap = _fact(
+        db_session,
+        stock_id=stock.id,
+        metric_key="mkt.market_cap",
+        period_end_date=market_as_of,
+    )
     assert market_cap.period_end_date == market_as_of
 
     shares = _fact(
         db_session,
         stock_id=stock.id,
-        metric_key="common_stock_shares_outstanding",
+        metric_key="equity.shares_outstanding",
         period_end_date=shares_as_of,
     )
     assert shares.period_end_date == shares_as_of
@@ -112,7 +127,7 @@ def test_quarterly_series_full_year_facts_are_written(client, db_session):
     fact = _fact(
         db_session,
         stock_id=stock.id,
-        metric_key="quarterly_sales_usd_millions",
+        metric_key="is.net_premiums_earned",
         period_end_date=date(2024, 12, 31),
         period_type="FY",
     )
@@ -123,7 +138,7 @@ def test_quarterly_series_full_year_facts_are_written(client, db_session):
     eps_fact = _fact(
         db_session,
         stock_id=stock.id,
-        metric_key="earnings_per_share",
+        metric_key="per_share.eps",
         period_end_date=date(2024, 12, 31),
         period_type="FY",
     )
@@ -133,7 +148,7 @@ def test_quarterly_series_full_year_facts_are_written(client, db_session):
     q1_fact = _fact(
         db_session,
         stock_id=stock.id,
-        metric_key="earnings_per_share",
+        metric_key="per_share.eps",
         period_end_date=date(2024, 3, 31),
         period_type="Q",
     )
@@ -147,7 +162,7 @@ def test_annual_financials_series_are_expanded(client, db_session):
     fact = _fact(
         db_session,
         stock_id=stock.id,
-        metric_key="net_profit_usd_millions",
+        metric_key="is.net_income",
         period_end_date=date(2017, 12, 31),
         period_type="FY",
     )
@@ -158,11 +173,11 @@ def test_annual_financials_series_are_expanded(client, db_session):
 def test_commentary_and_projection_range_remain_non_numeric(client, db_session):
     _, stock, _ = upload_axs(client, db_session)
 
-    commentary = _fact(db_session, stock_id=stock.id, metric_key="analyst_commentary")
+    commentary = _fact(db_session, stock_id=stock.id, metric_key="analyst.commentary")
     assert commentary.value_numeric is None
 
-    projection = _fact(db_session, stock_id=stock.id, metric_key="long_term_projection_year_range")
-    assert projection.value_numeric is None
+    strength = _fact(db_session, stock_id=stock.id, metric_key="quality.financial_strength")
+    assert strength.value_numeric is None
 
 
 def test_dedupe_within_document_for_fy_metrics(client, db_session):
@@ -172,7 +187,7 @@ def test_dedupe_within_document_for_fy_metrics(client, db_session):
         db_session.query(MetricFact)
         .filter(
             MetricFact.stock_id == stock.id,
-            MetricFact.metric_key == "net_profit_usd_millions",
+            MetricFact.metric_key == "is.net_income",
             MetricFact.period_type == "FY",
             MetricFact.period_end_date == date(2025, 12, 31),
             MetricFact.source_type == "parsed",

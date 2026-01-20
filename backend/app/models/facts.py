@@ -17,7 +17,7 @@ class MetricFact(Base):
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id"))
     stock_id: Mapped[int] = mapped_column(ForeignKey("stocks.id"))
     metric_key: Mapped[str] = mapped_column(String, index=True)
-    value_json: Mapped[dict[str, Any]] = mapped_column(JSONB)
+    value_json: Mapped[Optional[dict[str, Any]]] = mapped_column(JSONB, nullable=True)
     value_numeric: Mapped[Optional[float]] = mapped_column(Float, nullable=True, index=True)
     value_text: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     unit: Mapped[Optional[str]] = mapped_column(String, nullable=True)

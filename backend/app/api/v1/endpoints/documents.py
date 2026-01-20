@@ -64,16 +64,17 @@ def list_documents(
 
     companies_map: dict[int, dict[int, dict[str, str]]] = {}
     company_rows = session.execute(
-        select(MetricExtraction.document_id, Stock.id, Stock.ticker, Stock.company_name)
-        .join(MetricFact, MetricFact.source_ref_id == MetricExtraction.id)
+        select(MetricFact.source_document_id, Stock.id, Stock.ticker, Stock.company_name)
         .join(Stock, Stock.id == MetricFact.stock_id)
         .where(
-            MetricExtraction.document_id.in_(doc_ids),
+            MetricFact.source_document_id.in_(doc_ids),
             MetricFact.source_type == "parsed",
         )
         .distinct()
     ).all()
     for doc_id, stock_id, ticker, company_name in company_rows:
+        if doc_id is None:
+            continue
         companies_map.setdefault(doc_id, {})[stock_id] = {
             "ticker": ticker,
             "company_name": company_name,

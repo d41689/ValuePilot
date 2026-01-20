@@ -34,6 +34,7 @@ def upgrade() -> None:
         type_=postgresql.JSONB(astext_type=sa.Text()),
         postgresql_using="value_json::jsonb",
         existing_nullable=False,
+        nullable=True,
     )
     op.create_unique_constraint(
         "uq_metric_facts_dedupe",
@@ -55,7 +56,8 @@ def downgrade() -> None:
         existing_type=postgresql.JSONB(astext_type=sa.Text()),
         type_=sa.JSON(),
         postgresql_using="value_json::json",
-        existing_nullable=False,
+        existing_nullable=True,
+        nullable=False,
     )
     op.drop_column("metric_facts", "source_document_id")
     op.drop_column("metric_facts", "value_text")

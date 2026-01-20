@@ -112,6 +112,16 @@ mappings:
       numeric_from: $value
     notes: "FY EPS from annual_financials.per_share_metrics.earnings_per_share_usd"
 
+  - id: per_share.eps.fy.non_insurance
+    json_path: annual_financials.per_share_metrics.earnings_per_share.*
+    metric_key: per_share.eps
+    period_type: FY
+    unit: USD_per_share
+    period_end_date:
+      derive: year_end_from_key
+    value:
+      numeric_from: $value
+
   - id: per_share.eps.q
     json_path: earnings_per_share.by_year[].quarters.*.value
     metric_key: per_share.eps
@@ -133,6 +143,16 @@ mappings:
     value:
       numeric_from: $value
 
+  - id: per_share.dividends_declared.fy.non_insurance
+    json_path: annual_financials.per_share_metrics.dividends_declared_per_share.*
+    metric_key: per_share.dividends_declared
+    period_type: FY
+    unit: USD_per_share
+    period_end_date:
+      derive: year_end_from_key
+    value:
+      numeric_from: $value
+
   - id: per_share.dividends_paid.q
     json_path: quarterly_dividends_paid.by_year[].quarters.*.value
     metric_key: per_share.dividends_paid
@@ -145,6 +165,16 @@ mappings:
 
   - id: per_share.book_value.fy
     json_path: annual_financials.per_share_metrics.book_value_per_share_usd.*
+    metric_key: per_share.book_value
+    period_type: FY
+    unit: USD_per_share
+    period_end_date:
+      derive: year_end_from_key
+    value:
+      numeric_from: $value
+
+  - id: per_share.book_value.fy.non_insurance
+    json_path: annual_financials.per_share_metrics.book_value_per_share.*
     metric_key: per_share.book_value
     period_type: FY
     unit: USD_per_share
@@ -183,6 +213,46 @@ mappings:
     value:
       numeric_from: $value
 
+  - id: per_share.sales.fy
+    json_path: annual_financials.per_share_metrics.sales_per_share.*
+    metric_key: per_share.sales
+    period_type: FY
+    unit: USD_per_share
+    period_end_date:
+      derive: year_end_from_key
+    value:
+      numeric_from: $value
+
+  - id: per_share.cash_flow.fy
+    json_path: annual_financials.per_share_metrics.cash_flow_per_share.*
+    metric_key: per_share.cash_flow
+    period_type: FY
+    unit: USD_per_share
+    period_end_date:
+      derive: year_end_from_key
+    value:
+      numeric_from: $value
+
+  - id: per_share.capital_spending.fy
+    json_path: annual_financials.per_share_metrics.capital_spending_per_share.*
+    metric_key: per_share.capital_spending
+    period_type: FY
+    unit: USD_per_share
+    period_end_date:
+      derive: year_end_from_key
+    value:
+      numeric_from: $value
+
+  - id: equity.shares_outstanding.fy
+    json_path: annual_financials.per_share_metrics.common_shares_outstanding_millions.*
+    metric_key: equity.shares_outstanding
+    period_type: FY
+    unit: million_shares
+    period_end_date:
+      derive: year_end_from_key
+    value:
+      numeric_from: $value
+
   # -------------------------
   # INCOME STATEMENT (IS)
   # -------------------------
@@ -191,6 +261,36 @@ mappings:
     metric_key: is.net_income
     period_type: FY
     unit: USD_millions
+    period_end_date:
+      derive: year_end_from_key
+    value:
+      numeric_from: $value
+
+  - id: is.sales.fy
+    json_path: annual_financials.income_statement_usd_millions.sales.*
+    metric_key: is.sales
+    period_type: FY
+    unit: USD_millions
+    period_end_date:
+      derive: year_end_from_key
+    value:
+      numeric_from: $value
+
+  - id: is.depreciation.fy
+    json_path: annual_financials.income_statement_usd_millions.depreciation.*
+    metric_key: is.depreciation
+    period_type: FY
+    unit: USD_millions
+    period_end_date:
+      derive: year_end_from_key
+    value:
+      numeric_from: $value
+
+  - id: is.operating_margin.fy
+    json_path: annual_financials.income_statement_usd_millions.operating_margin_pct.*
+    metric_key: is.operating_margin
+    period_type: FY
+    unit: percent
     period_end_date:
       derive: year_end_from_key
     value:
@@ -699,6 +799,49 @@ mappings:
       from: meta.report_date
     value:
       numeric_from: ratings.beta.normalized
+
+  # -------------------------
+  # QUALITY METRICS (AS_OF)
+  # -------------------------
+  - id: quality.financial_strength.as_of
+    json_path: quality_metrics.company_financial_strength.value
+    metric_key: quality.financial_strength
+    period_type: AS_OF
+    unit: text
+    period_end_date:
+      from: meta.report_date
+    value:
+      text_from: quality_metrics.company_financial_strength.value
+
+  - id: quality.stock_price_stability.as_of
+    json_path: quality_metrics.stock_price_stability.value
+    metric_key: quality.stock_price_stability
+    period_type: AS_OF
+    unit: ratio
+    period_end_date:
+      from: meta.report_date
+    value:
+      numeric_from: quality_metrics.stock_price_stability.value
+
+  - id: quality.price_growth_persistence.as_of
+    json_path: quality_metrics.price_growth_persistence.value
+    metric_key: quality.price_growth_persistence
+    period_type: AS_OF
+    unit: ratio
+    period_end_date:
+      from: meta.report_date
+    value:
+      numeric_from: quality_metrics.price_growth_persistence.value
+
+  - id: quality.earnings_predictability.as_of
+    json_path: quality_metrics.earnings_predictability.value
+    metric_key: quality.earnings_predictability
+    period_type: AS_OF
+    unit: ratio
+    period_end_date:
+      from: meta.report_date
+    value:
+      numeric_from: quality_metrics.earnings_predictability.value
 
   # -------------------------
   # TARGETS / PROJECTIONS
