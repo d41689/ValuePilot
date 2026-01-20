@@ -7,7 +7,7 @@ from unittest.mock import patch
 
 
 def test_reparse_existing_document_deactivates_prior_parsed_facts(db_session):
-    text = "TESTCO RECENT 68.11\nNYSE-NEWP\nVALUE LINE\n"
+    text = "TESTCO RECENT 68.11\nNYSE-NEWP\nVALUE LINE\nAnalystX January 2, 2026\n"
     user = User(email="reparse_test@example.com")
     db_session.add(user)
     db_session.commit()
@@ -137,8 +137,8 @@ def test_reparse_existing_document_multi_page_updates_all_pages(db_session):
     db_session.commit()
 
     pages = [
-        (1, "ALPHA CO\nNYSE-ZZAQ\nRECENT PRICE 10\nVALUE LINE\n", []),
-        (2, "BETA CO\nZZBQ (NDQ)\nRECENT PRICE 20\nVALUE LINE\n", []),
+        (1, "ALPHA CO\nNYSE-ZZAQ\nRECENT PRICE 10\nVALUE LINE\nAnalystX January 2, 2026\n", []),
+        (2, "BETA CO\nZZBQ (NDQ)\nRECENT PRICE 20\nVALUE LINE\nAnalystY January 2, 2026\n", []),
     ]
 
     with patch(
@@ -191,7 +191,7 @@ def test_reparse_existing_document_ignores_industry_pages_in_status(db_session):
             DocumentPage(
                 document_id=doc.id,
                 page_number=1,
-                page_text="ALPHA CO\nNYSE-ALP\nRECENT PRICE 10\nVALUE LINE\n",
+                page_text="ALPHA CO\nNYSE-ALP\nRECENT PRICE 10\nVALUE LINE\nAnalystX January 2, 2026\n",
                 text_extraction_method="native_text",
             ),
             DocumentPage(
@@ -203,7 +203,7 @@ def test_reparse_existing_document_ignores_industry_pages_in_status(db_session):
             DocumentPage(
                 document_id=doc.id,
                 page_number=3,
-                page_text="BETA CO\nNDQ-BET\nRECENT PRICE 20\nVALUE LINE\n",
+                page_text="BETA CO\nNDQ-BET\nRECENT PRICE 20\nVALUE LINE\nAnalystY January 2, 2026\n",
                 text_extraction_method="native_text",
             ),
         ]

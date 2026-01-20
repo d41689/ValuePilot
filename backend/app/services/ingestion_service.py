@@ -2,6 +2,7 @@ import re
 import uuid
 from datetime import datetime, date
 from pathlib import Path
+from typing import Optional
 from sqlalchemy.orm import Session
 from sqlalchemy import update
 from fastapi import UploadFile
@@ -131,6 +132,10 @@ class IngestionService:
                         doc.notes = (doc.notes or "") + f"\n[page {page_num}] {note}"
 
                     extractions = parser.parse()
+                    report_date = self._report_date_from_extractions(extractions)
+                    if report_date is None:
+                        raise ValueError("missing_commentary_date")
+                    rating_event_dates = self._rating_event_dates(extractions)
 
                     for ext in extractions:
                         metric_record = MetricExtraction(
@@ -184,6 +189,7 @@ class IngestionService:
                         metric_key = ext.field_key
                         period_type = None
                         period_end_date = None
+                        period_end_date_is_derived = False
                         if isinstance(ext.parsed_value_json, dict):
                             period_type = ext.parsed_value_json.get("period_type")
                             period_end = ext.parsed_value_json.get("period_end_date")
@@ -192,6 +198,13 @@ class IngestionService:
                                     period_end_date = date.fromisoformat(period_end)
                                 except ValueError:
                                     period_end_date = None
+                        if period_end_date is None:
+                            period_end_date = self._derived_period_end_date(
+                                metric_key,
+                                report_date,
+                                rating_event_dates,
+                            )
+                            period_end_date_is_derived = period_end_date is not None
 
                         update_stmt = (
                             update(MetricFact)
@@ -203,7 +216,7 @@ class IngestionService:
                             )
                             .values(is_current=False)
                         )
-                        if period_end_date:
+                        if period_end_date and not period_end_date_is_derived:
                             update_stmt = update_stmt.where(MetricFact.period_end_date == period_end_date)
                         self.db.execute(update_stmt)
 
@@ -351,6 +364,10 @@ class IngestionService:
                 doc.notes = (doc.notes or "") + f"\n[page {page_num}] {note}"
 
             extractions = parser.parse()
+            report_date = self._report_date_from_extractions(extractions)
+            if report_date is None:
+                continue
+            rating_event_dates = self._rating_event_dates(extractions)
             for ext in extractions:
                 metric_record = MetricExtraction(
                     user_id=user_id,
@@ -403,6 +420,7 @@ class IngestionService:
                 metric_key = ext.field_key
                 period_type = None
                 period_end_date = None
+                period_end_date_is_derived = False
                 if isinstance(ext.parsed_value_json, dict):
                     period_type = ext.parsed_value_json.get("period_type")
                     period_end = ext.parsed_value_json.get("period_end_date")
@@ -411,6 +429,13 @@ class IngestionService:
                             period_end_date = date.fromisoformat(period_end)
                         except ValueError:
                             period_end_date = None
+                if period_end_date is None:
+                    period_end_date = self._derived_period_end_date(
+                        metric_key,
+                        report_date,
+                        rating_event_dates,
+                    )
+                    period_end_date_is_derived = period_end_date is not None
 
                 update_stmt = (
                     update(MetricFact)
@@ -422,7 +447,7 @@ class IngestionService:
                     )
                     .values(is_current=False)
                 )
-                if period_end_date:
+                if period_end_date and not period_end_date_is_derived:
                     update_stmt = update_stmt.where(MetricFact.period_end_date == period_end_date)
                 self.db.execute(update_stmt)
 
@@ -470,3 +495,97 @@ class IngestionService:
         self.db.commit()
         self.db.refresh(doc)
         return doc
+
+    @staticmethod
+    def _report_date_from_extractions(extractions: list) -> Optional[date]:
+        for ext in extractions:
+            if ext.field_key != "report_date":
+                continue
+            if isinstance(ext.parsed_value_json, dict):
+                iso = ext.parsed_value_json.get("iso_date")
+                if iso:
+                    try:
+                        return date.fromisoformat(iso)
+                    except ValueError:
+                        pass
+            if ext.raw_value_text:
+                try:
+                    return date.fromisoformat(ext.raw_value_text)
+                except ValueError:
+                    pass
+        return None
+
+    @staticmethod
+    def _rating_event_dates(extractions: list) -> dict[str, Optional[date]]:
+        event_dates: dict[str, Optional[date]] = {}
+        for ext in extractions:
+            if ext.field_key not in {"timeliness", "safety", "technical"}:
+                continue
+            notes = None
+            if isinstance(ext.parsed_value_json, dict):
+                notes = ext.parsed_value_json.get("notes")
+            if not notes:
+                event_dates[ext.field_key] = None
+                continue
+            match = re.search(r'(\\d{1,2})/(\\d{1,2})/(\\d{2})', notes)
+            if not match:
+                event_dates[ext.field_key] = None
+                continue
+            event_dates[ext.field_key] = date(
+                2000 + int(match.group(3)),
+                int(match.group(1)),
+                int(match.group(2)),
+            )
+        return event_dates
+
+    @staticmethod
+    def _derived_period_end_date(
+        metric_key: str,
+        report_date: Optional[date],
+        rating_event_dates: dict[str, Optional[date]],
+    ) -> Optional[date]:
+        if not report_date:
+            return None
+
+        header_keys = {
+            "recent_price",
+            "pe_ratio",
+            "pe_ratio_trailing",
+            "pe_ratio_median",
+            "relative_pe_ratio",
+            "dividend_yield",
+        }
+        quality_keys = {
+            "company_financial_strength",
+            "stock_price_stability",
+            "price_growth_persistence",
+            "earnings_predictability",
+        }
+        target_keys = {
+            "target_18m_low",
+            "target_18m_high",
+            "target_18m_mid",
+            "target_18m_upside_pct",
+        }
+        projection_keys = {
+            "long_term_projection_year_range",
+            "long_term_projection_high_price",
+            "long_term_projection_high_price_gain_pct",
+            "long_term_projection_high_total_return_pct",
+            "long_term_projection_low_price",
+            "long_term_projection_low_price_gain_pct",
+            "long_term_projection_low_total_return_pct",
+        }
+
+        if metric_key in header_keys:
+            return report_date
+        if metric_key in rating_event_dates:
+            return rating_event_dates.get(metric_key)
+        if metric_key in quality_keys:
+            return report_date
+        if metric_key in target_keys:
+            return report_date
+        if metric_key in projection_keys:
+            return report_date
+
+        return None

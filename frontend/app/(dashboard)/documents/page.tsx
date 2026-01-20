@@ -207,6 +207,7 @@ export default function DocumentsPage() {
             <Table>
               <TableHeader>
                 <TableRow>
+                  <TableHead className="w-[72px]">ID</TableHead>
                   <TableHead>File Name</TableHead>
                   <TableHead>Template</TableHead>
                   <TableHead>Companies</TableHead>
@@ -228,6 +229,7 @@ export default function DocumentsPage() {
                       className="animate-in fade-in slide-in-from-bottom-1 duration-500"
                       style={{ animationDelay: `${index * 40}ms` }}
                     >
+                      <TableCell className="text-muted-foreground">{doc.id}</TableCell>
                       <TableCell className="font-medium text-foreground">
                         {doc.file_name}
                       </TableCell>

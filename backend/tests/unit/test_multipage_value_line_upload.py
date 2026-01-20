@@ -8,8 +8,14 @@ def test_upload_multipage_parses_each_page_independently(client, db_session):
     db_session.add(user)
     db_session.commit()
 
-    page1_text = "SMITH (A.O.)\nNYSE-AOS\nRECENT PRICE 68.11\nP/E RATIO 17.4\nDIV'D YLD 2.0%\nVALUE LINE\n"
-    page2_text = "MICROSOFT CORP.\nMSFT (NDQ)\nRECENT PRICE 420.00\nP/E RATIO 30.0\nDIV'D YLD 0.8%\nVALUE LINE\n"
+    page1_text = (
+        "SMITH (A.O.)\nNYSE-AOS\nRECENT PRICE 68.11\nP/E RATIO 17.4\nDIV'D YLD 2.0%\n"
+        "VALUE LINE\nAnalystX January 2, 2026\n"
+    )
+    page2_text = (
+        "MICROSOFT CORP.\nMSFT (NDQ)\nRECENT PRICE 420.00\nP/E RATIO 30.0\nDIV'D YLD 0.8%\n"
+        "VALUE LINE\nAnalystY January 2, 2026\n"
+    )
 
     pages = [
         (1, page1_text, []),
@@ -70,7 +76,7 @@ def test_upload_multipage_non_company_pages_do_not_block_parsed_status(client, d
     db_session.add(user)
     db_session.commit()
 
-    page1_text = "SMITH (A.O.)\nNYSE-AOS\nRECENT PRICE 68.11\nVALUE LINE\n"
+    page1_text = "SMITH (A.O.)\nNYSE-AOS\nRECENT PRICE 68.11\nVALUE LINE\nAnalystX January 2, 2026\n"
     page2_text = "THIS IS NOT A VALUE LINE REPORT\n"
 
     pages = [
@@ -101,7 +107,7 @@ def test_upload_multipage_identity_unresolved_reports_error_code(client, db_sess
     db_session.add(user)
     db_session.commit()
 
-    page1_text = "SMITH (A.O.)\nNYSE-AOS\nRECENT PRICE 68.11\nVALUE LINE\n"
+    page1_text = "SMITH (A.O.)\nNYSE-AOS\nRECENT PRICE 68.11\nVALUE LINE\nAnalystX January 2, 2026\n"
     page2_text = "RECENT PRICE 12.34\nVALUE LINE\n"
 
     pages = [
