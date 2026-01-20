@@ -1,0 +1,140 @@
+import json
+from datetime import date
+from pathlib import Path
+from unittest.mock import patch
+
+from app.ingestion.pdf_extractor import PdfExtractor
+from app.models.facts import MetricFact
+from app.models.stocks import Stock
+from app.models.users import User
+
+
+FIXTURE_PDF = Path("tests/fixtures/value_line/axs.pdf")
+EXPECTED_JSON = Path("tests/fixtures/value_line/axs_v1.expected.json")
+
+
+def load_expected_json() -> dict:
+    with EXPECTED_JSON.open("r", encoding="utf-8") as fh:
+        return json.load(fh)
+
+
+def upload_axs(client, db_session) -> tuple[User, Stock, dict]:
+    user = User(email="axs_metric_facts@example.com")
+    db_session.add(user)
+    db_session.commit()
+
+    expected = load_expected_json()
+    pages = PdfExtractor.extract_pages_with_words(FIXTURE_PDF)
+
+    with patch(
+        "app.services.ingestion_service.PdfExtractor.extract_pages_with_words",
+        return_value=pages,
+    ):
+        resp = client.post(
+            f"/api/v1/documents/upload?user_id={user.id}",
+            files={"file": ("axs.pdf", b"%PDF-1.4\n%fake\n", "application/pdf")},
+        )
+
+    assert resp.status_code == 200, resp.text
+
+    stock = (
+        db_session.query(Stock)
+        .filter(Stock.ticker == "AXS", Stock.exchange == "NYSE")
+        .one()
+    )
+
+    return user, stock, expected
+
+
+def _fact(db_session, *, stock_id: int, metric_key: str, period_end_date: date | None = None) -> MetricFact:
+    query = (
+        db_session.query(MetricFact)
+        .filter(
+            MetricFact.stock_id == stock_id,
+            MetricFact.metric_key == metric_key,
+            MetricFact.source_type == "parsed",
+            MetricFact.is_current.is_(True),
+        )
+        .order_by(MetricFact.id.desc())
+    )
+    if period_end_date is not None:
+        query = query.filter(MetricFact.period_end_date == period_end_date)
+    result = query.first()
+    assert result is not None
+    return result
+
+
+def test_metric_facts_use_rating_event_dates(client, db_session):
+    _, stock, expected = upload_axs(client, db_session)
+
+    for key in ("timeliness", "safety", "technical"):
+        event_date = date.fromisoformat(expected["ratings"][key]["event"]["date"])
+        fact = _fact(db_session, stock_id=stock.id, metric_key=key)
+        assert fact.period_end_date == event_date
+
+
+def test_metric_facts_use_capital_structure_as_of_dates(client, db_session):
+    _, stock, expected = upload_axs(client, db_session)
+
+    cap_as_of = date.fromisoformat(expected["capital_structure"]["as_of"])
+    market_as_of = date.fromisoformat(expected["capital_structure"]["market_cap"]["as_of"])
+    shares_as_of = date.fromisoformat(expected["capital_structure"]["common_stock"]["as_of"])
+
+    total_debt = _fact(db_session, stock_id=stock.id, metric_key="total_debt", period_end_date=cap_as_of)
+    assert total_debt.period_end_date == cap_as_of
+
+    market_cap = _fact(db_session, stock_id=stock.id, metric_key="market_cap", period_end_date=market_as_of)
+    assert market_cap.period_end_date == market_as_of
+
+    shares = _fact(
+        db_session,
+        stock_id=stock.id,
+        metric_key="common_stock_shares_outstanding",
+        period_end_date=shares_as_of,
+    )
+    assert shares.period_end_date == shares_as_of
+
+
+def test_quarterly_series_full_year_facts_are_written(client, db_session):
+    _, stock, expected = upload_axs(client, db_session)
+
+    premiums_2024 = expected["net_premiums_earned"]["by_year"][2]["full_year"]["value"]
+    fact = _fact(
+        db_session,
+        stock_id=stock.id,
+        metric_key="quarterly_sales_usd_millions",
+        period_end_date=date(2024, 12, 31),
+    )
+    assert fact.value_numeric == premiums_2024 * 1_000_000.0
+
+    eps_2024 = expected["earnings_per_share"]["by_year"][2]["full_year"]["value"]
+    eps_fact = _fact(
+        db_session,
+        stock_id=stock.id,
+        metric_key="earnings_per_share",
+        period_end_date=date(2024, 12, 31),
+    )
+    assert eps_fact.value_numeric == eps_2024
+
+
+def test_annual_financials_series_are_expanded(client, db_session):
+    _, stock, expected = upload_axs(client, db_session)
+
+    net_profit_2017 = expected["annual_financials"]["income_statement_usd_millions"]["net_profit"]["2017"]
+    fact = _fact(
+        db_session,
+        stock_id=stock.id,
+        metric_key="net_profit_usd_millions",
+        period_end_date=date(2017, 12, 31),
+    )
+    assert fact.value_numeric == net_profit_2017 * 1_000_000.0
+
+
+def test_commentary_and_projection_range_remain_non_numeric(client, db_session):
+    _, stock, _ = upload_axs(client, db_session)
+
+    commentary = _fact(db_session, stock_id=stock.id, metric_key="analyst_commentary")
+    assert commentary.value_numeric is None
+
+    projection = _fact(db_session, stock_id=stock.id, metric_key="long_term_projection_year_range")
+    assert projection.value_numeric is None
