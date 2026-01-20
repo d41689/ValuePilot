@@ -63,3 +63,5 @@ postgres_data/
 local_storage/
 
 backend/storage/
+
+schema.sql

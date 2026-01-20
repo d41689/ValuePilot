@@ -46,7 +46,14 @@ def upload_axs(client, db_session) -> tuple[User, Stock, dict]:
     return user, stock, expected
 
 
-def _fact(db_session, *, stock_id: int, metric_key: str, period_end_date: date | None = None) -> MetricFact:
+def _fact(
+    db_session,
+    *,
+    stock_id: int,
+    metric_key: str,
+    period_end_date: date | None = None,
+    period_type: str | None = None,
+) -> MetricFact:
     query = (
         db_session.query(MetricFact)
         .filter(
@@ -59,6 +66,8 @@ def _fact(db_session, *, stock_id: int, metric_key: str, period_end_date: date |
     )
     if period_end_date is not None:
         query = query.filter(MetricFact.period_end_date == period_end_date)
+    if period_type is not None:
+        query = query.filter(MetricFact.period_type == period_type)
     result = query.first()
     assert result is not None
     return result
@@ -69,8 +78,9 @@ def test_metric_facts_use_rating_event_dates(client, db_session):
 
     for key in ("timeliness", "safety", "technical"):
         event_date = date.fromisoformat(expected["ratings"][key]["event"]["date"])
-        fact = _fact(db_session, stock_id=stock.id, metric_key=key)
+        fact = _fact(db_session, stock_id=stock.id, metric_key=key, period_type="EVENT")
         assert fact.period_end_date == event_date
+        assert fact.period_type == "EVENT"
 
 
 def test_metric_facts_use_capital_structure_as_of_dates(client, db_session):
@@ -104,8 +114,10 @@ def test_quarterly_series_full_year_facts_are_written(client, db_session):
         stock_id=stock.id,
         metric_key="quarterly_sales_usd_millions",
         period_end_date=date(2024, 12, 31),
+        period_type="FY",
     )
     assert fact.value_numeric == premiums_2024 * 1_000_000.0
+    assert fact.period_type == "FY"
 
     eps_2024 = expected["earnings_per_share"]["by_year"][2]["full_year"]["value"]
     eps_fact = _fact(
@@ -113,8 +125,19 @@ def test_quarterly_series_full_year_facts_are_written(client, db_session):
         stock_id=stock.id,
         metric_key="earnings_per_share",
         period_end_date=date(2024, 12, 31),
+        period_type="FY",
     )
     assert eps_fact.value_numeric == eps_2024
+    assert eps_fact.period_type == "FY"
+
+    q1_fact = _fact(
+        db_session,
+        stock_id=stock.id,
+        metric_key="earnings_per_share",
+        period_end_date=date(2024, 3, 31),
+        period_type="Q",
+    )
+    assert q1_fact.period_type == "Q"
 
 
 def test_annual_financials_series_are_expanded(client, db_session):
@@ -126,8 +149,10 @@ def test_annual_financials_series_are_expanded(client, db_session):
         stock_id=stock.id,
         metric_key="net_profit_usd_millions",
         period_end_date=date(2017, 12, 31),
+        period_type="FY",
     )
     assert fact.value_numeric == net_profit_2017 * 1_000_000.0
+    assert fact.period_type == "FY"
 
 
 def test_commentary_and_projection_range_remain_non_numeric(client, db_session):
@@ -138,3 +163,20 @@ def test_commentary_and_projection_range_remain_non_numeric(client, db_session):
 
     projection = _fact(db_session, stock_id=stock.id, metric_key="long_term_projection_year_range")
     assert projection.value_numeric is None
+
+
+def test_dedupe_within_document_for_fy_metrics(client, db_session):
+    _, stock, _ = upload_axs(client, db_session)
+
+    results = (
+        db_session.query(MetricFact)
+        .filter(
+            MetricFact.stock_id == stock.id,
+            MetricFact.metric_key == "net_profit_usd_millions",
+            MetricFact.period_type == "FY",
+            MetricFact.period_end_date == date(2025, 12, 31),
+            MetricFact.source_type == "parsed",
+        )
+        .all()
+    )
+    assert len(results) == 1

@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Optional
 from sqlalchemy.orm import Session
 from sqlalchemy import update
+from sqlalchemy.dialects.postgresql import insert
 from fastapi import UploadFile
 
 from app.models.artifacts import PdfDocument, DocumentPage
@@ -45,6 +46,12 @@ class IngestionService:
         "quarterly_dividends_paid_per_share",
         "tables_time_series",
     }
+    ANNUAL_TABLE_METRIC_KEYS = {
+        "capital_spending_per_share_usd",
+        "avg_annual_dividend_yield_pct",
+        "depreciation_usd_millions",
+        "net_profit_usd_millions",
+    }
     CAPITAL_STRUCTURE_AS_OF_KEYS = {
         "total_debt",
         "debt_due_in_5_years",
@@ -56,6 +63,19 @@ class IngestionService:
         "pension_obligations",
         "preferred_stock",
         "preferred_dividend",
+    }
+    RANGE_KEYS = {
+        "target_18m_low",
+        "target_18m_high",
+        "target_18m_mid",
+        "target_18m_upside_pct",
+        "long_term_projection_year_range",
+        "long_term_projection_high_price",
+        "long_term_projection_high_price_gain_pct",
+        "long_term_projection_high_total_return_pct",
+        "long_term_projection_low_price",
+        "long_term_projection_low_price_gain_pct",
+        "long_term_projection_low_total_return_pct",
     }
 
     def __init__(self, db: Session):
@@ -178,6 +198,7 @@ class IngestionService:
                         raise ValueError("missing_commentary_date")
                     rating_event_dates = self._rating_event_dates(extractions)
                     as_of_dates = self._as_of_dates_from_extractions(extractions)
+                    has_tables_time_series = any(ext.field_key == "tables_time_series" for ext in extractions)
 
                     for ext in extractions:
                         metric_record = MetricExtraction(
@@ -207,11 +228,13 @@ class IngestionService:
                                 period_end_date=fact.get("period_end_date"),
                                 period_end_date_is_derived=False,
                                 source_ref_id=metric_record.id,
+                                source_document_id=doc.id,
                                 value_type_override=fact.get("value_type"),
                                 force_numeric=True,
                             )
 
-                        if ext.field_key in self.SKIP_FACT_KEYS:
+                        skip_annual = has_tables_time_series and ext.field_key in self.ANNUAL_TABLE_METRIC_KEYS
+                        if ext.field_key in self.SKIP_FACT_KEYS or skip_annual:
                             continue
 
                         metric_key = ext.field_key
@@ -232,6 +255,7 @@ class IngestionService:
                             period_end_date=period_end_date,
                             period_end_date_is_derived=period_end_date_is_derived,
                             source_ref_id=metric_record.id,
+                            source_document_id=doc.id,
                         )
 
                     parsed_company_pages += 1
@@ -351,6 +375,7 @@ class IngestionService:
                 continue
             rating_event_dates = self._rating_event_dates(extractions)
             as_of_dates = self._as_of_dates_from_extractions(extractions)
+            has_tables_time_series = any(ext.field_key == "tables_time_series" for ext in extractions)
             for ext in extractions:
                 metric_record = MetricExtraction(
                     user_id=user_id,
@@ -379,11 +404,13 @@ class IngestionService:
                         period_end_date=fact.get("period_end_date"),
                         period_end_date_is_derived=False,
                         source_ref_id=metric_record.id,
+                        source_document_id=doc.id,
                         value_type_override=fact.get("value_type"),
                         force_numeric=True,
                     )
 
-                if ext.field_key in self.SKIP_FACT_KEYS:
+                skip_annual = has_tables_time_series and ext.field_key in self.ANNUAL_TABLE_METRIC_KEYS
+                if ext.field_key in self.SKIP_FACT_KEYS or skip_annual:
                     continue
 
                 metric_key = ext.field_key
@@ -404,6 +431,7 @@ class IngestionService:
                     period_end_date=period_end_date,
                     period_end_date_is_derived=period_end_date_is_derived,
                     source_ref_id=metric_record.id,
+                    source_document_id=doc.id,
                 )
 
             parsed_company_pages += 1
@@ -597,6 +625,14 @@ class IngestionService:
                 period_end_date = as_of_dates.get("pension_assets")
             elif metric_key == "market_cap":
                 period_end_date = as_of_dates.get("market_cap")
+            elif metric_key == "capital_structure_as_of":
+                period_end_date = as_of_dates.get("capital_structure")
+            elif metric_key == "market_cap_as_of":
+                period_end_date = as_of_dates.get("market_cap")
+            elif metric_key == "pension_assets_as_of":
+                period_end_date = as_of_dates.get("pension_assets")
+            elif metric_key == "report_date":
+                period_end_date = report_date
             elif metric_key in {"common_stock_shares_outstanding", "shares_outstanding"}:
                 period_end_date = as_of_dates.get("common_stock")
 
@@ -608,7 +644,72 @@ class IngestionService:
             )
             period_end_date_is_derived = period_end_date is not None
 
+        if period_type is None:
+            period_type = self._derived_period_type(
+                metric_key,
+                period_end_date,
+                report_date,
+                rating_event_dates,
+            )
+
+        if period_end_date is None and period_type == "AS_OF" and report_date:
+            period_end_date = report_date
+            period_end_date_is_derived = True
+
         return period_end_date, period_type, period_end_date_is_derived
+
+    def _derived_period_type(
+        self,
+        metric_key: str,
+        period_end_date: Optional[date],
+        report_date: Optional[date],
+        rating_event_dates: dict[str, Optional[date]],
+    ) -> Optional[str]:
+        if metric_key in rating_event_dates:
+            return "EVENT"
+        if metric_key in self.RANGE_KEYS:
+            return "RANGE"
+
+        header_keys = {
+            "recent_price",
+            "pe_ratio",
+            "pe_ratio_trailing",
+            "pe_ratio_median",
+            "relative_pe_ratio",
+            "dividend_yield",
+            "beta",
+        }
+        quality_keys = {
+            "company_financial_strength",
+            "stock_price_stability",
+            "price_growth_persistence",
+            "earnings_predictability",
+        }
+        as_of_keys = {
+            "report_date",
+            "analyst_name",
+            "analyst_commentary",
+            "business_description",
+            "capital_structure_as_of",
+            "market_cap_as_of",
+            "pension_assets_as_of",
+            "price_semantics_and_returns",
+            "institutional_decisions",
+            "annual_rates_of_change",
+        }
+        if (
+            metric_key in header_keys
+            or metric_key in quality_keys
+            or metric_key in as_of_keys
+            or metric_key in self.CAPITAL_STRUCTURE_AS_OF_KEYS
+            or metric_key in {"market_cap", "pension_assets", "common_stock_shares_outstanding", "shares_outstanding"}
+        ):
+            return "AS_OF"
+
+        if report_date and period_end_date == report_date:
+            return "AS_OF"
+
+        return None
 
     @staticmethod
     def _infer_value_type(metric_key: str) -> str:
@@ -665,6 +766,7 @@ class IngestionService:
         period_end_date: Optional[date],
         period_end_date_is_derived: bool,
         source_ref_id: Optional[int],
+        source_document_id: Optional[int],
         value_type_override: Optional[str] = None,
         force_numeric: bool = False,
     ) -> None:
@@ -674,6 +776,7 @@ class IngestionService:
             norm_val, norm_unit = Scaler.normalize(raw_value_text, value_type)
 
         value_json = self._build_value_json(parsed_value_json, raw_value_text, norm_val, norm_unit)
+        value_text = raw_value_text if metric_key in self.NON_NUMERIC_KEYS else None
 
         update_stmt = (
             update(MetricFact)
@@ -685,25 +788,49 @@ class IngestionService:
             )
             .values(is_current=False)
         )
+        if period_type:
+            update_stmt = update_stmt.where(
+                (MetricFact.period_type == period_type) | (MetricFact.period_type.is_(None))
+            )
         if period_end_date and not period_end_date_is_derived:
             update_stmt = update_stmt.where(MetricFact.period_end_date == period_end_date)
         self.db.execute(update_stmt)
 
-        self.db.add(
-            MetricFact(
-                user_id=user_id,
-                stock_id=stock_id,
-                metric_key=metric_key,
-                value_json=value_json,  # type: ignore[arg-type]
-                value_numeric=norm_val,
-                unit=norm_unit,
-                period_type=period_type,
-                period_end_date=period_end_date,
-                source_type="parsed",
-                source_ref_id=source_ref_id,
-                is_current=True,
-            )
+        insert_stmt = insert(MetricFact).values(
+            user_id=user_id,
+            stock_id=stock_id,
+            metric_key=metric_key,
+            value_json=value_json,  # type: ignore[arg-type]
+            value_numeric=norm_val,
+            value_text=value_text,
+            unit=norm_unit,
+            period_type=period_type,
+            period_end_date=period_end_date,
+            source_type="parsed",
+            source_ref_id=source_ref_id,
+            source_document_id=source_document_id,
+            is_current=True,
         )
+        insert_stmt = insert_stmt.on_conflict_do_update(
+            index_elements=[
+                "stock_id",
+                "metric_key",
+                "period_type",
+                "period_end_date",
+                "source_document_id",
+            ],
+            set_={
+                "value_json": value_json,
+                "value_numeric": norm_val,
+                "value_text": value_text,
+                "unit": norm_unit,
+                "period_type": period_type,
+                "period_end_date": period_end_date,
+                "source_ref_id": source_ref_id,
+                "is_current": True,
+            },
+        )
+        self.db.execute(insert_stmt)
         self.db.flush()
 
     def _expand_time_series_facts(self, ext, report_date: Optional[date]) -> list[dict]:
@@ -819,7 +946,11 @@ class IngestionService:
         facts: list[dict] = []
         for idx, label in enumerate(years):
             period_end_date = self._year_end_date(label)
-            period_type = "FY" if isinstance(label, int) or (isinstance(label, str) and label.isdigit()) else None
+            period_type = (
+                "FY"
+                if isinstance(label, int) or (isinstance(label, str) and label.isdigit())
+                else "AS_OF"
+            )
             if period_end_date is None:
                 continue
             for key, suffix in assets_map.items():
@@ -881,7 +1012,11 @@ class IngestionService:
         facts: list[dict] = []
         for idx, label in enumerate(years):
             period_end_date = self._year_end_date(label)
-            period_type = "FY" if isinstance(label, int) or (isinstance(label, str) and label.isdigit()) else None
+            period_type = (
+                "FY"
+                if isinstance(label, int) or (isinstance(label, str) and label.isdigit())
+                else "AS_OF"
+            )
             if period_end_date is None:
                 continue
             for key, suffix in assets_map.items():
