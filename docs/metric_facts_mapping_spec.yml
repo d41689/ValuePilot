@@ -51,8 +51,7 @@ enums:
 # Global defaults (can be overridden per mapping)
 defaults:
   source:
-    document_id_path: header.source_document_id
-    report_date_path: header.report_date
+    report_date_path: meta.report_date
   value_preference:
     # Prefer numeric when available, otherwise text, otherwise json
     - numeric
@@ -62,11 +61,11 @@ defaults:
 # Helpers: where to find common dates in the source JSON
 # (these are path strings; your parser can interpret them)
 date_paths:
-  report_date: header.report_date
-  recent_price_as_of: header.report_date
+  report_date: meta.report_date
+  recent_price_as_of: meta.report_date
   capital_structure_as_of: capital_structure.as_of
-  market_cap_as_of: market_cap.as_of
-  common_stock_as_of: common_stock.as_of
+  market_cap_as_of: capital_structure.market_cap.as_of
+  common_stock_as_of: capital_structure.common_stock.as_of
   timeliness_event_date: ratings.timeliness.event.date
   safety_event_date: ratings.safety.event.date
   technical_event_date: ratings.technical.event.date
@@ -90,6 +89,10 @@ date_paths:
 #     - numeric_from: json path
 #     - text_from: json path
 #     - json_from: json path
+# - metric_key_template:
+#     - format string for dynamic keys, e.g. rates.{metric_key}.cagr_10y
+# - metric_key_from:
+#     - relative path used to fill metric_key_template (e.g. metric_key)
 # - transforms: list of transforms to apply
 # - notes: free-form text
 # ============================================================
@@ -184,7 +187,7 @@ mappings:
   # INCOME STATEMENT (IS)
   # -------------------------
   - id: is.net_income.fy
-    json_path: annual_financials.income_statement_usd_millions.net_profit_usd_millions.*
+    json_path: annual_financials.income_statement_usd_millions.net_profit.*
     metric_key: is.net_income
     period_type: FY
     unit: USD_millions
@@ -217,7 +220,7 @@ mappings:
   # BALANCE SHEET (BS)
   # -------------------------
   - id: bs.total_assets.fy
-    json_path: annual_financials.balance_sheet_and_returns_usd_millions.total_assets_usd_millions.*
+    json_path: annual_financials.balance_sheet_and_returns_usd_millions.total_assets.*
     metric_key: bs.total_assets
     period_type: FY
     unit: USD_millions
@@ -227,7 +230,7 @@ mappings:
       numeric_from: $value
 
   - id: bs.total_equity.fy
-    json_path: annual_financials.balance_sheet_and_returns_usd_millions.shareholders_equity_usd_millions.*
+    json_path: annual_financials.balance_sheet_and_returns_usd_millions.shareholders_equity.*
     metric_key: bs.total_equity
     period_type: FY
     unit: USD_millions
@@ -238,7 +241,7 @@ mappings:
 
   # financial_position table: can include FY and non-FY dates (e.g., 2025-09-30)
   - id: bs.assets.bonds.fp
-    json_path: financial_position.assets_bonds_usd_millions[]
+    json_path: financial_position.assets.bonds[]
     metric_key: bs.assets.bonds
     period_type: AS_OF
     unit: USD_millions
@@ -249,7 +252,7 @@ mappings:
     notes: "If the corresponding year label is YYYY, you may store as FY; if YYYY-MM-DD, store as AS_OF with that date"
 
   - id: bs.assets.stocks.fp
-    json_path: financial_position.assets_stocks_usd_millions[]
+    json_path: financial_position.assets.stocks[]
     metric_key: bs.assets.stocks
     period_type: AS_OF
     unit: USD_millions
@@ -259,7 +262,7 @@ mappings:
       numeric_from: $value
 
   - id: bs.assets.other.fp
-    json_path: financial_position.assets_other_usd_millions[]
+    json_path: financial_position.assets.other[]
     metric_key: bs.assets.other
     period_type: AS_OF
     unit: USD_millions
@@ -269,7 +272,7 @@ mappings:
       numeric_from: $value
 
   - id: bs.total_assets.fp
-    json_path: financial_position.assets_total_usd_millions[]
+    json_path: financial_position.assets.total_assets[]
     metric_key: bs.total_assets
     period_type: AS_OF
     unit: USD_millions
@@ -279,7 +282,7 @@ mappings:
       numeric_from: $value
 
   - id: bs.liabilities.unearned_premiums.fp
-    json_path: financial_position.liabilities_unearned_premiums_usd_millions[]
+    json_path: financial_position.liabilities.unearned_premiums[]
     metric_key: bs.liabilities.unearned_premiums
     period_type: AS_OF
     unit: USD_millions
@@ -289,7 +292,7 @@ mappings:
       numeric_from: $value
 
   - id: bs.liabilities.reserves.fp
-    json_path: financial_position.liabilities_reserves_usd_millions[]
+    json_path: financial_position.liabilities.reserves[]
     metric_key: bs.liabilities.reserves
     period_type: AS_OF
     unit: USD_millions
@@ -299,7 +302,7 @@ mappings:
       numeric_from: $value
 
   - id: bs.liabilities.other.fp
-    json_path: financial_position.liabilities_other_usd_millions[]
+    json_path: financial_position.liabilities.other[]
     metric_key: bs.liabilities.other
     period_type: AS_OF
     unit: USD_millions
@@ -309,7 +312,7 @@ mappings:
       numeric_from: $value
 
   - id: bs.total_liabilities.fp
-    json_path: financial_position.liabilities_total_usd_millions[]
+    json_path: financial_position.liabilities.total_liabilities[]
     metric_key: bs.total_liabilities
     period_type: AS_OF
     unit: USD_millions
@@ -327,7 +330,7 @@ mappings:
     period_type: AS_OF
     unit: USD
     period_end_date:
-      from: header.report_date
+      from: meta.report_date
     value:
       numeric_from: header.recent_price
 
@@ -337,7 +340,7 @@ mappings:
     period_type: AS_OF
     unit: ratio
     period_end_date:
-      from: header.report_date
+      from: meta.report_date
     value:
       numeric_from: header.pe_ratio
 
@@ -347,7 +350,7 @@ mappings:
     period_type: AS_OF
     unit: ratio
     period_end_date:
-      from: header.report_date
+      from: meta.report_date
     value:
       numeric_from: header.pe_ratio_trailing
 
@@ -357,7 +360,7 @@ mappings:
     period_type: AS_OF
     unit: ratio
     period_end_date:
-      from: header.report_date
+      from: meta.report_date
     value:
       numeric_from: header.pe_ratio_median
 
@@ -367,19 +370,19 @@ mappings:
     period_type: AS_OF
     unit: ratio
     period_end_date:
-      from: header.report_date
+      from: meta.report_date
     value:
       numeric_from: header.relative_pe_ratio
 
   - id: val.dividend_yield.as_of
-    json_path: header.dividend_yield
+    json_path: header.dividend_yield_pct
     metric_key: val.dividend_yield
     period_type: AS_OF
     unit: percent
     period_end_date:
-      from: header.report_date
+      from: meta.report_date
     value:
-      numeric_from: header.dividend_yield
+      numeric_from: header.dividend_yield_pct
 
   - id: val.price_to_book.fy
     json_path: annual_financials.valuation_metrics.price_to_book_value_pct.*
@@ -411,31 +414,55 @@ mappings:
     value:
       numeric_from: $value
 
-  # -------------------------
-  # RETURNS / PROFITABILITY (annual)
-  # -------------------------
-  - id: is.tax_rate.fy
-    json_path: annual_financials.rates_of_change.income_tax_rate_pct.*
-    metric_key: is.tax_rate
+  - id: val.relative_pe.fy
+    json_path: annual_financials.valuation_metrics.relative_pe_ratio.*
+    metric_key: val.relative_pe
     period_type: FY
-    unit: percent
-    period_end_date:
-      derive: year_end_from_key
-    value:
-      numeric_from: $value
-
-  - id: bs.roe.fy
-    json_path: annual_financials.balance_sheet_and_returns_usd_millions.return_on_shareholders_equity_pct.*
-    metric_key: bs.roe
-    period_type: FY
-    unit: percent
+    unit: ratio
     period_end_date:
       derive: year_end_from_key
     value:
       numeric_from: $value
 
   # -------------------------
-  # INSURANCE OPERATING METRICS
+  # RATES OF CHANGE (annual_rates, dynamic metric_key)
+  # -------------------------
+  - id: rates.cagr_10y
+    json_path: annual_rates.metrics[]
+    metric_key_template: rates.{metric_key}.cagr_10y
+    metric_key_from: metric_key
+    period_type: AS_OF
+    unit: percent
+    period_end_date:
+      from: meta.report_date
+    value:
+      numeric_from: past_10y_cagr_pct
+
+  - id: rates.cagr_5y
+    json_path: annual_rates.metrics[]
+    metric_key_template: rates.{metric_key}.cagr_5y
+    metric_key_from: metric_key
+    period_type: AS_OF
+    unit: percent
+    period_end_date:
+      from: meta.report_date
+    value:
+      numeric_from: past_5y_cagr_pct
+
+  - id: rates.cagr_est
+    json_path: annual_rates.metrics[]
+    metric_key_template: rates.{metric_key}.cagr_est
+    metric_key_from: metric_key
+    period_type: PROJECTION_RANGE
+    unit: percent
+    period_end_date:
+      from: meta.report_date
+    value:
+      numeric_from: estimated_cagr_pct.value
+      json_from: estimated_cagr_pct
+
+  # -------------------------
+  # INSURANCE OPERATING STATISTICS (if present)
   # -------------------------
   - id: ins.loss_ratio.fy
     json_path: annual_financials.insurance_operating_statistics.loss_to_prem_earned_pct.*
@@ -457,98 +484,148 @@ mappings:
     value:
       numeric_from: $value
 
+  - id: ins.inv_inc_to_investments.fy
+    json_path: annual_financials.insurance_operating_statistics.inv_inc_to_total_investments_pct.*
+    metric_key: ins.inv_inc_to_investments
+    period_type: FY
+    unit: percent
+    period_end_date:
+      derive: year_end_from_key
+    value:
+      numeric_from: $value
+
+  - id: ins.expense_to_prem_written.fy
+    json_path: annual_financials.insurance_operating_statistics.expense_to_prem_written.*
+    metric_key: ins.expense_to_prem_written
+    period_type: FY
+    unit: percent
+    period_end_date:
+      derive: year_end_from_key
+    value:
+      numeric_from: $value
+
+  - id: ins.income_tax_rate.fy
+    json_path: annual_financials.insurance_operating_statistics.income_tax_rate_pct.*
+    metric_key: ins.income_tax_rate
+    period_type: FY
+    unit: percent
+    period_end_date:
+      derive: year_end_from_key
+    value:
+      numeric_from: $value
+
+  - id: ins.retained_to_common_equity.fy
+    json_path: annual_financials.insurance_operating_statistics.retained_to_common_equity_pct.*
+    metric_key: ins.retained_to_common_equity
+    period_type: FY
+    unit: percent
+    period_end_date:
+      derive: year_end_from_key
+    value:
+      numeric_from: $value
+
+  - id: ins.dividends_to_net_profit.fy
+    json_path: annual_financials.insurance_operating_statistics.all_dividends_to_net_profit_pct.*
+    metric_key: ins.dividends_to_net_profit
+    period_type: FY
+    unit: percent
+    period_end_date:
+      derive: year_end_from_key
+    value:
+      numeric_from: $value
+
   # -------------------------
   # CAPITAL STRUCTURE (AS_OF)
   # -------------------------
   - id: cap.total_debt.as_of
-    json_path: capital_structure.total_debt
+    json_path: capital_structure.total_debt.normalized
     metric_key: cap.total_debt
     period_type: AS_OF
     unit: USD
     period_end_date:
       from: capital_structure.as_of
     value:
-      numeric_from: capital_structure.total_debt
+      numeric_from: capital_structure.total_debt.normalized
 
   - id: cap.debt_due_in_5y.as_of
-    json_path: capital_structure.debt_due_in_5_years
+    json_path: capital_structure.debt_due_in_5_years.normalized
     metric_key: cap.debt_due_in_5y
     period_type: AS_OF
     unit: USD
     period_end_date:
       from: capital_structure.as_of
     value:
-      numeric_from: capital_structure.debt_due_in_5_years
+      numeric_from: capital_structure.debt_due_in_5_years.normalized
 
   - id: cap.long_term_debt.as_of
-    json_path: capital_structure.lt_debt
+    json_path: capital_structure.lt_debt.normalized
     metric_key: cap.long_term_debt
     period_type: AS_OF
     unit: USD
     period_end_date:
       from: capital_structure.as_of
     value:
-      numeric_from: capital_structure.lt_debt
+      numeric_from: capital_structure.lt_debt.normalized
 
   - id: cap.long_term_interest.as_of
-    json_path: capital_structure.lt_interest
+    json_path: capital_structure.lt_interest.normalized
     metric_key: cap.long_term_interest
     period_type: AS_OF
     unit: USD
     period_end_date:
       from: capital_structure.as_of
     value:
-      numeric_from: capital_structure.lt_interest
+      numeric_from: capital_structure.lt_interest.normalized
 
-  - id: cap.debt_pct_of_capital.as_of
-    json_path: capital_structure.debt_percent_of_capital
-    metric_key: cap.debt_pct_of_capital
+  - id: cap.lt_interest_pct_of_capital.as_of
+    json_path: capital_structure.lt_interest_percent_of_capital.normalized
+    metric_key: cap.lt_interest_percent_of_capital
     period_type: AS_OF
-    unit: percent
+    unit: ratio
     period_end_date:
       from: capital_structure.as_of
     value:
-      numeric_from: capital_structure.debt_percent_of_capital
+      numeric_from: capital_structure.lt_interest_percent_of_capital.normalized
 
   - id: cap.preferred_stock.as_of
-    json_path: capital_structure.preferred_stock
+    json_path: capital_structure.preferred_stock.normalized
     metric_key: cap.preferred_stock
     period_type: AS_OF
     unit: USD
     period_end_date:
       from: capital_structure.as_of
     value:
-      numeric_from: capital_structure.preferred_stock
+      numeric_from: capital_structure.preferred_stock.normalized
 
   - id: cap.preferred_dividend.as_of
-    json_path: capital_structure.preferred_dividend
+    json_path: capital_structure.preferred_dividend.normalized
     metric_key: cap.preferred_dividend
     period_type: AS_OF
     unit: USD
     period_end_date:
       from: capital_structure.as_of
     value:
-      numeric_from: capital_structure.preferred_dividend
+      numeric_from: capital_structure.preferred_dividend.normalized
 
   - id: equity.shares_outstanding.as_of
-    json_path: common_stock.shares_outstanding
+    json_path: capital_structure.common_stock.shares_outstanding.normalized
     metric_key: equity.shares_outstanding
     period_type: AS_OF
     unit: shares
     period_end_date:
-      from: common_stock.as_of
+      from: capital_structure.common_stock.as_of
     value:
-      numeric_from: common_stock.shares_outstanding
+      numeric_from: capital_structure.common_stock.shares_outstanding.normalized
 
   - id: mkt.market_cap.as_of
-    json_path: market_cap.value
+    json_path: capital_structure.market_cap.normalized
     metric_key: mkt.market_cap
     period_type: AS_OF
     unit: USD
     period_end_date:
-      from: market_cap.as_of
+      from: capital_structure.market_cap.as_of
     value:
-      numeric_from: market_cap.value
+      numeric_from: capital_structure.market_cap.normalized
 
   # -------------------------
   # RATINGS / QUALITY (AS_OF + EVENT)
@@ -559,19 +636,19 @@ mappings:
     period_type: AS_OF
     unit: ratio
     period_end_date:
-      from: header.report_date
+      from: meta.report_date
     value:
       numeric_from: ratings.timeliness.value
 
   - id: rating.timeliness.event
-    json_path: ratings.timeliness.event.action
+    json_path: ratings.timeliness.event.type
     metric_key: rating.timeliness_change
     period_type: EVENT
     unit: text
     period_end_date:
       from: ratings.timeliness.event.date
     value:
-      text_from: ratings.timeliness.event.action
+      text_from: ratings.timeliness.event.type
 
   - id: rating.safety.as_of
     json_path: ratings.safety.value
@@ -579,19 +656,19 @@ mappings:
     period_type: AS_OF
     unit: ratio
     period_end_date:
-      from: header.report_date
+      from: meta.report_date
     value:
       numeric_from: ratings.safety.value
 
   - id: rating.safety.event
-    json_path: ratings.safety.event.action
+    json_path: ratings.safety.event.type
     metric_key: rating.safety_change
     period_type: EVENT
     unit: text
     period_end_date:
       from: ratings.safety.event.date
     value:
-      text_from: ratings.safety.event.action
+      text_from: ratings.safety.event.type
 
   - id: rating.technical.as_of
     json_path: ratings.technical.value
@@ -599,19 +676,19 @@ mappings:
     period_type: AS_OF
     unit: ratio
     period_end_date:
-      from: header.report_date
+      from: meta.report_date
     value:
       numeric_from: ratings.technical.value
 
   - id: rating.technical.event
-    json_path: ratings.technical.event.action
+    json_path: ratings.technical.event.type
     metric_key: rating.technical_change
     period_type: EVENT
     unit: text
     period_end_date:
       from: ratings.technical.event.date
     value:
-      text_from: ratings.technical.event.action
+      text_from: ratings.technical.event.type
 
   - id: risk.beta.as_of
     json_path: ratings.beta.normalized
@@ -619,7 +696,7 @@ mappings:
     period_type: AS_OF
     unit: ratio
     period_end_date:
-      from: header.report_date
+      from: meta.report_date
     value:
       numeric_from: ratings.beta.normalized
 
@@ -627,106 +704,106 @@ mappings:
   # TARGETS / PROJECTIONS
   # -------------------------
   - id: target.price_18m.low
-    json_path: target_price_18m.low
+    json_path: target_price_18m.range.low.normalized
     metric_key: target.price_18m.low
     period_type: TARGET_HORIZON
     unit: USD
     period_end_date:
-      from: header.report_date
+      from: meta.report_date
     value:
-      numeric_from: target_price_18m.low
+      numeric_from: target_price_18m.range.low.normalized
 
   - id: target.price_18m.mid
-    json_path: target_price_18m.mid
+    json_path: target_price_18m.midpoint.price.normalized
     metric_key: target.price_18m.mid
     period_type: TARGET_HORIZON
     unit: USD
     period_end_date:
-      from: header.report_date
+      from: meta.report_date
     value:
-      numeric_from: target_price_18m.mid
+      numeric_from: target_price_18m.midpoint.price.normalized
 
   - id: target.price_18m.high
-    json_path: target_price_18m.high
+    json_path: target_price_18m.range.high.normalized
     metric_key: target.price_18m.high
     period_type: TARGET_HORIZON
     unit: USD
     period_end_date:
-      from: header.report_date
+      from: meta.report_date
     value:
-      numeric_from: target_price_18m.high
+      numeric_from: target_price_18m.range.high.normalized
 
   - id: target.price_18m.upside
-    json_path: target_price_18m.upside_pct
+    json_path: target_price_18m.midpoint.pct_to_mid.normalized
     metric_key: target.price_18m.upside
     period_type: TARGET_HORIZON
-    unit: percent
+    unit: ratio
     period_end_date:
-      from: header.report_date
+      from: meta.report_date
     value:
-      numeric_from: target_price_18m.upside_pct
+      numeric_from: target_price_18m.midpoint.pct_to_mid.normalized
 
   - id: proj.long_term.low_price
-    json_path: long_term_projection.low_price
+    json_path: long_term_projection.scenarios.low.price.normalized
     metric_key: proj.long_term.low_price
     period_type: PROJECTION_RANGE
     unit: USD
     period_end_date:
-      from: header.report_date
+      from: meta.report_date
     value:
-      numeric_from: long_term_projection.low_price
+      numeric_from: long_term_projection.scenarios.low.price.normalized
 
   - id: proj.long_term.high_price
-    json_path: long_term_projection.high_price
+    json_path: long_term_projection.scenarios.high.price.normalized
     metric_key: proj.long_term.high_price
     period_type: PROJECTION_RANGE
     unit: USD
     period_end_date:
-      from: header.report_date
+      from: meta.report_date
     value:
-      numeric_from: long_term_projection.high_price
+      numeric_from: long_term_projection.scenarios.high.price.normalized
 
   - id: proj.long_term.low_total_return
-    json_path: long_term_projection.low_total_return_pct
+    json_path: long_term_projection.scenarios.low.annual_total_return.normalized
     metric_key: proj.long_term.low_total_return
     period_type: PROJECTION_RANGE
-    unit: percent
+    unit: ratio
     period_end_date:
-      from: header.report_date
+      from: meta.report_date
     value:
-      numeric_from: long_term_projection.low_total_return_pct
+      numeric_from: long_term_projection.scenarios.low.annual_total_return.normalized
 
   - id: proj.long_term.high_total_return
-    json_path: long_term_projection.high_total_return_pct
+    json_path: long_term_projection.scenarios.high.annual_total_return.normalized
     metric_key: proj.long_term.high_total_return
     period_type: PROJECTION_RANGE
-    unit: percent
+    unit: ratio
     period_end_date:
-      from: header.report_date
+      from: meta.report_date
     value:
-      numeric_from: long_term_projection.high_total_return_pct
+      numeric_from: long_term_projection.scenarios.high.annual_total_return.normalized
 
   # -------------------------
   # TEXT FIELDS (stored as value_text; can also keep value_json)
   # -------------------------
   - id: company.business_description.as_of
-    json_path: text_blocks.business_description
+    json_path: narrative.business
     metric_key: company.business_description
     period_type: AS_OF
     unit: text
     period_end_date:
-      from: header.report_date
+      from: meta.report_date
     value:
-      text_from: text_blocks.business_description
+      text_from: narrative.business
 
   - id: analyst.commentary.as_of
-    json_path: text_blocks.analyst_commentary
+    json_path: narrative.analyst_commentary
     metric_key: analyst.commentary
     period_type: AS_OF
     unit: text
     period_end_date:
-      from: header.report_date
+      from: meta.report_date
     value:
-      text_from: text_blocks.analyst_commentary
+      text_from: narrative.analyst_commentary
 
 ...
