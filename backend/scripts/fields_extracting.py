@@ -158,8 +158,11 @@ def normalize_label_key(label: str) -> str:
     We keep it snake_case here. Mapping spec can later map to dotted keys.
     """
 
-    s = label.lower()
-    s = s.replace("’", "'")
+    s = label.replace("’", "'")
+    # Split CamelCase to keep word boundaries before lowercasing.
+    s = re.sub(r"([a-z])([A-Z])", r"\1 \2", s)
+    s = s.lower()
+    s = re.sub(r"'s\b", "", s)
     s = re.sub(r"\((?:mill|mill\.|\$mill\.|\$m)\)", "", s)
     s = s.replace("/", " per ")
     s = re.sub(r"[^a-z0-9]+", "_", s)
@@ -203,6 +206,8 @@ def _is_numeric_token(tok: str) -> bool:
     if not t:
         return False
     t = t.lstrip("d")
+    if re.fullmatch(r"\(?\.\d+%?\)?", t):
+        return True
     if t.upper() in {"NMF", "--"}:
         return True
     return bool(_RE_NUM_TOKEN.match(t))
@@ -258,6 +263,10 @@ def _split_mixed_numeric_label_cells(cells: List[str]) -> List[str]:
             continue
         toks = c_clean.split()
         if len(toks) < 3:
+            if len(toks) == 2 and _is_numeric_token(toks[0]) and _is_label_token(toks[1]):
+                out.append(clean_text(toks[0]))
+                out.append(clean_text(toks[1]))
+                continue
             out.append(c_clean)
             continue
 
@@ -269,6 +278,12 @@ def _split_mixed_numeric_label_cells(cells: List[str]) -> List[str]:
                 num_flags.append(False)
 
         if sum(num_flags) < 3 or not any(_is_label_token(t) for t in toks):
+            if num_flags and num_flags[0] and sum(num_flags) == 1:
+                label_tokens = toks[1:]
+                if label_tokens and all(_is_label_token(t) for t in label_tokens):
+                    out.append(clean_text(toks[0]))
+                    out.append(clean_text(" ".join(label_tokens)))
+                    continue
             out.append(c_clean)
             continue
 
@@ -619,6 +634,25 @@ def _is_financials_unit_anchor(text: str) -> bool:
     return False
 
 
+def _is_business_heading(text: str) -> bool:
+    t = clean_text(text).upper()
+    return t.startswith("BUSINESS") or "BUSINESS:" in t
+
+
+def _looks_like_financial_row(line: Line) -> bool:
+    text = clean_text(line.text)
+    if not text:
+        return False
+    tokens = text.split()
+    if len(tokens) < 3:
+        return False
+    num_like = sum(1 for t in tokens if looks_numeric(t) or _RE_YEAR.match(t) or _RE_QTR_DATE.match(t))
+    alpha_like = sum(1 for t in tokens if any(ch.isalpha() for ch in t))
+    if num_like >= 2 and alpha_like >= 1:
+        return True
+    return False
+
+
 def _is_quarter_header_like(text: str) -> bool:
     t = clean_text(text)
     if not t:
@@ -803,15 +837,29 @@ def parse_kv_candidates(block: Block) -> List[Dict[str, Any]]:
     for ln in block.lines:
         cells = split_by_x_gaps(ln.words, gap=12.0)
         texts = [c for c in cells_to_text(cells) if c]
-        if len(texts) < 2:
-            continue
-
         joined_line = clean_text(" ".join(texts))
         # Normalize common broken tokens produced by PDF extraction
         # e.g. "Duein5 Yrs" -> "Duein5Yrs" so we keep the semantic label intact.
         joined_line = joined_line.replace("’", "'")
         joined_line = re.sub(r"\bDue\s*in\s*(\d+)\s*Yrs\b", r"Duein\1Yrs", joined_line, flags=re.IGNORECASE)
         joined_line = re.sub(r"\bDuein(\d+)\s*Yrs\b", r"Duein\1Yrs", joined_line, flags=re.IGNORECASE)
+
+        if len(texts) < 2:
+            m = re.match(r"^(High|Low)\s+(.+)$", joined_line, flags=re.IGNORECASE)
+            if m and any(ch.isdigit() for ch in m.group(2)):
+                label = clean_text(m.group(1))
+                value = truncate_value_before_prose(clean_text(m.group(2)))
+                if value:
+                    out.append(
+                        {
+                            "label": label,
+                            "label_key": normalize_label_key(label),
+                            "value_text": value,
+                            "bbox": ln.bbox.to_list(),
+                            "method": "single_line_kv",
+                        }
+                    )
+            continue
 
         # Guard: skip known table header lines (they are not key-value facts)
         up = joined_line.upper()
@@ -904,9 +952,6 @@ def parse_kv_candidates(block: Block) -> List[Dict[str, Any]]:
         value = truncate_value_before_prose(clean_text(" ".join(value_parts)))
         if not value:
             continue
-
-        # joined_line already computed above
-        multi = list(multi_kv_re.finditer(joined_line))
 
         # Avoid accidentally treating year rows as kv
         if label and value and not _RE_YEAR.fullmatch(label):
@@ -1153,18 +1198,17 @@ def assign_lines_to_modules(
             }
         ]
 
-    modules: List[Dict[str, Any]] = []
+    modules_lines: List[Dict[str, Any]] = []
 
     # If the first heading is not the first line, prepend an implicit __page_header__ section.
     if split_idxs[0] != 0:
         pre_lines = ls[: split_idxs[0]]
-        pre_blocks = group_lines_into_blocks(pre_lines, gap_tol=block_gap_tol)
-        modules.append(
+        modules_lines.append(
             {
                 "name": "__page_header__",
                 "anchor_text": None,
                 "bbox": None,
-                "blocks": [serialize_block(b) for b in pre_blocks],
+                "lines": pre_lines,
             }
         )
 
@@ -1174,7 +1218,6 @@ def assign_lines_to_modules(
         start = s_i
         end = split_idxs[pos + 1] if pos + 1 < len(split_idxs) else len(ls)
         seg_lines = ls[start:end]
-        seg_blocks = group_lines_into_blocks(seg_lines, gap_tol=block_gap_tol)
 
         if _is_financials_unit_anchor(s_text):
             name = "__financials_table__"
@@ -1183,11 +1226,69 @@ def assign_lines_to_modules(
             name = normalize_module_name(s_text) or s_text or "__module__"
             anchor_text = s_text
 
-        modules.append(
+        modules_lines.append(
             {
                 "name": name,
                 "anchor_text": anchor_text,
                 "bbox": s_line.bbox.to_list(),
+                "lines": seg_lines,
+            }
+        )
+
+    # Pull left-column financial rows into __financials_table__ even if BUSINESS interrupts.
+    if unit_anchor_idxs:
+        anchor_idx = unit_anchor_idxs[0]
+        end_idx = len(ls)
+        for idx in heading_idxs:
+            if idx <= anchor_idx:
+                continue
+            if _is_business_heading(ls[idx].text):
+                continue
+            end_idx = idx
+            break
+
+        candidate_lines = ls[anchor_idx:end_idx]
+        financial_lines = [
+            ln
+            for ln in candidate_lines
+            if _is_financials_unit_anchor(ln.text) or _looks_like_financial_row(ln)
+        ]
+        if financial_lines:
+            line_idx_map = {id(ln): i for i, ln in enumerate(ls)}
+            financial_idx_set = {line_idx_map[id(ln)] for ln in financial_lines}
+            has_fin_module = False
+            for m in modules_lines:
+                if m.get("name") == "__financials_table__":
+                    m["lines"] = financial_lines
+                    has_fin_module = True
+                    continue
+                m["lines"] = [
+                    ln
+                    for ln in m.get("lines", [])
+                    if line_idx_map[id(ln)] not in financial_idx_set
+                ]
+            if not has_fin_module:
+                anchor_line = ls[anchor_idx]
+                modules_lines.append(
+                    {
+                        "name": "__financials_table__",
+                        "anchor_text": clean_text(anchor_line.text),
+                        "bbox": anchor_line.bbox.to_list(),
+                        "lines": financial_lines,
+                    }
+                )
+
+    modules: List[Dict[str, Any]] = []
+    for m in modules_lines:
+        seg_lines = m.get("lines") or []
+        if not seg_lines:
+            continue
+        seg_blocks = group_lines_into_blocks(seg_lines, gap_tol=block_gap_tol)
+        modules.append(
+            {
+                "name": m.get("name"),
+                "anchor_text": m.get("anchor_text"),
+                "bbox": m.get("bbox"),
                 "blocks": [serialize_block(b) for b in seg_blocks],
             }
         )
@@ -1236,14 +1337,41 @@ def serialize_block(block: Block) -> Dict[str, Any]:
 # Table merge helpers
 # -----------------------------
 
+def _find_year_tokens(text: str) -> List[str]:
+    tokens: List[str] = []
+    for t in clean_text(text).split():
+        if _RE_YEAR.match(t) or _RE_YEAR_RANGE.match(t):
+            tokens.append(t)
+    return tokens
+
+
+def _find_year_header_row_index(table: Dict[str, Any], min_years: int = 4) -> Tuple[Optional[int], List[str]]:
+    rows = table.get("rows") or []
+    for idx, row in enumerate(rows):
+        tokens: List[str] = []
+        for cell in row.get("cells") or []:
+            tokens.extend(_find_year_tokens(cell))
+        if len(tokens) >= min_years:
+            return idx, tokens
+    return None, []
+
+
+def _extract_year_grid_rows(table: Dict[str, Any], min_years: int = 4) -> Tuple[List[Dict[str, Any]], set]:
+    rows = table.get("rows") or []
+    idx, tokens = _find_year_header_row_index(table, min_years=min_years)
+    if idx is None:
+        return rows, set()
+
+    year_set = set(tokens)
+    header_row = {
+        "cells": tokens,
+        "bbox": rows[idx].get("bbox"),
+    }
+    return [header_row] + rows[idx + 1 :], year_set
+
+
 def _table_year_set(table: Dict[str, Any]) -> set:
-    years: set = set()
-    for r in table.get("rows", [])[:3]:
-        cells = r.get("cells") or []
-        for c in cells:
-            for t in clean_text(c).split():
-                if _RE_YEAR.match(t):
-                    years.add(t)
+    _, years = _extract_year_grid_rows(table, min_years=4)
     return years
 
 
@@ -1332,9 +1460,7 @@ def merge_cross_column_year_tables(modules: List[Dict[str, Any]], x_split: float
     merged: List[Dict[str, Any]] = []
     used_right: set = set()
 
-    def label_overlap_count(lt: Dict[str, Any], rt: Dict[str, Any]) -> int:
-        lrows = lt.get("rows") or []
-        rrows = rt.get("rows") or []
+    def label_overlap_count(lrows: List[Dict[str, Any]], rrows: List[Dict[str, Any]]) -> int:
         lkeys = { _row_label_key(r, i) for i, r in enumerate(lrows) }
         rkeys = { _row_label_key(r, i) for i, r in enumerate(rrows) }
         lkeys = {k for k in lkeys if not k.startswith("__idx_")}
@@ -1345,11 +1471,12 @@ def merge_cross_column_year_tables(modules: List[Dict[str, Any]], x_split: float
         lbb = lt.get("bbox")
         if not (isinstance(lbb, list) and len(lbb) == 4):
             continue
-        ly = _table_year_set(lt)
+        lrows, ly = _extract_year_grid_rows(lt, min_years=4)
         if len(ly) < 2:
-            ly = set()
+            continue
 
         best_rt = None
+        best_rrows: Optional[List[Dict[str, Any]]] = None
         best_ov = 0.0
         best_score = 0.0
         for r_idx, rt in enumerate(right_tables):
@@ -1361,11 +1488,11 @@ def merge_cross_column_year_tables(modules: List[Dict[str, Any]], x_split: float
             ov = y_overlap(lbb, rbb)
             if ov < 0.45:
                 continue
-            ry = _table_year_set(rt)
+            rrows, ry = _extract_year_grid_rows(rt, min_years=4)
             if len(ry) < 2:
-                ry = set()
+                continue
 
-            label_hits = label_overlap_count(lt, rt)
+            label_hits = label_overlap_count(lrows, rrows)
             years_disjoint = bool(ly and ry and (len(ly.intersection(ry)) <= 1))
             if label_hits < 2 and not years_disjoint:
                 continue
@@ -1375,11 +1502,13 @@ def merge_cross_column_year_tables(modules: List[Dict[str, Any]], x_split: float
                 best_score = score
                 best_ov = ov
                 best_rt = (r_idx, rt)
+                best_rrows = rrows
 
         if not best_rt:
             continue
 
         r_idx, rt = best_rt
+        rrows = best_rrows or []
         rbb = rt.get("bbox")
 
         def merge_row_cells(lrow: Dict[str, Any], rrow: Dict[str, Any]) -> Dict[str, Any]:
@@ -1397,8 +1526,6 @@ def merge_cross_column_year_tables(modules: List[Dict[str, Any]], x_split: float
                 merged_cells.extend(rpost)
             return {"cells": merged_cells, "bbox": lrow.get("bbox") or rrow.get("bbox")}
 
-        lrows = lt.get("rows") or []
-        rrows = rt.get("rows") or []
         r_map: Dict[str, Dict[str, Any]] = {}
         for i, row in enumerate(rrows):
             key = _row_label_key(row, i)

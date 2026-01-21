@@ -97,6 +97,18 @@
               "text": "2028-30PROJECTIONS\nAnn\u2019lTotal\nPrice Gain Return\nHigh 110 (+70%) 16%\nLow 80 (+25%) 8%",
               "kv_candidates": [
                 {
+                  "label": "High",
+                  "label_key": "high",
+                  "value_text": "110 16%",
+                  "bbox": [
+                    47.571,
+                    154.13048879999997,
+                    131.7003846,
+                    161.11508879999997
+                  ],
+                  "method": "single_line_kv"
+                },
+                {
                   "label": "Low",
                   "label_key": "low",
                   "value_text": "80 8%",
@@ -112,6 +124,18 @@
             }
           ],
           "field_candidates": [
+            {
+              "label": "High",
+              "label_key": "high",
+              "value_text": "110 16%",
+              "bbox": [
+                47.571,
+                154.13048879999997,
+                131.7003846,
+                161.11508879999997
+              ],
+              "method": "single_line_kv"
+            },
             {
               "label": "Low",
               "label_key": "low",
@@ -648,7 +672,7 @@
               "kv_candidates": [
                 {
                   "label": "TotalDebt",
-                  "label_key": "totaldebt",
+                  "label_key": "total_debt",
                   "value_text": "$75.6bill.",
                   "bbox": [
                     47.571,
@@ -700,7 +724,7 @@
           "field_candidates": [
             {
               "label": "TotalDebt",
-              "label_key": "totaldebt",
+              "label_key": "total_debt",
               "value_text": "$75.6bill.",
               "bbox": [
                 47.571,
@@ -808,18 +832,331 @@
           ],
           "blocks": [
             {
-              "type": "narrative",
+              "type": "table",
               "bbox": [
                 47.571,
                 418.0472888,
-                184.32133593000006,
-                431.397435
+                374.78120412000004,
+                486.67816730000004
               ],
-              "text": "($MILL.)\nCashAssets 10366 11207 7328"
+              "text": "($MILL.)\nCashAssets 10366 11207 7328\nReceivables 6024 5270 6994\nInventory (FIFO) 5583 5020 5475\nOther 1394 1502 1418 folioofwell over500beer andothermalt\nCurrentAssets 23367 22999 21215 company\u2019s operations are headquartered\nAcctsPayable 25981 23804 22188 Brandsinclude Budweiser,StellaArtois,Corona,Aguila,Hoegaar-\nDebtDue 4004 1449 3578 den,Skol,BudLight, and Brahma\nOther 7171 7813 7243\nCurrentLiab. 37156 33066 33009 Several trends within",
+              "table": {
+                "bbox": [
+                  47.571,
+                  418.0472888,
+                  374.78120412000004,
+                  486.67816730000004
+                ],
+                "header": [
+                  "($MILL.)"
+                ],
+                "header_row_index": 0,
+                "rows": [
+                  {
+                    "cells": [
+                      "($MILL.)"
+                    ],
+                    "bbox": [
+                      57.549,
+                      418.0472888,
+                      76.671837,
+                      425.0318888
+                    ]
+                  },
+                  {
+                    "cells": [
+                      "CashAssets",
+                      "10366",
+                      "11207",
+                      "7328"
+                    ],
+                    "bbox": [
+                      47.571,
+                      424.412835,
+                      184.32133593000006,
+                      431.397435
+                    ]
+                  },
+                  {
+                    "cells": [
+                      "Receivables",
+                      "6024",
+                      "5270",
+                      "6994"
+                    ],
+                    "bbox": [
+                      47.571,
+                      430.799535,
+                      184.33755018000005,
+                      437.784135
+                    ]
+                  },
+                  {
+                    "cells": [
+                      "Inventory (FIFO)",
+                      "5583",
+                      "5020",
+                      "5475"
+                    ],
+                    "bbox": [
+                      47.571,
+                      437.186235,
+                      184.27463889000003,
+                      444.170835
+                    ]
+                  },
+                  {
+                    "cells": [
+                      "Other",
+                      "1394",
+                      "1502",
+                      "1418",
+                      "folioofwell over500beer andothermalt"
+                    ],
+                    "bbox": [
+                      47.571,
+                      443.143235,
+                      312.20062656,
+                      450.557635
+                    ]
+                  },
+                  {
+                    "cells": [
+                      "CurrentAssets",
+                      "23367",
+                      "22999",
+                      "21215",
+                      "company\u2019s operations are headquartered"
+                    ],
+                    "bbox": [
+                      47.571,
+                      451.12593499999997,
+                      311.45766468000005,
+                      458.238635
+                    ]
+                  },
+                  {
+                    "cells": [
+                      "AcctsPayable",
+                      "25981",
+                      "23804",
+                      "22188",
+                      "Brandsinclude Budweiser,StellaArtois,Corona,Aguila,Hoegaar-"
+                    ],
+                    "bbox": [
+                      47.571,
+                      459.108635,
+                      374.78120412000004,
+                      466.221335
+                    ]
+                  },
+                  {
+                    "cells": [
+                      "DebtDue",
+                      "4004",
+                      "1449",
+                      "3578",
+                      "den,Skol,BudLight, and Brahma"
+                    ],
+                    "bbox": [
+                      47.571,
+                      465.623435,
+                      284.5080868,
+                      474.07593499999996
+                    ]
+                  },
+                  {
+                    "cells": [
+                      "Other",
+                      "7171",
+                      "7813",
+                      "7243"
+                    ],
+                    "bbox": [
+                      47.571,
+                      472.010135,
+                      184.36803297000003,
+                      478.994735
+                    ]
+                  },
+                  {
+                    "cells": [
+                      "CurrentLiab.",
+                      "37156",
+                      "33066",
+                      "33009",
+                      "Several trends within"
+                    ],
+                    "bbox": [
+                      47.571,
+                      478.1968673,
+                      298.36413703999995,
+                      486.67816730000004
+                    ]
+                  }
+                ]
+              }
             }
           ],
           "field_candidates": [],
-          "table_candidates": []
+          "table_candidates": [
+            {
+              "bbox": [
+                47.571,
+                418.0472888,
+                374.78120412000004,
+                486.67816730000004
+              ],
+              "header": [
+                "($MILL.)"
+              ],
+              "header_row_index": 0,
+              "rows": [
+                {
+                  "cells": [
+                    "($MILL.)"
+                  ],
+                  "bbox": [
+                    57.549,
+                    418.0472888,
+                    76.671837,
+                    425.0318888
+                  ]
+                },
+                {
+                  "cells": [
+                    "CashAssets",
+                    "10366",
+                    "11207",
+                    "7328"
+                  ],
+                  "bbox": [
+                    47.571,
+                    424.412835,
+                    184.32133593000006,
+                    431.397435
+                  ]
+                },
+                {
+                  "cells": [
+                    "Receivables",
+                    "6024",
+                    "5270",
+                    "6994"
+                  ],
+                  "bbox": [
+                    47.571,
+                    430.799535,
+                    184.33755018000005,
+                    437.784135
+                  ]
+                },
+                {
+                  "cells": [
+                    "Inventory (FIFO)",
+                    "5583",
+                    "5020",
+                    "5475"
+                  ],
+                  "bbox": [
+                    47.571,
+                    437.186235,
+                    184.27463889000003,
+                    444.170835
+                  ]
+                },
+                {
+                  "cells": [
+                    "Other",
+                    "1394",
+                    "1502",
+                    "1418",
+                    "folioofwell over500beer andothermalt"
+                  ],
+                  "bbox": [
+                    47.571,
+                    443.143235,
+                    312.20062656,
+                    450.557635
+                  ]
+                },
+                {
+                  "cells": [
+                    "CurrentAssets",
+                    "23367",
+                    "22999",
+                    "21215",
+                    "company\u2019s operations are headquartered"
+                  ],
+                  "bbox": [
+                    47.571,
+                    451.12593499999997,
+                    311.45766468000005,
+                    458.238635
+                  ]
+                },
+                {
+                  "cells": [
+                    "AcctsPayable",
+                    "25981",
+                    "23804",
+                    "22188",
+                    "Brandsinclude Budweiser,StellaArtois,Corona,Aguila,Hoegaar-"
+                  ],
+                  "bbox": [
+                    47.571,
+                    459.108635,
+                    374.78120412000004,
+                    466.221335
+                  ]
+                },
+                {
+                  "cells": [
+                    "DebtDue",
+                    "4004",
+                    "1449",
+                    "3578",
+                    "den,Skol,BudLight, and Brahma"
+                  ],
+                  "bbox": [
+                    47.571,
+                    465.623435,
+                    284.5080868,
+                    474.07593499999996
+                  ]
+                },
+                {
+                  "cells": [
+                    "Other",
+                    "7171",
+                    "7813",
+                    "7243"
+                  ],
+                  "bbox": [
+                    47.571,
+                    472.010135,
+                    184.36803297000003,
+                    478.994735
+                  ]
+                },
+                {
+                  "cells": [
+                    "CurrentLiab.",
+                    "37156",
+                    "33066",
+                    "33009",
+                    "Several trends within"
+                  ],
+                  "bbox": [
+                    47.571,
+                    478.1968673,
+                    298.36413703999995,
+                    486.67816730000004
+                  ]
+                }
+              ]
+            }
+          ]
         },
         {
           "name": "BUSINESS: Anheuser-Busch InBev N.V.",
@@ -834,90 +1171,25 @@
             {
               "type": "narrative",
               "bbox": [
-                47.571,
+                193.2477,
                 427.17783499999996,
                 375.84090924,
+                442.145135
+              ],
+              "text": "BUSINESS: Anheuser-Busch InBev N.V.\nbrewingcompany.Itproduces,markets,distributesandsellsaport-"
+            },
+            {
+              "type": "narrative",
+              "bbox": [
+                193.2491,
+                486.8766673,
+                295.57847899999996,
                 495.35796730000004
               ],
-              "text": "BUSINESS: Anheuser-Busch InBev N.V.\nReceivables 6024 5270 6994\nbrewingcompany.Itproduces,markets,distributesandsellsaport-\nInventory (FIFO) 5583 5020 5475\nOther 1394 1502 1418 folioofwell over500beer andothermalt\nCurrentAssets 23367 22999 21215 company\u2019s operations are headquartered\nAcctsPayable 25981 23804 22188 Brandsinclude Budweiser,StellaArtois,Corona,Aguila,Hoegaar-\nDebtDue 4004 1449 3578 den,Skol,BudLight, and Brahma\nOther 7171 7813 7243\nCurrentLiab. 37156 33066 33009 Several trends within\ntry are shaping how",
-              "kv_candidates": [
-                {
-                  "label": "CurrentAssets",
-                  "label_key": "currentassets",
-                  "value_text": "23367 22999 21215",
-                  "bbox": [
-                    47.571,
-                    451.12593499999997,
-                    311.45766468000005,
-                    458.238635
-                  ],
-                  "method": "cell_split"
-                },
-                {
-                  "label": "AcctsPayable",
-                  "label_key": "acctspayable",
-                  "value_text": "25981 23804 22188",
-                  "bbox": [
-                    47.571,
-                    459.108635,
-                    374.78120412000004,
-                    466.221335
-                  ],
-                  "method": "cell_split"
-                },
-                {
-                  "label": "CurrentLiab.",
-                  "label_key": "currentliab",
-                  "value_text": "37156 33066 33009",
-                  "bbox": [
-                    47.571,
-                    478.1968673,
-                    298.36413703999995,
-                    486.67816730000004
-                  ],
-                  "method": "cell_split"
-                }
-              ]
+              "text": "try are shaping how"
             }
           ],
-          "field_candidates": [
-            {
-              "label": "CurrentAssets",
-              "label_key": "currentassets",
-              "value_text": "23367 22999 21215",
-              "bbox": [
-                47.571,
-                451.12593499999997,
-                311.45766468000005,
-                458.238635
-              ],
-              "method": "cell_split"
-            },
-            {
-              "label": "AcctsPayable",
-              "label_key": "acctspayable",
-              "value_text": "25981 23804 22188",
-              "bbox": [
-                47.571,
-                459.108635,
-                374.78120412000004,
-                466.221335
-              ],
-              "method": "cell_split"
-            },
-            {
-              "label": "CurrentLiab.",
-              "label_key": "currentliab",
-              "value_text": "37156 33066 33009",
-              "bbox": [
-                47.571,
-                478.1968673,
-                298.36413703999995,
-                486.67816730000004
-              ],
-              "method": "cell_split"
-            }
-          ],
+          "field_candidates": [],
           "table_candidates": []
         },
         {
@@ -1226,7 +1498,8 @@
                       "6.19",
                       "6.34",
                       "6.30",
-                      "7.20 \u2018\u2018CashFlow\u2019\u2019perADR",
+                      "7.20",
+                      "\u2018\u2018CashFlow\u2019\u2019perADR",
                       "8.55"
                     ],
                     "bbox": [
@@ -1244,7 +1517,8 @@
                       "2.65",
                       "2.92",
                       "3.15",
-                      "4.00 EarningsperADR A",
+                      "4.00",
+                      "EarningsperADR A",
                       "5.10"
                     ],
                     "bbox": [
@@ -1262,7 +1536,8 @@
                       ".82",
                       ".88",
                       "1.30",
-                      "1.21 Div\u2019dsDecl\u2019dperADR C",
+                      "1.21",
+                      "Div\u2019dsDecl\u2019dperADR C",
                       "1.60"
                     ],
                     "bbox": [
@@ -1280,7 +1555,8 @@
                       "2.67",
                       "2.15",
                       "2.20",
-                      "2.30 Cap\u2019lSpendingperADR",
+                      "2.30",
+                      "Cap\u2019lSpendingperADR",
                       "2.75"
                     ],
                     "bbox": [
@@ -1615,7 +1891,9 @@
                   },
                   {
                     "cells": [
-                      ".6% 5.0% 6.8%",
+                      ".6%",
+                      "5.0%",
+                      "6.8%",
                       "4.8%",
                       "5.5%",
                       "4.0%",
@@ -1638,7 +1916,8 @@
                       "27%",
                       "27%",
                       "40%",
-                      "30% AllDiv\u2019dstoNetProf",
+                      "30%",
+                      "AllDiv\u2019dstoNetProf",
                       "30%"
                     ],
                     "bbox": [
@@ -1683,7 +1962,7 @@
               "kv_candidates": [
                 {
                   "label": "Stock\u2019sPriceStability",
-                  "label_key": "stock_spricestability",
+                  "label_key": "stock_price_stability",
                   "value_text": "85",
                   "bbox": [
                     442.6979,
@@ -1695,7 +1974,7 @@
                 },
                 {
                   "label": "PriceGrowthPersistence",
-                  "label_key": "pricegrowthpersistence",
+                  "label_key": "price_growth_persistence",
                   "value_text": "10",
                   "bbox": [
                     442.6979,
@@ -1707,7 +1986,7 @@
                 },
                 {
                   "label": "EarningsPredictability",
-                  "label_key": "earningspredictability",
+                  "label_key": "earnings_predictability",
                   "value_text": "30",
                   "bbox": [
                     442.6979,
@@ -1735,7 +2014,7 @@
             },
             {
               "label": "Stock\u2019sPriceStability",
-              "label_key": "stock_spricestability",
+              "label_key": "stock_price_stability",
               "value_text": "85",
               "bbox": [
                 442.6979,
@@ -1747,7 +2026,7 @@
             },
             {
               "label": "PriceGrowthPersistence",
-              "label_key": "pricegrowthpersistence",
+              "label_key": "price_growth_persistence",
               "value_text": "10",
               "bbox": [
                 442.6979,
@@ -1759,7 +2038,7 @@
             },
             {
               "label": "EarningsPredictability",
-              "label_key": "earningspredictability",
+              "label_key": "earnings_predictability",
               "value_text": "30",
               "bbox": [
                 442.6979,
@@ -1935,7 +2214,8 @@
                     "6.19",
                     "6.34",
                     "6.30",
-                    "7.20 \u2018\u2018CashFlow\u2019\u2019perADR",
+                    "7.20",
+                    "\u2018\u2018CashFlow\u2019\u2019perADR",
                     "8.55"
                   ],
                   "bbox": [
@@ -1953,7 +2233,8 @@
                     "2.65",
                     "2.92",
                     "3.15",
-                    "4.00 EarningsperADR A",
+                    "4.00",
+                    "EarningsperADR A",
                     "5.10"
                   ],
                   "bbox": [
@@ -1971,7 +2252,8 @@
                     ".82",
                     ".88",
                     "1.30",
-                    "1.21 Div\u2019dsDecl\u2019dperADR C",
+                    "1.21",
+                    "Div\u2019dsDecl\u2019dperADR C",
                     "1.60"
                   ],
                   "bbox": [
@@ -1989,7 +2271,8 @@
                     "2.67",
                     "2.15",
                     "2.20",
-                    "2.30 Cap\u2019lSpendingperADR",
+                    "2.30",
+                    "Cap\u2019lSpendingperADR",
                     "2.75"
                   ],
                   "bbox": [
@@ -2314,7 +2597,9 @@
                 },
                 {
                   "cells": [
-                    ".6% 5.0% 6.8%",
+                    ".6%",
+                    "5.0%",
+                    "6.8%",
                     "4.8%",
                     "5.5%",
                     "4.0%",
@@ -2337,7 +2622,8 @@
                     "27%",
                     "27%",
                     "40%",
-                    "30% AllDiv\u2019dstoNetProf",
+                    "30%",
+                    "AllDiv\u2019dstoNetProf",
                     "30%"
                   ],
                   "bbox": [
@@ -2348,6 +2634,376 @@
                   ]
                 }
               ]
+            },
+            {
+              "bbox": [
+                47.571,
+                169.76918879999994,
+                566.5123258000001,
+                303.219138
+              ],
+              "header": null,
+              "header_row_index": null,
+              "rows": [
+                {
+                  "cells": [
+                    "2015",
+                    "2016",
+                    "2017",
+                    "2018",
+                    "2019",
+                    "2020",
+                    "2021",
+                    "2022",
+                    "2023",
+                    "2024",
+                    "2025",
+                    "2026"
+                  ],
+                  "bbox": [
+                    53.5946,
+                    204.44834500000002,
+                    305.36271264000004,
+                    213.42854499999999
+                  ]
+                },
+                {
+                  "cells": [
+                    "the combination of InBev and Anheuser- 27.11 22.54 27.95 27.05 25.92"
+                  ],
+                  "bbox": [
+                    47.57108,
+                    213.42854499999999,
+                    305.19815652000005,
+                    222.7720875
+                  ]
+                },
+                {
+                  "cells": [
+                    "Busch in November of 2008. On July 1,",
+                    "7.10",
+                    "2.34",
+                    "5.19",
+                    "4.27",
+                    "6.85"
+                  ],
+                  "bbox": [
+                    47.57108,
+                    222.40874499999995,
+                    305.19269380000003,
+                    231.65278750000004
+                  ]
+                },
+                {
+                  "cells": [
+                    "2009, the company launched an American",
+                    "4.96",
+                    ".72",
+                    "3.15",
+                    "2.17",
+                    "4.62"
+                  ],
+                  "bbox": [
+                    47.57108,
+                    231.38894500000004,
+                    305.19159622,
+                    240.5333875
+                  ]
+                },
+                {
+                  "cells": [
+                    "DepositoryReceiptProgram(ADR)ona1-",
+                    "3.95",
+                    "4.00",
+                    "4.08",
+                    "3.30",
+                    "2.01"
+                  ],
+                  "bbox": [
+                    47.57108,
+                    240.369145,
+                    305.19269380000003,
+                    249.41408750000005
+                  ]
+                },
+                {
+                  "cells": [
+                    "for-1basis.",
+                    "2.95",
+                    "2.47",
+                    "2.35",
+                    "2.52",
+                    "2.56"
+                  ],
+                  "bbox": [
+                    47.57108,
+                    249.34934499999997,
+                    305.19269380000003,
+                    258.32954499999994
+                  ]
+                },
+                {
+                  "cells": [
+                    "26.20",
+                    "35.33",
+                    "35.95",
+                    "31.94",
+                    "37.50"
+                  ],
+                  "bbox": [
+                    195.5565,
+                    259.7914874999999,
+                    305.19815652000005,
+                    267.27498749999995
+                  ]
+                },
+                {
+                  "cells": [
+                    "1608.2",
+                    "2019.2",
+                    "2019.2",
+                    "2019.2",
+                    "2019.2"
+                  ],
+                  "bbox": [
+                    192.5063,
+                    268.7716875,
+                    305.2036192400001,
+                    276.25518750000003
+                  ]
+                },
+                {
+                  "cells": [
+                    "24.2",
+                    "NMF",
+                    "36.2",
+                    "44.0",
+                    "18.5"
+                  ],
+                  "bbox": [
+                    198.6067,
+                    277.75188749999995,
+                    305.17293736,
+                    285.2353875
+                  ]
+                },
+                {
+                  "cells": [
+                    "1.22",
+                    "NMF",
+                    "1.82",
+                    "2.38",
+                    ".99"
+                  ],
+                  "bbox": [
+                    198.6067,
+                    286.7320875,
+                    305.17183978,
+                    294.21558749999997
+                  ]
+                },
+                {
+                  "cells": [
+                    "23.77",
+                    "27.49",
+                    "33.26",
+                    "34.18",
+                    "33.26",
+                    "33.25",
+                    "34.75",
+                    "SalesperADR",
+                    "40.00"
+                  ],
+                  "bbox": [
+                    315.44516340000007,
+                    215.28858749999995,
+                    566.5123258000001,
+                    222.794538
+                  ]
+                },
+                {
+                  "cells": [
+                    "3.16",
+                    "4.92",
+                    "6.36",
+                    "6.19",
+                    "6.34",
+                    "6.30",
+                    "7.20",
+                    "\u2018\u2018CashFlow\u2019\u2019perADR",
+                    "8.55"
+                  ],
+                  "bbox": [
+                    318.4898755,
+                    224.1692875,
+                    565.6836534,
+                    231.67523800000004
+                  ]
+                },
+                {
+                  "cells": [
+                    ".70",
+                    "2.33",
+                    "2.97",
+                    "2.65",
+                    "2.92",
+                    "3.15",
+                    "4.00",
+                    "EarningsperADR A",
+                    "5.10"
+                  ],
+                  "bbox": [
+                    321.53895274,
+                    233.00309200000004,
+                    566.5120534,
+                    240.55633799999998
+                  ]
+                },
+                {
+                  "cells": [
+                    ".61",
+                    ".60",
+                    ".53",
+                    ".82",
+                    ".88",
+                    "1.30",
+                    "1.21",
+                    "Div\u2019dsDecl\u2019dperADR C",
+                    "1.60"
+                  ],
+                  "bbox": [
+                    321.54005032,
+                    241.88399200000003,
+                    566.3160534000001,
+                    249.43773799999997
+                  ]
+                },
+                {
+                  "cells": [
+                    "1.92",
+                    "2.86",
+                    "2.97",
+                    "2.67",
+                    "2.15",
+                    "2.20",
+                    "2.30",
+                    "Cap\u2019lSpendingperADR",
+                    "2.75"
+                  ],
+                  "bbox": [
+                    318.4898755,
+                    250.81128749999993,
+                    566.3835534000001,
+                    258.318038
+                  ]
+                },
+                {
+                  "cells": [
+                    "34.49",
+                    "34.77",
+                    "42.25",
+                    "47.11",
+                    "43.53",
+                    "46.35",
+                    "49.85",
+                    "BookValueperADR",
+                    "59.70"
+                  ],
+                  "bbox": [
+                    315.44516340000007,
+                    259.7914874999999,
+                    566.2063258000001,
+                    267.29823799999997
+                  ]
+                },
+                {
+                  "cells": [
+                    "1972.2",
+                    "1975.1",
+                    "1737.2",
+                    "1737.2",
+                    "1797.2",
+                    "1790.0",
+                    "1785.0",
+                    "CommonShsOutst\u2019g B",
+                    "1775.0"
+                  ],
+                  "bbox": [
+                    312.40045130000004,
+                    268.7252920000001,
+                    566.4159982,
+                    276.278538
+                  ]
+                },
+                {
+                  "cells": [
+                    "NMF",
+                    "27.8",
+                    "18.8",
+                    "22.4",
+                    "20.9",
+                    "19.5",
+                    "AvgAnn\u2019lP/ERatio",
+                    "19.0"
+                  ],
+                  "bbox": [
+                    317.24302462,
+                    277.75188749999995,
+                    566.0889534,
+                    285.258738
+                  ]
+                },
+                {
+                  "cells": [
+                    "NMF",
+                    "1.50",
+                    "1.09",
+                    "1.25",
+                    "1.11",
+                    "1.00",
+                    "RelativeP/ERatio",
+                    "1.05"
+                  ],
+                  "bbox": [
+                    317.24192704,
+                    286.7320875,
+                    566.3989534000001,
+                    294.23893799999996
+                  ]
+                },
+                {
+                  "cells": [
+                    "1.1%",
+                    ".9%",
+                    ".9%",
+                    "1.4%",
+                    "1.4%",
+                    "2.1%",
+                    "AvgAnn\u2019lDiv\u2019dYield",
+                    "1.5%"
+                  ],
+                  "bbox": [
+                    316.05099635,
+                    295.7122875,
+                    565.5198240999999,
+                    303.219138
+                  ]
+                }
+              ],
+              "merged_from": {
+                "left_bbox": [
+                  47.571,
+                  169.76918879999994,
+                  305.36271264000004,
+                  294.21558749999997
+                ],
+                "right_bbox": [
+                  311.5961688000001,
+                  204.4618775,
+                  566.5123258000001,
+                  303.219138
+                ]
+              }
             }
           ]
         }
