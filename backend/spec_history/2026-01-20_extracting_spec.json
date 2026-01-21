@@ -1,0 +1,202 @@
+{
+  "version": "0.1.0",
+  "algo_version": "open_world_v0.1",
+  "modules": [
+    {
+      "key": "capital_structure",
+      "anchors": ["CAPITAL STRUCTURE"],
+      "aliases": ["CAPITALSTRUCTURE", "CAPITAL STRUCTURE AS OF"]
+    },
+    {
+      "key": "right_column",
+      "anchors": ["%TOT.RETURN", "ANNUAL RATES", "QUARTERLY SALES", "EARNINGS PER", "QUARTERLY DIVIDENDS PAID"],
+      "aliases": ["RIGHT COLUMN"]
+    }
+  ],
+  "fields": {
+    "totaldebt": {
+      "canonical": "total_debt",
+      "unit": "usd",
+      "period_type": "AS_OF"
+    },
+    "ltdebt": {
+      "canonical": "long_term_debt",
+      "unit": "usd",
+      "period_type": "AS_OF"
+    },
+    "ltinterest": {
+      "canonical": "long_term_interest",
+      "unit": "usd",
+      "period_type": "AS_OF"
+    },
+    "duein5yrs": {
+      "canonical": "debt_due_in_5_years",
+      "unit": "usd",
+      "period_type": "AS_OF"
+    }
+  },
+  "table_fields": [
+    {
+      "row_labels": ["Sales($mill)", "Sales($mil)", "Sales"],
+      "canonical": "sales",
+      "unit": "usd_millions",
+      "period_type": "FY"
+    },
+    {
+      "row_labels": ["NetProfitMargin", "Net Profit Margin"],
+      "canonical": "net_profit_margin",
+      "unit": "percent",
+      "period_type": "FY"
+    },
+    {
+      "row_labels": ["OperatingMargin", "Operating Margin"],
+      "canonical": "operating_margin",
+      "unit": "percent",
+      "period_type": "FY"
+    },
+    {
+      "row_labels": ["NetProfit($mill)", "Net Profit($mill)", "Net Profit"],
+      "canonical": "net_profit",
+      "unit": "usd_millions",
+      "period_type": "FY"
+    },
+    {
+      "row_labels": ["Depreciation($mill)", "Depreciation"],
+      "canonical": "depreciation",
+      "unit": "usd_millions",
+      "period_type": "FY"
+    },
+    {
+      "row_labels": ["IncomeTaxRate", "Income Tax Rate"],
+      "canonical": "income_tax_rate",
+      "unit": "percent",
+      "period_type": "FY"
+    },
+    {
+      "row_labels": ["WorkingCap'l($mill)", "WorkingCapl($mill)", "Working Capital"],
+      "canonical": "working_capital",
+      "unit": "usd_millions",
+      "period_type": "FY"
+    },
+    {
+      "row_labels": ["Long-TermDebt($mill)", "Long Term Debt($mill)", "Long-Term Debt"],
+      "canonical": "long_term_debt",
+      "unit": "usd_millions",
+      "period_type": "FY"
+    },
+    {
+      "row_labels": ["Shr.Equity($mill)", "Shr Equity($mill)", "Shareholder Equity"],
+      "canonical": "shareholders_equity",
+      "unit": "usd_millions",
+      "period_type": "FY"
+    },
+    {
+      "row_labels": ["ReturnonTotalCap'l", "Return on Total Cap'l", "Return on Total Cap"],
+      "canonical": "return_on_total_capital",
+      "unit": "percent",
+      "period_type": "FY"
+    },
+    {
+      "row_labels": ["ReturnonShr.Equity", "Return on Shr. Equity", "Return on Shr Equity"],
+      "canonical": "return_on_equity",
+      "unit": "percent",
+      "period_type": "FY"
+    },
+    {
+      "row_labels": ["RetainedtoComEq", "Retained to Com Eq"],
+      "canonical": "retained_to_common_equity",
+      "unit": "percent",
+      "period_type": "FY"
+    },
+    {
+      "row_labels": ["AllDiv'dstoNetProf", "All Div'ds to Net Prof"],
+      "canonical": "dividends_to_net_profit",
+      "unit": "percent",
+      "period_type": "FY"
+    },
+    {
+      "row_labels": ["EarningsperADR", "Earnings per ADR"],
+      "canonical": "earnings_per_adr",
+      "unit": "usd_per_share",
+      "period_type": "FY"
+    },
+    {
+      "row_labels": ["SalesperADR", "Sales per ADR"],
+      "canonical": "sales_per_adr",
+      "unit": "usd_per_share",
+      "period_type": "FY"
+    },
+    {
+      "row_labels": ["CashFlow per ADR", "Cash Flow per ADR", "CashFlow per ADR"],
+      "canonical": "cash_flow_per_adr",
+      "unit": "usd_per_share",
+      "period_type": "FY"
+    },
+    {
+      "row_labels": ["Div'dsDecl'dperADR", "DivdsDecldperADR", "Dividends Declared per ADR"],
+      "canonical": "dividends_declared_per_adr",
+      "unit": "usd_per_share",
+      "period_type": "FY"
+    },
+    {
+      "row_labels": ["Cap'lSpendingperADR", "Capital Spending per ADR"],
+      "canonical": "capital_spending_per_adr",
+      "unit": "usd_per_share",
+      "period_type": "FY"
+    },
+    {
+      "row_labels": ["BookValueperADR", "Book Value per ADR"],
+      "canonical": "book_value_per_adr",
+      "unit": "usd_per_share",
+      "period_type": "FY"
+    },
+    {
+      "row_labels": ["CommonShsOutst'g", "Common Shs Outst'g", "CommonShsOutstg"],
+      "canonical": "common_shares_outstanding",
+      "unit": "million_shares",
+      "period_type": "FY"
+    },
+    {
+      "row_labels": ["AvgAnn'lDiv'dYield", "Avg Ann'l Div'd Yield", "Avg Annual Div'd Yield"],
+      "canonical": "average_annual_dividend_yield",
+      "unit": "percent",
+      "period_type": "FY"
+    },
+    {
+      "row_labels": ["AvgAnn'lP/ERatio", "Avg Ann'l P/E Ratio", "Avg P/E Ratio"],
+      "canonical": "average_annual_pe_ratio",
+      "unit": "ratio",
+      "period_type": "FY"
+    },
+    {
+      "row_labels": ["RelativeP/ERatio", "Relative P/E Ratio"],
+      "canonical": "relative_pe_ratio",
+      "unit": "ratio",
+      "period_type": "FY"
+    }
+  ],
+  "normalization": {
+    "percent_as_ratio": true,
+    "scale_tokens": {
+      "k": 1000,
+      "m": 1000000,
+      "mil": 1000000,
+      "mill": 1000000,
+      "million": 1000000,
+      "b": 1000000000,
+      "bil": 1000000000,
+      "bill": 1000000000,
+      "billion": 1000000000,
+      "t": 1000000000000,
+      "tril": 1000000000000,
+      "trillion": 1000000000000
+    }
+  },
+  "version_history": [
+    {
+      "version": "0.1.0",
+      "date": "2026-01-20",
+      "notes": "Initial open-world extraction spec for Value Line v0.1."
+    }
+  ]
+}

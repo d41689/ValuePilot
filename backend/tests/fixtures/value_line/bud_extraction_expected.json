@@ -1,0 +1,2840 @@
+[
+  {
+    "metric_key": "average_annual_dividend_yield",
+    "raw_value": "1.1%",
+    "value_numeric": 0.011000000000000001,
+    "unit": "percent",
+    "period_type": "FY",
+    "period_label": "2020",
+    "source": {
+      "module": "__right_column__",
+      "page": 1,
+      "bbox": [
+        316.05099635,
+        295.7122875,
+        565.5198240999999,
+        303.219138
+      ],
+      "label": "AvgAnn’lDiv’dYield",
+      "label_key": "avgann_ldiv_dyield",
+      "method": "table_row_parse"
+    },
+    "normalization_error": null
+  },
+  {
+    "metric_key": "average_annual_dividend_yield",
+    "raw_value": ".9%",
+    "value_numeric": 0.09,
+    "unit": "percent",
+    "period_type": "FY",
+    "period_label": "2021",
+    "source": {
+      "module": "__right_column__",
+      "page": 1,
+      "bbox": [
+        316.05099635,
+        295.7122875,
+        565.5198240999999,
+        303.219138
+      ],
+      "label": "AvgAnn’lDiv’dYield",
+      "label_key": "avgann_ldiv_dyield",
+      "method": "table_row_parse"
+    },
+    "normalization_error": null
+  },
+  {
+    "metric_key": "average_annual_dividend_yield",
+    "raw_value": ".9%",
+    "value_numeric": 0.09,
+    "unit": "percent",
+    "period_type": "FY",
+    "period_label": "2022",
+    "source": {
+      "module": "__right_column__",
+      "page": 1,
+      "bbox": [
+        316.05099635,
+        295.7122875,
+        565.5198240999999,
+        303.219138
+      ],
+      "label": "AvgAnn’lDiv’dYield",
+      "label_key": "avgann_ldiv_dyield",
+      "method": "table_row_parse"
+    },
+    "normalization_error": null
+  },
+  {
+    "metric_key": "average_annual_dividend_yield",
+    "raw_value": "1.4%",
+    "value_numeric": 0.013999999999999999,
+    "unit": "percent",
+    "period_type": "FY",
+    "period_label": "2023",
+    "source": {
+      "module": "__right_column__",
+      "page": 1,
+      "bbox": [
+        316.05099635,
+        295.7122875,
+        565.5198240999999,
+        303.219138
+      ],
+      "label": "AvgAnn’lDiv’dYield",
+      "label_key": "avgann_ldiv_dyield",
+      "method": "table_row_parse"
+    },
+    "normalization_error": null
+  },
+  {
+    "metric_key": "average_annual_dividend_yield",
+    "raw_value": "1.4%",
+    "value_numeric": 0.013999999999999999,
+    "unit": "percent",
+    "period_type": "FY",
+    "period_label": "2024",
+    "source": {
+      "module": "__right_column__",
+      "page": 1,
+      "bbox": [
+        316.05099635,
+        295.7122875,
+        565.5198240999999,
+        303.219138
+      ],
+      "label": "AvgAnn’lDiv’dYield",
+      "label_key": "avgann_ldiv_dyield",
+      "method": "table_row_parse"
+    },
+    "normalization_error": null
+  },
+  {
+    "metric_key": "average_annual_dividend_yield",
+    "raw_value": "2.1%",
+    "value_numeric": 0.021,
+    "unit": "percent",
+    "period_type": "FY",
+    "period_label": "2025",
+    "source": {
+      "module": "__right_column__",
+      "page": 1,
+      "bbox": [
+        316.05099635,
+        295.7122875,
+        565.5198240999999,
+        303.219138
+      ],
+      "label": "AvgAnn’lDiv’dYield",
+      "label_key": "avgann_ldiv_dyield",
+      "method": "table_row_parse"
+    },
+    "normalization_error": null
+  },
+  {
+    "metric_key": "average_annual_dividend_yield",
+    "raw_value": "1.5%",
+    "value_numeric": 0.015,
+    "unit": "percent",
+    "period_type": "FY",
+    "period_label": "2026",
+    "source": {
+      "module": "__right_column__",
+      "page": 1,
+      "bbox": [
+        316.05099635,
+        295.7122875,
+        565.5198240999999,
+        303.219138
+      ],
+      "label": "AvgAnn’lDiv’dYield",
+      "label_key": "avgann_ldiv_dyield",
+      "method": "table_row_parse"
+    },
+    "normalization_error": null
+  },
+  {
+    "metric_key": "average_annual_pe_ratio",
+    "raw_value": "NMF",
+    "value_numeric": null,
+    "unit": "ratio",
+    "period_type": "FY",
+    "period_label": "2020",
+    "source": {
+      "module": "__right_column__",
+      "page": 1,
+      "bbox": [
+        317.24302462,
+        277.75188749999995,
+        566.0889534,
+        285.258738
+      ],
+      "label": "AvgAnn’lP/ERatio",
+      "label_key": "avgann_lp_per_eratio",
+      "method": "table_row_parse"
+    },
+    "normalization_error": "non_numeric_marker"
+  },
+  {
+    "metric_key": "average_annual_pe_ratio",
+    "raw_value": "27.8",
+    "value_numeric": 27.8,
+    "unit": "ratio",
+    "period_type": "FY",
+    "period_label": "2021",
+    "source": {
+      "module": "__right_column__",
+      "page": 1,
+      "bbox": [
+        317.24302462,
+        277.75188749999995,
+        566.0889534,
+        285.258738
+      ],
+      "label": "AvgAnn’lP/ERatio",
+      "label_key": "avgann_lp_per_eratio",
+      "method": "table_row_parse"
+    },
+    "normalization_error": null
+  },
+  {
+    "metric_key": "average_annual_pe_ratio",
+    "raw_value": "18.8",
+    "value_numeric": 18.8,
+    "unit": "ratio",
+    "period_type": "FY",
+    "period_label": "2022",
+    "source": {
+      "module": "__right_column__",
+      "page": 1,
+      "bbox": [
+        317.24302462,
+        277.75188749999995,
+        566.0889534,
+        285.258738
+      ],
+      "label": "AvgAnn’lP/ERatio",
+      "label_key": "avgann_lp_per_eratio",
+      "method": "table_row_parse"
+    },
+    "normalization_error": null
+  },
+  {
+    "metric_key": "average_annual_pe_ratio",
+    "raw_value": "22.4",
+    "value_numeric": 22.4,
+    "unit": "ratio",
+    "period_type": "FY",
+    "period_label": "2023",
+    "source": {
+      "module": "__right_column__",
+      "page": 1,
+      "bbox": [
+        317.24302462,
+        277.75188749999995,
+        566.0889534,
+        285.258738
+      ],
+      "label": "AvgAnn’lP/ERatio",
+      "label_key": "avgann_lp_per_eratio",
+      "method": "table_row_parse"
+    },
+    "normalization_error": null
+  },
+  {
+    "metric_key": "average_annual_pe_ratio",
+    "raw_value": "20.9",
+    "value_numeric": 20.9,
+    "unit": "ratio",
+    "period_type": "FY",
+    "period_label": "2024",
+    "source": {
+      "module": "__right_column__",
+      "page": 1,
+      "bbox": [
+        317.24302462,
+        277.75188749999995,
+        566.0889534,
+        285.258738
+      ],
+      "label": "AvgAnn’lP/ERatio",
+      "label_key": "avgann_lp_per_eratio",
+      "method": "table_row_parse"
+    },
+    "normalization_error": null
+  },
+  {
+    "metric_key": "average_annual_pe_ratio",
+    "raw_value": "19.5",
+    "value_numeric": 19.5,
+    "unit": "ratio",
+    "period_type": "FY",
+    "period_label": "2025",
+    "source": {
+      "module": "__right_column__",
+      "page": 1,
+      "bbox": [
+        317.24302462,
+        277.75188749999995,
+        566.0889534,
+        285.258738
+      ],
+      "label": "AvgAnn’lP/ERatio",
+      "label_key": "avgann_lp_per_eratio",
+      "method": "table_row_parse"
+    },
+    "normalization_error": null
+  },
+  {
+    "metric_key": "average_annual_pe_ratio",
+    "raw_value": "19.0",
+    "value_numeric": 19.0,
+    "unit": "ratio",
+    "period_type": "FY",
+    "period_label": "2026",
+    "source": {
+      "module": "__right_column__",
+      "page": 1,
+      "bbox": [
+        317.24302462,
+        277.75188749999995,
+        566.0889534,
+        285.258738
+      ],
+      "label": "AvgAnn’lP/ERatio",
+      "label_key": "avgann_lp_per_eratio",
+      "method": "table_row_parse"
+    },
+    "normalization_error": null
+  },
+  {
+    "metric_key": "book_value_per_adr",
+    "raw_value": "34.49",
+    "value_numeric": 34.49,
+    "unit": "usd_per_share",
+    "period_type": "FY",
+    "period_label": "2020",
+    "source": {
+      "module": "__right_column__",
+      "page": 1,
+      "bbox": [
+        315.44516340000007,
+        259.7914874999999,
+        566.2063258000001,
+        267.29823799999997
+      ],
+      "label": "BookValueperADR",
+      "label_key": "bookvalueperadr",
+      "method": "table_row_parse"
+    },
+    "normalization_error": null
+  },
+  {
+    "metric_key": "book_value_per_adr",
+    "raw_value": "34.77",
+    "value_numeric": 34.77,
+    "unit": "usd_per_share",
+    "period_type": "FY",
+    "period_label": "2021",
+    "source": {
+      "module": "__right_column__",
+      "page": 1,
+      "bbox": [
+        315.44516340000007,
+        259.7914874999999,
+        566.2063258000001,
+        267.29823799999997
+      ],
+      "label": "BookValueperADR",
+      "label_key": "bookvalueperadr",
+      "method": "table_row_parse"
+    },
+    "normalization_error": null
+  },
+  {
+    "metric_key": "book_value_per_adr",
+    "raw_value": "42.25",
+    "value_numeric": 42.25,
+    "unit": "usd_per_share",
+    "period_type": "FY",
+    "period_label": "2022",
+    "source": {
+      "module": "__right_column__",
+      "page": 1,
+      "bbox": [
+        315.44516340000007,
+        259.7914874999999,
+        566.2063258000001,
+        267.29823799999997
+      ],
+      "label": "BookValueperADR",
+      "label_key": "bookvalueperadr",
+      "method": "table_row_parse"
+    },
+    "normalization_error": null
+  },
+  {
+    "metric_key": "book_value_per_adr",
+    "raw_value": "47.11",
+    "value_numeric": 47.11,
+    "unit": "usd_per_share",
+    "period_type": "FY",
+    "period_label": "2023",
+    "source": {
+      "module": "__right_column__",
+      "page": 1,
+      "bbox": [
+        315.44516340000007,
+        259.7914874999999,
+        566.2063258000001,
+        267.29823799999997
+      ],
+      "label": "BookValueperADR",
+      "label_key": "bookvalueperadr",
+      "method": "table_row_parse"
+    },
+    "normalization_error": null
+  },
+  {
+    "metric_key": "book_value_per_adr",
+    "raw_value": "43.53",
+    "value_numeric": 43.53,
+    "unit": "usd_per_share",
+    "period_type": "FY",
+    "period_label": "2024",
+    "source": {
+      "module": "__right_column__",
+      "page": 1,
+      "bbox": [
+        315.44516340000007,
+        259.7914874999999,
+        566.2063258000001,
+        267.29823799999997
+      ],
+      "label": "BookValueperADR",
+      "label_key": "bookvalueperadr",
+      "method": "table_row_parse"
+    },
+    "normalization_error": null
+  },
+  {
+    "metric_key": "book_value_per_adr",
+    "raw_value": "46.35",
+    "value_numeric": 46.35,
+    "unit": "usd_per_share",
+    "period_type": "FY",
+    "period_label": "2025",
+    "source": {
+      "module": "__right_column__",
+      "page": 1,
+      "bbox": [
+        315.44516340000007,
+        259.7914874999999,
+        566.2063258000001,
+        267.29823799999997
+      ],
+      "label": "BookValueperADR",
+      "label_key": "bookvalueperadr",
+      "method": "table_row_parse"
+    },
+    "normalization_error": null
+  },
+  {
+    "metric_key": "book_value_per_adr",
+    "raw_value": "49.85",
+    "value_numeric": 49.85,
+    "unit": "usd_per_share",
+    "period_type": "FY",
+    "period_label": "2026",
+    "source": {
+      "module": "__right_column__",
+      "page": 1,
+      "bbox": [
+        315.44516340000007,
+        259.7914874999999,
+        566.2063258000001,
+        267.29823799999997
+      ],
+      "label": "BookValueperADR",
+      "label_key": "bookvalueperadr",
+      "method": "table_row_parse"
+    },
+    "normalization_error": null
+  },
+  {
+    "metric_key": "common_shares_outstanding",
+    "raw_value": "1972.2",
+    "value_numeric": 1972200000.0,
+    "unit": "million_shares",
+    "period_type": "FY",
+    "period_label": "2020",
+    "source": {
+      "module": "__right_column__",
+      "page": 1,
+      "bbox": [
+        312.40045130000004,
+        268.7252920000001,
+        566.4159982,
+        276.278538
+      ],
+      "label": "CommonShsOutst’g B",
+      "label_key": "commonshsoutst_g",
+      "method": "table_row_parse"
+    },
+    "normalization_error": null
+  },
+  {
+    "metric_key": "common_shares_outstanding",
+    "raw_value": "1975.1",
+    "value_numeric": 1975100000.0,
+    "unit": "million_shares",
+    "period_type": "FY",
+    "period_label": "2021",
+    "source": {
+      "module": "__right_column__",
+      "page": 1,
+      "bbox": [
+        312.40045130000004,
+        268.7252920000001,
+        566.4159982,
+        276.278538
+      ],
+      "label": "CommonShsOutst’g B",
+      "label_key": "commonshsoutst_g",
+      "method": "table_row_parse"
+    },
+    "normalization_error": null
+  },
+  {
+    "metric_key": "common_shares_outstanding",
+    "raw_value": "1737.2",
+    "value_numeric": 1737200000.0,
+    "unit": "million_shares",
+    "period_type": "FY",
+    "period_label": "2022",
+    "source": {
+      "module": "__right_column__",
+      "page": 1,
+      "bbox": [
+        312.40045130000004,
+        268.7252920000001,
+        566.4159982,
+        276.278538
+      ],
+      "label": "CommonShsOutst’g B",
+      "label_key": "commonshsoutst_g",
+      "method": "table_row_parse"
+    },
+    "normalization_error": null
+  },
+  {
+    "metric_key": "common_shares_outstanding",
+    "raw_value": "1737.2",
+    "value_numeric": 1737200000.0,
+    "unit": "million_shares",
+    "period_type": "FY",
+    "period_label": "2023",
+    "source": {
+      "module": "__right_column__",
+      "page": 1,
+      "bbox": [
+        312.40045130000004,
+        268.7252920000001,
+        566.4159982,
+        276.278538
+      ],
+      "label": "CommonShsOutst’g B",
+      "label_key": "commonshsoutst_g",
+      "method": "table_row_parse"
+    },
+    "normalization_error": null
+  },
+  {
+    "metric_key": "common_shares_outstanding",
+    "raw_value": "1797.2",
+    "value_numeric": 1797200000.0,
+    "unit": "million_shares",
+    "period_type": "FY",
+    "period_label": "2024",
+    "source": {
+      "module": "__right_column__",
+      "page": 1,
+      "bbox": [
+        312.40045130000004,
+        268.7252920000001,
+        566.4159982,
+        276.278538
+      ],
+      "label": "CommonShsOutst’g B",
+      "label_key": "commonshsoutst_g",
+      "method": "table_row_parse"
+    },
+    "normalization_error": null
+  },
+  {
+    "metric_key": "common_shares_outstanding",
+    "raw_value": "1790.0",
+    "value_numeric": 1790000000.0,
+    "unit": "million_shares",
+    "period_type": "FY",
+    "period_label": "2025",
+    "source": {
+      "module": "__right_column__",
+      "page": 1,
+      "bbox": [
+        312.40045130000004,
+        268.7252920000001,
+        566.4159982,
+        276.278538
+      ],
+      "label": "CommonShsOutst’g B",
+      "label_key": "commonshsoutst_g",
+      "method": "table_row_parse"
+    },
+    "normalization_error": null
+  },
+  {
+    "metric_key": "common_shares_outstanding",
+    "raw_value": "1785.0",
+    "value_numeric": 1785000000.0,
+    "unit": "million_shares",
+    "period_type": "FY",
+    "period_label": "2026",
+    "source": {
+      "module": "__right_column__",
+      "page": 1,
+      "bbox": [
+        312.40045130000004,
+        268.7252920000001,
+        566.4159982,
+        276.278538
+      ],
+      "label": "CommonShsOutst’g B",
+      "label_key": "commonshsoutst_g",
+      "method": "table_row_parse"
+    },
+    "normalization_error": null
+  },
+  {
+    "metric_key": "debt_due_in_5_years",
+    "raw_value": "$14.4bill.",
+    "value_numeric": 14400000000.0,
+    "unit": "usd",
+    "period_type": "AS_OF",
+    "period_label": "6/30/25",
+    "source": {
+      "module": "capital_structure",
+      "page": 1,
+      "bbox": [
+        47.571,
+        295.7122875,
+        304.67842118000004,
+        303.9724888
+      ],
+      "label": "Duein5Yrs",
+      "label_key": "duein5yrs",
+      "method": "multi_kv_regex"
+    },
+    "normalization_error": null
+  },
+  {
+    "metric_key": "depreciation",
+    "raw_value": "4829.0",
+    "value_numeric": 4829000000.0,
+    "unit": "usd_millions",
+    "period_type": "FY",
+    "period_label": "2020",
+    "source": {
+      "module": "__right_column__",
+      "page": 1,
+      "bbox": [
+        312.40045130000004,
+        325.2466875,
+        566.5240896,
+        332.753538
+      ],
+      "label": "Depreciation($mill)",
+      "label_key": "depreciation_mill",
+      "method": "table_row_parse"
+    },
+    "normalization_error": null
+  },
+  {
+    "metric_key": "depreciation",
+    "raw_value": "5052.0",
+    "value_numeric": 5052000000.0,
+    "unit": "usd_millions",
+    "period_type": "FY",
+    "period_label": "2021",
+    "source": {
+      "module": "__right_column__",
+      "page": 1,
+      "bbox": [
+        312.40045130000004,
+        325.2466875,
+        566.5240896,
+        332.753538
+      ],
+      "label": "Depreciation($mill)",
+      "label_key": "depreciation_mill",
+      "method": "table_row_parse"
+    },
+    "normalization_error": null
+  },
+  {
+    "metric_key": "depreciation",
+    "raw_value": "5078.0",
+    "value_numeric": 5078000000.0,
+    "unit": "usd_millions",
+    "period_type": "FY",
+    "period_label": "2022",
+    "source": {
+      "module": "__right_column__",
+      "page": 1,
+      "bbox": [
+        312.40045130000004,
+        325.2466875,
+        566.5240896,
+        332.753538
+      ],
+      "label": "Depreciation($mill)",
+      "label_key": "depreciation_mill",
+      "method": "table_row_parse"
+    },
+    "normalization_error": null
+  },
+  {
+    "metric_key": "depreciation",
+    "raw_value": "5411.0",
+    "value_numeric": 5411000000.0,
+    "unit": "usd_millions",
+    "period_type": "FY",
+    "period_label": "2023",
+    "source": {
+      "module": "__right_column__",
+      "page": 1,
+      "bbox": [
+        312.40045130000004,
+        325.2466875,
+        566.5240896,
+        332.753538
+      ],
+      "label": "Depreciation($mill)",
+      "label_key": "depreciation_mill",
+      "method": "table_row_parse"
+    },
+    "normalization_error": null
+  },
+  {
+    "metric_key": "depreciation",
+    "raw_value": "5544.0",
+    "value_numeric": 5544000000.0,
+    "unit": "usd_millions",
+    "period_type": "FY",
+    "period_label": "2024",
+    "source": {
+      "module": "__right_column__",
+      "page": 1,
+      "bbox": [
+        312.40045130000004,
+        325.2466875,
+        566.5240896,
+        332.753538
+      ],
+      "label": "Depreciation($mill)",
+      "label_key": "depreciation_mill",
+      "method": "table_row_parse"
+    },
+    "normalization_error": null
+  },
+  {
+    "metric_key": "depreciation",
+    "raw_value": "5600",
+    "value_numeric": 5600000000.0,
+    "unit": "usd_millions",
+    "period_type": "FY",
+    "period_label": "2025",
+    "source": {
+      "module": "__right_column__",
+      "page": 1,
+      "bbox": [
+        312.40045130000004,
+        325.2466875,
+        566.5240896,
+        332.753538
+      ],
+      "label": "Depreciation($mill)",
+      "label_key": "depreciation_mill",
+      "method": "table_row_parse"
+    },
+    "normalization_error": null
+  },
+  {
+    "metric_key": "depreciation",
+    "raw_value": "5700",
+    "value_numeric": 5700000000.0,
+    "unit": "usd_millions",
+    "period_type": "FY",
+    "period_label": "2026",
+    "source": {
+      "module": "__right_column__",
+      "page": 1,
+      "bbox": [
+        312.40045130000004,
+        325.2466875,
+        566.5240896,
+        332.753538
+      ],
+      "label": "Depreciation($mill)",
+      "label_key": "depreciation_mill",
+      "method": "table_row_parse"
+    },
+    "normalization_error": null
+  },
+  {
+    "metric_key": "income_tax_rate",
+    "raw_value": "NMF",
+    "value_numeric": null,
+    "unit": "percent",
+    "period_type": "FY",
+    "period_label": "2020",
+    "source": {
+      "module": "__right_column__",
+      "page": 1,
+      "bbox": [
+        316.75407116,
+        343.2070875,
+        565.6158964999998,
+        350.713938
+      ],
+      "label": "IncomeTaxRate",
+      "label_key": "incometaxrate",
+      "method": "table_row_parse"
+    },
+    "normalization_error": "non_numeric_marker"
+  },
+  {
+    "metric_key": "income_tax_rate",
+    "raw_value": "--",
+    "value_numeric": null,
+    "unit": "percent",
+    "period_type": "FY",
+    "period_label": "2021",
+    "source": {
+      "module": "__right_column__",
+      "page": 1,
+      "bbox": [
+        316.75407116,
+        343.2070875,
+        565.6158964999998,
+        350.713938
+      ],
+      "label": "IncomeTaxRate",
+      "label_key": "incometaxrate",
+      "method": "table_row_parse"
+    },
+    "normalization_error": "non_numeric_marker"
+  },
+  {
+    "metric_key": "income_tax_rate",
+    "raw_value": "35.0%",
+    "value_numeric": 0.35,
+    "unit": "percent",
+    "period_type": "FY",
+    "period_label": "2022",
+    "source": {
+      "module": "__right_column__",
+      "page": 1,
+      "bbox": [
+        316.75407116,
+        343.2070875,
+        565.6158964999998,
+        350.713938
+      ],
+      "label": "IncomeTaxRate",
+      "label_key": "incometaxrate",
+      "method": "table_row_parse"
+    },
+    "normalization_error": null
+  },
+  {
+    "metric_key": "income_tax_rate",
+    "raw_value": "39.6%",
+    "value_numeric": 0.396,
+    "unit": "percent",
+    "period_type": "FY",
+    "period_label": "2023",
+    "source": {
+      "module": "__right_column__",
+      "page": 1,
+      "bbox": [
+        316.75407116,
+        343.2070875,
+        565.6158964999998,
+        350.713938
+      ],
+      "label": "IncomeTaxRate",
+      "label_key": "incometaxrate",
+      "method": "table_row_parse"
+    },
+    "normalization_error": null
+  },
+  {
+    "metric_key": "income_tax_rate",
+    "raw_value": "35.7%",
+    "value_numeric": 0.35700000000000004,
+    "unit": "percent",
+    "period_type": "FY",
+    "period_label": "2024",
+    "source": {
+      "module": "__right_column__",
+      "page": 1,
+      "bbox": [
+        316.75407116,
+        343.2070875,
+        565.6158964999998,
+        350.713938
+      ],
+      "label": "IncomeTaxRate",
+      "label_key": "incometaxrate",
+      "method": "table_row_parse"
+    },
+    "normalization_error": null
+  },
+  {
+    "metric_key": "income_tax_rate",
+    "raw_value": "28.0%",
+    "value_numeric": 0.28,
+    "unit": "percent",
+    "period_type": "FY",
+    "period_label": "2025",
+    "source": {
+      "module": "__right_column__",
+      "page": 1,
+      "bbox": [
+        316.75407116,
+        343.2070875,
+        565.6158964999998,
+        350.713938
+      ],
+      "label": "IncomeTaxRate",
+      "label_key": "incometaxrate",
+      "method": "table_row_parse"
+    },
+    "normalization_error": null
+  },
+  {
+    "metric_key": "income_tax_rate",
+    "raw_value": "30.0%",
+    "value_numeric": 0.3,
+    "unit": "percent",
+    "period_type": "FY",
+    "period_label": "2026",
+    "source": {
+      "module": "__right_column__",
+      "page": 1,
+      "bbox": [
+        316.75407116,
+        343.2070875,
+        565.6158964999998,
+        350.713938
+      ],
+      "label": "IncomeTaxRate",
+      "label_key": "incometaxrate",
+      "method": "table_row_parse"
+    },
+    "normalization_error": null
+  },
+  {
+    "metric_key": "long_term_debt",
+    "raw_value": "95478",
+    "value_numeric": 95478000000.0,
+    "unit": "usd_millions",
+    "period_type": "FY",
+    "period_label": "2020",
+    "source": {
+      "module": "__right_column__",
+      "page": 1,
+      "bbox": [
+        313.9277464600001,
+        370.1476875,
+        566.108162,
+        377.654538
+      ],
+      "label": "Long-TermDebt($mill)",
+      "label_key": "long_termdebt_mill",
+      "method": "table_row_parse"
+    },
+    "normalization_error": null
+  },
+  {
+    "metric_key": "long_term_debt",
+    "raw_value": "87369",
+    "value_numeric": 87369000000.0,
+    "unit": "usd_millions",
+    "period_type": "FY",
+    "period_label": "2021",
+    "source": {
+      "module": "__right_column__",
+      "page": 1,
+      "bbox": [
+        313.9277464600001,
+        370.1476875,
+        566.108162,
+        377.654538
+      ],
+      "label": "Long-TermDebt($mill)",
+      "label_key": "long_termdebt_mill",
+      "method": "table_row_parse"
+    },
+    "normalization_error": null
+  },
+  {
+    "metric_key": "long_term_debt",
+    "raw_value": "78880",
+    "value_numeric": 78880000000.0,
+    "unit": "usd_millions",
+    "period_type": "FY",
+    "period_label": "2022",
+    "source": {
+      "module": "__right_column__",
+      "page": 1,
+      "bbox": [
+        313.9277464600001,
+        370.1476875,
+        566.108162,
+        377.654538
+      ],
+      "label": "Long-TermDebt($mill)",
+      "label_key": "long_termdebt_mill",
+      "method": "table_row_parse"
+    },
+    "normalization_error": null
+  },
+  {
+    "metric_key": "long_term_debt",
+    "raw_value": "74163",
+    "value_numeric": 74163000000.0,
+    "unit": "usd_millions",
+    "period_type": "FY",
+    "period_label": "2023",
+    "source": {
+      "module": "__right_column__",
+      "page": 1,
+      "bbox": [
+        313.9277464600001,
+        370.1476875,
+        566.108162,
+        377.654538
+      ],
+      "label": "Long-TermDebt($mill)",
+      "label_key": "long_termdebt_mill",
+      "method": "table_row_parse"
+    },
+    "normalization_error": null
+  },
+  {
+    "metric_key": "long_term_debt",
+    "raw_value": "70720",
+    "value_numeric": 70720000000.0,
+    "unit": "usd_millions",
+    "period_type": "FY",
+    "period_label": "2024",
+    "source": {
+      "module": "__right_column__",
+      "page": 1,
+      "bbox": [
+        313.9277464600001,
+        370.1476875,
+        566.108162,
+        377.654538
+      ],
+      "label": "Long-TermDebt($mill)",
+      "label_key": "long_termdebt_mill",
+      "method": "table_row_parse"
+    },
+    "normalization_error": null
+  },
+  {
+    "metric_key": "long_term_debt",
+    "raw_value": "72000",
+    "value_numeric": 72000000000.0,
+    "unit": "usd_millions",
+    "period_type": "FY",
+    "period_label": "2025",
+    "source": {
+      "module": "__right_column__",
+      "page": 1,
+      "bbox": [
+        313.9277464600001,
+        370.1476875,
+        566.108162,
+        377.654538
+      ],
+      "label": "Long-TermDebt($mill)",
+      "label_key": "long_termdebt_mill",
+      "method": "table_row_parse"
+    },
+    "normalization_error": null
+  },
+  {
+    "metric_key": "long_term_debt",
+    "raw_value": "74000",
+    "value_numeric": 74000000000.0,
+    "unit": "usd_millions",
+    "period_type": "FY",
+    "period_label": "2026",
+    "source": {
+      "module": "__right_column__",
+      "page": 1,
+      "bbox": [
+        313.9277464600001,
+        370.1476875,
+        566.108162,
+        377.654538
+      ],
+      "label": "Long-TermDebt($mill)",
+      "label_key": "long_termdebt_mill",
+      "method": "table_row_parse"
+    },
+    "normalization_error": null
+  },
+  {
+    "metric_key": "long_term_debt",
+    "raw_value": "$72.0bill.",
+    "value_numeric": 72000000000.0,
+    "unit": "usd",
+    "period_type": "AS_OF",
+    "period_label": "6/30/25",
+    "source": {
+      "module": "capital_structure",
+      "page": 1,
+      "bbox": [
+        47.571,
+        311.934235,
+        167.08724452,
+        318.93978880000003
+      ],
+      "label": "LTDebt",
+      "label_key": "ltdebt",
+      "method": "multi_kv_regex"
+    },
+    "normalization_error": null
+  },
+  {
+    "metric_key": "long_term_interest",
+    "raw_value": "$4.1bill.",
+    "value_numeric": 4099999999.9999995,
+    "unit": "usd",
+    "period_type": "AS_OF",
+    "period_label": "6/30/25",
+    "source": {
+      "module": "capital_structure",
+      "page": 1,
+      "bbox": [
+        47.571,
+        311.934235,
+        167.08724452,
+        318.93978880000003
+      ],
+      "label": "LTInterest",
+      "label_key": "ltinterest",
+      "method": "multi_kv_regex"
+    },
+    "normalization_error": null
+  },
+  {
+    "metric_key": "net_profit",
+    "raw_value": "1405.0",
+    "value_numeric": 1405000000.0,
+    "unit": "usd_millions",
+    "period_type": "FY",
+    "period_label": "2020",
+    "source": {
+      "module": "__right_column__",
+      "page": 1,
+      "bbox": [
+        312.40045130000004,
+        334.2268875,
+        566.5032896,
+        341.73373799999996
+      ],
+      "label": "NetProfit($mill)",
+      "label_key": "netprofit_mill",
+      "method": "table_row_parse"
+    },
+    "normalization_error": null
+  },
+  {
+    "metric_key": "net_profit",
+    "raw_value": "4670.0",
+    "value_numeric": 4670000000.0,
+    "unit": "usd_millions",
+    "period_type": "FY",
+    "period_label": "2021",
+    "source": {
+      "module": "__right_column__",
+      "page": 1,
+      "bbox": [
+        312.40045130000004,
+        334.2268875,
+        566.5032896,
+        341.73373799999996
+      ],
+      "label": "NetProfit($mill)",
+      "label_key": "netprofit_mill",
+      "method": "table_row_parse"
+    },
+    "normalization_error": null
+  },
+  {
+    "metric_key": "net_profit",
+    "raw_value": "5969.0",
+    "value_numeric": 5969000000.0,
+    "unit": "usd_millions",
+    "period_type": "FY",
+    "period_label": "2022",
+    "source": {
+      "module": "__right_column__",
+      "page": 1,
+      "bbox": [
+        312.40045130000004,
+        334.2268875,
+        566.5032896,
+        341.73373799999996
+      ],
+      "label": "NetProfit($mill)",
+      "label_key": "netprofit_mill",
+      "method": "table_row_parse"
+    },
+    "normalization_error": null
+  },
+  {
+    "metric_key": "net_profit",
+    "raw_value": "5341.0",
+    "value_numeric": 5341000000.0,
+    "unit": "usd_millions",
+    "period_type": "FY",
+    "period_label": "2023",
+    "source": {
+      "module": "__right_column__",
+      "page": 1,
+      "bbox": [
+        312.40045130000004,
+        334.2268875,
+        566.5032896,
+        341.73373799999996
+      ],
+      "label": "NetProfit($mill)",
+      "label_key": "netprofit_mill",
+      "method": "table_row_parse"
+    },
+    "normalization_error": null
+  },
+  {
+    "metric_key": "net_profit",
+    "raw_value": "5855.0",
+    "value_numeric": 5855000000.0,
+    "unit": "usd_millions",
+    "period_type": "FY",
+    "period_label": "2024",
+    "source": {
+      "module": "__right_column__",
+      "page": 1,
+      "bbox": [
+        312.40045130000004,
+        334.2268875,
+        566.5032896,
+        341.73373799999996
+      ],
+      "label": "NetProfit($mill)",
+      "label_key": "netprofit_mill",
+      "method": "table_row_parse"
+    },
+    "normalization_error": null
+  },
+  {
+    "metric_key": "net_profit",
+    "raw_value": "5640",
+    "value_numeric": 5640000000.0,
+    "unit": "usd_millions",
+    "period_type": "FY",
+    "period_label": "2025",
+    "source": {
+      "module": "__right_column__",
+      "page": 1,
+      "bbox": [
+        312.40045130000004,
+        334.2268875,
+        566.5032896,
+        341.73373799999996
+      ],
+      "label": "NetProfit($mill)",
+      "label_key": "netprofit_mill",
+      "method": "table_row_parse"
+    },
+    "normalization_error": null
+  },
+  {
+    "metric_key": "net_profit",
+    "raw_value": "7140",
+    "value_numeric": 7140000000.0,
+    "unit": "usd_millions",
+    "period_type": "FY",
+    "period_label": "2026",
+    "source": {
+      "module": "__right_column__",
+      "page": 1,
+      "bbox": [
+        312.40045130000004,
+        334.2268875,
+        566.5032896,
+        341.73373799999996
+      ],
+      "label": "NetProfit($mill)",
+      "label_key": "netprofit_mill",
+      "method": "table_row_parse"
+    },
+    "normalization_error": null
+  },
+  {
+    "metric_key": "net_profit_margin",
+    "raw_value": "3.0%",
+    "value_numeric": 0.03,
+    "unit": "percent",
+    "period_type": "FY",
+    "period_label": "2020",
+    "source": {
+      "module": "__right_column__",
+      "page": 1,
+      "bbox": [
+        316.05436391,
+        352.1872875,
+        566.0180964999998,
+        359.694138
+      ],
+      "label": "NetProfitMargin",
+      "label_key": "netprofitmargin",
+      "method": "table_row_parse"
+    },
+    "normalization_error": null
+  },
+  {
+    "metric_key": "net_profit_margin",
+    "raw_value": "8.6%",
+    "value_numeric": 0.086,
+    "unit": "percent",
+    "period_type": "FY",
+    "period_label": "2021",
+    "source": {
+      "module": "__right_column__",
+      "page": 1,
+      "bbox": [
+        316.05436391,
+        352.1872875,
+        566.0180964999998,
+        359.694138
+      ],
+      "label": "NetProfitMargin",
+      "label_key": "netprofitmargin",
+      "method": "table_row_parse"
+    },
+    "normalization_error": null
+  },
+  {
+    "metric_key": "net_profit_margin",
+    "raw_value": "10.3%",
+    "value_numeric": 0.10300000000000001,
+    "unit": "percent",
+    "period_type": "FY",
+    "period_label": "2022",
+    "source": {
+      "module": "__right_column__",
+      "page": 1,
+      "bbox": [
+        316.05436391,
+        352.1872875,
+        566.0180964999998,
+        359.694138
+      ],
+      "label": "NetProfitMargin",
+      "label_key": "netprofitmargin",
+      "method": "table_row_parse"
+    },
+    "normalization_error": null
+  },
+  {
+    "metric_key": "net_profit_margin",
+    "raw_value": "9.0%",
+    "value_numeric": 0.09,
+    "unit": "percent",
+    "period_type": "FY",
+    "period_label": "2023",
+    "source": {
+      "module": "__right_column__",
+      "page": 1,
+      "bbox": [
+        316.05436391,
+        352.1872875,
+        566.0180964999998,
+        359.694138
+      ],
+      "label": "NetProfitMargin",
+      "label_key": "netprofitmargin",
+      "method": "table_row_parse"
+    },
+    "normalization_error": null
+  },
+  {
+    "metric_key": "net_profit_margin",
+    "raw_value": "9.8%",
+    "value_numeric": 0.098,
+    "unit": "percent",
+    "period_type": "FY",
+    "period_label": "2024",
+    "source": {
+      "module": "__right_column__",
+      "page": 1,
+      "bbox": [
+        316.05436391,
+        352.1872875,
+        566.0180964999998,
+        359.694138
+      ],
+      "label": "NetProfitMargin",
+      "label_key": "netprofitmargin",
+      "method": "table_row_parse"
+    },
+    "normalization_error": null
+  },
+  {
+    "metric_key": "net_profit_margin",
+    "raw_value": "9.5%",
+    "value_numeric": 0.095,
+    "unit": "percent",
+    "period_type": "FY",
+    "period_label": "2025",
+    "source": {
+      "module": "__right_column__",
+      "page": 1,
+      "bbox": [
+        316.05436391,
+        352.1872875,
+        566.0180964999998,
+        359.694138
+      ],
+      "label": "NetProfitMargin",
+      "label_key": "netprofitmargin",
+      "method": "table_row_parse"
+    },
+    "normalization_error": null
+  },
+  {
+    "metric_key": "net_profit_margin",
+    "raw_value": "11.5%",
+    "value_numeric": 0.115,
+    "unit": "percent",
+    "period_type": "FY",
+    "period_label": "2026",
+    "source": {
+      "module": "__right_column__",
+      "page": 1,
+      "bbox": [
+        316.05436391,
+        352.1872875,
+        566.0180964999998,
+        359.694138
+      ],
+      "label": "NetProfitMargin",
+      "label_key": "netprofitmargin",
+      "method": "table_row_parse"
+    },
+    "normalization_error": null
+  },
+  {
+    "metric_key": "operating_margin",
+    "raw_value": "35.6%",
+    "value_numeric": 0.35600000000000004,
+    "unit": "percent",
+    "period_type": "FY",
+    "period_label": "2020",
+    "source": {
+      "module": "__right_column__",
+      "page": 1,
+      "bbox": [
+        313.00638425,
+        316.2664875,
+        566.0169964999999,
+        323.77333799999997
+      ],
+      "label": "OperatingMargin",
+      "label_key": "operatingmargin",
+      "method": "table_row_parse"
+    },
+    "normalization_error": null
+  },
+  {
+    "metric_key": "operating_margin",
+    "raw_value": "34.4%",
+    "value_numeric": 0.344,
+    "unit": "percent",
+    "period_type": "FY",
+    "period_label": "2021",
+    "source": {
+      "module": "__right_column__",
+      "page": 1,
+      "bbox": [
+        313.00638425,
+        316.2664875,
+        566.0169964999999,
+        323.77333799999997
+      ],
+      "label": "OperatingMargin",
+      "label_key": "operatingmargin",
+      "method": "table_row_parse"
+    },
+    "normalization_error": null
+  },
+  {
+    "metric_key": "operating_margin",
+    "raw_value": "30.9%",
+    "value_numeric": 0.309,
+    "unit": "percent",
+    "period_type": "FY",
+    "period_label": "2022",
+    "source": {
+      "module": "__right_column__",
+      "page": 1,
+      "bbox": [
+        313.00638425,
+        316.2664875,
+        566.0169964999999,
+        323.77333799999997
+      ],
+      "label": "OperatingMargin",
+      "label_key": "operatingmargin",
+      "method": "table_row_parse"
+    },
+    "normalization_error": null
+  },
+  {
+    "metric_key": "operating_margin",
+    "raw_value": "32.3%",
+    "value_numeric": 0.32299999999999995,
+    "unit": "percent",
+    "period_type": "FY",
+    "period_label": "2023",
+    "source": {
+      "module": "__right_column__",
+      "page": 1,
+      "bbox": [
+        313.00638425,
+        316.2664875,
+        566.0169964999999,
+        323.77333799999997
+      ],
+      "label": "OperatingMargin",
+      "label_key": "operatingmargin",
+      "method": "table_row_parse"
+    },
+    "normalization_error": null
+  },
+  {
+    "metric_key": "operating_margin",
+    "raw_value": "34.0%",
+    "value_numeric": 0.34,
+    "unit": "percent",
+    "period_type": "FY",
+    "period_label": "2024",
+    "source": {
+      "module": "__right_column__",
+      "page": 1,
+      "bbox": [
+        313.00638425,
+        316.2664875,
+        566.0169964999999,
+        323.77333799999997
+      ],
+      "label": "OperatingMargin",
+      "label_key": "operatingmargin",
+      "method": "table_row_parse"
+    },
+    "normalization_error": null
+  },
+  {
+    "metric_key": "operating_margin",
+    "raw_value": "35.0%",
+    "value_numeric": 0.35,
+    "unit": "percent",
+    "period_type": "FY",
+    "period_label": "2025",
+    "source": {
+      "module": "__right_column__",
+      "page": 1,
+      "bbox": [
+        313.00638425,
+        316.2664875,
+        566.0169964999999,
+        323.77333799999997
+      ],
+      "label": "OperatingMargin",
+      "label_key": "operatingmargin",
+      "method": "table_row_parse"
+    },
+    "normalization_error": null
+  },
+  {
+    "metric_key": "operating_margin",
+    "raw_value": "36.0%",
+    "value_numeric": 0.36,
+    "unit": "percent",
+    "period_type": "FY",
+    "period_label": "2026",
+    "source": {
+      "module": "__right_column__",
+      "page": 1,
+      "bbox": [
+        313.00638425,
+        316.2664875,
+        566.0169964999999,
+        323.77333799999997
+      ],
+      "label": "OperatingMargin",
+      "label_key": "operatingmargin",
+      "method": "table_row_parse"
+    },
+    "normalization_error": null
+  },
+  {
+    "metric_key": "relative_pe_ratio",
+    "raw_value": "NMF",
+    "value_numeric": null,
+    "unit": "ratio",
+    "period_type": "FY",
+    "period_label": "2020",
+    "source": {
+      "module": "__right_column__",
+      "page": 1,
+      "bbox": [
+        317.24192704,
+        286.7320875,
+        566.3989534000001,
+        294.23893799999996
+      ],
+      "label": "RelativeP/ERatio",
+      "label_key": "relativep_per_eratio",
+      "method": "table_row_parse"
+    },
+    "normalization_error": "non_numeric_marker"
+  },
+  {
+    "metric_key": "relative_pe_ratio",
+    "raw_value": "1.50",
+    "value_numeric": 1.5,
+    "unit": "ratio",
+    "period_type": "FY",
+    "period_label": "2021",
+    "source": {
+      "module": "__right_column__",
+      "page": 1,
+      "bbox": [
+        317.24192704,
+        286.7320875,
+        566.3989534000001,
+        294.23893799999996
+      ],
+      "label": "RelativeP/ERatio",
+      "label_key": "relativep_per_eratio",
+      "method": "table_row_parse"
+    },
+    "normalization_error": null
+  },
+  {
+    "metric_key": "relative_pe_ratio",
+    "raw_value": "1.09",
+    "value_numeric": 1.09,
+    "unit": "ratio",
+    "period_type": "FY",
+    "period_label": "2022",
+    "source": {
+      "module": "__right_column__",
+      "page": 1,
+      "bbox": [
+        317.24192704,
+        286.7320875,
+        566.3989534000001,
+        294.23893799999996
+      ],
+      "label": "RelativeP/ERatio",
+      "label_key": "relativep_per_eratio",
+      "method": "table_row_parse"
+    },
+    "normalization_error": null
+  },
+  {
+    "metric_key": "relative_pe_ratio",
+    "raw_value": "1.25",
+    "value_numeric": 1.25,
+    "unit": "ratio",
+    "period_type": "FY",
+    "period_label": "2023",
+    "source": {
+      "module": "__right_column__",
+      "page": 1,
+      "bbox": [
+        317.24192704,
+        286.7320875,
+        566.3989534000001,
+        294.23893799999996
+      ],
+      "label": "RelativeP/ERatio",
+      "label_key": "relativep_per_eratio",
+      "method": "table_row_parse"
+    },
+    "normalization_error": null
+  },
+  {
+    "metric_key": "relative_pe_ratio",
+    "raw_value": "1.11",
+    "value_numeric": 1.11,
+    "unit": "ratio",
+    "period_type": "FY",
+    "period_label": "2024",
+    "source": {
+      "module": "__right_column__",
+      "page": 1,
+      "bbox": [
+        317.24192704,
+        286.7320875,
+        566.3989534000001,
+        294.23893799999996
+      ],
+      "label": "RelativeP/ERatio",
+      "label_key": "relativep_per_eratio",
+      "method": "table_row_parse"
+    },
+    "normalization_error": null
+  },
+  {
+    "metric_key": "relative_pe_ratio",
+    "raw_value": "1.00",
+    "value_numeric": 1.0,
+    "unit": "ratio",
+    "period_type": "FY",
+    "period_label": "2025",
+    "source": {
+      "module": "__right_column__",
+      "page": 1,
+      "bbox": [
+        317.24192704,
+        286.7320875,
+        566.3989534000001,
+        294.23893799999996
+      ],
+      "label": "RelativeP/ERatio",
+      "label_key": "relativep_per_eratio",
+      "method": "table_row_parse"
+    },
+    "normalization_error": null
+  },
+  {
+    "metric_key": "relative_pe_ratio",
+    "raw_value": "1.05",
+    "value_numeric": 1.05,
+    "unit": "ratio",
+    "period_type": "FY",
+    "period_label": "2026",
+    "source": {
+      "module": "__right_column__",
+      "page": 1,
+      "bbox": [
+        317.24192704,
+        286.7320875,
+        566.3989534000001,
+        294.23893799999996
+      ],
+      "label": "RelativeP/ERatio",
+      "label_key": "relativep_per_eratio",
+      "method": "table_row_parse"
+    },
+    "normalization_error": null
+  },
+  {
+    "metric_key": "retained_to_common_equity",
+    "raw_value": ".6% 5.0% 6.8%",
+    "value_numeric": 0.06,
+    "unit": "percent",
+    "period_type": "FY",
+    "period_label": "2020",
+    "source": {
+      "module": "__right_column__",
+      "page": 1,
+      "bbox": [
+        319.33168815,
+        406.0684875,
+        566.0197241,
+        413.575338
+      ],
+      "label": "RetainedtoComEq",
+      "label_key": "retainedtocomeq",
+      "method": "table_row_parse"
+    },
+    "normalization_error": null
+  },
+  {
+    "metric_key": "retained_to_common_equity",
+    "raw_value": "4.8%",
+    "value_numeric": 0.048,
+    "unit": "percent",
+    "period_type": "FY",
+    "period_label": "2021",
+    "source": {
+      "module": "__right_column__",
+      "page": 1,
+      "bbox": [
+        319.33168815,
+        406.0684875,
+        566.0197241,
+        413.575338
+      ],
+      "label": "RetainedtoComEq",
+      "label_key": "retainedtocomeq",
+      "method": "table_row_parse"
+    },
+    "normalization_error": null
+  },
+  {
+    "metric_key": "retained_to_common_equity",
+    "raw_value": "5.5%",
+    "value_numeric": 0.055,
+    "unit": "percent",
+    "period_type": "FY",
+    "period_label": "2022",
+    "source": {
+      "module": "__right_column__",
+      "page": 1,
+      "bbox": [
+        319.33168815,
+        406.0684875,
+        566.0197241,
+        413.575338
+      ],
+      "label": "RetainedtoComEq",
+      "label_key": "retainedtocomeq",
+      "method": "table_row_parse"
+    },
+    "normalization_error": null
+  },
+  {
+    "metric_key": "retained_to_common_equity",
+    "raw_value": "4.0%",
+    "value_numeric": 0.04,
+    "unit": "percent",
+    "period_type": "FY",
+    "period_label": "2023",
+    "source": {
+      "module": "__right_column__",
+      "page": 1,
+      "bbox": [
+        319.33168815,
+        406.0684875,
+        566.0197241,
+        413.575338
+      ],
+      "label": "RetainedtoComEq",
+      "label_key": "retainedtocomeq",
+      "method": "table_row_parse"
+    },
+    "normalization_error": null
+  },
+  {
+    "metric_key": "retained_to_common_equity",
+    "raw_value": "5.5%",
+    "value_numeric": 0.055,
+    "unit": "percent",
+    "period_type": "FY",
+    "period_label": "2024",
+    "source": {
+      "module": "__right_column__",
+      "page": 1,
+      "bbox": [
+        319.33168815,
+        406.0684875,
+        566.0197241,
+        413.575338
+      ],
+      "label": "RetainedtoComEq",
+      "label_key": "retainedtocomeq",
+      "method": "table_row_parse"
+    },
+    "normalization_error": null
+  },
+  {
+    "metric_key": "retained_to_common_equity",
+    "raw_value": "6.0%",
+    "value_numeric": 0.06,
+    "unit": "percent",
+    "period_type": "FY",
+    "period_label": "2025",
+    "source": {
+      "module": "__right_column__",
+      "page": 1,
+      "bbox": [
+        319.33168815,
+        406.0684875,
+        566.0197241,
+        413.575338
+      ],
+      "label": "RetainedtoComEq",
+      "label_key": "retainedtocomeq",
+      "method": "table_row_parse"
+    },
+    "normalization_error": null
+  },
+  {
+    "metric_key": "return_on_equity",
+    "raw_value": "2.1%",
+    "value_numeric": 0.021,
+    "unit": "percent",
+    "period_type": "FY",
+    "period_label": "2020",
+    "source": {
+      "module": "__right_column__",
+      "page": 1,
+      "bbox": [
+        316.05326633,
+        397.0882875,
+        565.7141240999999,
+        404.59513799999996
+      ],
+      "label": "ReturnonShr.Equity",
+      "label_key": "returnonshr_equity",
+      "method": "table_row_parse"
+    },
+    "normalization_error": null
+  },
+  {
+    "metric_key": "return_on_equity",
+    "raw_value": "6.8%",
+    "value_numeric": 0.068,
+    "unit": "percent",
+    "period_type": "FY",
+    "period_label": "2021",
+    "source": {
+      "module": "__right_column__",
+      "page": 1,
+      "bbox": [
+        316.05326633,
+        397.0882875,
+        565.7141240999999,
+        404.59513799999996
+      ],
+      "label": "ReturnonShr.Equity",
+      "label_key": "returnonshr_equity",
+      "method": "table_row_parse"
+    },
+    "normalization_error": null
+  },
+  {
+    "metric_key": "return_on_equity",
+    "raw_value": "8.1%",
+    "value_numeric": 0.081,
+    "unit": "percent",
+    "period_type": "FY",
+    "period_label": "2022",
+    "source": {
+      "module": "__right_column__",
+      "page": 1,
+      "bbox": [
+        316.05326633,
+        397.0882875,
+        565.7141240999999,
+        404.59513799999996
+      ],
+      "label": "ReturnonShr.Equity",
+      "label_key": "returnonshr_equity",
+      "method": "table_row_parse"
+    },
+    "normalization_error": null
+  },
+  {
+    "metric_key": "return_on_equity",
+    "raw_value": "6.5%",
+    "value_numeric": 0.065,
+    "unit": "percent",
+    "period_type": "FY",
+    "period_label": "2023",
+    "source": {
+      "module": "__right_column__",
+      "page": 1,
+      "bbox": [
+        316.05326633,
+        397.0882875,
+        565.7141240999999,
+        404.59513799999996
+      ],
+      "label": "ReturnonShr.Equity",
+      "label_key": "returnonshr_equity",
+      "method": "table_row_parse"
+    },
+    "normalization_error": null
+  },
+  {
+    "metric_key": "return_on_equity",
+    "raw_value": "7.5%",
+    "value_numeric": 0.075,
+    "unit": "percent",
+    "period_type": "FY",
+    "period_label": "2024",
+    "source": {
+      "module": "__right_column__",
+      "page": 1,
+      "bbox": [
+        316.05326633,
+        397.0882875,
+        565.7141240999999,
+        404.59513799999996
+      ],
+      "label": "ReturnonShr.Equity",
+      "label_key": "returnonshr_equity",
+      "method": "table_row_parse"
+    },
+    "normalization_error": null
+  },
+  {
+    "metric_key": "return_on_equity",
+    "raw_value": "7.0%",
+    "value_numeric": 0.07,
+    "unit": "percent",
+    "period_type": "FY",
+    "period_label": "2025",
+    "source": {
+      "module": "__right_column__",
+      "page": 1,
+      "bbox": [
+        316.05326633,
+        397.0882875,
+        565.7141240999999,
+        404.59513799999996
+      ],
+      "label": "ReturnonShr.Equity",
+      "label_key": "returnonshr_equity",
+      "method": "table_row_parse"
+    },
+    "normalization_error": null
+  },
+  {
+    "metric_key": "return_on_equity",
+    "raw_value": "8.0%",
+    "value_numeric": 0.08,
+    "unit": "percent",
+    "period_type": "FY",
+    "period_label": "2026",
+    "source": {
+      "module": "__right_column__",
+      "page": 1,
+      "bbox": [
+        316.05326633,
+        397.0882875,
+        565.7141240999999,
+        404.59513799999996
+      ],
+      "label": "ReturnonShr.Equity",
+      "label_key": "returnonshr_equity",
+      "method": "table_row_parse"
+    },
+    "normalization_error": null
+  },
+  {
+    "metric_key": "return_on_total_capital",
+    "raw_value": "3.2%",
+    "value_numeric": 0.032,
+    "unit": "percent",
+    "period_type": "FY",
+    "period_label": "2020",
+    "source": {
+      "module": "__right_column__",
+      "page": 1,
+      "bbox": [
+        316.05216874999996,
+        388.1080875,
+        565.4891241,
+        395.614938
+      ],
+      "label": "ReturnonTotalCap’l",
+      "label_key": "returnontotalcap_l",
+      "method": "table_row_parse"
+    },
+    "normalization_error": null
+  },
+  {
+    "metric_key": "return_on_total_capital",
+    "raw_value": "4.8%",
+    "value_numeric": 0.048,
+    "unit": "percent",
+    "period_type": "FY",
+    "period_label": "2021",
+    "source": {
+      "module": "__right_column__",
+      "page": 1,
+      "bbox": [
+        316.05216874999996,
+        388.1080875,
+        565.4891241,
+        395.614938
+      ],
+      "label": "ReturnonTotalCap’l",
+      "label_key": "returnontotalcap_l",
+      "method": "table_row_parse"
+    },
+    "normalization_error": null
+  },
+  {
+    "metric_key": "return_on_total_capital",
+    "raw_value": "5.3%",
+    "value_numeric": 0.053,
+    "unit": "percent",
+    "period_type": "FY",
+    "period_label": "2022",
+    "source": {
+      "module": "__right_column__",
+      "page": 1,
+      "bbox": [
+        316.05216874999996,
+        388.1080875,
+        565.4891241,
+        395.614938
+      ],
+      "label": "ReturnonTotalCap’l",
+      "label_key": "returnontotalcap_l",
+      "method": "table_row_parse"
+    },
+    "normalization_error": null
+  },
+  {
+    "metric_key": "return_on_total_capital",
+    "raw_value": "5.1%",
+    "value_numeric": 0.051,
+    "unit": "percent",
+    "period_type": "FY",
+    "period_label": "2023",
+    "source": {
+      "module": "__right_column__",
+      "page": 1,
+      "bbox": [
+        316.05216874999996,
+        388.1080875,
+        565.4891241,
+        395.614938
+      ],
+      "label": "ReturnonTotalCap’l",
+      "label_key": "returnontotalcap_l",
+      "method": "table_row_parse"
+    },
+    "normalization_error": null
+  },
+  {
+    "metric_key": "return_on_total_capital",
+    "raw_value": "5.7%",
+    "value_numeric": 0.057,
+    "unit": "percent",
+    "period_type": "FY",
+    "period_label": "2024",
+    "source": {
+      "module": "__right_column__",
+      "page": 1,
+      "bbox": [
+        316.05216874999996,
+        388.1080875,
+        565.4891241,
+        395.614938
+      ],
+      "label": "ReturnonTotalCap’l",
+      "label_key": "returnontotalcap_l",
+      "method": "table_row_parse"
+    },
+    "normalization_error": null
+  },
+  {
+    "metric_key": "return_on_total_capital",
+    "raw_value": "5.5%",
+    "value_numeric": 0.055,
+    "unit": "percent",
+    "period_type": "FY",
+    "period_label": "2025",
+    "source": {
+      "module": "__right_column__",
+      "page": 1,
+      "bbox": [
+        316.05216874999996,
+        388.1080875,
+        565.4891241,
+        395.614938
+      ],
+      "label": "ReturnonTotalCap’l",
+      "label_key": "returnontotalcap_l",
+      "method": "table_row_parse"
+    },
+    "normalization_error": null
+  },
+  {
+    "metric_key": "return_on_total_capital",
+    "raw_value": "6.0%",
+    "value_numeric": 0.06,
+    "unit": "percent",
+    "period_type": "FY",
+    "period_label": "2026",
+    "source": {
+      "module": "__right_column__",
+      "page": 1,
+      "bbox": [
+        316.05216874999996,
+        388.1080875,
+        565.4891241,
+        395.614938
+      ],
+      "label": "ReturnonTotalCap’l",
+      "label_key": "returnontotalcap_l",
+      "method": "table_row_parse"
+    },
+    "normalization_error": null
+  },
+  {
+    "metric_key": "sales",
+    "raw_value": "46881",
+    "value_numeric": 46881000000.0,
+    "unit": "usd_millions",
+    "period_type": "FY",
+    "period_label": "2020",
+    "source": {
+      "module": "__right_column__",
+      "page": 1,
+      "bbox": [
+        313.9228073500001,
+        307.2862875,
+        566.5246619999999,
+        314.793138
+      ],
+      "label": "Sales($mill)",
+      "label_key": "sales_mill",
+      "method": "table_row_parse"
+    },
+    "normalization_error": null
+  },
+  {
+    "metric_key": "sales",
+    "raw_value": "54304",
+    "value_numeric": 54304000000.0,
+    "unit": "usd_millions",
+    "period_type": "FY",
+    "period_label": "2021",
+    "source": {
+      "module": "__right_column__",
+      "page": 1,
+      "bbox": [
+        313.9228073500001,
+        307.2862875,
+        566.5246619999999,
+        314.793138
+      ],
+      "label": "Sales($mill)",
+      "label_key": "sales_mill",
+      "method": "table_row_parse"
+    },
+    "normalization_error": null
+  },
+  {
+    "metric_key": "sales",
+    "raw_value": "57786",
+    "value_numeric": 57786000000.0,
+    "unit": "usd_millions",
+    "period_type": "FY",
+    "period_label": "2022",
+    "source": {
+      "module": "__right_column__",
+      "page": 1,
+      "bbox": [
+        313.9228073500001,
+        307.2862875,
+        566.5246619999999,
+        314.793138
+      ],
+      "label": "Sales($mill)",
+      "label_key": "sales_mill",
+      "method": "table_row_parse"
+    },
+    "normalization_error": null
+  },
+  {
+    "metric_key": "sales",
+    "raw_value": "59380",
+    "value_numeric": 59380000000.0,
+    "unit": "usd_millions",
+    "period_type": "FY",
+    "period_label": "2023",
+    "source": {
+      "module": "__right_column__",
+      "page": 1,
+      "bbox": [
+        313.9228073500001,
+        307.2862875,
+        566.5246619999999,
+        314.793138
+      ],
+      "label": "Sales($mill)",
+      "label_key": "sales_mill",
+      "method": "table_row_parse"
+    },
+    "normalization_error": null
+  },
+  {
+    "metric_key": "sales",
+    "raw_value": "59768",
+    "value_numeric": 59768000000.0,
+    "unit": "usd_millions",
+    "period_type": "FY",
+    "period_label": "2024",
+    "source": {
+      "module": "__right_column__",
+      "page": 1,
+      "bbox": [
+        313.9228073500001,
+        307.2862875,
+        566.5246619999999,
+        314.793138
+      ],
+      "label": "Sales($mill)",
+      "label_key": "sales_mill",
+      "method": "table_row_parse"
+    },
+    "normalization_error": null
+  },
+  {
+    "metric_key": "sales",
+    "raw_value": "59500",
+    "value_numeric": 59500000000.0,
+    "unit": "usd_millions",
+    "period_type": "FY",
+    "period_label": "2025",
+    "source": {
+      "module": "__right_column__",
+      "page": 1,
+      "bbox": [
+        313.9228073500001,
+        307.2862875,
+        566.5246619999999,
+        314.793138
+      ],
+      "label": "Sales($mill)",
+      "label_key": "sales_mill",
+      "method": "table_row_parse"
+    },
+    "normalization_error": null
+  },
+  {
+    "metric_key": "sales",
+    "raw_value": "62000",
+    "value_numeric": 62000000000.0,
+    "unit": "usd_millions",
+    "period_type": "FY",
+    "period_label": "2026",
+    "source": {
+      "module": "__right_column__",
+      "page": 1,
+      "bbox": [
+        313.9228073500001,
+        307.2862875,
+        566.5246619999999,
+        314.793138
+      ],
+      "label": "Sales($mill)",
+      "label_key": "sales_mill",
+      "method": "table_row_parse"
+    },
+    "normalization_error": null
+  },
+  {
+    "metric_key": "sales_per_adr",
+    "raw_value": "23.77",
+    "value_numeric": 23.77,
+    "unit": "usd_per_share",
+    "period_type": "FY",
+    "period_label": "2020",
+    "source": {
+      "module": "__right_column__",
+      "page": 1,
+      "bbox": [
+        315.44516340000007,
+        215.28858749999995,
+        566.5123258000001,
+        222.794538
+      ],
+      "label": "SalesperADR",
+      "label_key": "salesperadr",
+      "method": "table_row_parse"
+    },
+    "normalization_error": null
+  },
+  {
+    "metric_key": "sales_per_adr",
+    "raw_value": "27.49",
+    "value_numeric": 27.49,
+    "unit": "usd_per_share",
+    "period_type": "FY",
+    "period_label": "2021",
+    "source": {
+      "module": "__right_column__",
+      "page": 1,
+      "bbox": [
+        315.44516340000007,
+        215.28858749999995,
+        566.5123258000001,
+        222.794538
+      ],
+      "label": "SalesperADR",
+      "label_key": "salesperadr",
+      "method": "table_row_parse"
+    },
+    "normalization_error": null
+  },
+  {
+    "metric_key": "sales_per_adr",
+    "raw_value": "33.26",
+    "value_numeric": 33.26,
+    "unit": "usd_per_share",
+    "period_type": "FY",
+    "period_label": "2022",
+    "source": {
+      "module": "__right_column__",
+      "page": 1,
+      "bbox": [
+        315.44516340000007,
+        215.28858749999995,
+        566.5123258000001,
+        222.794538
+      ],
+      "label": "SalesperADR",
+      "label_key": "salesperadr",
+      "method": "table_row_parse"
+    },
+    "normalization_error": null
+  },
+  {
+    "metric_key": "sales_per_adr",
+    "raw_value": "34.18",
+    "value_numeric": 34.18,
+    "unit": "usd_per_share",
+    "period_type": "FY",
+    "period_label": "2023",
+    "source": {
+      "module": "__right_column__",
+      "page": 1,
+      "bbox": [
+        315.44516340000007,
+        215.28858749999995,
+        566.5123258000001,
+        222.794538
+      ],
+      "label": "SalesperADR",
+      "label_key": "salesperadr",
+      "method": "table_row_parse"
+    },
+    "normalization_error": null
+  },
+  {
+    "metric_key": "sales_per_adr",
+    "raw_value": "33.26",
+    "value_numeric": 33.26,
+    "unit": "usd_per_share",
+    "period_type": "FY",
+    "period_label": "2024",
+    "source": {
+      "module": "__right_column__",
+      "page": 1,
+      "bbox": [
+        315.44516340000007,
+        215.28858749999995,
+        566.5123258000001,
+        222.794538
+      ],
+      "label": "SalesperADR",
+      "label_key": "salesperadr",
+      "method": "table_row_parse"
+    },
+    "normalization_error": null
+  },
+  {
+    "metric_key": "sales_per_adr",
+    "raw_value": "33.25",
+    "value_numeric": 33.25,
+    "unit": "usd_per_share",
+    "period_type": "FY",
+    "period_label": "2025",
+    "source": {
+      "module": "__right_column__",
+      "page": 1,
+      "bbox": [
+        315.44516340000007,
+        215.28858749999995,
+        566.5123258000001,
+        222.794538
+      ],
+      "label": "SalesperADR",
+      "label_key": "salesperadr",
+      "method": "table_row_parse"
+    },
+    "normalization_error": null
+  },
+  {
+    "metric_key": "sales_per_adr",
+    "raw_value": "34.75",
+    "value_numeric": 34.75,
+    "unit": "usd_per_share",
+    "period_type": "FY",
+    "period_label": "2026",
+    "source": {
+      "module": "__right_column__",
+      "page": 1,
+      "bbox": [
+        315.44516340000007,
+        215.28858749999995,
+        566.5123258000001,
+        222.794538
+      ],
+      "label": "SalesperADR",
+      "label_key": "salesperadr",
+      "method": "table_row_parse"
+    },
+    "normalization_error": null
+  },
+  {
+    "metric_key": "shareholders_equity",
+    "raw_value": "68024",
+    "value_numeric": 68024000000.0,
+    "unit": "usd_millions",
+    "period_type": "FY",
+    "period_label": "2020",
+    "source": {
+      "module": "__right_column__",
+      "page": 1,
+      "bbox": [
+        313.9228073500001,
+        379.1278875,
+        566.2354344,
+        386.63473799999997
+      ],
+      "label": "Shr.Equity($mill)",
+      "label_key": "shr_equity_mill",
+      "method": "table_row_parse"
+    },
+    "normalization_error": null
+  },
+  {
+    "metric_key": "shareholders_equity",
+    "raw_value": "68669",
+    "value_numeric": 68669000000.0,
+    "unit": "usd_millions",
+    "period_type": "FY",
+    "period_label": "2021",
+    "source": {
+      "module": "__right_column__",
+      "page": 1,
+      "bbox": [
+        313.9228073500001,
+        379.1278875,
+        566.2354344,
+        386.63473799999997
+      ],
+      "label": "Shr.Equity($mill)",
+      "label_key": "shr_equity_mill",
+      "method": "table_row_parse"
+    },
+    "normalization_error": null
+  },
+  {
+    "metric_key": "shareholders_equity",
+    "raw_value": "73398",
+    "value_numeric": 73398000000.0,
+    "unit": "usd_millions",
+    "period_type": "FY",
+    "period_label": "2022",
+    "source": {
+      "module": "__right_column__",
+      "page": 1,
+      "bbox": [
+        313.9228073500001,
+        379.1278875,
+        566.2354344,
+        386.63473799999997
+      ],
+      "label": "Shr.Equity($mill)",
+      "label_key": "shr_equity_mill",
+      "method": "table_row_parse"
+    },
+    "normalization_error": null
+  },
+  {
+    "metric_key": "shareholders_equity",
+    "raw_value": "81848",
+    "value_numeric": 81848000000.0,
+    "unit": "usd_millions",
+    "period_type": "FY",
+    "period_label": "2023",
+    "source": {
+      "module": "__right_column__",
+      "page": 1,
+      "bbox": [
+        313.9228073500001,
+        379.1278875,
+        566.2354344,
+        386.63473799999997
+      ],
+      "label": "Shr.Equity($mill)",
+      "label_key": "shr_equity_mill",
+      "method": "table_row_parse"
+    },
+    "normalization_error": null
+  },
+  {
+    "metric_key": "shareholders_equity",
+    "raw_value": "78237",
+    "value_numeric": 78237000000.0,
+    "unit": "usd_millions",
+    "period_type": "FY",
+    "period_label": "2024",
+    "source": {
+      "module": "__right_column__",
+      "page": 1,
+      "bbox": [
+        313.9228073500001,
+        379.1278875,
+        566.2354344,
+        386.63473799999997
+      ],
+      "label": "Shr.Equity($mill)",
+      "label_key": "shr_equity_mill",
+      "method": "table_row_parse"
+    },
+    "normalization_error": null
+  },
+  {
+    "metric_key": "shareholders_equity",
+    "raw_value": "83000",
+    "value_numeric": 83000000000.0,
+    "unit": "usd_millions",
+    "period_type": "FY",
+    "period_label": "2025",
+    "source": {
+      "module": "__right_column__",
+      "page": 1,
+      "bbox": [
+        313.9228073500001,
+        379.1278875,
+        566.2354344,
+        386.63473799999997
+      ],
+      "label": "Shr.Equity($mill)",
+      "label_key": "shr_equity_mill",
+      "method": "table_row_parse"
+    },
+    "normalization_error": null
+  },
+  {
+    "metric_key": "shareholders_equity",
+    "raw_value": "89000",
+    "value_numeric": 89000000000.0,
+    "unit": "usd_millions",
+    "period_type": "FY",
+    "period_label": "2026",
+    "source": {
+      "module": "__right_column__",
+      "page": 1,
+      "bbox": [
+        313.9228073500001,
+        379.1278875,
+        566.2354344,
+        386.63473799999997
+      ],
+      "label": "Shr.Equity($mill)",
+      "label_key": "shr_equity_mill",
+      "method": "table_row_parse"
+    },
+    "normalization_error": null
+  },
+  {
+    "metric_key": "total_debt",
+    "raw_value": "$75.6bill.",
+    "value_numeric": 75600000000.0,
+    "unit": "usd",
+    "period_type": "AS_OF",
+    "period_label": "6/30/25",
+    "source": {
+      "module": "capital_structure",
+      "page": 1,
+      "bbox": [
+        47.571,
+        295.7122875,
+        304.67842118000004,
+        303.9724888
+      ],
+      "label": "TotalDebt",
+      "label_key": "totaldebt",
+      "method": "multi_kv_regex"
+    },
+    "normalization_error": null
+  },
+  {
+    "metric_key": "working_capital",
+    "raw_value": "d5833",
+    "value_numeric": -5833000000.0,
+    "unit": "usd_millions",
+    "period_type": "FY",
+    "period_label": "2020",
+    "source": {
+      "module": "__right_column__",
+      "page": 1,
+      "bbox": [
+        313.9277212800001,
+        361.1674875,
+        566.3177965,
+        368.674338
+      ],
+      "label": "WorkingCap’l($mill)",
+      "label_key": "workingcap_l_mill",
+      "method": "table_row_parse"
+    },
+    "normalization_error": null
+  },
+  {
+    "metric_key": "working_capital",
+    "raw_value": "d10235",
+    "value_numeric": -10235000000.0,
+    "unit": "usd_millions",
+    "period_type": "FY",
+    "period_label": "2021",
+    "source": {
+      "module": "__right_column__",
+      "page": 1,
+      "bbox": [
+        313.9277212800001,
+        361.1674875,
+        566.3177965,
+        368.674338
+      ],
+      "label": "WorkingCap’l($mill)",
+      "label_key": "workingcap_l_mill",
+      "method": "table_row_parse"
+    },
+    "normalization_error": null
+  },
+  {
+    "metric_key": "working_capital",
+    "raw_value": "d11197",
+    "value_numeric": -11197000000.0,
+    "unit": "usd_millions",
+    "period_type": "FY",
+    "period_label": "2022",
+    "source": {
+      "module": "__right_column__",
+      "page": 1,
+      "bbox": [
+        313.9277212800001,
+        361.1674875,
+        566.3177965,
+        368.674338
+      ],
+      "label": "WorkingCap’l($mill)",
+      "label_key": "workingcap_l_mill",
+      "method": "table_row_parse"
+    },
+    "normalization_error": null
+  },
+  {
+    "metric_key": "working_capital",
+    "raw_value": "d13789",
+    "value_numeric": -13789000000.0,
+    "unit": "usd_millions",
+    "period_type": "FY",
+    "period_label": "2023",
+    "source": {
+      "module": "__right_column__",
+      "page": 1,
+      "bbox": [
+        313.9277212800001,
+        361.1674875,
+        566.3177965,
+        368.674338
+      ],
+      "label": "WorkingCap’l($mill)",
+      "label_key": "workingcap_l_mill",
+      "method": "table_row_parse"
+    },
+    "normalization_error": null
+  },
+  {
+    "metric_key": "working_capital",
+    "raw_value": "d10067",
+    "value_numeric": -10067000000.0,
+    "unit": "usd_millions",
+    "period_type": "FY",
+    "period_label": "2024",
+    "source": {
+      "module": "__right_column__",
+      "page": 1,
+      "bbox": [
+        313.9277212800001,
+        361.1674875,
+        566.3177965,
+        368.674338
+      ],
+      "label": "WorkingCap’l($mill)",
+      "label_key": "workingcap_l_mill",
+      "method": "table_row_parse"
+    },
+    "normalization_error": null
+  },
+  {
+    "metric_key": "working_capital",
+    "raw_value": "d11500",
+    "value_numeric": -11500000000.0,
+    "unit": "usd_millions",
+    "period_type": "FY",
+    "period_label": "2025",
+    "source": {
+      "module": "__right_column__",
+      "page": 1,
+      "bbox": [
+        313.9277212800001,
+        361.1674875,
+        566.3177965,
+        368.674338
+      ],
+      "label": "WorkingCap’l($mill)",
+      "label_key": "workingcap_l_mill",
+      "method": "table_row_parse"
+    },
+    "normalization_error": null
+  },
+  {
+    "metric_key": "working_capital",
+    "raw_value": "d10000",
+    "value_numeric": -10000000000.0,
+    "unit": "usd_millions",
+    "period_type": "FY",
+    "period_label": "2026",
+    "source": {
+      "module": "__right_column__",
+      "page": 1,
+      "bbox": [
+        313.9277212800001,
+        361.1674875,
+        566.3177965,
+        368.674338
+      ],
+      "label": "WorkingCap’l($mill)",
+      "label_key": "workingcap_l_mill",
+      "method": "table_row_parse"
+    },
+    "normalization_error": null
+  }
+]

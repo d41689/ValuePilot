@@ -183,11 +183,159 @@ def split_by_x_gaps(words: Sequence[Word], gap: float) -> List[List[Word]]:
     return cells
 
 
+
 def cells_to_text(cells: Sequence[Sequence[Word]]) -> List[str]:
     out: List[str] = []
     for cell in cells:
         out.append(clean_text(" ".join(w.text for w in cell)))
     return out
+
+# -----------------------------
+# Table post-processing helpers
+# -----------------------------
+
+_RE_NUM_TOKEN = re.compile(r"^\(?d?[\$\-]?\d+(?:,\d{3})*(?:\.\d+)?%?\)?$", re.IGNORECASE)
+_RE_YEAR_RANGE = re.compile(r"^\d{2}-\d{2}$")
+
+
+def _is_numeric_token(tok: str) -> bool:
+    t = (tok or "").strip()
+    if not t:
+        return False
+    t = t.lstrip("d")
+    if t.upper() in {"NMF", "--"}:
+        return True
+    return bool(_RE_NUM_TOKEN.match(t))
+
+
+def _token_has_alpha(tok: str) -> bool:
+    return any(ch.isalpha() for ch in (tok or ""))
+
+
+def _is_label_token(tok: str) -> bool:
+    t = (tok or "").strip()
+    if not t:
+        return False
+    if t.upper() in {"NMF", "--"}:
+        return False
+    if _is_numeric_token(t) or _RE_YEAR.match(t) or _RE_YEAR_RANGE.match(t):
+        return False
+    return _token_has_alpha(t)
+
+
+def _expand_numeric_only_cells(cells: List[str]) -> List[str]:
+    """Split a cell like '1.4% 1.4% 2.1%' into separate numeric cells.
+
+    We only expand when the cell is made entirely of numeric-like tokens (including NMF/--)
+    so we don't accidentally split prose.
+    """
+
+    out: List[str] = []
+    for c in cells:
+        c_clean = clean_text(c)
+        if not c_clean:
+            continue
+        toks = c_clean.split()
+        if len(toks) >= 2 and all(_is_numeric_token(t) for t in toks):
+            out.extend(toks)
+        else:
+            out.append(c_clean)
+    return out
+
+
+def _split_mixed_numeric_label_cells(cells: List[str]) -> List[str]:
+    """Split cells that contain many numeric tokens plus a trailing label.
+
+    Example:
+      "9.0% 9.8% 9.5% 11.5% NetProfitMargin"
+        -> ["9.0%", "9.8%", "9.5%", "11.5%", "NetProfitMargin"]
+    """
+
+    out: List[str] = []
+    for c in cells:
+        c_clean = clean_text(c)
+        if not c_clean:
+            continue
+        toks = c_clean.split()
+        if len(toks) < 3:
+            out.append(c_clean)
+            continue
+
+        num_flags = []
+        for t in toks:
+            if _is_numeric_token(t) or _RE_YEAR.match(t) or _RE_YEAR_RANGE.match(t):
+                num_flags.append(True)
+            else:
+                num_flags.append(False)
+
+        if sum(num_flags) < 3 or not any(_is_label_token(t) for t in toks):
+            out.append(c_clean)
+            continue
+
+        label_start = None
+        numeric_seen = 0
+        for i, t in enumerate(toks):
+            if num_flags[i]:
+                numeric_seen += 1
+                continue
+            if _is_label_token(t) and numeric_seen >= 3:
+                label_start = i
+                break
+
+        if label_start is None:
+            out.append(c_clean)
+            continue
+
+        tail_start = len(toks)
+        i = len(toks) - 1
+        while i > label_start and num_flags[i]:
+            tail_start = i
+            i -= 1
+
+        leading = toks[:label_start]
+        label_tokens = toks[label_start:tail_start]
+        trailing = toks[tail_start:]
+
+        if not any(_is_label_token(t) for t in label_tokens):
+            out.append(c_clean)
+            continue
+
+        out.extend([clean_text(t) for t in leading if t])
+        out.append(clean_text(" ".join(label_tokens)))
+        out.extend([clean_text(t) for t in trailing if t])
+
+    return out
+
+
+def _normalize_institutional_decisions_row(cells: List[str]) -> List[str]:
+    """Fix common Value Line Institutional Decisions row concatenation.
+
+    Example bad parse:
+      ['toBuy','257','250','192 shares','4']
+    Desired:
+      ['toBuy','257','250','192','shares','4']
+
+    We also handle '259 traded' similarly.
+    """
+
+    if not cells:
+        return cells
+
+    head = cells[0].strip()
+    if head not in {"toBuy", "toSell"}:
+        return cells
+
+    fixed: List[str] = []
+    for c in cells:
+        c0 = clean_text(c)
+        m = re.match(r"^(\(?d?[\$\-]?\d{1,3}(?:,\d{3})*(?:\.\d+)?%?\)?)\s+(shares|traded)$", c0, flags=re.IGNORECASE)
+        if m:
+            fixed.append(clean_text(m.group(1)))
+            fixed.append(clean_text(m.group(2)))
+        else:
+            fixed.append(c0)
+
+    return fixed
 
 
 # -----------------------------
@@ -627,6 +775,8 @@ def classify_block(block: Block) -> str:
     # Table-ish: at least 3 columns in many rows, and lots of numeric-like cells.
     if max_cols >= 4 and numeric_ratio >= 0.45:
         return "table"
+    if max_cols >= 3 and numeric_ratio >= 0.60 and len(row_cells) >= 3:
+        return "table"
 
     # KV-ish: many lines of the form "Label ... Value" with one numeric cell.
     kv_hits = 0
@@ -787,6 +937,16 @@ def parse_table_candidates(block: Block) -> Dict[str, Any]:
         texts = [c for c in cells_to_text(cells) if c]
         if not texts:
             continue
+
+        # Post-process: expand numeric-only cells (fixes '1.4% 1.4% 2.1%' sticking together)
+        texts = _expand_numeric_only_cells(texts)
+
+        # Post-process: split cells with numeric runs plus trailing labels
+        texts = _split_mixed_numeric_label_cells(texts)
+
+        # Post-process: fix common Institutional Decisions concatenation ('192 shares', '259 traded')
+        texts = _normalize_institutional_decisions_row(texts)
+
         rows.append({"cells": texts, "bbox": ln.bbox.to_list()})
 
     # Header inference: first row with low numeric ratio
@@ -1087,6 +1247,49 @@ def _table_year_set(table: Dict[str, Any]) -> set:
     return years
 
 
+def _is_label_cell(text: str) -> bool:
+    t = clean_text(text)
+    if not t:
+        return False
+    up = t.upper()
+    if up in {"NMF", "--"}:
+        return False
+    if _is_numeric_token(t) or _RE_YEAR.match(t) or _RE_YEAR_RANGE.match(t):
+        return False
+    return _token_has_alpha(t)
+
+
+def _split_row_cells_for_label(cells: List[str]) -> Tuple[List[str], Optional[str], List[str]]:
+    if not cells:
+        return [], None, []
+
+    label_end = None
+    for i in range(len(cells) - 1, -1, -1):
+        if _is_label_cell(cells[i]):
+            label_end = i
+            break
+
+    if label_end is None:
+        return list(cells), None, []
+
+    label_start = label_end
+    while label_start - 1 >= 0 and _is_label_cell(cells[label_start - 1]):
+        label_start -= 1
+
+    pre = list(cells[:label_start])
+    label = clean_text(" ".join(cells[label_start : label_end + 1]))
+    post = list(cells[label_end + 1 :])
+    return pre, label, post
+
+
+def _row_label_key(row: Dict[str, Any], idx: int) -> str:
+    cells = row.get("cells") or []
+    _, label, _ = _split_row_cells_for_label(cells)
+    if label:
+        return normalize_label_key(label)
+    return f"__idx_{idx}"
+
+
 def merge_cross_column_year_tables(modules: List[Dict[str, Any]], x_split: float) -> None:
     """Merge left/right tables that are actually one logical year grid split by columns.
 
@@ -1127,54 +1330,95 @@ def merge_cross_column_year_tables(modules: List[Dict[str, Any]], x_split: float
         return inter / union if union > 0 else 0.0
 
     merged: List[Dict[str, Any]] = []
+    used_right: set = set()
+
+    def label_overlap_count(lt: Dict[str, Any], rt: Dict[str, Any]) -> int:
+        lrows = lt.get("rows") or []
+        rrows = rt.get("rows") or []
+        lkeys = { _row_label_key(r, i) for i, r in enumerate(lrows) }
+        rkeys = { _row_label_key(r, i) for i, r in enumerate(rrows) }
+        lkeys = {k for k in lkeys if not k.startswith("__idx_")}
+        rkeys = {k for k in rkeys if not k.startswith("__idx_")}
+        return len(lkeys.intersection(rkeys))
 
     for lt in left_tables:
         lbb = lt.get("bbox")
         if not (isinstance(lbb, list) and len(lbb) == 4):
             continue
         ly = _table_year_set(lt)
-        if len(ly) < 4:
-            continue
+        if len(ly) < 2:
+            ly = set()
 
         best_rt = None
         best_ov = 0.0
-        for rt in right_tables:
+        best_score = 0.0
+        for r_idx, rt in enumerate(right_tables):
+            if r_idx in used_right:
+                continue
             rbb = rt.get("bbox")
             if not (isinstance(rbb, list) and len(rbb) == 4):
                 continue
             ov = y_overlap(lbb, rbb)
-            if ov < 0.55:
+            if ov < 0.45:
                 continue
             ry = _table_year_set(rt)
-            if len(ry) < 4:
+            if len(ry) < 2:
+                ry = set()
+
+            label_hits = label_overlap_count(lt, rt)
+            years_disjoint = bool(ly and ry and (len(ly.intersection(ry)) <= 1))
+            if label_hits < 2 and not years_disjoint:
                 continue
-            # Prefer disjoint/mostly disjoint year spans
-            if len(ly.intersection(ry)) > 2:
-                continue
-            if ov > best_ov:
+
+            score = (label_hits * 2.0) + (1.0 if years_disjoint else 0.0) + ov
+            if score > best_score:
+                best_score = score
                 best_ov = ov
-                best_rt = rt
+                best_rt = (r_idx, rt)
 
         if not best_rt:
             continue
 
-        rt = best_rt
+        r_idx, rt = best_rt
         rbb = rt.get("bbox")
-        # Merge row-wise by concatenating cell lists.
+
+        def merge_row_cells(lrow: Dict[str, Any], rrow: Dict[str, Any]) -> Dict[str, Any]:
+            lcells = lrow.get("cells") or []
+            rcells = rrow.get("cells") or []
+            lpre, llabel, lpost = _split_row_cells_for_label(lcells)
+            rpre, rlabel, rpost = _split_row_cells_for_label(rcells)
+            label = llabel or rlabel
+            merged_cells = list(lpre) + list(rpre)
+            if label:
+                merged_cells.append(label)
+            if lpost:
+                merged_cells.extend(lpost)
+            elif rpost:
+                merged_cells.extend(rpost)
+            return {"cells": merged_cells, "bbox": lrow.get("bbox") or rrow.get("bbox")}
+
         lrows = lt.get("rows") or []
         rrows = rt.get("rows") or []
-        n = min(len(lrows), len(rrows))
-        rows: List[Dict[str, Any]] = []
-        for i in range(n):
-            lc = (lrows[i].get("cells") or [])
-            rc = (rrows[i].get("cells") or [])
-            rows.append({"cells": lc + rc, "bbox": lrows[i].get("bbox") or rrows[i].get("bbox")})
+        r_map: Dict[str, Dict[str, Any]] = {}
+        for i, row in enumerate(rrows):
+            key = _row_label_key(row, i)
+            if key not in r_map:
+                r_map[key] = row
 
-        # If one side has extra rows, append them as-is.
-        for extra in lrows[n:]:
-            rows.append(extra)
-        for extra in rrows[n:]:
-            rows.append(extra)
+        rows: List[Dict[str, Any]] = []
+        used_keys: set = set()
+        for i, lrow in enumerate(lrows):
+            key = _row_label_key(lrow, i)
+            if key in r_map:
+                rows.append(merge_row_cells(lrow, r_map[key]))
+                used_keys.add(key)
+            else:
+                rows.append(lrow)
+
+        for key, rrow in r_map.items():
+            if key in used_keys:
+                continue
+            rows.append(rrow)
 
         merged_bbox = [
             float(min(lbb[0], rbb[0])),
@@ -1192,6 +1436,7 @@ def merge_cross_column_year_tables(modules: List[Dict[str, Any]], x_split: float
                 "merged_from": {"left_bbox": lbb, "right_bbox": rbb},
             }
         )
+        used_right.add(r_idx)
 
     if merged:
         right_mod.setdefault("table_candidates", [])
@@ -1313,4 +1558,3 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-
