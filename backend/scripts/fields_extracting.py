@@ -1771,6 +1771,8 @@ def discover_pdf_structure(pdf_path: str) -> Dict[str, Any]:
             for m in modules:
                 fields: List[Dict[str, Any]] = []
                 tables: List[Dict[str, Any]] = []
+                is_financials = m.get("name") == "__financials_table__"
+                is_institutional = "INSTITUTIONALDECISIONS" in _compact_upper(m.get("name") or "")
                 for b in m.get("blocks", []):
                     if b.get("type") == "kv":
                         fields.extend(b.get("kv_candidates", []))
@@ -1779,17 +1781,28 @@ def discover_pdf_structure(pdf_path: str) -> Dict[str, Any]:
                         fields.extend(b.get("kv_candidates", []))
                     if b.get("type") == "table":
                         t = b.get("table")
-                        if t:
-                            tables.extend(split_table_on_year_row(t))
+                        if not t:
+                            continue
+                        block_table = t
+                        split_tables = split_table_on_year_row(t)
 
-                if m.get("name") == "__financials_table__":
-                    tables = [_clean_financials_table(t) for t in tables if t]
+                        if is_financials:
+                            split_tables = [_clean_financials_table(st) for st in split_tables if st]
+                            block_table = _clean_financials_table(t)
 
-                if "INSTITUTIONALDECISIONS" in _compact_upper(m.get("name") or ""):
-                    split_tables: List[Dict[str, Any]] = []
-                    for t in tables:
-                        split_tables.extend(_split_institutional_decisions_table(t))
-                    tables = split_tables
+                        if is_institutional:
+                            inst_tables: List[Dict[str, Any]] = []
+                            for st in split_tables:
+                                inst_tables.extend(_split_institutional_decisions_table(st))
+                            split_tables = inst_tables
+                            if inst_tables:
+                                block_table = next(
+                                    (st for st in inst_tables if not st.get("year_grid_only")),
+                                    inst_tables[0],
+                                )
+
+                        b["table"] = block_table
+                        tables.extend(split_tables)
 
                 m["field_candidates"] = fields
                 m["table_candidates"] = tables

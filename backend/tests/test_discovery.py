@@ -19,6 +19,12 @@ def _iter_table_rows(module):
             yield row
 
 
+def _iter_block_tables(module):
+    for block in module.get("blocks", []):
+        if block.get("type") == "table" and block.get("table"):
+            yield block.get("table")
+
+
 def _is_numericish_cell(cell: str) -> bool:
     text = fields_extracting.clean_text(cell)
     if not text:
@@ -189,6 +195,22 @@ def test_bud_financials_table_no_narrative_tail_cells():
             assert _is_numericish_cell(cell)
 
 
+def test_bud_financials_block_table_no_narrative_tail_cells():
+    data = fields_extracting.discover_pdf_structure("tests/fixtures/value_line/bud.pdf")
+    financials = _get_module(data, "__financials_table__")
+    assert financials is not None
+
+    for table in _iter_block_tables(financials):
+        for row in table.get("rows", []):
+            cells = row.get("cells") or []
+            if not cells:
+                continue
+            if len(cells) == 1 and "MILL" in cells[0]:
+                continue
+            for cell in cells[1:]:
+                assert _is_numericish_cell(cell)
+
+
 def test_bud_retained_to_common_equity_cell_split():
     data = fields_extracting.discover_pdf_structure("tests/fixtures/value_line/bud.pdf")
     right = _get_module(data, "__right_column__")
@@ -273,6 +295,20 @@ def test_bud_institutional_decisions_table_has_no_year_grid_rows():
             tokens.extend(fields_extracting.clean_text(cell).split())
         year_count = sum(1 for t in tokens if fields_extracting._RE_YEAR.match(t))
         assert year_count < 4
+
+
+def test_bud_institutional_decisions_block_table_has_no_year_grid_rows():
+    data = fields_extracting.discover_pdf_structure("tests/fixtures/value_line/bud.pdf")
+    inst = _get_module(data, "InstitutionalDecisions")
+    assert inst is not None
+
+    for table in _iter_block_tables(inst):
+        for row in table.get("rows", []):
+            tokens = []
+            for cell in row.get("cells") or []:
+                tokens.extend(fields_extracting.clean_text(cell).split())
+            year_count = sum(1 for t in tokens if fields_extracting._RE_YEAR.match(t))
+            assert year_count < 4
 
 
 def test_bud_merged_year_grid_salesperadr_includes_left_values():
