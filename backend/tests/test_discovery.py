@@ -19,6 +19,22 @@ def _iter_table_rows(module):
             yield row
 
 
+def _is_numericish_cell(cell: str) -> bool:
+    text = fields_extracting.clean_text(cell)
+    if not text:
+        return False
+    tokens = text.split()
+    for token in tokens:
+        if fields_extracting._is_numeric_token(token):
+            continue
+        if fields_extracting._RE_YEAR.match(token):
+            continue
+        if fields_extracting._RE_QTR_DATE.match(token):
+            continue
+        return False
+    return True
+
+
 @pytest.mark.parametrize(
     "cell,expected",
     [
@@ -156,6 +172,23 @@ def test_bud_financials_table_contains_current_assets():
     assert in_fields or in_tables
 
 
+def test_bud_financials_table_no_narrative_tail_cells():
+    data = fields_extracting.discover_pdf_structure("tests/fixtures/value_line/bud.pdf")
+    financials = _get_module(data, "__financials_table__")
+    assert financials is not None
+
+    for row in _iter_table_rows(financials):
+        cells = row.get("cells") or []
+        if not cells:
+            continue
+        # Skip the anchor/header row.
+        if len(cells) == 1 and "MILL" in cells[0]:
+            continue
+        # First cell is label, rest should be numeric-ish.
+        for cell in cells[1:]:
+            assert _is_numericish_cell(cell)
+
+
 def test_bud_retained_to_common_equity_cell_split():
     data = fields_extracting.discover_pdf_structure("tests/fixtures/value_line/bud.pdf")
     right = _get_module(data, "__right_column__")
@@ -227,3 +260,16 @@ def test_bud_institutional_decisions_year_grid_merged():
 
     assert "2015" in year_cells
     assert "2026" in year_cells
+
+
+def test_bud_institutional_decisions_table_has_no_year_grid_rows():
+    data = fields_extracting.discover_pdf_structure("tests/fixtures/value_line/bud.pdf")
+    inst = _get_module(data, "InstitutionalDecisions")
+    assert inst is not None
+
+    for row in _iter_table_rows(inst):
+        tokens = []
+        for cell in row.get("cells") or []:
+            tokens.extend(fields_extracting.clean_text(cell).split())
+        year_count = sum(1 for t in tokens if fields_extracting._RE_YEAR.match(t))
+        assert year_count < 4

@@ -322,6 +322,61 @@ def _split_mixed_numeric_label_cells(cells: List[str]) -> List[str]:
     return out
 
 
+def _is_numericish_text(text: str) -> bool:
+    t = clean_text(text)
+    if not t:
+        return False
+    tokens = t.split()
+    for tok in tokens:
+        if _is_numeric_token(tok):
+            continue
+        if _RE_YEAR.match(tok) or _RE_QTR_DATE.match(tok):
+            continue
+        return False
+    return True
+
+
+def _trim_numeric_prefix(text: str) -> Optional[str]:
+    t = clean_text(text)
+    if not t:
+        return None
+    tokens = t.split()
+    if not tokens:
+        return None
+    if _is_numeric_token(tokens[0]):
+        return tokens[0]
+    return None
+
+
+def _clean_financials_table(table: Dict[str, Any]) -> Dict[str, Any]:
+    """Drop narrative tail cells in left-column financials rows."""
+
+    rows: List[Dict[str, Any]] = []
+    for row in table.get("rows", []):
+        cells = row.get("cells") or []
+        if not cells:
+            continue
+        if len(cells) == 1 and _is_financials_unit_anchor(cells[0]):
+            rows.append(row)
+            continue
+
+        cleaned: List[str] = [cells[0]]
+        for cell in cells[1:]:
+            if _is_numericish_text(cell):
+                cleaned.append(clean_text(cell))
+                continue
+            prefix = _trim_numeric_prefix(cell)
+            if prefix:
+                cleaned.append(prefix)
+            break
+
+        rows.append({"cells": cleaned, "bbox": row.get("bbox")})
+
+    updated = dict(table)
+    updated["rows"] = rows
+    return updated
+
+
 def _normalize_institutional_decisions_row(cells: List[str]) -> List[str]:
     """Fix common Value Line Institutional Decisions row concatenation.
 
@@ -1015,6 +1070,63 @@ def parse_table_candidates(block: Block) -> Dict[str, Any]:
     }
 
 
+# --- Table splitting helper: build table from rows ---
+def _build_table_from_rows(rows: List[Dict[str, Any]], fallback_bbox: Optional[List[float]] = None) -> Dict[str, Any]:
+    if not rows:
+        return {}
+
+    bxs: List[BBox] = []
+    for rr in rows:
+        bb = rr.get("bbox")
+        if isinstance(bb, list) and len(bb) == 4:
+            bxs.append(BBox(float(bb[0]), float(bb[1]), float(bb[2]), float(bb[3])))
+    bbox = BBox.union(bxs).to_list() if bxs else fallback_bbox
+
+    header = None
+    header_idx = None
+    for j, rr in enumerate(rows[: min(len(rows), 4)]):
+        cells = rr.get("cells") or []
+        if not cells:
+            continue
+        num_ratio = sum(1 for c in cells if looks_numeric(c) or _RE_YEAR.match(c)) / max(1, len(cells))
+        if num_ratio <= 0.25:
+            header = cells
+            header_idx = j
+            break
+
+    return {
+        "bbox": bbox,
+        "header": header,
+        "header_row_index": header_idx,
+        "rows": rows,
+    }
+
+
+def _split_institutional_decisions_table(table: Dict[str, Any]) -> List[Dict[str, Any]]:
+    rows = table.get("rows") or []
+    idx, _years = _find_year_header_row_index(table, min_years=4)
+    if idx is None or idx <= 1:
+        return [table]
+
+    pre_rows = rows[:idx]
+    year_slice = {"rows": rows[idx:]}
+    year_rows, year_set = _extract_year_grid_rows(year_slice, min_years=4)
+    if not year_set:
+        return [table]
+
+    pre_table = _build_table_from_rows(pre_rows, table.get("bbox"))
+    year_table = _build_table_from_rows(year_rows, table.get("bbox"))
+    if year_table:
+        year_table["year_grid_only"] = True
+
+    out = []
+    if pre_table:
+        out.append(pre_table)
+    if year_table:
+        out.append(year_table)
+    return out or [table]
+
+
 # --- Table splitting helper: split STOCK INDEX table from year grid ---
 def split_table_on_year_row(table: Dict[str, Any]) -> List[Dict[str, Any]]:
     """Split a parsed table into sub-tables when a dense year header row is detected.
@@ -1625,12 +1737,26 @@ def discover_pdf_structure(pdf_path: str) -> Dict[str, Any]:
                         if t:
                             tables.extend(split_table_on_year_row(t))
 
+                if m.get("name") == "__financials_table__":
+                    tables = [_clean_financials_table(t) for t in tables if t]
+
+                if "INSTITUTIONALDECISIONS" in _compact_upper(m.get("name") or ""):
+                    split_tables: List[Dict[str, Any]] = []
+                    for t in tables:
+                        split_tables.extend(_split_institutional_decisions_table(t))
+                    tables = split_tables
+
                 m["field_candidates"] = fields
                 m["table_candidates"] = tables
 
             # Best-effort: merge year-grid tables that are split across left/right columns.
             if x_split is not None:
                 merge_cross_column_year_tables(modules, float(x_split))
+                for mod in modules:
+                    if mod.get("name") == "__right_column__":
+                        continue
+                    mod_tables = mod.get("table_candidates") or []
+                    mod["table_candidates"] = [t for t in mod_tables if not t.get("year_grid_only")]
 
             result["pages"].append(
                 {
