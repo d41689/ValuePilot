@@ -44,7 +44,11 @@
 - Added year-grid numeric row filtering, label-prefix numeric splitting, and index-based alignment so left 2015–2019 values merge into labeled right rows.
 - Updated block-level tables for financials and InstitutionalDecisions to reflect cleaned/split rows.
 - Regenerated `backend/discovery.json` for bud.pdf via container run.
+- Marked merged right-column tables to avoid duplicate extraction and updated extraction to skip them.
+- Refreshed bud extraction fixture to include merged year-grid values.
 
 # Verification
 - `docker compose exec api pytest -q tests/test_discovery.py`
   - Result: 17 passed
+- `docker compose exec api pytest -q tests/test_regression.py`
+  - Result: 1 passed

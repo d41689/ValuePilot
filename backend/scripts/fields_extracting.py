@@ -1720,6 +1720,7 @@ def merge_cross_column_year_tables(modules: List[Dict[str, Any]], x_split: float
                 "merged_from": {"left_bbox": lbb, "right_bbox": rbb},
             }
         )
+        rt["merged_into"] = True
         used_right.add(r_idx)
 
     if merged:

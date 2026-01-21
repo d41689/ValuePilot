@@ -226,6 +226,8 @@ def extract_from_discovery(discovery: Dict[str, Any], spec: Dict[str, Any]) -> D
                 )
 
             for table in module.get("table_candidates", []):
+                if table.get("merged_into"):
+                    continue
                 years = extract_year_columns(table)
                 if years:
                     current_years = years
