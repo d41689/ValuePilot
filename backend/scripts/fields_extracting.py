@@ -263,10 +263,15 @@ def _split_mixed_numeric_label_cells(cells: List[str]) -> List[str]:
             continue
         toks = c_clean.split()
         if len(toks) < 3:
-            if len(toks) == 2 and _is_numeric_token(toks[0]) and _is_label_token(toks[1]):
-                out.append(clean_text(toks[0]))
-                out.append(clean_text(toks[1]))
-                continue
+            if len(toks) == 2:
+                if _is_numeric_token(toks[0]) and _is_label_token(toks[1]):
+                    out.append(clean_text(toks[0]))
+                    out.append(clean_text(toks[1]))
+                    continue
+                if _is_label_token(toks[0]) and _is_numeric_token(toks[1]):
+                    out.append(clean_text(toks[0]))
+                    out.append(clean_text(toks[1]))
+                    continue
             out.append(c_clean)
             continue
 
@@ -276,6 +281,25 @@ def _split_mixed_numeric_label_cells(cells: List[str]) -> List[str]:
                 num_flags.append(True)
             else:
                 num_flags.append(False)
+
+        first_num_idx = None
+        for i, is_num in enumerate(num_flags):
+            if is_num:
+                first_num_idx = i
+                break
+
+        if first_num_idx is not None and first_num_idx > 0 and sum(num_flags) >= 3:
+            label_prefix = toks[:first_num_idx]
+            numeric_tail = toks[first_num_idx:]
+            label_count = sum(1 for t in label_prefix if _is_label_token(t))
+            label_len = len(" ".join(label_prefix))
+            if label_count >= 3 or label_len > 18:
+                out.extend([clean_text(t) for t in numeric_tail if t])
+                continue
+            if 1 <= label_count <= 2:
+                out.append(clean_text(" ".join(label_prefix)))
+                out.extend([clean_text(t) for t in numeric_tail if t])
+                continue
 
         if sum(num_flags) < 3 or not any(_is_label_token(t) for t in toks):
             if num_flags and num_flags[0] and sum(num_flags) == 1:
@@ -1468,6 +1492,15 @@ def _find_year_header_row_index(table: Dict[str, Any], min_years: int = 4) -> Tu
     return None, []
 
 
+def _row_numeric_token_count(row: Dict[str, Any]) -> int:
+    count = 0
+    for cell in row.get("cells") or []:
+        for token in clean_text(cell).split():
+            if _is_numeric_token(token) or _RE_YEAR.match(token) or _RE_YEAR_RANGE.match(token):
+                count += 1
+    return count
+
+
 def _extract_year_grid_rows(table: Dict[str, Any], min_years: int = 4) -> Tuple[List[Dict[str, Any]], set]:
     rows = table.get("rows") or []
     idx, tokens = _find_year_header_row_index(table, min_years=min_years)
@@ -1479,7 +1512,10 @@ def _extract_year_grid_rows(table: Dict[str, Any], min_years: int = 4) -> Tuple[
         "cells": tokens,
         "bbox": rows[idx].get("bbox"),
     }
-    return [header_row] + rows[idx + 1 :], year_set
+    data_rows = [
+        row for row in rows[idx + 1 :] if _row_numeric_token_count(row) >= 3
+    ]
+    return [header_row] + data_rows, year_set
 
 
 def _table_year_set(table: Dict[str, Any]) -> set:
@@ -1638,24 +1674,33 @@ def merge_cross_column_year_tables(modules: List[Dict[str, Any]], x_split: float
                 merged_cells.extend(rpost)
             return {"cells": merged_cells, "bbox": lrow.get("bbox") or rrow.get("bbox")}
 
-        r_map: Dict[str, Dict[str, Any]] = {}
+        r_map: Dict[str, Tuple[int, Dict[str, Any]]] = {}
+        r_by_index: Dict[int, Dict[str, Any]] = {}
         for i, row in enumerate(rrows):
+            r_by_index[i] = row
             key = _row_label_key(row, i)
             if key not in r_map:
-                r_map[key] = row
+                r_map[key] = (i, row)
 
         rows: List[Dict[str, Any]] = []
         used_keys: set = set()
+        used_indices: set = set()
         for i, lrow in enumerate(lrows):
             key = _row_label_key(lrow, i)
             if key in r_map:
-                rows.append(merge_row_cells(lrow, r_map[key]))
+                r_idx, rrow = r_map[key]
+                rows.append(merge_row_cells(lrow, rrow))
                 used_keys.add(key)
+                used_indices.add(r_idx)
+            elif key.startswith("__idx_") and i in r_by_index and i not in used_indices:
+                rrow = r_by_index[i]
+                rows.append(merge_row_cells(lrow, rrow))
+                used_indices.add(i)
             else:
                 rows.append(lrow)
 
-        for key, rrow in r_map.items():
-            if key in used_keys:
+        for key, (r_idx, rrow) in r_map.items():
+            if key in used_keys or r_idx in used_indices:
                 continue
             rows.append(rrow)
 

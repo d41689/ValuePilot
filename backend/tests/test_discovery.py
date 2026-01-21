@@ -273,3 +273,37 @@ def test_bud_institutional_decisions_table_has_no_year_grid_rows():
             tokens.extend(fields_extracting.clean_text(cell).split())
         year_count = sum(1 for t in tokens if fields_extracting._RE_YEAR.match(t))
         assert year_count < 4
+
+
+def test_bud_merged_year_grid_salesperadr_includes_left_values():
+    data = fields_extracting.discover_pdf_structure("tests/fixtures/value_line/bud.pdf")
+    right = _get_module(data, "__right_column__")
+    assert right is not None
+
+    merged = [t for t in right.get("table_candidates", []) if t.get("merged_from")]
+    assert merged
+
+    target_row = None
+    for row in merged[0].get("rows", []):
+        cells = row.get("cells") or []
+        if any("SalesperADR" in cell for cell in cells):
+            target_row = cells
+            break
+
+    assert target_row is not None
+    assert "27.11" in target_row
+    assert "22.54" in target_row
+
+
+def test_bud_merged_year_grid_has_no_institutional_narrative():
+    data = fields_extracting.discover_pdf_structure("tests/fixtures/value_line/bud.pdf")
+    right = _get_module(data, "__right_column__")
+    assert right is not None
+
+    merged = [t for t in right.get("table_candidates", []) if t.get("merged_from")]
+    assert merged
+
+    for row in merged[0].get("rows", []):
+        for cell in row.get("cells") or []:
+            assert "Anheuser" not in cell
+            assert "InBev" not in cell

@@ -41,6 +41,7 @@
 - Implemented financial-row reassignment into `__financials_table__`, enhanced numeric token handling, and improved label normalization.
 - Extended cross-column merge to use year-grid row extraction and updated mixed-cell splitting for numeric+label cells.
 - Added financials table decontamination and InstitutionalDecisions year-grid split (year rows removed from the module, merged grid kept in right column).
+- Added year-grid numeric row filtering, label-prefix numeric splitting, and index-based alignment so left 2015–2019 values merge into labeled right rows.
 - Regenerated `backend/discovery.json` for bud.pdf.
 
 # Verification
