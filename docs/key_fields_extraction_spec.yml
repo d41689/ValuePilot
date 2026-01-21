@@ -1,0 +1,338 @@
+version: 2
+purpose: >
+  Open-world key field extraction specification for Value Line PDF reports.
+  This spec is intentionally NOT a whitelist of all possible fields.
+
+  Goal:
+    1) Automatically discover blocks/modules on a page.
+    2) Within each discovered module, extract ALL key/value pairs and/or ALL table rows.
+    3) Preserve raw labels and raw values as the source of truth.
+
+  Important:
+    - This layer DOES NOT normalize into metric_key.
+    - Mapping/normalization happens later (mapping-spec layer).
+
+principles:
+  - pdf_is_source_of_truth: true
+  - open_world_extraction: true
+  - never_drop_rows: true
+  - extraction_before_normalization: true
+  - adr_and_share_equivalent_at_semantic_level: true
+  - missing_fields_allowed: true
+  - preserve_raw_labels_and_values: true
+
+global_conventions:
+  dates:
+    report_date:
+      description: Report publication date (e.g. January 9, 2026)
+    as_of_date:
+      description: Snapshot date stated in block headers (e.g. "as of 9/30/25")
+    event_date:
+      description: Rating/event change date (e.g. "Lowered 1/9/26")
+
+  units:
+    canonical:
+      - per_share
+      - shares
+      - usd
+      - usd_millions
+      - percent
+      - ratio
+      - unknown
+
+  period_types:
+    - FY                  # full fiscal year
+    - Q                   # fiscal quarter
+    - AS_OF               # snapshot as-of a report date
+    - EVENT               # rating/event change on a specific date
+    - PROJECTION_RANGE    # multi-year forward estimates (e.g. 2028-2030)
+
+  output_shapes:
+    module:
+      description: A discovered logical block on the page.
+      fields:
+        - module_name_guess
+        - locator_confidence
+        - bbox
+        - raw_text
+        - kv_pairs
+        - table
+
+module_discovery:
+  # The discovery pipeline should:
+  # 1) Segment page into regions (layout segmentation)
+  # 2) Detect candidate headings inside each region
+  # 3) Form modules by heading + following content until next heading
+  # 4) Classify module content as table-like / kv-like / narrative
+  segmentation:
+    strategy: layout_regions
+    notes: >
+      Use PDF text runs (x/y coordinates, font size/weight) to cluster into
+      rectangular regions: header band, left column blocks, right column blocks,
+      and bottom table zones. Then split further by detected headings.
+
+  heading_detection:
+    candidates:
+      - pattern: uppercase_or_titlecase_heading
+        hints:
+          - bold_or_larger_font: true
+          - ends_with_colon_optional: true
+          - short_token_count_max: 6
+      - pattern: known_heading_keywords
+        keywords:
+          - "TIMELINESS"
+          - "SAFETY"
+          - "TECHNICAL"
+          - "BETA"
+          - "18-Month Target Price Range"
+          - "PROJECTIONS"
+          - "Institutional Decisions"
+          - "CAPITAL STRUCTURE"
+          - "CURRENT POSITION"
+          - "FINANCIAL POSITION"
+          - "ANNUAL RATES"
+          - "QUARTERLY SALES"
+          - "NET PREMIUMS EARNED"
+          - "EARNINGS PER"
+          - "QUARTERLY DIVIDENDS PAID"
+          - "% TOT. RETURN"
+          - "BUSINESS:"
+          - "Financial Strength"
+
+  module_name_guessing:
+    # Prefer known headings when matched; otherwise fallback to heading text.
+    known_heading_to_module:
+      header_band:
+        contains_any: ["RECENT PRICE", "P/E", "RELATIVE", "DIV’D", "VALUE LINE"]
+      ratings:
+        contains_any: ["TIMELINESS", "SAFETY", "TECHNICAL", "BETA"]
+      target_price_18m:
+        contains_any: ["18-Month Target Price Range"]
+      projections:
+        contains_any: ["PROJECTIONS"]
+      institutional_decisions:
+        contains_any: ["Institutional Decisions"]
+      capital_structure:
+        contains_any: ["CAPITAL STRUCTURE"]
+      current_position:
+        contains_any: ["CURRENT POSITION", "FINANCIAL POSITION"]
+      annual_rates:
+        contains_any: ["ANNUAL RATES"]
+      quarterly_sales:
+        contains_any: ["NET PREMIUMS EARNED", "QUARTERLY SALES"]
+      earnings_per_unit:
+        contains_any: ["EARNINGS PER SHARE", "EARNINGS PER ADR", "EARNINGS PER"]
+      quarterly_dividends:
+        contains_any: ["QUARTERLY DIVIDENDS PAID"]
+      total_return:
+        contains_any: ["% TOT. RETURN"]
+      business:
+        contains_any: ["BUSINESS:"]
+      analyst_commentary:
+        contains_any: ["This stock is ranked", "We project", "From the recent quotation"]
+      financial_strength:
+        contains_any: ["Financial Strength", "Price Stability", "Earnings Predictability"]
+
+extraction_modes:
+  # Each discovered module is classified into one of these modes.
+  classification:
+    priority_order: [table, kv, narrative, unknown]
+    heuristics:
+      table:
+        any:
+          - has_repeating_column_headers: true
+          - has_many_numeric_cells_aligned: true
+          - has_calendar_quarter_stub: true     # e.g. "Cal-" or "Calendar"
+          - has_year_columns: true
+      kv:
+        any:
+          - many_label_value_pairs_same_line: true
+          - frequent_short_labels_followed_by_numbers: true
+      narrative:
+        any:
+          - long_sentences_ratio_high: true
+          - few_numbers_ratio_low: true
+
+  kv_extractor:
+    # Extract ALL label/value pairs, not a fixed list.
+    label_candidates:
+      patterns:
+        - type: token_like_label
+          notes: "Short tokens or token groups, often uppercase or with symbols (P/E, DIV’D)."
+      normalization:
+        strip: true
+        collapse_spaces: true
+        normalize_quotes: true
+        remove_trailing_punctuation: [":", "."]
+    value_candidates:
+      patterns:
+        - type: numeric
+        - type: percent
+        - type: ratio
+        - type: price_range
+        - type: date
+        - type: string
+    pairing:
+      strategy: nearest_right_or_inline
+      max_dx: 220
+      max_dy: 8
+    value_normalization:
+      dash_nulls: ["--", "—", "–", ""]
+      nmf_nulls: ["NMF"]
+      deficit_prefix:
+        prefix: "d"
+        meaning: negative
+      parentheses_negative: true
+
+  table_extractor:
+    # Extract ALL rows and ALL columns by structural cues.
+    table_structure:
+      header_rows:
+        detect:
+          any_of:
+            - has_year_tokens: true
+            - has_quarter_end_dates: true
+            - has_range_tokens: true           # e.g. "28-30"
+      year_columns:
+        detect:
+          regex_any:
+            - "(?<!\\d)(19|20)\\d{2}(?!\\d)"
+            - "(?<!\\d)28-30(?!\\d)"
+      quarter_columns:
+        detect:
+          any_of:
+            - contains_any: ["Mar.", "Jun.", "Sep.", "Dec."]
+            - contains_any: ["Mar", "Jun", "Sep", "Dec"]
+            - contains_any: ["1Q", "2Q", "3Q", "4Q"]
+      full_year_column:
+        detect:
+          contains_any: ["Full Year", "Year"]
+      row_label:
+        detect:
+          strategy: leftmost_text_run_before_numeric_cells
+        normalize:
+          strip: true
+          collapse_spaces: true
+          normalize_quotes: true
+          remove_trailing_footnote_markers:
+            regex: "\\s+[A-Z]$"
+      cell_values:
+        normalize:
+          dash_nulls: ["--", "—", "–", ""]
+          nmf_nulls: ["NMF"]
+          deficit_prefix:
+            prefix: "d"
+            meaning: negative
+          parentheses_negative: true
+    output:
+      emit_each_row_as_series: true
+      include_detected_headers: true
+
+modules:
+  # IMPORTANT: This is a *minimal* set of known blocks to improve discovery confidence.
+  # The system MUST also emit unknown/unclassified modules discovered by layout segmentation.
+
+  - module: header_band
+    extraction_mode: kv
+    block_locator:
+      contains_any: ["RECENT PRICE", "P/E", "RELATIVE", "DIV’D", "VALUE LINE"]
+
+  - module: ratings
+    extraction_mode: kv
+    block_locator:
+      contains_any: ["TIMELINESS", "SAFETY", "TECHNICAL", "BETA"]
+    kv_overrides:
+      event_detection:
+        keywords: ["Lowered", "Raised", "New"]
+        output_field: events
+
+  - module: target_price_18m
+    extraction_mode: kv
+    block_locator:
+      contains_any: ["18-Month Target Price Range", "Low-High", "Midpoint"]
+
+  - module: projections
+    extraction_mode: kv
+    block_locator:
+      contains_any: ["PROJECTIONS", "Ann’l Total", "Price Gain", "Return"]
+
+  - module: institutional_decisions
+    extraction_mode: kv
+    block_locator:
+      contains_any: ["Institutional Decisions", "to Buy", "to Sell", "Hld’s"]
+
+  - module: capital_structure
+    extraction_mode: kv
+    block_locator:
+      contains_any: ["CAPITAL STRUCTURE", "Total Debt", "LT Debt", "Pfd Stock", "Common Stock"]
+
+  - module: current_position
+    extraction_mode: table
+    block_locator:
+      contains_any: ["CURRENT POSITION", "FINANCIAL POSITION"]
+
+  - module: annual_rates
+    extraction_mode: table
+    block_locator:
+      contains_any: ["ANNUAL RATES", "of change"]
+
+  - module: quarterly_sales
+    extraction_mode: table
+    block_locator:
+      contains_any: ["NET PREMIUMS EARNED", "QUARTERLY SALES"]
+
+  - module: earnings_per_unit
+    extraction_mode: table
+    block_locator:
+      contains_any: ["EARNINGS PER SHARE", "EARNINGS PER ADR", "EARNINGS PER"]
+    unit_semantics: per_share
+
+  - module: quarterly_dividends
+    extraction_mode: table
+    block_locator:
+      contains_any: ["QUARTERLY DIVIDENDS PAID"]
+    unit_semantics: per_share
+
+  - module: total_return
+    extraction_mode: kv
+    block_locator:
+      contains_any: ["% TOT. RETURN", "THIS STOCK", "INDEX"]
+
+  - module: financials_table
+    extraction_mode: table
+    block_locator:
+      any_of:
+        - contains_any: ["Sales per", "Cash Flow", "Earnings per", "Div’ds", "Book Value"]
+        - contains_any: ["Sales ($mill)", "Net Profit ($mill)", "Shr. Equity"]
+        - contains_any: ["Cap’l Spending", "Common Shs Outst’g", "P/C Prem Earned"]
+
+  - module: business
+    extraction_mode: narrative
+    block_locator:
+      contains_any: ["BUSINESS:"]
+
+  - module: analyst_commentary
+    extraction_mode: narrative
+    block_locator:
+      contains_any: ["This stock is ranked", "We project", "From the recent quotation"]
+
+  - module: financial_strength
+    extraction_mode: kv
+    block_locator:
+      contains_any: ["Financial Strength", "Price Stability", "Price Growth Persistence", "Earnings Predictability"]
+
+unknown_modules:
+  emit: true
+  naming:
+    strategy: heading_text_or_region_index
+    prefix: unknown
+  extraction_mode_fallback:
+    order: [table, kv, narrative]
+
+quality_gates:
+  require_at_least_one_module: true
+  require_at_least_one_table: true
+  warn_on_empty_modules: true
+  warn_on_unparsed_numeric_regions: true
+  warn_on_unknown_modules: true
+  emit_debug_diagnostics: true
