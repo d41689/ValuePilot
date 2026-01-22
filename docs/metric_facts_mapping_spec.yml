@@ -99,10 +99,10 @@ date_paths:
 
 mappings:
   # -------------------------
-  # PER SHARE (canonical)
+  # PER UNIT (canonicalized as "per_share.*" metric keys for v0.1)
   # -------------------------
   - id: per_share.eps.fy
-    json_path: annual_financials.per_share_metrics.earnings_per_share_usd.*
+    json_path: annual_financials.per_unit_metrics.earnings.*
     metric_key: per_share.eps
     period_type: FY
     unit: USD_per_share
@@ -110,17 +110,7 @@ mappings:
       derive: year_end_from_key
     value:
       numeric_from: $value
-    notes: "FY EPS from annual_financials.per_share_metrics.earnings_per_share_usd"
-
-  - id: per_share.eps.fy.non_insurance
-    json_path: annual_financials.per_share_metrics.earnings_per_share.*
-    metric_key: per_share.eps
-    period_type: FY
-    unit: USD_per_share
-    period_end_date:
-      derive: year_end_from_key
-    value:
-      numeric_from: $value
+    notes: "FY per-unit earnings from annual_financials.per_unit_metrics.earnings"
 
   - id: per_share.eps.q
     json_path: earnings_per_share.by_year[].quarters.*.value
@@ -134,17 +124,7 @@ mappings:
     notes: "Quarterly EPS from EARNINGS PER SHARE module"
 
   - id: per_share.dividends_declared.fy
-    json_path: annual_financials.per_share_metrics.dividends_declared_per_share_usd.*
-    metric_key: per_share.dividends_declared
-    period_type: FY
-    unit: USD_per_share
-    period_end_date:
-      derive: year_end_from_key
-    value:
-      numeric_from: $value
-
-  - id: per_share.dividends_declared.fy.non_insurance
-    json_path: annual_financials.per_share_metrics.dividends_declared_per_share.*
+    json_path: annual_financials.per_unit_metrics.dividends_declared.*
     metric_key: per_share.dividends_declared
     period_type: FY
     unit: USD_per_share
@@ -164,17 +144,7 @@ mappings:
       numeric_from: $value
 
   - id: per_share.book_value.fy
-    json_path: annual_financials.per_share_metrics.book_value_per_share_usd.*
-    metric_key: per_share.book_value
-    period_type: FY
-    unit: USD_per_share
-    period_end_date:
-      derive: year_end_from_key
-    value:
-      numeric_from: $value
-
-  - id: per_share.book_value.fy.non_insurance
-    json_path: annual_financials.per_share_metrics.book_value_per_share.*
+    json_path: annual_financials.per_unit_metrics.book_value.*
     metric_key: per_share.book_value
     period_type: FY
     unit: USD_per_share
@@ -184,7 +154,7 @@ mappings:
       numeric_from: $value
 
   - id: per_share.premiums_earned.fy
-    json_path: annual_financials.per_share_metrics.pc_prem_earned_per_share_usd.*
+    json_path: annual_financials.per_unit_metrics.pc_prem_earned.*
     metric_key: per_share.premiums_earned
     period_type: FY
     unit: USD_per_share
@@ -194,7 +164,7 @@ mappings:
       numeric_from: $value
 
   - id: per_share.investment_income.fy
-    json_path: annual_financials.per_share_metrics.investment_income_per_share_usd.*
+    json_path: annual_financials.per_unit_metrics.investment_income.*
     metric_key: per_share.investment_income
     period_type: FY
     unit: USD_per_share
@@ -204,7 +174,7 @@ mappings:
       numeric_from: $value
 
   - id: per_share.underwriting_income.fy
-    json_path: annual_financials.per_share_metrics.underwriting_income_per_share_usd.*
+    json_path: annual_financials.per_unit_metrics.underwriting_income.*
     metric_key: per_share.underwriting_income
     period_type: FY
     unit: USD_per_share
@@ -214,7 +184,7 @@ mappings:
       numeric_from: $value
 
   - id: per_share.sales.fy
-    json_path: annual_financials.per_share_metrics.sales_per_share.*
+    json_path: annual_financials.per_unit_metrics.sales.*
     metric_key: per_share.sales
     period_type: FY
     unit: USD_per_share
@@ -224,7 +194,7 @@ mappings:
       numeric_from: $value
 
   - id: per_share.cash_flow.fy
-    json_path: annual_financials.per_share_metrics.cash_flow_per_share.*
+    json_path: annual_financials.per_unit_metrics.cash_flow.*
     metric_key: per_share.cash_flow
     period_type: FY
     unit: USD_per_share
@@ -234,7 +204,7 @@ mappings:
       numeric_from: $value
 
   - id: per_share.capital_spending.fy
-    json_path: annual_financials.per_share_metrics.capital_spending_per_share.*
+    json_path: annual_financials.per_unit_metrics.capital_spending.*
     metric_key: per_share.capital_spending
     period_type: FY
     unit: USD_per_share
@@ -244,7 +214,7 @@ mappings:
       numeric_from: $value
 
   - id: equity.shares_outstanding.fy
-    json_path: annual_financials.per_share_metrics.common_shares_outstanding_millions.*
+    json_path: annual_financials.per_unit_metrics.common_shares_outstanding_millions.*
     metric_key: equity.shares_outstanding
     period_type: FY
     unit: million_shares

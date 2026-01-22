@@ -20,6 +20,8 @@ def build_value_line_page_json(
     report_date = _report_date(by_key)
     insurance_layout = _detect_insurance_layout(by_key)
     adr_layout = _detect_adr_layout(parser, by_key)
+    layout_id = "insurance" if insurance_layout else "industrial"
+    security_unit = "adr" if adr_layout else "share"
     quarterly_block = _build_quarterly_block(
         by_key.get("quarterly_sales_usd_millions"),
         unit="USD_millions",
@@ -29,9 +31,12 @@ def build_value_line_page_json(
     output = {
         "meta": {
             "parser_version": "value_line_v1",
+            "schema_version": "1.1",
             "page_number": page_number,
             "report_date": report_date,
             "source": "value_line",
+            "layout_id": layout_id,
+            "security_unit": security_unit,
         },
         "identity": {
             "company_name": identity.company_name,
@@ -56,9 +61,17 @@ def build_value_line_page_json(
             insurance_layout=insurance_layout,
             adr_layout=adr_layout,
         ),
-        "earnings_per_share": _build_quarterly_block(
+        # v1.1: stable keys; non-applicable blocks are emitted as null (not omitted).
+        "quarterly_sales": quarterly_block if not insurance_layout else None,
+        "net_premiums_earned": quarterly_block if insurance_layout else None,
+        "earnings_per_share": _build_quarterly_block_or_none(
             by_key.get("earnings_per_share"),
             unit="USD_per_share",
+            report_date=report_date,
+        ),
+        "earnings_per_adr": _build_quarterly_block_or_none(
+            by_key.get("earnings_per_adr"),
+            unit="USD_per_adr",
             report_date=report_date,
         ),
         "quarterly_dividends_paid": _build_quarterly_block(
@@ -67,34 +80,13 @@ def build_value_line_page_json(
             report_date=report_date,
             add_missing_report_year=not adr_layout,
             estimate_year_offset=0 if adr_layout else 1,
-            include_period_end=not adr_layout,
         ),
         "annual_financials": _build_annual_financials(by_key, insurance_layout=insurance_layout, adr_layout=adr_layout),
         "total_return": _build_total_return(by_key),
         "historical_price_range": _build_historical_price_range(by_key, insurance_layout=insurance_layout),
+        "current_position": _build_current_position(by_key),
         "narrative": _build_narrative(by_key, report_date, adr_layout=adr_layout),
     }
-
-    if insurance_layout:
-        output["net_premiums_earned"] = quarterly_block
-    else:
-        output["quarterly_sales"] = quarterly_block
-
-    current_position = _build_current_position(by_key)
-    if current_position:
-        output["current_position"] = current_position
-
-    earnings_adr = _build_quarterly_block(
-        by_key.get("earnings_per_adr"),
-        unit="USD_per_adr",
-        report_date=report_date,
-    )
-    if isinstance(earnings_adr, dict) and earnings_adr.get("by_year"):
-        output["earnings_per_adr"] = earnings_adr
-
-    earnings = output.get("earnings_per_share")
-    if isinstance(earnings, dict) and not earnings.get("by_year"):
-        output.pop("earnings_per_share", None)
 
     return output
 
@@ -515,27 +507,18 @@ def _build_quarterly_block(
     report_date: Optional[str],
     add_missing_report_year: bool = False,
     estimate_year_offset: int = 1,
-    include_period_end: bool = True,
 ) -> dict[str, Any]:
     rows = res.parsed_value_json if res and res.parsed_value_json else []
     report_year = int(report_date[:4]) if report_date else None
     by_year = []
     for row in rows:
         year = row.get("calendar_year")
-        if include_period_end:
-            quarters = {
-                "Q1": {"period_end": _quarter_end_date(year, 1), "value": row.get("mar_31")},
-                "Q2": {"period_end": _quarter_end_date(year, 2), "value": row.get("jun_30")},
-                "Q3": {"period_end": _quarter_end_date(year, 3), "value": row.get("sep_30")},
-                "Q4": {"period_end": _quarter_end_date(year, 4), "value": row.get("dec_31")},
-            }
-        else:
-            quarters = {
-                "Q1": {"value": row.get("mar_31")},
-                "Q2": {"value": row.get("jun_30")},
-                "Q3": {"value": row.get("sep_30")},
-                "Q4": {"value": row.get("dec_31")},
-            }
+        quarters = {
+            "Q1": {"period_end": _quarter_end_date(year, 1), "value": row.get("mar_31")},
+            "Q2": {"period_end": _quarter_end_date(year, 2), "value": row.get("jun_30")},
+            "Q3": {"period_end": _quarter_end_date(year, 3), "value": row.get("sep_30")},
+            "Q4": {"period_end": _quarter_end_date(year, 4), "value": row.get("dec_31")},
+        }
         is_estimated = (
             report_year is not None
             and year is not None
@@ -565,6 +548,18 @@ def _build_quarterly_block(
     return {"unit": unit, "by_year": by_year}
 
 
+def _build_quarterly_block_or_none(
+    res: Any,
+    *,
+    unit: str,
+    report_date: Optional[str],
+) -> Optional[dict[str, Any]]:
+    block = _build_quarterly_block(res, unit=unit, report_date=report_date)
+    if not block.get("by_year"):
+        return None
+    return block
+
+
 def _build_annual_financials(
     by_key: dict[str, Any],
     *,
@@ -580,34 +575,38 @@ def _build_annual_financials(
     projection_range = annual.get("projection_year_range")
     projection = annual.get("projection_2028_2030", {})
 
+    per_unit = "share"
+    if not insurance_layout:
+        per_unit = "adr" if adr_layout else "share"
+
+    # v1.1: unify per-unit naming (unit is in annual_financials.per_unit + meta.currency).
     if insurance_layout:
-        per_share_map = {
-            "pc_prem_earned_per_share_usd": "pc_prem_earned_per_share_usd",
-            "investment_income_per_share_usd": "investment_income_per_share_usd",
-            "underwriting_income_per_share_usd": "underwriting_income_per_share_usd",
-            "earnings_per_share_usd": "earnings_per_share_usd",
-            "dividends_declared_per_share_usd": "dividends_declared_per_share_usd",
-            "book_value_per_share_usd": "book_value_per_share_usd",
+        per_unit_map = {
+            "pc_prem_earned_per_share_usd": "pc_prem_earned",
+            "investment_income_per_share_usd": "investment_income",
+            "underwriting_income_per_share_usd": "underwriting_income",
+            "earnings_per_share_usd": "earnings",
+            "dividends_declared_per_share_usd": "dividends_declared",
+            "book_value_per_share_usd": "book_value",
             "common_shares_outstanding_millions": "common_shares_outstanding_millions",
         }
     else:
-        per_share_suffix = "per_adr" if adr_layout else "per_share"
-        per_share_map = {
-            "sales_per_share_usd": f"sales_{per_share_suffix}",
-            "cash_flow_per_share_usd": f"cash_flow_{per_share_suffix}",
-            "capital_spending_per_share_usd": f"capital_spending_{per_share_suffix}",
-            "earnings_per_share_usd": f"earnings_{per_share_suffix}",
-            "dividends_declared_per_share_usd": f"dividends_declared_{per_share_suffix}",
-            "book_value_per_share_usd": f"book_value_{per_share_suffix}",
+        per_unit_map = {
+            "sales_per_share_usd": "sales",
+            "cash_flow_per_share_usd": "cash_flow",
+            "capital_spending_per_share_usd": "capital_spending",
+            "earnings_per_share_usd": "earnings",
+            "dividends_declared_per_share_usd": "dividends_declared",
+            "book_value_per_share_usd": "book_value",
             "common_shares_outstanding_millions": "common_shares_outstanding_millions",
         }
 
-    per_share = _series_group_to_year_map(
+    per_unit_metrics = _series_group_to_year_map(
         annual.get("per_share", {}),
         years,
         projection,
-        keys=list(per_share_map.keys()),
-        rename_map=per_share_map,
+        keys=list(per_unit_map.keys()),
+        rename_map=per_unit_map,
         drop_all_null=True,
     )
     valuation = _series_group_to_year_map(
@@ -620,7 +619,6 @@ def _build_annual_financials(
             "relative_pe_ratio",
             "avg_annual_dividend_yield_pct",
         ],
-        drop_trailing_null=not adr_layout,
         drop_all_null=True,
     )
     if insurance_layout:
@@ -634,15 +632,38 @@ def _build_annual_financials(
         keys=income_keys,
         drop_all_null=True,
     )
-    balance_sheet = {}
-    if insurance_layout:
-        balance_sheet = _series_group_to_year_map(
-            annual.get("balance_sheet_and_returns_usd_millions", {}),
-            years,
-            projection,
-            keys=["total_assets", "shareholders_equity"],
-            drop_all_null=True,
-        )
+    income_statement_ratios = _series_group_to_year_map(
+        annual.get("income_statement_usd_millions", {}),
+        years,
+        projection,
+        keys=["income_tax_rate_pct", "net_profit_margin_pct"],
+        drop_all_null=True,
+    )
+
+    # v1.1: keep annual balance sheet/returns grouped (no BUD-only flattened fields).
+    balance_keys = ["total_assets", "shareholders_equity"]
+    if not insurance_layout:
+        balance_keys = [
+            "working_capital",
+            "long_term_debt",
+            "shareholders_equity",
+            "total_assets",
+            "return_on_total_capital_pct",
+            "return_on_shareholders_equity_pct",
+            "retained_to_common_equity_pct",
+            "all_dividends_to_net_profit_pct",
+        ]
+    balance_sheet = _series_group_to_year_map(
+        annual.get("balance_sheet_and_returns_usd_millions", {}),
+        years,
+        projection,
+        keys=balance_keys,
+        drop_all_null=True,
+    )
+    for key in ("retained_to_common_equity_pct", "all_dividends_to_net_profit_pct"):
+        series = balance_sheet.get(key)
+        if isinstance(series, dict) and any(value is None for value in series.values()):
+            series["notes"] = "NMF values are represented as null"
 
     payload = {
         "meta": {
@@ -652,47 +673,13 @@ def _build_annual_financials(
             "historical_years": years,
             "projection_year_range": projection_range,
         },
-        "per_share_metrics": per_share,
+        "per_unit": per_unit,
+        "per_unit_metrics": per_unit_metrics,
         "valuation_metrics": valuation,
         "income_statement_usd_millions": income_statement,
+        "income_statement_ratios_pct": income_statement_ratios,
+        "balance_sheet_and_returns_usd_millions": balance_sheet,
     }
-    if balance_sheet:
-        payload["balance_sheet_and_returns_usd_millions"] = balance_sheet
-
-    if not insurance_layout and adr_layout:
-        extra_income = _series_group_to_year_map(
-            annual.get("income_statement_usd_millions", {}),
-            years,
-            projection,
-            keys=["income_tax_rate_pct", "net_profit_margin_pct"],
-            drop_all_null=True,
-        )
-        extra_balance = _series_group_to_year_map(
-            annual.get("balance_sheet_and_returns_usd_millions", {}),
-            years,
-            projection,
-            keys=[
-                "working_capital",
-                "long_term_debt",
-                "shareholders_equity",
-                "return_on_total_capital_pct",
-                "return_on_shareholders_equity_pct",
-                "retained_to_common_equity_pct",
-                "all_dividends_to_net_profit_pct",
-            ],
-            rename_map={
-                "working_capital": "working_capital_usd_millions",
-                "long_term_debt": "long_term_debt_usd_millions",
-                "shareholders_equity": "shareholders_equity_usd_millions",
-            },
-            drop_all_null=True,
-        )
-        payload.update(extra_income)
-        payload.update(extra_balance)
-        for key in ("retained_to_common_equity_pct", "all_dividends_to_net_profit_pct"):
-            series = payload.get(key)
-            if isinstance(series, dict) and any(value is None for value in series.values()):
-                series["notes"] = "NMF values are represented as null"
 
     return payload
 
@@ -769,8 +756,7 @@ def _build_narrative(
         "commentary_date": report_date,
     }
     commentary = _raw(by_key, "analyst_commentary")
-    if commentary is not None or not adr_layout:
-        narrative["analyst_commentary"] = commentary
+    narrative["analyst_commentary"] = commentary
     return narrative
 
 

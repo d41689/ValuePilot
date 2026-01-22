@@ -91,3 +91,25 @@ def test_axs_annual_financials_years_and_total_return_shape():
     assert "price_semantics_and_returns" not in actual
     assert actual["total_return"]["as_of_date"] == expected["total_return"]["as_of_date"]
     assert actual["total_return"]["series"] == expected["total_return"]["series"]
+
+
+def test_axs_v1_1_meta_and_stable_top_level_keys():
+    actual = build_page_json()
+
+    # v1.1 contract: stable keys (nullable) + explicit layout/security hints.
+    assert actual["meta"]["schema_version"] == "1.1"
+    assert actual["meta"]["layout_id"] == "insurance"
+    assert actual["meta"]["security_unit"] == "share"
+
+    assert "quarterly_sales" in actual
+    assert actual["quarterly_sales"] is None
+    assert "net_premiums_earned" in actual
+    assert actual["net_premiums_earned"] is not None
+
+    assert "earnings_per_share" in actual
+    assert actual["earnings_per_share"] is not None
+    assert "earnings_per_adr" in actual
+    assert actual["earnings_per_adr"] is None
+
+    assert "current_position" in actual
+    assert actual["current_position"] is None

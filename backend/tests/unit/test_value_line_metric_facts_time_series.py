@@ -18,7 +18,7 @@ def load_expected_json() -> dict:
         return json.load(fh)
 
 
-def upload_axs(client, db_session) -> tuple[User, Stock, dict]:
+def upload_axs(client, db_session) -> tuple[User, Stock, dict, int]:
     user = User(email="axs_metric_facts@example.com")
     db_session.add(user)
     db_session.commit()
@@ -36,6 +36,7 @@ def upload_axs(client, db_session) -> tuple[User, Stock, dict]:
         )
 
     assert resp.status_code == 200, resp.text
+    doc_id = resp.json()["document_id"]
 
     stock = (
         db_session.query(Stock)
@@ -43,7 +44,7 @@ def upload_axs(client, db_session) -> tuple[User, Stock, dict]:
         .one()
     )
 
-    return user, stock, expected
+    return user, stock, expected, doc_id
 
 
 def _fact(
@@ -51,6 +52,7 @@ def _fact(
     *,
     stock_id: int,
     metric_key: str,
+    source_document_id: int | None = None,
     period_end_date: date | None = None,
     period_type: str | None = None,
 ) -> MetricFact:
@@ -64,6 +66,8 @@ def _fact(
         )
         .order_by(MetricFact.id.desc())
     )
+    if source_document_id is not None:
+        query = query.filter(MetricFact.source_document_id == source_document_id)
     if period_end_date is not None:
         query = query.filter(MetricFact.period_end_date == period_end_date)
     if period_type is not None:
@@ -74,7 +78,7 @@ def _fact(
 
 
 def test_metric_facts_use_rating_event_dates(client, db_session):
-    _, stock, expected = upload_axs(client, db_session)
+    _, stock, expected, doc_id = upload_axs(client, db_session)
 
     for key in ("timeliness", "safety", "technical"):
         event_date = date.fromisoformat(expected["ratings"][key]["event"]["date"])
@@ -82,6 +86,7 @@ def test_metric_facts_use_rating_event_dates(client, db_session):
             db_session,
             stock_id=stock.id,
             metric_key=f"rating.{key}_change",
+            source_document_id=doc_id,
             period_type="EVENT",
         )
         assert fact.period_end_date == event_date
@@ -89,7 +94,7 @@ def test_metric_facts_use_rating_event_dates(client, db_session):
 
 
 def test_metric_facts_use_capital_structure_as_of_dates(client, db_session):
-    _, stock, expected = upload_axs(client, db_session)
+    _, stock, expected, doc_id = upload_axs(client, db_session)
 
     cap_as_of = date.fromisoformat(expected["capital_structure"]["as_of"])
     market_as_of = date.fromisoformat(expected["capital_structure"]["market_cap"]["as_of"])
@@ -99,6 +104,7 @@ def test_metric_facts_use_capital_structure_as_of_dates(client, db_session):
         db_session,
         stock_id=stock.id,
         metric_key="cap.total_debt",
+        source_document_id=doc_id,
         period_end_date=cap_as_of,
     )
     assert total_debt.period_end_date == cap_as_of
@@ -107,6 +113,7 @@ def test_metric_facts_use_capital_structure_as_of_dates(client, db_session):
         db_session,
         stock_id=stock.id,
         metric_key="mkt.market_cap",
+        source_document_id=doc_id,
         period_end_date=market_as_of,
     )
     assert market_cap.period_end_date == market_as_of
@@ -115,19 +122,21 @@ def test_metric_facts_use_capital_structure_as_of_dates(client, db_session):
         db_session,
         stock_id=stock.id,
         metric_key="equity.shares_outstanding",
+        source_document_id=doc_id,
         period_end_date=shares_as_of,
     )
     assert shares.period_end_date == shares_as_of
 
 
 def test_quarterly_series_full_year_facts_are_written(client, db_session):
-    _, stock, expected = upload_axs(client, db_session)
+    _, stock, expected, doc_id = upload_axs(client, db_session)
 
     premiums_2024 = expected["net_premiums_earned"]["by_year"][2]["full_year"]["value"]
     fact = _fact(
         db_session,
         stock_id=stock.id,
         metric_key="is.net_premiums_earned",
+        source_document_id=doc_id,
         period_end_date=date(2024, 12, 31),
         period_type="FY",
     )
@@ -139,6 +148,7 @@ def test_quarterly_series_full_year_facts_are_written(client, db_session):
         db_session,
         stock_id=stock.id,
         metric_key="per_share.eps",
+        source_document_id=doc_id,
         period_end_date=date(2024, 12, 31),
         period_type="FY",
     )
@@ -149,6 +159,7 @@ def test_quarterly_series_full_year_facts_are_written(client, db_session):
         db_session,
         stock_id=stock.id,
         metric_key="per_share.eps",
+        source_document_id=doc_id,
         period_end_date=date(2024, 3, 31),
         period_type="Q",
     )
@@ -156,13 +167,14 @@ def test_quarterly_series_full_year_facts_are_written(client, db_session):
 
 
 def test_annual_financials_series_are_expanded(client, db_session):
-    _, stock, expected = upload_axs(client, db_session)
+    _, stock, expected, doc_id = upload_axs(client, db_session)
 
     net_profit_2017 = expected["annual_financials"]["income_statement_usd_millions"]["net_profit"]["2017"]
     fact = _fact(
         db_session,
         stock_id=stock.id,
         metric_key="is.net_income",
+        source_document_id=doc_id,
         period_end_date=date(2017, 12, 31),
         period_type="FY",
     )
@@ -171,17 +183,27 @@ def test_annual_financials_series_are_expanded(client, db_session):
 
 
 def test_commentary_and_projection_range_remain_non_numeric(client, db_session):
-    _, stock, _ = upload_axs(client, db_session)
+    _, stock, _, doc_id = upload_axs(client, db_session)
 
-    commentary = _fact(db_session, stock_id=stock.id, metric_key="analyst.commentary")
+    commentary = _fact(
+        db_session,
+        stock_id=stock.id,
+        metric_key="analyst.commentary",
+        source_document_id=doc_id,
+    )
     assert commentary.value_numeric is None
 
-    strength = _fact(db_session, stock_id=stock.id, metric_key="quality.financial_strength")
+    strength = _fact(
+        db_session,
+        stock_id=stock.id,
+        metric_key="quality.financial_strength",
+        source_document_id=doc_id,
+    )
     assert strength.value_numeric is None
 
 
 def test_dedupe_within_document_for_fy_metrics(client, db_session):
-    _, stock, _ = upload_axs(client, db_session)
+    _, stock, _, doc_id = upload_axs(client, db_session)
 
     results = (
         db_session.query(MetricFact)
@@ -191,6 +213,7 @@ def test_dedupe_within_document_for_fy_metrics(client, db_session):
             MetricFact.period_type == "FY",
             MetricFact.period_end_date == date(2025, 12, 31),
             MetricFact.source_type == "parsed",
+            MetricFact.source_document_id == doc_id,
         )
         .all()
     )

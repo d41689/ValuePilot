@@ -161,11 +161,11 @@ def test_smith_tables_time_series_populated():
     assert parsed_annual.get("projection_year_range") == expected_annual["meta"]["projection_year_range"]
 
     parsed_per_share = parsed_annual.get("per_share") or {}
-    expected_per_share = expected_annual["per_share_metrics"]
+    expected_per_share = expected_annual["per_unit_metrics"]
     per_share_map = {
-        "sales_per_share_usd": "sales_per_share",
-        "cash_flow_per_share_usd": "cash_flow_per_share",
-        "capital_spending_per_share_usd": "capital_spending_per_share",
+        "sales_per_share_usd": "sales",
+        "cash_flow_per_share_usd": "cash_flow",
+        "capital_spending_per_share_usd": "capital_spending",
     }
     for parsed_key, expected_key in per_share_map.items():
         expected_series = [expected_per_share[expected_key][str(year)] for year in years]

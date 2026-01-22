@@ -136,7 +136,7 @@ def test_axs_tables_time_series_extracted():
     assert parsed_annual.get("years") == years
     assert parsed_annual.get("projection_year_range") == expected_annual["meta"]["projection_year_range"]
     parsed_eps = parsed_annual.get("per_share", {}).get("earnings_per_share_usd") or []
-    expected_eps_map = expected_annual["per_share_metrics"]["earnings_per_share_usd"]
+    expected_eps_map = expected_annual["per_unit_metrics"]["earnings"]
     expected_eps = [expected_eps_map[str(year)] for year in years]
     assert len(parsed_eps) == len(expected_eps)
     if parsed_eps and expected_eps:

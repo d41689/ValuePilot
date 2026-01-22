@@ -19,6 +19,11 @@
       "unit": "usd",
       "period_type": "AS_OF"
     },
+    "total_debt": {
+      "canonical": "total_debt",
+      "unit": "usd",
+      "period_type": "AS_OF"
+    },
     "ltdebt": {
       "canonical": "long_term_debt",
       "unit": "usd",

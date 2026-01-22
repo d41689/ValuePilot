@@ -196,7 +196,8 @@ def _extract_value(
         if isinstance(json_val, dict):
             value_json = json_val
 
-    if value_json is None and _is_estimate(mapping, match, root):
+    # Do not emit "estimate-only" facts when the value is missing/null.
+    if value_json is None and (value_numeric is not None or value_text is not None) and _is_estimate(mapping, match, root):
         value_json = {"is_estimate": True}
 
     return value_numeric, value_text, value_json, unit, used_paths

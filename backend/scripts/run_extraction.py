@@ -184,7 +184,15 @@ def extract_from_discovery(discovery: Dict[str, Any], spec: Dict[str, Any]) -> D
         for module in page.get("modules", []):
             module_key = _module_key(spec, module)
             as_of_date = _extract_as_of_date(module.get("anchor_text") or module.get("name"))
+            # Seed with the best year header we can find in this module so we can parse
+            # tables that appear before the explicit header table in reading order.
             current_years: List[str] = []
+            for table in module.get("table_candidates", []):
+                if table.get("merged_into"):
+                    continue
+                years = extract_year_columns(table)
+                if len(years) > len(current_years):
+                    current_years = years
 
             for field in module.get("field_candidates", []):
                 label_key = field.get("label_key")
@@ -232,22 +240,40 @@ def extract_from_discovery(discovery: Dict[str, Any], spec: Dict[str, Any]) -> D
                 if years:
                     current_years = years
                 elif current_years:
-                    def _looks_like_year_grid(rows: List[Dict[str, Any]], yr_count: int) -> bool:
-                        for r in rows:
-                            cells = r.get("cells") or []
-                            pre, label, post = fields_extracting._split_row_cells_for_label(cells)
-                            if not label:
-                                continue
-                            values = [v for v in (pre + post) if v]
-                            if len(values) >= max(4, yr_count - 1):
-                                return True
-                        return False
-
                     rows = table.get("rows") or []
-                    if _looks_like_year_grid(rows, len(current_years)):
-                        years = current_years
-                    else:
+                    # Some Value Line tables (e.g. sales/net profit rows) may only include the
+                    # trailing subset of years + the projection column. When we can't extract
+                    # an explicit year header, reuse the most recent year tokens.
+                    max_values = 0
+                    has_projection_col = False
+                    for r in rows:
+                        cells = r.get("cells") or []
+                        pre, label, post = fields_extracting._split_row_cells_for_label(cells)
+                        if not label:
+                            continue
+                        values = [
+                            fields_extracting.clean_text(v)
+                            for v in (pre + post)
+                            if fields_extracting.clean_text(v)
+                        ]
+                        post_values = [
+                            fields_extracting.clean_text(v)
+                            for v in post
+                            if fields_extracting.clean_text(v)
+                        ]
+                        if post_values:
+                            has_projection_col = True
+                        max_values = max(max_values, len(values))
+
+                    if max_values < 4:
                         continue
+
+                    if max_values < len(current_years) and has_projection_col and max_values > 1:
+                        # Current year headers often omit the projection-range token; drop one slot
+                        # so the trailing year subset aligns and the projection column is ignored.
+                        years = current_years[-(max_values - 1):]
+                    else:
+                        years = current_years[-max_values:] if max_values < len(current_years) else current_years
                 else:
                     continue
                 for row in table.get("rows", []):

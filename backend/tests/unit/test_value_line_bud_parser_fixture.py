@@ -28,3 +28,15 @@ def test_value_line_bud_page_json_matches_expected_fixture():
     actual = build_page_json()
 
     assert actual == expected
+
+
+def test_bud_v1_1_quarterly_dividends_have_period_end_and_narrative_has_commentary_key():
+    actual = build_page_json()
+
+    year = actual["quarterly_dividends_paid"]["by_year"][0]
+    assert year["quarters"]["Q1"]["period_end"] is not None
+    assert year["quarters"]["Q2"]["period_end"] is not None
+    assert year["quarters"]["Q3"]["period_end"] is not None
+    assert year["quarters"]["Q4"]["period_end"] is not None
+
+    assert "analyst_commentary" in actual["narrative"]
