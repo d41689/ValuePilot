@@ -311,13 +311,13 @@ class ValueLineV1Parser(BaseParser):
                 confidence_score=0.9,
             ))
 
-        high_match = re.search(r'High\s+(\d+)\s*\(\+?(\d+)%\)\s+(\d+)%', self.text, re.IGNORECASE)
+        high_match = re.search(r'High\s+(\d+)\s*\(([-+]?\d+)%\)\s+([-+]?\d+)%', self.text, re.IGNORECASE)
         if high_match:
             results.append(ExtractionResult(field_key="long_term_projection_high_price", raw_value_text=high_match.group(1), original_text_snippet=high_match.group(0), confidence_score=0.9))
             results.append(ExtractionResult(field_key="long_term_projection_high_price_gain_pct", raw_value_text=f"{high_match.group(2)}%", original_text_snippet=high_match.group(0), confidence_score=0.9))
             results.append(ExtractionResult(field_key="long_term_projection_high_total_return_pct", raw_value_text=f"{high_match.group(3)}%", original_text_snippet=high_match.group(0), confidence_score=0.9))
 
-        low_match = re.search(r'Low\s+(\d+)\s*\(\+?(\d+)%\)\s+(\d+)%', self.text, re.IGNORECASE)
+        low_match = re.search(r'Low\s+(\d+)\s*\(([-+]?\d+)%\)\s+([-+]?\d+)%', self.text, re.IGNORECASE)
         if low_match:
             results.append(ExtractionResult(field_key="long_term_projection_low_price", raw_value_text=low_match.group(1), original_text_snippet=low_match.group(0), confidence_score=0.9))
             results.append(ExtractionResult(field_key="long_term_projection_low_price_gain_pct", raw_value_text=f"{low_match.group(2)}%", original_text_snippet=low_match.group(0), confidence_score=0.9))
@@ -351,21 +351,33 @@ class ValueLineV1Parser(BaseParser):
                 confidence_score=0.7,
             ))
 
-        total_debt = re.search(r'Total\s*Debt\s*\$([\d\.]+)\s*(mil|mill|million|bil|bill|billion)\.?\b', self.text, re.IGNORECASE)
-        if total_debt:
-            results.append(ExtractionResult(field_key="total_debt", raw_value_text=_money_from_match(total_debt), original_text_snippet=total_debt.group(0), confidence_score=0.9))
+        def _cap_money_or_nil(field_key: str, label_pat: str) -> None:
+            money = re.search(
+                rf'{label_pat}\s*\$([\d\.]+)\s*(mil|mill|million|bil|bill|billion)\.?\b',
+                self.text,
+                re.IGNORECASE,
+            )
+            if money:
+                results.append(ExtractionResult(
+                    field_key=field_key,
+                    raw_value_text=_money_from_match(money),
+                    original_text_snippet=money.group(0),
+                    confidence_score=0.9,
+                ))
+                return
+            nil_match = re.search(rf'{label_pat}\s*Nil\b', self.text, re.IGNORECASE)
+            if nil_match:
+                results.append(ExtractionResult(
+                    field_key=field_key,
+                    raw_value_text="Nil",
+                    original_text_snippet=nil_match.group(0),
+                    confidence_score=0.7,
+                ))
 
-        due_5y = re.search(r'Due\s*in\s*5\s*Yrs\s*\$([\d\.]+)\s*(mil|mill|million|bil|bill|billion)\.?\b', self.text, re.IGNORECASE)
-        if due_5y:
-            results.append(ExtractionResult(field_key="debt_due_in_5_years", raw_value_text=_money_from_match(due_5y), original_text_snippet=due_5y.group(0), confidence_score=0.9))
-        
-        lt_debt = re.search(r'LT\s*Debt\s*\$([\d\.]+)\s*(mil|mill|million|bil|bill|billion)\.?\b', self.text, re.IGNORECASE)
-        if lt_debt:
-            results.append(ExtractionResult(field_key="lt_debt", raw_value_text=_money_from_match(lt_debt), original_text_snippet=lt_debt.group(0), confidence_score=0.9))
-
-        lt_interest = re.search(r'LT\s*Interest\s*\$([\d\.]+)\s*(mil|mill|million|bil|bill|billion)\.?\b', self.text, re.IGNORECASE)
-        if lt_interest:
-            results.append(ExtractionResult(field_key="lt_interest", raw_value_text=_money_from_match(lt_interest), original_text_snippet=lt_interest.group(0), confidence_score=0.9))
+        _cap_money_or_nil("total_debt", r'Total\s*Debt')
+        _cap_money_or_nil("debt_due_in_5_years", r'Due\s*in\s*5\s*Yrs')
+        _cap_money_or_nil("lt_debt", r'LT\s*Debt')
+        _cap_money_or_nil("lt_interest", r'LT\s*Interest')
 
         cap_pct = re.search(r'\((\d+\.?\d*)%\s*of\s*Cap', self.text, re.IGNORECASE)
         if cap_pct:
@@ -440,6 +452,7 @@ class ValueLineV1Parser(BaseParser):
             as_of = None
             notes = None
             class_a_shares = None
+            class_a_shares_display = None
             voting_multiple = None
             voting_notes = None
             unit = "ADRs" if re.search(r'ADR', shares_match2.group(0), re.IGNORECASE) else None
@@ -447,11 +460,25 @@ class ValueLineV1Parser(BaseParser):
             as_of_match = re.search(r'asof\s*(\d{1,2}/\d{1,2}/\d{2})', tail, re.IGNORECASE)
             if as_of_match:
                 as_of = self._iso_from_mdy(as_of_match.group(1)) or as_of_match.group(1)
-            includes = re.search(r'Includes\s*([\d,]+)\s*Class\s*A\s*shares', tail, re.IGNORECASE)
+            includes = re.search(
+                r'Includes\s*([\d,\.]+)\s*(million|mil|mill)?\s*Class\s*A\s*shares',
+                tail,
+                re.IGNORECASE,
+            )
             if includes:
-                count = includes.group(1)
-                notes = f"Includes {count} Class A shares"
-                class_a_shares = count
+                raw_count = includes.group(1)
+                count = raw_count.replace(",", "")
+                notes = f"Includes {raw_count} Class A shares"
+                scale_token = includes.group(2)
+                if scale_token:
+                    scale = 1_000_000.0
+                    class_a_shares = str(int(float(count) * scale))
+                    scale_label = "million"
+                    class_a_shares_display = f"{count} {scale_label} class A shares"
+                    notes = f"Includes {raw_count} {scale_label} class A shares"
+                else:
+                    class_a_shares = raw_count
+                    class_a_shares_display = None
                 voting_match = re.search(r'(\d+)\s*x\s*voting', tail, re.IGNORECASE)
                 if voting_match:
                     voting_multiple = int(voting_match.group(1))
@@ -469,6 +496,7 @@ class ValueLineV1Parser(BaseParser):
                         "as_of": as_of,
                         "notes": notes,
                         "class_a_shares": class_a_shares,
+                        "class_a_shares_display": class_a_shares_display,
                         "class_a_voting_power_multiple": voting_multiple,
                         "class_a_voting_power_notes": voting_notes,
                         "unit": unit,
@@ -477,6 +505,40 @@ class ValueLineV1Parser(BaseParser):
                 },
                 confidence_score=0.9,
             ))
+        else:
+            shares_scaled = re.search(
+                r'Common\s*Stock\s*([\d\.]+)\s*(mil|mill|million)\.?\s*(?:shs|shares)\.?',
+                self.text,
+                re.IGNORECASE,
+            )
+            if shares_scaled:
+                num = float(shares_scaled.group(1))
+                scaled = str(int(num * 1_000_000.0))
+                parsed_meta = {}
+                parsed_meta["as_of"] = None
+                tail = self.text[shares_scaled.end(): shares_scaled.end() + 500]
+                includes = re.search(
+                    r'Includes\s*([\d,\.]+)\s*(million|mil|mill)?\s*Class\s*A\s*shares',
+                    tail,
+                    re.IGNORECASE,
+                )
+                if includes:
+                    raw_count = includes.group(1)
+                    count = raw_count.replace(",", "")
+                    scale_token = includes.group(2)
+                    if scale_token:
+                        class_a_value = str(int(float(count) * 1_000_000.0))
+                        parsed_meta["class_a_shares"] = class_a_value
+                        parsed_meta["class_a_shares_display"] = f"{raw_count} million class A shares"
+                    else:
+                        parsed_meta["class_a_shares"] = raw_count
+                results.append(ExtractionResult(
+                    field_key="common_stock_shares_outstanding",
+                    raw_value_text=scaled,
+                    original_text_snippet=shares_scaled.group(0),
+                    parsed_value_json=parsed_meta or None,
+                    confidence_score=0.9,
+                ))
 
         mkt_match = re.search(
             r'MARKET\s*CAP\s*:?\s*\$([\d\.]+)\s*(billion|mil|mill|million)\b(?:\(([^)]+)\))?',

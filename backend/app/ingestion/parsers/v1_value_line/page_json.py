@@ -301,6 +301,7 @@ def _build_capital_structure(
         raw = _raw(by_key, raw_key)
         if raw is not None:
             cap[output_key] = formatter(raw)
+    cap.setdefault("lt_interest_percent_of_capital", None)
 
     leases_raw = _raw(by_key, "leases_uncapitalized_annual_rentals")
     if leases_raw is not None:
@@ -349,14 +350,15 @@ def _build_capital_structure(
             },
         }
         as_of = parsed_meta.get("as_of")
-        if as_of:
+        if "as_of" in parsed_meta:
             common_stock["as_of"] = as_of
         elif cap.get("as_of"):
             common_stock["as_of"] = cap["as_of"]
         class_a_raw = parsed_meta.get("class_a_shares")
+        class_a_display = parsed_meta.get("class_a_shares_display") or class_a_raw
         if class_a_raw:
             common_stock["class_a_shares"] = {
-                "display": class_a_raw,
+                "display": class_a_display,
                 "normalized": _to_number(class_a_raw),
                 "unit": "shares",
             }
@@ -367,6 +369,8 @@ def _build_capital_structure(
                 "multiple": voting_multiple,
                 "notes": voting_notes,
             }
+        elif class_a_raw:
+            common_stock["class_a_voting_power"] = None
         cap["common_stock"] = common_stock
 
     market_raw = _raw(by_key, "market_cap")
@@ -768,6 +772,8 @@ def _raw(by_key: dict[str, Any], key: str) -> Optional[str]:
 
 
 def _money_entry(raw_value: Optional[str]) -> dict[str, Any]:
+    if raw_value and raw_value.strip().upper() in {"NIL", "NMF", "--"}:
+        return {"display": raw_value, "normalized": None, "unit": "USD"}
     normalized, unit = Scaler.normalize(raw_value, "number") if raw_value else (None, None)
     if normalized is not None:
         normalized = round(normalized, 6)
@@ -951,6 +957,16 @@ def _detect_adr_layout(parser: ValueLineV1Parser, by_key: dict[str, Any]) -> boo
 def _shares_display(res: Any, raw_value: str) -> str:
     if res and getattr(res, "original_text_snippet", None):
         snippet = res.original_text_snippet or ""
+        match = re.search(
+            r'Common\s*Stock\s*([\d\.]+)\s*(mil|mill|million)\.?\s*(?:shs|shares)',
+            snippet,
+            re.IGNORECASE,
+        )
+        if match:
+            num = match.group(1)
+            token = match.group(2).lower()
+            token_display = "mill." if token in {"mil", "mill", "million"} else token
+            return f"{num} {token_display} shs"
         match = re.search(r'Common\s*Stock\s*([\d,]+)', snippet, re.IGNORECASE)
         if match:
             return match.group(1)
