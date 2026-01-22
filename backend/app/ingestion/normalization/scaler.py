@@ -11,6 +11,7 @@ class Scaler:
         'million': 1_000_000,
         'b': 1_000_000_000,
         'bil': 1_000_000_000,
+        'bill': 1_000_000_000,
         'billion': 1_000_000_000,
         't': 1_000_000_000_000,
         'tril': 1_000_000_000_000,
@@ -56,7 +57,7 @@ class Scaler:
         # Detect Scale
         scale_multiplier = 1.0
         scale_match = re.search(
-            r'(thousand|trillion|tril|billion|bil|million|mill|mil|k|m|b|t)\.?\b',
+            r'(thousand|trillion|tril|billion|bill|bil|million|mill|mil|k|m|b|t)\.?\b',
             clean_text,
         )
         if scale_match:

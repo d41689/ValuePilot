@@ -19,6 +19,7 @@ def build_value_line_page_json(
 
     report_date = _report_date(by_key)
     insurance_layout = _detect_insurance_layout(by_key)
+    adr_layout = _detect_adr_layout(parser, by_key)
     quarterly_block = _build_quarterly_block(
         by_key.get("quarterly_sales_usd_millions"),
         unit="USD_millions",
@@ -43,9 +44,18 @@ def build_value_line_page_json(
         "target_price_18m": _build_target_18m(by_key),
         "long_term_projection": _build_long_term_projection(by_key),
         "institutional_decisions": _build_institutional_decisions(by_key),
-        "capital_structure": _build_capital_structure(by_key, insurance_layout=insurance_layout),
+        "capital_structure": _build_capital_structure(
+            by_key,
+            insurance_layout=insurance_layout,
+            adr_layout=adr_layout,
+        ),
         "financial_position": _build_financial_position(by_key),
-        "annual_rates": _build_annual_rates(parser.text, by_key, insurance_layout=insurance_layout),
+        "annual_rates": _build_annual_rates(
+            parser.text,
+            by_key,
+            insurance_layout=insurance_layout,
+            adr_layout=adr_layout,
+        ),
         "earnings_per_share": _build_quarterly_block(
             by_key.get("earnings_per_share"),
             unit="USD_per_share",
@@ -53,14 +63,16 @@ def build_value_line_page_json(
         ),
         "quarterly_dividends_paid": _build_quarterly_block(
             by_key.get("quarterly_dividends_paid_per_share"),
-            unit="USD_per_share",
+            unit="USD_per_adr" if adr_layout else "USD_per_share",
             report_date=report_date,
-            add_missing_report_year=True,
+            add_missing_report_year=not adr_layout,
+            estimate_year_offset=0 if adr_layout else 1,
+            include_period_end=not adr_layout,
         ),
-        "annual_financials": _build_annual_financials(by_key, insurance_layout=insurance_layout),
+        "annual_financials": _build_annual_financials(by_key, insurance_layout=insurance_layout, adr_layout=adr_layout),
         "total_return": _build_total_return(by_key),
         "historical_price_range": _build_historical_price_range(by_key, insurance_layout=insurance_layout),
-        "narrative": _build_narrative(by_key, report_date),
+        "narrative": _build_narrative(by_key, report_date, adr_layout=adr_layout),
     }
 
     if insurance_layout:
@@ -71,6 +83,18 @@ def build_value_line_page_json(
     current_position = _build_current_position(by_key)
     if current_position:
         output["current_position"] = current_position
+
+    earnings_adr = _build_quarterly_block(
+        by_key.get("earnings_per_adr"),
+        unit="USD_per_adr",
+        report_date=report_date,
+    )
+    if isinstance(earnings_adr, dict) and earnings_adr.get("by_year"):
+        output["earnings_per_adr"] = earnings_adr
+
+    earnings = output.get("earnings_per_share")
+    if isinstance(earnings, dict) and not earnings.get("by_year"):
+        output.pop("earnings_per_share", None)
 
     return output
 
@@ -263,7 +287,12 @@ def _build_institutional_decisions(by_key: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _build_capital_structure(by_key: dict[str, Any], *, insurance_layout: bool) -> dict[str, Any]:
+def _build_capital_structure(
+    by_key: dict[str, Any],
+    *,
+    insurance_layout: bool,
+    adr_layout: bool,
+) -> dict[str, Any]:
     cap: dict[str, Any] = {}
 
     as_of = _raw(by_key, "capital_structure_as_of")
@@ -286,6 +315,8 @@ def _build_capital_structure(by_key: dict[str, Any], *, insurance_layout: bool) 
         leases_entry = _money_entry(leases_raw)
         leases_entry["notes"] = "Annual rentals"
         cap["leases_uncapitalized"] = leases_entry
+    elif not insurance_layout:
+        cap["leases_uncapitalized"] = None
 
     pension_assets_raw = _raw(by_key, "pension_assets")
     if pension_assets_raw is not None:
@@ -314,17 +345,22 @@ def _build_capital_structure(by_key: dict[str, Any], *, insurance_layout: bool) 
     raw_shares = _raw(by_key, "common_stock_shares_outstanding") or _raw(by_key, "shares_outstanding")
     if raw_shares is not None:
         shares_display = raw_shares if insurance_layout else _shares_display(shares_res, raw_shares)
+        unit = "shares"
+        parsed_meta = shares_res.parsed_value_json if shares_res and isinstance(shares_res.parsed_value_json, dict) else {}
+        if adr_layout or (parsed_meta.get("unit") == "ADRs"):
+            unit = "ADRs"
         common_stock = {
             "shares_outstanding": {
                 "display": shares_display,
                 "normalized": _to_number(raw_shares),
-                "unit": "shares",
+                "unit": unit,
             },
         }
-        parsed_meta = shares_res.parsed_value_json if shares_res and isinstance(shares_res.parsed_value_json, dict) else {}
         as_of = parsed_meta.get("as_of")
         if as_of:
             common_stock["as_of"] = as_of
+        elif cap.get("as_of"):
+            common_stock["as_of"] = cap["as_of"]
         class_a_raw = parsed_meta.get("class_a_shares")
         if class_a_raw:
             common_stock["class_a_shares"] = {
@@ -387,13 +423,17 @@ def _build_current_position(by_key: dict[str, Any]) -> Optional[dict[str, Any]]:
     periods = []
     for idx, year in enumerate(years):
         label, period_end_date = _period_label_and_end(year)
+        inventory_fifo = _series_at(parsed.get("inventory_fifo"), idx)
+        inventory_lifo = _series_at(parsed.get("inventory_lifo"), idx)
+        inventory_key = "inventory_fifo" if inventory_fifo is not None else "inventory_lifo"
+        inventory_value = inventory_fifo if inventory_fifo is not None else inventory_lifo
         periods.append({
             "label": label,
             "period_end_date": period_end_date,
             "assets": {
                 "cash_assets": _series_at(parsed.get("cash_assets"), idx),
                 "receivables": _series_at(parsed.get("receivables"), idx),
-                "inventory_lifo": _series_at(parsed.get("inventory_lifo"), idx),
+                inventory_key: inventory_value,
                 "other_current_assets": _series_at(parsed.get("other_current_assets"), idx),
                 "total_current_assets": _series_at(parsed.get("current_assets_total"), idx),
             },
@@ -408,7 +448,13 @@ def _build_current_position(by_key: dict[str, Any]) -> Optional[dict[str, Any]]:
     return {"unit": "USD_millions", "periods": periods}
 
 
-def _build_annual_rates(text: str, by_key: dict[str, Any], *, insurance_layout: bool) -> dict[str, Any]:
+def _build_annual_rates(
+    text: str,
+    by_key: dict[str, Any],
+    *,
+    insurance_layout: bool,
+    adr_layout: bool,
+) -> dict[str, Any]:
     res = by_key.get("annual_rates_of_change")
     parsed = res.parsed_value_json if res and res.parsed_value_json else {}
     from_period, to_period = _annual_rates_periods(text)
@@ -456,7 +502,10 @@ def _build_annual_rates(text: str, by_key: dict[str, Any], *, insurance_layout: 
             metric["past_5y_note"] = note
         metrics.append(metric)
 
-    return {"unit": "per_share", "metrics": metrics}
+    unit = "per_adr" if adr_layout else "per_share"
+    if insurance_layout:
+        unit = "per_share"
+    return {"unit": unit, "metrics": metrics}
 
 
 def _build_quarterly_block(
@@ -465,19 +514,33 @@ def _build_quarterly_block(
     unit: str,
     report_date: Optional[str],
     add_missing_report_year: bool = False,
+    estimate_year_offset: int = 1,
+    include_period_end: bool = True,
 ) -> dict[str, Any]:
     rows = res.parsed_value_json if res and res.parsed_value_json else []
     report_year = int(report_date[:4]) if report_date else None
     by_year = []
     for row in rows:
         year = row.get("calendar_year")
-        quarters = {
-            "Q1": {"period_end": _quarter_end_date(year, 1), "value": row.get("mar_31")},
-            "Q2": {"period_end": _quarter_end_date(year, 2), "value": row.get("jun_30")},
-            "Q3": {"period_end": _quarter_end_date(year, 3), "value": row.get("sep_30")},
-            "Q4": {"period_end": _quarter_end_date(year, 4), "value": row.get("dec_31")},
-        }
-        is_estimated = report_year is not None and year is not None and year >= report_year - 1
+        if include_period_end:
+            quarters = {
+                "Q1": {"period_end": _quarter_end_date(year, 1), "value": row.get("mar_31")},
+                "Q2": {"period_end": _quarter_end_date(year, 2), "value": row.get("jun_30")},
+                "Q3": {"period_end": _quarter_end_date(year, 3), "value": row.get("sep_30")},
+                "Q4": {"period_end": _quarter_end_date(year, 4), "value": row.get("dec_31")},
+            }
+        else:
+            quarters = {
+                "Q1": {"value": row.get("mar_31")},
+                "Q2": {"value": row.get("jun_30")},
+                "Q3": {"value": row.get("sep_30")},
+                "Q4": {"value": row.get("dec_31")},
+            }
+        is_estimated = (
+            report_year is not None
+            and year is not None
+            and year >= report_year - estimate_year_offset
+        )
         by_year.append({
             "calendar_year": year,
             "quarters": quarters,
@@ -502,7 +565,12 @@ def _build_quarterly_block(
     return {"unit": unit, "by_year": by_year}
 
 
-def _build_annual_financials(by_key: dict[str, Any], *, insurance_layout: bool) -> dict[str, Any]:
+def _build_annual_financials(
+    by_key: dict[str, Any],
+    *,
+    insurance_layout: bool,
+    adr_layout: bool,
+) -> dict[str, Any]:
     res = by_key.get("tables_time_series")
     if not res or not res.parsed_value_json:
         return {"meta": {}}
@@ -523,13 +591,14 @@ def _build_annual_financials(by_key: dict[str, Any], *, insurance_layout: bool) 
             "common_shares_outstanding_millions": "common_shares_outstanding_millions",
         }
     else:
+        per_share_suffix = "per_adr" if adr_layout else "per_share"
         per_share_map = {
-            "sales_per_share_usd": "sales_per_share",
-            "cash_flow_per_share_usd": "cash_flow_per_share",
-            "capital_spending_per_share_usd": "capital_spending_per_share",
-            "earnings_per_share_usd": "earnings_per_share",
-            "dividends_declared_per_share_usd": "dividends_declared_per_share",
-            "book_value_per_share_usd": "book_value_per_share",
+            "sales_per_share_usd": f"sales_{per_share_suffix}",
+            "cash_flow_per_share_usd": f"cash_flow_{per_share_suffix}",
+            "capital_spending_per_share_usd": f"capital_spending_{per_share_suffix}",
+            "earnings_per_share_usd": f"earnings_{per_share_suffix}",
+            "dividends_declared_per_share_usd": f"dividends_declared_{per_share_suffix}",
+            "book_value_per_share_usd": f"book_value_{per_share_suffix}",
             "common_shares_outstanding_millions": "common_shares_outstanding_millions",
         }
 
@@ -551,7 +620,7 @@ def _build_annual_financials(by_key: dict[str, Any], *, insurance_layout: bool) 
             "relative_pe_ratio",
             "avg_annual_dividend_yield_pct",
         ],
-        drop_trailing_null=True,
+        drop_trailing_null=not adr_layout,
         drop_all_null=True,
     )
     if insurance_layout:
@@ -589,6 +658,41 @@ def _build_annual_financials(by_key: dict[str, Any], *, insurance_layout: bool) 
     }
     if balance_sheet:
         payload["balance_sheet_and_returns_usd_millions"] = balance_sheet
+
+    if not insurance_layout and adr_layout:
+        extra_income = _series_group_to_year_map(
+            annual.get("income_statement_usd_millions", {}),
+            years,
+            projection,
+            keys=["income_tax_rate_pct", "net_profit_margin_pct"],
+            drop_all_null=True,
+        )
+        extra_balance = _series_group_to_year_map(
+            annual.get("balance_sheet_and_returns_usd_millions", {}),
+            years,
+            projection,
+            keys=[
+                "working_capital",
+                "long_term_debt",
+                "shareholders_equity",
+                "return_on_total_capital_pct",
+                "return_on_shareholders_equity_pct",
+                "retained_to_common_equity_pct",
+                "all_dividends_to_net_profit_pct",
+            ],
+            rename_map={
+                "working_capital": "working_capital_usd_millions",
+                "long_term_debt": "long_term_debt_usd_millions",
+                "shareholders_equity": "shareholders_equity_usd_millions",
+            },
+            drop_all_null=True,
+        )
+        payload.update(extra_income)
+        payload.update(extra_balance)
+        for key in ("retained_to_common_equity_pct", "all_dividends_to_net_profit_pct"):
+            series = payload.get(key)
+            if isinstance(series, dict) and any(value is None for value in series.values()):
+                series["notes"] = "NMF values are represented as null"
 
     return payload
 
@@ -646,7 +750,12 @@ def _build_historical_price_range(by_key: dict[str, Any], *, insurance_layout: b
     return rows
 
 
-def _build_narrative(by_key: dict[str, Any], report_date: Optional[str]) -> dict[str, Any]:
+def _build_narrative(
+    by_key: dict[str, Any],
+    report_date: Optional[str],
+    *,
+    adr_layout: bool,
+) -> dict[str, Any]:
     analyst = by_key.get("analyst_name")
     analyst_name = None
     if analyst and isinstance(analyst.parsed_value_json, dict):
@@ -654,12 +763,15 @@ def _build_narrative(by_key: dict[str, Any], report_date: Optional[str]) -> dict
     if analyst_name is None:
         analyst_name = _raw(by_key, "analyst_name")
 
-    return {
+    narrative = {
         "business": _raw(by_key, "business_description"),
-        "analyst_commentary": _raw(by_key, "analyst_commentary"),
         "analyst_name": analyst_name,
         "commentary_date": report_date,
     }
+    commentary = _raw(by_key, "analyst_commentary")
+    if commentary is not None or not adr_layout:
+        narrative["analyst_commentary"] = commentary
+    return narrative
 
 
 def _raw(by_key: dict[str, Any], key: str) -> Optional[str]:
@@ -671,6 +783,8 @@ def _raw(by_key: dict[str, Any], key: str) -> Optional[str]:
 
 def _money_entry(raw_value: Optional[str]) -> dict[str, Any]:
     normalized, unit = Scaler.normalize(raw_value, "number") if raw_value else (None, None)
+    if normalized is not None:
+        normalized = round(normalized, 6)
     return {"display": raw_value, "normalized": normalized, "unit": unit}
 
 
@@ -831,6 +945,20 @@ def _detect_insurance_layout(by_key: dict[str, Any]) -> bool:
         if ar.parsed_value_json.get("premium_income") or ar.parsed_value_json.get("investment_income"):
             return True
 
+    return False
+
+
+def _detect_adr_layout(parser: ValueLineV1Parser, by_key: dict[str, Any]) -> bool:
+    head_text = parser.text[:2000] if parser.text else ""
+    if re.search(r'\bADR\b', head_text, re.IGNORECASE):
+        return True
+    shares_res = by_key.get("common_stock_shares_outstanding") or by_key.get("shares_outstanding")
+    if shares_res and getattr(shares_res, "original_text_snippet", None):
+        if re.search(r'ADR', shares_res.original_text_snippet or "", re.IGNORECASE):
+            return True
+    if shares_res and isinstance(shares_res.parsed_value_json, dict):
+        if shares_res.parsed_value_json.get("unit") == "ADRs":
+            return True
     return False
 
 
