@@ -124,8 +124,11 @@ export default function ScreenerPage() {
             No stocks found matching criteria.
           </div>
         ) : (
-          <div className="overflow-x-auto">
-            <table className="min-w-max divide-y divide-gray-200">
+          <div className="relative">
+            <div className="pointer-events-none absolute inset-y-0 left-0 w-6 bg-gradient-to-r from-white to-transparent" />
+            <div className="pointer-events-none absolute inset-y-0 right-0 w-6 bg-gradient-to-l from-white to-transparent" />
+            <div className="overflow-x-auto">
+              <table className="min-w-max divide-y divide-gray-200">
               <thead className="bg-gray-50">
                 <tr>
                   <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Ticker</th>
@@ -234,7 +237,14 @@ export default function ScreenerPage() {
                   );
                 })}
               </tbody>
-            </table>
+              </table>
+            </div>
+            <div className="flex items-center justify-center gap-2 py-2 text-xs text-gray-400">
+              <span aria-hidden>←</span>
+              <span className="h-1 w-24 rounded-full bg-gradient-to-r from-gray-200 via-gray-400 to-gray-200" />
+              <span>Scroll horizontally to see more</span>
+              <span aria-hidden>→</span>
+            </div>
           </div>
         )}
       </div>
