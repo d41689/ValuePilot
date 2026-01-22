@@ -643,6 +643,7 @@
   "total_return": {
     "as_of_date": "2025-12-29",
     "unit": "percent",
+    "source": "value_line",
     "series": [
       { "name": "this_stock", "window_years": 1, "value_pct": 29.6 },
       { "name": "this_stock", "window_years": 3, "value_pct": 10.3 },
