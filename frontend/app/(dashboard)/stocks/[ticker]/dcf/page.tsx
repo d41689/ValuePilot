@@ -333,9 +333,9 @@ export default function StockDcfPage() {
                     </button>
                   </div>
                 </div>
-                <div className="flex flex-wrap items-center justify-between gap-3">
+                <div className="flex items-center justify-between gap-3">
                   <span>Growth Rate</span>
-                  <div className="flex flex-wrap items-center gap-3">
+                  <div className="flex flex-col items-end gap-2">
                     <div className="flex items-center overflow-hidden rounded-lg border border-border/70 bg-background">
                       <button
                         type="button"
@@ -367,7 +367,7 @@ export default function StockDcfPage() {
                         +
                       </button>
                     </div>
-                    <div className="flex flex-wrap items-center gap-2">
+                    <div className="flex flex-wrap items-center justify-end gap-2">
                       {growthRateOptions.map((option) => (
                         <button
                           key={option.key}
