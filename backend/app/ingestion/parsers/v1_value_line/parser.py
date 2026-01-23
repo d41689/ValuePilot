@@ -191,17 +191,22 @@ class ValueLineV1Parser(BaseParser):
                     confidence_score=0.8,
                 ))
 
-        if not any(r.field_key == "safety" for r in results) and 1 in self.page_words:
-            safety_value = self._rating_from_words("SAFETY", self.page_words[1])
-            if safety_value is not None:
-                notes = _rating_note_from_text("SAFETY")
-                parsed = {"value": safety_value}
+        # Word-layout fallback: some PDFs omit the numeric rating in the text layer.
+        if 1 in self.page_words:
+            for key, label in (("timeliness", "TIMELINESS"), ("technical", "TECHNICAL"), ("safety", "SAFETY")):
+                if any(r.field_key == key for r in results):
+                    continue
+                value = self._rating_from_words(label, self.page_words[1])
+                if value is None:
+                    continue
+                notes = _rating_note_from_text(label)
+                parsed = {"value": value}
                 if notes:
                     parsed["notes"] = notes
                 results.append(ExtractionResult(
-                    field_key="safety",
-                    raw_value_text=str(safety_value),
-                    original_text_snippet="SAFETY (word layout)",
+                    field_key=key,
+                    raw_value_text=str(value),
+                    original_text_snippet=f"{label} (word layout)",
                     parsed_value_json=parsed,
                     confidence_score=0.6,
                 ))
@@ -313,15 +318,19 @@ class ValueLineV1Parser(BaseParser):
 
         high_match = re.search(r'High\s+(\d+)\s*\(([-+]?\d+)%\)\s+([-+]?\d+)%', self.text, re.IGNORECASE)
         if high_match:
+            gain = high_match.group(2).lstrip("+")
+            total = high_match.group(3).lstrip("+")
             results.append(ExtractionResult(field_key="long_term_projection_high_price", raw_value_text=high_match.group(1), original_text_snippet=high_match.group(0), confidence_score=0.9))
-            results.append(ExtractionResult(field_key="long_term_projection_high_price_gain_pct", raw_value_text=f"{high_match.group(2)}%", original_text_snippet=high_match.group(0), confidence_score=0.9))
-            results.append(ExtractionResult(field_key="long_term_projection_high_total_return_pct", raw_value_text=f"{high_match.group(3)}%", original_text_snippet=high_match.group(0), confidence_score=0.9))
+            results.append(ExtractionResult(field_key="long_term_projection_high_price_gain_pct", raw_value_text=f"{gain}%", original_text_snippet=high_match.group(0), confidence_score=0.9))
+            results.append(ExtractionResult(field_key="long_term_projection_high_total_return_pct", raw_value_text=f"{total}%", original_text_snippet=high_match.group(0), confidence_score=0.9))
 
         low_match = re.search(r'Low\s+(\d+)\s*\(([-+]?\d+)%\)\s+([-+]?\d+)%', self.text, re.IGNORECASE)
         if low_match:
+            gain = low_match.group(2).lstrip("+")
+            total = low_match.group(3).lstrip("+")
             results.append(ExtractionResult(field_key="long_term_projection_low_price", raw_value_text=low_match.group(1), original_text_snippet=low_match.group(0), confidence_score=0.9))
-            results.append(ExtractionResult(field_key="long_term_projection_low_price_gain_pct", raw_value_text=f"{low_match.group(2)}%", original_text_snippet=low_match.group(0), confidence_score=0.9))
-            results.append(ExtractionResult(field_key="long_term_projection_low_total_return_pct", raw_value_text=f"{low_match.group(3)}%", original_text_snippet=low_match.group(0), confidence_score=0.9))
+            results.append(ExtractionResult(field_key="long_term_projection_low_price_gain_pct", raw_value_text=f"{gain}%", original_text_snippet=low_match.group(0), confidence_score=0.9))
+            results.append(ExtractionResult(field_key="long_term_projection_low_total_return_pct", raw_value_text=f"{total}%", original_text_snippet=low_match.group(0), confidence_score=0.9))
 
         # --- 3. Financial Snapshot ---
         
@@ -365,11 +374,13 @@ class ValueLineV1Parser(BaseParser):
                     confidence_score=0.9,
                 ))
                 return
-            nil_match = re.search(rf'{label_pat}\s*Nil\b', self.text, re.IGNORECASE)
+            nil_match = re.search(rf'{label_pat}\s*(?:Nil|None)\b', self.text, re.IGNORECASE)
             if nil_match:
+                word = re.search(r"(Nil|None)\b", nil_match.group(0), re.IGNORECASE)
+                value = word.group(1).title() if word else "Nil"
                 results.append(ExtractionResult(
                     field_key=field_key,
-                    raw_value_text="Nil",
+                    raw_value_text=value,
                     original_text_snippet=nil_match.group(0),
                     confidence_score=0.7,
                 ))
@@ -384,12 +395,21 @@ class ValueLineV1Parser(BaseParser):
             results.append(ExtractionResult(field_key="debt_percent_of_capital", raw_value_text=f"{cap_pct.group(1)}%", original_text_snippet=cap_pct.group(0), confidence_score=0.8))
 
         leases = re.search(
-            r'Leases,?\s*Uncapitalized\s*Annual\s*rentals\s*\$([\d\.]+)\s*(mil|mill|million|bil|bill|billion)\.?\b',
+            r'Leases,?\s*Uncapitalized[:\s]*Annual\s*rentals\s*\$([\d\.]+)\s*(mil|mill|million|bil|bill|billion)\.?\b',
             self.text,
             re.IGNORECASE,
         )
         if leases:
             results.append(ExtractionResult(field_key="leases_uncapitalized_annual_rentals", raw_value_text=_money_from_match(leases), original_text_snippet=leases.group(0), confidence_score=0.8))
+
+        if re.search(r'No\s*Defined\s*Benefit\s*Pension\s*Plan', self.text, re.IGNORECASE):
+            results.append(ExtractionResult(
+                field_key="pension_plan",
+                raw_value_text="No Defined Benefit Pension Plan",
+                original_text_snippet="No Defined Benefit Pension Plan",
+                parsed_value_json={"defined_benefit": False, "notes": "No Defined Benefit Pension Plan"},
+                confidence_score=0.8,
+            ))
 
         pension_assets = re.search(
             r'Pension\s*Assets-?\s*(\d{1,2}/\d{2})?\s*\$([\d\.]+)\s*(mil|mill|million|bil|bill|billion)\.?\b',
@@ -1318,14 +1338,40 @@ class ValueLineV1Parser(BaseParser):
 
     @staticmethod
     def _find_year_sequence(text: str) -> list[int]:
-        candidates: list[list[int]] = []
-        for match in re.finditer(r'(?:20\d{2}\s+){6,}20\d{2}', text):
-            years = [int(y) for y in re.findall(r'20\d{2}', match.group(0))]
-            if years:
-                candidates.append(years)
-        if not candidates:
+        # Value Line PDFs sometimes glue year tokens together (e.g. "20192020B"),
+        # so we can't rely on whitespace-separated year runs.
+        matches = [(int(m.group(0)), m.start()) for m in re.finditer(r"20\d{2}", text)]
+        if not matches:
             return []
-        return max(candidates, key=len)
+
+        # Group nearby year tokens into "runs" by position. This is robust against
+        # missing whitespace and minor punctuation between years.
+        max_gap = 12  # chars between consecutive year tokens within the same header/run
+        runs: list[list[int]] = []
+        current: list[int] = [matches[0][0]]
+        last_pos = matches[0][1]
+        for year, pos in matches[1:]:
+            if 0 <= pos - last_pos <= max_gap:
+                current.append(year)
+            else:
+                if len(current) >= 6:
+                    runs.append(current)
+                current = [year]
+            last_pos = pos
+        if len(current) >= 6:
+            runs.append(current)
+
+        if not runs:
+            return []
+
+        def score(years: list[int]) -> tuple[int, int]:
+            # Prefer longer runs and more unique years.
+            uniq = list(dict.fromkeys(years))
+            return (len(uniq), len(years))
+
+        best = max(runs, key=score)
+        uniq = list(dict.fromkeys(best))
+        return uniq
 
     @staticmethod
     def _align_years(years: list[int], values: list[str]) -> list[int]:
@@ -1435,13 +1481,22 @@ class ValueLineV1Parser(BaseParser):
                 prev_x1 = float(w.get("x1", 0.0))
             return "".join(parts)
 
-        def parse_line(tag: str) -> Optional[tuple[float, float]]:
-            pattern = rf'\b{tag}\.?\s+([+-]?[0-9.]+)\s+([+-]?[0-9.]+)'
+        def parse_line(tag: str) -> Optional[tuple[Optional[float], Optional[float]]]:
+            # Some PDFs use an em-dash for the missing series (e.g. "5yr. — 68.5").
+            pattern = rf"\b{tag}\.?\s+([+-]?[0-9.]+|[\u2013\u2014\u2212\u2010\u2011\u2012\u2015-]+)\s+([+-]?[0-9.]+|[\u2013\u2014\u2212\u2010\u2011\u2012\u2015-]+)"
             for line_words in lines.values():
                 text = line_text(line_words)
                 match = re.search(pattern, text, re.IGNORECASE)
                 if match:
-                    return float(match.group(1)), float(match.group(2))
+                    def _num(token: str) -> Optional[float]:
+                        token = token.strip()
+                        if re.fullmatch(r"[\u2013\u2014\u2212\u2010\u2011\u2012\u2015-]+", token):
+                            return None
+                        return float(token)
+
+                    a = _num(match.group(1))
+                    b = _num(match.group(2))
+                    return a, b
             return None
 
         returns = {

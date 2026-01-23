@@ -74,12 +74,12 @@ def build_value_line_page_json(
             unit="USD_per_adr",
             report_date=report_date,
         ),
-        "quarterly_dividends_paid": _build_quarterly_block(
+        "quarterly_dividends_paid": _build_quarterly_dividends_paid(
+            parser.text,
             by_key.get("quarterly_dividends_paid_per_share"),
             unit="USD_per_adr" if adr_layout else "USD_per_share",
             report_date=report_date,
-            add_missing_report_year=not adr_layout,
-            estimate_year_offset=0 if adr_layout else 1,
+            adr_layout=adr_layout,
         ),
         "annual_financials": _build_annual_financials(by_key, insurance_layout=insurance_layout, adr_layout=adr_layout),
         "total_return": _build_total_return(by_key),
@@ -325,6 +325,10 @@ def _build_capital_structure(
 
     if insurance_layout:
         cap["pension_plan"] = None
+    else:
+        pension_res = by_key.get("pension_plan")
+        if pension_res and isinstance(getattr(pension_res, "parsed_value_json", None), dict):
+            cap["pension_plan"] = pension_res.parsed_value_json
 
     for output_key, raw_key in (
         ("preferred_stock", "preferred_stock"),
@@ -731,6 +735,18 @@ def _build_historical_price_range(by_key: dict[str, Any], *, insurance_layout: b
     highs = prices.get("high", [])
     lows = prices.get("low", [])
 
+    # Guardrail: occasionally the text-layer match grabs year tokens (e.g. 2028/2030)
+    # instead of prices. If we see year-like prices, treat the whole block as unparsed.
+    def _looks_like_year(value: Any) -> bool:
+        try:
+            v = float(value)
+        except (TypeError, ValueError):
+            return False
+        return 1900 <= v <= 2100
+
+    if any(_looks_like_year(v) for v in highs) or any(_looks_like_year(v) for v in lows):
+        return []
+
     rows = []
     for idx, year in enumerate(years):
         rows.append({
@@ -772,7 +788,7 @@ def _raw(by_key: dict[str, Any], key: str) -> Optional[str]:
 
 
 def _money_entry(raw_value: Optional[str]) -> dict[str, Any]:
-    if raw_value and raw_value.strip().upper() in {"NIL", "NMF", "--"}:
+    if raw_value and raw_value.strip().upper() in {"NIL", "NONE", "NMF", "--"}:
         return {"display": raw_value, "normalized": None, "unit": "USD"}
     normalized, unit = Scaler.normalize(raw_value, "number") if raw_value else (None, None)
     if normalized is not None:
@@ -816,15 +832,21 @@ def _ratio_to_pct(value: Optional[float]) -> Optional[float]:
 
 
 def _annual_rates_periods(text: str) -> tuple[Optional[str], Optional[str]]:
-    block_match = re.search(r'ANNUALRATES.*?(\bto[^\n]+)', text, re.IGNORECASE | re.DOTALL)
-    segment = block_match.group(0) if block_match else text
+    # Normalize smart quotes found in some PDF text layers (e.g. to’28-’30).
+    segment = text.translate({
+        0x2018: ord("'"),
+        0x2019: ord("'"),
+        0x02BC: ord("'"),
+    })
+    # Search across the whole text: the only relevant "to" we care about includes
+    # a two-digit year range (e.g. to'28-'30), which avoids false matches.
 
     from_match = re.search(
-        r"Est(?:[\u2019'`]d)?\s*[\u2019'`]?(\d{2})-?[\u2019'`]?(\d{2})",
+        r"Est(?:'d)?\s*'?(\d{2})\s*-\s*'?(\d{2})",
         segment,
         re.IGNORECASE,
     )
-    to_match = re.search(r"to[\u2019'`]?\s*(\d{2})-?[\u2019'`]?(\d{2})", segment, re.IGNORECASE)
+    to_match = re.search(r"to'?\s*'?(\d{2})\s*-\s*'?(\d{2})", segment, re.IGNORECASE)
 
     from_period = None
     to_period = None
@@ -833,6 +855,61 @@ def _annual_rates_periods(text: str) -> tuple[Optional[str], Optional[str]]:
     if to_match:
         to_period = f"20{to_match.group(1)}-20{to_match.group(2)}"
     return from_period, to_period
+
+
+def _build_quarterly_dividends_paid(
+    text: str,
+    res: Any,
+    *,
+    unit: str,
+    report_date: Optional[str],
+    adr_layout: bool,
+) -> dict[str, Any]:
+    # Standard quarterly rows (when present).
+    block = _build_quarterly_block(
+        res,
+        unit=unit,
+        report_date=report_date,
+        add_missing_report_year=not adr_layout,
+        estimate_year_offset=0 if adr_layout else 1,
+    )
+
+    # Some reports explicitly state there are no dividends instead of providing a table.
+    compact = re.sub(r"\s+", "", text or "").upper()
+    if not re.search(r"NOCASHDIVIDENDS.{0,200}BEINGPAID", compact):
+        return block
+
+    report_year = int(report_date[:4]) if report_date else None
+    note = "No cash dividends being paid"
+
+    # Try to derive the year range from the nearby text (filtering out long-term projection years).
+    start = re.search(r"QUARTERLYDIVIDENDS\w*", text, re.IGNORECASE)
+    if start:
+        segment = text[start.start() : start.start() + 1400]
+    else:
+        m = re.search(r"No\s+cash\s+dividends\s+being\s+paid", text, re.IGNORECASE)
+        segment = text[m.start() - 300 : m.start() + 600] if m else text
+
+    years = []
+    for y in re.findall(r"20\d{2}", segment):
+        yi = int(y)
+        if report_year and yi > report_year:
+            continue
+        years.append(yi)
+    years = sorted(set(years))
+    if report_year and len(years) < 2:
+        years = list(range(report_year - 4, report_year + 1))
+
+    by_year = [
+        {
+            "calendar_year": y,
+            "quarters": None,
+            "full_year": {"value": None, "is_estimated": False},
+            "notes": note,
+        }
+        for y in years
+    ]
+    return {"unit": unit, "note": note, "by_year": by_year}
 
 
 def _parse_period(period: Optional[str]) -> tuple[Optional[int], Optional[int]]:

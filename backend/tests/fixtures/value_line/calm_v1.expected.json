@@ -199,6 +199,10 @@
       "unit": "USD",
       "notes": "Annual rentals"
     },
+    "pension_plan": {
+      "defined_benefit": false,
+      "notes": "No Defined Benefit Pension Plan"
+    },
     "common_stock": {
       "shares_outstanding": {
         "display": "48.4 mill. shs",
