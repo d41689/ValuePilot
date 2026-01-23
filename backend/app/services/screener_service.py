@@ -12,7 +12,10 @@ class ScreenerService:
         "net_profit_usd_millions": {"keys": ["is.net_income"], "period_type": "FY"},
         "depreciation_usd_millions": {"keys": ["is.depreciation"], "period_type": "FY"},
         "capital_spending_per_share_usd": {"keys": ["per_share.capital_spending"], "period_type": "FY"},
-        "common_shares_outstanding_millions": {"keys": ["equity.shares_outstanding"], "period_type": "AS_OF"},
+        "common_shares_outstanding_millions": {
+            "keys": ["equity.shares_outstanding"],
+            "period_type": ["AS_OF", "FY"],
+        },
         "timeliness": {"keys": ["rating.timeliness"], "period_type": "AS_OF"},
         "safety": {"keys": ["rating.safety"], "period_type": "AS_OF"},
         "avg_annual_dividend_yield_pct": {"keys": ["val.avg_dividend_yield"], "period_type": "FY"},
@@ -90,9 +93,14 @@ class ScreenerService:
                 for key in spec["keys"]:
                     facts_for_key = fact_map.get(key, [])
                     if desired_period_type:
-                        facts_for_key = [
-                            fact for fact in facts_for_key if fact.period_type == desired_period_type
-                        ]
+                        if isinstance(desired_period_type, (list, tuple, set)):
+                            facts_for_key = [
+                                fact for fact in facts_for_key if fact.period_type in desired_period_type
+                            ]
+                        else:
+                            facts_for_key = [
+                                fact for fact in facts_for_key if fact.period_type == desired_period_type
+                            ]
                     if not facts_for_key:
                         continue
                     fact = max(
