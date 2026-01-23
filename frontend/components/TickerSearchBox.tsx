@@ -5,16 +5,19 @@ import { useRouter } from 'next/navigation';
 import { Search } from 'lucide-react';
 
 import { cn } from '@/lib/utils';
+import { buildStockRoute, normalizeTicker } from '@/lib/stockRoutes';
 
 type TickerSearchBoxProps = {
   defaultValue?: string;
   placeholder?: string;
+  destination?: 'summary' | 'dcf';
   className?: string;
 };
 
 export default function TickerSearchBox({
   defaultValue = '',
   placeholder = '输入 ticker，例如 COCO / EMPA.TO',
+  destination = 'summary',
   className,
 }: TickerSearchBoxProps) {
   const router = useRouter();
@@ -26,12 +29,15 @@ export default function TickerSearchBox({
 
   const handleSubmit = (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
-    const trimmed = value.trim();
-    if (!trimmed) {
+    const normalized = normalizeTicker(value);
+    if (!normalized) {
       return;
     }
-    const normalized = trimmed.toUpperCase();
-    router.push(`/stocks/${encodeURIComponent(normalized)}/summary`);
+    const target = buildStockRoute(normalized, destination);
+    if (!target) {
+      return;
+    }
+    router.push(target);
   };
 
   return (

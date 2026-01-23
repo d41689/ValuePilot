@@ -2,11 +2,13 @@
 
 import { useEffect, useState } from 'react';
 import { useParams } from 'next/navigation';
+import Link from 'next/link';
 import axios from 'axios';
 
 import apiClient from '@/lib/api/client';
 import TickerSearchBox from '@/components/TickerSearchBox';
 import StockSummaryCard from '@/components/StockSummaryCard';
+import { buildStockRoute, normalizeTicker } from '@/lib/stockRoutes';
 
 type StockSummary = {
   id: number;
@@ -23,6 +25,8 @@ export default function StockSummaryPage() {
   const [summary, setSummary] = useState<StockSummary | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const tickerForLink = summary?.ticker ?? (tickerParam || '').toString();
+  const dcfRoute = buildStockRoute(normalizeTicker(tickerForLink), 'dcf');
 
   useEffect(() => {
     if (!tickerParam) {
@@ -90,6 +94,17 @@ export default function StockSummaryPage() {
           pe={summary.pe}
         />
       )}
+
+      <div className="pt-4">
+        {dcfRoute ? (
+          <Link
+            href={dcfRoute}
+            className="text-sm font-medium text-primary underline-offset-4 hover:underline"
+          >
+            DCF
+          </Link>
+        ) : null}
+      </div>
     </div>
   );
 }
