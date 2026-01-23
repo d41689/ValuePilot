@@ -1,13 +1,15 @@
 'use client';
 
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useParams } from 'next/navigation';
 import { HelpCircle } from 'lucide-react';
+import axios from 'axios';
 
 import TickerSearchBox from '@/components/TickerSearchBox';
 import { Card } from '@/components/ui/card';
 import { normalizeTicker } from '@/lib/stockRoutes';
 import { computeGrowthValue, computeTerminalValue, computeTotalValue } from '@/lib/dcfMath';
+import apiClient from '@/lib/api/client';
 
 const toNumber = (value: string, fallback = 0) => {
   const parsed = Number(value);
@@ -38,12 +40,79 @@ export default function StockDcfPage() {
   const [depreciationPerShare, setDepreciationPerShare] = useState('3.00');
   const [capexPerShare, setCapexPerShare] = useState('0.45');
   const [basedOnOverride, setBasedOnOverride] = useState('');
+  const [oepsSeries, setOepsSeries] = useState<Array<{ year: number; value: number }>>([]);
+  const [oepsNormalized, setOepsNormalized] = useState<number | null>(null);
+  const [basedOnSelection, setBasedOnSelection] = useState<'norm' | number>('norm');
+  const [growthRateOptions, setGrowthRateOptions] = useState<
+    Array<{ key: string; label: string; value: number }>
+  >([]);
+  const [growthRateSelection, setGrowthRateSelection] = useState<string | null>(null);
 
   const [discountRate, setDiscountRate] = useState(10);
   const [growthYears, setGrowthYears] = useState(10);
   const [growthRate, setGrowthRate] = useState(20);
   const [terminalYears, setTerminalYears] = useState(1000);
   const [terminalRate, setTerminalRate] = useState(4);
+
+  useEffect(() => {
+    if (!displayTicker) {
+      return;
+    }
+    let isActive = true;
+    apiClient
+      .get(`/stocks/by_ticker/${encodeURIComponent(displayTicker)}`)
+      .then((response) => {
+        if (!isActive) {
+          return;
+        }
+        const normalized = response.data?.oeps_normalized;
+        const series = Array.isArray(response.data?.oeps_series)
+          ? response.data.oeps_series
+              .filter(
+                (item: { year?: number; value?: number }) =>
+                  typeof item?.year === 'number' && typeof item?.value === 'number'
+              )
+              .slice(0, 6)
+          : [];
+        const rateOptions = Array.isArray(response.data?.growth_rate_options)
+          ? response.data.growth_rate_options.filter(
+              (item: { key?: string; label?: string; value?: number }) =>
+                typeof item?.key === 'string' &&
+                typeof item?.label === 'string' &&
+                typeof item?.value === 'number'
+            )
+          : [];
+        setOepsSeries(series);
+        setGrowthRateOptions(rateOptions);
+        if (typeof normalized === 'number' && Number.isFinite(normalized)) {
+          setOepsNormalized(normalized);
+          setBasedOnSelection('norm');
+          setBasedOnOverride((prev) => (prev.trim() ? prev : normalized.toFixed(3)));
+        }
+        if (series.length > 0 && (typeof normalized !== 'number' || !Number.isFinite(normalized))) {
+          setBasedOnSelection(series[0].year);
+          setBasedOnOverride(series[0].value.toFixed(3));
+        }
+        if (rateOptions.length > 0) {
+          const lowest = rateOptions.reduce((min, current) =>
+            current.value < min.value ? current : min
+          );
+          setGrowthRateSelection(lowest.key);
+          setGrowthRate(lowest.value);
+        }
+      })
+      .catch((err) => {
+        if (!isActive) {
+          return;
+        }
+        if (axios.isAxiosError(err)) {
+          return;
+        }
+      });
+    return () => {
+      isActive = false;
+    };
+  }, [displayTicker]);
 
   const computedBasedOn = useMemo(() => {
     const base =
@@ -103,14 +172,43 @@ export default function StockDcfPage() {
           <div className="flex flex-wrap items-center justify-between gap-4 px-6 py-4 text-sm font-medium">
             <div className="flex flex-wrap items-center gap-3">
               <span>Based on</span>
-              <div className="flex items-center gap-1 rounded-full border border-border/70 bg-muted/40 p-1">
-                <button className="rounded-full bg-background px-4 py-1 text-sm font-semibold text-primary shadow-sm">
-                  EPS w/o NRI
+              <div className="flex flex-wrap items-center gap-1 rounded-full border border-border/70 bg-muted/40 p-1">
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (oepsNormalized === null) {
+                      return;
+                    }
+                    setBasedOnSelection('norm');
+                    setBasedOnOverride(oepsNormalized.toFixed(3));
+                  }}
+                  className={[
+                    'rounded-full px-4 py-1 text-sm',
+                    basedOnSelection === 'norm'
+                      ? 'bg-background font-semibold text-primary shadow-sm'
+                      : 'text-muted-foreground',
+                  ].join(' ')}
+                >
+                  OEPS Norm
                 </button>
-                <button className="rounded-full px-4 py-1 text-sm text-muted-foreground">FCF</button>
-                <button className="rounded-full px-4 py-1 text-sm text-muted-foreground">
-                  Adjusted Dividend
-                </button>
+                {oepsSeries.map((item) => (
+                  <button
+                    key={item.year}
+                    type="button"
+                    onClick={() => {
+                      setBasedOnSelection(item.year);
+                      setBasedOnOverride(item.value.toFixed(3));
+                    }}
+                    className={[
+                      'rounded-full px-4 py-1 text-sm',
+                      basedOnSelection === item.year
+                        ? 'bg-background font-semibold text-primary shadow-sm'
+                        : 'text-muted-foreground',
+                    ].join(' ')}
+                  >
+                    {item.year}
+                  </button>
+                ))}
               </div>
             </div>
             <div className="flex items-center gap-2 rounded-lg border border-border/70 bg-card/80 px-4 py-2">
@@ -235,31 +333,60 @@ export default function StockDcfPage() {
                     </button>
                   </div>
                 </div>
-                <div className="flex items-center justify-between">
+                <div className="flex flex-wrap items-center justify-between gap-3">
                   <span>Growth Rate</span>
-                  <div className="flex items-center overflow-hidden rounded-lg border border-border/70 bg-background">
-                    <button
-                      type="button"
-                      onClick={() => setGrowthRate((value) => clampNonNegative(value - 1))}
-                      className="px-4 py-2 text-muted-foreground"
-                    >
-                      -
-                    </button>
-                    <input
-                      value={growthRate}
-                      onChange={(event) =>
-                        setGrowthRate(clampNonNegative(toNumber(event.target.value)))
-                      }
-                      inputMode="numeric"
-                      className="w-14 bg-transparent text-center text-base font-semibold outline-none"
-                    />
-                    <button
-                      type="button"
-                      onClick={() => setGrowthRate((value) => value + 1)}
-                      className="px-4 py-2 text-muted-foreground"
-                    >
-                      +
-                    </button>
+                  <div className="flex flex-wrap items-center gap-3">
+                    <div className="flex items-center overflow-hidden rounded-lg border border-border/70 bg-background">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setGrowthRateSelection(null);
+                          setGrowthRate((value) => clampNonNegative(value - 1));
+                        }}
+                        className="px-4 py-2 text-muted-foreground"
+                      >
+                        -
+                      </button>
+                      <input
+                        value={growthRate}
+                        onChange={(event) => {
+                          setGrowthRateSelection(null);
+                          setGrowthRate(clampNonNegative(toNumber(event.target.value)));
+                        }}
+                        inputMode="numeric"
+                        className="w-14 bg-transparent text-center text-base font-semibold outline-none"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setGrowthRateSelection(null);
+                          setGrowthRate((value) => value + 1);
+                        }}
+                        className="px-4 py-2 text-muted-foreground"
+                      >
+                        +
+                      </button>
+                    </div>
+                    <div className="flex flex-wrap items-center gap-2">
+                      {growthRateOptions.map((option) => (
+                        <button
+                          key={option.key}
+                          type="button"
+                          onClick={() => {
+                            setGrowthRateSelection(option.key);
+                            setGrowthRate(option.value);
+                          }}
+                          className={[
+                            'rounded-full border border-border/70 px-3 py-1 text-xs',
+                            growthRateSelection === option.key
+                              ? 'bg-background font-semibold text-primary shadow-sm'
+                              : 'text-muted-foreground',
+                          ].join(' ')}
+                        >
+                          {option.label} {option.value.toFixed(1)}
+                        </button>
+                      ))}
+                    </div>
                   </div>
                 </div>
                 <div className="flex items-center justify-between text-base font-semibold">

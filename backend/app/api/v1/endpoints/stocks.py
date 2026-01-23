@@ -29,10 +29,68 @@ def read_stock_by_ticker(
     facts_stmt = select(MetricFact).where(
         MetricFact.stock_id == stock.id,
         MetricFact.is_current.is_(True),
-        MetricFact.metric_key.in_(["mkt.price", "val.pe"]),
+        MetricFact.metric_key.in_(
+            ["mkt.price", "val.pe", "owners_earnings_per_share_normalized"]
+        ),
     )
     facts = session.scalars(facts_stmt).all()
     facts_by_key = {fact.metric_key: fact.value_numeric for fact in facts}
+
+    oeps_stmt = (
+        select(MetricFact)
+        .where(
+            MetricFact.stock_id == stock.id,
+            MetricFact.is_current.is_(True),
+            MetricFact.metric_key == "owners_earnings_per_share",
+            MetricFact.period_type == "FY",
+        )
+        .order_by(MetricFact.period_end_date.desc())
+        .limit(6)
+    )
+    oeps_facts = session.scalars(oeps_stmt).all()
+    oeps_series = []
+    for fact in oeps_facts:
+        period_end = fact.period_end_date
+        if not period_end:
+            continue
+        value = fact.value_numeric if fact.value_numeric is not None else 0.0
+        oeps_series.append({"year": period_end.year, "value": value})
+
+    growth_key_map = {
+        "rates.sales.cagr_est": ("sales", "Sales"),
+        "rates.cash_flow.cagr_est": ("cash_flow", "Cash Flow"),
+        "rates.earnings.cagr_est": ("earnings", "Earnings"),
+    }
+    growth_stmt = (
+        select(MetricFact)
+        .where(
+            MetricFact.stock_id == stock.id,
+            MetricFact.is_current.is_(True),
+            MetricFact.metric_key.in_(list(growth_key_map.keys())),
+        )
+        .order_by(MetricFact.metric_key.asc(), MetricFact.period_end_date.desc())
+    )
+    growth_facts = session.scalars(growth_stmt).all()
+    growth_by_key: dict[str, float] = {}
+    for fact in growth_facts:
+        if fact.metric_key in growth_by_key:
+            continue
+        raw_value = None
+        if isinstance(fact.value_json, dict):
+            raw_value = fact.value_json.get("value")
+        if isinstance(raw_value, (int, float)):
+            growth_by_key[fact.metric_key] = float(raw_value)
+            continue
+        if fact.value_numeric is not None:
+            growth_by_key[fact.metric_key] = fact.value_numeric * 100.0
+
+    growth_rate_options = []
+    for metric_key, (key, label) in growth_key_map.items():
+        if metric_key not in growth_by_key:
+            continue
+        growth_rate_options.append(
+            {"key": key, "label": label, "value": growth_by_key[metric_key]}
+        )
 
     return {
         "id": stock.id,
@@ -41,6 +99,9 @@ def read_stock_by_ticker(
         "company_name": stock.company_name,
         "price": facts_by_key.get("mkt.price"),
         "pe": facts_by_key.get("val.pe"),
+        "oeps_normalized": facts_by_key.get("owners_earnings_per_share_normalized"),
+        "oeps_series": oeps_series,
+        "growth_rate_options": growth_rate_options,
     }
 
 @router.get("/{stock_id}", response_model=dict)

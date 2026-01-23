@@ -19,6 +19,7 @@ from app.ingestion.parsers.v1_value_line.parser import ValueLineV1Parser
 from app.ingestion.parsers.v1_value_line.page_json import build_value_line_page_json
 from app.ingestion.normalization.scaler import Scaler
 from app.services.mapping_spec import MappingSpec
+from app.services.owners_earnings import build_owners_earnings_facts
 
 
 LOGGER = logging.getLogger(__name__)
@@ -229,6 +230,12 @@ class IngestionService:
                         self.db.flush()
 
                     facts, _, unmapped = self.mapping_spec.generate_facts(page_json)
+                    facts.extend(
+                        build_owners_earnings_facts(
+                            facts,
+                            report_date=report_date,
+                        )
+                    )
                     for path in sorted(unmapped):
                         LOGGER.warning(
                             "Unmapped page_json path: %s (document_id=%s page=%s)",
@@ -388,6 +395,12 @@ class IngestionService:
                 self.db.flush()
 
             facts, _, unmapped = self.mapping_spec.generate_facts(page_json)
+            facts.extend(
+                build_owners_earnings_facts(
+                    facts,
+                    report_date=report_date,
+                )
+            )
             for path in sorted(unmapped):
                 LOGGER.warning(
                     "Unmapped page_json path: %s (document_id=%s page=%s)",
