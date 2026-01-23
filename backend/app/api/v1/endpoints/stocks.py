@@ -1,11 +1,47 @@
 from typing import Any
 from fastapi import APIRouter, HTTPException
-from sqlalchemy import select
+from sqlalchemy import select, func
 from app.api.deps import SessionDep
 from app.models.stocks import Stock
 from app.models.facts import MetricFact
 
 router = APIRouter()
+
+@router.get("/by_ticker/{ticker}", response_model=dict)
+def read_stock_by_ticker(
+    ticker: str,
+    session: SessionDep,
+) -> Any:
+    """
+    Get stock overview by ticker (case-insensitive).
+    """
+    ticker_normalized = ticker.strip().lower()
+    stmt = (
+        select(Stock)
+        .where(func.lower(Stock.ticker) == ticker_normalized)
+        .order_by(Stock.id.asc())
+        .limit(1)
+    )
+    stock = session.scalars(stmt).first()
+    if not stock:
+        raise HTTPException(status_code=404, detail="Stock not found")
+
+    facts_stmt = select(MetricFact).where(
+        MetricFact.stock_id == stock.id,
+        MetricFact.is_current.is_(True),
+        MetricFact.metric_key.in_(["mkt.price", "val.pe"]),
+    )
+    facts = session.scalars(facts_stmt).all()
+    facts_by_key = {fact.metric_key: fact.value_numeric for fact in facts}
+
+    return {
+        "id": stock.id,
+        "ticker": stock.ticker,
+        "exchange": stock.exchange,
+        "company_name": stock.company_name,
+        "price": facts_by_key.get("mkt.price"),
+        "pe": facts_by_key.get("val.pe"),
+    }
 
 @router.get("/{stock_id}", response_model=dict)
 def read_stock(
