@@ -36,7 +36,7 @@ class ValueLineV1Parser(BaseParser):
         ]
         exchange_code_set = {code.upper() for code in exchange_codes}
         exchange_tokens = "(" + "|".join(exchange_codes) + ")"
-        ticker_pattern = r"[A-Z]{1,5}(?:\\.[A-Z]{1,4})?"
+        ticker_pattern = r"[A-Z]{1,5}(?:\.[A-Z]{1,4})?"
         exchange_map = {
             "NASDAQ": "NDQ",
             "NAS": "NDQ",
@@ -56,6 +56,16 @@ class ValueLineV1Parser(BaseParser):
         # Pattern 3: EXCHANGE TICKER e.g. "NASDAQ AAPL"
         pattern3 = re.compile(rf'\b{exchange_tokens}\s+({ticker_pattern})(?=\s|$)', re.IGNORECASE)
         pattern4 = re.compile(r'\b([A-Z]{1,5}\.[A-Z]{1,4})(?=\s|$)', re.IGNORECASE)
+
+        def _normalize_ticker(ticker: Optional[str], exchange: Optional[str]) -> Optional[str]:
+            if not ticker:
+                return ticker
+            upper = ticker.upper()
+            if exchange and exchange.upper() in {"TSE", "TSX"}:
+                match = re.match(r'^([A-Z]{1,5})\.TO([A-Z])$', upper)
+                if match:
+                    return f"{match.group(1)}.TO"
+            return upper
 
         def set_company_name(line: str, match_start: int, line_idx: int) -> None:
             pre_match = line[:match_start].strip()
@@ -82,6 +92,7 @@ class ValueLineV1Parser(BaseParser):
                 info.ticker = match1.group(1).upper()
                 exchange = match1.group(2).upper()
                 info.exchange = exchange_map.get(exchange, exchange)
+                info.ticker = _normalize_ticker(info.ticker, info.exchange)
                 set_company_name(line, match1.start(), idx)
                 break
 
@@ -90,6 +101,7 @@ class ValueLineV1Parser(BaseParser):
                 exchange = match2.group(1).upper()
                 info.exchange = exchange_map.get(exchange, exchange)
                 info.ticker = match2.group(2).upper()
+                info.ticker = _normalize_ticker(info.ticker, info.exchange)
                 set_company_name(line, match2.start(), idx)
                 break
 
@@ -98,6 +110,7 @@ class ValueLineV1Parser(BaseParser):
                 exchange = match3.group(1).upper()
                 info.exchange = exchange_map.get(exchange, exchange)
                 info.ticker = match3.group(2).upper()
+                info.ticker = _normalize_ticker(info.ticker, info.exchange)
                 set_company_name(line, match3.start(), idx)
                 break
 
@@ -106,6 +119,7 @@ class ValueLineV1Parser(BaseParser):
                 info.ticker = match4.group(1).upper()
                 if info.ticker.endswith(".TO"):
                     info.exchange = "TSE"
+                info.ticker = _normalize_ticker(info.ticker, info.exchange)
                 set_company_name(line, match4.start(), idx)
                 break
         
@@ -385,7 +399,7 @@ class ValueLineV1Parser(BaseParser):
                     confidence_score=0.7,
                 ))
 
-        _cap_money_or_nil("total_debt", r'Total\s*Debt')
+        _cap_money_or_nil("total_debt", r'(?:Total|Tot\.?)\s*Debt')
         _cap_money_or_nil("debt_due_in_5_years", r'Due\s*in\s*5\s*Yrs')
         _cap_money_or_nil("lt_debt", r'LT\s*Debt')
         _cap_money_or_nil("lt_interest", r'LT\s*Interest')
@@ -395,7 +409,7 @@ class ValueLineV1Parser(BaseParser):
             results.append(ExtractionResult(field_key="debt_percent_of_capital", raw_value_text=f"{cap_pct.group(1)}%", original_text_snippet=cap_pct.group(0), confidence_score=0.8))
 
         leases = re.search(
-            r'Leases,?\s*Uncapitalized[:\s]*Annual\s*rentals\s*\$([\d\.]+)\s*(mil|mill|million|bil|bill|billion)\.?\b',
+            r'Leases,?\s*(?:Uncap\.?|Uncapitalized)[:\s\.]*Annual\s*Rentals\s*\$([\d\.]+)\s*(mil|mill|million|bil|bill|billion)\.?\b',
             self.text,
             re.IGNORECASE,
         )
@@ -535,7 +549,6 @@ class ValueLineV1Parser(BaseParser):
                 num = float(shares_scaled.group(1))
                 scaled = str(int(num * 1_000_000.0))
                 parsed_meta = {}
-                parsed_meta["as_of"] = None
                 tail = self.text[shares_scaled.end(): shares_scaled.end() + 500]
                 includes = re.search(
                     r'Includes\s*([\d,\.]+)\s*(million|mil|mill)?\s*Class\s*A\s*shares',
@@ -965,7 +978,7 @@ class ValueLineV1Parser(BaseParser):
             return self.text[start.end(): start.end() + end.start()]
 
         # Current Position table ($mill.) -> structured JSON
-        cp_block = _slice_between(r'\bCURRENTPOSITION\b', r'\bANNUALRATES')
+        cp_block = _slice_between(r'\bCURRENT\s*POSITION', r'\bANNUALRATES')
         if cp_block:
             header = re.search(r'(\d{4})\s+(\d{4})\s+(\d{1,2}/\d{1,2}/\d{2})', cp_block)
             if header:
@@ -1795,10 +1808,22 @@ class ValueLineV1Parser(BaseParser):
         if proj is not None:
             projection["sales"] = proj
 
+        series, proj = parse_series(r'GrossMargin', percent_ratio=False)
+        income_statement["gross_margin_pct"] = series
+        if proj is not None:
+            projection["gross_margin_pct"] = proj
+
         series, proj = parse_series(r'OperatingMargin', percent_ratio=False)
         income_statement["operating_margin_pct"] = series
         if proj is not None:
             projection["operating_margin_pct"] = proj
+
+        series, proj = parse_series(r'NumberofStores', percent_ratio=False)
+        income_statement["number_of_stores"] = [
+            int(value) if value is not None else None for value in series
+        ]
+        if proj is not None:
+            projection["number_of_stores"] = int(proj)
 
         series, proj = parse_series(r'NetProfitMargin', percent_ratio=False)
         income_statement["net_profit_margin_pct"] = series
@@ -1870,7 +1895,10 @@ class ValueLineV1Parser(BaseParser):
         if idx is None:
             return None
 
-        quarter_words = [w for w in words[idx:] if w.get("text") in {"1Q", "2Q", "3Q", "4Q"}]
+        def is_quarter_token(text: str) -> bool:
+            return re.fullmatch(r'[1-4]Q\d{0,4}', text) is not None
+
+        quarter_words = [w for w in words[idx:] if is_quarter_token(str(w.get("text", "")))]
         quarter_words = sorted(quarter_words, key=lambda w: float(w.get("x0", 0.0)))
         if not quarter_words:
             return None
@@ -1880,11 +1908,11 @@ class ValueLineV1Parser(BaseParser):
         holds: list[int] = []
         if holds_idx is not None:
             hword = words[idx + holds_idx].get("text", "")
-            first = re.search(r'(\d{5,})', str(hword))
+            first = re.search(r'(\d{4,})', str(hword))
             if first:
                 holds.append(int(first.group(1)))
             for w in words[idx + holds_idx + 1 : idx + holds_idx + 5]:
-                if re.fullmatch(r'\d{5,}', str(w.get("text", ""))):
+                if re.fullmatch(r'\d{2,}', str(w.get("text", ""))):
                     holds.append(int(w["text"]))
                 if len(holds) >= len(quarter_words):
                     break
@@ -1900,6 +1928,11 @@ class ValueLineV1Parser(BaseParser):
             )
             x_max = max(base_x0 + 12.0, next_x0 - 1.0)
 
+            q_text = str(q.get("text", ""))
+            q_match = re.match(r'^([1-4])Q(\d{0,4})$', q_text)
+            q_label = q_match.group(1) + "Q" if q_match else q_text[:2]
+            year_prefix = q_match.group(2) if q_match else ""
+
             # Year tokens often appear on the same baseline (e.g., "20" "2" "5")
             year_tokens = [
                 w for w in words[idx:]
@@ -1907,7 +1940,9 @@ class ValueLineV1Parser(BaseParser):
                 and base_x0 < float(w.get("x0", 0.0)) < x_max
                 and re.fullmatch(r'\d{1,2}', str(w.get("text", "")))
             ]
-            year_str = "".join([str(w["text"]) for w in sorted(year_tokens, key=lambda w: float(w.get("x0", 0.0)))])
+            year_str = year_prefix + "".join(
+                [str(w["text"]) for w in sorted(year_tokens, key=lambda w: float(w.get("x0", 0.0)))]
+            )
             if len(year_str) == 4:
                 year = int(year_str)
             else:
@@ -1933,7 +1968,7 @@ class ValueLineV1Parser(BaseParser):
             holds_000 = holds[q_idx] if q_idx < len(holds) else None
 
             quarterly.append({
-                "period": f"{q['text']}{year}",
+                "period": f"{q_label}{year}",
                 "to_buy": to_buy,
                 "to_sell": to_sell,
                 "holds_000": holds_000,

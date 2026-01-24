@@ -209,7 +209,7 @@
         "normalized": 48400000.0,
         "unit": "shares"
       },
-      "as_of": null,
+      "as_of": "2025-08-30",
       "class_a_shares": {
         "display": "4.8 million class A shares",
         "normalized": 4800000.0,

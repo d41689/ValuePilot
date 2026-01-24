@@ -632,7 +632,14 @@ def _build_annual_financials(
     if insurance_layout:
         income_keys = ["net_profit"]
     else:
-        income_keys = ["sales", "operating_margin_pct", "depreciation", "net_profit"]
+        income_keys = [
+            "sales",
+            "gross_margin_pct",
+            "operating_margin_pct",
+            "number_of_stores",
+            "depreciation",
+            "net_profit",
+        ]
     income_statement = _series_group_to_year_map(
         annual.get("income_statement_usd_millions", {}),
         years,
@@ -1042,7 +1049,9 @@ def _shares_display(res: Any, raw_value: str) -> str:
         if match:
             num = match.group(1)
             token = match.group(2).lower()
-            token_display = "mill." if token in {"mil", "mill", "million"} else token
+            if token == "million":
+                return f"{num} million shares"
+            token_display = "mill." if token in {"mil", "mill"} else token
             return f"{num} {token_display} shs"
         match = re.search(r'Common\s*Stock\s*([\d,]+)', snippet, re.IGNORECASE)
         if match:
