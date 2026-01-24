@@ -409,7 +409,7 @@ class ValueLineV1Parser(BaseParser):
             results.append(ExtractionResult(field_key="debt_percent_of_capital", raw_value_text=f"{cap_pct.group(1)}%", original_text_snippet=cap_pct.group(0), confidence_score=0.8))
 
         leases = re.search(
-            r'Leases,?\s*(?:Uncap\.?|Uncapitalized)[:\s\.]*Annual\s*Rentals\s*\$([\d\.]+)\s*(mil|mill|million|bil|bill|billion)\.?\b',
+            r'Leases,?\s*(?:Uncap\.?|Uncapitalized)[:\s\.]*(?:Annual\s*Rentals\s*)?\$([\d\.]+)\s*(mil|mill|million|bil|bill|billion)\.?\b',
             self.text,
             re.IGNORECASE,
         )
@@ -1062,7 +1062,7 @@ class ValueLineV1Parser(BaseParser):
                     ))
 
         # Annual Rates of Change -> structured JSON (ratios)
-        ar_block = _slice_between(r'\bANNUALRATES', r'\b(?:QUARTERLYSALES|NETPREMIUMSEARNED)\b')
+        ar_block = _slice_between(r'\bANNUALRATES', r'\b(?:QUARTERLYSALES|QUARTERLYREVENUES|NETPREMIUMSEARNED)\b')
         if ar_block:
             token_re = r'(?:[-+]?\d*\.?\d+%?|NMF|NM|N/A|NA|--|NIL)'
 
@@ -1098,6 +1098,7 @@ class ValueLineV1Parser(BaseParser):
                 return data
             parsed = {
                 "sales": growth_row(r'\bSales\b'),
+                "revenues": growth_row(r'\bRevenues\b'),
                 "cash_flow_per_share": growth_row(r'Cash\s*Flow'),
                 "earnings": growth_row(r'\bEarnings\b'),
                 "dividends": growth_row(r'\bDividends\b'),
@@ -1117,6 +1118,16 @@ class ValueLineV1Parser(BaseParser):
         def _parse_quarterly_rows(block: str) -> list[dict[str, Any]]:
             rows: list[dict[str, Any]] = []
             token_re = r'(?:--|NMF|NM|N/A|NA|NIL|[dD]?-?\d*\.?\d+)'
+            header_slice = block[:200]
+            month_order: list[str] = []
+            for match in re.findall(r'(Mar|Jun|Sep|Dec)\.?\s*(?:\d{1,2}|Per)', header_slice, re.IGNORECASE):
+                month = match.title()
+                if month not in month_order:
+                    month_order.append(month)
+                if len(month_order) == 4:
+                    break
+            if len(month_order) != 4:
+                month_order = ["Mar", "Jun", "Sep", "Dec"]
             row_re = re.compile(
                 rf'^\s*(\d{{4}})[ \t]+({token_re})[ \t]+({token_re})[ \t]+({token_re})[ \t]+({token_re})(?:[ \t]+({token_re}))?(?:[ \t]+.*)?$',
                 re.MULTILINE,
@@ -1141,28 +1152,37 @@ class ValueLineV1Parser(BaseParser):
                         raw = '0' + raw
                     value = float(raw)
                     return -value if negative else value
+                values = [_f(m.group(2)), _f(m.group(3)), _f(m.group(4)), _f(m.group(5))]
+                month_map = {month: values[idx] for idx, month in enumerate(month_order)}
                 rows.append({
                     "calendar_year": int(m.group(1)),
-                    "mar_31": _f(m.group(2)),
-                    "jun_30": _f(m.group(3)),
-                    "sep_30": _f(m.group(4)),
-                    "dec_31": _f(m.group(5)),
+                    "mar_31": month_map.get("Mar"),
+                    "jun_30": month_map.get("Jun"),
+                    "sep_30": month_map.get("Sep"),
+                    "dec_31": month_map.get("Dec"),
                     "full_year": _f(m.group(6)) if m.group(6) else None,
                 })
             return rows
 
-        qs_start = re.search(r'\b(?:QUARTERLYSALES|NETPREMIUMSEARNED)\b', self.text, re.IGNORECASE)
+        qs_start = re.search(r'\b(QUARTERLYSALES|QUARTERLYREVENUES|NETPREMIUMSEARNED)\b', self.text, re.IGNORECASE)
         div_start_pat = r'\bQUARTERLYDIVIDENDS\w*\b'
         if qs_start:
+            qs_label = qs_start.group(1).upper()
             after_qs = self.text[qs_start.end():]
             qs_end = re.search(r'\b(?:EARNINGSPERADR\w*|EARNINGSPERSHARE\w*|QUARTERLYDIVIDENDS\w*)\b', after_qs, re.IGNORECASE)
             qs_block = after_qs[: qs_end.start()] if qs_end else after_qs
             parsed = _parse_quarterly_rows(qs_block)
             if parsed:
+                if qs_label == "QUARTERLYREVENUES":
+                    field_key = "quarterly_revenues_usd_millions"
+                    snippet = "QUARTERLYREVENUES ..."
+                else:
+                    field_key = "quarterly_sales_usd_millions"
+                    snippet = "QUARTERLYSALES ..."
                 results.append(ExtractionResult(
-                    field_key="quarterly_sales_usd_millions",
+                    field_key=field_key,
                     raw_value_text=None,
-                    original_text_snippet="QUARTERLYSALES ...",
+                    original_text_snippet=snippet,
                     parsed_value_json=parsed,
                     confidence_score=0.8,
                 ))
@@ -1788,6 +1808,11 @@ class ValueLineV1Parser(BaseParser):
         if proj is not None:
             projection["sales_per_share_usd"] = proj
 
+        series, proj = parse_series(r'Revenues\s*per(?:sh|ADR)', percent_ratio=False)
+        per_share["revenues_per_share_usd"] = series
+        if proj is not None:
+            projection["revenues_per_share_usd"] = proj
+
         series, proj = parse_series(r'Cash\s*Flow[^A-Za-z0-9]*per(?:sh|ADR)', percent_ratio=False)
         per_share["cash_flow_per_share_usd"] = series
         if proj is not None:
@@ -1807,6 +1832,11 @@ class ValueLineV1Parser(BaseParser):
         income_statement["sales"] = series
         if proj is not None:
             projection["sales"] = proj
+
+        series, proj = parse_series(r'Revenues\(\$?mill\)', percent_ratio=False)
+        income_statement["revenues"] = series
+        if proj is not None:
+            projection["revenues"] = proj
 
         series, proj = parse_series(r'GrossMargin', percent_ratio=False)
         income_statement["gross_margin_pct"] = series
