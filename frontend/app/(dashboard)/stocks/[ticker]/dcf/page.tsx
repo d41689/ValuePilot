@@ -146,6 +146,13 @@ export default function StockDcfPage() {
     () => computeTotalValue(growthValue, terminalValue),
     [growthValue, terminalValue]
   );
+  const safeMarginPct = useMemo(() => {
+    const price = Math.max(0, toNumber(stockPrice));
+    if (totalValue <= 0) {
+      return null;
+    }
+    return 100 * (1 - price / totalValue);
+  }, [stockPrice, totalValue]);
 
   return (
     <div className="space-y-6">
@@ -156,19 +163,6 @@ export default function StockDcfPage() {
 
       <Card className="overflow-hidden border-border/70 bg-background/80">
         <div className="divide-y divide-border/70">
-          <div className="flex flex-wrap items-center justify-between gap-4 px-6 py-4 text-sm font-medium">
-            <span>Stock Price</span>
-            <div className="flex items-center gap-2 rounded-lg border border-border/70 bg-card/80 px-4 py-2">
-              <span className="text-muted-foreground">$</span>
-              <input
-                value={stockPrice}
-                onChange={(event) => setStockPrice(event.target.value)}
-                inputMode="decimal"
-                className="w-28 bg-transparent text-right text-base font-semibold outline-none"
-              />
-            </div>
-          </div>
-
           <div className="flex flex-wrap items-center justify-between gap-4 px-6 py-4 text-sm font-medium">
             <div className="flex flex-wrap items-center gap-3">
               <span>Based on</span>
@@ -464,10 +458,38 @@ export default function StockDcfPage() {
             </div>
           </div>
 
-          <div className="flex items-center justify-between px-6 py-4 text-base font-semibold">
-            <span>Total Value</span>
-            <span>$ {formatMoney(totalValue)}</span>
+          <div className="flex flex-wrap items-center justify-between gap-4 px-6 py-4 text-sm font-medium">
+            <div className="flex items-center gap-3">
+              <span>Stock Price</span>
+              <div className="flex items-center gap-2 rounded-lg border border-border/70 bg-card/80 px-4 py-2">
+                <span className="text-muted-foreground">$</span>
+                <input
+                  value={stockPrice}
+                  onChange={(event) => setStockPrice(event.target.value)}
+                  inputMode="decimal"
+                  className="w-28 bg-transparent text-right text-base font-semibold outline-none"
+                />
+              </div>
+            </div>
+            <div className="flex flex-wrap items-center gap-4 text-base font-semibold">
+              <div className="flex items-center gap-2">
+                <span className="text-sm font-medium text-muted-foreground">Total Value</span>
+                <span>$ {formatMoney(totalValue)}</span>
+              </div>
+              <div className="flex items-center gap-2">
+                <span className="text-sm font-medium text-muted-foreground">Safe Margin</span>
+                <span>
+                  {safeMarginPct === null
+                    ? '—'
+                    : `${safeMarginPct.toLocaleString('en-US', {
+                        minimumFractionDigits: 1,
+                        maximumFractionDigits: 1,
+                      })}%`}
+                </span>
+              </div>
+            </div>
           </div>
+
         </div>
       </Card>
     </div>
