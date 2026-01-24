@@ -1,0 +1,1208 @@
+{
+  "meta": {
+    "parser_version": "value_line_v1",
+    "schema_version": "1.1",
+    "page_number": 1,
+    "report_date": "2026-01-09",
+    "source": "value_line",
+    "layout_id": "industrial",
+    "security_unit": "share"
+  },
+  "identity": {
+    "company_name": "EMPIRE COMPANY",
+    "ticker": "EMPA.TO",
+    "exchange": "TSE"
+  },
+  "header": {
+    "recent_price": 47.70,
+    "pe_ratio": 15.0,
+    "pe_ratio_trailing": 16.1,
+    "pe_ratio_median": null,
+    "relative_pe_ratio": 0.80,
+    "dividend_yield_pct": 1.9
+  },
+  "ratings": {
+    "timeliness": {
+      "value": 3,
+      "event": {
+        "type": "lowered",
+        "date": "2026-01-09",
+        "raw": "Lowered 1/9/26"
+      }
+    },
+    "safety": {
+      "value": 2,
+      "event": {
+        "type": "raised",
+        "date": "2022-10-14",
+        "raw": "Raised 10/14/22"
+      }
+    },
+    "technical": {
+      "value": 2,
+      "event": {
+        "type": "raised",
+        "date": "2026-01-09",
+        "raw": "Raised 1/9/26"
+      }
+    },
+    "beta": {
+      "display": ".45",
+      "normalized": 0.45,
+      "unit": "ratio",
+      "notes": "1.00 = Market"
+    }
+  },
+  "quality_metrics": {
+    "company_financial_strength": {
+      "value": "B++",
+      "scale": "letter_grade"
+    },
+    "stock_price_stability": {
+      "value": 100.0,
+      "scale": "0-100"
+    },
+    "price_growth_persistence": {
+      "value": 60.0,
+      "scale": "0-100"
+    },
+    "earnings_predictability": {
+      "value": 80.0,
+      "scale": "0-100"
+    }
+  },
+  "target_price_18m": {
+    "period_type": "target_horizon",
+    "horizon_months": 18,
+    "range": {
+      "low": {
+        "display": "$34",
+        "normalized": 34.0,
+        "unit": "USD"
+      },
+      "high": {
+        "display": "$55",
+        "normalized": 55.0,
+        "unit": "USD"
+      }
+    },
+    "midpoint": {
+      "price": {
+        "display": "$45",
+        "normalized": 45.0,
+        "unit": "USD"
+      },
+      "pct_to_mid": {
+        "display": "-5%",
+        "normalized": -0.05,
+        "unit": "ratio"
+      }
+    }
+  },
+  "long_term_projection": {
+    "projection_year_range": "2028-2030",
+    "period_type": "projection_range",
+    "scenarios": {
+      "high": {
+        "price": {
+          "display": "60",
+          "normalized": 60.0,
+          "unit": "USD"
+        },
+        "price_gain": {
+          "display": "+25%",
+          "normalized": 0.25,
+          "unit": "ratio"
+        },
+        "annual_total_return": {
+          "display": "8%",
+          "normalized": 0.08,
+          "unit": "ratio"
+        }
+      },
+      "low": {
+        "price": {
+          "display": "45",
+          "normalized": 45.0,
+          "unit": "USD"
+        },
+        "price_gain": {
+          "display": "-5%",
+          "normalized": -0.05,
+          "unit": "ratio"
+        },
+        "annual_total_return": {
+          "display": "1%",
+          "normalized": 0.01,
+          "unit": "ratio"
+        }
+      }
+    }
+  },
+  "institutional_decisions": {
+    "unit": {
+      "hlds": "thousand_shares"
+    },
+    "by_quarter": [
+      {
+        "period": "1Q2025",
+        "period_type": "Q",
+        "period_end_date": "2025-03-31",
+        "to_buy": 0,
+        "to_sell": 1,
+        "holdings_thousand_shares": 46
+      },
+      {
+        "period": "2Q2025",
+        "period_type": "Q",
+        "period_end_date": "2025-06-30",
+        "to_buy": 0,
+        "to_sell": 0,
+        "holdings_thousand_shares": 46
+      },
+      {
+        "period": "3Q2025",
+        "period_type": "Q",
+        "period_end_date": "2025-09-30",
+        "to_buy": 0,
+        "to_sell": 0,
+        "holdings_thousand_shares": 46
+      }
+    ]
+  },
+  "capital_structure": {
+    "as_of": "2025-11-01",
+    "total_debt": {
+      "display": "$1269 mill",
+      "normalized": 1269000000.0,
+      "unit": "USD"
+    },
+    "debt_due_in_5_years": {
+      "display": "$495.0 mill",
+      "normalized": 495000000.0,
+      "unit": "USD"
+    },
+    "lt_debt": {
+      "display": "$1054 mill",
+      "normalized": 1054000000.0,
+      "unit": "USD"
+    },
+    "lt_interest": {
+      "display": "$60.0 mill",
+      "normalized": 60000000.0,
+      "unit": "USD"
+    },
+    "lt_interest_percent_of_capital": {
+      "display": "16%",
+      "normalized": 0.16,
+      "unit": "ratio"
+    },
+    "leases_uncapitalized": {
+      "display": "$13.6 mill",
+      "normalized": 13600000.0,
+      "unit": "USD",
+      "notes": "Annual rentals"
+    },
+    "pension_assets": {
+      "display": "$477.0 mill",
+      "normalized": 477000000.0,
+      "unit": "USD",
+      "as_of": "2025-05-31"
+    },
+    "obligations_other": {
+      "display": "$547.0 mill",
+      "normalized": 547000000.0,
+      "unit": "USD",
+      "label": "Oblig."
+    },
+    "common_stock": {
+      "shares_outstanding": {
+        "display": "230.80 million shares",
+        "normalized": 230800000.0,
+        "unit": "shares"
+      },
+      "as_of": "2025-11-01"
+    },
+    "market_cap": {
+      "display": "$11.0 billion",
+      "normalized": 11000000000.0,
+      "unit": "USD",
+      "market_cap_category": "Large Cap"
+    }
+  },
+  "financial_position": null,
+  "current_position": {
+    "unit": "USD_millions",
+    "periods": [
+      {
+        "label": "2023",
+        "period_end_date": "2023-12-31",
+        "assets": {
+          "cash_assets": 259.6,
+          "receivables": 677.8,
+          "inventory_lifo": 1771.7,
+          "other_current_assets": 394.5,
+          "total_current_assets": 3103.6
+        },
+        "liabilities": {
+          "accounts_payable": 3034.7,
+          "debt_due": 113.5,
+          "other_current_liabilities": 743.1,
+          "total_current_liabilities": 3891.3
+        }
+      },
+      {
+        "label": "2024",
+        "period_end_date": "2024-12-31",
+        "assets": {
+          "cash_assets": 285.0,
+          "receivables": 668.0,
+          "inventory_lifo": 1833.0,
+          "other_current_assets": 348.0,
+          "total_current_assets": 3134.0
+        },
+        "liabilities": {
+          "accounts_payable": 3122.0,
+          "debt_due": 225.0,
+          "other_current_liabilities": 749.0,
+          "total_current_liabilities": 4096.0
+        }
+      },
+      {
+        "label": "11/1/25",
+        "period_end_date": "2025-11-01",
+        "assets": {
+          "cash_assets": 254.0,
+          "receivables": 725.0,
+          "inventory_lifo": 1987.0,
+          "other_current_assets": 403.0,
+          "total_current_assets": 3369.0
+        },
+        "liabilities": {
+          "accounts_payable": 3017.0,
+          "debt_due": 215.0,
+          "other_current_liabilities": 722.0,
+          "total_current_liabilities": 3954.0
+        }
+      }
+    ]
+  },
+  "annual_rates": {
+    "unit": "per_share",
+    "metrics": [
+      {
+        "metric_key": "sales",
+        "past_10y_cagr_pct": 4.0,
+        "past_5y_cagr_pct": 5.0,
+        "estimated_cagr_pct": {
+          "from_period": "2022-2024",
+          "to_period": "2028-2030",
+          "value": 4.0
+        }
+      },
+      {
+        "metric_key": "cash_flow",
+        "past_10y_cagr_pct": 9.0,
+        "past_5y_cagr_pct": 14.5,
+        "estimated_cagr_pct": {
+          "from_period": "2022-2024",
+          "to_period": "2028-2030",
+          "value": 4.0
+        },
+        "display_name": "Cash Flow"
+      },
+      {
+        "metric_key": "earnings",
+        "past_10y_cagr_pct": 7.0,
+        "past_5y_cagr_pct": 13.0,
+        "estimated_cagr_pct": {
+          "from_period": "2022-2024",
+          "to_period": "2028-2030",
+          "value": 5.5
+        }
+      },
+      {
+        "metric_key": "dividends",
+        "past_10y_cagr_pct": 6.5,
+        "past_5y_cagr_pct": 7.5,
+        "estimated_cagr_pct": {
+          "from_period": "2022-2024",
+          "to_period": "2028-2030",
+          "value": 6.0
+        }
+      },
+      {
+        "metric_key": "book_value",
+        "past_10y_cagr_pct": null,
+        "past_5y_cagr_pct": 7.5,
+        "estimated_cagr_pct": {
+          "from_period": "2022-2024",
+          "to_period": "2028-2030",
+          "value": 5.5
+        }
+      }
+    ]
+  },
+  "quarterly_sales": {
+    "unit": "USD_millions",
+    "by_year": [
+      {
+        "calendar_year": 2022,
+        "quarters": {
+          "Q1": {
+            "period_end": "2022-03-31",
+            "value": 7938.0
+          },
+          "Q2": {
+            "period_end": "2022-06-30",
+            "value": 7643.0
+          },
+          "Q3": {
+            "period_end": "2022-09-30",
+            "value": 7489.0
+          },
+          "Q4": {
+            "period_end": "2022-12-31",
+            "value": 7408.0
+          }
+        },
+        "full_year": {
+          "value": 30478.0,
+          "is_estimated": false
+        }
+      },
+      {
+        "calendar_year": 2023,
+        "quarters": {
+          "Q1": {
+            "period_end": "2023-03-31",
+            "value": 8076.0
+          },
+          "Q2": {
+            "period_end": "2023-06-30",
+            "value": 7751.0
+          },
+          "Q3": {
+            "period_end": "2023-09-30",
+            "value": 7494.0
+          },
+          "Q4": {
+            "period_end": "2023-12-31",
+            "value": 7412.0
+          }
+        },
+        "full_year": {
+          "value": 30733.0,
+          "is_estimated": false
+        }
+      },
+      {
+        "calendar_year": 2024,
+        "quarters": {
+          "Q1": {
+            "period_end": "2024-03-31",
+            "value": 8137.0
+          },
+          "Q2": {
+            "period_end": "2024-06-30",
+            "value": 7778.0
+          },
+          "Q3": {
+            "period_end": "2024-09-30",
+            "value": 7725.0
+          },
+          "Q4": {
+            "period_end": "2024-12-31",
+            "value": 7637.0
+          }
+        },
+        "full_year": {
+          "value": 31277.0,
+          "is_estimated": false
+        }
+      },
+      {
+        "calendar_year": 2025,
+        "quarters": {
+          "Q1": {
+            "period_end": "2025-03-31",
+            "value": 8258.0
+          },
+          "Q2": {
+            "period_end": "2025-06-30",
+            "value": 7995.0
+          },
+          "Q3": {
+            "period_end": "2025-09-30",
+            "value": 7922.0
+          },
+          "Q4": {
+            "period_end": "2025-12-31",
+            "value": 7825.0
+          }
+        },
+        "full_year": {
+          "value": 32000.0,
+          "is_estimated": true
+        }
+      },
+      {
+        "calendar_year": 2026,
+        "quarters": {
+          "Q1": {
+            "period_end": "2026-03-31",
+            "value": 8560.0
+          },
+          "Q2": {
+            "period_end": "2026-06-30",
+            "value": 8200.0
+          },
+          "Q3": {
+            "period_end": "2026-09-30",
+            "value": 8150.0
+          },
+          "Q4": {
+            "period_end": "2026-12-31",
+            "value": 8090.0
+          }
+        },
+        "full_year": {
+          "value": 33000.0,
+          "is_estimated": true
+        }
+      }
+    ]
+  },
+  "net_premiums_earned": null,
+  "earnings_per_share": {
+    "unit": "USD_per_share",
+    "by_year": [
+      {
+        "calendar_year": 2022,
+        "quarters": {
+          "Q1": {
+            "period_end": "2022-03-31",
+            "value": 0.71
+          },
+          "Q2": {
+            "period_end": "2022-06-30",
+            "value": 0.73
+          },
+          "Q3": {
+            "period_end": "2022-09-30",
+            "value": 0.49
+          },
+          "Q4": {
+            "period_end": "2022-12-31",
+            "value": 0.72
+          }
+        },
+        "full_year": {
+          "value": 2.64,
+          "is_estimated": false
+        }
+      },
+      {
+        "calendar_year": 2023,
+        "quarters": {
+          "Q1": {
+            "period_end": "2023-03-31",
+            "value": 1.03
+          },
+          "Q2": {
+            "period_end": "2023-06-30",
+            "value": 0.73
+          },
+          "Q3": {
+            "period_end": "2023-09-30",
+            "value": 0.54
+          },
+          "Q4": {
+            "period_end": "2023-12-31",
+            "value": 0.61
+          }
+        },
+        "full_year": {
+          "value": 2.92,
+          "is_estimated": false
+        }
+      },
+      {
+        "calendar_year": 2024,
+        "quarters": {
+          "Q1": {
+            "period_end": "2024-03-31",
+            "value": 0.86
+          },
+          "Q2": {
+            "period_end": "2024-06-30",
+            "value": 0.73
+          },
+          "Q3": {
+            "period_end": "2024-09-30",
+            "value": 0.62
+          },
+          "Q4": {
+            "period_end": "2024-12-31",
+            "value": 0.74
+          }
+        },
+        "full_year": {
+          "value": 2.93,
+          "is_estimated": false
+        }
+      },
+      {
+        "calendar_year": 2025,
+        "quarters": {
+          "Q1": {
+            "period_end": "2025-03-31",
+            "value": 0.91
+          },
+          "Q2": {
+            "period_end": "2025-06-30",
+            "value": 0.69
+          },
+          "Q3": {
+            "period_end": "2025-09-30",
+            "value": 0.75
+          },
+          "Q4": {
+            "period_end": "2025-12-31",
+            "value": 0.8
+          }
+        },
+        "full_year": {
+          "value": 3.15,
+          "is_estimated": true
+        }
+      },
+      {
+        "calendar_year": 2026,
+        "quarters": {
+          "Q1": {
+            "period_end": "2026-03-31",
+            "value": 0.93
+          },
+          "Q2": {
+            "period_end": "2026-06-30",
+            "value": 0.77
+          },
+          "Q3": {
+            "period_end": "2026-09-30",
+            "value": 0.8
+          },
+          "Q4": {
+            "period_end": "2026-12-31",
+            "value": 0.85
+          }
+        },
+        "full_year": {
+          "value": 3.35,
+          "is_estimated": true
+        }
+      }
+    ]
+  },
+  "earnings_per_adr": null,
+  "quarterly_dividends_paid": {
+    "unit": "USD_per_share",
+    "by_year": [
+      {
+        "calendar_year": 2022,
+        "quarters": {
+          "Q1": {
+            "period_end": "2022-03-31",
+            "value": 0.15
+          },
+          "Q2": {
+            "period_end": "2022-06-30",
+            "value": 0.15
+          },
+          "Q3": {
+            "period_end": "2022-09-30",
+            "value": 0.165
+          },
+          "Q4": {
+            "period_end": "2022-12-31",
+            "value": 0.165
+          }
+        },
+        "full_year": {
+          "value": 0.63,
+          "is_estimated": false
+        }
+      },
+      {
+        "calendar_year": 2023,
+        "quarters": {
+          "Q1": {
+            "period_end": "2023-03-31",
+            "value": 0.165
+          },
+          "Q2": {
+            "period_end": "2023-06-30",
+            "value": 0.165
+          },
+          "Q3": {
+            "period_end": "2023-09-30",
+            "value": 0.1825
+          },
+          "Q4": {
+            "period_end": "2023-12-31",
+            "value": 0.1825
+          }
+        },
+        "full_year": {
+          "value": 0.7,
+          "is_estimated": false
+        }
+      },
+      {
+        "calendar_year": 2024,
+        "quarters": {
+          "Q1": {
+            "period_end": "2024-03-31",
+            "value": 0.1825
+          },
+          "Q2": {
+            "period_end": "2024-06-30",
+            "value": 0.1825
+          },
+          "Q3": {
+            "period_end": "2024-09-30",
+            "value": 0.2
+          },
+          "Q4": {
+            "period_end": "2024-12-31",
+            "value": 0.2
+          }
+        },
+        "full_year": {
+          "value": 0.77,
+          "is_estimated": false
+        }
+      },
+      {
+        "calendar_year": 2025,
+        "quarters": {
+          "Q1": {
+            "period_end": "2025-03-31",
+            "value": 0.2
+          },
+          "Q2": {
+            "period_end": "2025-06-30",
+            "value": 0.2
+          },
+          "Q3": {
+            "period_end": "2025-09-30",
+            "value": 0.22
+          },
+          "Q4": {
+            "period_end": "2025-12-31",
+            "value": 0.22
+          }
+        },
+        "full_year": {
+          "value": 0.84,
+          "is_estimated": true
+        }
+      },
+      {
+        "calendar_year": 2026,
+        "quarters": null,
+        "full_year": {
+          "value": null,
+          "is_estimated": true,
+          "notes": "No quarterly or full-year dividend values provided in report"
+        }
+      }
+    ]
+  },
+  "annual_financials": {
+    "meta": {
+      "source": "value_line",
+      "table_type": "annual_financials_and_ratios",
+      "currency": "USD",
+      "historical_years": [
+        2015,
+        2016,
+        2017,
+        2018,
+        2019,
+        2020,
+        2021,
+        2022,
+        2023,
+        2024,
+        2025,
+        2026
+      ],
+      "projection_year_range": "2028-2030"
+    },
+    "per_unit": "share",
+    "per_unit_metrics": {
+      "sales": {
+        "2015": 90.62,
+        "2016": 87.63,
+        "2017": 89.13,
+        "2018": 92.5,
+        "2019": 98.86,
+        "2020": 106.51,
+        "2021": 114.83,
+        "2022": 120.33,
+        "2023": 126.98,
+        "2024": 131.47,
+        "2025": 139.15,
+        "2026": 143.5,
+        "projection_2028_2030": 166.0
+      },
+      "cash_flow": {
+        "2015": -6.1,
+        "2016": 2.27,
+        "2017": 2.28,
+        "2018": 3.07,
+        "2019": 5.18,
+        "2020": 6.06,
+        "2021": 6.77,
+        "2022": 6.94,
+        "2023": 7.08,
+        "2024": 7.35,
+        "2025": 7.65,
+        "2026": 8.0,
+        "projection_2028_2030": 9.4
+      },
+      "earnings": {
+        "2015": -7.78,
+        "2016": 0.58,
+        "2017": 0.59,
+        "2018": 1.5,
+        "2019": 2.2,
+        "2020": 2.6,
+        "2021": 2.8,
+        "2022": 2.64,
+        "2023": 2.92,
+        "2024": 2.93,
+        "2025": 3.15,
+        "2026": 3.35,
+        "projection_2028_2030": 4.0
+      },
+      "dividends_declared": {
+        "2015": 0.4,
+        "2016": 0.41,
+        "2017": 0.42,
+        "2018": 0.44,
+        "2019": 0.46,
+        "2020": 0.52,
+        "2021": 0.56,
+        "2022": 0.63,
+        "2023": 0.7,
+        "2024": 0.77,
+        "2025": 0.84,
+        "2026": 0.91,
+        "projection_2028_2030": 1.12
+      },
+      "book_value": {
+        "2015": 13.33,
+        "2016": 13.41,
+        "2017": 13.63,
+        "2018": 14.73,
+        "2019": 14.59,
+        "2020": 16.48,
+        "2021": 19.0,
+        "2022": 20.53,
+        "2023": 22.07,
+        "2024": 22.74,
+        "2025": 24.55,
+        "2026": 25.7,
+        "projection_2028_2030": 31.4
+      },
+      "common_shares_outstanding_millions": {
+        "2015": 271.68,
+        "2016": 271.68,
+        "2017": 271.69,
+        "2018": 271.8,
+        "2019": 268.95,
+        "2020": 265.42,
+        "2021": 262.66,
+        "2022": 253.28,
+        "2023": 242.03,
+        "2024": 237.9,
+        "2025": 230.0,
+        "2026": 230.0,
+        "projection_2028_2030": 230.0
+      }
+    },
+    "valuation_metrics": {
+      "avg_annual_pe_ratio": {
+        "2015": null,
+        "2016": 33.2,
+        "2017": 38.6,
+        "2018": 17.7,
+        "2019": 14.9,
+        "2020": 13.7,
+        "2021": 14.3,
+        "2022": 14.2,
+        "2023": 12.2,
+        "2024": 13.8,
+        "2025": 15.5,
+        "2026": null,
+        "projection_2028_2030": 13.0
+      },
+      "relative_pe_ratio": {
+        "2015": null,
+        "2016": 1.74,
+        "2017": 1.94,
+        "2018": 0.96,
+        "2019": 0.79,
+        "2020": 0.7,
+        "2021": 0.77,
+        "2022": 0.82,
+        "2023": 0.71,
+        "2024": 0.77,
+        "2025": 0.85,
+        "2026": null,
+        "projection_2028_2030": 0.7
+      },
+      "avg_annual_dividend_yield_pct": {
+        "2015": 1.5,
+        "2016": 2.1,
+        "2017": 1.8,
+        "2018": 1.7,
+        "2019": 1.4,
+        "2020": 1.5,
+        "2021": 1.4,
+        "2022": 1.7,
+        "2023": 1.9,
+        "2024": 1.9,
+        "2025": 1.7,
+        "2026": null,
+        "projection_2028_2030": 2.1
+      }
+    },
+    "income_statement_usd_millions": {
+      "sales": {
+        "2015": 24619.0,
+        "2016": 23806.0,
+        "2017": 24215.0,
+        "2018": 25142.0,
+        "2019": 26588.0,
+        "2020": 28268.0,
+        "2021": 30162.0,
+        "2022": 30478.0,
+        "2023": 30733.0,
+        "2024": 31277.0,
+        "2025": 32000.0,
+        "2026": 33000.0,
+        "projection_2028_2030": 38200.0
+      },
+      "gross_margin_pct": {
+        "2015": 26.1,
+        "2016": 25.8,
+        "2017": 26.2,
+        "2018": 24.2,
+        "2019": 24.9,
+        "2020": 28.5,
+        "2021": 28.6,
+        "2022": 28.9,
+        "2023": 26.3,
+        "2024": 26.8,
+        "2025": 26.5,
+        "2026": 26.5,
+        "projection_2028_2030": 26.5
+      },
+      "operating_margin_pct": {
+        "2015": 4.1,
+        "2016": 2.7,
+        "2017": 2.7,
+        "2018": 3.6,
+        "2019": 6.6,
+        "2020": 7.2,
+        "2021": 7.1,
+        "2022": 6.9,
+        "2023": 7.4,
+        "2024": 7.3,
+        "2025": 7.3,
+        "2026": 7.3,
+        "projection_2028_2030": 7.4
+      },
+      "number_of_stores": {
+        "2015": 1815,
+        "2016": 1815,
+        "2017": 1810,
+        "2018": 1849,
+        "2019": 1850,
+        "2020": 1850,
+        "2021": 1865,
+        "2022": 1859,
+        "2023": 1860,
+        "2024": 1865,
+        "2025": 1870,
+        "2026": 1875,
+        "projection_2028_2030": 1900
+      },
+      "net_profit": {
+        "2015": -2131.0,
+        "2016": 172.5,
+        "2017": 179.8,
+        "2018": 416.4,
+        "2019": 612.8,
+        "2020": 764.2,
+        "2021": 811.3,
+        "2022": 727.7,
+        "2023": 762.6,
+        "2024": 746.0,
+        "2025": 725.0,
+        "2026": 770.0,
+        "projection_2028_2030": 920.0
+      }
+    },
+    "income_statement_ratios_pct": {
+      "income_tax_rate_pct": {
+        "2015": null,
+        "2016": 19.77,
+        "2017": 23.81,
+        "2018": 25.74,
+        "2019": 26.41,
+        "2020": 25.81,
+        "2021": 24.99,
+        "2022": 24.62,
+        "2023": 25.8,
+        "2024": 25.0,
+        "2025": 26.0,
+        "2026": 26.0,
+        "projection_2028_2030": 26.0
+      },
+      "net_profit_margin_pct": {
+        "2015": null,
+        "2016": 0.7,
+        "2017": 0.7,
+        "2018": 1.7,
+        "2019": 2.3,
+        "2020": 2.7,
+        "2021": 2.7,
+        "2022": 2.4,
+        "2023": 2.5,
+        "2024": 2.4,
+        "2025": 2.3,
+        "2026": 2.3,
+        "projection_2028_2030": 2.4
+      }
+    },
+    "balance_sheet_and_returns_usd_millions": {
+      "working_capital": {
+        "2015": -106.5,
+        "2016": -324.2,
+        "2017": -466.3,
+        "2018": -41.8,
+        "2019": -804.5,
+        "2020": -294.7,
+        "2021": -1027.0,
+        "2022": -902.5,
+        "2023": -787.7,
+        "2024": -962.0,
+        "2025": -800.0,
+        "2026": -830.0,
+        "projection_2028_2030": -850.0
+      },
+      "long_term_debt": {
+        "2015": 2011.5,
+        "2016": 1736.8,
+        "2017": 1139.5,
+        "2018": 1984.4,
+        "2019": 1105.2,
+        "2020": 1178.8,
+        "2021": 595.7,
+        "2022": 911.3,
+        "2023": 981.9,
+        "2024": 857.0,
+        "2025": 1100.0,
+        "2026": 1140.0,
+        "projection_2028_2030": 1320.0
+      },
+      "shareholders_equity": {
+        "2015": 3621.0,
+        "2016": 3644.2,
+        "2017": 3702.8,
+        "2018": 4003.3,
+        "2019": 3924.6,
+        "2020": 4372.7,
+        "2021": 4991.5,
+        "2022": 5200.4,
+        "2023": 5341.1,
+        "2024": 5410.0,
+        "2025": 5650.0,
+        "2026": 5910.0,
+        "projection_2028_2030": 7230.0
+      },
+      "return_on_total_capital_pct": {
+        "2015": null,
+        "2016": 4.2,
+        "2017": 4.8,
+        "2018": 7.7,
+        "2019": 15.0,
+        "2020": 16.2,
+        "2021": 17.0,
+        "2022": 14.1,
+        "2023": 12.6,
+        "2024": 12.4,
+        "2025": 13.0,
+        "2026": 13.0,
+        "projection_2028_2030": 13.0
+      },
+      "return_on_shareholders_equity_pct": {
+        "2015": null,
+        "2016": 4.7,
+        "2017": 4.9,
+        "2018": 10.4,
+        "2019": 15.6,
+        "2020": 17.5,
+        "2021": 16.3,
+        "2022": 14.0,
+        "2023": 14.3,
+        "2024": 13.8,
+        "2025": 13.0,
+        "2026": 13.0,
+        "projection_2028_2030": 12.5
+      },
+      "retained_to_common_equity_pct": {
+        "2015": null,
+        "2016": 1.7,
+        "2017": 1.8,
+        "2018": 7.4,
+        "2019": 12.3,
+        "2020": 14.3,
+        "2021": 13.1,
+        "2022": 10.7,
+        "2023": 10.1,
+        "2024": 9.5,
+        "2025": 9.5,
+        "2026": 9.5,
+        "projection_2028_2030": 9.5,
+        "notes": "NMF values are represented as null"
+      },
+      "all_dividends_to_net_profit_pct": {
+        "2015": null,
+        "2016": 65.0,
+        "2017": 63.0,
+        "2018": 29.0,
+        "2019": 21.0,
+        "2020": 18.0,
+        "2021": 19.0,
+        "2022": 23.0,
+        "2023": 24.0,
+        "2024": 26.0,
+        "2025": 26.0,
+        "2026": 27.0,
+        "projection_2028_2030": 27.0,
+        "notes": "NMF values are represented as null"
+      }
+    }
+  },
+  "total_return": {
+    "as_of_date": "2025-12-29",
+    "unit": "percent",
+    "source": "value_line",
+    "series": [
+      {
+        "name": "this_stock",
+        "window_years": 1,
+        "value_pct": 16.1
+      },
+      {
+        "name": "this_stock",
+        "window_years": 3,
+        "value_pct": 39.9
+      },
+      {
+        "name": "this_stock",
+        "window_years": 5,
+        "value_pct": 38.2
+      },
+      {
+        "name": "vl_arithmetic_index",
+        "window_years": 1,
+        "value_pct": 3.6
+      },
+      {
+        "name": "vl_arithmetic_index",
+        "window_years": 3,
+        "value_pct": 39.2
+      },
+      {
+        "name": "vl_arithmetic_index",
+        "window_years": 5,
+        "value_pct": 68.5
+      }
+    ]
+  },
+  "historical_price_range": [
+    {
+      "year": 2014,
+      "high": 29.5,
+      "low": 21.6
+    },
+    {
+      "year": 2015,
+      "high": 31.9,
+      "low": 24.9
+    },
+    {
+      "year": 2016,
+      "high": 27.0,
+      "low": 14.7
+    },
+    {
+      "year": 2017,
+      "high": 26.9,
+      "low": 15.4
+    },
+    {
+      "year": 2018,
+      "high": 30.1,
+      "low": 21.7
+    },
+    {
+      "year": 2019,
+      "high": 37.8,
+      "low": 27.8
+    },
+    {
+      "year": 2020,
+      "high": 41.4,
+      "low": 24.3
+    },
+    {
+      "year": 2021,
+      "high": 44.1,
+      "low": 34.4
+    },
+    {
+      "year": 2022,
+      "high": 45.9,
+      "low": 31.4
+    },
+    {
+      "year": 2023,
+      "high": 40.7,
+      "low": 31.6
+    },
+    {
+      "year": 2024,
+      "high": 48.5,
+      "low": 30.5
+    },
+    {
+      "year": 2025,
+      "high": 58.1,
+      "low": 40.3
+    }
+  ],
+  
+  "narrative": {
+    "business": null,
+    "analyst_name": "Sharif Abdou",
+    "commentary_date": "2026-01-09",
+    "analyst_commentary": null
+  }
+}
