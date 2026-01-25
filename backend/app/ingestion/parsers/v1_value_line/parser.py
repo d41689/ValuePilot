@@ -452,8 +452,27 @@ class ValueLineV1Parser(BaseParser):
             ))
 
         oblig = re.search(r'Oblig\.?\s*\$([\d\.]+)\s*(mil|mill|million|bil|bill|billion)\.?\b', self.text, re.IGNORECASE)
+        if not oblig:
+            # Some PDFs break the unit token onto a later line (e.g. "Oblig.$1.03 ... bill.").
+            oblig = re.search(r'Oblig\.?\s*\$([\d\.]+)\b', self.text, re.IGNORECASE)
         if oblig:
-            results.append(ExtractionResult(field_key="pension_obligations", raw_value_text=_money_from_match(oblig), original_text_snippet=oblig.group(0), confidence_score=0.8))
+            unit = oblig.group(2) if oblig.lastindex and oblig.lastindex >= 2 else None
+            if not unit:
+                tail = self.text[oblig.end() : oblig.end() + 220]
+                # Prefer billions if both ($mill) and bill/bil appear nearby in the text layer.
+                bill_match = re.search(r'\b(bil|bill|billion)\.?\b', tail, re.IGNORECASE)
+                mil_match = re.search(r'\b(mil|mill|million)\.?\b', tail, re.IGNORECASE)
+                unit_match = bill_match or mil_match
+                unit = unit_match.group(1) if unit_match else None
+            if unit:
+                results.append(
+                    ExtractionResult(
+                        field_key="pension_obligations",
+                        raw_value_text=f"${oblig.group(1)} {unit}",
+                        original_text_snippet=oblig.group(0),
+                        confidence_score=0.8,
+                    )
+                )
 
         pfd_stock = re.search(r'Pfd\s*Stock\s*\$([\d\.]+)\s*(mil|mill|million|bil|bill|billion)\.?\b', self.text, re.IGNORECASE)
         if pfd_stock:
@@ -485,7 +504,7 @@ class ValueLineV1Parser(BaseParser):
             ))
 
         shares_match2 = re.search(
-            r'CommonStock\s*([\d,]+)\s*(?:shares|shs|ADRs?|ADS(?:sout\.?|sout|s)?)\.?',
+            r'CommonStock\s*([\d,]+(?:\.\d+)?)\s*(?:(mil|mill|million)\.?)?\s*(?:shares|shs|ADRs?|ADS(?:sout\.?|sout|s)?)\.?',
             self.text,
             re.IGNORECASE,
         )
@@ -501,6 +520,10 @@ class ValueLineV1Parser(BaseParser):
                 unit = "ADRs"
             elif re.search(r'ADS', shares_match2.group(0), re.IGNORECASE):
                 unit = "ADS"
+            raw_num = shares_match2.group(1).replace(",", "")
+            scale_token = shares_match2.group(2)
+            if scale_token:
+                raw_num = str(int(float(raw_num) * 1_000_000.0))
             tail = self.text[shares_match2.end(): shares_match2.end() + 500]
             as_of_match = re.search(r'asof\s*(\d{1,2}/\d{1,2}/\d{2})', tail, re.IGNORECASE)
             if as_of_match:
@@ -532,11 +555,11 @@ class ValueLineV1Parser(BaseParser):
                     voting_multiple = voting_multiple or 10
                     voting_notes = "Super voting power beyond director elections"
             results.append(ExtractionResult(
-                    field_key="common_stock_shares_outstanding",
-                    raw_value_text=shares_match2.group(1).replace(',', ''),
-                    original_text_snippet=shares_match2.group(0),
-                    parsed_value_json={
-                        k: v
+                field_key="common_stock_shares_outstanding",
+                raw_value_text=raw_num,
+                original_text_snippet=shares_match2.group(0),
+                parsed_value_json={
+                    k: v
                     for k, v in {
                         "as_of": as_of,
                         "notes": notes,
@@ -1000,12 +1023,14 @@ class ValueLineV1Parser(BaseParser):
                         return None
                     return [float(m.group(1)), float(m.group(2)), float(m.group(3))]
                 inventory_fifo = row3(r'Inventory\s*\(FIFO\)')
+                inventory_avg_cost = row3(r'Inventory\s*\((?:AvgCst|AvgCost|Avg\s*Cost)\)')
                 parsed = {
                     "years": years,
                     "cash_assets": row3(r'Cash\s*Assets'),
                     "receivables": row3(r'Receivables'),
                     "inventory_lifo": row3(r'Inventory\s*\(LIFO\)'),
                     "inventory_fifo": inventory_fifo,
+                    "inventory_avg_cost": inventory_avg_cost,
                     "other_current_assets": row3(r'Other'),
                     "current_assets_total": row3(r'Current\s*Assets'),
                     "accounts_payable": row3(r'Accts\s*Payable'),
@@ -1176,12 +1201,13 @@ class ValueLineV1Parser(BaseParser):
             return rows
 
         qs_start = re.search(r'\b(QUARTERLYSALES|QUARTERLYREVENUES|NETPREMIUMSEARNED)\b', self.text, re.IGNORECASE)
-        div_start_pat = r'\bQUARTERLYDIVIDENDS\w*\b'
+        div_start_pat = r'(?:QUARTERLYDIVIDENDS\w*|SEMIANNUALDIVIDENDSPAID\w*|DIVIDENDSPAID\w*)'
         if qs_start:
             qs_label = qs_start.group(1).upper()
             after_qs = self.text[qs_start.end():]
             qs_end = re.search(
-                r'\b(?:EARNINGSPERADR\w*|EARNINGSPERSHARE\w*|EARNINGSPERADS\w*|QUARTERLYDIVIDENDS\w*)\b',
+                r'\b(?:EARNINGSPERADR\w*|EARNINGSPERSHARE\w*|EARNINGSPERADS\w*)\b|'
+                r'(?:QUARTERLYDIVIDENDS\w*|SEMIANNUALDIVIDENDSPAID\w*|DIVIDENDSPAID\w*)',
                 after_qs,
                 re.IGNORECASE,
             )
@@ -1237,7 +1263,14 @@ class ValueLineV1Parser(BaseParser):
             div_match = re.search(div_start_pat, after_qs, re.IGNORECASE)
             if div_match:
                 div_start_idx = qs_start.end() + div_match.end()
-                div_block = self.text[div_start_idx:]
+                # Bound the dividends block so we don't accidentally parse unrelated trailing data.
+                tail = self.text[div_start_idx:]
+                stop = re.search(
+                    r'\b(?:Iason|ANNUAL\s*RATES|CURRENT\s*POSITION|CAPITAL\s*STRUCTURE)\b',
+                    tail,
+                    re.IGNORECASE,
+                )
+                div_block = tail[: stop.start()] if stop else tail
                 parsed = _parse_quarterly_rows(div_block)
                 if parsed:
                     results.append(ExtractionResult(
@@ -1443,6 +1476,8 @@ class ValueLineV1Parser(BaseParser):
         if token is None:
             return None
         raw = token.strip()
+        # Normalize common text-layer OCR artifacts in numeric tokens (e.g. "31.q%" -> "31.9%").
+        raw = re.sub(r'(\d+)\.([qg])(\d*)', lambda m: f"{m.group(1)}.9{m.group(3)}", raw, flags=re.IGNORECASE)
         upper = raw.upper()
         if upper in {"--", "NMF", "NIL"}:
             return None
@@ -1603,13 +1638,19 @@ class ValueLineV1Parser(BaseParser):
         tokens = flat_text.split()
         insurance_layout = re.search(r'P/CPremiumsEarned|UnderwritingMargin|LossToPrem|InvInc/TotalInv', flat_text, re.IGNORECASE) is not None
 
+        def _normalize_value_token(token: str) -> str:
+            raw = str(token or "").strip()
+            return re.sub(r'(\d+)\.([qg])(\d*)', lambda m: f"{m.group(1)}.9{m.group(3)}", raw, flags=re.IGNORECASE)
+
         def is_value_token(token: str) -> bool:
+            token = _normalize_value_token(token)
             upper = token.upper()
             if upper in {"--", "NMF", "NIL"}:
                 return True
             return re.fullmatch(r'[dD]?-?\d*\.?\d+%?', token) is not None
 
         def coerce(token: str, percent_ratio: bool) -> Optional[float]:
+            token = _normalize_value_token(token)
             value = self._coerce_value(token)
             if value is None:
                 return None
@@ -1645,7 +1686,7 @@ class ValueLineV1Parser(BaseParser):
             def _to_float(token: str) -> Optional[float]:
                 if token is None:
                     return None
-                raw = token.strip().replace("%", "")
+                raw = _normalize_value_token(token).replace("%", "")
                 if raw.upper() in {"--", "NMF", "NIL"}:
                     return None
                 if raw.startswith("."):
@@ -1764,7 +1805,10 @@ class ValueLineV1Parser(BaseParser):
         if proj is not None:
             projection["earnings_per_share_usd"] = proj
 
-        series, proj = parse_series(r'Div.?dsDecl.?dper(?:sh|ADR|ADS)[A-Z]?', percent_ratio=False)
+        series, proj = parse_series(
+            r'(?:Div.?dsDecl.?dper(?:sh|ADR|ADS)[A-Z]?|GrossDiv.*Decl.*ADR[A-Z]?)',
+            percent_ratio=False,
+        )
         per_share["dividends_declared_per_share_usd"] = series
         if proj is not None:
             projection["dividends_declared_per_share_usd"] = proj
@@ -1774,7 +1818,7 @@ class ValueLineV1Parser(BaseParser):
         if proj is not None:
             projection["book_value_per_share_usd"] = proj
 
-        series, proj = parse_series(r'(?:CommonShsOutst|EquivADSsOutst)', percent_ratio=False)
+        series, proj = parse_series(r'(?:CommonShsOutst|EquivADSsOutst|EquivADRsOutst)', percent_ratio=False)
         per_share["common_shares_outstanding_millions"] = series
         if proj is not None:
             projection["common_shares_outstanding_millions"] = proj
@@ -1859,7 +1903,7 @@ class ValueLineV1Parser(BaseParser):
         if proj is not None:
             projection["retained_to_common_equity_pct"] = proj
 
-        series, proj = parse_series(r'AllDiv.?dstoNetProf', percent_ratio=insurance_layout)
+        series, proj = parse_series(r'AllDiv.*toNetProf', percent_ratio=insurance_layout)
         balance_sheet["all_dividends_to_net_profit_pct"] = series
         if proj is not None:
             projection["all_dividends_to_net_profit_pct"] = proj
@@ -1982,7 +2026,10 @@ class ValueLineV1Parser(BaseParser):
         def _round_top(w: dict[str, Any]) -> float:
             return round(float(w.get("top", 0.0)), 1)
 
-        idx = next((i for i, w in enumerate(words) if w.get("text") == "InstitutionalDecisions"), None)
+        idx = next(
+            (i for i, w in enumerate(words) if "InstitutionalDecisions" in str(w.get("text", ""))),
+            None,
+        )
         if idx is None:
             return None
 

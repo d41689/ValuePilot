@@ -482,10 +482,15 @@ def _build_current_position(by_key: dict[str, Any]) -> Optional[dict[str, Any]]:
     periods = []
     for idx, year in enumerate(years):
         label, period_end_date = _period_label_and_end(year)
+        inventory_avg_cost = _series_at(parsed.get("inventory_avg_cost"), idx)
         inventory_fifo = _series_at(parsed.get("inventory_fifo"), idx)
         inventory_lifo = _series_at(parsed.get("inventory_lifo"), idx)
-        inventory_key = "inventory_fifo" if inventory_fifo is not None else "inventory_lifo"
-        inventory_value = inventory_fifo if inventory_fifo is not None else inventory_lifo
+        if inventory_avg_cost is not None:
+            inventory_key = "inventory_avg_cost"
+            inventory_value = inventory_avg_cost
+        else:
+            inventory_key = "inventory_fifo" if inventory_fifo is not None else "inventory_lifo"
+            inventory_value = inventory_fifo if inventory_fifo is not None else inventory_lifo
         period = {
             "label": label,
             "period_end_date": period_end_date,
@@ -1211,6 +1216,13 @@ def _detect_ads_layout(parser: ValueLineV1Parser, by_key: dict[str, Any]) -> boo
 def _shares_display(res: Any, raw_value: str) -> str:
     if res and getattr(res, "original_text_snippet", None):
         snippet = res.original_text_snippet or ""
+        match = re.search(
+            r'CommonStock\s*([\d,]+(?:\.\d+)?)\s*(mil|mill|million)\.?\s*(?:ADRs?|ADSs?)',
+            snippet,
+            re.IGNORECASE,
+        )
+        if match:
+            return f"{match.group(1)} mil"
         match = re.search(
             r'Common\s*Stock\s*([\d\.]+)\s*(mil|mill|million)\.?\s*(?:shs|shares)',
             snippet,
