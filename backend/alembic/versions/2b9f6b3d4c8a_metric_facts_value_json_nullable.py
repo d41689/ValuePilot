@@ -28,6 +28,11 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
+    # Backfill NULLs before restoring NOT NULL constraint so downgrades are safe on
+    # databases that accepted NULLs while this revision was applied.
+    op.execute(
+        sa.text("UPDATE metric_facts SET value_json = '{}'::jsonb WHERE value_json IS NULL")
+    )
     op.alter_column(
         "metric_facts",
         "value_json",
