@@ -117,6 +117,25 @@ Agents MUST run verification commands inside containers, e.g.:
 If tests fail:
 - Fix bugs and re-run until all tests are green.
 
+## 3.1 Parser Fixture Alignment Workflow (Required)
+
+When given a task of the form:
+1) a specific Value Line PDF fixture and its expected parse output (`*.expected.json`),
+2) generate `*.parser.json` using this project's parser,
+3) compare `*.parser.json` vs `*.expected.json` and adjust parser code until they match,
+
+Agents MUST use the project scripts below (inside Docker), and MUST NOT use OS-level `diff` for JSON comparisons.
+
+- Generate `*.parser.json` (canonical):
+  - `docker compose exec api python -m scripts.value_line_dump --pdf tests/fixtures/value_line/<name>.pdf --out tests/fixtures/value_line/<name>_v1.parser.json`
+- Key-by-key JSON diff (canonical):
+  - `docker compose exec api python -m scripts.json_diff tests/fixtures/value_line/<name>_v1.expected.json tests/fixtures/value_line/<name>_v1.parser.json tests/fixtures/value_line/<name>_v1.diff.json`
+- Iterate:
+  - Use the diff JSON file as the source of truth for mismatched paths/values.
+  - Adjust parser code minimally (TDD), regenerate `*.parser.json`, re-run `scripts.json_diff`, and repeat until the diff output is `{}`.
+- Verify:
+  - `docker compose exec api pytest -q` (or at least the relevant fixture test(s)).
+
 ## 4. Safety & Data Contract Checks (Always-On)
 
 - Screeners MUST query `metric_facts` and filter on `is_current = true`.
