@@ -19,9 +19,10 @@ def build_value_line_page_json(
 
     report_date = _report_date(by_key)
     insurance_layout = _detect_insurance_layout(by_key)
-    adr_layout = _detect_adr_layout(parser, by_key)
+    ads_layout = _detect_ads_layout(parser, by_key)
+    adr_layout = _detect_adr_layout(parser, by_key) if not ads_layout else False
     layout_id = "insurance" if insurance_layout else "industrial"
-    security_unit = "adr" if adr_layout else "share"
+    security_unit = "ADS" if ads_layout else ("adr" if adr_layout else "share")
     quarter_month_order = _quarter_month_order(parser.text)
     quarterly_sales_block = _build_quarterly_block(
         by_key.get("quarterly_sales_usd_millions"),
@@ -62,6 +63,7 @@ def build_value_line_page_json(
             by_key,
             insurance_layout=insurance_layout,
             adr_layout=adr_layout,
+            ads_layout=ads_layout,
         ),
         "financial_position": _build_financial_position(by_key),
         "annual_rates": _build_annual_rates(
@@ -69,6 +71,7 @@ def build_value_line_page_json(
             by_key,
             insurance_layout=insurance_layout,
             adr_layout=adr_layout,
+            ads_layout=ads_layout,
         ),
         # v1.1: stable keys; non-applicable blocks are emitted as null (not omitted).
         "quarterly_sales": quarterly_sales_block if not insurance_layout else None,
@@ -85,17 +88,24 @@ def build_value_line_page_json(
             report_date=report_date,
             month_order=quarter_month_order,
         ),
+        "earnings_per_ads": _build_quarterly_block_or_none(
+            by_key.get("earnings_per_ads"),
+            unit="USD_per_ads",
+            report_date=report_date,
+            month_order=quarter_month_order,
+        ),
         "quarterly_dividends_paid": _build_quarterly_dividends_paid(
             parser.text,
             by_key.get("quarterly_dividends_paid_per_share"),
-            unit="USD_per_adr" if adr_layout else "USD_per_share",
+            unit="USD_per_ads" if ads_layout else ("USD_per_adr" if adr_layout else "USD_per_share"),
             report_date=report_date,
-            adr_layout=adr_layout,
+            adr_layout=adr_layout or ads_layout,
         ),
         "annual_financials": _build_annual_financials(
             by_key,
             insurance_layout=insurance_layout,
             adr_layout=adr_layout,
+            ads_layout=ads_layout,
             text=parser.text,
         ),
         "total_return": _build_total_return(by_key),
@@ -103,6 +113,12 @@ def build_value_line_page_json(
         "current_position": _build_current_position(by_key),
         "narrative": _build_narrative(by_key, report_date, adr_layout=adr_layout),
     }
+
+    if ads_layout and output.get("earnings_per_ads") is not None:
+        output["earnings_per_ads"]["notes"] = "Values are reported as Earnings per ADS in the source table."
+
+    if not ads_layout:
+        output.pop("earnings_per_ads", None)
 
     if use_quarterly_revenues:
         output.pop("quarterly_sales", None)
@@ -304,6 +320,7 @@ def _build_capital_structure(
     *,
     insurance_layout: bool,
     adr_layout: bool,
+    ads_layout: bool,
 ) -> dict[str, Any]:
     cap: dict[str, Any] = {}
 
@@ -357,6 +374,8 @@ def _build_capital_structure(
         raw = _raw(by_key, raw_key)
         if raw is not None:
             cap[output_key] = _money_entry(raw)
+    if ads_layout:
+        cap.setdefault("preferred_stock", None)
 
     shares_res = by_key.get("common_stock_shares_outstanding") or by_key.get("shares_outstanding")
     raw_shares = _raw(by_key, "common_stock_shares_outstanding") or _raw(by_key, "shares_outstanding")
@@ -364,7 +383,9 @@ def _build_capital_structure(
         shares_display = raw_shares if insurance_layout else _shares_display(shares_res, raw_shares)
         unit = "shares"
         parsed_meta = shares_res.parsed_value_json if shares_res and isinstance(shares_res.parsed_value_json, dict) else {}
-        if adr_layout or (parsed_meta.get("unit") == "ADRs"):
+        if ads_layout or (parsed_meta.get("unit") == "ADS"):
+            unit = "ads"
+        elif adr_layout or (parsed_meta.get("unit") == "ADRs"):
             unit = "ADRs"
         common_stock = {
             "shares_outstanding": {
@@ -495,6 +516,7 @@ def _build_annual_rates(
     *,
     insurance_layout: bool,
     adr_layout: bool,
+    ads_layout: bool,
 ) -> dict[str, Any]:
     res = by_key.get("annual_rates_of_change")
     parsed = res.parsed_value_json if res and res.parsed_value_json else {}
@@ -554,7 +576,7 @@ def _build_annual_rates(
             metric["past_5y_note"] = note
         metrics.append(metric)
 
-    unit = "per_adr" if adr_layout else "per_share"
+    unit = "per_ads" if ads_layout else ("per_adr" if adr_layout else "per_share")
     if insurance_layout:
         unit = "per_share"
     return {"unit": unit, "metrics": metrics}
@@ -656,6 +678,7 @@ def _build_annual_financials(
     *,
     insurance_layout: bool,
     adr_layout: bool,
+    ads_layout: bool,
     text: Optional[str] = None,
 ) -> dict[str, Any]:
     res = by_key.get("tables_time_series")
@@ -670,7 +693,7 @@ def _build_annual_financials(
 
     per_unit = "share"
     if not insurance_layout:
-        per_unit = "adr" if adr_layout else "share"
+        per_unit = "ads" if ads_layout else ("adr" if adr_layout else "share")
 
     per_share_data = annual.get("per_share", {})
     income_statement_data = annual.get("income_statement_usd_millions", {})
@@ -1158,7 +1181,8 @@ def _detect_insurance_layout(by_key: dict[str, Any]) -> bool:
 
 def _detect_adr_layout(parser: ValueLineV1Parser, by_key: dict[str, Any]) -> bool:
     head_text = parser.text[:2000] if parser.text else ""
-    if re.search(r'\bADR\b', head_text, re.IGNORECASE):
+    # Guardrail: avoid treating legend text (e.g. "ADR 640") as an ADR layout signal.
+    if re.search(r'\(\s*ADR\s*\)', head_text, re.IGNORECASE) or re.search(r'\bper\s*ADR\b', head_text, re.IGNORECASE):
         return True
     shares_res = by_key.get("common_stock_shares_outstanding") or by_key.get("shares_outstanding")
     if shares_res and getattr(shares_res, "original_text_snippet", None):
@@ -1166,6 +1190,20 @@ def _detect_adr_layout(parser: ValueLineV1Parser, by_key: dict[str, Any]) -> boo
             return True
     if shares_res and isinstance(shares_res.parsed_value_json, dict):
         if shares_res.parsed_value_json.get("unit") == "ADRs":
+            return True
+    return False
+
+
+def _detect_ads_layout(parser: ValueLineV1Parser, by_key: dict[str, Any]) -> bool:
+    head_text = parser.text[:2000] if parser.text else ""
+    if re.search(r'\(\s*ADS\s*\)', head_text, re.IGNORECASE) or re.search(r'\bper\s*ADS\b', head_text, re.IGNORECASE):
+        return True
+    shares_res = by_key.get("common_stock_shares_outstanding") or by_key.get("shares_outstanding")
+    if shares_res and getattr(shares_res, "original_text_snippet", None):
+        if re.search(r'ADS', shares_res.original_text_snippet or "", re.IGNORECASE):
+            return True
+    if shares_res and isinstance(shares_res.parsed_value_json, dict):
+        if shares_res.parsed_value_json.get("unit") == "ADS":
             return True
     return False
 

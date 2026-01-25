@@ -70,6 +70,9 @@ class ValueLineV1Parser(BaseParser):
         def set_company_name(line: str, match_start: int, line_idx: int) -> None:
             pre_match = line[:match_start].strip()
             clean_pre = pre_match.rstrip(":-").strip()
+            # Ignore unit markers like "(ADS)" or "(ADR)" when they appear ahead of the ticker.
+            if re.fullmatch(r"\(\s*(ADS|ADR)\s*\)", clean_pre, re.IGNORECASE):
+                clean_pre = ""
             if len(clean_pre) > 3 and clean_pre.upper() not in exchange_code_set:
                 info.company_name = clean_pre
                 return
@@ -481,7 +484,11 @@ class ValueLineV1Parser(BaseParser):
                 parsed_value_json=parsed,
             ))
 
-        shares_match2 = re.search(r'CommonStock\s*([\d,]+)\s*(?:shares|shs|ADRs?)\.?', self.text, re.IGNORECASE)
+        shares_match2 = re.search(
+            r'CommonStock\s*([\d,]+)\s*(?:shares|shs|ADRs?|ADS(?:sout\.?|sout|s)?)\.?',
+            self.text,
+            re.IGNORECASE,
+        )
         if shares_match2:
             as_of = None
             notes = None
@@ -489,7 +496,11 @@ class ValueLineV1Parser(BaseParser):
             class_a_shares_display = None
             voting_multiple = None
             voting_notes = None
-            unit = "ADRs" if re.search(r'ADR', shares_match2.group(0), re.IGNORECASE) else None
+            unit = None
+            if re.search(r'ADR', shares_match2.group(0), re.IGNORECASE):
+                unit = "ADRs"
+            elif re.search(r'ADS', shares_match2.group(0), re.IGNORECASE):
+                unit = "ADS"
             tail = self.text[shares_match2.end(): shares_match2.end() + 500]
             as_of_match = re.search(r'asof\s*(\d{1,2}/\d{1,2}/\d{2})', tail, re.IGNORECASE)
             if as_of_match:
@@ -521,11 +532,11 @@ class ValueLineV1Parser(BaseParser):
                     voting_multiple = voting_multiple or 10
                     voting_notes = "Super voting power beyond director elections"
             results.append(ExtractionResult(
-                field_key="common_stock_shares_outstanding",
-                raw_value_text=shares_match2.group(1).replace(',', ''),
-                original_text_snippet=shares_match2.group(0),
-                parsed_value_json={
-                    k: v
+                    field_key="common_stock_shares_outstanding",
+                    raw_value_text=shares_match2.group(1).replace(',', ''),
+                    original_text_snippet=shares_match2.group(0),
+                    parsed_value_json={
+                        k: v
                     for k, v in {
                         "as_of": as_of,
                         "notes": notes,
@@ -1169,7 +1180,11 @@ class ValueLineV1Parser(BaseParser):
         if qs_start:
             qs_label = qs_start.group(1).upper()
             after_qs = self.text[qs_start.end():]
-            qs_end = re.search(r'\b(?:EARNINGSPERADR\w*|EARNINGSPERSHARE\w*|QUARTERLYDIVIDENDS\w*)\b', after_qs, re.IGNORECASE)
+            qs_end = re.search(
+                r'\b(?:EARNINGSPERADR\w*|EARNINGSPERSHARE\w*|EARNINGSPERADS\w*|QUARTERLYDIVIDENDS\w*)\b',
+                after_qs,
+                re.IGNORECASE,
+            )
             qs_block = after_qs[: qs_end.start()] if qs_end else after_qs
             parsed = _parse_quarterly_rows(qs_block)
             if parsed:
@@ -1198,7 +1213,12 @@ class ValueLineV1Parser(BaseParser):
                     eps_field_key = "earnings_per_share"
                     eps_start_idx = qs_start.end() + eps_start.end()
                 else:
-                    eps_start_idx = None
+                    eps_start = re.search(r'\bEARNINGSPERADS\w*\b', after_qs, re.IGNORECASE)
+                    if eps_start:
+                        eps_field_key = "earnings_per_ads"
+                        eps_start_idx = qs_start.end() + eps_start.end()
+                    else:
+                        eps_start_idx = None
 
             if eps_field_key and eps_start_idx is not None:
                 after_eps = self.text[eps_start_idx:]
@@ -1622,6 +1642,19 @@ class ValueLineV1Parser(BaseParser):
                         break
             values_raw = list(reversed(values_raw))
 
+            def _to_float(token: str) -> Optional[float]:
+                if token is None:
+                    return None
+                raw = token.strip().replace("%", "")
+                if raw.upper() in {"--", "NMF", "NIL"}:
+                    return None
+                if raw.startswith("."):
+                    raw = "0" + raw
+                try:
+                    return float(raw)
+                except ValueError:
+                    return None
+
             def is_row_label(token: str) -> bool:
                 if not re.search(r"[A-Za-z]", token):
                     return False
@@ -1639,13 +1672,41 @@ class ValueLineV1Parser(BaseParser):
                 if is_row_label(tokens[stop_idx]):
                     values_raw = values_raw[1:]
 
+            # Some PDFs (notably ADS layouts) can bleed the prior row's projection value into the
+            # start of this row. If the stop token looks like an annual-table row label, apply a
+            # small heuristic to drop the leading outlier.
+            if missing_last_year and stop_idx is not None and len(values_raw) == len(years) - 1:
+                stop_token = tokens[stop_idx]
+                if re.search(r"(Outst|AvgAnn.?lP/ERatio|RelativeP/ERatio)", stop_token, re.IGNORECASE):
+                    first = _to_float(values_raw[0]) if values_raw else None
+                    second = _to_float(values_raw[1]) if len(values_raw) > 1 else None
+                    if "OUTST" in stop_token.upper():
+                        if first is not None and second is not None and first > 200 and second < 200:
+                            values_raw = values_raw[1:]
+                    elif "AVGANN" in stop_token.upper():
+                        if first is not None and second is not None and first > 3 and second <= 3:
+                            values_raw = values_raw[1:]
+                    elif "RELATIVEP/ERATIO" in stop_token.upper():
+                        if first is not None and all(v.upper() in {"--", "NMF", "NIL"} for v in values_raw[1:]):
+                            values_raw = values_raw[1:]
+
             if missing_last_year and len(values_raw) > len(years):
                 values_raw = values_raw[-(len(years) - 1):]
                 aligned_years = years[:-1]
             else:
                 if len(values_raw) > len(years):
                     values_raw = values_raw[-len(years):]
-                aligned_years = self._align_years(years, values_raw)
+                if missing_last_year:
+                    if len(values_raw) == len(years):
+                        aligned_years = years
+                    elif len(values_raw) == len(years) - 1:
+                        aligned_years = years[:-1]
+                    elif len(values_raw) == len(years) - 2:
+                        aligned_years = years[:-2]
+                    else:
+                        aligned_years = years[: len(values_raw)]
+                else:
+                    aligned_years = self._align_years(years, values_raw)
 
             values = [coerce(token, percent_ratio) for token in values_raw]
             series = [None for _ in years]
@@ -1698,22 +1759,22 @@ class ValueLineV1Parser(BaseParser):
         if proj is not None:
             projection["underwriting_income_per_share_usd"] = proj
 
-        series, proj = parse_series(r'Earningsper(?:sh|ADR)[A-Z]?', percent_ratio=False)
+        series, proj = parse_series(r'Earningsper(?:sh|ADR|ADS)[A-Z]?', percent_ratio=False)
         per_share["earnings_per_share_usd"] = series
         if proj is not None:
             projection["earnings_per_share_usd"] = proj
 
-        series, proj = parse_series(r'Div.?dsDecl.?dper(?:sh|ADR)[A-Z]?', percent_ratio=False)
+        series, proj = parse_series(r'Div.?dsDecl.?dper(?:sh|ADR|ADS)[A-Z]?', percent_ratio=False)
         per_share["dividends_declared_per_share_usd"] = series
         if proj is not None:
             projection["dividends_declared_per_share_usd"] = proj
 
-        series, proj = parse_series(r'BookValueper(?:sh|ADR)', percent_ratio=False)
+        series, proj = parse_series(r'BookValueper(?:sh|ADR|ADS)', percent_ratio=False)
         per_share["book_value_per_share_usd"] = series
         if proj is not None:
             projection["book_value_per_share_usd"] = proj
 
-        series, proj = parse_series(r'CommonShsOutst', percent_ratio=False)
+        series, proj = parse_series(r'(?:CommonShsOutst|EquivADSsOutst)', percent_ratio=False)
         per_share["common_shares_outstanding_millions"] = series
         if proj is not None:
             projection["common_shares_outstanding_millions"] = proj
@@ -1803,22 +1864,22 @@ class ValueLineV1Parser(BaseParser):
         if proj is not None:
             projection["all_dividends_to_net_profit_pct"] = proj
 
-        series, proj = parse_series(r'Sales\s*per(?:sh|ADR)', percent_ratio=False)
+        series, proj = parse_series(r'Sales\s*per(?:sh|ADR|ADS)', percent_ratio=False)
         per_share["sales_per_share_usd"] = series
         if proj is not None:
             projection["sales_per_share_usd"] = proj
 
-        series, proj = parse_series(r'Revenues\s*per(?:sh|ADR)', percent_ratio=False)
+        series, proj = parse_series(r'Revenues\s*per(?:sh|ADR|ADS)', percent_ratio=False)
         per_share["revenues_per_share_usd"] = series
         if proj is not None:
             projection["revenues_per_share_usd"] = proj
 
-        series, proj = parse_series(r'Cash\s*Flow[^A-Za-z0-9]*per(?:sh|ADR)', percent_ratio=False)
+        series, proj = parse_series(r'Cash\s*Flow[^A-Za-z0-9]*per(?:sh|ADR|ADS)', percent_ratio=False)
         per_share["cash_flow_per_share_usd"] = series
         if proj is not None:
             projection["cash_flow_per_share_usd"] = proj
 
-        series, proj = parse_series(r'Cap[’\']?lSpendingper(?:sh|ADR)', percent_ratio=False)
+        series, proj = parse_series(r'Cap[’\']?lSpendingper(?:sh|ADR|ADS)', percent_ratio=False)
         per_share["capital_spending_per_share_usd"] = series
         if proj is not None:
             projection["capital_spending_per_share_usd"] = proj
