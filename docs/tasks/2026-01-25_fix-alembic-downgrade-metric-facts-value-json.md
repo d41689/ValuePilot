@@ -15,6 +15,7 @@
 
 ## Files To Change
 - `backend/alembic/versions/2b9f6b3d4c8a_metric_facts_value_json_nullable.py`
+  - Renamed to `backend/alembic/versions/20260120201000-metric_facts_value_json_nullable.py` (filename convention update).
 - `docs/tasks/2026-01-25_fix-alembic-downgrade-metric-facts-value-json.md`
 
 ## Test Plan (Docker)

@@ -76,6 +76,10 @@ All data written to `metric_facts.value_numeric` MUST be normalized to base unit
 ## Naming Conventions
 - **Metric Keys**: `snake_case` ONLY. NO leading numbers. (e.g., `target_18m_low`, not `18m_target`).
 - **Tables**: `snake_case` plural (e.g., `metric_facts`, `stock_pools`).
+- **Alembic Revision Filenames**: `backend/alembic/versions/YYYYMMDDHHMMSS-description.py`
+  - Use the `Create Date` timestamp from the revision header for `YYYYMMDDHHMMSS`.
+  - Keep `{description}` readable (prefer existing underscore-separated slugs).
+  - Never change `revision` / `down_revision` identifiers inside the file when renaming.
 
 ## Error Handling
 - **Normalization Failures**: If a value cannot be normalized (e.g., unknown unit), store the `raw_value` in JSON but leave `value_numeric` as `NULL`. Flag specific error metadata.
