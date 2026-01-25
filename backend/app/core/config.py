@@ -18,6 +18,11 @@ class Settings(BaseSettings):
     # Prioritize DATABASE_URL from env, otherwise build it
     SQLALCHEMY_DATABASE_URI: Optional[str] = Field(None, validation_alias="DATABASE_URL")
 
+    # Dev bootstrap: optional default user
+    # If set, endpoints that require a user may auto-create this user when the DB has zero users.
+    DEFAULT_USER_EMAIL: Optional[str] = None
+    DEFAULT_USER_ID: int = 1
+
     @field_validator("SQLALCHEMY_DATABASE_URI", mode="before")
     @classmethod
     def assemble_db_connection(cls, v: Optional[str], info: ValidationInfo) -> Any:

@@ -9,8 +9,49 @@ from app.api.deps import SessionDep
 from app.services.ingestion_service import IngestionService
 from app.models.users import User
 from app.models.artifacts import PdfDocument
+from app.core.config import settings
+import sqlalchemy as sa
 
 router = APIRouter()
+
+
+def _get_user_or_seed(session: SessionDep, user_id: int) -> User:
+    user = session.get(User, user_id)
+    if user:
+        return user
+
+    if (
+        settings.DEFAULT_USER_EMAIL
+        and user_id == settings.DEFAULT_USER_ID
+    ):
+        email_owner = session.scalar(select(User).where(User.email == settings.DEFAULT_USER_EMAIL))
+        if email_owner and email_owner.id != settings.DEFAULT_USER_ID:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "DEFAULT_USER_EMAIL already exists with a different user id; "
+                    "cannot auto-seed DEFAULT_USER_ID."
+                ),
+            )
+
+        seeded_user = User(id=settings.DEFAULT_USER_ID, email=settings.DEFAULT_USER_EMAIL)
+        session.add(seeded_user)
+        session.commit()
+
+        # If we inserted an explicit ID, advance the sequence so future inserts don't collide.
+        if session.bind and session.bind.dialect.name == "postgresql":
+            max_user_id = session.scalar(select(func.max(User.id))) or settings.DEFAULT_USER_ID
+            session.execute(
+                sa.text(
+                    "SELECT setval(pg_get_serial_sequence('users','id'), :v, true)"
+                ).bindparams(v=max_user_id)
+            )
+            session.commit()
+
+        return seeded_user
+
+    raise HTTPException(status_code=404, detail="User not found")
+
 
 @router.get("", response_model=list[dict])
 def list_documents(
@@ -21,9 +62,7 @@ def list_documents(
     """
     List documents for a user with page counts and company summary.
     """
-    user = session.get(User, user_id)
-    if not user:
-        raise HTTPException(status_code=404, detail="User not found")
+    _get_user_or_seed(session, user_id)
 
     docs = session.scalars(
         select(PdfDocument)
@@ -137,9 +176,7 @@ def upload_document(
         raise HTTPException(status_code=400, detail="Only PDF files are supported.")
 
     # Validate user exists
-    user = session.get(User, user_id)
-    if not user:
-        raise HTTPException(status_code=404, detail="User not found")
+    _get_user_or_seed(session, user_id)
 
     service = IngestionService(session)
     try:
@@ -168,9 +205,7 @@ def reparse_document(
     Re-run parsing for an existing document ID.
     Inserts new metric_extractions and new parsed metric_facts (previous parsed facts are deactivated).
     """
-    user = session.get(User, user_id)
-    if not user:
-        raise HTTPException(status_code=404, detail="User not found")
+    _get_user_or_seed(session, user_id)
 
     doc = session.get(PdfDocument, document_id)
     if not doc or doc.user_id != user_id:
@@ -194,9 +229,7 @@ def read_document_raw_text(
     """
     Get raw text for a document. Falls back to concatenated page text if raw_text is empty.
     """
-    user = session.get(User, user_id)
-    if not user:
-        raise HTTPException(status_code=404, detail="User not found")
+    _get_user_or_seed(session, user_id)
 
     doc = session.get(PdfDocument, document_id)
     if not doc or doc.user_id != user_id:

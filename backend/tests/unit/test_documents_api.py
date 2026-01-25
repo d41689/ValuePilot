@@ -1,5 +1,8 @@
 from datetime import datetime
 
+import sqlalchemy as sa
+
+from app.core.config import settings
 from app.models.users import User
 from app.models.stocks import Stock
 from app.models.artifacts import PdfDocument, DocumentPage
@@ -172,3 +175,17 @@ def test_documents_raw_text_endpoint(client, db_session):
     resp = client.get(f"/api/v1/documents/{doc.id}/raw_text?user_id={user.id}")
     assert resp.status_code == 200, resp.text
     assert resp.json()["raw_text"] == "hello world"
+
+
+def test_documents_list_auto_seeds_default_user(client, db_session):
+    assert settings.DEFAULT_USER_EMAIL, "DEFAULT_USER_EMAIL must be set in dev docker-compose"
+
+    db_session.execute(sa.text("TRUNCATE TABLE users RESTART IDENTITY CASCADE"))
+    db_session.commit()
+
+    resp = client.get(f"/api/v1/documents?user_id={settings.DEFAULT_USER_ID}")
+    assert resp.status_code == 200, resp.text
+    assert resp.json() == []
+
+    seeded = db_session.get(User, settings.DEFAULT_USER_ID)
+    assert seeded is not None
