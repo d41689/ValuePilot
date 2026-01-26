@@ -712,6 +712,12 @@ def _build_annual_financials(
     has_avg_div_yield = bool(
         re.search(r"AvgAnn.?lDiv.?dYield", scan_text, re.IGNORECASE)
     )
+    has_avg_pe_ratio = bool(
+        re.search(r"AvgAnn.?lP/ERatio", scan_text, re.IGNORECASE)
+    )
+    has_relative_pe_ratio = bool(
+        re.search(r"RelativeP/ERatio", scan_text, re.IGNORECASE)
+    )
     has_all_divs = bool(
         re.search(r"AllDiv.?dstoNetProf", scan_text, re.IGNORECASE)
     )
@@ -770,8 +776,24 @@ def _build_annual_financials(
             "relative_pe_ratio",
             "avg_annual_dividend_yield_pct",
         ],
-        keep_all_null_keys={"avg_annual_dividend_yield_pct"} if keep_all_null and has_avg_div_yield else set(),
-        include_projection_keys={"avg_annual_dividend_yield_pct"} if keep_all_null and has_avg_div_yield else set(),
+        keep_all_null_keys={
+            key
+            for key, enabled in (
+                ("avg_annual_pe_ratio", has_avg_pe_ratio),
+                ("relative_pe_ratio", has_relative_pe_ratio),
+                ("avg_annual_dividend_yield_pct", has_avg_div_yield),
+            )
+            if keep_all_null and enabled
+        },
+        include_projection_keys={
+            key
+            for key, enabled in (
+                ("avg_annual_pe_ratio", has_avg_pe_ratio),
+                ("relative_pe_ratio", has_relative_pe_ratio),
+                ("avg_annual_dividend_yield_pct", has_avg_div_yield),
+            )
+            if keep_all_null and enabled
+        },
         drop_all_null=True,
     )
     if insurance_layout:

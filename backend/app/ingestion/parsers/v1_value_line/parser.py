@@ -185,7 +185,7 @@ class ValueLineV1Parser(BaseParser):
 
         def _rating_note_from_text(label: str) -> Optional[str]:
             m = re.search(
-                rf'\b{label}\b\s+([A-Za-z]+)\s*(\d{{1,2}}/\d{{1,2}}/\d{{2}})',
+                rf'\b{label}\b(?:\s+\d+)?\s+([A-Za-z]+)\s*(\d{{1,2}}/\d{{1,2}}/\d{{2}})',
                 self.text,
                 re.IGNORECASE,
             )
@@ -193,40 +193,39 @@ class ValueLineV1Parser(BaseParser):
                 return None
             return f"{m.group(1).title()} {m.group(2)}"
 
-        # Ratings (Timeliness / Technical) - tolerate "Lowered1/2/26" without spaces
-        for key in ("timeliness", "technical", "safety"):
-            m = re.search(rf'\b{key.upper()}\s+(\d+)(?:\s+([A-Za-z]+)\s*(\d{{1,2}}/\d{{1,2}}/\d{{2}}))?', self.text, re.IGNORECASE)
-            if m:
-                notes = None
-                if m.group(2) and m.group(3):
-                    notes = f"{m.group(2).title()} {m.group(3)}"
-                results.append(ExtractionResult(
-                    field_key=key,
-                    raw_value_text=m.group(1),
-                    original_text_snippet=m.group(0),
-                    parsed_value_json={"value": int(m.group(1)), "notes": notes} if notes else {"value": int(m.group(1))},
-                    confidence_score=0.8,
-                ))
+        # Ratings (Timeliness / Technical / Safety)
+        # Prefer word-layout values (more reliable on PDFs where the text layer drifts),
+        # but still derive event notes from the text layer when present.
+        for key, label in (("timeliness", "TIMELINESS"), ("technical", "TECHNICAL"), ("safety", "SAFETY")):
+            notes = _rating_note_from_text(label)
 
-        # Word-layout fallback: some PDFs omit the numeric rating in the text layer.
-        if 1 in self.page_words:
-            for key, label in (("timeliness", "TIMELINESS"), ("technical", "TECHNICAL"), ("safety", "SAFETY")):
-                if any(r.field_key == key for r in results):
-                    continue
+            value: Optional[int] = None
+            if 1 in self.page_words:
                 value = self._rating_from_words(label, self.page_words[1])
-                if value is None:
-                    continue
-                notes = _rating_note_from_text(label)
-                parsed = {"value": value}
-                if notes:
-                    parsed["notes"] = notes
-                results.append(ExtractionResult(
+
+            snippet = f"{label} (word layout)"
+            if value is None:
+                m = re.search(rf'\b{label}\b\s+(\d+)', self.text, re.IGNORECASE)
+                if m:
+                    value = int(m.group(1))
+                    snippet = m.group(0)
+
+            if value is None:
+                continue
+
+            parsed = {"value": value}
+            if notes:
+                parsed["notes"] = notes
+
+            results.append(
+                ExtractionResult(
                     field_key=key,
                     raw_value_text=str(value),
-                    original_text_snippet=f"{label} (word layout)",
+                    original_text_snippet=snippet,
                     parsed_value_json=parsed,
-                    confidence_score=0.6,
-                ))
+                    confidence_score=0.8 if 1 in self.page_words else 0.7,
+                )
+            )
 
         strength_match = re.search(r'FinancialStrength\s+([A-Z][A-Z+\-]{0,3})', self.text, re.IGNORECASE)
         if strength_match:
