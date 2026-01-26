@@ -56,40 +56,59 @@ def read_stock_by_ticker(
         value = fact.value_numeric if fact.value_numeric is not None else 0.0
         oeps_series.append({"year": period_end.year, "value": value})
 
-    growth_key_map = {
-        "rates.sales.cagr_est": ("sales", "Sales"),
-        "rates.cash_flow.cagr_est": ("cash_flow", "Cash Flow"),
-        "rates.earnings.cagr_est": ("earnings", "Earnings"),
-    }
+    growth_metric_keys = [
+        "rates.sales.cagr_est",
+        "rates.revenues.cagr_est",
+        "rates.cash_flow.cagr_est",
+        "rates.earnings.cagr_est",
+    ]
     growth_stmt = (
         select(MetricFact)
         .where(
             MetricFact.stock_id == stock.id,
             MetricFact.is_current.is_(True),
-            MetricFact.metric_key.in_(list(growth_key_map.keys())),
+            MetricFact.metric_key.in_(growth_metric_keys),
         )
         .order_by(MetricFact.metric_key.asc(), MetricFact.period_end_date.desc())
     )
     growth_facts = session.scalars(growth_stmt).all()
-    growth_by_key: dict[str, float] = {}
-    for fact in growth_facts:
-        if fact.metric_key in growth_by_key:
-            continue
+    growth_by_metric_key: dict[str, float] = {}
+
+    def _growth_value_pct(fact: MetricFact) -> float | None:
         raw_value = None
         if isinstance(fact.value_json, dict):
             raw_value = fact.value_json.get("value")
         if isinstance(raw_value, (int, float)):
-            growth_by_key[fact.metric_key] = float(raw_value)
-            continue
+            return float(raw_value)
         if fact.value_numeric is not None:
-            growth_by_key[fact.metric_key] = fact.value_numeric * 100.0
+            return float(fact.value_numeric) * 100.0
+        return None
+
+    for fact in growth_facts:
+        if fact.metric_key in growth_by_metric_key:
+            continue
+        value = _growth_value_pct(fact)
+        if value is not None:
+            growth_by_metric_key[fact.metric_key] = value
 
     growth_rate_options = []
-    for metric_key, (key, label) in growth_key_map.items():
-        if metric_key not in growth_by_key:
-            continue
+
+    if "rates.sales.cagr_est" in growth_by_metric_key:
         growth_rate_options.append(
-            {"key": key, "label": label, "value": growth_by_key[metric_key]}
+            {"key": "sales", "label": "Sales", "value": growth_by_metric_key["rates.sales.cagr_est"]}
+        )
+    elif "rates.revenues.cagr_est" in growth_by_metric_key:
+        growth_rate_options.append(
+            {"key": "revenues", "label": "Revenues", "value": growth_by_metric_key["rates.revenues.cagr_est"]}
+        )
+
+    if "rates.cash_flow.cagr_est" in growth_by_metric_key:
+        growth_rate_options.append(
+            {"key": "cash_flow", "label": "Cash Flow", "value": growth_by_metric_key["rates.cash_flow.cagr_est"]}
+        )
+    if "rates.earnings.cagr_est" in growth_by_metric_key:
+        growth_rate_options.append(
+            {"key": "earnings", "label": "Earnings", "value": growth_by_metric_key["rates.earnings.cagr_est"]}
         )
 
     return {

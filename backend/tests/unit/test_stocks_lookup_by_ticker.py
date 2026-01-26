@@ -198,6 +198,69 @@ def test_lookup_stock_by_ticker_returns_summary(client, db_session):
     ]
 
 
+def test_lookup_stock_by_ticker_uses_revenues_growth_when_sales_missing(client, db_session):
+    user = User(email="ticker_lookup_revenues@example.com")
+    stock = Stock(ticker="REV_TEST", exchange="NDQ", company_name="REVENUES INC", is_active=True)
+    db_session.add_all([user, stock])
+    db_session.commit()
+
+    db_session.add_all(
+        [
+            MetricFact(
+                user_id=user.id,
+                stock_id=stock.id,
+                metric_key="rates.revenues.cagr_est",
+                value_json={"value": 11.0},
+                value_numeric=0.11,
+                unit="ratio",
+                period_type="PROJECTION_RANGE",
+                period_end_date=date(2026, 1, 9),
+                source_type="parsed",
+                source_ref_id=None,
+                is_current=True,
+            ),
+            MetricFact(
+                user_id=user.id,
+                stock_id=stock.id,
+                metric_key="rates.cash_flow.cagr_est",
+                value_json={"value": 7.5},
+                value_numeric=0.075,
+                unit="ratio",
+                period_type="PROJECTION_RANGE",
+                period_end_date=date(2026, 1, 9),
+                source_type="parsed",
+                source_ref_id=None,
+                is_current=True,
+            ),
+            MetricFact(
+                user_id=user.id,
+                stock_id=stock.id,
+                metric_key="rates.earnings.cagr_est",
+                value_json={"value": 5.0},
+                value_numeric=0.05,
+                unit="ratio",
+                period_type="PROJECTION_RANGE",
+                period_end_date=date(2026, 1, 9),
+                source_type="parsed",
+                source_ref_id=None,
+                is_current=True,
+            ),
+        ]
+    )
+    db_session.commit()
+
+    response = client.get("/api/v1/stocks/by_ticker/rev_test")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["ticker"] == "REV_TEST"
+    assert payload["growth_rate_options"] == [
+        {"key": "revenues", "label": "Revenues", "value": 11.0},
+        {"key": "cash_flow", "label": "Cash Flow", "value": 7.5},
+        {"key": "earnings", "label": "Earnings", "value": 5.0},
+    ]
+
+
 def test_lookup_stock_by_ticker_not_found(client):
     response = client.get("/api/v1/stocks/by_ticker/UNKNOWN")
 
