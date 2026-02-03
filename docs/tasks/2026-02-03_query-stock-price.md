@@ -222,3 +222,11 @@ V1 不在表结构中持久化 `is_final`。我们采用启发式规则控制“
   - 收盘后确认刷新最多一次
   - 10 分钟节流（同 stock 同日不重复外部调用）
 ---
+
+## 15. Progress Update
+
+- 2026-02-03：完成 V1 实现：
+  - 新增 `MarketDataService`（`/api/v1/stocks/prices/refresh`）与按需刷新逻辑
+  - 使用 `stock_prices` insert-only 写入；读取侧按最新 `created_at` 取当日值
+  - 新增单测覆盖 target_date 近似算法、确认刷新、节流与 API 返回
+  - 测试：`docker compose exec api pytest -q tests/unit/test_market_data_refresh.py`（PASS）

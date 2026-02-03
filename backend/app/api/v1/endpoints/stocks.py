@@ -1,9 +1,10 @@
 from typing import Any
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Body
 from sqlalchemy import select, func
 from app.api.deps import SessionDep
 from app.models.stocks import Stock
 from app.models.facts import MetricFact
+from app.services.market_data_service import MarketDataService
 
 router = APIRouter()
 
@@ -176,3 +177,17 @@ def read_stock_facts(
         }
         for f in facts
     ]
+
+
+@router.post("/prices/refresh", response_model=list[dict])
+def refresh_stock_prices(
+    session: SessionDep,
+    payload: dict = Body(...),
+) -> Any:
+    stock_ids = payload.get("stock_ids")
+    reason = payload.get("reason", "unspecified")
+    if not isinstance(stock_ids, list) or not stock_ids:
+        raise HTTPException(status_code=400, detail="stock_ids must be a non-empty list")
+
+    service = MarketDataService(session)
+    return service.refresh_stock_prices(stock_ids, reason=reason)
