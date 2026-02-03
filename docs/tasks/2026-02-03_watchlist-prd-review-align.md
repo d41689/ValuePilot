@@ -36,3 +36,4 @@
 - Updated Fair Value API contract to extend the existing `GET /api/v1/stocks/{stock_id}/facts` surface (spec-only; not yet implemented).
 - Simplified Fair Value write body to `metric_key + value_numeric` (unit/period semantics sourced from mapping spec).
 - Added read semantics for `stock_prices` (insert-only; pick latest `created_at`) and clarified `Δ Today` definition (EOD).
+- Added deterministic Fair Value display precedence and a non-binding UI refresh sequencing note.

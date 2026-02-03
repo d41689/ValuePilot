@@ -124,8 +124,8 @@ V1 建议列：
 |--------|------------|
 | Ticker | 股票代码 |
 | Name | 公司名（可选） |
-| Price | 当前价格（EOD close，来自 `stock_prices`；页面打开时可触发 refresh） |
-| Fair Value | Fair Value（可编辑；按用户/按股票全局值，跨 watchlist 共享；存储在 `metric_facts` 的 manual fact；若不存在，可回退展示 Value Line 的 `target.price_18m.mid`） |
+| Price | 当前价格（EOD close，来自 `stock_prices`；页面打开时可触发 refresh；单位由数据源/交易所决定，V1 默认美股，通常为 USD） |
+| Fair Value | Fair Value（可编辑；按用户/按股票全局值，跨 watchlist 共享；存储在 `metric_facts` 的 manual fact；若不存在，可回退展示 Value Line 的 `target.price_18m.mid`；展示优先级见 §7） |
 | Margin of Safety | (FV - Price) / FV（FV 为空则 MOS 为空） |
 | Δ Today | 当日涨跌（EOD；`close(target_date) - close(prev_price_date)`；`prev_price_date` 为 target_date 之前最近一次有价的 `price_date`；两天数据齐全才显示；可选） |
 | Last Update | 数据更新时间 |
@@ -261,6 +261,11 @@ V1 不引入新的 `watchlists` / `watchlist_items` 表，避免与 v0.1 PRD 和
 - 注意：`metric_key / unit / period_type / period_end_date` 属于 **metric semantics**，必须以 `docs/metric_facts_mapping_spec.yml` 为权威；本 PRD 不在此处定义它们。
 - Watchlist 实现时需要在 mapping spec 中新增一个“用户 Fair Value”对应的条目（unit=USD，period_type=AS_OF），并在写入时遵循 v0.1 的 `is_current` 语义。
 
+Fair Value 展示优先级（deterministic）：
+1) 用户手动输入的 Fair Value（`metric_facts`, `source_type=manual`, `is_current=true`）
+2) Value Line 的 18M Target Mid（`metric_facts.metric_key = target.price_18m.mid`, `is_current=true`，只作为只读 fallback）
+3) 无（显示空值）
+
 ---
 
 ## 8. API Contracts（V1）
@@ -308,6 +313,9 @@ POST /api/v1/stocks/prices/refresh
 - 先拉当前 watchlist 的 members（得到 stock_ids）
 - 调用 refresh（传 `stock_ids`；可带 `reason` 字段用于审计/排障）
 - 再拉 table data（members + price + fair value + MOS）
+
+实现建议（非强制）：
+- UI 可先用缓存数据渲染表格，同时触发 refresh（async），refresh 完成后再拉一次 table data 更新 Price/Δ Today。
 
 ---
 
