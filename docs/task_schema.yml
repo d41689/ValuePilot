@@ -1,0 +1,177 @@
+schema_version: 1
+task:
+  id: "T-2026-02-03-prd-merge-align"
+  title: "PRD 合并对齐（v0.1 + multipage addendum）"
+  type: "docs_only"
+  priority: "P1"
+  owners:
+    - role: "tech_lead"
+    - role: "doc_reviewer"
+  created_at: "2026-02-03"
+  tags:
+    - prd
+    - contract
+    - governance
+    - multipage
+    - metric_facts
+
+authority:
+  # 明确权威源优先级（冲突时以谁为准）
+  precedence:
+    - path: "docs/metric_facts_mapping_spec.yml"
+      scope: ["metric_semantics", "metric_key", "unit", "period", "mapping_to_storage"]
+    - path: "docs/prd/value-pilot-prd-v0.1.md"
+      scope: ["execution_contract", "data_contract", "api_contract", "ingestion_contract"]
+    - path: "docs/tasks/**/*.md"
+      scope: ["historical_reference_only"]
+  rules:
+    - id: "AUTH-001"
+      text: "When conflicts exist, precedence MUST be applied in order; lower precedence sources MUST NOT override higher precedence sources."
+    - id: "AUTH-002"
+      text: "Any new PRD/addendum MUST NOT redefine metric semantics outside docs/metric_facts_mapping_spec.yml."
+
+guardrails:
+  # 防止 agent 越权 / scope creep
+  runtime_behavior_change: "forbidden"
+  code_changes: "forbidden"
+  schema_migration_changes: "forbidden"
+  allowed_paths:
+    - "docs/prd/**"
+    - "docs/tasks/**"
+  forbidden_paths:
+    - "backend/**"
+    - "frontend/**"
+    - "**/*.py"
+    - "**/*.ts"
+    - "**/*.sql"
+  enforcement:
+    - id: "GR-001"
+      check: "diff_only_under_allowed_paths"
+    - id: "GR-002"
+      check: "no_runtime_behavior_change_claimed_or_implied"
+    - id: "GR-003"
+      check: "no_schema_or_migration_files_touched"
+
+references:
+  prd:
+    - "docs/prd/value-pilot-prd-v0.1.md"
+    - "docs/prd/value-pilot-prd-v0.1-multipage.md"
+  mapping_spec:
+    - "docs/metric_facts_mapping_spec.yml"
+  decision_records:
+    - "docs/tasks/2026-01-21_metric-facts-mapping-spec.md"
+
+files:
+  to_change:
+    - path: "docs/prd/value-pilot-prd-v0.1.md"
+      action: "edit"
+    - path: "docs/prd/value-pilot-prd-v0.1-multipage.md"
+      action: "edit"
+    - path: "docs/prd/README.md"
+      action: "create_optional"
+  notes:
+    - "value-pilot-prd-v0.1-multipage.md 将保留为历史只读并在顶部标注已合并/冻结"
+
+workflow:
+  requires_human_approval: true
+  approval_gates:
+    - gate_id: "G1-plan-review"
+      required_roles: ["tech_lead", "doc_reviewer"]
+      description: "Execution Plan & contract precedence review before edits land"
+    - gate_id: "G2-final-review"
+      required_roles: ["tech_lead", "doc_reviewer"]
+      description: "Final diff review + DoD checks pass"
+
+execution_plan:
+  steps:
+    - id: "S1"
+      title: "增加 Contract Sources / Naming Conventions 小节"
+      target_files: ["docs/prd/value-pilot-prd-v0.1.md"]
+      actions:
+        - "Add section: Contract Sources / Naming Conventions"
+        - "State metric_key allows dotted namespace + snake_case (align with mapping spec)"
+        - "State mapping spec is authoritative for metric_facts storage mapping"
+      acceptance_checks:
+        - "Section exists and explicitly references authority.precedence"
+
+    - id: "S2A"
+      title: "合并 multipage 语义模型"
+      target_files: ["docs/prd/value-pilot-prd-v0.1.md"]
+      actions:
+        - "Merge semantic model from multipage addendum"
+        - "Define multi-page container"
+        - "Define parse_status including parsed_partial"
+      acceptance_checks:
+        - "No contradiction with existing implementation claims in repo docs"
+
+    - id: "S2B"
+      title: "合并 multipage 接口/输出契约"
+      target_files: ["docs/prd/value-pilot-prd-v0.1.md"]
+      actions:
+        - "Merge pdf_documents.stock_id rules"
+        - "Merge upload API page_reports[] schema + required constraints"
+        - "Reference non-normative minimal example source (do not rewrite schema in PRD)"
+      non_normative_example:
+        type: "test_reference"
+        path: "backend/tests/unit/test_multipage_value_line_upload.py"
+      acceptance_checks:
+        - "PRD references example source as non-normative"
+        - "PRD does not duplicate schema text verbatim"
+
+    - id: "S3"
+      title: "冻结 multipage addendum（归档/重定向说明）"
+      target_files: ["docs/prd/value-pilot-prd-v0.1-multipage.md"]
+      actions:
+        - "Add top banner: merged into v0.1 PRD, frozen as historical reference"
+        - "Add link to canonical PRD entry"
+      acceptance_checks:
+        - "Banner clearly states non-authoritative + merged"
+
+    - id: "S4"
+      title: "新增 PRD README（可选）"
+      optional: true
+      target_files: ["docs/prd/README.md"]
+      actions:
+        - "Explain canonical entrypoint and file relationships"
+        - "Restate authority precedence"
+        - "Add prohibition rule: do not redefine metric semantics outside mapping spec"
+      acceptance_checks:
+        - "README states canonical entry + precedence + prohibition rule"
+
+    - id: "S5"
+      title: "最小一致性检查（repo 文案对齐）"
+      actions:
+        - "Search repo for snake_case-only / field_map legacy claims"
+        - "Add deprecated/redirect notes in PRD where needed (docs only)"
+      acceptance_checks:
+        - "No remaining docs claim metric_key is snake_case-only without deprecation note"
+
+definition_of_done:
+  - id: "DOD-001"
+    text: "Merged docs/prd/value-pilot-prd-v0.1.md contains no statements conflicting with multipage capability or dotted namespace metric_key."
+  - id: "DOD-002"
+    text: "Repo contains no references treating docs/prd/value-pilot-prd-v0.1-multipage.md as current normative spec (historical reference allowed)."
+  - id: "DOD-003"
+    text: "All changes are docs-only; no code/schema/migration files modified."
+  - id: "DOD-004"
+    text: "Authority precedence is explicitly stated and unambiguous."
+
+validation:
+  tests:
+    - id: "DOCS-ONLY"
+      command: "none_required"
+      rationale: "Docs-only change"
+    - id: "SMOKE-OPTIONAL"
+      optional: true
+      command: "docker compose exec api pytest -q"
+      rationale: "Ensure repo conventions not accidentally broken"
+
+rollback:
+  strategy:
+    - "git revert commit(s) touching docs/prd/* and docs/tasks/*"
+    - "restore pre-merge state (two PRDs) if necessary"
+  triggers:
+    - id: "RB-001"
+      text: "Reviewer identifies new ambiguity in contract precedence or multiple valid interpretations."
+    - id: "RB-002"
+      text: "Any guardrails violation (code/schema/migration touched)."
