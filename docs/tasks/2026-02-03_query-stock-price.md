@@ -70,7 +70,7 @@
 **Step 1：确定目标交易日 `target_date`（V1 近似）**
 - 使用 US/Eastern 当前日期 `today_et`
 - 若 `today_et` 是周六/周日，则 `target_date` 取上一个周五
-- 若 `today_et` 是周一且在开盘前，则 `target_date` 取上一个周五
+- 若 `today_et` 是周一且在开盘前（V1 以常规美股开盘 09:30 ET 为准），则 `target_date` 取上一个周五
 - 其他工作日：
   - 若当前时间 < 收盘后缓冲（默认 16:30 ET），`target_date = yesterday_et`
   - 否则 `target_date = today_et`
@@ -93,7 +93,9 @@
 
 - 仅对“需要刷新”的 stock 发起行情请求
 - 批量刷新（按行情源支持能力）
-- 写入 `stock_prices`（同一 `stock_id + price_date` 的去重由应用层控制；V1 以“最新一条 created_at”为准）
+- 写入 `stock_prices`：
+  - V1 采用 insert-only：每次刷新插入一条新记录（不做 UPDATE）
+  - 读取侧以“同一 `stock_id + price_date` 的最新 `created_at`”作为当日 EOD 的当前值（收盘后确认刷新写入的新记录自然覆盖旧记录）
 
 ---
 
