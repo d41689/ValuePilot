@@ -60,6 +60,17 @@
   - Enforce v0.1 correction semantics:
     - insert a new `metric_facts` row (`source_type=manual`, `is_current=true`)
     - set previous current row(s) for the same (user_id, stock_id, metric_key) to `is_current=false`
+  - Notes (V1):
+    - This endpoint is intentionally generic to match the existing `GET /api/v1/stocks/{stock_id}/facts`.
+    - Optional (future): add a semantic alias like `PUT /api/v1/stocks/{stock_id}/facts/fair-value` that calls the same implementation.
+
+Ownership enforcement (MUST):
+- The backend MUST enforce ownership server-side; `user_id` MUST NOT be “trusted” to imply authorization by itself.
+- For any pool/membership operation, validate:
+  - `stock_pools.user_id == user_id`
+  - `pool_memberships.pool_id` belongs to that pool and `pool_memberships.user_id == user_id`
+- For Fair Value writes, always write `metric_facts.user_id = user_id`, and reject any attempt to write facts for another user.
+- If/when auth/session is introduced, migrate from `user_id` query params to server-derived identity (do not duplicate authorization logic in the client).
 
 ### Step 3: Frontend Watchlist Page
 - Sidebar for watchlists (list + create)
@@ -72,6 +83,13 @@
   - render cached data
   - call refresh (`POST /api/v1/stocks/prices/refresh`) in background
   - re-fetch table data after refresh completes
+
+Deterministic read rules (implementation guidance):
+- Price (EOD):
+  - `SELECT close FROM stock_prices WHERE stock_id = :id AND price_date = :target_date ORDER BY created_at DESC LIMIT 1`
+- Δ Today (optional, EOD):
+  - `prev_price_date = SELECT max(price_date) FROM stock_prices WHERE stock_id = :id AND price_date < :target_date`
+  - If either close is missing, return null for Δ Today.
 
 ### Step 4: Tests
 - Backend unit tests:
@@ -106,4 +124,3 @@
 - [ ] Any numeric comparisons are against normalized numeric fields (`metric_facts.value_numeric`)
 - [ ] Metric semantics are defined only in `docs/metric_facts_mapping_spec.yml`
 - [ ] Manual corrections are insert-only with `is_current` flipping
-
