@@ -65,3 +65,8 @@ local_storage/
 backend/storage/
 
 schema.sql
+
+.ai/
+.env
+agents_hub/
+crew/
