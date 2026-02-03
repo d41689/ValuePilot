@@ -1,12 +1,57 @@
 from typing import Any
-from fastapi import APIRouter, HTTPException, Body
-from sqlalchemy import select, func
+from fastapi import APIRouter, HTTPException, Body, Query
+from sqlalchemy import select, func, update
+from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
+import sqlalchemy as sa
 from app.api.deps import SessionDep
 from app.models.stocks import Stock
 from app.models.facts import MetricFact
 from app.services.market_data_service import MarketDataService
+from app.core.config import settings
+from app.models.users import User
 
 router = APIRouter()
+
+ET = ZoneInfo("America/New_York")
+FAIR_VALUE_KEY = "val.fair_value"
+
+
+def _get_user_or_seed(session: SessionDep, user_id: int) -> User:
+    user = session.get(User, user_id)
+    if user:
+        return user
+
+    if (
+        settings.DEFAULT_USER_EMAIL
+        and user_id == settings.DEFAULT_USER_ID
+    ):
+        email_owner = session.scalar(select(User).where(User.email == settings.DEFAULT_USER_EMAIL))
+        if email_owner and email_owner.id != settings.DEFAULT_USER_ID:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "DEFAULT_USER_EMAIL already exists with a different user id; "
+                    "cannot auto-seed DEFAULT_USER_ID."
+                ),
+            )
+
+        seeded_user = User(id=settings.DEFAULT_USER_ID, email=settings.DEFAULT_USER_EMAIL)
+        session.add(seeded_user)
+        session.commit()
+
+        if session.bind and session.bind.dialect.name == "postgresql":
+            max_user_id = session.scalar(select(func.max(User.id))) or settings.DEFAULT_USER_ID
+            session.execute(
+                sa.text(
+                    "SELECT setval(pg_get_serial_sequence('users','id'), :v, true)"
+                ).bindparams(v=max_user_id)
+            )
+            session.commit()
+
+        return seeded_user
+
+    raise HTTPException(status_code=404, detail="User not found")
 
 @router.get("/by_ticker/{ticker}", response_model=dict)
 def read_stock_by_ticker(
@@ -177,6 +222,68 @@ def read_stock_facts(
         }
         for f in facts
     ]
+
+
+@router.put("/{stock_id}/facts", response_model=dict)
+def upsert_stock_fact(
+    *,
+    stock_id: int,
+    session: SessionDep,
+    user_id: int = Query(..., description="ID of the user who owns the fact"),
+    payload: dict = Body(...),
+) -> Any:
+    _get_user_or_seed(session, user_id)
+
+    stock = session.get(Stock, stock_id)
+    if not stock:
+        raise HTTPException(status_code=404, detail="Stock not found")
+
+    metric_key = payload.get("metric_key")
+    value_numeric = payload.get("value_numeric")
+    if metric_key != FAIR_VALUE_KEY:
+        raise HTTPException(status_code=400, detail="Unsupported metric_key")
+    if value_numeric is None or not isinstance(value_numeric, (int, float)):
+        raise HTTPException(status_code=400, detail="value_numeric must be a number")
+
+    session.execute(
+        update(MetricFact)
+        .where(
+            MetricFact.user_id == user_id,
+            MetricFact.stock_id == stock_id,
+            MetricFact.metric_key == metric_key,
+            MetricFact.is_current.is_(True),
+        )
+        .values(is_current=False)
+    )
+
+    now_et = datetime.now(timezone.utc).astimezone(ET)
+    fact = MetricFact(
+        user_id=user_id,
+        stock_id=stock_id,
+        metric_key=metric_key,
+        value_numeric=float(value_numeric),
+        unit="USD",
+        period_type="AS_OF",
+        period_end_date=now_et.date(),
+        source_type="manual",
+        is_current=True,
+    )
+    session.add(fact)
+    session.commit()
+    session.refresh(fact)
+
+    return {
+        "id": fact.id,
+        "stock_id": fact.stock_id,
+        "metric_key": fact.metric_key,
+        "value_numeric": fact.value_numeric,
+        "unit": fact.unit,
+        "period_type": fact.period_type,
+        "period_end_date": fact.period_end_date,
+        "source_type": fact.source_type,
+        "is_current": fact.is_current,
+        "created_at": fact.created_at,
+    }
 
 
 @router.post("/prices/refresh", response_model=list[dict])

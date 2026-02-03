@@ -2,12 +2,13 @@
 
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
-import { Activity, FileText, LayoutDashboard, Search, Upload } from 'lucide-react';
+import { Activity, FileText, LayoutDashboard, Search, Upload, Star } from 'lucide-react';
 
 import { cn } from '@/lib/utils';
 
 const navigation = [
   { name: 'Dashboard', href: '/home', icon: LayoutDashboard },
+  { name: 'Watchlist', href: '/watchlist', icon: Star },
   { name: 'Documents', href: '/documents', icon: FileText },
   { name: 'Upload', href: '/upload', icon: Upload },
   { name: 'Screener', href: '/screener', icon: Search },

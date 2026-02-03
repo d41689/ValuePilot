@@ -1,5 +1,7 @@
 # 2026-02-03 Watchlist V1 Implementation
 
+Status: Approved (2026-02-03)
+
 ## Goal / Acceptance Criteria
 
 - Provide a V1 Watchlist UI that lets a user:
@@ -116,11 +118,21 @@ Deterministic read rules (implementation guidance):
   - `docker compose exec api pytest -q tests/unit/test_stock_pools_api.py`
   - `docker compose exec api pytest -q tests/unit/test_metric_facts_manual_fair_value.py`
 
-## Contract Checklist (Must Pass)
+## Progress Update (2026-02-03)
+- Added `val.fair_value` manual metric entry to `docs/metric_facts_mapping_spec.yml`.
+- Implemented `stock_pools` + `pool_memberships` endpoints with ownership enforcement and deterministic price reads.
+- Added Fair Value write endpoint: `PUT /api/v1/stocks/{stock_id}/facts?user_id=...` (manual only).
+- Built Watchlist UI page (sidebar + table + inline Fair Value edit + refresh hook).
+- Added backend unit tests for watchlist APIs and Fair Value writes.
 
-- [ ] No new DB tables or migrations in V1
-- [ ] Watchlist uses `stock_pools` + `pool_memberships`
-- [ ] Price reads are from `stock_prices` (EOD close)
-- [ ] Any numeric comparisons are against normalized numeric fields (`metric_facts.value_numeric`)
-- [ ] Metric semantics are defined only in `docs/metric_facts_mapping_spec.yml`
-- [ ] Manual corrections are insert-only with `is_current` flipping
+## Verification (Docker)
+- `docker compose exec api pytest -q tests/unit/test_stock_pools_api.py tests/unit/test_metric_facts_manual_fair_value.py`
+
+## Contract Checklist (Status)
+
+- [x] No new DB tables or migrations in V1
+- [x] Watchlist uses `stock_pools` + `pool_memberships`
+- [x] Price reads are from `stock_prices` (EOD close)
+- [x] Any numeric comparisons are against normalized numeric fields (`metric_facts.value_numeric`)
+- [x] Metric semantics are defined only in `docs/metric_facts_mapping_spec.yml`
+- [x] Manual corrections are insert-only with `is_current` flipping
