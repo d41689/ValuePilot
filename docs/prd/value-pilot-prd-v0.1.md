@@ -2,11 +2,26 @@
 > It focuses on parsing boundaries, data models, and execution semantics.  
 > Higher-level product narrative (Background, Milestones) may live in a separate overview doc.
 
+## A. Contract Sources & Precedence (V1)
+
+This PRD intentionally separates “system behavior + storage contracts” from “metric semantics”.
+
+If any inconsistencies exist, the following precedence order MUST be applied:
+1) `docs/metric_facts_mapping_spec.yml` (metric semantics: `metric_key`, units, `period_type`, `period_end_date` derivations)
+2) `docs/prd/value-pilot-prd-v0.1.md` (system behavior, schema, ingestion/API contracts)
+3) Historical addendums / decision records (read-only reference; not normative)
+
+This PRD MUST NOT be used to redefine metric semantics outside `docs/metric_facts_mapping_spec.yml`.
+Any PRD text about metrics is descriptive and MUST defer to the mapping spec for canonical keys, units, and period rules.
+
 ## B.4 Parsing Boundary (Explicit Scope)
 
 - V1 parsing is **template‑based**, not generic.
-- **V1 supports Value Line equity report PDFs only** (the single‑page standard layout).
-- Any non‑Value Line PDFs can still be uploaded and stored but will be marked as `unsupported_template`.
+- **V1 supports Value Line equity report PDFs only** (each parsed page must match the single‑page standard layout).
+- V1 supports both:
+  - single-page PDFs (one company), and
+  - multi-page “container PDFs” where each page is an independent Value Line report for a different company (see §B.4.2).
+- Non‑Value Line pages can still be uploaded/stored; ingestion reports `unsupported_template` at the page level and the overall document status may be `failed` if 0 company pages parse successfully.
 
 ### B.4.1 Value Line Template Fields (V1)
 
@@ -40,16 +55,106 @@ The V1 parser MUST extract (at minimum) the following fields when present:
 - business_description (Value Line “BUSINESS” paragraph)
 - analyst_name
 
+### B.4.2 Multi-Page Value Line PDF Ingestion (V1)
+
+The system MUST support PDFs with 1..N pages where each page is parsed independently.
+
+Definitions:
+- **Container PDF Document**: the uploaded PDF artifact (may contain multiple company pages).
+- **Page Report**: the independent parsing unit corresponding to a single page within a Container PDF Document.
+- **Company Page**: a page that passes the Value Line V1 template validation (page-level).
+
+In Scope:
+- Loop over pages (ascending `page_number`) and parse each page as a standalone Value Line report.
+- Partial success: some pages may parse successfully while others fail or are skipped as non-company pages.
+
+Out of Scope (v0.1):
+- Non–Value Line templates.
+- “One page contains multiple companies” layouts.
+- Cross-page reconciliation (merging facts across pages).
+
+Upload + ingestion flow:
+1) Store the PDF as one `pdf_documents` row and extract per-page text into `document_pages`.
+2) For each page `p`:
+   - Validate Value Line V1 template (page-level).
+   - Extract identity (ticker/exchange/company_name) from that page.
+   - Resolve stock identity per §Stock Identity Resolution.
+   - Parse metrics and persist immutable `metric_extractions` with:
+     - `document_id = <container document id>`
+     - `page_number = p`
+     - `original_text_snippet` set for each extracted field
+   - Map parsed page JSON to `metric_facts` using `docs/metric_facts_mapping_spec.yml`.
+
+Single-page vs multi-page stock linkage (`pdf_documents.stock_id`):
+- If the uploaded PDF is single-page and represents a single company, `pdf_documents.stock_id` MAY be set.
+- If the uploaded PDF is multi-page and contains multiple companies, `pdf_documents.stock_id` MUST be NULL (multi-company container).
+
+Completion status (`pdf_documents.parse_status`, v0.1):
+- `uploaded`: stored but not yet parsed
+- `parsing`: ingestion in progress
+- `parsed`: all company pages parsed successfully (non-company pages may be skipped)
+- `parsed_partial`: at least 1 company page parsed and at least 1 company page failed (e.g., identity unresolved / parse error)
+- `failed`: 0 company pages parsed successfully
+
+Output contract (API):
+- The upload response MUST include `page_reports[]` even for single-page PDFs (length = 1).
+- Each entry MUST include `page_number`, `status`, and `parser_version`.
+- `page_number` is 1-indexed (matches PDF page numbering).
+
+Note:
+- `pdf_documents.parse_status` is document-level.
+- `page_reports[].status` is page-level and may include `unsupported_template` even when `pdf_documents.parse_status` is `parsed` or `parsed_partial`.
+
+Example (schema shape, not exhaustive):
+
+```json
+{
+  "document_id": 123,
+  "page_count": 7,
+  "status": "parsed_partial",
+  "page_reports": [
+    {
+      "page_number": 1,
+      "status": "parsed",
+      "parser_version": "v1",
+      "stock_id": 10,
+      "ticker": "AOS",
+      "exchange": "NYSE"
+    },
+    {
+      "page_number": 2,
+      "status": "unsupported_template",
+      "parser_version": "v1",
+      "error_code": "unsupported_template",
+      "error_message": "Non-company page skipped."
+    },
+    {
+      "page_number": 3,
+      "status": "failed",
+      "parser_version": "v1",
+      "error_code": "identity_unresolved",
+      "error_message": "Could not resolve ticker/exchange for page."
+    }
+  ]
+}
+```
+
+Recommended `error_code` enum values (v0.1):
+- `unsupported_template`
+- `identity_unresolved`
+- `parse_error`
+- `normalization_error`
+
+Non-normative reference: see multi-page behavior tests in `backend/tests/unit/test_multipage_value_line_upload.py`.
+
 ### Canonical Metric Key Rules (V1)
 
 - All `metric_key` values MUST:
-  - use `snake_case`
+  - use dotted namespaces with `snake_case` segments (e.g., `mkt.price`, `val.pe`, `per_share.eps`)
   - NOT start with a number
-- Template field names are mapped to canonical keys, e.g.:
-  - `18_month_target_low` → `target_18m_low`
-  - `18_month_target_high` → `target_18m_high`
-  - `relative_pe_ratio` → `pe_ratio_relative`
+- Metric keys MUST NOT encode units (no `_usd`, `_pct`, `_millions` in the key); units live in `metric_facts.unit` and are defined in `docs/metric_facts_mapping_spec.yml`.
 - Only canonical keys are exposed to formulas and screeners.
+See Appendix A.2 for the canonical regex form.
 
 ---
 
@@ -93,7 +198,7 @@ Note:
 - source (e.g. Value Line)
 - upload_time
 - file_storage_key (store original PDF; text can be regenerated)
-- parse_status (pending / parsed / failed / unsupported_template / requires_ocr)
+- parse_status (uploaded / parsing / parsed / parsed_partial / failed)
 - parser_template_id (nullable)
 - parser_version
 - raw_text (optional cache)
@@ -115,11 +220,11 @@ Note:
 - page_number
 - page_text
 - page_image_key (optional, for calibration UI)
-- text_extraction_method (native_text / ocr)
+- text_extraction_method (native_text; `ocr` reserved for future)
 
 Text Extraction Strategy (V1):
-- Attempt native text-layer extraction first (fast and accurate for most Value Line PDFs).
-- If extracted text density is below a threshold, mark `text_extraction_method = ocr` and run OCR as fallback.
+- v0.1 implementation uses native text-layer extraction.
+- OCR fallback is reserved for a future revision; when introduced it MUST be expressed via `document_pages.text_extraction_method = ocr` (and must not break lineage contracts).
 
 #### metric_extractions (field-level lineage)
 - id
@@ -160,7 +265,7 @@ UI & Query Semantics (V1):
 - id
 - user_id
 - stock_id
-- metric_key (canonical name, e.g. "pe_ratio", "dividend_yield", "sales", "eps")
+- metric_key (canonical name, e.g. `mkt.price`, `val.pe`, `val.dividend_yield`, `per_share.eps`)
 - value_json (typed value; number/string/percent)
 - value_numeric (nullable; numeric projection of value_json for indexing/filtering)
 - unit (nullable)
@@ -322,236 +427,42 @@ Confidence Strategy (V1):
 
 ---
 
-## Appendix A: Value Line V1 Field → Metric Mapping Specification
+## Appendix A: Metric Keys & Mapping Contracts (V1)
 
-This appendix defines the **authoritative mapping** from Value Line template field keys
-(extracted by the parser) to internal canonical `metric_key` values used by
-`metric_facts`, formulas, screeners, and alerts.
+This appendix defines the authoritative contract for mapping parsed Value Line output into `metric_facts`.
 
-This mapping MUST be treated as versioned contract code.
+### A.1 Authoritative Source
 
-### A.1 Design Principles
-
-- Parser field keys are **template-facing** (reflect Value Line layout).
-- `metric_key` values are **domain-facing** (stable, canonical, formula-safe).
-- All `metric_key` values:
-  - use `snake_case`
-  - do NOT start with numbers
-- Only `metric_key` values are exposed to:
-  - Formula Engine
-  - Screening Rules
-  - Alert Logic
-
----
-
-### A.2 Mapping File Structure
-
-Recommended implementation artifact:
+The authoritative mapping and metric semantics live in:
 
 ```
-value_line_v1_field_map.json
+docs/metric_facts_mapping_spec.yml
 ```
 
-Schema:
+This mapping spec MUST be treated as versioned contract code. If PRD text and the mapping spec diverge on metric semantics, the mapping spec wins (see §A).
 
-```json
-{
-  "template": "value_line_equity_report_v1",
-  "version": "1.0",
-  "fields": {
-    "<field_key>": {
-      "metric_key": "...",
-      "value_type": "number | percent | ratio | integer | string",
-      "unit": "USD | % | null",
-      "numeric": true,
-      "period_type": "FY | Q | TTM | null",
-      "notes": "optional"
-    }
-  }
-}
-```
+### A.2 Metric Key Naming (Canonical)
 
----
+- `metric_key` uses dotted namespaces with `snake_case` segments (e.g., `mkt.price`, `val.pe`, `per_share.eps`).
+- Each segment MUST match `[a-z][a-z0-9_]*`.
+- Full regex form: `^[a-z][a-z0-9_]*(\\.[a-z][a-z0-9_]*)*$`.
+- `metric_key` MUST NOT encode units (no `_usd`, `_pct`, `_millions`, etc.); units are expressed via `metric_facts.unit`.
 
-### A.3 Header / Ratings Fields
+### A.3 What the Mapping Spec Defines
 
-```json
-{
-  "recent_price": {
-    "metric_key": "price_recent",
-    "value_type": "number",
-    "unit": "USD",
-    "numeric": true
-  },
-  "pe_ratio": {
-    "metric_key": "pe_ratio",
-    "value_type": "ratio",
-    "numeric": true
-  },
-  "relative_pe_ratio": {
-    "metric_key": "pe_ratio_relative",
-    "value_type": "ratio",
-    "numeric": true
-  },
-  "dividend_yield": {
-    "metric_key": "dividend_yield",
-    "value_type": "percent",
-    "numeric": true
-  },
-  "timeliness": {
-    "metric_key": "rating_timeliness",
-    "value_type": "integer",
-    "numeric": true
-  },
-  "safety": {
-    "metric_key": "rating_safety",
-    "value_type": "integer",
-    "numeric": true
-  },
-  "technical": {
-    "metric_key": "rating_technical",
-    "value_type": "integer",
-    "numeric": true
-  },
-  "beta": {
-    "metric_key": "beta",
-    "value_type": "ratio",
-    "numeric": true
-  }
-}
-```
+`docs/metric_facts_mapping_spec.yml` defines (non-exhaustive):
+- which parsed page JSON paths map to which canonical `metric_key`
+- `period_type` and `period_end_date` sourcing/derivation rules
+- unit/value normalization rules (as specified in the mapping spec)
+- which value form is preferred (`value_numeric` vs `value_text` vs `value_json`)
 
----
+### A.4 Template Field Keys vs Canonical Metric Keys
 
-### A.4 18‑Month Target Price Fields
+- The parser emits template-facing keys into `metric_extractions.field_key`.
+- Ingestion builds a stable page JSON payload and maps it to `metric_facts.metric_key` via `docs/metric_facts_mapping_spec.yml`.
 
-```json
-{
-  "18_month_target_low": {
-    "metric_key": "target_18m_low",
-    "value_type": "number",
-    "unit": "USD",
-    "numeric": true
-  },
-  "18_month_target_high": {
-    "metric_key": "target_18m_high",
-    "value_type": "number",
-    "unit": "USD",
-    "numeric": true
-  },
-  "18_month_target_midpoint": {
-    "metric_key": "target_18m_mid",
-    "value_type": "number",
-    "unit": "USD",
-    "numeric": true
-  },
-  "midpoint_pct_to_mid": {
-    "metric_key": "target_18m_upside_pct",
-    "value_type": "percent",
-    "numeric": true
-  }
-}
-```
-
----
-
-### A.5 Long‑Term Projection Fields (Rolling)
-
-```json
-{
-  "long_term_projection_high_price": {
-    "metric_key": "target_long_high",
-    "value_type": "number",
-    "unit": "USD",
-    "numeric": true
-  },
-  "long_term_projection_low_price": {
-    "metric_key": "target_long_low",
-    "value_type": "number",
-    "unit": "USD",
-    "numeric": true
-  },
-  "long_term_projection_high_total_return_pct": {
-    "metric_key": "target_long_total_return_high_pct",
-    "value_type": "percent",
-    "numeric": true
-  },
-  "long_term_projection_low_total_return_pct": {
-    "metric_key": "target_long_total_return_low_pct",
-    "value_type": "percent",
-    "numeric": true
-  }
-}
-```
-
-Note:
-- Value Line projection windows are rolling; the parser MUST extract the printed year range into `long_term_projection_year_range`.
-- Store the year range as a separate extraction field to avoid hard-coding years in field keys.
-
----
-
-### A.6 Quarterly Time‑Series Tables
-
-```json
-{
-  "quarterly_sales": {
-    "metric_key": "revenue",
-    "value_type": "number",
-    "unit": "USD",
-    "numeric": true,
-    "period_type": "Q",
-    "notes": "One metric_facts row per quarter"
-  },
-  "earnings_per_share": {
-    "metric_key": "eps",
-    "value_type": "number",
-    "numeric": true,
-    "period_type": "Q"
-  },
-  "quarterly_dividends": {
-    "metric_key": "dividend_per_share",
-    "value_type": "number",
-    "unit": "USD",
-    "numeric": true,
-    "period_type": "Q"
-  }
-}
-```
-
----
-
-### A.7 Financial Snapshot Fields
-
-```json
-{
-  "market_cap": {
-    "metric_key": "market_cap",
-    "value_type": "number",
-    "unit": "USD",
-    "numeric": true
-  },
-  "shares_outstanding": {
-    "metric_key": "shares_outstanding",
-    "value_type": "number",
-    "numeric": true
-  },
-  "total_debt": {
-    "metric_key": "total_debt",
-    "value_type": "number",
-    "unit": "USD",
-    "numeric": true
-  }
-}
-```
-
----
-
-### A.8 Execution Rules
-
-- Parsers MUST emit `metric_extractions.field_key`.
-- Mapping resolves `field_key` → `metric_key`.
-- All persisted, queryable metrics MUST be written to `metric_facts`.
-- Formulas, screeners, and alerts MUST reference `metric_key` only.
+Legacy note:
+- Earlier drafts referenced a `value_line_v1_field_map.json` approach. This is deprecated for v0.1; do not introduce new metric semantics outside the mapping spec.
 ---
 
 ## Appendix B: Normalization Layer Specification (V1)
@@ -636,7 +547,7 @@ Notes:
 
 - Screeners MUST filter on `metric_facts.value_numeric`.
 - For percentage metrics, comparisons are done using the ratio base:
-  - Example: dividend_yield > 0.03 (for > 3%)
+  - Example: val.dividend_yield > 0.03 (for > 3%)
 
 ### B.6 Validation & Guardrails
 

@@ -67,3 +67,18 @@
 ## Rollback Strategy
 - 通过 git 回滚 `docs/prd/*` 与本任务文件的提交（或恢复到合并前的两份 PRD 状态）。
 - 当 reviewer 认为“契约优先级/语义”产生新的歧义或存在多种可解释路径时，触发 rollback（语义失败也可回滚）。
+
+## Progress Update
+
+- 2026-02-03：已开始执行（已获批准），完成 PRD 合并与权威源对齐：
+  - `docs/prd/value-pilot-prd-v0.1.md`：新增“Contract Sources & Precedence”，合并 multipage 语义/接口契约，更新 `metric_key` 命名规则为 dotted namespace，与 `docs/metric_facts_mapping_spec.yml` 对齐。
+  - `docs/prd/value-pilot-prd-v0.1-multipage.md`：加顶栏标注“MERGED + FROZEN”，明确历史只读。
+  - `docs/prd/README.md`：新增 PRD 目录治理与硬约束（metric 语义只能在 mapping spec 定义）。
+- Approval: 2026-02-03（thread 内用户明确回复“批准”）。
+
+## Definition of Done (Self-Check)
+
+- [x] 合并后的 `docs/prd/value-pilot-prd-v0.1.md` 不再与 multipage 能力或 dotted namespace `metric_key` 冲突
+- [x] `docs/prd/value-pilot-prd-v0.1-multipage.md` 明确标注为历史只读、非权威来源
+- [x] 变更为 docs-only（未修改 backend/frontend/schema/migrations）
+- [x] precedence 顺序已写死且无歧义（mapping spec > v0.1 PRD > historical）

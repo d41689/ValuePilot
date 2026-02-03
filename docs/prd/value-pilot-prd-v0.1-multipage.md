@@ -1,3 +1,11 @@
+# Status (2026-02-03): MERGED + FROZEN
+
+This addendum has been merged into the single authoritative v0.1 PRD:
+- `docs/prd/value-pilot-prd-v0.1.md` (see §B.4.2 “Multi-Page Value Line PDF Ingestion (V1)”)
+- If section numbering changes, search in `docs/prd/value-pilot-prd-v0.1.md` for: `Multi-Page Value Line PDF Ingestion (V1)`.
+
+This document is retained as a historical, read-only record and MUST NOT be treated as the current normative spec.
+
 # ValuePilot v0.1 PRD Addendum: Multi-Page Value Line PDF Ingestion
 
 Status: **APPROVED (with edits)** (implementation may begin after an approved execution plan)
