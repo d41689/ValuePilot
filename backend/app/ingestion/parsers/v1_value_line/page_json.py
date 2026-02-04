@@ -158,6 +158,10 @@ def _format_pct_display(raw: Optional[str]) -> Optional[str]:
     if raw is None:
         return None
     raw = raw.strip()
+    if raw.upper() in {"NIL", "NMF", "--"}:
+        return "Nil" if raw.upper() == "NIL" else raw
+    if re.search(r"[A-Za-z]", raw):
+        return raw
     if raw.startswith(("+", "-")):
         return raw
     if raw.endswith("%"):

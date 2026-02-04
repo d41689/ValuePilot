@@ -83,8 +83,8 @@ class ValueLineV1Parser(BaseParser):
                 upper_prev = clean_prev.upper()
                 if "VALUE LINE" in upper_prev or "PAGE" in upper_prev:
                     continue
-                if "RECENT" in upper_prev:
-                    info.company_name = clean_prev.split("RECENT")[0].strip()
+                if re.search(r"RECEN.?T", upper_prev):
+                    info.company_name = re.split(r"RECEN.?T", clean_prev, flags=re.IGNORECASE)[0].strip()
                 else:
                     info.company_name = clean_prev
                 break
@@ -144,10 +144,21 @@ class ValueLineV1Parser(BaseParser):
 
         # --- 1. Header Metrics (Expanded) ---
         
-        # Recent Price (text layer or word-merged tokens like "RECENT109.10")
-        recent_match = re.search(r'\bRECENT\s*(?:PRICE\s*)?(\d+\.?\d*)', self.text, re.IGNORECASE)
+        # Recent Price (text layer or word-merged tokens like "RECENT109.10" or "RECEN1T062.19")
+        recent_match = re.search(
+            r'\bRECEN(?:(?P<prefix>\d)T|T)\s*(?:PRICE\s*)?(?P<price>\d+\.?\d*)',
+            self.text,
+            re.IGNORECASE,
+        )
         if recent_match:
-            add_res("recent_price", recent_match)
+            prefix = recent_match.group("prefix") or ""
+            raw_value = f"{prefix}{recent_match.group('price')}"
+            results.append(ExtractionResult(
+                field_key="recent_price",
+                raw_value_text=raw_value,
+                original_text_snippet=recent_match.group(0),
+                confidence_score=0.9,
+            ))
         elif 1 in self.page_words:
             recent_from_words = self._recent_price_from_words(self.page_words[1])
             if recent_from_words:
@@ -340,13 +351,18 @@ class ValueLineV1Parser(BaseParser):
             results.append(ExtractionResult(field_key="long_term_projection_high_price_gain_pct", raw_value_text=f"{gain}%", original_text_snippet=high_match.group(0), confidence_score=0.9))
             results.append(ExtractionResult(field_key="long_term_projection_high_total_return_pct", raw_value_text=f"{total}%", original_text_snippet=high_match.group(0), confidence_score=0.9))
 
-        low_match = re.search(r'Low\s+(\d+)\s*\(([-+]?\d+)%\)\s+([-+]?\d+)%', self.text, re.IGNORECASE)
+        low_match = re.search(r'Low\s+(\d+)\s*\(([-+]?\d+)%\)\s+([-+]?\d+%?|NIL|Nil)', self.text, re.IGNORECASE)
         if low_match:
             gain = low_match.group(2).lstrip("+")
-            total = low_match.group(3).lstrip("+")
+            total_raw = low_match.group(3)
+            total = total_raw if total_raw.upper() == "NIL" else total_raw.lstrip("+")
             results.append(ExtractionResult(field_key="long_term_projection_low_price", raw_value_text=low_match.group(1), original_text_snippet=low_match.group(0), confidence_score=0.9))
             results.append(ExtractionResult(field_key="long_term_projection_low_price_gain_pct", raw_value_text=f"{gain}%", original_text_snippet=low_match.group(0), confidence_score=0.9))
-            results.append(ExtractionResult(field_key="long_term_projection_low_total_return_pct", raw_value_text=f"{total}%", original_text_snippet=low_match.group(0), confidence_score=0.9))
+            if str(total).upper() == "NIL":
+                total_text = "Nil"
+            else:
+                total_text = total if str(total).endswith("%") else f"{total}%"
+            results.append(ExtractionResult(field_key="long_term_projection_low_total_return_pct", raw_value_text=total_text, original_text_snippet=low_match.group(0), confidence_score=0.9))
 
         # --- 3. Financial Snapshot ---
         
@@ -607,7 +623,7 @@ class ValueLineV1Parser(BaseParser):
                 ))
 
         mkt_match = re.search(
-            r'MARKET\s*CAP\s*:?\s*\$([\d\.]+)\s*(billion|mil|mill|million)\b(?:\(([^)]+)\))?',
+            r'MARKET\s*CAP\s*:?\s*\$([\d\.]+)\s*(trillion|tril|billion|mil|mill|million)\b(?:\(([^)]+)\))?',
             self.text,
             re.IGNORECASE,
         )
@@ -616,6 +632,8 @@ class ValueLineV1Parser(BaseParser):
             token = mkt_match.group(2).lower()
             if token in {"mil", "mill", "million"}:
                 token = "mill"
+            elif token in {"tril", "trillion"}:
+                token = "trillion"
             elif token in {"billion"}:
                 token = "billion"
             note_raw = mkt_match.group(3)
@@ -1114,7 +1132,7 @@ class ValueLineV1Parser(BaseParser):
 
             def growth_row(label_pat: str) -> Optional[dict[str, float]]:
                 m = re.search(
-                    rf'{label_pat}[^\d%+-]{{0,20}}({token_re})\s+({token_re})\s+({token_re})',
+                    rf'{label_pat}[^A-Za-z0-9%+-]{{0,20}}({token_re})\s+({token_re})\s+({token_re})',
                     ar_block,
                     re.IGNORECASE,
                 )
@@ -1518,11 +1536,12 @@ class ValueLineV1Parser(BaseParser):
     def _recent_price_from_words(words: list[dict[str, Any]]) -> Optional[str]:
         for w in words:
             text = str(w.get("text", ""))
-            match = re.search(r'RECENT\s*(\d+\.?\d*)', text, re.IGNORECASE)
+            match = re.search(r'RECEN(?:(?P<prefix>\d)T|T)\s*(?P<price>\d+\.?\d*)', text, re.IGNORECASE)
             if match:
-                return match.group(1)
+                prefix = match.group("prefix") or ""
+                return f"{prefix}{match.group('price')}"
         for w in words:
-            if str(w.get("text", "")).upper() != "RECENT":
+            if not re.fullmatch(r"RECEN.?T", str(w.get("text", "")).upper()):
                 continue
             base_top = float(w.get("top", 0.0))
             base_x = float(w.get("x0", 0.0))
@@ -1730,9 +1749,21 @@ class ValueLineV1Parser(BaseParser):
                         if first is not None and all(v.upper() in {"--", "NMF", "NIL"} for v in values_raw[1:]):
                             values_raw = values_raw[1:]
 
+            def trailing_placeholders(values: list[str]) -> int:
+                count = 0
+                for token in reversed(values):
+                    if str(token).upper() in {"--", "NMF", "NIL"}:
+                        count += 1
+                    else:
+                        break
+                return count
+
             if missing_last_year and len(values_raw) > len(years):
                 values_raw = values_raw[-(len(years) - 1):]
                 aligned_years = years[:-1]
+                if trailing_placeholders(values_raw) >= 2 and len(years) >= 2:
+                    values_raw = values_raw[1:]
+                    aligned_years = years[:-2]
             else:
                 if len(values_raw) > len(years):
                     values_raw = values_raw[-len(years):]
@@ -2020,15 +2051,22 @@ class ValueLineV1Parser(BaseParser):
         candidates = sorted(candidates, key=lambda w: abs(float(w.get("x0", 0.0)) - label_x))
         return int(candidates[0]["text"])
 
-    @staticmethod
-    def _parse_institutional_decisions_from_words(words: list[dict[str, Any]]) -> Optional[ExtractionResult]:
+    def _parse_institutional_decisions_from_words(self, words: list[dict[str, Any]]) -> Optional[ExtractionResult]:
         def _round_top(w: dict[str, Any]) -> float:
             return round(float(w.get("top", 0.0)), 1)
 
-        idx = next(
-            (i for i, w in enumerate(words) if "InstitutionalDecisions" in str(w.get("text", ""))),
-            None,
-        )
+        idx = None
+        for i, w in enumerate(words):
+            text = str(w.get("text", ""))
+            upper = text.upper()
+            if "INSTITUTIONALDECISIONS" in upper:
+                idx = i
+                break
+            if upper == "INSTITUTIONAL" and i + 1 < len(words):
+                next_text = str(words[i + 1].get("text", "")).upper()
+                if next_text.startswith("DECISIONS"):
+                    idx = i
+                    break
         if idx is None:
             return None
 
@@ -2036,6 +2074,26 @@ class ValueLineV1Parser(BaseParser):
             return re.fullmatch(r'[1-4]Q\d{0,4}', text) is not None
 
         quarter_words = [w for w in words[idx:] if is_quarter_token(str(w.get("text", "")))]
+        if not quarter_words:
+            q_tokens = [w for w in words[idx:] if str(w.get("text", "")).upper() == "Q"]
+            for q in q_tokens:
+                row_top = float(q.get("top", 0.0))
+                q_x0 = float(q.get("x0", 0.0))
+                candidates = [
+                    w for w in words[idx:]
+                    if abs(float(w.get("top", 0.0)) - row_top) < 2.0
+                    and str(w.get("text", "")).isdigit()
+                    and str(w.get("text", "")) in {"1", "2", "3", "4"}
+                    and float(w.get("x0", 0.0)) < q_x0
+                ]
+                if not candidates:
+                    continue
+                digit = sorted(candidates, key=lambda w: abs(float(w.get("x0", 0.0)) - q_x0))[0]
+                quarter_words.append({
+                    "text": f"{digit.get('text')}Q",
+                    "x0": q_x0,
+                    "top": row_top,
+                })
         quarter_words = sorted(quarter_words, key=lambda w: float(w.get("x0", 0.0)))
         if not quarter_words:
             return None
@@ -2054,42 +2112,59 @@ class ValueLineV1Parser(BaseParser):
                 if len(holds) >= len(quarter_words):
                     break
 
+        report_match = re.search(
+            r'(January|February|March|April|May|June|July|August|September|October|November|December)\s*(\d{1,2})\s*,\s*(\d{4})',
+            self.text,
+        )
+        report_year = int(report_match.group(3)) if report_match else 0
+
         quarterly: list[dict[str, Any]] = []
         for q_idx, q in enumerate(quarter_words):
             row_top = float(q.get("top", 0.0))
             base_x0 = float(q.get("x0", 0.0))
-            next_x0 = (
-                float(quarter_words[q_idx + 1].get("x0", 0.0))
-                if q_idx + 1 < len(quarter_words)
-                else base_x0 + 40.0
-            )
-            x_max = max(base_x0 + 12.0, next_x0 - 1.0)
+            prev_x0 = float(quarter_words[q_idx - 1].get("x0", 0.0)) if q_idx > 0 else None
+            next_x0 = float(quarter_words[q_idx + 1].get("x0", 0.0)) if q_idx + 1 < len(quarter_words) else None
+            left_bound = ((prev_x0 + base_x0) / 2.0) if prev_x0 is not None else base_x0 - 10.0
+            right_bound = ((base_x0 + next_x0) / 2.0) if next_x0 is not None else base_x0 + 40.0
 
             q_text = str(q.get("text", ""))
             q_match = re.match(r'^([1-4])Q(\d{0,4})$', q_text)
             q_label = q_match.group(1) + "Q" if q_match else q_text[:2]
             year_prefix = q_match.group(2) if q_match else ""
 
-            # Year tokens often appear on the same baseline (e.g., "20" "2" "5")
-            year_tokens = [
+            # Year tokens often appear on the same baseline immediately after Q (e.g., "20" "2" "5")
+            row_tokens = [
                 w for w in words[idx:]
                 if abs(float(w.get("top", 0.0)) - row_top) < 0.6
-                and base_x0 < float(w.get("x0", 0.0)) < x_max
-                and re.fullmatch(r'\d{1,2}', str(w.get("text", "")))
+                and float(w.get("x0", 0.0)) > base_x0
             ]
-            year_str = year_prefix + "".join(
-                [str(w["text"]) for w in sorted(year_tokens, key=lambda w: float(w.get("x0", 0.0)))]
-            )
+            row_tokens = sorted(row_tokens, key=lambda w: float(w.get("x0", 0.0)))
+            year_digits = year_prefix
+            for w in row_tokens:
+                token = str(w.get("text", ""))
+                if not re.fullmatch(r'\d{1,2}', token):
+                    continue
+                year_digits += token
+                if len(year_digits) >= 4:
+                    year_digits = year_digits[:4]
+                    break
+
+            year_str = year_digits
             if len(year_str) == 4:
                 year = int(year_str)
+            elif len(year_str) >= 2:
+                year = 2000 + int(year_str[-2:])
             else:
-                year = 2000 + int(year_str[-2:]) if len(year_str) >= 2 else 0
+                year = report_year
+
+            if report_year and (year < report_year - 1 or year > report_year + 1):
+                year = report_year
 
             candidates = [
                 w for w in words[idx:]
-                if base_x0 < float(w.get("x0", 0.0)) < x_max
+                if left_bound < float(w.get("x0", 0.0)) < right_bound
                 and float(w.get("top", 0.0)) > row_top + 1.0
-                and re.fullmatch(r'\d', str(w.get("text", "")))
+                and re.fullmatch(r'\d+', str(w.get("text", "")))
             ]
             tops = sorted({_round_top(w) for w in candidates})
             if len(tops) < 2:
