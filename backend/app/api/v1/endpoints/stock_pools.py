@@ -203,7 +203,10 @@ def list_pool_members(
 
     members = session.scalars(
         select(PoolMembership)
-        .where(PoolMembership.pool_id == pool_id)
+        .where(
+            PoolMembership.pool_id == pool_id,
+            PoolMembership.user_id == user_id,
+        )
         .order_by(PoolMembership.created_at.desc())
     ).all()
     if not members:
