@@ -96,15 +96,24 @@ export default function WatchlistPage() {
   const members = membersQuery.data ?? [];
 
   useEffect(() => {
-    if (!members.length) {
-      setFairValueEdits({});
-      return;
-    }
-    const next: Record<number, string> = {};
-    for (const row of members) {
-      next[row.stock_id] = row.fair_value !== null ? row.fair_value.toString() : '';
-    }
-    setFairValueEdits(next);
+    setFairValueEdits((prev) => {
+      if (!members.length) {
+        return Object.keys(prev).length === 0 ? prev : {};
+      }
+      const next: Record<number, string> = {};
+      for (const row of members) {
+        next[row.stock_id] = row.fair_value !== null ? row.fair_value.toString() : '';
+      }
+      const prevKeys = Object.keys(prev);
+      const nextKeys = Object.keys(next);
+      if (prevKeys.length !== nextKeys.length) return next;
+      for (const key of nextKeys) {
+        if (prev[key] !== next[key]) {
+          return next;
+        }
+      }
+      return prev;
+    });
   }, [members]);
 
   useEffect(() => {
