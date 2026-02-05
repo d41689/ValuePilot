@@ -8,7 +8,7 @@ import axios from 'axios';
 import TickerSearchBox from '@/components/TickerSearchBox';
 import { Card } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
-import { useToast } from '@/components/ui/use-toast';
+import { toast } from '@/components/ui/use-toast';
 import { normalizeTicker } from '@/lib/stockRoutes';
 import { computeGrowthValue, computeTerminalValue, computeTotalValue } from '@/lib/dcfMath';
 import apiClient from '@/lib/api/client';
@@ -35,7 +35,6 @@ const formatInputMoney = (value: number) =>
   });
 
 export default function StockDcfPage() {
-  const { toast } = useToast();
   const params = useParams();
   const tickerParam = Array.isArray(params?.ticker) ? params.ticker[0] : params?.ticker;
   const displayTicker = normalizeTicker((tickerParam || '').toString());
@@ -595,6 +594,7 @@ export default function StockDcfPage() {
                   variant="outline"
                   onClick={handleSaveFairValue}
                   disabled={isSavingFairValue}
+                  type="button"
                 >
                   Save
                 </Button>
