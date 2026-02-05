@@ -72,6 +72,66 @@ def test_reparse_existing_document_deactivates_prior_parsed_facts(db_session):
     assert facts[1].is_current is True
 
 
+def test_reparse_existing_document_falls_back_to_pdf_words_when_cached_text_missing(db_session):
+    user = User(email="reparse_words_fallback@example.com")
+    db_session.add(user)
+    db_session.commit()
+
+    stock = Stock(ticker="NEWP", exchange="NYSE", company_name="TESTCO")
+    db_session.add(stock)
+    db_session.commit()
+
+    doc = PdfDocument(
+        user_id=user.id,
+        file_name="smith.pdf",
+        source="upload",
+        file_storage_key="/tmp/does-not-matter.pdf",
+        parse_status="parsed",
+        stock_id=stock.id,
+        identity_needs_review=False,
+        raw_text=None,
+    )
+    db_session.add(doc)
+    db_session.commit()
+
+    db_session.add(
+        DocumentPage(
+            document_id=doc.id,
+            page_number=1,
+            page_text="",
+            text_extraction_method="native_text",
+        )
+    )
+    db_session.commit()
+
+    pages = [
+        (
+            1,
+            "TESTCO\nNYSE-NEWP\nRECENT PRICE 10\nVALUE LINE\nAnalystX January 2, 2026\n",
+            [],
+        )
+    ]
+
+    with patch(
+        "app.services.ingestion_service.PdfExtractor.extract_pages_with_words",
+        return_value=pages,
+    ):
+        service = IngestionService(db_session)
+        service.reparse_existing_document(user_id=user.id, document_id=doc.id, reextract_pdf=False)
+
+    facts = (
+        db_session.query(MetricFact)
+        .filter(
+            MetricFact.user_id == user.id,
+            MetricFact.metric_key == "mkt.price",
+            MetricFact.is_current.is_(True),
+        )
+        .all()
+    )
+    assert facts
+    assert any(f.value_numeric == 10.0 for f in facts)
+
+
 def test_reparse_existing_document_multi_page_updates_all_pages(db_session):
     user = User(email="reparse_multipage@example.com")
     db_session.add(user)

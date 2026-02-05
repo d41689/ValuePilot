@@ -329,8 +329,27 @@ class IngestionService:
             doc.raw_text = "\n".join(full_text_parts)
         else:
             pages_data = [(p.page_number, p.page_text or "", []) for p in doc.pages]
+            pages_data = sorted(pages_data, key=lambda item: item[0])
+            saved_path = self.storage.get_file_path(doc.file_storage_key)
+            try:
+                extracted_pages = PdfExtractor.extract_pages_with_words(saved_path)
+            except FileNotFoundError:
+                extracted_pages = []
+            words_by_page = {page_num: words for page_num, _, words in extracted_pages}
+            text_by_page = {page_num: text for page_num, text, _ in extracted_pages}
+            if not pages_data:
+                pages_data = extracted_pages
+            else:
+                pages_data = [
+                    (
+                        page_num,
+                        text or text_by_page.get(page_num, ""),
+                        words_by_page.get(page_num, []),
+                    )
+                    for page_num, text, _ in pages_data
+                ]
             if not doc.raw_text:
-                doc.raw_text = "\n".join([p.page_text or "" for p in doc.pages])
+                doc.raw_text = "\n".join([page_text or "" for _, page_text, _ in pages_data])
 
         if not pages_data:
             doc.parse_status = "failed"
