@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useState } from 'react';
 import { useMutation, useQuery } from '@tanstack/react-query';
+import Link from 'next/link';
 import { Plus, RefreshCcw, Trash2 } from 'lucide-react';
 
 import apiClient from '@/lib/api/client';
@@ -467,12 +468,17 @@ export default function WatchlistPage() {
                       <TableCell>{formatNumber(row.delta_today)}</TableCell>
                       <TableCell>{formatDate(row.price_updated_at)}</TableCell>
                       <TableCell>
-                        <Button
-                          variant="ghost"
-                          onClick={() => removeMember.mutate(row.membership_id)}
-                        >
-                          Remove
-                        </Button>
+                        <div className="flex items-center gap-2">
+                          <Button asChild variant="outline">
+                            <Link href={`/stocks/${encodeURIComponent(row.ticker)}/dcf`}>DCF</Link>
+                          </Button>
+                          <Button
+                            variant="ghost"
+                            onClick={() => removeMember.mutate(row.membership_id)}
+                          >
+                            Remove
+                          </Button>
+                        </div>
                       </TableCell>
                     </TableRow>
                   ))}
