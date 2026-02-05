@@ -35,7 +35,9 @@ export default function StockDcfPage() {
   const tickerParam = Array.isArray(params?.ticker) ? params.ticker[0] : params?.ticker;
   const displayTicker = normalizeTicker((tickerParam || '').toString());
 
-  const [stockPrice, setStockPrice] = useState('451.14');
+  const [latestPrice, setLatestPrice] = useState<number | null>(null);
+  const [latestPriceUpdatedAt, setLatestPriceUpdatedAt] = useState<string | null>(null);
+  const [manualPrice, setManualPrice] = useState('');
   const [netProfitPerShare, setNetProfitPerShare] = useState('12.00');
   const [depreciationPerShare, setDepreciationPerShare] = useState('3.00');
   const [capexPerShare, setCapexPerShare] = useState('0.45');
@@ -59,23 +61,32 @@ export default function StockDcfPage() {
       return;
     }
     let isActive = true;
-    apiClient
-      .get(`/stocks/by_ticker/${encodeURIComponent(displayTicker)}`)
-      .then((response) => {
+    setLatestPrice(null);
+    setLatestPriceUpdatedAt(null);
+    setManualPrice('');
+    const hydrate = async () => {
+      try {
+        const response = await apiClient.get(`/stocks/by_ticker/${encodeURIComponent(displayTicker)}`);
         if (!isActive) {
           return;
         }
-        const normalized = response.data?.oeps_normalized;
-        const series = Array.isArray(response.data?.oeps_series)
-          ? response.data.oeps_series
+        const payload = response.data ?? {};
+        const fetchedLatest = payload.latest_price;
+        if (typeof fetchedLatest === 'number' && Number.isFinite(fetchedLatest)) {
+          setLatestPrice(fetchedLatest);
+          setLatestPriceUpdatedAt(payload.latest_price_updated_at ?? null);
+        }
+        const normalized = payload?.oeps_normalized;
+        const series = Array.isArray(payload?.oeps_series)
+          ? payload.oeps_series
               .filter(
                 (item: { year?: number; value?: number }) =>
                   typeof item?.year === 'number' && typeof item?.value === 'number'
               )
               .slice(0, 6)
           : [];
-        const rateOptions = Array.isArray(response.data?.growth_rate_options)
-          ? response.data.growth_rate_options.filter(
+        const rateOptions = Array.isArray(payload?.growth_rate_options)
+          ? payload.growth_rate_options.filter(
               (item: { key?: string; label?: string; value?: number }) =>
                 typeof item?.key === 'string' &&
                 typeof item?.label === 'string' &&
@@ -100,15 +111,38 @@ export default function StockDcfPage() {
           setGrowthRateSelection(lowest.key);
           setGrowthRate(lowest.value);
         }
-      })
-      .catch((err) => {
+        const stockId = payload?.id;
+        if (typeof stockId === 'number') {
+          try {
+            await apiClient.post('/stocks/prices/refresh', {
+              stock_ids: [stockId],
+              reason: 'dcf_page',
+            });
+            const refreshed = await apiClient.get(
+              `/stocks/by_ticker/${encodeURIComponent(displayTicker)}`
+            );
+            if (!isActive) {
+              return;
+            }
+            const refreshedPrice = refreshed.data?.latest_price;
+            if (typeof refreshedPrice === 'number' && Number.isFinite(refreshedPrice)) {
+              setLatestPrice(refreshedPrice);
+              setLatestPriceUpdatedAt(refreshed.data?.latest_price_updated_at ?? null);
+            }
+          } catch {
+            // best-effort refresh; keep existing price if refresh fails
+          }
+        }
+      } catch (err) {
         if (!isActive) {
           return;
         }
         if (axios.isAxiosError(err)) {
           return;
         }
-      });
+      }
+    };
+    hydrate();
     return () => {
       isActive = false;
     };
@@ -146,13 +180,38 @@ export default function StockDcfPage() {
     () => computeTotalValue(growthValue, terminalValue),
     [growthValue, terminalValue]
   );
+  const effectivePrice = useMemo(() => {
+    if (latestPrice !== null) {
+      return Math.max(0, latestPrice);
+    }
+    const parsed = Number(manualPrice);
+    if (!Number.isFinite(parsed)) {
+      return null;
+    }
+    return Math.max(0, parsed);
+  }, [latestPrice, manualPrice]);
+
   const safeMarginPct = useMemo(() => {
-    const price = Math.max(0, toNumber(stockPrice));
+    const price = effectivePrice;
+    if (price === null) {
+      return null;
+    }
     if (totalValue <= 0) {
       return null;
     }
     return 100 * (1 - price / totalValue);
-  }, [stockPrice, totalValue]);
+  }, [effectivePrice, totalValue]);
+
+  const priceUpdatedLabel = useMemo(() => {
+    if (!latestPriceUpdatedAt) {
+      return null;
+    }
+    const dt = new Date(latestPriceUpdatedAt);
+    if (Number.isNaN(dt.getTime())) {
+      return null;
+    }
+    return dt.toLocaleString();
+  }, [latestPriceUpdatedAt]);
 
   return (
     <div className="space-y-6">
@@ -464,11 +523,15 @@ export default function StockDcfPage() {
               <div className="flex items-center gap-2 rounded-lg border border-border/70 bg-card/80 px-4 py-2">
                 <span className="text-muted-foreground">$</span>
                 <input
-                  value={stockPrice}
-                  onChange={(event) => setStockPrice(event.target.value)}
+                  value={latestPrice !== null ? latestPrice.toFixed(2) : manualPrice}
+                  onChange={(event) => setManualPrice(event.target.value)}
                   inputMode="decimal"
+                  disabled={latestPrice !== null}
                   className="w-28 bg-transparent text-right text-base font-semibold outline-none"
                 />
+                {priceUpdatedLabel && latestPrice !== null && (
+                  <span className="text-xs text-muted-foreground">Updated {priceUpdatedLabel}</span>
+                )}
               </div>
             </div>
             <div className="flex flex-wrap items-center gap-4 text-base font-semibold">

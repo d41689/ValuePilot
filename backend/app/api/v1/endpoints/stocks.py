@@ -5,9 +5,10 @@ from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 import sqlalchemy as sa
 from app.api.deps import SessionDep
-from app.models.stocks import Stock
+from app.models.stocks import Stock, StockPrice
 from app.models.facts import MetricFact
 from app.services.market_data_service import MarketDataService
+from app.services.market_data_service import compute_target_date
 from app.core.config import settings
 from app.models.users import User
 
@@ -81,6 +82,22 @@ def read_stock_by_ticker(
     )
     facts = session.scalars(facts_stmt).all()
     facts_by_key = {fact.metric_key: fact.value_numeric for fact in facts}
+
+    now_et = datetime.now(timezone.utc).astimezone(ET)
+    target_date = compute_target_date(now_et)
+    latest_price = session.scalars(
+        select(StockPrice)
+        .where(StockPrice.stock_id == stock.id, StockPrice.price_date == target_date)
+        .order_by(StockPrice.created_at.desc())
+        .limit(1)
+    ).first()
+    if latest_price is None:
+        latest_price = session.scalars(
+            select(StockPrice)
+            .where(StockPrice.stock_id == stock.id)
+            .order_by(StockPrice.price_date.desc(), StockPrice.created_at.desc())
+            .limit(1)
+        ).first()
 
     oeps_stmt = (
         select(MetricFact)
@@ -163,6 +180,9 @@ def read_stock_by_ticker(
         "exchange": stock.exchange,
         "company_name": stock.company_name,
         "price": facts_by_key.get("mkt.price"),
+        "latest_price": float(latest_price.close) if latest_price and latest_price.close is not None else None,
+        "latest_price_date": latest_price.price_date.isoformat() if latest_price else None,
+        "latest_price_updated_at": latest_price.created_at.isoformat() if latest_price else None,
         "pe": facts_by_key.get("val.pe"),
         "oeps_normalized": facts_by_key.get("owners_earnings_per_share_normalized"),
         "oeps_series": oeps_series,

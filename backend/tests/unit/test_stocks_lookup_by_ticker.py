@@ -1,7 +1,7 @@
-from datetime import date
+from datetime import date, datetime, timezone
 
 from app.models.facts import MetricFact
-from app.models.stocks import Stock
+from app.models.stocks import Stock, StockPrice
 from app.models.users import User
 
 
@@ -171,6 +171,20 @@ def test_lookup_stock_by_ticker_returns_summary(client, db_session):
             ),
         ]
     )
+    db_session.add(
+        StockPrice(
+            stock_id=stock.id,
+            price_date=date(2026, 1, 10),
+            open=54.0,
+            high=56.5,
+            low=53.5,
+            close=55.25,
+            adj_close=None,
+            volume=123456,
+            source="yfinance",
+            created_at=datetime(2026, 1, 10, 21, 0, tzinfo=timezone.utc),
+        )
+    )
     db_session.commit()
 
     response = client.get("/api/v1/stocks/by_ticker/coco_test")
@@ -181,6 +195,8 @@ def test_lookup_stock_by_ticker_returns_summary(client, db_session):
     assert payload["exchange"] == "NDQ"
     assert payload["company_name"] == "VITA COCO"
     assert payload["price"] == 54.52
+    assert payload["latest_price"] == 55.25
+    assert payload["latest_price_date"] == "2026-01-10"
     assert payload["pe"] == 43.3
     assert payload["oeps_normalized"] == 5.55
     assert payload["oeps_series"] == [
