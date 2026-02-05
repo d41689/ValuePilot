@@ -95,6 +95,17 @@ export default function WatchlistPage() {
 
   const members = membersQuery.data ?? [];
 
+  const sortedMembers = useMemo(() => {
+    return [...members].sort((a, b) => {
+      const aMos = a.mos ?? -Infinity;
+      const bMos = b.mos ?? -Infinity;
+      if (bMos === aMos) {
+        return a.ticker.localeCompare(b.ticker);
+      }
+      return bMos - aMos;
+    });
+  }, [members]);
+
   useEffect(() => {
     setFairValueEdits((prev) => {
       if (!members.length) {
@@ -423,7 +434,7 @@ export default function WatchlistPage() {
                   </TableRow>
                 </TableHeader>
                 <TableBody>
-                  {members.map((row) => (
+                  {sortedMembers.map((row) => (
                     <TableRow key={row.membership_id}>
                       <TableCell className="font-medium">{row.ticker}</TableCell>
                       <TableCell>{row.company_name}</TableCell>
@@ -446,7 +457,13 @@ export default function WatchlistPage() {
                           </span>
                         </div>
                       </TableCell>
-                      <TableCell>{formatPercent(row.mos)}</TableCell>
+                      <TableCell
+                        className={
+                          row.mos !== null && row.mos > 0.3 ? 'font-semibold text-emerald-600' : undefined
+                        }
+                      >
+                        {formatPercent(row.mos)}
+                      </TableCell>
                       <TableCell>{formatNumber(row.delta_today)}</TableCell>
                       <TableCell>{formatDate(row.price_updated_at)}</TableCell>
                       <TableCell>
