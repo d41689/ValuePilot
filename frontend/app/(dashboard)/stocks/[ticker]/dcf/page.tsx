@@ -7,9 +7,13 @@ import axios from 'axios';
 
 import TickerSearchBox from '@/components/TickerSearchBox';
 import { Card } from '@/components/ui/card';
+import { Button } from '@/components/ui/button';
+import { useToast } from '@/components/ui/use-toast';
 import { normalizeTicker } from '@/lib/stockRoutes';
 import { computeGrowthValue, computeTerminalValue, computeTotalValue } from '@/lib/dcfMath';
 import apiClient from '@/lib/api/client';
+
+const USER_ID = 1;
 
 const toNumber = (value: string, fallback = 0) => {
   const parsed = Number(value);
@@ -31,6 +35,7 @@ const formatInputMoney = (value: number) =>
   });
 
 export default function StockDcfPage() {
+  const { toast } = useToast();
   const params = useParams();
   const tickerParam = Array.isArray(params?.ticker) ? params.ticker[0] : params?.ticker;
   const displayTicker = normalizeTicker((tickerParam || '').toString());
@@ -38,6 +43,8 @@ export default function StockDcfPage() {
   const [latestPrice, setLatestPrice] = useState<number | null>(null);
   const [latestPriceUpdatedAt, setLatestPriceUpdatedAt] = useState<string | null>(null);
   const [manualPrice, setManualPrice] = useState('');
+  const [stockId, setStockId] = useState<number | null>(null);
+  const [isSavingFairValue, setIsSavingFairValue] = useState(false);
   const [netProfitPerShare, setNetProfitPerShare] = useState('12.00');
   const [depreciationPerShare, setDepreciationPerShare] = useState('3.00');
   const [capexPerShare, setCapexPerShare] = useState('0.45');
@@ -64,6 +71,7 @@ export default function StockDcfPage() {
     setLatestPrice(null);
     setLatestPriceUpdatedAt(null);
     setManualPrice('');
+    setStockId(null);
     const hydrate = async () => {
       try {
         const response = await apiClient.get(`/stocks/by_ticker/${encodeURIComponent(displayTicker)}`);
@@ -71,6 +79,9 @@ export default function StockDcfPage() {
           return;
         }
         const payload = response.data ?? {};
+        if (typeof payload.id === 'number') {
+          setStockId(payload.id);
+        }
         const fetchedLatest = payload.latest_price;
         if (typeof fetchedLatest === 'number' && Number.isFinite(fetchedLatest)) {
           setLatestPrice(fetchedLatest);
@@ -123,6 +134,9 @@ export default function StockDcfPage() {
             );
             if (!isActive) {
               return;
+            }
+            if (typeof refreshed.data?.id === 'number') {
+              setStockId(refreshed.data.id);
             }
             const refreshedPrice = refreshed.data?.latest_price;
             if (typeof refreshedPrice === 'number' && Number.isFinite(refreshedPrice)) {
@@ -212,6 +226,44 @@ export default function StockDcfPage() {
     }
     return dt.toLocaleString();
   }, [latestPriceUpdatedAt]);
+
+  const handleSaveFairValue = async () => {
+    if (stockId === null) {
+      toast({
+        title: 'Save failed',
+        description: 'Unable to resolve stock ID.',
+        variant: 'destructive',
+      });
+      return;
+    }
+    if (!Number.isFinite(totalValue) || totalValue <= 0) {
+      toast({
+        title: 'Invalid value',
+        description: 'Total Value must be a positive number.',
+        variant: 'destructive',
+      });
+      return;
+    }
+    setIsSavingFairValue(true);
+    try {
+      await apiClient.put(`/stocks/${stockId}/facts?user_id=${USER_ID}`, {
+        metric_key: 'val.fair_value',
+        value_numeric: totalValue,
+      });
+      toast({
+        title: 'Saved',
+        description: 'Fair Value updated from Total Value.',
+      });
+    } catch (error) {
+      toast({
+        title: 'Save failed',
+        description: 'Unable to update Fair Value.',
+        variant: 'destructive',
+      });
+    } finally {
+      setIsSavingFairValue(false);
+    }
+  };
 
   return (
     <div className="space-y-6">
@@ -538,6 +590,14 @@ export default function StockDcfPage() {
               <div className="flex items-center gap-2">
                 <span className="text-sm font-medium text-muted-foreground">Total Value</span>
                 <span>$ {formatMoney(totalValue)}</span>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={handleSaveFairValue}
+                  disabled={isSavingFairValue}
+                >
+                  Save
+                </Button>
               </div>
               <div className="flex items-center gap-2">
                 <span className="text-sm font-medium text-muted-foreground">Safe Margin</span>
