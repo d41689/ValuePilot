@@ -23,6 +23,12 @@ class Settings(BaseSettings):
     DEFAULT_USER_EMAIL: Optional[str] = None
     DEFAULT_USER_ID: int = 1
 
+    # JWT / Auth
+    SECRET_KEY: str = "change-me-in-production-use-a-long-random-string"
+    JWT_ALGORITHM: str = "HS256"
+    ACCESS_TOKEN_EXPIRE_MINUTES: int = 30
+    REFRESH_TOKEN_EXPIRE_DAYS: int = 7
+
     @field_validator("SQLALCHEMY_DATABASE_URI", mode="before")
     @classmethod
     def assemble_db_connection(cls, v: Optional[str], info: ValidationInfo) -> Any:

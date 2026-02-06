@@ -1,7 +1,7 @@
 from datetime import datetime
 from typing import Optional
 
-from pydantic import BaseModel, EmailStr, Field
+from pydantic import BaseModel, Field
 
 
 # ---------- Enums (as constrained literals) ----------
@@ -13,12 +13,12 @@ TIER_VALUES = ("free", "premium")
 # ---------- Request schemas ----------
 
 class UserCreate(BaseModel):
-    email: EmailStr
+    email: str = Field(min_length=5, max_length=255)
     password: str = Field(min_length=8, max_length=128)
 
 
 class UserLogin(BaseModel):
-    email: EmailStr
+    email: str
     password: str
 
 
