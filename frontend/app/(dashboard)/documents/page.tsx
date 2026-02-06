@@ -24,8 +24,6 @@ import {
 } from '@/components/ui/table';
 import { useToast } from '@/components/ui/use-toast';
 
-const USER_ID = 1;
-
 type Company = {
   ticker: string;
   company_name: string;
@@ -109,16 +107,16 @@ export default function DocumentsPage() {
   const [activeReparseId, setActiveReparseId] = useState<number | null>(null);
 
   const documentsQuery = useQuery({
-    queryKey: ['documents', USER_ID],
+    queryKey: ['documents'],
     queryFn: async () => {
-      const res = await apiClient.get(`/documents?user_id=${USER_ID}`);
+      const res = await apiClient.get('/documents');
       return res.data as DocumentRow[];
     },
   });
 
   const reparseMutation = useMutation({
     mutationFn: async (docId: number) => {
-      const res = await apiClient.post(`/documents/${docId}/reparse?user_id=${USER_ID}`);
+      const res = await apiClient.post(`/documents/${docId}/reparse`);
       return res.data;
     },
     onSuccess: () => {
@@ -150,7 +148,7 @@ export default function DocumentsPage() {
         const res = await apiClient.get(`/extractions/document/${doc.id}`);
         setDetailData(JSON.stringify(res.data, null, 2));
       } else {
-        const res = await apiClient.get(`/documents/${doc.id}/raw_text?user_id=${USER_ID}`);
+        const res = await apiClient.get(`/documents/${doc.id}/raw_text`);
         setDetailData(res.data.raw_text || '');
       }
     } catch (err: unknown) {

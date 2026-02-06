@@ -3,13 +3,14 @@ from datetime import date
 from app.models.users import User
 from app.models.stocks import Stock
 from app.models.facts import MetricFact
+from app.core.security import hash_password
 
 
 FAIR_VALUE_KEY = "val.fair_value"
 
 
 def _make_user(db_session, email: str = "fairvalue@example.com") -> User:
-    user = User(email=email)
+    user = User(email=email, hashed_password=hash_password("TestPass123!"))
     db_session.add(user)
     db_session.commit()
     return user
@@ -22,9 +23,10 @@ def _make_stock(db_session, ticker: str) -> Stock:
     return stock
 
 
-def test_put_fair_value_creates_new_current_fact(client, db_session):
+def test_put_fair_value_creates_new_current_fact(client, db_session, auth_headers):
     user = _make_user(db_session)
     stock = _make_stock(db_session, "FVR")
+    headers = auth_headers(user)
 
     old_fact = MetricFact(
         user_id=user.id,
@@ -41,7 +43,8 @@ def test_put_fair_value_creates_new_current_fact(client, db_session):
     db_session.commit()
 
     resp = client.put(
-        f"/api/v1/stocks/{stock.id}/facts?user_id={user.id}",
+        f"/api/v1/stocks/{stock.id}/facts",
+        headers=headers,
         json={"metric_key": FAIR_VALUE_KEY, "value_numeric": 125.0},
     )
     assert resp.status_code == 200, resp.text
@@ -61,12 +64,14 @@ def test_put_fair_value_creates_new_current_fact(client, db_session):
     assert facts[1].is_current is True
 
 
-def test_put_fair_value_rejects_unknown_metric_key(client, db_session):
+def test_put_fair_value_rejects_unknown_metric_key(client, db_session, auth_headers):
     user = _make_user(db_session, "fairvalue2@example.com")
     stock = _make_stock(db_session, "BAD")
+    headers = auth_headers(user)
 
     resp = client.put(
-        f"/api/v1/stocks/{stock.id}/facts?user_id={user.id}",
+        f"/api/v1/stocks/{stock.id}/facts",
+        headers=headers,
         json={"metric_key": "val.unknown", "value_numeric": 10.0},
     )
     assert resp.status_code == 400

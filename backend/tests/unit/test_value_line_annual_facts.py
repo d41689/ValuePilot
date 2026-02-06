@@ -6,7 +6,6 @@ from unittest.mock import patch
 from app.ingestion.pdf_extractor import PdfExtractor
 from app.models.facts import MetricFact
 from app.models.stocks import Stock
-from app.models.users import User
 
 
 FIXTURE_PDF = Path("tests/fixtures/value_line/smith ao.pdf")
@@ -18,10 +17,9 @@ def load_expected_json() -> dict:
         return json.load(fh)
 
 
-def test_upload_writes_annual_facts_latest_actual_and_estimate(client, db_session):
-    user = User(email="annual_facts_test@example.com")
-    db_session.add(user)
-    db_session.commit()
+def test_upload_writes_annual_facts_latest_actual_and_estimate(client, db_session, user_factory, auth_headers):
+    user = user_factory("annual_facts_test@example.com")
+    headers = auth_headers(user)
 
     expected = load_expected_json()
     annual = expected["annual_financials"]
@@ -37,7 +35,8 @@ def test_upload_writes_annual_facts_latest_actual_and_estimate(client, db_sessio
         return_value=pages,
     ):
         resp = client.post(
-            f"/api/v1/documents/upload?user_id={user.id}",
+            "/api/v1/documents/upload",
+            headers=headers,
             files={"file": ("single.pdf", b"%PDF-1.4\n%fake\n", "application/pdf")},
         )
 

@@ -18,8 +18,6 @@ import {
 } from '@/components/ui/table';
 import { useToast } from '@/components/ui/use-toast';
 
-const USER_ID = 1;
-
 type StockPool = {
   id: number;
   name: string;
@@ -40,6 +38,14 @@ type WatchlistRow = {
   fair_value_source: string | null;
   mos: number | null;
   delta_today: number | null;
+};
+
+type ApiError = {
+  response?: {
+    data?: {
+      detail?: string;
+    };
+  };
 };
 
 function formatNumber(value: number | null, digits = 2) {
@@ -68,9 +74,9 @@ export default function WatchlistPage() {
   const [refreshedPoolId, setRefreshedPoolId] = useState<number | null>(null);
 
   const poolsQuery = useQuery({
-    queryKey: ['watchlist-pools', USER_ID],
+    queryKey: ['watchlist-pools'],
     queryFn: async () => {
-      const res = await apiClient.get(`/stock_pools?user_id=${USER_ID}`);
+      const res = await apiClient.get('/stock_pools');
       return res.data as StockPool[];
     },
   });
@@ -84,12 +90,10 @@ export default function WatchlistPage() {
   }, [activePoolId, pools]);
 
   const membersQuery = useQuery({
-    queryKey: ['watchlist-members', activePoolId, USER_ID],
+    queryKey: ['watchlist-members', activePoolId],
     enabled: Boolean(activePoolId),
     queryFn: async () => {
-      const res = await apiClient.get(
-        `/stock_pools/${activePoolId}/members?user_id=${USER_ID}`
-      );
+      const res = await apiClient.get(`/stock_pools/${activePoolId}/members`);
       return res.data as WatchlistRow[];
     },
   });
@@ -139,7 +143,7 @@ export default function WatchlistPage() {
 
   const createPool = useMutation({
     mutationFn: async () => {
-      const res = await apiClient.post(`/stock_pools?user_id=${USER_ID}`, {
+      const res = await apiClient.post('/stock_pools', {
         name: newPoolName,
       });
       return res.data as StockPool;
@@ -165,7 +169,7 @@ export default function WatchlistPage() {
 
   const deletePool = useMutation({
     mutationFn: async (poolId: number) => {
-      const res = await apiClient.delete(`/stock_pools/${poolId}?user_id=${USER_ID}`);
+      const res = await apiClient.delete(`/stock_pools/${poolId}`);
       return res.data;
     },
     onSuccess: () => {
@@ -188,10 +192,7 @@ export default function WatchlistPage() {
 
   const addMember = useMutation({
     mutationFn: async (stockId: number) => {
-      const res = await apiClient.post(
-        `/stock_pools/${activePoolId}/members?user_id=${USER_ID}`,
-        { stock_id: stockId }
-      );
+      const res = await apiClient.post(`/stock_pools/${activePoolId}/members`, { stock_id: stockId });
       return res.data;
     },
     onSuccess: () => {
@@ -201,17 +202,16 @@ export default function WatchlistPage() {
       setRefreshedPoolId(null);
       toast({ title: 'Ticker added' });
     },
-    onError: (error: any) => {
-      const message = error?.response?.data?.detail ?? 'Unable to add ticker.';
+    onError: (error: unknown) => {
+      const apiError = (typeof error === 'object' && error !== null ? error : {}) as ApiError;
+      const message = apiError.response?.data?.detail ?? 'Unable to add ticker.';
       toast({ title: 'Add failed', description: message, variant: 'destructive' });
     },
   });
 
   const removeMember = useMutation({
     mutationFn: async (membershipId: number) => {
-      const res = await apiClient.delete(
-        `/stock_pools/${activePoolId}/members/${membershipId}?user_id=${USER_ID}`
-      );
+      const res = await apiClient.delete(`/stock_pools/${activePoolId}/members/${membershipId}`);
       return res.data;
     },
     onSuccess: () => {
@@ -244,13 +244,10 @@ export default function WatchlistPage() {
 
   const updateFairValue = useMutation({
     mutationFn: async (payload: { stockId: number; value: number }) => {
-      const res = await apiClient.put(
-        `/stocks/${payload.stockId}/facts?user_id=${USER_ID}`,
-        {
-          metric_key: 'val.fair_value',
-          value_numeric: payload.value,
-        }
-      );
+      const res = await apiClient.put(`/stocks/${payload.stockId}/facts`, {
+        metric_key: 'val.fair_value',
+        value_numeric: payload.value,
+      });
       return res.data;
     },
     onSuccess: () => {
@@ -276,8 +273,9 @@ export default function WatchlistPage() {
         throw new Error('Stock not found');
       }
       addMember.mutate(stockId);
-    } catch (error: any) {
-      const message = error?.response?.data?.detail ?? 'Ticker not found.';
+    } catch (error: unknown) {
+      const apiError = (typeof error === 'object' && error !== null ? error : {}) as ApiError;
+      const message = apiError.response?.data?.detail ?? 'Ticker not found.';
       toast({ title: 'Lookup failed', description: message, variant: 'destructive' });
     }
   };

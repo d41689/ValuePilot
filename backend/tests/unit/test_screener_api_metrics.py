@@ -1,13 +1,9 @@
-from app.main import app
-from app.models.users import User
 from app.models.stocks import Stock
 from app.models.facts import MetricFact
 
 
-def test_screener_api_returns_metrics_payload(client, db_session):
-    user = User(email="screener_metrics@example.com")
-    db_session.add(user)
-    db_session.commit()
+def test_screener_api_returns_metrics_payload(client, db_session, user_factory, auth_headers):
+    user = user_factory("screener_metrics@example.com")
 
     stock_ok = Stock(ticker="AOS", exchange="NYSE", company_name="SMITH (A.O.)", is_active=True)
     stock_fail = Stock(ticker="FAIL", exchange="NYSE", company_name="Fail Co", is_active=True)
@@ -215,6 +211,7 @@ def test_screener_api_returns_metrics_payload(client, db_session):
 
     resp = client.post(
         "/api/v1/screener/run",
+        headers=auth_headers(user),
         json={
             "type": "AND",
             "conditions": [

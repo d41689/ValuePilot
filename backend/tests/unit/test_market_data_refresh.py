@@ -152,10 +152,10 @@ def test_refresh_throttled(db_session):
     assert results[0]["reason"] == "throttled"
 
 
-def test_refresh_endpoint_returns_results(client, db_session, monkeypatch):
+def test_refresh_endpoint_returns_results(client, db_session, monkeypatch, auth_headers):
     from app.services import market_data_service
 
-    _, stock = _make_user_stock(db_session)
+    user, stock = _make_user_stock(db_session)
     provider = FakeProvider()
 
     def _fake_provider():
@@ -165,6 +165,7 @@ def test_refresh_endpoint_returns_results(client, db_session, monkeypatch):
 
     resp = client.post(
         "/api/v1/stocks/prices/refresh",
+        headers=auth_headers(user),
         json={"stock_ids": [stock.id], "reason": "pool_page_open"},
     )
     assert resp.status_code == 200, resp.text

@@ -2,7 +2,6 @@ from datetime import datetime
 
 import sqlalchemy as sa
 
-from app.core.config import settings
 from app.models.users import User
 from app.models.stocks import Stock
 from app.models.artifacts import PdfDocument, DocumentPage
@@ -10,10 +9,9 @@ from app.models.extractions import MetricExtraction
 from app.models.facts import MetricFact
 
 
-def test_documents_list_returns_companies_and_page_count(client, db_session):
-    user = User(email="documents_list@example.com")
-    db_session.add(user)
-    db_session.commit()
+def test_documents_list_returns_companies_and_page_count(client, db_session, user_factory, auth_headers):
+    user = user_factory("documents_list@example.com")
+    headers = auth_headers(user)
 
     stock_a = Stock(ticker="AOS", exchange="NYSE", company_name="SMITH (A.O.)")
     stock_b = Stock(ticker="MSFT", exchange="NDQ", company_name="Microsoft")
@@ -136,7 +134,7 @@ def test_documents_list_returns_companies_and_page_count(client, db_session):
     )
     db_session.commit()
 
-    resp = client.get(f"/api/v1/documents?user_id={user.id}")
+    resp = client.get("/api/v1/documents", headers=headers)
     assert resp.status_code == 200, resp.text
     payload = resp.json()
 
@@ -155,10 +153,9 @@ def test_documents_list_returns_companies_and_page_count(client, db_session):
     assert {c["ticker"] for c in two["companies"]} == {"AOS", "MSFT"}
 
 
-def test_documents_raw_text_endpoint(client, db_session):
-    user = User(email="documents_raw@example.com")
-    db_session.add(user)
-    db_session.commit()
+def test_documents_raw_text_endpoint(client, db_session, user_factory, auth_headers):
+    user = user_factory("documents_raw@example.com")
+    headers = auth_headers(user)
 
     doc = PdfDocument(
         user_id=user.id,
@@ -172,20 +169,14 @@ def test_documents_raw_text_endpoint(client, db_session):
     db_session.add(doc)
     db_session.commit()
 
-    resp = client.get(f"/api/v1/documents/{doc.id}/raw_text?user_id={user.id}")
+    resp = client.get(f"/api/v1/documents/{doc.id}/raw_text", headers=headers)
     assert resp.status_code == 200, resp.text
     assert resp.json()["raw_text"] == "hello world"
 
 
-def test_documents_list_auto_seeds_default_user(client, db_session):
-    assert settings.DEFAULT_USER_EMAIL, "DEFAULT_USER_EMAIL must be set in dev docker-compose"
-
+def test_documents_list_requires_auth(client, db_session):
     db_session.execute(sa.text("TRUNCATE TABLE users RESTART IDENTITY CASCADE"))
     db_session.commit()
 
-    resp = client.get(f"/api/v1/documents?user_id={settings.DEFAULT_USER_ID}")
-    assert resp.status_code == 200, resp.text
-    assert resp.json() == []
-
-    seeded = db_session.get(User, settings.DEFAULT_USER_ID)
-    assert seeded is not None
+    resp = client.get("/api/v1/documents")
+    assert resp.status_code == 401, resp.text

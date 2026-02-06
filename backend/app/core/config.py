@@ -18,11 +18,6 @@ class Settings(BaseSettings):
     # Prioritize DATABASE_URL from env, otherwise build it
     SQLALCHEMY_DATABASE_URI: Optional[str] = Field(None, validation_alias="DATABASE_URL")
 
-    # Dev bootstrap: optional default user
-    # If set, endpoints that require a user may auto-create this user when the DB has zero users.
-    DEFAULT_USER_EMAIL: Optional[str] = None
-    DEFAULT_USER_ID: int = 1
-
     # JWT / Auth
     SECRET_KEY: str = "change-me-in-production-use-a-long-random-string"
     JWT_ALGORITHM: str = "HS256"

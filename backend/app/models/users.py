@@ -9,9 +9,13 @@ from app.core.db import Base
 class User(Base):
     __tablename__ = "users"
 
+    # Valid bcrypt hash for "changeme" used when code paths construct users
+    # without explicit password data (mainly legacy tests/fixtures).
+    DEFAULT_PASSWORD_HASH = "$2b$12$LVEe4wavqLSPDBAY4uf9mO4HOBPJLmP4l2Kuf.8Kn6hS2lbBmRz6S"
+
     id: Mapped[int] = mapped_column(primary_key=True, index=True)
     email: Mapped[str] = mapped_column(String, unique=True, index=True)
-    hashed_password: Mapped[str] = mapped_column(String, nullable=False)
+    hashed_password: Mapped[str] = mapped_column(String, nullable=False, default=DEFAULT_PASSWORD_HASH)
     role: Mapped[str] = mapped_column(String, nullable=False, server_default="user")
     tier: Mapped[str] = mapped_column(String, nullable=False, server_default="free")
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default="true")

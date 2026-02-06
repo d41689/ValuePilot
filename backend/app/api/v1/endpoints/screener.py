@@ -1,6 +1,6 @@
 from typing import Any, List, Dict
 from fastapi import APIRouter, HTTPException, Body
-from app.api.deps import SessionDep
+from app.api.deps import SessionDep, CurrentUser
 from app.services.screener_service import ScreenerService
 
 router = APIRouter()
@@ -8,6 +8,7 @@ router = APIRouter()
 @router.post("/run", response_model=List[dict])
 def run_screen(
     session: SessionDep,
+    current_user: CurrentUser,
     rule: Dict[str, Any] = Body(
         ...,
         examples={
@@ -29,9 +30,9 @@ def run_screen(
     """
     service = ScreenerService(session)
     try:
-        results = service.execute_screen(rule)
+        results = service.execute_screen(rule, current_user_id=current_user.id)
         stock_ids = [stock.id for stock in results]
-        metrics_by_stock = service.fetch_metrics_for_stocks(stock_ids)
+        metrics_by_stock = service.fetch_metrics_for_stocks(stock_ids, current_user_id=current_user.id)
         return [
             {
                 "id": stock.id,

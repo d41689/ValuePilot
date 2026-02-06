@@ -4,6 +4,7 @@ from app.services.screener_service import ScreenerService
 from app.models.users import User
 from app.models.stocks import Stock
 from app.models.facts import MetricFact, Formula
+from app.core.security import hash_password
 
 def test_formula_engine_validation():
     engine = FormulaEngine(None) # No DB needed for validation logic
@@ -33,7 +34,7 @@ def test_formula_engine_evaluation():
 
 def test_run_formula_integration(db_session):
     # Setup
-    user = User(email="formula@test.com")
+    user = User(email="formula@test.com", hashed_password=hash_password("TestPass123!"))
     stock = Stock(ticker="FMLA", exchange="NYS", company_name="Formula Corp")
     db_session.add(user)
     db_session.add(stock)
@@ -70,7 +71,7 @@ def test_run_formula_integration(db_session):
 
 def test_screener_service(db_session):
     # Setup
-    user = User(email="screen@test.com")
+    user = User(email="screen@test.com", hashed_password=hash_password("TestPass123!"))
     s1 = Stock(ticker="A", exchange="NYS", company_name="A Corp")
     s2 = Stock(ticker="B", exchange="NYS", company_name="B Corp")
     db_session.add_all([user, s1, s2])
@@ -91,7 +92,7 @@ def test_screener_service(db_session):
         "type": "AND",
         "conditions": [{"metric": "pe", "operator": "<", "value": 20}]
     }
-    results = service.execute_screen(rule1)
+    results = service.execute_screen(rule1, current_user_id=user.id)
     assert len(results) == 1
     assert results[0].ticker == "A"
     
@@ -100,7 +101,7 @@ def test_screener_service(db_session):
         "type": "AND",
         "conditions": [{"metric": "yld", "operator": ">", "value": 0.02}]
     }
-    results = service.execute_screen(rule2)
+    results = service.execute_screen(rule2, current_user_id=user.id)
     assert len(results) == 1
     assert results[0].ticker == "A"
     
@@ -109,7 +110,7 @@ def test_screener_service(db_session):
         "type": "AND",
         "conditions": [{"metric": "pe", "operator": ">", "value": 25}]
     }
-    results = service.execute_screen(rule3)
+    results = service.execute_screen(rule3, current_user_id=user.id)
     assert len(results) == 1
     assert results[0].ticker == "B"
     
@@ -122,5 +123,5 @@ def test_screener_service(db_session):
             {"metric": "yld", "operator": "<", "value": 0.02}
         ]
     }
-    results = service.execute_screen(rule4)
+    results = service.execute_screen(rule4, current_user_id=user.id)
     assert len(results) == 0

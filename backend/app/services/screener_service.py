@@ -3,6 +3,7 @@ from sqlalchemy.orm import Session, aliased
 from sqlalchemy import select, and_, or_
 from app.models.stocks import Stock
 from app.models.facts import MetricFact
+from app.models.users import User
 
 class ScreenerService:
     def __init__(self, db: Session):
@@ -64,15 +65,17 @@ class ScreenerService:
             return fact.value_json.get("value", fact.value_json.get("raw"))
         return fact.value_json
 
-    def fetch_metrics_for_stocks(self, stock_ids: list[int]) -> dict[int, dict[str, Any]]:
+    def fetch_metrics_for_stocks(self, stock_ids: list[int], current_user_id: int) -> dict[int, dict[str, Any]]:
         if not stock_ids:
             return {}
 
+        admin_user_ids = self._admin_user_ids()
         estimate_expr = MetricFact.value_json["is_estimate"].as_boolean()
         stmt = select(MetricFact).where(
             MetricFact.stock_id.in_(stock_ids),
             MetricFact.metric_key.in_(self.metric_keys()),
             MetricFact.is_current.is_(True),
+            self._visibility_predicate(MetricFact, current_user_id, admin_user_ids),
             or_(
                 estimate_expr.is_(None),
                 estimate_expr.is_(False),
@@ -126,7 +129,7 @@ class ScreenerService:
 
         return metrics_by_stock
 
-    def execute_screen(self, rule_json: Dict[str, Any]) -> List[Stock]:
+    def execute_screen(self, rule_json: Dict[str, Any], current_user_id: int) -> List[Stock]:
         """
         Executes a screen based on the rule definition.
         
@@ -159,9 +162,10 @@ class ScreenerService:
         # WHERE f1.value_numeric < 20 AND f2.value_numeric > 0.02
         
         # We need to parse the rule and construct these joins dynamically.
+        admin_user_ids = self._admin_user_ids()
         
         if rule_json.get("type") == "AND":
-             query = self._build_and_query(query, rule_json.get("conditions", []))
+             query = self._build_and_query(query, rule_json.get("conditions", []), current_user_id, admin_user_ids)
         else:
             # "OR" logic is trickier with simple inner joins (might need left joins + coalescing, or union)
             # Keeping V1 scope to AND logic for simplicity as per common screener MVPs.
@@ -170,7 +174,13 @@ class ScreenerService:
 
         return self.db.scalars(query).all()
 
-    def _build_and_query(self, query, conditions: List[Dict[str, Any]]):
+    def _build_and_query(
+        self,
+        query,
+        conditions: List[Dict[str, Any]],
+        current_user_id: int,
+        admin_user_ids: list[int],
+    ):
         for cond in conditions:
             metric_key = self._canonical_metric_key(cond["metric"])
             operator = cond["operator"]
@@ -185,7 +195,8 @@ class ScreenerService:
                 and_(
                     Stock.id == fact_alias.stock_id,
                     fact_alias.metric_key == metric_key,
-                    fact_alias.is_current.is_(True)
+                    fact_alias.is_current.is_(True),
+                    self._visibility_predicate(fact_alias, current_user_id, admin_user_ids),
                 )
             )
             
@@ -202,3 +213,20 @@ class ScreenerService:
                 query = query.where(fact_alias.value_numeric == target_value)
                 
         return query
+    def _admin_user_ids(self) -> list[int]:
+        return list(self.db.scalars(select(User.id).where(User.role == "admin")).all())
+
+    def _visibility_predicate(self, fact_entity, current_user_id: int, admin_user_ids: list[int]):
+        return or_(
+            and_(
+                fact_entity.source_type == "parsed",
+                or_(
+                    fact_entity.user_id == current_user_id,
+                    fact_entity.user_id.in_(admin_user_ids),
+                ),
+            ),
+            and_(
+                fact_entity.user_id == current_user_id,
+                fact_entity.source_type.in_(["manual", "calculated"]),
+            ),
+        )

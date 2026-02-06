@@ -13,8 +13,7 @@ export default function UploadZone() {
     mutationFn: async (file: File) => {
       const formData = new FormData();
       formData.append('file', file);
-      // Hardcoded user_id for V0.1 prototype
-      const res = await apiClient.post('/documents/upload?user_id=1', formData, {
+      const res = await apiClient.post('/documents/upload', formData, {
         headers: { 'Content-Type': 'multipart/form-data' },
       });
       return res.data;

@@ -18,10 +18,9 @@ def load_expected_json() -> dict:
         return json.load(fh)
 
 
-def upload_axs(client, db_session) -> tuple[User, Stock, dict, int]:
-    user = User(email="axs_metric_facts@example.com")
-    db_session.add(user)
-    db_session.commit()
+def upload_axs(client, db_session, user_factory, auth_headers) -> tuple[User, Stock, dict, int]:
+    user = user_factory("axs_metric_facts@example.com")
+    headers = auth_headers(user)
 
     expected = load_expected_json()
     pages = PdfExtractor.extract_pages_with_words(FIXTURE_PDF)
@@ -31,7 +30,8 @@ def upload_axs(client, db_session) -> tuple[User, Stock, dict, int]:
         return_value=pages,
     ):
         resp = client.post(
-            f"/api/v1/documents/upload?user_id={user.id}",
+            "/api/v1/documents/upload",
+            headers=headers,
             files={"file": ("axs.pdf", b"%PDF-1.4\n%fake\n", "application/pdf")},
         )
 
@@ -77,8 +77,8 @@ def _fact(
     return result
 
 
-def test_metric_facts_use_rating_event_dates(client, db_session):
-    _, stock, expected, doc_id = upload_axs(client, db_session)
+def test_metric_facts_use_rating_event_dates(client, db_session, user_factory, auth_headers):
+    _, stock, expected, doc_id = upload_axs(client, db_session, user_factory, auth_headers)
 
     for key in ("timeliness", "safety", "technical"):
         event_date = date.fromisoformat(expected["ratings"][key]["event"]["date"])
@@ -93,8 +93,8 @@ def test_metric_facts_use_rating_event_dates(client, db_session):
         assert fact.period_type == "EVENT"
 
 
-def test_metric_facts_use_capital_structure_as_of_dates(client, db_session):
-    _, stock, expected, doc_id = upload_axs(client, db_session)
+def test_metric_facts_use_capital_structure_as_of_dates(client, db_session, user_factory, auth_headers):
+    _, stock, expected, doc_id = upload_axs(client, db_session, user_factory, auth_headers)
 
     cap_as_of = date.fromisoformat(expected["capital_structure"]["as_of"])
     market_as_of = date.fromisoformat(expected["capital_structure"]["market_cap"]["as_of"])
@@ -128,8 +128,8 @@ def test_metric_facts_use_capital_structure_as_of_dates(client, db_session):
     assert shares.period_end_date == shares_as_of
 
 
-def test_quarterly_series_full_year_facts_are_written(client, db_session):
-    _, stock, expected, doc_id = upload_axs(client, db_session)
+def test_quarterly_series_full_year_facts_are_written(client, db_session, user_factory, auth_headers):
+    _, stock, expected, doc_id = upload_axs(client, db_session, user_factory, auth_headers)
 
     premiums_2024 = expected["net_premiums_earned"]["by_year"][2]["full_year"]["value"]
     fact = _fact(
@@ -166,8 +166,8 @@ def test_quarterly_series_full_year_facts_are_written(client, db_session):
     assert q1_fact.period_type == "Q"
 
 
-def test_annual_financials_series_are_expanded(client, db_session):
-    _, stock, expected, doc_id = upload_axs(client, db_session)
+def test_annual_financials_series_are_expanded(client, db_session, user_factory, auth_headers):
+    _, stock, expected, doc_id = upload_axs(client, db_session, user_factory, auth_headers)
 
     net_profit_2017 = expected["annual_financials"]["income_statement_usd_millions"]["net_profit"]["2017"]
     fact = _fact(
@@ -182,8 +182,8 @@ def test_annual_financials_series_are_expanded(client, db_session):
     assert fact.period_type == "FY"
 
 
-def test_commentary_and_projection_range_remain_non_numeric(client, db_session):
-    _, stock, _, doc_id = upload_axs(client, db_session)
+def test_commentary_and_projection_range_remain_non_numeric(client, db_session, user_factory, auth_headers):
+    _, stock, _, doc_id = upload_axs(client, db_session, user_factory, auth_headers)
 
     commentary = _fact(
         db_session,
@@ -202,8 +202,8 @@ def test_commentary_and_projection_range_remain_non_numeric(client, db_session):
     assert strength.value_numeric is None
 
 
-def test_dedupe_within_document_for_fy_metrics(client, db_session):
-    _, stock, _, doc_id = upload_axs(client, db_session)
+def test_dedupe_within_document_for_fy_metrics(client, db_session, user_factory, auth_headers):
+    _, stock, _, doc_id = upload_axs(client, db_session, user_factory, auth_headers)
 
     results = (
         db_session.query(MetricFact)

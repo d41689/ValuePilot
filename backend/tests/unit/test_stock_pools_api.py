@@ -6,6 +6,7 @@ import pytest
 from app.models.users import User
 from app.models.stocks import Stock, StockPool, PoolMembership, StockPrice
 from app.models.facts import MetricFact
+from app.core.security import hash_password
 
 
 ET = ZoneInfo("America/New_York")
@@ -14,7 +15,7 @@ TARGET_KEY = "target.price_18m.mid"
 
 
 def _make_user(db_session, email: str = "watchlist@example.com") -> User:
-    user = User(email=email)
+    user = User(email=email, hashed_password=hash_password("TestPass123!"))
     db_session.add(user)
     db_session.commit()
     return user
@@ -27,29 +28,32 @@ def _make_stock(db_session, ticker: str) -> Stock:
     return stock
 
 
-def test_stock_pools_crud_and_membership(client, db_session):
+def test_stock_pools_crud_and_membership(client, db_session, auth_headers):
     user = _make_user(db_session)
     stock = _make_stock(db_session, "AAPL")
+    headers = auth_headers(user)
 
-    resp = client.get(f"/api/v1/stock_pools?user_id={user.id}")
+    resp = client.get("/api/v1/stock_pools", headers=headers)
     assert resp.status_code == 200
     assert resp.json() == []
 
     resp = client.post(
-        f"/api/v1/stock_pools?user_id={user.id}",
+        "/api/v1/stock_pools",
+        headers=headers,
         json={"name": "Default"},
     )
     assert resp.status_code == 200
     pool = resp.json()
     assert pool["name"] == "Default"
 
-    resp = client.get(f"/api/v1/stock_pools?user_id={user.id}")
+    resp = client.get("/api/v1/stock_pools", headers=headers)
     assert resp.status_code == 200
     pools = resp.json()
     assert len(pools) == 1
 
     resp = client.post(
-        f"/api/v1/stock_pools/{pool['id']}/members?user_id={user.id}",
+        f"/api/v1/stock_pools/{pool['id']}/members",
+        headers=headers,
         json={"stock_id": stock.id},
     )
     assert resp.status_code == 200
@@ -57,22 +61,25 @@ def test_stock_pools_crud_and_membership(client, db_session):
     assert membership["stock"]["ticker"] == "AAPL"
 
     resp = client.post(
-        f"/api/v1/stock_pools/{pool['id']}/members?user_id={user.id}",
+        f"/api/v1/stock_pools/{pool['id']}/members",
+        headers=headers,
         json={"stock_id": stock.id},
     )
     assert resp.status_code == 409
 
     resp = client.delete(
-        f"/api/v1/stock_pools/{pool['id']}?user_id={user.id}",
+        f"/api/v1/stock_pools/{pool['id']}",
+        headers=headers,
     )
     assert resp.status_code == 200
     assert resp.json()["status"] == "deleted"
 
 
-def test_pool_members_include_price_and_fair_value(client, db_session, monkeypatch):
+def test_pool_members_include_price_and_fair_value(client, db_session, monkeypatch, auth_headers):
     from app.api.v1.endpoints import stock_pools as stock_pools_endpoint
 
     user = _make_user(db_session, "watchlist2@example.com")
+    headers = auth_headers(user)
     pool = StockPool(user_id=user.id, name="Value", description=None)
     db_session.add(pool)
     db_session.commit()
@@ -197,7 +204,7 @@ def test_pool_members_include_price_and_fair_value(client, db_session, monkeypat
     )
     db_session.commit()
 
-    resp = client.get(f"/api/v1/stock_pools/{pool.id}/members?user_id={user.id}")
+    resp = client.get(f"/api/v1/stock_pools/{pool.id}/members", headers=headers)
     assert resp.status_code == 200
     rows = resp.json()
     assert len(rows) == 2
@@ -215,4 +222,3 @@ def test_pool_members_include_price_and_fair_value(client, db_session, monkeypat
     assert row_b["fair_value"] == pytest.approx(80.0)
     assert row_b["fair_value_source"] == TARGET_KEY
     assert row_b["mos"] == pytest.approx(0.375)
-

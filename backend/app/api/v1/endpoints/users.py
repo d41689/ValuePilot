@@ -1,41 +1,47 @@
 from typing import Any
-from fastapi import APIRouter, HTTPException
+
+from fastapi import APIRouter, HTTPException, status
 from sqlalchemy import select
-from app.api.deps import SessionDep
+
+from app.api.deps import SessionDep, AdminUser
+from app.core.security import hash_password
 from app.models.users import User
+from app.schemas.users import UserCreate, UserRead
 
 router = APIRouter()
 
-@router.post("/", response_model=dict)
+
+@router.post("/", response_model=UserRead, status_code=status.HTTP_201_CREATED)
 def create_user(
     *,
     session: SessionDep,
-    email: str,
+    current_user: AdminUser,
+    body: UserCreate,
 ) -> Any:
-    """
-    Create new user.
-    """
-    user = session.scalar(select(User).where(User.email == email))
-    if user:
+    existing = session.scalar(select(User).where(User.email == body.email))
+    if existing:
         raise HTTPException(
-            status_code=400,
-            detail="The user with this username already exists in the system.",
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Email already registered",
         )
-    user = User(email=email)
+
+    user = User(
+        email=body.email,
+        hashed_password=hash_password(body.password),
+    )
     session.add(user)
     session.commit()
     session.refresh(user)
-    return {"id": user.id, "email": user.email, "created_at": user.created_at}
+    return user
 
-@router.get("/", response_model=list[dict])
+
+@router.get("/", response_model=list[UserRead])
 def read_users(
+    *,
     session: SessionDep,
+    current_user: AdminUser,
     skip: int = 0,
     limit: int = 100,
 ) -> Any:
-    """
-    Retrieve users.
-    """
     stmt = select(User).offset(skip).limit(limit)
-    users = session.scalars(stmt).all()
-    return [{"id": u.id, "email": u.email, "created_at": u.created_at} for u in users]
+    return list(session.scalars(stmt).all())

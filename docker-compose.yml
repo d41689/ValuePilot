@@ -27,8 +27,6 @@ services:
       - "8001:8000"
     environment:
       - DATABASE_URL=postgresql://user:password@db:5432/valuepilot
-      - DEFAULT_USER_EMAIL=dev@valuepilot.local
-      - DEFAULT_USER_ID=1
     volumes:
       - ./backend:/code
       - ./docs:/code/docs

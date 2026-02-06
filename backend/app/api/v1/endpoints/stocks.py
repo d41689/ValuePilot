@@ -1,11 +1,12 @@
 from typing import Any
 from fastapi import APIRouter, HTTPException, Body, Query
-from sqlalchemy import select, func, update
+from sqlalchemy import select, func, update, and_, or_
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 from app.api.deps import SessionDep, CurrentUser
 from app.models.stocks import Stock, StockPrice
 from app.models.facts import MetricFact
+from app.models.users import User
 from app.services.market_data_service import MarketDataService
 from app.services.market_data_service import compute_target_date
 
@@ -13,6 +14,22 @@ router = APIRouter()
 
 ET = ZoneInfo("America/New_York")
 FAIR_VALUE_KEY = "val.fair_value"
+
+
+def _visible_fact_predicate(current_user_id: int, admin_user_ids: list[int]):
+    return or_(
+        and_(
+            MetricFact.source_type == "parsed",
+            or_(
+                MetricFact.user_id == current_user_id,
+                MetricFact.user_id.in_(admin_user_ids),
+            ),
+        ),
+        and_(
+            MetricFact.user_id == current_user_id,
+            MetricFact.source_type.in_(["manual", "calculated"]),
+        ),
+    )
 
 
 @router.get("/by_ticker/{ticker}", response_model=dict)
@@ -175,6 +192,7 @@ def read_stock(
 def read_stock_facts(
     stock_id: int,
     session: SessionDep,
+    current_user: CurrentUser,
 ) -> Any:
     """
     Get normalized metric facts for a stock.
@@ -184,10 +202,13 @@ def read_stock_facts(
     if not stock:
         raise HTTPException(status_code=404, detail="Stock not found")
 
+    admin_user_ids = list(session.scalars(select(User.id).where(User.role == "admin")).all())
+
     # Get current facts
     stmt = select(MetricFact).where(
         MetricFact.stock_id == stock_id,
-        MetricFact.is_current.is_(True)
+        MetricFact.is_current.is_(True),
+        _visible_fact_predicate(current_user.id, admin_user_ids),
     )
     facts = session.scalars(stmt).all()
 
@@ -270,6 +291,7 @@ def upsert_stock_fact(
 @router.post("/prices/refresh", response_model=list[dict])
 def refresh_stock_prices(
     session: SessionDep,
+    current_user: CurrentUser,
     payload: dict = Body(...),
 ) -> Any:
     stock_ids = payload.get("stock_ids")

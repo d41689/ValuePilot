@@ -13,8 +13,6 @@ import { normalizeTicker } from '@/lib/stockRoutes';
 import { computeGrowthValue, computeTerminalValue, computeTotalValue } from '@/lib/dcfMath';
 import apiClient from '@/lib/api/client';
 
-const USER_ID = 1;
-
 const toNumber = (value: string, fallback = 0) => {
   const parsed = Number(value);
   return Number.isFinite(parsed) ? parsed : fallback;
@@ -245,7 +243,7 @@ export default function StockDcfPage() {
     }
     setIsSavingFairValue(true);
     try {
-      await apiClient.put(`/stocks/${stockId}/facts?user_id=${USER_ID}`, {
+      await apiClient.put(`/stocks/${stockId}/facts`, {
         metric_key: 'val.fair_value',
         value_numeric: totalValue,
       });
@@ -253,7 +251,7 @@ export default function StockDcfPage() {
         title: 'Saved',
         description: 'Fair Value updated from Total Value.',
       });
-    } catch (error) {
+    } catch {
       toast({
         title: 'Save failed',
         description: 'Unable to update Fair Value.',

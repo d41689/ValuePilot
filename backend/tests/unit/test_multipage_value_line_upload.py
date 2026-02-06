@@ -1,12 +1,8 @@
 from unittest.mock import patch
 
-from app.models.users import User
-
-
-def test_upload_multipage_parses_each_page_independently(client, db_session):
-    user = User(email="multipage_upload@example.com")
-    db_session.add(user)
-    db_session.commit()
+def test_upload_multipage_parses_each_page_independently(client, db_session, user_factory, auth_headers):
+    user = user_factory("multipage_upload@example.com")
+    headers = auth_headers(user)
 
     page1_text = (
         "SMITH (A.O.)\nNYSE-AOS\nRECENT PRICE 68.11\nP/E RATIO 17.4\nDIV'D YLD 2.0%\n"
@@ -27,7 +23,8 @@ def test_upload_multipage_parses_each_page_independently(client, db_session):
         return_value=pages,
     ):
         resp = client.post(
-            f"/api/v1/documents/upload?user_id={user.id}",
+            "/api/v1/documents/upload",
+            headers=headers,
             files={"file": ("multi.pdf", b"%PDF-1.4\\n%fake\\n", "application/pdf")},
         )
 
@@ -71,10 +68,9 @@ def test_upload_multipage_parses_each_page_independently(client, db_session):
     assert ("MSFT", "NDQ") in tickers
 
 
-def test_upload_multipage_non_company_pages_do_not_block_parsed_status(client, db_session):
-    user = User(email="multipage_partial@example.com")
-    db_session.add(user)
-    db_session.commit()
+def test_upload_multipage_non_company_pages_do_not_block_parsed_status(client, db_session, user_factory, auth_headers):
+    user = user_factory("multipage_partial@example.com")
+    headers = auth_headers(user)
 
     page1_text = "SMITH (A.O.)\nNYSE-AOS\nRECENT PRICE 68.11\nVALUE LINE\nAnalystX January 2, 2026\n"
     page2_text = "THIS IS NOT A VALUE LINE REPORT\n"
@@ -89,7 +85,8 @@ def test_upload_multipage_non_company_pages_do_not_block_parsed_status(client, d
         return_value=pages,
     ):
         resp = client.post(
-            f"/api/v1/documents/upload?user_id={user.id}",
+            "/api/v1/documents/upload",
+            headers=headers,
             files={"file": ("multi.pdf", b"%PDF-1.4\\n%fake\\n", "application/pdf")},
         )
 
@@ -102,10 +99,9 @@ def test_upload_multipage_non_company_pages_do_not_block_parsed_status(client, d
     assert body["page_reports"][1]["error_code"] == "unsupported_template"
 
 
-def test_upload_multipage_identity_unresolved_reports_error_code(client, db_session):
-    user = User(email="multipage_identity@example.com")
-    db_session.add(user)
-    db_session.commit()
+def test_upload_multipage_identity_unresolved_reports_error_code(client, db_session, user_factory, auth_headers):
+    user = user_factory("multipage_identity@example.com")
+    headers = auth_headers(user)
 
     page1_text = "SMITH (A.O.)\nNYSE-AOS\nRECENT PRICE 68.11\nVALUE LINE\nAnalystX January 2, 2026\n"
     page2_text = "RECENT PRICE 12.34\nVALUE LINE\n"
@@ -120,7 +116,8 @@ def test_upload_multipage_identity_unresolved_reports_error_code(client, db_sess
         return_value=pages,
     ):
         resp = client.post(
-            f"/api/v1/documents/upload?user_id={user.id}",
+            "/api/v1/documents/upload",
+            headers=headers,
             files={"file": ("multi.pdf", b"%PDF-1.4\\n%fake\\n", "application/pdf")},
         )
 

@@ -2,6 +2,7 @@
 
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
+import { useEffect, useMemo, useState } from 'react';
 import { Activity, FileText, LayoutDashboard, Search, Upload, Star } from 'lucide-react';
 
 import { cn } from '@/lib/utils';
@@ -16,6 +17,20 @@ const navigation = [
 
 export default function AppShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
+  const [role, setRole] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (typeof document === 'undefined') return;
+    const cookiePart = document.cookie
+      .split('; ')
+      .find((item) => item.startsWith('vp_role='));
+    setRole(cookiePart ? decodeURIComponent(cookiePart.split('=')[1]) : null);
+  }, []);
+
+  const visibleNavigation = useMemo(() => {
+    if (role === 'admin') return navigation;
+    return navigation.filter((item) => item.href !== '/upload');
+  }, [role]);
 
   return (
     <div className="relative min-h-screen bg-background text-foreground">
@@ -37,7 +52,7 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
             </div>
           </div>
           <nav className="flex-1 space-y-1">
-            {navigation.map((item) => {
+            {visibleNavigation.map((item) => {
               const Icon = item.icon;
               const isActive = pathname.startsWith(item.href);
               return (

@@ -4,7 +4,9 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 from app.api.deps import get_db
+from app.core.security import create_access_token, hash_password
 from app.main import app
+from app.models.users import User
 
 # Use an in-memory SQLite database for testing to avoid affecting the development DB
 # OR use the Postgres DB but with rollbacks. 
@@ -58,3 +60,37 @@ def client(db_session):
     with TestClient(app) as c:
         yield c
     app.dependency_overrides.clear()
+
+
+@pytest.fixture(scope="function")
+def user_factory(db_session):
+    def _factory(
+        email: str = "user@example.com",
+        *,
+        password: str = "TestPass123!",
+        role: str = "user",
+        tier: str = "free",
+        is_active: bool = True,
+    ) -> User:
+        user = User(
+            email=email,
+            hashed_password=hash_password(password),
+            role=role,
+            tier=tier,
+            is_active=is_active,
+        )
+        db_session.add(user)
+        db_session.commit()
+        db_session.refresh(user)
+        return user
+
+    return _factory
+
+
+@pytest.fixture(scope="function")
+def auth_headers():
+    def _headers(user: User) -> dict[str, str]:
+        token = create_access_token(user.id, user.role)
+        return {"Authorization": f"Bearer {token}"}
+
+    return _headers

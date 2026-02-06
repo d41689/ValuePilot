@@ -2,7 +2,7 @@ from typing import Any
 from datetime import datetime
 from fastapi import APIRouter, HTTPException, Body
 from sqlalchemy import select
-from app.api.deps import SessionDep
+from app.api.deps import SessionDep, CurrentUser
 from app.models.extractions import MetricExtraction
 from app.models.facts import MetricFact
 from app.models.artifacts import PdfDocument
@@ -14,10 +14,15 @@ router = APIRouter()
 def read_document_extractions(
     document_id: int,
     session: SessionDep,
+    current_user: CurrentUser,
 ) -> Any:
     """
     Get all extractions for a specific document (Traceability View).
     """
+    doc = session.get(PdfDocument, document_id)
+    if not doc or doc.user_id != current_user.id:
+        raise HTTPException(status_code=404, detail="Document not found")
+
     stmt = select(MetricExtraction).where(MetricExtraction.document_id == document_id)
     extractions = session.scalars(stmt).all()
     
@@ -39,6 +44,7 @@ def read_document_extractions(
 def correct_extraction(
     extraction_id: int,
     session: SessionDep,
+    current_user: CurrentUser,
     corrected_value: str = Body(..., embed=True),
 ) -> Any:
     """
@@ -47,6 +53,8 @@ def correct_extraction(
     """
     extraction = session.get(MetricExtraction, extraction_id)
     if not extraction:
+        raise HTTPException(status_code=404, detail="Extraction not found")
+    if extraction.user_id != current_user.id:
         raise HTTPException(status_code=404, detail="Extraction not found")
 
     # 1. Update Extraction

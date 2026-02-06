@@ -21,7 +21,7 @@ branch_labels = None
 depends_on = None
 
 # Placeholder bcrypt hash for "changeme" – forces password reset on first real login.
-_PLACEHOLDER_HASH = "$2b$12$placeholderHashForExistingUsersXXXXXXXXXXXXXXXXXXXX"
+_PLACEHOLDER_HASH = "$2b$12$LVEe4wavqLSPDBAY4uf9mO4HOBPJLmP4l2Kuf.8Kn6hS2lbBmRz6S"
 
 
 def upgrade() -> None:
