@@ -5,64 +5,23 @@ from app.models.artifacts import DocumentPage
 from app.models.extractions import MetricExtraction
 from app.models.facts import MetricFact
 from app.models.stocks import Stock
-from app.api.deps import SessionDep
+from app.api.deps import SessionDep, CurrentUser
 from app.services.ingestion_service import IngestionService
-from app.models.users import User
 from app.models.artifacts import PdfDocument
-from app.core.config import settings
-import sqlalchemy as sa
 
 router = APIRouter()
-
-
-def _get_user_or_seed(session: SessionDep, user_id: int) -> User:
-    user = session.get(User, user_id)
-    if user:
-        return user
-
-    if (
-        settings.DEFAULT_USER_EMAIL
-        and user_id == settings.DEFAULT_USER_ID
-    ):
-        email_owner = session.scalar(select(User).where(User.email == settings.DEFAULT_USER_EMAIL))
-        if email_owner and email_owner.id != settings.DEFAULT_USER_ID:
-            raise HTTPException(
-                status_code=409,
-                detail=(
-                    "DEFAULT_USER_EMAIL already exists with a different user id; "
-                    "cannot auto-seed DEFAULT_USER_ID."
-                ),
-            )
-
-        seeded_user = User(id=settings.DEFAULT_USER_ID, email=settings.DEFAULT_USER_EMAIL)
-        session.add(seeded_user)
-        session.commit()
-
-        # If we inserted an explicit ID, advance the sequence so future inserts don't collide.
-        if session.bind and session.bind.dialect.name == "postgresql":
-            max_user_id = session.scalar(select(func.max(User.id))) or settings.DEFAULT_USER_ID
-            session.execute(
-                sa.text(
-                    "SELECT setval(pg_get_serial_sequence('users','id'), :v, true)"
-                ).bindparams(v=max_user_id)
-            )
-            session.commit()
-
-        return seeded_user
-
-    raise HTTPException(status_code=404, detail="User not found")
 
 
 @router.get("", response_model=list[dict])
 def list_documents(
     *,
     session: SessionDep,
-    user_id: int = Query(..., description="ID of the user who owns the documents"),
+    current_user: CurrentUser,
 ) -> Any:
     """
-    List documents for a user with page counts and company summary.
+    List documents for the authenticated user with page counts and company summary.
     """
-    _get_user_or_seed(session, user_id)
+    user_id = current_user.id
 
     docs = session.scalars(
         select(PdfDocument)
@@ -166,8 +125,8 @@ def list_documents(
 def upload_document(
     *,
     session: SessionDep,
+    current_user: CurrentUser,
     file: UploadFile = File(...),
-    user_id: int = Query(..., description="ID of the user uploading the document")
 ) -> Any:
     """
     Upload a PDF document, save it, and extract text.
@@ -175,9 +134,7 @@ def upload_document(
     if file.content_type != "application/pdf":
         raise HTTPException(status_code=400, detail="Only PDF files are supported.")
 
-    # Validate user exists
-    _get_user_or_seed(session, user_id)
-
+    user_id = current_user.id
     service = IngestionService(session)
     try:
         doc, page_reports = service.process_upload(user_id, file)
@@ -197,19 +154,19 @@ def upload_document(
 def reparse_document(
     *,
     session: SessionDep,
+    current_user: CurrentUser,
     document_id: int,
-    user_id: int = Query(..., description="ID of the user who owns the document"),
     reextract_pdf: bool = Query(False, description="Re-extract text from stored PDF before parsing"),
 ) -> Any:
     """
     Re-run parsing for an existing document ID.
     Inserts new metric_extractions and new parsed metric_facts (previous parsed facts are deactivated).
     """
-    _get_user_or_seed(session, user_id)
+    user_id = current_user.id
 
     doc = session.get(PdfDocument, document_id)
     if not doc or doc.user_id != user_id:
-        raise HTTPException(status_code=404, detail="Document not found for user")
+        raise HTTPException(status_code=404, detail="Document not found")
 
     service = IngestionService(session)
     try:
@@ -223,17 +180,17 @@ def reparse_document(
 def read_document_raw_text(
     *,
     session: SessionDep,
+    current_user: CurrentUser,
     document_id: int,
-    user_id: int = Query(..., description="ID of the user who owns the document"),
 ) -> Any:
     """
     Get raw text for a document. Falls back to concatenated page text if raw_text is empty.
     """
-    _get_user_or_seed(session, user_id)
+    user_id = current_user.id
 
     doc = session.get(PdfDocument, document_id)
     if not doc or doc.user_id != user_id:
-        raise HTTPException(status_code=404, detail="Document not found for user")
+        raise HTTPException(status_code=404, detail="Document not found")
 
     raw_text = doc.raw_text
     if raw_text is None:

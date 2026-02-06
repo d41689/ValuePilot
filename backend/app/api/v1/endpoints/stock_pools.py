@@ -3,13 +3,10 @@ from __future__ import annotations
 from datetime import datetime, timezone, date
 from typing import Any
 
-from fastapi import APIRouter, HTTPException, Query, Body
+from fastapi import APIRouter, HTTPException, Body
 from sqlalchemy import select, func, delete
-import sqlalchemy as sa
 
-from app.api.deps import SessionDep
-from app.core.config import settings
-from app.models.users import User
+from app.api.deps import SessionDep, CurrentUser
 from app.models.stocks import StockPool, PoolMembership, Stock, StockPrice
 from app.models.facts import MetricFact
 from app.services.market_data_service import compute_target_date, ET
@@ -19,43 +16,6 @@ router = APIRouter()
 
 FAIR_VALUE_KEY = "val.fair_value"
 TARGET_FALLBACK_KEY = "target.price_18m.mid"
-
-
-def _get_user_or_seed(session: SessionDep, user_id: int) -> User:
-    user = session.get(User, user_id)
-    if user:
-        return user
-
-    if (
-        settings.DEFAULT_USER_EMAIL
-        and user_id == settings.DEFAULT_USER_ID
-    ):
-        email_owner = session.scalar(select(User).where(User.email == settings.DEFAULT_USER_EMAIL))
-        if email_owner and email_owner.id != settings.DEFAULT_USER_ID:
-            raise HTTPException(
-                status_code=409,
-                detail=(
-                    "DEFAULT_USER_EMAIL already exists with a different user id; "
-                    "cannot auto-seed DEFAULT_USER_ID."
-                ),
-            )
-
-        seeded_user = User(id=settings.DEFAULT_USER_ID, email=settings.DEFAULT_USER_EMAIL)
-        session.add(seeded_user)
-        session.commit()
-
-        if session.bind and session.bind.dialect.name == "postgresql":
-            max_user_id = session.scalar(select(func.max(User.id))) or settings.DEFAULT_USER_ID
-            session.execute(
-                sa.text(
-                    "SELECT setval(pg_get_serial_sequence('users','id'), :v, true)"
-                ).bindparams(v=max_user_id)
-            )
-            session.commit()
-
-        return seeded_user
-
-    raise HTTPException(status_code=404, detail="User not found")
 
 
 def _latest_price_for_date(session: SessionDep, stock_id: int, price_date: date) -> StockPrice | None:
@@ -112,9 +72,9 @@ def _calc_mos(price: float | None, fair_value: float | None) -> float | None:
 def list_stock_pools(
     *,
     session: SessionDep,
-    user_id: int = Query(..., description="ID of the user who owns the pools"),
+    current_user: CurrentUser,
 ) -> Any:
-    _get_user_or_seed(session, user_id)
+    user_id = current_user.id
 
     pools = session.scalars(
         select(StockPool).where(StockPool.user_id == user_id).order_by(StockPool.created_at.desc())
@@ -147,10 +107,10 @@ def list_stock_pools(
 def create_stock_pool(
     *,
     session: SessionDep,
-    user_id: int = Query(..., description="ID of the user who owns the pool"),
+    current_user: CurrentUser,
     payload: dict = Body(...),
 ) -> Any:
-    _get_user_or_seed(session, user_id)
+    user_id = current_user.id
 
     name = (payload.get("name") or "").strip()
     description = payload.get("description")
@@ -173,14 +133,14 @@ def create_stock_pool(
 def delete_stock_pool(
     *,
     session: SessionDep,
+    current_user: CurrentUser,
     pool_id: int,
-    user_id: int = Query(..., description="ID of the user who owns the pool"),
 ) -> Any:
-    _get_user_or_seed(session, user_id)
+    user_id = current_user.id
 
     pool = session.get(StockPool, pool_id)
     if not pool or pool.user_id != user_id:
-        raise HTTPException(status_code=404, detail="Pool not found for user")
+        raise HTTPException(status_code=404, detail="Pool not found")
 
     session.execute(delete(PoolMembership).where(PoolMembership.pool_id == pool_id))
     session.delete(pool)
@@ -192,14 +152,14 @@ def delete_stock_pool(
 def list_pool_members(
     *,
     session: SessionDep,
+    current_user: CurrentUser,
     pool_id: int,
-    user_id: int = Query(..., description="ID of the user who owns the pool"),
 ) -> Any:
-    _get_user_or_seed(session, user_id)
+    user_id = current_user.id
 
     pool = session.get(StockPool, pool_id)
     if not pool or pool.user_id != user_id:
-        raise HTTPException(status_code=404, detail="Pool not found for user")
+        raise HTTPException(status_code=404, detail="Pool not found")
 
     members = session.scalars(
         select(PoolMembership)
@@ -265,15 +225,15 @@ def list_pool_members(
 def add_pool_member(
     *,
     session: SessionDep,
+    current_user: CurrentUser,
     pool_id: int,
-    user_id: int = Query(..., description="ID of the user who owns the pool"),
     payload: dict = Body(...),
 ) -> Any:
-    _get_user_or_seed(session, user_id)
+    user_id = current_user.id
 
     pool = session.get(StockPool, pool_id)
     if not pool or pool.user_id != user_id:
-        raise HTTPException(status_code=404, detail="Pool not found for user")
+        raise HTTPException(status_code=404, detail="Pool not found")
 
     stock_id = payload.get("stock_id")
     if not isinstance(stock_id, int):
@@ -322,19 +282,19 @@ def add_pool_member(
 def remove_pool_member(
     *,
     session: SessionDep,
+    current_user: CurrentUser,
     pool_id: int,
     membership_id: int,
-    user_id: int = Query(..., description="ID of the user who owns the pool"),
 ) -> Any:
-    _get_user_or_seed(session, user_id)
+    user_id = current_user.id
 
     pool = session.get(StockPool, pool_id)
     if not pool or pool.user_id != user_id:
-        raise HTTPException(status_code=404, detail="Pool not found for user")
+        raise HTTPException(status_code=404, detail="Pool not found")
 
     membership = session.get(PoolMembership, membership_id)
     if not membership or membership.pool_id != pool_id or membership.user_id != user_id:
-        raise HTTPException(status_code=404, detail="Membership not found for user")
+        raise HTTPException(status_code=404, detail="Membership not found")
 
     session.delete(membership)
     session.commit()

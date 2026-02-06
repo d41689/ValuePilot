@@ -3,56 +3,17 @@ from fastapi import APIRouter, HTTPException, Body, Query
 from sqlalchemy import select, func, update
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
-import sqlalchemy as sa
-from app.api.deps import SessionDep
+from app.api.deps import SessionDep, CurrentUser
 from app.models.stocks import Stock, StockPrice
 from app.models.facts import MetricFact
 from app.services.market_data_service import MarketDataService
 from app.services.market_data_service import compute_target_date
-from app.core.config import settings
-from app.models.users import User
 
 router = APIRouter()
 
 ET = ZoneInfo("America/New_York")
 FAIR_VALUE_KEY = "val.fair_value"
 
-
-def _get_user_or_seed(session: SessionDep, user_id: int) -> User:
-    user = session.get(User, user_id)
-    if user:
-        return user
-
-    if (
-        settings.DEFAULT_USER_EMAIL
-        and user_id == settings.DEFAULT_USER_ID
-    ):
-        email_owner = session.scalar(select(User).where(User.email == settings.DEFAULT_USER_EMAIL))
-        if email_owner and email_owner.id != settings.DEFAULT_USER_ID:
-            raise HTTPException(
-                status_code=409,
-                detail=(
-                    "DEFAULT_USER_EMAIL already exists with a different user id; "
-                    "cannot auto-seed DEFAULT_USER_ID."
-                ),
-            )
-
-        seeded_user = User(id=settings.DEFAULT_USER_ID, email=settings.DEFAULT_USER_EMAIL)
-        session.add(seeded_user)
-        session.commit()
-
-        if session.bind and session.bind.dialect.name == "postgresql":
-            max_user_id = session.scalar(select(func.max(User.id))) or settings.DEFAULT_USER_ID
-            session.execute(
-                sa.text(
-                    "SELECT setval(pg_get_serial_sequence('users','id'), :v, true)"
-                ).bindparams(v=max_user_id)
-            )
-            session.commit()
-
-        return seeded_user
-
-    raise HTTPException(status_code=404, detail="User not found")
 
 @router.get("/by_ticker/{ticker}", response_model=dict)
 def read_stock_by_ticker(
@@ -200,7 +161,7 @@ def read_stock(
     stock = session.get(Stock, stock_id)
     if not stock:
         raise HTTPException(status_code=404, detail="Stock not found")
-    
+
     return {
         "id": stock.id,
         "ticker": stock.ticker,
@@ -229,7 +190,7 @@ def read_stock_facts(
         MetricFact.is_current.is_(True)
     )
     facts = session.scalars(stmt).all()
-    
+
     return [
         {
             "id": f.id,
@@ -249,10 +210,10 @@ def upsert_stock_fact(
     *,
     stock_id: int,
     session: SessionDep,
-    user_id: int = Query(..., description="ID of the user who owns the fact"),
+    current_user: CurrentUser,
     payload: dict = Body(...),
 ) -> Any:
-    _get_user_or_seed(session, user_id)
+    user_id = current_user.id
 
     stock = session.get(Stock, stock_id)
     if not stock:
