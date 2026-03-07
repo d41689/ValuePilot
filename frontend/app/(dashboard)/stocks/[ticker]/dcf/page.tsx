@@ -11,7 +11,17 @@ import { Button } from '@/components/ui/button';
 import { toast } from '@/components/ui/use-toast';
 import { normalizeTicker } from '@/lib/stockRoutes';
 import { computeGrowthValue, computeTerminalValue, computeTotalValue } from '@/lib/dcfMath';
+import { resolveDcfDefaults } from '@/lib/dcfDefaults';
 import apiClient from '@/lib/api/client';
+
+const DEFAULT_NET_PROFIT_PER_SHARE = '12.00';
+const DEFAULT_DEPRECIATION_PER_SHARE = '3.00';
+const DEFAULT_CAPEX_PER_SHARE = '0.45';
+const DEFAULT_DISCOUNT_RATE = 10;
+const DEFAULT_GROWTH_YEARS = 10;
+const DEFAULT_GROWTH_RATE = 20;
+const DEFAULT_TERMINAL_YEARS = 1000;
+const DEFAULT_TERMINAL_RATE = 4;
 
 const toNumber = (value: string, fallback = 0) => {
   const parsed = Number(value);
@@ -42,9 +52,10 @@ export default function StockDcfPage() {
   const [manualPrice, setManualPrice] = useState('');
   const [stockId, setStockId] = useState<number | null>(null);
   const [isSavingFairValue, setIsSavingFairValue] = useState(false);
-  const [netProfitPerShare, setNetProfitPerShare] = useState('12.00');
-  const [depreciationPerShare, setDepreciationPerShare] = useState('3.00');
-  const [capexPerShare, setCapexPerShare] = useState('0.45');
+  const [hasResolvedStockDefaults, setHasResolvedStockDefaults] = useState(false);
+  const [netProfitPerShare, setNetProfitPerShare] = useState(DEFAULT_NET_PROFIT_PER_SHARE);
+  const [depreciationPerShare, setDepreciationPerShare] = useState(DEFAULT_DEPRECIATION_PER_SHARE);
+  const [capexPerShare, setCapexPerShare] = useState(DEFAULT_CAPEX_PER_SHARE);
   const [basedOnOverride, setBasedOnOverride] = useState('');
   const [oepsSeries, setOepsSeries] = useState<Array<{ year: number; value: number }>>([]);
   const [oepsNormalized, setOepsNormalized] = useState<number | null>(null);
@@ -54,21 +65,36 @@ export default function StockDcfPage() {
   >([]);
   const [growthRateSelection, setGrowthRateSelection] = useState<string | null>(null);
 
-  const [discountRate, setDiscountRate] = useState(10);
-  const [growthYears, setGrowthYears] = useState(10);
-  const [growthRate, setGrowthRate] = useState(20);
-  const [terminalYears, setTerminalYears] = useState(1000);
-  const [terminalRate, setTerminalRate] = useState(4);
+  const [discountRate, setDiscountRate] = useState(DEFAULT_DISCOUNT_RATE);
+  const [growthYears, setGrowthYears] = useState(DEFAULT_GROWTH_YEARS);
+  const [growthRate, setGrowthRate] = useState(DEFAULT_GROWTH_RATE);
+  const [terminalYears, setTerminalYears] = useState(DEFAULT_TERMINAL_YEARS);
+  const [terminalRate, setTerminalRate] = useState(DEFAULT_TERMINAL_RATE);
 
   useEffect(() => {
     if (!displayTicker) {
       return;
     }
     let isActive = true;
+    setHasResolvedStockDefaults(false);
     setLatestPrice(null);
     setLatestPriceUpdatedAt(null);
     setManualPrice('');
     setStockId(null);
+    setNetProfitPerShare(DEFAULT_NET_PROFIT_PER_SHARE);
+    setDepreciationPerShare(DEFAULT_DEPRECIATION_PER_SHARE);
+    setCapexPerShare(DEFAULT_CAPEX_PER_SHARE);
+    setBasedOnOverride('');
+    setOepsSeries([]);
+    setOepsNormalized(null);
+    setBasedOnSelection('norm');
+    setGrowthRateOptions([]);
+    setGrowthRateSelection(null);
+    setDiscountRate(DEFAULT_DISCOUNT_RATE);
+    setGrowthYears(DEFAULT_GROWTH_YEARS);
+    setGrowthRate(DEFAULT_GROWTH_RATE);
+    setTerminalYears(DEFAULT_TERMINAL_YEARS);
+    setTerminalRate(DEFAULT_TERMINAL_RATE);
     const hydrate = async () => {
       try {
         const response = await apiClient.get(`/stocks/by_ticker/${encodeURIComponent(displayTicker)}`);
@@ -76,6 +102,7 @@ export default function StockDcfPage() {
           return;
         }
         const payload = response.data ?? {};
+        const defaults = resolveDcfDefaults(payload);
         if (typeof payload.id === 'number') {
           setStockId(payload.id);
         }
@@ -84,41 +111,18 @@ export default function StockDcfPage() {
           setLatestPrice(fetchedLatest);
           setLatestPriceUpdatedAt(payload.latest_price_updated_at ?? null);
         }
-        const normalized = payload?.oeps_normalized;
-        const series = Array.isArray(payload?.oeps_series)
-          ? payload.oeps_series
-              .filter(
-                (item: { year?: number; value?: number }) =>
-                  typeof item?.year === 'number' && typeof item?.value === 'number'
-              )
-              .slice(0, 6)
-          : [];
-        const rateOptions = Array.isArray(payload?.growth_rate_options)
-          ? payload.growth_rate_options.filter(
-              (item: { key?: string; label?: string; value?: number }) =>
-                typeof item?.key === 'string' &&
-                typeof item?.label === 'string' &&
-                typeof item?.value === 'number'
-            )
-          : [];
-        setOepsSeries(series);
-        setGrowthRateOptions(rateOptions);
-        if (typeof normalized === 'number' && Number.isFinite(normalized)) {
-          setOepsNormalized(normalized);
-          setBasedOnSelection('norm');
-          setBasedOnOverride((prev) => (prev.trim() ? prev : normalized.toFixed(3)));
+        setOepsSeries(defaults.oepsSeries);
+        setOepsNormalized(defaults.oepsNormalized);
+        setGrowthRateOptions(defaults.growthRateOptions);
+        if (defaults.basedOnOverride) {
+          setBasedOnSelection(defaults.basedOnSelection);
+          setBasedOnOverride(defaults.basedOnOverride);
         }
-        if (series.length > 0 && (typeof normalized !== 'number' || !Number.isFinite(normalized))) {
-          setBasedOnSelection(series[0].year);
-          setBasedOnOverride(series[0].value.toFixed(3));
+        if (defaults.growthRateSelection && defaults.growthRate !== null) {
+          setGrowthRateSelection(defaults.growthRateSelection);
+          setGrowthRate(defaults.growthRate);
         }
-        if (rateOptions.length > 0) {
-          const lowest = rateOptions.reduce((min, current) =>
-            current.value < min.value ? current : min
-          );
-          setGrowthRateSelection(lowest.key);
-          setGrowthRate(lowest.value);
-        }
+        setHasResolvedStockDefaults(true);
         const stockId = payload?.id;
         if (typeof stockId === 'number') {
           try {
@@ -148,6 +152,7 @@ export default function StockDcfPage() {
         if (!isActive) {
           return;
         }
+        setHasResolvedStockDefaults(true);
         if (axios.isAxiosError(err)) {
           return;
         }
@@ -167,7 +172,9 @@ export default function StockDcfPage() {
 
   const basedOnValue = basedOnOverride.trim()
     ? Math.max(0, toNumber(basedOnOverride))
-    : computedBasedOn;
+    : hasResolvedStockDefaults
+      ? computedBasedOn
+      : 0;
 
   const growthValue = useMemo(
     () => computeGrowthValue(basedOnValue, discountRate, growthYears, growthRate),
@@ -191,6 +198,11 @@ export default function StockDcfPage() {
     () => computeTotalValue(growthValue, terminalValue),
     [growthValue, terminalValue]
   );
+  const basedOnInputValue = basedOnOverride.trim()
+    ? basedOnOverride
+    : hasResolvedStockDefaults
+      ? formatInputMoney(computedBasedOn)
+      : '';
   const effectivePrice = useMemo(() => {
     if (latestPrice !== null) {
       return Math.max(0, latestPrice);
@@ -316,7 +328,7 @@ export default function StockDcfPage() {
             <div className="flex items-center gap-2 rounded-lg border border-border/70 bg-card/80 px-4 py-2">
               <span className="text-muted-foreground">$</span>
               <input
-                value={basedOnOverride.trim() ? basedOnOverride : formatInputMoney(computedBasedOn)}
+                value={basedOnInputValue}
                 onChange={(event) => setBasedOnOverride(event.target.value)}
                 onBlur={() => setBasedOnOverride((value) => value.trim())}
                 inputMode="decimal"
@@ -493,7 +505,7 @@ export default function StockDcfPage() {
                 </div>
                 <div className="flex items-center justify-between text-base font-semibold">
                   <span>Growth Value</span>
-                  <span>$ {formatMoney(growthValue)}</span>
+                  <span>{hasResolvedStockDefaults ? `$ ${formatMoney(growthValue)}` : '—'}</span>
                 </div>
               </div>
             </div>
@@ -560,7 +572,7 @@ export default function StockDcfPage() {
                 </div>
                 <div className="flex items-center justify-between text-base font-semibold">
                   <span>Terminal Value</span>
-                  <span>$ {formatMoney(terminalValue)}</span>
+                  <span>{hasResolvedStockDefaults ? `$ ${formatMoney(terminalValue)}` : '—'}</span>
                 </div>
               </div>
             </div>
@@ -586,12 +598,12 @@ export default function StockDcfPage() {
             <div className="flex flex-wrap items-center gap-4 text-base font-semibold">
               <div className="flex items-center gap-2">
                 <span className="text-sm font-medium text-muted-foreground">Total Value</span>
-                <span>$ {formatMoney(totalValue)}</span>
+                <span>{hasResolvedStockDefaults ? `$ ${formatMoney(totalValue)}` : '—'}</span>
                 <Button
                   size="sm"
                   variant="outline"
                   onClick={handleSaveFairValue}
-                  disabled={isSavingFairValue}
+                  disabled={isSavingFairValue || !hasResolvedStockDefaults}
                   type="button"
                 >
                   Save
