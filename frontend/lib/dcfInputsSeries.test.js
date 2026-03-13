@@ -51,3 +51,39 @@ test('resolveDcfComponentInputs falls back to current dcf_inputs for norm select
   });
 });
 
+test('resolveDcfComponentInputs keeps based-on components aligned for norm selection', () => {
+  const payload = {
+    dcf_inputs: {
+      net_profit_per_share: { value: 11.25, source: 'fact' },
+      depreciation_per_share: { value: 2.195945945945946, source: 'computed' },
+      capital_spending_per_share: { value: 8.75, source: 'fact' },
+    },
+    dcf_inputs_series: [
+      {
+        year: 2026,
+        net_profit_per_share: { value: 11.25, source: 'fact' },
+        depreciation_per_share: { value: 2.195945945945946, source: 'computed' },
+        capital_spending_per_share: { value: 8.75, source: 'fact' },
+      },
+      {
+        year: 2025,
+        net_profit_per_share: { value: 10.6, source: 'fact' },
+        depreciation_per_share: { value: 1.8333333333333333, source: 'computed' },
+        capital_spending_per_share: { value: 7.15, source: 'fact' },
+      },
+    ],
+  };
+
+  const resolved = resolveDcfComponentInputs(payload, 'norm');
+  const basedOn =
+    Number(resolved.netProfitPerShare) +
+    Number(resolved.depreciationPerShare) -
+    Number(resolved.capexPerShare);
+
+  assert.deepEqual(resolved, {
+    netProfitPerShare: '11.250',
+    depreciationPerShare: '2.196',
+    capexPerShare: '8.750',
+  });
+  assert.ok(Math.abs(basedOn - 4.696) < 0.001);
+});

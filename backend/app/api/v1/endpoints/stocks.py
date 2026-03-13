@@ -1,7 +1,7 @@
 from typing import Any
 from fastapi import APIRouter, HTTPException, Body, Query
 from sqlalchemy import select, func, update, and_, or_
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from zoneinfo import ZoneInfo
 from app.api.deps import SessionDep, CurrentUser
 from app.models.stocks import Stock, StockPrice
@@ -14,6 +14,70 @@ router = APIRouter()
 
 ET = ZoneInfo("America/New_York")
 FAIR_VALUE_KEY = "val.fair_value"
+DCF_INPUT_FACT_KEYS = {
+    "net_profit_per_share": "per_share.eps",
+    "depreciation": "is.depreciation",
+    "shares_outstanding": "equity.shares_outstanding",
+    "capital_spending_per_share": "per_share.capital_spending",
+}
+
+
+def _dcf_value(value: float, source: str) -> dict[str, float | str]:
+    return {"value": float(value), "source": source}
+
+
+def _build_dcf_inputs_entry(inputs_by_key: dict[str, MetricFact | None]) -> dict[str, dict[str, float | str]]:
+    eps_fact = inputs_by_key.get(DCF_INPUT_FACT_KEYS["net_profit_per_share"])
+    capex_fact = inputs_by_key.get(DCF_INPUT_FACT_KEYS["capital_spending_per_share"])
+    depreciation_fact = inputs_by_key.get(DCF_INPUT_FACT_KEYS["depreciation"])
+    shares_fact = inputs_by_key.get(DCF_INPUT_FACT_KEYS["shares_outstanding"])
+
+    eps_value = float(eps_fact.value_numeric) if eps_fact and eps_fact.value_numeric is not None else 0.0
+    eps_source = "fact" if eps_fact and eps_fact.value_numeric is not None else "missing"
+
+    capex_value = float(capex_fact.value_numeric) if capex_fact and capex_fact.value_numeric is not None else 0.0
+    capex_source = "fact" if capex_fact and capex_fact.value_numeric is not None else "missing"
+
+    depreciation_value = (
+        float(depreciation_fact.value_numeric)
+        if depreciation_fact and depreciation_fact.value_numeric is not None
+        else 0.0
+    )
+    shares_value = float(shares_fact.value_numeric) if shares_fact and shares_fact.value_numeric is not None else 0.0
+    depreciation_per_share = depreciation_value / shares_value if shares_value > 0 else 0.0
+    depreciation_source = (
+        "computed"
+        if depreciation_fact and depreciation_fact.value_numeric is not None and shares_value > 0
+        else "missing"
+    )
+
+    return {
+        "net_profit_per_share": _dcf_value(eps_value, eps_source),
+        "depreciation_per_share": _dcf_value(depreciation_per_share, depreciation_source),
+        "capital_spending_per_share": _dcf_value(capex_value, capex_source),
+    }
+
+
+def _resolve_normalized_dcf_inputs(
+    oeps_facts: list[MetricFact],
+    dcf_inputs_series_by_year: dict[int, dict[str, dict[str, float | str]]],
+) -> dict[str, dict[str, float | str]] | None:
+    latest_five = [fact for fact in oeps_facts if fact.period_end_date is not None][:5]
+    if not latest_five:
+        return None
+
+    ranked = sorted(
+        latest_five,
+        key=lambda fact: (
+            float(fact.value_numeric) if fact.value_numeric is not None else 0.0,
+            fact.period_end_date,
+        ),
+    )
+    median_fact = ranked[len(ranked) // 2]
+    median_year = median_fact.period_end_date.year if median_fact.period_end_date else None
+    if median_year is None:
+        return None
+    return dcf_inputs_series_by_year.get(median_year)
 
 
 def _visible_fact_predicate(current_user_id: int, admin_user_ids: list[int]):
@@ -97,6 +161,37 @@ def read_stock_by_ticker(
         value = fact.value_numeric if fact.value_numeric is not None else 0.0
         oeps_series.append({"year": period_end.year, "value": value})
 
+    dcf_inputs_stmt = (
+        select(MetricFact)
+        .where(
+            MetricFact.stock_id == stock.id,
+            MetricFact.is_current.is_(True),
+            MetricFact.period_type == "FY",
+            MetricFact.metric_key.in_(list(DCF_INPUT_FACT_KEYS.values())),
+        )
+        .order_by(MetricFact.metric_key.asc(), MetricFact.period_end_date.desc())
+    )
+    dcf_input_facts = session.scalars(dcf_inputs_stmt).all()
+    dcf_inputs_by_date: dict[date, dict[str, MetricFact | None]] = {}
+    for fact in dcf_input_facts:
+        period_end = fact.period_end_date
+        if not period_end:
+            continue
+        by_key = dcf_inputs_by_date.setdefault(period_end, {})
+        if fact.metric_key not in by_key:
+            by_key[fact.metric_key] = fact
+
+    dcf_inputs_series = []
+    dcf_inputs_series_by_year: dict[int, dict[str, dict[str, float | str]]] = {}
+    for fact in oeps_facts:
+        period_end = fact.period_end_date
+        if not period_end:
+            continue
+        entry = _build_dcf_inputs_entry(dcf_inputs_by_date.get(period_end, {}))
+        dcf_inputs_series.append({"year": period_end.year, **entry})
+        dcf_inputs_series_by_year[period_end.year] = entry
+    dcf_inputs = _resolve_normalized_dcf_inputs(oeps_facts, dcf_inputs_series_by_year)
+
     growth_metric_keys = [
         "rates.sales.cagr_est",
         "rates.revenues.cagr_est",
@@ -164,6 +259,8 @@ def read_stock_by_ticker(
         "pe": facts_by_key.get("val.pe"),
         "oeps_normalized": facts_by_key.get("owners_earnings_per_share_normalized"),
         "oeps_series": oeps_series,
+        "dcf_inputs": dcf_inputs,
+        "dcf_inputs_series": dcf_inputs_series,
         "growth_rate_options": growth_rate_options,
     }
 

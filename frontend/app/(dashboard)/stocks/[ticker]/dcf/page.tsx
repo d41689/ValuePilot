@@ -12,6 +12,7 @@ import { toast } from '@/components/ui/use-toast';
 import { normalizeTicker } from '@/lib/stockRoutes';
 import { computeGrowthValue, computeTerminalValue, computeTotalValue } from '@/lib/dcfMath';
 import { resolveDcfDefaults } from '@/lib/dcfDefaults';
+import { resolveDcfComponentInputs, type DcfInputsResponsePayload } from '@/lib/dcfInputsSeries';
 import apiClient from '@/lib/api/client';
 
 const DEFAULT_NET_PROFIT_PER_SHARE = '12.00';
@@ -57,6 +58,7 @@ export default function StockDcfPage() {
   const [depreciationPerShare, setDepreciationPerShare] = useState(DEFAULT_DEPRECIATION_PER_SHARE);
   const [capexPerShare, setCapexPerShare] = useState(DEFAULT_CAPEX_PER_SHARE);
   const [basedOnOverride, setBasedOnOverride] = useState('');
+  const [dcfInputsPayload, setDcfInputsPayload] = useState<DcfInputsResponsePayload | null>(null);
   const [oepsSeries, setOepsSeries] = useState<Array<{ year: number; value: number }>>([]);
   const [oepsNormalized, setOepsNormalized] = useState<number | null>(null);
   const [basedOnSelection, setBasedOnSelection] = useState<'norm' | number>('norm');
@@ -85,6 +87,7 @@ export default function StockDcfPage() {
     setDepreciationPerShare(DEFAULT_DEPRECIATION_PER_SHARE);
     setCapexPerShare(DEFAULT_CAPEX_PER_SHARE);
     setBasedOnOverride('');
+    setDcfInputsPayload(null);
     setOepsSeries([]);
     setOepsNormalized(null);
     setBasedOnSelection('norm');
@@ -103,6 +106,10 @@ export default function StockDcfPage() {
         }
         const payload = response.data ?? {};
         const defaults = resolveDcfDefaults(payload);
+        const nextDcfInputsPayload: DcfInputsResponsePayload = {
+          dcf_inputs: payload?.dcf_inputs ?? null,
+          dcf_inputs_series: payload?.dcf_inputs_series ?? null,
+        };
         if (typeof payload.id === 'number') {
           setStockId(payload.id);
         }
@@ -111,11 +118,26 @@ export default function StockDcfPage() {
           setLatestPrice(fetchedLatest);
           setLatestPriceUpdatedAt(payload.latest_price_updated_at ?? null);
         }
+        setDcfInputsPayload(nextDcfInputsPayload);
         setOepsSeries(defaults.oepsSeries);
         setOepsNormalized(defaults.oepsNormalized);
         setGrowthRateOptions(defaults.growthRateOptions);
-        if (defaults.basedOnOverride) {
-          setBasedOnSelection(defaults.basedOnSelection);
+        setBasedOnSelection(defaults.basedOnSelection);
+        const resolvedInputs = resolveDcfComponentInputs(
+          nextDcfInputsPayload,
+          defaults.basedOnSelection
+        );
+        const hasResolvedInputs = [
+          resolvedInputs.netProfitPerShare,
+          resolvedInputs.depreciationPerShare,
+          resolvedInputs.capexPerShare,
+        ].some((value) => value !== '');
+        if (hasResolvedInputs) {
+          setNetProfitPerShare(resolvedInputs.netProfitPerShare);
+          setDepreciationPerShare(resolvedInputs.depreciationPerShare);
+          setCapexPerShare(resolvedInputs.capexPerShare);
+          setBasedOnOverride('');
+        } else if (defaults.basedOnOverride) {
           setBasedOnOverride(defaults.basedOnOverride);
         }
         if (defaults.growthRateSelection && defaults.growthRate !== null) {
@@ -294,6 +316,19 @@ export default function StockDcfPage() {
                       return;
                     }
                     setBasedOnSelection('norm');
+                    const resolvedInputs = resolveDcfComponentInputs(dcfInputsPayload ?? {}, 'norm');
+                    const hasResolvedInputs = [
+                      resolvedInputs.netProfitPerShare,
+                      resolvedInputs.depreciationPerShare,
+                      resolvedInputs.capexPerShare,
+                    ].some((value) => value !== '');
+                    if (hasResolvedInputs) {
+                      setNetProfitPerShare(resolvedInputs.netProfitPerShare);
+                      setDepreciationPerShare(resolvedInputs.depreciationPerShare);
+                      setCapexPerShare(resolvedInputs.capexPerShare);
+                      setBasedOnOverride('');
+                      return;
+                    }
                     setBasedOnOverride(oepsNormalized.toFixed(3));
                   }}
                   className={[
@@ -311,6 +346,22 @@ export default function StockDcfPage() {
                     type="button"
                     onClick={() => {
                       setBasedOnSelection(item.year);
+                      const resolvedInputs = resolveDcfComponentInputs(
+                        dcfInputsPayload ?? {},
+                        item.year
+                      );
+                      const hasResolvedInputs = [
+                        resolvedInputs.netProfitPerShare,
+                        resolvedInputs.depreciationPerShare,
+                        resolvedInputs.capexPerShare,
+                      ].some((value) => value !== '');
+                      if (hasResolvedInputs) {
+                        setNetProfitPerShare(resolvedInputs.netProfitPerShare);
+                        setDepreciationPerShare(resolvedInputs.depreciationPerShare);
+                        setCapexPerShare(resolvedInputs.capexPerShare);
+                        setBasedOnOverride('');
+                        return;
+                      }
                       setBasedOnOverride(item.value.toFixed(3));
                     }}
                     className={[
@@ -342,7 +393,10 @@ export default function StockDcfPage() {
               <span>Net profit / sh</span>
               <input
                 value={netProfitPerShare}
-                onChange={(event) => setNetProfitPerShare(event.target.value)}
+                onChange={(event) => {
+                  setNetProfitPerShare(event.target.value);
+                  setBasedOnOverride('');
+                }}
                 inputMode="decimal"
                 className="w-20 bg-transparent text-right text-sm font-medium text-foreground outline-none"
               />
@@ -351,7 +405,10 @@ export default function StockDcfPage() {
               <span>Depreciation / sh</span>
               <input
                 value={depreciationPerShare}
-                onChange={(event) => setDepreciationPerShare(event.target.value)}
+                onChange={(event) => {
+                  setDepreciationPerShare(event.target.value);
+                  setBasedOnOverride('');
+                }}
                 inputMode="decimal"
                 className="w-20 bg-transparent text-right text-sm font-medium text-foreground outline-none"
               />
@@ -360,7 +417,10 @@ export default function StockDcfPage() {
               <span>Cap’l spending / sh</span>
               <input
                 value={capexPerShare}
-                onChange={(event) => setCapexPerShare(event.target.value)}
+                onChange={(event) => {
+                  setCapexPerShare(event.target.value);
+                  setBasedOnOverride('');
+                }}
                 inputMode="decimal"
                 className="w-20 bg-transparent text-right text-sm font-medium text-foreground outline-none"
               />
