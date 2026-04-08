@@ -16,7 +16,7 @@ const navigation = [
 ];
 
 export default function AppShell({ children }: { children: React.ReactNode }) {
-  const pathname = usePathname();
+  const pathname = usePathname() ?? '';
   const [role, setRole] = useState<string | null>(null);
 
   useEffect(() => {
