@@ -32,7 +32,8 @@ export function middleware(request: NextRequest) {
 
 export const config = {
   matcher: [
-    ...AUTH_PUBLIC_PATHS,
+    '/login',
+    '/register',
     '/home/:path*',
     '/documents/:path*',
     '/watchlist/:path*',
