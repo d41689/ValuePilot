@@ -1,11 +1,16 @@
 'use client';
 
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useEffectEvent, useMemo, useState } from 'react';
 import { useMutation, useQuery } from '@tanstack/react-query';
 import Link from 'next/link';
 import { Plus, RefreshCcw, Trash2 } from 'lucide-react';
 
 import apiClient from '@/lib/api/client';
+import {
+  buildFairValueEdits,
+  hasFairValueEditChanges,
+  sortWatchlistMembers,
+} from '@/lib/watchlistState';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import {
@@ -81,13 +86,7 @@ export default function WatchlistPage() {
     },
   });
 
-  const pools = poolsQuery.data ?? [];
-
-  useEffect(() => {
-    if (!activePoolId && pools.length > 0) {
-      setActivePoolId(pools[0].id);
-    }
-  }, [activePoolId, pools]);
+  const pools = useMemo(() => poolsQuery.data ?? [], [poolsQuery.data]);
 
   const membersQuery = useQuery({
     queryKey: ['watchlist-members', activePoolId],
@@ -98,37 +97,40 @@ export default function WatchlistPage() {
     },
   });
 
-  const members = membersQuery.data ?? [];
+  const members = useMemo(() => membersQuery.data ?? [], [membersQuery.data]);
 
   const sortedMembers = useMemo(() => {
-    return [...members].sort((a, b) => {
-      const aMos = a.mos ?? -Infinity;
-      const bMos = b.mos ?? -Infinity;
-      if (bMos === aMos) {
-        return a.ticker.localeCompare(b.ticker);
-      }
-      return bMos - aMos;
-    });
+    return sortWatchlistMembers(members);
   }, [members]);
+
+  const refreshPrices = useMutation({
+    mutationFn: async (stockIds: number[]) => {
+      if (!stockIds.length) return [];
+      const res = await apiClient.post('/stocks/prices/refresh', {
+        stock_ids: stockIds,
+        reason: 'watchlist_open',
+      });
+      return res.data;
+    },
+    onSuccess: () => {
+      membersQuery.refetch();
+    },
+  });
+
+  const triggerAutoRefreshPrices = useEffectEvent((stockIds: number[]) => {
+    refreshPrices.mutate(stockIds);
+  });
+
+  useEffect(() => {
+    if (!activePoolId && pools.length > 0) {
+      setActivePoolId(pools[0].id);
+    }
+  }, [activePoolId, pools]);
 
   useEffect(() => {
     setFairValueEdits((prev) => {
-      if (!members.length) {
-        return Object.keys(prev).length === 0 ? prev : {};
-      }
-      const next: Record<number, string> = {};
-      for (const row of members) {
-        next[row.stock_id] = row.fair_value !== null ? row.fair_value.toString() : '';
-      }
-      const prevKeys = Object.keys(prev);
-      const nextKeys = Object.keys(next);
-      if (prevKeys.length !== nextKeys.length) return next;
-      for (const key of nextKeys) {
-        if (prev[key] !== next[key]) {
-          return next;
-        }
-      }
-      return prev;
+      const next = buildFairValueEdits(members);
+      return hasFairValueEditChanges(prev, next) ? next : prev;
     });
   }, [members]);
 
@@ -137,9 +139,8 @@ export default function WatchlistPage() {
     if (refreshedPoolId === activePoolId) return;
     if (!members.length) return;
     setRefreshedPoolId(activePoolId);
-    const stockIds = members.map((row) => row.stock_id);
-    refreshPrices.mutate(stockIds);
-  }, [activePoolId, refreshedPoolId, members]);
+    triggerAutoRefreshPrices(members.map((row) => row.stock_id));
+  }, [activePoolId, refreshedPoolId, members, triggerAutoRefreshPrices]);
 
   const createPool = useMutation({
     mutationFn: async () => {
@@ -225,20 +226,6 @@ export default function WatchlistPage() {
         description: 'Unable to remove ticker.',
         variant: 'destructive',
       });
-    },
-  });
-
-  const refreshPrices = useMutation({
-    mutationFn: async (stockIds: number[]) => {
-      if (!stockIds.length) return [];
-      const res = await apiClient.post('/stocks/prices/refresh', {
-        stock_ids: stockIds,
-        reason: 'watchlist_open',
-      });
-      return res.data;
-    },
-    onSuccess: () => {
-      membersQuery.refetch();
     },
   });
 
