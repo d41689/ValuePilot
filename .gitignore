@@ -55,6 +55,7 @@ frontend/.env.production.local
 
 # === Docker & Local Data ===
 postgres_data/
+storage/postgres/
 .gemini/
 *.log
 

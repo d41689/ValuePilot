@@ -1,15 +1,19 @@
 'use client';
 
-import { FormEvent, useState } from 'react';
 import Link from 'next/link';
-import { useRouter, useSearchParams } from 'next/navigation';
+import { FormEvent, useState } from 'react';
+import { useRouter } from 'next/navigation';
 
 import apiClient from '@/lib/api/client';
 
-type LoginResponse = {
-  access_token: string;
-  refresh_token: string;
-  token_type: string;
+type RegisterResponse = {
+  id: number;
+  email: string;
+  role: string;
+  tier: string;
+  is_active: boolean;
+  created_at: string;
+  updated_at: string | null;
 };
 
 type ApiError = {
@@ -20,49 +24,26 @@ type ApiError = {
   };
 };
 
-function decodeJwtPayload(token: string): Record<string, unknown> | null {
-  try {
-    const base64 = token.split('.')[1];
-    if (!base64) return null;
-    const normalized = base64.replace(/-/g, '+').replace(/_/g, '/');
-    const padded = normalized + '='.repeat((4 - (normalized.length % 4)) % 4);
-    return JSON.parse(atob(padded)) as Record<string, unknown>;
-  } catch {
-    return null;
-  }
-}
-
-export default function LoginPage() {
+export default function RegisterPage() {
   const router = useRouter();
-  const searchParams = useSearchParams();
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
-  const registered = searchParams.get('registered') === '1';
 
   const onSubmit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     setError(null);
     setIsSubmitting(true);
     try {
-      const response = await apiClient.post<LoginResponse>('/auth/login', {
+      await apiClient.post<RegisterResponse>('/auth/register', {
         email: email.trim(),
         password,
       });
-      const { access_token, refresh_token } = response.data;
-      const payload = decodeJwtPayload(access_token);
-      const role = typeof payload?.role === 'string' ? payload.role : 'user';
-
-      window.localStorage.setItem('vp_access_token', access_token);
-      window.localStorage.setItem('vp_refresh_token', refresh_token);
-      document.cookie = `vp_access_token=${access_token}; path=/; max-age=${7 * 24 * 60 * 60}; SameSite=Lax`;
-      document.cookie = `vp_role=${role}; path=/; max-age=${7 * 24 * 60 * 60}; SameSite=Lax`;
-
-      router.replace('/home');
+      router.replace('/login?registered=1');
     } catch (err: unknown) {
       const apiError = (typeof err === 'object' && err !== null ? err : {}) as ApiError;
-      const message = apiError.response?.data?.detail ?? 'Login failed';
+      const message = apiError.response?.data?.detail ?? 'Registration failed';
       setError(message);
     } finally {
       setIsSubmitting(false);
@@ -72,14 +53,11 @@ export default function LoginPage() {
   return (
     <div className="rounded-2xl border border-border/60 bg-card/95 p-6 shadow-sm">
       <div className="space-y-2">
-        <h1 className="font-display text-2xl font-semibold">Sign in</h1>
-        <p className="text-sm text-muted-foreground">Use your ValuePilot credentials.</p>
+        <h1 className="font-display text-2xl font-semibold">Create account</h1>
+        <p className="text-sm text-muted-foreground">
+          Register a new ValuePilot account with your email and password.
+        </p>
       </div>
-      {registered && (
-        <div className="mt-4 rounded-xl border border-emerald-300 bg-emerald-50 px-3 py-2 text-sm text-emerald-700">
-          Account created. Sign in with your new credentials.
-        </div>
-      )}
 
       <form className="mt-6 space-y-4" onSubmit={onSubmit}>
         <div className="space-y-2">
@@ -104,9 +82,11 @@ export default function LoginPage() {
             type="password"
             value={password}
             onChange={(event) => setPassword(event.target.value)}
+            minLength={8}
             required
             className="w-full rounded-xl border border-border/70 bg-background px-3 py-2 text-sm outline-none focus:border-primary/70"
           />
+          <p className="text-xs text-muted-foreground">Must be at least 8 characters.</p>
         </div>
         {error && (
           <div className="rounded-xl border border-red-300 bg-red-50 px-3 py-2 text-sm text-red-700">
@@ -118,14 +98,14 @@ export default function LoginPage() {
           disabled={isSubmitting}
           className="w-full rounded-xl bg-primary px-4 py-2 text-sm font-medium text-primary-foreground disabled:opacity-60"
         >
-          {isSubmitting ? 'Signing in...' : 'Sign in'}
+          {isSubmitting ? 'Creating account...' : 'Create account'}
         </button>
       </form>
 
       <p className="mt-4 text-center text-sm text-muted-foreground">
-        Need an account?{' '}
-        <Link href="/register" className="font-medium text-primary hover:underline">
-          Create one
+        Already have an account?{' '}
+        <Link href="/login" className="font-medium text-primary hover:underline">
+          Sign in
         </Link>
       </p>
     </div>

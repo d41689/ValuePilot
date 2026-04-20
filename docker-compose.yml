@@ -2,14 +2,19 @@ name: valuepilot-dev
 
 services:
   db:
-    image: postgres:15
+    image: postgres:18.3
     restart: unless-stopped
-    command: ["sleep", "infinity"]
     environment:
-      PGHOST: postgres
-      PGUSER: valuepilot
-      PGPASSWORD: valuepilot
-      PGDATABASE: valuepilot
+      POSTGRES_USER: valuepilot
+      POSTGRES_PASSWORD: valuepilot
+      POSTGRES_DB: valuepilot
+    volumes:
+      - ./storage/postgres:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U valuepilot -d valuepilot"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
     networks:
       - shared-infra
 
@@ -31,7 +36,8 @@ services:
       - /app/.next
     command: ["npm", "run", "dev", "--", "--hostname", "0.0.0.0", "--port", "3000"]
     depends_on:
-      - api
+      api:
+        condition: service_started
 
   api:
     build:
@@ -43,13 +49,14 @@ services:
     ports:
       - "${HOST_API_PORT:-8001}:8000"
     environment:
-      DATABASE_URL: postgresql://valuepilot:valuepilot@postgres:5432/valuepilot
+      DATABASE_URL: postgresql://valuepilot:valuepilot@db:5432/valuepilot
     volumes:
       - ./backend:/code
       - ./docs:/code/docs
     command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]
     depends_on:
-      - db
+      db:
+        condition: service_healthy
     networks:
       - default
       - shared-infra

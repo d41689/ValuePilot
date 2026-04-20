@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { AUTH_PUBLIC_PATHS, isPublicAuthPath } from '@/lib/authRoutes';
 
 const PROTECTED_PREFIXES = ['/home', '/documents', '/watchlist', '/upload', '/stocks', '/calibration', '/screener'];
 const ADMIN_PREFIXES = ['/upload'];
@@ -11,7 +12,7 @@ export function middleware(request: NextRequest) {
   const isProtectedRoute = PROTECTED_PREFIXES.some((prefix) => pathname === prefix || pathname.startsWith(`${prefix}/`));
   const isAdminRoute = ADMIN_PREFIXES.some((prefix) => pathname === prefix || pathname.startsWith(`${prefix}/`));
 
-  if (pathname === '/login') {
+  if (isPublicAuthPath(pathname)) {
     if (token) {
       return NextResponse.redirect(new URL('/home', request.url));
     }
@@ -31,7 +32,7 @@ export function middleware(request: NextRequest) {
 
 export const config = {
   matcher: [
-    '/login',
+    ...AUTH_PUBLIC_PATHS,
     '/home/:path*',
     '/documents/:path*',
     '/watchlist/:path*',

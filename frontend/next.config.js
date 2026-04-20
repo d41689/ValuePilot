@@ -6,7 +6,7 @@ const nextConfig = {
     return [
       {
         source: '/api/:path*',
-        destination: 'http://api:8000/:path*', // Proxy to backend service in Docker
+        destination: 'http://api:8000/api/:path*', // Preserve /api prefix for backend routes
       },
     ]
   },
