@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useEffectEvent, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useMutation, useQuery } from '@tanstack/react-query';
 import Link from 'next/link';
 import { Plus, RefreshCcw, Trash2 } from 'lucide-react';
@@ -117,9 +117,11 @@ export default function WatchlistPage() {
     },
   });
 
-  const triggerAutoRefreshPrices = useEffectEvent((stockIds: number[]) => {
-    refreshPrices.mutate(stockIds);
-  });
+  const refreshPricesMutateRef = useRef(refreshPrices.mutate);
+
+  useEffect(() => {
+    refreshPricesMutateRef.current = refreshPrices.mutate;
+  }, [refreshPrices.mutate]);
 
   useEffect(() => {
     if (!activePoolId && pools.length > 0) {
@@ -139,8 +141,8 @@ export default function WatchlistPage() {
     if (refreshedPoolId === activePoolId) return;
     if (!members.length) return;
     setRefreshedPoolId(activePoolId);
-    triggerAutoRefreshPrices(members.map((row) => row.stock_id));
-  }, [activePoolId, refreshedPoolId, members, triggerAutoRefreshPrices]);
+    refreshPricesMutateRef.current(members.map((row) => row.stock_id));
+  }, [activePoolId, refreshedPoolId, members]);
 
   const createPool = useMutation({
     mutationFn: async () => {

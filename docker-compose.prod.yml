@@ -20,7 +20,16 @@ services:
       api:
         condition: service_started
     command: >
-      sh -c "npm run build && HOSTNAME=0.0.0.0 PORT=3000 node .next/standalone/server.js"
+      sh -c "npm run build &&
+             mkdir -p .next/standalone/.next &&
+             rm -rf .next/standalone/.next/static &&
+             cp -R .next/static .next/standalone/.next/static &&
+             if [ -d public ]; then
+               rm -rf .next/standalone/public &&
+               cp -R public .next/standalone/public;
+             fi &&
+             cd .next/standalone &&
+             HOSTNAME=0.0.0.0 PORT=3000 node server.js"
 
   api:
     build:

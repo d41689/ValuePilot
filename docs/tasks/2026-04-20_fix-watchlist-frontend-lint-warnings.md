@@ -22,6 +22,7 @@
 ## Files To Change
 - `frontend/app/(dashboard)/watchlist/page.tsx`
 - `frontend/lib/watchlistState.js` (new, if needed)
+- `frontend/lib/watchlistState.d.ts` (new, if needed)
 - `frontend/lib/watchlistState.test.js` (new, if needed)
 - `docs/tasks/2026-04-20_fix-watchlist-frontend-lint-warnings.md` (this file)
 
@@ -58,11 +59,14 @@
   - member sorting
   - fair-value edit map generation
   - fair-value edit diffing
+- Added `frontend/lib/watchlistState.d.ts` so the TypeScript watchlist page consumes the JS helper with correct `Record<number, string>` typing during prod builds.
 - Added `frontend/lib/watchlistState.test.js` first and confirmed the red phase:
   - initial Docker test run failed with `Cannot find module './watchlistState'`
 - `docker compose up -d --build web` collided with the prod API port already in use on this machine, so verification was performed with one-off Docker commands instead:
   - `docker compose run --rm --no-deps web node --test ...`
   - `docker compose run --rm --no-deps web npm run lint`
+- Follow-up compatibility adjustment:
+  - Replaced `useEffectEvent` with a `useRef`-backed callback because the current React version in this repo does not export `useEffectEvent` during prod builds.
 - Cleaned up the temporary dev containers with `docker compose down` after verification.
 
 ## Verification Results
