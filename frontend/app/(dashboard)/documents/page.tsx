@@ -1,10 +1,12 @@
 'use client';
 
-import { useState } from 'react';
+import Link from 'next/link';
+import { useEffect, useState } from 'react';
 import { useMutation, useQuery } from '@tanstack/react-query';
-import { FileSearch, FileText, Loader2, RefreshCcw, X } from 'lucide-react';
+import { AlertTriangle, FileSearch, FileText, Loader2, RefreshCcw, Upload, X } from 'lucide-react';
 
 import apiClient from '@/lib/api/client';
+import { canUploadDocuments, getDocumentsUploadNotice } from '@/lib/documentsAccess';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import {
@@ -100,11 +102,20 @@ function formatPageCount(total: number, parsed?: number) {
 
 export default function DocumentsPage() {
   const { toast } = useToast();
+  const [role, setRole] = useState<string | null>(null);
   const [detail, setDetail] = useState<DetailView | null>(null);
   const [detailData, setDetailData] = useState<string>('');
   const [detailError, setDetailError] = useState<string | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
   const [activeReparseId, setActiveReparseId] = useState<number | null>(null);
+
+  useEffect(() => {
+    if (typeof document === 'undefined') return;
+    const cookiePart = document.cookie
+      .split('; ')
+      .find((item) => item.startsWith('vp_role='));
+    setRole(cookiePart ? decodeURIComponent(cookiePart.split('=')[1]) : null);
+  }, []);
 
   const documentsQuery = useQuery({
     queryKey: ['documents'],
@@ -159,6 +170,8 @@ export default function DocumentsPage() {
   };
 
   const documents = documentsQuery.data ?? [];
+  const canUpload = canUploadDocuments(role);
+  const uploadNotice = getDocumentsUploadNotice(role);
 
   return (
     <div className="space-y-6 animate-in fade-in slide-in-from-bottom-2 duration-500">
@@ -169,17 +182,39 @@ export default function DocumentsPage() {
             Research input registry for uploaded reports and parsing outcomes.
           </p>
         </div>
-        <div className="flex items-center gap-2 rounded-full border border-border/60 bg-card/80 px-4 py-2 text-xs text-muted-foreground">
-          <span className="font-semibold text-foreground">{documents.length}</span>
-          documents tracked
-          {documentsQuery.isFetching && (
-            <span className="flex items-center gap-1 text-primary">
-              <Loader2 className="h-3 w-3 animate-spin" />
-              Refreshing
-            </span>
-          )}
+        <div className="flex flex-wrap items-center justify-end gap-2">
+          {canUpload ? (
+            <Button asChild>
+              <Link href="/upload">
+                <Upload className="h-4 w-4" />
+                Upload Document
+              </Link>
+            </Button>
+          ) : null}
+          <div className="flex items-center gap-2 rounded-full border border-border/60 bg-card/80 px-4 py-2 text-xs text-muted-foreground">
+            <span className="font-semibold text-foreground">{documents.length}</span>
+            documents tracked
+            {documentsQuery.isFetching && (
+              <span className="flex items-center gap-1 text-primary">
+                <Loader2 className="h-3 w-3 animate-spin" />
+                Refreshing
+              </span>
+            )}
+          </div>
         </div>
       </div>
+
+      {uploadNotice && (
+        <Card className="border-amber-300/60 bg-amber-50/70">
+          <CardContent className="flex items-start gap-3 p-4 text-sm text-amber-900">
+            <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
+            <div>
+              <div className="font-medium">Upload access restricted</div>
+              <p>{uploadNotice}</p>
+            </div>
+          </CardContent>
+        </Card>
+      )}
 
       <Card className="border-border/60 bg-card/85">
         <CardHeader className="flex flex-row items-start justify-between">
