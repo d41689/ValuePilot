@@ -69,5 +69,6 @@ schema.sql
 
 .ai/
 .env
+.env.prod
 agents_hub/
 crew/
