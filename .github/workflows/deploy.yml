@@ -1,0 +1,47 @@
+name: Deploy Prod
+
+on:
+  workflow_run:
+    workflows:
+      - CI
+    types:
+      - completed
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-prod-main
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    if: >
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.workflow_run.conclusion == 'success' &&
+       github.event.workflow_run.head_branch == 'main')
+    runs-on:
+      - self-hosted
+      - macOS
+      - ARM64
+      - valuepilot-prod
+    timeout-minutes: 45
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v5
+
+      - name: Install deploy env files
+        run: |
+          test -f "$HOME/.config/valuepilot/.env"
+          test -f "$HOME/.config/valuepilot/.env.prod"
+          cp "$HOME/.config/valuepilot/.env" ./.env
+          cp "$HOME/.config/valuepilot/.env.prod" ./.env.prod
+
+      - name: Deploy prod stack
+        run: ./scripts/deploy_prod_from_main.sh
+
+      - name: Print prod logs on failure
+        if: failure()
+        run: docker compose -f docker-compose.prod.yml logs --no-color --tail=200
