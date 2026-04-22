@@ -35,6 +35,13 @@ jobs:
       - name: Create shared Docker network
         run: docker network create projects-shared || true
 
+      - name: Create CI env file
+        run: |
+          cat > .env <<'EOF'
+          NEXT_PUBLIC_API_URL=/api/v1
+          SECRET_KEY=valuepilot-ci-secret-key
+          EOF
+
       - name: Build and start services
         run: docker compose up -d --build
 

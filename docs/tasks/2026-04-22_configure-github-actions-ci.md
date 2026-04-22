@@ -50,6 +50,7 @@
 - 2026-04-22: Added `.github/workflows/ci.yml` with triggers for `pull_request` to `main` and `push` to `main`.
 - 2026-04-22: Discovered `docker-compose.yml` depends on the external network `projects-shared`, so the workflow creates that network before `docker compose up`.
 - 2026-04-22: Local verification needed host port overrides because this machine already has other services bound to the default ports; the workflow now sets CI-safe host ports.
+- 2026-04-22: First GitHub Actions run failed because the repo intentionally does not track root `.env`; updated the workflow to generate a minimal CI-only `.env` before starting Compose.
 
 ## Verification Results
 - `HOST_WEB_PORT=13001 HOST_API_PORT=18001 docker compose up -d --build` -> pass
