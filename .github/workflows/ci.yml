@@ -1,0 +1,59 @@
+name: CI
+
+on:
+  pull_request:
+    branches:
+      - main
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      HOST_WEB_PORT: 13001
+      HOST_API_PORT: 18001
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Show Docker versions
+        run: |
+          docker --version
+          docker compose version
+
+      - name: Create shared Docker network
+        run: docker network create projects-shared || true
+
+      - name: Build and start services
+        run: docker compose up -d --build
+
+      - name: Apply migrations
+        run: docker compose exec -T api alembic upgrade head
+
+      - name: Run backend tests
+        run: docker compose exec -T api pytest -q
+
+      - name: Run frontend unit tests
+        run: docker compose exec -T web sh -lc 'node --test lib/*.test.js'
+
+      - name: Run frontend lint
+        run: docker compose exec -T web npm run lint
+
+      - name: Print service logs on failure
+        if: failure()
+        run: docker compose logs --no-color
+
+      - name: Tear down services
+        if: always()
+        run: docker compose down -v
