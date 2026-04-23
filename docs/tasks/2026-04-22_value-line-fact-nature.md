@@ -67,6 +67,7 @@
 - `annual_financials.meta` now keeps backward-compatible `historical_years` while adding explicit `actual_years`, `estimate_years`, `fiscal_year_end_month`, and `fact_nature="mixed"`.
 - Key top-level sections now preserve source semantics: header and total return as `snapshot`; ratings, target price, long-term projection, and narrative as `opinion`.
 - Ingestion now propagates `fact_nature` / `is_estimate` into annual and quarterly parsed facts so downstream logic does not have to infer estimate semantics from the last year heuristic.
+- Follow-up convergence completed: page JSON no longer emits redundant quarterly/full-year `is_estimated`; consumers now rely on `fact_nature` instead.
 - Updated affected Value Line expected fixtures to the new page JSON contract after parser behavior stabilized.
 
 ## Verification Results
@@ -77,3 +78,10 @@
 - `docker compose exec api pytest -q`
 
 All passed. Final full API test run: `111 passed in 19.50s`.
+
+Second-pass convergence verification:
+- `docker compose exec api pytest -q tests/unit/test_value_line_axs_parser_time_fields.py tests/unit/test_value_line_calm_parser_fixture.py`
+- `docker compose exec api pytest -q tests/unit/test_value_line_metric_facts_time_series.py tests/unit/test_value_line_annual_facts.py`
+- `docker compose exec api pytest -q`
+
+All passed. Final full API test run after removing `is_estimated` from page JSON: `111 passed in 17.98s`.

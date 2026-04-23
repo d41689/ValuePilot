@@ -304,7 +304,6 @@
         },
         "full_year": {
           "value": 427.8,
-          "is_estimated": false,
           "fact_nature": "actual"
         }
       },
@@ -334,7 +333,6 @@
         },
         "full_year": {
           "value": 493.6,
-          "is_estimated": false,
           "fact_nature": "actual"
         }
       },
@@ -364,7 +362,6 @@
         },
         "full_year": {
           "value": 516.0,
-          "is_estimated": false,
           "fact_nature": "actual"
         }
       },
@@ -394,7 +391,6 @@
         },
         "full_year": {
           "value": 600.0,
-          "is_estimated": true,
           "fact_nature": "estimate"
         }
       },
@@ -424,7 +420,6 @@
         },
         "full_year": {
           "value": 650.0,
-          "is_estimated": true,
           "fact_nature": "estimate"
         }
       }
@@ -468,7 +463,6 @@
         },
         "full_year": {
           "value": 0.14,
-          "is_estimated": false,
           "fact_nature": "actual"
         }
       },
@@ -498,7 +492,6 @@
         },
         "full_year": {
           "value": 0.79,
-          "is_estimated": false,
           "fact_nature": "actual"
         }
       },
@@ -528,7 +521,6 @@
         },
         "full_year": {
           "value": 0.94,
-          "is_estimated": false,
           "fact_nature": "actual"
         }
       },
@@ -558,7 +550,6 @@
         },
         "full_year": {
           "value": 1.2,
-          "is_estimated": true,
           "fact_nature": "estimate"
         }
       },
@@ -588,7 +579,6 @@
         },
         "full_year": {
           "value": 1.4,
-          "is_estimated": true,
           "fact_nature": "estimate"
         }
       }
@@ -612,7 +602,6 @@
         "quarters": null,
         "full_year": {
           "value": null,
-          "is_estimated": false,
           "fact_nature": "actual"
         },
         "notes": "No cash dividends being paid"
@@ -622,7 +611,6 @@
         "quarters": null,
         "full_year": {
           "value": null,
-          "is_estimated": false,
           "fact_nature": "actual"
         },
         "notes": "No cash dividends being paid"
@@ -632,7 +620,6 @@
         "quarters": null,
         "full_year": {
           "value": null,
-          "is_estimated": false,
           "fact_nature": "actual"
         },
         "notes": "No cash dividends being paid"
@@ -642,7 +629,6 @@
         "quarters": null,
         "full_year": {
           "value": null,
-          "is_estimated": false,
           "fact_nature": "actual"
         },
         "notes": "No cash dividends being paid"
@@ -652,7 +638,6 @@
         "quarters": null,
         "full_year": {
           "value": null,
-          "is_estimated": false,
           "fact_nature": "actual"
         },
         "notes": "No cash dividends being paid"

@@ -108,6 +108,12 @@ def test_axs_semantic_tags_and_annual_estimate_years():
     assert annual_meta["estimate_years"] == [2025, 2026]
     assert annual_meta["actual_years"][-1] == 2024
 
+    full_year_2025 = next(row for row in actual["net_premiums_earned"]["by_year"] if row["calendar_year"] == 2025)[
+        "full_year"
+    ]
+    assert "is_estimated" not in full_year_2025
+    assert full_year_2025["fact_nature"] == "estimate"
+
 
 def test_axs_v1_1_meta_and_stable_top_level_keys():
     actual = build_page_json()

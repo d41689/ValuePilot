@@ -315,7 +315,6 @@
         },
         "full_year": {
           "value": 1777.2,
-          "is_estimated": false,
           "fact_nature": "actual"
         }
       },
@@ -345,7 +344,6 @@
         },
         "full_year": {
           "value": 3146.2,
-          "is_estimated": false,
           "fact_nature": "actual"
         }
       },
@@ -375,7 +373,6 @@
         },
         "full_year": {
           "value": 2326.4,
-          "is_estimated": false,
           "fact_nature": "actual"
         }
       },
@@ -405,7 +402,6 @@
         },
         "full_year": {
           "value": 4261.9,
-          "is_estimated": false,
           "fact_nature": "actual"
         }
       },
@@ -435,7 +431,6 @@
         },
         "full_year": {
           "value": 3355.0,
-          "is_estimated": true,
           "fact_nature": "estimate"
         }
       }
@@ -479,7 +474,6 @@
         },
         "full_year": {
           "value": 2.72,
-          "is_estimated": false,
           "fact_nature": "actual"
         }
       },
@@ -509,7 +503,6 @@
         },
         "full_year": {
           "value": 15.52,
-          "is_estimated": false,
           "fact_nature": "actual"
         }
       },
@@ -539,7 +532,6 @@
         },
         "full_year": {
           "value": 5.69,
-          "is_estimated": false,
           "fact_nature": "actual"
         }
       },
@@ -569,7 +561,6 @@
         },
         "full_year": {
           "value": 24.95,
-          "is_estimated": false,
           "fact_nature": "actual"
         }
       },
@@ -599,7 +590,6 @@
         },
         "full_year": {
           "value": 9.8,
-          "is_estimated": true,
           "fact_nature": "estimate"
         }
       }
@@ -643,7 +633,6 @@
         },
         "full_year": {
           "value": 1.73,
-          "is_estimated": false,
           "fact_nature": "actual"
         }
       },
@@ -673,7 +662,6 @@
         },
         "full_year": {
           "value": 4.31,
-          "is_estimated": false,
           "fact_nature": "actual"
         }
       },
@@ -703,7 +691,6 @@
         },
         "full_year": {
           "value": 2.9,
-          "is_estimated": false,
           "fact_nature": "actual"
         }
       },
@@ -733,7 +720,6 @@
         },
         "full_year": {
           "value": 8.67,
-          "is_estimated": true,
           "fact_nature": "estimate"
         }
       },
@@ -742,7 +728,6 @@
         "quarters": null,
         "full_year": {
           "value": null,
-          "is_estimated": true,
           "fact_nature": "estimate",
           "notes": "No quarterly or full-year dividend values provided in report"
         }

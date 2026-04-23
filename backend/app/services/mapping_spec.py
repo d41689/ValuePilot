@@ -130,8 +130,6 @@ def _walk_tokens(
                 if "fact_nature" in item:
                     next_context["fact_nature"] = item.get("fact_nature")
                 full_year = item.get("full_year") if isinstance(item.get("full_year"), dict) else None
-                if full_year is not None and "is_estimated" in full_year:
-                    next_context["is_estimated"] = full_year.get("is_estimated")
                 if full_year is not None and "fact_nature" in full_year:
                     next_context["fact_nature"] = full_year.get("fact_nature")
             yield from _walk_tokens(
@@ -312,8 +310,6 @@ def _normalize_numeric(value: Any, unit: Optional[str]) -> tuple[Optional[float]
 def _is_estimate(mapping: dict[str, Any], match: MappingMatch, root: dict[str, Any]) -> bool:
     fact_nature = match.context.get("fact_nature")
     if fact_nature == "estimate":
-        return True
-    if match.context.get("is_estimated") is True:
         return True
     if mapping.get("period_type") != "FY":
         return False

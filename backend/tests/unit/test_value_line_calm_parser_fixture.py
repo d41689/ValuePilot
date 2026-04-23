@@ -35,9 +35,9 @@ def test_value_line_calm_non_december_fiscal_year_estimate_boundary():
 
     quarterly_sales = actual["quarterly_sales"]["by_year"]
     by_year = {row["calendar_year"]: row for row in quarterly_sales}
-    assert by_year[2025]["full_year"]["is_estimated"] is False
+    assert "is_estimated" not in by_year[2025]["full_year"]
     assert by_year[2025]["full_year"]["fact_nature"] == "actual"
-    assert by_year[2026]["full_year"]["is_estimated"] is True
+    assert "is_estimated" not in by_year[2026]["full_year"]
     assert by_year[2026]["full_year"]["fact_nature"] == "estimate"
 
     annual_meta = actual["annual_financials"]["meta"]

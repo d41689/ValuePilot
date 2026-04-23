@@ -635,12 +635,11 @@ def _build_quarterly_block(
     by_year = []
     for row in rows:
         year = row.get("calendar_year")
-        is_estimated = is_estimated_year(
+        fact_nature = "estimate" if is_estimated_year(
             int(year) if year is not None else None,
             report_date,
             fiscal_year_end_month,
-        )
-        fact_nature = "estimate" if is_estimated else "actual"
+        ) else "actual"
         quarters = {
             "Q1": {"period_end": quarter_end_date_for_fiscal_year(year, 1, month_order), "value": row.get("q1"), "fact_nature": fact_nature},
             "Q2": {"period_end": quarter_end_date_for_fiscal_year(year, 2, month_order), "value": row.get("q2"), "fact_nature": fact_nature},
@@ -650,7 +649,7 @@ def _build_quarterly_block(
         by_year.append({
             "calendar_year": year,
             "quarters": quarters,
-            "full_year": {"value": row.get("full_year"), "is_estimated": is_estimated, "fact_nature": fact_nature},
+            "full_year": {"value": row.get("full_year"), "fact_nature": fact_nature},
         })
 
     if add_missing_report_year and report_year:
@@ -661,13 +660,11 @@ def _build_quarterly_block(
                 "quarters": None,
                 "full_year": {
                     "value": None,
-                    "is_estimated": True,
                     "fact_nature": "estimate",
                     "notes": "No quarterly or full-year dividend values provided in report",
                 },
             })
         else:
-            by_year[-1]["full_year"]["is_estimated"] = True
             by_year[-1]["full_year"]["fact_nature"] = "estimate"
 
     return {
@@ -1121,7 +1118,7 @@ def _build_quarterly_dividends_paid(
         {
             "calendar_year": y,
             "quarters": None,
-            "full_year": {"value": None, "is_estimated": False, "fact_nature": "actual"},
+            "full_year": {"value": None, "fact_nature": "actual"},
             "notes": note,
         }
         for y in years

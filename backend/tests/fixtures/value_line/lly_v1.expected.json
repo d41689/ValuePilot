@@ -321,7 +321,6 @@
         },
         "full_year": {
           "value": 28541.0,
-          "is_estimated": false,
           "fact_nature": "actual"
         }
       },
@@ -351,7 +350,6 @@
         },
         "full_year": {
           "value": 34124.0,
-          "is_estimated": false,
           "fact_nature": "actual"
         }
       },
@@ -381,7 +379,6 @@
         },
         "full_year": {
           "value": 45043.0,
-          "is_estimated": false,
           "fact_nature": "actual"
         }
       },
@@ -411,7 +408,6 @@
         },
         "full_year": {
           "value": 63800.0,
-          "is_estimated": true,
           "fact_nature": "estimate"
         }
       },
@@ -441,7 +437,6 @@
         },
         "full_year": {
           "value": 75900.0,
-          "is_estimated": true,
           "fact_nature": "estimate"
         }
       }
@@ -485,7 +480,6 @@
         },
         "full_year": {
           "value": 7.94,
-          "is_estimated": false,
           "fact_nature": "actual"
         }
       },
@@ -515,7 +509,6 @@
         },
         "full_year": {
           "value": 6.32,
-          "is_estimated": false,
           "fact_nature": "actual"
         }
       },
@@ -545,7 +538,6 @@
         },
         "full_year": {
           "value": 12.99,
-          "is_estimated": false,
           "fact_nature": "actual"
         }
       },
@@ -575,7 +567,6 @@
         },
         "full_year": {
           "value": 23.8,
-          "is_estimated": true,
           "fact_nature": "estimate"
         }
       },
@@ -605,7 +596,6 @@
         },
         "full_year": {
           "value": 32.5,
-          "is_estimated": true,
           "fact_nature": "estimate"
         }
       }
@@ -649,7 +639,6 @@
         },
         "full_year": {
           "value": 3.4,
-          "is_estimated": false,
           "fact_nature": "actual"
         }
       },
@@ -679,7 +668,6 @@
         },
         "full_year": {
           "value": 3.92,
-          "is_estimated": false,
           "fact_nature": "actual"
         }
       },
@@ -709,7 +697,6 @@
         },
         "full_year": {
           "value": 4.52,
-          "is_estimated": false,
           "fact_nature": "actual"
         }
       },
@@ -739,7 +726,6 @@
         },
         "full_year": {
           "value": 5.2,
-          "is_estimated": false,
           "fact_nature": "actual"
         }
       },
@@ -769,7 +755,6 @@
         },
         "full_year": {
           "value": null,
-          "is_estimated": true,
           "fact_nature": "estimate"
         }
       }
