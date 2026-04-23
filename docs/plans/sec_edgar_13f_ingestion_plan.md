@@ -205,6 +205,10 @@ CREATE TABLE institution_managers (
     last_seen_at        TIMESTAMPTZ DEFAULT NOW(),     -- 该 manager 再次出现在白名单同步或 EDGAR 抓取结果中时更新
     created_at          TIMESTAMPTZ DEFAULT NOW()
 );
+-- 种子阶段若尚未确认严格 legal entity name，可先将抓取到的 manager name 暂存为 `legal_name`，后续经人工确认后再修正。
+-- match_status 默认值 'seeded' 针对 Dataroma 导入路径；其他入口（如手动录入或 EDGAR 直接发现）应在应用层显式指定初始状态。
+-- dataroma_code 建议加部分唯一索引：CREATE UNIQUE INDEX uq_institution_managers_dataroma_code ON institution_managers(dataroma_code) WHERE dataroma_code IS NOT NULL;
+CREATE INDEX idx_institution_managers_parent_manager_id ON institution_managers(parent_manager_id);
 
 -- 原始抓取文档（可重放、可审计，覆盖 EDGAR 与 Dataroma）
 CREATE TABLE raw_source_documents (
@@ -226,6 +230,7 @@ CREATE TABLE raw_source_documents (
 
 CREATE UNIQUE INDEX uq_raw_source_documents_system_url
     ON raw_source_documents(source_system, source_url);
+-- 当前 MVP raw 层采用"单 URL 单记录"模型；若应用层执行覆盖更新，则更新原记录而非追加新版本。
 
 -- 13F 申报元数据（保留原始版本 + amendment 关系）
 CREATE TABLE filings_13f (
@@ -436,7 +441,8 @@ Dataroma 侧：重新抓取 managers.php，同步白名单新增/移除的机构
 amendment 处理规则：
 - 13F-HR/A 不覆盖原始 filing 记录
 - 同一期内保留所有版本
-- 识别“历史补录”：若修订版增加了之前没有的持仓且 filing 存在保密申请历史，应标记为补录而非当季买入
+- 识别”历史补录”：若修订版增加了之前没有的持仓且 filing 存在保密申请历史，应标记为补录而非当季买入
+- MVP 阶段”历史补录”优先作为 serving/UI 层推导标签处理，暂不强制新增持久化字段。
 ```
 
 ---
