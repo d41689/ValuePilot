@@ -8,7 +8,18 @@ import axios from 'axios';
 import apiClient from '@/lib/api/client';
 import TickerSearchBox from '@/components/TickerSearchBox';
 import StockSummaryCard from '@/components/StockSummaryCard';
+import provenanceHelpers from '@/lib/factProvenance';
 import { buildStockRoute, normalizeTicker } from '@/lib/stockRoutes';
+
+const { formatFactProvenanceLabel } = provenanceHelpers;
+
+type FactProvenance = {
+  source_type?: string | null;
+  source_document_id?: number | null;
+  source_report_date?: string | null;
+  period_end_date?: string | null;
+  is_active_report?: boolean;
+};
 
 type StockSummary = {
   id: number;
@@ -17,6 +28,10 @@ type StockSummary = {
   company_name: string;
   price: number | null;
   pe: number | null;
+  active_report_document_id?: number | null;
+  active_report_date?: string | null;
+  price_provenance?: FactProvenance | null;
+  pe_provenance?: FactProvenance | null;
 };
 
 export default function StockSummaryPage() {
@@ -92,6 +107,10 @@ export default function StockSummaryPage() {
           exchange={summary.exchange}
           price={summary.price}
           pe={summary.pe}
+          activeReportDate={summary.active_report_date}
+          activeReportDocumentId={summary.active_report_document_id}
+          priceProvenanceLabel={formatFactProvenanceLabel(summary.price_provenance)}
+          peProvenanceLabel={formatFactProvenanceLabel(summary.pe_provenance)}
         />
       )}
 

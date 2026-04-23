@@ -9,11 +9,18 @@ import TickerSearchBox from '@/components/TickerSearchBox';
 import { Card } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { toast } from '@/components/ui/use-toast';
+import provenanceHelpers from '@/lib/factProvenance';
 import { normalizeTicker } from '@/lib/stockRoutes';
 import { computeGrowthValue, computeTerminalValue, computeTotalValue } from '@/lib/dcfMath';
 import { resolveDcfDefaults } from '@/lib/dcfDefaults';
-import { resolveDcfComponentInputs, type DcfInputsResponsePayload } from '@/lib/dcfInputsSeries';
+import {
+  resolveDcfComponentInputs,
+  resolveDcfInputsPayload,
+  type DcfInputsResponsePayload,
+} from '@/lib/dcfInputsSeries';
 import apiClient from '@/lib/api/client';
+
+const { formatFactProvenanceLabel, formatComputedFactProvenanceLabel } = provenanceHelpers;
 
 const DEFAULT_NET_PROFIT_PER_SHARE = '12.00';
 const DEFAULT_DEPRECIATION_PER_SHARE = '3.00';
@@ -43,6 +50,43 @@ const formatInputMoney = (value: number) =>
     maximumFractionDigits: 3,
   });
 
+type FactProvenance = {
+  source_type?: string | null;
+  source_document_id?: number | null;
+  source_report_date?: string | null;
+  period_end_date?: string | null;
+  is_active_report?: boolean;
+};
+
+type ComputedFactProvenance = {
+  inputs?: Array<
+    {
+      metric_key?: string;
+    } & FactProvenance
+  >;
+};
+
+type DcfValueWithProvenance = {
+  value?: number;
+  source?: string;
+  provenance?: FactProvenance | ComputedFactProvenance | null;
+};
+
+type StockDcfPayload = {
+  id?: number;
+  latest_price?: number | null;
+  latest_price_updated_at?: string | null;
+  active_report_document_id?: number | null;
+  active_report_date?: string | null;
+  oeps_normalized_provenance?: FactProvenance | null;
+  growth_rate_options?: Array<{
+    key: string;
+    label: string;
+    value: number;
+    provenance?: FactProvenance | null;
+  }> | null;
+};
+
 export default function StockDcfPage() {
   const params = useParams();
   const tickerParam = Array.isArray(params?.ticker) ? params.ticker[0] : params?.ticker;
@@ -52,6 +96,7 @@ export default function StockDcfPage() {
   const [latestPriceUpdatedAt, setLatestPriceUpdatedAt] = useState<string | null>(null);
   const [manualPrice, setManualPrice] = useState('');
   const [stockId, setStockId] = useState<number | null>(null);
+  const [stockPayload, setStockPayload] = useState<StockDcfPayload | null>(null);
   const [isSavingFairValue, setIsSavingFairValue] = useState(false);
   const [hasResolvedStockDefaults, setHasResolvedStockDefaults] = useState(false);
   const [netProfitPerShare, setNetProfitPerShare] = useState(DEFAULT_NET_PROFIT_PER_SHARE);
@@ -83,6 +128,7 @@ export default function StockDcfPage() {
     setLatestPriceUpdatedAt(null);
     setManualPrice('');
     setStockId(null);
+    setStockPayload(null);
     setNetProfitPerShare(DEFAULT_NET_PROFIT_PER_SHARE);
     setDepreciationPerShare(DEFAULT_DEPRECIATION_PER_SHARE);
     setCapexPerShare(DEFAULT_CAPEX_PER_SHARE);
@@ -104,7 +150,8 @@ export default function StockDcfPage() {
         if (!isActive) {
           return;
         }
-        const payload = response.data ?? {};
+        const payload = (response.data ?? {}) as StockDcfPayload & Record<string, unknown>;
+        setStockPayload(payload);
         const defaults = resolveDcfDefaults(payload);
         const nextDcfInputsPayload: DcfInputsResponsePayload = {
           dcf_inputs: payload?.dcf_inputs ?? null,
@@ -158,13 +205,15 @@ export default function StockDcfPage() {
             if (!isActive) {
               return;
             }
-            if (typeof refreshed.data?.id === 'number') {
-              setStockId(refreshed.data.id);
+            const refreshedPayload = (refreshed.data ?? {}) as StockDcfPayload & Record<string, unknown>;
+            setStockPayload(refreshedPayload);
+            if (typeof refreshedPayload.id === 'number') {
+              setStockId(refreshedPayload.id);
             }
-            const refreshedPrice = refreshed.data?.latest_price;
+            const refreshedPrice = refreshedPayload.latest_price;
             if (typeof refreshedPrice === 'number' && Number.isFinite(refreshedPrice)) {
               setLatestPrice(refreshedPrice);
-              setLatestPriceUpdatedAt(refreshed.data?.latest_price_updated_at ?? null);
+              setLatestPriceUpdatedAt(refreshedPayload.latest_price_updated_at ?? null);
             }
           } catch {
             // best-effort refresh; keep existing price if refresh fails
@@ -258,6 +307,60 @@ export default function StockDcfPage() {
     return dt.toLocaleString();
   }, [latestPriceUpdatedAt]);
 
+  const activeReportLabel = useMemo(() => {
+    if (!stockPayload) {
+      return null;
+    }
+    const segments = [];
+    if (stockPayload.active_report_date) {
+      const parsed = new Date(`${stockPayload.active_report_date}T00:00:00`);
+      segments.push(
+        Number.isNaN(parsed.getTime())
+          ? stockPayload.active_report_date
+          : parsed.toLocaleDateString()
+      );
+    }
+    if (Number.isInteger(stockPayload.active_report_document_id)) {
+      segments.push(`doc #${stockPayload.active_report_document_id}`);
+    }
+    return segments.length > 0 ? `Active report · ${segments.join(' · ')}` : null;
+  }, [stockPayload]);
+
+  const selectedBasedOnPayload = useMemo(
+    () =>
+      resolveDcfInputsPayload(dcfInputsPayload ?? {}, basedOnSelection) as
+        | {
+            net_profit_per_share?: DcfValueWithProvenance | null;
+            depreciation_per_share?: DcfValueWithProvenance | null;
+          }
+        | null,
+    [basedOnSelection, dcfInputsPayload]
+  );
+
+  const basedOnProvenanceLabel = useMemo(() => {
+    if (basedOnSelection === 'norm') {
+      return formatFactProvenanceLabel(stockPayload?.oeps_normalized_provenance);
+    }
+    const factLabel = formatFactProvenanceLabel(
+      (selectedBasedOnPayload?.net_profit_per_share?.provenance as FactProvenance | null) ?? null
+    );
+    if (factLabel) {
+      return factLabel;
+    }
+    return formatComputedFactProvenanceLabel(
+      (selectedBasedOnPayload?.depreciation_per_share?.provenance as ComputedFactProvenance | null) ??
+        null
+    );
+  }, [basedOnSelection, selectedBasedOnPayload, stockPayload]);
+
+  const growthRateProvenanceLabel = useMemo(() => {
+    if (!stockPayload || !growthRateSelection || !Array.isArray(stockPayload.growth_rate_options)) {
+      return null;
+    }
+    const option = stockPayload.growth_rate_options.find((item) => item?.key === growthRateSelection);
+    return formatFactProvenanceLabel(option?.provenance ?? null);
+  }, [growthRateSelection, stockPayload]);
+
   const handleSaveFairValue = async () => {
     if (stockId === null) {
       toast({
@@ -301,6 +404,9 @@ export default function StockDcfPage() {
       <div className="space-y-3">
         <h1 className="text-xl font-semibold tracking-tight">DCF</h1>
         <TickerSearchBox destination="dcf" defaultValue={displayTicker} />
+        {activeReportLabel ? (
+          <div className="text-sm text-muted-foreground">{activeReportLabel}</div>
+        ) : null}
       </div>
 
       <Card className="overflow-hidden border-border/70 bg-background/80">
@@ -375,6 +481,11 @@ export default function StockDcfPage() {
                   </button>
                 ))}
               </div>
+              {basedOnProvenanceLabel ? (
+                <div className="text-xs font-normal text-muted-foreground">
+                  {basedOnProvenanceLabel}
+                </div>
+              ) : null}
             </div>
             <div className="flex items-center gap-2 rounded-lg border border-border/70 bg-card/80 px-4 py-2">
               <span className="text-muted-foreground">$</span>
@@ -561,6 +672,11 @@ export default function StockDcfPage() {
                         </button>
                       ))}
                     </div>
+                    {growthRateProvenanceLabel ? (
+                      <div className="text-xs font-normal text-muted-foreground">
+                        {growthRateProvenanceLabel}
+                      </div>
+                    ) : null}
                   </div>
                 </div>
                 <div className="flex items-center justify-between text-base font-semibold">
