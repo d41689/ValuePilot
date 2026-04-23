@@ -207,7 +207,9 @@ CREATE TABLE institution_managers (
 );
 -- 种子阶段若尚未确认严格 legal entity name，可先将抓取到的 manager name 暂存为 `legal_name`，后续经人工确认后再修正。
 -- match_status 默认值 'seeded' 针对 Dataroma 导入路径；其他入口（如手动录入或 EDGAR 直接发现）应在应用层显式指定初始状态。
--- dataroma_code 建议加部分唯一索引：CREATE UNIQUE INDEX uq_institution_managers_dataroma_code ON institution_managers(dataroma_code) WHERE dataroma_code IS NOT NULL;
+CREATE UNIQUE INDEX uq_institution_managers_dataroma_code
+    ON institution_managers(dataroma_code)
+    WHERE dataroma_code IS NOT NULL;  -- seed 阶段稳定外部标识，防止 bootstrap 重跑产生重复实体
 CREATE INDEX idx_institution_managers_parent_manager_id ON institution_managers(parent_manager_id);
 
 -- 原始抓取文档（可重放、可审计，覆盖 EDGAR 与 Dataroma）
@@ -230,7 +232,7 @@ CREATE TABLE raw_source_documents (
 
 CREATE UNIQUE INDEX uq_raw_source_documents_system_url
     ON raw_source_documents(source_system, source_url);
--- 当前 MVP raw 层采用"单 URL 单记录"模型；若应用层执行覆盖更新，则更新原记录而非追加新版本。
+-- 当前 MVP raw 层采用"单 URL 单记录"模型；MVP 阶段默认策略为"已存在则跳过"；仅在显式 refresh / reparse 场景下允许覆盖更新（更新原记录而非追加新版本）。
 
 -- 13F 申报元数据（保留原始版本 + amendment 关系）
 CREATE TABLE filings_13f (
@@ -318,6 +320,7 @@ CREATE UNIQUE INDEX uq_cusip_ticker_map_cusip_valid_from
 - `valid_from` 允许为空；未知起始时间的映射以 surrogate key 管理，并通过唯一索引约束已知起始日期的重复写入
 - PostgreSQL 唯一索引允许多个 `NULL` 共存，因此 `valid_from IS NULL` 的重复控制不能依赖索引，需由应用层或额外的 partial unique index 处理
 - 自动写入映射时，不应为同一 `cusip` 生成相互重叠的有效时间区间；冲突记录应进入人工 review 或降级为候选映射
+- MVP 阶段有效时间区间冲突由 enrichment service 在写入前校验，暂不依赖数据库 exclusion constraint
 
 ### 5.3 关键字段语义约定
 
@@ -579,6 +582,8 @@ prod 的 docker-compose / 部署配置应显式设置 EDGAR_SCHEDULER_ENABLED=tr
 - [ ] 接入 SEC Official List 校验 CUSIP 是否可申报（用于增强映射置信度与数据标注，MVP 阶段不作为阻塞 holding 入库的硬门槛）
 
 ### Phase C — API 层
+> 公开 API 默认仅面向 `match_status='confirmed'` 且 `cik IS NOT NULL` 的机构；候选记录不进入正式查询接口。
+
 - [ ] `GET /api/v1/institutions` — 机构列表（支持 `?superinvestor=true` 过滤）
 - [ ] `GET /api/v1/institutions/{cik}/filings?period=2024-Q4` — 返回该季度全部 filing 版本
 - [ ] `GET /api/v1/institutions/{cik}/holdings?period=2024-Q4` — 默认返回 canonical snapshot（`is_latest_for_period = true`）
