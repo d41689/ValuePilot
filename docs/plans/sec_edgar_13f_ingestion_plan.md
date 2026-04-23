@@ -212,13 +212,14 @@ CREATE TABLE raw_source_documents (
     fetched_at          TIMESTAMPTZ DEFAULT NOW(),
     etag                TEXT,
     raw_sha256          VARCHAR(64),
-    body_path           TEXT NOT NULL,
-    parse_status        VARCHAR(20) DEFAULT 'pending', -- pending / parsed / failed
+    body_path           TEXT NOT NULL,                -- 原始响应内容在对象存储或本地归档中的路径标识
+    parse_status        VARCHAR(20) DEFAULT 'pending', -- 取值受代码枚举约束（pending / parsed / failed），不允许自由文本
     parsed_at           TIMESTAMPTZ,
     error_message       TEXT
 );
 
--- 防止重跑 backfill 时 raw 层无限膨胀；同一 URL 的重复抓取以 etag / sha256 区分版本
+-- MVP 阶段 raw 层默认按 (source_system, source_url) 去重；
+-- 若后续需要保留同一 URL 的多版本响应，再放宽该约束并引入版本字段。
 CREATE UNIQUE INDEX uq_raw_source_documents_system_url
     ON raw_source_documents(source_system, source_url);
 
@@ -269,7 +270,7 @@ CREATE INDEX idx_filings_13f_manager_period ON filings_13f(manager_id, period_of
 CREATE INDEX idx_filings_13f_latest_period ON filings_13f(manager_id, period_of_report, is_latest_for_period);
 
 -- 保证同一 (manager_id, period_of_report) 只有一条 is_latest_for_period = true
--- 实现层在更新 canonical snapshot 时须先将旧版本置 false，再将新版本置 true
+-- 该更新应在单个事务内完成，避免违反部分唯一索引或产生短暂双真值状态
 CREATE UNIQUE INDEX uq_filings_13f_latest_per_period
     ON filings_13f(manager_id, period_of_report)
     WHERE is_latest_for_period = TRUE;
@@ -323,6 +324,7 @@ CREATE UNIQUE INDEX uq_cusip_ticker_map_cusip_valid_from
 - 排序最后的一份 filing 标记为 `is_latest_for_period = true`
 - `is_latest_for_period` 的判定不依赖 `amends_accession_no` 是否可靠解析
 - 实现层应保证同一 `(manager_id, period_of_report)` 仅有一条记录满足 `is_latest_for_period = true`（通过部分唯一索引 `uq_filings_13f_latest_per_period` 强制执行）
+- 当某个 `(manager_id, period_of_report)` 组新增 filing 时，需对该组全部记录重算 `version_rank` 与 `is_latest_for_period`，更新须在单个事务内完成
 
 **`amends_accession_no` 填充规则**：
 - 若可从 amendment filing 内容中可靠解析出被修订 accession，则写入 `amends_accession_no`
@@ -364,7 +366,7 @@ CREATE UNIQUE INDEX uq_cusip_ticker_map_cusip_valid_from
 
 2. 对每个 superinvestor，使用 EDGAR search-index 搜索 13F 申报候选并补充 CIK：
    GET https://efts.sec.gov/LATEST/search-index?q="{manager_name}"&forms=13F-HR
-   → 匹配 CIK，更新 institution_managers.cik
+   → 低置信度匹配不直接写入 institution_managers.cik，先进入 review queue，人工确认后再提升
 
 3. 结果：institution_managers 表里有 ~150 条带 CIK + dataroma_code 的超级投资者
 ```
@@ -478,14 +480,14 @@ DATAROMA_RETRY_BACKOFF_S = [10, 60]
 
 ### 数据质量校验（MVP 必做）
 - [ ] 校验 `holdings_13f.value_thousands` 汇总与 `reported_total_value_thousands` 的差异
-- [ ] 校验 `cusip` 长度与字符合法性
+- [ ] 校验 `cusip` 长度与字符集合等基础格式合法性（不验证 CUSIP 的真实存在性）
 - [ ] 校验 `shares` / `value_thousands` 非负
 - [ ] 校验同一 filing 内无重复 `row_fingerprint`
 - [ ] 校验 `period_of_report` 与目标季度一致
 - [ ] 对解析失败的 raw 文档保留错误信息并可重试
 
 ### Phase B — CUSIP 映射完善
-- [ ] EDGAR company search 补充未映射 CUSIP
+- [ ] EDGAR 搜索接口或其他官方可验证来源补充未映射 CUSIP
 - [ ] 自动关联 `holdings_13f.stock_id`
 
 ### Phase C — API 层
