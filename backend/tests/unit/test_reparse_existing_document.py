@@ -3,6 +3,7 @@ from datetime import date
 from app.models.users import User
 from app.models.stocks import Stock
 from app.models.artifacts import PdfDocument, DocumentPage
+from app.models.extractions import MetricExtraction
 from app.models.facts import MetricFact
 from app.services.ingestion_service import IngestionService
 from unittest.mock import patch
@@ -487,3 +488,99 @@ def test_reparse_existing_document_promotes_newer_document_for_same_metric_perio
     assert old_fact.is_current is False
     assert new_fact.value_numeric == 120.0
     assert new_fact.is_current is True
+
+
+def test_reparse_existing_document_replaces_prior_document_snapshot_when_identity_changes(db_session):
+    user = User(email="reparse_identity_change@example.com")
+    db_session.add(user)
+    db_session.commit()
+
+    old_stock = Stock(ticker="FNVD", exchange="NYSE", company_name="Franco-Nevada Old")
+    new_stock = Stock(ticker="FNV", exchange="NYSE", company_name="Franco-Nevada Corp.")
+    db_session.add_all([old_stock, new_stock])
+    db_session.commit()
+
+    text = "FRANCO-NEVADA RECENT PRICE 10\nNYSE-FNV\nVALUE LINE\nKevin Downing January 2, 2026\n"
+    doc = PdfDocument(
+        user_id=user.id,
+        file_name="FNV.pdf",
+        source="upload",
+        file_storage_key="/tmp/fnv.pdf",
+        parse_status="parsed",
+        stock_id=old_stock.id,
+        identity_needs_review=False,
+        raw_text=text,
+    )
+    db_session.add(doc)
+    db_session.commit()
+
+    db_session.add(
+        DocumentPage(
+            document_id=doc.id,
+            page_number=1,
+            page_text=text,
+            text_extraction_method="native_text",
+        )
+    )
+    db_session.add(
+        MetricExtraction(
+            user_id=user.id,
+            document_id=doc.id,
+            page_number=1,
+            field_key="recent_price",
+            raw_value_text="9",
+            original_text_snippet="RECENT PRICE 9",
+            parsed_value_json={"raw": "9"},
+            confidence_score=0.5,
+            bbox_json=None,
+            parser_template_id=None,
+            parser_version="v1",
+        )
+    )
+    db_session.add(
+        MetricFact(
+            user_id=user.id,
+            stock_id=old_stock.id,
+            metric_key="mkt.price",
+            value_json={"raw": "9", "normalized": 9.0, "unit": "USD"},
+            value_numeric=9.0,
+            unit="USD",
+            period_type="AS_OF",
+            period_end_date=date(2026, 1, 2),
+            source_type="parsed",
+            source_document_id=doc.id,
+            source_ref_id=None,
+            is_current=True,
+        )
+    )
+    db_session.commit()
+
+    service = IngestionService(db_session)
+    service.reparse_existing_document(user_id=user.id, document_id=doc.id, reextract_pdf=False)
+
+    db_session.expire_all()
+    db_session.refresh(doc)
+    facts = (
+        db_session.query(MetricFact)
+        .filter(
+            MetricFact.source_document_id == doc.id,
+            MetricFact.source_type == "parsed",
+        )
+        .order_by(MetricFact.id.asc())
+        .all()
+    )
+    extractions = (
+        db_session.query(MetricExtraction)
+        .filter(MetricExtraction.document_id == doc.id)
+        .order_by(MetricExtraction.id.asc())
+        .all()
+    )
+
+    assert facts
+    assert doc.stock_id is not None
+    assert doc.stock_id != old_stock.id
+    assert {fact.stock_id for fact in facts} == {doc.stock_id}
+    assert all(fact.is_current for fact in facts)
+    assert all(fact.stock_id != old_stock.id for fact in facts)
+    assert extractions
+    assert all(extraction.raw_value_text != "9" for extraction in extractions)

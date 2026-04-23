@@ -307,8 +307,8 @@ class IngestionService:
 
     def reparse_existing_document(self, *, user_id: int, document_id: int, reextract_pdf: bool = False) -> PdfDocument:
         """
-        Re-runs parsing on an existing document without mutating prior metric_extractions rows.
-        Inserts new metric_extractions + metric_facts and deactivates prior parsed current facts per metric_key.
+        Re-runs parsing on an existing document by rebuilding its parsed snapshot.
+        Removes prior parsed metric_extractions + metric_facts for the document and then inserts a fresh parse result.
         """
         doc = self.db.get(PdfDocument, document_id)
         if not doc or doc.user_id != user_id:
@@ -358,10 +358,13 @@ class IngestionService:
                 doc.raw_text = "\n".join([page_text or "" for _, page_text, _ in pages_data])
 
         if not pages_data:
+            self._clear_document_parsed_snapshot(doc)
             doc.parse_status = "failed"
             self.db.commit()
             self.db.refresh(doc)
             return doc
+
+        self._clear_document_parsed_snapshot(doc)
 
         is_multi_company_container = len(pages_data) > 1
         if is_multi_company_container:
@@ -461,6 +464,21 @@ class IngestionService:
         self.db.commit()
         self.db.refresh(doc)
         return doc
+
+    def _clear_document_parsed_snapshot(self, doc: PdfDocument) -> None:
+        self.db.query(MetricFact).filter(
+            MetricFact.source_document_id == doc.id,
+            MetricFact.source_type == "parsed",
+        ).delete(synchronize_session=False)
+        self.db.query(MetricExtraction).filter(
+            MetricExtraction.document_id == doc.id,
+        ).delete(synchronize_session=False)
+        doc.stock_id = None
+        doc.report_date = None
+        doc.identity_needs_review = False
+        doc.notes = None
+        self.db.add(doc)
+        self.db.flush()
 
     @staticmethod
     def _report_date_from_extractions(extractions: list) -> Optional[date]:
