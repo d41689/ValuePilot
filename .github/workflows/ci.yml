@@ -57,6 +57,9 @@ jobs:
       - name: Run frontend lint
         run: docker compose exec -T web npm run lint
 
+      - name: Run frontend production build
+        run: docker compose exec -T web sh -lc 'NODE_ENV=production npm run build'
+
       - name: Print service logs on failure
         if: failure()
         run: docker compose logs --no-color
