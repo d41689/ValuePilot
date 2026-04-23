@@ -16,7 +16,9 @@ import { resolveDcfDefaults } from '@/lib/dcfDefaults';
 import {
   resolveDcfComponentInputs,
   resolveDcfInputsPayload,
+  type DcfInputsPayload,
   type DcfInputsResponsePayload,
+  type DcfInputsSeriesEntry,
 } from '@/lib/dcfInputsSeries';
 import apiClient from '@/lib/api/client';
 
@@ -78,6 +80,8 @@ type StockDcfPayload = {
   latest_price_updated_at?: string | null;
   active_report_document_id?: number | null;
   active_report_date?: string | null;
+  dcf_inputs?: DcfInputsPayload | null;
+  dcf_inputs_series?: DcfInputsSeriesEntry[] | null;
   oeps_normalized_provenance?: FactProvenance | null;
   growth_rate_options?: Array<{
     key: string;
@@ -311,7 +315,7 @@ export default function StockDcfPage() {
     if (!stockPayload) {
       return null;
     }
-    const segments = [];
+    const segments: string[] = [];
     if (stockPayload.active_report_date) {
       const parsed = new Date(`${stockPayload.active_report_date}T00:00:00`);
       segments.push(
