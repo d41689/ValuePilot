@@ -24,15 +24,22 @@ class MappingMatch:
 
 
 class MappingSpec:
-    def __init__(self, spec: dict[str, Any]) -> None:
+    def __init__(self, spec: dict[str, Any], taxonomy: Optional[dict[str, Any]] = None) -> None:
         self.spec = spec
+        self.taxonomy = taxonomy or {}
         self.mappings = spec.get("mappings", [])
 
     @classmethod
-    def load(cls, path: Path) -> "MappingSpec":
+    def load(cls, path: Path, taxonomy_path: Optional[Path] = None) -> "MappingSpec":
         with path.open("r", encoding="utf-8") as fh:
             data = yaml.safe_load(fh)
-        return cls(data)
+        taxonomy: dict[str, Any] = {}
+        resolved_taxonomy_path = taxonomy_path or path.with_name("value_line_field_taxonomy.yml")
+        if resolved_taxonomy_path.exists():
+            with resolved_taxonomy_path.open("r", encoding="utf-8") as fh:
+                taxonomy = yaml.safe_load(fh) or {}
+        _apply_taxonomy(data, taxonomy)
+        return cls(data, taxonomy)
 
     def generate_facts(self, page_json: dict[str, Any]) -> tuple[list[dict[str, Any]], set[str], set[str]]:
         facts: list[dict[str, Any]] = []
@@ -327,9 +334,20 @@ def _is_estimate(mapping: dict[str, Any], match: MappingMatch, root: dict[str, A
 
 
 def _fact_nature(mapping: dict[str, Any], match: MappingMatch, root: dict[str, Any]) -> Optional[str]:
+    explicit_fact_nature = mapping.get("fact_nature")
+    if isinstance(explicit_fact_nature, str):
+        return explicit_fact_nature
+
     fact_nature = match.context.get("fact_nature")
     if isinstance(fact_nature, str):
         return fact_nature
+
+    fact_nature_rule = mapping.get("fact_nature_rule")
+    if fact_nature_rule == "context_only":
+        return None
+    if fact_nature_rule == "none":
+        return None
+
     if mapping.get("period_type") == "FY":
         year = _parse_year(match.context.get("key") or match.context.get("calendar_year"))
         if year is None:
@@ -343,6 +361,49 @@ def _fact_nature(mapping: dict[str, Any], match: MappingMatch, root: dict[str, A
     if _is_estimate(mapping, match, root):
         return "estimate"
     return None
+
+
+def _apply_taxonomy(spec: dict[str, Any], taxonomy: dict[str, Any]) -> None:
+    if not taxonomy:
+        return
+    mappings = spec.get("mappings", [])
+    if not isinstance(mappings, list):
+        return
+
+    mapping_semantics = taxonomy.get("mapping_semantics", {})
+    if not isinstance(mapping_semantics, dict):
+        return
+
+    mapping_by_id = {
+        mapping.get("id"): mapping
+        for mapping in mappings
+        if isinstance(mapping, dict) and isinstance(mapping.get("id"), str)
+    }
+    allowed_fact_natures = {"actual", "estimate", "snapshot", "opinion", "mixed"}
+    allowed_rules = {"context_only", "context_or_annual_meta", "none"}
+
+    unknown_ids = sorted(set(mapping_semantics) - set(mapping_by_id))
+    if unknown_ids:
+        raise ValueError(f"Unknown taxonomy mapping ids: {', '.join(unknown_ids)}")
+
+    for mapping_id, semantics in mapping_semantics.items():
+        if not isinstance(semantics, dict):
+            raise ValueError(f"Invalid taxonomy semantics for mapping id: {mapping_id}")
+        mapping = mapping_by_id[mapping_id]
+
+        fact_nature = semantics.get("fact_nature")
+        if fact_nature is not None:
+            if fact_nature not in allowed_fact_natures:
+                raise ValueError(f"Invalid fact_nature '{fact_nature}' for mapping id: {mapping_id}")
+            mapping["fact_nature"] = fact_nature
+
+        fact_nature_rule = semantics.get("fact_nature_rule")
+        if fact_nature_rule is not None:
+            if fact_nature_rule not in allowed_rules:
+                raise ValueError(
+                    f"Invalid fact_nature_rule '{fact_nature_rule}' for mapping id: {mapping_id}"
+                )
+            mapping["fact_nature_rule"] = fact_nature_rule
 
 
 def _parse_year(value: Any) -> Optional[int]:

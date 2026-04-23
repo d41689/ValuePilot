@@ -1,0 +1,68 @@
+import json
+from datetime import date
+from pathlib import Path
+
+import yaml
+
+from app.services.mapping_spec import MappingSpec
+
+
+SPEC_PATH = Path("docs/metric_facts_mapping_spec.yml")
+TAXONOMY_PATH = Path("docs/value_line_field_taxonomy.yml")
+FIXTURE_JSON = Path("tests/fixtures/value_line/axs_v1.expected.json")
+
+
+def load_taxonomy() -> dict:
+    with TAXONOMY_PATH.open("r", encoding="utf-8") as fh:
+        return yaml.safe_load(fh)
+
+
+def load_page_json() -> dict:
+    with FIXTURE_JSON.open("r", encoding="utf-8") as fh:
+        return json.load(fh)
+
+
+def test_value_line_taxonomy_covers_core_sections_and_mappings():
+    taxonomy = load_taxonomy()
+
+    assert taxonomy["page_json_sections"]["header"]["fact_nature"] == "snapshot"
+    assert taxonomy["page_json_sections"]["ratings"]["fact_nature"] == "opinion"
+    assert taxonomy["page_json_sections"]["target_price_18m"]["fact_nature"] == "opinion"
+    assert taxonomy["page_json_sections"]["annual_financials"]["fact_nature"] == "mixed"
+    assert taxonomy["page_json_sections"]["earnings_per_share"]["fact_nature"] == "mixed"
+    assert taxonomy["page_json_sections"]["total_return"]["fact_nature"] == "snapshot"
+    assert taxonomy["page_json_sections"]["narrative"]["fact_nature"] == "opinion"
+
+    mapping_semantics = taxonomy["mapping_semantics"]
+    assert mapping_semantics["mkt.price.as_of"]["fact_nature"] == "snapshot"
+    assert mapping_semantics["rating.timeliness.as_of"]["fact_nature"] == "opinion"
+    assert mapping_semantics["target.price_18m.mid"]["fact_nature"] == "opinion"
+    assert mapping_semantics["analyst.commentary.as_of"]["fact_nature"] == "opinion"
+    assert mapping_semantics["is.net_income.fy"]["fact_nature_rule"] == "context_or_annual_meta"
+    assert mapping_semantics["per_share.eps.q"]["fact_nature_rule"] == "context_only"
+
+
+def test_mapping_spec_uses_taxonomy_semantics_for_generated_facts():
+    spec = MappingSpec.load(SPEC_PATH)
+    page_json = load_page_json()
+
+    facts, _, _ = spec.generate_facts(page_json)
+    by_key = {(f["metric_key"], f.get("period_type"), f.get("period_end_date")): f for f in facts}
+
+    price = by_key[("mkt.price", "AS_OF", date(2026, 1, 9))]
+    assert price["value_json"]["fact_nature"] == "snapshot"
+
+    timeliness = by_key[("rating.timeliness", "AS_OF", date(2026, 1, 9))]
+    assert timeliness["value_json"]["fact_nature"] == "opinion"
+
+    target_mid = by_key[("target.price_18m.mid", "TARGET_HORIZON", date(2026, 1, 9))]
+    assert target_mid["value_json"]["fact_nature"] == "opinion"
+
+    commentary = by_key[("analyst.commentary", "AS_OF", date(2026, 1, 9))]
+    assert commentary["value_json"]["fact_nature"] == "opinion"
+
+    net_income_actual = by_key[("is.net_income", "FY", date(2024, 12, 31))]
+    assert net_income_actual["value_json"]["fact_nature"] == "actual"
+
+    net_income_estimate = by_key[("is.net_income", "FY", date(2025, 12, 31))]
+    assert net_income_estimate["value_json"]["fact_nature"] == "estimate"
