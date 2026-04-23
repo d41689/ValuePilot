@@ -70,6 +70,8 @@ def test_reparse_existing_document_deactivates_prior_parsed_facts(db_session):
     assert len(facts) == 2
     assert facts[0].is_current is False
     assert facts[1].is_current is True
+    db_session.refresh(doc)
+    assert doc.report_date == date(2026, 1, 2)
 
 
 def test_reparse_existing_document_falls_back_to_pdf_words_when_cached_text_missing(db_session):

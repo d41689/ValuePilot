@@ -116,7 +116,8 @@ class IngestionService:
             source="upload",
             file_storage_key=saved_path_str,
             parse_status="uploaded",
-            upload_time=datetime.now()
+            upload_time=datetime.now(),
+            report_date=None,
         )
         self.db.add(doc)
         self.db.commit()
@@ -206,6 +207,7 @@ class IngestionService:
                     report_date = self._report_date_from_extractions(extractions)
                     if report_date is None:
                         raise ValueError("missing_commentary_date")
+                    doc.report_date = report_date
                     page_json = build_value_line_page_json(
                         parser,
                         page_number=page_num,
@@ -360,6 +362,7 @@ class IngestionService:
         is_multi_company_container = len(pages_data) > 1
         if is_multi_company_container:
             doc.stock_id = None
+        doc.report_date = None
 
         def is_company_page(text: str) -> bool:
             upper = (text or "").upper()
@@ -391,6 +394,7 @@ class IngestionService:
             report_date = self._report_date_from_extractions(extractions)
             if report_date is None:
                 continue
+            doc.report_date = report_date
             page_json = build_value_line_page_json(
                 parser,
                 page_number=page_num,

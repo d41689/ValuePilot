@@ -1,6 +1,6 @@
-from datetime import datetime
+from datetime import date, datetime
 from typing import Optional, TYPE_CHECKING
-from sqlalchemy import String, DateTime, Boolean, ForeignKey, Integer, Text
+from sqlalchemy import String, Date, DateTime, Boolean, ForeignKey, Integer, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.sql import func
 from app.core.db import Base
@@ -27,6 +27,7 @@ class PdfDocument(Base):
     file_name: Mapped[str] = mapped_column(String)
     source: Mapped[str] = mapped_column(String)
     upload_time: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    report_date: Mapped[Optional[date]] = mapped_column(Date, nullable=True)
     file_storage_key: Mapped[str] = mapped_column(String)
     parse_status: Mapped[str] = mapped_column(String) # pending / parsed / failed / unsupported_template / requires_ocr
     parser_template_id: Mapped[Optional[int]] = mapped_column(ForeignKey("parser_templates.id"), nullable=True)
