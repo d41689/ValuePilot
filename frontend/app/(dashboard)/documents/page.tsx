@@ -6,6 +6,7 @@ import { useMutation, useQuery } from '@tanstack/react-query';
 import { AlertTriangle, FileSearch, FileText, Loader2, RefreshCcw, Upload, X } from 'lucide-react';
 
 import apiClient from '@/lib/api/client';
+import activeReportHelpers from '@/lib/documentActiveReport';
 import documentEvidenceHelpers from '@/lib/documentEvidence';
 import { canUploadDocuments, getDocumentsUploadNotice } from '@/lib/documentsAccess';
 import { Badge } from '@/components/ui/badge';
@@ -44,6 +45,8 @@ type DocumentRow = {
   parsed_page_count: number;
   companies: Company[];
   company_count: number;
+  is_active_report: boolean;
+  active_for_tickers: string[];
 };
 
 type DetailView = {
@@ -139,6 +142,7 @@ function formatPageCount(total: number, parsed?: number) {
 }
 
 const { buildDocumentEvidenceSections } = documentEvidenceHelpers;
+const { formatActiveReportTickers, getActiveReportBadgeLabel } = activeReportHelpers;
 
 export default function DocumentsPage() {
   const { toast } = useToast();
@@ -293,6 +297,7 @@ export default function DocumentsPage() {
                   <TableHead>Companies</TableHead>
                   <TableHead>Pages</TableHead>
                   <TableHead>Status</TableHead>
+                  <TableHead>Active Report</TableHead>
                   <TableHead>Report Date</TableHead>
                   <TableHead>Uploaded</TableHead>
                   <TableHead>Actions</TableHead>
@@ -318,13 +323,25 @@ export default function DocumentsPage() {
                         {doc.template_label || 'Unknown'}
                       </TableCell>
                       <TableCell className="text-muted-foreground">
-                        {formatCompanies(doc.companies)}
+                        <div className="space-y-1">
+                          <div>{formatCompanies(doc.companies)}</div>
+                          {doc.active_for_tickers.length > 0 ? (
+                            <div className="text-xs text-emerald-700">
+                              {formatActiveReportTickers(doc.active_for_tickers)}
+                            </div>
+                          ) : null}
+                        </div>
                       </TableCell>
                       <TableCell className="text-muted-foreground">
                         {formatPageCount(doc.page_count, doc.parsed_page_count)}
                       </TableCell>
                       <TableCell>
                         <Badge variant={meta.variant}>{meta.label}</Badge>
+                      </TableCell>
+                      <TableCell>
+                        <Badge variant={doc.is_active_report ? 'success' : 'secondary'}>
+                          {getActiveReportBadgeLabel(doc.is_active_report)}
+                        </Badge>
                       </TableCell>
                       <TableCell className="text-muted-foreground">
                         {formatDateOnly(doc.report_date)}
