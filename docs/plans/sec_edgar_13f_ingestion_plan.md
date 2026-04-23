@@ -95,11 +95,15 @@ Dataroma 在本方案中只作为**辅助发现源（discovery / bootstrap layer
 
 | 限制项 | 值 | 说明 |
 |--------|-----|------|
-| 最大请求频率 | **10 req/s** | 超过会被 IP 封禁（429 或直接断连） |
-| 推荐安全频率 | **≤ 5 req/s** | 官方建议留有余量 |
+| 最大请求频率 | **10 req/s** | SEC 官方上限，超过会被 IP 封禁（429 或直接断连） |
+| 推荐安全频率 | **≤ 5 req/s** | 官方建议留有余量，**此为 per-IP 总预算** |
 | 并发连接数 | 建议保守控制 **≤ 2** | 实现层安全并发策略，非 SEC 明文规定 |
 
 > 封禁通常为临时性（数小时），但频繁触发导致永久 IP 封禁并需向 SEC 申诉解封。
+
+> **重要**：速率限制是 **per IP** 的，dev 与 prod 若共享同一出口 IP，则共享同一份速率预算。详见第 7 节多环境策略。
+
+以上限制值均为上限参考，实现层的实际参数通过环境变量配置，见第 7 节。
 
 ### 3.2 User-Agent 强制要求
 
@@ -439,25 +443,93 @@ amendment 处理规则：
 
 ## 7. 限速与重试策略
 
+### 7.1 参数配置
+
+所有速率与重试参数通过环境变量配置，不硬编码。以下为各环境的推荐默认值：
+
+```bash
+# EDGAR 速率参数
+EDGAR_REQUEST_DELAY_S=0.2          # 5 req/s；prod 默认值
+EDGAR_MAX_CONCURRENCY=2
+EDGAR_MAX_RETRIES=3
+EDGAR_RETRY_BACKOFF_S="5,30,120"   # 逗号分隔
+
+# Dataroma 速率参数
+DATAROMA_REQUEST_DELAY_S=2.0       # 0.5 req/s
+DATAROMA_MAX_RETRIES=2
+DATAROMA_RETRY_BACKOFF_S="10,60"
+
+# EDGAR User-Agent（必填，启动时校验）
+EDGAR_USER_AGENT="ValuePilot dane@example.com"
+
+# 调度器开关（默认仅 prod 开启）
+EDGAR_SCHEDULER_ENABLED=false      # dev 默认关闭，prod 显式设为 true
+
+# 抓取模式（见多环境策略）
+EDGAR_FETCH_MODE=live              # live | replay（replay 只读 raw_source_documents，不发网络请求）
+```
+
+### 7.2 多环境速率预算策略
+
+**核心问题**：EDGAR 速率限制是 **per IP** 的。若 dev 与 prod 部署在同一主机（同一出口 IP），两者的请求会共享 10 req/s 的总预算，叠加后极易触发封禁。
+
+**推荐策略：环境隔离 + 共享限速器**
+
+| 环境 | 默认抓取行为 | 速率默认值 | 说明 |
+|------|------------|------------|------|
+| **prod** | 自动调度开启 | 5 req/s（delay=0.2s） | 正常生产配置 |
+| **dev** | 调度关闭，仅支持手动 CLI | 1 req/5s（delay=5s） | 保守默认，避免占用 prod 预算 |
+| **dev replay 模式** | 读取已有 raw_source_documents | 不发网络请求 | 开发/调试时首选，零 EDGAR 消耗 |
+
+**若 dev 和 prod 必须共用同一 IP**，推荐使用 **Redis 分布式 token bucket**：
+
+```
+所有进程（dev + prod）共享同一个 Redis key 作为 token bucket
+→ 无论哪个进程发请求，都从同一个桶里消耗令牌
+→ 从 IP 维度保证总速率 ≤ 5 req/s
+```
+
+若当前不想引入 Redis 依赖，**最简可行方案**：
+
+```
+1. dev 默认 EDGAR_FETCH_MODE=replay（不发真实请求）
+2. dev 需要真实抓取时，手动设置 EDGAR_REQUEST_DELAY_S=5（1 req/5s）
+3. 避免 dev 和 prod 同时运行 backfill 任务
+```
+
+### 7.3 自动抓取触发机制
+
+```
+触发方式：
+  - 手动：CLI 命令（edgar fetch-holdings / edgar backfill）
+  - 自动：调度器（APScheduler 或系统 cron），由 EDGAR_SCHEDULER_ENABLED 控制
+
+自动调度只在 EDGAR_SCHEDULER_ENABLED=true 时启动，默认 false。
+prod 的 docker-compose / 部署配置应显式设置 EDGAR_SCHEDULER_ENABLED=true。
+
+调度触发时机（每季度一次）：
+  Q1 申报截止 → 5 月 15 日前后触发
+  Q2 申报截止 → 8 月 14 日前后触发
+  Q3 申报截止 → 11 月 14 日前后触发
+  Q4 申报截止 → 2 月 14 日前后触发
+
+调度触发后的行为：
+  1. 拉取最新季度 form.idx（写入 raw_source_documents）
+  2. 对白名单 CIK 过滤出新 accession
+  3. 逐个抓取 filing（受 token bucket 限速）
+  4. 触发 CUSIP 映射补充
+```
+
+### 7.4 实现约束
+
 实现建议：
 - 采用**全局 token bucket** 限速，而不是在各个抓取函数中零散 `sleep`
-- 以 host 维度分别限速（如 `www.sec.gov`、`data.sec.gov`、`www.dataroma.com`）
+- 以 host 维度分别限速（`www.sec.gov`、`data.sec.gov`、`www.dataroma.com` 各自独立 bucket）
 - `User-Agent` 作为配置项强制注入，启动时校验，避免遗漏
 - 遇到 429 / 403 时记录响应头、响应体摘要和请求 URL，便于排查封禁或结构变化
 - 原始响应统一写入 `raw_source_documents`，通过 `source_system` 和 `document_type` 做审计与回放
 
 ```python
-# 建议通过全局调度器统一限速，不在单个函数里各自 sleep
-# EDGAR（data.sec.gov / www.sec.gov）
-EDGAR_REQUEST_DELAY_S = 0.2     # 5 req/s，低于 10 req/s 上限
-EDGAR_MAX_RETRIES     = 3
-EDGAR_RETRY_BACKOFF_S = [5, 30, 120]
-
-# Dataroma（非官方，保守抓取）
-DATAROMA_REQUEST_DELAY_S = 2.0  # 0.5 req/s，避免触发反爬
-DATAROMA_MAX_RETRIES     = 2
-DATAROMA_RETRY_BACKOFF_S = [10, 60]
-
 # 通用规则：
 # 遇到 429 / 503：全局暂停 60s，以 1 req/s 重启
 # 遇到 403：检查 User-Agent（EDGAR）或页面结构变化（Dataroma），不自动重试
@@ -508,6 +580,7 @@ DATAROMA_RETRY_BACKOFF_S = [10, 60]
 - [ ] `GET /api/v1/stocks/{ticker}/institutions` — 某股票的机构持仓者
 
 ### Phase D — 定期增量
+- [ ] 调度器实现，通过 `EDGAR_SCHEDULER_ENABLED` 控制是否启动（prod 显式开启，dev 默认关闭）
 - [ ] 定时任务每季度自动运行：Dataroma 白名单同步 + EDGAR 新申报抓取
 - [ ] **申报进度看板**：监控白名单机构在季末 45 天内的申报进度
 
@@ -518,6 +591,7 @@ DATAROMA_RETRY_BACKOFF_S = [10, 60]
 | 风险 | 缓解措施 |
 |------|----------|
 | EDGAR IP 封禁 | 严格限速 5 req/s + 退避；生产用独立 IP；记录 429/403 细节 |
+| dev + prod 共用 IP 超限 | dev 默认 replay 模式或 delay=5s；若必须共 IP 则用 Redis 分布式 token bucket；避免同时跑 backfill |
 | Dataroma 页面结构变化 | 解析失败时告警，自动降级到纯 EDGAR 流程 |
 | Dataroma 下线或访问策略变化 | 系统设计上 Dataroma 只是 Discovery 层，停用不影响主链路 |
 | CUSIP 映射缺失或历史漂移 | 允许 `stock_id` 为空；引入 `valid_from` / `valid_to`；异步补充 |
