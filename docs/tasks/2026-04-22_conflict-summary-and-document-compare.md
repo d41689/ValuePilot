@@ -46,12 +46,14 @@
 ## Progress Log
 - [x] Add summary conflict UI and tests.
 - [x] Run Docker verification and commit summary step.
-- [ ] Add document comparison view and tests.
-- [ ] Run Docker verification and commit compare step.
+- [x] Add document comparison view and tests.
+- [x] Run Docker verification and commit compare step.
 
 ## Notes / Decisions / Gotchas
 - Stock summary conflict rendering is frontend-only and consumes the existing additive stock API payload.
 - Conflict formatting is isolated in `frontend/lib/actualConflicts.js` so page components stay declarative.
+- Document comparison uses a minimal additive backend endpoint instead of client-side JSON diffing.
+- Compare alignment differs by `fact_nature`: `actual/estimate` compare on metric+period, while `snapshot/opinion` compare on metric identity across report versions.
 
 ## Verification Results
 - Summary conflict step:
@@ -59,3 +61,12 @@
     - `4 tests passed`
   - `docker compose exec web npm run lint`
     - `No ESLint warnings or errors`
+- Document compare step:
+  - `docker compose exec api pytest -q tests/unit/test_documents_api.py`
+    - `7 passed in 1.45s`
+  - `docker compose exec web node --test lib/documentCompare.test.js lib/documentEvidence.test.js lib/documentActiveReport.test.js lib/documentsAccess.test.js`
+    - `8 tests passed`
+  - `docker compose exec web npm run lint`
+    - `No ESLint warnings or errors`
+  - `docker compose exec api pytest -q`
+    - `121 passed in 21.06s`

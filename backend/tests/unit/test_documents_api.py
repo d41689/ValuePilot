@@ -423,6 +423,249 @@ def test_document_evidence_endpoint_requires_document_ownership(
     assert resp.status_code == 404
 
 
+def test_documents_compare_endpoint_returns_structured_diffs_by_fact_nature(
+    client, db_session, user_factory, auth_headers
+):
+    user = user_factory("documents_compare@example.com")
+    headers = auth_headers(user)
+
+    stock = Stock(ticker="FICO", exchange="NYSE", company_name="Fair Isaac")
+    db_session.add(stock)
+    db_session.commit()
+
+    left_doc = PdfDocument(
+        user_id=user.id,
+        file_name="fico-q1.pdf",
+        source="upload",
+        file_storage_key="/tmp/fico-q1.pdf",
+        parse_status="parsed",
+        report_date=date(2026, 1, 9),
+        upload_time=datetime.utcnow(),
+    )
+    right_doc = PdfDocument(
+        user_id=user.id,
+        file_name="fico-q2.pdf",
+        source="upload",
+        file_storage_key="/tmp/fico-q2.pdf",
+        parse_status="parsed",
+        report_date=date(2026, 4, 9),
+        upload_time=datetime.utcnow(),
+    )
+    db_session.add_all([left_doc, right_doc])
+    db_session.commit()
+
+    db_session.add_all(
+        [
+            MetricFact(
+                user_id=user.id,
+                stock_id=stock.id,
+                metric_key="is.net_income",
+                value_json={"fact_nature": "actual"},
+                value_numeric=100.0,
+                unit="USD",
+                period_type="FY",
+                period_end_date=date(2024, 12, 31),
+                source_type="parsed",
+                source_document_id=left_doc.id,
+                is_current=False,
+            ),
+            MetricFact(
+                user_id=user.id,
+                stock_id=stock.id,
+                metric_key="is.net_income",
+                value_json={"fact_nature": "actual"},
+                value_numeric=120.0,
+                unit="USD",
+                period_type="FY",
+                period_end_date=date(2024, 12, 31),
+                source_type="parsed",
+                source_document_id=right_doc.id,
+                is_current=True,
+            ),
+            MetricFact(
+                user_id=user.id,
+                stock_id=stock.id,
+                metric_key="estimate.eps_diluted",
+                value_json={"fact_nature": "estimate"},
+                value_numeric=21.5,
+                unit="USD",
+                period_type="FY",
+                period_end_date=date(2026, 12, 31),
+                source_type="parsed",
+                source_document_id=left_doc.id,
+                is_current=False,
+            ),
+            MetricFact(
+                user_id=user.id,
+                stock_id=stock.id,
+                metric_key="estimate.eps_diluted",
+                value_json={"fact_nature": "estimate"},
+                value_numeric=22.0,
+                unit="USD",
+                period_type="FY",
+                period_end_date=date(2026, 12, 31),
+                source_type="parsed",
+                source_document_id=right_doc.id,
+                is_current=True,
+            ),
+            MetricFact(
+                user_id=user.id,
+                stock_id=stock.id,
+                metric_key="snapshot.pe",
+                value_json={"fact_nature": "snapshot"},
+                value_numeric=28.0,
+                period_type="AS_OF",
+                period_end_date=date(2026, 1, 9),
+                source_type="parsed",
+                source_document_id=left_doc.id,
+                is_current=False,
+            ),
+            MetricFact(
+                user_id=user.id,
+                stock_id=stock.id,
+                metric_key="snapshot.pe",
+                value_json={"fact_nature": "snapshot"},
+                value_numeric=31.0,
+                period_type="AS_OF",
+                period_end_date=date(2026, 4, 9),
+                source_type="parsed",
+                source_document_id=right_doc.id,
+                is_current=True,
+            ),
+            MetricFact(
+                user_id=user.id,
+                stock_id=stock.id,
+                metric_key="mkt.price",
+                value_json={"fact_nature": "snapshot"},
+                value_numeric=250.0,
+                period_type="AS_OF",
+                period_end_date=date(2026, 1, 9),
+                source_type="parsed",
+                source_document_id=left_doc.id,
+                is_current=False,
+            ),
+            MetricFact(
+                user_id=user.id,
+                stock_id=stock.id,
+                metric_key="mkt.price",
+                value_json={"fact_nature": "snapshot"},
+                value_numeric=250.0,
+                period_type="AS_OF",
+                period_end_date=date(2026, 4, 9),
+                source_type="parsed",
+                source_document_id=right_doc.id,
+                is_current=True,
+            ),
+        ]
+    )
+
+    db_session.add_all(
+        [
+            MetricExtraction(
+                user_id=user.id,
+                document_id=left_doc.id,
+                page_number=1,
+                field_key="analyst_commentary",
+                raw_value_text="Margins should expand gradually.",
+                original_text_snippet="Commentary: Margins should expand gradually.",
+                confidence_score=0.9,
+                parser_version="v1",
+            ),
+            MetricExtraction(
+                user_id=user.id,
+                document_id=right_doc.id,
+                page_number=1,
+                field_key="analyst_commentary",
+                raw_value_text="Margins should expand sharply through FY2027.",
+                original_text_snippet="Commentary: Margins should expand sharply through FY2027.",
+                confidence_score=0.9,
+                parser_version="v1",
+            ),
+        ]
+    )
+    db_session.commit()
+
+    resp = client.get(
+        f"/api/v1/documents/compare?left_document_id={left_doc.id}&right_document_id={right_doc.id}",
+        headers=headers,
+    )
+    assert resp.status_code == 200, resp.text
+
+    payload = resp.json()
+    assert payload["left_document"] == {
+        "id": left_doc.id,
+        "file_name": "fico-q1.pdf",
+        "report_date": "2026-01-09",
+    }
+    assert payload["right_document"] == {
+        "id": right_doc.id,
+        "file_name": "fico-q2.pdf",
+        "report_date": "2026-04-09",
+    }
+    assert payload["shared_tickers"] == ["FICO"]
+
+    sections = {section["fact_nature"]: section for section in payload["sections"]}
+    assert [section["fact_nature"] for section in payload["sections"]] == [
+        "actual",
+        "estimate",
+        "snapshot",
+        "opinion",
+    ]
+
+    assert sections["actual"]["items"] == [
+        {
+            "stock_ticker": "FICO",
+            "metric_key": "is.net_income",
+            "mapping_id": None,
+            "period_type": "FY",
+            "period_end_date": "2024-12-31",
+            "label": "FICO · is.net_income",
+            "change_type": "changed",
+            "left_value": "100",
+            "right_value": "120",
+        }
+    ]
+    assert sections["estimate"]["items"] == [
+        {
+            "stock_ticker": "FICO",
+            "metric_key": "estimate.eps_diluted",
+            "mapping_id": None,
+            "period_type": "FY",
+            "period_end_date": "2026-12-31",
+            "label": "FICO · estimate.eps_diluted",
+            "change_type": "changed",
+            "left_value": "21.5",
+            "right_value": "22",
+        }
+    ]
+    assert sections["snapshot"]["items"] == [
+        {
+            "stock_ticker": "FICO",
+            "metric_key": "snapshot.pe",
+            "mapping_id": None,
+            "period_type": "AS_OF",
+            "period_end_date": "2026-01-09",
+            "label": "FICO · snapshot.pe",
+            "change_type": "changed",
+            "left_value": "28",
+            "right_value": "31",
+        }
+    ]
+    assert sections["opinion"]["items"] == [
+        {
+            "stock_ticker": None,
+            "metric_key": "analyst.commentary",
+            "mapping_id": "analyst.commentary.as_of",
+            "period_type": "AS_OF",
+            "period_end_date": "2026-01-09",
+            "label": "analyst.commentary.as_of",
+            "change_type": "changed",
+            "left_value": "Margins should expand gradually.",
+            "right_value": "Margins should expand sharply through FY2027.",
+        }
+    ]
+
+
 def test_documents_list_requires_auth(client, db_session):
     db_session.execute(sa.text("TRUNCATE TABLE users RESTART IDENTITY CASCADE"))
     db_session.commit()

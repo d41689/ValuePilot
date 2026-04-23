@@ -1,3 +1,4 @@
+from collections import defaultdict
 from functools import lru_cache
 from pathlib import Path
 import re
@@ -205,6 +206,67 @@ def reparse_document(
         raise HTTPException(status_code=500, detail=f"Reparse failed: {str(e)}")
 
 
+@router.get("/compare", response_model=dict)
+def compare_documents(
+    *,
+    session: SessionDep,
+    current_user: CurrentUser,
+    left_document_id: int = Query(..., description="Left-hand document id"),
+    right_document_id: int = Query(..., description="Right-hand document id"),
+) -> Any:
+    user_id = current_user.id
+
+    left_doc = session.get(PdfDocument, left_document_id)
+    right_doc = session.get(PdfDocument, right_document_id)
+    if not left_doc or left_doc.user_id != user_id:
+        raise HTTPException(status_code=404, detail="Left document not found")
+    if not right_doc or right_doc.user_id != user_id:
+        raise HTTPException(status_code=404, detail="Right document not found")
+
+    left_stock_ids = _document_stock_ids(session, left_doc)
+    right_stock_ids = _document_stock_ids(session, right_doc)
+    shared_stock_ids = sorted(left_stock_ids & right_stock_ids)
+    if not shared_stock_ids:
+        raise HTTPException(status_code=400, detail="Documents do not share a parsed company")
+
+    stock_lookup = {
+        stock.id: stock
+        for stock in session.scalars(select(Stock).where(Stock.id.in_(shared_stock_ids))).all()
+    }
+    taxonomy = _load_value_line_taxonomy()
+
+    left_fact_entries = _document_compare_fact_entries(session, left_doc.id, shared_stock_ids, stock_lookup)
+    right_fact_entries = _document_compare_fact_entries(session, right_doc.id, shared_stock_ids, stock_lookup)
+    left_evidence_entries = _document_compare_evidence_entries(session, left_doc, taxonomy)
+    right_evidence_entries = _document_compare_evidence_entries(session, right_doc, taxonomy)
+
+    sections = _build_document_compare_sections(
+        left_fact_entries=left_fact_entries,
+        right_fact_entries=right_fact_entries,
+        left_evidence_entries=left_evidence_entries,
+        right_evidence_entries=right_evidence_entries,
+    )
+
+    return {
+        "left_document": {
+            "id": left_doc.id,
+            "file_name": left_doc.file_name,
+            "report_date": _iso_date(left_doc.report_date),
+        },
+        "right_document": {
+            "id": right_doc.id,
+            "file_name": right_doc.file_name,
+            "report_date": _iso_date(right_doc.report_date),
+        },
+        "shared_tickers": sorted(
+            stock_lookup[stock_id].ticker
+            for stock_id in shared_stock_ids
+            if stock_id in stock_lookup
+        ),
+        "sections": sections,
+    }
+
+
 @router.get("/{document_id}/raw_text", response_model=dict)
 def read_document_raw_text(
     *,
@@ -373,3 +435,225 @@ def _iso_date(value: Any) -> Optional[str]:
         return None
     iso = getattr(value, "isoformat", None)
     return iso() if callable(iso) else str(value)
+
+
+def _document_stock_ids(session: SessionDep, doc: PdfDocument) -> set[int]:
+    stock_ids = set(
+        session.scalars(
+            select(MetricFact.stock_id)
+            .where(
+                MetricFact.source_document_id == doc.id,
+                MetricFact.source_type == "parsed",
+            )
+            .distinct()
+        ).all()
+    )
+    if doc.stock_id:
+        stock_ids.add(doc.stock_id)
+    return {stock_id for stock_id in stock_ids if stock_id is not None}
+
+
+def _document_compare_fact_entries(
+    session: SessionDep,
+    document_id: int,
+    stock_ids: list[int],
+    stock_lookup: dict[int, Stock],
+) -> dict[tuple[Any, ...], dict[str, Any]]:
+    rows = session.scalars(
+        select(MetricFact)
+        .where(
+            MetricFact.source_document_id == document_id,
+            MetricFact.source_type == "parsed",
+            MetricFact.stock_id.in_(stock_ids),
+        )
+        .order_by(MetricFact.id.asc())
+    ).all()
+
+    entries: dict[tuple[Any, ...], dict[str, Any]] = {}
+    for fact in rows:
+        value_json = fact.value_json or {}
+        fact_nature = value_json.get("fact_nature")
+        if fact_nature not in {"actual", "estimate", "snapshot", "opinion"}:
+            continue
+        key = _document_compare_fact_key(fact_nature, fact)
+        entries[key] = {
+            "fact_nature": fact_nature,
+            "stock_ticker": stock_lookup.get(fact.stock_id).ticker if fact.stock_id in stock_lookup else None,
+            "metric_key": fact.metric_key,
+            "mapping_id": None,
+            "period_type": fact.period_type,
+            "period_end_date": _iso_date(fact.period_end_date or fact.as_of_date),
+            "value": _document_compare_value_label(
+                value_numeric=fact.value_numeric,
+                value_text=fact.value_text,
+                value_json=value_json,
+            ),
+        }
+    return entries
+
+
+def _document_compare_fact_key(fact_nature: str, fact: MetricFact) -> tuple[Any, ...]:
+    if fact_nature in {"actual", "estimate"}:
+        return (
+            "fact",
+            fact_nature,
+            fact.stock_id,
+            fact.metric_key,
+            fact.period_type,
+            fact.period_end_date,
+        )
+    return (
+        "fact",
+        fact_nature,
+        fact.stock_id,
+        fact.metric_key,
+    )
+
+
+def _document_compare_evidence_entries(
+    session: SessionDep,
+    doc: PdfDocument,
+    taxonomy: dict[str, Any],
+) -> dict[tuple[Any, ...], dict[str, Any]]:
+    evidence_reads = taxonomy.get("evidence_reads", {})
+    if not evidence_reads:
+        return {}
+
+    field_keys = sorted(
+        {
+            str(config["extraction_field_key"])
+            for config in evidence_reads.values()
+            if config.get("source") == "metric_extractions" and config.get("extraction_field_key")
+        }
+    )
+    extractions = session.scalars(
+        select(MetricExtraction)
+        .where(
+            MetricExtraction.document_id == doc.id,
+            MetricExtraction.field_key.in_(field_keys),
+        )
+    ).all()
+    latest_by_field = _latest_extractions_by_field(extractions)
+    mapping_semantics = taxonomy.get("mapping_semantics", {})
+
+    entries: dict[tuple[Any, ...], dict[str, Any]] = {}
+    for mapping_id, config in evidence_reads.items():
+        extraction_field_key = config.get("extraction_field_key")
+        if not isinstance(extraction_field_key, str):
+            continue
+        extraction = latest_by_field.get(extraction_field_key)
+        if extraction is None:
+            continue
+
+        value_text, _value_json = _resolve_evidence_value(config, extraction)
+        if value_text is None:
+            continue
+        semantics = mapping_semantics.get(mapping_id, {})
+        fact_nature = semantics.get("fact_nature")
+        if fact_nature not in {"actual", "estimate", "snapshot", "opinion"}:
+            continue
+        period_end_date = _resolve_evidence_period_end(config, doc, extraction, None)
+        key = ("evidence", fact_nature, mapping_id)
+        entries[key] = {
+            "fact_nature": fact_nature,
+            "stock_ticker": None,
+            "metric_key": config.get("metric_key"),
+            "mapping_id": mapping_id,
+            "period_type": config.get("period_type"),
+            "period_end_date": period_end_date,
+            "value": value_text,
+        }
+    return entries
+
+
+def _build_document_compare_sections(
+    *,
+    left_fact_entries: dict[tuple[Any, ...], dict[str, Any]],
+    right_fact_entries: dict[tuple[Any, ...], dict[str, Any]],
+    left_evidence_entries: dict[tuple[Any, ...], dict[str, Any]],
+    right_evidence_entries: dict[tuple[Any, ...], dict[str, Any]],
+) -> list[dict[str, Any]]:
+    left_entries = {}
+    left_entries.update(left_fact_entries)
+    left_entries.update(left_evidence_entries)
+    right_entries = {}
+    right_entries.update(right_fact_entries)
+    right_entries.update(right_evidence_entries)
+
+    grouped_items: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    all_keys = set(left_entries) | set(right_entries)
+    for key in all_keys:
+        left = left_entries.get(key)
+        right = right_entries.get(key)
+        fact_nature = (left or right or {}).get("fact_nature")
+        if fact_nature not in {"actual", "estimate", "snapshot", "opinion"}:
+            continue
+
+        left_value = left.get("value") if left else None
+        right_value = right.get("value") if right else None
+        if left_value == right_value:
+            continue
+
+        grouped_items[fact_nature].append(
+            {
+                "stock_ticker": (left or right).get("stock_ticker"),
+                "metric_key": (left or right).get("metric_key"),
+                "mapping_id": (left or right).get("mapping_id"),
+                "period_type": (left or right).get("period_type"),
+                "period_end_date": (left or right).get("period_end_date"),
+                "label": _document_compare_label(left or right),
+                "change_type": _document_compare_change_type(left_value, right_value),
+                "left_value": left_value,
+                "right_value": right_value,
+            }
+        )
+
+    sections = []
+    for fact_nature in ["actual", "estimate", "snapshot", "opinion"]:
+        items = sorted(
+            grouped_items.get(fact_nature, []),
+            key=lambda item: (
+                item["stock_ticker"] or "",
+                item["metric_key"] or "",
+                item["mapping_id"] or "",
+                item["period_end_date"] or "",
+            ),
+        )
+        sections.append(
+            {
+                "fact_nature": fact_nature,
+                "title": fact_nature.capitalize(),
+                "items": items,
+            }
+        )
+    return sections
+
+
+def _document_compare_label(entry: dict[str, Any]) -> str:
+    if entry.get("stock_ticker") and entry.get("metric_key"):
+        return f"{entry['stock_ticker']} · {entry['metric_key']}"
+    if entry.get("mapping_id"):
+        return str(entry["mapping_id"])
+    return str(entry.get("metric_key") or "Unknown")
+
+
+def _document_compare_change_type(left_value: Optional[str], right_value: Optional[str]) -> str:
+    if left_value is None:
+        return "right_only"
+    if right_value is None:
+        return "left_only"
+    return "changed"
+
+
+def _document_compare_value_label(
+    *,
+    value_numeric: Optional[float],
+    value_text: Optional[str],
+    value_json: dict[str, Any],
+) -> Optional[str]:
+    if value_numeric is not None:
+        return f"{value_numeric:g}"
+    if value_text:
+        return value_text
+    raw = value_json.get("raw")
+    return str(raw) if raw is not None else None
