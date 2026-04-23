@@ -6,6 +6,7 @@ import { useMutation, useQuery } from '@tanstack/react-query';
 import { AlertTriangle, FileSearch, FileText, Loader2, RefreshCcw, Upload, X } from 'lucide-react';
 
 import apiClient from '@/lib/api/client';
+import documentEvidenceHelpers from '@/lib/documentEvidence';
 import { canUploadDocuments, getDocumentsUploadNotice } from '@/lib/documentsAccess';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -46,8 +47,37 @@ type DocumentRow = {
 };
 
 type DetailView = {
-  type: 'parsed' | 'raw';
+  type: 'parsed' | 'raw' | 'evidence';
   doc: DocumentRow;
+};
+
+type EvidenceItem = {
+  mapping_id: string;
+  metric_key: string;
+  fact_nature: string | null;
+  storage_role: string | null;
+  source: string;
+  field_key: string;
+  extraction_id: number;
+  page_number: number | null;
+  period_type: string | null;
+  period_end_date: string | null;
+  value_text: string | null;
+  value_json: { raw?: string } | null;
+  original_text_snippet: string | null;
+};
+
+type EvidenceSectionItem = {
+  label: string;
+  value: string;
+  meta: string | null;
+  detail: string | null;
+};
+
+type EvidenceSection = {
+  id: string;
+  title: string;
+  items: EvidenceSectionItem[];
 };
 
 type StatusMeta = {
@@ -108,11 +138,14 @@ function formatPageCount(total: number, parsed?: number) {
   return `${parsedCount} / ${total}`;
 }
 
+const { buildDocumentEvidenceSections } = documentEvidenceHelpers;
+
 export default function DocumentsPage() {
   const { toast } = useToast();
   const [role, setRole] = useState<string | null>(null);
   const [detail, setDetail] = useState<DetailView | null>(null);
   const [detailData, setDetailData] = useState<string>('');
+  const [detailEvidence, setDetailEvidence] = useState<EvidenceSection[]>([]);
   const [detailError, setDetailError] = useState<string | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
   const [activeReparseId, setActiveReparseId] = useState<number | null>(null);
@@ -157,15 +190,21 @@ export default function DocumentsPage() {
     },
   });
 
-  const handleView = async (doc: DocumentRow, type: 'parsed' | 'raw') => {
+  const handleView = async (doc: DocumentRow, type: 'parsed' | 'raw' | 'evidence') => {
     setDetail({ doc, type });
     setDetailError(null);
     setDetailData('');
+    setDetailEvidence([]);
     setDetailLoading(true);
     try {
       if (type === 'parsed') {
         const res = await apiClient.get(`/extractions/document/${doc.id}`);
         setDetailData(JSON.stringify(res.data, null, 2));
+      } else if (type === 'evidence') {
+        const res = await apiClient.get(`/documents/${doc.id}/evidence`);
+        setDetailEvidence(
+          buildDocumentEvidenceSections((res.data?.evidence ?? []) as EvidenceItem[])
+        );
       } else {
         const res = await apiClient.get(`/documents/${doc.id}/raw_text`);
         setDetailData(res.data.raw_text || '');
@@ -306,6 +345,14 @@ export default function DocumentsPage() {
                           <Button
                             variant="outline"
                             size="sm"
+                            onClick={() => handleView(doc, 'evidence')}
+                          >
+                            <FileSearch className="h-3 w-3" />
+                            View Evidence
+                          </Button>
+                          <Button
+                            variant="outline"
+                            size="sm"
                             onClick={() => handleView(doc, 'raw')}
                           >
                             <FileText className="h-3 w-3" />
@@ -342,7 +389,11 @@ export default function DocumentsPage() {
           <CardHeader className="flex flex-row items-start justify-between gap-4">
             <div>
               <CardDescription>
-                {detail.type === 'parsed' ? 'Parsed Data' : 'Raw Text'}
+                {detail.type === 'parsed'
+                  ? 'Parsed Data'
+                  : detail.type === 'evidence'
+                    ? 'Evidence View'
+                    : 'Raw Text'}
               </CardDescription>
               <CardTitle>{detail.doc.file_name}</CardTitle>
             </div>
@@ -358,6 +409,50 @@ export default function DocumentsPage() {
               </div>
             ) : detailError ? (
               <div className="text-sm text-destructive">{detailError}</div>
+            ) : detail.type === 'evidence' ? (
+              detailEvidence.length > 0 ? (
+                <div className="space-y-4">
+                  {detailEvidence.map((section) => (
+                    <div
+                      key={section.id}
+                      className="rounded-xl border border-border/60 bg-muted/20 p-4"
+                    >
+                      <div className="mb-3 text-sm font-semibold text-foreground">
+                        {section.title}
+                      </div>
+                      <div className="space-y-3">
+                        {section.items.map((item) => (
+                          <div
+                            key={`${section.id}-${item.label}-${item.value}`}
+                            className="space-y-1 rounded-lg border border-border/40 bg-background/80 p-3"
+                          >
+                            <div className="flex flex-wrap items-center justify-between gap-2">
+                              <div className="text-sm font-medium text-foreground">
+                                {item.label}
+                              </div>
+                              {item.meta ? (
+                                <div className="text-xs text-muted-foreground">{item.meta}</div>
+                              ) : null}
+                            </div>
+                            <div className="text-sm text-foreground whitespace-pre-wrap">
+                              {item.value}
+                            </div>
+                            {item.detail && item.detail !== item.value ? (
+                              <div className="text-xs text-muted-foreground whitespace-pre-wrap">
+                                {item.detail}
+                              </div>
+                            ) : null}
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <div className="text-sm text-muted-foreground">
+                  No evidence-only fields available for this document.
+                </div>
+              )
             ) : detailData ? (
               <pre className="max-h-96 overflow-auto whitespace-pre-wrap rounded-xl border border-border/60 bg-muted/30 p-4 text-xs text-foreground">
                 {detailData}
