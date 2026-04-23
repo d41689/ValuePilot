@@ -197,9 +197,11 @@ CREATE TABLE institution_managers (
     is_superinvestor    BOOLEAN DEFAULT FALSE,
     dataroma_synced_at  TIMESTAMPTZ,
     first_seen_at       TIMESTAMPTZ DEFAULT NOW(),
-    last_seen_at        TIMESTAMPTZ DEFAULT NOW(),
+    last_seen_at        TIMESTAMPTZ DEFAULT NOW(),     -- 该 manager 再次出现在白名单同步或 EDGAR 抓取结果中时更新
     created_at          TIMESTAMPTZ DEFAULT NOW()
 );
+-- match_status 状态流转：Dataroma 初始导入为 seeded；低置信自动匹配进入 candidate；
+-- 人工确认后置为 confirmed；确认无效的候选置为 rejected。
 
 -- 原始抓取文档（可重放、可审计，覆盖 EDGAR 与 Dataroma）
 CREATE TABLE raw_source_documents (
@@ -400,6 +402,7 @@ CREATE UNIQUE INDEX uq_cusip_ticker_map_cusip_valid_from
 2. 构建文件目录 URL，从 filing 目录中定位 primary document 与 information table XML（常见为 `primary-doc.xml` 与 `infotable.xml`）
 3. 对同一 filing，primary document 与 information table 分别写入独立 raw 记录，并分别回填 raw_primary_doc_id 与 raw_infotable_doc_id
    （source_system='edgar', document_type='primary_doc_xml' / 'infotable_xml'）
+   - 实现顺序：先写入 raw 记录并拿到 raw ids，再执行解析与 filings_13f 外键回填
 4. 解析 XML → 写入 holdings_13f
    - 每条 `<infoTable>` 计算 row_fingerprint
    - 使用 `UNIQUE (filing_id, row_fingerprint)` 保证幂等
