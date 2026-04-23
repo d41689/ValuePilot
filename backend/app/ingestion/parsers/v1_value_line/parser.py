@@ -792,6 +792,32 @@ class ValueLineV1Parser(BaseParser):
                 lambda m: f"{left_quote}{m.group(1)}{right_quote} program",
                 text,
             )
+            text = re.sub(r'(?i)\bIn telligence\b', 'Intelligence', text)
+            text = re.sub(r'(?i)\bAD Ss\b', 'ADSs', text)
+            text = re.sub(r'(?i)\bpriva tely\b', 'privately', text)
+            text = re.sub(r'(?i)\bapproxima tely\b', 'approximately', text)
+            text = re.sub(r'(?i)\bultima tely\b', 'ultimately', text)
+            text = re.sub(r'(?i)\bpla net\b', 'planet', text)
+            text = re.sub(r'(?i)\bopport unity\b', 'opportunity', text)
+            text = re.sub(r'(?i)\bS tellarton\b', 'Stellarton', text)
+            text = re.sub(r'(?i)\bpreviousyear\b', 'previous year', text)
+            text = re.sub(r'(?i)\bindustryleading\b', 'industry-leading', text)
+            text = re.sub(r'(?i)\byear-overyear\b', 'year-over-year', text)
+            text = re.sub(r'(?i)\boperationalefficiency\b', 'operational efficiency', text)
+            text = re.sub(r'(?i)\bproductline\b', 'product line', text)
+            text = re.sub(r'(?i)\bconsumerdriven\b', 'consumer-driven', text)
+            text = re.sub(r'(?i)\btopand bottomline\b', 'top- and bottom-line', text)
+            text = re.sub(r'(?i)\btopand bottom-line\b', 'top- and bottom-line', text)
+            text = re.sub(r'(?i)\blowto\b', 'low-to', text)
+            text = re.sub(r'(?i)\bdec lines\b', 'declines', text)
+            text = re.sub(r'(?i)\bdollardenominated\b', 'dollar-denominated', text)
+            text = re.sub(r'(?i)\byears end\b', 'year ends', text)
+            text = re.sub(r'(?i)\bK 12\b', 'K12', text)
+            text = re.sub(r'(?i)\bAD Rs\b', 'ADRs', text)
+            text = re.sub(r'(?i)\bcomm,\s+shares\b', 'comm. shares', text)
+            text = re.sub(r'(?i)\b(\d{1,2})\s+th\b', r'\1th', text)
+            text = re.sub(r'(?i)www\.empireco\.\s+ca', 'www.empireco.ca', text)
+            text = re.sub(r'(?i)www\.vitacoco\s+company\.com', 'www.vitacococompany.com', text)
             text = re.sub(r'\s+', ' ', text).strip()
             return text
 
@@ -832,14 +858,15 @@ class ValueLineV1Parser(BaseParser):
         def _normalize_commentary_text(raw: str) -> str:
             text = _normalize_section_text(raw)
             text = re.sub(r'^In millions\.\s*', '', text, flags=re.IGNORECASE)
+            company_token = r"[A-Z][A-Za-z.&'’\-]*,?"
             plausible_start = re.match(
-                r'^\s*(Shares\s+of\b|[A-Z][A-Za-z.&\'’\-]+(?:\s+[A-Z][A-Za-z.&\'’\-]+){0,4}\s+(?:shares|stock|finished|have|has|is|are|reported|advanced|trades|looks|joined|ended|rose|fell|posted|continued|declined|slipped|generated|remained))',
+                rf'^\s*(Shares\s+of\b|The\s+business\s+outlook\b|{company_token}(?:\s+{company_token}){{0,5}}\s+(?:shares|stock|finished|have|has|is|are|reported|advanced|trades|looks|joined|ended|rose|fell|posted|continued|declined|slipped|generated|remained))',
                 text,
                 flags=re.IGNORECASE,
             )
             if not plausible_start:
                 text = re.sub(
-                    r'^\s*.*?(?=(Shares\s+of\b|[A-Z][A-Za-z.&\'’\-]+(?:\s+[A-Z][A-Za-z.&\'’\-]+){0,4}\s+(?:shares|stock|finished|have|has|is|are|reported|advanced|trades|looks|joined|ended|rose|fell|posted|continued|declined|slipped|generated|remained)))',
+                    rf'^\s*.*?(?=(Shares\s+of\b|The\s+business\s+outlook\b|{company_token}(?:\s+{company_token}){{0,5}}\s+(?:shares|stock|finished|have|has|is|are|reported|advanced|trades|looks|joined|ended|rose|fell|posted|continued|declined|slipped|generated|remained)))',
                     '',
                     text,
                     flags=re.IGNORECASE,
@@ -895,7 +922,7 @@ class ValueLineV1Parser(BaseParser):
             )
             text = re.sub(r'especially is a compelling', 'especially compelling', text, flags=re.IGNORECASE)
             text = re.sub(
-                r'\b[A-Z][a-z]+(?:\s+[A-Z][a-z]+){0,3}\s+(January|February|March|April|May|June|July|August|September|October|November|December)\s+\d{1,2},\s+\d{4}.*$',
+                r'\b[A-Z][a-z]+(?:\s+(?:[A-Z]\.|[A-Z][a-z]+\.?)){1,4}\s+(January|February|March|April|May|June|July|August|September|October|November|December)\s+\d{1,2},\s+\d{4}\s*$',
                 '',
                 text,
                 flags=re.IGNORECASE,
@@ -1045,7 +1072,7 @@ class ValueLineV1Parser(BaseParser):
                 line_key = int(round(float(word.get("top", 0.0))))
                 line_map.setdefault(line_key, []).append(word)
 
-            signature_word = None
+            signature_candidates: list[dict[str, Any]] = []
             for line_key in sorted(line_map):
                 line_words = sorted(line_map[line_key], key=lambda word: float(word.get("x0", 0.0)))
                 month_word = next(
@@ -1063,8 +1090,8 @@ class ValueLineV1Parser(BaseParser):
                     continue
                 if not re.search(r'\b20\d{2}\b', line_text):
                     continue
-                signature_word = month_word
-                break
+                signature_candidates.append(month_word)
+            signature_word = signature_candidates[-1] if signature_candidates else None
             if signature_word is None:
                 return None, None
 
@@ -1104,15 +1131,37 @@ class ValueLineV1Parser(BaseParser):
             if split_top is None:
                 return None, None
 
-            def _flow_text(items: list[dict[str, Any]]) -> Optional[str]:
+            def _column_region_text(items: list[dict[str, Any]]) -> Optional[str]:
                 if not items:
                     return None
-                combined = " ".join(str(word.get("text", "")) for word in items if word.get("text"))
+                split_x = 380.0
+
+                def _line_text(words_subset: list[dict[str, Any]]) -> str:
+                    lines: dict[int, list[dict[str, Any]]] = {}
+                    for word in words_subset:
+                        line_key = int(round(float(word.get("top", 0.0))))
+                        lines.setdefault(line_key, []).append(word)
+                    output_lines: list[str] = []
+                    for line_key in sorted(lines):
+                        line_words = sorted(lines[line_key], key=lambda word: float(word.get("x0", 0.0)))
+                        line = " ".join(str(word.get("text", "")) for word in line_words if word.get("text"))
+                        line = line.strip()
+                        if line:
+                            output_lines.append(line)
+                    return "\n".join(output_lines)
+
+                xs = [float(word.get("x0", 0.0)) for word in items]
+                if min(xs) < split_x - 20.0 and max(xs) > split_x + 20.0:
+                    left_words = [word for word in items if float(word.get("x0", 0.0)) < split_x]
+                    right_words = [word for word in items if float(word.get("x0", 0.0)) >= split_x]
+                    combined = "\n".join(filter(None, [_line_text(left_words), _line_text(right_words)]))
+                else:
+                    combined = _line_text(items)
                 return combined.strip() or None
 
             business_words = [word for word in narrative_words if float(word.get("top", 0.0)) < split_top - 0.1]
             commentary_words = [word for word in narrative_words if float(word.get("top", 0.0)) >= split_top - 0.1]
-            return _flow_text(business_words), _flow_text(commentary_words)
+            return _column_region_text(business_words), _column_region_text(commentary_words)
 
         business_desc = None
         business_snippet = None

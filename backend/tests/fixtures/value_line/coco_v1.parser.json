@@ -19,7 +19,8 @@
     "pe_ratio_trailing": 47.4,
     "pe_ratio_median": null,
     "relative_pe_ratio": 2.32,
-    "dividend_yield_pct": null
+    "dividend_yield_pct": null,
+    "fact_nature": "snapshot"
   },
   "ratings": {
     "timeliness": {
@@ -51,7 +52,8 @@
       "normalized": 1.0,
       "unit": "ratio",
       "notes": "1.00 = Market"
-    }
+    },
+    "fact_nature": "opinion"
   },
   "quality_metrics": {
     "company_financial_strength": {
@@ -97,7 +99,8 @@
         "normalized": 0.2,
         "unit": "ratio"
       }
-    }
+    },
+    "fact_nature": "opinion"
   },
   "long_term_projection": {
     "projection_year_range": "2028-2030",
@@ -137,7 +140,8 @@
           "unit": "ratio"
         }
       }
-    }
+    },
+    "fact_nature": "opinion"
   },
   "institutional_decisions": {
     "unit": {
@@ -268,7 +272,8 @@
         },
         "past_5y_note": "--"
       }
-    ]
+    ],
+    "fact_nature": "opinion"
   },
   "quarterly_sales": {
     "unit": "USD_millions",
@@ -278,24 +283,28 @@
         "quarters": {
           "Q1": {
             "period_end": "2022-03-31",
-            "value": 96.5
+            "value": 96.5,
+            "fact_nature": "actual"
           },
           "Q2": {
             "period_end": "2022-06-30",
-            "value": 115.3
+            "value": 115.3,
+            "fact_nature": "actual"
           },
           "Q3": {
             "period_end": "2022-09-30",
-            "value": 124.0
+            "value": 124.0,
+            "fact_nature": "actual"
           },
           "Q4": {
             "period_end": "2022-12-31",
-            "value": 92.0
+            "value": 92.0,
+            "fact_nature": "actual"
           }
         },
         "full_year": {
           "value": 427.8,
-          "is_estimated": false
+          "fact_nature": "actual"
         }
       },
       {
@@ -303,24 +312,28 @@
         "quarters": {
           "Q1": {
             "period_end": "2023-03-31",
-            "value": 109.7
+            "value": 109.7,
+            "fact_nature": "actual"
           },
           "Q2": {
             "period_end": "2023-06-30",
-            "value": 139.6
+            "value": 139.6,
+            "fact_nature": "actual"
           },
           "Q3": {
             "period_end": "2023-09-30",
-            "value": 138.1
+            "value": 138.1,
+            "fact_nature": "actual"
           },
           "Q4": {
             "period_end": "2023-12-31",
-            "value": 106.2
+            "value": 106.2,
+            "fact_nature": "actual"
           }
         },
         "full_year": {
           "value": 493.6,
-          "is_estimated": false
+          "fact_nature": "actual"
         }
       },
       {
@@ -328,24 +341,28 @@
         "quarters": {
           "Q1": {
             "period_end": "2024-03-31",
-            "value": 111.6
+            "value": 111.6,
+            "fact_nature": "actual"
           },
           "Q2": {
             "period_end": "2024-06-30",
-            "value": 144.1
+            "value": 144.1,
+            "fact_nature": "actual"
           },
           "Q3": {
             "period_end": "2024-09-30",
-            "value": 133.0
+            "value": 133.0,
+            "fact_nature": "actual"
           },
           "Q4": {
             "period_end": "2024-12-31",
-            "value": 127.3
+            "value": 127.3,
+            "fact_nature": "actual"
           }
         },
         "full_year": {
           "value": 516.0,
-          "is_estimated": false
+          "fact_nature": "actual"
         }
       },
       {
@@ -353,24 +370,28 @@
         "quarters": {
           "Q1": {
             "period_end": "2025-03-31",
-            "value": 130.9
+            "value": 130.9,
+            "fact_nature": "estimate"
           },
           "Q2": {
             "period_end": "2025-06-30",
-            "value": 168.7
+            "value": 168.7,
+            "fact_nature": "estimate"
           },
           "Q3": {
             "period_end": "2025-09-30",
-            "value": 182.3
+            "value": 182.3,
+            "fact_nature": "estimate"
           },
           "Q4": {
             "period_end": "2025-12-31",
-            "value": 118.1
+            "value": 118.1,
+            "fact_nature": "estimate"
           }
         },
         "full_year": {
           "value": 600.0,
-          "is_estimated": true
+          "fact_nature": "estimate"
         }
       },
       {
@@ -378,27 +399,39 @@
         "quarters": {
           "Q1": {
             "period_end": "2026-03-31",
-            "value": 140.0
+            "value": 140.0,
+            "fact_nature": "estimate"
           },
           "Q2": {
             "period_end": "2026-06-30",
-            "value": 170.0
+            "value": 170.0,
+            "fact_nature": "estimate"
           },
           "Q3": {
             "period_end": "2026-09-30",
-            "value": 200.0
+            "value": 200.0,
+            "fact_nature": "estimate"
           },
           "Q4": {
             "period_end": "2026-12-31",
-            "value": 140.0
+            "value": 140.0,
+            "fact_nature": "estimate"
           }
         },
         "full_year": {
           "value": 650.0,
-          "is_estimated": true
+          "fact_nature": "estimate"
         }
       }
-    ]
+    ],
+    "fact_nature": "mixed",
+    "quarter_month_order": [
+      "Mar",
+      "Jun",
+      "Sep",
+      "Dec"
+    ],
+    "fiscal_year_end_month": 12
   },
   "net_premiums_earned": null,
   "earnings_per_share": {
@@ -409,24 +442,28 @@
         "quarters": {
           "Q1": {
             "period_end": "2022-03-31",
-            "value": 0.04
+            "value": 0.04,
+            "fact_nature": "actual"
           },
           "Q2": {
             "period_end": "2022-06-30",
-            "value": 0.02
+            "value": 0.02,
+            "fact_nature": "actual"
           },
           "Q3": {
             "period_end": "2022-09-30",
-            "value": 0.13
+            "value": 0.13,
+            "fact_nature": "actual"
           },
           "Q4": {
             "period_end": "2022-12-31",
-            "value": -0.05
+            "value": -0.05,
+            "fact_nature": "actual"
           }
         },
         "full_year": {
           "value": 0.14,
-          "is_estimated": false
+          "fact_nature": "actual"
         }
       },
       {
@@ -434,24 +471,28 @@
         "quarters": {
           "Q1": {
             "period_end": "2023-03-31",
-            "value": 0.12
+            "value": 0.12,
+            "fact_nature": "actual"
           },
           "Q2": {
             "period_end": "2023-06-30",
-            "value": 0.31
+            "value": 0.31,
+            "fact_nature": "actual"
           },
           "Q3": {
             "period_end": "2023-09-30",
-            "value": 0.26
+            "value": 0.26,
+            "fact_nature": "actual"
           },
           "Q4": {
             "period_end": "2023-12-31",
-            "value": 0.11
+            "value": 0.11,
+            "fact_nature": "actual"
           }
         },
         "full_year": {
           "value": 0.79,
-          "is_estimated": false
+          "fact_nature": "actual"
         }
       },
       {
@@ -459,24 +500,28 @@
         "quarters": {
           "Q1": {
             "period_end": "2024-03-31",
-            "value": 0.24
+            "value": 0.24,
+            "fact_nature": "actual"
           },
           "Q2": {
             "period_end": "2024-06-30",
-            "value": 0.32
+            "value": 0.32,
+            "fact_nature": "actual"
           },
           "Q3": {
             "period_end": "2024-09-30",
-            "value": 0.32
+            "value": 0.32,
+            "fact_nature": "actual"
           },
           "Q4": {
             "period_end": "2024-12-31",
-            "value": 0.06
+            "value": 0.06,
+            "fact_nature": "actual"
           }
         },
         "full_year": {
           "value": 0.94,
-          "is_estimated": false
+          "fact_nature": "actual"
         }
       },
       {
@@ -484,24 +529,28 @@
         "quarters": {
           "Q1": {
             "period_end": "2025-03-31",
-            "value": 0.31
+            "value": 0.31,
+            "fact_nature": "estimate"
           },
           "Q2": {
             "period_end": "2025-06-30",
-            "value": 0.38
+            "value": 0.38,
+            "fact_nature": "estimate"
           },
           "Q3": {
             "period_end": "2025-09-30",
-            "value": 0.4
+            "value": 0.4,
+            "fact_nature": "estimate"
           },
           "Q4": {
             "period_end": "2025-12-31",
-            "value": 0.11
+            "value": 0.11,
+            "fact_nature": "estimate"
           }
         },
         "full_year": {
           "value": 1.2,
-          "is_estimated": true
+          "fact_nature": "estimate"
         }
       },
       {
@@ -509,27 +558,39 @@
         "quarters": {
           "Q1": {
             "period_end": "2026-03-31",
-            "value": 0.35
+            "value": 0.35,
+            "fact_nature": "estimate"
           },
           "Q2": {
             "period_end": "2026-06-30",
-            "value": 0.4
+            "value": 0.4,
+            "fact_nature": "estimate"
           },
           "Q3": {
             "period_end": "2026-09-30",
-            "value": 0.45
+            "value": 0.45,
+            "fact_nature": "estimate"
           },
           "Q4": {
             "period_end": "2026-12-31",
-            "value": 0.2
+            "value": 0.2,
+            "fact_nature": "estimate"
           }
         },
         "full_year": {
           "value": 1.4,
-          "is_estimated": true
+          "fact_nature": "estimate"
         }
       }
-    ]
+    ],
+    "fact_nature": "mixed",
+    "quarter_month_order": [
+      "Mar",
+      "Jun",
+      "Sep",
+      "Dec"
+    ],
+    "fiscal_year_end_month": 12
   },
   "earnings_per_adr": null,
   "quarterly_dividends_paid": {
@@ -541,7 +602,7 @@
         "quarters": null,
         "full_year": {
           "value": null,
-          "is_estimated": false
+          "fact_nature": "actual"
         },
         "notes": "No cash dividends being paid"
       },
@@ -550,7 +611,7 @@
         "quarters": null,
         "full_year": {
           "value": null,
-          "is_estimated": false
+          "fact_nature": "actual"
         },
         "notes": "No cash dividends being paid"
       },
@@ -559,7 +620,7 @@
         "quarters": null,
         "full_year": {
           "value": null,
-          "is_estimated": false
+          "fact_nature": "actual"
         },
         "notes": "No cash dividends being paid"
       },
@@ -568,7 +629,7 @@
         "quarters": null,
         "full_year": {
           "value": null,
-          "is_estimated": false
+          "fact_nature": "actual"
         },
         "notes": "No cash dividends being paid"
       },
@@ -577,11 +638,12 @@
         "quarters": null,
         "full_year": {
           "value": null,
-          "is_estimated": false
+          "fact_nature": "actual"
         },
         "notes": "No cash dividends being paid"
       }
-    ]
+    ],
+    "fact_nature": "mixed"
   },
   "annual_financials": {
     "meta": {
@@ -602,6 +664,24 @@
         2025,
         2026
       ],
+      "actual_years": [
+        2015,
+        2016,
+        2017,
+        2018,
+        2019,
+        2020,
+        2021,
+        2022,
+        2023,
+        2024
+      ],
+      "estimate_years": [
+        2025,
+        2026
+      ],
+      "fact_nature": "mixed",
+      "fiscal_year_end_month": 12,
       "projection_year_range": "2028-2030"
     },
     "per_unit": "share",
@@ -951,7 +1031,8 @@
         "window_years": 5,
         "value_pct": 68.5
       }
-    ]
+    ],
+    "fact_nature": "snapshot"
   },
   "historical_price_range": [],
   "current_position": {
@@ -1011,9 +1092,10 @@
     ]
   },
   "narrative": {
-    "business": null,
+    "business": "The Vita Coco Company operates in the functional beverages category. The company markets and distributes coconut water under the Vita Coco label. Vita Coco has expanded to include enhanced water, coconut milk, plant-based drinks, coconut oil, and post-workout beverages. Additional brands include Runa, Ever & Ever, and PWR Lift. Vita Coco reports in two geographic segments: The Americas (80% of \u201924 sales) and Int\u2019l (20%). Functional beverages have health benefits as they are fortified with vitamins. Has 319 employees. Off. & dir. own about 19.1% of comm. shares (4/25 Proxy). Chairman: Mike Kirban. CEO: Martin Roper. Inc.: DE. Address: 250 Park Ave. South, Seventh Floor, New York, NY, 10003. Tel.: 212-206-0763. Internet: www.vitacococompany.com.",
     "analyst_name": "Nira Maharaj",
     "commentary_date": "2026-01-09",
-    "analyst_commentary": null
+    "analyst_commentary": "Shares of The Vita Coco Company continue to gain investor support. At the recent quotation, the equity has increased almost 30% in value since our early October report, and is in the vicinity of its historical high. Investors appear to be emboldened by the string of favorable financial performances for 2025. In the first nine months of last year, aggregate sales and earnings both increased 24%, totaling $481.9 million and $1.09 a share, respectively. We are optimistic that sales and earnings advanced commendably for the full year (though some tariff impact was expected to derail sales in the final quarter). Prospects in 2026 appear solid. Despite macroeconomic weakness, consumers continue to seek out coconut water as a drink option. The appeal is multifaceted, but perhaps the most touted features are the health benefits associated with coconut water consumption. Vita Coco intends to increase its market share through product line extensions, such as the recently debuted Vita Coco Treats and cold pressed coconut water. Increased advertising and promotional investments, as well as strategic retail placements, have also helped to increase consumer awareness. Additionally, more-efficient e-commerce channels, including Amazon, have been beneficial. From an operational standpoint, we expect the company to continue to implement pricing initiatives and packaging reconfigurations in order to offset present macroeconomic challenges. Prospects over the 3 to 5-year horizon are a bit ill-defined. Although the company is well placed within its beverage space, coconut water is a niche category. A lack of diversification and the somewhat fickle nature of consumer taste preferences are a bit of a concern. These shares are ranked to mirror the broader market averages in the coming year. Long-term investors may want to wait for a better entry point. Although we project healthy annual earnings growth out to 2028-2030, the recent runup in COCO\u2019s share price limits capital appreciation potential over the 2028-2030 time frame. In fact, the stock is currently trading well within our 3 to 5-year Target Price Range.",
+    "fact_nature": "opinion"
   }
 }
