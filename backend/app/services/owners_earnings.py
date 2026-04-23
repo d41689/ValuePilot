@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import date
 from statistics import median
-from typing import Optional
+from typing import Any, Iterable, Optional
 
 
 EPS_KEY = "per_share.eps"
@@ -12,6 +12,22 @@ SHARES_KEY = "equity.shares_outstanding"
 
 OEPS_KEY = "owners_earnings_per_share"
 OEPS_NORM_KEY = "owners_earnings_per_share_normalized"
+OE_INPUT_KEYS = {EPS_KEY, CAPEX_KEY, DEPRECIATION_KEY, SHARES_KEY}
+
+
+def infer_owners_earnings_fact_nature(facts: Iterable[Any]) -> str:
+    fact_natures: set[str] = set()
+    for fact in facts:
+        value_json = None
+        if isinstance(fact, dict):
+            value_json = fact.get("value_json")
+        else:
+            value_json = getattr(fact, "value_json", None)
+        if isinstance(value_json, dict):
+            fact_nature = value_json.get("fact_nature")
+            if isinstance(fact_nature, str):
+                fact_natures.add(fact_nature)
+    return "estimate" if "estimate" in fact_natures else "actual"
 
 
 def build_owners_earnings_facts(
@@ -26,7 +42,7 @@ def build_owners_earnings_facts(
         if fact.get("period_type") != "FY":
             continue
         metric_key = fact.get("metric_key")
-        if metric_key not in {EPS_KEY, CAPEX_KEY, DEPRECIATION_KEY, SHARES_KEY}:
+        if metric_key not in OE_INPUT_KEYS:
             continue
         period_end = fact.get("period_end_date")
         if not isinstance(period_end, date):
@@ -34,11 +50,10 @@ def build_owners_earnings_facts(
         value = fact.get("value_numeric")
         numeric = float(value) if isinstance(value, (int, float)) else 0.0
         by_date.setdefault(period_end, {})[metric_key] = numeric
-        value_json = fact.get("value_json")
-        if isinstance(value_json, dict):
-            fact_nature = value_json.get("fact_nature")
-            if isinstance(fact_nature, str):
-                fact_natures_by_date.setdefault(period_end, set()).add(fact_nature)
+        derived_input_facts = fact_natures_by_date.setdefault(period_end, set())
+        inferred = infer_owners_earnings_fact_nature([fact])
+        if inferred:
+            derived_input_facts.add(inferred)
 
     if not by_date:
         return []
@@ -56,9 +71,7 @@ def build_owners_earnings_facts(
         oeps_value = eps + dep_per_share - capex
         oeps_by_date[period_end] = oeps_value
         derived_fact_nature = (
-            "estimate"
-            if "estimate" in fact_natures_by_date.get(period_end, set())
-            else "actual"
+            "estimate" if "estimate" in fact_natures_by_date.get(period_end, set()) else "actual"
         )
         derived.append(
             {
