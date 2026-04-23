@@ -60,6 +60,9 @@ def test_value_line_taxonomy_covers_core_sections_and_mappings():
     assert evidence_reads["rating.timeliness.event"]["metric_key"] == "rating.timeliness_change"
     assert evidence_reads["rating.safety.event"]["value_mode"] == "rating_event"
     assert evidence_reads["rating.technical.event"]["value_mode"] == "rating_event"
+    derived_metrics = taxonomy["derived_metrics"]
+    assert derived_metrics["owners_earnings_per_share"]["fact_nature_rule"] == "derived_from_inputs"
+    assert derived_metrics["owners_earnings_per_share_normalized"]["fact_nature"] == "snapshot"
 
 
 def test_mapping_spec_uses_taxonomy_semantics_for_generated_facts():

@@ -8,6 +8,8 @@ def test_taxonomy_matcher_covers_static_and_dynamic_keys():
     assert classify_metric_key("mkt.price", matcher).covered is True
     assert classify_metric_key("rates.sales.cagr_10y", matcher).covered is True
     assert classify_metric_key("rates.cash_flow.cagr_est", matcher).covered is True
+    assert classify_metric_key("owners_earnings_per_share", matcher).covered is True
+    assert classify_metric_key("owners_earnings_per_share_normalized", matcher).covered is True
 
 
 def test_taxonomy_matcher_excludes_evidence_only_and_legacy_keys():

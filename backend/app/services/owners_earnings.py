@@ -20,6 +20,7 @@ def build_owners_earnings_facts(
     report_date: Optional[date],
 ) -> list[dict]:
     by_date: dict[date, dict[str, float]] = {}
+    fact_natures_by_date: dict[date, set[str]] = {}
 
     for fact in facts:
         if fact.get("period_type") != "FY":
@@ -33,6 +34,11 @@ def build_owners_earnings_facts(
         value = fact.get("value_numeric")
         numeric = float(value) if isinstance(value, (int, float)) else 0.0
         by_date.setdefault(period_end, {})[metric_key] = numeric
+        value_json = fact.get("value_json")
+        if isinstance(value_json, dict):
+            fact_nature = value_json.get("fact_nature")
+            if isinstance(fact_nature, str):
+                fact_natures_by_date.setdefault(period_end, set()).add(fact_nature)
 
     if not by_date:
         return []
@@ -49,12 +55,17 @@ def build_owners_earnings_facts(
         dep_per_share = depreciation / shares if shares > 0 else 0.0
         oeps_value = eps + dep_per_share - capex
         oeps_by_date[period_end] = oeps_value
+        derived_fact_nature = (
+            "estimate"
+            if "estimate" in fact_natures_by_date.get(period_end, set())
+            else "actual"
+        )
         derived.append(
             {
                 "metric_key": OEPS_KEY,
                 "value_numeric": oeps_value,
                 "value_text": None,
-                "value_json": None,
+                "value_json": {"fact_nature": derived_fact_nature},
                 "unit": "USD",
                 "period_type": "FY",
                 "period_end_date": period_end,
@@ -70,7 +81,7 @@ def build_owners_earnings_facts(
                 "metric_key": OEPS_NORM_KEY,
                 "value_numeric": normalized_value,
                 "value_text": None,
-                "value_json": None,
+                "value_json": {"fact_nature": "snapshot"},
                 "unit": "USD",
                 "period_type": "AS_OF",
                 "period_end_date": report_date,

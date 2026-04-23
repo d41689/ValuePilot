@@ -199,3 +199,11 @@ evidence_reads:
     extraction_field_key: technical
     value_mode: rating_event
     period_end_source: parsed_event_date
+
+derived_metrics:
+  owners_earnings_per_share:
+    fact_nature_rule: derived_from_inputs
+    storage_role: canonical_fact
+  owners_earnings_per_share_normalized:
+    fact_nature: snapshot
+    storage_role: canonical_fact

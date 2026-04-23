@@ -1,7 +1,7 @@
 import argparse
 import json
 import re
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -43,6 +43,7 @@ def build_taxonomy_matcher(
     spec = _load_yaml(spec_path)
     taxonomy = _load_yaml(taxonomy_path)
     mapping_semantics = taxonomy.get("mapping_semantics", {})
+    derived_metrics = taxonomy.get("derived_metrics", {})
 
     exact_keys: set[str] = set()
     dynamic_patterns: list[re.Pattern[str]] = []
@@ -62,6 +63,13 @@ def build_taxonomy_matcher(
         if isinstance(template, str):
             pattern_text = "^" + re.escape(template).replace(r"\{metric_key\}", r"[a-z0-9_]+") + "$"
             dynamic_patterns.append(re.compile(pattern_text))
+
+    for metric_key, semantics in derived_metrics.items():
+        if not isinstance(metric_key, str):
+            continue
+        if isinstance(semantics, dict) and semantics.get("storage_role") == "evidence_only":
+            continue
+        exact_keys.add(metric_key)
 
     return TaxonomyMatcher(
         exact_keys=frozenset(exact_keys),
