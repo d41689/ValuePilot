@@ -93,6 +93,22 @@ def test_axs_annual_financials_years_and_total_return_shape():
     assert actual["total_return"]["series"] == expected["total_return"]["series"]
 
 
+def test_axs_semantic_tags_and_annual_estimate_years():
+    actual = build_page_json()
+
+    assert actual["header"]["fact_nature"] == "snapshot"
+    assert actual["ratings"]["fact_nature"] == "opinion"
+    assert actual["target_price_18m"]["fact_nature"] == "opinion"
+    assert actual["long_term_projection"]["fact_nature"] == "opinion"
+    assert actual["narrative"]["fact_nature"] == "opinion"
+    assert actual["total_return"]["fact_nature"] == "snapshot"
+
+    annual_meta = actual["annual_financials"]["meta"]
+    assert annual_meta["fact_nature"] == "mixed"
+    assert annual_meta["estimate_years"] == [2025, 2026]
+    assert annual_meta["actual_years"][-1] == 2024
+
+
 def test_axs_v1_1_meta_and_stable_top_level_keys():
     actual = build_page_json()
 

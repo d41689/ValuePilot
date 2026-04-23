@@ -2,6 +2,13 @@ import calendar
 import re
 from typing import Dict, Any, Optional
 from app.ingestion.parsers.base import BaseParser, IdentityInfo, ExtractionResult
+from app.ingestion.parsers.v1_value_line.semantics import (
+    detect_quarter_month_order,
+    extract_month_order,
+    fiscal_year_end_month_from_order,
+    parse_report_date_iso,
+    split_actual_and_estimate_years,
+)
 
 class ValueLineV1Parser(BaseParser):
     def __init__(self, text: str, page_words: Optional[dict[int, list[dict[str, Any]]]] = None):
@@ -1172,15 +1179,10 @@ class ValueLineV1Parser(BaseParser):
             rows: list[dict[str, Any]] = []
             token_re = r'(?:--|NMF|NM|N/A|NA|NIL|[dD]?-?\d*\.?\d+)'
             header_slice = block[:200]
-            month_order: list[str] = []
-            for match in re.findall(r'(Mar|Jun|Sep|Dec)\.?\s*(?:\d{1,2}|Per)', header_slice, re.IGNORECASE):
-                month = match.title()
-                if month not in month_order:
-                    month_order.append(month)
-                if len(month_order) == 4:
-                    break
+            month_order = extract_month_order(header_slice)
             if len(month_order) != 4:
                 month_order = ["Mar", "Jun", "Sep", "Dec"]
+            fiscal_year_end_month = fiscal_year_end_month_from_order(month_order)
             row_re = re.compile(
                 rf'^\s*(\d{{4}})[ \t]+({token_re})[ \t]+({token_re})[ \t]+({token_re})[ \t]+({token_re})(?:[ \t]+({token_re}))?(?:[ \t]+.*)?$',
                 re.MULTILINE,
@@ -1206,13 +1208,14 @@ class ValueLineV1Parser(BaseParser):
                     value = float(raw)
                     return -value if negative else value
                 values = [_f(m.group(2)), _f(m.group(3)), _f(m.group(4)), _f(m.group(5))]
-                month_map = {month: values[idx] for idx, month in enumerate(month_order)}
                 rows.append({
                     "calendar_year": int(m.group(1)),
-                    "mar_31": month_map.get("Mar"),
-                    "jun_30": month_map.get("Jun"),
-                    "sep_30": month_map.get("Sep"),
-                    "dec_31": month_map.get("Dec"),
+                    "q1": values[0],
+                    "q2": values[1],
+                    "q3": values[2],
+                    "q4": values[3],
+                    "quarter_month_order": month_order,
+                    "fiscal_year_end_month": fiscal_year_end_month,
                     "full_year": _f(m.group(6)) if m.group(6) else None,
                 })
             return rows
@@ -2010,6 +2013,14 @@ class ValueLineV1Parser(BaseParser):
         if proj is not None:
             projection["return_on_total_capital_pct"] = proj
 
+        report_date = parse_report_date_iso(self.text)
+        quarter_month_order = detect_quarter_month_order(self.text)
+        fiscal_year_end_month = fiscal_year_end_month_from_order(quarter_month_order)
+        actual_years, estimate_years = split_actual_and_estimate_years(
+            years,
+            report_date,
+            fiscal_year_end_month,
+        )
 
         return {
             "price_history_high_low": {
@@ -2019,6 +2030,10 @@ class ValueLineV1Parser(BaseParser):
             },
             "annual_financials_and_ratios_2015_2026_with_projection_2028_2030": {
                 "years": years,
+                "actual_years": actual_years,
+                "estimate_years": estimate_years,
+                "quarter_month_order": quarter_month_order,
+                "fiscal_year_end_month": fiscal_year_end_month,
                 "projection_year_range": proj_range,
                 "per_share": {**per_share, "notes": None},
                 "valuation": valuation,

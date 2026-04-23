@@ -19,7 +19,8 @@
     "pe_ratio_trailing": 23.6,
     "pe_ratio_median": 25.0,
     "relative_pe_ratio": 0.76,
-    "dividend_yield_pct": null
+    "dividend_yield_pct": null,
+    "fact_nature": "snapshot"
   },
   "ratings": {
     "timeliness": {
@@ -51,7 +52,8 @@
       "normalized": 1.25,
       "unit": "ratio",
       "notes": "1.00 = Market"
-    }
+    },
+    "fact_nature": "opinion"
   },
   "quality_metrics": {
     "company_financial_strength": {
@@ -97,7 +99,8 @@
         "normalized": -0.1,
         "unit": "ratio"
       }
-    }
+    },
+    "fact_nature": "opinion"
   },
   "long_term_projection": {
     "projection_year_range": "2028-2030",
@@ -137,7 +140,8 @@
           "unit": "ratio"
         }
       }
-    }
+    },
+    "fact_nature": "opinion"
   },
   "institutional_decisions": {
     "unit": {
@@ -274,7 +278,8 @@
           "value": 5.5
         }
       }
-    ]
+    ],
+    "fact_nature": "opinion"
   },
   "net_premiums_earned": null,
   "earnings_per_share": null,
@@ -286,128 +291,161 @@
         "calendar_year": 2022,
         "quarters": {
           "Q1": {
-            "period_end": "2022-03-31",
-            "value": 1.56
+            "period_end": "2021-06-30",
+            "value": 1.75,
+            "fact_nature": "actual"
           },
           "Q2": {
-            "period_end": "2022-06-30",
-            "value": 1.75
+            "period_end": "2021-09-30",
+            "value": 1.82,
+            "fact_nature": "actual"
           },
           "Q3": {
-            "period_end": "2022-09-30",
-            "value": 1.82
+            "period_end": "2021-12-31",
+            "value": 2.79,
+            "fact_nature": "actual"
           },
           "Q4": {
-            "period_end": "2022-12-31",
-            "value": 2.79
+            "period_end": "2022-03-31",
+            "value": 1.56,
+            "fact_nature": "actual"
           }
         },
         "full_year": {
           "value": 7.92,
-          "is_estimated": false
+          "is_estimated": false,
+          "fact_nature": "actual"
         }
       },
       {
         "calendar_year": 2023,
         "quarters": {
           "Q1": {
-            "period_end": "2023-03-31",
-            "value": 1.4
+            "period_end": "2022-06-30",
+            "value": 2.4,
+            "fact_nature": "actual"
           },
           "Q2": {
-            "period_end": "2023-06-30",
-            "value": 2.4
+            "period_end": "2022-09-30",
+            "value": 2.14,
+            "fact_nature": "actual"
           },
           "Q3": {
-            "period_end": "2023-09-30",
-            "value": 2.14
+            "period_end": "2022-12-31",
+            "value": 2.67,
+            "fact_nature": "actual"
           },
           "Q4": {
-            "period_end": "2023-12-31",
-            "value": 2.67
+            "period_end": "2023-03-31",
+            "value": 1.4,
+            "fact_nature": "actual"
           }
         },
         "full_year": {
           "value": 8.62,
-          "is_estimated": false
+          "is_estimated": false,
+          "fact_nature": "actual"
         }
       },
       {
         "calendar_year": 2024,
         "quarters": {
           "Q1": {
-            "period_end": "2024-03-31",
-            "value": 1.4
+            "period_end": "2023-06-30",
+            "value": 2.26,
+            "fact_nature": "actual"
           },
           "Q2": {
-            "period_end": "2024-06-30",
-            "value": 2.26
+            "period_end": "2023-09-30",
+            "value": 2.15,
+            "fact_nature": "actual"
           },
           "Q3": {
-            "period_end": "2024-09-30",
-            "value": 2.15
+            "period_end": "2023-12-31",
+            "value": 2.93,
+            "fact_nature": "actual"
           },
           "Q4": {
-            "period_end": "2024-12-31",
-            "value": 2.93
+            "period_end": "2024-03-31",
+            "value": 1.4,
+            "fact_nature": "actual"
           }
         },
         "full_year": {
           "value": 8.74,
-          "is_estimated": false
+          "is_estimated": false,
+          "fact_nature": "actual"
         }
       },
       {
         "calendar_year": 2025,
         "quarters": {
           "Q1": {
-            "period_end": "2025-03-31",
-            "value": 2.83
+            "period_end": "2024-06-30",
+            "value": 2.06,
+            "fact_nature": "actual"
           },
           "Q2": {
-            "period_end": "2025-06-30",
-            "value": 2.06
+            "period_end": "2024-09-30",
+            "value": 0.61,
+            "fact_nature": "actual"
           },
           "Q3": {
-            "period_end": "2025-09-30",
-            "value": 0.61
+            "period_end": "2024-12-31",
+            "value": 2.5,
+            "fact_nature": "actual"
           },
           "Q4": {
-            "period_end": "2025-12-31",
-            "value": 2.5
+            "period_end": "2025-03-31",
+            "value": 2.83,
+            "fact_nature": "actual"
           }
         },
         "full_year": {
           "value": 8.0,
-          "is_estimated": false
+          "is_estimated": false,
+          "fact_nature": "actual"
         }
       },
       {
         "calendar_year": 2026,
         "quarters": {
           "Q1": {
-            "period_end": "2026-03-31",
-            "value": 3.05
+            "period_end": "2025-06-30",
+            "value": 2.9,
+            "fact_nature": "estimate"
           },
           "Q2": {
-            "period_end": "2026-06-30",
-            "value": 2.9
+            "period_end": "2025-09-30",
+            "value": 3.0,
+            "fact_nature": "estimate"
           },
           "Q3": {
-            "period_end": "2026-09-30",
-            "value": 3.0
+            "period_end": "2025-12-31",
+            "value": 3.2,
+            "fact_nature": "estimate"
           },
           "Q4": {
-            "period_end": "2026-12-31",
-            "value": 3.2
+            "period_end": "2026-03-31",
+            "value": 3.05,
+            "fact_nature": "estimate"
           }
         },
         "full_year": {
           "value": 12.15,
-          "is_estimated": true
+          "is_estimated": true,
+          "fact_nature": "estimate"
         }
       }
     ],
+    "fact_nature": "mixed",
+    "quarter_month_order": [
+      "Jun",
+      "Sep",
+      "Dec",
+      "Mar"
+    ],
+    "fiscal_year_end_month": 3,
     "notes": "Values are reported as Earnings per ADS in the source table."
   },
   "quarterly_dividends_paid": {
@@ -419,7 +457,8 @@
         "quarters": null,
         "full_year": {
           "value": null,
-          "is_estimated": false
+          "is_estimated": false,
+          "fact_nature": "actual"
         },
         "notes": "No cash dividends being paid"
       },
@@ -428,7 +467,8 @@
         "quarters": null,
         "full_year": {
           "value": null,
-          "is_estimated": false
+          "is_estimated": false,
+          "fact_nature": "actual"
         },
         "notes": "No cash dividends being paid"
       },
@@ -437,7 +477,8 @@
         "quarters": null,
         "full_year": {
           "value": null,
-          "is_estimated": false
+          "is_estimated": false,
+          "fact_nature": "actual"
         },
         "notes": "No cash dividends being paid"
       },
@@ -446,7 +487,8 @@
         "quarters": null,
         "full_year": {
           "value": null,
-          "is_estimated": false
+          "is_estimated": false,
+          "fact_nature": "actual"
         },
         "notes": "No cash dividends being paid"
       },
@@ -455,11 +497,13 @@
         "quarters": null,
         "full_year": {
           "value": null,
-          "is_estimated": false
+          "is_estimated": false,
+          "fact_nature": "actual"
         },
         "notes": "No cash dividends being paid"
       }
-    ]
+    ],
+    "fact_nature": "mixed"
   },
   "annual_financials": {
     "meta": {
@@ -480,6 +524,24 @@
         2025,
         2026
       ],
+      "actual_years": [
+        2015,
+        2016,
+        2017,
+        2018,
+        2019,
+        2020,
+        2021,
+        2022,
+        2023,
+        2024,
+        2025
+      ],
+      "estimate_years": [
+        2026
+      ],
+      "fact_nature": "mixed",
+      "fiscal_year_end_month": 3,
       "projection_year_range": "2028-2030"
     },
     "per_unit": "ads",
@@ -875,7 +937,8 @@
         "window_years": 5,
         "value_pct": 59.2
       }
-    ]
+    ],
+    "fact_nature": "snapshot"
   },
   "historical_price_range": [
     {
@@ -999,7 +1062,8 @@
     "business": null,
     "analyst_name": "Nicholas Patrikis",
     "commentary_date": "2026-01-30",
-    "analyst_commentary": null
+    "analyst_commentary": null,
+    "fact_nature": "opinion"
   },
   "quarterly_revenues": {
     "unit": "USD_millions",
@@ -1008,127 +1072,160 @@
         "calendar_year": 2022,
         "quarters": {
           "Q1": {
-            "period_end": "2022-03-31",
-            "value": 30316.0
+            "period_end": "2021-06-30",
+            "value": 30689.0,
+            "fact_nature": "actual"
           },
           "Q2": {
-            "period_end": "2022-06-30",
-            "value": 30689.0
+            "period_end": "2021-09-30",
+            "value": 29124.0,
+            "fact_nature": "actual"
           },
           "Q3": {
-            "period_end": "2022-09-30",
-            "value": 29124.0
+            "period_end": "2021-12-31",
+            "value": 35921.0,
+            "fact_nature": "actual"
           },
           "Q4": {
-            "period_end": "2022-12-31",
-            "value": 35921.0
+            "period_end": "2022-03-31",
+            "value": 30316.0,
+            "fact_nature": "actual"
           }
         },
         "full_year": {
           "value": 126050.0,
-          "is_estimated": false
+          "is_estimated": false,
+          "fact_nature": "actual"
         }
       },
       {
         "calendar_year": 2023,
         "quarters": {
           "Q1": {
-            "period_end": "2023-03-31",
-            "value": 30729.0
+            "period_end": "2022-06-30",
+            "value": 32292.0,
+            "fact_nature": "actual"
           },
           "Q2": {
-            "period_end": "2023-06-30",
-            "value": 32292.0
+            "period_end": "2022-09-30",
+            "value": 30810.0,
+            "fact_nature": "actual"
           },
           "Q3": {
-            "period_end": "2023-09-30",
-            "value": 30810.0
+            "period_end": "2022-12-31",
+            "value": 36669.0,
+            "fact_nature": "actual"
           },
           "Q4": {
-            "period_end": "2023-12-31",
-            "value": 36669.0
+            "period_end": "2023-03-31",
+            "value": 30729.0,
+            "fact_nature": "actual"
           }
         },
         "full_year": {
           "value": 130500.0,
-          "is_estimated": false
+          "is_estimated": false,
+          "fact_nature": "actual"
         }
       },
       {
         "calendar_year": 2024,
         "quarters": {
           "Q1": {
-            "period_end": "2024-03-31",
-            "value": 32584.0
+            "period_end": "2023-06-30",
+            "value": 33470.0,
+            "fact_nature": "actual"
           },
           "Q2": {
-            "period_end": "2024-06-30",
-            "value": 33470.0
+            "period_end": "2023-09-30",
+            "value": 33701.0,
+            "fact_nature": "actual"
           },
           "Q3": {
-            "period_end": "2024-09-30",
-            "value": 33701.0
+            "period_end": "2023-12-31",
+            "value": 38381.0,
+            "fact_nature": "actual"
           },
           "Q4": {
-            "period_end": "2024-12-31",
-            "value": 38381.0
+            "period_end": "2024-03-31",
+            "value": 32584.0,
+            "fact_nature": "actual"
           }
         },
         "full_year": {
           "value": 138136.0,
-          "is_estimated": false
+          "is_estimated": false,
+          "fact_nature": "actual"
         }
       },
       {
         "calendar_year": 2025,
         "quarters": {
           "Q1": {
-            "period_end": "2025-03-31",
-            "value": 40121.0
+            "period_end": "2024-06-30",
+            "value": 34571.0,
+            "fact_nature": "actual"
           },
           "Q2": {
-            "period_end": "2025-06-30",
-            "value": 34571.0
+            "period_end": "2024-09-30",
+            "value": 34808.0,
+            "fact_nature": "actual"
           },
           "Q3": {
-            "period_end": "2025-09-30",
-            "value": 34808.0
+            "period_end": "2024-12-31",
+            "value": 40500.0,
+            "fact_nature": "actual"
           },
           "Q4": {
-            "period_end": "2025-12-31",
-            "value": 40500.0
+            "period_end": "2025-03-31",
+            "value": 40121.0,
+            "fact_nature": "actual"
           }
         },
         "full_year": {
           "value": 150000.0,
-          "is_estimated": false
+          "is_estimated": false,
+          "fact_nature": "actual"
         }
       },
       {
         "calendar_year": 2026,
         "quarters": {
           "Q1": {
-            "period_end": "2026-03-31",
-            "value": 44500.0
+            "period_end": "2025-06-30",
+            "value": 42500.0,
+            "fact_nature": "estimate"
           },
           "Q2": {
-            "period_end": "2026-06-30",
-            "value": 42500.0
+            "period_end": "2025-09-30",
+            "value": 43000.0,
+            "fact_nature": "estimate"
           },
           "Q3": {
-            "period_end": "2026-09-30",
-            "value": 43000.0
+            "period_end": "2025-12-31",
+            "value": 43500.0,
+            "fact_nature": "estimate"
           },
           "Q4": {
-            "period_end": "2026-12-31",
-            "value": 43500.0
+            "period_end": "2026-03-31",
+            "value": 44500.0,
+            "fact_nature": "estimate"
           }
         },
         "full_year": {
           "value": 173500.0,
-          "is_estimated": true
+          "is_estimated": true,
+          "fact_nature": "estimate"
         }
       }
-    ]
+    ],
+    "fact_nature": "mixed",
+    "quarter_month_order": [
+      "Jun",
+      "Sep",
+      "Dec",
+      "Mar"
+    ],
+    "fiscal_year_end_month": 3
   }
 }

@@ -127,9 +127,13 @@ def _walk_tokens(
                     next_context["calendar_year"] = item.get("calendar_year")
                 if "period_end" in item:
                     next_context["period_end"] = item.get("period_end")
+                if "fact_nature" in item:
+                    next_context["fact_nature"] = item.get("fact_nature")
                 full_year = item.get("full_year") if isinstance(item.get("full_year"), dict) else None
                 if full_year is not None and "is_estimated" in full_year:
                     next_context["is_estimated"] = full_year.get("is_estimated")
+                if full_year is not None and "fact_nature" in full_year:
+                    next_context["fact_nature"] = full_year.get("fact_nature")
             yield from _walk_tokens(
                 item,
                 tokens[1:],
@@ -196,9 +200,12 @@ def _extract_value(
         if isinstance(json_val, dict):
             value_json = json_val
 
-    # Do not emit "estimate-only" facts when the value is missing/null.
-    if value_json is None and (value_numeric is not None or value_text is not None) and _is_estimate(mapping, match, root):
-        value_json = {"is_estimate": True}
+    if value_json is None and (value_numeric is not None or value_text is not None):
+        fact_nature = _fact_nature(mapping, match, root)
+        if fact_nature is not None:
+            value_json = {"fact_nature": fact_nature}
+            if fact_nature == "estimate":
+                value_json["is_estimate"] = True
 
     return value_numeric, value_text, value_json, unit, used_paths
 
@@ -303,6 +310,9 @@ def _normalize_numeric(value: Any, unit: Optional[str]) -> tuple[Optional[float]
 
 
 def _is_estimate(mapping: dict[str, Any], match: MappingMatch, root: dict[str, Any]) -> bool:
+    fact_nature = match.context.get("fact_nature")
+    if fact_nature == "estimate":
+        return True
     if match.context.get("is_estimated") is True:
         return True
     if mapping.get("period_type") != "FY":
@@ -310,6 +320,9 @@ def _is_estimate(mapping: dict[str, Any], match: MappingMatch, root: dict[str, A
     year = _parse_year(match.context.get("key") or match.context.get("calendar_year"))
     if year is None:
         return False
+    estimate_years = _resolve_path(root, "annual_financials.meta.estimate_years")
+    if isinstance(estimate_years, list):
+        return year in {int(y) for y in estimate_years if _parse_year(y) is not None}
     years = _resolve_path(root, "annual_financials.meta.historical_years")
     if isinstance(years, list) and years:
         try:
@@ -317,6 +330,25 @@ def _is_estimate(mapping: dict[str, Any], match: MappingMatch, root: dict[str, A
         except (TypeError, ValueError):
             return False
     return False
+
+
+def _fact_nature(mapping: dict[str, Any], match: MappingMatch, root: dict[str, Any]) -> Optional[str]:
+    fact_nature = match.context.get("fact_nature")
+    if isinstance(fact_nature, str):
+        return fact_nature
+    if mapping.get("period_type") == "FY":
+        year = _parse_year(match.context.get("key") or match.context.get("calendar_year"))
+        if year is None:
+            return None
+        estimate_years = _resolve_path(root, "annual_financials.meta.estimate_years")
+        if isinstance(estimate_years, list) and year in {int(y) for y in estimate_years if _parse_year(y) is not None}:
+            return "estimate"
+        actual_years = _resolve_path(root, "annual_financials.meta.actual_years")
+        if isinstance(actual_years, list) and year in {int(y) for y in actual_years if _parse_year(y) is not None}:
+            return "actual"
+    if _is_estimate(mapping, match, root):
+        return "estimate"
+    return None
 
 
 def _parse_year(value: Any) -> Optional[int]:

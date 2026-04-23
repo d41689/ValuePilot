@@ -17,6 +17,10 @@ from app.services.identity_service import IdentityService
 from app.ingestion.pdf_extractor import PdfExtractor
 from app.ingestion.parsers.v1_value_line.parser import ValueLineV1Parser
 from app.ingestion.parsers.v1_value_line.page_json import build_value_line_page_json
+from app.ingestion.parsers.v1_value_line.semantics import (
+    is_estimated_year,
+    quarter_end_date_for_fiscal_year,
+)
 from app.ingestion.normalization.scaler import Scaler
 from app.services.mapping_spec import MappingSpec
 from app.services.owners_earnings import build_owners_earnings_facts
@@ -757,6 +761,10 @@ class IngestionService:
                 else parsed_value_json
             )
             if isinstance(value_json, dict):
+                if value_json.get("is_estimate") is True:
+                    value_json.setdefault("fact_nature", "estimate")
+                elif "fact_nature" not in value_json and value_json.get("period_type") in {"FY", "Q"}:
+                    value_json["fact_nature"] = "actual"
                 if raw_value_text is not None:
                     value_json.setdefault("raw", raw_value_text)
                 if norm_val is not None:
@@ -956,38 +964,47 @@ class IngestionService:
     ) -> list[dict]:
         if not isinstance(rows, list):
             return []
-        report_year = report_date.year if report_date else None
+        month_order = None
+        fiscal_year_end_month = None
+        if rows and isinstance(rows[0], dict):
+            month_order = rows[0].get("quarter_month_order")
+            fiscal_year_end_month = rows[0].get("fiscal_year_end_month")
         facts: list[dict] = []
-        quarter_map = (
-            ("mar_31", (3, 31)),
-            ("jun_30", (6, 30)),
-            ("sep_30", (9, 30)),
-            ("dec_31", (12, 31)),
-        )
+        quarter_map = (("q1", 1), ("q2", 2), ("q3", 3), ("q4", 4))
         for row in rows:
             year = row.get("calendar_year")
             if not year:
                 continue
-            for key, (month, day) in quarter_map:
+            is_estimate = is_estimated_year(
+                int(year),
+                report_date.isoformat() if report_date else None,
+                fiscal_year_end_month if isinstance(fiscal_year_end_month, int) else None,
+            )
+            fact_nature = "estimate" if is_estimate else "actual"
+            for key, quarter_num in quarter_map:
                 value = row.get(key)
                 if value is None:
                     continue
                 raw_value_text = self._format_raw_value(value, value_type, scale_token)
+                period_end = quarter_end_date_for_fiscal_year(int(year), quarter_num, month_order)
+                if not period_end:
+                    continue
                 facts.append(
                     {
                         "metric_key": metric_key,
                         "raw_value_text": raw_value_text,
-                        "parsed_value_json": None,
+                        "parsed_value_json": {"fact_nature": fact_nature},
                         "period_type": "Q",
-                        "period_end_date": date(int(year), month, day),
+                        "period_end_date": date.fromisoformat(period_end),
                         "value_type": value_type,
                     }
                 )
             full_year = row.get("full_year")
             if full_year is None:
                 continue
-            is_estimate = report_year is not None and int(year) >= report_year - 1
-            parsed_value_json = {"is_estimate": True} if is_estimate else None
+            parsed_value_json = {"fact_nature": fact_nature}
+            if is_estimate:
+                parsed_value_json["is_estimate"] = True
             raw_value_text = self._format_raw_value(full_year, value_type, scale_token)
             facts.append(
                 {
@@ -1166,7 +1183,13 @@ class IngestionService:
         }
         percent_like = {"expense_to_prem_written"}
 
-        estimate_year = years[-1]
+        estimate_years = {
+            int(year)
+            for year in annual.get("estimate_years", [])
+            if isinstance(year, int) or (isinstance(year, str) and str(year).isdigit())
+        }
+        if not estimate_years and years:
+            estimate_years = {int(years[-1])}
         facts: list[dict] = []
 
         def append_fact(
@@ -1180,7 +1203,9 @@ class IngestionService:
         ) -> None:
             if value is None:
                 return
-            parsed_value_json = {"is_estimate": True} if is_estimate else None
+            parsed_value_json = {"fact_nature": "estimate" if is_estimate else "actual"}
+            if is_estimate:
+                parsed_value_json["is_estimate"] = True
             raw_value_text = self._format_raw_value(value, value_type, scale_token)
             facts.append(
                 {
@@ -1219,7 +1244,7 @@ class IngestionService:
                         value_type="number",
                         scale_token="mill",
                         year=year,
-                        is_estimate=year == estimate_year,
+                        is_estimate=year in estimate_years,
                     )
                 else:
                     append_fact(
@@ -1228,7 +1253,7 @@ class IngestionService:
                         value_type="currency",
                         scale_token=None,
                         year=year,
-                        is_estimate=year == estimate_year,
+                        is_estimate=year in estimate_years,
                     )
 
         for key, values in valuation.items():
@@ -1251,7 +1276,7 @@ class IngestionService:
                     value_type=value_type,
                     scale_token=None,
                     year=year,
-                    is_estimate=year == estimate_year,
+                    is_estimate=year in estimate_years,
                 )
 
         for key, values in income_statement.items():
@@ -1277,7 +1302,7 @@ class IngestionService:
                     value_type=value_type,
                     scale_token=scale_token,
                     year=year,
-                    is_estimate=year == estimate_year,
+                    is_estimate=year in estimate_years,
                 )
 
         for key, values in balance_sheet.items():
@@ -1303,7 +1328,7 @@ class IngestionService:
                     value_type=value_type,
                     scale_token=scale_token,
                     year=year,
-                    is_estimate=year == estimate_year,
+                    is_estimate=year in estimate_years,
                 )
 
         return facts

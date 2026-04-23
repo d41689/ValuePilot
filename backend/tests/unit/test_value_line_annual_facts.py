@@ -23,9 +23,9 @@ def test_upload_writes_annual_facts_latest_actual_and_estimate(client, db_sessio
 
     expected = load_expected_json()
     annual = expected["annual_financials"]
-    years = annual["meta"]["historical_years"]
-    actual_year = years[-2]
-    estimate_year = years[-1]
+    actual_year = annual["meta"]["actual_years"][-1]
+    estimate_years = annual["meta"].get("estimate_years", [])
+    estimate_year = estimate_years[0] if estimate_years else None
 
     text = PdfExtractor.extract_text(FIXTURE_PDF)
     pages = [(1, text, [])]
@@ -67,14 +67,16 @@ def test_upload_writes_annual_facts_latest_actual_and_estimate(client, db_sessio
         ),
         None,
     )
-    estimate_fact = next(
-        (
-            f
-            for f in net_profit_facts
-            if f.period_end_date == date(estimate_year, 12, 31) and f.is_current
-        ),
-        None,
-    )
+    estimate_fact = None
+    if estimate_year is not None:
+        estimate_fact = next(
+            (
+                f
+                for f in net_profit_facts
+                if f.period_end_date == date(estimate_year, 12, 31) and f.is_current
+            ),
+            None,
+        )
     assert actual_fact is not None
     assert actual_fact.is_current is True
     assert actual_fact.period_type == "FY"
@@ -85,7 +87,7 @@ def test_upload_writes_annual_facts_latest_actual_and_estimate(client, db_sessio
     expected_actual = net_profit[str(actual_year)]
     assert actual_fact.value_numeric == expected_actual * 1_000_000.0
 
-    expected_estimate = net_profit.get(str(estimate_year))
+    expected_estimate = net_profit.get(str(estimate_year)) if estimate_year is not None else None
     if expected_estimate is None:
         assert estimate_fact is None
     else:
@@ -119,15 +121,21 @@ def test_upload_writes_annual_facts_latest_actual_and_estimate(client, db_sessio
     expected_dividend = annual["valuation_metrics"]["avg_annual_dividend_yield_pct"][str(actual_year)]
     assert actual_dividend.value_numeric == expected_dividend / 100.0
 
-    estimate_dividend = next(
-        (
-            f
-            for f in dividend_facts
-            if f.period_end_date == date(estimate_year, 12, 31) and f.is_current
-        ),
-        None,
+    estimate_dividend = None
+    if estimate_year is not None:
+        estimate_dividend = next(
+            (
+                f
+                for f in dividend_facts
+                if f.period_end_date == date(estimate_year, 12, 31) and f.is_current
+            ),
+            None,
+        )
+    expected_estimate = (
+        annual["valuation_metrics"]["avg_annual_dividend_yield_pct"].get(str(estimate_year))
+        if estimate_year is not None
+        else None
     )
-    expected_estimate = annual["valuation_metrics"]["avg_annual_dividend_yield_pct"].get(str(estimate_year))
     if expected_estimate is None:
         assert estimate_dividend is None
     else:

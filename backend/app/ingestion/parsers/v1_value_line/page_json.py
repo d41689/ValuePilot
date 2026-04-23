@@ -4,6 +4,13 @@ from typing import Any, Optional
 
 from app.ingestion.normalization.scaler import Scaler
 from app.ingestion.parsers.v1_value_line.parser import ValueLineV1Parser
+from app.ingestion.parsers.v1_value_line.semantics import (
+    detect_quarter_month_order,
+    fiscal_year_end_month_from_order,
+    is_estimated_year,
+    quarter_end_date_for_fiscal_year,
+    split_actual_and_estimate_years,
+)
 
 
 def build_value_line_page_json(
@@ -23,7 +30,23 @@ def build_value_line_page_json(
     adr_layout = _detect_adr_layout(parser, by_key) if not ads_layout else False
     layout_id = "insurance" if insurance_layout else "industrial"
     security_unit = "ADS" if ads_layout else ("adr" if adr_layout else "share")
-    quarter_month_order = _quarter_month_order(parser.text)
+    quarter_month_order = detect_quarter_month_order(parser.text)
+    header = _build_header(by_key)
+    header["fact_nature"] = "snapshot"
+    ratings = _build_ratings(by_key)
+    ratings["fact_nature"] = "opinion"
+    annual_rates = _build_annual_rates(
+        parser.text,
+        by_key,
+        insurance_layout=insurance_layout,
+        adr_layout=adr_layout,
+        ads_layout=ads_layout,
+    )
+    annual_rates["fact_nature"] = "opinion"
+    target_price_18m = _build_target_18m(by_key)
+    target_price_18m["fact_nature"] = "opinion"
+    long_term_projection = _build_long_term_projection(by_key)
+    long_term_projection["fact_nature"] = "opinion"
     quarterly_sales_block = _build_quarterly_block(
         by_key.get("quarterly_sales_usd_millions"),
         unit="USD_millions",
@@ -53,11 +76,11 @@ def build_value_line_page_json(
             "ticker": identity.ticker,
             "exchange": identity.exchange,
         },
-        "header": _build_header(by_key),
-        "ratings": _build_ratings(by_key),
+        "header": header,
+        "ratings": ratings,
         "quality_metrics": _build_quality_metrics(by_key),
-        "target_price_18m": _build_target_18m(by_key),
-        "long_term_projection": _build_long_term_projection(by_key),
+        "target_price_18m": target_price_18m,
+        "long_term_projection": long_term_projection,
         "institutional_decisions": _build_institutional_decisions(by_key),
         "capital_structure": _build_capital_structure(
             by_key,
@@ -66,13 +89,7 @@ def build_value_line_page_json(
             ads_layout=ads_layout,
         ),
         "financial_position": _build_financial_position(by_key),
-        "annual_rates": _build_annual_rates(
-            parser.text,
-            by_key,
-            insurance_layout=insurance_layout,
-            adr_layout=adr_layout,
-            ads_layout=ads_layout,
-        ),
+        "annual_rates": annual_rates,
         # v1.1: stable keys; non-applicable blocks are emitted as null (not omitted).
         "quarterly_sales": quarterly_sales_block if not insurance_layout else None,
         "net_premiums_earned": quarterly_sales_block if insurance_layout else None,
@@ -103,6 +120,7 @@ def build_value_line_page_json(
         ),
         "annual_financials": _build_annual_financials(
             by_key,
+            report_date=report_date,
             insurance_layout=insurance_layout,
             adr_layout=adr_layout,
             ads_layout=ads_layout,
@@ -123,6 +141,11 @@ def build_value_line_page_json(
     if use_quarterly_revenues:
         output.pop("quarterly_sales", None)
         output["quarterly_revenues"] = quarterly_revenues_block
+
+    if isinstance(output.get("total_return"), dict):
+        output["total_return"]["fact_nature"] = "snapshot"
+    if isinstance(output.get("narrative"), dict):
+        output["narrative"]["fact_nature"] = "opinion"
 
     return output
 
@@ -602,31 +625,32 @@ def _build_quarterly_block(
 ) -> dict[str, Any]:
     rows = res.parsed_value_json if res and res.parsed_value_json else []
     report_year = int(report_date[:4]) if report_date else None
-    report_month = int(report_date[5:7]) if report_date else None
-    offset = estimate_year_offset
-    if month_order and isinstance(month_order, list) and len(month_order) == 4 and report_month:
-        month_lookup = {"Mar": 3, "Jun": 6, "Sep": 9, "Dec": 12}
-        fye_month = month_lookup.get(month_order[-1])
-        if fye_month and fye_month != 12 and report_month < fye_month:
-            offset = 0
+    fiscal_year_end_month = None
+    if rows and isinstance(rows, list) and isinstance(rows[0], dict):
+        fiscal_year_end_month = rows[0].get("fiscal_year_end_month")
+        if month_order is None:
+            month_order = rows[0].get("quarter_month_order")
+    if not isinstance(fiscal_year_end_month, int):
+        fiscal_year_end_month = fiscal_year_end_month_from_order(month_order)
     by_year = []
     for row in rows:
         year = row.get("calendar_year")
-        quarters = {
-            "Q1": {"period_end": _quarter_end_date(year, 1), "value": row.get("mar_31")},
-            "Q2": {"period_end": _quarter_end_date(year, 2), "value": row.get("jun_30")},
-            "Q3": {"period_end": _quarter_end_date(year, 3), "value": row.get("sep_30")},
-            "Q4": {"period_end": _quarter_end_date(year, 4), "value": row.get("dec_31")},
-        }
-        is_estimated = (
-            report_year is not None
-            and year is not None
-            and year >= report_year - offset
+        is_estimated = is_estimated_year(
+            int(year) if year is not None else None,
+            report_date,
+            fiscal_year_end_month,
         )
+        fact_nature = "estimate" if is_estimated else "actual"
+        quarters = {
+            "Q1": {"period_end": quarter_end_date_for_fiscal_year(year, 1, month_order), "value": row.get("q1"), "fact_nature": fact_nature},
+            "Q2": {"period_end": quarter_end_date_for_fiscal_year(year, 2, month_order), "value": row.get("q2"), "fact_nature": fact_nature},
+            "Q3": {"period_end": quarter_end_date_for_fiscal_year(year, 3, month_order), "value": row.get("q3"), "fact_nature": fact_nature},
+            "Q4": {"period_end": quarter_end_date_for_fiscal_year(year, 4, month_order), "value": row.get("q4"), "fact_nature": fact_nature},
+        }
         by_year.append({
             "calendar_year": year,
             "quarters": quarters,
-            "full_year": {"value": row.get("full_year"), "is_estimated": is_estimated},
+            "full_year": {"value": row.get("full_year"), "is_estimated": is_estimated, "fact_nature": fact_nature},
         })
 
     if add_missing_report_year and report_year:
@@ -638,13 +662,21 @@ def _build_quarterly_block(
                 "full_year": {
                     "value": None,
                     "is_estimated": True,
+                    "fact_nature": "estimate",
                     "notes": "No quarterly or full-year dividend values provided in report",
                 },
             })
         else:
             by_year[-1]["full_year"]["is_estimated"] = True
+            by_year[-1]["full_year"]["fact_nature"] = "estimate"
 
-    return {"unit": unit, "by_year": by_year}
+    return {
+        "unit": unit,
+        "by_year": by_year,
+        "fact_nature": "mixed",
+        "quarter_month_order": month_order,
+        "fiscal_year_end_month": fiscal_year_end_month,
+    }
 
 
 def _build_quarterly_block_or_none(
@@ -666,25 +698,13 @@ def _build_quarterly_block_or_none(
 
 
 def _quarter_month_order(text: str) -> Optional[list[str]]:
-    if not text:
-        return None
-    start = re.search(r"\b(QUARTERLYSALES|QUARTERLYREVENUES|NETPREMIUMSEARNED)\b", text, re.IGNORECASE)
-    if not start:
-        return None
-    segment = text[start.end() : start.end() + 400]
-    month_order: list[str] = []
-    for match in re.findall(r"(Mar|Jun|Sep|Dec)\.?\s*(?:\d{1,2}|Per)", segment, re.IGNORECASE):
-        month = match.title()
-        if month not in month_order:
-            month_order.append(month)
-        if len(month_order) == 4:
-            return month_order
-    return None
+    return detect_quarter_month_order(text)
 
 
 def _build_annual_financials(
     by_key: dict[str, Any],
     *,
+    report_date: Optional[str],
     insurance_layout: bool,
     adr_layout: bool,
     ads_layout: bool,
@@ -696,9 +716,15 @@ def _build_annual_financials(
 
     annual = res.parsed_value_json.get("annual_financials_and_ratios_2015_2026_with_projection_2028_2030", {})
     years = annual.get("years", [])
+    fiscal_year_end_month = annual.get("fiscal_year_end_month")
     projection_range = annual.get("projection_year_range")
     projection = annual.get("projection_2028_2030", {})
     scan_text = text or ""
+    actual_years, estimate_years = split_actual_and_estimate_years(
+        years if isinstance(years, list) else [],
+        report_date,
+        fiscal_year_end_month if isinstance(fiscal_year_end_month, int) else None,
+    )
 
     per_unit = "share"
     if not insurance_layout:
@@ -866,6 +892,10 @@ def _build_annual_financials(
             "table_type": "annual_financials_and_ratios",
             "currency": "USD",
             "historical_years": years,
+            "actual_years": actual_years,
+            "estimate_years": estimate_years,
+            "fact_nature": "mixed",
+            "fiscal_year_end_month": fiscal_year_end_month,
             "projection_year_range": projection_range,
         },
         "per_unit": per_unit,
@@ -1091,12 +1121,12 @@ def _build_quarterly_dividends_paid(
         {
             "calendar_year": y,
             "quarters": None,
-            "full_year": {"value": None, "is_estimated": False},
+            "full_year": {"value": None, "is_estimated": False, "fact_nature": "actual"},
             "notes": note,
         }
         for y in years
     ]
-    return {"unit": unit, "note": note, "by_year": by_year}
+    return {"unit": unit, "note": note, "by_year": by_year, "fact_nature": "mixed"}
 
 
 def _parse_period(period: Optional[str]) -> tuple[Optional[int], Optional[int]]:
