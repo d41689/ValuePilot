@@ -225,8 +225,8 @@ CREATE TABLE raw_source_documents (
 );
 
 -- 当前 MVP 阶段 raw 层默认按 (source_system, source_url) 去重；是否跳过或覆盖已有记录由应用层决定。
--- 若应用层选择覆盖，应同步更新 fetched_at、etag、raw_sha256、body_path、parse_status、parsed_at 等元数据字段。
--- 若后续需要保留同一 URL 的多版本响应，再放宽该约束并引入版本字段。
+-- 若应用层选择覆盖，应同步更新 http_status、fetched_at、etag、raw_sha256、body_path、parse_status、parsed_at、error_message 等元数据字段。
+-- MVP 阶段不保留同一 URL 的多版本 raw 历史；如后续确有审计需要，再引入版本字段或放宽唯一约束。
 CREATE UNIQUE INDEX uq_raw_source_documents_system_url
     ON raw_source_documents(source_system, source_url);
 ```
@@ -419,7 +419,7 @@ CREATE UNIQUE INDEX uq_cusip_ticker_map_cusip_valid_from
 ```
 对每个白名单机构：
   1. 抓取 dataroma.com/m/holdings.php?m={dataroma_code}
-  2. 解析 HTML 表格：ticker + cusip（如页面有） + issuer_name
+  2. 解析 HTML 表格中的可用标识字段：优先 ticker，其次页面中可获得的 CUSIP 与 issuer_name
   3. 写入 cusip_ticker_map（source='dataroma'）
   
 对剩余未映射的 CUSIP：
