@@ -5,7 +5,7 @@ from datetime import datetime, date
 from pathlib import Path
 from typing import Optional
 from sqlalchemy.orm import Session
-from sqlalchemy import update
+from sqlalchemy import update, select
 from sqlalchemy.dialects.postgresql import insert
 from fastapi import UploadFile
 
@@ -797,24 +797,6 @@ class IngestionService:
         value_json = self._build_value_json(parsed_value_json, raw_value_text, norm_val, norm_unit)
         value_text = raw_value_text if metric_key in self.NON_NUMERIC_KEYS else None
 
-        update_stmt = (
-            update(MetricFact)
-            .where(
-                MetricFact.stock_id == stock_id,
-                MetricFact.metric_key == metric_key,
-                MetricFact.source_type == "parsed",
-                MetricFact.is_current.is_(True),
-            )
-            .values(is_current=False)
-        )
-        if period_type:
-            update_stmt = update_stmt.where(
-                (MetricFact.period_type == period_type) | (MetricFact.period_type.is_(None))
-            )
-        if period_end_date and not period_end_date_is_derived:
-            update_stmt = update_stmt.where(MetricFact.period_end_date == period_end_date)
-        self.db.execute(update_stmt)
-
         insert_stmt = insert(MetricFact).values(
             user_id=user_id,
             stock_id=stock_id,
@@ -851,6 +833,12 @@ class IngestionService:
         )
         self.db.execute(insert_stmt)
         self.db.flush()
+        self._reconcile_parsed_fact_current_slot(
+            stock_id=stock_id,
+            metric_key=metric_key,
+            period_type=period_type,
+            period_end_date=period_end_date,
+        )
 
     def _insert_metric_fact_from_mapping(
         self,
@@ -866,22 +854,6 @@ class IngestionService:
         period_end_date: Optional[date],
         source_document_id: Optional[int],
     ) -> None:
-        update_stmt = (
-            update(MetricFact)
-            .where(
-                MetricFact.stock_id == stock_id,
-                MetricFact.metric_key == metric_key,
-                MetricFact.source_type == "parsed",
-                MetricFact.is_current.is_(True),
-            )
-            .values(is_current=False)
-        )
-        if period_type:
-            update_stmt = update_stmt.where(MetricFact.period_type == period_type)
-        if period_end_date:
-            update_stmt = update_stmt.where(MetricFact.period_end_date == period_end_date)
-        self.db.execute(update_stmt)
-
         insert_stmt = insert(MetricFact).values(
             user_id=user_id,
             stock_id=stock_id,
@@ -916,6 +888,55 @@ class IngestionService:
             },
         )
         self.db.execute(insert_stmt)
+        self.db.flush()
+        self._reconcile_parsed_fact_current_slot(
+            stock_id=stock_id,
+            metric_key=metric_key,
+            period_type=period_type,
+            period_end_date=period_end_date,
+        )
+
+    def _reconcile_parsed_fact_current_slot(
+        self,
+        *,
+        stock_id: int,
+        metric_key: str,
+        period_type: Optional[str],
+        period_end_date: Optional[date],
+    ) -> None:
+        facts = self.db.scalars(
+            select(MetricFact).where(
+                MetricFact.stock_id == stock_id,
+                MetricFact.metric_key == metric_key,
+                MetricFact.source_type == "parsed",
+                MetricFact.period_type == period_type,
+                MetricFact.period_end_date == period_end_date,
+            )
+        ).all()
+        if not facts:
+            return
+
+        doc_ids = sorted({fact.source_document_id for fact in facts if fact.source_document_id is not None})
+        report_dates_by_doc: dict[int, Optional[date]] = {}
+        if doc_ids:
+            report_dates_by_doc = dict(
+                self.db.execute(
+                    select(PdfDocument.id, PdfDocument.report_date).where(PdfDocument.id.in_(doc_ids))
+                ).all()
+            )
+
+        winner = max(
+            facts,
+            key=lambda fact: (
+                report_dates_by_doc.get(fact.source_document_id or -1) or date.min,
+                fact.source_document_id or -1,
+                fact.id or -1,
+            ),
+        )
+
+        for fact in facts:
+            fact.is_current = fact.id == winner.id
+            self.db.add(fact)
         self.db.flush()
 
     def _expand_time_series_facts(self, ext, report_date: Optional[date]) -> list[dict]:
