@@ -220,6 +220,7 @@ CREATE TABLE raw_source_documents (
 );
 
 -- 当前 MVP 阶段 raw 层默认按 (source_system, source_url) 去重；是否跳过或覆盖已有记录由应用层决定。
+-- 若应用层选择覆盖，应同步更新 fetched_at、etag、raw_sha256、body_path、parse_status、parsed_at 等元数据字段。
 -- 若后续需要保留同一 URL 的多版本响应，再放宽该约束并引入版本字段。
 CREATE UNIQUE INDEX uq_raw_source_documents_system_url
     ON raw_source_documents(source_system, source_url);
@@ -314,6 +315,7 @@ CREATE UNIQUE INDEX uq_cusip_ticker_map_cusip_valid_from
 - `stocks` 表仅作为当前系统股票实体的关联目标，不应替代 security master 的历史语义
 - `valid_from` 允许为空；未知起始时间的映射以 surrogate key 管理，并通过唯一索引约束已知起始日期的重复写入
 - PostgreSQL 唯一索引允许多个 `NULL` 共存，因此 `valid_from IS NULL` 的重复控制不能依赖索引，需由应用层或额外的 partial unique index 处理
+- 自动写入映射时，不应为同一 `cusip` 生成相互重叠的有效时间区间；冲突记录应进入人工 review 或降级为候选映射
 
 ### 5.3 关键字段语义约定
 
@@ -373,7 +375,7 @@ CREATE UNIQUE INDEX uq_cusip_ticker_map_cusip_valid_from
    GET https://efts.sec.gov/LATEST/search-index?q="{manager_name}"&forms=13F-HR
    → 低置信度匹配不直接写入 institution_managers.cik，先进入 review queue，人工确认后再提升
 
-3. 结果：institution_managers 表里有 ~150 条带 CIK + dataroma_code 的超级投资者
+3. 结果：institution_managers 中形成 ~150 条超级投资者候选记录；高置信度记录可直接带 CIK，低置信度记录进入 review queue，人工确认后再补全
 ```
 
 ### Step 1：机构申报元数据抓取（EDGAR，季度批量）
