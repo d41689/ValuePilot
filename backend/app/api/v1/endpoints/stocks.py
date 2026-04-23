@@ -4,10 +4,11 @@ from sqlalchemy import select, func, update, and_, or_
 from datetime import date, datetime, timezone
 from zoneinfo import ZoneInfo
 from app.api.deps import SessionDep, CurrentUser
+from app.models.artifacts import PdfDocument
 from app.models.stocks import Stock, StockPrice
 from app.models.facts import MetricFact
 from app.models.users import User
-from app.services.active_report_resolver import resolve_active_reports
+from app.services.active_report_resolver import ActiveReportSelection, resolve_active_reports
 from app.services.market_data_service import MarketDataService
 from app.services.market_data_service import compute_target_date
 
@@ -23,11 +24,63 @@ DCF_INPUT_FACT_KEYS = {
 }
 
 
-def _dcf_value(value: float, source: str) -> dict[str, float | str]:
-    return {"value": float(value), "source": source}
+def _dcf_value(value: float, source: str, provenance: dict[str, Any] | None = None) -> dict[str, Any]:
+    payload: dict[str, Any] = {"value": float(value), "source": source}
+    if provenance is not None:
+        payload["provenance"] = provenance
+    return payload
 
 
-def _build_dcf_inputs_entry(inputs_by_key: dict[str, MetricFact | None]) -> dict[str, dict[str, float | str]]:
+def _fact_provenance(
+    fact: MetricFact | None,
+    *,
+    active_report: ActiveReportSelection | None,
+    report_dates_by_doc: dict[int, date | None],
+) -> dict[str, Any] | None:
+    if fact is None:
+        return None
+    document_id = fact.source_document_id
+    report_date = report_dates_by_doc.get(document_id) if document_id is not None else None
+    return {
+        "source_type": fact.source_type,
+        "source_document_id": document_id,
+        "source_report_date": report_date.isoformat() if report_date else None,
+        "period_end_date": fact.period_end_date.isoformat() if fact.period_end_date else None,
+        "is_active_report": bool(
+            active_report is not None
+            and document_id is not None
+            and active_report.document_id == document_id
+        ),
+    }
+
+
+def _computed_dcf_provenance(
+    facts: list[tuple[str, MetricFact | None]],
+    *,
+    active_report: ActiveReportSelection | None,
+    report_dates_by_doc: dict[int, date | None],
+) -> dict[str, Any] | None:
+    inputs = []
+    for metric_key, fact in facts:
+        provenance = _fact_provenance(
+            fact,
+            active_report=active_report,
+            report_dates_by_doc=report_dates_by_doc,
+        )
+        if provenance is None:
+            continue
+        inputs.append({"metric_key": metric_key, **provenance})
+    if not inputs:
+        return None
+    return {"inputs": inputs}
+
+
+def _build_dcf_inputs_entry(
+    inputs_by_key: dict[str, MetricFact | None],
+    *,
+    active_report: ActiveReportSelection | None,
+    report_dates_by_doc: dict[int, date | None],
+) -> dict[str, dict[str, Any]]:
     eps_fact = inputs_by_key.get(DCF_INPUT_FACT_KEYS["net_profit_per_share"])
     capex_fact = inputs_by_key.get(DCF_INPUT_FACT_KEYS["capital_spending_per_share"])
     depreciation_fact = inputs_by_key.get(DCF_INPUT_FACT_KEYS["depreciation"])
@@ -53,16 +106,43 @@ def _build_dcf_inputs_entry(inputs_by_key: dict[str, MetricFact | None]) -> dict
     )
 
     return {
-        "net_profit_per_share": _dcf_value(eps_value, eps_source),
-        "depreciation_per_share": _dcf_value(depreciation_per_share, depreciation_source),
-        "capital_spending_per_share": _dcf_value(capex_value, capex_source),
+        "net_profit_per_share": _dcf_value(
+            eps_value,
+            eps_source,
+            _fact_provenance(
+                eps_fact,
+                active_report=active_report,
+                report_dates_by_doc=report_dates_by_doc,
+            ),
+        ),
+        "depreciation_per_share": _dcf_value(
+            depreciation_per_share,
+            depreciation_source,
+            _computed_dcf_provenance(
+                [
+                    (DCF_INPUT_FACT_KEYS["depreciation"], depreciation_fact),
+                    (DCF_INPUT_FACT_KEYS["shares_outstanding"], shares_fact),
+                ],
+                active_report=active_report,
+                report_dates_by_doc=report_dates_by_doc,
+            ),
+        ),
+        "capital_spending_per_share": _dcf_value(
+            capex_value,
+            capex_source,
+            _fact_provenance(
+                capex_fact,
+                active_report=active_report,
+                report_dates_by_doc=report_dates_by_doc,
+            ),
+        ),
     }
 
 
 def _resolve_normalized_dcf_inputs(
     oeps_facts: list[MetricFact],
-    dcf_inputs_series_by_year: dict[int, dict[str, dict[str, float | str]]],
-) -> dict[str, dict[str, float | str]] | None:
+    dcf_inputs_series_by_year: dict[int, dict[str, dict[str, Any]]],
+) -> dict[str, dict[str, Any]] | None:
     latest_five = [fact for fact in oeps_facts if fact.period_end_date is not None][:5]
     if not latest_five:
         return None
@@ -125,7 +205,7 @@ def read_stock_by_ticker(
         ),
     )
     facts = session.scalars(facts_stmt).all()
-    facts_by_key = {fact.metric_key: fact.value_numeric for fact in facts}
+    facts_by_key = {fact.metric_key: fact for fact in facts}
 
     now_et = datetime.now(timezone.utc).astimezone(ET)
     target_date = compute_target_date(now_et)
@@ -155,13 +235,6 @@ def read_stock_by_ticker(
         .limit(6)
     )
     oeps_facts = session.scalars(oeps_stmt).all()
-    oeps_series = []
-    for fact in oeps_facts:
-        period_end = fact.period_end_date
-        if not period_end:
-            continue
-        value = fact.value_numeric if fact.value_numeric is not None else 0.0
-        oeps_series.append({"year": period_end.year, "value": value})
 
     dcf_inputs_stmt = (
         select(MetricFact)
@@ -184,15 +257,7 @@ def read_stock_by_ticker(
             by_key[fact.metric_key] = fact
 
     dcf_inputs_series = []
-    dcf_inputs_series_by_year: dict[int, dict[str, dict[str, float | str]]] = {}
-    for fact in oeps_facts:
-        period_end = fact.period_end_date
-        if not period_end:
-            continue
-        entry = _build_dcf_inputs_entry(dcf_inputs_by_date.get(period_end, {}))
-        dcf_inputs_series.append({"year": period_end.year, **entry})
-        dcf_inputs_series_by_year[period_end.year] = entry
-    dcf_inputs = _resolve_normalized_dcf_inputs(oeps_facts, dcf_inputs_series_by_year)
+    dcf_inputs_series_by_year: dict[int, dict[str, dict[str, Any]]] = {}
 
     growth_metric_keys = [
         "rates.sales.cagr_est",
@@ -211,6 +276,7 @@ def read_stock_by_ticker(
     )
     growth_facts = session.scalars(growth_stmt).all()
     growth_by_metric_key: dict[str, float] = {}
+    growth_fact_by_metric_key: dict[str, MetricFact] = {}
 
     def _growth_value_pct(fact: MetricFact) -> float | None:
         raw_value = None
@@ -228,25 +294,109 @@ def read_stock_by_ticker(
         value = _growth_value_pct(fact)
         if value is not None:
             growth_by_metric_key[fact.metric_key] = value
+            growth_fact_by_metric_key[fact.metric_key] = fact
+
+    provenance_facts = [*facts, *oeps_facts, *dcf_input_facts, *growth_facts]
+    source_document_ids = sorted(
+        {
+            fact.source_document_id
+            for fact in provenance_facts
+            if fact.source_document_id is not None
+        }
+    )
+    report_dates_by_doc: dict[int, date | None] = {}
+    if source_document_ids:
+        report_dates_by_doc = dict(
+            session.execute(
+                select(PdfDocument.id, PdfDocument.report_date).where(PdfDocument.id.in_(source_document_ids))
+            ).all()
+        )
+
+    oeps_series = []
+    for fact in oeps_facts:
+        period_end = fact.period_end_date
+        if not period_end:
+            continue
+        value = fact.value_numeric if fact.value_numeric is not None else 0.0
+        oeps_series.append(
+            {
+                "year": period_end.year,
+                "value": value,
+                "provenance": _fact_provenance(
+                    fact,
+                    active_report=active_report,
+                    report_dates_by_doc=report_dates_by_doc,
+                ),
+            }
+        )
+
+    for fact in oeps_facts:
+        period_end = fact.period_end_date
+        if not period_end:
+            continue
+        entry = _build_dcf_inputs_entry(
+            dcf_inputs_by_date.get(period_end, {}),
+            active_report=active_report,
+            report_dates_by_doc=report_dates_by_doc,
+        )
+        dcf_inputs_series.append({"year": period_end.year, **entry})
+        dcf_inputs_series_by_year[period_end.year] = entry
+    dcf_inputs = _resolve_normalized_dcf_inputs(oeps_facts, dcf_inputs_series_by_year)
 
     growth_rate_options = []
 
     if "rates.sales.cagr_est" in growth_by_metric_key:
         growth_rate_options.append(
-            {"key": "sales", "label": "Sales", "value": growth_by_metric_key["rates.sales.cagr_est"]}
+            {
+                "key": "sales",
+                "label": "Sales",
+                "value": growth_by_metric_key["rates.sales.cagr_est"],
+                "provenance": _fact_provenance(
+                    growth_fact_by_metric_key.get("rates.sales.cagr_est"),
+                    active_report=active_report,
+                    report_dates_by_doc=report_dates_by_doc,
+                ),
+            }
         )
     elif "rates.revenues.cagr_est" in growth_by_metric_key:
         growth_rate_options.append(
-            {"key": "revenues", "label": "Revenues", "value": growth_by_metric_key["rates.revenues.cagr_est"]}
+            {
+                "key": "revenues",
+                "label": "Revenues",
+                "value": growth_by_metric_key["rates.revenues.cagr_est"],
+                "provenance": _fact_provenance(
+                    growth_fact_by_metric_key.get("rates.revenues.cagr_est"),
+                    active_report=active_report,
+                    report_dates_by_doc=report_dates_by_doc,
+                ),
+            }
         )
 
     if "rates.cash_flow.cagr_est" in growth_by_metric_key:
         growth_rate_options.append(
-            {"key": "cash_flow", "label": "Cash Flow", "value": growth_by_metric_key["rates.cash_flow.cagr_est"]}
+            {
+                "key": "cash_flow",
+                "label": "Cash Flow",
+                "value": growth_by_metric_key["rates.cash_flow.cagr_est"],
+                "provenance": _fact_provenance(
+                    growth_fact_by_metric_key.get("rates.cash_flow.cagr_est"),
+                    active_report=active_report,
+                    report_dates_by_doc=report_dates_by_doc,
+                ),
+            }
         )
     if "rates.earnings.cagr_est" in growth_by_metric_key:
         growth_rate_options.append(
-            {"key": "earnings", "label": "Earnings", "value": growth_by_metric_key["rates.earnings.cagr_est"]}
+            {
+                "key": "earnings",
+                "label": "Earnings",
+                "value": growth_by_metric_key["rates.earnings.cagr_est"],
+                "provenance": _fact_provenance(
+                    growth_fact_by_metric_key.get("rates.earnings.cagr_est"),
+                    active_report=active_report,
+                    report_dates_by_doc=report_dates_by_doc,
+                ),
+            }
         )
 
     return {
@@ -256,12 +406,31 @@ def read_stock_by_ticker(
         "company_name": stock.company_name,
         "active_report_document_id": active_report.document_id if active_report else None,
         "active_report_date": active_report.report_date.isoformat() if active_report and active_report.report_date else None,
-        "price": facts_by_key.get("mkt.price"),
+        "price": facts_by_key.get("mkt.price").value_numeric if facts_by_key.get("mkt.price") else None,
+        "price_provenance": _fact_provenance(
+            facts_by_key.get("mkt.price"),
+            active_report=active_report,
+            report_dates_by_doc=report_dates_by_doc,
+        ),
         "latest_price": float(latest_price.close) if latest_price and latest_price.close is not None else None,
         "latest_price_date": latest_price.price_date.isoformat() if latest_price else None,
         "latest_price_updated_at": latest_price.created_at.isoformat() if latest_price else None,
-        "pe": facts_by_key.get("val.pe"),
-        "oeps_normalized": facts_by_key.get("owners_earnings_per_share_normalized"),
+        "pe": facts_by_key.get("val.pe").value_numeric if facts_by_key.get("val.pe") else None,
+        "pe_provenance": _fact_provenance(
+            facts_by_key.get("val.pe"),
+            active_report=active_report,
+            report_dates_by_doc=report_dates_by_doc,
+        ),
+        "oeps_normalized": (
+            facts_by_key.get("owners_earnings_per_share_normalized").value_numeric
+            if facts_by_key.get("owners_earnings_per_share_normalized")
+            else None
+        ),
+        "oeps_normalized_provenance": _fact_provenance(
+            facts_by_key.get("owners_earnings_per_share_normalized"),
+            active_report=active_report,
+            report_dates_by_doc=report_dates_by_doc,
+        ),
         "oeps_series": oeps_series,
         "dcf_inputs": dcf_inputs,
         "dcf_inputs_series": dcf_inputs_series,
