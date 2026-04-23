@@ -1,5 +1,6 @@
 from app.models.stocks import Stock
 from app.models.facts import MetricFact
+from datetime import date
 
 
 def test_screener_api_returns_metrics_payload(client, db_session, user_factory, auth_headers):
@@ -153,6 +154,20 @@ def test_screener_api_returns_metrics_payload(client, db_session, user_factory, 
                 value_numeric=0.016,
                 unit="percent",
                 period_type="FY",
+                period_end_date=date(2024, 12, 31),
+                source_type="parsed",
+                source_ref_id=None,
+                is_current=True,
+            ),
+            MetricFact(
+                user_id=user.id,
+                stock_id=stock_ok.id,
+                metric_key="val.avg_dividend_yield",
+                value_json={"raw": "3.0%", "normalized": 3.0, "unit": "percent", "fact_nature": "estimate"},
+                value_numeric=0.03,
+                unit="percent",
+                period_type="FY",
+                period_end_date=date(2025, 12, 31),
                 source_type="parsed",
                 source_ref_id=None,
                 is_current=True,

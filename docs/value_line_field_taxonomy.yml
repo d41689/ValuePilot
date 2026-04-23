@@ -1,0 +1,209 @@
+version: 1
+
+page_json_sections:
+  header:
+    fact_nature: snapshot
+  ratings:
+    fact_nature: opinion
+  target_price_18m:
+    fact_nature: opinion
+  long_term_projection:
+    fact_nature: opinion
+  annual_rates:
+    fact_nature: opinion
+  narrative:
+    fact_nature: opinion
+  total_return:
+    fact_nature: snapshot
+  capital_structure:
+    fact_nature: snapshot
+  quality_metrics:
+    fact_nature: opinion
+  annual_financials:
+    fact_nature: mixed
+  quarterly_sales:
+    fact_nature: mixed
+  net_premiums_earned:
+    fact_nature: mixed
+  earnings_per_share:
+    fact_nature: mixed
+  quarterly_dividends_paid:
+    fact_nature: mixed
+
+mapping_semantics:
+  per_share.eps.fy:
+    fact_nature_rule: context_or_annual_meta
+  per_share.eps.q:
+    fact_nature_rule: context_only
+  per_share.dividends_declared.fy:
+    fact_nature_rule: context_or_annual_meta
+  per_share.dividends_paid.q:
+    fact_nature_rule: context_only
+  per_share.book_value.fy:
+    fact_nature_rule: context_or_annual_meta
+  per_share.premiums_earned.fy:
+    fact_nature_rule: context_or_annual_meta
+  per_share.investment_income.fy:
+    fact_nature_rule: context_or_annual_meta
+  per_share.underwriting_income.fy:
+    fact_nature_rule: context_or_annual_meta
+  per_share.sales.fy:
+    fact_nature_rule: context_or_annual_meta
+  per_share.cash_flow.fy:
+    fact_nature_rule: context_or_annual_meta
+  per_share.capital_spending.fy:
+    fact_nature_rule: context_or_annual_meta
+  equity.shares_outstanding.fy:
+    fact_nature_rule: context_or_annual_meta
+  is.net_income.fy:
+    fact_nature_rule: context_or_annual_meta
+  is.sales.fy:
+    fact_nature_rule: context_or_annual_meta
+  is.depreciation.fy:
+    fact_nature_rule: context_or_annual_meta
+  is.operating_margin.fy:
+    fact_nature_rule: context_or_annual_meta
+  is.net_premiums_earned.q:
+    fact_nature_rule: context_only
+  is.net_premiums_earned.fy:
+    fact_nature_rule: context_only
+  bs.total_assets.fy:
+    fact_nature_rule: context_or_annual_meta
+  bs.total_equity.fy:
+    fact_nature_rule: context_or_annual_meta
+  val.price_to_book.fy:
+    fact_nature_rule: context_or_annual_meta
+  val.avg_pe.fy:
+    fact_nature_rule: context_or_annual_meta
+  val.avg_dividend_yield.fy:
+    fact_nature_rule: context_or_annual_meta
+  val.relative_pe.fy:
+    fact_nature_rule: context_or_annual_meta
+  mkt.price.as_of:
+    fact_nature: snapshot
+  val.pe.as_of:
+    fact_nature: snapshot
+  val.pe_trailing.as_of:
+    fact_nature: snapshot
+  val.pe_median.as_of:
+    fact_nature: snapshot
+  val.relative_pe.as_of:
+    fact_nature: snapshot
+  val.dividend_yield.as_of:
+    fact_nature: snapshot
+  rates.cagr_10y:
+    fact_nature: opinion
+  rates.cagr_5y:
+    fact_nature: opinion
+  rates.cagr_est:
+    fact_nature: opinion
+  cap.total_debt.as_of:
+    fact_nature: snapshot
+  cap.debt_due_in_5y.as_of:
+    fact_nature: snapshot
+  cap.long_term_debt.as_of:
+    fact_nature: snapshot
+  cap.long_term_interest.as_of:
+    fact_nature: snapshot
+  cap.lt_interest_pct_of_capital.as_of:
+    fact_nature: snapshot
+  cap.preferred_stock.as_of:
+    fact_nature: snapshot
+  cap.preferred_dividend.as_of:
+    fact_nature: snapshot
+  equity.shares_outstanding.as_of:
+    fact_nature: snapshot
+  mkt.market_cap.as_of:
+    fact_nature: snapshot
+  rating.timeliness.as_of:
+    fact_nature: opinion
+  rating.timeliness.event:
+    fact_nature: opinion
+    storage_role: evidence_only
+  rating.safety.as_of:
+    fact_nature: opinion
+  rating.safety.event:
+    fact_nature: opinion
+    storage_role: evidence_only
+  rating.technical.as_of:
+    fact_nature: opinion
+  rating.technical.event:
+    fact_nature: opinion
+    storage_role: evidence_only
+  risk.beta.as_of:
+    fact_nature: opinion
+  quality.financial_strength.as_of:
+    fact_nature: opinion
+  quality.stock_price_stability.as_of:
+    fact_nature: opinion
+  quality.price_growth_persistence.as_of:
+    fact_nature: opinion
+  quality.earnings_predictability.as_of:
+    fact_nature: opinion
+  target.price_18m.low:
+    fact_nature: opinion
+  target.price_18m.mid:
+    fact_nature: opinion
+  target.price_18m.high:
+    fact_nature: opinion
+  target.price_18m.upside:
+    fact_nature: opinion
+  proj.long_term.low_price:
+    fact_nature: opinion
+  proj.long_term.high_price:
+    fact_nature: opinion
+  proj.long_term.low_total_return:
+    fact_nature: opinion
+  proj.long_term.high_total_return:
+    fact_nature: opinion
+  company.business_description.as_of:
+    fact_nature: opinion
+    storage_role: evidence_only
+  analyst.commentary.as_of:
+    fact_nature: opinion
+    storage_role: evidence_only
+
+evidence_reads:
+  company.business_description.as_of:
+    source: metric_extractions
+    metric_key: company.business_description
+    period_type: AS_OF
+    extraction_field_key: business_description
+    value_mode: raw_text
+    period_end_source: document_report_date
+  analyst.commentary.as_of:
+    source: metric_extractions
+    metric_key: analyst.commentary
+    period_type: AS_OF
+    extraction_field_key: analyst_commentary
+    value_mode: raw_text
+    period_end_source: document_report_date
+  rating.timeliness.event:
+    source: metric_extractions
+    metric_key: rating.timeliness_change
+    period_type: EVENT
+    extraction_field_key: timeliness
+    value_mode: rating_event
+    period_end_source: parsed_event_date
+  rating.safety.event:
+    source: metric_extractions
+    metric_key: rating.safety_change
+    period_type: EVENT
+    extraction_field_key: safety
+    value_mode: rating_event
+    period_end_source: parsed_event_date
+  rating.technical.event:
+    source: metric_extractions
+    metric_key: rating.technical_change
+    period_type: EVENT
+    extraction_field_key: technical
+    value_mode: rating_event
+    period_end_source: parsed_event_date
+
+derived_metrics:
+  owners_earnings_per_share:
+    fact_nature_rule: derived_from_inputs
+    storage_role: canonical_fact
+  owners_earnings_per_share_normalized:
+    fact_nature: snapshot
+    storage_role: canonical_fact

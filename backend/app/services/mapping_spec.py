@@ -24,15 +24,22 @@ class MappingMatch:
 
 
 class MappingSpec:
-    def __init__(self, spec: dict[str, Any]) -> None:
+    def __init__(self, spec: dict[str, Any], taxonomy: Optional[dict[str, Any]] = None) -> None:
         self.spec = spec
+        self.taxonomy = taxonomy or {}
         self.mappings = spec.get("mappings", [])
 
     @classmethod
-    def load(cls, path: Path) -> "MappingSpec":
+    def load(cls, path: Path, taxonomy_path: Optional[Path] = None) -> "MappingSpec":
         with path.open("r", encoding="utf-8") as fh:
             data = yaml.safe_load(fh)
-        return cls(data)
+        taxonomy: dict[str, Any] = {}
+        resolved_taxonomy_path = taxonomy_path or path.with_name("value_line_field_taxonomy.yml")
+        if resolved_taxonomy_path.exists():
+            with resolved_taxonomy_path.open("r", encoding="utf-8") as fh:
+                taxonomy = yaml.safe_load(fh) or {}
+        _apply_taxonomy(data, taxonomy)
+        return cls(data, taxonomy)
 
     def generate_facts(self, page_json: dict[str, Any]) -> tuple[list[dict[str, Any]], set[str], set[str]]:
         facts: list[dict[str, Any]] = []
@@ -40,6 +47,8 @@ class MappingSpec:
         for mapping in self.mappings:
             json_path = mapping.get("json_path")
             if not json_path:
+                continue
+            if mapping.get("storage_role") == "evidence_only":
                 continue
             for match in _iter_matches(page_json, json_path):
                 used_paths.add(match.path)
@@ -127,9 +136,11 @@ def _walk_tokens(
                     next_context["calendar_year"] = item.get("calendar_year")
                 if "period_end" in item:
                     next_context["period_end"] = item.get("period_end")
+                if "fact_nature" in item:
+                    next_context["fact_nature"] = item.get("fact_nature")
                 full_year = item.get("full_year") if isinstance(item.get("full_year"), dict) else None
-                if full_year is not None and "is_estimated" in full_year:
-                    next_context["is_estimated"] = full_year.get("is_estimated")
+                if full_year is not None and "fact_nature" in full_year:
+                    next_context["fact_nature"] = full_year.get("fact_nature")
             yield from _walk_tokens(
                 item,
                 tokens[1:],
@@ -196,9 +207,13 @@ def _extract_value(
         if isinstance(json_val, dict):
             value_json = json_val
 
-    # Do not emit "estimate-only" facts when the value is missing/null.
-    if value_json is None and (value_numeric is not None or value_text is not None) and _is_estimate(mapping, match, root):
-        value_json = {"is_estimate": True}
+    fact_nature = _fact_nature(mapping, match, root)
+    if isinstance(value_json, dict):
+        if fact_nature is not None and "fact_nature" not in value_json:
+            value_json = {**value_json, "fact_nature": fact_nature}
+    elif value_numeric is not None or value_text is not None:
+        if fact_nature is not None:
+            value_json = {"fact_nature": fact_nature}
 
     return value_numeric, value_text, value_json, unit, used_paths
 
@@ -303,13 +318,17 @@ def _normalize_numeric(value: Any, unit: Optional[str]) -> tuple[Optional[float]
 
 
 def _is_estimate(mapping: dict[str, Any], match: MappingMatch, root: dict[str, Any]) -> bool:
-    if match.context.get("is_estimated") is True:
+    fact_nature = match.context.get("fact_nature")
+    if fact_nature == "estimate":
         return True
     if mapping.get("period_type") != "FY":
         return False
     year = _parse_year(match.context.get("key") or match.context.get("calendar_year"))
     if year is None:
         return False
+    estimate_years = _resolve_path(root, "annual_financials.meta.estimate_years")
+    if isinstance(estimate_years, list):
+        return year in {int(y) for y in estimate_years if _parse_year(y) is not None}
     years = _resolve_path(root, "annual_financials.meta.historical_years")
     if isinstance(years, list) and years:
         try:
@@ -317,6 +336,87 @@ def _is_estimate(mapping: dict[str, Any], match: MappingMatch, root: dict[str, A
         except (TypeError, ValueError):
             return False
     return False
+
+
+def _fact_nature(mapping: dict[str, Any], match: MappingMatch, root: dict[str, Any]) -> Optional[str]:
+    explicit_fact_nature = mapping.get("fact_nature")
+    if isinstance(explicit_fact_nature, str):
+        return explicit_fact_nature
+
+    fact_nature = match.context.get("fact_nature")
+    if isinstance(fact_nature, str):
+        return fact_nature
+
+    fact_nature_rule = mapping.get("fact_nature_rule")
+    if fact_nature_rule == "context_only":
+        return None
+    if fact_nature_rule == "none":
+        return None
+
+    if mapping.get("period_type") == "FY":
+        year = _parse_year(match.context.get("key") or match.context.get("calendar_year"))
+        if year is None:
+            return None
+        estimate_years = _resolve_path(root, "annual_financials.meta.estimate_years")
+        if isinstance(estimate_years, list) and year in {int(y) for y in estimate_years if _parse_year(y) is not None}:
+            return "estimate"
+        actual_years = _resolve_path(root, "annual_financials.meta.actual_years")
+        if isinstance(actual_years, list) and year in {int(y) for y in actual_years if _parse_year(y) is not None}:
+            return "actual"
+    if _is_estimate(mapping, match, root):
+        return "estimate"
+    return None
+
+
+def _apply_taxonomy(spec: dict[str, Any], taxonomy: dict[str, Any]) -> None:
+    if not taxonomy:
+        return
+    mappings = spec.get("mappings", [])
+    if not isinstance(mappings, list):
+        return
+
+    mapping_semantics = taxonomy.get("mapping_semantics", {})
+    if not isinstance(mapping_semantics, dict):
+        return
+
+    mapping_by_id = {
+        mapping.get("id"): mapping
+        for mapping in mappings
+        if isinstance(mapping, dict) and isinstance(mapping.get("id"), str)
+    }
+    allowed_fact_natures = {"actual", "estimate", "snapshot", "opinion", "mixed"}
+    allowed_rules = {"context_only", "context_or_annual_meta", "none"}
+
+    unknown_ids = sorted(set(mapping_semantics) - set(mapping_by_id))
+    if unknown_ids:
+        raise ValueError(f"Unknown taxonomy mapping ids: {', '.join(unknown_ids)}")
+
+    for mapping_id, semantics in mapping_semantics.items():
+        if not isinstance(semantics, dict):
+            raise ValueError(f"Invalid taxonomy semantics for mapping id: {mapping_id}")
+        mapping = mapping_by_id[mapping_id]
+
+        fact_nature = semantics.get("fact_nature")
+        if fact_nature is not None:
+            if fact_nature not in allowed_fact_natures:
+                raise ValueError(f"Invalid fact_nature '{fact_nature}' for mapping id: {mapping_id}")
+            mapping["fact_nature"] = fact_nature
+
+        fact_nature_rule = semantics.get("fact_nature_rule")
+        if fact_nature_rule is not None:
+            if fact_nature_rule not in allowed_rules:
+                raise ValueError(
+                    f"Invalid fact_nature_rule '{fact_nature_rule}' for mapping id: {mapping_id}"
+                )
+            mapping["fact_nature_rule"] = fact_nature_rule
+
+        storage_role = semantics.get("storage_role")
+        if storage_role is not None:
+            if storage_role not in {"canonical_fact", "evidence_only"}:
+                raise ValueError(
+                    f"Invalid storage_role '{storage_role}' for mapping id: {mapping_id}"
+                )
+            mapping["storage_role"] = storage_role
 
 
 def _parse_year(value: Any) -> Optional[int]:

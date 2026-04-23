@@ -5,7 +5,7 @@ from datetime import datetime, date
 from pathlib import Path
 from typing import Optional
 from sqlalchemy.orm import Session
-from sqlalchemy import update
+from sqlalchemy import update, select
 from sqlalchemy.dialects.postgresql import insert
 from fastapi import UploadFile
 
@@ -31,33 +31,13 @@ class IngestionService:
         "analyst_commentary",
         "business_description",
         "annual_rates_of_change",
-        "current_position_usd_millions",
-        "financial_position_usd_millions",
-        "quarterly_sales_usd_millions",
-        "earnings_per_share",
-        "quarterly_dividends_paid_per_share",
         "institutional_decisions",
         "company_financial_strength",
         "capital_structure_as_of",
         "market_cap_as_of",
         "pension_assets_as_of",
         "price_semantics_and_returns",
-        "tables_time_series",
         "long_term_projection_year_range",
-    }
-    SKIP_FACT_KEYS = {
-        "current_position_usd_millions",
-        "financial_position_usd_millions",
-        "quarterly_sales_usd_millions",
-        "earnings_per_share",
-        "quarterly_dividends_paid_per_share",
-        "tables_time_series",
-    }
-    ANNUAL_TABLE_METRIC_KEYS = {
-        "capital_spending_per_share_usd",
-        "avg_annual_dividend_yield_pct",
-        "depreciation_usd_millions",
-        "net_profit_usd_millions",
     }
     CAPITAL_STRUCTURE_AS_OF_KEYS = {
         "total_debt",
@@ -303,8 +283,8 @@ class IngestionService:
 
     def reparse_existing_document(self, *, user_id: int, document_id: int, reextract_pdf: bool = False) -> PdfDocument:
         """
-        Re-runs parsing on an existing document without mutating prior metric_extractions rows.
-        Inserts new metric_extractions + metric_facts and deactivates prior parsed current facts per metric_key.
+        Re-runs parsing on an existing document by rebuilding its parsed snapshot.
+        Removes prior parsed metric_extractions + metric_facts for the document and then inserts a fresh parse result.
         """
         doc = self.db.get(PdfDocument, document_id)
         if not doc or doc.user_id != user_id:
@@ -354,10 +334,13 @@ class IngestionService:
                 doc.raw_text = "\n".join([page_text or "" for _, page_text, _ in pages_data])
 
         if not pages_data:
+            self._clear_document_parsed_snapshot(doc)
             doc.parse_status = "failed"
             self.db.commit()
             self.db.refresh(doc)
             return doc
+
+        self._clear_document_parsed_snapshot(doc)
 
         is_multi_company_container = len(pages_data) > 1
         if is_multi_company_container:
@@ -457,6 +440,21 @@ class IngestionService:
         self.db.commit()
         self.db.refresh(doc)
         return doc
+
+    def _clear_document_parsed_snapshot(self, doc: PdfDocument) -> None:
+        self.db.query(MetricFact).filter(
+            MetricFact.source_document_id == doc.id,
+            MetricFact.source_type == "parsed",
+        ).delete(synchronize_session=False)
+        self.db.query(MetricExtraction).filter(
+            MetricExtraction.document_id == doc.id,
+        ).delete(synchronize_session=False)
+        doc.stock_id = None
+        doc.report_date = None
+        doc.identity_needs_review = False
+        doc.notes = None
+        self.db.add(doc)
+        self.db.flush()
 
     @staticmethod
     def _report_date_from_extractions(extractions: list) -> Optional[date]:
@@ -757,6 +755,10 @@ class IngestionService:
                 else parsed_value_json
             )
             if isinstance(value_json, dict):
+                if value_json.pop("is_estimate", None) is True:
+                    value_json.setdefault("fact_nature", "estimate")
+                elif "fact_nature" not in value_json and value_json.get("period_type") in {"FY", "Q"}:
+                    value_json["fact_nature"] = "actual"
                 if raw_value_text is not None:
                     value_json.setdefault("raw", raw_value_text)
                 if norm_val is not None:
@@ -788,24 +790,6 @@ class IngestionService:
 
         value_json = self._build_value_json(parsed_value_json, raw_value_text, norm_val, norm_unit)
         value_text = raw_value_text if metric_key in self.NON_NUMERIC_KEYS else None
-
-        update_stmt = (
-            update(MetricFact)
-            .where(
-                MetricFact.stock_id == stock_id,
-                MetricFact.metric_key == metric_key,
-                MetricFact.source_type == "parsed",
-                MetricFact.is_current.is_(True),
-            )
-            .values(is_current=False)
-        )
-        if period_type:
-            update_stmt = update_stmt.where(
-                (MetricFact.period_type == period_type) | (MetricFact.period_type.is_(None))
-            )
-        if period_end_date and not period_end_date_is_derived:
-            update_stmt = update_stmt.where(MetricFact.period_end_date == period_end_date)
-        self.db.execute(update_stmt)
 
         insert_stmt = insert(MetricFact).values(
             user_id=user_id,
@@ -843,6 +827,12 @@ class IngestionService:
         )
         self.db.execute(insert_stmt)
         self.db.flush()
+        self._reconcile_parsed_fact_current_slot(
+            stock_id=stock_id,
+            metric_key=metric_key,
+            period_type=period_type,
+            period_end_date=period_end_date,
+        )
 
     def _insert_metric_fact_from_mapping(
         self,
@@ -858,22 +848,6 @@ class IngestionService:
         period_end_date: Optional[date],
         source_document_id: Optional[int],
     ) -> None:
-        update_stmt = (
-            update(MetricFact)
-            .where(
-                MetricFact.stock_id == stock_id,
-                MetricFact.metric_key == metric_key,
-                MetricFact.source_type == "parsed",
-                MetricFact.is_current.is_(True),
-            )
-            .values(is_current=False)
-        )
-        if period_type:
-            update_stmt = update_stmt.where(MetricFact.period_type == period_type)
-        if period_end_date:
-            update_stmt = update_stmt.where(MetricFact.period_end_date == period_end_date)
-        self.db.execute(update_stmt)
-
         insert_stmt = insert(MetricFact).values(
             user_id=user_id,
             stock_id=stock_id,
@@ -909,401 +883,52 @@ class IngestionService:
         )
         self.db.execute(insert_stmt)
         self.db.flush()
+        self._reconcile_parsed_fact_current_slot(
+            stock_id=stock_id,
+            metric_key=metric_key,
+            period_type=period_type,
+            period_end_date=period_end_date,
+        )
 
-    def _expand_time_series_facts(self, ext, report_date: Optional[date]) -> list[dict]:
-        if ext.parsed_value_json is None:
-            return []
-        if ext.field_key == "quarterly_sales_usd_millions":
-            return self._expand_quarterly_series(
-                ext.parsed_value_json,
-                metric_key="quarterly_sales_usd_millions",
-                report_date=report_date,
-                value_type="currency",
-                scale_token="mill",
-            )
-        if ext.field_key == "earnings_per_share":
-            return self._expand_quarterly_series(
-                ext.parsed_value_json,
-                metric_key="earnings_per_share",
-                report_date=report_date,
-                value_type="currency",
-                scale_token=None,
-            )
-        if ext.field_key == "quarterly_dividends_paid_per_share":
-            return self._expand_quarterly_series(
-                ext.parsed_value_json,
-                metric_key="quarterly_dividends_paid_per_share",
-                report_date=report_date,
-                value_type="currency",
-                scale_token=None,
-            )
-        if ext.field_key == "current_position_usd_millions":
-            return self._expand_current_position_facts(ext.parsed_value_json)
-        if ext.field_key == "financial_position_usd_millions":
-            return self._expand_financial_position_facts(ext.parsed_value_json)
-        if ext.field_key == "tables_time_series":
-            return self._expand_annual_financials_facts(ext.parsed_value_json, report_date)
-        return []
-
-    def _expand_quarterly_series(
+    def _reconcile_parsed_fact_current_slot(
         self,
-        rows: object,
         *,
+        stock_id: int,
         metric_key: str,
-        report_date: Optional[date],
-        value_type: str,
-        scale_token: Optional[str],
-    ) -> list[dict]:
-        if not isinstance(rows, list):
-            return []
-        report_year = report_date.year if report_date else None
-        facts: list[dict] = []
-        quarter_map = (
-            ("mar_31", (3, 31)),
-            ("jun_30", (6, 30)),
-            ("sep_30", (9, 30)),
-            ("dec_31", (12, 31)),
+        period_type: Optional[str],
+        period_end_date: Optional[date],
+    ) -> None:
+        facts = self.db.scalars(
+            select(MetricFact).where(
+                MetricFact.stock_id == stock_id,
+                MetricFact.metric_key == metric_key,
+                MetricFact.source_type == "parsed",
+                MetricFact.period_type == period_type,
+                MetricFact.period_end_date == period_end_date,
+            )
+        ).all()
+        if not facts:
+            return
+
+        doc_ids = sorted({fact.source_document_id for fact in facts if fact.source_document_id is not None})
+        report_dates_by_doc: dict[int, Optional[date]] = {}
+        if doc_ids:
+            report_dates_by_doc = dict(
+                self.db.execute(
+                    select(PdfDocument.id, PdfDocument.report_date).where(PdfDocument.id.in_(doc_ids))
+                ).all()
+            )
+
+        winner = max(
+            facts,
+            key=lambda fact: (
+                report_dates_by_doc.get(fact.source_document_id or -1) or date.min,
+                fact.source_document_id or -1,
+                fact.id or -1,
+            ),
         )
-        for row in rows:
-            year = row.get("calendar_year")
-            if not year:
-                continue
-            for key, (month, day) in quarter_map:
-                value = row.get(key)
-                if value is None:
-                    continue
-                raw_value_text = self._format_raw_value(value, value_type, scale_token)
-                facts.append(
-                    {
-                        "metric_key": metric_key,
-                        "raw_value_text": raw_value_text,
-                        "parsed_value_json": None,
-                        "period_type": "Q",
-                        "period_end_date": date(int(year), month, day),
-                        "value_type": value_type,
-                    }
-                )
-            full_year = row.get("full_year")
-            if full_year is None:
-                continue
-            is_estimate = report_year is not None and int(year) >= report_year - 1
-            parsed_value_json = {"is_estimate": True} if is_estimate else None
-            raw_value_text = self._format_raw_value(full_year, value_type, scale_token)
-            facts.append(
-                {
-                    "metric_key": metric_key,
-                    "raw_value_text": raw_value_text,
-                    "parsed_value_json": parsed_value_json,
-                    "period_type": "FY",
-                    "period_end_date": date(int(year), 12, 31),
-                    "value_type": value_type,
-                }
-            )
-        return facts
 
-    def _expand_current_position_facts(self, parsed: object) -> list[dict]:
-        if not isinstance(parsed, dict):
-            return []
-        years = parsed.get("years", [])
-        if not isinstance(years, list):
-            return []
-        assets_map = {
-            "cash_assets": "cash_assets",
-            "receivables": "receivables",
-            "inventory_lifo": "inventory_lifo",
-            "other_current_assets": "other_current_assets",
-            "current_assets_total": "total_current_assets",
-        }
-        liab_map = {
-            "accounts_payable": "accounts_payable",
-            "debt_due": "debt_due",
-            "other_current_liabilities": "other_current_liabilities",
-            "current_liabilities_total": "total_current_liabilities",
-        }
-        facts: list[dict] = []
-        for idx, label in enumerate(years):
-            period_end_date = self._year_end_date(label)
-            period_type = (
-                "FY"
-                if isinstance(label, int) or (isinstance(label, str) and label.isdigit())
-                else "AS_OF"
-            )
-            if period_end_date is None:
-                continue
-            for key, suffix in assets_map.items():
-                series = parsed.get(key)
-                if not isinstance(series, list) or idx >= len(series):
-                    continue
-                value = series[idx]
-                if value is None:
-                    continue
-                facts.append(
-                    {
-                        "metric_key": f"current_position_{suffix}_usd_millions",
-                        "raw_value_text": self._format_raw_value(value, "currency", "mill"),
-                        "parsed_value_json": None,
-                        "period_type": period_type,
-                        "period_end_date": period_end_date,
-                        "value_type": "currency",
-                    }
-                )
-            for key, suffix in liab_map.items():
-                series = parsed.get(key)
-                if not isinstance(series, list) or idx >= len(series):
-                    continue
-                value = series[idx]
-                if value is None:
-                    continue
-                facts.append(
-                    {
-                        "metric_key": f"current_position_{suffix}_usd_millions",
-                        "raw_value_text": self._format_raw_value(value, "currency", "mill"),
-                        "parsed_value_json": None,
-                        "period_type": period_type,
-                        "period_end_date": period_end_date,
-                        "value_type": "currency",
-                    }
-                )
-        return facts
-
-    def _expand_financial_position_facts(self, parsed: object) -> list[dict]:
-        if not isinstance(parsed, dict):
-            return []
-        years = parsed.get("years", [])
-        if not isinstance(years, list):
-            return []
-        assets = parsed.get("assets", {}) if isinstance(parsed.get("assets"), dict) else {}
-        liabilities = parsed.get("liabilities", {}) if isinstance(parsed.get("liabilities"), dict) else {}
-        assets_map = {
-            "bonds": "assets_bonds",
-            "stocks": "assets_stocks",
-            "other": "assets_other",
-            "total_assets": "assets_total",
-        }
-        liabilities_map = {
-            "unearned_premiums": "liabilities_unearned_premiums",
-            "reserves": "liabilities_reserves",
-            "other": "liabilities_other",
-            "total_liabilities": "liabilities_total",
-        }
-        facts: list[dict] = []
-        for idx, label in enumerate(years):
-            period_end_date = self._year_end_date(label)
-            period_type = (
-                "FY"
-                if isinstance(label, int) or (isinstance(label, str) and label.isdigit())
-                else "AS_OF"
-            )
-            if period_end_date is None:
-                continue
-            for key, suffix in assets_map.items():
-                series = assets.get(key)
-                if not isinstance(series, list) or idx >= len(series):
-                    continue
-                value = series[idx]
-                if value is None:
-                    continue
-                facts.append(
-                    {
-                        "metric_key": f"financial_position_{suffix}_usd_millions",
-                        "raw_value_text": self._format_raw_value(value, "currency", "mill"),
-                        "parsed_value_json": None,
-                        "period_type": period_type,
-                        "period_end_date": period_end_date,
-                        "value_type": "currency",
-                    }
-                )
-            for key, suffix in liabilities_map.items():
-                series = liabilities.get(key)
-                if not isinstance(series, list) or idx >= len(series):
-                    continue
-                value = series[idx]
-                if value is None:
-                    continue
-                facts.append(
-                    {
-                        "metric_key": f"financial_position_{suffix}_usd_millions",
-                        "raw_value_text": self._format_raw_value(value, "currency", "mill"),
-                        "parsed_value_json": None,
-                        "period_type": period_type,
-                        "period_end_date": period_end_date,
-                        "value_type": "currency",
-                    }
-                )
-        return facts
-
-    def _expand_annual_financials_facts(self, parsed: object, report_date: Optional[date]) -> list[dict]:
-        if not isinstance(parsed, dict):
-            return []
-        annual = parsed.get("annual_financials_and_ratios_2015_2026_with_projection_2028_2030", {})
-        if not isinstance(annual, dict):
-            return []
-        years = annual.get("years", [])
-        if not isinstance(years, list) or not years:
-            return []
-
-        per_share = annual.get("per_share", {}) if isinstance(annual.get("per_share"), dict) else {}
-        valuation = annual.get("valuation", {}) if isinstance(annual.get("valuation"), dict) else {}
-        income_statement = annual.get("income_statement_usd_millions", {}) if isinstance(
-            annual.get("income_statement_usd_millions"), dict
-        ) else {}
-        balance_sheet = annual.get("balance_sheet_and_returns_usd_millions", {}) if isinstance(
-            annual.get("balance_sheet_and_returns_usd_millions"), dict
-        ) else {}
-
-        insurance_layout = (
-            "pc_prem_earned_per_share_usd" in per_share or "pc_premiums_earned" in income_statement
-        )
-        ratio_keys = {
-            "loss_to_prem_earned_pct",
-            "expense_to_prem_written",
-            "underwriting_margin_pct",
-            "income_tax_rate_pct",
-            "inv_inc_to_total_investments_pct",
-            "return_on_shareholders_equity_pct",
-            "retained_to_common_equity_pct",
-            "all_dividends_to_net_profit_pct",
-        }
-        percent_like = {"expense_to_prem_written"}
-
-        estimate_year = years[-1]
-        facts: list[dict] = []
-
-        def append_fact(
-            *,
-            metric_key: str,
-            value: float,
-            value_type: str,
-            scale_token: Optional[str],
-            year: int,
-            is_estimate: bool,
-        ) -> None:
-            if value is None:
-                return
-            parsed_value_json = {"is_estimate": True} if is_estimate else None
-            raw_value_text = self._format_raw_value(value, value_type, scale_token)
-            facts.append(
-                {
-                    "metric_key": metric_key,
-                    "raw_value_text": raw_value_text,
-                    "parsed_value_json": parsed_value_json,
-                    "period_type": "FY",
-                    "period_end_date": date(int(year), 12, 31),
-                    "value_type": value_type,
-                }
-            )
-
-        def metric_key_with_millions(key: str) -> str:
-            if key.endswith("_usd_millions") or key.endswith("_usd"):
-                return key
-            return f"{key}_usd_millions"
-
-        def percent_value_type(key: str) -> str:
-            if insurance_layout and key in ratio_keys:
-                return "ratio"
-            return "percent"
-
-        for key, values in per_share.items():
-            if key == "notes" or not isinstance(values, list):
-                continue
-            for idx, year in enumerate(years):
-                if idx >= len(values):
-                    continue
-                value = values[idx]
-                if value is None:
-                    continue
-                if key == "common_shares_outstanding_millions":
-                    append_fact(
-                        metric_key=key,
-                        value=value,
-                        value_type="number",
-                        scale_token="mill",
-                        year=year,
-                        is_estimate=year == estimate_year,
-                    )
-                else:
-                    append_fact(
-                        metric_key=key,
-                        value=value,
-                        value_type="currency",
-                        scale_token=None,
-                        year=year,
-                        is_estimate=year == estimate_year,
-                    )
-
-        for key, values in valuation.items():
-            if not isinstance(values, list):
-                continue
-            for idx, year in enumerate(years):
-                if idx >= len(values):
-                    continue
-                value = values[idx]
-                if value is None:
-                    continue
-                value_type = (
-                    "ratio"
-                    if key in ratio_keys
-                    else percent_value_type(key) if key.endswith("_pct") else "ratio"
-                )
-                append_fact(
-                    metric_key=key,
-                    value=value,
-                    value_type=value_type,
-                    scale_token=None,
-                    year=year,
-                    is_estimate=year == estimate_year,
-                )
-
-        for key, values in income_statement.items():
-            if not isinstance(values, list):
-                continue
-            for idx, year in enumerate(years):
-                if idx >= len(values):
-                    continue
-                value = values[idx]
-                if value is None:
-                    continue
-                if key.endswith("_pct") or key in percent_like:
-                    value_type = percent_value_type(key)
-                    metric_key = key
-                    scale_token = None
-                else:
-                    value_type = "currency"
-                    metric_key = metric_key_with_millions(key)
-                    scale_token = "mill"
-                append_fact(
-                    metric_key=metric_key,
-                    value=value,
-                    value_type=value_type,
-                    scale_token=scale_token,
-                    year=year,
-                    is_estimate=year == estimate_year,
-                )
-
-        for key, values in balance_sheet.items():
-            if not isinstance(values, list):
-                continue
-            for idx, year in enumerate(years):
-                if idx >= len(values):
-                    continue
-                value = values[idx]
-                if value is None:
-                    continue
-                if key.endswith("_pct") or key in percent_like:
-                    value_type = percent_value_type(key)
-                    metric_key = key
-                    scale_token = None
-                else:
-                    value_type = "currency"
-                    metric_key = metric_key_with_millions(key)
-                    scale_token = "mill"
-                append_fact(
-                    metric_key=metric_key,
-                    value=value,
-                    value_type=value_type,
-                    scale_token=scale_token,
-                    year=year,
-                    is_estimate=year == estimate_year,
-                )
-
-        return facts
+        for fact in facts:
+            fact.is_current = fact.id == winner.id
+            self.db.add(fact)
+        self.db.flush()

@@ -55,12 +55,56 @@ def test_build_owners_earnings_facts_median_last_5_years():
 
     # OEPS values for FY 2020-2024 (last 5 usable FY)
     assert derived_by_key[("owners_earnings_per_share", "FY", dates[1])]["value_numeric"] == 1.5
+    assert derived_by_key[("owners_earnings_per_share", "FY", dates[1])]["value_json"]["fact_nature"] == "actual"
     assert derived_by_key[("owners_earnings_per_share", "FY", dates[2])]["value_numeric"] == 2.0
+    assert derived_by_key[("owners_earnings_per_share", "FY", dates[2])]["value_json"]["fact_nature"] == "actual"
     assert derived_by_key[("owners_earnings_per_share", "FY", dates[3])]["value_numeric"] == -0.5
+    assert derived_by_key[("owners_earnings_per_share", "FY", dates[3])]["value_json"]["fact_nature"] == "actual"
     assert derived_by_key[("owners_earnings_per_share", "FY", dates[4])]["value_numeric"] == 4.0
+    assert derived_by_key[("owners_earnings_per_share", "FY", dates[4])]["value_json"]["fact_nature"] == "actual"
     assert derived_by_key[("owners_earnings_per_share", "FY", dates[5])]["value_numeric"] == 3.5
+    assert derived_by_key[("owners_earnings_per_share", "FY", dates[5])]["value_json"]["fact_nature"] == "actual"
 
     normalized = derived_by_key[
         ("owners_earnings_per_share_normalized", "AS_OF", date(2026, 1, 9))
-    ]["value_numeric"]
+    ]
+    assert normalized["value_json"]["fact_nature"] == "snapshot"
+    normalized = normalized["value_numeric"]
     assert normalized == 2.0
+
+
+def test_build_owners_earnings_facts_marks_estimate_years_from_inputs():
+    period_end = date(2025, 12, 31)
+    facts = [
+        {
+            "metric_key": "per_share.eps",
+            "value_numeric": 3.0,
+            "value_text": None,
+            "value_json": {"fact_nature": "estimate"},
+            "unit": None,
+            "period_type": "FY",
+            "period_end_date": period_end,
+        },
+        {
+            "metric_key": "per_share.capital_spending",
+            "value_numeric": 1.0,
+            "value_text": None,
+            "value_json": {"fact_nature": "actual"},
+            "unit": None,
+            "period_type": "FY",
+            "period_end_date": period_end,
+        },
+    ]
+
+    derived = build_owners_earnings_facts(facts, report_date=None)
+    assert derived == [
+        {
+            "metric_key": "owners_earnings_per_share",
+            "value_numeric": 2.0,
+            "value_text": None,
+            "value_json": {"fact_nature": "estimate"},
+            "unit": "USD",
+            "period_type": "FY",
+            "period_end_date": period_end,
+        }
+    ]

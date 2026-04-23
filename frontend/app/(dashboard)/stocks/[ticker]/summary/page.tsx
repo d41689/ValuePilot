@@ -8,7 +8,20 @@ import axios from 'axios';
 import apiClient from '@/lib/api/client';
 import TickerSearchBox from '@/components/TickerSearchBox';
 import StockSummaryCard from '@/components/StockSummaryCard';
+import actualConflictHelpers from '@/lib/actualConflicts';
+import provenanceHelpers from '@/lib/factProvenance';
 import { buildStockRoute, normalizeTicker } from '@/lib/stockRoutes';
+
+const { buildActualConflictDisplayItems } = actualConflictHelpers;
+const { formatFactProvenanceLabel } = provenanceHelpers;
+
+type FactProvenance = {
+  source_type?: string | null;
+  source_document_id?: number | null;
+  source_report_date?: string | null;
+  period_end_date?: string | null;
+  is_active_report?: boolean;
+};
 
 type StockSummary = {
   id: number;
@@ -17,6 +30,21 @@ type StockSummary = {
   company_name: string;
   price: number | null;
   pe: number | null;
+  active_report_document_id?: number | null;
+  active_report_date?: string | null;
+  price_provenance?: FactProvenance | null;
+  pe_provenance?: FactProvenance | null;
+  actual_conflict_count?: number;
+  actual_conflicts?: Array<{
+    metric_key: string;
+    period_type: string | null;
+    period_end_date: string | null;
+    observations: Array<{
+      value_numeric: number | null;
+      value_text: string | null;
+      source_report_date: string | null;
+    }>;
+  }>;
 };
 
 export default function StockSummaryPage() {
@@ -27,6 +55,7 @@ export default function StockSummaryPage() {
   const [error, setError] = useState<string | null>(null);
   const tickerForLink = summary?.ticker ?? (tickerParam || '').toString();
   const dcfRoute = buildStockRoute(normalizeTicker(tickerForLink), 'dcf');
+  const actualConflictItems = buildActualConflictDisplayItems(summary?.actual_conflicts ?? []);
 
   useEffect(() => {
     if (!tickerParam) {
@@ -92,6 +121,12 @@ export default function StockSummaryPage() {
           exchange={summary.exchange}
           price={summary.price}
           pe={summary.pe}
+          activeReportDate={summary.active_report_date}
+          activeReportDocumentId={summary.active_report_document_id}
+          priceProvenanceLabel={formatFactProvenanceLabel(summary.price_provenance)}
+          peProvenanceLabel={formatFactProvenanceLabel(summary.pe_provenance)}
+          actualConflictCount={summary.actual_conflict_count ?? 0}
+          actualConflictItems={actualConflictItems}
         />
       )}
 

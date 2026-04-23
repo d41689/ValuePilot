@@ -28,3 +28,18 @@ def test_value_line_calm_page_json_matches_expected_fixture():
     actual = build_page_json()
 
     assert actual == expected
+
+
+def test_value_line_calm_non_december_fiscal_year_estimate_boundary():
+    actual = build_page_json()
+
+    quarterly_sales = actual["quarterly_sales"]["by_year"]
+    by_year = {row["calendar_year"]: row for row in quarterly_sales}
+    assert "is_estimated" not in by_year[2025]["full_year"]
+    assert by_year[2025]["full_year"]["fact_nature"] == "actual"
+    assert "is_estimated" not in by_year[2026]["full_year"]
+    assert by_year[2026]["full_year"]["fact_nature"] == "estimate"
+
+    annual_meta = actual["annual_financials"]["meta"]
+    assert annual_meta["estimate_years"] == [2026]
+    assert annual_meta["actual_years"][-1] == 2025

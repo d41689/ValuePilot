@@ -19,7 +19,8 @@
     "pe_ratio_trailing": 8.6,
     "pe_ratio_median": 15.0,
     "relative_pe_ratio": 0.43,
-    "dividend_yield_pct": 1.6
+    "dividend_yield_pct": 1.6,
+    "fact_nature": "snapshot"
   },
   "ratings": {
     "timeliness": {
@@ -51,7 +52,8 @@
       "normalized": 1.0,
       "unit": "ratio",
       "notes": "1.00 = Market"
-    }
+    },
+    "fact_nature": "opinion"
   },
   "quality_metrics": {
     "company_financial_strength": {
@@ -97,7 +99,8 @@
         "normalized": 0.2,
         "unit": "ratio"
       }
-    }
+    },
+    "fact_nature": "opinion"
   },
   "long_term_projection": {
     "projection_year_range": "2028-2030",
@@ -137,7 +140,8 @@
           "unit": "ratio"
         }
       }
-    }
+    },
+    "fact_nature": "opinion"
   },
   "institutional_decisions": {
     "unit": {
@@ -329,7 +333,8 @@
           "value": 16.5
         }
       }
-    ]
+    ],
+    "fact_nature": "opinion"
   },
   "quarterly_sales": null,
   "net_premiums_earned": {
@@ -340,24 +345,28 @@
         "quarters": {
           "Q1": {
             "period_end": "2022-03-31",
-            "value": 1258.2
+            "value": 1258.2,
+            "fact_nature": "actual"
           },
           "Q2": {
             "period_end": "2022-06-30",
-            "value": 1277.1
+            "value": 1277.1,
+            "fact_nature": "actual"
           },
           "Q3": {
             "period_end": "2022-09-30",
-            "value": 1284.9
+            "value": 1284.9,
+            "fact_nature": "actual"
           },
           "Q4": {
             "period_end": "2022-12-31",
-            "value": 1340.1
+            "value": 1340.1,
+            "fact_nature": "actual"
           }
         },
         "full_year": {
           "value": 5160.3,
-          "is_estimated": false
+          "fact_nature": "actual"
         }
       },
       {
@@ -365,24 +374,28 @@
         "quarters": {
           "Q1": {
             "period_end": "2023-03-31",
-            "value": 1230.2
+            "value": 1230.2,
+            "fact_nature": "actual"
           },
           "Q2": {
             "period_end": "2023-06-30",
-            "value": 1265.7
+            "value": 1265.7,
+            "fact_nature": "actual"
           },
           "Q3": {
             "period_end": "2023-09-30",
-            "value": 1322.6
+            "value": 1322.6,
+            "fact_nature": "actual"
           },
           "Q4": {
             "period_end": "2023-12-31",
-            "value": 1265.3
+            "value": 1265.3,
+            "fact_nature": "actual"
           }
         },
         "full_year": {
           "value": 5083.8,
-          "is_estimated": false
+          "fact_nature": "actual"
         }
       },
       {
@@ -390,24 +403,28 @@
         "quarters": {
           "Q1": {
             "period_end": "2024-03-31",
-            "value": 1258.0
+            "value": 1258.0,
+            "fact_nature": "actual"
           },
           "Q2": {
             "period_end": "2024-06-30",
-            "value": 1304.5
+            "value": 1304.5,
+            "fact_nature": "actual"
           },
           "Q3": {
             "period_end": "2024-09-30",
-            "value": 1366.7
+            "value": 1366.7,
+            "fact_nature": "actual"
           },
           "Q4": {
             "period_end": "2024-12-31",
-            "value": 1377.0
+            "value": 1377.0,
+            "fact_nature": "actual"
           }
         },
         "full_year": {
           "value": 5306.2,
-          "is_estimated": false
+          "fact_nature": "actual"
         }
       },
       {
@@ -415,24 +432,28 @@
         "quarters": {
           "Q1": {
             "period_end": "2025-03-31",
-            "value": 1340.8
+            "value": 1340.8,
+            "fact_nature": "estimate"
           },
           "Q2": {
             "period_end": "2025-06-30",
-            "value": 1393.4
+            "value": 1393.4,
+            "fact_nature": "estimate"
           },
           "Q3": {
             "period_end": "2025-09-30",
-            "value": 1451.9
+            "value": 1451.9,
+            "fact_nature": "estimate"
           },
           "Q4": {
             "period_end": "2025-12-31",
-            "value": 1463.9
+            "value": 1463.9,
+            "fact_nature": "estimate"
           }
         },
         "full_year": {
           "value": 5650.0,
-          "is_estimated": true
+          "fact_nature": "estimate"
         }
       },
       {
@@ -440,27 +461,39 @@
         "quarters": {
           "Q1": {
             "period_end": "2026-03-31",
-            "value": 1425.0
+            "value": 1425.0,
+            "fact_nature": "estimate"
           },
           "Q2": {
             "period_end": "2026-06-30",
-            "value": 1450.0
+            "value": 1450.0,
+            "fact_nature": "estimate"
           },
           "Q3": {
             "period_end": "2026-09-30",
-            "value": 1475.0
+            "value": 1475.0,
+            "fact_nature": "estimate"
           },
           "Q4": {
             "period_end": "2026-12-31",
-            "value": 1500.0
+            "value": 1500.0,
+            "fact_nature": "estimate"
           }
         },
         "full_year": {
           "value": 5850.0,
-          "is_estimated": true
+          "fact_nature": "estimate"
         }
       }
-    ]
+    ],
+    "fact_nature": "mixed",
+    "quarter_month_order": [
+      "Mar",
+      "Jun",
+      "Sep",
+      "Dec"
+    ],
+    "fiscal_year_end_month": 12
   },
   "earnings_per_share": {
     "unit": "USD_per_share",
@@ -470,24 +503,28 @@
         "quarters": {
           "Q1": {
             "period_end": "2022-03-31",
-            "value": 2.09
+            "value": 2.09,
+            "fact_nature": "actual"
           },
           "Q2": {
             "period_end": "2022-06-30",
-            "value": 1.74
+            "value": 1.74,
+            "fact_nature": "actual"
           },
           "Q3": {
             "period_end": "2022-09-30",
-            "value": 0.03
+            "value": 0.03,
+            "fact_nature": "actual"
           },
           "Q4": {
             "period_end": "2022-12-31",
-            "value": 1.95
+            "value": 1.95,
+            "fact_nature": "actual"
           }
         },
         "full_year": {
           "value": 5.81,
-          "is_estimated": false
+          "fact_nature": "actual"
         }
       },
       {
@@ -495,24 +532,28 @@
         "quarters": {
           "Q1": {
             "period_end": "2023-03-31",
-            "value": 2.33
+            "value": 2.33,
+            "fact_nature": "actual"
           },
           "Q2": {
             "period_end": "2023-06-30",
-            "value": 2.23
+            "value": 2.23,
+            "fact_nature": "actual"
           },
           "Q3": {
             "period_end": "2023-09-30",
-            "value": 2.34
+            "value": 2.34,
+            "fact_nature": "actual"
           },
           "Q4": {
             "period_end": "2023-12-31",
-            "value": -1.25
+            "value": -1.25,
+            "fact_nature": "actual"
           }
         },
         "full_year": {
           "value": 5.65,
-          "is_estimated": false
+          "fact_nature": "actual"
         }
       },
       {
@@ -520,24 +561,28 @@
         "quarters": {
           "Q1": {
             "period_end": "2024-03-31",
-            "value": 2.57
+            "value": 2.57,
+            "fact_nature": "actual"
           },
           "Q2": {
             "period_end": "2024-06-30",
-            "value": 2.93
+            "value": 2.93,
+            "fact_nature": "actual"
           },
           "Q3": {
             "period_end": "2024-09-30",
-            "value": 2.71
+            "value": 2.71,
+            "fact_nature": "actual"
           },
           "Q4": {
             "period_end": "2024-12-31",
-            "value": 2.97
+            "value": 2.97,
+            "fact_nature": "actual"
           }
         },
         "full_year": {
           "value": 11.18,
-          "is_estimated": false
+          "fact_nature": "actual"
         }
       },
       {
@@ -545,24 +590,28 @@
         "quarters": {
           "Q1": {
             "period_end": "2025-03-31",
-            "value": 3.17
+            "value": 3.17,
+            "fact_nature": "estimate"
           },
           "Q2": {
             "period_end": "2025-06-30",
-            "value": 3.29
+            "value": 3.29,
+            "fact_nature": "estimate"
           },
           "Q3": {
             "period_end": "2025-09-30",
-            "value": 3.25
+            "value": 3.25,
+            "fact_nature": "estimate"
           },
           "Q4": {
             "period_end": "2025-12-31",
-            "value": 3.39
+            "value": 3.39,
+            "fact_nature": "estimate"
           }
         },
         "full_year": {
           "value": 13.1,
-          "is_estimated": true
+          "fact_nature": "estimate"
         }
       },
       {
@@ -570,27 +619,39 @@
         "quarters": {
           "Q1": {
             "period_end": "2026-03-31",
-            "value": 3.35
+            "value": 3.35,
+            "fact_nature": "estimate"
           },
           "Q2": {
             "period_end": "2026-06-30",
-            "value": 3.5
+            "value": 3.5,
+            "fact_nature": "estimate"
           },
           "Q3": {
             "period_end": "2026-09-30",
-            "value": 3.4
+            "value": 3.4,
+            "fact_nature": "estimate"
           },
           "Q4": {
             "period_end": "2026-12-31",
-            "value": 3.55
+            "value": 3.55,
+            "fact_nature": "estimate"
           }
         },
         "full_year": {
           "value": 13.8,
-          "is_estimated": true
+          "fact_nature": "estimate"
         }
       }
-    ]
+    ],
+    "fact_nature": "mixed",
+    "quarter_month_order": [
+      "Mar",
+      "Jun",
+      "Sep",
+      "Dec"
+    ],
+    "fiscal_year_end_month": 12
   },
   "earnings_per_adr": null,
   "quarterly_dividends_paid": {
@@ -601,24 +662,28 @@
         "quarters": {
           "Q1": {
             "period_end": "2022-03-31",
-            "value": 0.43
+            "value": 0.43,
+            "fact_nature": "actual"
           },
           "Q2": {
             "period_end": "2022-06-30",
-            "value": 0.43
+            "value": 0.43,
+            "fact_nature": "actual"
           },
           "Q3": {
             "period_end": "2022-09-30",
-            "value": 0.43
+            "value": 0.43,
+            "fact_nature": "actual"
           },
           "Q4": {
             "period_end": "2022-12-31",
-            "value": 0.44
+            "value": 0.44,
+            "fact_nature": "actual"
           }
         },
         "full_year": {
           "value": 1.73,
-          "is_estimated": false
+          "fact_nature": "actual"
         }
       },
       {
@@ -626,24 +691,28 @@
         "quarters": {
           "Q1": {
             "period_end": "2023-03-31",
-            "value": 0.44
+            "value": 0.44,
+            "fact_nature": "actual"
           },
           "Q2": {
             "period_end": "2023-06-30",
-            "value": 0.44
+            "value": 0.44,
+            "fact_nature": "actual"
           },
           "Q3": {
             "period_end": "2023-09-30",
-            "value": 0.44
+            "value": 0.44,
+            "fact_nature": "actual"
           },
           "Q4": {
             "period_end": "2023-12-31",
-            "value": 0.44
+            "value": 0.44,
+            "fact_nature": "actual"
           }
         },
         "full_year": {
           "value": 1.76,
-          "is_estimated": false
+          "fact_nature": "actual"
         }
       },
       {
@@ -651,24 +720,28 @@
         "quarters": {
           "Q1": {
             "period_end": "2024-03-31",
-            "value": 0.44
+            "value": 0.44,
+            "fact_nature": "actual"
           },
           "Q2": {
             "period_end": "2024-06-30",
-            "value": 0.44
+            "value": 0.44,
+            "fact_nature": "actual"
           },
           "Q3": {
             "period_end": "2024-09-30",
-            "value": 0.44
+            "value": 0.44,
+            "fact_nature": "actual"
           },
           "Q4": {
             "period_end": "2024-12-31",
-            "value": 0.44
+            "value": 0.44,
+            "fact_nature": "actual"
           }
         },
         "full_year": {
           "value": 1.76,
-          "is_estimated": false
+          "fact_nature": "actual"
         }
       },
       {
@@ -676,24 +749,28 @@
         "quarters": {
           "Q1": {
             "period_end": "2025-03-31",
-            "value": 0.44
+            "value": 0.44,
+            "fact_nature": "estimate"
           },
           "Q2": {
             "period_end": "2025-06-30",
-            "value": 0.44
+            "value": 0.44,
+            "fact_nature": "estimate"
           },
           "Q3": {
             "period_end": "2025-09-30",
-            "value": 0.44
+            "value": 0.44,
+            "fact_nature": "estimate"
           },
           "Q4": {
             "period_end": "2025-12-31",
-            "value": 0.44
+            "value": 0.44,
+            "fact_nature": "estimate"
           }
         },
         "full_year": {
           "value": 1.76,
-          "is_estimated": true
+          "fact_nature": "estimate"
         }
       },
       {
@@ -701,11 +778,19 @@
         "quarters": null,
         "full_year": {
           "value": null,
-          "is_estimated": true,
+          "fact_nature": "estimate",
           "notes": "No quarterly or full-year dividend values provided in report"
         }
       }
-    ]
+    ],
+    "fact_nature": "mixed",
+    "quarter_month_order": [
+      "Mar",
+      "Jun",
+      "Sep",
+      "Dec"
+    ],
+    "fiscal_year_end_month": 12
   },
   "annual_financials": {
     "meta": {
@@ -726,6 +811,24 @@
         2025,
         2026
       ],
+      "actual_years": [
+        2015,
+        2016,
+        2017,
+        2018,
+        2019,
+        2020,
+        2021,
+        2022,
+        2023,
+        2024
+      ],
+      "estimate_years": [
+        2025,
+        2026
+      ],
+      "fact_nature": "mixed",
+      "fiscal_year_end_month": 12,
       "projection_year_range": "2028-2030"
     },
     "per_unit": "share",
@@ -1000,7 +1103,8 @@
         "window_years": 5,
         "value_pct": 68.5
       }
-    ]
+    ],
+    "fact_nature": "snapshot"
   },
   "historical_price_range": [
     {
@@ -1069,6 +1173,7 @@
     "business": "AXIS Capital Holdings Limited provides various insurance and reinsurance products worldwide. Its Insurance segment offers specialty insurance products, including property, professional lines, and accident & health. The company\u2019s reinsurance segment provides treaty reinsurance to insurance companies. Product lines in that unit include liability, credit & surety, and motor. The company operates in two divisions: Insurance (74.0% of \u201924 net premiums earned); Reinsurance (26.0%). Had 1,876 employees at 12/31/24. Officers and directors own less than 1% of common stock; The Vanguard Group, 11.1% (4/25 proxy). CEO & President: Vincent Tizzio. Address: Axis House, 92 Pitts Bay Road, Pembroke HM 08, Bermuda. Tel.: 441-496-2600. Web: www.axiscapital.com.",
     "analyst_name": "Michael Napoli",
     "commentary_date": "2026-01-09",
-    "analyst_commentary": "Shares of Axis Capital Holdings have advanced nicely in price in recent months. The company reported favorable comparisons for the 2025 third quarter. Net premiums earned increased roughly 6%, on a year-over-year basis. Healthy growth from the insurance segment was partly offset by a modest decline at the reinsurance business. Underwriting income of $541 million marked an increase of 22% on a year-to-year basis. Net investment income decreased somewhat, though, due to lower income from fixed maturities. Earnings per share rose 20%, to $3.25. The company generated a combined ratio of 89.5% for the recent period. A combined ratio of less than 100% generally indicates that an insurance company is earning more in premiums than it is paying out in claims and expenses. Good operating performance likely continued for the fourth quarter, and we expect that premiums and earnings per share advanced 6% and 17%, respectively, for full-year 2025. Solid operating results ought to persist, and we project healthy growth from 2026 onward. The company is a global specialty underwriter, and appears to be well positioned in the insurance and reinsurance markets that it serves. Its \u201cHow We Work\u201d program is driving operational improvements throughout the organization, supported by investments in data, technology, and artificial intelligence. Enhancements to the product portfolio should also continue to bear fruit. The recent introduction of AXIS Capacity Solutions also appears promising. This is a new line that will develop and support structured and multiline portfolio capacity transactions, which will serve the company\u2019s distribution partners, while directly addressing a rising trend across the global specialty insurance market. The multiline market is growing faster than the broader insurance market. Share repurchases ought to support the bottom line, as well. This stock is ranked to track the broader market averages for the coming six to 12 months. We envision solid growth in premiums and earnings for the company over the pull to late decade. From the recent quotation, this stock offers respectable, though not especially compelling, total return potential."
+    "analyst_commentary": "Shares of Axis Capital Holdings have advanced nicely in price in recent months. The company reported favorable comparisons for the 2025 third quarter. Net premiums earned increased roughly 6%, on a year-over-year basis. Healthy growth from the insurance segment was partly offset by a modest decline at the reinsurance business. Underwriting income of $541 million marked an increase of 22% on a year-to-year basis. Net investment income decreased somewhat, though, due to lower income from fixed maturities. Earnings per share rose 20%, to $3.25. The company generated a combined ratio of 89.5% for the recent period. A combined ratio of less than 100% generally indicates that an insurance company is earning more in premiums than it is paying out in claims and expenses. Good operating performance likely continued for the fourth quarter, and we expect that premiums and earnings per share advanced 6% and 17%, respectively, for full-year 2025. Solid operating results ought to persist, and we project healthy growth from 2026 onward. The company is a global specialty underwriter, and appears to be well positioned in the insurance and reinsurance markets that it serves. Its \u201cHow We Work\u201d program is driving operational improvements throughout the organization, supported by investments in data, technology, and artificial intelligence. Enhancements to the product portfolio should also continue to bear fruit. The recent introduction of AXIS Capacity Solutions also appears promising. This is a new line that will develop and support structured and multiline portfolio capacity transactions, which will serve the company\u2019s distribution partners, while directly addressing a rising trend across the global specialty insurance market. The multiline market is growing faster than the broader insurance market. Share repurchases ought to support the bottom line, as well. This stock is ranked to track the broader market averages for the coming six to 12 months. We envision solid growth in premiums and earnings for the company over the pull to late decade. From the recent quotation, this stock offers respectable, though not especially compelling, total return potential.",
+    "fact_nature": "opinion"
   }
 }
