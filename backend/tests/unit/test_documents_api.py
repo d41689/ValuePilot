@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import date, datetime
 
 import sqlalchemy as sa
 
@@ -24,6 +24,7 @@ def test_documents_list_returns_companies_and_page_count(client, db_session, use
         source="upload",
         file_storage_key="/tmp/aos.pdf",
         parse_status="parsed",
+        report_date=date(2026, 1, 2),
         upload_time=datetime.utcnow(),
         stock_id=stock_a.id,
     )
@@ -145,11 +146,13 @@ def test_documents_list_returns_companies_and_page_count(client, db_session, use
     one = doc_map[doc_one.id]
     assert one["page_count"] == 1
     assert one["parsed_page_count"] == 1
+    assert one["report_date"] == "2026-01-02"
     assert one["companies"] == [{"ticker": "AOS", "company_name": "SMITH (A.O.)"}]
 
     two = doc_map[doc_two.id]
     assert two["page_count"] == 2
     assert two["parsed_page_count"] == 2
+    assert two["report_date"] is None
     assert {c["ticker"] for c in two["companies"]} == {"AOS", "MSFT"}
 
 

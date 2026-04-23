@@ -38,6 +38,7 @@ type DocumentRow = {
   template_label: string;
   parse_status: string;
   upload_time: string | null;
+  report_date: string | null;
   page_count: number;
   parsed_page_count: number;
   companies: Company[];
@@ -92,6 +93,13 @@ function formatDate(iso: string | null) {
   const dt = new Date(iso);
   if (Number.isNaN(dt.getTime())) return '—';
   return dt.toLocaleString();
+}
+
+function formatDateOnly(iso: string | null) {
+  if (!iso) return '—';
+  const dt = new Date(`${iso}T00:00:00`);
+  if (Number.isNaN(dt.getTime())) return '—';
+  return dt.toLocaleDateString();
 }
 
 function formatPageCount(total: number, parsed?: number) {
@@ -246,6 +254,7 @@ export default function DocumentsPage() {
                   <TableHead>Companies</TableHead>
                   <TableHead>Pages</TableHead>
                   <TableHead>Status</TableHead>
+                  <TableHead>Report Date</TableHead>
                   <TableHead>Uploaded</TableHead>
                   <TableHead>Actions</TableHead>
                 </TableRow>
@@ -277,6 +286,9 @@ export default function DocumentsPage() {
                       </TableCell>
                       <TableCell>
                         <Badge variant={meta.variant}>{meta.label}</Badge>
+                      </TableCell>
+                      <TableCell className="text-muted-foreground">
+                        {formatDateOnly(doc.report_date)}
                       </TableCell>
                       <TableCell className="text-muted-foreground">
                         {formatDate(doc.upload_time)}

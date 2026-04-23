@@ -112,6 +112,7 @@ def list_documents(
                 "template_label": template_label,
                 "parse_status": doc.parse_status,
                 "upload_time": doc.upload_time.isoformat() if doc.upload_time else None,
+                "report_date": doc.report_date.isoformat() if doc.report_date else None,
                 "page_count": page_counts.get(doc.id, 0),
                 "parsed_page_count": parsed_page_counts.get(doc.id, 0),
                 "companies": companies,
