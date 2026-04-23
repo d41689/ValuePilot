@@ -12,6 +12,7 @@ from app.models.facts import MetricFact
 from app.models.stocks import Stock
 from app.api.deps import SessionDep, CurrentUser
 from app.ingestion.parsers.v1_value_line.evidence import parse_rating_event_notes
+from app.services.active_report_resolver import resolve_active_reports
 from app.services.ingestion_service import IngestionService
 from app.models.artifacts import PdfDocument
 
@@ -98,6 +99,16 @@ def list_documents(
         stock.id: stock
         for stock in session.scalars(select(Stock).where(Stock.id.in_(stock_ids))).all()
     }
+    active_reports_by_stock = resolve_active_reports(session, document_ids=doc_ids)
+    active_tickers_by_doc: dict[int, list[str]] = {}
+    for stock_id, active in active_reports_by_stock.items():
+        stock = stock_lookup.get(stock_id)
+        if stock is None:
+            stock = session.get(Stock, stock_id)
+            if stock is None:
+                continue
+            stock_lookup[stock_id] = stock
+        active_tickers_by_doc.setdefault(active.document_id, []).append(stock.ticker)
 
     output = []
     for doc in docs:
@@ -118,6 +129,7 @@ def list_documents(
             template_label = "Unknown"
 
         companies = sorted(companies_dict.values(), key=lambda c: c["ticker"])
+        active_for_tickers = sorted(active_tickers_by_doc.get(doc.id, []))
         output.append(
             {
                 "id": doc.id,
@@ -131,6 +143,8 @@ def list_documents(
                 "parsed_page_count": parsed_page_counts.get(doc.id, 0),
                 "companies": companies,
                 "company_count": len(companies),
+                "is_active_report": bool(active_for_tickers),
+                "active_for_tickers": active_for_tickers,
             }
         )
 

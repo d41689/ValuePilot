@@ -7,6 +7,7 @@ from app.api.deps import SessionDep, CurrentUser
 from app.models.stocks import Stock, StockPrice
 from app.models.facts import MetricFact
 from app.models.users import User
+from app.services.active_report_resolver import resolve_active_reports
 from app.services.market_data_service import MarketDataService
 from app.services.market_data_service import compute_target_date
 
@@ -114,6 +115,7 @@ def read_stock_by_ticker(
     stock = session.scalars(stmt).first()
     if not stock:
         raise HTTPException(status_code=404, detail="Stock not found")
+    active_report = resolve_active_reports(session, stock_ids=[stock.id]).get(stock.id)
 
     facts_stmt = select(MetricFact).where(
         MetricFact.stock_id == stock.id,
@@ -252,6 +254,8 @@ def read_stock_by_ticker(
         "ticker": stock.ticker,
         "exchange": stock.exchange,
         "company_name": stock.company_name,
+        "active_report_document_id": active_report.document_id if active_report else None,
+        "active_report_date": active_report.report_date.isoformat() if active_report and active_report.report_date else None,
         "price": facts_by_key.get("mkt.price"),
         "latest_price": float(latest_price.close) if latest_price and latest_price.close is not None else None,
         "latest_price_date": latest_price.price_date.isoformat() if latest_price else None,

@@ -148,12 +148,108 @@ def test_documents_list_returns_companies_and_page_count(client, db_session, use
     assert one["parsed_page_count"] == 1
     assert one["report_date"] == "2026-01-02"
     assert one["companies"] == [{"ticker": "AOS", "company_name": "SMITH (A.O.)"}]
+    assert one["is_active_report"] is True
+    assert one["active_for_tickers"] == ["AOS"]
 
     two = doc_map[doc_two.id]
     assert two["page_count"] == 2
     assert two["parsed_page_count"] == 2
     assert two["report_date"] is None
     assert {c["ticker"] for c in two["companies"]} == {"AOS", "MSFT"}
+    assert two["is_active_report"] is True
+    assert two["active_for_tickers"] == ["MSFT"]
+
+
+def test_documents_list_marks_latest_report_as_active_per_company(
+    client, db_session, user_factory, auth_headers
+):
+    user = user_factory("documents_active@example.com")
+    headers = auth_headers(user)
+
+    stock = Stock(ticker="FICO", exchange="NYSE", company_name="Fair Isaac")
+    db_session.add(stock)
+    db_session.commit()
+
+    old_doc = PdfDocument(
+        user_id=user.id,
+        file_name="fico-q1.pdf",
+        source="upload",
+        file_storage_key="/tmp/fico-q1.pdf",
+        parse_status="parsed",
+        report_date=date(2026, 1, 9),
+        upload_time=datetime.utcnow(),
+    )
+    new_doc = PdfDocument(
+        user_id=user.id,
+        file_name="fico-q2.pdf",
+        source="upload",
+        file_storage_key="/tmp/fico-q2.pdf",
+        parse_status="parsed",
+        report_date=date(2026, 4, 9),
+        upload_time=datetime.utcnow(),
+    )
+    db_session.add_all([old_doc, new_doc])
+    db_session.commit()
+
+    old_extraction = MetricExtraction(
+        user_id=user.id,
+        document_id=old_doc.id,
+        page_number=1,
+        field_key="recent_price",
+        raw_value_text="100",
+        original_text_snippet="recent_price",
+        confidence_score=0.9,
+    )
+    new_extraction = MetricExtraction(
+        user_id=user.id,
+        document_id=new_doc.id,
+        page_number=1,
+        field_key="recent_price",
+        raw_value_text="110",
+        original_text_snippet="recent_price",
+        confidence_score=0.9,
+    )
+    db_session.add_all([old_extraction, new_extraction])
+    db_session.flush()
+
+    db_session.add_all(
+        [
+            MetricFact(
+                user_id=user.id,
+                stock_id=stock.id,
+                metric_key="mkt.price",
+                value_json={"raw": "100"},
+                value_numeric=100.0,
+                unit="USD",
+                source_type="parsed",
+                source_ref_id=old_extraction.id,
+                source_document_id=old_doc.id,
+                is_current=False,
+            ),
+            MetricFact(
+                user_id=user.id,
+                stock_id=stock.id,
+                metric_key="mkt.price",
+                value_json={"raw": "110"},
+                value_numeric=110.0,
+                unit="USD",
+                source_type="parsed",
+                source_ref_id=new_extraction.id,
+                source_document_id=new_doc.id,
+                is_current=True,
+            ),
+        ]
+    )
+    db_session.commit()
+
+    resp = client.get("/api/v1/documents", headers=headers)
+    assert resp.status_code == 200, resp.text
+
+    doc_map = {doc["id"]: doc for doc in resp.json()}
+    assert doc_map[old_doc.id]["is_active_report"] is False
+    assert doc_map[old_doc.id]["active_for_tickers"] == []
+    assert doc_map[new_doc.id]["is_active_report"] is True
+    assert doc_map[new_doc.id]["active_for_tickers"] == ["FICO"]
 
 
 def test_documents_raw_text_endpoint(client, db_session, user_factory, auth_headers):

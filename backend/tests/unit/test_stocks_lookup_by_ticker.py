@@ -1,5 +1,6 @@
 from datetime import date, datetime, timezone
 
+from app.models.artifacts import PdfDocument
 from app.models.facts import MetricFact
 from app.models.stocks import Stock, StockPrice
 from app.models.users import User
@@ -509,6 +510,8 @@ def test_lookup_stock_by_ticker_returns_summary(client, db_session):
     assert payload["price"] == 54.52
     assert payload["latest_price"] == 55.25
     assert payload["latest_price_date"] == "2026-01-10"
+    assert payload["active_report_document_id"] is None
+    assert payload["active_report_date"] is None
     assert payload["pe"] == 43.3
     assert payload["oeps_normalized"] == 5.1
     assert payload["oeps_series"] == [
@@ -567,6 +570,73 @@ def test_lookup_stock_by_ticker_returns_summary(client, db_session):
         {"key": "cash_flow", "label": "Cash Flow", "value": 7.5},
         {"key": "earnings", "label": "Earnings", "value": 7.5},
     ]
+
+
+def test_lookup_stock_by_ticker_returns_active_report_metadata(client, db_session):
+    user = User(email="ticker_active_report@example.com")
+    stock = Stock(ticker="FICO_TEST", exchange="NYSE", company_name="Fair Isaac", is_active=True)
+    db_session.add_all([user, stock])
+    db_session.commit()
+
+    old_doc = PdfDocument(
+        user_id=user.id,
+        file_name="fico-q1.pdf",
+        source="upload",
+        file_storage_key="/tmp/fico-q1.pdf",
+        parse_status="parsed",
+        stock_id=stock.id,
+        report_date=date(2026, 1, 9),
+    )
+    new_doc = PdfDocument(
+        user_id=user.id,
+        file_name="fico-q2.pdf",
+        source="upload",
+        file_storage_key="/tmp/fico-q2.pdf",
+        parse_status="parsed",
+        stock_id=stock.id,
+        report_date=date(2026, 4, 9),
+    )
+    db_session.add_all([old_doc, new_doc])
+    db_session.commit()
+
+    db_session.add_all(
+        [
+            MetricFact(
+                user_id=user.id,
+                stock_id=stock.id,
+                metric_key="mkt.price",
+                value_json={"raw": "110", "fact_nature": "snapshot"},
+                value_numeric=110.0,
+                unit="USD",
+                period_type="AS_OF",
+                period_end_date=date(2026, 4, 9),
+                source_type="parsed",
+                source_document_id=new_doc.id,
+                is_current=True,
+            ),
+            MetricFact(
+                user_id=user.id,
+                stock_id=stock.id,
+                metric_key="val.pe",
+                value_json={"raw": "35", "fact_nature": "snapshot"},
+                value_numeric=35.0,
+                unit="ratio",
+                period_type="AS_OF",
+                period_end_date=date(2026, 4, 9),
+                source_type="parsed",
+                source_document_id=new_doc.id,
+                is_current=True,
+            ),
+        ]
+    )
+    db_session.commit()
+
+    response = client.get("/api/v1/stocks/by_ticker/fico_test")
+    assert response.status_code == 200
+
+    payload = response.json()
+    assert payload["active_report_document_id"] == new_doc.id
+    assert payload["active_report_date"] == "2026-04-09"
 
 
 def test_lookup_stock_by_ticker_uses_revenues_growth_when_sales_missing(client, db_session):
