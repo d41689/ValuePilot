@@ -207,8 +207,11 @@ def _extract_value(
         if isinstance(json_val, dict):
             value_json = json_val
 
-    if value_json is None and (value_numeric is not None or value_text is not None):
-        fact_nature = _fact_nature(mapping, match, root)
+    fact_nature = _fact_nature(mapping, match, root)
+    if isinstance(value_json, dict):
+        if fact_nature is not None and "fact_nature" not in value_json:
+            value_json = {**value_json, "fact_nature": fact_nature}
+    elif value_numeric is not None or value_text is not None:
         if fact_nature is not None:
             value_json = {"fact_nature": fact_nature}
 

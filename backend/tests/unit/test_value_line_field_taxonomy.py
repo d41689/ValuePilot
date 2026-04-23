@@ -84,6 +84,12 @@ def test_mapping_spec_uses_taxonomy_semantics_for_generated_facts():
     target_mid = by_key[("target.price_18m.mid", "TARGET_HORIZON", date(2026, 1, 9))]
     assert target_mid["value_json"]["fact_nature"] == "opinion"
 
+    rates_est = by_key[("rates.earnings.cagr_est", "PROJECTION_RANGE", date(2026, 1, 9))]
+    assert rates_est["value_json"]["fact_nature"] == "opinion"
+    assert rates_est["value_json"]["from_period"] == "2022-2024"
+    assert rates_est["value_json"]["to_period"] == "2028-2030"
+    assert rates_est["value_json"]["value"] == 14.5
+
     assert ("analyst.commentary", "AS_OF", date(2026, 1, 9)) not in by_key
 
     net_income_actual = by_key[("is.net_income", "FY", date(2024, 12, 31))]
