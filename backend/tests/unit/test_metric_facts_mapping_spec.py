@@ -36,4 +36,7 @@ def test_mapping_spec_generates_core_facts():
     assert strength["value_numeric"] is None
     assert strength["value_text"] == "A"
 
+    assert ("analyst.commentary", "AS_OF", date(2026, 1, 9)) not in by_key
+    assert ("company.business_description", "AS_OF", date(2026, 1, 9)) not in by_key
+
     assert any(path.startswith("historical_price_range") for path in unmapped)

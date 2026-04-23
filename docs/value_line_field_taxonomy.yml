@@ -155,5 +155,7 @@ mapping_semantics:
     fact_nature: opinion
   company.business_description.as_of:
     fact_nature: opinion
+    storage_role: evidence_only
   analyst.commentary.as_of:
     fact_nature: opinion
+    storage_role: evidence_only

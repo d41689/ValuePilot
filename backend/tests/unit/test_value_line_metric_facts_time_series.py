@@ -213,13 +213,18 @@ def test_annual_financials_estimate_years_keep_estimate_semantics(client, db_ses
 def test_commentary_and_projection_range_remain_non_numeric(client, db_session, user_factory, auth_headers):
     _, stock, _, doc_id = upload_axs(client, db_session, user_factory, auth_headers)
 
-    commentary = _fact(
-        db_session,
-        stock_id=stock.id,
-        metric_key="analyst.commentary",
-        source_document_id=doc_id,
+    commentary = (
+        db_session.query(MetricFact)
+        .filter(
+            MetricFact.stock_id == stock.id,
+            MetricFact.metric_key == "analyst.commentary",
+            MetricFact.source_type == "parsed",
+            MetricFact.source_document_id == doc_id,
+            MetricFact.is_current.is_(True),
+        )
+        .first()
     )
-    assert commentary.value_numeric is None
+    assert commentary is None
 
     strength = _fact(
         db_session,

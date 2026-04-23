@@ -48,6 +48,8 @@ class MappingSpec:
             json_path = mapping.get("json_path")
             if not json_path:
                 continue
+            if mapping.get("storage_role") == "evidence_only":
+                continue
             for match in _iter_matches(page_json, json_path):
                 used_paths.add(match.path)
                 metric_key = _resolve_metric_key(mapping, match)
@@ -404,6 +406,14 @@ def _apply_taxonomy(spec: dict[str, Any], taxonomy: dict[str, Any]) -> None:
                     f"Invalid fact_nature_rule '{fact_nature_rule}' for mapping id: {mapping_id}"
                 )
             mapping["fact_nature_rule"] = fact_nature_rule
+
+        storage_role = semantics.get("storage_role")
+        if storage_role is not None:
+            if storage_role not in {"canonical_fact", "evidence_only"}:
+                raise ValueError(
+                    f"Invalid storage_role '{storage_role}' for mapping id: {mapping_id}"
+                )
+            mapping["storage_role"] = storage_role
 
 
 def _parse_year(value: Any) -> Optional[int]:

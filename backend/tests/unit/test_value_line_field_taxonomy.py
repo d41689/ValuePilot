@@ -38,6 +38,8 @@ def test_value_line_taxonomy_covers_core_sections_and_mappings():
     assert mapping_semantics["rating.timeliness.as_of"]["fact_nature"] == "opinion"
     assert mapping_semantics["target.price_18m.mid"]["fact_nature"] == "opinion"
     assert mapping_semantics["analyst.commentary.as_of"]["fact_nature"] == "opinion"
+    assert mapping_semantics["analyst.commentary.as_of"]["storage_role"] == "evidence_only"
+    assert mapping_semantics["company.business_description.as_of"]["storage_role"] == "evidence_only"
     assert mapping_semantics["is.net_income.fy"]["fact_nature_rule"] == "context_or_annual_meta"
     assert mapping_semantics["per_share.eps.q"]["fact_nature_rule"] == "context_only"
 
@@ -58,8 +60,7 @@ def test_mapping_spec_uses_taxonomy_semantics_for_generated_facts():
     target_mid = by_key[("target.price_18m.mid", "TARGET_HORIZON", date(2026, 1, 9))]
     assert target_mid["value_json"]["fact_nature"] == "opinion"
 
-    commentary = by_key[("analyst.commentary", "AS_OF", date(2026, 1, 9))]
-    assert commentary["value_json"]["fact_nature"] == "opinion"
+    assert ("analyst.commentary", "AS_OF", date(2026, 1, 9)) not in by_key
 
     net_income_actual = by_key[("is.net_income", "FY", date(2024, 12, 31))]
     assert net_income_actual["value_json"]["fact_nature"] == "actual"
