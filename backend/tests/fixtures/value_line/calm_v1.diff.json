@@ -1,1 +1,615 @@
-{}
+{
+  "annual_financials.meta.actual_years": [
+    [
+      2015,
+      2016,
+      2017,
+      2018,
+      2019,
+      2020,
+      2021,
+      2022,
+      2023,
+      2024,
+      2025
+    ],
+    null
+  ],
+  "annual_financials.meta.estimate_years": [
+    [
+      2026
+    ],
+    null
+  ],
+  "annual_financials.meta.fact_nature": [
+    "mixed",
+    null
+  ],
+  "annual_financials.meta.fiscal_year_end_month": [
+    5,
+    null
+  ],
+  "annual_rates.fact_nature": [
+    "opinion",
+    null
+  ],
+  "earnings_per_share.by_year[0].full_year.fact_nature": [
+    "actual",
+    null
+  ],
+  "earnings_per_share.by_year[0].full_year.is_estimated": [
+    null,
+    false
+  ],
+  "earnings_per_share.by_year[0].quarters.Q1.fact_nature": [
+    "actual",
+    null
+  ],
+  "earnings_per_share.by_year[0].quarters.Q1.period_end": [
+    "2021-08-31",
+    "2022-03-31"
+  ],
+  "earnings_per_share.by_year[0].quarters.Q2.fact_nature": [
+    "actual",
+    null
+  ],
+  "earnings_per_share.by_year[0].quarters.Q2.period_end": [
+    "2021-11-30",
+    "2022-06-30"
+  ],
+  "earnings_per_share.by_year[0].quarters.Q3.fact_nature": [
+    "actual",
+    null
+  ],
+  "earnings_per_share.by_year[0].quarters.Q3.period_end": [
+    "2022-02-28",
+    "2022-09-30"
+  ],
+  "earnings_per_share.by_year[0].quarters.Q4.fact_nature": [
+    "actual",
+    null
+  ],
+  "earnings_per_share.by_year[0].quarters.Q4.period_end": [
+    "2022-05-31",
+    "2022-12-31"
+  ],
+  "earnings_per_share.by_year[1].full_year.fact_nature": [
+    "actual",
+    null
+  ],
+  "earnings_per_share.by_year[1].full_year.is_estimated": [
+    null,
+    false
+  ],
+  "earnings_per_share.by_year[1].quarters.Q1.fact_nature": [
+    "actual",
+    null
+  ],
+  "earnings_per_share.by_year[1].quarters.Q1.period_end": [
+    "2022-08-31",
+    "2023-03-31"
+  ],
+  "earnings_per_share.by_year[1].quarters.Q2.fact_nature": [
+    "actual",
+    null
+  ],
+  "earnings_per_share.by_year[1].quarters.Q2.period_end": [
+    "2022-11-30",
+    "2023-06-30"
+  ],
+  "earnings_per_share.by_year[1].quarters.Q3.fact_nature": [
+    "actual",
+    null
+  ],
+  "earnings_per_share.by_year[1].quarters.Q3.period_end": [
+    "2023-02-28",
+    "2023-09-30"
+  ],
+  "earnings_per_share.by_year[1].quarters.Q4.fact_nature": [
+    "actual",
+    null
+  ],
+  "earnings_per_share.by_year[1].quarters.Q4.period_end": [
+    "2023-05-31",
+    "2023-12-31"
+  ],
+  "earnings_per_share.by_year[2].full_year.fact_nature": [
+    "actual",
+    null
+  ],
+  "earnings_per_share.by_year[2].full_year.is_estimated": [
+    null,
+    false
+  ],
+  "earnings_per_share.by_year[2].quarters.Q1.fact_nature": [
+    "actual",
+    null
+  ],
+  "earnings_per_share.by_year[2].quarters.Q1.period_end": [
+    "2023-08-31",
+    "2024-03-31"
+  ],
+  "earnings_per_share.by_year[2].quarters.Q2.fact_nature": [
+    "actual",
+    null
+  ],
+  "earnings_per_share.by_year[2].quarters.Q2.period_end": [
+    "2023-11-30",
+    "2024-06-30"
+  ],
+  "earnings_per_share.by_year[2].quarters.Q3.fact_nature": [
+    "actual",
+    null
+  ],
+  "earnings_per_share.by_year[2].quarters.Q3.period_end": [
+    "2024-02-29",
+    "2024-09-30"
+  ],
+  "earnings_per_share.by_year[2].quarters.Q4.fact_nature": [
+    "actual",
+    null
+  ],
+  "earnings_per_share.by_year[2].quarters.Q4.period_end": [
+    "2024-05-31",
+    "2024-12-31"
+  ],
+  "earnings_per_share.by_year[3].full_year.fact_nature": [
+    "actual",
+    null
+  ],
+  "earnings_per_share.by_year[3].full_year.is_estimated": [
+    null,
+    true
+  ],
+  "earnings_per_share.by_year[3].quarters.Q1.fact_nature": [
+    "actual",
+    null
+  ],
+  "earnings_per_share.by_year[3].quarters.Q1.period_end": [
+    "2024-08-31",
+    "2025-03-31"
+  ],
+  "earnings_per_share.by_year[3].quarters.Q2.fact_nature": [
+    "actual",
+    null
+  ],
+  "earnings_per_share.by_year[3].quarters.Q2.period_end": [
+    "2024-11-30",
+    "2025-06-30"
+  ],
+  "earnings_per_share.by_year[3].quarters.Q3.fact_nature": [
+    "actual",
+    null
+  ],
+  "earnings_per_share.by_year[3].quarters.Q3.period_end": [
+    "2025-02-28",
+    "2025-09-30"
+  ],
+  "earnings_per_share.by_year[3].quarters.Q4.fact_nature": [
+    "actual",
+    null
+  ],
+  "earnings_per_share.by_year[3].quarters.Q4.period_end": [
+    "2025-05-31",
+    "2025-12-31"
+  ],
+  "earnings_per_share.by_year[4].full_year.fact_nature": [
+    "estimate",
+    null
+  ],
+  "earnings_per_share.by_year[4].full_year.is_estimated": [
+    null,
+    true
+  ],
+  "earnings_per_share.by_year[4].quarters.Q1.fact_nature": [
+    "estimate",
+    null
+  ],
+  "earnings_per_share.by_year[4].quarters.Q1.period_end": [
+    "2025-08-31",
+    "2026-03-31"
+  ],
+  "earnings_per_share.by_year[4].quarters.Q2.fact_nature": [
+    "estimate",
+    null
+  ],
+  "earnings_per_share.by_year[4].quarters.Q2.period_end": [
+    "2025-11-30",
+    "2026-06-30"
+  ],
+  "earnings_per_share.by_year[4].quarters.Q3.fact_nature": [
+    "estimate",
+    null
+  ],
+  "earnings_per_share.by_year[4].quarters.Q3.period_end": [
+    "2026-02-28",
+    "2026-09-30"
+  ],
+  "earnings_per_share.by_year[4].quarters.Q4.fact_nature": [
+    "estimate",
+    null
+  ],
+  "earnings_per_share.by_year[4].quarters.Q4.period_end": [
+    "2026-05-31",
+    "2026-12-31"
+  ],
+  "earnings_per_share.fact_nature": [
+    "mixed",
+    null
+  ],
+  "earnings_per_share.fiscal_year_end_month": [
+    5,
+    null
+  ],
+  "earnings_per_share.quarter_month_order": [
+    [
+      "Aug",
+      "Nov",
+      "Feb",
+      "May"
+    ],
+    null
+  ],
+  "header.fact_nature": [
+    "snapshot",
+    null
+  ],
+  "long_term_projection.fact_nature": [
+    "opinion",
+    null
+  ],
+  "narrative.fact_nature": [
+    "opinion",
+    null
+  ],
+  "quarterly_dividends_paid.by_year[0].full_year.fact_nature": [
+    "actual",
+    null
+  ],
+  "quarterly_dividends_paid.by_year[0].full_year.is_estimated": [
+    null,
+    false
+  ],
+  "quarterly_dividends_paid.by_year[0].quarters.Q1.fact_nature": [
+    "actual",
+    null
+  ],
+  "quarterly_dividends_paid.by_year[0].quarters.Q2.fact_nature": [
+    "actual",
+    null
+  ],
+  "quarterly_dividends_paid.by_year[0].quarters.Q3.fact_nature": [
+    "actual",
+    null
+  ],
+  "quarterly_dividends_paid.by_year[0].quarters.Q4.fact_nature": [
+    "actual",
+    null
+  ],
+  "quarterly_dividends_paid.by_year[1].full_year.fact_nature": [
+    "actual",
+    null
+  ],
+  "quarterly_dividends_paid.by_year[1].full_year.is_estimated": [
+    null,
+    false
+  ],
+  "quarterly_dividends_paid.by_year[1].quarters.Q1.fact_nature": [
+    "actual",
+    null
+  ],
+  "quarterly_dividends_paid.by_year[1].quarters.Q2.fact_nature": [
+    "actual",
+    null
+  ],
+  "quarterly_dividends_paid.by_year[1].quarters.Q3.fact_nature": [
+    "actual",
+    null
+  ],
+  "quarterly_dividends_paid.by_year[1].quarters.Q4.fact_nature": [
+    "actual",
+    null
+  ],
+  "quarterly_dividends_paid.by_year[2].full_year.fact_nature": [
+    "actual",
+    null
+  ],
+  "quarterly_dividends_paid.by_year[2].full_year.is_estimated": [
+    null,
+    false
+  ],
+  "quarterly_dividends_paid.by_year[2].quarters.Q1.fact_nature": [
+    "actual",
+    null
+  ],
+  "quarterly_dividends_paid.by_year[2].quarters.Q2.fact_nature": [
+    "actual",
+    null
+  ],
+  "quarterly_dividends_paid.by_year[2].quarters.Q3.fact_nature": [
+    "actual",
+    null
+  ],
+  "quarterly_dividends_paid.by_year[2].quarters.Q4.fact_nature": [
+    "actual",
+    null
+  ],
+  "quarterly_dividends_paid.by_year[3].full_year.fact_nature": [
+    "estimate",
+    null
+  ],
+  "quarterly_dividends_paid.by_year[3].full_year.is_estimated": [
+    null,
+    true
+  ],
+  "quarterly_dividends_paid.by_year[3].quarters.Q1.fact_nature": [
+    "estimate",
+    null
+  ],
+  "quarterly_dividends_paid.by_year[3].quarters.Q2.fact_nature": [
+    "estimate",
+    null
+  ],
+  "quarterly_dividends_paid.by_year[3].quarters.Q3.fact_nature": [
+    "estimate",
+    null
+  ],
+  "quarterly_dividends_paid.by_year[3].quarters.Q4.fact_nature": [
+    "estimate",
+    null
+  ],
+  "quarterly_dividends_paid.by_year[4].full_year.fact_nature": [
+    "estimate",
+    null
+  ],
+  "quarterly_dividends_paid.by_year[4].full_year.is_estimated": [
+    null,
+    true
+  ],
+  "quarterly_dividends_paid.fact_nature": [
+    "mixed",
+    null
+  ],
+  "quarterly_dividends_paid.fiscal_year_end_month": [
+    12,
+    null
+  ],
+  "quarterly_dividends_paid.quarter_month_order": [
+    [
+      "Mar",
+      "Jun",
+      "Sep",
+      "Dec"
+    ],
+    null
+  ],
+  "quarterly_sales.by_year[0].full_year.fact_nature": [
+    "actual",
+    null
+  ],
+  "quarterly_sales.by_year[0].full_year.is_estimated": [
+    null,
+    false
+  ],
+  "quarterly_sales.by_year[0].quarters.Q1.fact_nature": [
+    "actual",
+    null
+  ],
+  "quarterly_sales.by_year[0].quarters.Q1.period_end": [
+    "2021-08-31",
+    "2022-03-31"
+  ],
+  "quarterly_sales.by_year[0].quarters.Q2.fact_nature": [
+    "actual",
+    null
+  ],
+  "quarterly_sales.by_year[0].quarters.Q2.period_end": [
+    "2021-11-30",
+    "2022-06-30"
+  ],
+  "quarterly_sales.by_year[0].quarters.Q3.fact_nature": [
+    "actual",
+    null
+  ],
+  "quarterly_sales.by_year[0].quarters.Q3.period_end": [
+    "2022-02-28",
+    "2022-09-30"
+  ],
+  "quarterly_sales.by_year[0].quarters.Q4.fact_nature": [
+    "actual",
+    null
+  ],
+  "quarterly_sales.by_year[0].quarters.Q4.period_end": [
+    "2022-05-31",
+    "2022-12-31"
+  ],
+  "quarterly_sales.by_year[1].full_year.fact_nature": [
+    "actual",
+    null
+  ],
+  "quarterly_sales.by_year[1].full_year.is_estimated": [
+    null,
+    false
+  ],
+  "quarterly_sales.by_year[1].quarters.Q1.fact_nature": [
+    "actual",
+    null
+  ],
+  "quarterly_sales.by_year[1].quarters.Q1.period_end": [
+    "2022-08-31",
+    "2023-03-31"
+  ],
+  "quarterly_sales.by_year[1].quarters.Q2.fact_nature": [
+    "actual",
+    null
+  ],
+  "quarterly_sales.by_year[1].quarters.Q2.period_end": [
+    "2022-11-30",
+    "2023-06-30"
+  ],
+  "quarterly_sales.by_year[1].quarters.Q3.fact_nature": [
+    "actual",
+    null
+  ],
+  "quarterly_sales.by_year[1].quarters.Q3.period_end": [
+    "2023-02-28",
+    "2023-09-30"
+  ],
+  "quarterly_sales.by_year[1].quarters.Q4.fact_nature": [
+    "actual",
+    null
+  ],
+  "quarterly_sales.by_year[1].quarters.Q4.period_end": [
+    "2023-05-31",
+    "2023-12-31"
+  ],
+  "quarterly_sales.by_year[2].full_year.fact_nature": [
+    "actual",
+    null
+  ],
+  "quarterly_sales.by_year[2].full_year.is_estimated": [
+    null,
+    false
+  ],
+  "quarterly_sales.by_year[2].quarters.Q1.fact_nature": [
+    "actual",
+    null
+  ],
+  "quarterly_sales.by_year[2].quarters.Q1.period_end": [
+    "2023-08-31",
+    "2024-03-31"
+  ],
+  "quarterly_sales.by_year[2].quarters.Q2.fact_nature": [
+    "actual",
+    null
+  ],
+  "quarterly_sales.by_year[2].quarters.Q2.period_end": [
+    "2023-11-30",
+    "2024-06-30"
+  ],
+  "quarterly_sales.by_year[2].quarters.Q3.fact_nature": [
+    "actual",
+    null
+  ],
+  "quarterly_sales.by_year[2].quarters.Q3.period_end": [
+    "2024-02-29",
+    "2024-09-30"
+  ],
+  "quarterly_sales.by_year[2].quarters.Q4.fact_nature": [
+    "actual",
+    null
+  ],
+  "quarterly_sales.by_year[2].quarters.Q4.period_end": [
+    "2024-05-31",
+    "2024-12-31"
+  ],
+  "quarterly_sales.by_year[3].full_year.fact_nature": [
+    "actual",
+    null
+  ],
+  "quarterly_sales.by_year[3].full_year.is_estimated": [
+    null,
+    true
+  ],
+  "quarterly_sales.by_year[3].quarters.Q1.fact_nature": [
+    "actual",
+    null
+  ],
+  "quarterly_sales.by_year[3].quarters.Q1.period_end": [
+    "2024-08-31",
+    "2025-03-31"
+  ],
+  "quarterly_sales.by_year[3].quarters.Q2.fact_nature": [
+    "actual",
+    null
+  ],
+  "quarterly_sales.by_year[3].quarters.Q2.period_end": [
+    "2024-11-30",
+    "2025-06-30"
+  ],
+  "quarterly_sales.by_year[3].quarters.Q3.fact_nature": [
+    "actual",
+    null
+  ],
+  "quarterly_sales.by_year[3].quarters.Q3.period_end": [
+    "2025-02-28",
+    "2025-09-30"
+  ],
+  "quarterly_sales.by_year[3].quarters.Q4.fact_nature": [
+    "actual",
+    null
+  ],
+  "quarterly_sales.by_year[3].quarters.Q4.period_end": [
+    "2025-05-31",
+    "2025-12-31"
+  ],
+  "quarterly_sales.by_year[4].full_year.fact_nature": [
+    "estimate",
+    null
+  ],
+  "quarterly_sales.by_year[4].full_year.is_estimated": [
+    null,
+    true
+  ],
+  "quarterly_sales.by_year[4].quarters.Q1.fact_nature": [
+    "estimate",
+    null
+  ],
+  "quarterly_sales.by_year[4].quarters.Q1.period_end": [
+    "2025-08-31",
+    "2026-03-31"
+  ],
+  "quarterly_sales.by_year[4].quarters.Q2.fact_nature": [
+    "estimate",
+    null
+  ],
+  "quarterly_sales.by_year[4].quarters.Q2.period_end": [
+    "2025-11-30",
+    "2026-06-30"
+  ],
+  "quarterly_sales.by_year[4].quarters.Q3.fact_nature": [
+    "estimate",
+    null
+  ],
+  "quarterly_sales.by_year[4].quarters.Q3.period_end": [
+    "2026-02-28",
+    "2026-09-30"
+  ],
+  "quarterly_sales.by_year[4].quarters.Q4.fact_nature": [
+    "estimate",
+    null
+  ],
+  "quarterly_sales.by_year[4].quarters.Q4.period_end": [
+    "2026-05-31",
+    "2026-12-31"
+  ],
+  "quarterly_sales.fact_nature": [
+    "mixed",
+    null
+  ],
+  "quarterly_sales.fiscal_year_end_month": [
+    5,
+    null
+  ],
+  "quarterly_sales.quarter_month_order": [
+    [
+      "Aug",
+      "Nov",
+      "Feb",
+      "May"
+    ],
+    null
+  ],
+  "ratings.fact_nature": [
+    "opinion",
+    null
+  ],
+  "target_price_18m.fact_nature": [
+    "opinion",
+    null
+  ],
+  "total_return.fact_nature": [
+    "snapshot",
+    null
+  ]
+}

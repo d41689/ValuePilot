@@ -74,6 +74,53 @@ class ValueLineV1Parser(BaseParser):
                     return f"{match.group(1)}.TO"
             return upper
 
+        def _trim_footnote_marker_suffix(ticker: Optional[str]) -> Optional[str]:
+            if not ticker:
+                return ticker
+            footnote_match = re.search(
+                r'\(([A-Z])\)\s+Stock.*?ticker\s*([A-Z]{1,5})(?:\.[A-Z]{1,4})?',
+                self.text,
+                re.IGNORECASE | re.DOTALL,
+            )
+            if not footnote_match:
+                return ticker
+            marker = footnote_match.group(1).upper()
+            referenced = footnote_match.group(2).upper()
+            if ticker.upper() == f"{referenced}{marker}":
+                return referenced
+            return ticker
+
+        def _identity_from_words() -> tuple[Optional[str], Optional[str]]:
+            if not self.page_words or 1 not in self.page_words:
+                return None, None
+            top_words = [
+                word for word in self.page_words[1]
+                if float(word.get("top", 0.0)) <= 55.0
+            ]
+            if not top_words:
+                return None, None
+            lines: dict[int, list[dict[str, Any]]] = {}
+            for word in top_words:
+                line_key = int(round(float(word.get("top", 0.0))))
+                lines.setdefault(line_key, []).append(word)
+            for line_words in lines.values():
+                ordered = sorted(line_words, key=lambda word: float(word.get("x0", 0.0)))
+                for idx, word in enumerate(ordered):
+                    text = str(word.get("text", ""))
+                    normalized = text.strip().strip("():").upper()
+                    if normalized not in exchange_code_set:
+                        continue
+                    exchange = exchange_map.get(normalized, normalized)
+                    for next_word in ordered[idx + 1: idx + 4]:
+                        next_text = str(next_word.get("text", "")).strip()
+                        match = re.match(r'^[-:]\s*([A-Z]{1,5}(?:\.[A-Z]{1,4})?)$', next_text, re.IGNORECASE)
+                        if match:
+                            return exchange, _normalize_ticker(match.group(1), exchange)
+                        match = re.match(r'^([A-Z]{1,5}(?:\.[A-Z]{1,4})?)$', next_text, re.IGNORECASE)
+                        if match:
+                            return exchange, _normalize_ticker(match.group(1), exchange)
+            return None, None
+
         def set_company_name(line: str, match_start: int, line_idx: int) -> None:
             pre_match = line[:match_start].strip()
             clean_pre = pre_match.rstrip(":-").strip()
@@ -103,6 +150,7 @@ class ValueLineV1Parser(BaseParser):
                 exchange = match1.group(2).upper()
                 info.exchange = exchange_map.get(exchange, exchange)
                 info.ticker = _normalize_ticker(info.ticker, info.exchange)
+                info.ticker = _trim_footnote_marker_suffix(info.ticker)
                 set_company_name(line, match1.start(), idx)
                 break
 
@@ -112,6 +160,7 @@ class ValueLineV1Parser(BaseParser):
                 info.exchange = exchange_map.get(exchange, exchange)
                 info.ticker = match2.group(2).upper()
                 info.ticker = _normalize_ticker(info.ticker, info.exchange)
+                info.ticker = _trim_footnote_marker_suffix(info.ticker)
                 set_company_name(line, match2.start(), idx)
                 break
 
@@ -121,6 +170,7 @@ class ValueLineV1Parser(BaseParser):
                 info.exchange = exchange_map.get(exchange, exchange)
                 info.ticker = match3.group(2).upper()
                 info.ticker = _normalize_ticker(info.ticker, info.exchange)
+                info.ticker = _trim_footnote_marker_suffix(info.ticker)
                 set_company_name(line, match3.start(), idx)
                 break
 
@@ -130,8 +180,19 @@ class ValueLineV1Parser(BaseParser):
                 if info.ticker.endswith(".TO"):
                     info.exchange = "TSE"
                 info.ticker = _normalize_ticker(info.ticker, info.exchange)
+                info.ticker = _trim_footnote_marker_suffix(info.ticker)
                 set_company_name(line, match4.start(), idx)
                 break
+
+        word_exchange, word_ticker = _identity_from_words()
+        if word_ticker:
+            if (
+                not info.ticker
+                or info.ticker == word_ticker
+                or (len(info.ticker) == len(word_ticker) + 1 and info.ticker.startswith(word_ticker))
+            ):
+                info.ticker = word_ticker
+                info.exchange = word_exchange or info.exchange
         
         return info
 
@@ -671,6 +732,7 @@ class ValueLineV1Parser(BaseParser):
             text = raw.replace("BUSINESS:", " ")
             text = re.sub(r'\(\$MILL\.\)', ' ', text, flags=re.IGNORECASE)
             text = re.sub(r'-\n\s*([a-z])', r'\1', text)
+            text = re.sub(r'-\s+([a-z])', r'\1', text)
             text = text.replace("\n", " ")
             text = re.sub(r'(?<=[A-Z])(?=[A-Z][a-z])', ' ', text)
             text = re.sub(r'(?<=[a-z])(?=[A-Z])', ' ', text)
@@ -688,8 +750,10 @@ class ValueLineV1Parser(BaseParser):
             )
             text = re.sub(r'\bRe insurance\b', 'Reinsurance', text)
             text = re.sub(r'(:)(?=\d)', r'\1 ', text)
+            text = re.sub(r'(?<=\d)-\s+(?=\d)', '-', text)
             text = re.sub(r'www\.\s*', 'www.', text, flags=re.IGNORECASE)
             text = re.sub(r'\.\s*com', '.com', text, flags=re.IGNORECASE)
+            text = re.sub(r'\bInter\s+net\b', 'Internet', text, flags=re.IGNORECASE)
             text = re.sub(r'(?i)insuranceand', 'insurance and', text)
             text = re.sub(r'(?i)specialtyinsurance', 'specialty insurance', text)
             text = re.sub(r'(?i)insuranceproducts', 'insurance products', text)
@@ -699,6 +763,16 @@ class ValueLineV1Parser(BaseParser):
             text = re.sub(r'(?i)productsworldwide', 'products worldwide', text)
             text = re.sub(r'(?i)unitinclude', 'unit include', text)
             text = re.sub(r'(?i)employeesat', 'employees at', text)
+            text = re.sub(r'(?i)royalty stream company', 'royalty and stream company', text)
+            text = re.sub(r'(?i)does not operate any assets in which', 'does not operate any of the assets in which', text)
+            text = re.sub(r'(?i)located and North America', 'located in North America', text)
+            text = re.sub(r'(?i)Incorporated:\s*Canada\.\s*of the Addr\.', 'Incorporated: Canada. Addr.', text)
+            text = re.sub(r'\bP\.\s+O\.', 'P.O.', text)
+            text = re.sub(
+                r'\b([A-Z])\s*(\d)\s*([A-Z])\s*(\d)\s*([A-Z])\s*(\d)\b',
+                lambda m: f"{m.group(1)}{m.group(2)}{m.group(3)} {m.group(4)}{m.group(5)}{m.group(6)}",
+                text,
+            )
             text = re.sub(r'(?i)accident&health', 'accident & health', text)
             text = re.sub(r'(?i)credit&surety', 'credit & surety', text)
             text = re.sub(r'Reinsurance\(', 'Reinsurance (', text)
@@ -757,7 +831,23 @@ class ValueLineV1Parser(BaseParser):
             return cleaned
         def _normalize_commentary_text(raw: str) -> str:
             text = _normalize_section_text(raw)
+            text = re.sub(r'^In millions\.\s*', '', text, flags=re.IGNORECASE)
+            plausible_start = re.match(
+                r'^\s*(Shares\s+of\b|[A-Z][A-Za-z.&\'’\-]+(?:\s+[A-Z][A-Za-z.&\'’\-]+){0,4}\s+(?:shares|stock|finished|have|has|is|are|reported|advanced|trades|looks|joined|ended|rose|fell|posted|continued|declined|slipped|generated|remained))',
+                text,
+                flags=re.IGNORECASE,
+            )
+            if not plausible_start:
+                text = re.sub(
+                    r'^\s*.*?(?=(Shares\s+of\b|[A-Z][A-Za-z.&\'’\-]+(?:\s+[A-Z][A-Za-z.&\'’\-]+){0,4}\s+(?:shares|stock|finished|have|has|is|are|reported|advanced|trades|looks|joined|ended|rose|fell|posted|continued|declined|slipped|generated|remained)))',
+                    '',
+                    text,
+                    flags=re.IGNORECASE,
+                )
+            text = re.sub(r'^In millions\.\s*', '', text, flags=re.IGNORECASE)
             text = re.sub(r'([A-Za-z])-\s+([A-Za-z])', r'\1\2', text)
+            text = re.sub(r'(\d)\s+(st|nd|rd|th)\b', r'\1\2', text, flags=re.IGNORECASE)
+            text = re.sub(r'\bTime liness\b', 'Timeliness', text, flags=re.IGNORECASE)
             text = re.sub(r'price in months', 'price in recent months', text, flags=re.IGNORECASE)
             text = re.sub(r'Holdings advanced', 'Holdings have advanced', text, flags=re.IGNORECASE)
             text = re.sub(r'recent reinsurance markets', 'reinsurance markets', text, flags=re.IGNORECASE)
@@ -804,6 +894,13 @@ class ValueLineV1Parser(BaseParser):
                 flags=re.IGNORECASE,
             )
             text = re.sub(r'especially is a compelling', 'especially compelling', text, flags=re.IGNORECASE)
+            text = re.sub(
+                r'\b[A-Z][a-z]+(?:\s+[A-Z][a-z]+){0,3}\s+(January|February|March|April|May|June|July|August|September|October|November|December)\s+\d{1,2},\s+\d{4}.*$',
+                '',
+                text,
+                flags=re.IGNORECASE,
+            )
+            text = re.sub(r'\s+', ' ', text).strip()
             return text
 
         def _extract_section_from_words(
@@ -858,10 +955,12 @@ class ValueLineV1Parser(BaseParser):
 
             top = float(start_word.get("top", 0.0))
             bottom = float(end_word.get("top", 0.0))
+            left_bound = float(start_word.get("x0", 0.0)) - 2.0
             section_words = [
                 word for word in words
                 if float(word.get("top", 0.0)) >= top - 1.0
                 and float(word.get("top", 0.0)) < bottom - 1.0
+                and float(word.get("x0", 0.0)) >= left_bound
             ]
             if not section_words:
                 return None
@@ -924,6 +1023,97 @@ class ValueLineV1Parser(BaseParser):
             combined = " ".join(filter(None, [build_column_text(left_words), build_column_text(right_words)]))
             return combined.strip() or None
 
+        def _extract_bottom_narrative_from_words() -> tuple[Optional[str], Optional[str]]:
+            if not self.page_words or 1 not in self.page_words:
+                return None, None
+            words = self.page_words[1]
+            business_start = next(
+                (word for word in words if re.search(r'BUSINESS:', str(word.get("text", "")), re.IGNORECASE)),
+                None,
+            )
+            if business_start is None:
+                return None, None
+
+            month_re = re.compile(
+                r'^(January|February|March|April|May|June|July|August|September|October|November|December)\b',
+                re.IGNORECASE,
+            )
+            line_map: dict[int, list[dict[str, Any]]] = {}
+            for word in words:
+                if float(word.get("top", 0.0)) <= float(business_start.get("top", 0.0)):
+                    continue
+                line_key = int(round(float(word.get("top", 0.0))))
+                line_map.setdefault(line_key, []).append(word)
+
+            signature_word = None
+            for line_key in sorted(line_map):
+                line_words = sorted(line_map[line_key], key=lambda word: float(word.get("x0", 0.0)))
+                month_word = next(
+                    (
+                        word
+                        for word in line_words
+                        if month_re.search(str(word.get("text", "")))
+                    ),
+                    None,
+                )
+                if month_word is None:
+                    continue
+                line_text = " ".join(str(word.get("text", "")) for word in line_words if word.get("text"))
+                if not re.search(r'\b\d{1,2},?\b', line_text):
+                    continue
+                if not re.search(r'\b20\d{2}\b', line_text):
+                    continue
+                signature_word = month_word
+                break
+            if signature_word is None:
+                return None, None
+
+            start_top = float(business_start.get("top", 0.0))
+            end_top = float(signature_word.get("top", 0.0))
+            signature_x0 = float(signature_word.get("x0", 0.0))
+            left_bound = float(business_start.get("x0", 0.0)) - 2.0
+            narrative_words = [
+                word for word in words
+                if float(word.get("top", 0.0)) >= start_top - 1.0
+                and (
+                    float(word.get("top", 0.0)) < end_top - 1.0
+                    or (
+                        abs(float(word.get("top", 0.0)) - end_top) <= 1.0
+                        and float(word.get("x0", 0.0)) < min(signature_x0 - 2.0, 380.0)
+                    )
+                )
+                and float(word.get("x0", 0.0)) >= left_bound
+            ]
+            if not narrative_words:
+                return None, None
+
+            line_tops = sorted(
+                {
+                    round(float(word.get("top", 0.0)), 1)
+                    for word in narrative_words
+                }
+            )
+            if len(line_tops) < 2:
+                return None, None
+
+            split_top = None
+            for idx in range(1, len(line_tops)):
+                if line_tops[idx] - line_tops[idx - 1] > 9.0:
+                    split_top = line_tops[idx]
+                    break
+            if split_top is None:
+                return None, None
+
+            def _flow_text(items: list[dict[str, Any]]) -> Optional[str]:
+                if not items:
+                    return None
+                combined = " ".join(str(word.get("text", "")) for word in items if word.get("text"))
+                return combined.strip() or None
+
+            business_words = [word for word in narrative_words if float(word.get("top", 0.0)) < split_top - 0.1]
+            commentary_words = [word for word in narrative_words if float(word.get("top", 0.0)) >= split_top - 0.1]
+            return _flow_text(business_words), _flow_text(commentary_words)
+
         business_desc = None
         business_snippet = None
         has_sales_breakdown = False
@@ -961,6 +1151,16 @@ class ValueLineV1Parser(BaseParser):
                     business_desc = _clean_sales_breakdown_description(business_desc)
                     has_sales_breakdown = True
             business_snippet = "BUSINESS (word layout)"
+
+        split_word_business, split_word_commentary = _extract_bottom_narrative_from_words()
+        if split_word_business and not has_sales_breakdown:
+            business_desc = _normalize_section_text(split_word_business)
+            if business_desc:
+                lowered = business_desc.lower()
+                if "salesbreakdown" in lowered or "sales breakdown" in lowered:
+                    business_desc = _clean_sales_breakdown_description(business_desc)
+                    has_sales_breakdown = True
+            business_snippet = "BUSINESS (bottom narrative layout)"
 
         if business_desc and not has_sales_breakdown and re.search(
             r'\b(Cash\s*Assets|Receivables|Inventory\s*\((?:LIFO|FIFO)\)|Accts\s*Payable|Debt\s*Due|Current\s*Assets|Current\s*Liab\.?|Bonds|Stocks|Total\s*Assets|Unearned\s*Prems|Reserves|Total\s*Liab[^\s]*)',
@@ -1009,6 +1209,10 @@ class ValueLineV1Parser(BaseParser):
         if word_commentary:
             commentary_text = _normalize_commentary_text(word_commentary)
             commentary_snippet = "COMMENTARY (word layout)"
+
+        if split_word_commentary:
+            commentary_text = _normalize_commentary_text(split_word_commentary)
+            commentary_snippet = "COMMENTARY (bottom narrative layout)"
 
         if commentary_text and re.search(
             r'\b(Cash\s*Assets|Receivables|Inventory\s*\((?:LIFO|FIFO)\)|Accts\s*Payable|Debt\s*Due|Current\s*Assets|Current\s*Liab\.?|Bonds|Stocks|Total\s*Assets|Unearned\s*Prems|Reserves|Total\s*Liab[^\s]*)',
@@ -1562,13 +1766,30 @@ class ValueLineV1Parser(BaseParser):
 
     def _parse_total_return_from_words(self, words: list[dict[str, Any]]) -> Optional[ExtractionResult]:
         label_word = next(
-            (w for w in words if "TOT.RETURN" in str(w.get("text", "")).upper()),
+            (
+                w for w in words
+                if re.fullmatch(r'TOT\.?', str(w.get("text", "")).upper())
+            ),
             None,
         )
         if not label_word:
+            label_word = next(
+                (
+                    w for w in words
+                    if "TOT.RETURN" in str(w.get("text", "")).upper()
+                    or str(w.get("text", "")).upper().startswith("TOT")
+                ),
+                None,
+            )
+        if not label_word:
             return None
 
-        label_text = str(label_word.get("text", ""))
+        label_top = round(float(label_word.get("top", 0.0)), 1)
+        label_line_words = sorted(
+            [w for w in words if abs(round(float(w.get("top", 0.0)), 1) - label_top) < 0.2],
+            key=lambda x: float(x.get("x0", 0.0)),
+        )
+        label_text = " ".join(str(w.get("text", "")) for w in label_line_words if w.get("text"))
         date_match = re.search(r'(\d{1,2}/\d{1,2}/\d{2})', label_text)
         as_of = self._iso_from_mdy(date_match.group(1)) if date_match else None
 
@@ -1590,9 +1811,9 @@ class ValueLineV1Parser(BaseParser):
                 prev_x1 = float(w.get("x1", 0.0))
             return "".join(parts)
 
-        def parse_line(tag: str) -> Optional[tuple[Optional[float], Optional[float]]]:
+        def parse_line(window_years: int) -> Optional[tuple[Optional[float], Optional[float]]]:
             # Some PDFs use an em-dash for the missing series (e.g. "5yr. — 68.5").
-            pattern = rf"\b{tag}\.?\s+([+-]?[0-9.]+|[\u2013\u2014\u2212\u2010\u2011\u2012\u2015-]+)\s+([+-]?[0-9.]+|[\u2013\u2014\u2212\u2010\u2011\u2012\u2015-]+)"
+            pattern = rf"\b{window_years}\s*yr\.?\s+([+-]?[0-9.]+|[\u2013\u2014\u2212\u2010\u2011\u2012\u2015-]+)\s+([+-]?[0-9.]+|[\u2013\u2014\u2212\u2010\u2011\u2012\u2015-]+)"
             for line_words in lines.values():
                 text = line_text(line_words)
                 match = re.search(pattern, text, re.IGNORECASE)
@@ -1609,9 +1830,9 @@ class ValueLineV1Parser(BaseParser):
             return None
 
         returns = {
-            "1y": parse_line("1yr"),
-            "3y": parse_line("3yr"),
-            "5y": parse_line("5yr"),
+            "1y": parse_line(1),
+            "3y": parse_line(3),
+            "5y": parse_line(5),
         }
         if not any(returns.values()):
             return None

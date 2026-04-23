@@ -41,6 +41,6 @@ class PdfExtractor:
         with pdfplumber.open(file_path) as pdf:
             for i, page in enumerate(pdf.pages):
                 text = page.extract_text() or ""
-                words = page.extract_words() or []
+                words = page.extract_words(x_tolerance=1, y_tolerance=1, use_text_flow=True) or []
                 pages_content.append((i + 1, text, words))
         return pages_content
