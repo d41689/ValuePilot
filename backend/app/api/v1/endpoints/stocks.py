@@ -9,6 +9,7 @@ from app.models.stocks import Stock, StockPrice
 from app.models.facts import MetricFact
 from app.models.users import User
 from app.services.active_report_resolver import ActiveReportSelection, resolve_active_reports
+from app.services.actual_conflict_service import detect_actual_conflicts
 from app.services.market_data_service import MarketDataService
 from app.services.market_data_service import compute_target_date
 
@@ -399,6 +400,12 @@ def read_stock_by_ticker(
             }
         )
 
+    actual_conflicts = detect_actual_conflicts(
+        session,
+        stock_id=stock.id,
+        active_report=active_report,
+    )
+
     return {
         "id": stock.id,
         "ticker": stock.ticker,
@@ -435,6 +442,8 @@ def read_stock_by_ticker(
         "dcf_inputs": dcf_inputs,
         "dcf_inputs_series": dcf_inputs_series,
         "growth_rate_options": growth_rate_options,
+        "actual_conflict_count": len(actual_conflicts),
+        "actual_conflicts": actual_conflicts,
     }
 
 @router.get("/{stock_id}", response_model=dict)

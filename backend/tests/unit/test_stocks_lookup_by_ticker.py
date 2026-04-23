@@ -1080,6 +1080,147 @@ def test_lookup_stock_by_ticker_returns_active_report_metadata(client, db_sessio
     assert payload["active_report_date"] == "2026-04-09"
 
 
+def test_lookup_stock_by_ticker_returns_actual_conflicts(client, db_session):
+    user = User(email="ticker_conflicts@example.com")
+    stock = Stock(ticker="CONF_TEST", exchange="NYSE", company_name="Conflict Co", is_active=True)
+    db_session.add_all([user, stock])
+    db_session.commit()
+
+    old_doc = PdfDocument(
+        user_id=user.id,
+        file_name="conf-q1.pdf",
+        source="upload",
+        file_storage_key="/tmp/conf-q1.pdf",
+        parse_status="parsed",
+        stock_id=stock.id,
+        report_date=date(2026, 1, 9),
+    )
+    new_doc = PdfDocument(
+        user_id=user.id,
+        file_name="conf-q2.pdf",
+        source="upload",
+        file_storage_key="/tmp/conf-q2.pdf",
+        parse_status="parsed",
+        stock_id=stock.id,
+        report_date=date(2026, 4, 9),
+    )
+    db_session.add_all([old_doc, new_doc])
+    db_session.commit()
+
+    db_session.add_all(
+        [
+            MetricFact(
+                user_id=user.id,
+                stock_id=stock.id,
+                metric_key="is.net_income",
+                value_json={"fact_nature": "actual", "raw": "100"},
+                value_numeric=100.0,
+                unit="USD",
+                period_type="FY",
+                period_end_date=date(2024, 12, 31),
+                source_type="parsed",
+                source_document_id=old_doc.id,
+                is_current=False,
+            ),
+            MetricFact(
+                user_id=user.id,
+                stock_id=stock.id,
+                metric_key="is.net_income",
+                value_json={"fact_nature": "actual", "raw": "120"},
+                value_numeric=120.0,
+                unit="USD",
+                period_type="FY",
+                period_end_date=date(2024, 12, 31),
+                source_type="parsed",
+                source_document_id=new_doc.id,
+                is_current=True,
+            ),
+            MetricFact(
+                user_id=user.id,
+                stock_id=stock.id,
+                metric_key="per_share.eps",
+                value_json={"fact_nature": "actual", "raw": "5.0"},
+                value_numeric=5.0,
+                unit="USD",
+                period_type="FY",
+                period_end_date=date(2024, 12, 31),
+                source_type="parsed",
+                source_document_id=old_doc.id,
+                is_current=False,
+            ),
+            MetricFact(
+                user_id=user.id,
+                stock_id=stock.id,
+                metric_key="per_share.eps",
+                value_json={"fact_nature": "actual", "raw": "5.0"},
+                value_numeric=5.0,
+                unit="USD",
+                period_type="FY",
+                period_end_date=date(2024, 12, 31),
+                source_type="parsed",
+                source_document_id=new_doc.id,
+                is_current=True,
+            ),
+            MetricFact(
+                user_id=user.id,
+                stock_id=stock.id,
+                metric_key="rates.earnings.cagr_est",
+                value_json={"fact_nature": "estimate", "value": 10.0},
+                value_numeric=0.10,
+                unit="ratio",
+                period_type="PROJECTION_RANGE",
+                period_end_date=date(2026, 4, 9),
+                source_type="parsed",
+                source_document_id=old_doc.id,
+                is_current=False,
+            ),
+            MetricFact(
+                user_id=user.id,
+                stock_id=stock.id,
+                metric_key="rates.earnings.cagr_est",
+                value_json={"fact_nature": "estimate", "value": 12.0},
+                value_numeric=0.12,
+                unit="ratio",
+                period_type="PROJECTION_RANGE",
+                period_end_date=date(2026, 4, 9),
+                source_type="parsed",
+                source_document_id=new_doc.id,
+                is_current=True,
+            ),
+        ]
+    )
+    db_session.commit()
+
+    response = client.get("/api/v1/stocks/by_ticker/conf_test")
+    assert response.status_code == 200
+
+    payload = response.json()
+    assert payload["actual_conflict_count"] == 1
+    assert payload["actual_conflicts"] == [
+        {
+            "metric_key": "is.net_income",
+            "period_type": "FY",
+            "period_end_date": "2024-12-31",
+            "observations": [
+                {
+                    "source_document_id": new_doc.id,
+                    "source_report_date": "2026-04-09",
+                    "value_numeric": 120.0,
+                    "value_text": None,
+                    "is_active_report": True,
+                },
+                {
+                    "source_document_id": old_doc.id,
+                    "source_report_date": "2026-01-09",
+                    "value_numeric": 100.0,
+                    "value_text": None,
+                    "is_active_report": False,
+                },
+            ],
+        }
+    ]
+
+
 def test_lookup_stock_by_ticker_uses_revenues_growth_when_sales_missing(client, db_session):
     user = User(email="ticker_lookup_revenues@example.com")
     stock = Stock(ticker="REV_TEST", exchange="NDQ", company_name="REVENUES INC", is_active=True)
