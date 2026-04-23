@@ -97,7 +97,7 @@ Dataroma 在本方案中只作为**辅助发现源（discovery / bootstrap layer
 |--------|-----|------|
 | 最大请求频率 | **10 req/s** | 超过会被 IP 封禁（429 或直接断连） |
 | 推荐安全频率 | **≤ 5 req/s** | 官方建议留有余量 |
-| 并发连接数 | **1 个 IP 不超过 2** | 多线程须注意 |
+| 并发连接数 | 建议保守控制 **≤ 2** | 实现层安全并发策略，非 SEC 明文规定 |
 
 > 封禁通常为临时性（数小时），但频繁触发可能导致永久 IP 封禁并需向 SEC 申诉解封。
 
@@ -204,6 +204,7 @@ CREATE TABLE institution_managers (
 -- 人工确认后置为 confirmed；确认无效的候选置为 rejected。
 -- 如 dataroma_code 被视为超级投资者白名单中的稳定外部标识，建议在实现层对非空值加唯一约束：
 --   CREATE UNIQUE INDEX uq_institution_managers_dataroma_code ON institution_managers(dataroma_code) WHERE dataroma_code IS NOT NULL;
+-- 在 CIK 未确认阶段，候选记录的去重与流转主要依赖 dataroma_code、match_status 与 review queue，而不是 cik。
 
 -- 原始抓取文档（可重放、可审计，覆盖 EDGAR 与 Dataroma）
 CREATE TABLE raw_source_documents (
@@ -310,7 +311,7 @@ CREATE UNIQUE INDEX uq_cusip_ticker_map_cusip_valid_from
 
 映射填充优先级：
 1. **Dataroma holdings 页**（直接有 ticker，覆盖白名单机构持仓的部分 CUSIP）
-2. **EDGAR company search / 其他官方可交叉验证来源**
+2. **EDGAR 搜索接口或其他官方可验证来源**
 3. 手动补充
 
 **设计约束**：
