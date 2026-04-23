@@ -177,6 +177,156 @@ def test_documents_raw_text_endpoint(client, db_session, user_factory, auth_head
     assert resp.json()["raw_text"] == "hello world"
 
 
+def test_document_evidence_endpoint_returns_evidence_only_fields(
+    client, db_session, user_factory, auth_headers
+):
+    user = user_factory("documents_evidence@example.com")
+    headers = auth_headers(user)
+
+    doc = PdfDocument(
+        user_id=user.id,
+        file_name="fico.pdf",
+        source="upload",
+        file_storage_key="/tmp/fico.pdf",
+        parse_status="parsed",
+        upload_time=datetime.utcnow(),
+        report_date=date(2026, 1, 9),
+    )
+    db_session.add(doc)
+    db_session.commit()
+
+    db_session.add_all(
+        [
+            MetricExtraction(
+                user_id=user.id,
+                document_id=doc.id,
+                page_number=1,
+                field_key="business_description",
+                raw_value_text="Provides analytics software.",
+                original_text_snippet="Business: Provides analytics software.",
+                confidence_score=0.9,
+                parser_version="v1",
+            ),
+            MetricExtraction(
+                user_id=user.id,
+                document_id=doc.id,
+                page_number=1,
+                field_key="analyst_commentary",
+                raw_value_text="Margins should expand through FY2027.",
+                original_text_snippet="Commentary: Margins should expand through FY2027.",
+                confidence_score=0.9,
+                parser_version="v1",
+            ),
+            MetricExtraction(
+                user_id=user.id,
+                document_id=doc.id,
+                page_number=1,
+                field_key="timeliness",
+                raw_value_text="2",
+                original_text_snippet="Timeliness 2 Raised 12/19/25",
+                parsed_value_json={"value": 2, "notes": "Raised 12/19/25"},
+                confidence_score=0.9,
+                parser_version="v1",
+            ),
+            MetricExtraction(
+                user_id=user.id,
+                document_id=doc.id,
+                page_number=1,
+                field_key="safety",
+                raw_value_text="1",
+                original_text_snippet="Safety 1",
+                parsed_value_json={"value": 1},
+                confidence_score=0.9,
+                parser_version="v1",
+            ),
+            MetricExtraction(
+                user_id=user.id,
+                document_id=doc.id,
+                page_number=1,
+                field_key="technical",
+                raw_value_text="3",
+                original_text_snippet="Technical 3 Lowered 11/01/25",
+                parsed_value_json={"value": 3, "notes": "Lowered 11/01/25"},
+                confidence_score=0.9,
+                parser_version="v1",
+            ),
+            MetricExtraction(
+                user_id=user.id,
+                document_id=doc.id,
+                page_number=1,
+                field_key="business_description",
+                raw_value_text="Older stale description.",
+                original_text_snippet="Older Business: Older stale description.",
+                confidence_score=0.6,
+                parser_version="v0",
+            ),
+        ]
+    )
+    db_session.commit()
+
+    resp = client.get(f"/api/v1/documents/{doc.id}/evidence", headers=headers)
+    assert resp.status_code == 200, resp.text
+
+    payload = resp.json()
+    assert payload["document_id"] == doc.id
+    evidence_map = {item["mapping_id"]: item for item in payload["evidence"]}
+
+    business = evidence_map["company.business_description.as_of"]
+    assert business["metric_key"] == "company.business_description"
+    assert business["fact_nature"] == "opinion"
+    assert business["storage_role"] == "evidence_only"
+    assert business["source"] == "metric_extractions"
+    assert business["field_key"] == "business_description"
+    assert business["period_type"] == "AS_OF"
+    assert business["period_end_date"] == "2026-01-09"
+    assert business["value_text"] == "Provides analytics software."
+    assert business["value_json"] is None
+    assert business["original_text_snippet"] == "Business: Provides analytics software."
+
+    commentary = evidence_map["analyst.commentary.as_of"]
+    assert commentary["metric_key"] == "analyst.commentary"
+    assert commentary["value_text"] == "Margins should expand through FY2027."
+
+    timeliness_event = evidence_map["rating.timeliness.event"]
+    assert timeliness_event["metric_key"] == "rating.timeliness_change"
+    assert timeliness_event["period_type"] == "EVENT"
+    assert timeliness_event["period_end_date"] == "2025-12-19"
+    assert timeliness_event["value_text"] == "raised"
+    assert timeliness_event["value_json"] == {
+        "type": "raised",
+        "date": "2025-12-19",
+        "raw": "Raised 12/19/25",
+    }
+
+    technical_event = evidence_map["rating.technical.event"]
+    assert technical_event["metric_key"] == "rating.technical_change"
+    assert technical_event["period_end_date"] == "2025-11-01"
+    assert technical_event["value_text"] == "lowered"
+
+    assert "rating.safety.event" not in evidence_map
+
+
+def test_document_evidence_endpoint_requires_document_ownership(
+    client, db_session, user_factory, auth_headers
+):
+    owner = user_factory("documents_evidence_owner@example.com")
+    intruder = user_factory("documents_evidence_intruder@example.com")
+
+    doc = PdfDocument(
+        user_id=owner.id,
+        file_name="owned.pdf",
+        source="upload",
+        file_storage_key="/tmp/owned.pdf",
+        parse_status="parsed",
+        upload_time=datetime.utcnow(),
+    )
+    db_session.add(doc)
+    db_session.commit()
+
+    resp = client.get(f"/api/v1/documents/{doc.id}/evidence", headers=auth_headers(intruder))
+    assert resp.status_code == 404
+
+
 def test_documents_list_requires_auth(client, db_session):
     db_session.execute(sa.text("TRUNCATE TABLE users RESTART IDENTITY CASCADE"))
     db_session.commit()

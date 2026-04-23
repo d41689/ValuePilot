@@ -1,15 +1,29 @@
-from typing import Any
+from functools import lru_cache
+from pathlib import Path
+import re
+from typing import Any, Optional
+
 from fastapi import APIRouter, UploadFile, File, HTTPException, Query
 from sqlalchemy import select, func
+import yaml
 from app.models.artifacts import DocumentPage
 from app.models.extractions import MetricExtraction
 from app.models.facts import MetricFact
 from app.models.stocks import Stock
 from app.api.deps import SessionDep, CurrentUser
+from app.ingestion.parsers.v1_value_line.evidence import parse_rating_event_notes
 from app.services.ingestion_service import IngestionService
 from app.models.artifacts import PdfDocument
 
 router = APIRouter()
+VALUE_LINE_TAXONOMY_PATH = next(
+    (
+        parent / "docs" / "value_line_field_taxonomy.yml"
+        for parent in Path(__file__).resolve().parents
+        if (parent / "docs" / "value_line_field_taxonomy.yml").exists()
+    ),
+    Path(__file__).resolve().parents[4] / "docs" / "value_line_field_taxonomy.yml",
+)
 
 
 @router.get("", response_model=list[dict])
@@ -203,3 +217,145 @@ def read_document_raw_text(
         raw_text = "\n".join([p.page_text or "" for p in pages])
 
     return {"document_id": doc.id, "raw_text": raw_text or ""}
+
+
+@router.get("/{document_id}/evidence", response_model=dict)
+def read_document_evidence(
+    *,
+    session: SessionDep,
+    current_user: CurrentUser,
+    document_id: int,
+) -> Any:
+    """
+    Get evidence-only Value Line fields for a document from the audit-layer extractions.
+    """
+    user_id = current_user.id
+
+    doc = session.get(PdfDocument, document_id)
+    if not doc or doc.user_id != user_id:
+        raise HTTPException(status_code=404, detail="Document not found")
+
+    taxonomy = _load_value_line_taxonomy()
+    evidence_reads = taxonomy.get("evidence_reads", {})
+    if not evidence_reads:
+        return {"document_id": doc.id, "evidence": []}
+
+    field_keys = sorted(
+        {
+            str(config["extraction_field_key"])
+            for config in evidence_reads.values()
+            if config.get("source") == "metric_extractions" and config.get("extraction_field_key")
+        }
+    )
+    extractions = session.scalars(
+        select(MetricExtraction)
+        .where(
+            MetricExtraction.document_id == doc.id,
+            MetricExtraction.field_key.in_(field_keys),
+        )
+    ).all()
+    latest_by_field = _latest_extractions_by_field(extractions)
+    mapping_semantics = taxonomy.get("mapping_semantics", {})
+
+    evidence: list[dict[str, Any]] = []
+    for mapping_id, config in evidence_reads.items():
+        field_key = config.get("extraction_field_key")
+        if not isinstance(field_key, str):
+            continue
+        extraction = latest_by_field.get(field_key)
+        if extraction is None:
+            continue
+
+        value_text, value_json = _resolve_evidence_value(config, extraction)
+        if value_text is None and value_json is None:
+            continue
+
+        period_end_date = _resolve_evidence_period_end(config, doc, extraction, value_json)
+        semantics = mapping_semantics.get(mapping_id, {})
+
+        evidence.append(
+            {
+                "mapping_id": mapping_id,
+                "metric_key": config.get("metric_key"),
+                "fact_nature": semantics.get("fact_nature"),
+                "storage_role": semantics.get("storage_role"),
+                "source": config.get("source"),
+                "field_key": extraction.field_key,
+                "extraction_id": extraction.id,
+                "page_number": extraction.page_number,
+                "period_type": config.get("period_type"),
+                "period_end_date": period_end_date,
+                "value_text": value_text,
+                "value_json": value_json,
+                "original_text_snippet": extraction.original_text_snippet,
+            }
+        )
+
+    return {"document_id": doc.id, "evidence": evidence}
+
+
+@lru_cache(maxsize=1)
+def _load_value_line_taxonomy() -> dict[str, Any]:
+    with VALUE_LINE_TAXONOMY_PATH.open("r", encoding="utf-8") as fh:
+        return yaml.safe_load(fh) or {}
+
+
+def _latest_extractions_by_field(
+    extractions: list[MetricExtraction],
+) -> dict[str, MetricExtraction]:
+    latest: dict[str, MetricExtraction] = {}
+    for extraction in extractions:
+        current = latest.get(extraction.field_key)
+        if current is None or _extraction_sort_key(extraction) > _extraction_sort_key(current):
+            latest[extraction.field_key] = extraction
+    return latest
+
+
+def _extraction_sort_key(extraction: MetricExtraction) -> tuple[int, int]:
+    return (_parser_version_rank(extraction.parser_version), extraction.id)
+
+
+def _parser_version_rank(version: Optional[str]) -> int:
+    if not version:
+        return -1
+    match = re.search(r"(\d+)$", version)
+    return int(match.group(1)) if match else -1
+
+
+def _resolve_evidence_value(
+    config: dict[str, Any],
+    extraction: MetricExtraction,
+) -> tuple[Optional[str], Optional[dict[str, Any]]]:
+    value_mode = config.get("value_mode")
+    if value_mode == "raw_text":
+        return extraction.raw_value_text, None
+    if value_mode == "rating_event":
+        notes = None
+        if isinstance(extraction.parsed_value_json, dict):
+            notes = extraction.parsed_value_json.get("notes")
+        event = parse_rating_event_notes(notes)
+        if event is None:
+            return None, None
+        return event.get("type"), event
+    return None, None
+
+
+def _resolve_evidence_period_end(
+    config: dict[str, Any],
+    doc: PdfDocument,
+    extraction: MetricExtraction,
+    value_json: Optional[dict[str, Any]],
+) -> Optional[str]:
+    period_end_source = config.get("period_end_source")
+    if period_end_source == "document_report_date":
+        return _iso_date(doc.report_date or extraction.as_of_date or extraction.period_end_date)
+    if period_end_source == "parsed_event_date" and isinstance(value_json, dict):
+        return value_json.get("date")
+    return _iso_date(extraction.period_end_date or extraction.as_of_date or doc.report_date)
+
+
+def _iso_date(value: Any) -> Optional[str]:
+    if value is None:
+        return None
+    iso = getattr(value, "isoformat", None)
+    return iso() if callable(iso) else str(value)

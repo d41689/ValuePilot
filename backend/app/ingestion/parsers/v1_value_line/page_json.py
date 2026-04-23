@@ -3,6 +3,7 @@ import re
 from typing import Any, Optional
 
 from app.ingestion.normalization.scaler import Scaler
+from app.ingestion.parsers.v1_value_line.evidence import parse_rating_event_notes
 from app.ingestion.parsers.v1_value_line.parser import ValueLineV1Parser
 from app.ingestion.parsers.v1_value_line.semantics import (
     detect_quarter_month_order,
@@ -209,7 +210,7 @@ def _build_ratings(by_key: dict[str, Any]) -> dict[str, Any]:
         res = by_key.get(key)
         value = res.parsed_value_json.get("value") if res and res.parsed_value_json else None
         notes = res.parsed_value_json.get("notes") if res and res.parsed_value_json else None
-        event = _parse_event(notes)
+        event = parse_rating_event_notes(notes)
         ratings[key] = {"value": value, "event": event} if event else {"value": value}
 
     beta_res = by_key.get("beta")
@@ -1013,20 +1014,6 @@ def _money_entry(raw_value: Optional[str]) -> dict[str, Any]:
 def _percent_entry(raw_value: Optional[str]) -> dict[str, Any]:
     normalized, unit = Scaler.normalize(raw_value, "percent") if raw_value else (None, None)
     return {"display": raw_value, "normalized": normalized, "unit": unit}
-
-
-def _parse_event(notes: Optional[str]) -> Optional[dict[str, Any]]:
-    if not notes:
-        return None
-    match = re.search(r'(Lowered|Raised|New)\s*(\d{1,2}/\d{1,2}/\d{2})', notes, re.IGNORECASE)
-    if not match:
-        return None
-    iso = _iso_from_mdy(match.group(2))
-    return {
-        "type": match.group(1).lower(),
-        "date": iso,
-        "raw": notes,
-    }
 
 
 def _extract_parenthetical(snippet: Optional[str]) -> Optional[str]:

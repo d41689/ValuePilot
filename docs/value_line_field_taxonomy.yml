@@ -162,3 +162,40 @@ mapping_semantics:
   analyst.commentary.as_of:
     fact_nature: opinion
     storage_role: evidence_only
+
+evidence_reads:
+  company.business_description.as_of:
+    source: metric_extractions
+    metric_key: company.business_description
+    period_type: AS_OF
+    extraction_field_key: business_description
+    value_mode: raw_text
+    period_end_source: document_report_date
+  analyst.commentary.as_of:
+    source: metric_extractions
+    metric_key: analyst.commentary
+    period_type: AS_OF
+    extraction_field_key: analyst_commentary
+    value_mode: raw_text
+    period_end_source: document_report_date
+  rating.timeliness.event:
+    source: metric_extractions
+    metric_key: rating.timeliness_change
+    period_type: EVENT
+    extraction_field_key: timeliness
+    value_mode: rating_event
+    period_end_source: parsed_event_date
+  rating.safety.event:
+    source: metric_extractions
+    metric_key: rating.safety_change
+    period_type: EVENT
+    extraction_field_key: safety
+    value_mode: rating_event
+    period_end_source: parsed_event_date
+  rating.technical.event:
+    source: metric_extractions
+    metric_key: rating.technical_change
+    period_type: EVENT
+    extraction_field_key: technical
+    value_mode: rating_event
+    period_end_source: parsed_event_date

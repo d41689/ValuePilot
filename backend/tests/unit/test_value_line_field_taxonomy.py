@@ -46,6 +46,21 @@ def test_value_line_taxonomy_covers_core_sections_and_mappings():
     assert mapping_semantics["is.net_income.fy"]["fact_nature_rule"] == "context_or_annual_meta"
     assert mapping_semantics["per_share.eps.q"]["fact_nature_rule"] == "context_only"
 
+    evidence_reads = taxonomy["evidence_reads"]
+    assert evidence_reads["company.business_description.as_of"] == {
+        "source": "metric_extractions",
+        "metric_key": "company.business_description",
+        "period_type": "AS_OF",
+        "extraction_field_key": "business_description",
+        "value_mode": "raw_text",
+        "period_end_source": "document_report_date",
+    }
+    assert evidence_reads["analyst.commentary.as_of"]["extraction_field_key"] == "analyst_commentary"
+    assert evidence_reads["rating.timeliness.event"]["value_mode"] == "rating_event"
+    assert evidence_reads["rating.timeliness.event"]["metric_key"] == "rating.timeliness_change"
+    assert evidence_reads["rating.safety.event"]["value_mode"] == "rating_event"
+    assert evidence_reads["rating.technical.event"]["value_mode"] == "rating_event"
+
 
 def test_mapping_spec_uses_taxonomy_semantics_for_generated_facts():
     spec = MappingSpec.load(SPEC_PATH)
