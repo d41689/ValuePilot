@@ -77,20 +77,25 @@ def _fact(
     return result
 
 
-def test_metric_facts_use_rating_event_dates(client, db_session, user_factory, auth_headers):
+def test_rating_event_text_fields_remain_evidence_only(client, db_session, user_factory, auth_headers):
     _, stock, expected, doc_id = upload_axs(client, db_session, user_factory, auth_headers)
 
     for key in ("timeliness", "safety", "technical"):
         event_date = date.fromisoformat(expected["ratings"][key]["event"]["date"])
-        fact = _fact(
-            db_session,
-            stock_id=stock.id,
-            metric_key=f"rating.{key}_change",
-            source_document_id=doc_id,
-            period_type="EVENT",
+        fact = (
+            db_session.query(MetricFact)
+            .filter(
+                MetricFact.stock_id == stock.id,
+                MetricFact.metric_key == f"rating.{key}_change",
+                MetricFact.source_type == "parsed",
+                MetricFact.source_document_id == doc_id,
+                MetricFact.period_type == "EVENT",
+                MetricFact.period_end_date == event_date,
+                MetricFact.is_current.is_(True),
+            )
+            .first()
         )
-        assert fact.period_end_date == event_date
-        assert fact.period_type == "EVENT"
+        assert fact is None
 
 
 def test_metric_facts_use_capital_structure_as_of_dates(client, db_session, user_factory, auth_headers):

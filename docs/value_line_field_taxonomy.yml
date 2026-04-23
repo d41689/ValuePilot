@@ -119,14 +119,17 @@ mapping_semantics:
     fact_nature: opinion
   rating.timeliness.event:
     fact_nature: opinion
+    storage_role: evidence_only
   rating.safety.as_of:
     fact_nature: opinion
   rating.safety.event:
     fact_nature: opinion
+    storage_role: evidence_only
   rating.technical.as_of:
     fact_nature: opinion
   rating.technical.event:
     fact_nature: opinion
+    storage_role: evidence_only
   risk.beta.as_of:
     fact_nature: opinion
   quality.financial_strength.as_of:

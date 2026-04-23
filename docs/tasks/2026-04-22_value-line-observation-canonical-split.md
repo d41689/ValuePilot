@@ -50,7 +50,7 @@
 - [x] Run Docker verification.
 
 ## Notes / Decisions / Gotchas
-- Applied the first observation/canonical split only to the clearest evidence-only fields: `company.business_description.as_of` and `analyst.commentary.as_of`.
+- Applied the first observation/canonical split only to the clearest evidence-only fields: `company.business_description.as_of`, `analyst.commentary.as_of`, and rating change event text fields (`rating.*_change`).
 - Added `storage_role` to the Value Line taxonomy contract with allowed values `canonical_fact` and `evidence_only`.
 - `MappingSpec.generate_facts()` now skips mappings marked `evidence_only`, so those fields remain available in page JSON / document evidence but no longer emit canonical `metric_facts`.
 - Kept structured opinion fields like ratings, quality metrics, targets, and projections in `metric_facts` for now; they are still actively used by product flows and need a more explicit downstream design before being split further.

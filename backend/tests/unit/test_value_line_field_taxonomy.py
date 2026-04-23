@@ -40,6 +40,9 @@ def test_value_line_taxonomy_covers_core_sections_and_mappings():
     assert mapping_semantics["analyst.commentary.as_of"]["fact_nature"] == "opinion"
     assert mapping_semantics["analyst.commentary.as_of"]["storage_role"] == "evidence_only"
     assert mapping_semantics["company.business_description.as_of"]["storage_role"] == "evidence_only"
+    assert mapping_semantics["rating.timeliness.event"]["storage_role"] == "evidence_only"
+    assert mapping_semantics["rating.safety.event"]["storage_role"] == "evidence_only"
+    assert mapping_semantics["rating.technical.event"]["storage_role"] == "evidence_only"
     assert mapping_semantics["is.net_income.fy"]["fact_nature_rule"] == "context_or_annual_meta"
     assert mapping_semantics["per_share.eps.q"]["fact_nature_rule"] == "context_only"
 
@@ -56,6 +59,9 @@ def test_mapping_spec_uses_taxonomy_semantics_for_generated_facts():
 
     timeliness = by_key[("rating.timeliness", "AS_OF", date(2026, 1, 9))]
     assert timeliness["value_json"]["fact_nature"] == "opinion"
+    assert ("rating.timeliness_change", "EVENT", date(2026, 1, 9)) not in by_key
+    assert ("rating.safety_change", "EVENT", date(2026, 1, 9)) not in by_key
+    assert ("rating.technical_change", "EVENT", date(2026, 1, 9)) not in by_key
 
     target_mid = by_key[("target.price_18m.mid", "TARGET_HORIZON", date(2026, 1, 9))]
     assert target_mid["value_json"]["fact_nature"] == "opinion"

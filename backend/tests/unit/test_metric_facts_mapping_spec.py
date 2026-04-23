@@ -36,6 +36,9 @@ def test_mapping_spec_generates_core_facts():
     assert strength["value_numeric"] is None
     assert strength["value_text"] == "A"
 
+    assert ("rating.timeliness_change", "EVENT", date(2026, 1, 9)) not in by_key
+    assert ("rating.safety_change", "EVENT", date(2026, 1, 9)) not in by_key
+    assert ("rating.technical_change", "EVENT", date(2026, 1, 9)) not in by_key
     assert ("analyst.commentary", "AS_OF", date(2026, 1, 9)) not in by_key
     assert ("company.business_description", "AS_OF", date(2026, 1, 9)) not in by_key
 
