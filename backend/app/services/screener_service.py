@@ -70,15 +70,15 @@ class ScreenerService:
             return {}
 
         admin_user_ids = self._admin_user_ids()
-        estimate_expr = MetricFact.value_json["is_estimate"].as_boolean()
+        fact_nature_expr = MetricFact.value_json["fact_nature"].as_string()
         stmt = select(MetricFact).where(
             MetricFact.stock_id.in_(stock_ids),
             MetricFact.metric_key.in_(self.metric_keys()),
             MetricFact.is_current.is_(True),
             self._visibility_predicate(MetricFact, current_user_id, admin_user_ids),
             or_(
-                estimate_expr.is_(None),
-                estimate_expr.is_(False),
+                fact_nature_expr.is_(None),
+                fact_nature_expr != "estimate",
             ),
         )
         facts = self.db.scalars(stmt).all()

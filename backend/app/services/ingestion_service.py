@@ -761,7 +761,7 @@ class IngestionService:
                 else parsed_value_json
             )
             if isinstance(value_json, dict):
-                if value_json.get("is_estimate") is True:
+                if value_json.pop("is_estimate", None) is True:
                     value_json.setdefault("fact_nature", "estimate")
                 elif "fact_nature" not in value_json and value_json.get("period_type") in {"FY", "Q"}:
                     value_json["fact_nature"] = "actual"
@@ -1003,8 +1003,6 @@ class IngestionService:
             if full_year is None:
                 continue
             parsed_value_json = {"fact_nature": fact_nature}
-            if is_estimate:
-                parsed_value_json["is_estimate"] = True
             raw_value_text = self._format_raw_value(full_year, value_type, scale_token)
             facts.append(
                 {
@@ -1204,8 +1202,6 @@ class IngestionService:
             if value is None:
                 return
             parsed_value_json = {"fact_nature": "estimate" if is_estimate else "actual"}
-            if is_estimate:
-                parsed_value_json["is_estimate"] = True
             raw_value_text = self._format_raw_value(value, value_type, scale_token)
             facts.append(
                 {

@@ -194,7 +194,7 @@ def test_annual_financials_estimate_years_keep_estimate_semantics(client, db_ses
         period_type="FY",
     )
     assert estimate_2025.value_json is not None
-    assert estimate_2025.value_json.get("is_estimate") is True
+    assert "is_estimate" not in estimate_2025.value_json
     assert estimate_2025.value_json.get("fact_nature") == "estimate"
 
     actual_2024 = _fact(
@@ -206,6 +206,7 @@ def test_annual_financials_estimate_years_keep_estimate_semantics(client, db_ses
         period_type="FY",
     )
     assert actual_2024.value_json is not None
+    assert "is_estimate" not in actual_2024.value_json
     assert actual_2024.value_json.get("fact_nature") == "actual"
 
 

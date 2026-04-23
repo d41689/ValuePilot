@@ -202,8 +202,6 @@ def _extract_value(
         fact_nature = _fact_nature(mapping, match, root)
         if fact_nature is not None:
             value_json = {"fact_nature": fact_nature}
-            if fact_nature == "estimate":
-                value_json["is_estimate"] = True
 
     return value_numeric, value_text, value_json, unit, used_paths
 

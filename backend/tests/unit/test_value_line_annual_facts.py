@@ -76,12 +76,13 @@ def test_upload_writes_annual_facts_latest_actual_and_estimate(client, db_sessio
                 if f.period_end_date == date(estimate_year, 12, 31) and f.is_current
             ),
             None,
-        )
+    )
     assert actual_fact is not None
     assert actual_fact.is_current is True
     assert actual_fact.period_type == "FY"
-    actual_is_estimate = actual_fact.value_json.get("is_estimate") if actual_fact.value_json else None
-    assert actual_is_estimate in (False, None)
+    assert actual_fact.value_json is not None
+    assert "is_estimate" not in actual_fact.value_json
+    assert actual_fact.value_json.get("fact_nature") == "actual"
 
     net_profit = annual["income_statement_usd_millions"]["net_profit"]
     expected_actual = net_profit[str(actual_year)]
@@ -94,8 +95,9 @@ def test_upload_writes_annual_facts_latest_actual_and_estimate(client, db_sessio
         assert estimate_fact is not None
         assert estimate_fact.is_current is True
         assert estimate_fact.period_type == "FY"
-        estimate_is_estimate = estimate_fact.value_json.get("is_estimate") if estimate_fact.value_json else None
-        assert estimate_is_estimate is True
+        assert estimate_fact.value_json is not None
+        assert "is_estimate" not in estimate_fact.value_json
+        assert estimate_fact.value_json.get("fact_nature") == "estimate"
         assert estimate_fact.value_numeric == expected_estimate * 1_000_000.0
 
     dividend_facts = (
@@ -141,5 +143,6 @@ def test_upload_writes_annual_facts_latest_actual_and_estimate(client, db_sessio
     else:
         assert estimate_dividend is not None
         assert estimate_dividend.value_numeric == expected_estimate / 100.0
-        dividend_is_estimate = estimate_dividend.value_json.get("is_estimate") if estimate_dividend.value_json else None
-        assert dividend_is_estimate is True
+        assert estimate_dividend.value_json is not None
+        assert "is_estimate" not in estimate_dividend.value_json
+        assert estimate_dividend.value_json.get("fact_nature") == "estimate"
