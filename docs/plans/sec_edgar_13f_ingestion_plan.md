@@ -605,11 +605,21 @@ prod 的 docker-compose / 部署配置应显式设置 EDGAR_SCHEDULER_ENABLED=tr
 > 公开 API 默认仅面向 `match_status='confirmed'` 且 `cik IS NOT NULL` 的机构；候选记录不进入正式查询接口。
 
 - [x] `GET /api/v1/institutions` — 机构列表（支持 `?superinvestor=true` 过滤）
+  > 返回 80 家 confirmed 机构，字段含 cik / legal_name / is_superinvestor
 - [x] `GET /api/v1/institutions/{cik}/filings?period=2024-Q4` — 返回该季度全部 filing 版本
+  > 端到端验证通过；period 过滤按 `period_of_report` 范围查询
 - [x] `GET /api/v1/institutions/{cik}/holdings?period=2024-Q4` — 默认返回 canonical snapshot（`is_latest_for_period = true`）
+  > 端到端验证通过；holdings 响应附带 `ticker` 字段（从 `cusip_ticker_map` 实时 enrich）；Berkshire 2024-Q4 返回 112 条，AXP/AAPL/KO 等 ticker 均正常
 - [x] `GET /api/v1/filings/{accession_no}/holdings` — 返回某份 filing 的原始持仓视图
+  > 端到端验证通过；raw 视图不做 ticker enrich（设计如此）
 - [x] `GET /api/v1/stocks/{ticker}/institutions` — 某股票的机构持仓者
-  > 以上 5 个端点代码已实现（`app/api/v1/endpoints/institutions.py`）并注册到路由，holdings 响应附带 `ticker` 字段（从 `cusip_ticker_map` 实时 enrich）。**尚未用真实数据做端到端测试。**
+  > 端到端验证通过；AAPL 返回 19 家机构，含 Berkshire Hathaway
+
+**Phase C 端到端测试结论（2026-04-24）：全部通过。**
+
+**修复了一个隐藏 bug**：`period_of_report` 在 form.idx 入库时以 `filed_at`（申报日）为代理值，primary doc 解析后从未回写真实季末日期，导致所有 `?period=` 过滤返回 0 条。
+- 修复位置：`app/services/edgar_ingestion.py:ingest_filing_holdings()`；解析 `periodOfReport` 后立即更新 filing 并重算 `version_rank` / `is_latest_for_period`
+- 新增 CLI：`edgar backfill-period-dates`（`backfill_period_of_report()`）；运行后 270 个 filing 全部修正（示例：Berkshire 2024-Q4 `period_of_report` 从 `2025-02-14` → `2024-12-31`）
 
 ### Phase D — 定期增量
 - [ ] 调度器实现，通过 `EDGAR_SCHEDULER_ENABLED` 控制是否启动（prod 显式开启，dev 默认关闭）
