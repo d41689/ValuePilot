@@ -33,6 +33,23 @@ class Settings(BaseSettings):
         # Fallback to building from components if not provided directly
         return str(f"postgresql://{info.data.get('POSTGRES_USER')}:{info.data.get('POSTGRES_PASSWORD')}@{info.data.get('POSTGRES_SERVER')}/{info.data.get('POSTGRES_DB')}")
 
+    # EDGAR rate / retry
+    EDGAR_USER_AGENT: str = "ValuePilot contact@valuepilot.com"
+    EDGAR_REQUEST_DELAY_S: float = 0.2        # 5 req/s; prod default
+    EDGAR_MAX_CONCURRENCY: int = 2
+    EDGAR_MAX_RETRIES: int = 3
+    EDGAR_RETRY_BACKOFF_S: str = "5,30,120"
+    EDGAR_FETCH_MODE: str = "live"            # live | replay
+    EDGAR_SCHEDULER_ENABLED: bool = False     # prod: true
+
+    # Dataroma rate / retry
+    DATAROMA_REQUEST_DELAY_S: float = 2.0
+    DATAROMA_MAX_RETRIES: int = 2
+    DATAROMA_RETRY_BACKOFF_S: str = "10,60"
+
+    # Raw document storage root
+    EDGAR_RAW_STORAGE_DIR: str = "/code/storage/edgar_raw"
+
     model_config = SettingsConfigDict(env_file=".env", case_sensitive=True)
 
 settings = Settings()
