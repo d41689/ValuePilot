@@ -550,50 +550,82 @@ prod 的 docker-compose / 部署配置应显式设置 EDGAR_SCHEDULER_ENABLED=tr
 ## 8. 实施阶段
 
 ### Phase A（MVP）— 超级投资者白名单 + EDGAR 持仓
-- [ ] 数据库 migration（`institution_managers`、`raw_source_documents`、`filings_13f`、`holdings_13f`、`cusip_ticker_map`）
-- [ ] EDGAR HTTP client（User-Agent、全局限速 5 req/s、退避重试）
-- [ ] Dataroma HTTP client（限速 0.5 req/s、HTML 解析失败告警、可一键停用）
-- [ ] `managers.php` 解析器 → 填充超级投资者白名单
-- [ ] manager name → CIK 候选匹配器（输出匹配分数；低置信度匹配不直接写入 `institution_managers.cik`，先落候选表或 review queue，人工确认后再提升）
-- [ ] `form.idx` 解析器（季度索引）
-- [ ] `primary-doc.xml` / `infotable.xml` 下载与 raw 存储
-- [ ] `infotable.xml` 解析器（row_fingerprint 幂等去重）
-- [ ] filing reconciliation（`reported_total_value_thousands` vs `computed_total_value_thousands`）
-- [ ] Dataroma `holdings.php` 解析器 → 填充 `cusip_ticker_map`
-- [ ] CLI 命令：
+- [x] 数据库 migration（`institution_managers`、`raw_source_documents`、`filings_13f`、`holdings_13f`、`cusip_ticker_map`）
+  > `20260423000000-add_13f_ingestion_tables.py`；后续 `20260423120000-widen_cusip_ticker_map_source.py` 将 `source` 列从 VARCHAR(20) 扩到 VARCHAR(50)
+- [x] EDGAR HTTP client（User-Agent、全局限速 5 req/s、退避重试）
+  > `app/edgar/client.py`；token bucket 限速，指数退避，User-Agent 从环境变量注入
+- [x] Dataroma HTTP client（限速 0.5 req/s、HTML 解析失败告警、可一键停用）
+  > `app/dataroma/client.py`；1 req/2s，解析失败 logger.error，不影响主链路
+- [x] `managers.php` 解析器 → 填充超级投资者白名单
+  > `app/dataroma/parsers/managers.py`；实际入库 80 位超级投资者
+- [x] manager name → CIK 候选匹配器（输出匹配分数；低置信度匹配不直接写入 `institution_managers.cik`，先落候选表或 review queue，人工确认后再提升）
+  > `app/services/edgar_ingestion.py:match_cik_candidates()`；80/80 均已 `match_status='confirmed'`，含 4 位通过 EDGAR fulltext 搜索人工确认的边缘案例（DAC/MPF/PI/OA）
+- [x] `form.idx` 解析器（季度索引）
+  > `app/edgar/parsers/form_idx.py`；过滤 13F-HR / 13F-HR/A，跳过 xslForm13F_X02 XSLT 路径
+- [x] `primary-doc.xml` / `infotable.xml` 下载与 raw 存储
+  > `app/edgar/fetcher.py`；写入 `raw_source_documents`，savepoint 处理幂等冲突
+- [x] `infotable.xml` 解析器（row_fingerprint 幂等去重）
+  > `app/edgar/parsers/infotable.py`；修复了 `shrsOrPrnAmt` 包装元素处理（shares 字段原来对 17,561/17,613 条为 NULL）
+- [x] filing reconciliation（`reported_total_value_thousands` vs `computed_total_value_thousands`）
+  > `app/edgar/parsers/primary_doc.py` 解析 `tableValueTotal`；`app/services/edgar_quality.py` 做 0.1% 容差校验；Kahn Brothers 差异为 True Positive（该机构以美元而非千美元报告）
+- [x] Dataroma `holdings.php` 解析器 → 填充 `cusip_ticker_map`
+  > `app/dataroma/parsers/holdings.py`；2026 年 Dataroma 页面结构变更后重写（新格式：`/m/stock.php?sym=AAPL`，issuer_name 在 `<span>` 内）
+- [x] CLI 命令：
   - `edgar bootstrap-whitelist` — 从 Dataroma 初始化超级投资者列表
   - `edgar fetch-holdings --quarter 2025-Q1` — 按季度抓取持仓
   - `edgar reparse-filing --accession 0001234567-25-000001` — 重放单份 filing 解析
-  - `edgar backfill --quarters 4` — 回溯最近 4 个季度（2024-Q2 → 2025-Q1）
+  - `edgar backfill --quarters 4` — 回溯最近 N 个季度
+  > 额外新增：`reparse-all`（批量重解析已存 raw docs）、`backfill-reported-totals`、`quality-check`、`enrich-cusip`、`bootstrap-stocks`、`enrich-stocks-edgar`
 
-**回溯范围**：以首批启用的 ~80 家白名单机构为例，最近 4 个季度约对应 320 次 EDGAR 申报抓取、约 32,000 条持仓记录，可在 1-2 小时内完成；实际规模取决于最终启用名单。
+**回溯实际结果（2026-04）**：80 家白名单机构，5 个季度（2024-Q1 ～ 2025-Q1），270 个 filings，17,613 条 holdings 入库。
 
 ### 数据质量校验（MVP 必做）
-- [ ] 校验 `holdings_13f.value_thousands` 汇总与 `reported_total_value_thousands` 的差异（0.1% 容错）
-- [ ] 校验 `cusip` 长度与字符集合等基础格式合法性（不验证 CUSIP 的真实存在性）
-- [ ] 校验 `shares` / `value_thousands` 非负
-- [ ] 校验同一 filing 内无重复 `row_fingerprint`
-- [ ] 校验 `period_of_report` 与目标季度一致
-- [ ] 对解析失败的 raw 文档保留错误信息并可重试
+- [x] 校验 `holdings_13f.value_thousands` 汇总与 `reported_total_value_thousands` 的差异（0.1% 容错）
+  > `app/services/edgar_quality.py:_check_reconciliation()`
+- [x] 校验 `cusip` 长度与字符集合等基础格式合法性（不验证 CUSIP 的真实存在性）
+  > `_check_cusip_format()`；正则 `^[A-Z0-9]{9}$`
+- [x] 校验 `shares` / `value_thousands` 非负
+  > `_check_negative_values()`
+- [x] 校验同一 filing 内无重复 `row_fingerprint`
+  > `_check_duplicate_fingerprints()`
+- [x] 校验 `period_of_report` 与目标季度一致
+  > `_check_period_alignment()`；需传 `--quarter` 参数才生效
+- [x] 对解析失败的 raw 文档保留错误信息并可重试
+  > `_check_parse_failures()`；查 `raw_source_documents.parse_status='failed'`；可用 `reparse-filing` 重跑
 
 ### Phase B — CUSIP 映射完善
-- [ ] EDGAR 搜索接口或其他官方可验证来源补充未映射 CUSIP
-- [ ] 异步 enrichment job 自动回填 `holdings_13f.stock_id`
+- [x] EDGAR 搜索接口或其他官方可验证来源补充未映射 CUSIP
+  > `app/services/cusip_enrichment.py:enrich_stocks_from_edgar_tickers()`；使用 SEC `company_tickers.json`（免费、无速率限制）做名称模糊匹配；新增 507 个映射
+- [x] 异步 enrichment job 自动回填 `holdings_13f.stock_id`
+  > `backfill_stock_ids()`；单条 SQL UPDATE...FROM JOIN（cusip → cusip_ticker_map → stocks）；当前覆盖率 15,778/17,613（89.6%）
 - [ ] 接入 SEC Official List 校验 CUSIP 是否可申报（用于增强映射置信度与数据标注，MVP 阶段不作为阻塞 holding 入库的硬门槛）
+  > 尚未实现。SEC 每季度发布 13F Securities List（Excel），可用于标注 `cusip_ticker_map.is_13f_reportable`；当前字段已预留，默认 `true`
 
 ### Phase C — API 层
 > 公开 API 默认仅面向 `match_status='confirmed'` 且 `cik IS NOT NULL` 的机构；候选记录不进入正式查询接口。
 
-- [ ] `GET /api/v1/institutions` — 机构列表（支持 `?superinvestor=true` 过滤）
-- [ ] `GET /api/v1/institutions/{cik}/filings?period=2024-Q4` — 返回该季度全部 filing 版本
-- [ ] `GET /api/v1/institutions/{cik}/holdings?period=2024-Q4` — 默认返回 canonical snapshot（`is_latest_for_period = true`）
-- [ ] `GET /api/v1/filings/{accession_no}/holdings` — 返回某份 filing 的原始持仓视图
-- [ ] `GET /api/v1/stocks/{ticker}/institutions` — 某股票的机构持仓者
+- [x] `GET /api/v1/institutions` — 机构列表（支持 `?superinvestor=true` 过滤）
+  > 返回 80 家 confirmed 机构，字段含 cik / legal_name / is_superinvestor
+- [x] `GET /api/v1/institutions/{cik}/filings?period=2024-Q4` — 返回该季度全部 filing 版本
+  > 端到端验证通过；period 过滤按 `period_of_report` 范围查询
+- [x] `GET /api/v1/institutions/{cik}/holdings?period=2024-Q4` — 默认返回 canonical snapshot（`is_latest_for_period = true`）
+  > 端到端验证通过；holdings 响应附带 `ticker` 字段（从 `cusip_ticker_map` 实时 enrich）；Berkshire 2024-Q4 返回 112 条，AXP/AAPL/KO 等 ticker 均正常
+- [x] `GET /api/v1/filings/{accession_no}/holdings` — 返回某份 filing 的原始持仓视图
+  > 端到端验证通过；raw 视图不做 ticker enrich（设计如此）
+- [x] `GET /api/v1/stocks/{ticker}/institutions` — 某股票的机构持仓者
+  > 端到端验证通过；AAPL 返回 19 家机构，含 Berkshire Hathaway
+
+**Phase C 端到端测试结论（2026-04-24）：全部通过。**
+
+**修复了一个隐藏 bug**：`period_of_report` 在 form.idx 入库时以 `filed_at`（申报日）为代理值，primary doc 解析后从未回写真实季末日期，导致所有 `?period=` 过滤返回 0 条。
+- 修复位置：`app/services/edgar_ingestion.py:ingest_filing_holdings()`；解析 `periodOfReport` 后立即更新 filing 并重算 `version_rank` / `is_latest_for_period`
+- 新增 CLI：`edgar backfill-period-dates`（`backfill_period_of_report()`）；运行后 270 个 filing 全部修正（示例：Berkshire 2024-Q4 `period_of_report` 从 `2025-02-14` → `2024-12-31`）
 
 ### Phase D — 定期增量
 - [ ] 调度器实现，通过 `EDGAR_SCHEDULER_ENABLED` 控制是否启动（prod 显式开启，dev 默认关闭）
 - [ ] 定时任务每季度自动运行：Dataroma 白名单同步 + EDGAR 新申报抓取
 - [ ] **申报进度看板**：监控白名单机构在季末 45 天内的申报进度
+  > 当前所有季度更新均为手动 CLI，运行流程见 README.md。
 
 ---
 

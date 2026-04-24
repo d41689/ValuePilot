@@ -10,6 +10,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
@@ -111,7 +112,18 @@ def fetch_and_store(
         parse_status="pending",
     )
     db.add(doc)
-    db.flush()
+    try:
+        # Use a savepoint so a conflict on (source_system, source_url) doesn't
+        # abort the outer transaction — just re-fetch the already-committed row.
+        with db.begin_nested():
+            db.flush()
+    except IntegrityError:
+        existing = (
+            db.query(RawSourceDocument)
+            .filter_by(source_system=source_system, source_url=source_url)
+            .one()
+        )
+        return existing
     return doc
 
 

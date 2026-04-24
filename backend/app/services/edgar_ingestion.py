@@ -27,6 +27,7 @@ from app.edgar.parsers.form_idx import (
     quarter_to_year_qtr,
 )
 from app.edgar.parsers.infotable import compute_total_value, parse_infotable
+from app.edgar.parsers.primary_doc import parse_primary_doc
 from app.edgar.parsers.submissions import parse_submissions, submissions_url
 from app.models.institutions import (
     CusipTickerMap,
@@ -380,13 +381,21 @@ def ingest_quarter_index(
 
 
 def _accession_period_of_report(rec: FormIdxRecord):
-    """Derive period_of_report from accession filename suffix as best guess.
-
-    The real period is in the primary document; we use filed_at as proxy
-    until the primary doc is parsed.  Returns filed_at date.
-    """
-    # Will be overwritten when primary doc is parsed
+    """Use filed_at as a proxy period until the primary doc is parsed."""
     return rec.filed_at
+
+
+def _parse_period_date(s: str):
+    """Parse MM-DD-YYYY or YYYY-MM-DD string from primary doc into a date."""
+    from datetime import date as _date
+    s = s.strip()
+    m = re.match(r"^(\d{2})-(\d{2})-(\d{4})$", s)
+    if m:
+        return _date(int(m.group(3)), int(m.group(1)), int(m.group(2)))
+    m = re.match(r"^(\d{4})-(\d{2})-(\d{2})$", s)
+    if m:
+        return _date(int(m.group(1)), int(m.group(2)), int(m.group(3)))
+    return None
 
 
 def _recalculate_version_ranks(db: Session, manager_id: int, period_of_report) -> None:
@@ -427,8 +436,12 @@ def ingest_filing_holdings(
     filing: Filing13F,
     *,
     force_refresh: bool = False,
+    replace_holdings: bool = False,
 ) -> int:
-    """Download + parse infotable for one filing. Returns count of holdings inserted."""
+    """Download + parse infotable for one filing. Returns count of holdings inserted.
+
+    replace_holdings=True deletes existing holdings before re-inserting (use for reparse).
+    """
     manager: InstitutionManager = filing.manager
     if manager is None:
         manager = db.query(InstitutionManager).get(filing.manager_id)
@@ -436,38 +449,42 @@ def ingest_filing_holdings(
     cik = (manager.cik or "").lstrip("0")
     accession_raw = filing.accession_no.replace("-", "")
 
-    with EdgarClient() as client:
-        # Locate infotable.xml via the filing index
-        index_url = (
-            f"https://www.sec.gov/Archives/edgar/data/{cik}"
-            f"/{accession_raw}/{filing.accession_no}-index.htm"
+    # If raw docs are already stored and we're not force-refreshing, skip URL resolution.
+    if not force_refresh and filing.raw_infotable_doc_id and filing.raw_primary_doc_id:
+        primary_doc = (
+            db.query(RawSourceDocument).get(filing.raw_primary_doc_id)
         )
-        infotable_url = _resolve_infotable_url(client, cik, accession_raw, filing.accession_no)
-        primary_url = _resolve_primary_doc_url(client, cik, accession_raw, filing.accession_no)
+        infotable_doc = (
+            db.query(RawSourceDocument).get(filing.raw_infotable_doc_id)
+        )
+    else:
+        with EdgarClient() as client:
+            infotable_url = _resolve_infotable_url(client, cik, accession_raw, filing.accession_no)
+            primary_url = _resolve_primary_doc_url(client, cik, accession_raw, filing.accession_no)
 
-        primary_doc = fetch_and_store(
-            db,
-            source_system="edgar",
-            document_type="primary_doc_xml",
-            source_url=primary_url,
-            cik=manager.cik,
-            accession_no=filing.accession_no,
-            client=client,
-            force_refresh=force_refresh,
-        )
-        infotable_doc = fetch_and_store(
-            db,
-            source_system="edgar",
-            document_type="infotable_xml",
-            source_url=infotable_url,
-            cik=manager.cik,
-            accession_no=filing.accession_no,
-            client=client,
-            force_refresh=force_refresh,
-        )
+            primary_doc = fetch_and_store(
+                db,
+                source_system="edgar",
+                document_type="primary_doc_xml",
+                source_url=primary_url,
+                cik=manager.cik,
+                accession_no=filing.accession_no,
+                client=client,
+                force_refresh=force_refresh,
+            )
+            infotable_doc = fetch_and_store(
+                db,
+                source_system="edgar",
+                document_type="infotable_xml",
+                source_url=infotable_url,
+                cik=manager.cik,
+                accession_no=filing.accession_no,
+                client=client,
+                force_refresh=force_refresh,
+            )
 
-    filing.raw_primary_doc_id = primary_doc.id
-    filing.raw_infotable_doc_id = infotable_doc.id
+        filing.raw_primary_doc_id = primary_doc.id
+        filing.raw_infotable_doc_id = infotable_doc.id
 
     try:
         body = load_body(infotable_doc)
@@ -478,15 +495,20 @@ def ingest_filing_holdings(
         db.flush()
         raise
 
+    if replace_holdings:
+        db.query(Holding13F).filter_by(filing_id=filing.id).delete()
+        db.flush()
+
     inserted = 0
     for row in rows:
-        existing = (
-            db.query(Holding13F)
-            .filter_by(filing_id=filing.id, row_fingerprint=row.row_fingerprint)
-            .one_or_none()
-        )
-        if existing is not None:
-            continue
+        if not replace_holdings:
+            existing = (
+                db.query(Holding13F)
+                .filter_by(filing_id=filing.id, row_fingerprint=row.row_fingerprint)
+                .one_or_none()
+            )
+            if existing is not None:
+                continue
 
         holding = Holding13F(
             filing_id=filing.id,
@@ -505,6 +527,34 @@ def ingest_filing_holdings(
         )
         db.add(holding)
         inserted += 1
+
+    # Populate reported_total_value_thousands and fix period_of_report from primary doc
+    try:
+        primary_body = load_body(primary_doc)
+        summary = parse_primary_doc(primary_body)
+
+        if not filing.reported_total_value_thousands and summary.table_value_total is not None:
+            filing.reported_total_value_thousands = summary.table_value_total
+
+        if summary.period_of_report:
+            parsed_period = _parse_period_date(summary.period_of_report)
+            if parsed_period and parsed_period != filing.period_of_report:
+                old_period = filing.period_of_report
+                # Clear is_latest on both old and new period groups before touching
+                for period in (old_period, parsed_period):
+                    db.query(Filing13F).filter_by(
+                        manager_id=filing.manager_id, period_of_report=period
+                    ).update({"is_latest_for_period": False})
+                filing.period_of_report = parsed_period
+                db.flush()
+                _recalculate_version_ranks(db, filing.manager_id, parsed_period)
+                _recalculate_version_ranks(db, filing.manager_id, old_period)
+                logger.info(
+                    "Corrected period_of_report for %s: %s → %s",
+                    filing.accession_no, old_period, parsed_period,
+                )
+    except Exception as exc:
+        logger.warning("Could not parse primary doc for %s: %s", filing.accession_no, exc)
 
     # Reconciliation
     computed = compute_total_value(rows)
@@ -627,6 +677,71 @@ def backfill_quarters(db: Session, num_quarters: int = 4) -> dict[str, int]:
             logger.error("Failed to backfill %s: %s", q, exc)
             results[q] = -1
     return results
+
+
+def backfill_period_of_report(db: Session) -> int:
+    """Fix period_of_report for all filings by re-parsing stored primary docs.
+
+    On first ingestion, period_of_report is set to filed_at as a proxy.
+    The real quarter-end date lives inside the primary document (periodOfReport).
+    This function corrects all existing rows.  Safe to run multiple times.
+
+    Returns count of filings updated.
+    """
+    from app.edgar.fetcher import load_body
+    from app.models.institutions import Filing13F, RawSourceDocument
+
+    filings = (
+        db.query(Filing13F)
+        .filter(Filing13F.raw_primary_doc_id.isnot(None))
+        .all()
+    )
+
+    # Pass 1: collect corrections (manager_id, old_period, new_period) per filing
+    corrections: list[tuple[Filing13F, object, object]] = []
+    for filing in filings:
+        doc = db.get(RawSourceDocument, filing.raw_primary_doc_id)
+        if doc is None:
+            continue
+        try:
+            body = load_body(doc)
+            summary = parse_primary_doc(body)
+            if summary.period_of_report:
+                parsed = _parse_period_date(summary.period_of_report)
+                if parsed and parsed != filing.period_of_report:
+                    corrections.append((filing, filing.period_of_report, parsed))
+        except Exception as exc:
+            logger.warning("backfill_period_of_report: %s: %s", filing.accession_no, exc)
+
+    if not corrections:
+        logger.info("backfill_period_of_report: nothing to fix")
+        return 0
+
+    # Pass 2: gather every period group that will be touched
+    affected: set[tuple] = set()
+    for filing, old, new in corrections:
+        affected.add((filing.manager_id, old))
+        affected.add((filing.manager_id, new))
+
+    # Pass 3: clear is_latest for all affected groups before any period changes
+    for manager_id, period in affected:
+        db.query(Filing13F).filter_by(
+            manager_id=manager_id, period_of_report=period
+        ).update({"is_latest_for_period": False})
+    db.flush()
+
+    # Pass 4: apply period corrections
+    for filing, _old, new in corrections:
+        filing.period_of_report = new
+    db.flush()
+
+    # Pass 5: recalculate version_rank and is_latest for every touched group
+    for manager_id, period in affected:
+        _recalculate_version_ranks(db, manager_id, period)
+    db.flush()
+
+    logger.info("backfill_period_of_report: corrected %d filings", len(corrections))
+    return len(corrections)
 
 
 def _recent_quarters(year: int, month: int, n: int) -> list[str]:
