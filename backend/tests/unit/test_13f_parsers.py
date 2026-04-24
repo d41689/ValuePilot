@@ -15,13 +15,14 @@ from app.dataroma.parsers.holdings import parse_holdings
 # ---------------------------------------------------------------------------
 
 FORM_IDX_SAMPLE = textwrap.dedent("""\
-    Full-Index of EDGAR Filings for 2024 QTR1
+    Description:           Master Index of EDGAR Dissemination Feed by Form Type
+    Last Data Received:    March 31, 2024
 
-    Company Name                            Form Type   CIK         Date Filed  Filename
-    ---------------------------------------- ----------- ----------- ---------- -------------------------------------------------
-    BERKSHIRE HATHAWAY INC                  13F-HR      1067983     2024-02-14  edgar/data/1067983/0001067983-24-000006.txt
-    SOME OTHER CORP                         10-K        9999999     2024-01-10  edgar/data/9999999/0009999999-24-000001.txt
-    PAULSON & CO. INC.                      13F-HR/A    1035055     2024-02-15  edgar/data/1035055/0001035055-24-000001.txt
+    Form Type   Company Name                                                  CIK         Date Filed  File Name
+    ------------------------------------------------------------------------------------------------------------------------
+    13F-HR      BERKSHIRE HATHAWAY INC                                        1067983     2024-02-14  edgar/data/1067983/0001067983-24-000006.txt
+    10-K        SOME OTHER CORP                                                9999999     2024-01-10  edgar/data/9999999/0009999999-24-000001.txt
+    13F-HR/A    PAULSON & CO. INC.                                             1035055     2024-02-15  edgar/data/1035055/0001035055-24-000001.txt
 """).encode()
 
 

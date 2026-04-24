@@ -1,17 +1,18 @@
 """Parse EDGAR quarterly full-index form.idx files.
 
-Format (fixed-width, header line + separator + data):
-  Company Name                            Form Type   CIK         Date Filed  Filename
-  ---------------------------------------- ---------- ----------- ---------- ---------
-  BERKSHIRE HATHAWAY INC                  13F-HR      1067983     2024-02-14  edgar/data/...
+EDGAR form.idx format (fixed-width, header + separator + data):
+  Form Type   Company Name  ...  CIK         Date Filed  File Name
+  ---...
+  13F-HR      BERKSHIRE HATHAWAY INC  ...     1067983     2025-02-14  edgar/data/...
 
-Column offsets are read dynamically from the header line to be tolerant of
-minor format variations across years.
+The header and data lines may have slightly different column alignment, so we
+use regex to extract the well-known structured fields (date, CIK, filename)
+rather than relying on header-based fixed offsets.
 """
 import io
+import re
 from dataclasses import dataclass
 from datetime import date
-from typing import Optional
 
 
 @dataclass
@@ -35,45 +36,47 @@ class FormIdxRecord:
 
 _FORM_TYPES = frozenset({"13F-HR", "13F-HR/A"})
 
-_HEADER_KEYS = ("Company Name", "Form Type", "CIK", "Date Filed", "Filename")
+# Data line: form_type  company_name  cik  YYYY-MM-DD  edgar/data/...
+# We anchor on the well-known structured fields: date and edgar/data path.
+_DATA_RE = re.compile(
+    r"^(\S[^\n]*?)\s{2,}(\d+)\s+(\d{4}-\d{2}-\d{2})\s+(edgar/data/\S+)"
+)
 
 
 def parse_form_idx(content: bytes, form_types: frozenset[str] = _FORM_TYPES) -> list[FormIdxRecord]:
     """Parse raw form.idx bytes and return matching records."""
     text = content.decode("latin-1")
     records: list[FormIdxRecord] = []
-
-    col: dict[str, int] = {}
     in_data = False
 
     for line in io.StringIO(text):
-        line = line.rstrip("\n")
-
-        # Detect column layout from header line
-        if not col and all(k in line for k in _HEADER_KEYS):
-            col["company"] = line.index("Company Name")
-            col["form_type"] = line.index("Form Type")
-            col["cik"] = line.index("CIK")
-            col["date"] = line.index("Date Filed")
-            col["filename"] = line.index("Filename")
-            continue
+        line = line.rstrip()
 
         if line.lstrip().startswith("---"):
             in_data = True
             continue
 
-        if not in_data or not line.strip() or not col:
+        if not in_data or not line.strip():
             continue
 
-        company_name = line[col["company"]:col["form_type"]].strip()
-        form_type = line[col["form_type"]:col["cik"]].strip()
-        cik_raw = line[col["cik"]:col["date"]].strip()
-        date_str = line[col["date"]:col["filename"]].strip()
-        filename = line[col["filename"]:].strip()
+        m = _DATA_RE.match(line)
+        if not m:
+            continue
+
+        prefix = m.group(1)           # "form_type   company_name"
+        cik_raw = m.group(2)
+        date_str = m.group(3)
+        filename = m.group(4)
+
+        # Split prefix into form_type + company_name: form_type is the first
+        # whitespace-free token, company_name is the rest.
+        parts = prefix.split(None, 1)  # split on any whitespace, max 1 split
+        if len(parts) < 1:
+            continue
+        form_type = parts[0]
+        company_name = parts[1].strip() if len(parts) > 1 else ""
 
         if form_type not in form_types:
-            continue
-        if not cik_raw or not date_str:
             continue
 
         try:

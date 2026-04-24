@@ -57,12 +57,18 @@ def _normalize_name(name: str) -> str:
 
 
 def _name_score(a: str, b: str) -> float:
-    """Simple Jaccard similarity on word sets, used for CIK candidate matching."""
-    wa = set(_normalize_name(a).split())
-    wb = set(_normalize_name(b).split())
+    """Containment similarity: fraction of the smaller word set covered by the larger.
+
+    Filters single-char tokens so "L.P." → {"l","p"} doesn't pollute the score.
+    'Pershing Square' vs 'Pershing Square Capital Management, L.P.' → 1.0
+    """
+    wa = {w for w in _normalize_name(a).split() if len(w) > 1}
+    wb = {w for w in _normalize_name(b).split() if len(w) > 1}
     if not wa or not wb:
         return 0.0
-    return len(wa & wb) / len(wa | wb)
+    smaller = wa if len(wa) <= len(wb) else wb
+    larger = wb if len(wa) <= len(wb) else wa
+    return len(smaller & larger) / len(smaller)
 
 
 # ---------------------------------------------------------------------------
@@ -112,11 +118,112 @@ def bootstrap_whitelist(db: Session) -> int:
 # CIK candidate matching
 # ---------------------------------------------------------------------------
 
+def _extract_company_name(dataroma_display_name: str) -> str:
+    """Extract searchable company name from Dataroma display names.
+
+    'Bill Ackman - Pershing Square Capital Management' → 'Pershing Square Capital Management'
+    'Ariel Investments' → 'Ariel Investments'
+    """
+    if " - " in dataroma_display_name:
+        return dataroma_display_name.split(" - ", 1)[1].strip()
+    return dataroma_display_name.strip()
+
+
+def _parse_display_name(display_name_str: str) -> tuple[str, str]:
+    """Parse EDGAR display_names entry like 'Pershing Square Capital Management, L.P.  (CIK 0001336528)'.
+    Returns (company_name, cik_padded).
+    """
+    import re
+    m = re.match(r"^(.+?)\s*\(CIK\s+(\d+)\)", display_name_str)
+    if m:
+        return m.group(1).strip(), m.group(2).zfill(10)
+    return display_name_str.strip(), ""
+
+
+def _submissions_company_name(client: EdgarClient, cik_padded: str) -> str:
+    """Fetch entity name from EDGAR submissions API."""
+    import json
+    url = f"https://data.sec.gov/submissions/CIK{cik_padded}.json"
+    try:
+        body = client.get(url)
+        return json.loads(body).get("name", "")
+    except Exception:
+        return ""
+
+
+def _search_edgar_by_company_name(client: EdgarClient, company_name: str) -> list[tuple[str, str]]:
+    """Use EDGAR browse-edgar company name search. Returns [(entity_name, cik_padded), ...].
+
+    Single match: root <company-info> has conformed-name + cik directly.
+    Multiple matches: entries have `id: urn:tag:www.sec.gov:cik=XXXXXXXXXX`; we call the
+    submissions API to resolve the canonical company name for each CIK.
+    """
+    import re, urllib.parse, xml.etree.ElementTree as ET
+
+    url = (
+        "https://www.sec.gov/cgi-bin/browse-edgar"
+        f"?company={urllib.parse.quote(company_name)}"
+        "&CIK=&type=13F-HR&dateb=&owner=include&count=10&search_text=&action=getcompany&output=atom"
+    )
+    body = client.get(url)
+    root = ET.fromstring(body)
+    NS = "http://www.w3.org/2005/Atom"
+
+    results: list[tuple[str, str]] = []
+    seen_cik: set[str] = set()
+
+    def _add(name: str, cik_raw: str) -> None:
+        cik = re.sub(r"\D", "", cik_raw).zfill(10)
+        if cik and cik not in seen_cik and name:
+            seen_cik.add(cik)
+            results.append((name.strip(), cik))
+
+    # Case 1: root-level <company-info> (EDGAR resolved to a single entity)
+    root_ci = root.find(f"{{{NS}}}company-info")
+    if root_ci is not None:
+        name_el = root_ci.find(f"{{{NS}}}conformed-name")
+        cik_el = root_ci.find(f"{{{NS}}}cik")
+        if name_el is not None and cik_el is not None:
+            _add(name_el.text or "", cik_el.text or "")
+
+    # Case 2: multiple matches — entries have `id: urn:tag:www.sec.gov:cik=XXXXXXXXXX`
+    for entry in root.findall(f".//{{{NS}}}entry"):
+        # Try nested company-info first (some EDGAR response variants)
+        ci = entry.find(f".//{{{NS}}}company-info")
+        if ci is not None:
+            name_el = ci.find(f"{{{NS}}}conformed-name")
+            cik_el = ci.find(f"{{{NS}}}cik")
+            if name_el is not None and cik_el is not None:
+                _add(name_el.text or "", cik_el.text or "")
+                continue
+
+        # Extract CIK from id field: urn:tag:www.sec.gov:cik=0001336528
+        id_el = entry.find(f"{{{NS}}}id")
+        if id_el is None or id_el.text is None:
+            continue
+        m = re.search(r"cik=(\d+)", id_el.text)
+        if not m:
+            continue
+        cik = m.group(1).zfill(10)
+        if cik in seen_cik:
+            continue
+        # Resolve company name via submissions API
+        entity_name = _submissions_company_name(client, cik)
+        if entity_name:
+            _add(entity_name, cik)
+
+    return results
+
+
 def match_cik_candidates(db: Session, min_score: float = 0.6) -> int:
     """For each seeded manager without CIK, query EDGAR and propose candidates.
 
-    High-confidence matches (score ≥ 0.85) are auto-confirmed.
-    Lower scores stay as 'candidate' for human review.
+    Strategy:
+    - Extract company name from Dataroma display name (strip 'Person - ' prefix)
+    - Use EDGAR company-name search (browse-edgar) — searches entity names, not filing text
+    - Score returned names against extracted company name via Jaccard similarity
+    - score ≥ 0.85 → auto-confirm; 0.6–0.85 → candidate for human review
+
     Returns number of managers updated.
     """
     managers = (
@@ -128,65 +235,55 @@ def match_cik_candidates(db: Session, min_score: float = 0.6) -> int:
     updated = 0
     with EdgarClient() as client:
         for mgr in managers:
-            url = (
-                f"https://efts.sec.gov/LATEST/search-index"
-                f"?q=%22{mgr.legal_name.replace(' ', '+')}%22&forms=13F-HR&hits.hits._source=period_of_report&hits.hits.total.value=1"
-            )
+            company_name = _extract_company_name(mgr.legal_name)
             try:
-                body = client.get(url)
+                candidates = _search_edgar_by_company_name(client, company_name)
             except Exception as exc:
-                logger.warning("CIK search failed for %s: %s", mgr.legal_name, exc)
+                logger.warning("CIK search failed for %s: %s", company_name, exc)
                 continue
 
-            import json
-            try:
-                data = json.loads(body)
-            except Exception:
+            if not candidates:
+                logger.debug("No EDGAR results for: %s", company_name)
                 continue
 
-            hits = data.get("hits", {}).get("hits", [])
-            if not hits:
-                continue
+            best_score = 0.0
+            best_cik = ""
+            best_entity = ""
 
-            for hit in hits[:5]:
-                source = hit.get("_source", {})
-                hit_name = source.get("entity_name", "") or source.get("display_names", [""])[0]
-                hit_cik = source.get("file_num", "") or ""
-                # Try to extract CIK from _id or entity_id
-                cik_raw = (
-                    hit.get("_id", "")
-                    or source.get("entity_id", "")
+            for entity_name, cik_candidate in candidates:
+                score = max(
+                    _name_score(company_name, entity_name),
+                    _name_score(mgr.legal_name, entity_name),
                 )
-                # EDGAR search _id is often the accession; look for cik field
-                cik_field = source.get("ciks", [])
-                if cik_field:
-                    cik_raw = str(cik_field[0]).zfill(10)
-                else:
-                    continue
+                if score > best_score:
+                    best_score = score
+                    best_cik = cik_candidate
+                    best_entity = entity_name
 
-                score = _name_score(mgr.legal_name, hit_name)
-                if score < min_score:
-                    continue
+            if best_score < min_score:
+                logger.debug("No match for %s (best: %s score=%.2f)", company_name, best_entity, best_score)
+                continue
 
-                # Check no other manager has this CIK already confirmed
-                conflict = (
-                    db.query(InstitutionManager)
-                    .filter_by(cik=cik_raw)
-                    .filter(InstitutionManager.id != mgr.id)
-                    .one_or_none()
-                )
-                if conflict:
-                    continue
+            conflict = (
+                db.query(InstitutionManager)
+                .filter_by(cik=best_cik)
+                .filter(InstitutionManager.id != mgr.id)
+                .one_or_none()
+            )
+            if conflict:
+                logger.warning("CIK %s already taken by %s, skipping %s", best_cik, conflict.legal_name, mgr.legal_name)
+                continue
 
-                if score >= 0.85:
-                    mgr.cik = cik_raw
-                    mgr.match_status = "confirmed"
-                else:
-                    mgr.match_status = "candidate"
-                    # Store candidate CIK as display_name annotation
-                    mgr.display_name = f"[candidate_cik={cik_raw} score={score:.2f}] {mgr.legal_name}"
-                updated += 1
-                break
+            if best_score >= 0.85:
+                mgr.cik = best_cik
+                mgr.legal_name = best_entity
+                mgr.match_status = "confirmed"
+                logger.info("Confirmed %s → CIK %s (score=%.2f)", best_entity, best_cik, best_score)
+            else:
+                mgr.match_status = "candidate"
+                mgr.display_name = f"[candidate_cik={best_cik} score={best_score:.2f}] {best_entity}"
+                logger.info("Candidate %s → CIK %s (score=%.2f)", company_name, best_cik, best_score)
+            updated += 1
 
     db.flush()
     return updated
@@ -256,18 +353,26 @@ def ingest_quarter_index(
         if existing is not None:
             continue
 
+        period = _accession_period_of_report(rec)
+        # Clear is_latest_for_period on all existing filings for this group
+        # BEFORE inserting to avoid partial-unique-index violation.
+        (
+            db.query(Filing13F)
+            .filter_by(manager_id=manager.id, period_of_report=period)
+            .update({"is_latest_for_period": False})
+        )
         filing = Filing13F(
             manager_id=manager.id,
             accession_no=rec.accession_no,
-            period_of_report=_accession_period_of_report(rec),
+            period_of_report=period,
             filed_at=rec.filed_at,
             form_type=rec.form_type,
             version_rank=1,
-            is_latest_for_period=True,
+            is_latest_for_period=False,  # recalculate sets the correct one
         )
         db.add(filing)
-        db.flush()  # get id before version_rank recalculation
-        _recalculate_version_ranks(db, manager.id, filing.period_of_report)
+        db.flush()
+        _recalculate_version_ranks(db, manager.id, period)
         inserted += 1
 
     db.flush()
@@ -429,6 +534,7 @@ def _resolve_infotable_url(
     base = f"https://www.sec.gov/Archives/edgar/data/{cik}/{accession_raw}"
     candidates = [
         f"{base}/infotable.xml",
+        f"{base}/informationtable.xml",
         f"{base}/INFOTABLE.XML",
         f"{base}/form13fInfoTable.xml",
     ]
@@ -480,13 +586,16 @@ def _scan_index_for_file(
     pattern = re.compile(
         r'href="(/Archives/edgar/data/[^"]+\.xml)"', re.IGNORECASE
     )
-    matches = pattern.findall(body.decode("utf-8", errors="replace"))
+    all_matches = pattern.findall(body.decode("utf-8", errors="replace"))
+    # Exclude xslForm paths — those are XSLT-rendered HTML, not machine-readable XML
+    matches = [m for m in all_matches if "/xsl" not in m.lower()]
     base = "https://www.sec.gov"
     if hint == "infotable":
         for m in matches:
-            if "infotable" in m.lower() or "form13f" in m.lower():
+            basename = m.rsplit("/", 1)[-1].lower()
+            if "infotable" in basename or "form13f" in basename:
                 return base + m
-        # Return first XML if no specific match
+        # Return last XML if no specific match (often the data file comes last)
         if matches:
             return base + matches[-1]
     else:
