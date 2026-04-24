@@ -329,6 +329,24 @@ def quality_check(
 
 
 @app.command()
+def backfill_period_dates() -> None:
+    """Fix period_of_report for all filings by re-parsing stored primary docs."""
+    from app.services.edgar_ingestion import backfill_period_of_report
+
+    db = SessionLocal()
+    try:
+        n = backfill_period_of_report(db)
+        db.commit()
+        typer.echo(f"Corrected period_of_report for {n} filings.")
+    except Exception as exc:
+        db.rollback()
+        typer.echo(f"Error: {exc}", err=True)
+        raise typer.Exit(1)
+    finally:
+        db.close()
+
+
+@app.command()
 def enrich_cusip() -> None:
     """Seed cusip_ticker_map from Dataroma holdings pages (name-based matching)."""
     from app.services.cusip_enrichment import enrich_from_dataroma
