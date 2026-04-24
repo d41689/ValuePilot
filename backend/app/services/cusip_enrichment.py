@@ -11,7 +11,8 @@ from sqlalchemy.orm import Session
 
 from app.dataroma.client import DataromaClient
 from app.dataroma.parsers.holdings import DataromaHolding, parse_holdings
-from app.models.institutions import CusipTickerMap, InstitutionManager
+from app.models.institutions import CusipTickerMap, Holding13F, InstitutionManager
+from app.models.stocks import Stock
 
 logger = logging.getLogger(__name__)
 
@@ -79,11 +80,13 @@ def upsert_cusip_mapping(
         )
         confidence = f"review_needed:{confidence}"
 
+    from sqlalchemy.exc import SQLAlchemyError
+
     mapping = CusipTickerMap(
         cusip=cusip,
         ticker=ticker,
         issuer_name=issuer_name,
-        source=source,
+        source=source[:20],           # VARCHAR(20) guard
         mapping_reason=mapping_reason,
         confidence=confidence,
         valid_from=valid_from,
@@ -92,7 +95,12 @@ def upsert_cusip_mapping(
         updated_at=datetime.now(timezone.utc),
     )
     db.add(mapping)
-    db.flush()
+    try:
+        with db.begin_nested():
+            db.flush()
+    except SQLAlchemyError as exc:
+        logger.warning("upsert_cusip_mapping flush failed for %s: %s", cusip, exc)
+        raise
     return mapping
 
 
@@ -216,3 +224,170 @@ def enrich_from_dataroma(db: Session) -> int:
         )
     db.flush()
     return inserted
+
+
+# ---------------------------------------------------------------------------
+# Step 1 – bootstrap stocks from cusip_ticker_map
+# ---------------------------------------------------------------------------
+
+def bootstrap_stocks_from_cusip_map(db: Session) -> int:
+    """Upsert one Stock row per distinct ticker in cusip_ticker_map.
+
+    Uses issuer_name as company_name; exchange defaults to 'US' since
+    CUSIP-level data doesn't carry exchange info reliably.
+    Returns count of newly created Stock rows.
+    """
+    from sqlalchemy import text
+
+    # Best issuer_name per ticker: prefer the most common one
+    rows = db.execute(text("""
+        SELECT ticker, issuer_name, COUNT(*) AS cnt
+        FROM cusip_ticker_map
+        WHERE ticker IS NOT NULL AND is_active = true
+        GROUP BY ticker, issuer_name
+        ORDER BY ticker, cnt DESC
+    """)).fetchall()
+
+    best: dict[str, str] = {}  # ticker → best issuer_name
+    for row in rows:
+        if row.ticker not in best:
+            best[row.ticker] = row.issuer_name or row.ticker
+
+    created = 0
+    for ticker, company_name in best.items():
+        existing = db.query(Stock).filter_by(ticker=ticker).first()
+        if existing is None:
+            db.add(Stock(
+                ticker=ticker,
+                company_name=company_name,
+                exchange="US",
+                is_active=True,
+            ))
+            created += 1
+
+    db.flush()
+    logger.info("bootstrap_stocks_from_cusip_map: created %d new Stock rows", created)
+    return created
+
+
+def backfill_stock_ids(db: Session) -> int:
+    """Set holdings_13f.stock_id via cusip → cusip_ticker_map.ticker → stocks.id.
+
+    Idempotent: only updates rows where stock_id IS NULL.
+    Returns count of holdings updated.
+    """
+    from sqlalchemy import text
+
+    result = db.execute(text("""
+        UPDATE holdings_13f h
+        SET stock_id = s.id
+        FROM cusip_ticker_map c
+        JOIN stocks s ON s.ticker = c.ticker
+        WHERE h.cusip = c.cusip
+          AND c.is_active = true
+          AND h.stock_id IS NULL
+    """))
+    updated = result.rowcount
+    logger.info("backfill_stock_ids: updated %d holdings", updated)
+    return updated
+
+
+# ---------------------------------------------------------------------------
+# Step 2 – EDGAR company_tickers.json for remaining unmatched CUSIPs
+# ---------------------------------------------------------------------------
+
+def enrich_stocks_from_edgar_tickers(db: Session) -> dict[str, int]:
+    """Fetch SEC company_tickers.json, match unmatched holdings by issuer name,
+    upsert stocks, update cusip_ticker_map, and backfill stock_id.
+
+    Returns dict with keys: tickers_fetched, new_stocks, new_mappings, holdings_linked.
+    """
+    import json
+    from sqlalchemy import text
+    from app.edgar.client import EdgarClient
+
+    # Fetch EDGAR company ticker universe
+    with EdgarClient() as client:
+        raw = client.get("https://www.sec.gov/files/company_tickers.json")
+    data = json.loads(raw)
+
+    # Build lookup: normalized_name → (ticker, title)
+    edgar_lookup: dict[str, tuple[str, str]] = {}
+    for entry in data.values():
+        ticker = (entry.get("ticker") or "").strip().upper()
+        title = (entry.get("title") or "").strip()
+        if ticker and title:
+            key = _normalize_name(title)
+            if key and key not in edgar_lookup:
+                edgar_lookup[key] = (ticker, title)
+
+    logger.info("enrich_stocks_from_edgar_tickers: %d EDGAR tickers loaded", len(edgar_lookup))
+
+    # Get unmatched CUSIPs (no stock_id, and not yet in cusip_ticker_map)
+    unmatched = db.execute(text("""
+        SELECT DISTINCT h.cusip, h.issuer_name
+        FROM holdings_13f h
+        LEFT JOIN cusip_ticker_map c ON c.cusip = h.cusip AND c.is_active = true
+        WHERE h.stock_id IS NULL
+          AND c.cusip IS NULL
+          AND h.cusip IS NOT NULL
+          AND h.issuer_name IS NOT NULL
+    """)).fetchall()
+
+    logger.info("enrich_stocks_from_edgar_tickers: %d unmatched CUSIPs to resolve", len(unmatched))
+
+    new_mappings = 0
+    for row in unmatched:
+        norm = _normalize_name(row.issuer_name)
+        if not norm:
+            continue
+
+        # Exact match first
+        match = edgar_lookup.get(norm)
+        if match is None:
+            # Fuzzy: find best above threshold
+            best_score, best_match = 0.0, None
+            for candidate_norm, candidate_val in edgar_lookup.items():
+                score = _name_score(norm, candidate_norm)
+                if score > best_score:
+                    best_score, best_match = score, candidate_val
+            if best_score >= 0.85:
+                match = best_match
+                confidence = "medium"
+            elif best_score >= 0.75:
+                match = best_match
+                confidence = "low"
+            else:
+                continue
+        else:
+            confidence = "high"  # exact normalized match
+
+        ticker, title = match
+        try:
+            upsert_cusip_mapping(
+                db,
+                cusip=row.cusip,
+                ticker=ticker,
+                issuer_name=title,
+                source="sec_co_tickers",
+                mapping_reason="name-matched from SEC company_tickers.json",
+                confidence=confidence,
+            )
+            new_mappings += 1
+        except Exception as exc:
+            logger.warning("Failed to map %s → %s: %s", row.cusip, ticker, exc)
+
+    db.flush()
+
+    # Ensure stock rows exist for all newly mapped tickers
+    new_stocks = bootstrap_stocks_from_cusip_map(db)
+
+    # Backfill stock_id for the newly linked holdings
+    holdings_linked = backfill_stock_ids(db)
+
+    return {
+        "tickers_fetched": len(edgar_lookup),
+        "new_mappings": new_mappings,
+        "new_stocks": new_stocks,
+        "holdings_linked": holdings_linked,
+    }
