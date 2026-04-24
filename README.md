@@ -60,9 +60,9 @@ Searches EDGAR for each manager by name and scores candidates. High-confidence m
 
 **Step 2 — Backfill historical quarters (one-time)**
 ```bash
-docker compose exec api python -m app.cli.edgar backfill --quarters 5
+docker compose exec api python -m app.cli.edgar backfill --quarters 8
 ```
-Fetches `form.idx` indexes and downloads + parses all filings for the last N quarters. Takes 30–60 min for 5 quarters across 80 managers.
+Fetches `form.idx` indexes and downloads + parses all filings for the last N quarters. Takes 30–60 min for 5 quarters across 80 managers. Use `--quarters 8` to cover ~2 years of history.
 
 **Step 3 — Build the CUSIP → ticker map**
 ```bash
@@ -85,10 +85,16 @@ docker compose exec api python -m app.cli.edgar quality-check --quarter 2025-Q1
 
 ---
 
-### Quarterly Update (run each quarter, ~45 days after quarter-end)
+### Quarterly Update
 
-Approximate filing deadlines: Feb 14 (Q4), May 15 (Q1), Aug 14 (Q2), Nov 14 (Q3).
+**In production, this runs automatically.** The scheduler (`EDGAR_SCHEDULER_ENABLED=true` in
+`docker-compose.prod.yml`) triggers every Monday at 06:00 UTC, checks whether a new quarter's
+filings are available, and runs the full pipeline if so. It is idempotent — if the quarter is
+already ingested, it skips.
 
+Filing deadlines (when a quarter becomes available): Feb 14 (Q4), May 15 (Q1), Aug 14 (Q2), Nov 14 (Q3).
+
+**In dev, run manually:**
 ```bash
 # 1. Fetch new quarter's index + holdings
 docker compose exec api python -m app.cli.edgar backfill --quarters 1
@@ -102,9 +108,6 @@ docker compose exec api python -m app.cli.edgar enrich-stocks-edgar
 docker compose exec api python -m app.cli.edgar quality-check --quarter <YYYY-Qn>
 ```
 
-> **Note:** Quarterly updates are currently manual. Phase D will automate this with a scheduler
-> (`EDGAR_SCHEDULER_ENABLED=true` in prod).
-
 ---
 
 ### Other Useful Commands
@@ -117,26 +120,38 @@ docker compose exec api python -m app.cli.edgar reparse-filing --accession 00012
 docker compose exec api python -m app.cli.edgar reparse-all
 docker compose exec api python -m app.cli.edgar reparse-all --quarter 2025-Q1
 
+# Fix period_of_report for all filings (re-parses primary docs)
+docker compose exec api python -m app.cli.edgar backfill-period-dates
+
 # Backfill reported_total_value_thousands from stored primary docs
 docker compose exec api python -m app.cli.edgar backfill-reported-totals
 ```
 
 ---
 
-### API Endpoints (Phase C)
+### API Endpoints
+
+#### Institutional Holdings (Phase C)
 
 | Method | Path | Description |
 |--------|------|-------------|
 | GET | `/api/v1/institutions` | List confirmed institutions (`?superinvestor=true`) |
-| GET | `/api/v1/institutions/{cik}/filings` | All filing versions for an institution |
+| GET | `/api/v1/institutions/{cik}/filings` | All filing versions for an institution (`?period=2024-Q4`) |
 | GET | `/api/v1/institutions/{cik}/holdings` | Latest-snapshot holdings (`?period=2024-Q4`) |
-| GET | `/api/v1/filings/{accession_no}/holdings` | Holdings for a specific filing version |
+| GET | `/api/v1/filings/{accession_no}/holdings` | Holdings for a specific filing version (raw) |
 | GET | `/api/v1/stocks/{ticker}/institutions` | Institutions holding a given ticker |
+
+#### Scheduler & Filing Progress (Phase D)
+
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/api/v1/scheduler/status` | Scheduler on/off state and latest available quarter |
+| GET | `/api/v1/scheduler/filing-progress` | Per-manager filed/pending status (`?quarter=2025-Q1`) |
 
 ---
 
 ### Known Limitations
 
-- **10.4% of holdings have no `stock_id`** — these are small, foreign, or delisted securities not found in Dataroma or SEC `company_tickers.json`. They appear in API responses with `ticker: null`.
+- **~10% of holdings have no `stock_id`** — small, foreign, or delisted securities not found in Dataroma or SEC `company_tickers.json`. Appear in API responses with `ticker: null`.
 - **Kahn Brothers reconciliation warnings are expected** — they report values in dollars, not thousands (genuine filer non-compliance; not a pipeline bug).
-- **Quarterly updates are manual** until Phase D (scheduler) is implemented.
+- **2025-Q1 has limited data** — the original backfill ran `--quarters 5` from April 2026, which excludes 2025-Q1. Run `backfill --quarters 8` to fill the gap.
