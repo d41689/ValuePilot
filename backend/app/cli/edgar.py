@@ -328,5 +328,23 @@ def quality_check(
         db.close()
 
 
+@app.command()
+def enrich_cusip() -> None:
+    """Seed cusip_ticker_map from Dataroma holdings pages (name-based matching)."""
+    from app.services.cusip_enrichment import enrich_from_dataroma
+
+    db = SessionLocal()
+    try:
+        n = enrich_from_dataroma(db)
+        db.commit()
+        typer.echo(f"Inserted {n} CUSIP→ticker mappings.")
+    except Exception as exc:
+        db.rollback()
+        typer.echo(f"Error: {exc}", err=True)
+        raise typer.Exit(1)
+    finally:
+        db.close()
+
+
 if __name__ == "__main__":
     app()

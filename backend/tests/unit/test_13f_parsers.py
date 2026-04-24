@@ -182,15 +182,15 @@ HOLDINGS_HTML = b"""
 <table>
   <tr><th>Stock</th><th>%</th></tr>
   <tr>
-    <td><a href="/m/holdings.php?stock=AAPL">Apple Inc</a></td>
+    <td class="stock"><a href="/m/stock.php?sym=AAPL">AAPL<span> - Apple Inc.</span></a></td>
     <td>10.5%</td>
   </tr>
   <tr>
-    <td><a href="/m/holdings.php?stock=MSFT">Microsoft Corp</a></td>
+    <td class="stock"><a href="/m/stock.php?sym=MSFT">MSFT<span> - Microsoft Corp</span></a></td>
     <td>8.2%</td>
   </tr>
   <tr>
-    <td><a href="/m/holdings.php?stock=AAPL">Apple duplicate</a></td>
+    <td class="stock"><a href="/m/stock.php?sym=AAPL">AAPL<span> - Apple duplicate</span></a></td>
     <td>0.1%</td>
   </tr>
 </table>
@@ -214,4 +214,4 @@ def test_parse_holdings_dedup():
 def test_parse_holdings_issuer_name():
     holdings = parse_holdings(HOLDINGS_HTML)
     aapl = next(h for h in holdings if h.ticker == "AAPL")
-    assert aapl.issuer_name == "Apple Inc"
+    assert aapl.issuer_name == "Apple Inc."

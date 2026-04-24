@@ -96,18 +96,46 @@ def upsert_cusip_mapping(
     return mapping
 
 
+def _normalize_name(name: str) -> str:
+    """Lowercase, strip legal suffixes and punctuation for comparison."""
+    import re
+    s = name.lower()
+    s = re.sub(r"\b(inc|corp|co|ltd|llc|lp|plc|nv|ag|sa|the|class [a-z]|cl [a-z])\b", " ", s)
+    s = re.sub(r"[^a-z0-9 ]", " ", s)
+    return re.sub(r"\s+", " ", s).strip()
+
+
+def _name_score(a: str, b: str) -> float:
+    """Containment ratio: fraction of shorter token set covered by larger."""
+    ta = {t for t in a.split() if len(t) > 1}
+    tb = {t for t in b.split() if len(t) > 1}
+    if not ta or not tb:
+        return 0.0
+    smaller, larger = (ta, tb) if len(ta) <= len(tb) else (tb, ta)
+    return len(smaller & larger) / len(smaller)
+
+
 def enrich_from_dataroma(db: Session) -> int:
-    """Fetch holdings pages for all confirmed superinvestors and seed cusip_ticker_map.
+    """Seed cusip_ticker_map by matching Dataroma tickers to holdings by issuer name.
+
+    Dataroma holdings pages show ticker + company name but no CUSIP.
+    We collect (ticker, issuer_name) from Dataroma, then match against
+    (cusip, issuer_name) in holdings_13f using normalized name similarity.
 
     Returns count of new mappings inserted.
     """
+    from sqlalchemy import text
+
+    # Step 1: collect (ticker, issuer_name) from all Dataroma manager pages
     managers = (
         db.query(InstitutionManager)
         .filter_by(is_superinvestor=True)
         .filter(InstitutionManager.dataroma_code.isnot(None))
         .all()
     )
-    inserted = 0
+    ticker_map: dict[str, str] = {}  # normalized_name → ticker (best seen)
+    ticker_raw: dict[str, str] = {}  # normalized_name → raw issuer_name
+
     with DataromaClient() as dc:
         for mgr in managers:
             try:
@@ -115,33 +143,76 @@ def enrich_from_dataroma(db: Session) -> int:
             except Exception as exc:
                 logger.error(
                     "Dataroma holdings fetch failed for %s (%s): %s",
-                    mgr.legal_name,
-                    mgr.dataroma_code,
-                    exc,
+                    mgr.legal_name, mgr.dataroma_code, exc,
                 )
                 continue
 
-            holdings = parse_holdings(html)
-            for h in holdings:
-                if not h.ticker:
+            for h in parse_holdings(html):
+                if not h.ticker or not h.issuer_name:
                     continue
-                # Use issuer_name as mapping_reason evidence
-                try:
-                    m = upsert_cusip_mapping(
-                        db,
-                        cusip=h.cusip or "",  # CUSIP not on Dataroma page; skipped if empty
-                        ticker=h.ticker,
-                        issuer_name=h.issuer_name,
-                        source="dataroma",
-                        mapping_reason=(
-                            f"https://www.dataroma.com/m/holdings.php?m={mgr.dataroma_code}"
-                        ),
-                        confidence="medium",
-                    )
-                    if m.id is not None:
-                        inserted += 1
-                except Exception as exc:
-                    logger.warning("cusip_ticker_map insert failed for %s: %s", h.ticker, exc)
+                key = _normalize_name(h.issuer_name)
+                if key and key not in ticker_map:
+                    ticker_map[key] = h.ticker
+                    ticker_raw[key] = h.issuer_name
 
+    logger.info("Dataroma: collected %d distinct (ticker, name) pairs", len(ticker_map))
+
+    # Step 2: get distinct (cusip, issuer_name) from holdings_13f
+    rows = db.execute(text(
+        "SELECT DISTINCT cusip, issuer_name FROM holdings_13f WHERE cusip IS NOT NULL"
+    )).fetchall()
+
+    # Step 3: match by name, insert into cusip_ticker_map
+    inserted = 0
+    unmatched: list[str] = []
+    for row in rows:
+        cusip = row.cusip
+        norm = _normalize_name(row.issuer_name or "")
+        if not norm:
+            continue
+
+        # Exact match first
+        ticker = ticker_map.get(norm)
+        raw_name = ticker_raw.get(norm)
+        if ticker is None:
+            # Fuzzy: find best scoring name above threshold
+            best_score, best_ticker, best_raw = 0.0, None, None
+            for candidate_norm, candidate_ticker in ticker_map.items():
+                score = _name_score(norm, candidate_norm)
+                if score > best_score:
+                    best_score, best_ticker, best_raw = score, candidate_ticker, ticker_raw[candidate_norm]
+            if best_score >= 0.85:
+                ticker = best_ticker
+                raw_name = best_raw
+            elif best_score >= 0.7:
+                ticker = best_ticker
+                raw_name = best_raw
+                logger.debug(
+                    "Low-confidence match: %r -> %s (score=%.2f)", row.issuer_name, ticker, best_score
+                )
+            else:
+                unmatched.append(row.issuer_name or cusip)
+                continue
+
+        try:
+            confidence = "medium" if ticker else "low"
+            upsert_cusip_mapping(
+                db,
+                cusip=cusip,
+                ticker=ticker,
+                issuer_name=raw_name or row.issuer_name,
+                source="dataroma",
+                mapping_reason="name-matched from Dataroma holdings pages",
+                confidence=confidence,
+            )
+            inserted += 1
+        except Exception as exc:
+            logger.warning("cusip_ticker_map insert failed for %s/%s: %s", cusip, ticker, exc)
+
+    if unmatched:
+        logger.info(
+            "enrich_from_dataroma: %d CUSIPs unmatched (not in any Dataroma portfolio): %s…",
+            len(unmatched), ", ".join(unmatched[:5]),
+        )
     db.flush()
     return inserted
