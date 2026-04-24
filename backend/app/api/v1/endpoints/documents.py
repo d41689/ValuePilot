@@ -4,14 +4,15 @@ from pathlib import Path
 import re
 from typing import Any, Optional
 
-from fastapi import APIRouter, UploadFile, File, HTTPException, Query
-from sqlalchemy import select, func
+from fastapi import APIRouter, UploadFile, File, HTTPException, Query, Body
+from sqlalchemy import select, func, update
 import yaml
 from app.models.artifacts import DocumentPage
 from app.models.extractions import MetricExtraction
 from app.models.facts import MetricFact
 from app.models.stocks import Stock
 from app.api.deps import SessionDep, CurrentUser
+from app.ingestion.normalization.scaler import Scaler
 from app.ingestion.parsers.v1_value_line.evidence import parse_rating_event_notes
 from app.services.active_report_resolver import resolve_active_reports
 from app.services.ingestion_service import IngestionService
@@ -26,6 +27,30 @@ VALUE_LINE_TAXONOMY_PATH = next(
     ),
     Path(__file__).resolve().parents[4] / "docs" / "value_line_field_taxonomy.yml",
 )
+
+DOCUMENT_REVIEW_GROUPS = [
+    ("identity_header", "Identity & Header"),
+    ("ratings_quality", "Ratings & Quality"),
+    ("target_projection", "Target & Projection"),
+    ("capital_structure", "Capital Structure"),
+    ("annual_rates", "Annual Rates"),
+    ("quarterly_tables", "Quarterly Tables"),
+    ("annual_financials", "Annual Financials"),
+    ("institutional_decisions", "Institutional Decisions"),
+    ("narrative", "Narrative"),
+]
+
+DOCUMENT_REVIEW_LABELS = {
+    "mkt.price": "Price",
+    "mkt.market_cap": "Market Cap",
+    "snapshot.pe": "P/E Ratio",
+    "snapshot.relative_pe": "Relative P/E",
+    "snapshot.dividend_yield": "Dividend Yield",
+    "rating.timeliness": "Timeliness",
+    "rating.safety": "Safety",
+    "rating.technical": "Technical",
+    "rating.beta": "Beta",
+}
 
 
 @router.get("", response_model=list[dict])
@@ -370,6 +395,166 @@ def read_document_evidence(
     return {"document_id": doc.id, "evidence": evidence}
 
 
+@router.get("/{document_id}/review", response_model=dict)
+def read_document_review(
+    *,
+    session: SessionDep,
+    current_user: CurrentUser,
+    document_id: int,
+) -> Any:
+    """
+    Return a Value Line report-oriented review payload for one document.
+    """
+    doc = session.get(PdfDocument, document_id)
+    if not doc or doc.user_id != current_user.id:
+        raise HTTPException(status_code=404, detail="Document not found")
+
+    facts = _document_review_selected_facts(session, doc)
+    stock_ids = sorted({fact.stock_id for fact in facts if fact.stock_id is not None})
+    if doc.stock_id:
+        stock_ids.append(doc.stock_id)
+    stock_lookup = {
+        stock.id: stock
+        for stock in session.scalars(select(Stock).where(Stock.id.in_(set(stock_ids)))).all()
+    } if stock_ids else {}
+    document_stock = stock_lookup.get(doc.stock_id) if doc.stock_id else None
+
+    lineage_by_fact_id = _document_review_lineage_by_fact_id(session, doc, facts)
+
+    grouped: dict[str, list[dict[str, Any]]] = {key: [] for key, _label in DOCUMENT_REVIEW_GROUPS}
+    for fact in facts:
+        group_key = _document_review_group_key(fact)
+        lineage = lineage_by_fact_id.get(fact.id)
+        item = _document_review_item(fact, stock_lookup, lineage)
+        grouped[group_key].append(item)
+
+    groups = []
+    for group_key, label in DOCUMENT_REVIEW_GROUPS:
+        items = grouped[group_key]
+        if not items:
+            continue
+        groups.append(
+            {
+                "key": group_key,
+                "label": label,
+                "items": sorted(
+                    items,
+                    key=lambda item: (
+                        item.get("period_end_date") or item.get("as_of_date") or "",
+                        item.get("metric_key") or "",
+                        item.get("fact_id") or 0,
+                    ),
+                ),
+            }
+        )
+
+    return {
+        "document": {
+            "id": doc.id,
+            "file_name": doc.file_name,
+            "ticker": document_stock.ticker if document_stock else None,
+            "company_name": document_stock.company_name if document_stock else None,
+            "report_date": _iso_date(doc.report_date),
+        },
+        "groups": groups,
+    }
+
+
+@router.post("/{document_id}/review/facts/{fact_id}/corrections", response_model=dict)
+def correct_document_review_fact(
+    *,
+    session: SessionDep,
+    current_user: CurrentUser,
+    document_id: int,
+    fact_id: int,
+    payload: dict = Body(...),
+) -> Any:
+    """
+    Insert a manual current fact for a reviewed document value.
+    """
+    doc = session.get(PdfDocument, document_id)
+    if not doc or doc.user_id != current_user.id:
+        raise HTTPException(status_code=404, detail="Document not found")
+
+    fact = session.get(MetricFact, fact_id)
+    if not fact or fact.user_id != current_user.id:
+        raise HTTPException(status_code=404, detail="Fact not found")
+    if not _document_review_fact_belongs_to_document(session, doc, fact):
+        raise HTTPException(status_code=404, detail="Fact not found")
+
+    raw_value = payload.get("value")
+    if raw_value is None or str(raw_value).strip() == "":
+        raise HTTPException(status_code=400, detail={"value": "Correction value is required"})
+    raw_text = str(raw_value).strip()
+    unit_hint = payload.get("unit")
+    note = payload.get("note")
+
+    value_numeric, normalized_unit, value_text = _normalize_review_correction(
+        raw_text=raw_text,
+        unit_hint=str(unit_hint).strip() if unit_hint else None,
+        fact=fact,
+    )
+    if value_numeric is None and value_text is None:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "value": "Correction value could not be normalized",
+                "metric_key": fact.metric_key,
+            },
+        )
+
+    session.execute(
+        update(MetricFact)
+        .where(
+            MetricFact.user_id == current_user.id,
+            MetricFact.stock_id == fact.stock_id,
+            MetricFact.metric_key == fact.metric_key,
+            MetricFact.period_type == fact.period_type,
+            MetricFact.period_end_date == fact.period_end_date,
+            MetricFact.as_of_date == fact.as_of_date,
+            MetricFact.is_current.is_(True),
+        )
+        .values(is_current=False)
+    )
+
+    value_json = {
+        "raw": raw_text,
+        "correction": True,
+        "corrected_from_fact_id": fact.id,
+    }
+    if note:
+        value_json["note"] = str(note)
+
+    manual_fact = MetricFact(
+        user_id=current_user.id,
+        stock_id=fact.stock_id,
+        metric_key=fact.metric_key,
+        value_json=value_json,
+        value_numeric=value_numeric,
+        value_text=value_text,
+        unit=normalized_unit or fact.unit,
+        currency=fact.currency,
+        period=fact.period,
+        period_type=fact.period_type,
+        period_end_date=fact.period_end_date,
+        as_of_date=fact.as_of_date,
+        source_document_id=doc.id,
+        source_type="manual",
+        source_ref_id=fact.source_ref_id,
+        is_current=True,
+    )
+    session.add(manual_fact)
+    session.commit()
+    session.refresh(manual_fact)
+
+    return {
+        "status": "success",
+        "fact_id": manual_fact.id,
+        "normalized_value": manual_fact.value_numeric,
+        "unit": manual_fact.unit,
+    }
+
+
 @lru_cache(maxsize=1)
 def _load_value_line_taxonomy() -> dict[str, Any]:
     with VALUE_LINE_TAXONOMY_PATH.open("r", encoding="utf-8") as fh:
@@ -435,6 +620,240 @@ def _iso_date(value: Any) -> Optional[str]:
         return None
     iso = getattr(value, "isoformat", None)
     return iso() if callable(iso) else str(value)
+
+
+def _document_review_selected_facts(
+    session: SessionDep,
+    doc: PdfDocument,
+) -> list[MetricFact]:
+    rows = session.scalars(
+        select(MetricFact)
+        .where(
+            MetricFact.user_id == doc.user_id,
+            MetricFact.source_document_id == doc.id,
+        )
+        .order_by(MetricFact.id.asc())
+    ).all()
+
+    selected: dict[tuple[Any, ...], MetricFact] = {}
+    for fact in rows:
+        identity = _document_review_fact_identity(fact)
+        current = selected.get(identity)
+        if current is None or _document_review_fact_rank(fact) >= _document_review_fact_rank(current):
+            selected[identity] = fact
+    return list(selected.values())
+
+
+def _document_review_fact_identity(fact: MetricFact) -> tuple[Any, ...]:
+    return (
+        fact.user_id,
+        fact.stock_id,
+        fact.metric_key,
+        fact.period_type,
+        fact.period_end_date,
+        fact.as_of_date,
+    )
+
+
+def _document_review_fact_rank(fact: MetricFact) -> tuple[int, int, int]:
+    manual_rank = 1 if fact.source_type == "manual" else 0
+    current_rank = 1 if fact.is_current else 0
+    return (manual_rank, current_rank, fact.id)
+
+
+def _document_review_lineage_by_fact_id(
+    session: SessionDep,
+    doc: PdfDocument,
+    facts: list[MetricFact],
+) -> dict[int, MetricExtraction]:
+    source_ref_ids = sorted({fact.source_ref_id for fact in facts if fact.source_ref_id is not None})
+    by_extraction_id = {}
+    if source_ref_ids:
+        extractions = session.scalars(
+            select(MetricExtraction).where(
+                MetricExtraction.user_id == doc.user_id,
+                MetricExtraction.document_id == doc.id,
+                MetricExtraction.id.in_(source_ref_ids),
+            )
+        ).all()
+        by_extraction_id = {extraction.id: extraction for extraction in extractions}
+
+    document_extractions = session.scalars(
+        select(MetricExtraction)
+        .where(
+            MetricExtraction.user_id == doc.user_id,
+            MetricExtraction.document_id == doc.id,
+        )
+        .order_by(MetricExtraction.id.desc())
+    ).all()
+
+    lineage: dict[int, MetricExtraction] = {}
+    for fact in facts:
+        if fact.source_ref_id in by_extraction_id:
+            lineage[fact.id] = by_extraction_id[fact.source_ref_id]
+            continue
+        fallback = _document_review_find_lineage_fallback(fact, document_extractions)
+        if fallback is not None:
+            lineage[fact.id] = fallback
+    return lineage
+
+
+def _document_review_find_lineage_fallback(
+    fact: MetricFact,
+    extractions: list[MetricExtraction],
+) -> Optional[MetricExtraction]:
+    metric_leaf = (fact.metric_key or "").split(".")[-1]
+    for extraction in extractions:
+        if extraction.field_key not in {fact.metric_key, metric_leaf}:
+            continue
+        if fact.period_type and extraction.period_type and fact.period_type != extraction.period_type:
+            continue
+        if fact.period_end_date and extraction.period_end_date and fact.period_end_date != extraction.period_end_date:
+            continue
+        if fact.as_of_date and extraction.as_of_date and fact.as_of_date != extraction.as_of_date:
+            continue
+        return extraction
+    return None
+
+
+def _document_review_item(
+    fact: MetricFact,
+    stock_lookup: dict[int, Stock],
+    lineage: Optional[MetricExtraction],
+) -> dict[str, Any]:
+    value_json = fact.value_json if isinstance(fact.value_json, dict) else {}
+    raw_value = value_json.get("raw")
+    display_value = str(raw_value) if raw_value is not None else _document_review_value_label(fact)
+    stock = stock_lookup.get(fact.stock_id)
+    return {
+        "metric_key": fact.metric_key,
+        "label": _document_review_label(fact.metric_key),
+        "fact_id": fact.id,
+        "stock_ticker": stock.ticker if stock else None,
+        "display_value": display_value,
+        "value_numeric": fact.value_numeric,
+        "value_text": fact.value_text,
+        "unit": fact.unit,
+        "period": fact.period,
+        "period_type": fact.period_type,
+        "period_end_date": _iso_date(fact.period_end_date),
+        "as_of_date": _iso_date(fact.as_of_date),
+        "source_type": fact.source_type,
+        "is_current": fact.is_current,
+        "lineage_available": lineage is not None,
+        "lineage": _document_review_lineage(lineage),
+        "editable": True,
+    }
+
+
+def _document_review_lineage(extraction: Optional[MetricExtraction]) -> Optional[dict[str, Any]]:
+    if extraction is None:
+        return None
+    return {
+        "extraction_id": extraction.id,
+        "document_id": extraction.document_id,
+        "page_number": extraction.page_number,
+        "original_text_snippet": extraction.original_text_snippet,
+    }
+
+
+def _document_review_value_label(fact: MetricFact) -> Optional[str]:
+    if fact.value_text:
+        return fact.value_text
+    if fact.value_numeric is not None:
+        return f"{fact.value_numeric:g}"
+    return None
+
+
+def _document_review_label(metric_key: str) -> str:
+    if metric_key in DOCUMENT_REVIEW_LABELS:
+        return DOCUMENT_REVIEW_LABELS[metric_key]
+    leaf = (metric_key or "Unknown").split(".")[-1]
+    return leaf.replace("_", " ").title()
+
+
+def _document_review_group_key(fact: MetricFact) -> str:
+    metric_key = (fact.metric_key or "").lower()
+    period_type = (fact.period_type or "").upper()
+
+    if any(token in metric_key for token in ["business", "commentary", "narrative", "description"]):
+        return "narrative"
+    if any(token in metric_key for token in ["institution", "to_buy", "to_sell", "holding"]):
+        return "institutional_decisions"
+    if period_type == "Q" or any(token in metric_key for token in ["quarter", "qtr"]):
+        return "quarterly_tables"
+    if any(token in metric_key for token in ["target", "projection", "return", "gain"]):
+        return "target_projection"
+    if any(
+        token in metric_key
+        for token in ["rating", "timeliness", "safety", "technical", "beta", "strength", "stability", "predictability"]
+    ):
+        return "ratings_quality"
+    if any(
+        token in metric_key
+        for token in ["debt", "capital", "lease", "pension", "share", "market_cap", "interest"]
+    ):
+        return "capital_structure"
+    if any(token in metric_key for token in ["cagr", "growth_rate", "annual_rate"]):
+        return "annual_rates"
+    if period_type == "FY":
+        return "annual_financials"
+    return "identity_header"
+
+
+def _document_review_fact_belongs_to_document(
+    session: SessionDep,
+    doc: PdfDocument,
+    fact: MetricFact,
+) -> bool:
+    if fact.source_document_id == doc.id:
+        return True
+    if fact.source_ref_id is None:
+        return False
+    extraction = session.get(MetricExtraction, fact.source_ref_id)
+    return bool(
+        extraction
+        and extraction.user_id == doc.user_id
+        and extraction.document_id == doc.id
+    )
+
+
+def _normalize_review_correction(
+    *,
+    raw_text: str,
+    unit_hint: Optional[str],
+    fact: MetricFact,
+) -> tuple[Optional[float], Optional[str], Optional[str]]:
+    value_type = _document_review_value_type(fact)
+    if value_type == "text":
+        return None, fact.unit, raw_text
+
+    normalization_input = raw_text
+    if unit_hint and unit_hint.lower() not in raw_text.lower():
+        normalization_input = f"{raw_text} {unit_hint}"
+    value_numeric, normalized_unit = Scaler.normalize(normalization_input, value_type)
+    return value_numeric, normalized_unit, None
+
+
+def _document_review_value_type(fact: MetricFact) -> str:
+    metric_key = (fact.metric_key or "").lower()
+    unit = (fact.unit or "").lower()
+    if fact.value_numeric is None and unit not in {"usd", "ratio", "number", "shares"}:
+        return "text"
+    if unit == "usd" or any(
+        token in metric_key
+        for token in ["price", "market_cap", "debt", "sales", "revenue", "cash", "earnings", "income", "dividend"]
+    ):
+        return "currency"
+    if unit == "ratio":
+        if "%" in str(fact.value_json or "") or any(
+            token in metric_key for token in ["yield", "pct", "percent", "margin", "cagr", "rate"]
+        ):
+            return "percent"
+        return "ratio"
+    if any(token in metric_key for token in ["yield", "pct", "percent", "margin", "cagr"]):
+        return "percent"
+    return "number"
 
 
 def _document_stock_ids(session: SessionDep, doc: PdfDocument) -> set[int]:
