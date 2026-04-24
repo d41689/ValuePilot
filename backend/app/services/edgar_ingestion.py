@@ -27,6 +27,7 @@ from app.edgar.parsers.form_idx import (
     quarter_to_year_qtr,
 )
 from app.edgar.parsers.infotable import compute_total_value, parse_infotable
+from app.edgar.parsers.primary_doc import parse_primary_doc
 from app.edgar.parsers.submissions import parse_submissions, submissions_url
 from app.models.institutions import (
     CusipTickerMap,
@@ -427,8 +428,12 @@ def ingest_filing_holdings(
     filing: Filing13F,
     *,
     force_refresh: bool = False,
+    replace_holdings: bool = False,
 ) -> int:
-    """Download + parse infotable for one filing. Returns count of holdings inserted."""
+    """Download + parse infotable for one filing. Returns count of holdings inserted.
+
+    replace_holdings=True deletes existing holdings before re-inserting (use for reparse).
+    """
     manager: InstitutionManager = filing.manager
     if manager is None:
         manager = db.query(InstitutionManager).get(filing.manager_id)
@@ -436,38 +441,42 @@ def ingest_filing_holdings(
     cik = (manager.cik or "").lstrip("0")
     accession_raw = filing.accession_no.replace("-", "")
 
-    with EdgarClient() as client:
-        # Locate infotable.xml via the filing index
-        index_url = (
-            f"https://www.sec.gov/Archives/edgar/data/{cik}"
-            f"/{accession_raw}/{filing.accession_no}-index.htm"
+    # If raw docs are already stored and we're not force-refreshing, skip URL resolution.
+    if not force_refresh and filing.raw_infotable_doc_id and filing.raw_primary_doc_id:
+        primary_doc = (
+            db.query(RawSourceDocument).get(filing.raw_primary_doc_id)
         )
-        infotable_url = _resolve_infotable_url(client, cik, accession_raw, filing.accession_no)
-        primary_url = _resolve_primary_doc_url(client, cik, accession_raw, filing.accession_no)
+        infotable_doc = (
+            db.query(RawSourceDocument).get(filing.raw_infotable_doc_id)
+        )
+    else:
+        with EdgarClient() as client:
+            infotable_url = _resolve_infotable_url(client, cik, accession_raw, filing.accession_no)
+            primary_url = _resolve_primary_doc_url(client, cik, accession_raw, filing.accession_no)
 
-        primary_doc = fetch_and_store(
-            db,
-            source_system="edgar",
-            document_type="primary_doc_xml",
-            source_url=primary_url,
-            cik=manager.cik,
-            accession_no=filing.accession_no,
-            client=client,
-            force_refresh=force_refresh,
-        )
-        infotable_doc = fetch_and_store(
-            db,
-            source_system="edgar",
-            document_type="infotable_xml",
-            source_url=infotable_url,
-            cik=manager.cik,
-            accession_no=filing.accession_no,
-            client=client,
-            force_refresh=force_refresh,
-        )
+            primary_doc = fetch_and_store(
+                db,
+                source_system="edgar",
+                document_type="primary_doc_xml",
+                source_url=primary_url,
+                cik=manager.cik,
+                accession_no=filing.accession_no,
+                client=client,
+                force_refresh=force_refresh,
+            )
+            infotable_doc = fetch_and_store(
+                db,
+                source_system="edgar",
+                document_type="infotable_xml",
+                source_url=infotable_url,
+                cik=manager.cik,
+                accession_no=filing.accession_no,
+                client=client,
+                force_refresh=force_refresh,
+            )
 
-    filing.raw_primary_doc_id = primary_doc.id
-    filing.raw_infotable_doc_id = infotable_doc.id
+        filing.raw_primary_doc_id = primary_doc.id
+        filing.raw_infotable_doc_id = infotable_doc.id
 
     try:
         body = load_body(infotable_doc)
@@ -478,15 +487,20 @@ def ingest_filing_holdings(
         db.flush()
         raise
 
+    if replace_holdings:
+        db.query(Holding13F).filter_by(filing_id=filing.id).delete()
+        db.flush()
+
     inserted = 0
     for row in rows:
-        existing = (
-            db.query(Holding13F)
-            .filter_by(filing_id=filing.id, row_fingerprint=row.row_fingerprint)
-            .one_or_none()
-        )
-        if existing is not None:
-            continue
+        if not replace_holdings:
+            existing = (
+                db.query(Holding13F)
+                .filter_by(filing_id=filing.id, row_fingerprint=row.row_fingerprint)
+                .one_or_none()
+            )
+            if existing is not None:
+                continue
 
         holding = Holding13F(
             filing_id=filing.id,
@@ -505,6 +519,16 @@ def ingest_filing_holdings(
         )
         db.add(holding)
         inserted += 1
+
+    # Populate reported_total_value_thousands from primary doc if not yet set
+    if not filing.reported_total_value_thousands:
+        try:
+            primary_body = load_body(primary_doc)
+            summary = parse_primary_doc(primary_body)
+            if summary.table_value_total is not None:
+                filing.reported_total_value_thousands = summary.table_value_total
+        except Exception as exc:
+            logger.warning("Could not parse primary doc for %s: %s", filing.accession_no, exc)
 
     # Reconciliation
     computed = compute_total_value(rows)

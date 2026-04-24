@@ -84,16 +84,18 @@ def parse_infotable(content: bytes) -> list[HoldingRow]:
             continue
 
         raw: dict = {}
-        for child in elem:
-            tag = _strip_ns(child.tag)
-            raw[tag] = (child.text or "").strip()
-
-        # votingAuthority is a nested element in some filings
         voting_elem = None
         for child in elem:
-            if _strip_ns(child.tag) == "votingAuthority":
+            tag = _strip_ns(child.tag)
+            if tag == "shrsOrPrnAmt":
+                # Unwrap: pull sshPrnamt and sshPrnamtType up to raw
+                for grandchild in child:
+                    gtag = _strip_ns(grandchild.tag)
+                    raw[gtag] = (grandchild.text or "").strip()
+            elif tag == "votingAuthority":
                 voting_elem = child
-                break
+            else:
+                raw[tag] = (child.text or "").strip()
 
         cusip = raw.get("cusip", "").upper()
         issuer_name = raw.get("nameOfIssuer", "") or raw.get("issuerName", "")
