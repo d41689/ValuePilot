@@ -588,10 +588,9 @@ def _resolve_infotable_url(
         f"{base}/INFOTABLE.XML",
         f"{base}/form13fInfoTable.xml",
     ]
-    # Try candidates with HEAD
     for url in candidates:
         try:
-            client.get(url)  # will raise if 404 etc.
+            client.head(url)
             return url
         except Exception:
             continue
@@ -610,7 +609,7 @@ def _resolve_primary_doc_url(
     ]
     for url in candidates:
         try:
-            client.get(url)
+            client.head(url)
             return url
         except Exception:
             continue

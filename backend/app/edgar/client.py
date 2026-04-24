@@ -80,8 +80,8 @@ class EdgarClient:
         )
         self._backoff = _parse_backoff(settings.EDGAR_RETRY_BACKOFF_S)
 
-    def get(self, url: str) -> bytes:
-        """Fetch URL, blocking until rate limit allows, with retry on transient errors."""
+    def _request(self, method: str, url: str) -> httpx.Response:
+        """Execute a rate-limited request with retry on transient errors."""
         bucket = _get_bucket()
         last_exc: Optional[Exception] = None
 
@@ -93,14 +93,14 @@ class EdgarClient:
 
             bucket.acquire()
             try:
-                resp = self._client.get(url)
+                resp = self._client.request(method, url)
             except httpx.TransportError as exc:
                 logger.warning("EDGAR transport error for %s: %s", url, exc)
                 last_exc = exc
                 continue
 
             if resp.status_code == 200:
-                return resp.content
+                return resp
 
             if resp.status_code == 403:
                 raise RuntimeError(
@@ -110,7 +110,6 @@ class EdgarClient:
             if resp.status_code in (429, 503):
                 logger.error("EDGAR %d — global pause 60 s then resume at 1 req/s", resp.status_code)
                 time.sleep(60)
-                # Reset bucket to conservative 1 req/s
                 global _bucket
                 with _bucket_lock:
                     _bucket = _TokenBucket(rate=1.0, burst=1)
@@ -127,6 +126,18 @@ class EdgarClient:
         raise RuntimeError(
             f"EDGAR fetch failed after {settings.EDGAR_MAX_RETRIES} retries for {url}"
         ) from last_exc
+
+    def get(self, url: str) -> bytes:
+        """Fetch URL body, rate-limited with retry."""
+        return self._request("GET", url).content
+
+    def head(self, url: str) -> None:
+        """Probe URL existence without downloading the body, rate-limited with retry.
+
+        Raises on any non-200 response (e.g. 404). Use this instead of get()
+        when only checking whether a file exists.
+        """
+        self._request("HEAD", url)
 
     def close(self) -> None:
         self._client.close()
