@@ -622,10 +622,15 @@ prod 的 docker-compose / 部署配置应显式设置 EDGAR_SCHEDULER_ENABLED=tr
 - 新增 CLI：`edgar backfill-period-dates`（`backfill_period_of_report()`）；运行后 270 个 filing 全部修正（示例：Berkshire 2024-Q4 `period_of_report` 从 `2025-02-14` → `2024-12-31`）
 
 ### Phase D — 定期增量
-- [ ] 调度器实现，通过 `EDGAR_SCHEDULER_ENABLED` 控制是否启动（prod 显式开启，dev 默认关闭）
-- [ ] 定时任务每季度自动运行：Dataroma 白名单同步 + EDGAR 新申报抓取
-- [ ] **申报进度看板**：监控白名单机构在季末 45 天内的申报进度
-  > 当前所有季度更新均为手动 CLI，运行流程见 README.md。
+- [x] 调度器实现，通过 `EDGAR_SCHEDULER_ENABLED` 控制是否启动（prod 显式开启，dev 默认关闭）
+  > `app/services/scheduler.py:create_scheduler()`；使用 APScheduler BackgroundScheduler，每周一 06:00 UTC 触发；通过 FastAPI lifespan 在 API 启动时自动启动；`docker-compose.prod.yml` 已设置 `EDGAR_SCHEDULER_ENABLED=true`
+- [x] 定时任务每季度自动运行：Dataroma 白名单同步 + EDGAR 新申报抓取
+  > `run_quarterly_pipeline()`；先检查 DB 中是否已有该季度数据（幂等），再按顺序执行：form.idx → infotable 解析 → enrich_from_dataroma → bootstrap_stocks → backfill_stock_ids → enrich_stocks_from_edgar_tickers → quality_check
+  > 季度可用时间由 `latest_available_quarter()` 计算：Q4→2/14、Q1→5/15、Q2→8/14、Q3→11/14
+- [x] **申报进度看板**：监控白名单机构在季末 45 天内的申报进度
+  > `GET /api/v1/scheduler/filing-progress?quarter=2025-Q4`；返回 80 家机构的申报状态（已申报/未申报）、截止日期、剩余天数
+  > `GET /api/v1/scheduler/status`；返回调度器开关状态和当前最新可用季度
+  > 验证：2025-Q4 进度显示 62/80 已申报，18 家待申报（截止日 2026-02-14，已过期）
 
 ---
 

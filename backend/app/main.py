@@ -1,23 +1,45 @@
+import logging
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+
 from app.core.config import settings
 from app.api.v1.api import api_router
+
+logger = logging.getLogger(__name__)
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    scheduler = None
+    if settings.EDGAR_SCHEDULER_ENABLED:
+        from app.core.db import SessionLocal
+        from app.services.scheduler import create_scheduler
+        scheduler = create_scheduler(SessionLocal)
+        scheduler.start()
+        logger.info("EDGAR quarterly scheduler started")
+    yield
+    if scheduler is not None:
+        scheduler.shutdown(wait=False)
+        logger.info("EDGAR scheduler stopped")
+
 
 app = FastAPI(
     title=settings.PROJECT_NAME,
     description="Financial Analysis Engine API",
     version="0.1.0",
+    lifespan=lifespan,
     docs_url="/docs",
     redoc_url="/redoc",
     openapi_url="/openapi.json",
     openapi_tags=[
         {"name": "users", "description": "Operations with users."},
-    ]
+    ],
 )
 
-# CORS Configuration
 origins = [
-    "http://localhost:3000",  # Next.js frontend
+    "http://localhost:3000",
     "http://localhost:3001",
     "http://127.0.0.1:3000",
     "http://127.0.0.1:3001",
@@ -33,9 +55,11 @@ app.add_middleware(
 
 app.include_router(api_router, prefix=settings.API_V1_STR)
 
+
 @app.get("/")
 async def root():
     return {"message": "Welcome to ValuePilot API", "status": "running"}
+
 
 @app.get("/health")
 async def health_check():
