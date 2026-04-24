@@ -130,7 +130,7 @@ class CusipTickerMap(Base):
     security_type: Mapped[Optional[str]] = mapped_column(String(30), nullable=True)
     exchange: Mapped[Optional[str]] = mapped_column(String(30), nullable=True)
     is_13f_reportable: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
-    source: Mapped[Optional[str]] = mapped_column(String(20), nullable=True)
+    source: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
     mapping_reason: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     confidence: Mapped[Optional[str]] = mapped_column(String(20), nullable=True)
     valid_from: Mapped[Optional[date]] = mapped_column(Date, nullable=True)

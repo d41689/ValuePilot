@@ -86,7 +86,7 @@ def upsert_cusip_mapping(
         cusip=cusip,
         ticker=ticker,
         issuer_name=issuer_name,
-        source=source[:20],           # VARCHAR(20) guard
+        source=source,
         mapping_reason=mapping_reason,
         confidence=confidence,
         valid_from=valid_from,
