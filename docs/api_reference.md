@@ -14,6 +14,11 @@ Base URL: `/api/v1`
   - **Body**: Multipart Form Data (`file`: PDF)
   - **Description**: Uploads a Value Line PDF, parses it, extracts identity and metrics.
   - **Returns**: Document status and ID.
+- **GET** `/documents/{document_id}/review`
+  - **Description**: Returns fact-backed parsed data grouped for Value Line report review, including normalized values and extraction lineage where available.
+- **POST** `/documents/{document_id}/review/facts/{fact_id}/corrections`
+  - **Body**: `{"value": "...", "unit": "...", "note": "..."}`
+  - **Description**: Creates a manual current fact for a reviewed value without mutating the original extraction.
 
 ### Stocks
 - **GET** `/stocks/{stock_id}`

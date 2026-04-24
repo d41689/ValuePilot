@@ -423,6 +423,296 @@ def test_document_evidence_endpoint_requires_document_ownership(
     assert resp.status_code == 404
 
 
+def test_document_review_endpoint_returns_grouped_facts_with_lineage(
+    client, db_session, user_factory, auth_headers
+):
+    user = user_factory("documents_review@example.com")
+    headers = auth_headers(user)
+
+    stock = Stock(ticker="AOS", exchange="NYSE", company_name="SMITH (A.O.)")
+    db_session.add(stock)
+    db_session.commit()
+
+    doc = PdfDocument(
+        user_id=user.id,
+        file_name="aos.pdf",
+        source="upload",
+        file_storage_key="/tmp/aos.pdf",
+        parse_status="parsed",
+        report_date=date(2026, 1, 2),
+        upload_time=datetime.utcnow(),
+        stock_id=stock.id,
+    )
+    db_session.add(doc)
+    db_session.commit()
+
+    extraction = MetricExtraction(
+        user_id=user.id,
+        document_id=doc.id,
+        page_number=1,
+        field_key="recent_price",
+        raw_value_text="$68.11",
+        original_text_snippet="Recent price $68.11",
+        confidence_score=0.92,
+        parser_version="v1",
+        as_of_date=date(2026, 1, 2),
+    )
+    db_session.add(extraction)
+    db_session.flush()
+
+    fact = MetricFact(
+        user_id=user.id,
+        stock_id=stock.id,
+        metric_key="mkt.price",
+        value_json={"raw": "$68.11", "fact_nature": "snapshot"},
+        value_numeric=68.11,
+        unit="USD",
+        period_type="AS_OF",
+        as_of_date=date(2026, 1, 2),
+        source_type="parsed",
+        source_ref_id=extraction.id,
+        source_document_id=doc.id,
+        is_current=True,
+    )
+    db_session.add(fact)
+    db_session.commit()
+
+    resp = client.get(f"/api/v1/documents/{doc.id}/review", headers=headers)
+    assert resp.status_code == 200, resp.text
+
+    payload = resp.json()
+    assert payload["document"] == {
+        "id": doc.id,
+        "file_name": "aos.pdf",
+        "ticker": "AOS",
+        "company_name": "SMITH (A.O.)",
+        "report_date": "2026-01-02",
+    }
+    group_map = {group["key"]: group for group in payload["groups"]}
+    assert "identity_header" in group_map
+
+    item = group_map["identity_header"]["items"][0]
+    assert item["metric_key"] == "mkt.price"
+    assert item["label"] == "Price"
+    assert item["fact_id"] == fact.id
+    assert item["display_value"] == "$68.11"
+    assert item["value_numeric"] == 68.11
+    assert item["unit"] == "USD"
+    assert item["period_type"] == "AS_OF"
+    assert item["as_of_date"] == "2026-01-02"
+    assert item["source_type"] == "parsed"
+    assert item["is_current"] is True
+    assert item["editable"] is True
+    assert item["lineage_available"] is True
+    assert item["lineage"] == {
+        "extraction_id": extraction.id,
+        "document_id": doc.id,
+        "page_number": 1,
+        "original_text_snippet": "Recent price $68.11",
+    }
+
+
+def test_document_review_endpoint_requires_document_ownership(
+    client, db_session, user_factory, auth_headers
+):
+    owner = user_factory("documents_review_owner@example.com")
+    intruder = user_factory("documents_review_intruder@example.com")
+
+    doc = PdfDocument(
+        user_id=owner.id,
+        file_name="owned-review.pdf",
+        source="upload",
+        file_storage_key="/tmp/owned-review.pdf",
+        parse_status="parsed",
+        upload_time=datetime.utcnow(),
+    )
+    db_session.add(doc)
+    db_session.commit()
+
+    resp = client.get(f"/api/v1/documents/{doc.id}/review", headers=auth_headers(intruder))
+    assert resp.status_code == 404
+
+
+def test_document_review_correction_creates_manual_current_fact_without_mutating_extraction(
+    client, db_session, user_factory, auth_headers
+):
+    user = user_factory("documents_review_correct@example.com")
+    headers = auth_headers(user)
+
+    stock = Stock(ticker="AOS", exchange="NYSE", company_name="SMITH (A.O.)")
+    db_session.add(stock)
+    db_session.commit()
+
+    doc = PdfDocument(
+        user_id=user.id,
+        file_name="aos-correct.pdf",
+        source="upload",
+        file_storage_key="/tmp/aos-correct.pdf",
+        parse_status="parsed",
+        report_date=date(2026, 1, 2),
+        upload_time=datetime.utcnow(),
+        stock_id=stock.id,
+    )
+    db_session.add(doc)
+    db_session.commit()
+
+    extraction = MetricExtraction(
+        user_id=user.id,
+        document_id=doc.id,
+        page_number=1,
+        field_key="market_cap",
+        raw_value_text="$9.5 billion",
+        original_text_snippet="Market Cap: $9.5 billion",
+        confidence_score=0.92,
+        parser_version="v1",
+    )
+    db_session.add(extraction)
+    db_session.flush()
+
+    parsed_fact = MetricFact(
+        user_id=user.id,
+        stock_id=stock.id,
+        metric_key="mkt.market_cap",
+        value_json={"raw": "$9.5 billion", "fact_nature": "snapshot"},
+        value_numeric=9_500_000_000.0,
+        unit="USD",
+        period_type="AS_OF",
+        as_of_date=date(2026, 1, 2),
+        source_type="parsed",
+        source_ref_id=extraction.id,
+        source_document_id=doc.id,
+        is_current=True,
+    )
+    db_session.add(parsed_fact)
+    db_session.commit()
+
+    resp = client.post(
+        f"/api/v1/documents/{doc.id}/review/facts/{parsed_fact.id}/corrections",
+        headers=headers,
+        json={"value": "$9.6 billion", "note": "Checked against report."},
+    )
+    assert resp.status_code == 200, resp.text
+
+    db_session.refresh(extraction)
+    db_session.refresh(parsed_fact)
+    manual_fact = db_session.get(MetricFact, resp.json()["fact_id"])
+
+    assert extraction.corrected_by_user is False
+    assert extraction.corrected_at is None
+    assert parsed_fact.is_current is False
+    assert manual_fact is not None
+    assert manual_fact.source_type == "manual"
+    assert manual_fact.source_document_id == doc.id
+    assert manual_fact.source_ref_id == extraction.id
+    assert manual_fact.is_current is True
+    assert manual_fact.value_numeric == 9_600_000_000.0
+    assert manual_fact.unit == "USD"
+    assert manual_fact.value_json["raw"] == "$9.6 billion"
+    assert manual_fact.value_json["correction"] is True
+    assert manual_fact.value_json["note"] == "Checked against report."
+
+
+def test_document_review_correction_rejects_fact_from_another_document(
+    client, db_session, user_factory, auth_headers
+):
+    user = user_factory("documents_review_wrong_doc@example.com")
+    headers = auth_headers(user)
+
+    stock = Stock(ticker="AOS", exchange="NYSE", company_name="SMITH (A.O.)")
+    db_session.add(stock)
+    db_session.commit()
+
+    doc = PdfDocument(
+        user_id=user.id,
+        file_name="aos-target.pdf",
+        source="upload",
+        file_storage_key="/tmp/aos-target.pdf",
+        parse_status="parsed",
+        upload_time=datetime.utcnow(),
+        stock_id=stock.id,
+    )
+    other_doc = PdfDocument(
+        user_id=user.id,
+        file_name="aos-other.pdf",
+        source="upload",
+        file_storage_key="/tmp/aos-other.pdf",
+        parse_status="parsed",
+        upload_time=datetime.utcnow(),
+        stock_id=stock.id,
+    )
+    db_session.add_all([doc, other_doc])
+    db_session.commit()
+
+    other_fact = MetricFact(
+        user_id=user.id,
+        stock_id=stock.id,
+        metric_key="mkt.price",
+        value_numeric=68.11,
+        unit="USD",
+        source_type="parsed",
+        source_document_id=other_doc.id,
+        is_current=True,
+    )
+    db_session.add(other_fact)
+    db_session.commit()
+
+    resp = client.post(
+        f"/api/v1/documents/{doc.id}/review/facts/{other_fact.id}/corrections",
+        headers=headers,
+        json={"value": "70"},
+    )
+    assert resp.status_code == 404
+
+
+def test_document_review_correction_rejects_unparseable_numeric_value_without_writes(
+    client, db_session, user_factory, auth_headers
+):
+    user = user_factory("documents_review_bad_value@example.com")
+    headers = auth_headers(user)
+
+    stock = Stock(ticker="AOS", exchange="NYSE", company_name="SMITH (A.O.)")
+    db_session.add(stock)
+    db_session.commit()
+
+    doc = PdfDocument(
+        user_id=user.id,
+        file_name="aos-bad-value.pdf",
+        source="upload",
+        file_storage_key="/tmp/aos-bad-value.pdf",
+        parse_status="parsed",
+        upload_time=datetime.utcnow(),
+        stock_id=stock.id,
+    )
+    db_session.add(doc)
+    db_session.commit()
+
+    fact = MetricFact(
+        user_id=user.id,
+        stock_id=stock.id,
+        metric_key="mkt.price",
+        value_numeric=68.11,
+        unit="USD",
+        source_type="parsed",
+        source_document_id=doc.id,
+        is_current=True,
+    )
+    db_session.add(fact)
+    db_session.commit()
+
+    before_count = db_session.scalar(sa.select(sa.func.count(MetricFact.id)))
+    resp = client.post(
+        f"/api/v1/documents/{doc.id}/review/facts/{fact.id}/corrections",
+        headers=headers,
+        json={"value": "not a number"},
+    )
+
+    db_session.refresh(fact)
+    after_count = db_session.scalar(sa.select(sa.func.count(MetricFact.id)))
+    assert resp.status_code == 400
+    assert fact.is_current is True
+    assert after_count == before_count
+
+
 def test_documents_compare_endpoint_returns_structured_diffs_by_fact_nature(
     client, db_session, user_factory, auth_headers
 ):

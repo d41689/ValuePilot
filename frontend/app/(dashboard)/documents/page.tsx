@@ -434,6 +434,12 @@ export default function DocumentsPage() {
                       </TableCell>
                       <TableCell>
                         <div className="flex flex-wrap gap-2">
+                          <Button asChild variant="outline" size="sm">
+                            <Link href={`/documents/${doc.id}/review`}>
+                              <FileSearch className="h-3 w-3" />
+                              Review Extracted Data
+                            </Link>
+                          </Button>
                           <Button
                             variant="outline"
                             size="sm"
