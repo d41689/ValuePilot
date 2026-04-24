@@ -43,6 +43,7 @@ services:
       - "${HOST_API_PORT:-8101}:8000"
     environment:
       DATABASE_URL: postgresql://${VALUEPILOT_DB_USER:-valuepilot}:${VALUEPILOT_DB_PASSWORD:-valuepilot}@postgres:5432/${VALUEPILOT_PROD_DB:-valuepilot_prod}
+      EDGAR_SCHEDULER_ENABLED: "true"
     volumes:
       - ./docs:/code/docs:ro
     command: >
