@@ -14,6 +14,16 @@ from app.models.stocks import Stock
 from app.api.deps import SessionDep, CurrentUser
 from app.ingestion.normalization.scaler import Scaler
 from app.ingestion.parsers.v1_value_line.evidence import parse_rating_event_notes
+from app.ingestion.parsers.v1_value_line.page_json import (
+    _build_annual_financials as _build_value_line_annual_financials,
+    _build_annual_rates as _build_value_line_annual_rates,
+    _build_capital_structure as _build_value_line_capital_structure,
+    _build_current_position as _build_value_line_current_position,
+    _build_quarterly_block as _build_value_line_quarterly_block,
+    _build_quarterly_block_or_none as _build_value_line_quarterly_block_or_none,
+    _build_quarterly_dividends_paid as _build_value_line_quarterly_dividends_paid,
+    _quarter_month_order as _value_line_quarter_month_order,
+)
 from app.services.active_report_resolver import resolve_active_reports
 from app.services.ingestion_service import IngestionService
 from app.models.artifacts import PdfDocument
@@ -46,10 +56,62 @@ DOCUMENT_REVIEW_LABELS = {
     "snapshot.pe": "P/E Ratio",
     "snapshot.relative_pe": "Relative P/E",
     "snapshot.dividend_yield": "Dividend Yield",
+    "val.pe": "P/E Ratio",
+    "val.pe_trailing": "P/E Trailing",
+    "val.pe_median": "P/E Median",
+    "val.relative_pe": "Relative P/E",
+    "val.dividend_yield": "Dividend Yield",
     "rating.timeliness": "Timeliness",
     "rating.safety": "Safety",
     "rating.technical": "Technical",
     "rating.beta": "Beta",
+}
+
+DOCUMENT_REVIEW_SUMMARY_FIELDS = [
+    ("recent_price", "mkt.price", "Recent Price"),
+    ("pe_ratio", "val.pe", "P/E Ratio"),
+    ("pe_trailing", "val.pe_trailing", "P/E Trailing"),
+    ("pe_median", "val.pe_median", "P/E Median"),
+    ("relative_pe_ratio", "val.relative_pe", "Relative P/E Ratio"),
+    ("dividend_yield", "val.dividend_yield", "Div'd Yld"),
+]
+
+DOCUMENT_REVIEW_CAPITAL_STRUCTURE_FIELDS = {
+    "capital_structure_as_of",
+    "total_debt",
+    "debt_due_in_5_years",
+    "lt_debt",
+    "lt_interest",
+    "debt_percent_of_capital",
+    "leases_uncapitalized_annual_rentals",
+    "pension_assets",
+    "pension_assets_as_of",
+    "pension_obligations",
+    "pension_plan",
+    "preferred_stock",
+    "preferred_dividend",
+    "common_stock_shares_outstanding",
+    "shares_outstanding",
+    "market_cap",
+    "market_cap_as_of",
+}
+
+DOCUMENT_REVIEW_CURRENT_POSITION_FIELDS = {
+    "current_position_usd_millions",
+}
+
+DOCUMENT_REVIEW_ANNUAL_FINANCIALS_FIELDS = {
+    "tables_time_series",
+}
+
+DOCUMENT_REVIEW_ANNUAL_RATES_FIELDS = {
+    "annual_rates_of_change",
+}
+
+DOCUMENT_REVIEW_QUARTERLY_TABLE_FIELDS = {
+    "quarterly_sales_usd_millions",
+    "earnings_per_share",
+    "quarterly_dividends_paid_per_share",
 }
 
 
@@ -453,9 +515,18 @@ def read_document_review(
             "id": doc.id,
             "file_name": doc.file_name,
             "ticker": document_stock.ticker if document_stock else None,
+            "exchange": document_stock.exchange if document_stock else None,
             "company_name": document_stock.company_name if document_stock else None,
             "report_date": _iso_date(doc.report_date),
         },
+        "summary": _document_review_summary(facts, document_stock.id if document_stock else None),
+        "annual_rates": _document_review_annual_rates(session, doc),
+        "quarterly_sales": _document_review_quarterly_sales(session, doc),
+        "earnings_per_share": _document_review_earnings_per_share(session, doc),
+        "quarterly_dividends_paid": _document_review_quarterly_dividends_paid(session, doc),
+        "annual_financials": _document_review_annual_financials(session, doc),
+        "capital_structure": _document_review_capital_structure(session, doc),
+        "current_position": _document_review_current_position(session, doc),
         "groups": groups,
     }
 
@@ -721,9 +792,7 @@ def _document_review_item(
     stock_lookup: dict[int, Stock],
     lineage: Optional[MetricExtraction],
 ) -> dict[str, Any]:
-    value_json = fact.value_json if isinstance(fact.value_json, dict) else {}
-    raw_value = value_json.get("raw")
-    display_value = str(raw_value) if raw_value is not None else _document_review_value_label(fact)
+    display_value = _document_review_display_value(fact)
     stock = stock_lookup.get(fact.stock_id)
     return {
         "metric_key": fact.metric_key,
@@ -765,11 +834,222 @@ def _document_review_value_label(fact: MetricFact) -> Optional[str]:
     return None
 
 
+def _document_review_display_value(fact: MetricFact) -> Optional[str]:
+    value_json = fact.value_json if isinstance(fact.value_json, dict) else {}
+    raw_value = value_json.get("raw")
+    if raw_value is not None:
+        return str(raw_value)
+    return _document_review_value_label(fact)
+
+
 def _document_review_label(metric_key: str) -> str:
     if metric_key in DOCUMENT_REVIEW_LABELS:
         return DOCUMENT_REVIEW_LABELS[metric_key]
     leaf = (metric_key or "Unknown").split(".")[-1]
     return leaf.replace("_", " ").title()
+
+
+def _document_review_summary(
+    facts: list[MetricFact],
+    preferred_stock_id: Optional[int],
+) -> dict[str, Optional[dict[str, Any]]]:
+    candidate_stock_id = preferred_stock_id
+    if candidate_stock_id is None:
+        candidate_stock_id = next((fact.stock_id for fact in facts if fact.stock_id is not None), None)
+
+    facts_by_key = {
+        fact.metric_key: fact
+        for fact in facts
+        if fact.metric_key and (candidate_stock_id is None or fact.stock_id == candidate_stock_id)
+    }
+
+    summary: dict[str, Optional[dict[str, Any]]] = {}
+    for summary_key, metric_key, label in DOCUMENT_REVIEW_SUMMARY_FIELDS:
+        fact = facts_by_key.get(metric_key)
+        summary[summary_key] = _document_review_summary_item(fact, label)
+    return summary
+
+
+def _document_review_summary_item(
+    fact: Optional[MetricFact],
+    label: str,
+) -> Optional[dict[str, Any]]:
+    if fact is None:
+        return None
+    return {
+        "metric_key": fact.metric_key,
+        "label": label,
+        "display_value": _document_review_display_value(fact),
+        "value_numeric": fact.value_numeric,
+        "unit": fact.unit,
+    }
+
+
+def _document_review_capital_structure(
+    session: SessionDep,
+    doc: PdfDocument,
+) -> Optional[dict[str, Any]]:
+    extractions = session.scalars(
+        select(MetricExtraction)
+        .where(
+            MetricExtraction.user_id == doc.user_id,
+            MetricExtraction.document_id == doc.id,
+            MetricExtraction.field_key.in_(DOCUMENT_REVIEW_CAPITAL_STRUCTURE_FIELDS),
+        )
+        .order_by(MetricExtraction.id.asc())
+    ).all()
+    if not extractions:
+        return None
+
+    by_key = _latest_extractions_by_field(extractions)
+    capital_structure = _build_value_line_capital_structure(
+        by_key,
+        insurance_layout=False,
+        adr_layout=False,
+        ads_layout=False,
+    )
+    return capital_structure or None
+
+
+def _document_review_annual_financials(
+    session: SessionDep,
+    doc: PdfDocument,
+) -> Optional[dict[str, Any]]:
+    extractions = session.scalars(
+        select(MetricExtraction)
+        .where(
+            MetricExtraction.user_id == doc.user_id,
+            MetricExtraction.document_id == doc.id,
+            MetricExtraction.field_key.in_(DOCUMENT_REVIEW_ANNUAL_FINANCIALS_FIELDS),
+        )
+        .order_by(MetricExtraction.id.asc())
+    ).all()
+    if not extractions:
+        return None
+
+    by_key = _latest_extractions_by_field(extractions)
+    annual_financials = _build_value_line_annual_financials(
+        by_key,
+        report_date=_iso_date(doc.report_date),
+        insurance_layout=False,
+        adr_layout=False,
+        ads_layout=False,
+        text=doc.raw_text,
+    )
+    return annual_financials or None
+
+
+def _document_review_annual_rates(
+    session: SessionDep,
+    doc: PdfDocument,
+) -> Optional[dict[str, Any]]:
+    extractions = session.scalars(
+        select(MetricExtraction)
+        .where(
+            MetricExtraction.user_id == doc.user_id,
+            MetricExtraction.document_id == doc.id,
+            MetricExtraction.field_key.in_(DOCUMENT_REVIEW_ANNUAL_RATES_FIELDS),
+        )
+        .order_by(MetricExtraction.id.asc())
+    ).all()
+    if not extractions:
+        return None
+
+    by_key = _latest_extractions_by_field(extractions)
+    annual_rates = _build_value_line_annual_rates(
+        doc.raw_text or "",
+        by_key,
+        insurance_layout=False,
+        adr_layout=False,
+        ads_layout=False,
+    )
+    return annual_rates or None
+
+
+def _document_review_quarterly_extractions(
+    session: SessionDep,
+    doc: PdfDocument,
+) -> dict[str, MetricExtraction]:
+    extractions = session.scalars(
+        select(MetricExtraction)
+        .where(
+            MetricExtraction.user_id == doc.user_id,
+            MetricExtraction.document_id == doc.id,
+            MetricExtraction.field_key.in_(DOCUMENT_REVIEW_QUARTERLY_TABLE_FIELDS),
+        )
+        .order_by(MetricExtraction.id.asc())
+    ).all()
+    return _latest_extractions_by_field(extractions)
+
+
+def _document_review_quarterly_sales(
+    session: SessionDep,
+    doc: PdfDocument,
+) -> Optional[dict[str, Any]]:
+    by_key = _document_review_quarterly_extractions(session, doc)
+    if "quarterly_sales_usd_millions" not in by_key:
+        return None
+    quarterly_sales = _build_value_line_quarterly_block(
+        by_key.get("quarterly_sales_usd_millions"),
+        unit="USD_millions",
+        report_date=_iso_date(doc.report_date),
+        month_order=_value_line_quarter_month_order(doc.raw_text or ""),
+    )
+    return quarterly_sales or None
+
+
+def _document_review_earnings_per_share(
+    session: SessionDep,
+    doc: PdfDocument,
+) -> Optional[dict[str, Any]]:
+    by_key = _document_review_quarterly_extractions(session, doc)
+    if "earnings_per_share" not in by_key:
+        return None
+    earnings = _build_value_line_quarterly_block_or_none(
+        by_key.get("earnings_per_share"),
+        unit="USD_per_share",
+        report_date=_iso_date(doc.report_date),
+        month_order=_value_line_quarter_month_order(doc.raw_text or ""),
+    )
+    return earnings or None
+
+
+def _document_review_quarterly_dividends_paid(
+    session: SessionDep,
+    doc: PdfDocument,
+) -> Optional[dict[str, Any]]:
+    by_key = _document_review_quarterly_extractions(session, doc)
+    if "quarterly_dividends_paid_per_share" not in by_key:
+        return None
+    dividends = _build_value_line_quarterly_dividends_paid(
+        doc.raw_text or "",
+        by_key.get("quarterly_dividends_paid_per_share"),
+        unit="USD_per_share",
+        report_date=_iso_date(doc.report_date),
+        adr_layout=False,
+    )
+    return dividends or None
+
+
+def _document_review_current_position(
+    session: SessionDep,
+    doc: PdfDocument,
+) -> Optional[dict[str, Any]]:
+    extractions = session.scalars(
+        select(MetricExtraction)
+        .where(
+            MetricExtraction.user_id == doc.user_id,
+            MetricExtraction.document_id == doc.id,
+            MetricExtraction.field_key.in_(DOCUMENT_REVIEW_CURRENT_POSITION_FIELDS),
+        )
+        .order_by(MetricExtraction.id.asc())
+    ).all()
+    if not extractions:
+        return None
+
+    by_key = _latest_extractions_by_field(extractions)
+    current_position = _build_value_line_current_position(by_key)
+    return current_position or None
 
 
 def _document_review_group_key(fact: MetricFact) -> str:

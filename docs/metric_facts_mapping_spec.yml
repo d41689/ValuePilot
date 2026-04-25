@@ -890,6 +890,26 @@ mappings:
     value:
       numeric_from: long_term_projection.scenarios.high.price.normalized
 
+  - id: proj.long_term.low_price_gain
+    json_path: long_term_projection.scenarios.low.price_gain.normalized
+    metric_key: proj.long_term.low_price_gain
+    period_type: PROJECTION_RANGE
+    unit: ratio
+    period_end_date:
+      from: meta.report_date
+    value:
+      numeric_from: long_term_projection.scenarios.low.price_gain.normalized
+
+  - id: proj.long_term.high_price_gain
+    json_path: long_term_projection.scenarios.high.price_gain.normalized
+    metric_key: proj.long_term.high_price_gain
+    period_type: PROJECTION_RANGE
+    unit: ratio
+    period_end_date:
+      from: meta.report_date
+    value:
+      numeric_from: long_term_projection.scenarios.high.price_gain.normalized
+
   - id: proj.long_term.low_total_return
     json_path: long_term_projection.scenarios.low.annual_total_return.normalized
     metric_key: proj.long_term.low_total_return
@@ -909,6 +929,39 @@ mappings:
       from: meta.report_date
     value:
       numeric_from: long_term_projection.scenarios.high.annual_total_return.normalized
+
+  # -------------------------
+  # OWNERSHIP / INSTITUTIONAL DECISIONS
+  # -------------------------
+  - id: ownership.institutional.to_buy.q
+    json_path: institutional_decisions.by_quarter[]
+    metric_key: ownership.institutional.to_buy
+    period_type: Q
+    unit: count
+    period_end_date:
+      from: period_end_date
+    value:
+      numeric_from: to_buy
+
+  - id: ownership.institutional.to_sell.q
+    json_path: institutional_decisions.by_quarter[]
+    metric_key: ownership.institutional.to_sell
+    period_type: Q
+    unit: count
+    period_end_date:
+      from: period_end_date
+    value:
+      numeric_from: to_sell
+
+  - id: ownership.institutional.holdings.q
+    json_path: institutional_decisions.by_quarter[]
+    metric_key: ownership.institutional.holdings
+    period_type: Q
+    unit: thousand_shares
+    period_end_date:
+      from: period_end_date
+    value:
+      numeric_from: holdings_thousand_shares
 
   # -------------------------
   # TEXT FIELDS (stored as value_text; can also keep value_json)
