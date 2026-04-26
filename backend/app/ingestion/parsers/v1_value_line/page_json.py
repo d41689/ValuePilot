@@ -830,7 +830,14 @@ def _build_annual_financials(
         drop_all_null=True,
     )
     if insurance_layout:
-        income_keys = ["net_profit"]
+        income_keys = [
+            "pc_premiums_earned",
+            "loss_to_prem_earned_pct",
+            "expense_to_prem_written",
+            "underwriting_margin_pct",
+            "net_profit",
+            "inv_inc_to_total_investments_pct",
+        ]
     else:
         income_keys = [
             "revenues" if use_revenues else "sales",
@@ -856,8 +863,15 @@ def _build_annual_financials(
     )
 
     # v1.1: keep annual balance sheet/returns grouped (no BUD-only flattened fields).
-    balance_keys = ["total_assets", "shareholders_equity"]
-    if not insurance_layout:
+    if insurance_layout:
+        balance_keys = [
+            "total_assets",
+            "shareholders_equity",
+            "return_on_shareholders_equity_pct",
+            "retained_to_common_equity_pct",
+            "all_dividends_to_net_profit_pct",
+        ]
+    else:
         balance_keys = [
             "working_capital",
             "long_term_debt",
