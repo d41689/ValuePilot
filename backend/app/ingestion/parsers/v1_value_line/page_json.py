@@ -10,6 +10,7 @@ from app.ingestion.parsers.v1_value_line.semantics import (
     fiscal_year_end_month_from_order,
     is_estimated_year,
     quarter_end_date_for_fiscal_year,
+    quarter_fact_nature,
     split_actual_and_estimate_years,
 )
 
@@ -636,21 +637,25 @@ def _build_quarterly_block(
     by_year = []
     for row in rows:
         year = row.get("calendar_year")
-        fact_nature = "estimate" if is_estimated_year(
+        year_fact_nature = "estimate" if is_estimated_year(
             int(year) if year is not None else None,
             report_date,
             fiscal_year_end_month,
         ) else "actual"
+        q1_end = quarter_end_date_for_fiscal_year(year, 1, month_order)
+        q2_end = quarter_end_date_for_fiscal_year(year, 2, month_order)
+        q3_end = quarter_end_date_for_fiscal_year(year, 3, month_order)
+        q4_end = quarter_end_date_for_fiscal_year(year, 4, month_order)
         quarters = {
-            "Q1": {"period_end": quarter_end_date_for_fiscal_year(year, 1, month_order), "value": row.get("q1"), "fact_nature": fact_nature},
-            "Q2": {"period_end": quarter_end_date_for_fiscal_year(year, 2, month_order), "value": row.get("q2"), "fact_nature": fact_nature},
-            "Q3": {"period_end": quarter_end_date_for_fiscal_year(year, 3, month_order), "value": row.get("q3"), "fact_nature": fact_nature},
-            "Q4": {"period_end": quarter_end_date_for_fiscal_year(year, 4, month_order), "value": row.get("q4"), "fact_nature": fact_nature},
+            "Q1": {"period_end": q1_end, "value": row.get("q1"), "fact_nature": quarter_fact_nature(q1_end, report_date)},
+            "Q2": {"period_end": q2_end, "value": row.get("q2"), "fact_nature": quarter_fact_nature(q2_end, report_date)},
+            "Q3": {"period_end": q3_end, "value": row.get("q3"), "fact_nature": quarter_fact_nature(q3_end, report_date)},
+            "Q4": {"period_end": q4_end, "value": row.get("q4"), "fact_nature": quarter_fact_nature(q4_end, report_date)},
         }
         by_year.append({
             "calendar_year": year,
             "quarters": quarters,
-            "full_year": {"value": row.get("full_year"), "fact_nature": fact_nature},
+            "full_year": {"value": row.get("full_year"), "fact_nature": year_fact_nature},
         })
 
     if add_missing_report_year and report_year:

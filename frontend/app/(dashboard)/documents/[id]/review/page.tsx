@@ -62,7 +62,10 @@ type ReviewCurrentPositionTable = ReviewProjectionTable & {
   rows: Array<ReviewProjectionTable['rows'][number] & { section: string }>;
 };
 
-type ReviewAnnualFinancialsTable = ReviewProjectionTable;
+type ReviewAnnualFinancialsTable = {
+  columns: ReviewProjectionTable['columns'];
+  rows: Array<ReviewProjectionTable['rows'][number] & { section?: string | null }>;
+};
 
 type ReviewParserTable = ReviewProjectionTable & {
   unit: string | null;
@@ -684,25 +687,46 @@ export default function DocumentReviewPage() {
                     </tr>
                   </thead>
                   <tbody>
-                    {annualFinancialsTable.rows.map((row) => (
-                      <tr key={row.key} className="border-b border-border/60 last:border-0">
-                        <th className="sticky left-0 z-10 bg-background/95 px-4 py-3 text-left font-semibold text-foreground">
-                          {row.label}
-                        </th>
-                        {row.cells.map((cell) => (
-                          <td
-                            key={cell.key}
-                            className={`px-4 py-3 text-right ${
-                              cell.isEstimate
-                                ? 'font-semibold text-red-600'
-                                : 'font-semibold text-foreground'
-                            }`}
-                          >
-                            {cell.displayValue}
-                          </td>
-                        ))}
-                      </tr>
-                    ))}
+                    {(() => {
+                      let prevSection: string | null = null;
+                      return annualFinancialsTable.rows.flatMap((row) => {
+                        const rowSection = row.section ?? null;
+                        const elements = [];
+                        if (rowSection && rowSection !== prevSection) {
+                          prevSection = rowSection;
+                          elements.push(
+                            <tr key={`section-${rowSection}-${row.key}`} className="border-b border-border/40 bg-muted/40">
+                              <th
+                                colSpan={annualFinancialsTable.columns.length + 1}
+                                className="sticky left-0 z-10 bg-muted/40 px-4 py-2 text-left text-xs font-semibold uppercase tracking-wide text-muted-foreground"
+                              >
+                                {rowSection}
+                              </th>
+                            </tr>
+                          );
+                        }
+                        elements.push(
+                          <tr key={row.key} className="border-b border-border/60 last:border-0">
+                            <th className="sticky left-0 z-10 bg-background/95 px-4 py-3 text-left font-semibold text-foreground">
+                              {row.label}
+                            </th>
+                            {row.cells.map((cell) => (
+                              <td
+                                key={cell.key}
+                                className={`px-4 py-3 text-right ${
+                                  cell.isEstimate
+                                    ? 'font-semibold text-red-600'
+                                    : 'font-semibold text-foreground'
+                                }`}
+                              >
+                                {cell.displayValue}
+                              </td>
+                            ))}
+                          </tr>
+                        );
+                        return elements;
+                      });
+                    })()}
                   </tbody>
                 </table>
               </div>

@@ -830,6 +830,8 @@ def _document_review_value_label(fact: MetricFact) -> Optional[str]:
     if fact.value_text:
         return fact.value_text
     if fact.value_numeric is not None:
+        if fact.unit == "ratio" and "yield" in (fact.metric_key or ""):
+            return f"{fact.value_numeric * 100:g}%"
         return f"{fact.value_numeric:g}"
     return None
 
@@ -857,11 +859,21 @@ def _document_review_summary(
     if candidate_stock_id is None:
         candidate_stock_id = next((fact.stock_id for fact in facts if fact.stock_id is not None), None)
 
-    facts_by_key = {
-        fact.metric_key: fact
-        for fact in facts
-        if fact.metric_key and (candidate_stock_id is None or fact.stock_id == candidate_stock_id)
-    }
+    facts_by_key: dict[str, MetricFact] = {}
+    for fact in facts:
+        if not fact.metric_key:
+            continue
+        if candidate_stock_id is not None and fact.stock_id != candidate_stock_id:
+            continue
+        key = fact.metric_key
+        current = facts_by_key.get(key)
+        if current is None:
+            facts_by_key[key] = fact
+        elif fact.period_type == "AS_OF" and current.period_type != "AS_OF":
+            # Prefer snapshot (AS_OF) over historical (FY) for summary display
+            facts_by_key[key] = fact
+        elif fact.period_type == current.period_type and _document_review_fact_rank(fact) >= _document_review_fact_rank(current):
+            facts_by_key[key] = fact
 
     summary: dict[str, Optional[dict[str, Any]]] = {}
     for summary_key, metric_key, label in DOCUMENT_REVIEW_SUMMARY_FIELDS:
@@ -902,9 +914,13 @@ def _document_review_capital_structure(
         return None
 
     by_key = _latest_extractions_by_field(extractions)
+    insurance_layout = bool(
+        doc.raw_text
+        and re.search(r'P/CPremiumsEarned|UnderwritingMargin|LossToPrem|InvInc/TotalInv', doc.raw_text, re.IGNORECASE)
+    )
     capital_structure = _build_value_line_capital_structure(
         by_key,
-        insurance_layout=False,
+        insurance_layout=insurance_layout,
         adr_layout=False,
         ads_layout=False,
     )
@@ -928,10 +944,26 @@ def _document_review_annual_financials(
         return None
 
     by_key = _latest_extractions_by_field(extractions)
+    ts = by_key.get("tables_time_series")
+    insurance_layout = False
+    if ts and ts.parsed_value_json:
+        annual = ts.parsed_value_json.get(
+            "annual_financials_and_ratios_2015_2026_with_projection_2028_2030", {}
+        )
+        per_share = annual.get("per_share", {})
+        insurance_keys = (
+            "pc_prem_earned_per_share_usd",
+            "investment_income_per_share_usd",
+            "underwriting_income_per_share_usd",
+        )
+        insurance_layout = any(
+            isinstance(per_share.get(k), list) and any(v is not None for v in per_share.get(k, []))
+            for k in insurance_keys
+        )
     annual_financials = _build_value_line_annual_financials(
         by_key,
         report_date=_iso_date(doc.report_date),
-        insurance_layout=False,
+        insurance_layout=insurance_layout,
         adr_layout=False,
         ads_layout=False,
         text=doc.raw_text,
@@ -956,10 +988,16 @@ def _document_review_annual_rates(
         return None
 
     by_key = _latest_extractions_by_field(extractions)
+    ar = by_key.get("annual_rates_of_change")
+    insurance_layout = bool(
+        ar
+        and ar.parsed_value_json
+        and (ar.parsed_value_json.get("premium_income") or ar.parsed_value_json.get("investment_income"))
+    )
     annual_rates = _build_value_line_annual_rates(
         doc.raw_text or "",
         by_key,
-        insurance_layout=False,
+        insurance_layout=insurance_layout,
         adr_layout=False,
         ads_layout=False,
     )

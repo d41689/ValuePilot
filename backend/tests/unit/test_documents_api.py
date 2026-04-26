@@ -1148,7 +1148,9 @@ def test_document_review_endpoint_returns_parser_annual_and_quarterly_blocks(
         "to_period": "2028-2030",
         "value": 7.5,
     }
-    assert payload["quarterly_sales"]["by_year"][1]["quarters"]["Q1"]["fact_nature"] == "estimate"
+    # Q1-Q3 2025 are actual (period ended well before the Dec 26 report); Q4 (Dec 31) is estimated.
+    assert payload["quarterly_sales"]["by_year"][1]["quarters"]["Q1"]["fact_nature"] == "actual"
+    assert payload["quarterly_sales"]["by_year"][1]["quarters"]["Q4"]["fact_nature"] == "estimate"
     assert payload["quarterly_sales"]["by_year"][1]["full_year"]["value"] == 1750.0
     assert payload["earnings_per_share"]["by_year"][0]["full_year"]["value"] == 3.21
     assert payload["quarterly_dividends_paid"]["by_year"][0]["full_year"]["value"] == 1.44

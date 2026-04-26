@@ -397,17 +397,17 @@
           "Q1": {
             "period_end": "2025-03-31",
             "value": 963.9,
-            "fact_nature": "estimate"
+            "fact_nature": "actual"
           },
           "Q2": {
             "period_end": "2025-06-30",
             "value": 1011.3,
-            "fact_nature": "estimate"
+            "fact_nature": "actual"
           },
           "Q3": {
             "period_end": "2025-09-30",
             "value": 942.5,
-            "fact_nature": "estimate"
+            "fact_nature": "actual"
           },
           "Q4": {
             "period_end": "2025-12-31",
@@ -556,17 +556,17 @@
           "Q1": {
             "period_end": "2025-03-31",
             "value": 0.95,
-            "fact_nature": "estimate"
+            "fact_nature": "actual"
           },
           "Q2": {
             "period_end": "2025-06-30",
             "value": 1.07,
-            "fact_nature": "estimate"
+            "fact_nature": "actual"
           },
           "Q3": {
             "period_end": "2025-09-30",
             "value": 0.94,
-            "fact_nature": "estimate"
+            "fact_nature": "actual"
           },
           "Q4": {
             "period_end": "2025-12-31",
@@ -744,17 +744,17 @@
           "Q1": {
             "period_end": "2025-03-31",
             "value": 0.34,
-            "fact_nature": "estimate"
+            "fact_nature": "actual"
           },
           "Q2": {
             "period_end": "2025-06-30",
             "value": 0.34,
-            "fact_nature": "estimate"
+            "fact_nature": "actual"
           },
           "Q3": {
             "period_end": "2025-09-30",
             "value": 0.34,
-            "fact_nature": "estimate"
+            "fact_nature": "actual"
           },
           "Q4": {
             "period_end": "2025-12-31",

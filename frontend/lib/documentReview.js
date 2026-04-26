@@ -62,7 +62,10 @@ const TABLE_ROW_ORDER = [
 const ANNUAL_FINANCIAL_ROW_LABELS = {
   'per_share.sales': 'Sales / Share',
   'per_share.revenues': 'Revenues / Share',
+  'per_share.premiums_earned': 'P/C Premiums Earned / Share',
   'per_share.cash_flow': 'Cash Flow / Share',
+  'per_share.investment_income': 'Investment Income / Share',
+  'per_share.underwriting_income': 'Underwriting Income / Share',
   'per_share.capital_spending': 'Capital Spending / Share',
   'per_share.eps': 'Earnings / Share',
   'per_share.dividends_declared': 'Dividends Declared / Share',
@@ -92,7 +95,10 @@ const ANNUAL_FINANCIAL_ROW_LABELS = {
 const ANNUAL_FINANCIAL_ROW_ORDER = [
   'per_share.sales',
   'per_share.revenues',
+  'per_share.premiums_earned',
   'per_share.cash_flow',
+  'per_share.investment_income',
+  'per_share.underwriting_income',
   'per_share.capital_spending',
   'per_share.eps',
   'per_share.dividends_declared',
@@ -810,6 +816,7 @@ function buildDocumentReviewAnnualFinancials(groups, annualFinancials = null) {
     .map((row) => ({
       key: row.key,
       label: row.label,
+      section: annualFinancialRowSection(row.key),
       cells: columns.map((column) => {
         const item = row.cells.get(column.key);
         return {
@@ -854,6 +861,7 @@ function buildAnnualFinancialsFromBlock(annualFinancials) {
       const row = {
         key: metricKey,
         label: ANNUAL_FINANCIAL_ROW_LABELS[metricKey] || humanizeMetricKey(seriesKey),
+        section: annualFinancialRowSection(metricKey),
         sortKey: annualFinancialMetricSortKey(metricKey),
         cells: columns.map((column) => ({
           key: column.key,
@@ -876,6 +884,7 @@ function buildAnnualFinancialsFromBlock(annualFinancials) {
     .map((row) => ({
       key: row.key,
       label: row.label,
+      section: row.section,
       cells: row.cells,
     }));
 
@@ -912,15 +921,20 @@ function buildDocumentReviewAnnualRates(annualRates = null) {
         key,
         label: metric.display_name ? String(metric.display_name) : humanizeMetricKey(key),
         sortKey: annualRateSortKey(key),
-        cells: columns.map((column) => ({
-          key: column.key,
-          label: column.label,
-          displayValue:
-            column.key === 'estimated_cagr_pct'
-              ? formatAnnualRatePercent(metric.estimated_cagr_pct?.value)
-              : formatAnnualRatePercent(metric[column.key]),
-          isEstimate: column.isEstimate,
-        })),
+        cells: columns.map((column) => {
+          let displayValue;
+          if (column.key === 'estimated_cagr_pct') {
+            displayValue = formatAnnualRatePercent(metric.estimated_cagr_pct?.value);
+          } else {
+            const raw = metric[column.key];
+            const note = metric[`${column.key.replace('_cagr_pct', '')}_note`];
+            displayValue =
+              (raw === null || raw === undefined) && note
+                ? String(note)
+                : formatAnnualRatePercent(raw);
+          }
+          return { key: column.key, label: column.label, displayValue, isEstimate: column.isEstimate };
+        }),
       };
     })
     .filter((row) => row.key && row.cells.some((cell) => cell.displayValue !== '—'))
@@ -1038,9 +1052,9 @@ function buildDocumentReviewCapitalStructure(groups, capitalStructure = null) {
     metrics.push({
       key: config.key,
       label: config.label,
-      displayValue: fact
-        ? formatCapitalStructureValue(config.key, fact)
-        : formatRawCapitalStructureValue(config.key, rawValue.value),
+      displayValue: rawValue?.exists
+        ? formatRawCapitalStructureValue(config.key, rawValue.value)
+        : formatCapitalStructureValue(config.key, fact),
     });
   }
 
@@ -1219,6 +1233,18 @@ function annualFinancialRowSortKey(item) {
 function annualFinancialMetricSortKey(metricKey) {
   const index = ANNUAL_FINANCIAL_ROW_ORDER.indexOf(metricKey);
   return index === -1 ? 999 : index;
+}
+
+function annualFinancialRowSection(metricKey) {
+  const prefix = String(metricKey).split('.')[0];
+  const map = {
+    per_share: 'Per Share',
+    equity: 'Per Share',
+    is: 'Income Statement',
+    bs: 'Balance Sheet',
+    val: 'Valuation',
+  };
+  return map[prefix] || null;
 }
 
 function formatAnnualFinancialRowLabel(item) {
@@ -1573,23 +1599,23 @@ function formatRawCapitalStructureValue(key, value) {
     }
   }
 
-  if (value.display !== null && value.display !== undefined && value.display !== '') {
-    return String(value.display);
-  }
-  if (value.notes) {
-    return String(value.notes);
-  }
   if (typeof value.normalized === 'number') {
-    if (value.unit === 'USD') {
-      return formatCompactCurrency(value.normalized);
-    }
     if (value.unit === 'shares' || key === 'shares_outstanding') {
       return formatInteger(value.normalized);
+    }
+    if (value.unit === 'USD') {
+      return formatCompactCurrency(value.normalized);
     }
     if (value.unit === 'ratio' || key.includes('percent')) {
       return formatPercentValue(value.normalized) || '—';
     }
     return formatNumber(value.normalized);
+  }
+  if (value.display !== null && value.display !== undefined && value.display !== '') {
+    return String(value.display);
+  }
+  if (value.notes) {
+    return String(value.notes);
   }
   return '—';
 }
