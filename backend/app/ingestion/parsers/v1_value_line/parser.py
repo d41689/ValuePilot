@@ -1996,78 +1996,71 @@ class ValueLineV1Parser(BaseParser):
                     return False
                 return True
 
-            if stop_idx is not None and len(values_raw) > len(years):
-                if is_row_label(tokens[stop_idx]):
-                    values_raw = values_raw[1:]
+            row_years = full_years if len(full_years) > len(years) and len(values_raw) > len(years) else years
+            dropped_leading_value = False
 
-            if missing_last_year and len(values_raw) == len(years) and stop_idx is not None:
+            if stop_idx is not None and len(values_raw) > len(row_years):
                 if is_row_label(tokens[stop_idx]):
                     values_raw = values_raw[1:]
+                    dropped_leading_value = True
+
+            if missing_last_year and len(values_raw) == len(row_years) and stop_idx is not None:
+                if is_row_label(tokens[stop_idx]):
+                    values_raw = values_raw[1:]
+                    dropped_leading_value = True
 
             # Some PDFs (notably ADS layouts) can bleed the prior row's projection value into the
             # start of this row. If the stop token looks like an annual-table row label, apply a
             # small heuristic to drop the leading outlier.
-            if missing_last_year and stop_idx is not None and len(values_raw) == len(years) - 1:
+            if (
+                missing_last_year
+                and stop_idx is not None
+                and not dropped_leading_value
+                and len(values_raw) == len(row_years) - 1
+            ):
                 stop_token = tokens[stop_idx]
                 if re.search(r"(Outst|AvgAnn.?lP/ERatio|RelativeP/ERatio)", stop_token, re.IGNORECASE):
                     first = _to_float(values_raw[0]) if values_raw else None
                     second = _to_float(values_raw[1]) if len(values_raw) > 1 else None
                     if "OUTST" in stop_token.upper():
-                        if first is not None and second is not None and first > 200 and second < 200:
+                        if first is not None and second is not None and first > 100 and second < 100:
                             values_raw = values_raw[1:]
                     elif "AVGANN" in stop_token.upper():
                         if first is not None and second is not None and first > 3 and second <= 3:
                             values_raw = values_raw[1:]
                     elif "RELATIVEP/ERATIO" in stop_token.upper():
-                        if first is not None and all(v.upper() in {"--", "NMF", "NIL"} for v in values_raw[1:]):
+                        if (
+                            first is not None
+                            and len(values_raw) > 1
+                            and (
+                                all(v.upper() in {"--", "NMF", "NIL"} for v in values_raw[1:])
+                                or ("%" not in values_raw[0] and "%" in values_raw[1])
+                            )
+                        ):
                             values_raw = values_raw[1:]
 
-            def trailing_placeholders(values: list[str]) -> int:
-                count = 0
-                for token in reversed(values):
-                    if str(token).upper() in {"--", "NMF", "NIL"}:
-                        count += 1
-                    else:
-                        break
-                return count
+            if len(values_raw) > len(row_years):
+                values_raw = values_raw[-len(row_years):]
 
-            if missing_last_year and len(values_raw) > len(years):
-                # Determine how many trailing years have no value for this row.
-                # Rows annotated with "Boldfiguresare" or "ValueLine" immediately
-                # before their label reliably include a 3rd right-side estimate
-                # column (e.g. the current-year P/E estimate), so only the final
-                # projection year is absent → n=1. All other rows (e.g. div yield
-                # when Value Line omits the upcoming-year estimate) use the
-                # document-level gap count as a lower bound.
-                pre_label_tok = tokens[label_idx - 1] if label_idx > 0 else ""
-                if re.search(r'Bold|ValueLine', pre_label_tok, re.IGNORECASE):
-                    n = 1
+            if missing_last_year:
+                if len(values_raw) == len(row_years):
+                    aligned_years = row_years
+                elif len(values_raw) == len(row_years) - 1:
+                    aligned_years = row_years[:-1]
+                elif len(values_raw) == len(row_years) - 2:
+                    aligned_years = row_years[:-2]
                 else:
-                    n = max(1, len(full_years) - len(values_raw))
-                values_raw = values_raw[-(len(years) - n):]
-                aligned_years = years[:-n]
-                if trailing_placeholders(values_raw) >= 2 and len(years) >= 2:
-                    values_raw = values_raw[1:]
-                    aligned_years = years[:-(n + 1)]
+                    aligned_years = row_years[: len(values_raw)]
             else:
-                if len(values_raw) > len(years):
-                    values_raw = values_raw[-len(years):]
-                if missing_last_year:
-                    if len(values_raw) == len(years):
-                        aligned_years = years
-                    elif len(values_raw) == len(years) - 1:
-                        aligned_years = years[:-1]
-                    elif len(values_raw) == len(years) - 2:
-                        aligned_years = years[:-2]
-                    else:
-                        aligned_years = years[: len(values_raw)]
-                else:
-                    aligned_years = self._align_years(years, values_raw)
+                aligned_years = self._align_years(row_years, values_raw)
 
             values = [coerce(token, percent_ratio) for token in values_raw]
             series = [None for _ in years]
+            selected_year_indexes = {year: idx for idx, year in enumerate(years)}
             for year, value in zip(aligned_years, values):
-                series[years.index(year)] = value
+                idx = selected_year_indexes.get(year)
+                if idx is not None:
+                    series[idx] = value
 
             projection = None
             for k in range(label_idx + 1, len(tokens)):
