@@ -12,7 +12,7 @@ function sortWatchlistMembers(rows) {
 function buildFairValueEdits(rows) {
   const next = {};
   for (const row of rows) {
-    next[row.stock_id] = row.fair_value !== null ? row.fair_value.toString() : '';
+    next[row.stock_id] = row.fair_value !== null ? row.fair_value.toFixed(2) : '';
   }
   return next;
 }

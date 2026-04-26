@@ -1009,6 +1009,67 @@ def test_document_review_endpoint_returns_parser_annual_financials_block(
     assert annual["balance_sheet_and_returns_usd_millions"]["long_term_debt"]["2025"] == 457.3
 
 
+def test_document_review_endpoint_returns_total_return_block(
+    client, db_session, user_factory, auth_headers
+):
+    user = user_factory("documents_review_total_return@example.com")
+    headers = auth_headers(user)
+
+    stock = Stock(ticker="AXS", exchange="NYSE", company_name="AXIS Capital")
+    db_session.add(stock)
+    db_session.commit()
+
+    doc = PdfDocument(
+        user_id=user.id,
+        file_name="axs-total-return.pdf",
+        source="upload",
+        file_storage_key="/tmp/axs-total-return.pdf",
+        parse_status="parsed",
+        report_date=date(2026, 1, 9),
+        upload_time=datetime.utcnow(),
+        stock_id=stock.id,
+    )
+    db_session.add(doc)
+    db_session.commit()
+
+    db_session.add(
+        MetricExtraction(
+            user_id=user.id,
+            document_id=doc.id,
+            page_number=1,
+            field_key="price_semantics_and_returns",
+            raw_value_text=None,
+            parsed_value_json={
+                "value_line_total_return_as_of": "2025-12-29",
+                "total_return": {
+                    "stock": {"1y": 0.244, "3y": 1.171, "5y": 1.502},
+                    "index": {"1y": 0.036, "3y": 0.392, "5y": 0.685},
+                },
+            },
+            original_text_snippet="% TOT. RETURN 12/29/25",
+            confidence_score=0.8,
+            parser_version="v1",
+        )
+    )
+    db_session.commit()
+
+    resp = client.get(f"/api/v1/documents/{doc.id}/review", headers=headers)
+    assert resp.status_code == 200, resp.text
+
+    total_return = resp.json()["total_return"]
+    assert total_return["as_of_date"] == "2025-12-29"
+    assert total_return["unit"] == "percent"
+    assert total_return["fact_nature"] == "snapshot"
+    assert total_return["series"] == [
+        {"name": "this_stock", "window_years": 1, "value_pct": 24.4},
+        {"name": "this_stock", "window_years": 3, "value_pct": 117.1},
+        {"name": "this_stock", "window_years": 5, "value_pct": 150.2},
+        {"name": "vl_arithmetic_index", "window_years": 1, "value_pct": 3.6},
+        {"name": "vl_arithmetic_index", "window_years": 3, "value_pct": 39.2},
+        {"name": "vl_arithmetic_index", "window_years": 5, "value_pct": 68.5},
+    ]
+
+
 def test_document_review_endpoint_returns_parser_annual_and_quarterly_blocks(
     client, db_session, user_factory, auth_headers
 ):

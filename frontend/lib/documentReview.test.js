@@ -11,6 +11,7 @@ const {
   buildDocumentReviewQuality,
   buildDocumentReviewTargetRange,
   buildDocumentReviewProjections,
+  buildDocumentReviewTotalReturn,
   buildDocumentReviewInstitutionalDecisions,
   buildDocumentReviewAnnualFinancials,
   buildDocumentReviewAnnualRates,
@@ -659,6 +660,43 @@ test('buildDocumentReviewProjections maps high and low scenarios into a table', 
     [
       ['high', 'High', ['405', '90%', '18.0%']],
       ['low', 'Low', ['300', '-18%', '-8%']],
+    ]
+  );
+});
+
+test('buildDocumentReviewTotalReturn maps Value Line total return into a table', () => {
+  const table = buildDocumentReviewTotalReturn({
+    as_of_date: '2025-12-29',
+    unit: 'percent',
+    source: 'value_line',
+    series: [
+      { name: 'this_stock', window_years: 1, value_pct: 24.4 },
+      { name: 'this_stock', window_years: 3, value_pct: 117.1 },
+      { name: 'this_stock', window_years: 5, value_pct: 150.2 },
+      { name: 'vl_arithmetic_index', window_years: 1, value_pct: 3.6 },
+      { name: 'vl_arithmetic_index', window_years: 3, value_pct: 39.2 },
+      { name: 'vl_arithmetic_index', window_years: 5, value_pct: 68.5 },
+    ],
+  });
+
+  assert.equal(table.unit, 'As of 12/29/25');
+  assert.deepEqual(
+    table.columns.map((column) => [column.key, column.label]),
+    [
+      ['1', '1 yr.'],
+      ['3', '3 yr.'],
+      ['5', '5 yr.'],
+    ]
+  );
+  assert.deepEqual(
+    table.rows.map((row) => [
+      row.key,
+      row.label,
+      row.cells.map((cell) => cell.displayValue),
+    ]),
+    [
+      ['this_stock', 'This Stock', ['24.4%', '117.1%', '150.2%']],
+      ['vl_arithmetic_index', 'VL Arithmetic Index', ['3.6%', '39.2%', '68.5%']],
     ]
   );
 });

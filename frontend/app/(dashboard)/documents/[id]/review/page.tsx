@@ -105,6 +105,7 @@ type ReviewPayload = {
   earnings_per_share: Record<string, unknown> | null;
   quarterly_dividends_paid: Record<string, unknown> | null;
   annual_financials: Record<string, unknown> | null;
+  total_return: Record<string, unknown> | null;
   capital_structure: Record<string, unknown> | null;
   current_position: Record<string, unknown> | null;
   financial_position: Record<string, unknown> | null;
@@ -132,6 +133,7 @@ const {
   buildDocumentReviewNarrativeCards,
   buildDocumentReviewTargetRange,
   buildDocumentReviewProjections,
+  buildDocumentReviewTotalReturn,
   buildDocumentReviewInstitutionalDecisions,
   buildDocumentReviewAnnualFinancials,
   buildDocumentReviewAnnualRates,
@@ -302,6 +304,10 @@ export default function DocumentReviewPage() {
   const projectionTable = useMemo<ReviewProjectionTable>(
     () => buildDocumentReviewProjections(reviewQuery.data?.groups ?? []),
     [reviewQuery.data?.groups]
+  );
+  const totalReturnTable = useMemo<ReviewParserTable>(
+    () => buildDocumentReviewTotalReturn(reviewQuery.data?.total_return ?? null),
+    [reviewQuery.data?.total_return]
   );
   const institutionalDecisionTable = useMemo<ReviewInstitutionalDecisionTable>(
     () => buildDocumentReviewInstitutionalDecisions(reviewQuery.data?.groups ?? []),
@@ -537,6 +543,11 @@ export default function DocumentReviewPage() {
               </div>
             </CardContent>
           </Card>
+          <ReviewTableCard
+            title="% TOT. RETURN"
+            table={totalReturnTable}
+            minWidth="min-w-[420px]"
+          />
           <Card className="border-border/60 bg-card/90">
             <CardContent className="p-6">
               <div>

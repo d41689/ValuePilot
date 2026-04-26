@@ -324,6 +324,17 @@ const PROJECTION_ROWS = [
   },
 ];
 
+const TOTAL_RETURN_COLUMNS = [
+  { key: '1', label: '1 yr.' },
+  { key: '3', label: '3 yr.' },
+  { key: '5', label: '5 yr.' },
+];
+
+const TOTAL_RETURN_ROWS = [
+  { key: 'this_stock', label: 'This Stock' },
+  { key: 'vl_arithmetic_index', label: 'VL Arithmetic Index' },
+];
+
 const INSTITUTIONAL_DECISION_ROWS = [
   {
     key: 'to_buy',
@@ -744,6 +755,49 @@ function buildDocumentReviewProjections(groups) {
         };
       }),
     })),
+  };
+}
+
+/**
+ * @param {Record<string, unknown> | null} totalReturn
+ */
+function buildDocumentReviewTotalReturn(totalReturn = null) {
+  const block =
+    totalReturn && typeof totalReturn === 'object' && !Array.isArray(totalReturn)
+      ? totalReturn
+      : null;
+  const series = Array.isArray(block?.series) ? block.series : [];
+  const byRowAndWindow = new Map();
+
+  for (const item of series) {
+    if (!item || typeof item !== 'object' || Array.isArray(item)) {
+      continue;
+    }
+    const rowKey = String(item.name || '');
+    const windowKey = String(item.window_years || '');
+    if (!rowKey || !windowKey) {
+      continue;
+    }
+    byRowAndWindow.set(`${rowKey}:${windowKey}`, item);
+  }
+
+  const rows = TOTAL_RETURN_ROWS.map((row) => ({
+    key: row.key,
+    label: row.label,
+    cells: TOTAL_RETURN_COLUMNS.map((column) => {
+      const item = byRowAndWindow.get(`${row.key}:${column.key}`);
+      return {
+        key: column.key,
+        label: column.label,
+        displayValue: formatTotalReturnValue(item?.value_pct),
+      };
+    }),
+  })).filter((row) => row.cells.some((cell) => cell.displayValue !== '—'));
+
+  return {
+    unit: block?.as_of_date ? `As of ${formatShortDate(block.as_of_date)}` : 'percent',
+    columns: TOTAL_RETURN_COLUMNS,
+    rows,
   };
 }
 
@@ -1592,6 +1646,17 @@ function formatDocumentReviewProjectionValue(key, item) {
   return '—';
 }
 
+function formatTotalReturnValue(value) {
+  if (value === null || value === undefined || value === '') {
+    return '—';
+  }
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) {
+    return String(value);
+  }
+  return `${numeric.toFixed(1)}%`;
+}
+
 function formatProjectionPercentValue(value) {
   const formatted = formatPercentValue(value);
   return formatted ? formatted.replace(/^\+/, '') : null;
@@ -1916,6 +1981,8 @@ module.exports = {
   TARGET_RANGE_ORDER,
   PROJECTION_COLUMNS,
   PROJECTION_ROWS,
+  TOTAL_RETURN_COLUMNS,
+  TOTAL_RETURN_ROWS,
   INSTITUTIONAL_DECISION_ROWS,
   CURRENT_POSITION_ROWS,
   ANNUAL_RATES_ORDER,
@@ -1930,6 +1997,7 @@ module.exports = {
   buildDocumentReviewNarrativeCards,
   buildDocumentReviewTargetRange,
   buildDocumentReviewProjections,
+  buildDocumentReviewTotalReturn,
   buildDocumentReviewInstitutionalDecisions,
   buildDocumentReviewAnnualFinancials,
   buildDocumentReviewAnnualRates,

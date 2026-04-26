@@ -22,6 +22,7 @@ from app.ingestion.parsers.v1_value_line.page_json import (
     _build_quarterly_block as _build_value_line_quarterly_block,
     _build_quarterly_block_or_none as _build_value_line_quarterly_block_or_none,
     _build_quarterly_dividends_paid as _build_value_line_quarterly_dividends_paid,
+    _build_total_return as _build_value_line_total_return,
     _quarter_month_order as _value_line_quarter_month_order,
 )
 from app.services.active_report_resolver import resolve_active_reports
@@ -529,6 +530,7 @@ def read_document_review(
         "earnings_per_share": _document_review_earnings_per_share(session, doc),
         "quarterly_dividends_paid": _document_review_quarterly_dividends_paid(session, doc),
         "annual_financials": _document_review_annual_financials(session, doc),
+        "total_return": _document_review_total_return(session, doc),
         "capital_structure": _document_review_capital_structure(session, doc),
         "current_position": _document_review_current_position(session, doc),
         "financial_position": _document_review_financial_position(session, doc),
@@ -974,6 +976,30 @@ def _document_review_annual_financials(
         text=doc.raw_text,
     )
     return annual_financials or None
+
+
+def _document_review_total_return(
+    session: SessionDep,
+    doc: PdfDocument,
+) -> Optional[dict[str, Any]]:
+    extractions = session.scalars(
+        select(MetricExtraction)
+        .where(
+            MetricExtraction.user_id == doc.user_id,
+            MetricExtraction.document_id == doc.id,
+            MetricExtraction.field_key == "price_semantics_and_returns",
+        )
+        .order_by(MetricExtraction.id.asc())
+    ).all()
+    if not extractions:
+        return None
+
+    total_return = _build_value_line_total_return(_latest_extractions_by_field(extractions))
+    series = total_return.get("series") if isinstance(total_return, dict) else None
+    if not isinstance(series, list) or not any(item.get("value_pct") is not None for item in series):
+        return None
+    total_return["fact_nature"] = "snapshot"
+    return total_return
 
 
 def _document_review_annual_rates(
