@@ -100,6 +100,10 @@ DOCUMENT_REVIEW_CURRENT_POSITION_FIELDS = {
     "current_position_usd_millions",
 }
 
+DOCUMENT_REVIEW_FINANCIAL_POSITION_FIELDS = {
+    "financial_position_usd_millions",
+}
+
 DOCUMENT_REVIEW_ANNUAL_FINANCIALS_FIELDS = {
     "tables_time_series",
 }
@@ -527,6 +531,7 @@ def read_document_review(
         "annual_financials": _document_review_annual_financials(session, doc),
         "capital_structure": _document_review_capital_structure(session, doc),
         "current_position": _document_review_current_position(session, doc),
+        "financial_position": _document_review_financial_position(session, doc),
         "groups": groups,
     }
 
@@ -1088,6 +1093,26 @@ def _document_review_current_position(
     by_key = _latest_extractions_by_field(extractions)
     current_position = _build_value_line_current_position(by_key)
     return current_position or None
+
+
+def _document_review_financial_position(
+    session: SessionDep,
+    doc: PdfDocument,
+) -> Optional[dict[str, Any]]:
+    extractions = session.scalars(
+        select(MetricExtraction)
+        .where(
+            MetricExtraction.user_id == doc.user_id,
+            MetricExtraction.document_id == doc.id,
+            MetricExtraction.field_key.in_(DOCUMENT_REVIEW_FINANCIAL_POSITION_FIELDS),
+        )
+        .order_by(MetricExtraction.id.asc())
+    ).all()
+    if not extractions:
+        return None
+    by_key = _latest_extractions_by_field(extractions)
+    fp = by_key.get("financial_position_usd_millions")
+    return fp.parsed_value_json if fp and fp.parsed_value_json else None
 
 
 def _document_review_group_key(fact: MetricFact) -> str:

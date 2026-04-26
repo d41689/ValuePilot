@@ -1041,6 +1041,47 @@ function buildDocumentReviewCurrentPosition(currentPosition = null) {
   };
 }
 
+const FINANCIAL_POSITION_ROWS = [
+  { key: 'assets.bonds', label: 'Bonds ($M)', section: 'assets', path: ['assets', 'bonds'] },
+  { key: 'assets.stocks', label: 'Common Stocks ($M)', section: 'assets', path: ['assets', 'stocks'] },
+  { key: 'assets.other', label: 'Other Assets ($M)', section: 'assets', path: ['assets', 'other'] },
+  { key: 'assets.total_assets', label: 'Total Assets ($M)', section: 'assets', path: ['assets', 'total_assets'] },
+  { key: 'liabilities.unearned_premiums', label: 'Unearned Premiums ($M)', section: 'liabilities', path: ['liabilities', 'unearned_premiums'] },
+  { key: 'liabilities.reserves', label: 'Loss Reserves ($M)', section: 'liabilities', path: ['liabilities', 'reserves'] },
+  { key: 'liabilities.other', label: 'Other Liabilities ($M)', section: 'liabilities', path: ['liabilities', 'other'] },
+  { key: 'liabilities.total_liabilities', label: 'Total Liabilities ($M)', section: 'liabilities', path: ['liabilities', 'total_liabilities'] },
+];
+
+/**
+ * @param {Record<string, unknown> | null} financialPosition
+ */
+function buildDocumentReviewFinancialPosition(financialPosition = null) {
+  const block =
+    financialPosition && typeof financialPosition === 'object' && !Array.isArray(financialPosition)
+      ? financialPosition
+      : null;
+  const years = Array.isArray(block?.years) ? block.years : [];
+  const columns = years.map((year) => ({ key: String(year), label: String(year) }));
+
+  const rows = FINANCIAL_POSITION_ROWS.map((row) => {
+    const seriesParent = block?.[row.path[0]];
+    const series = seriesParent && typeof seriesParent === 'object' ? seriesParent[row.path[1]] : null;
+    const cells = years.map((year, index) => {
+      const raw = Array.isArray(series) ? series[index] : undefined;
+      const exists = raw !== null && raw !== undefined;
+      return {
+        key: String(year),
+        label: String(year),
+        displayValue: exists && typeof raw === 'number' ? raw.toFixed(1) : '—',
+        sourceExists: exists,
+      };
+    });
+    return { key: row.key, label: row.label, section: row.section, cells };
+  }).filter((row) => row.cells.some((cell) => cell.sourceExists));
+
+  return { columns, rows };
+}
+
 /**
  * @param {Array<{ key: string, label: string, items: Array<object> }>} groups
  * @param {Record<string, unknown> | null} capitalStructure
@@ -1866,6 +1907,7 @@ module.exports = {
   buildDocumentReviewAnnualRates,
   buildDocumentReviewQuarterlyTable,
   buildDocumentReviewCurrentPosition,
+  buildDocumentReviewFinancialPosition,
   buildDocumentReviewCapitalStructure,
   formatDocumentReviewValue,
   formatDocumentReviewMeta,

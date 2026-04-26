@@ -2,7 +2,7 @@
 
 import Link from 'next/link';
 import { useParams } from 'next/navigation';
-import { useMemo } from 'react';
+import React, { useMemo } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { ArrowLeft, Loader2 } from 'lucide-react';
 
@@ -107,6 +107,7 @@ type ReviewPayload = {
   annual_financials: Record<string, unknown> | null;
   capital_structure: Record<string, unknown> | null;
   current_position: Record<string, unknown> | null;
+  financial_position: Record<string, unknown> | null;
   groups: ReviewGroup[];
 };
 
@@ -137,6 +138,7 @@ const {
   buildDocumentReviewQuarterlyTable,
   buildDocumentReviewCapitalStructure,
   buildDocumentReviewCurrentPosition,
+  buildDocumentReviewFinancialPosition,
 } = documentReviewHelpers;
 
 function ReviewTableCard({
@@ -324,6 +326,10 @@ export default function DocumentReviewPage() {
   const currentPositionTable = useMemo<ReviewCurrentPositionTable>(
     () => buildDocumentReviewCurrentPosition(reviewQuery.data?.current_position ?? null),
     [reviewQuery.data?.current_position]
+  );
+  const financialPositionTable = useMemo<ReviewAnnualFinancialsTable>(
+    () => buildDocumentReviewFinancialPosition(reviewQuery.data?.financial_position ?? null),
+    [reviewQuery.data?.financial_position]
   );
   const annualFinancialsTable = useMemo<ReviewAnnualFinancialsTable>(
     () =>
@@ -663,6 +669,74 @@ export default function DocumentReviewPage() {
               </div>
             </CardContent>
           </Card>
+          {financialPositionTable.rows.length > 0 && (
+            <Card className="border-border/60 bg-card/90">
+              <CardContent className="p-6">
+                <div className="flex flex-wrap items-baseline justify-between gap-3">
+                  <h2 className="font-display text-xl font-semibold tracking-tight text-foreground">
+                    FINANCIAL POSITION
+                  </h2>
+                  <div className="text-xs uppercase text-muted-foreground">USD millions</div>
+                </div>
+
+                <div className="mt-5 overflow-x-auto rounded-lg border border-border/60 bg-background/70">
+                  <table className="w-full min-w-[560px] border-collapse text-sm">
+                    <thead>
+                      <tr className="border-b border-border/60">
+                        <th className="w-56 px-4 py-3 text-left font-medium text-muted-foreground" />
+                        {financialPositionTable.columns.map((column) => (
+                          <th
+                            key={column.key}
+                            className="px-4 py-3 text-right text-xs font-medium uppercase text-muted-foreground"
+                          >
+                            {column.label}
+                          </th>
+                        ))}
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {(() => {
+                        let prevSection: string | null = null;
+                        return financialPositionTable.rows.flatMap((row) => {
+                          const rowSection = row.section ?? null;
+                          const elements: React.ReactElement[] = [];
+                          if (rowSection && rowSection !== prevSection) {
+                            prevSection = rowSection;
+                            elements.push(
+                              <tr key={`section-${rowSection}`} className="border-b border-border/60 bg-muted/30">
+                                <td
+                                  colSpan={financialPositionTable.columns.length + 1}
+                                  className="px-4 py-2 text-xs font-semibold uppercase tracking-wider text-muted-foreground"
+                                >
+                                  {rowSection.charAt(0).toUpperCase() + rowSection.slice(1)}
+                                </td>
+                              </tr>
+                            );
+                          }
+                          elements.push(
+                            <tr key={row.key} className="border-b border-border/60 last:border-0">
+                              <th className="px-4 py-3 text-left font-semibold text-foreground">
+                                {row.label}
+                              </th>
+                              {row.cells.map((cell) => (
+                                <td
+                                  key={cell.key}
+                                  className="px-4 py-3 text-right font-semibold text-foreground"
+                                >
+                                  {cell.displayValue}
+                                </td>
+                              ))}
+                            </tr>
+                          );
+                          return elements;
+                        });
+                      })()}
+                    </tbody>
+                  </table>
+                </div>
+              </CardContent>
+            </Card>
+          )}
           <Card className="border-border/60 bg-card/90">
             <CardContent className="p-6">
               <div>
@@ -691,7 +765,7 @@ export default function DocumentReviewPage() {
                       let prevSection: string | null = null;
                       return annualFinancialsTable.rows.flatMap((row) => {
                         const rowSection = row.section ?? null;
-                        const elements = [];
+                        const elements: React.ReactElement[] = [];
                         if (rowSection && rowSection !== prevSection) {
                           prevSection = rowSection;
                           elements.push(
