@@ -2032,11 +2032,23 @@ class ValueLineV1Parser(BaseParser):
                 return count
 
             if missing_last_year and len(values_raw) > len(years):
-                values_raw = values_raw[-(len(years) - 1):]
-                aligned_years = years[:-1]
+                # Determine how many trailing years have no value for this row.
+                # Rows annotated with "Boldfiguresare" or "ValueLine" immediately
+                # before their label reliably include a 3rd right-side estimate
+                # column (e.g. the current-year P/E estimate), so only the final
+                # projection year is absent → n=1. All other rows (e.g. div yield
+                # when Value Line omits the upcoming-year estimate) use the
+                # document-level gap count as a lower bound.
+                pre_label_tok = tokens[label_idx - 1] if label_idx > 0 else ""
+                if re.search(r'Bold|ValueLine', pre_label_tok, re.IGNORECASE):
+                    n = 1
+                else:
+                    n = max(1, len(full_years) - len(values_raw))
+                values_raw = values_raw[-(len(years) - n):]
+                aligned_years = years[:-n]
                 if trailing_placeholders(values_raw) >= 2 and len(years) >= 2:
                     values_raw = values_raw[1:]
-                    aligned_years = years[:-2]
+                    aligned_years = years[:-(n + 1)]
             else:
                 if len(values_raw) > len(years):
                     values_raw = values_raw[-len(years):]
