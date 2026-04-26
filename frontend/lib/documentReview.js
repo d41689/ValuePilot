@@ -1025,7 +1025,7 @@ function buildDocumentReviewAnnualRates(annualRates = null) {
       const orderDelta = a.sortKey - b.sortKey;
       return orderDelta !== 0 ? orderDelta : a.label.localeCompare(b.label);
     })
-    .map(({ sortKey: _sortKey, ...row }) => row);
+    .map((row) => ({ key: row.key, label: row.label, cells: row.cells }));
 
   return {
     unit: typeof block?.unit === 'string' ? block.unit : null,
