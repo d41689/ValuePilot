@@ -788,11 +788,23 @@ test('buildDocumentReviewAnnualFinancials maps annual facts without merging same
         },
       },
       valuation_metrics: {
+        price_to_book_value_pct: {
+          2024: 411.3,
+          2025: 500,
+          2026: null,
+          projection_2028_2030: 200,
+        },
         avg_annual_pe_ratio: {
           2024: 38.8,
           2025: 37.3,
           2026: null,
           projection_2028_2030: 35.0,
+        },
+        avg_annual_dividend_yield_pct: {
+          2024: 1.2,
+          2025: null,
+          2026: null,
+          projection_2028_2030: 1.0,
         },
       },
       income_statement_usd_millions: {
@@ -802,13 +814,25 @@ test('buildDocumentReviewAnnualFinancials maps annual facts without merging same
           2026: 2300.0,
           projection_2028_2030: 2960.0,
         },
+        operating_margin_pct: {
+          2024: 85.5,
+          2025: 88.0,
+          2026: 86.0,
+          projection_2028_2030: 86.0,
+        },
       },
       income_statement_ratios_pct: {
         income_tax_rate_pct: {
-          2024: 0.013999999999999999,
-          2025: 0.19,
-          2026: 0.18,
-          projection_2028_2030: 0.18,
+          2024: 25.5,
+          2025: 19.0,
+          2026: 18.0,
+          projection_2028_2030: 18.0,
+        },
+        net_profit_margin_pct: {
+          2024: 55.5,
+          2025: 58.0,
+          2026: 59.0,
+          projection_2028_2030: 65.0,
         },
       },
       balance_sheet_and_returns_usd_millions: {
@@ -817,6 +841,30 @@ test('buildDocumentReviewAnnualFinancials maps annual facts without merging same
           2025: 500.0,
           2026: 1150.0,
           projection_2028_2030: 2200.0,
+        },
+        return_on_total_capital_pct: {
+          2024: 10.5,
+          2025: 15.0,
+          2026: 17.0,
+          projection_2028_2030: 17.5,
+        },
+        return_on_shareholders_equity_pct: {
+          2024: 10.5,
+          2025: 15.0,
+          2026: 17.0,
+          projection_2028_2030: 17.5,
+        },
+        retained_to_common_equity_pct: {
+          2024: 5.7,
+          2025: 11.0,
+          2026: 13.0,
+          projection_2028_2030: 13.5,
+        },
+        all_dividends_to_net_profit_pct: {
+          2024: 45.0,
+          2025: 28.0,
+          2026: 22.0,
+          projection_2028_2030: 20.0,
         },
       },
     }
@@ -840,9 +888,17 @@ test('buildDocumentReviewAnnualFinancials maps annual facts without merging same
       ['per_share.sales', 'Sales / Share', ['5.79', '9.10', '12.00', '15.60']],
       ['per_share.eps', 'Earnings / Share', ['3.21', '5.35', '7.15', '10.00']],
       ['is.sales', 'Sales ($M)', ['1113.6', '1750.0', '2300.0', '2960.0']],
-      ['is.income_tax_rate', 'Income Tax Rate', ['0.014', '0.190', '0.180', '0.180']],
+      ['is.operating_margin', 'Operating Margin', ['85.5%', '88.0%', '86.0%', '86.0%']],
+      ['is.income_tax_rate', 'Income Tax Rate', ['25.5%', '19.0%', '18.0%', '18.0%']],
+      ['is.net_profit_margin', 'Net Profit Margin', ['55.5%', '58.0%', '59.0%', '65.0%']],
       ['bs.working_capital', 'Working Capital ($M)', ['1649.3', '500.0', '1150.0', '2200.0']],
+      ['bs.return_on_total_capital', 'Return on Total Capital', ['10.5%', '15.0%', '17.0%', '17.5%']],
+      ['bs.return_on_equity', 'Return on Shareholders Equity', ['10.5%', '15.0%', '17.0%', '17.5%']],
+      ['bs.retained_to_common_equity', 'Retained to Common Equity', ['5.7%', '11.0%', '13.0%', '13.5%']],
+      ['bs.dividends_to_net_profit', 'All Dividends to Net Profit', ['45%', '28%', '22%', '20%']],
+      ['val.price_to_book', 'Price to Book Value', ['411.3%', '500.0%', '—', '200.0%']],
       ['val.avg_pe', 'Avg Annual P/E Ratio', ['38.8', '37.3', '—', '35.0']],
+      ['val.avg_dividend_yield', 'Avg Annual Dividend Yield', ['1.2%', '—', '—', '1.0%']],
     ]
   );
 });

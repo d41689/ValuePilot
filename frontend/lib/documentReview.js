@@ -135,6 +135,22 @@ const ANNUAL_FINANCIAL_ROW_ORDER = [
   'val.avg_dividend_yield',
 ];
 
+const ANNUAL_FINANCIAL_PERCENT_ROWS = new Set([
+  'is.operating_margin',
+  'is.loss_ratio',
+  'is.expense_ratio',
+  'is.underwriting_margin',
+  'is.inv_income_yield',
+  'is.income_tax_rate',
+  'is.net_profit_margin',
+  'bs.return_on_total_capital',
+  'bs.return_on_equity',
+  'bs.retained_to_common_equity',
+  'bs.dividends_to_net_profit',
+  'val.price_to_book',
+  'val.avg_dividend_yield',
+]);
+
 const SUMMARY_ORDER = [
   'recent_price',
   'pe_ratio',
@@ -868,6 +884,7 @@ function buildAnnualFinancialsFromBlock(annualFinancials) {
         continue;
       }
       const decimalPlaces = annualFinancialSeriesDecimalPlaces(series, columns);
+      const isPercent = annualFinancialMetricIsPercent(metricKey);
       const row = {
         key: metricKey,
         label: ANNUAL_FINANCIAL_ROW_LABELS[metricKey] || humanizeMetricKey(seriesKey),
@@ -876,7 +893,9 @@ function buildAnnualFinancialsFromBlock(annualFinancials) {
         cells: columns.map((column) => ({
           key: column.key,
           label: column.label,
-          displayValue: formatAnnualFinancialRawValue(series[column.key], decimalPlaces),
+          displayValue: formatAnnualFinancialRawValue(series[column.key], decimalPlaces, {
+            isPercent,
+          }),
           isEstimate: column.isEstimate,
         })),
       };
@@ -1284,6 +1303,10 @@ function annualFinancialRowSortKey(item) {
 function annualFinancialMetricSortKey(metricKey) {
   const index = ANNUAL_FINANCIAL_ROW_ORDER.indexOf(metricKey);
   return index === -1 ? 999 : index;
+}
+
+function annualFinancialMetricIsPercent(metricKey) {
+  return ANNUAL_FINANCIAL_PERCENT_ROWS.has(metricKey);
 }
 
 function annualFinancialRowSection(metricKey) {
@@ -1727,17 +1750,22 @@ function inferredDecimalPlaces(value) {
   return 6;
 }
 
-function formatAnnualFinancialRawValue(value, decimalPlaces = null) {
+function formatAnnualFinancialRawValue(value, decimalPlaces = null, options = {}) {
   if (value === null || value === undefined || value === '') {
     return '—';
   }
+  const suffix = options.isPercent ? '%' : '';
   if (typeof value === 'number') {
     if (typeof decimalPlaces === 'number' && decimalPlaces > 0) {
-      return value.toFixed(decimalPlaces);
+      return `${value.toFixed(decimalPlaces)}${suffix}`;
     }
-    return formatNumber(value);
+    return `${formatNumber(value)}${suffix}`;
   }
-  return String(value);
+  const text = String(value);
+  if (suffix && !text.endsWith(suffix)) {
+    return `${text}${suffix}`;
+  }
+  return text;
 }
 
 function firstAnnualRateEstimatePeriods(metrics) {
