@@ -16,6 +16,7 @@ router = APIRouter()
 
 FAIR_VALUE_KEY = "val.fair_value"
 TARGET_FALLBACK_KEY = "target.price_18m.mid"
+PIOTROSKI_TOTAL_KEY = "score.piotroski.total"
 
 
 def _latest_price_for_date(session: SessionDep, stock_id: int, price_date: date) -> StockPrice | None:
@@ -66,6 +67,61 @@ def _calc_mos(price: float | None, fair_value: float | None) -> float | None:
     if fair_value == 0:
         return None
     return (fair_value - price) / fair_value
+
+
+def _serialize_piotroski_total(fact: MetricFact) -> dict[str, Any]:
+    value_json = fact.value_json if isinstance(fact.value_json, dict) else {}
+    return {
+        "period_end_date": fact.period_end_date.isoformat() if fact.period_end_date else None,
+        "fiscal_year": value_json.get("fiscal_year") or (fact.period_end_date.year if fact.period_end_date else None),
+        "score": fact.value_numeric,
+        "status": value_json.get("status"),
+        "variant": value_json.get("variant"),
+        "partial_score": value_json.get("partial_score"),
+        "available_indicators": value_json.get("available_indicators"),
+        "max_available_score": value_json.get("max_available_score"),
+        "missing_indicators": value_json.get("missing_indicators") or [],
+    }
+
+
+def _is_displayable_historical_piotroski_total(fact: MetricFact) -> bool:
+    if fact.period_end_date and fact.period_end_date > date.today():
+        return False
+    value_json = fact.value_json if isinstance(fact.value_json, dict) else {}
+    return value_json.get("fact_nature") != "estimate"
+
+
+def _piotroski_scores_for_stocks(
+    session: SessionDep, user_id: int, stock_ids: list[int]
+) -> dict[int, list[dict[str, Any]]]:
+    if not stock_ids:
+        return {}
+
+    unique_stock_ids = list(dict.fromkeys(stock_ids))
+    scores_by_stock_id: dict[int, list[dict[str, Any]]] = {stock_id: [] for stock_id in unique_stock_ids}
+
+    facts = session.scalars(
+        select(MetricFact)
+        .where(
+            MetricFact.user_id == user_id,
+            MetricFact.stock_id.in_(unique_stock_ids),
+            MetricFact.metric_key == PIOTROSKI_TOTAL_KEY,
+            MetricFact.source_type == "calculated",
+            MetricFact.is_current.is_(True),
+            MetricFact.period_type == "FY",
+            MetricFact.period_end_date.is_not(None),
+        )
+        .order_by(MetricFact.stock_id.asc(), MetricFact.period_end_date.desc(), MetricFact.created_at.desc())
+    ).all()
+
+    for fact in facts:
+        if not _is_displayable_historical_piotroski_total(fact):
+            continue
+        stock_scores = scores_by_stock_id.get(fact.stock_id)
+        if stock_scores is not None and len(stock_scores) < 3:
+            stock_scores.append(_serialize_piotroski_total(fact))
+
+    return scores_by_stock_id
 
 
 @router.get("", response_model=list[dict])
@@ -174,6 +230,9 @@ def list_pool_members(
 
     now_et = datetime.now(timezone.utc).astimezone(ET)
     target_date = compute_target_date(now_et)
+    piotroski_scores_by_stock_id = _piotroski_scores_for_stocks(
+        session, user_id, [membership.stock_id for membership in members]
+    )
 
     rows: list[dict[str, Any]] = []
     for membership in members:
@@ -215,6 +274,7 @@ def list_pool_members(
                 "fair_value_source": fair_value_source,
                 "mos": mos,
                 "delta_today": delta_today,
+                "piotroski_f_scores": piotroski_scores_by_stock_id.get(stock.id, []),
             }
         )
 

@@ -20,6 +20,8 @@ from app.ingestion.parsers.v1_value_line.page_json import build_value_line_page_
 from app.ingestion.normalization.scaler import Scaler
 from app.services.mapping_spec import MappingSpec
 from app.services.owners_earnings import build_owners_earnings_facts
+from app.services.calculated_metrics.value_line_ratios import ValueLineRatioCalculator
+from app.services.calculated_metrics.piotroski_f_score import PiotroskiFScoreCalculator
 
 
 LOGGER = logging.getLogger(__name__)
@@ -239,6 +241,8 @@ class IngestionService:
                             source_document_id=doc.id,
                         )
 
+                    self._run_calculated_metrics(user_id=user_id, stock_id=stock.id)
+
                     parsed_company_pages += 1
                     page_reports.append(
                         {
@@ -428,6 +432,8 @@ class IngestionService:
                     source_document_id=doc.id,
                 )
 
+            self._run_calculated_metrics(user_id=user_id, stock_id=stock.id)
+
             parsed_company_pages += 1
 
         if parsed_company_pages == 0:
@@ -455,6 +461,10 @@ class IngestionService:
         doc.notes = None
         self.db.add(doc)
         self.db.flush()
+
+    def _run_calculated_metrics(self, *, user_id: int, stock_id: int) -> None:
+        ValueLineRatioCalculator(self.db).calculate_for_stock(user_id=user_id, stock_id=stock_id)
+        PiotroskiFScoreCalculator(self.db).calculate_for_stock(user_id=user_id, stock_id=stock_id)
 
     @staticmethod
     def _report_date_from_extractions(extractions: list) -> Optional[date]:

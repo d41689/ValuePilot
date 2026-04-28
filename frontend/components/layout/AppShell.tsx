@@ -38,8 +38,8 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
         <div className="absolute -top-24 right-[-6rem] h-64 w-64 rounded-full bg-primary/15 blur-3xl" />
         <div className="absolute bottom-[-8rem] left-[-4rem] h-72 w-72 rounded-full bg-amber-300/30 blur-3xl" />
       </div>
-      <div className="mx-auto flex min-h-screen max-w-[1600px] gap-6 p-2">
-        <aside className="flex w-56 flex-col gap-6 rounded-2xl border border-border/60 bg-card/90 p-5 shadow-sm backdrop-blur">
+      <div className="mx-auto flex min-h-screen w-full max-w-[1600px] gap-6 p-2">
+        <aside className="flex w-56 shrink-0 flex-col gap-6 rounded-2xl border border-border/60 bg-card/90 p-5 shadow-sm backdrop-blur">
           <div className="flex items-center gap-3">
             <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-primary/10 text-primary">
               <Activity className="h-5 w-5" />
@@ -78,7 +78,7 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
           </div>
         </aside>
 
-        <main className="flex-1 overflow-auto rounded-2xl border border-border/60 bg-card/85 p-6 shadow-sm backdrop-blur">
+        <main className="min-w-0 flex-1 overflow-auto rounded-2xl border border-border/60 bg-card/85 p-6 shadow-sm backdrop-blur">
           {children}
         </main>
       </div>

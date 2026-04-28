@@ -6,6 +6,7 @@ const {
   sortWatchlistMembers,
   buildFairValueEdits,
   hasFairValueEditChanges,
+  formatPiotroskiFScoreSeries,
 } = require('./watchlistState');
 
 test('sortWatchlistMembers orders by MOS descending and ticker ascending as tie-breaker', () => {
@@ -52,4 +53,25 @@ test('hasFairValueEditChanges detects identical and changed edit maps', () => {
     ),
     true
   );
+});
+
+test('formatPiotroskiFScoreSeries formats complete and partial yearly scores', () => {
+  assert.equal(
+    formatPiotroskiFScoreSeries([
+      { fiscal_year: 2024, score: 8, status: 'calculated', variant: 'valueline_proxy' },
+      {
+        fiscal_year: 2023,
+        score: null,
+        status: 'partial',
+        variant: 'insurance_adjusted',
+        partial_score: 6,
+        max_available_score: 8,
+      },
+      { fiscal_year: 2022, score: 4, status: 'calculated', variant: 'standard' },
+      { fiscal_year: 2021, score: 3, status: 'calculated', variant: 'standard' },
+    ]),
+    '2024: 8/9\n2023: 6/8 partial\n2022: 4/9'
+  );
+
+  assert.equal(formatPiotroskiFScoreSeries([]), '—');
 });

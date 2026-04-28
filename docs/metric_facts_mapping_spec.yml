@@ -309,6 +309,52 @@ mappings:
     value:
       numeric_from: $value
 
+  - id: cap.long_term_debt.fy
+    json_path: annual_financials.balance_sheet_and_returns_usd_millions.long_term_debt.*
+    metric_key: cap.long_term_debt
+    period_type: FY
+    unit: USD_millions
+    period_end_date:
+      derive: year_end_from_key
+    value:
+      numeric_from: $value
+      null_as_zero: true
+      null_as_zero_method: blank_value_line_debt_cell_as_zero
+    notes: "For Value Line annual Long-Term Debt rows, a blank/null per-year cell is treated as zero only when the row itself is present."
+
+  - id: returns.total_capital.fy
+    json_path: annual_financials.balance_sheet_and_returns_usd_millions.return_on_total_capital_pct.*
+    metric_key: returns.total_capital
+    period_type: FY
+    unit: percent
+    period_end_date:
+      derive: year_end_from_key
+    value:
+      numeric_from: $value
+    notes: "Value Line Return on Total Cap'l. Stored as a Value Line proxy for ROA-based Piotroski components when total assets are unavailable."
+
+  - id: bs.current_assets.current_position
+    json_path: current_position.periods[].assets.total_current_assets
+    metric_key: bs.current_assets
+    period_type: FY
+    unit: USD_millions
+    period_end_date:
+      derive: year_end_from_context
+    value:
+      numeric_from: $value
+    notes: "Value Line Current Position total current assets. Used to calculate liquidity.current_ratio when available."
+
+  - id: bs.current_liabilities.current_position
+    json_path: current_position.periods[].liabilities.total_current_liabilities
+    metric_key: bs.current_liabilities
+    period_type: FY
+    unit: USD_millions
+    period_end_date:
+      derive: year_end_from_context
+    value:
+      numeric_from: $value
+    notes: "Value Line Current Position total current liabilities. Used to calculate liquidity.current_ratio when available."
+
   # financial_position table: can include FY and non-FY dates (e.g., 2025-09-30)
   - id: bs.assets.bonds.fp
     json_path: financial_position.assets.bonds[]
