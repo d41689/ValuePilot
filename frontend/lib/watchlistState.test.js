@@ -5,6 +5,7 @@ const assert = require('node:assert/strict');
 const {
   sortWatchlistMembers,
   buildFairValueEdits,
+  formatWatchlistOptionLabel,
   hasFairValueEditChanges,
   formatPiotroskiFScoreSeries,
 } = require('./watchlistState');
@@ -53,6 +54,12 @@ test('hasFairValueEditChanges detects identical and changed edit maps', () => {
     ),
     true
   );
+});
+
+test('formatWatchlistOptionLabel includes the watchlist member count', () => {
+  assert.equal(formatWatchlistOptionLabel({ name: 'Core', member_count: 3 }), 'Core · 3 stocks');
+  assert.equal(formatWatchlistOptionLabel({ name: 'Ideas', member_count: 1 }), 'Ideas · 1 stock');
+  assert.equal(formatWatchlistOptionLabel({ name: 'Empty' }), 'Empty · 0 stocks');
 });
 
 test('formatPiotroskiFScoreSeries formats complete and partial yearly scores', () => {

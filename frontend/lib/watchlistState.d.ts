@@ -11,6 +11,11 @@ export function hasFairValueEditChanges(
   next: Record<number, string>
 ): boolean;
 
+export function formatWatchlistOptionLabel(pool: {
+  name?: string | null;
+  member_count?: number | null;
+}): string;
+
 export type PiotroskiFScore = {
   fiscal_year: number | null;
   score: number | null;
