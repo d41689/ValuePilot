@@ -1,7 +1,10 @@
 import calendar
 import re
-from datetime import date
+from datetime import date, timedelta
 from typing import Optional
+
+# SEC 10-Q filing deadline for large accelerated filers is 40 days; use 45 as a safe threshold.
+_QUARTERLY_REPORTING_LAG = timedelta(days=45)
 
 
 MONTH_LOOKUP = {
@@ -124,6 +127,25 @@ def split_actual_and_estimate_years(
         else:
             actual_years.append(year)
     return actual_years, estimate_years
+
+
+def quarter_fact_nature(
+    period_end: Optional[str],
+    report_date_iso: Optional[str],
+) -> str:
+    """Return 'actual' if the quarter's results would have been published by the report date.
+
+    A quarter is considered published if its period-end date plus the typical SEC reporting
+    lag (45 days for large accelerated filers) falls on or before the report date.
+    """
+    if not period_end or not report_date_iso:
+        return "estimate"
+    try:
+        q_end = date.fromisoformat(period_end)
+        r_date = date.fromisoformat(report_date_iso)
+        return "actual" if q_end + _QUARTERLY_REPORTING_LAG <= r_date else "estimate"
+    except ValueError:
+        return "estimate"
 
 
 def quarter_end_date_for_fiscal_year(

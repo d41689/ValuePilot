@@ -37,6 +37,11 @@ def test_value_line_taxonomy_covers_core_sections_and_mappings():
     assert mapping_semantics["mkt.price.as_of"]["fact_nature"] == "snapshot"
     assert mapping_semantics["rating.timeliness.as_of"]["fact_nature"] == "opinion"
     assert mapping_semantics["target.price_18m.mid"]["fact_nature"] == "opinion"
+    assert mapping_semantics["proj.long_term.high_price_gain"]["fact_nature"] == "opinion"
+    assert mapping_semantics["proj.long_term.low_price_gain"]["fact_nature"] == "opinion"
+    assert mapping_semantics["ownership.institutional.to_buy.q"]["fact_nature"] == "snapshot"
+    assert mapping_semantics["ownership.institutional.to_sell.q"]["fact_nature"] == "snapshot"
+    assert mapping_semantics["ownership.institutional.holdings.q"]["fact_nature"] == "snapshot"
     assert mapping_semantics["analyst.commentary.as_of"]["fact_nature"] == "opinion"
     assert mapping_semantics["analyst.commentary.as_of"]["storage_role"] == "evidence_only"
     assert mapping_semantics["company.business_description.as_of"]["storage_role"] == "evidence_only"
@@ -83,6 +88,14 @@ def test_mapping_spec_uses_taxonomy_semantics_for_generated_facts():
 
     target_mid = by_key[("target.price_18m.mid", "TARGET_HORIZON", date(2026, 1, 9))]
     assert target_mid["value_json"]["fact_nature"] == "opinion"
+
+    high_gain = by_key[("proj.long_term.high_price_gain", "PROJECTION_RANGE", date(2026, 1, 9))]
+    assert high_gain["value_numeric"] == 0.7
+    assert high_gain["value_json"]["fact_nature"] == "opinion"
+
+    inst_holds = by_key[("ownership.institutional.holdings", "Q", date(2025, 9, 30))]
+    assert inst_holds["value_numeric"] == 74_403_000
+    assert inst_holds["value_json"]["fact_nature"] == "snapshot"
 
     rates_est = by_key[("rates.earnings.cagr_est", "PROJECTION_RANGE", date(2026, 1, 9))]
     assert rates_est["value_json"]["fact_nature"] == "opinion"

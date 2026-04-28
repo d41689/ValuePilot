@@ -485,6 +485,7 @@ def test_document_review_endpoint_returns_grouped_facts_with_lineage(
         "id": doc.id,
         "file_name": "aos.pdf",
         "ticker": "AOS",
+        "exchange": "NYSE",
         "company_name": "SMITH (A.O.)",
         "report_date": "2026-01-02",
     }
@@ -510,6 +511,710 @@ def test_document_review_endpoint_returns_grouped_facts_with_lineage(
         "page_number": 1,
         "original_text_snippet": "Recent price $68.11",
     }
+
+
+def test_document_review_endpoint_returns_header_summary_fields(
+    client, db_session, user_factory, auth_headers
+):
+    user = user_factory("documents_review_summary@example.com")
+    headers = auth_headers(user)
+
+    stock = Stock(ticker="AOS", exchange="NYSE", company_name="SMITH (A.O.)")
+    db_session.add(stock)
+    db_session.commit()
+
+    doc = PdfDocument(
+        user_id=user.id,
+        file_name="aos-summary.pdf",
+        source="upload",
+        file_storage_key="/tmp/aos-summary.pdf",
+        parse_status="parsed",
+        report_date=date(2026, 1, 2),
+        upload_time=datetime.utcnow(),
+        stock_id=stock.id,
+    )
+    db_session.add(doc)
+    db_session.commit()
+
+    db_session.add_all(
+        [
+            MetricFact(
+                user_id=user.id,
+                stock_id=stock.id,
+                metric_key="mkt.price",
+                value_json={"raw": "$68.11", "fact_nature": "snapshot"},
+                value_numeric=68.11,
+                unit="USD",
+                period_type="AS_OF",
+                as_of_date=date(2026, 1, 2),
+                source_type="parsed",
+                source_document_id=doc.id,
+                is_current=True,
+            ),
+            MetricFact(
+                user_id=user.id,
+                stock_id=stock.id,
+                metric_key="val.pe",
+                value_json={"raw": "18.5", "fact_nature": "snapshot"},
+                value_numeric=18.5,
+                unit="ratio",
+                period_type="AS_OF",
+                as_of_date=date(2026, 1, 2),
+                source_type="parsed",
+                source_document_id=doc.id,
+                is_current=True,
+            ),
+            MetricFact(
+                user_id=user.id,
+                stock_id=stock.id,
+                metric_key="val.pe_trailing",
+                value_json={"raw": "17.9", "fact_nature": "snapshot"},
+                value_numeric=17.9,
+                unit="ratio",
+                period_type="AS_OF",
+                as_of_date=date(2026, 1, 2),
+                source_type="parsed",
+                source_document_id=doc.id,
+                is_current=True,
+            ),
+            MetricFact(
+                user_id=user.id,
+                stock_id=stock.id,
+                metric_key="val.pe_median",
+                value_json={"raw": "22.0", "fact_nature": "snapshot"},
+                value_numeric=22.0,
+                unit="ratio",
+                period_type="AS_OF",
+                as_of_date=date(2026, 1, 2),
+                source_type="parsed",
+                source_document_id=doc.id,
+                is_current=True,
+            ),
+            MetricFact(
+                user_id=user.id,
+                stock_id=stock.id,
+                metric_key="val.relative_pe",
+                value_json={"raw": "0.93", "fact_nature": "snapshot"},
+                value_numeric=0.93,
+                unit="ratio",
+                period_type="AS_OF",
+                as_of_date=date(2026, 1, 2),
+                source_type="parsed",
+                source_document_id=doc.id,
+                is_current=True,
+            ),
+            MetricFact(
+                user_id=user.id,
+                stock_id=stock.id,
+                metric_key="val.dividend_yield",
+                value_json={"raw": "2.0%", "fact_nature": "snapshot"},
+                value_numeric=0.02,
+                unit="percent",
+                period_type="AS_OF",
+                as_of_date=date(2026, 1, 2),
+                source_type="parsed",
+                source_document_id=doc.id,
+                is_current=True,
+            ),
+        ]
+    )
+    db_session.commit()
+
+    resp = client.get(f"/api/v1/documents/{doc.id}/review", headers=headers)
+    assert resp.status_code == 200, resp.text
+
+    payload = resp.json()
+    assert payload["document"]["exchange"] == "NYSE"
+    assert payload["summary"] == {
+        "recent_price": {
+            "metric_key": "mkt.price",
+            "label": "Recent Price",
+            "display_value": "$68.11",
+            "value_numeric": 68.11,
+            "unit": "USD",
+        },
+        "pe_ratio": {
+            "metric_key": "val.pe",
+            "label": "P/E Ratio",
+            "display_value": "18.5",
+            "value_numeric": 18.5,
+            "unit": "ratio",
+        },
+        "pe_trailing": {
+            "metric_key": "val.pe_trailing",
+            "label": "P/E Trailing",
+            "display_value": "17.9",
+            "value_numeric": 17.9,
+            "unit": "ratio",
+        },
+        "pe_median": {
+            "metric_key": "val.pe_median",
+            "label": "P/E Median",
+            "display_value": "22.0",
+            "value_numeric": 22.0,
+            "unit": "ratio",
+        },
+        "relative_pe_ratio": {
+            "metric_key": "val.relative_pe",
+            "label": "Relative P/E Ratio",
+            "display_value": "0.93",
+            "value_numeric": 0.93,
+            "unit": "ratio",
+        },
+        "dividend_yield": {
+            "metric_key": "val.dividend_yield",
+            "label": "Div'd Yld",
+            "display_value": "2.0%",
+            "value_numeric": 0.02,
+            "unit": "percent",
+        },
+    }
+
+
+def test_document_review_endpoint_returns_parser_capital_structure_block(
+    client, db_session, user_factory, auth_headers
+):
+    user = user_factory("documents_review_capital_structure@example.com")
+    headers = auth_headers(user)
+
+    stock = Stock(ticker="FNV", exchange="NYSE", company_name="FRANCO-NEVADA")
+    db_session.add(stock)
+    db_session.commit()
+
+    doc = PdfDocument(
+        user_id=user.id,
+        file_name="fnv-capital.pdf",
+        source="upload",
+        file_storage_key="/tmp/fnv-capital.pdf",
+        parse_status="parsed",
+        report_date=date(2025, 12, 26),
+        upload_time=datetime.utcnow(),
+        stock_id=stock.id,
+    )
+    db_session.add(doc)
+    db_session.commit()
+
+    db_session.add_all(
+        [
+            MetricExtraction(
+                user_id=user.id,
+                document_id=doc.id,
+                page_number=1,
+                field_key="capital_structure_as_of",
+                raw_value_text="2025-09-30",
+                original_text_snippet="CAPITAL STRUCTURE as of 9/30/25",
+                confidence_score=0.95,
+                parser_version="v1",
+            ),
+            MetricExtraction(
+                user_id=user.id,
+                document_id=doc.id,
+                page_number=1,
+                field_key="total_debt",
+                raw_value_text="None",
+                original_text_snippet="Total Debt None",
+                confidence_score=0.95,
+                parser_version="v1",
+            ),
+            MetricExtraction(
+                user_id=user.id,
+                document_id=doc.id,
+                page_number=1,
+                field_key="pension_plan",
+                raw_value_text="No Defined Benefit Pension Plan",
+                parsed_value_json={
+                    "defined_benefit": False,
+                    "notes": "No Defined Benefit Pension Plan",
+                },
+                original_text_snippet="No Defined Benefit Pension Plan",
+                confidence_score=0.95,
+                parser_version="v1",
+            ),
+            MetricExtraction(
+                user_id=user.id,
+                document_id=doc.id,
+                page_number=1,
+                field_key="common_stock_shares_outstanding",
+                raw_value_text="192,800,000",
+                parsed_value_json={"as_of": "2025-09-30"},
+                original_text_snippet="Common Stock 192,800,000 shares",
+                confidence_score=0.95,
+                parser_version="v1",
+            ),
+            MetricExtraction(
+                user_id=user.id,
+                document_id=doc.id,
+                page_number=1,
+                field_key="market_cap",
+                raw_value_text="$40.9 billion",
+                parsed_value_json={"notes": "Large Cap"},
+                original_text_snippet="Market Cap: $40.9 billion (Large Cap)",
+                confidence_score=0.95,
+                parser_version="v1",
+            ),
+        ]
+    )
+    db_session.add_all(
+        [
+            MetricFact(
+                user_id=user.id,
+                stock_id=stock.id,
+                metric_key="equity.shares_outstanding",
+                value_json={"raw": "192,800,000", "fact_nature": "snapshot"},
+                value_numeric=192_800_000.0,
+                unit="shares",
+                period_type="AS_OF",
+                as_of_date=date(2025, 9, 30),
+                source_type="parsed",
+                source_document_id=doc.id,
+                is_current=True,
+            ),
+            MetricFact(
+                user_id=user.id,
+                stock_id=stock.id,
+                metric_key="mkt.market_cap",
+                value_json={"raw": "$40.9 billion", "fact_nature": "snapshot"},
+                value_numeric=40_900_000_000.0,
+                unit="USD",
+                period_type="AS_OF",
+                as_of_date=date(2025, 9, 30),
+                source_type="parsed",
+                source_document_id=doc.id,
+                is_current=True,
+            ),
+        ]
+    )
+    db_session.commit()
+
+    resp = client.get(f"/api/v1/documents/{doc.id}/review", headers=headers)
+    assert resp.status_code == 200, resp.text
+
+    assert resp.json()["capital_structure"] == {
+        "as_of": "2025-09-30",
+        "total_debt": {"display": "None", "normalized": None, "unit": "USD"},
+        "lt_interest_percent_of_capital": None,
+        "leases_uncapitalized": None,
+        "pension_plan": {
+            "defined_benefit": False,
+            "notes": "No Defined Benefit Pension Plan",
+        },
+        "common_stock": {
+            "shares_outstanding": {
+                "display": "192,800,000",
+                "normalized": 192800000.0,
+                "unit": "shares",
+            },
+            "as_of": "2025-09-30",
+        },
+        "market_cap": {
+            "display": "$40.9 billion",
+            "normalized": 40900000000.0,
+            "unit": "USD",
+            "market_cap_category": "Large Cap",
+        },
+    }
+
+
+def test_document_review_endpoint_returns_parser_current_position_block(
+    client, db_session, user_factory, auth_headers
+):
+    user = user_factory("documents_review_current_position@example.com")
+    headers = auth_headers(user)
+
+    stock = Stock(ticker="AOS", exchange="NYSE", company_name="SMITH (A.O.)")
+    db_session.add(stock)
+    db_session.commit()
+
+    doc = PdfDocument(
+        user_id=user.id,
+        file_name="aos-current-position.pdf",
+        source="upload",
+        file_storage_key="/tmp/aos-current-position.pdf",
+        parse_status="parsed",
+        report_date=date(2026, 1, 2),
+        upload_time=datetime.utcnow(),
+        stock_id=stock.id,
+    )
+    db_session.add(doc)
+    db_session.commit()
+
+    db_session.add(
+        MetricExtraction(
+            user_id=user.id,
+            document_id=doc.id,
+            page_number=1,
+            field_key="current_position_usd_millions",
+            raw_value_text=None,
+            parsed_value_json={
+                "years": ["2023", "2024", "2025-09-30"],
+                "cash_assets": [363.4, 276.1, 172.8],
+                "receivables": [596.0, 541.4, 589.0],
+                "inventory_lifo": [497.4, 532.1, 507.3],
+                "other_current_assets": [43.5, 43.3, 47.0],
+                "current_assets_total": [1500.3, 1392.9, 1316.1],
+                "accounts_payable": [600.4, 588.7, 521.4],
+                "debt_due": [10.0, 10.0, 19.0],
+                "other_current_liabilities": [334.9, 298.5, 312.1],
+                "current_liabilities_total": [945.3, 897.2, 852.5],
+            },
+            original_text_snippet="CURRENTPOSITION ...",
+            confidence_score=0.7,
+            parser_version="v1",
+        )
+    )
+    db_session.commit()
+
+    resp = client.get(f"/api/v1/documents/{doc.id}/review", headers=headers)
+    assert resp.status_code == 200, resp.text
+
+    assert resp.json()["current_position"] == {
+        "unit": "USD_millions",
+        "periods": [
+            {
+                "label": "2023",
+                "period_end_date": "2023-12-31",
+                "assets": {
+                    "cash_assets": 363.4,
+                    "receivables": 596.0,
+                    "inventory_lifo": 497.4,
+                    "other_current_assets": 43.5,
+                    "total_current_assets": 1500.3,
+                },
+                "liabilities": {
+                    "accounts_payable": 600.4,
+                    "debt_due": 10.0,
+                    "other_current_liabilities": 334.9,
+                    "total_current_liabilities": 945.3,
+                },
+            },
+            {
+                "label": "2024",
+                "period_end_date": "2024-12-31",
+                "assets": {
+                    "cash_assets": 276.1,
+                    "receivables": 541.4,
+                    "inventory_lifo": 532.1,
+                    "other_current_assets": 43.3,
+                    "total_current_assets": 1392.9,
+                },
+                "liabilities": {
+                    "accounts_payable": 588.7,
+                    "debt_due": 10.0,
+                    "other_current_liabilities": 298.5,
+                    "total_current_liabilities": 897.2,
+                },
+            },
+            {
+                "label": "9/30/25",
+                "period_end_date": "2025-09-30",
+                "assets": {
+                    "cash_assets": 172.8,
+                    "receivables": 589.0,
+                    "inventory_lifo": 507.3,
+                    "other_current_assets": 47.0,
+                    "total_current_assets": 1316.1,
+                },
+                "liabilities": {
+                    "accounts_payable": 521.4,
+                    "debt_due": 19.0,
+                    "other_current_liabilities": 312.1,
+                    "total_current_liabilities": 852.5,
+                },
+            },
+        ],
+    }
+
+
+def test_document_review_endpoint_returns_parser_annual_financials_block(
+    client, db_session, user_factory, auth_headers
+):
+    user = user_factory("documents_review_annual_financials@example.com")
+    headers = auth_headers(user)
+
+    stock = Stock(ticker="FNV", exchange="NYSE", company_name="FRANCO-NEVADA")
+    db_session.add(stock)
+    db_session.commit()
+
+    doc = PdfDocument(
+        user_id=user.id,
+        file_name="fnv-annual-financials.pdf",
+        source="upload",
+        file_storage_key="/tmp/fnv-annual-financials.pdf",
+        parse_status="parsed",
+        report_date=date(2025, 12, 26),
+        upload_time=datetime.utcnow(),
+        stock_id=stock.id,
+    )
+    db_session.add(doc)
+    db_session.commit()
+
+    parsed_json = {
+        "annual_financials_and_ratios_2015_2026_with_projection_2028_2030": {
+            "years": [2024, 2025, 2026],
+            "fiscal_year_end_month": 12,
+            "projection_year_range": "2028-2030",
+            "per_share": {
+                "sales_per_share_usd": [5.79, 9.1, 12.0],
+                "cash_flow_per_share_usd": [4.38, 6.75, 8.65],
+                "earnings_per_share_usd": [3.21, 5.35, 7.15],
+            },
+            "valuation": {
+                "avg_annual_pe_ratio": [38.8, 37.3, None],
+                "relative_pe_ratio": [2.16, 2.13, None],
+            },
+            "income_statement_usd_millions": {
+                "sales": [1113.6, 1750.0, 2300.0],
+                "operating_margin_pct": [85.5, 88.0, 86.0],
+                "net_profit": [618.1, 1025.0, 1375.0],
+            },
+            "balance_sheet_and_returns_usd_millions": {
+                "working_capital": [1649.3, 500.0, 1150.0],
+                "long_term_debt": [None, 457.3, None],
+                "shareholders_equity": [5996.6, 7200.0, 7800.0],
+            },
+            "projection_2028_2030": {
+                "sales_per_share_usd": 15.6,
+                "avg_annual_pe_ratio": 35.0,
+                "sales": 2960.0,
+                "working_capital": 2200.0,
+            },
+        }
+    }
+    db_session.add(
+        MetricExtraction(
+            user_id=user.id,
+            document_id=doc.id,
+            page_number=1,
+            field_key="tables_time_series",
+            raw_value_text=None,
+            parsed_value_json=parsed_json,
+            original_text_snippet="TABLES_TIME_SERIES ...",
+            confidence_score=0.8,
+            parser_version="v1",
+        )
+    )
+    db_session.commit()
+
+    resp = client.get(f"/api/v1/documents/{doc.id}/review", headers=headers)
+    assert resp.status_code == 200, resp.text
+
+    annual = resp.json()["annual_financials"]
+    assert annual["meta"]["historical_years"] == [2024, 2025, 2026]
+    assert annual["meta"]["projection_year_range"] == "2028-2030"
+    assert annual["per_unit_metrics"]["sales"]["2024"] == 5.79
+    assert annual["per_unit_metrics"]["sales"]["projection_2028_2030"] == 15.6
+    assert annual["valuation_metrics"]["avg_annual_pe_ratio"]["projection_2028_2030"] == 35.0
+    assert annual["income_statement_usd_millions"]["sales"]["projection_2028_2030"] == 2960.0
+    assert annual["balance_sheet_and_returns_usd_millions"]["long_term_debt"]["2024"] is None
+    assert annual["balance_sheet_and_returns_usd_millions"]["long_term_debt"]["2025"] == 457.3
+
+
+def test_document_review_endpoint_returns_total_return_block(
+    client, db_session, user_factory, auth_headers
+):
+    user = user_factory("documents_review_total_return@example.com")
+    headers = auth_headers(user)
+
+    stock = Stock(ticker="AXS", exchange="NYSE", company_name="AXIS Capital")
+    db_session.add(stock)
+    db_session.commit()
+
+    doc = PdfDocument(
+        user_id=user.id,
+        file_name="axs-total-return.pdf",
+        source="upload",
+        file_storage_key="/tmp/axs-total-return.pdf",
+        parse_status="parsed",
+        report_date=date(2026, 1, 9),
+        upload_time=datetime.utcnow(),
+        stock_id=stock.id,
+    )
+    db_session.add(doc)
+    db_session.commit()
+
+    db_session.add(
+        MetricExtraction(
+            user_id=user.id,
+            document_id=doc.id,
+            page_number=1,
+            field_key="price_semantics_and_returns",
+            raw_value_text=None,
+            parsed_value_json={
+                "value_line_total_return_as_of": "2025-12-29",
+                "total_return": {
+                    "stock": {"1y": 0.244, "3y": 1.171, "5y": 1.502},
+                    "index": {"1y": 0.036, "3y": 0.392, "5y": 0.685},
+                },
+            },
+            original_text_snippet="% TOT. RETURN 12/29/25",
+            confidence_score=0.8,
+            parser_version="v1",
+        )
+    )
+    db_session.commit()
+
+    resp = client.get(f"/api/v1/documents/{doc.id}/review", headers=headers)
+    assert resp.status_code == 200, resp.text
+
+    total_return = resp.json()["total_return"]
+    assert total_return["as_of_date"] == "2025-12-29"
+    assert total_return["unit"] == "percent"
+    assert total_return["fact_nature"] == "snapshot"
+    assert total_return["series"] == [
+        {"name": "this_stock", "window_years": 1, "value_pct": 24.4},
+        {"name": "this_stock", "window_years": 3, "value_pct": 117.1},
+        {"name": "this_stock", "window_years": 5, "value_pct": 150.2},
+        {"name": "vl_arithmetic_index", "window_years": 1, "value_pct": 3.6},
+        {"name": "vl_arithmetic_index", "window_years": 3, "value_pct": 39.2},
+        {"name": "vl_arithmetic_index", "window_years": 5, "value_pct": 68.5},
+    ]
+
+
+def test_document_review_endpoint_returns_parser_annual_and_quarterly_blocks(
+    client, db_session, user_factory, auth_headers
+):
+    user = user_factory("documents_review_time_series@example.com")
+    headers = auth_headers(user)
+
+    stock = Stock(ticker="FNV", exchange="NYSE", company_name="FRANCO-NEVADA")
+    db_session.add(stock)
+    db_session.commit()
+
+    doc = PdfDocument(
+        user_id=user.id,
+        file_name="fnv-time-series.pdf",
+        source="upload",
+        file_storage_key="/tmp/fnv-time-series.pdf",
+        parse_status="parsed",
+        report_date=date(2025, 12, 26),
+        upload_time=datetime.utcnow(),
+        stock_id=stock.id,
+        raw_text="Annual Rates Est'd 22-24 to'28-'30 Quarterly Sales Earnings Per Share",
+    )
+    db_session.add(doc)
+    db_session.commit()
+
+    db_session.add_all(
+        [
+            MetricExtraction(
+                user_id=user.id,
+                document_id=doc.id,
+                page_number=1,
+                field_key="annual_rates_of_change",
+                raw_value_text=None,
+                parsed_value_json={
+                    "sales": {
+                        "past_10y": 0.09,
+                        "past_5y": 0.135,
+                        "est_to_2028_2030": 0.075,
+                    },
+                    "cash_flow_per_share": {
+                        "past_10y": 0.145,
+                        "past_5y": 0.155,
+                        "est_to_2028_2030": 0.11,
+                    },
+                },
+                original_text_snippet="Annual Rates ...",
+                confidence_score=0.8,
+                parser_version="v1",
+            ),
+            MetricExtraction(
+                user_id=user.id,
+                document_id=doc.id,
+                page_number=1,
+                field_key="quarterly_sales_usd_millions",
+                raw_value_text=None,
+                parsed_value_json=[
+                    {
+                        "calendar_year": 2024,
+                        "q1": 256.8,
+                        "q2": 260.1,
+                        "q3": 275.7,
+                        "q4": 321.0,
+                        "full_year": 1113.6,
+                        "quarter_month_order": ["Mar", "Jun", "Sep", "Dec"],
+                        "fiscal_year_end_month": 12,
+                    },
+                    {
+                        "calendar_year": 2025,
+                        "q1": 368.4,
+                        "q2": 369.4,
+                        "q3": 487.7,
+                        "q4": 524.5,
+                        "full_year": 1750.0,
+                        "quarter_month_order": ["Mar", "Jun", "Sep", "Dec"],
+                        "fiscal_year_end_month": 12,
+                    },
+                ],
+                original_text_snippet="Quarterly Sales ...",
+                confidence_score=0.8,
+                parser_version="v1",
+            ),
+            MetricExtraction(
+                user_id=user.id,
+                document_id=doc.id,
+                page_number=1,
+                field_key="earnings_per_share",
+                raw_value_text=None,
+                parsed_value_json=[
+                    {
+                        "calendar_year": 2024,
+                        "q1": 0.76,
+                        "q2": 0.75,
+                        "q3": 0.80,
+                        "q4": 0.95,
+                        "full_year": 3.21,
+                        "quarter_month_order": ["Mar", "Jun", "Sep", "Dec"],
+                        "fiscal_year_end_month": 12,
+                    }
+                ],
+                original_text_snippet="Earnings Per Share ...",
+                confidence_score=0.8,
+                parser_version="v1",
+            ),
+            MetricExtraction(
+                user_id=user.id,
+                document_id=doc.id,
+                page_number=1,
+                field_key="quarterly_dividends_paid_per_share",
+                raw_value_text=None,
+                parsed_value_json=[
+                    {
+                        "calendar_year": 2024,
+                        "q1": 0.36,
+                        "q2": 0.36,
+                        "q3": 0.36,
+                        "q4": 0.36,
+                        "full_year": 1.44,
+                        "quarter_month_order": ["Mar", "Jun", "Sep", "Dec"],
+                        "fiscal_year_end_month": 12,
+                    }
+                ],
+                original_text_snippet="Quarterly Dividends Paid ...",
+                confidence_score=0.8,
+                parser_version="v1",
+            ),
+        ]
+    )
+    db_session.commit()
+
+    resp = client.get(f"/api/v1/documents/{doc.id}/review", headers=headers)
+    assert resp.status_code == 200, resp.text
+
+    payload = resp.json()
+    assert payload["annual_rates"]["metrics"][0]["metric_key"] == "sales"
+    assert payload["annual_rates"]["metrics"][0]["past_10y_cagr_pct"] == 9
+    assert payload["annual_rates"]["metrics"][0]["estimated_cagr_pct"] == {
+        "from_period": "2022-2024",
+        "to_period": "2028-2030",
+        "value": 7.5,
+    }
+    # Q1-Q3 2025 are actual (period ended well before the Dec 26 report); Q4 (Dec 31) is estimated.
+    assert payload["quarterly_sales"]["by_year"][1]["quarters"]["Q1"]["fact_nature"] == "actual"
+    assert payload["quarterly_sales"]["by_year"][1]["quarters"]["Q4"]["fact_nature"] == "estimate"
+    assert payload["quarterly_sales"]["by_year"][1]["full_year"]["value"] == 1750.0
+    assert payload["earnings_per_share"]["by_year"][0]["full_year"]["value"] == 3.21
+    assert payload["quarterly_dividends_paid"]["by_year"][0]["full_year"]["value"] == 1.44
 
 
 def test_document_review_endpoint_requires_document_ownership(

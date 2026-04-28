@@ -308,6 +308,8 @@ def _normalize_numeric(value: Any, unit: Optional[str]) -> tuple[Optional[float]
 
     if unit == "USD_millions":
         return numeric * 1_000_000.0, "USD"
+    if unit == "thousand_shares":
+        return numeric * 1_000.0, "shares"
     if unit == "million_shares":
         return numeric * 1_000_000.0, "shares"
     if unit == "percent":

@@ -36,6 +36,31 @@ def test_mapping_spec_generates_core_facts():
     assert strength["value_numeric"] is None
     assert strength["value_text"] == "A"
 
+    high_gain = by_key.get(("proj.long_term.high_price_gain", "PROJECTION_RANGE", date(2026, 1, 9)))
+    assert high_gain is not None
+    assert high_gain["value_numeric"] == pytest.approx(0.7)
+    assert high_gain["unit"] == "ratio"
+
+    low_gain = by_key.get(("proj.long_term.low_price_gain", "PROJECTION_RANGE", date(2026, 1, 9)))
+    assert low_gain is not None
+    assert low_gain["value_numeric"] == pytest.approx(0.25)
+    assert low_gain["unit"] == "ratio"
+
+    inst_buy = by_key.get(("ownership.institutional.to_buy", "Q", date(2025, 3, 31)))
+    assert inst_buy is not None
+    assert inst_buy["value_numeric"] == pytest.approx(232)
+    assert inst_buy["unit"] == "count"
+
+    inst_sell = by_key.get(("ownership.institutional.to_sell", "Q", date(2025, 6, 30)))
+    assert inst_sell is not None
+    assert inst_sell["value_numeric"] == pytest.approx(189)
+    assert inst_sell["unit"] == "count"
+
+    inst_holds = by_key.get(("ownership.institutional.holdings", "Q", date(2025, 9, 30)))
+    assert inst_holds is not None
+    assert inst_holds["value_numeric"] == pytest.approx(74_403_000)
+    assert inst_holds["unit"] == "shares"
+
     assert ("rating.timeliness_change", "EVENT", date(2026, 1, 9)) not in by_key
     assert ("rating.safety_change", "EVENT", date(2026, 1, 9)) not in by_key
     assert ("rating.technical_change", "EVENT", date(2026, 1, 9)) not in by_key

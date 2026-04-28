@@ -356,17 +356,17 @@
           "Q1": {
             "period_end": "2025-03-31",
             "value": 368.4,
-            "fact_nature": "estimate"
+            "fact_nature": "actual"
           },
           "Q2": {
             "period_end": "2025-06-30",
             "value": 369.4,
-            "fact_nature": "estimate"
+            "fact_nature": "actual"
           },
           "Q3": {
             "period_end": "2025-09-30",
             "value": 487.7,
-            "fact_nature": "estimate"
+            "fact_nature": "actual"
           },
           "Q4": {
             "period_end": "2025-12-31",
@@ -515,17 +515,17 @@
           "Q1": {
             "period_end": "2025-03-31",
             "value": 1.07,
-            "fact_nature": "estimate"
+            "fact_nature": "actual"
           },
           "Q2": {
             "period_end": "2025-06-30",
             "value": 1.24,
-            "fact_nature": "estimate"
+            "fact_nature": "actual"
           },
           "Q3": {
             "period_end": "2025-09-30",
             "value": 1.43,
-            "fact_nature": "estimate"
+            "fact_nature": "actual"
           },
           "Q4": {
             "period_end": "2025-12-31",
@@ -703,17 +703,17 @@
           "Q1": {
             "period_end": "2025-03-31",
             "value": 0.38,
-            "fact_nature": "estimate"
+            "fact_nature": "actual"
           },
           "Q2": {
             "period_end": "2025-06-30",
             "value": 0.38,
-            "fact_nature": "estimate"
+            "fact_nature": "actual"
           },
           "Q3": {
             "period_end": "2025-09-30",
             "value": 0.38,
-            "fact_nature": "estimate"
+            "fact_nature": "actual"
           },
           "Q4": {
             "period_end": "2025-12-31",
@@ -889,13 +889,13 @@
         "2016": null,
         "2017": null,
         "2018": null,
-        "2019": null,
-        "2020": 46.4,
-        "2021": 47.9,
-        "2022": 38.5,
-        "2023": 37.6,
-        "2024": 38.8,
-        "2025": 37.3,
+        "2019": 46.4,
+        "2020": 47.9,
+        "2021": 38.5,
+        "2022": 37.6,
+        "2023": 38.8,
+        "2024": 37.3,
+        "2025": null,
         "2026": null,
         "projection_2028_2030": 35.0
       },
@@ -904,28 +904,28 @@
         "2016": null,
         "2017": null,
         "2018": null,
-        "2019": null,
-        "2020": 2.47,
-        "2021": 2.46,
-        "2022": 2.08,
-        "2023": 2.17,
-        "2024": 2.16,
-        "2025": 2.13,
+        "2019": 2.47,
+        "2020": 2.46,
+        "2021": 2.08,
+        "2022": 2.17,
+        "2023": 2.16,
+        "2024": 2.13,
+        "2025": null,
         "2026": null,
         "projection_2028_2030": 1.95
       },
       "avg_annual_dividend_yield_pct": {
-        "2015": 1.5,
-        "2016": 1.7,
-        "2017": 1.4,
-        "2018": 1.2,
-        "2019": 1.4,
-        "2020": 1.2,
+        "2015": 1.7,
+        "2016": 1.4,
+        "2017": 1.2,
+        "2018": 1.4,
+        "2019": 1.2,
+        "2020": 0.8,
         "2021": 0.8,
-        "2022": 0.8,
-        "2023": 0.9,
-        "2024": 1.0,
-        "2025": 1.2,
+        "2022": 0.9,
+        "2023": 1.0,
+        "2024": 1.2,
+        "2025": null,
         "2026": null,
         "projection_2028_2030": 1.0
       }
@@ -1293,7 +1293,7 @@
     "business": "Franco-Nevada Corp. is a gold-focused royalty and stream company (streams differ from royalties and are generally contracts for the forward purchase of a portion of future precious metal from a mining property). Franco does not operate any of the assets in which it has royalty/stream interests. It also has interests in platinum and oil/gas properties. Its 400 properties are located in North America, South America, Australia, and Africa. Chrmn: David Harquail. Pres. & CEO: Paul Brink. Officers and directors own less than 1% of the common stock (Proxy 3/25). Incorporated: Canada. Addr.: 199 Bay St., Suite 2000 P.O. Box 285 Commerce Court Postal Station Toronto, Ontario M5L 1G9 Canada. Tel.: (416) 306-6300. Internet: www.franco-nevada.com.",
     "analyst_name": "Kevin Downing",
     "commentary_date": "2025-12-26",
-    "analyst_commentary": "Franco-Nevada finished out the third quarter with its price at peak levels. However, the weeks leading up to the November 3rd earnings release were turbulent. Starting in mid-October, the stock joined a broader decline in gold mining equities as gold futures pulled back sharply. The selling pressure reflected both the commodity’s falling price and what appeared to be profit-taking after the royalty company’s extended rally. By the time management prepared to report results, shares had lost a significant part of their gains. The results lifted the shares, and momentum built in the weeks that followed as the stock won back much of the ground lost during the October pullback. Management reported record quarterly results for the third consecutive quarter, driven by elevated gold prices, strong operational performance, and proceeds from the sale of Cobre Panama concentrate stockpiles. Precious metals made up 85% of revenue. CEO Paul Brink highlighted six significant gold acquisitions completed over the past 18 months, positioning Franco-Nevada for roughly 50% growth in gold equivalent ounces over five years if Cobre Panama resumes production. The large Panamanian copper mine has been closed since late 2023 due to political and environmental disputes, though management expressed optimism about recent positive comments from President Mulino and a shift in public sentiment toward reopening. The shares might not appeal to momentum investors. Our Timeliness Ranking System has the shares pegged to underperform the broader market in the year ahead. The stock usually trades at a relatively high multiple, but the valuation is still reasonable when looked at with a long-term investment perspective. Inevitably, the valuation depends heavily on where gold prices settle once interest rate policy normalizes. We view the stock as a lower-risk way to hedge against inflation and maintain gold exposure without the operational baggage of traditional miners. That said, with the shares up more than 70% year-to-date, those looking for a bargain will have to find it elsewhere or wait for a better entry point.",
+    "analyst_commentary": "Franco-Nevada finished out the third quarter with its price at peak levels. However, the weeks leading up to the November 3rd earnings release were turbulent. Starting in mid-October, the stock joined a broader decline in gold mining equities as gold futures pulled back sharply. The selling pressure reflected both the commodity\u2019s falling price and what appeared to be profit-taking after the royalty company\u2019s extended rally. By the time management prepared to report results, shares had lost a significant part of their gains. The results lifted the shares, and momentum built in the weeks that followed as the stock won back much of the ground lost during the October pullback. Management reported record quarterly results for the third consecutive quarter, driven by elevated gold prices, strong operational performance, and proceeds from the sale of Cobre Panama concentrate stockpiles. Precious metals made up 85% of revenue. CEO Paul Brink highlighted six significant gold acquisitions completed over the past 18 months, positioning Franco-Nevada for roughly 50% growth in gold equivalent ounces over five years if Cobre Panama resumes production. The large Panamanian copper mine has been closed since late 2023 due to political and environmental disputes, though management expressed optimism about recent positive comments from President Mulino and a shift in public sentiment toward reopening. The shares might not appeal to momentum investors. Our Timeliness Ranking System has the shares pegged to underperform the broader market in the year ahead. The stock usually trades at a relatively high multiple, but the valuation is still reasonable when looked at with a long-term investment perspective. Inevitably, the valuation depends heavily on where gold prices settle once interest rate policy normalizes. We view the stock as a lower-risk way to hedge against inflation and maintain gold exposure without the operational baggage of traditional miners. That said, with the shares up more than 70% year-to-date, those looking for a bargain will have to find it elsewhere or wait for a better entry point.",
     "fact_nature": "opinion"
   }
 }

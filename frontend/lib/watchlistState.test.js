@@ -22,15 +22,17 @@ test('sortWatchlistMembers orders by MOS descending and ticker ascending as tie-
   );
 });
 
-test('buildFairValueEdits mirrors current fair value strings for each stock', () => {
+test('buildFairValueEdits formats current fair value strings for each stock', () => {
   const rows = [
     { stock_id: 10, fair_value: 120.5 },
     { stock_id: 11, fair_value: null },
+    { stock_id: 12, fair_value: 98.4567 },
   ];
 
   assert.deepEqual(buildFairValueEdits(rows), {
-    10: '120.5',
+    10: '120.50',
     11: '',
+    12: '98.46',
   });
 });
 

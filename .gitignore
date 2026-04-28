@@ -44,6 +44,7 @@ yarn-error.log*
 pnpm-debug.log*
 .npm/
 frontend/.next/
+frontend/tsconfig.tsbuildinfo
 frontend/out/
 frontend/build/
 frontend/dist/

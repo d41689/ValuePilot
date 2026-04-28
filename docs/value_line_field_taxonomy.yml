@@ -152,10 +152,20 @@ mapping_semantics:
     fact_nature: opinion
   proj.long_term.high_price:
     fact_nature: opinion
+  proj.long_term.low_price_gain:
+    fact_nature: opinion
+  proj.long_term.high_price_gain:
+    fact_nature: opinion
   proj.long_term.low_total_return:
     fact_nature: opinion
   proj.long_term.high_total_return:
     fact_nature: opinion
+  ownership.institutional.to_buy.q:
+    fact_nature: snapshot
+  ownership.institutional.to_sell.q:
+    fact_nature: snapshot
+  ownership.institutional.holdings.q:
+    fact_nature: snapshot
   company.business_description.as_of:
     fact_nature: opinion
     storage_role: evidence_only

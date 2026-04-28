@@ -356,17 +356,17 @@
           "Q1": {
             "period_end": "2025-03-31",
             "value": 368.4,
-            "fact_nature": "estimate"
+            "fact_nature": "actual"
           },
           "Q2": {
             "period_end": "2025-06-30",
             "value": 369.4,
-            "fact_nature": "estimate"
+            "fact_nature": "actual"
           },
           "Q3": {
             "period_end": "2025-09-30",
             "value": 487.7,
-            "fact_nature": "estimate"
+            "fact_nature": "actual"
           },
           "Q4": {
             "period_end": "2025-12-31",
@@ -515,17 +515,17 @@
           "Q1": {
             "period_end": "2025-03-31",
             "value": 1.07,
-            "fact_nature": "estimate"
+            "fact_nature": "actual"
           },
           "Q2": {
             "period_end": "2025-06-30",
             "value": 1.24,
-            "fact_nature": "estimate"
+            "fact_nature": "actual"
           },
           "Q3": {
             "period_end": "2025-09-30",
             "value": 1.43,
-            "fact_nature": "estimate"
+            "fact_nature": "actual"
           },
           "Q4": {
             "period_end": "2025-12-31",
@@ -703,17 +703,17 @@
           "Q1": {
             "period_end": "2025-03-31",
             "value": 0.38,
-            "fact_nature": "estimate"
+            "fact_nature": "actual"
           },
           "Q2": {
             "period_end": "2025-06-30",
             "value": 0.38,
-            "fact_nature": "estimate"
+            "fact_nature": "actual"
           },
           "Q3": {
             "period_end": "2025-09-30",
             "value": 0.38,
-            "fact_nature": "estimate"
+            "fact_nature": "actual"
           },
           "Q4": {
             "period_end": "2025-12-31",
@@ -889,13 +889,13 @@
         "2016": null,
         "2017": null,
         "2018": null,
-        "2019": null,
-        "2020": 46.4,
-        "2021": 47.9,
-        "2022": 38.5,
-        "2023": 37.6,
-        "2024": 38.8,
-        "2025": 37.3,
+        "2019": 46.4,
+        "2020": 47.9,
+        "2021": 38.5,
+        "2022": 37.6,
+        "2023": 38.8,
+        "2024": 37.3,
+        "2025": null,
         "2026": null,
         "projection_2028_2030": 35.0
       },
@@ -904,28 +904,28 @@
         "2016": null,
         "2017": null,
         "2018": null,
-        "2019": null,
-        "2020": 2.47,
-        "2021": 2.46,
-        "2022": 2.08,
-        "2023": 2.17,
-        "2024": 2.16,
-        "2025": 2.13,
+        "2019": 2.47,
+        "2020": 2.46,
+        "2021": 2.08,
+        "2022": 2.17,
+        "2023": 2.16,
+        "2024": 2.13,
+        "2025": null,
         "2026": null,
         "projection_2028_2030": 1.95
       },
       "avg_annual_dividend_yield_pct": {
-        "2015": 1.5,
-        "2016": 1.7,
-        "2017": 1.4,
-        "2018": 1.2,
-        "2019": 1.4,
-        "2020": 1.2,
+        "2015": 1.7,
+        "2016": 1.4,
+        "2017": 1.2,
+        "2018": 1.4,
+        "2019": 1.2,
+        "2020": 0.8,
         "2021": 0.8,
-        "2022": 0.8,
-        "2023": 0.9,
-        "2024": 1.0,
-        "2025": 1.2,
+        "2022": 0.9,
+        "2023": 1.0,
+        "2024": 1.2,
+        "2025": null,
         "2026": null,
         "projection_2028_2030": 1.0
       }
