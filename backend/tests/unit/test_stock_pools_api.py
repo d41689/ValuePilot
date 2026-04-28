@@ -12,6 +12,7 @@ from app.core.security import hash_password
 ET = ZoneInfo("America/New_York")
 FAIR_VALUE_KEY = "val.fair_value"
 TARGET_KEY = "target.price_18m.mid"
+PIOTROSKI_TOTAL_KEY = "score.piotroski.total"
 
 
 def _make_user(db_session, email: str = "watchlist@example.com") -> User:
@@ -202,6 +203,87 @@ def test_pool_members_include_price_and_fair_value(client, db_session, monkeypat
             is_current=True,
         )
     )
+    db_session.add_all(
+        [
+            MetricFact(
+                user_id=user.id,
+                stock_id=stock_a.id,
+                metric_key=PIOTROSKI_TOTAL_KEY,
+                value_numeric=9.0,
+                value_json={
+                    "status": "calculated",
+                    "variant": "valueline_proxy",
+                    "fiscal_year": 2999,
+                    "fact_nature": "estimate",
+                },
+                unit="score_total",
+                period_type="FY",
+                period_end_date=date(2999, 12, 31),
+                source_type="calculated",
+                is_current=True,
+            ),
+            MetricFact(
+                user_id=user.id,
+                stock_id=stock_a.id,
+                metric_key=PIOTROSKI_TOTAL_KEY,
+                value_numeric=8.0,
+                value_json={
+                    "status": "calculated",
+                    "variant": "valueline_proxy",
+                    "fiscal_year": 2024,
+                },
+                unit="score_total",
+                period_type="FY",
+                period_end_date=date(2024, 12, 31),
+                source_type="calculated",
+                is_current=True,
+            ),
+            MetricFact(
+                user_id=user.id,
+                stock_id=stock_a.id,
+                metric_key=PIOTROSKI_TOTAL_KEY,
+                value_numeric=None,
+                value_json={
+                    "status": "partial",
+                    "variant": "insurance_adjusted",
+                    "fiscal_year": 2023,
+                    "partial_score": 6,
+                    "available_indicators": 8,
+                    "max_available_score": 8,
+                    "missing_indicators": ["score.piotroski.current_ratio_improving"],
+                },
+                unit="score_total",
+                period_type="FY",
+                period_end_date=date(2023, 12, 31),
+                source_type="calculated",
+                is_current=True,
+            ),
+            MetricFact(
+                user_id=user.id,
+                stock_id=stock_a.id,
+                metric_key=PIOTROSKI_TOTAL_KEY,
+                value_numeric=4.0,
+                value_json={"status": "calculated", "variant": "standard", "fiscal_year": 2022},
+                unit="score_total",
+                period_type="FY",
+                period_end_date=date(2022, 12, 31),
+                source_type="calculated",
+                is_current=True,
+            ),
+            MetricFact(
+                user_id=user.id,
+                stock_id=stock_a.id,
+                metric_key=PIOTROSKI_TOTAL_KEY,
+                value_numeric=3.0,
+                value_json={"status": "calculated", "variant": "standard", "fiscal_year": 2021},
+                unit="score_total",
+                period_type="FY",
+                period_end_date=date(2021, 12, 31),
+                source_type="calculated",
+                is_current=True,
+            ),
+        ]
+    )
     db_session.commit()
 
     resp = client.get(f"/api/v1/stock_pools/{pool.id}/members", headers=headers)
@@ -215,6 +297,41 @@ def test_pool_members_include_price_and_fair_value(client, db_session, monkeypat
     assert row_a["fair_value"] == pytest.approx(200.0)
     assert row_a["fair_value_source"] == "manual"
     assert row_a["mos"] == pytest.approx(0.5)
+    assert row_a["piotroski_f_scores"] == [
+        {
+            "period_end_date": "2024-12-31",
+            "fiscal_year": 2024,
+            "score": 8.0,
+            "status": "calculated",
+            "variant": "valueline_proxy",
+            "partial_score": None,
+            "available_indicators": None,
+            "max_available_score": None,
+            "missing_indicators": [],
+        },
+        {
+            "period_end_date": "2023-12-31",
+            "fiscal_year": 2023,
+            "score": None,
+            "status": "partial",
+            "variant": "insurance_adjusted",
+            "partial_score": 6,
+            "available_indicators": 8,
+            "max_available_score": 8,
+            "missing_indicators": ["score.piotroski.current_ratio_improving"],
+        },
+        {
+            "period_end_date": "2022-12-31",
+            "fiscal_year": 2022,
+            "score": 4.0,
+            "status": "calculated",
+            "variant": "standard",
+            "partial_score": None,
+            "available_indicators": None,
+            "max_available_score": None,
+            "missing_indicators": [],
+        },
+    ]
 
     row_b = next(row for row in rows if row["ticker"] == "MSFT")
     assert row_b["price"] == pytest.approx(50.0)
@@ -222,3 +339,4 @@ def test_pool_members_include_price_and_fair_value(client, db_session, monkeypat
     assert row_b["fair_value"] == pytest.approx(80.0)
     assert row_b["fair_value_source"] == TARGET_KEY
     assert row_b["mos"] == pytest.approx(0.375)
+    assert row_b["piotroski_f_scores"] == []

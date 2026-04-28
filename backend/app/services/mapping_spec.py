@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import date
+from calendar import monthrange
 from pathlib import Path
 import logging
 import re
@@ -134,6 +135,8 @@ def _walk_tokens(
             if isinstance(item, dict):
                 if "calendar_year" in item:
                     next_context["calendar_year"] = item.get("calendar_year")
+                if _parse_year(item.get("label")) and len(str(item.get("label"))) == 4:
+                    next_context["calendar_year"] = item.get("label")
                 if "period_end" in item:
                     next_context["period_end"] = item.get("period_end")
                 if "fact_nature" in item:
@@ -192,6 +195,11 @@ def _extract_value(
         numeric, path = _resolve_value_path(match, root, value_spec.get("numeric_from"))
         if path:
             used_paths.add(path)
+        if numeric is None and value_spec.get("null_as_zero") is True:
+            numeric = 0
+            method = value_spec.get("null_as_zero_method")
+            if isinstance(method, str):
+                value_json = {"method": method}
         if numeric is not None:
             value_numeric, unit = _normalize_numeric(numeric, unit)
     if "text_from" in value_spec:
@@ -233,10 +241,10 @@ def _resolve_period_end(
         derive = period_spec.get("derive")
         if derive == "year_end_from_key":
             year = _parse_year(match.context.get("key"))
-            period_end = date(year, 12, 31) if year else None
+            period_end = _fiscal_year_end_from_root(root, year) if year else None
         elif derive == "year_end_from_context":
             year = _parse_year(match.context.get("calendar_year"))
-            period_end = date(year, 12, 31) if year else None
+            period_end = _fiscal_year_end_from_root(root, year) if year else None
         elif derive == "quarter_end_from_context":
             raw = match.context.get("period_end")
             period_end = _parse_date(raw)
@@ -262,6 +270,19 @@ def _financial_position_date(
         return date(year, 12, 31), "FY"
     parsed = _parse_date(label)
     return parsed, period_type
+
+
+def _fiscal_year_end_from_root(root: dict[str, Any], year: Optional[int]) -> Optional[date]:
+    if year is None:
+        return None
+    raw_month = _resolve_path(root, "annual_financials.meta.fiscal_year_end_month")
+    try:
+        month = int(raw_month)
+    except (TypeError, ValueError):
+        month = 12
+    if month < 1 or month > 12:
+        month = 12
+    return date(year, month, monthrange(year, month)[1])
 
 
 def _resolve_value_path(match: MappingMatch, root: dict[str, Any], path: Any) -> tuple[Any, Optional[str]]:

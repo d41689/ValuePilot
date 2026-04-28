@@ -27,6 +27,8 @@ from app.ingestion.parsers.v1_value_line.page_json import (
 )
 from app.services.active_report_resolver import resolve_active_reports
 from app.services.ingestion_service import IngestionService
+from app.services.calculated_metrics.value_line_ratios import ValueLineRatioCalculator
+from app.services.calculated_metrics.piotroski_f_score import PiotroskiFScoreCalculator
 from app.models.artifacts import PdfDocument
 
 router = APIRouter()
@@ -622,6 +624,9 @@ def correct_document_review_fact(
         is_current=True,
     )
     session.add(manual_fact)
+    session.flush()
+    ValueLineRatioCalculator(session).calculate_for_stock(user_id=current_user.id, stock_id=fact.stock_id)
+    PiotroskiFScoreCalculator(session).calculate_for_stock(user_id=current_user.id, stock_id=fact.stock_id)
     session.commit()
     session.refresh(manual_fact)
 

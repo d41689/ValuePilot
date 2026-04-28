@@ -8,6 +8,7 @@ import { Plus, RefreshCcw, Trash2 } from 'lucide-react';
 import apiClient from '@/lib/api/client';
 import {
   buildFairValueEdits,
+  formatPiotroskiFScoreSeries,
   hasFairValueEditChanges,
   sortWatchlistMembers,
 } from '@/lib/watchlistState';
@@ -43,6 +44,17 @@ type WatchlistRow = {
   fair_value_source: string | null;
   mos: number | null;
   delta_today: number | null;
+  piotroski_f_scores: Array<{
+    period_end_date: string | null;
+    fiscal_year: number | null;
+    score: number | null;
+    status: string | null;
+    variant: string | null;
+    partial_score: number | null;
+    available_indicators: number | null;
+    max_available_score: number | null;
+    missing_indicators: string[];
+  }>;
 };
 
 type ApiError = {
@@ -320,8 +332,8 @@ export default function WatchlistPage() {
         </div>
       </header>
 
-      <div className="grid gap-6 lg:grid-cols-[280px_1fr]">
-        <Card className="border-border/60 bg-card/85">
+      <div className="grid min-w-0 gap-6 lg:grid-cols-[280px_1fr]">
+        <Card className="min-w-0 border-border/60 bg-card/85">
           <CardHeader>
             <CardTitle className="text-base">My Watchlists</CardTitle>
           </CardHeader>
@@ -371,7 +383,7 @@ export default function WatchlistPage() {
           </CardContent>
         </Card>
 
-        <Card className="border-border/60 bg-card/85">
+        <Card className="min-w-0 border-border/60 bg-card/85">
           <CardHeader className="flex flex-row items-start justify-between gap-4">
             <div>
               <CardTitle className="text-base">
@@ -408,11 +420,12 @@ export default function WatchlistPage() {
               </div>
             )}
             {members.length > 0 && (
-              <Table>
+              <Table className="min-w-[1080px]">
                 <TableHeader>
                   <TableRow>
                     <TableHead>Ticker</TableHead>
                     <TableHead>Company</TableHead>
+                    <TableHead>F-Score 3Y</TableHead>
                     <TableHead>Price</TableHead>
                     <TableHead>Fair Value</TableHead>
                     <TableHead>MOS</TableHead>
@@ -426,6 +439,9 @@ export default function WatchlistPage() {
                     <TableRow key={row.membership_id}>
                       <TableCell className="font-medium">{row.ticker}</TableCell>
                       <TableCell>{row.company_name}</TableCell>
+                      <TableCell className="min-w-[9rem] max-w-[11rem] whitespace-pre-line text-xs leading-5 text-muted-foreground">
+                        {formatPiotroskiFScoreSeries(row.piotroski_f_scores)}
+                      </TableCell>
                       <TableCell>{formatNumber(row.price)}</TableCell>
                       <TableCell>
                         <div className="flex flex-col gap-1">

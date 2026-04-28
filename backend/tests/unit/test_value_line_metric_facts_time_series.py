@@ -171,6 +171,32 @@ def test_quarterly_series_full_year_facts_are_written(client, db_session, user_f
     assert q1_fact.period_type == "Q"
 
 
+def test_value_line_upload_creates_piotroski_partial_diagnostic_fact(
+    client, db_session, user_factory, auth_headers
+):
+    _, stock, _, _ = upload_axs(client, db_session, user_factory, auth_headers)
+
+    total = (
+        db_session.query(MetricFact)
+        .filter(
+            MetricFact.stock_id == stock.id,
+            MetricFact.metric_key == "score.piotroski.total",
+            MetricFact.source_type == "calculated",
+            MetricFact.is_current.is_(True),
+        )
+        .order_by(MetricFact.period_end_date.desc())
+        .first()
+    )
+
+    assert total is not None
+    assert total.source_document_id is None
+    assert total.value_numeric is None
+    assert total.value_json["status"] == "partial"
+    assert total.value_json["variant"] == "insurance_adjusted"
+    assert total.value_json["calculation_version"] == "piotroski_value_line_v1"
+    assert "missing_indicators" in total.value_json
+
+
 def test_annual_financials_series_are_expanded(client, db_session, user_factory, auth_headers):
     _, stock, expected, doc_id = upload_axs(client, db_session, user_factory, auth_headers)
 
