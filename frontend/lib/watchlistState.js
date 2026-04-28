@@ -34,6 +34,14 @@ function hasFairValueEditChanges(current, next) {
   return false;
 }
 
+function formatWatchlistOptionLabel(pool) {
+  const count = typeof pool?.member_count === 'number' && Number.isFinite(pool.member_count)
+    ? pool.member_count
+    : 0;
+  const label = pool?.name ?? 'Untitled';
+  return `${label} · ${count} ${count === 1 ? 'stock' : 'stocks'}`;
+}
+
 function formatPiotroskiFScore(score) {
   if (!score) return '—';
   const fiscalYear = score.fiscal_year ? String(score.fiscal_year) : 'FY';
@@ -61,6 +69,7 @@ function formatPiotroskiFScoreSeries(scores) {
 module.exports = {
   sortWatchlistMembers,
   buildFairValueEdits,
+  formatWatchlistOptionLabel,
   hasFairValueEditChanges,
   formatPiotroskiFScore,
   formatPiotroskiFScoreSeries,
