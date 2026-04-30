@@ -7,7 +7,9 @@ import axios from 'axios';
 
 import TickerSearchBox from '@/components/TickerSearchBox';
 import { Card } from '@/components/ui/card';
+import { Checkbox } from '@/components/ui/checkbox';
 import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
 import { toast } from '@/components/ui/use-toast';
 import provenanceHelpers from '@/lib/factProvenance';
 import { normalizeTicker } from '@/lib/stockRoutes';
@@ -419,8 +421,10 @@ export default function StockDcfPage() {
             <div className="flex flex-wrap items-center gap-3">
               <span>Based on</span>
               <div className="flex flex-wrap items-center gap-1 rounded-full border border-border/70 bg-muted/40 p-1">
-                <button
+                <Button
                   type="button"
+                  variant="ghost"
+                  size="sm"
                   onClick={() => {
                     if (oepsNormalized === null) {
                       return;
@@ -449,11 +453,13 @@ export default function StockDcfPage() {
                   ].join(' ')}
                 >
                   OEPS Norm
-                </button>
+                </Button>
                 {oepsSeries.map((item) => (
-                  <button
+                  <Button
                     key={item.year}
                     type="button"
+                    variant="ghost"
+                    size="sm"
                     onClick={() => {
                       setBasedOnSelection(item.year);
                       const resolvedInputs = resolveDcfComponentInputs(
@@ -482,7 +488,7 @@ export default function StockDcfPage() {
                     ].join(' ')}
                   >
                     {item.year}
-                  </button>
+                  </Button>
                 ))}
               </div>
               {basedOnProvenanceLabel ? (
@@ -493,12 +499,12 @@ export default function StockDcfPage() {
             </div>
             <div className="flex items-center gap-2 rounded-lg border border-border/70 bg-card/80 px-4 py-2">
               <span className="text-muted-foreground">$</span>
-              <input
+              <Input
                 value={basedOnInputValue}
                 onChange={(event) => setBasedOnOverride(event.target.value)}
                 onBlur={() => setBasedOnOverride((value) => value.trim())}
                 inputMode="decimal"
-                className="w-28 bg-transparent text-right text-base font-semibold outline-none"
+                className="h-auto w-28 border-0 bg-transparent px-0 py-0 text-right text-base font-semibold shadow-none focus-visible:ring-0 focus-visible:ring-offset-0"
               />
             </div>
           </div>
@@ -506,38 +512,38 @@ export default function StockDcfPage() {
           <div className="grid gap-3 px-6 pb-2 text-xs text-muted-foreground md:grid-cols-3">
             <label className="flex items-center justify-between gap-2 rounded-xl border border-border/70 bg-muted/30 px-3 py-2">
               <span>Net profit / sh</span>
-              <input
+              <Input
                 value={netProfitPerShare}
                 onChange={(event) => {
                   setNetProfitPerShare(event.target.value);
                   setBasedOnOverride('');
                 }}
                 inputMode="decimal"
-                className="w-20 bg-transparent text-right text-sm font-medium text-foreground outline-none"
+                className="h-auto w-20 border-0 bg-transparent px-0 py-0 text-right text-sm font-medium text-foreground shadow-none focus-visible:ring-0 focus-visible:ring-offset-0"
               />
             </label>
             <label className="flex items-center justify-between gap-2 rounded-xl border border-border/70 bg-muted/30 px-3 py-2">
               <span>Depreciation / sh</span>
-              <input
+              <Input
                 value={depreciationPerShare}
                 onChange={(event) => {
                   setDepreciationPerShare(event.target.value);
                   setBasedOnOverride('');
                 }}
                 inputMode="decimal"
-                className="w-20 bg-transparent text-right text-sm font-medium text-foreground outline-none"
+                className="h-auto w-20 border-0 bg-transparent px-0 py-0 text-right text-sm font-medium text-foreground shadow-none focus-visible:ring-0 focus-visible:ring-offset-0"
               />
             </label>
             <label className="flex items-center justify-between gap-2 rounded-xl border border-border/70 bg-muted/30 px-3 py-2">
               <span>Cap’l spending / sh</span>
-              <input
+              <Input
                 value={capexPerShare}
                 onChange={(event) => {
                   setCapexPerShare(event.target.value);
                   setBasedOnOverride('');
                 }}
                 inputMode="decimal"
-                className="w-20 bg-transparent text-right text-sm font-medium text-foreground outline-none"
+                className="h-auto w-20 border-0 bg-transparent px-0 py-0 text-right text-sm font-medium text-foreground shadow-none focus-visible:ring-0 focus-visible:ring-offset-0"
               />
             </label>
           </div>
@@ -548,26 +554,28 @@ export default function StockDcfPage() {
               <HelpCircle className="h-4 w-4 text-muted-foreground" />
             </div>
             <div className="flex items-center overflow-hidden rounded-lg border border-border/70 bg-card/80">
-              <button
+              <Button
                 type="button"
+                variant="ghost"
+                size="icon"
                 onClick={() => setDiscountRate((value) => clampNonNegative(value - 1))}
-                className="px-4 py-2 text-muted-foreground"
               >
                 -
-              </button>
-              <input
+              </Button>
+              <Input
                 value={discountRate}
                 onChange={(event) => setDiscountRate(clampNonNegative(toNumber(event.target.value)))}
                 inputMode="numeric"
-                className="w-16 bg-transparent text-center text-base font-semibold outline-none"
+                className="h-auto w-16 border-0 bg-transparent px-0 py-0 text-center text-base font-semibold shadow-none focus-visible:ring-0 focus-visible:ring-offset-0"
               />
-              <button
+              <Button
                 type="button"
+                variant="ghost"
+                size="icon"
                 onClick={() => setDiscountRate((value) => value + 1)}
-                className="px-4 py-2 text-muted-foreground"
               >
                 +
-              </button>
+              </Button>
             </div>
           </div>
 
@@ -576,10 +584,7 @@ export default function StockDcfPage() {
               Tangible Book Value
               <HelpCircle className="h-4 w-4 text-muted-foreground" />
               <label className="flex items-center gap-2 text-sm font-semibold text-foreground">
-                <input
-                  type="checkbox"
-                  className="h-5 w-5 rounded-md border border-border/70 accent-primary"
-                />
+                <Checkbox />
                 Add to Fair Value
               </label>
             </div>
@@ -598,69 +603,75 @@ export default function StockDcfPage() {
                 <div className="flex items-center justify-between">
                   <span>Years</span>
                   <div className="flex items-center overflow-hidden rounded-lg border border-border/70 bg-background">
-                    <button
+                    <Button
                       type="button"
+                      variant="ghost"
+                      size="icon"
                       onClick={() => setGrowthYears((value) => clampNonNegative(value - 1))}
-                      className="px-4 py-2 text-muted-foreground"
                     >
                       -
-                    </button>
-                    <input
+                    </Button>
+                    <Input
                       value={growthYears}
                       onChange={(event) =>
                         setGrowthYears(clampNonNegative(toNumber(event.target.value)))
                       }
                       inputMode="numeric"
-                      className="w-14 bg-transparent text-center text-base font-semibold outline-none"
+                      className="h-auto w-14 border-0 bg-transparent px-0 py-0 text-center text-base font-semibold shadow-none focus-visible:ring-0 focus-visible:ring-offset-0"
                     />
-                    <button
+                    <Button
                       type="button"
+                      variant="ghost"
+                      size="icon"
                       onClick={() => setGrowthYears((value) => value + 1)}
-                      className="px-4 py-2 text-muted-foreground"
                     >
                       +
-                    </button>
+                    </Button>
                   </div>
                 </div>
                 <div className="flex items-center justify-between gap-3">
                   <span>Growth Rate</span>
                   <div className="flex flex-col items-end gap-2">
                     <div className="flex items-center overflow-hidden rounded-lg border border-border/70 bg-background">
-                      <button
+                      <Button
                         type="button"
+                        variant="ghost"
+                        size="icon"
                         onClick={() => {
                           setGrowthRateSelection(null);
                           setGrowthRate((value) => clampNonNegative(value - 1));
                         }}
-                        className="px-4 py-2 text-muted-foreground"
                       >
                         -
-                      </button>
-                      <input
+                      </Button>
+                      <Input
                         value={growthRate}
                         onChange={(event) => {
                           setGrowthRateSelection(null);
                           setGrowthRate(clampNonNegative(toNumber(event.target.value)));
                         }}
                         inputMode="numeric"
-                        className="w-14 bg-transparent text-center text-base font-semibold outline-none"
+                        className="h-auto w-14 border-0 bg-transparent px-0 py-0 text-center text-base font-semibold shadow-none focus-visible:ring-0 focus-visible:ring-offset-0"
                       />
-                      <button
+                      <Button
                         type="button"
+                        variant="ghost"
+                        size="icon"
                         onClick={() => {
                           setGrowthRateSelection(null);
                           setGrowthRate((value) => value + 1);
                         }}
-                        className="px-4 py-2 text-muted-foreground"
                       >
                         +
-                      </button>
+                      </Button>
                     </div>
                     <div className="flex flex-wrap items-center justify-end gap-2">
                       {growthRateOptions.map((option) => (
-                        <button
+                        <Button
                           key={option.key}
                           type="button"
+                          variant="outline"
+                          size="sm"
                           onClick={() => {
                             setGrowthRateSelection(option.key);
                             setGrowthRate(option.value);
@@ -673,7 +684,7 @@ export default function StockDcfPage() {
                           ].join(' ')}
                         >
                           {option.label} {option.value.toFixed(1)}
-                        </button>
+                        </Button>
                       ))}
                     </div>
                     {growthRateProvenanceLabel ? (
@@ -699,55 +710,59 @@ export default function StockDcfPage() {
                 <div className="flex items-center justify-between">
                   <span>Years</span>
                   <div className="flex items-center overflow-hidden rounded-lg border border-border/70 bg-background">
-                    <button
+                    <Button
                       type="button"
+                      variant="ghost"
+                      size="icon"
                       onClick={() => setTerminalYears((value) => clampNonNegative(value - 1))}
-                      className="px-4 py-2 text-muted-foreground"
                     >
                       -
-                    </button>
-                    <input
+                    </Button>
+                    <Input
                       value={terminalYears}
                       onChange={(event) =>
                         setTerminalYears(clampNonNegative(toNumber(event.target.value)))
                       }
                       inputMode="numeric"
-                      className="w-14 bg-transparent text-center text-base font-semibold outline-none"
+                      className="h-auto w-14 border-0 bg-transparent px-0 py-0 text-center text-base font-semibold shadow-none focus-visible:ring-0 focus-visible:ring-offset-0"
                     />
-                    <button
+                    <Button
                       type="button"
+                      variant="ghost"
+                      size="icon"
                       onClick={() => setTerminalYears((value) => value + 1)}
-                      className="px-4 py-2 text-muted-foreground"
                     >
                       +
-                    </button>
+                    </Button>
                   </div>
                 </div>
                 <div className="flex items-center justify-between">
                   <span>Growth Rate</span>
                   <div className="flex items-center overflow-hidden rounded-lg border border-border/70 bg-background">
-                    <button
+                    <Button
                       type="button"
+                      variant="ghost"
+                      size="icon"
                       onClick={() => setTerminalRate((value) => clampNonNegative(value - 1))}
-                      className="px-4 py-2 text-muted-foreground"
                     >
                       -
-                    </button>
-                    <input
+                    </Button>
+                    <Input
                       value={terminalRate}
                       onChange={(event) =>
                         setTerminalRate(clampNonNegative(toNumber(event.target.value)))
                       }
                       inputMode="numeric"
-                      className="w-14 bg-transparent text-center text-base font-semibold outline-none"
+                      className="h-auto w-14 border-0 bg-transparent px-0 py-0 text-center text-base font-semibold shadow-none focus-visible:ring-0 focus-visible:ring-offset-0"
                     />
-                    <button
+                    <Button
                       type="button"
+                      variant="ghost"
+                      size="icon"
                       onClick={() => setTerminalRate((value) => value + 1)}
-                      className="px-4 py-2 text-muted-foreground"
                     >
                       +
-                    </button>
+                    </Button>
                   </div>
                 </div>
                 <div className="flex items-center justify-between text-base font-semibold">
@@ -763,12 +778,12 @@ export default function StockDcfPage() {
               <span>Stock Price</span>
               <div className="flex items-center gap-2 rounded-lg border border-border/70 bg-card/80 px-4 py-2">
                 <span className="text-muted-foreground">$</span>
-                <input
+                <Input
                   value={latestPrice !== null ? latestPrice.toFixed(2) : manualPrice}
                   onChange={(event) => setManualPrice(event.target.value)}
                   inputMode="decimal"
                   disabled={latestPrice !== null}
-                  className="w-28 bg-transparent text-right text-base font-semibold outline-none"
+                  className="h-auto w-28 border-0 bg-transparent px-0 py-0 text-right text-base font-semibold shadow-none focus-visible:ring-0 focus-visible:ring-offset-0"
                 />
                 {priceUpdatedLabel && latestPrice !== null && (
                   <span className="text-xs text-muted-foreground">Updated {priceUpdatedLabel}</span>

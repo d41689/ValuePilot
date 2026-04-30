@@ -85,6 +85,13 @@ All data written to `metric_facts.value_numeric` MUST be normalized to base unit
 - **Normalization Failures**: If a value cannot be normalized (e.g., unknown unit), store the `raw_value` in JSON but leave `value_numeric` as `NULL`. Flag specific error metadata.
 - **Traceability**: Every parsed metric MUST include `document_id`, `page_number`, and `original_text_snippet`.
 
+## Frontend UI Standard
+- **Use shadcn/ui + Tailwind for frontend UI.** Shared controls live in `frontend/components/ui/` and follow the shadcn pattern: Radix primitives where appropriate, `class-variance-authority` for variants, `cn()` for class merging, and Tailwind utility classes for styling.
+- **Do not render raw form/control primitives directly in app, feature, or shared business components.** Use shared UI components such as `Button`, `Input`, `Textarea`, `Select`, `DropdownMenu`, `Checkbox`, `Table`, `Card`, `Badge`, and `Toast`.
+- **If a needed shadcn/ui component does not exist yet, add it under `frontend/components/ui/` first**, then use it from product code. Avoid one-off styled `<input>`, `<select>`, `<textarea>`, `<button>`, `<details>`, or raw table markup outside `components/ui`.
+- **Use Tailwind classes for layout and component-specific adjustments only.** Keep reusable interaction states, focus rings, disabled states, and base sizing inside shared UI components.
+- **Use lucide-react icons inside controls when an icon exists.** Avoid hand-rolled SVG controls in product UI.
+
 # Development Workflow (Agent Instructions)
 
 ## 1. Task Logging (Required)

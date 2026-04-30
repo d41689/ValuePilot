@@ -4,6 +4,7 @@ import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { Search } from 'lucide-react';
 
+import { Input } from '@/components/ui/input';
 import { cn } from '@/lib/utils';
 import { buildStockRoute, normalizeTicker } from '@/lib/stockRoutes';
 
@@ -49,12 +50,12 @@ export default function TickerSearchBox({
       )}
     >
       <Search className="h-5 w-5 text-muted-foreground" />
-      <input
+      <Input
         aria-label="Search ticker"
         value={value}
         onChange={(event) => setValue(event.target.value)}
         placeholder={placeholder}
-        className="flex-1 bg-transparent text-sm font-medium text-foreground outline-none placeholder:text-muted-foreground"
+        className="h-auto flex-1 border-0 bg-transparent px-0 py-0 text-sm font-medium shadow-none focus-visible:ring-0 focus-visible:ring-offset-0"
       />
       <span className="hidden rounded-full border border-border/70 px-2 py-1 text-xs text-muted-foreground md:inline">
         Press Enter

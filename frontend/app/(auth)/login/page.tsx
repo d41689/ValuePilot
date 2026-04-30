@@ -4,6 +4,8 @@ import { FormEvent, useEffect, useState } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 
+import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
 import apiClient from '@/lib/api/client';
 
 type LoginResponse = {
@@ -93,26 +95,24 @@ export default function LoginPage() {
           <label className="text-sm font-medium text-foreground" htmlFor="email">
             Email
           </label>
-          <input
+          <Input
             id="email"
             type="email"
             value={email}
             onChange={(event) => setEmail(event.target.value)}
             required
-            className="w-full rounded-xl border border-border/70 bg-background px-3 py-2 text-sm outline-none focus:border-primary/70"
           />
         </div>
         <div className="space-y-2">
           <label className="text-sm font-medium text-foreground" htmlFor="password">
             Password
           </label>
-          <input
+          <Input
             id="password"
             type="password"
             value={password}
             onChange={(event) => setPassword(event.target.value)}
             required
-            className="w-full rounded-xl border border-border/70 bg-background px-3 py-2 text-sm outline-none focus:border-primary/70"
           />
         </div>
         {error && (
@@ -120,13 +120,13 @@ export default function LoginPage() {
             {error}
           </div>
         )}
-        <button
+        <Button
           type="submit"
           disabled={isSubmitting}
-          className="w-full rounded-xl bg-primary px-4 py-2 text-sm font-medium text-primary-foreground disabled:opacity-60"
+          className="w-full"
         >
           {isSubmitting ? 'Signing in...' : 'Sign in'}
-        </button>
+        </Button>
       </form>
 
       <p className="mt-4 text-center text-sm text-muted-foreground">
