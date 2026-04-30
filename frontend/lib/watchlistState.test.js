@@ -8,6 +8,7 @@ const {
   buildFairValueEdits,
   formatOverviewOptionLabel,
   formatWatchlistOptionLabel,
+  formatRefreshPricesSuccessDescription,
   getRefreshPricesButtonPresentation,
   hasFairValueEditChanges,
   isOverviewWatchlistId,
@@ -84,6 +85,25 @@ test('getRefreshPricesButtonPresentation returns loading label and spin class', 
     iconClassName: 'mr-2 h-4 w-4 animate-spin',
     label: 'Refreshing',
   });
+});
+
+test('formatRefreshPricesSuccessDescription summarizes refreshed prices', () => {
+  assert.equal(
+    formatRefreshPricesSuccessDescription(
+      [
+        { stock_id: 1, status: 'refreshed' },
+        { stock_id: 2, status: 'skipped' },
+        { stock_id: 3, status: 'failed' },
+      ],
+      3
+    ),
+    'Updated 1 of 3 stocks.'
+  );
+  assert.equal(
+    formatRefreshPricesSuccessDescription([{ stock_id: 1, status: 'skipped' }], 1),
+    'Checked 1 stock; prices are already current.'
+  );
+  assert.equal(formatRefreshPricesSuccessDescription([], 0), 'No stocks to refresh.');
 });
 
 test('formatPiotroskiFScoreSeries formats complete and partial yearly scores', () => {
