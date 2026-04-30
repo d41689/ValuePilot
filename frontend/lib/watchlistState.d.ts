@@ -22,6 +22,11 @@ export function isOverviewWatchlistId(value: unknown): value is typeof OVERVIEW_
 
 export function formatOverviewOptionLabel(count: number | null | undefined): string;
 
+export function getRefreshPricesButtonPresentation(isPending: boolean): {
+  iconClassName: string;
+  label: string;
+};
+
 export type PiotroskiFScore = {
   fiscal_year: number | null;
   score: number | null;

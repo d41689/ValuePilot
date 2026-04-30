@@ -12,6 +12,7 @@ import {
   formatOverviewOptionLabel,
   formatPiotroskiFScoreSeries,
   formatWatchlistOptionLabel,
+  getRefreshPricesButtonPresentation,
   hasFairValueEditChanges,
   isOverviewWatchlistId,
   sortWatchlistMembers,
@@ -313,6 +314,7 @@ export default function WatchlistPage() {
     [pools, activePoolId]
   );
   const overviewMemberCount = isOverviewActive ? members.length : null;
+  const refreshButton = getRefreshPricesButtonPresentation(refreshPrices.isPending);
 
   return (
     <div className="flex flex-col gap-6">
@@ -404,8 +406,8 @@ export default function WatchlistPage() {
                 onClick={() => refreshPrices.mutate(members.map((row) => row.stock_id))}
                 disabled={!members.length || refreshPrices.isPending}
               >
-                <RefreshCcw className="mr-2 h-4 w-4" />
-                Refresh Prices
+                <RefreshCcw className={refreshButton.iconClassName} />
+                {refreshButton.label}
               </Button>
               {!isOverviewActive && activePool && (
                 <details className="group relative">

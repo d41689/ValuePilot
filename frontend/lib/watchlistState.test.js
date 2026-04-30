@@ -8,6 +8,7 @@ const {
   buildFairValueEdits,
   formatOverviewOptionLabel,
   formatWatchlistOptionLabel,
+  getRefreshPricesButtonPresentation,
   hasFairValueEditChanges,
   isOverviewWatchlistId,
   formatPiotroskiFScoreSeries,
@@ -72,6 +73,17 @@ test('overview watchlist helpers identify and label the virtual list', () => {
   assert.equal(formatOverviewOptionLabel(4), 'Overview · 4 stocks');
   assert.equal(formatOverviewOptionLabel(1), 'Overview · 1 stock');
   assert.equal(formatOverviewOptionLabel(null), 'Overview');
+});
+
+test('getRefreshPricesButtonPresentation returns loading label and spin class', () => {
+  assert.deepEqual(getRefreshPricesButtonPresentation(false), {
+    iconClassName: 'mr-2 h-4 w-4',
+    label: 'Refresh Prices',
+  });
+  assert.deepEqual(getRefreshPricesButtonPresentation(true), {
+    iconClassName: 'mr-2 h-4 w-4 animate-spin',
+    label: 'Refreshing',
+  });
 });
 
 test('formatPiotroskiFScoreSeries formats complete and partial yearly scores', () => {
