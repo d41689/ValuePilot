@@ -11,6 +11,14 @@ import documentReviewHelpers from '@/lib/documentReview';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from '@/components/ui/table';
 
 type ReviewSummaryMetric = {
   metric_key?: string | null;
@@ -171,28 +179,28 @@ function ReviewTableCard({
         </div>
 
         <div className="mt-5 overflow-x-auto rounded-lg border border-border/60 bg-background/70">
-          <table className={`w-full ${minWidth} border-collapse text-sm`}>
-            <thead>
-              <tr className="border-b border-border/60">
-                <th className="w-40 px-4 py-3 text-left font-medium text-muted-foreground" />
+          <Table className={`w-full ${minWidth} border-collapse text-sm`}>
+            <TableHeader>
+              <TableRow className="border-b border-border/60">
+                <TableHead className="w-40 px-4 py-3 text-left font-medium text-muted-foreground" />
                 {table.columns.map((column) => (
-                  <th
+                  <TableHead
                     key={column.key}
                     className="px-4 py-3 text-right text-xs font-medium uppercase text-muted-foreground"
                   >
                     {column.label}
-                  </th>
+                  </TableHead>
                 ))}
-              </tr>
-            </thead>
-            <tbody>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
               {table.rows.map((row) => (
-                <tr key={row.key} className="border-b border-border/60 last:border-0">
-                  <th className="px-4 py-3 text-left font-semibold text-foreground">
+                <TableRow key={row.key} className="border-b border-border/60 last:border-0">
+                  <TableHead className="px-4 py-3 text-left font-semibold text-foreground">
                     {row.label}
-                  </th>
+                  </TableHead>
                   {row.cells.map((cell) => (
-                    <td
+                    <TableCell
                       key={cell.key}
                       className={`px-4 py-3 text-right ${
                         cell.isEstimate
@@ -201,12 +209,12 @@ function ReviewTableCard({
                       }`}
                     >
                       {cell.displayValue}
-                    </td>
+                    </TableCell>
                   ))}
-                </tr>
+                </TableRow>
               ))}
-            </tbody>
-          </table>
+            </TableBody>
+          </Table>
         </div>
       </CardContent>
     </Card>
@@ -508,38 +516,38 @@ export default function DocumentReviewPage() {
               </div>
 
               <div className="mt-5 overflow-x-auto rounded-lg border border-border/60 bg-background/70">
-                <table className="w-full min-w-[520px] border-collapse text-sm">
-                  <thead>
-                    <tr className="border-b border-border/60">
-                      <th className="w-24 px-4 py-3 text-left font-medium text-muted-foreground" />
+                <Table className="w-full min-w-[520px] border-collapse text-sm">
+                  <TableHeader>
+                    <TableRow className="border-b border-border/60">
+                      <TableHead className="w-24 px-4 py-3 text-left font-medium text-muted-foreground" />
                       {projectionTable.columns.map((column) => (
-                        <th
+                        <TableHead
                           key={column.key}
                           className="px-4 py-3 text-right text-xs font-medium uppercase text-muted-foreground"
                         >
                           {column.label}
-                        </th>
+                        </TableHead>
                       ))}
-                    </tr>
-                  </thead>
-                  <tbody>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
                     {projectionTable.rows.map((row) => (
-                      <tr key={row.key} className="border-b border-border/60 last:border-0">
-                        <th className="px-4 py-3 text-left font-semibold text-foreground">
+                      <TableRow key={row.key} className="border-b border-border/60 last:border-0">
+                        <TableHead className="px-4 py-3 text-left font-semibold text-foreground">
                           {row.label}
-                        </th>
+                        </TableHead>
                         {row.cells.map((cell) => (
-                          <td
+                          <TableCell
                             key={cell.key}
                             className="px-4 py-3 text-right font-semibold text-foreground"
                           >
                             {cell.displayValue}
-                          </td>
+                          </TableCell>
                         ))}
-                      </tr>
+                      </TableRow>
                     ))}
-                  </tbody>
-                </table>
+                  </TableBody>
+                </Table>
               </div>
             </CardContent>
           </Card>
@@ -557,38 +565,38 @@ export default function DocumentReviewPage() {
               </div>
 
               <div className="mt-5 overflow-x-auto rounded-lg border border-border/60 bg-background/70">
-                <table className="w-full min-w-[520px] border-collapse text-sm">
-                  <thead>
-                    <tr className="border-b border-border/60">
-                      <th className="w-28 px-4 py-3 text-left font-medium text-muted-foreground" />
+                <Table className="w-full min-w-[520px] border-collapse text-sm">
+                  <TableHeader>
+                    <TableRow className="border-b border-border/60">
+                      <TableHead className="w-28 px-4 py-3 text-left font-medium text-muted-foreground" />
                       {institutionalDecisionTable.columns.map((column) => (
-                        <th
+                        <TableHead
                           key={column.key}
                           className="px-4 py-3 text-right text-xs font-medium uppercase text-muted-foreground"
                         >
                           {column.label}
-                        </th>
+                        </TableHead>
                       ))}
-                    </tr>
-                  </thead>
-                  <tbody>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
                     {institutionalDecisionTable.rows.map((row) => (
-                      <tr key={row.key} className="border-b border-border/60 last:border-0">
-                        <th className="px-4 py-3 text-left font-semibold text-foreground">
+                      <TableRow key={row.key} className="border-b border-border/60 last:border-0">
+                        <TableHead className="px-4 py-3 text-left font-semibold text-foreground">
                           {row.label}
-                        </th>
+                        </TableHead>
                         {row.cells.map((cell) => (
-                          <td
+                          <TableCell
                             key={cell.key}
                             className="px-4 py-3 text-right font-semibold text-foreground"
                           >
                             {cell.displayValue}
-                          </td>
+                          </TableCell>
                         ))}
-                      </tr>
+                      </TableRow>
                     ))}
-                  </tbody>
-                </table>
+                  </TableBody>
+                </Table>
               </div>
             </CardContent>
           </Card>
@@ -645,38 +653,38 @@ export default function DocumentReviewPage() {
               </div>
 
               <div className="mt-5 overflow-x-auto rounded-lg border border-border/60 bg-background/70">
-                <table className="w-full min-w-[560px] border-collapse text-sm">
-                  <thead>
-                    <tr className="border-b border-border/60">
-                      <th className="w-56 px-4 py-3 text-left font-medium text-muted-foreground" />
+                <Table className="w-full min-w-[560px] border-collapse text-sm">
+                  <TableHeader>
+                    <TableRow className="border-b border-border/60">
+                      <TableHead className="w-56 px-4 py-3 text-left font-medium text-muted-foreground" />
                       {currentPositionTable.columns.map((column) => (
-                        <th
+                        <TableHead
                           key={column.key}
                           className="px-4 py-3 text-right text-xs font-medium uppercase text-muted-foreground"
                         >
                           {column.label}
-                        </th>
+                        </TableHead>
                       ))}
-                    </tr>
-                  </thead>
-                  <tbody>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
                     {currentPositionTable.rows.map((row) => (
-                      <tr key={row.key} className="border-b border-border/60 last:border-0">
-                        <th className="px-4 py-3 text-left font-semibold text-foreground">
+                      <TableRow key={row.key} className="border-b border-border/60 last:border-0">
+                        <TableHead className="px-4 py-3 text-left font-semibold text-foreground">
                           {row.label}
-                        </th>
+                        </TableHead>
                         {row.cells.map((cell) => (
-                          <td
+                          <TableCell
                             key={cell.key}
                             className="px-4 py-3 text-right font-semibold text-foreground"
                           >
                             {cell.displayValue}
-                          </td>
+                          </TableCell>
                         ))}
-                      </tr>
+                      </TableRow>
                     ))}
-                  </tbody>
-                </table>
+                  </TableBody>
+                </Table>
               </div>
             </CardContent>
           </Card>
@@ -691,21 +699,21 @@ export default function DocumentReviewPage() {
                 </div>
 
                 <div className="mt-5 overflow-x-auto rounded-lg border border-border/60 bg-background/70">
-                  <table className="w-full min-w-[560px] border-collapse text-sm">
-                    <thead>
-                      <tr className="border-b border-border/60">
-                        <th className="w-56 px-4 py-3 text-left font-medium text-muted-foreground" />
+                  <Table className="w-full min-w-[560px] border-collapse text-sm">
+                    <TableHeader>
+                      <TableRow className="border-b border-border/60">
+                        <TableHead className="w-56 px-4 py-3 text-left font-medium text-muted-foreground" />
                         {financialPositionTable.columns.map((column) => (
-                          <th
+                          <TableHead
                             key={column.key}
                             className="px-4 py-3 text-right text-xs font-medium uppercase text-muted-foreground"
                           >
                             {column.label}
-                          </th>
+                          </TableHead>
                         ))}
-                      </tr>
-                    </thead>
-                    <tbody>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
                       {(() => {
                         let prevSection: string | null = null;
                         return financialPositionTable.rows.flatMap((row) => {
@@ -714,36 +722,36 @@ export default function DocumentReviewPage() {
                           if (rowSection && rowSection !== prevSection) {
                             prevSection = rowSection;
                             elements.push(
-                              <tr key={`section-${rowSection}`} className="border-b border-border/60 bg-muted/30">
-                                <td
+                              <TableRow key={`section-${rowSection}`} className="border-b border-border/60 bg-muted/30">
+                                <TableCell
                                   colSpan={financialPositionTable.columns.length + 1}
                                   className="px-4 py-2 text-xs font-semibold uppercase tracking-wider text-muted-foreground"
                                 >
                                   {rowSection.charAt(0).toUpperCase() + rowSection.slice(1)}
-                                </td>
-                              </tr>
+                                </TableCell>
+                              </TableRow>
                             );
                           }
                           elements.push(
-                            <tr key={row.key} className="border-b border-border/60 last:border-0">
-                              <th className="px-4 py-3 text-left font-semibold text-foreground">
+                            <TableRow key={row.key} className="border-b border-border/60 last:border-0">
+                              <TableHead className="px-4 py-3 text-left font-semibold text-foreground">
                                 {row.label}
-                              </th>
+                              </TableHead>
                               {row.cells.map((cell) => (
-                                <td
+                                <TableCell
                                   key={cell.key}
                                   className="px-4 py-3 text-right font-semibold text-foreground"
                                 >
                                   {cell.displayValue}
-                                </td>
+                                </TableCell>
                               ))}
-                            </tr>
+                            </TableRow>
                           );
                           return elements;
                         });
                       })()}
-                    </tbody>
-                  </table>
+                    </TableBody>
+                  </Table>
                 </div>
               </CardContent>
             </Card>
@@ -757,21 +765,21 @@ export default function DocumentReviewPage() {
               </div>
 
               <div className="mt-5 overflow-x-auto rounded-lg border border-border/60 bg-background/70">
-                <table className="w-full min-w-[980px] border-collapse text-sm">
-                  <thead>
-                    <tr className="border-b border-border/60">
-                      <th className="sticky left-0 z-10 w-56 bg-background/95 px-4 py-3 text-left font-medium text-muted-foreground" />
+                <Table className="w-full min-w-[980px] border-collapse text-sm">
+                  <TableHeader>
+                    <TableRow className="border-b border-border/60">
+                      <TableHead className="sticky left-0 z-10 w-56 bg-background/95 px-4 py-3 text-left font-medium text-muted-foreground" />
                       {annualFinancialsTable.columns.map((column) => (
-                        <th
+                        <TableHead
                           key={column.key}
                           className="px-4 py-3 text-right text-xs font-medium uppercase text-muted-foreground"
                         >
                           {column.label}
-                        </th>
+                        </TableHead>
                       ))}
-                    </tr>
-                  </thead>
-                  <tbody>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
                     {(() => {
                       let prevSection: string | null = null;
                       return annualFinancialsTable.rows.flatMap((row) => {
@@ -780,23 +788,23 @@ export default function DocumentReviewPage() {
                         if (rowSection && rowSection !== prevSection) {
                           prevSection = rowSection;
                           elements.push(
-                            <tr key={`section-${rowSection}-${row.key}`} className="border-b border-border/40 bg-muted/40">
-                              <th
+                            <TableRow key={`section-${rowSection}-${row.key}`} className="border-b border-border/40 bg-muted/40">
+                              <TableHead
                                 colSpan={annualFinancialsTable.columns.length + 1}
                                 className="sticky left-0 z-10 bg-muted/40 px-4 py-2 text-left text-xs font-semibold uppercase tracking-wide text-muted-foreground"
                               >
                                 {rowSection}
-                              </th>
-                            </tr>
+                              </TableHead>
+                            </TableRow>
                           );
                         }
                         elements.push(
-                          <tr key={row.key} className="border-b border-border/60 last:border-0">
-                            <th className="sticky left-0 z-10 bg-background/95 px-4 py-3 text-left font-semibold text-foreground">
+                          <TableRow key={row.key} className="border-b border-border/60 last:border-0">
+                            <TableHead className="sticky left-0 z-10 bg-background/95 px-4 py-3 text-left font-semibold text-foreground">
                               {row.label}
-                            </th>
+                            </TableHead>
                             {row.cells.map((cell) => (
-                              <td
+                              <TableCell
                                 key={cell.key}
                                 className={`px-4 py-3 text-right ${
                                   cell.isEstimate
@@ -805,15 +813,15 @@ export default function DocumentReviewPage() {
                                 }`}
                               >
                                 {cell.displayValue}
-                              </td>
+                              </TableCell>
                             ))}
-                          </tr>
+                          </TableRow>
                         );
                         return elements;
                       });
                     })()}
-                  </tbody>
-                </table>
+                  </TableBody>
+                </Table>
               </div>
             </CardContent>
           </Card>

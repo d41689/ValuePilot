@@ -5,6 +5,16 @@ import { useMutation } from '@tanstack/react-query';
 import apiClient from '@/lib/api/client';
 
 import { Search, Loader2 } from 'lucide-react';
+import { Button } from '@/components/ui/button';
+import { Textarea } from '@/components/ui/textarea';
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from '@/components/ui/table';
 
 type HeaderRatingValue = string | number | null;
 type HeaderRatingEntry = { value?: HeaderRatingValue } | HeaderRatingValue;
@@ -99,21 +109,20 @@ export default function ScreenerPage() {
       
       <div className="bg-white p-6 rounded-lg shadow-sm border border-gray-200">
         <label className="block text-sm font-medium text-gray-700 mb-2">Screening Rules (JSON)</label>
-        <textarea 
+        <Textarea
           value={ruleText}
           onChange={(e) => setRuleText(e.target.value)}
-          className="w-full h-48 font-mono text-sm p-4 border rounded-md bg-gray-50 focus:ring-2 focus:ring-blue-500 outline-none"
+          className="h-48 font-mono bg-gray-50"
         />
         
         <div className="mt-4 flex justify-end">
-          <button
+          <Button
             onClick={() => screenMutation.mutate()}
             disabled={screenMutation.isPending}
-            className="flex items-center gap-2 bg-blue-600 text-white px-4 py-2 rounded-md hover:bg-blue-700 disabled:opacity-50"
           >
             {screenMutation.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Search className="h-4 w-4" />}
             Run Screen
-          </button>
+          </Button>
         </div>
       </div>
 
@@ -128,25 +137,25 @@ export default function ScreenerPage() {
             <div className="pointer-events-none absolute inset-y-0 left-0 w-6 bg-gradient-to-r from-white to-transparent" />
             <div className="pointer-events-none absolute inset-y-0 right-0 w-6 bg-gradient-to-l from-white to-transparent" />
             <div className="overflow-x-auto">
-              <table className="min-w-max divide-y divide-gray-200">
-              <thead className="bg-gray-50">
-                <tr>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Ticker</th>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Company Name</th>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Net Profit</th>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Depreciation</th>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Cap’l Spending / Sh</th>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Common Shs Outst’g</th>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">TIMELINESS</th>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">SAFETY</th>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Avg Ann’l Div’d Yield</th>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Company’s Financial Strength</th>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Stock’s Price Stability</th>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Price Growth Persistence</th>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Earnings Predictability</th>
-                </tr>
-              </thead>
-              <tbody className="bg-white divide-y divide-gray-200">
+              <Table className="min-w-max">
+              <TableHeader className="bg-gray-50">
+                <TableRow>
+                  <TableHead>Ticker</TableHead>
+                  <TableHead>Company Name</TableHead>
+                  <TableHead>Net Profit</TableHead>
+                  <TableHead>Depreciation</TableHead>
+                  <TableHead>Cap’l Spending / Sh</TableHead>
+                  <TableHead>Common Shs Outst’g</TableHead>
+                  <TableHead>TIMELINESS</TableHead>
+                  <TableHead>SAFETY</TableHead>
+                  <TableHead>Avg Ann’l Div’d Yield</TableHead>
+                  <TableHead>Company’s Financial Strength</TableHead>
+                  <TableHead>Stock’s Price Stability</TableHead>
+                  <TableHead>Price Growth Persistence</TableHead>
+                  <TableHead>Earnings Predictability</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody className="bg-white">
                 {results.map((stock) => {
                   const metrics = (stock?.metrics ?? {}) as Record<string, unknown>;
                   const netProfit = pickFirstDefined(
@@ -219,25 +228,25 @@ export default function ScreenerPage() {
                   );
 
                   return (
-                    <tr key={stock.id ?? `${stock.ticker}-${stock.company_name}`}>
-                      <td className="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900">{stock.ticker ?? '—'}</td>
-                      <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">{stock.company_name ?? '—'}</td>
-                      <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">{formatUSDMillions(netProfit)}</td>
-                      <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">{formatUSDMillions(depreciation)}</td>
-                      <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">{formatUSD(capexPerSh, 2)}</td>
-                      <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">{formatMillions(commonShs)}</td>
-                      <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">{formatText(timeliness)}</td>
-                      <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">{formatText(safety)}</td>
-                      <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">{formatPct(avgDivYield)}</td>
-                      <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">{formatText(finStrength)}</td>
-                      <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">{formatText(priceStability)}</td>
-                      <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">{formatText(priceGrowthPersistence)}</td>
-                      <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">{formatText(earningsPredictability)}</td>
-                    </tr>
+                    <TableRow key={stock.id ?? `${stock.ticker}-${stock.company_name}`}>
+                      <TableCell className="whitespace-nowrap font-medium text-gray-900">{stock.ticker ?? '—'}</TableCell>
+                      <TableCell className="whitespace-nowrap text-gray-500">{stock.company_name ?? '—'}</TableCell>
+                      <TableCell className="whitespace-nowrap text-gray-900">{formatUSDMillions(netProfit)}</TableCell>
+                      <TableCell className="whitespace-nowrap text-gray-900">{formatUSDMillions(depreciation)}</TableCell>
+                      <TableCell className="whitespace-nowrap text-gray-900">{formatUSD(capexPerSh, 2)}</TableCell>
+                      <TableCell className="whitespace-nowrap text-gray-900">{formatMillions(commonShs)}</TableCell>
+                      <TableCell className="whitespace-nowrap text-gray-900">{formatText(timeliness)}</TableCell>
+                      <TableCell className="whitespace-nowrap text-gray-900">{formatText(safety)}</TableCell>
+                      <TableCell className="whitespace-nowrap text-gray-900">{formatPct(avgDivYield)}</TableCell>
+                      <TableCell className="whitespace-nowrap text-gray-900">{formatText(finStrength)}</TableCell>
+                      <TableCell className="whitespace-nowrap text-gray-900">{formatText(priceStability)}</TableCell>
+                      <TableCell className="whitespace-nowrap text-gray-900">{formatText(priceGrowthPersistence)}</TableCell>
+                      <TableCell className="whitespace-nowrap text-gray-900">{formatText(earningsPredictability)}</TableCell>
+                    </TableRow>
                   );
                 })}
-              </tbody>
-              </table>
+              </TableBody>
+              </Table>
             </div>
             <div className="flex items-center justify-center gap-2 py-2 text-xs text-gray-400">
               <span aria-hidden>←</span>

@@ -4,6 +4,8 @@ import Link from 'next/link';
 import { FormEvent, useState } from 'react';
 import { useRouter } from 'next/navigation';
 
+import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
 import apiClient from '@/lib/api/client';
 
 type RegisterResponse = {
@@ -64,27 +66,25 @@ export default function RegisterPage() {
           <label className="text-sm font-medium text-foreground" htmlFor="email">
             Email
           </label>
-          <input
+          <Input
             id="email"
             type="email"
             value={email}
             onChange={(event) => setEmail(event.target.value)}
             required
-            className="w-full rounded-xl border border-border/70 bg-background px-3 py-2 text-sm outline-none focus:border-primary/70"
           />
         </div>
         <div className="space-y-2">
           <label className="text-sm font-medium text-foreground" htmlFor="password">
             Password
           </label>
-          <input
+          <Input
             id="password"
             type="password"
             value={password}
             onChange={(event) => setPassword(event.target.value)}
             minLength={8}
             required
-            className="w-full rounded-xl border border-border/70 bg-background px-3 py-2 text-sm outline-none focus:border-primary/70"
           />
           <p className="text-xs text-muted-foreground">Must be at least 8 characters.</p>
         </div>
@@ -93,13 +93,13 @@ export default function RegisterPage() {
             {error}
           </div>
         )}
-        <button
+        <Button
           type="submit"
           disabled={isSubmitting}
-          className="w-full rounded-xl bg-primary px-4 py-2 text-sm font-medium text-primary-foreground disabled:opacity-60"
+          className="w-full"
         >
           {isSubmitting ? 'Creating account...' : 'Create account'}
-        </button>
+        </Button>
       </form>
 
       <p className="mt-4 text-center text-sm text-muted-foreground">

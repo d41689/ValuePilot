@@ -4,6 +4,8 @@ import { useState, useRef } from 'react';
 import { Upload, File, CheckCircle, AlertCircle, Loader2 } from 'lucide-react';
 import apiClient from '@/lib/api/client';
 import { useMutation } from '@tanstack/react-query';
+import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
 
 export default function UploadZone() {
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -41,7 +43,7 @@ export default function UploadZone() {
         className="border-2 border-dashed border-gray-300 rounded-lg p-8 text-center hover:bg-gray-50 transition-colors cursor-pointer"
         onClick={() => fileInputRef.current?.click()}
       >
-        <input 
+        <Input
           type="file" 
           ref={fileInputRef} 
           className="hidden" 
@@ -59,14 +61,13 @@ export default function UploadZone() {
 
       {selectedFile && (
         <div className="mt-4 flex justify-end">
-          <button
+          <Button
             onClick={handleUpload}
             disabled={uploadMutation.isPending}
-            className="flex items-center gap-2 bg-blue-600 text-white px-4 py-2 rounded-md hover:bg-blue-700 disabled:opacity-50"
           >
             {uploadMutation.isPending && <Loader2 className="h-4 w-4 animate-spin" />}
             {uploadMutation.isPending ? 'Uploading...' : 'Process Document'}
-          </button>
+          </Button>
         </div>
       )}
 

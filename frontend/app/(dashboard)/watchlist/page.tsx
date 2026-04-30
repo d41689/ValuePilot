@@ -22,6 +22,20 @@ import {
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader } from '@/components/ui/card';
 import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu';
+import { Input } from '@/components/ui/input';
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select';
+import {
   Table,
   TableBody,
   TableCell,
@@ -383,26 +397,29 @@ export default function WatchlistPage() {
                 <span className="text-xs font-semibold uppercase text-muted-foreground">
                   Watchlist
                 </span>
-                <select
-                  className="h-10 rounded-lg border border-border/60 bg-background px-3 text-sm outline-none transition focus:border-primary"
+                <Select
                   value={activeWatchlistValue}
-                  onChange={(event) => {
-                    const nextValue = event.target.value;
+                  onValueChange={(nextValue) => {
                     setActiveWatchlistId(
                       isOverviewWatchlistId(nextValue) ? OVERVIEW_WATCHLIST_ID : Number(nextValue)
                     );
                     setRefreshedWatchlistId(null);
                   }}
                 >
-                  <option value={OVERVIEW_WATCHLIST_ID}>
-                    {formatOverviewOptionLabel(overviewMemberCount)}
-                  </option>
+                  <SelectTrigger>
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value={OVERVIEW_WATCHLIST_ID}>
+                      {formatOverviewOptionLabel(overviewMemberCount)}
+                    </SelectItem>
                   {pools.map((pool) => (
-                    <option key={pool.id} value={pool.id}>
+                    <SelectItem key={pool.id} value={String(pool.id)}>
                       {formatWatchlistOptionLabel(pool)}
-                    </option>
+                    </SelectItem>
                   ))}
-                </select>
+                  </SelectContent>
+                </Select>
               </div>
 
               <div className="flex min-w-[16rem] flex-1 items-end gap-2 sm:max-w-md">
@@ -410,8 +427,7 @@ export default function WatchlistPage() {
                   <span className="text-xs font-semibold uppercase text-muted-foreground">
                     New List
                   </span>
-                  <input
-                    className="h-10 w-full rounded-lg border border-border/60 bg-background px-3 text-sm outline-none transition focus:border-primary"
+                  <Input
                     placeholder="Name"
                     value={newPoolName}
                     onChange={(event) => setNewPoolName(event.target.value)}
@@ -433,8 +449,8 @@ export default function WatchlistPage() {
                   <span className="text-xs font-semibold uppercase text-muted-foreground">
                     Ticker
                   </span>
-                  <input
-                    className="h-10 w-32 rounded-lg border border-border/60 bg-background px-3 text-sm outline-none transition focus:border-primary"
+                  <Input
+                    className="w-32"
                     placeholder="Symbol"
                     value={tickerInput}
                     onChange={(event) => setTickerInput(event.target.value)}
@@ -463,23 +479,24 @@ export default function WatchlistPage() {
                 {refreshButton.label}
               </Button>
               {!isOverviewActive && activePool && (
-                <details className="group relative">
-                  <summary className="flex h-10 cursor-pointer list-none items-center justify-center rounded-lg border border-border/60 bg-background px-3 text-sm font-medium outline-none transition hover:bg-muted/60 focus:border-primary [&::-webkit-details-marker]:hidden">
-                    <MoreHorizontal className="h-4 w-4" />
-                    <span className="sr-only">Watchlist actions</span>
-                  </summary>
-                  <div className="absolute right-0 z-20 mt-2 w-48 rounded-lg border border-border/60 bg-card p-2 shadow-lg">
-                    <Button
-                      className="w-full justify-start"
-                      variant="destructive"
+                <DropdownMenu>
+                  <DropdownMenuTrigger asChild>
+                    <Button variant="outline" size="icon" type="button">
+                      <MoreHorizontal className="h-4 w-4" />
+                      <span className="sr-only">Watchlist actions</span>
+                    </Button>
+                  </DropdownMenuTrigger>
+                  <DropdownMenuContent align="end">
+                    <DropdownMenuItem
+                      className="text-destructive focus:text-destructive"
                       onClick={() => deletePool.mutate(activePool.id)}
                       disabled={deletePool.isPending}
                     >
                       <Trash2 className="mr-2 h-4 w-4" />
                       Delete Watchlist
-                    </Button>
-                  </div>
-                </details>
+                    </DropdownMenuItem>
+                  </DropdownMenuContent>
+                </DropdownMenu>
               )}
             </div>
           </div>
@@ -519,8 +536,8 @@ export default function WatchlistPage() {
                     <TableCell>{formatNumber(row.price)}</TableCell>
                     <TableCell>
                       <div className="flex flex-col gap-1">
-                        <input
-                          className="w-24 rounded-md border border-border/60 bg-background px-2 py-1 text-sm"
+                        <Input
+                          className="h-8 w-24 px-2 py-1"
                           value={fairValueEdits[row.stock_id] ?? ''}
                           onChange={(event) =>
                             setFairValueEdits((prev) => ({
