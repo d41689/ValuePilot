@@ -7,10 +7,13 @@ import { MoreHorizontal, Plus, RefreshCcw, Trash2 } from 'lucide-react';
 
 import apiClient from '@/lib/api/client';
 import {
+  OVERVIEW_WATCHLIST_ID,
   buildFairValueEdits,
+  formatOverviewOptionLabel,
   formatPiotroskiFScoreSeries,
   formatWatchlistOptionLabel,
   hasFairValueEditChanges,
+  isOverviewWatchlistId,
   sortWatchlistMembers,
 } from '@/lib/watchlistState';
 import { Button } from '@/components/ui/button';
@@ -66,6 +69,8 @@ type ApiError = {
   };
 };
 
+type ActiveWatchlistId = number | typeof OVERVIEW_WATCHLIST_ID;
+
 function formatNumber(value: number | null, digits = 2) {
   if (value === null || Number.isNaN(value)) return '—';
   return value.toFixed(digits);
@@ -85,11 +90,13 @@ function formatDate(value: string | null) {
 
 export default function WatchlistPage() {
   const { toast } = useToast();
-  const [activePoolId, setActivePoolId] = useState<number | null>(null);
+  const [activeWatchlistId, setActiveWatchlistId] =
+    useState<ActiveWatchlistId>(OVERVIEW_WATCHLIST_ID);
   const [newPoolName, setNewPoolName] = useState('');
   const [tickerInput, setTickerInput] = useState('');
   const [fairValueEdits, setFairValueEdits] = useState<Record<number, string>>({});
-  const [refreshedPoolId, setRefreshedPoolId] = useState<number | null>(null);
+  const [refreshedWatchlistId, setRefreshedWatchlistId] =
+    useState<ActiveWatchlistId | null>(null);
 
   const poolsQuery = useQuery({
     queryKey: ['watchlist-pools'],
@@ -100,12 +107,17 @@ export default function WatchlistPage() {
   });
 
   const pools = useMemo(() => poolsQuery.data ?? [], [poolsQuery.data]);
+  const isOverviewActive = isOverviewWatchlistId(activeWatchlistId);
+  const activePoolId = typeof activeWatchlistId === 'number' ? activeWatchlistId : null;
+  const activeWatchlistValue = isOverviewActive ? OVERVIEW_WATCHLIST_ID : String(activePoolId);
 
   const membersQuery = useQuery({
-    queryKey: ['watchlist-members', activePoolId],
-    enabled: Boolean(activePoolId),
+    queryKey: ['watchlist-members', activeWatchlistId],
     queryFn: async () => {
-      const res = await apiClient.get(`/stock_pools/${activePoolId}/members`);
+      const endpoint = isOverviewWatchlistId(activeWatchlistId)
+        ? '/stock_pools/overview/members'
+        : `/stock_pools/${activeWatchlistId}/members`;
+      const res = await apiClient.get(endpoint);
       return res.data as WatchlistRow[];
     },
   });
@@ -137,12 +149,6 @@ export default function WatchlistPage() {
   }, [refreshPrices.mutate]);
 
   useEffect(() => {
-    if (!activePoolId && pools.length > 0) {
-      setActivePoolId(pools[0].id);
-    }
-  }, [activePoolId, pools]);
-
-  useEffect(() => {
     setFairValueEdits((prev) => {
       const next = buildFairValueEdits(members);
       return hasFairValueEditChanges(prev, next) ? next : prev;
@@ -150,12 +156,11 @@ export default function WatchlistPage() {
   }, [members]);
 
   useEffect(() => {
-    if (!activePoolId) return;
-    if (refreshedPoolId === activePoolId) return;
+    if (refreshedWatchlistId === activeWatchlistId) return;
     if (!members.length) return;
-    setRefreshedPoolId(activePoolId);
+    setRefreshedWatchlistId(activeWatchlistId);
     refreshPricesMutateRef.current(members.map((row) => row.stock_id));
-  }, [activePoolId, refreshedPoolId, members]);
+  }, [activeWatchlistId, refreshedWatchlistId, members]);
 
   const createPool = useMutation({
     mutationFn: async () => {
@@ -167,8 +172,8 @@ export default function WatchlistPage() {
     onSuccess: (pool) => {
       setNewPoolName('');
       poolsQuery.refetch();
-      setActivePoolId(pool.id);
-      setRefreshedPoolId(null);
+      setActiveWatchlistId(pool.id);
+      setRefreshedWatchlistId(null);
       toast({
         title: 'Watchlist created',
         description: `“${pool.name}” is ready.`,
@@ -190,8 +195,8 @@ export default function WatchlistPage() {
     },
     onSuccess: () => {
       poolsQuery.refetch();
-      setActivePoolId(null);
-      setRefreshedPoolId(null);
+      setActiveWatchlistId(OVERVIEW_WATCHLIST_ID);
+      setRefreshedWatchlistId(null);
       toast({
         title: 'Watchlist deleted',
         description: 'The watchlist has been removed.',
@@ -208,6 +213,9 @@ export default function WatchlistPage() {
 
   const addMember = useMutation({
     mutationFn: async (stockId: number) => {
+      if (!activePoolId) {
+        throw new Error('Cannot add ticker to Overview');
+      }
       const res = await apiClient.post(`/stock_pools/${activePoolId}/members`, { stock_id: stockId });
       return res.data;
     },
@@ -215,7 +223,7 @@ export default function WatchlistPage() {
       membersQuery.refetch();
       poolsQuery.refetch();
       setTickerInput('');
-      setRefreshedPoolId(null);
+      setRefreshedWatchlistId(null);
       toast({ title: 'Ticker added' });
     },
     onError: (error: unknown) => {
@@ -227,6 +235,9 @@ export default function WatchlistPage() {
 
   const removeMember = useMutation({
     mutationFn: async (membershipId: number) => {
+      if (!activePoolId) {
+        throw new Error('Cannot remove ticker from Overview');
+      }
       const res = await apiClient.delete(`/stock_pools/${activePoolId}/members/${membershipId}`);
       return res.data;
     },
@@ -301,6 +312,7 @@ export default function WatchlistPage() {
     () => pools.find((pool) => pool.id === activePoolId) ?? null,
     [pools, activePoolId]
   );
+  const overviewMemberCount = isOverviewActive ? members.length : null;
 
   return (
     <div className="flex flex-col gap-6">
@@ -323,15 +335,18 @@ export default function WatchlistPage() {
                 </span>
                 <select
                   className="h-10 rounded-lg border border-border/60 bg-background px-3 text-sm outline-none transition focus:border-primary"
-                  value={activePoolId ?? ''}
+                  value={activeWatchlistValue}
                   onChange={(event) => {
-                    const nextPoolId = Number(event.target.value);
-                    setActivePoolId(Number.isFinite(nextPoolId) ? nextPoolId : null);
-                    setRefreshedPoolId(null);
+                    const nextValue = event.target.value;
+                    setActiveWatchlistId(
+                      isOverviewWatchlistId(nextValue) ? OVERVIEW_WATCHLIST_ID : Number(nextValue)
+                    );
+                    setRefreshedWatchlistId(null);
                   }}
-                  disabled={pools.length === 0}
                 >
-                  {pools.length === 0 && <option value="">No watchlists</option>}
+                  <option value={OVERVIEW_WATCHLIST_ID}>
+                    {formatOverviewOptionLabel(overviewMemberCount)}
+                  </option>
                   {pools.map((pool) => (
                     <option key={pool.id} value={pool.id}>
                       {formatWatchlistOptionLabel(pool)}
@@ -373,12 +388,12 @@ export default function WatchlistPage() {
                     placeholder="Symbol"
                     value={tickerInput}
                     onChange={(event) => setTickerInput(event.target.value)}
-                    disabled={!activePoolId}
+                    disabled={isOverviewActive}
                   />
                 </div>
                 <Button
                   onClick={handleAddTicker}
-                  disabled={!tickerInput.trim() || !activePoolId || addMember.isPending}
+                  disabled={isOverviewActive || !tickerInput.trim() || addMember.isPending}
                 >
                   <Plus className="mr-2 h-4 w-4" />
                   Add
@@ -392,7 +407,7 @@ export default function WatchlistPage() {
                 <RefreshCcw className="mr-2 h-4 w-4" />
                 Refresh Prices
               </Button>
-              {activePool && (
+              {!isOverviewActive && activePool && (
                 <details className="group relative">
                   <summary className="flex h-10 cursor-pointer list-none items-center justify-center rounded-lg border border-border/60 bg-background px-3 text-sm font-medium outline-none transition hover:bg-muted/60 focus:border-primary [&::-webkit-details-marker]:hidden">
                     <MoreHorizontal className="h-4 w-4" />
@@ -420,7 +435,7 @@ export default function WatchlistPage() {
           )}
           {!membersQuery.isLoading && members.length === 0 && (
             <div className="py-10 text-sm text-muted-foreground">
-              No stocks yet. Add your first ticker.
+              {isOverviewActive ? 'No stocks in Overview.' : 'No stocks yet. Add your first ticker.'}
             </div>
           )}
           {members.length > 0 && (
@@ -479,12 +494,14 @@ export default function WatchlistPage() {
                         <Button asChild variant="outline">
                           <Link href={`/stocks/${encodeURIComponent(row.ticker)}/dcf`}>DCF</Link>
                         </Button>
-                        <Button
-                          variant="ghost"
-                          onClick={() => removeMember.mutate(row.membership_id)}
-                        >
-                          Remove
-                        </Button>
+                        {!isOverviewActive && (
+                          <Button
+                            variant="ghost"
+                            onClick={() => removeMember.mutate(row.membership_id)}
+                          >
+                            Remove
+                          </Button>
+                        )}
                       </div>
                     </TableCell>
                   </TableRow>
