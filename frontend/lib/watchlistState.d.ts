@@ -1,3 +1,5 @@
+export const OVERVIEW_WATCHLIST_ID: 'overview';
+
 export function sortWatchlistMembers<T extends { ticker: string; mos: number | null }>(
   rows: T[]
 ): T[];
@@ -15,6 +17,10 @@ export function formatWatchlistOptionLabel(pool: {
   name?: string | null;
   member_count?: number | null;
 }): string;
+
+export function isOverviewWatchlistId(value: unknown): value is typeof OVERVIEW_WATCHLIST_ID;
+
+export function formatOverviewOptionLabel(count: number | null | undefined): string;
 
 export type PiotroskiFScore = {
   fiscal_year: number | null;

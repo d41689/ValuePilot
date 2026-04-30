@@ -1,3 +1,5 @@
+const OVERVIEW_WATCHLIST_ID = 'overview';
+
 function sortWatchlistMembers(rows) {
   return [...rows].sort((a, b) => {
     const aMos = a.mos ?? -Infinity;
@@ -42,6 +44,20 @@ function formatWatchlistOptionLabel(pool) {
   return `${label} · ${count} ${count === 1 ? 'stock' : 'stocks'}`;
 }
 
+function isOverviewWatchlistId(value) {
+  return value === OVERVIEW_WATCHLIST_ID;
+}
+
+function formatOverviewOptionLabel(count) {
+  if (count === null || count === undefined) {
+    return 'Overview';
+  }
+  const safeCount = typeof count === 'number' && Number.isFinite(count) ? count : 0;
+  return `${OVERVIEW_WATCHLIST_ID[0].toUpperCase()}${OVERVIEW_WATCHLIST_ID.slice(1)} · ${safeCount} ${
+    safeCount === 1 ? 'stock' : 'stocks'
+  }`;
+}
+
 function formatPiotroskiFScore(score) {
   if (!score) return '—';
   const fiscalYear = score.fiscal_year ? String(score.fiscal_year) : 'FY';
@@ -67,10 +83,13 @@ function formatPiotroskiFScoreSeries(scores) {
 }
 
 module.exports = {
+  OVERVIEW_WATCHLIST_ID,
   sortWatchlistMembers,
   buildFairValueEdits,
+  formatOverviewOptionLabel,
   formatWatchlistOptionLabel,
   hasFairValueEditChanges,
+  isOverviewWatchlistId,
   formatPiotroskiFScore,
   formatPiotroskiFScoreSeries,
 };

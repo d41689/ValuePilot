@@ -124,6 +124,67 @@ def _piotroski_scores_for_stocks(
     return scores_by_stock_id
 
 
+def _watchlist_rows_for_memberships(
+    session: SessionDep,
+    user_id: int,
+    members: list[PoolMembership],
+) -> list[dict[str, Any]]:
+    if not members:
+        return []
+
+    now_et = datetime.now(timezone.utc).astimezone(ET)
+    target_date = compute_target_date(now_et)
+    piotroski_scores_by_stock_id = _piotroski_scores_for_stocks(
+        session, user_id, [membership.stock_id for membership in members]
+    )
+
+    rows: list[dict[str, Any]] = []
+    for membership in members:
+        stock = session.get(Stock, membership.stock_id)
+        if not stock:
+            continue
+
+        latest = _latest_price_for_date(session, stock.id, target_date)
+        price = float(latest.close) if latest else None
+        price_updated_at = latest.created_at if latest else None
+
+        prev_price_date = session.scalar(
+            select(func.max(StockPrice.price_date))
+            .where(
+                StockPrice.stock_id == stock.id,
+                StockPrice.price_date < target_date,
+            )
+        )
+        delta_today = None
+        if prev_price_date and latest:
+            prev_price = _latest_price_for_date(session, stock.id, prev_price_date)
+            if prev_price and prev_price.close is not None:
+                delta_today = float(latest.close) - float(prev_price.close)
+
+        fair_value, fair_value_source = _fair_value_for_stock(session, user_id, stock.id)
+        mos = _calc_mos(price, fair_value)
+
+        rows.append(
+            {
+                "membership_id": membership.id,
+                "stock_id": stock.id,
+                "ticker": stock.ticker,
+                "exchange": stock.exchange,
+                "company_name": stock.company_name,
+                "price": price,
+                "price_date": target_date.isoformat(),
+                "price_updated_at": price_updated_at,
+                "fair_value": fair_value,
+                "fair_value_source": fair_value_source,
+                "mos": mos,
+                "delta_today": delta_today,
+                "piotroski_f_scores": piotroski_scores_by_stock_id.get(stock.id, []),
+            }
+        )
+
+    return rows
+
+
 @router.get("", response_model=list[dict])
 def list_stock_pools(
     *,
@@ -204,6 +265,31 @@ def delete_stock_pool(
     return {"status": "deleted"}
 
 
+@router.get("/overview/members", response_model=list[dict])
+def list_overview_members(
+    *,
+    session: SessionDep,
+    current_user: CurrentUser,
+) -> Any:
+    user_id = current_user.id
+
+    members = session.scalars(
+        select(PoolMembership)
+        .where(PoolMembership.user_id == user_id)
+        .order_by(PoolMembership.created_at.desc(), PoolMembership.id.desc())
+    ).all()
+
+    unique_members: list[PoolMembership] = []
+    seen_stock_ids: set[int] = set()
+    for membership in members:
+        if membership.stock_id in seen_stock_ids:
+            continue
+        seen_stock_ids.add(membership.stock_id)
+        unique_members.append(membership)
+
+    return _watchlist_rows_for_memberships(session, user_id, unique_members)
+
+
 @router.get("/{pool_id}/members", response_model=list[dict])
 def list_pool_members(
     *,
@@ -225,60 +311,7 @@ def list_pool_members(
         )
         .order_by(PoolMembership.created_at.desc())
     ).all()
-    if not members:
-        return []
-
-    now_et = datetime.now(timezone.utc).astimezone(ET)
-    target_date = compute_target_date(now_et)
-    piotroski_scores_by_stock_id = _piotroski_scores_for_stocks(
-        session, user_id, [membership.stock_id for membership in members]
-    )
-
-    rows: list[dict[str, Any]] = []
-    for membership in members:
-        stock = session.get(Stock, membership.stock_id)
-        if not stock:
-            continue
-
-        latest = _latest_price_for_date(session, stock.id, target_date)
-        price = float(latest.close) if latest else None
-        price_updated_at = latest.created_at if latest else None
-
-        prev_price_date = session.scalar(
-            select(func.max(StockPrice.price_date))
-            .where(
-                StockPrice.stock_id == stock.id,
-                StockPrice.price_date < target_date,
-            )
-        )
-        delta_today = None
-        if prev_price_date and latest:
-            prev_price = _latest_price_for_date(session, stock.id, prev_price_date)
-            if prev_price and prev_price.close is not None:
-                delta_today = float(latest.close) - float(prev_price.close)
-
-        fair_value, fair_value_source = _fair_value_for_stock(session, user_id, stock.id)
-        mos = _calc_mos(price, fair_value)
-
-        rows.append(
-            {
-                "membership_id": membership.id,
-                "stock_id": stock.id,
-                "ticker": stock.ticker,
-                "exchange": stock.exchange,
-                "company_name": stock.company_name,
-                "price": price,
-                "price_date": target_date.isoformat(),
-                "price_updated_at": price_updated_at,
-                "fair_value": fair_value,
-                "fair_value_source": fair_value_source,
-                "mos": mos,
-                "delta_today": delta_today,
-                "piotroski_f_scores": piotroski_scores_by_stock_id.get(stock.id, []),
-            }
-        )
-
-    return rows
+    return _watchlist_rows_for_memberships(session, user_id, members)
 
 
 @router.post("/{pool_id}/members", response_model=dict)

@@ -3,10 +3,13 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 
 const {
+  OVERVIEW_WATCHLIST_ID,
   sortWatchlistMembers,
   buildFairValueEdits,
+  formatOverviewOptionLabel,
   formatWatchlistOptionLabel,
   hasFairValueEditChanges,
+  isOverviewWatchlistId,
   formatPiotroskiFScoreSeries,
 } = require('./watchlistState');
 
@@ -60,6 +63,15 @@ test('formatWatchlistOptionLabel includes the watchlist member count', () => {
   assert.equal(formatWatchlistOptionLabel({ name: 'Core', member_count: 3 }), 'Core · 3 stocks');
   assert.equal(formatWatchlistOptionLabel({ name: 'Ideas', member_count: 1 }), 'Ideas · 1 stock');
   assert.equal(formatWatchlistOptionLabel({ name: 'Empty' }), 'Empty · 0 stocks');
+});
+
+test('overview watchlist helpers identify and label the virtual list', () => {
+  assert.equal(OVERVIEW_WATCHLIST_ID, 'overview');
+  assert.equal(isOverviewWatchlistId('overview'), true);
+  assert.equal(isOverviewWatchlistId(12), false);
+  assert.equal(formatOverviewOptionLabel(4), 'Overview · 4 stocks');
+  assert.equal(formatOverviewOptionLabel(1), 'Overview · 1 stock');
+  assert.equal(formatOverviewOptionLabel(null), 'Overview');
 });
 
 test('formatPiotroskiFScoreSeries formats complete and partial yearly scores', () => {

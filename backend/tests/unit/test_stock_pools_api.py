@@ -76,6 +76,73 @@ def test_stock_pools_crud_and_membership(client, db_session, auth_headers):
     assert resp.json()["status"] == "deleted"
 
 
+def test_overview_members_union_deduplicates_and_scopes_to_user(client, db_session, auth_headers):
+    user = _make_user(db_session, "overview@example.com")
+    other_user = _make_user(db_session, "other-overview@example.com")
+    headers = auth_headers(user)
+
+    pool_a = StockPool(user_id=user.id, name="Core", description=None)
+    pool_b = StockPool(user_id=user.id, name="Ideas", description=None)
+    other_pool = StockPool(user_id=other_user.id, name="Other", description=None)
+    db_session.add_all([pool_a, pool_b, other_pool])
+    db_session.commit()
+
+    stock_a = _make_stock(db_session, "AAPL")
+    stock_b = _make_stock(db_session, "MSFT")
+    stock_c = _make_stock(db_session, "FICO")
+    other_stock = _make_stock(db_session, "NVDA")
+
+    db_session.add_all(
+        [
+            PoolMembership(
+                user_id=user.id,
+                pool_id=pool_a.id,
+                stock_id=stock_a.id,
+                inclusion_type="manual",
+                rule_id=None,
+            ),
+            PoolMembership(
+                user_id=user.id,
+                pool_id=pool_a.id,
+                stock_id=stock_b.id,
+                inclusion_type="manual",
+                rule_id=None,
+            ),
+            PoolMembership(
+                user_id=user.id,
+                pool_id=pool_b.id,
+                stock_id=stock_b.id,
+                inclusion_type="manual",
+                rule_id=None,
+            ),
+            PoolMembership(
+                user_id=user.id,
+                pool_id=pool_b.id,
+                stock_id=stock_c.id,
+                inclusion_type="manual",
+                rule_id=None,
+            ),
+            PoolMembership(
+                user_id=other_user.id,
+                pool_id=other_pool.id,
+                stock_id=other_stock.id,
+                inclusion_type="manual",
+                rule_id=None,
+            ),
+        ]
+    )
+    db_session.commit()
+
+    resp = client.get("/api/v1/stock_pools/overview/members", headers=headers)
+    assert resp.status_code == 200
+
+    rows = resp.json()
+    assert {row["ticker"] for row in rows} == {"AAPL", "MSFT", "FICO"}
+    assert [row["ticker"] for row in rows].count("MSFT") == 1
+    assert all(row["membership_id"] is not None for row in rows)
+    assert all(row["ticker"] != "NVDA" for row in rows)
+
+
 def test_pool_members_include_price_and_fair_value(client, db_session, monkeypatch, auth_headers):
     from app.api.v1.endpoints import stock_pools as stock_pools_endpoint
 
