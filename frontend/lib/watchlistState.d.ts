@@ -27,6 +27,11 @@ export function getRefreshPricesButtonPresentation(isPending: boolean): {
   label: string;
 };
 
+export function formatRefreshPricesSuccessDescription(
+  results: Array<{ status?: string | null }> | null | undefined,
+  requestedCount: number
+): string;
+
 export type PiotroskiFScore = {
   fiscal_year: number | null;
   score: number | null;

@@ -11,6 +11,7 @@ import {
   buildFairValueEdits,
   formatOverviewOptionLabel,
   formatPiotroskiFScoreSeries,
+  formatRefreshPricesSuccessDescription,
   formatWatchlistOptionLabel,
   getRefreshPricesButtonPresentation,
   hasFairValueEditChanges,
@@ -68,6 +69,16 @@ type ApiError = {
       detail?: string;
     };
   };
+};
+
+type RefreshPricesPayload = {
+  showToast?: boolean;
+  stockIds: number[];
+};
+
+type RefreshPriceResult = {
+  stock_id: number;
+  status: string;
 };
 
 type ActiveWatchlistId = number | typeof OVERVIEW_WATCHLIST_ID;
@@ -130,16 +141,32 @@ export default function WatchlistPage() {
   }, [members]);
 
   const refreshPrices = useMutation({
-    mutationFn: async (stockIds: number[]) => {
+    mutationFn: async ({ stockIds }: RefreshPricesPayload) => {
       if (!stockIds.length) return [];
       const res = await apiClient.post('/stocks/prices/refresh', {
         stock_ids: stockIds,
         reason: 'watchlist_open',
       });
-      return res.data;
+      return res.data as RefreshPriceResult[];
     },
-    onSuccess: () => {
+    onSuccess: (results, payload) => {
       membersQuery.refetch();
+      if (payload.showToast) {
+        toast({
+          title: 'Prices refreshed',
+          description: formatRefreshPricesSuccessDescription(results, payload.stockIds.length),
+        });
+      }
+    },
+    onError: (error: unknown, payload) => {
+      if (!payload.showToast) return;
+      const apiError = (typeof error === 'object' && error !== null ? error : {}) as ApiError;
+      const message = apiError.response?.data?.detail ?? 'Unable to refresh prices.';
+      toast({
+        title: 'Refresh failed',
+        description: message,
+        variant: 'destructive',
+      });
     },
   });
 
@@ -160,7 +187,10 @@ export default function WatchlistPage() {
     if (refreshedWatchlistId === activeWatchlistId) return;
     if (!members.length) return;
     setRefreshedWatchlistId(activeWatchlistId);
-    refreshPricesMutateRef.current(members.map((row) => row.stock_id));
+    refreshPricesMutateRef.current({
+      showToast: false,
+      stockIds: members.map((row) => row.stock_id),
+    });
   }, [activeWatchlistId, refreshedWatchlistId, members]);
 
   const createPool = useMutation({
@@ -403,7 +433,12 @@ export default function WatchlistPage() {
               </div>
               <Button
                 variant="outline"
-                onClick={() => refreshPrices.mutate(members.map((row) => row.stock_id))}
+                onClick={() =>
+                  refreshPrices.mutate({
+                    showToast: true,
+                    stockIds: members.map((row) => row.stock_id),
+                  })
+                }
                 disabled={!members.length || refreshPrices.isPending}
               >
                 <RefreshCcw className={refreshButton.iconClassName} />

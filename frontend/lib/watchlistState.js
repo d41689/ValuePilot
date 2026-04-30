@@ -65,6 +65,25 @@ function getRefreshPricesButtonPresentation(isPending) {
   };
 }
 
+function formatRefreshPricesSuccessDescription(results, requestedCount) {
+  const count = typeof requestedCount === 'number' && Number.isFinite(requestedCount)
+    ? requestedCount
+    : 0;
+  if (count <= 0) {
+    return 'No stocks to refresh.';
+  }
+
+  const refreshedCount = Array.isArray(results)
+    ? results.filter((result) => result?.status === 'refreshed').length
+    : 0;
+
+  if (refreshedCount > 0) {
+    return `Updated ${refreshedCount} of ${count} ${count === 1 ? 'stock' : 'stocks'}.`;
+  }
+
+  return `Checked ${count} ${count === 1 ? 'stock' : 'stocks'}; prices are already current.`;
+}
+
 function formatPiotroskiFScore(score) {
   if (!score) return '—';
   const fiscalYear = score.fiscal_year ? String(score.fiscal_year) : 'FY';
@@ -94,6 +113,7 @@ module.exports = {
   sortWatchlistMembers,
   buildFairValueEdits,
   formatOverviewOptionLabel,
+  formatRefreshPricesSuccessDescription,
   formatWatchlistOptionLabel,
   getRefreshPricesButtonPresentation,
   hasFairValueEditChanges,
