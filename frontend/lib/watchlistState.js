@@ -58,6 +58,13 @@ function formatOverviewOptionLabel(count) {
   }`;
 }
 
+function getRefreshPricesButtonPresentation(isPending) {
+  return {
+    iconClassName: isPending ? 'mr-2 h-4 w-4 animate-spin' : 'mr-2 h-4 w-4',
+    label: isPending ? 'Refreshing' : 'Refresh Prices',
+  };
+}
+
 function formatPiotroskiFScore(score) {
   if (!score) return '—';
   const fiscalYear = score.fiscal_year ? String(score.fiscal_year) : 'FY';
@@ -88,6 +95,7 @@ module.exports = {
   buildFairValueEdits,
   formatOverviewOptionLabel,
   formatWatchlistOptionLabel,
+  getRefreshPricesButtonPresentation,
   hasFairValueEditChanges,
   isOverviewWatchlistId,
   formatPiotroskiFScore,
