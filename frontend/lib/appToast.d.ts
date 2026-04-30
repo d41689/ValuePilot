@@ -1,17 +1,15 @@
-import type { ReactNode } from 'react';
-
 export type AppToastType = 'success' | 'error' | 'warning' | 'info';
 
 export type AppToastOptions = {
   type: AppToastType;
-  title: ReactNode;
-  description?: ReactNode;
+  title: string;
+  description?: string;
 };
 
 export type AppToastPayload = {
   appType: AppToastType;
-  title: ReactNode;
-  description?: ReactNode;
+  title: string;
+  description?: string;
   variant: 'default' | 'destructive';
 };
 
