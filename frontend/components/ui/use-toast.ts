@@ -7,8 +7,11 @@ import type { ToastActionElement, ToastProps } from '@/components/ui/toast';
 const TOAST_LIMIT = 3;
 const TOAST_REMOVE_DELAY = 4000;
 
+export type AppToastType = 'success' | 'error' | 'warning' | 'info';
+
 type Toast = ToastProps & {
   id: string;
+  appType?: AppToastType;
   title?: React.ReactNode;
   description?: React.ReactNode;
   action?: ToastActionElement;

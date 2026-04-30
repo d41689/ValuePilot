@@ -6,6 +6,7 @@ import Link from 'next/link';
 import { MoreHorizontal, Plus, RefreshCcw, Trash2 } from 'lucide-react';
 
 import apiClient from '@/lib/api/client';
+import { showAppToast } from '@/lib/appToast';
 import {
   OVERVIEW_WATCHLIST_ID,
   buildFairValueEdits,
@@ -152,7 +153,8 @@ export default function WatchlistPage() {
     onSuccess: (results, payload) => {
       membersQuery.refetch();
       if (payload.showToast) {
-        toast({
+        showAppToast(toast, {
+          type: 'success',
           title: 'Prices refreshed',
           description: formatRefreshPricesSuccessDescription(results, payload.stockIds.length),
         });
@@ -162,10 +164,10 @@ export default function WatchlistPage() {
       if (!payload.showToast) return;
       const apiError = (typeof error === 'object' && error !== null ? error : {}) as ApiError;
       const message = apiError.response?.data?.detail ?? 'Unable to refresh prices.';
-      toast({
+      showAppToast(toast, {
+        type: 'error',
         title: 'Refresh failed',
         description: message,
-        variant: 'destructive',
       });
     },
   });
@@ -205,16 +207,17 @@ export default function WatchlistPage() {
       poolsQuery.refetch();
       setActiveWatchlistId(pool.id);
       setRefreshedWatchlistId(null);
-      toast({
+      showAppToast(toast, {
+        type: 'success',
         title: 'Watchlist created',
         description: `“${pool.name}” is ready.`,
       });
     },
     onError: () => {
-      toast({
+      showAppToast(toast, {
+        type: 'error',
         title: 'Create failed',
         description: 'Unable to create watchlist. Please try again.',
-        variant: 'destructive',
       });
     },
   });
@@ -228,16 +231,17 @@ export default function WatchlistPage() {
       poolsQuery.refetch();
       setActiveWatchlistId(OVERVIEW_WATCHLIST_ID);
       setRefreshedWatchlistId(null);
-      toast({
+      showAppToast(toast, {
+        type: 'success',
         title: 'Watchlist deleted',
         description: 'The watchlist has been removed.',
       });
     },
     onError: () => {
-      toast({
+      showAppToast(toast, {
+        type: 'error',
         title: 'Delete failed',
         description: 'Unable to delete watchlist.',
-        variant: 'destructive',
       });
     },
   });
@@ -255,12 +259,19 @@ export default function WatchlistPage() {
       poolsQuery.refetch();
       setTickerInput('');
       setRefreshedWatchlistId(null);
-      toast({ title: 'Ticker added' });
+      showAppToast(toast, {
+        type: 'success',
+        title: 'Ticker added',
+      });
     },
     onError: (error: unknown) => {
       const apiError = (typeof error === 'object' && error !== null ? error : {}) as ApiError;
       const message = apiError.response?.data?.detail ?? 'Unable to add ticker.';
-      toast({ title: 'Add failed', description: message, variant: 'destructive' });
+      showAppToast(toast, {
+        type: 'error',
+        title: 'Add failed',
+        description: message,
+      });
     },
   });
 
@@ -275,13 +286,16 @@ export default function WatchlistPage() {
     onSuccess: () => {
       membersQuery.refetch();
       poolsQuery.refetch();
-      toast({ title: 'Removed from watchlist' });
+      showAppToast(toast, {
+        type: 'success',
+        title: 'Removed from watchlist',
+      });
     },
     onError: () => {
-      toast({
+      showAppToast(toast, {
+        type: 'error',
         title: 'Remove failed',
         description: 'Unable to remove ticker.',
-        variant: 'destructive',
       });
     },
   });
@@ -298,10 +312,10 @@ export default function WatchlistPage() {
       membersQuery.refetch();
     },
     onError: () => {
-      toast({
+      showAppToast(toast, {
+        type: 'error',
         title: 'Update failed',
         description: 'Unable to update Fair Value.',
-        variant: 'destructive',
       });
     },
   });
@@ -320,7 +334,11 @@ export default function WatchlistPage() {
     } catch (error: unknown) {
       const apiError = (typeof error === 'object' && error !== null ? error : {}) as ApiError;
       const message = apiError.response?.data?.detail ?? 'Ticker not found.';
-      toast({ title: 'Lookup failed', description: message, variant: 'destructive' });
+      showAppToast(toast, {
+        type: 'error',
+        title: 'Lookup failed',
+        description: message,
+      });
     }
   };
 
@@ -329,10 +347,10 @@ export default function WatchlistPage() {
     if (raw === undefined) return;
     const value = Number(raw);
     if (!Number.isFinite(value)) {
-      toast({
+      showAppToast(toast, {
+        type: 'error',
         title: 'Invalid value',
         description: 'Fair Value must be a number.',
-        variant: 'destructive',
       });
       return;
     }
