@@ -70,7 +70,7 @@ export default function WatchlistFScoreComparePage() {
 function WatchlistFScoreCompareContent() {
   const router = useRouter();
   const searchParams = useSearchParams();
-  const selectedWatchlistId = searchParams.get('watchlistId') || OVERVIEW_WATCHLIST_ID;
+  const selectedWatchlistId = searchParams?.get('watchlistId') || OVERVIEW_WATCHLIST_ID;
 
   const poolsQuery = useQuery({
     queryKey: ['watchlist-pools'],

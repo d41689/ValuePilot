@@ -52,6 +52,7 @@ Out:
   - `docker compose exec web node --test lib/watchlistState.test.js`
   - `docker compose exec web node --test lib/uiStandard.test.js`
   - `docker compose exec web npm run lint`
+- 2026-05-01: PR #20 CI failed during `next build` because `useSearchParams()` can be typed as nullable. Updated the compare page to read search params null-safely.
 
 ## Contract Checklist
 
