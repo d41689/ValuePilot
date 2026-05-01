@@ -124,6 +124,130 @@ def _piotroski_scores_for_stocks(
     return scores_by_stock_id
 
 
+def _piotroski_compare_fact_nature(fact: MetricFact) -> str:
+    value_json = fact.value_json if isinstance(fact.value_json, dict) else {}
+    fact_nature = value_json.get("fact_nature")
+    return fact_nature if isinstance(fact_nature, str) and fact_nature else "actual"
+
+
+def _piotroski_compare_year(fact: MetricFact) -> int | None:
+    value_json = fact.value_json if isinstance(fact.value_json, dict) else {}
+    fiscal_year = value_json.get("fiscal_year")
+    if isinstance(fiscal_year, int):
+        return fiscal_year
+    return fact.period_end_date.year if fact.period_end_date else None
+
+
+def _piotroski_compare_display_score(fact: MetricFact | None) -> str:
+    if fact is None:
+        return "—"
+    value_json = fact.value_json if isinstance(fact.value_json, dict) else {}
+    if isinstance(fact.value_numeric, (int, float)):
+        return f"{float(fact.value_numeric):.0f}"
+    partial_score = value_json.get("partial_score")
+    max_available_score = value_json.get("max_available_score")
+    if isinstance(partial_score, int) and isinstance(max_available_score, int):
+        return f"{partial_score}/{max_available_score}"
+    return "—"
+
+
+def _serialize_piotroski_compare_cell(year: int, fact: MetricFact | None) -> dict[str, Any]:
+    value_json = fact.value_json if fact and isinstance(fact.value_json, dict) else {}
+    return {
+        "fiscal_year": year,
+        "score": fact.value_numeric if fact and isinstance(fact.value_numeric, (int, float)) else None,
+        "display_score": _piotroski_compare_display_score(fact),
+        "fact_nature": _piotroski_compare_fact_nature(fact) if fact else None,
+        "status": value_json.get("status") if fact else None,
+    }
+
+
+def _select_piotroski_compare_facts(facts: list[MetricFact]) -> list[MetricFact]:
+    actual: list[MetricFact] = []
+    estimates: list[MetricFact] = []
+    for fact in facts:
+        if _piotroski_compare_year(fact) is None:
+            continue
+        if _piotroski_compare_fact_nature(fact) == "estimate":
+            estimates.append(fact)
+        else:
+            actual.append(fact)
+    actual.sort(key=lambda fact: _piotroski_compare_year(fact) or 0, reverse=True)
+    estimates.sort(key=lambda fact: _piotroski_compare_year(fact) or 0)
+    selected_actual = sorted(actual[:5], key=lambda fact: _piotroski_compare_year(fact) or 0)
+    return selected_actual + estimates[:2]
+
+
+def _piotroski_compare_payload(
+    session: SessionDep,
+    user_id: int,
+    members: list[PoolMembership],
+    *,
+    watchlist: dict[str, Any],
+) -> dict[str, Any]:
+    unique_members: list[PoolMembership] = []
+    seen_stock_ids: set[int] = set()
+    for member in members:
+        if member.stock_id in seen_stock_ids:
+            continue
+        seen_stock_ids.add(member.stock_id)
+        unique_members.append(member)
+
+    stock_ids = [member.stock_id for member in unique_members]
+    facts_by_stock_id: dict[int, list[MetricFact]] = {stock_id: [] for stock_id in stock_ids}
+    if stock_ids:
+        facts = session.scalars(
+            select(MetricFact)
+            .where(
+                MetricFact.user_id == user_id,
+                MetricFact.stock_id.in_(stock_ids),
+                MetricFact.metric_key == PIOTROSKI_TOTAL_KEY,
+                MetricFact.source_type == "calculated",
+                MetricFact.is_current.is_(True),
+                MetricFact.period_type == "FY",
+                MetricFact.period_end_date.is_not(None),
+            )
+            .order_by(MetricFact.stock_id.asc(), MetricFact.period_end_date.asc(), MetricFact.created_at.desc())
+        ).all()
+        for fact in facts:
+            facts_by_stock_id.setdefault(fact.stock_id, []).append(fact)
+
+    selected_by_stock_id: dict[int, dict[int, MetricFact]] = {}
+    years: set[int] = set()
+    for stock_id, facts in facts_by_stock_id.items():
+        selected = {}
+        for fact in _select_piotroski_compare_facts(facts):
+            year = _piotroski_compare_year(fact)
+            if year is None or year in selected:
+                continue
+            selected[year] = fact
+            years.add(year)
+        selected_by_stock_id[stock_id] = selected
+
+    ordered_years = sorted(years)
+    rows: list[dict[str, Any]] = []
+    for member in unique_members:
+        stock = session.get(Stock, member.stock_id)
+        if not stock:
+            continue
+        by_year = selected_by_stock_id.get(stock.id, {})
+        rows.append(
+            {
+                "stock_id": stock.id,
+                "ticker": stock.ticker,
+                "exchange": stock.exchange,
+                "company_name": stock.company_name,
+                "scores": [
+                    _serialize_piotroski_compare_cell(year, by_year.get(year))
+                    for year in ordered_years
+                ],
+            }
+        )
+
+    rows.sort(key=lambda row: row["ticker"])
+    return {"watchlist": watchlist, "years": ordered_years, "rows": rows}
+
+
 def _watchlist_rows_for_memberships(
     session: SessionDep,
     user_id: int,
@@ -288,6 +412,56 @@ def list_overview_members(
         unique_members.append(membership)
 
     return _watchlist_rows_for_memberships(session, user_id, unique_members)
+
+
+@router.get("/overview/f-score-compare", response_model=dict)
+def overview_f_score_compare(
+    *,
+    session: SessionDep,
+    current_user: CurrentUser,
+) -> Any:
+    user_id = current_user.id
+
+    members = session.scalars(
+        select(PoolMembership)
+        .where(PoolMembership.user_id == user_id)
+        .order_by(PoolMembership.created_at.desc(), PoolMembership.id.desc())
+    ).all()
+    return _piotroski_compare_payload(
+        session,
+        user_id,
+        members,
+        watchlist={"id": "overview", "name": "Overview"},
+    )
+
+
+@router.get("/{pool_id}/f-score-compare", response_model=dict)
+def pool_f_score_compare(
+    *,
+    session: SessionDep,
+    current_user: CurrentUser,
+    pool_id: int,
+) -> Any:
+    user_id = current_user.id
+
+    pool = session.get(StockPool, pool_id)
+    if not pool or pool.user_id != user_id:
+        raise HTTPException(status_code=404, detail="Pool not found")
+
+    members = session.scalars(
+        select(PoolMembership)
+        .where(
+            PoolMembership.pool_id == pool_id,
+            PoolMembership.user_id == user_id,
+        )
+        .order_by(PoolMembership.created_at.desc())
+    ).all()
+    return _piotroski_compare_payload(
+        session,
+        user_id,
+        members,
+        watchlist={"id": pool.id, "name": pool.name},
+    )
 
 
 @router.get("/{pool_id}/members", response_model=list[dict])

@@ -29,6 +29,41 @@ def _make_stock(db_session, ticker: str) -> Stock:
     return stock
 
 
+def _piotroski_total_fact(
+    user_id: int,
+    stock_id: int,
+    year: int,
+    score: float | None,
+    *,
+    fact_nature: str = "actual",
+    partial_score: int | None = None,
+    max_available_score: int | None = None,
+) -> MetricFact:
+    value_json = {
+        "status": "partial" if score is None else "calculated",
+        "variant": "standard",
+        "fiscal_year": year,
+        "fact_nature": fact_nature,
+    }
+    if partial_score is not None:
+        value_json["partial_score"] = partial_score
+    if max_available_score is not None:
+        value_json["max_available_score"] = max_available_score
+        value_json["available_indicators"] = max_available_score
+    return MetricFact(
+        user_id=user_id,
+        stock_id=stock_id,
+        metric_key=PIOTROSKI_TOTAL_KEY,
+        value_numeric=score,
+        value_json=value_json,
+        unit="score_total",
+        period_type="FY",
+        period_end_date=date(year, 12, 31),
+        source_type="calculated",
+        is_current=True,
+    )
+
+
 def test_stock_pools_crud_and_membership(client, db_session, auth_headers):
     user = _make_user(db_session)
     stock = _make_stock(db_session, "AAPL")
@@ -141,6 +176,114 @@ def test_overview_members_union_deduplicates_and_scopes_to_user(client, db_sessi
     assert [row["ticker"] for row in rows].count("MSFT") == 1
     assert all(row["membership_id"] is not None for row in rows)
     assert all(row["ticker"] != "NVDA" for row in rows)
+
+
+def test_pool_f_score_compare_returns_five_actual_and_two_estimate_years(
+    client, db_session, auth_headers
+):
+    user = _make_user(db_session, "fscore-compare@example.com")
+    headers = auth_headers(user)
+    pool = StockPool(user_id=user.id, name="Quality", description=None)
+    db_session.add(pool)
+    db_session.commit()
+
+    stock_a = _make_stock(db_session, "ASML")
+    stock_b = _make_stock(db_session, "FICO")
+    db_session.add_all(
+        [
+            PoolMembership(
+                user_id=user.id,
+                pool_id=pool.id,
+                stock_id=stock_a.id,
+                inclusion_type="manual",
+                rule_id=None,
+            ),
+            PoolMembership(
+                user_id=user.id,
+                pool_id=pool.id,
+                stock_id=stock_b.id,
+                inclusion_type="manual",
+                rule_id=None,
+            ),
+        ]
+    )
+    db_session.add_all(
+        [
+            *[
+                _piotroski_total_fact(user.id, stock_a.id, year, float(score))
+                for year, score in [
+                    (2019, 4),
+                    (2020, 5),
+                    (2021, 6),
+                    (2022, 7),
+                    (2023, 8),
+                    (2024, 9),
+                ]
+            ],
+            _piotroski_total_fact(user.id, stock_a.id, 2025, 7.0, fact_nature="estimate"),
+            _piotroski_total_fact(user.id, stock_a.id, 2026, 6.0, fact_nature="estimate"),
+            _piotroski_total_fact(user.id, stock_a.id, 2027, 5.0, fact_nature="estimate"),
+            _piotroski_total_fact(
+                user.id,
+                stock_b.id,
+                2024,
+                None,
+                partial_score=6,
+                max_available_score=8,
+            ),
+        ]
+    )
+    db_session.commit()
+
+    resp = client.get(f"/api/v1/stock_pools/{pool.id}/f-score-compare", headers=headers)
+    assert resp.status_code == 200, resp.text
+    payload = resp.json()
+
+    assert payload["watchlist"] == {"id": pool.id, "name": "Quality"}
+    assert payload["years"] == [2020, 2021, 2022, 2023, 2024, 2025, 2026]
+    row_a = next(row for row in payload["rows"] if row["ticker"] == "ASML")
+    assert row_a["scores"] == [
+        {"fiscal_year": 2020, "score": 5.0, "display_score": "5", "fact_nature": "actual", "status": "calculated"},
+        {"fiscal_year": 2021, "score": 6.0, "display_score": "6", "fact_nature": "actual", "status": "calculated"},
+        {"fiscal_year": 2022, "score": 7.0, "display_score": "7", "fact_nature": "actual", "status": "calculated"},
+        {"fiscal_year": 2023, "score": 8.0, "display_score": "8", "fact_nature": "actual", "status": "calculated"},
+        {"fiscal_year": 2024, "score": 9.0, "display_score": "9", "fact_nature": "actual", "status": "calculated"},
+        {"fiscal_year": 2025, "score": 7.0, "display_score": "7", "fact_nature": "estimate", "status": "calculated"},
+        {"fiscal_year": 2026, "score": 6.0, "display_score": "6", "fact_nature": "estimate", "status": "calculated"},
+    ]
+    row_b = next(row for row in payload["rows"] if row["ticker"] == "FICO")
+    assert row_b["scores"][-3] == {
+        "fiscal_year": 2024,
+        "score": None,
+        "display_score": "6/8",
+        "fact_nature": "actual",
+        "status": "partial",
+    }
+
+
+def test_overview_f_score_compare_deduplicates_members(client, db_session, auth_headers):
+    user = _make_user(db_session, "overview-fscore-compare@example.com")
+    headers = auth_headers(user)
+    pool_a = StockPool(user_id=user.id, name="Core", description=None)
+    pool_b = StockPool(user_id=user.id, name="Ideas", description=None)
+    db_session.add_all([pool_a, pool_b])
+    db_session.commit()
+
+    stock = _make_stock(db_session, "MSFT")
+    db_session.add_all(
+        [
+            PoolMembership(user_id=user.id, pool_id=pool_a.id, stock_id=stock.id, inclusion_type="manual"),
+            PoolMembership(user_id=user.id, pool_id=pool_b.id, stock_id=stock.id, inclusion_type="manual"),
+            _piotroski_total_fact(user.id, stock.id, 2024, 8.0),
+        ]
+    )
+    db_session.commit()
+
+    resp = client.get("/api/v1/stock_pools/overview/f-score-compare", headers=headers)
+    assert resp.status_code == 200, resp.text
+    payload = resp.json()
+    assert payload["watchlist"] == {"id": "overview", "name": "Overview"}
+    assert [row["ticker"] for row in payload["rows"]] == ["MSFT"]
 
 
 def test_pool_members_include_price_and_fair_value(client, db_session, monkeypatch, auth_headers):
