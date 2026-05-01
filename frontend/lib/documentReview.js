@@ -1090,7 +1090,7 @@ function buildDocumentReviewCurrentPosition(currentPosition = null) {
       : null;
   const periods = Array.isArray(block?.periods) ? block.periods : [];
   const columns = periods.map((period, index) => ({
-    key: String(period?.period_end_date || period?.label || index),
+    key: `${String(period?.period_end_date || period?.label || 'period')}-${String(period?.label || index)}-${index}`,
     label: String(period?.label || period?.period_end_date || `Period ${index + 1}`),
   }));
 

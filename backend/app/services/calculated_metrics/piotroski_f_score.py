@@ -171,8 +171,8 @@ def _roa_positive(index: FactIndex, period_end: date) -> Optional[ComponentResul
         standard_metric="roa_positive",
         candidates=[
             ("returns.roa", "standard", "standard_roa", "returns.roa[Y] > 0", lambda cur: cur > 0),
-            ("is.net_income", "valueline_proxy", "fallback_net_income_positive", "is.net_income[Y] > 0", lambda cur: cur > 0),
             ("returns.total_capital", "valueline_proxy", "fallback_return_on_total_capital", "returns.total_capital[Y] > 0", lambda cur: cur > 0),
+            ("is.net_income", "valueline_proxy", "fallback_net_income_positive", "is.net_income[Y] > 0", lambda cur: cur > 0),
         ],
     )
 
@@ -265,7 +265,7 @@ def _current_ratio_improving(index: FactIndex, period_end: date) -> Optional[Com
     previous = index.previous_date(period_end)
     if not previous:
         return None
-    return _first_comparison_rule(
+    standard = _first_comparison_rule(
         index,
         period_end,
         previous,
@@ -274,6 +274,36 @@ def _current_ratio_improving(index: FactIndex, period_end: date) -> Optional[Com
         candidates=[
             ("liquidity.current_ratio", "standard", "standard_current_ratio", "liquidity.current_ratio[Y] > liquidity.current_ratio[Y-1]", lambda cur, prev: cur > prev),
         ],
+    )
+    if standard:
+        return standard
+    return _current_position_totals_improving(index, period_end, previous)
+
+
+def _current_position_totals_improving(
+    index: FactIndex,
+    period_end: date,
+    previous: date,
+) -> Optional[ComponentResult]:
+    current_assets = index.get("bs.current_assets", period_end)
+    current_liabilities = index.get("bs.current_liabilities", period_end)
+    previous_assets = index.get("bs.current_assets", previous)
+    previous_liabilities = index.get("bs.current_liabilities", previous)
+    inputs = [current_assets, current_liabilities, previous_assets, previous_liabilities]
+    if not all(fact and fact.value_numeric is not None for fact in inputs):
+        return None
+    if not _is_positive(current_liabilities.value_numeric) or not _is_positive(previous_liabilities.value_numeric):
+        return None
+    current_ratio = float(current_assets.value_numeric) / float(current_liabilities.value_numeric)
+    previous_ratio = float(previous_assets.value_numeric) / float(previous_liabilities.value_numeric)
+    return ComponentResult(
+        metric_key="score.piotroski.current_ratio_improving",
+        standard_metric="current_ratio_improving",
+        value=1 if current_ratio > previous_ratio else 0,
+        variant="standard",
+        method="fallback_current_position_totals",
+        formula="bs.current_assets[Y] / bs.current_liabilities[Y] > bs.current_assets[Y-1] / bs.current_liabilities[Y-1]",
+        inputs=inputs,
     )
 
 
@@ -532,6 +562,10 @@ def _fact_nature(inputs: list[FactSnapshot]) -> str:
         if fact.value_json.get("fact_nature") == "estimate":
             return "estimate"
     return "actual"
+
+
+def _is_positive(value: Any) -> bool:
+    return isinstance(value, (int, float)) and float(value) > 0
 
 
 def _lineage_item(fact: FactSnapshot) -> dict[str, Any]:

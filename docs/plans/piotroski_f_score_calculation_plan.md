@@ -152,7 +152,7 @@ Insurance adjusted ratio examples:
 
 | Standard Piotroski item | Standard input | Value Line preferred input | Proxy status |
 |---|---|---|---|
-| ROA positive | `is.net_income / bs.total_assets > 0` | `Net Profit / Total Assets`; fallback `Net Profit > 0`; fallback `Return on Total Capital > 0` | Standard if both net income and total assets are available; otherwise proxy |
+| ROA positive | `is.net_income / bs.total_assets > 0` | `Net Profit / Total Assets`; fallback `Return on Total Capital > 0`; fallback `Net Profit > 0` | Standard if both net income and total assets are available; otherwise proxy |
 | CFO positive | Operating cash flow > 0 | Value Line `"Cash Flow"` per share > 0 | Proxy until true operating cash flow is available |
 | ROA improving | ROA Y vs Y-1 | `Return on Total Capital` Y vs Y-1 | Proxy if total assets unavailable |
 | Accrual quality | Operating cash flow > net income | `"Cash Flow"` per share > EPS | Proxy |
@@ -167,12 +167,12 @@ For fiscal year `Y`:
 
 | Key | Rule | Required comparison |
 |---|---|---|
-| `roa_positive` | Primary: `returns.roa[Y] > 0`; fallback 1: `is.net_income[Y] > 0`; fallback 2: `returns.total_capital[Y] > 0` | Current year |
+| `roa_positive` | Primary: `returns.roa[Y] > 0`; fallback 1: `returns.total_capital[Y] > 0`; fallback 2: `is.net_income[Y] > 0` | Current year |
 | `cfo_positive` | Primary: `is.operating_cash_flow[Y] > 0`; fallback: `per_share.cash_flow[Y] > 0` | Current year |
 | `roa_improving` | Primary: `returns.roa[Y] > returns.roa[Y-1]`; fallback: `returns.total_capital[Y] > returns.total_capital[Y-1]` | Current vs previous year |
 | `accrual_quality` | Primary: `is.operating_cash_flow[Y] > is.net_income[Y]`; fallback: `per_share.cash_flow[Y] > per_share.eps[Y]` | Current year |
 | `leverage_declining` | Primary: `leverage.long_term_debt_to_assets[Y] < leverage.long_term_debt_to_assets[Y-1]`; fallback: `cap.long_term_debt[Y] < cap.long_term_debt[Y-1]` | Current vs previous year |
-| `current_ratio_improving` | `liquidity.current_ratio[Y] > liquidity.current_ratio[Y-1]` | Current vs previous year |
+| `current_ratio_improving` | Primary: `liquidity.current_ratio[Y] > liquidity.current_ratio[Y-1]`; fallback: `bs.current_assets[Y] / bs.current_liabilities[Y] > bs.current_assets[Y-1] / bs.current_liabilities[Y-1]` | Current vs previous year |
 | `no_dilution` | `equity.shares_outstanding[Y] <= equity.shares_outstanding[Y-1]` | Current vs previous year |
 | `gross_margin_improving` | Primary: `is.gross_margin[Y] > is.gross_margin[Y-1]`; fallback: `is.operating_margin[Y] > is.operating_margin[Y-1]`; insurance-adjusted: `ins.underwriting_margin[Y] > ins.underwriting_margin[Y-1]` | Current vs previous year |
 | `asset_turnover_improving` | Non-insurance: `revenue[Y] / bs.total_assets[Y] > revenue[Y-1] / bs.total_assets[Y-1]`; insurance-adjusted: `premiums_earned[Y] / bs.total_assets[Y] > premiums_earned[Y-1] / bs.total_assets[Y-1]` | Current vs previous year |

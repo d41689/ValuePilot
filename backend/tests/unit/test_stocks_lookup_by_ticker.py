@@ -8,6 +8,175 @@ from app.models.stocks import Stock, StockPrice
 from app.models.users import User
 
 
+def _piotroski_fact(
+    *,
+    user_id: int,
+    stock_id: int,
+    metric_key: str,
+    year: int,
+    value: float | None,
+    value_json: dict | None = None,
+) -> MetricFact:
+    return MetricFact(
+        user_id=user_id,
+        stock_id=stock_id,
+        metric_key=metric_key,
+        value_numeric=value,
+        value_json=value_json or {
+            "status": "calculated",
+            "variant": "valueline_proxy",
+                            "fact_nature": (
+                                "estimate"
+                                if metric_key == "score.piotroski.roa_positive" and year == 2026
+                                else "actual"
+                            ),
+            "fiscal_year": year,
+        },
+        unit="score_component" if metric_key != "score.piotroski.total" else "score_total",
+        period_type="FY",
+        period_end_date=date(year, 12, 31),
+        source_type="calculated",
+        is_current=True,
+    )
+
+
+def test_lookup_stock_by_ticker_returns_dynamic_piotroski_card_from_current_stock(client, db_session):
+    user = User(email="ticker_f_score@example.com")
+    stock = Stock(ticker="FSC_TEST", exchange="NYSE", company_name="F SCORE INC", is_active=True)
+    other_stock = Stock(ticker="OTHER_FS", exchange="NYSE", company_name="OTHER SCORE", is_active=True)
+    db_session.add_all([user, stock, other_stock])
+    db_session.commit()
+
+    years = [2022, 2023, 2024, 2025, 2026]
+    component_values = {
+        "score.piotroski.roa_positive": [1, 1, 1, 1, 1],
+        "score.piotroski.cfo_positive": [1, 1, 1, 1, 1],
+        "score.piotroski.roa_improving": [1, 0, 1, 0, 1],
+        "score.piotroski.accrual_quality": [1, 1, 0, 0, 0],
+        "score.piotroski.leverage_declining": [0, 0, 1, 1, 1],
+        "score.piotroski.current_ratio_improving": [0, 1, 1, 1, 0],
+        "score.piotroski.no_dilution": [1, 1, 1, 1, 1],
+        "score.piotroski.gross_margin_improving": [1, 1, 1, 0, 0],
+        "score.piotroski.asset_turnover_improving": [0, 1, 1, 1, 0],
+    }
+    facts = []
+    for metric_key, values in component_values.items():
+        for year, value in zip(years, values):
+            facts.append(
+                _piotroski_fact(
+                    user_id=user.id,
+                    stock_id=stock.id,
+                    metric_key=metric_key,
+                    year=year,
+                    value=float(value),
+                    value_json={
+                        "status": "calculated",
+                        "variant": "valueline_proxy",
+                        "fact_nature": (
+                            "estimate"
+                            if metric_key == "score.piotroski.roa_positive" and year == 2026
+                            else "actual"
+                        ),
+                        "fiscal_year": year,
+                        "formula": f"{metric_key}[Y] test formula",
+                        "inputs": [
+                            {
+                                "metric_key": f"{metric_key}.input",
+                                "value_numeric": float(value) * 10,
+                                "period_end_date": f"{year}-12-31",
+                                "fact_nature": (
+                                    "estimate"
+                                    if metric_key == "score.piotroski.roa_positive" and year == 2026
+                                    else "actual"
+                                ),
+                            }
+                        ],
+                    },
+                )
+            )
+    for year, value in zip(years, [7, 7, 8, 7, 7]):
+        facts.append(
+            _piotroski_fact(
+                user_id=user.id,
+                stock_id=stock.id,
+                metric_key="score.piotroski.total",
+                year=year,
+                value=float(value),
+            )
+        )
+    facts.append(
+        _piotroski_fact(
+            user_id=user.id,
+            stock_id=other_stock.id,
+            metric_key="score.piotroski.total",
+            year=2026,
+            value=2.0,
+        )
+    )
+    db_session.add_all(facts)
+    db_session.commit()
+
+    response = client.get("/api/v1/stocks/by_ticker/fsc_test")
+
+    assert response.status_code == 200
+    card = response.json()["piotroski_f_score_card"]
+    assert card["years"] == [2022, 2023, 2024, 2025, 2026]
+    assert len(card["rows"]) == 10
+    rows_by_key = {row["metric_key"]: row for row in card["rows"]}
+    assert list(rows_by_key) == [
+        "score.piotroski.roa_positive",
+        "score.piotroski.cfo_positive",
+        "score.piotroski.roa_improving",
+        "score.piotroski.accrual_quality",
+        "score.piotroski.leverage_declining",
+        "score.piotroski.current_ratio_improving",
+        "score.piotroski.no_dilution",
+        "score.piotroski.gross_margin_improving",
+        "score.piotroski.asset_turnover_improving",
+        "score.piotroski.total",
+    ]
+
+    roa_row = rows_by_key["score.piotroski.roa_positive"]
+    assert roa_row["formula_details"]["used_values"] == [
+        {
+            "metric_key": "score.piotroski.roa_positive.input",
+            "value_numeric": 10.0,
+            "period_end_date": "2022-12-31",
+            "fact_nature": "actual",
+        },
+        {
+            "metric_key": "score.piotroski.roa_positive.input",
+            "value_numeric": 10.0,
+            "period_end_date": "2023-12-31",
+            "fact_nature": "actual",
+        },
+        {
+            "metric_key": "score.piotroski.roa_positive.input",
+            "value_numeric": 10.0,
+            "period_end_date": "2024-12-31",
+            "fact_nature": "actual",
+        },
+        {
+            "metric_key": "score.piotroski.roa_positive.input",
+            "value_numeric": 10.0,
+            "period_end_date": "2025-12-31",
+            "fact_nature": "actual",
+        },
+        {
+            "metric_key": "score.piotroski.roa_positive.input",
+            "value_numeric": 10.0,
+            "period_end_date": "2026-12-31",
+            "fact_nature": "estimate",
+        },
+    ]
+    assert roa_row["score_fact_natures"] == ["actual", "actual", "actual", "actual", "estimate"]
+
+    for metric_key, row in rows_by_key.items():
+        if metric_key != "score.piotroski.total":
+            assert len(row["formula_details"]["used_values"]) == 5
+    assert rows_by_key["score.piotroski.total"]["formula_details"]["used_values"] == []
+
+
 def test_lookup_stock_by_ticker_returns_summary(client, db_session):
     user = User(email="ticker_lookup@example.com")
     stock = Stock(ticker="COCO_TEST", exchange="NDQ", company_name="VITA COCO", is_active=True)

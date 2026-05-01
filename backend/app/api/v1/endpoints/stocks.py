@@ -23,6 +23,128 @@ DCF_INPUT_FACT_KEYS = {
     "shares_outstanding": "equity.shares_outstanding",
     "capital_spending_per_share": "per_share.capital_spending",
 }
+PIOTROSKI_CARD_ROWS = [
+    {
+        "category": "盈利",
+        "check": "ROA > 0",
+        "metric_key": "score.piotroski.roa_positive",
+        "standard_definition": "ROA is positive.",
+        "formula": "returns.roa[Y] > 0",
+        "fallback_formulas": ["is.net_income[Y] > 0", "returns.total_capital[Y] > 0"],
+        "all_pass_comment": "最近 5 年全部通过，盈利底盘稳健。",
+        "pass_comment": "最近年份通过，盈利底盘保持稳健。",
+        "fail_comment": "最近年份未通过，需要关注盈利质量。",
+        "missing_comment": "数据不足，暂无法判断盈利底盘。",
+    },
+    {
+        "category": "",
+        "check": "CFO > 0",
+        "metric_key": "score.piotroski.cfo_positive",
+        "standard_definition": "Operating cash flow is positive.",
+        "formula": "is.operating_cash_flow[Y] > 0",
+        "fallback_formulas": ["per_share.cash_flow[Y] > 0"],
+        "all_pass_comment": "最近 5 年全部通过，现金流为正。",
+        "pass_comment": "最近年份通过，经营现金流为正。",
+        "fail_comment": "最近年份未通过，需要关注现金流质量。",
+        "missing_comment": "数据不足，暂无法判断现金流正负。",
+    },
+    {
+        "category": "",
+        "check": "ROA 提升",
+        "metric_key": "score.piotroski.roa_improving",
+        "standard_definition": "ROA improves from the prior year.",
+        "formula": "returns.roa[Y] > returns.roa[Y-1]",
+        "fallback_formulas": ["returns.total_capital[Y] > returns.total_capital[Y-1]"],
+        "all_pass_comment": "最近 5 年全部通过，资产回报率持续改善。",
+        "pass_comment": "最近年份通过，资产回报率改善。",
+        "fail_comment": "最近年份未通过，需要关注资产回报率趋势。",
+        "missing_comment": "数据不足，暂无法判断 ROA 趋势。",
+    },
+    {
+        "category": "",
+        "check": "CFO>ROA",
+        "metric_key": "score.piotroski.accrual_quality",
+        "standard_definition": "Operating cash flow exceeds net income.",
+        "formula": "is.operating_cash_flow[Y] > is.net_income[Y]",
+        "fallback_formulas": ["per_share.cash_flow[Y] > per_share.eps[Y]"],
+        "all_pass_comment": "最近 5 年全部通过，利润质量稳定。",
+        "pass_comment": "最近年份通过，现金流质量改善。",
+        "fail_comment": "最近年份未通过，需要关注利润质量。",
+        "missing_comment": "数据不足，暂无法判断利润质量。",
+    },
+    {
+        "category": "安全",
+        "check": "杠杆率下降",
+        "metric_key": "score.piotroski.leverage_declining",
+        "standard_definition": "Long-term leverage declines from the prior year.",
+        "formula": "leverage.long_term_debt_to_assets[Y] < leverage.long_term_debt_to_assets[Y-1]",
+        "fallback_formulas": [
+            "leverage.long_term_debt_to_capital[Y] < leverage.long_term_debt_to_capital[Y-1]",
+            "cap.long_term_debt[Y] < cap.long_term_debt[Y-1]",
+        ],
+        "all_pass_comment": "最近 5 年全部通过，债务压力持续减轻。",
+        "pass_comment": "最近年份通过，债务压力信号改善。",
+        "fail_comment": "最近年份未通过，需要关注债务压力。",
+        "missing_comment": "数据不足，暂无法判断杠杆趋势。",
+    },
+    {
+        "category": "",
+        "check": "流动比率提升",
+        "metric_key": "score.piotroski.current_ratio_improving",
+        "standard_definition": "Current ratio improves from the prior year.",
+        "formula": "liquidity.current_ratio[Y] > liquidity.current_ratio[Y-1]",
+        "fallback_formulas": [
+            "bs.current_assets[Y] / bs.current_liabilities[Y] > bs.current_assets[Y-1] / bs.current_liabilities[Y-1]",
+        ],
+        "all_pass_comment": "最近 5 年全部通过，短期偿债能力持续改善。",
+        "pass_comment": "最近年份通过，短期偿债能力改善。",
+        "fail_comment": "最近年份未通过，短期偿债能力承压。",
+        "missing_comment": "数据不足，暂无法判断流动性趋势。",
+    },
+    {
+        "category": "",
+        "check": "无股本稀释",
+        "metric_key": "score.piotroski.no_dilution",
+        "standard_definition": "Shares outstanding do not increase from the prior year.",
+        "formula": "equity.shares_outstanding[Y] <= equity.shares_outstanding[Y-1]",
+        "fallback_formulas": [],
+        "all_pass_comment": "最近 5 年全部通过，股本稀释压力低。",
+        "pass_comment": "最近年份通过，股本稀释压力低。",
+        "fail_comment": "最近年份未通过，需要关注股本稀释。",
+        "missing_comment": "数据不足，暂无法判断股本稀释。",
+    },
+    {
+        "category": "效率",
+        "check": "毛利率提升",
+        "metric_key": "score.piotroski.gross_margin_improving",
+        "standard_definition": "Gross margin improves from the prior year.",
+        "formula": "is.gross_margin[Y] > is.gross_margin[Y-1]",
+        "fallback_formulas": [
+            "ins.underwriting_margin[Y] > ins.underwriting_margin[Y-1]",
+            "is.operating_margin[Y] > is.operating_margin[Y-1]",
+        ],
+        "all_pass_comment": "最近 5 年全部通过，成本和定价效率稳定。",
+        "pass_comment": "最近年份通过，成本或定价效率改善。",
+        "fail_comment": "最近年份未通过，成本或定价效率承压。",
+        "missing_comment": "数据不足，暂无法判断效率趋势。",
+    },
+    {
+        "category": "",
+        "check": "资产周转率提升",
+        "metric_key": "score.piotroski.asset_turnover_improving",
+        "standard_definition": "Asset turnover improves from the prior year.",
+        "formula": "efficiency.asset_turnover[Y] > efficiency.asset_turnover[Y-1]",
+        "fallback_formulas": [
+            "ins.premium_turnover[Y] > ins.premium_turnover[Y-1]",
+            "efficiency.capital_turnover[Y] > efficiency.capital_turnover[Y-1]",
+        ],
+        "all_pass_comment": "最近 5 年全部通过，资产使用效率持续改善。",
+        "pass_comment": "最近年份通过，资产使用效率改善。",
+        "fail_comment": "最近年份未通过，资产使用效率承压。",
+        "missing_comment": "数据不足，暂无法判断资产周转趋势。",
+    },
+]
+PIOTROSKI_TOTAL_KEY = "score.piotroski.total"
 
 
 def _dcf_value(value: float, source: str, provenance: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -74,6 +196,230 @@ def _computed_dcf_provenance(
     if not inputs:
         return None
     return {"inputs": inputs}
+
+
+def _score_value(fact: MetricFact | None) -> int | float | None:
+    if fact is None:
+        return None
+    value_json = fact.value_json if isinstance(fact.value_json, dict) else {}
+    raw_value = fact.value_numeric
+    if raw_value is None:
+        raw_value = value_json.get("partial_score")
+    if not isinstance(raw_value, (int, float)):
+        return None
+    value = float(raw_value)
+    return int(value) if value.is_integer() else value
+
+
+def _score_fact_nature(fact: MetricFact | None) -> str | None:
+    value_json = fact.value_json if fact and isinstance(fact.value_json, dict) else {}
+    inputs = value_json.get("inputs")
+    if isinstance(inputs, list) and any(
+        isinstance(item, dict) and item.get("fact_nature") == "estimate" for item in inputs
+    ):
+        return "estimate"
+    fact_nature = value_json.get("fact_nature")
+    if isinstance(fact_nature, str) and fact_nature:
+        return fact_nature
+    if isinstance(inputs, list) and inputs:
+        return "actual"
+    return None
+
+
+def _score_year(fact: MetricFact) -> int | None:
+    value_json = fact.value_json if isinstance(fact.value_json, dict) else {}
+    fiscal_year = value_json.get("fiscal_year")
+    if isinstance(fiscal_year, int):
+        return fiscal_year
+    if fact.period_end_date:
+        return fact.period_end_date.year
+    return None
+
+
+def _piotroski_status_and_comment(
+    values: list[int | float | None],
+    row_config: dict[str, str],
+) -> tuple[str, str, str]:
+    numeric_values = [value for value in values if isinstance(value, (int, float))]
+    if not numeric_values:
+        return "⚠️", "warning", row_config["missing_comment"]
+    latest = values[-1]
+    if latest == 1:
+        if len(numeric_values) == len(values) and all(value == 1 for value in numeric_values):
+            return "✅", "success", row_config["all_pass_comment"]
+        return "✅", "success", row_config["pass_comment"]
+    if latest == 0:
+        return "❌", "danger", row_config["fail_comment"]
+    return "⚠️", "warning", row_config["missing_comment"]
+
+
+def _row_formula(
+    by_year: dict[int, MetricFact],
+    display_years: list[int],
+    fallback_formula: str,
+) -> str:
+    for year in reversed(display_years):
+        fact = by_year.get(year)
+        value_json = fact.value_json if fact and isinstance(fact.value_json, dict) else {}
+        formula = value_json.get("formula")
+        if isinstance(formula, str) and formula.strip():
+            return formula
+    return fallback_formula
+
+
+def _used_values(fact: MetricFact | None) -> list[dict[str, Any]]:
+    value_json = fact.value_json if fact and isinstance(fact.value_json, dict) else {}
+    inputs = value_json.get("inputs")
+    if not isinstance(inputs, list):
+        return []
+    used_values = []
+    for item in inputs:
+        if not isinstance(item, dict):
+            continue
+        used_values.append(
+            {
+                "metric_key": item.get("metric_key"),
+                "value_numeric": item.get("value_numeric"),
+                "period_end_date": item.get("period_end_date"),
+                "fact_nature": item.get("fact_nature"),
+            }
+        )
+    return used_values
+
+
+def _used_values_for_years(
+    by_year: dict[int, MetricFact],
+    display_years: list[int],
+) -> list[dict[str, Any]]:
+    used_values: list[dict[str, Any]] = []
+    for year in display_years:
+        used_values.extend(_used_values(by_year.get(year)))
+    return used_values
+
+
+def _latest_fact(by_year: dict[int, MetricFact], display_years: list[int]) -> MetricFact | None:
+    for year in reversed(display_years):
+        fact = by_year.get(year)
+        if fact is not None:
+            return fact
+    return None
+
+
+def _formula_details(
+    *,
+    row_config: dict[str, Any],
+    formula: str,
+    metric_facts_by_year: dict[int, MetricFact],
+    display_years: list[int],
+) -> dict[str, Any]:
+    fallback_formulas = []
+    seen_fallbacks = set()
+    for fallback_formula in row_config["fallback_formulas"]:
+        if fallback_formula == formula or fallback_formula in seen_fallbacks:
+            continue
+        seen_fallbacks.add(fallback_formula)
+        fallback_formulas.append(fallback_formula)
+    return {
+        "standard_definition": row_config["standard_definition"],
+        "standard_formula": row_config["formula"],
+        "fallback_formulas": fallback_formulas,
+        "used_formula": formula,
+        "used_values": _used_values_for_years(metric_facts_by_year, display_years),
+    }
+
+
+def _build_piotroski_f_score_card(session: SessionDep, stock_id: int) -> dict[str, Any]:
+    metric_keys = [row["metric_key"] for row in PIOTROSKI_CARD_ROWS] + [PIOTROSKI_TOTAL_KEY]
+    facts = session.scalars(
+        select(MetricFact)
+        .where(
+            MetricFact.stock_id == stock_id,
+            MetricFact.metric_key.in_(metric_keys),
+            MetricFact.source_type == "calculated",
+            MetricFact.is_current.is_(True),
+            MetricFact.period_type == "FY",
+        )
+        .order_by(MetricFact.period_end_date.desc(), MetricFact.created_at.desc())
+    ).all()
+
+    by_key_year: dict[str, dict[int, MetricFact]] = {metric_key: {} for metric_key in metric_keys}
+    years: list[int] = []
+    for fact in facts:
+        year = _score_year(fact)
+        if year is None:
+            continue
+        by_year = by_key_year.setdefault(fact.metric_key, {})
+        if year not in by_year:
+            by_year[year] = fact
+        if year not in years:
+            years.append(year)
+
+    display_years = sorted(years, reverse=True)[:5]
+    display_years.sort()
+    rows = []
+    for row_config in PIOTROSKI_CARD_ROWS:
+        metric_facts_by_year = by_key_year[row_config["metric_key"]]
+        scores = [_score_value(metric_facts_by_year.get(year)) for year in display_years]
+        score_fact_natures = [_score_fact_nature(metric_facts_by_year.get(year)) for year in display_years]
+        status, status_tone, comment = _piotroski_status_and_comment(scores, row_config)
+        formula = _row_formula(metric_facts_by_year, display_years, row_config["formula"])
+        rows.append(
+            {
+                "category": row_config["category"],
+                "check": row_config["check"],
+                "metric_key": row_config["metric_key"],
+                "formula": formula,
+                "formula_details": _formula_details(
+                    row_config=row_config,
+                    formula=formula,
+                    metric_facts_by_year=metric_facts_by_year,
+                    display_years=display_years,
+                ),
+                "scores": scores,
+                "score_fact_natures": score_fact_natures,
+                "status": status,
+                "status_tone": status_tone,
+                "comment": comment,
+            }
+        )
+
+    total_scores = [_score_value(by_key_year[PIOTROSKI_TOTAL_KEY].get(year)) for year in display_years]
+    total_score_fact_natures = [_score_fact_nature(by_key_year[PIOTROSKI_TOTAL_KEY].get(year)) for year in display_years]
+    latest_total = next(
+        (value for value in reversed(total_scores) if isinstance(value, (int, float))),
+        None,
+    )
+    total_comment = (
+        f"最新 F-Score 为 {latest_total}，基本面维持强壮。"
+        if isinstance(latest_total, (int, float)) and latest_total >= 7
+        else (
+            f"最新 F-Score 为 {latest_total}，需要继续观察。"
+            if isinstance(latest_total, (int, float))
+            else "暂无可用 F-Score 总分。"
+        )
+    )
+    rows.append(
+        {
+            "category": "总计",
+            "check": "F-Score",
+            "metric_key": PIOTROSKI_TOTAL_KEY,
+            "formula": "9 项 Piotroski 指标得分加总",
+            "formula_details": {
+                "standard_definition": "Total Piotroski F-Score sums the 9 binary component indicators.",
+                "standard_formula": "sum(9 Piotroski component scores)",
+                "fallback_formulas": ["Value Line proxy components when standard inputs are unavailable"],
+                "used_formula": "9 项 Piotroski 指标得分加总",
+                "used_values": [],
+            },
+            "scores": total_scores,
+            "score_fact_natures": total_score_fact_natures,
+            "status": "--",
+            "status_tone": "secondary",
+            "comment": total_comment,
+        }
+    )
+
+    return {"years": display_years, "rows": rows}
 
 
 def _build_dcf_inputs_entry(
@@ -442,6 +788,7 @@ def read_stock_by_ticker(
         "dcf_inputs": dcf_inputs,
         "dcf_inputs_series": dcf_inputs_series,
         "growth_rate_options": growth_rate_options,
+        "piotroski_f_score_card": _build_piotroski_f_score_card(session, stock.id),
         "actual_conflict_count": len(actual_conflicts),
         "actual_conflicts": actual_conflicts,
     }
