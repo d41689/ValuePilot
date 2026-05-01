@@ -88,6 +88,25 @@ def test_build_piotroski_f_score_facts_uses_return_on_total_capital_for_roa_impr
     assert by_key["score.piotroski.roa_improving"]["value_json"]["method"] == "fallback_return_on_total_capital"
 
 
+def test_build_piotroski_f_score_facts_prefers_total_capital_over_net_income_for_roa_positive_proxy():
+    y0 = date(2023, 12, 31)
+    y1 = date(2024, 12, 31)
+    facts = [
+        _fact("returns.total_capital", 0.10, y0, fact_id=1),
+        _fact("returns.total_capital", 0.12, y1, fact_id=2),
+        _fact("is.net_income", -100.0, y1, fact_id=3),
+    ]
+
+    derived = build_piotroski_f_score_facts(facts)
+    by_key = {fact["metric_key"]: fact for fact in derived if fact["period_end_date"] == y1}
+
+    assert by_key["score.piotroski.roa_positive"]["value_numeric"] == 1.0
+    assert by_key["score.piotroski.roa_positive"]["value_json"]["method"] == "fallback_return_on_total_capital"
+    assert by_key["score.piotroski.roa_positive"]["value_json"]["formula"] == "returns.total_capital[Y] > 0"
+    assert by_key["score.piotroski.roa_improving"]["value_numeric"] == 1.0
+    assert by_key["score.piotroski.roa_improving"]["value_json"]["method"] == "fallback_return_on_total_capital"
+
+
 def test_build_piotroski_f_score_facts_uses_debt_to_capital_for_leverage_proxy():
     y0 = date(2023, 12, 31)
     y1 = date(2024, 12, 31)

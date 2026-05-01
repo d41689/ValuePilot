@@ -171,8 +171,8 @@ def _roa_positive(index: FactIndex, period_end: date) -> Optional[ComponentResul
         standard_metric="roa_positive",
         candidates=[
             ("returns.roa", "standard", "standard_roa", "returns.roa[Y] > 0", lambda cur: cur > 0),
-            ("is.net_income", "valueline_proxy", "fallback_net_income_positive", "is.net_income[Y] > 0", lambda cur: cur > 0),
             ("returns.total_capital", "valueline_proxy", "fallback_return_on_total_capital", "returns.total_capital[Y] > 0", lambda cur: cur > 0),
+            ("is.net_income", "valueline_proxy", "fallback_net_income_positive", "is.net_income[Y] > 0", lambda cur: cur > 0),
         ],
     )
 
