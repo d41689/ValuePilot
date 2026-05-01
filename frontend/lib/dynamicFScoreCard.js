@@ -1,54 +1,36 @@
-const dynamicFScoreYears = ['2022', '2023', '2024', '2025', '2026'];
+const STATUS_TONES = new Set(['success', 'warning', 'danger', 'secondary']);
 
-const dynamicFScoreRows = [
-  {
-    category: '盈利',
-    check: 'ROA > 0',
-    scores: [1, 1, 1, 1, 1],
-    status: '✅',
-    statusTone: 'success',
-    comment: '底盘极其稳健。',
-  },
-  {
-    category: '',
-    check: 'CFO>ROA',
-    scores: [1, 1, 0, 0, 0],
-    status: '❌',
-    statusTone: 'danger',
-    comment: '警惕：利润调节风险。',
-  },
-  {
-    category: '安全',
-    check: '杠杆率下降',
-    scores: [0, 0, 1, 1, 1],
-    status: '✅',
-    statusTone: 'success',
-    comment: '债务压力显著减轻。',
-  },
-  {
-    category: '效率',
-    check: '毛利率提升',
-    scores: [1, 1, 1, 0, 0],
-    status: '⚠️',
-    statusTone: 'warning',
-    comment: '核心风险：成本上涨。',
-  },
-  {
-    category: '总计',
-    check: 'F-Score',
-    scores: [7, 7, 8, 7, 7],
-    status: '--',
-    statusTone: 'secondary',
-    comment: '结论：基本面维持强壮。',
-  },
-];
+function normalizeDynamicFScoreCard(card) {
+  if (!card || typeof card !== 'object') {
+    return { years: [], rows: [] };
+  }
 
-function getDynamicFScoreTotalRow() {
-  return dynamicFScoreRows[dynamicFScoreRows.length - 1];
+  const years = Array.isArray(card.years) ? card.years.map((year) => String(year)) : [];
+  const rows = Array.isArray(card.rows)
+    ? card.rows.map((row) => ({
+        category: typeof row.category === 'string' ? row.category : '',
+        check: typeof row.check === 'string' ? row.check : '',
+        metricKey: typeof row.metric_key === 'string' ? row.metric_key : '',
+        scores: Array.isArray(row.scores)
+          ? row.scores.map((score) => (typeof score === 'number' && Number.isFinite(score) ? score : null))
+          : [],
+        status: typeof row.status === 'string' ? row.status : '⚠️',
+        statusTone: STATUS_TONES.has(row.status_tone) ? row.status_tone : 'warning',
+        comment: typeof row.comment === 'string' ? row.comment : '',
+      }))
+    : [];
+
+  return { years, rows };
+}
+
+function formatDynamicFScoreValue(value) {
+  if (value === null || value === undefined || !Number.isFinite(value)) {
+    return '—';
+  }
+  return Number.isInteger(value) ? String(value) : value.toFixed(1);
 }
 
 module.exports = {
-  dynamicFScoreYears,
-  dynamicFScoreRows,
-  getDynamicFScoreTotalRow,
+  formatDynamicFScoreValue,
+  normalizeDynamicFScoreCard,
 };

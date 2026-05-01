@@ -3,39 +3,54 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 
 const {
-  dynamicFScoreYears,
-  dynamicFScoreRows,
-  getDynamicFScoreTotalRow,
+  formatDynamicFScoreValue,
+  normalizeDynamicFScoreCard,
 } = require('./dynamicFScoreCard');
 
-test('dynamic F-Score card model contains requested five-year table', () => {
-  assert.deepEqual(dynamicFScoreYears, ['2022', '2023', '2024', '2025', '2026']);
-  assert.equal(dynamicFScoreRows.length, 5);
+test('normalizeDynamicFScoreCard maps API card data for the current ticker', () => {
+  const card = normalizeDynamicFScoreCard({
+    years: [2022, 2023, 2024, 2025, 2026],
+    rows: [
+      {
+        category: '盈利',
+        check: 'ROA > 0',
+        metric_key: 'score.piotroski.roa_positive',
+        scores: [1, 1, 1, 1, 1],
+        status: '✅',
+        status_tone: 'success',
+        comment: '最近 5 年全部通过，盈利底盘稳健。',
+      },
+      {
+        category: '总计',
+        check: 'F-Score',
+        metric_key: 'score.piotroski.total',
+        scores: [7, 7, 8, 7, 7],
+        status: '--',
+        status_tone: 'secondary',
+        comment: '最新 F-Score 为 7，基本面维持强壮。',
+      },
+    ],
+  });
 
-  assert.deepEqual(dynamicFScoreRows[0], {
+  assert.deepEqual(card.years, ['2022', '2023', '2024', '2025', '2026']);
+  assert.deepEqual(card.rows[0], {
     category: '盈利',
     check: 'ROA > 0',
+    metricKey: 'score.piotroski.roa_positive',
     scores: [1, 1, 1, 1, 1],
     status: '✅',
     statusTone: 'success',
-    comment: '底盘极其稳健。',
+    comment: '最近 5 年全部通过，盈利底盘稳健。',
   });
+});
 
-  assert.deepEqual(dynamicFScoreRows[1], {
-    category: '',
-    check: 'CFO>ROA',
-    scores: [1, 1, 0, 0, 0],
-    status: '❌',
-    statusTone: 'danger',
-    comment: '警惕：利润调节风险。',
-  });
+test('normalizeDynamicFScoreCard returns empty rows for missing ticker facts', () => {
+  assert.deepEqual(normalizeDynamicFScoreCard(null), { years: [], rows: [] });
+  assert.deepEqual(normalizeDynamicFScoreCard({ years: [], rows: [] }), { years: [], rows: [] });
+});
 
-  assert.deepEqual(getDynamicFScoreTotalRow(), {
-    category: '总计',
-    check: 'F-Score',
-    scores: [7, 7, 8, 7, 7],
-    status: '--',
-    statusTone: 'secondary',
-    comment: '结论：基本面维持强壮。',
-  });
+test('formatDynamicFScoreValue keeps score cells compact', () => {
+  assert.equal(formatDynamicFScoreValue(1), '1');
+  assert.equal(formatDynamicFScoreValue(7.5), '7.5');
+  assert.equal(formatDynamicFScoreValue(null), '—');
 });

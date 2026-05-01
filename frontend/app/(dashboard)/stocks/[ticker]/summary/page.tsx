@@ -12,6 +12,7 @@ import StockSummaryCard from '@/components/StockSummaryCard';
 import actualConflictHelpers from '@/lib/actualConflicts';
 import provenanceHelpers from '@/lib/factProvenance';
 import { buildStockRoute, normalizeTicker } from '@/lib/stockRoutes';
+import type { DynamicFScoreApiCard } from '@/lib/dynamicFScoreCard';
 
 const { buildActualConflictDisplayItems } = actualConflictHelpers;
 const { formatFactProvenanceLabel } = provenanceHelpers;
@@ -46,6 +47,7 @@ type StockSummary = {
       source_report_date: string | null;
     }>;
   }>;
+  piotroski_f_score_card?: DynamicFScoreApiCard;
 };
 
 export default function StockSummaryPage() {
@@ -130,7 +132,11 @@ export default function StockSummaryPage() {
             actualConflictCount={summary.actual_conflict_count ?? 0}
             actualConflictItems={actualConflictItems}
           />
-          {summary.ticker.toUpperCase() === 'ASML' ? <DynamicFScoreCard /> : null}
+          <DynamicFScoreCard
+            ticker={summary.ticker}
+            companyName={summary.company_name}
+            card={summary.piotroski_f_score_card ?? null}
+          />
         </>
       )}
 

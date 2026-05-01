@@ -23,6 +23,45 @@ DCF_INPUT_FACT_KEYS = {
     "shares_outstanding": "equity.shares_outstanding",
     "capital_spending_per_share": "per_share.capital_spending",
 }
+PIOTROSKI_CARD_ROWS = [
+    {
+        "category": "盈利",
+        "check": "ROA > 0",
+        "metric_key": "score.piotroski.roa_positive",
+        "all_pass_comment": "最近 5 年全部通过，盈利底盘稳健。",
+        "pass_comment": "最近年份通过，盈利底盘保持稳健。",
+        "fail_comment": "最近年份未通过，需要关注盈利质量。",
+        "missing_comment": "数据不足，暂无法判断盈利底盘。",
+    },
+    {
+        "category": "",
+        "check": "CFO>ROA",
+        "metric_key": "score.piotroski.accrual_quality",
+        "all_pass_comment": "最近 5 年全部通过，利润质量稳定。",
+        "pass_comment": "最近年份通过，现金流质量改善。",
+        "fail_comment": "最近年份未通过，需要关注利润质量。",
+        "missing_comment": "数据不足，暂无法判断利润质量。",
+    },
+    {
+        "category": "安全",
+        "check": "杠杆率下降",
+        "metric_key": "score.piotroski.leverage_declining",
+        "all_pass_comment": "最近 5 年全部通过，债务压力持续减轻。",
+        "pass_comment": "最近年份通过，债务压力信号改善。",
+        "fail_comment": "最近年份未通过，需要关注债务压力。",
+        "missing_comment": "数据不足，暂无法判断杠杆趋势。",
+    },
+    {
+        "category": "效率",
+        "check": "毛利率提升",
+        "metric_key": "score.piotroski.gross_margin_improving",
+        "all_pass_comment": "最近 5 年全部通过，成本和定价效率稳定。",
+        "pass_comment": "最近年份通过，成本或定价效率改善。",
+        "fail_comment": "最近年份未通过，成本或定价效率承压。",
+        "missing_comment": "数据不足，暂无法判断效率趋势。",
+    },
+]
+PIOTROSKI_TOTAL_KEY = "score.piotroski.total"
 
 
 def _dcf_value(value: float, source: str, provenance: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -74,6 +113,119 @@ def _computed_dcf_provenance(
     if not inputs:
         return None
     return {"inputs": inputs}
+
+
+def _score_value(fact: MetricFact | None) -> int | float | None:
+    if fact is None:
+        return None
+    value_json = fact.value_json if isinstance(fact.value_json, dict) else {}
+    raw_value = fact.value_numeric
+    if raw_value is None:
+        raw_value = value_json.get("partial_score")
+    if not isinstance(raw_value, (int, float)):
+        return None
+    value = float(raw_value)
+    return int(value) if value.is_integer() else value
+
+
+def _score_year(fact: MetricFact) -> int | None:
+    value_json = fact.value_json if isinstance(fact.value_json, dict) else {}
+    fiscal_year = value_json.get("fiscal_year")
+    if isinstance(fiscal_year, int):
+        return fiscal_year
+    if fact.period_end_date:
+        return fact.period_end_date.year
+    return None
+
+
+def _piotroski_status_and_comment(
+    values: list[int | float | None],
+    row_config: dict[str, str],
+) -> tuple[str, str, str]:
+    numeric_values = [value for value in values if isinstance(value, (int, float))]
+    if not numeric_values:
+        return "⚠️", "warning", row_config["missing_comment"]
+    latest = values[-1]
+    if latest == 1:
+        if len(numeric_values) == len(values) and all(value == 1 for value in numeric_values):
+            return "✅", "success", row_config["all_pass_comment"]
+        return "✅", "success", row_config["pass_comment"]
+    if latest == 0:
+        return "❌", "danger", row_config["fail_comment"]
+    return "⚠️", "warning", row_config["missing_comment"]
+
+
+def _build_piotroski_f_score_card(session: SessionDep, stock_id: int) -> dict[str, Any]:
+    metric_keys = [row["metric_key"] for row in PIOTROSKI_CARD_ROWS] + [PIOTROSKI_TOTAL_KEY]
+    facts = session.scalars(
+        select(MetricFact)
+        .where(
+            MetricFact.stock_id == stock_id,
+            MetricFact.metric_key.in_(metric_keys),
+            MetricFact.source_type == "calculated",
+            MetricFact.is_current.is_(True),
+            MetricFact.period_type == "FY",
+        )
+        .order_by(MetricFact.period_end_date.desc(), MetricFact.created_at.desc())
+    ).all()
+
+    by_key_year: dict[str, dict[int, MetricFact]] = {metric_key: {} for metric_key in metric_keys}
+    years: list[int] = []
+    for fact in facts:
+        year = _score_year(fact)
+        if year is None:
+            continue
+        by_year = by_key_year.setdefault(fact.metric_key, {})
+        if year not in by_year:
+            by_year[year] = fact
+        if year not in years:
+            years.append(year)
+
+    display_years = sorted(years, reverse=True)[:5]
+    display_years.sort()
+    rows = []
+    for row_config in PIOTROSKI_CARD_ROWS:
+        scores = [_score_value(by_key_year[row_config["metric_key"]].get(year)) for year in display_years]
+        status, status_tone, comment = _piotroski_status_and_comment(scores, row_config)
+        rows.append(
+            {
+                "category": row_config["category"],
+                "check": row_config["check"],
+                "metric_key": row_config["metric_key"],
+                "scores": scores,
+                "status": status,
+                "status_tone": status_tone,
+                "comment": comment,
+            }
+        )
+
+    total_scores = [_score_value(by_key_year[PIOTROSKI_TOTAL_KEY].get(year)) for year in display_years]
+    latest_total = next(
+        (value for value in reversed(total_scores) if isinstance(value, (int, float))),
+        None,
+    )
+    total_comment = (
+        f"最新 F-Score 为 {latest_total}，基本面维持强壮。"
+        if isinstance(latest_total, (int, float)) and latest_total >= 7
+        else (
+            f"最新 F-Score 为 {latest_total}，需要继续观察。"
+            if isinstance(latest_total, (int, float))
+            else "暂无可用 F-Score 总分。"
+        )
+    )
+    rows.append(
+        {
+            "category": "总计",
+            "check": "F-Score",
+            "metric_key": PIOTROSKI_TOTAL_KEY,
+            "scores": total_scores,
+            "status": "--",
+            "status_tone": "secondary",
+            "comment": total_comment,
+        }
+    )
+
+    return {"years": display_years, "rows": rows}
 
 
 def _build_dcf_inputs_entry(
@@ -442,6 +594,7 @@ def read_stock_by_ticker(
         "dcf_inputs": dcf_inputs,
         "dcf_inputs_series": dcf_inputs_series,
         "growth_rate_options": growth_rate_options,
+        "piotroski_f_score_card": _build_piotroski_f_score_card(session, stock.id),
         "actual_conflict_count": len(actual_conflicts),
         "actual_conflicts": actual_conflicts,
     }

@@ -8,6 +8,136 @@ from app.models.stocks import Stock, StockPrice
 from app.models.users import User
 
 
+def _piotroski_fact(
+    *,
+    user_id: int,
+    stock_id: int,
+    metric_key: str,
+    year: int,
+    value: float | None,
+    value_json: dict | None = None,
+) -> MetricFact:
+    return MetricFact(
+        user_id=user_id,
+        stock_id=stock_id,
+        metric_key=metric_key,
+        value_numeric=value,
+        value_json=value_json or {
+            "status": "calculated",
+            "variant": "valueline_proxy",
+            "fact_nature": "actual",
+            "fiscal_year": year,
+        },
+        unit="score_component" if metric_key != "score.piotroski.total" else "score_total",
+        period_type="FY",
+        period_end_date=date(year, 12, 31),
+        source_type="calculated",
+        is_current=True,
+    )
+
+
+def test_lookup_stock_by_ticker_returns_dynamic_piotroski_card_from_current_stock(client, db_session):
+    user = User(email="ticker_f_score@example.com")
+    stock = Stock(ticker="FSC_TEST", exchange="NYSE", company_name="F SCORE INC", is_active=True)
+    other_stock = Stock(ticker="OTHER_FS", exchange="NYSE", company_name="OTHER SCORE", is_active=True)
+    db_session.add_all([user, stock, other_stock])
+    db_session.commit()
+
+    years = [2022, 2023, 2024, 2025, 2026]
+    component_values = {
+        "score.piotroski.roa_positive": [1, 1, 1, 1, 1],
+        "score.piotroski.accrual_quality": [1, 1, 0, 0, 0],
+        "score.piotroski.leverage_declining": [0, 0, 1, 1, 1],
+        "score.piotroski.gross_margin_improving": [1, 1, 1, 0, 0],
+    }
+    facts = []
+    for metric_key, values in component_values.items():
+        for year, value in zip(years, values):
+            facts.append(
+                _piotroski_fact(
+                    user_id=user.id,
+                    stock_id=stock.id,
+                    metric_key=metric_key,
+                    year=year,
+                    value=float(value),
+                )
+            )
+    for year, value in zip(years, [7, 7, 8, 7, 7]):
+        facts.append(
+            _piotroski_fact(
+                user_id=user.id,
+                stock_id=stock.id,
+                metric_key="score.piotroski.total",
+                year=year,
+                value=float(value),
+            )
+        )
+    facts.append(
+        _piotroski_fact(
+            user_id=user.id,
+            stock_id=other_stock.id,
+            metric_key="score.piotroski.total",
+            year=2026,
+            value=2.0,
+        )
+    )
+    db_session.add_all(facts)
+    db_session.commit()
+
+    response = client.get("/api/v1/stocks/by_ticker/fsc_test")
+
+    assert response.status_code == 200
+    card = response.json()["piotroski_f_score_card"]
+    assert card["years"] == [2022, 2023, 2024, 2025, 2026]
+    assert card["rows"] == [
+        {
+            "category": "盈利",
+            "check": "ROA > 0",
+            "metric_key": "score.piotroski.roa_positive",
+            "scores": [1, 1, 1, 1, 1],
+            "status": "✅",
+            "status_tone": "success",
+            "comment": "最近 5 年全部通过，盈利底盘稳健。",
+        },
+        {
+            "category": "",
+            "check": "CFO>ROA",
+            "metric_key": "score.piotroski.accrual_quality",
+            "scores": [1, 1, 0, 0, 0],
+            "status": "❌",
+            "status_tone": "danger",
+            "comment": "最近年份未通过，需要关注利润质量。",
+        },
+        {
+            "category": "安全",
+            "check": "杠杆率下降",
+            "metric_key": "score.piotroski.leverage_declining",
+            "scores": [0, 0, 1, 1, 1],
+            "status": "✅",
+            "status_tone": "success",
+            "comment": "最近年份通过，债务压力信号改善。",
+        },
+        {
+            "category": "效率",
+            "check": "毛利率提升",
+            "metric_key": "score.piotroski.gross_margin_improving",
+            "scores": [1, 1, 1, 0, 0],
+            "status": "❌",
+            "status_tone": "danger",
+            "comment": "最近年份未通过，成本或定价效率承压。",
+        },
+        {
+            "category": "总计",
+            "check": "F-Score",
+            "metric_key": "score.piotroski.total",
+            "scores": [7, 7, 8, 7, 7],
+            "status": "--",
+            "status_tone": "secondary",
+            "comment": "最新 F-Score 为 7，基本面维持强壮。",
+        },
+    ]
+
+
 def test_lookup_stock_by_ticker_returns_summary(client, db_session):
     user = User(email="ticker_lookup@example.com")
     stock = Stock(ticker="COCO_TEST", exchange="NDQ", company_name="VITA COCO", is_active=True)
