@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useMutation, useQuery } from '@tanstack/react-query';
 import Link from 'next/link';
-import { MoreHorizontal, Plus, RefreshCcw, Trash2 } from 'lucide-react';
+import { BarChart3, MoreHorizontal, Plus, RefreshCcw, Trash2 } from 'lucide-react';
 
 import apiClient from '@/lib/api/client';
 import { showAppToast } from '@/lib/appToast';
@@ -397,29 +397,37 @@ export default function WatchlistPage() {
                 <span className="text-xs font-semibold uppercase text-muted-foreground">
                   Watchlist
                 </span>
-                <Select
-                  value={activeWatchlistValue}
-                  onValueChange={(nextValue) => {
-                    setActiveWatchlistId(
-                      isOverviewWatchlistId(nextValue) ? OVERVIEW_WATCHLIST_ID : Number(nextValue)
-                    );
-                    setRefreshedWatchlistId(null);
-                  }}
-                >
-                  <SelectTrigger>
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value={OVERVIEW_WATCHLIST_ID}>
-                      {formatOverviewOptionLabel(overviewMemberCount)}
-                    </SelectItem>
-                  {pools.map((pool) => (
-                    <SelectItem key={pool.id} value={String(pool.id)}>
-                      {formatWatchlistOptionLabel(pool)}
-                    </SelectItem>
-                  ))}
-                  </SelectContent>
-                </Select>
+                <div className="flex items-center gap-2">
+                  <Select
+                    value={activeWatchlistValue}
+                    onValueChange={(nextValue) => {
+                      setActiveWatchlistId(
+                        isOverviewWatchlistId(nextValue) ? OVERVIEW_WATCHLIST_ID : Number(nextValue)
+                      );
+                      setRefreshedWatchlistId(null);
+                    }}
+                  >
+                    <SelectTrigger className="min-w-[15rem]">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value={OVERVIEW_WATCHLIST_ID}>
+                        {formatOverviewOptionLabel(overviewMemberCount)}
+                      </SelectItem>
+                    {pools.map((pool) => (
+                      <SelectItem key={pool.id} value={String(pool.id)}>
+                        {formatWatchlistOptionLabel(pool)}
+                      </SelectItem>
+                    ))}
+                    </SelectContent>
+                  </Select>
+                  <Button asChild variant="outline">
+                    <Link href={`/watchlist/f-score-compare?watchlistId=${encodeURIComponent(activeWatchlistValue)}`}>
+                      <BarChart3 className="mr-2 h-4 w-4" />
+                      F-Score Compare
+                    </Link>
+                  </Button>
+                </div>
               </div>
 
               <div className="flex min-w-[16rem] flex-1 items-end gap-2 sm:max-w-md">
