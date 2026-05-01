@@ -1224,3 +1224,32 @@ test('buildDocumentReviewCurrentPosition maps current position periods into a ta
     ]
   );
 });
+
+test('buildDocumentReviewCurrentPosition keeps keys unique for duplicate period end dates', () => {
+  const table = buildDocumentReviewCurrentPosition({
+    unit: 'USD_millions',
+    periods: [
+      {
+        label: '2025',
+        period_end_date: '2025-12-31',
+        assets: { total_current_assets: 705.2 },
+        liabilities: { total_current_liabilities: 849.2 },
+      },
+      {
+        label: '12/31/25',
+        period_end_date: '2025-12-31',
+        assets: { total_current_assets: 698.8 },
+        liabilities: { total_current_liabilities: 752.1 },
+      },
+    ],
+  });
+
+  assert.deepEqual(
+    table.columns.map((column) => column.label),
+    ['2025', '12/31/25']
+  );
+  assert.equal(new Set(table.columns.map((column) => column.key)).size, table.columns.length);
+  for (const row of table.rows) {
+    assert.equal(new Set(row.cells.map((cell) => cell.key)).size, row.cells.length);
+  }
+});
