@@ -93,7 +93,9 @@ PIOTROSKI_CARD_ROWS = [
         "metric_key": "score.piotroski.current_ratio_improving",
         "standard_definition": "Current ratio improves from the prior year.",
         "formula": "liquidity.current_ratio[Y] > liquidity.current_ratio[Y-1]",
-        "fallback_formulas": [],
+        "fallback_formulas": [
+            "bs.current_assets[Y] / bs.current_liabilities[Y] > bs.current_assets[Y-1] / bs.current_liabilities[Y-1]",
+        ],
         "all_pass_comment": "最近 5 年全部通过，短期偿债能力持续改善。",
         "pass_comment": "最近年份通过，短期偿债能力改善。",
         "fail_comment": "最近年份未通过，短期偿债能力承压。",

@@ -172,7 +172,7 @@ For fiscal year `Y`:
 | `roa_improving` | Primary: `returns.roa[Y] > returns.roa[Y-1]`; fallback: `returns.total_capital[Y] > returns.total_capital[Y-1]` | Current vs previous year |
 | `accrual_quality` | Primary: `is.operating_cash_flow[Y] > is.net_income[Y]`; fallback: `per_share.cash_flow[Y] > per_share.eps[Y]` | Current year |
 | `leverage_declining` | Primary: `leverage.long_term_debt_to_assets[Y] < leverage.long_term_debt_to_assets[Y-1]`; fallback: `cap.long_term_debt[Y] < cap.long_term_debt[Y-1]` | Current vs previous year |
-| `current_ratio_improving` | `liquidity.current_ratio[Y] > liquidity.current_ratio[Y-1]` | Current vs previous year |
+| `current_ratio_improving` | Primary: `liquidity.current_ratio[Y] > liquidity.current_ratio[Y-1]`; fallback: `bs.current_assets[Y] / bs.current_liabilities[Y] > bs.current_assets[Y-1] / bs.current_liabilities[Y-1]` | Current vs previous year |
 | `no_dilution` | `equity.shares_outstanding[Y] <= equity.shares_outstanding[Y-1]` | Current vs previous year |
 | `gross_margin_improving` | Primary: `is.gross_margin[Y] > is.gross_margin[Y-1]`; fallback: `is.operating_margin[Y] > is.operating_margin[Y-1]`; insurance-adjusted: `ins.underwriting_margin[Y] > ins.underwriting_margin[Y-1]` | Current vs previous year |
 | `asset_turnover_improving` | Non-insurance: `revenue[Y] / bs.total_assets[Y] > revenue[Y-1] / bs.total_assets[Y-1]`; insurance-adjusted: `premiums_earned[Y] / bs.total_assets[Y] > premiums_earned[Y-1] / bs.total_assets[Y-1]` | Current vs previous year |
