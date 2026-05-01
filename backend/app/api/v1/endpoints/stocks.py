@@ -285,6 +285,16 @@ def _used_values(fact: MetricFact | None) -> list[dict[str, Any]]:
     return used_values
 
 
+def _used_values_for_years(
+    by_year: dict[int, MetricFact],
+    display_years: list[int],
+) -> list[dict[str, Any]]:
+    used_values: list[dict[str, Any]] = []
+    for year in display_years:
+        used_values.extend(_used_values(by_year.get(year)))
+    return used_values
+
+
 def _latest_fact(by_year: dict[int, MetricFact], display_years: list[int]) -> MetricFact | None:
     for year in reversed(display_years):
         fact = by_year.get(year)
@@ -297,7 +307,8 @@ def _formula_details(
     *,
     row_config: dict[str, Any],
     formula: str,
-    latest_fact: MetricFact | None,
+    metric_facts_by_year: dict[int, MetricFact],
+    display_years: list[int],
 ) -> dict[str, Any]:
     fallback_formulas = []
     seen_fallbacks = set()
@@ -311,7 +322,7 @@ def _formula_details(
         "standard_formula": row_config["formula"],
         "fallback_formulas": fallback_formulas,
         "used_formula": formula,
-        "used_values": _used_values(latest_fact),
+        "used_values": _used_values_for_years(metric_facts_by_year, display_years),
     }
 
 
@@ -359,7 +370,8 @@ def _build_piotroski_f_score_card(session: SessionDep, stock_id: int) -> dict[st
                 "formula_details": _formula_details(
                     row_config=row_config,
                     formula=formula,
-                    latest_fact=_latest_fact(metric_facts_by_year, display_years),
+                    metric_facts_by_year=metric_facts_by_year,
+                    display_years=display_years,
                 ),
                 "scores": scores,
                 "score_fact_natures": score_fact_natures,

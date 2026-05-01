@@ -25,6 +25,12 @@ test('normalizeDynamicFScoreCard maps API card data for the current ticker', () 
           used_values: [
             {
               metric_key: 'is.net_income',
+              value_numeric: 80,
+              period_end_date: '2022-12-31',
+              fact_nature: 'actual',
+            },
+            {
+              metric_key: 'is.net_income',
               value_numeric: 100,
               period_end_date: '2026-12-31',
               fact_nature: 'actual',
@@ -62,6 +68,12 @@ test('normalizeDynamicFScoreCard maps API card data for the current ticker', () 
       fallbackFormulas: ['is.net_income[Y] > 0'],
       usedFormula: 'is.net_income[Y] > 0',
       usedValues: [
+        {
+          metricKey: 'is.net_income',
+          valueNumeric: 80,
+          periodEndDate: '2022-12-31',
+          factNature: 'actual',
+        },
         {
           metricKey: 'is.net_income',
           valueNumeric: 100,

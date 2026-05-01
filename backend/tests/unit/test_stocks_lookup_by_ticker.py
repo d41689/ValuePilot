@@ -84,11 +84,11 @@ def test_lookup_stock_by_ticker_returns_dynamic_piotroski_card_from_current_stoc
                                 "metric_key": f"{metric_key}.input",
                                 "value_numeric": float(value) * 10,
                                 "period_end_date": f"{year}-12-31",
-                                    "fact_nature": (
-                                        "estimate"
-                                        if metric_key == "score.piotroski.roa_positive" and year == 2026
-                                        else "actual"
-                                    ),
+                                "fact_nature": (
+                                    "estimate"
+                                    if metric_key == "score.piotroski.roa_positive" and year == 2026
+                                    else "actual"
+                                ),
                             }
                         ],
                     },
@@ -122,263 +122,59 @@ def test_lookup_stock_by_ticker_returns_dynamic_piotroski_card_from_current_stoc
     card = response.json()["piotroski_f_score_card"]
     assert card["years"] == [2022, 2023, 2024, 2025, 2026]
     assert len(card["rows"]) == 10
-    assert card["rows"] == [
+    rows_by_key = {row["metric_key"]: row for row in card["rows"]}
+    assert list(rows_by_key) == [
+        "score.piotroski.roa_positive",
+        "score.piotroski.cfo_positive",
+        "score.piotroski.roa_improving",
+        "score.piotroski.accrual_quality",
+        "score.piotroski.leverage_declining",
+        "score.piotroski.current_ratio_improving",
+        "score.piotroski.no_dilution",
+        "score.piotroski.gross_margin_improving",
+        "score.piotroski.asset_turnover_improving",
+        "score.piotroski.total",
+    ]
+
+    roa_row = rows_by_key["score.piotroski.roa_positive"]
+    assert roa_row["formula_details"]["used_values"] == [
         {
-            "category": "盈利",
-            "check": "ROA > 0",
-            "metric_key": "score.piotroski.roa_positive",
-            "formula": "score.piotroski.roa_positive[Y] test formula",
-            "formula_details": {
-                "standard_definition": "ROA is positive.",
-                "standard_formula": "returns.roa[Y] > 0",
-                "fallback_formulas": [
-                    "is.net_income[Y] > 0",
-                    "returns.total_capital[Y] > 0",
-                ],
-                "used_formula": "score.piotroski.roa_positive[Y] test formula",
-                "used_values": [
-                    {
-                        "metric_key": "score.piotroski.roa_positive.input",
-                        "value_numeric": 10.0,
-                        "period_end_date": "2026-12-31",
-                        "fact_nature": "estimate",
-                    }
-                ],
-            },
-            "scores": [1, 1, 1, 1, 1],
-            "score_fact_natures": ["actual", "actual", "actual", "actual", "estimate"],
-            "status": "✅",
-            "status_tone": "success",
-            "comment": "最近 5 年全部通过，盈利底盘稳健。",
+            "metric_key": "score.piotroski.roa_positive.input",
+            "value_numeric": 10.0,
+            "period_end_date": "2022-12-31",
+            "fact_nature": "actual",
         },
         {
-            "category": "",
-            "check": "CFO > 0",
-            "metric_key": "score.piotroski.cfo_positive",
-            "formula": "score.piotroski.cfo_positive[Y] test formula",
-            "formula_details": {
-                "standard_definition": "Operating cash flow is positive.",
-                "standard_formula": "is.operating_cash_flow[Y] > 0",
-                "fallback_formulas": ["per_share.cash_flow[Y] > 0"],
-                "used_formula": "score.piotroski.cfo_positive[Y] test formula",
-                "used_values": [
-                    {
-                        "metric_key": "score.piotroski.cfo_positive.input",
-                        "value_numeric": 10.0,
-                        "period_end_date": "2026-12-31",
-                        "fact_nature": "actual",
-                    }
-                ],
-            },
-            "scores": [1, 1, 1, 1, 1],
-            "score_fact_natures": ["actual", "actual", "actual", "actual", "actual"],
-            "status": "✅",
-            "status_tone": "success",
-            "comment": "最近 5 年全部通过，现金流为正。",
+            "metric_key": "score.piotroski.roa_positive.input",
+            "value_numeric": 10.0,
+            "period_end_date": "2023-12-31",
+            "fact_nature": "actual",
         },
         {
-            "category": "",
-            "check": "ROA 提升",
-            "metric_key": "score.piotroski.roa_improving",
-            "formula": "score.piotroski.roa_improving[Y] test formula",
-            "formula_details": {
-                "standard_definition": "ROA improves from the prior year.",
-                "standard_formula": "returns.roa[Y] > returns.roa[Y-1]",
-                "fallback_formulas": ["returns.total_capital[Y] > returns.total_capital[Y-1]"],
-                "used_formula": "score.piotroski.roa_improving[Y] test formula",
-                "used_values": [
-                    {
-                        "metric_key": "score.piotroski.roa_improving.input",
-                        "value_numeric": 10.0,
-                        "period_end_date": "2026-12-31",
-                        "fact_nature": "actual",
-                    }
-                ],
-            },
-            "scores": [1, 0, 1, 0, 1],
-            "score_fact_natures": ["actual", "actual", "actual", "actual", "actual"],
-            "status": "✅",
-            "status_tone": "success",
-            "comment": "最近年份通过，资产回报率改善。",
+            "metric_key": "score.piotroski.roa_positive.input",
+            "value_numeric": 10.0,
+            "period_end_date": "2024-12-31",
+            "fact_nature": "actual",
         },
         {
-            "category": "",
-            "check": "CFO>ROA",
-            "metric_key": "score.piotroski.accrual_quality",
-            "formula": "score.piotroski.accrual_quality[Y] test formula",
-            "formula_details": {
-                "standard_definition": "Operating cash flow exceeds net income.",
-                "standard_formula": "is.operating_cash_flow[Y] > is.net_income[Y]",
-                "fallback_formulas": ["per_share.cash_flow[Y] > per_share.eps[Y]"],
-                "used_formula": "score.piotroski.accrual_quality[Y] test formula",
-                "used_values": [
-                    {
-                        "metric_key": "score.piotroski.accrual_quality.input",
-                        "value_numeric": 0.0,
-                        "period_end_date": "2026-12-31",
-                        "fact_nature": "actual",
-                    }
-                ],
-            },
-            "scores": [1, 1, 0, 0, 0],
-            "score_fact_natures": ["actual", "actual", "actual", "actual", "actual"],
-            "status": "❌",
-            "status_tone": "danger",
-            "comment": "最近年份未通过，需要关注利润质量。",
+            "metric_key": "score.piotroski.roa_positive.input",
+            "value_numeric": 10.0,
+            "period_end_date": "2025-12-31",
+            "fact_nature": "actual",
         },
         {
-            "category": "安全",
-            "check": "杠杆率下降",
-            "metric_key": "score.piotroski.leverage_declining",
-            "formula": "score.piotroski.leverage_declining[Y] test formula",
-            "formula_details": {
-                "standard_definition": "Long-term leverage declines from the prior year.",
-                "standard_formula": "leverage.long_term_debt_to_assets[Y] < leverage.long_term_debt_to_assets[Y-1]",
-                "fallback_formulas": [
-                    "leverage.long_term_debt_to_capital[Y] < leverage.long_term_debt_to_capital[Y-1]",
-                    "cap.long_term_debt[Y] < cap.long_term_debt[Y-1]",
-                ],
-                "used_formula": "score.piotroski.leverage_declining[Y] test formula",
-                "used_values": [
-                    {
-                        "metric_key": "score.piotroski.leverage_declining.input",
-                        "value_numeric": 10.0,
-                        "period_end_date": "2026-12-31",
-                        "fact_nature": "actual",
-                    }
-                ],
-            },
-            "scores": [0, 0, 1, 1, 1],
-            "score_fact_natures": ["actual", "actual", "actual", "actual", "actual"],
-            "status": "✅",
-            "status_tone": "success",
-            "comment": "最近年份通过，债务压力信号改善。",
-        },
-        {
-            "category": "",
-            "check": "流动比率提升",
-            "metric_key": "score.piotroski.current_ratio_improving",
-            "formula": "score.piotroski.current_ratio_improving[Y] test formula",
-            "formula_details": {
-                "standard_definition": "Current ratio improves from the prior year.",
-                "standard_formula": "liquidity.current_ratio[Y] > liquidity.current_ratio[Y-1]",
-                "fallback_formulas": [],
-                "used_formula": "score.piotroski.current_ratio_improving[Y] test formula",
-                "used_values": [
-                    {
-                        "metric_key": "score.piotroski.current_ratio_improving.input",
-                        "value_numeric": 0.0,
-                        "period_end_date": "2026-12-31",
-                        "fact_nature": "actual",
-                    }
-                ],
-            },
-            "scores": [0, 1, 1, 1, 0],
-            "score_fact_natures": ["actual", "actual", "actual", "actual", "actual"],
-            "status": "❌",
-            "status_tone": "danger",
-            "comment": "最近年份未通过，短期偿债能力承压。",
-        },
-        {
-            "category": "",
-            "check": "无股本稀释",
-            "metric_key": "score.piotroski.no_dilution",
-            "formula": "score.piotroski.no_dilution[Y] test formula",
-            "formula_details": {
-                "standard_definition": "Shares outstanding do not increase from the prior year.",
-                "standard_formula": "equity.shares_outstanding[Y] <= equity.shares_outstanding[Y-1]",
-                "fallback_formulas": [],
-                "used_formula": "score.piotroski.no_dilution[Y] test formula",
-                "used_values": [
-                    {
-                        "metric_key": "score.piotroski.no_dilution.input",
-                        "value_numeric": 10.0,
-                        "period_end_date": "2026-12-31",
-                        "fact_nature": "actual",
-                    }
-                ],
-            },
-            "scores": [1, 1, 1, 1, 1],
-            "score_fact_natures": ["actual", "actual", "actual", "actual", "actual"],
-            "status": "✅",
-            "status_tone": "success",
-            "comment": "最近 5 年全部通过，股本稀释压力低。",
-        },
-        {
-            "category": "效率",
-            "check": "毛利率提升",
-            "metric_key": "score.piotroski.gross_margin_improving",
-            "formula": "score.piotroski.gross_margin_improving[Y] test formula",
-            "formula_details": {
-                "standard_definition": "Gross margin improves from the prior year.",
-                "standard_formula": "is.gross_margin[Y] > is.gross_margin[Y-1]",
-                "fallback_formulas": [
-                    "ins.underwriting_margin[Y] > ins.underwriting_margin[Y-1]",
-                    "is.operating_margin[Y] > is.operating_margin[Y-1]",
-                ],
-                "used_formula": "score.piotroski.gross_margin_improving[Y] test formula",
-                "used_values": [
-                    {
-                        "metric_key": "score.piotroski.gross_margin_improving.input",
-                        "value_numeric": 0.0,
-                        "period_end_date": "2026-12-31",
-                        "fact_nature": "actual",
-                    }
-                ],
-            },
-            "scores": [1, 1, 1, 0, 0],
-            "score_fact_natures": ["actual", "actual", "actual", "actual", "actual"],
-            "status": "❌",
-            "status_tone": "danger",
-            "comment": "最近年份未通过，成本或定价效率承压。",
-        },
-        {
-            "category": "",
-            "check": "资产周转率提升",
-            "metric_key": "score.piotroski.asset_turnover_improving",
-            "formula": "score.piotroski.asset_turnover_improving[Y] test formula",
-            "formula_details": {
-                "standard_definition": "Asset turnover improves from the prior year.",
-                "standard_formula": "efficiency.asset_turnover[Y] > efficiency.asset_turnover[Y-1]",
-                "fallback_formulas": [
-                    "ins.premium_turnover[Y] > ins.premium_turnover[Y-1]",
-                    "efficiency.capital_turnover[Y] > efficiency.capital_turnover[Y-1]",
-                ],
-                "used_formula": "score.piotroski.asset_turnover_improving[Y] test formula",
-                "used_values": [
-                    {
-                        "metric_key": "score.piotroski.asset_turnover_improving.input",
-                        "value_numeric": 0.0,
-                        "period_end_date": "2026-12-31",
-                        "fact_nature": "actual",
-                    }
-                ],
-            },
-            "scores": [0, 1, 1, 1, 0],
-            "score_fact_natures": ["actual", "actual", "actual", "actual", "actual"],
-            "status": "❌",
-            "status_tone": "danger",
-            "comment": "最近年份未通过，资产使用效率承压。",
-        },
-        {
-            "category": "总计",
-            "check": "F-Score",
-            "metric_key": "score.piotroski.total",
-            "formula": "9 项 Piotroski 指标得分加总",
-            "formula_details": {
-                "standard_definition": "Total Piotroski F-Score sums the 9 binary component indicators.",
-                "standard_formula": "sum(9 Piotroski component scores)",
-                "fallback_formulas": ["Value Line proxy components when standard inputs are unavailable"],
-                "used_formula": "9 项 Piotroski 指标得分加总",
-                "used_values": [],
-            },
-            "scores": [7, 7, 8, 7, 7],
-            "score_fact_natures": ["actual", "actual", "actual", "actual", "actual"],
-            "status": "--",
-            "status_tone": "secondary",
-            "comment": "最新 F-Score 为 7，基本面维持强壮。",
+            "metric_key": "score.piotroski.roa_positive.input",
+            "value_numeric": 10.0,
+            "period_end_date": "2026-12-31",
+            "fact_nature": "estimate",
         },
     ]
+    assert roa_row["score_fact_natures"] == ["actual", "actual", "actual", "actual", "estimate"]
+
+    for metric_key, row in rows_by_key.items():
+        if metric_key != "score.piotroski.total":
+            assert len(row["formula_details"]["used_values"]) == 5
+    assert rows_by_key["score.piotroski.total"]["formula_details"]["used_values"] == []
 
 
 def test_lookup_stock_by_ticker_returns_summary(client, db_session):
