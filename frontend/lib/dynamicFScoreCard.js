@@ -11,6 +11,7 @@ function normalizeDynamicFScoreCard(card) {
         category: typeof row.category === 'string' ? row.category : '',
         check: typeof row.check === 'string' ? row.check : '',
         metricKey: typeof row.metric_key === 'string' ? row.metric_key : '',
+        formula: typeof row.formula === 'string' ? row.formula : '',
         scores: Array.isArray(row.scores)
           ? row.scores.map((score) => (typeof score === 'number' && Number.isFinite(score) ? score : null))
           : [],

@@ -28,6 +28,7 @@ PIOTROSKI_CARD_ROWS = [
         "category": "盈利",
         "check": "ROA > 0",
         "metric_key": "score.piotroski.roa_positive",
+        "formula": "returns.roa[Y] > 0",
         "all_pass_comment": "最近 5 年全部通过，盈利底盘稳健。",
         "pass_comment": "最近年份通过，盈利底盘保持稳健。",
         "fail_comment": "最近年份未通过，需要关注盈利质量。",
@@ -35,8 +36,29 @@ PIOTROSKI_CARD_ROWS = [
     },
     {
         "category": "",
+        "check": "CFO > 0",
+        "metric_key": "score.piotroski.cfo_positive",
+        "formula": "is.operating_cash_flow[Y] > 0",
+        "all_pass_comment": "最近 5 年全部通过，现金流为正。",
+        "pass_comment": "最近年份通过，经营现金流为正。",
+        "fail_comment": "最近年份未通过，需要关注现金流质量。",
+        "missing_comment": "数据不足，暂无法判断现金流正负。",
+    },
+    {
+        "category": "",
+        "check": "ROA 提升",
+        "metric_key": "score.piotroski.roa_improving",
+        "formula": "returns.roa[Y] > returns.roa[Y-1]",
+        "all_pass_comment": "最近 5 年全部通过，资产回报率持续改善。",
+        "pass_comment": "最近年份通过，资产回报率改善。",
+        "fail_comment": "最近年份未通过，需要关注资产回报率趋势。",
+        "missing_comment": "数据不足，暂无法判断 ROA 趋势。",
+    },
+    {
+        "category": "",
         "check": "CFO>ROA",
         "metric_key": "score.piotroski.accrual_quality",
+        "formula": "is.operating_cash_flow[Y] > is.net_income[Y]",
         "all_pass_comment": "最近 5 年全部通过，利润质量稳定。",
         "pass_comment": "最近年份通过，现金流质量改善。",
         "fail_comment": "最近年份未通过，需要关注利润质量。",
@@ -46,19 +68,51 @@ PIOTROSKI_CARD_ROWS = [
         "category": "安全",
         "check": "杠杆率下降",
         "metric_key": "score.piotroski.leverage_declining",
+        "formula": "leverage.long_term_debt_to_assets[Y] < leverage.long_term_debt_to_assets[Y-1]",
         "all_pass_comment": "最近 5 年全部通过，债务压力持续减轻。",
         "pass_comment": "最近年份通过，债务压力信号改善。",
         "fail_comment": "最近年份未通过，需要关注债务压力。",
         "missing_comment": "数据不足，暂无法判断杠杆趋势。",
     },
     {
+        "category": "",
+        "check": "流动比率提升",
+        "metric_key": "score.piotroski.current_ratio_improving",
+        "formula": "liquidity.current_ratio[Y] > liquidity.current_ratio[Y-1]",
+        "all_pass_comment": "最近 5 年全部通过，短期偿债能力持续改善。",
+        "pass_comment": "最近年份通过，短期偿债能力改善。",
+        "fail_comment": "最近年份未通过，短期偿债能力承压。",
+        "missing_comment": "数据不足，暂无法判断流动性趋势。",
+    },
+    {
+        "category": "",
+        "check": "无股本稀释",
+        "metric_key": "score.piotroski.no_dilution",
+        "formula": "equity.shares_outstanding[Y] <= equity.shares_outstanding[Y-1]",
+        "all_pass_comment": "最近 5 年全部通过，股本稀释压力低。",
+        "pass_comment": "最近年份通过，股本稀释压力低。",
+        "fail_comment": "最近年份未通过，需要关注股本稀释。",
+        "missing_comment": "数据不足，暂无法判断股本稀释。",
+    },
+    {
         "category": "效率",
         "check": "毛利率提升",
         "metric_key": "score.piotroski.gross_margin_improving",
+        "formula": "is.gross_margin[Y] > is.gross_margin[Y-1]",
         "all_pass_comment": "最近 5 年全部通过，成本和定价效率稳定。",
         "pass_comment": "最近年份通过，成本或定价效率改善。",
         "fail_comment": "最近年份未通过，成本或定价效率承压。",
         "missing_comment": "数据不足，暂无法判断效率趋势。",
+    },
+    {
+        "category": "",
+        "check": "资产周转率提升",
+        "metric_key": "score.piotroski.asset_turnover_improving",
+        "formula": "efficiency.asset_turnover[Y] > efficiency.asset_turnover[Y-1]",
+        "all_pass_comment": "最近 5 年全部通过，资产使用效率持续改善。",
+        "pass_comment": "最近年份通过，资产使用效率改善。",
+        "fail_comment": "最近年份未通过，资产使用效率承压。",
+        "missing_comment": "数据不足，暂无法判断资产周转趋势。",
     },
 ]
 PIOTROSKI_TOTAL_KEY = "score.piotroski.total"
@@ -155,6 +209,20 @@ def _piotroski_status_and_comment(
     return "⚠️", "warning", row_config["missing_comment"]
 
 
+def _row_formula(
+    by_year: dict[int, MetricFact],
+    display_years: list[int],
+    fallback_formula: str,
+) -> str:
+    for year in reversed(display_years):
+        fact = by_year.get(year)
+        value_json = fact.value_json if fact and isinstance(fact.value_json, dict) else {}
+        formula = value_json.get("formula")
+        if isinstance(formula, str) and formula.strip():
+            return formula
+    return fallback_formula
+
+
 def _build_piotroski_f_score_card(session: SessionDep, stock_id: int) -> dict[str, Any]:
     metric_keys = [row["metric_key"] for row in PIOTROSKI_CARD_ROWS] + [PIOTROSKI_TOTAL_KEY]
     facts = session.scalars(
@@ -185,13 +253,15 @@ def _build_piotroski_f_score_card(session: SessionDep, stock_id: int) -> dict[st
     display_years.sort()
     rows = []
     for row_config in PIOTROSKI_CARD_ROWS:
-        scores = [_score_value(by_key_year[row_config["metric_key"]].get(year)) for year in display_years]
+        metric_facts_by_year = by_key_year[row_config["metric_key"]]
+        scores = [_score_value(metric_facts_by_year.get(year)) for year in display_years]
         status, status_tone, comment = _piotroski_status_and_comment(scores, row_config)
         rows.append(
             {
                 "category": row_config["category"],
                 "check": row_config["check"],
                 "metric_key": row_config["metric_key"],
+                "formula": _row_formula(metric_facts_by_year, display_years, row_config["formula"]),
                 "scores": scores,
                 "status": status,
                 "status_tone": status_tone,
@@ -218,6 +288,7 @@ def _build_piotroski_f_score_card(session: SessionDep, stock_id: int) -> dict[st
             "category": "总计",
             "check": "F-Score",
             "metric_key": PIOTROSKI_TOTAL_KEY,
+            "formula": "9 项 Piotroski 指标得分加总",
             "scores": total_scores,
             "status": "--",
             "status_tone": "secondary",

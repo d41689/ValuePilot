@@ -4,6 +4,7 @@ export type DynamicFScoreApiRow = {
   category?: string;
   check?: string;
   metric_key?: string;
+  formula?: string;
   scores?: Array<number | null>;
   status?: string;
   status_tone?: DynamicFScoreStatusTone | string;
@@ -19,6 +20,7 @@ export type DynamicFScoreRow = {
   category: string;
   check: string;
   metricKey: string;
+  formula: string;
   scores: Array<number | null>;
   status: string;
   statusTone: DynamicFScoreStatusTone;

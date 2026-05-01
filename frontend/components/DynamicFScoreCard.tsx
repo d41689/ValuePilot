@@ -39,6 +39,7 @@ export default function DynamicFScoreCard({ ticker, companyName, card }: Dynamic
               <TableRow>
                 <TableHead className="min-w-20">类别</TableHead>
                 <TableHead className="min-w-32">检查项</TableHead>
+                <TableHead className="min-w-72">计算公式</TableHead>
                 {model.years.map((year) => (
                   <TableHead key={year} className="text-center">
                     {year}
@@ -53,6 +54,9 @@ export default function DynamicFScoreCard({ ticker, companyName, card }: Dynamic
                 <TableRow key={row.metricKey || `${row.category}-${row.check}`}>
                   <TableCell className="font-medium text-foreground">{row.category}</TableCell>
                   <TableCell className="whitespace-nowrap text-muted-foreground">{row.check}</TableCell>
+                  <TableCell className="min-w-72 font-mono text-xs text-muted-foreground">
+                    {row.formula || '—'}
+                  </TableCell>
                   {model.years.map((year, index) => (
                     <TableCell
                       key={`${row.metricKey || row.check}-${year}`}

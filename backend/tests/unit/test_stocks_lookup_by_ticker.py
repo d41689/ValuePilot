@@ -46,9 +46,14 @@ def test_lookup_stock_by_ticker_returns_dynamic_piotroski_card_from_current_stoc
     years = [2022, 2023, 2024, 2025, 2026]
     component_values = {
         "score.piotroski.roa_positive": [1, 1, 1, 1, 1],
+        "score.piotroski.cfo_positive": [1, 1, 1, 1, 1],
+        "score.piotroski.roa_improving": [1, 0, 1, 0, 1],
         "score.piotroski.accrual_quality": [1, 1, 0, 0, 0],
         "score.piotroski.leverage_declining": [0, 0, 1, 1, 1],
+        "score.piotroski.current_ratio_improving": [0, 1, 1, 1, 0],
+        "score.piotroski.no_dilution": [1, 1, 1, 1, 1],
         "score.piotroski.gross_margin_improving": [1, 1, 1, 0, 0],
+        "score.piotroski.asset_turnover_improving": [0, 1, 1, 1, 0],
     }
     facts = []
     for metric_key, values in component_values.items():
@@ -60,6 +65,13 @@ def test_lookup_stock_by_ticker_returns_dynamic_piotroski_card_from_current_stoc
                     metric_key=metric_key,
                     year=year,
                     value=float(value),
+                    value_json={
+                        "status": "calculated",
+                        "variant": "valueline_proxy",
+                        "fact_nature": "actual",
+                        "fiscal_year": year,
+                        "formula": f"{metric_key}[Y] test formula",
+                    },
                 )
             )
     for year, value in zip(years, [7, 7, 8, 7, 7]):
@@ -89,11 +101,13 @@ def test_lookup_stock_by_ticker_returns_dynamic_piotroski_card_from_current_stoc
     assert response.status_code == 200
     card = response.json()["piotroski_f_score_card"]
     assert card["years"] == [2022, 2023, 2024, 2025, 2026]
+    assert len(card["rows"]) == 10
     assert card["rows"] == [
         {
             "category": "盈利",
             "check": "ROA > 0",
             "metric_key": "score.piotroski.roa_positive",
+            "formula": "score.piotroski.roa_positive[Y] test formula",
             "scores": [1, 1, 1, 1, 1],
             "status": "✅",
             "status_tone": "success",
@@ -101,8 +115,29 @@ def test_lookup_stock_by_ticker_returns_dynamic_piotroski_card_from_current_stoc
         },
         {
             "category": "",
+            "check": "CFO > 0",
+            "metric_key": "score.piotroski.cfo_positive",
+            "formula": "score.piotroski.cfo_positive[Y] test formula",
+            "scores": [1, 1, 1, 1, 1],
+            "status": "✅",
+            "status_tone": "success",
+            "comment": "最近 5 年全部通过，现金流为正。",
+        },
+        {
+            "category": "",
+            "check": "ROA 提升",
+            "metric_key": "score.piotroski.roa_improving",
+            "formula": "score.piotroski.roa_improving[Y] test formula",
+            "scores": [1, 0, 1, 0, 1],
+            "status": "✅",
+            "status_tone": "success",
+            "comment": "最近年份通过，资产回报率改善。",
+        },
+        {
+            "category": "",
             "check": "CFO>ROA",
             "metric_key": "score.piotroski.accrual_quality",
+            "formula": "score.piotroski.accrual_quality[Y] test formula",
             "scores": [1, 1, 0, 0, 0],
             "status": "❌",
             "status_tone": "danger",
@@ -112,24 +147,57 @@ def test_lookup_stock_by_ticker_returns_dynamic_piotroski_card_from_current_stoc
             "category": "安全",
             "check": "杠杆率下降",
             "metric_key": "score.piotroski.leverage_declining",
+            "formula": "score.piotroski.leverage_declining[Y] test formula",
             "scores": [0, 0, 1, 1, 1],
             "status": "✅",
             "status_tone": "success",
             "comment": "最近年份通过，债务压力信号改善。",
         },
         {
+            "category": "",
+            "check": "流动比率提升",
+            "metric_key": "score.piotroski.current_ratio_improving",
+            "formula": "score.piotroski.current_ratio_improving[Y] test formula",
+            "scores": [0, 1, 1, 1, 0],
+            "status": "❌",
+            "status_tone": "danger",
+            "comment": "最近年份未通过，短期偿债能力承压。",
+        },
+        {
+            "category": "",
+            "check": "无股本稀释",
+            "metric_key": "score.piotroski.no_dilution",
+            "formula": "score.piotroski.no_dilution[Y] test formula",
+            "scores": [1, 1, 1, 1, 1],
+            "status": "✅",
+            "status_tone": "success",
+            "comment": "最近 5 年全部通过，股本稀释压力低。",
+        },
+        {
             "category": "效率",
             "check": "毛利率提升",
             "metric_key": "score.piotroski.gross_margin_improving",
+            "formula": "score.piotroski.gross_margin_improving[Y] test formula",
             "scores": [1, 1, 1, 0, 0],
             "status": "❌",
             "status_tone": "danger",
             "comment": "最近年份未通过，成本或定价效率承压。",
         },
         {
+            "category": "",
+            "check": "资产周转率提升",
+            "metric_key": "score.piotroski.asset_turnover_improving",
+            "formula": "score.piotroski.asset_turnover_improving[Y] test formula",
+            "scores": [0, 1, 1, 1, 0],
+            "status": "❌",
+            "status_tone": "danger",
+            "comment": "最近年份未通过，资产使用效率承压。",
+        },
+        {
             "category": "总计",
             "check": "F-Score",
             "metric_key": "score.piotroski.total",
+            "formula": "9 项 Piotroski 指标得分加总",
             "scores": [7, 7, 8, 7, 7],
             "status": "--",
             "status_tone": "secondary",
