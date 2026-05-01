@@ -90,6 +90,36 @@ test('normalizeDynamicFScoreCard maps API card data for the current ticker', () 
   });
 });
 
+test('normalizeDynamicFScoreCard preserves duplicate used values for comparison formulas', () => {
+  const card = normalizeDynamicFScoreCard({
+    years: [2023],
+    rows: [
+      {
+        check: 'ROA 提升',
+        metric_key: 'score.piotroski.roa_improving',
+        formula_details: {
+          used_values: [
+            {
+              metric_key: 'returns.total_capital',
+              value_numeric: 0.425,
+              period_end_date: '2023-12-31',
+              fact_nature: 'actual',
+            },
+            {
+              metric_key: 'returns.total_capital',
+              value_numeric: 0.425,
+              period_end_date: '2023-12-31',
+              fact_nature: 'actual',
+            },
+          ],
+        },
+      },
+    ],
+  });
+
+  assert.equal(card.rows[0].formulaDetails.usedValues.length, 2);
+});
+
 test('normalizeDynamicFScoreCard returns empty rows for missing ticker facts', () => {
   assert.deepEqual(normalizeDynamicFScoreCard(null), { years: [], rows: [] });
   assert.deepEqual(normalizeDynamicFScoreCard({ years: [], rows: [] }), { years: [], rows: [] });

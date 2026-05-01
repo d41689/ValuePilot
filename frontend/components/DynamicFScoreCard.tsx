@@ -91,9 +91,9 @@ function FormulaInfo({
             <div className="font-semibold text-foreground">实际使用计算的值</div>
             {hasUsedValues ? (
               <div className="mt-1 space-y-1">
-                {details.usedValues.map((value) => (
+                {details.usedValues.map((value, index) => (
                   <div
-                    key={`${value.metricKey}-${value.periodEndDate}-${value.valueNumeric}`}
+                    key={`${value.metricKey}-${value.periodEndDate}-${value.valueNumeric}-${index}`}
                     className="font-mono text-muted-foreground"
                   >
                     {value.metricKey || 'unknown'} = {formatDynamicFScoreValue(value.valueNumeric)}
