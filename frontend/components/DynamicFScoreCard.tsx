@@ -1,4 +1,10 @@
+'use client';
+
+import { useState } from 'react';
+import { Info } from 'lucide-react';
+
 import { Badge } from '@/components/ui/badge';
+import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import {
   Table,
@@ -12,6 +18,7 @@ import {
   formatDynamicFScoreValue,
   normalizeDynamicFScoreCard,
   type DynamicFScoreApiCard,
+  type DynamicFScoreFormulaDetails,
 } from '@/lib/dynamicFScoreCard';
 
 type DynamicFScoreCardProps = {
@@ -19,6 +26,89 @@ type DynamicFScoreCardProps = {
   companyName: string;
   card: DynamicFScoreApiCard;
 };
+
+function FormulaInfo({
+  formula,
+  details,
+}: {
+  formula: string;
+  details: DynamicFScoreFormulaDetails;
+}) {
+  const [open, setOpen] = useState(false);
+  const hasFallbacks = details.fallbackFormulas.length > 0;
+  const hasUsedValues = details.usedValues.length > 0;
+
+  return (
+    <div
+      className="group relative flex min-w-72 items-start gap-2"
+      onMouseLeave={() => setOpen(false)}
+    >
+      <span className="break-words font-mono text-xs text-muted-foreground">{formula || '—'}</span>
+      <Button
+        type="button"
+        variant="ghost"
+        size="icon"
+        className="h-6 w-6 shrink-0 text-muted-foreground"
+        aria-label="F-Score formula details"
+        onClick={() => setOpen((current) => !current)}
+        onFocus={() => setOpen(true)}
+      >
+        <Info className="h-4 w-4" aria-hidden="true" />
+      </Button>
+      <div
+        className={[
+          'absolute left-0 top-7 z-50 w-[min(30rem,calc(100vw-4rem))] rounded-md border border-border bg-popover p-3 text-xs text-popover-foreground shadow-lg',
+          open ? 'block' : 'hidden group-hover:block group-focus-within:block',
+        ].join(' ')}
+      >
+        <div className="space-y-3">
+          <div>
+            <div className="font-semibold text-foreground">F-Score 标准定义</div>
+            <div className="mt-1 text-muted-foreground">{details.standardDefinition || '—'}</div>
+          </div>
+          <div>
+            <div className="font-semibold text-foreground">标准公式</div>
+            <div className="mt-1 font-mono text-muted-foreground">{details.standardFormula || '—'}</div>
+          </div>
+          <div>
+            <div className="font-semibold text-foreground">我们的公式 / Fallbacks</div>
+            <div className="mt-1 font-mono text-muted-foreground">{details.usedFormula || formula || '—'}</div>
+            {hasFallbacks ? (
+              <div className="mt-2 space-y-1">
+                {details.fallbackFormulas.map((fallback) => (
+                  <div key={fallback} className="font-mono text-muted-foreground">
+                    {fallback}
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <div className="mt-1 text-muted-foreground">No fallback formula configured.</div>
+            )}
+          </div>
+          <div>
+            <div className="font-semibold text-foreground">实际使用计算的值</div>
+            {hasUsedValues ? (
+              <div className="mt-1 space-y-1">
+                {details.usedValues.map((value) => (
+                  <div
+                    key={`${value.metricKey}-${value.periodEndDate}-${value.valueNumeric}`}
+                    className="font-mono text-muted-foreground"
+                  >
+                    {value.metricKey || 'unknown'} = {formatDynamicFScoreValue(value.valueNumeric)}
+                    {value.periodEndDate ? ` · ${value.periodEndDate}` : ''}
+                    {value.factNature ? ` · ${value.factNature}` : ''}
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <div className="mt-1 text-muted-foreground">暂无输入值明细。</div>
+            )}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
 
 export default function DynamicFScoreCard({ ticker, companyName, card }: DynamicFScoreCardProps) {
   const model = normalizeDynamicFScoreCard(card);
@@ -54,8 +144,8 @@ export default function DynamicFScoreCard({ ticker, companyName, card }: Dynamic
                 <TableRow key={row.metricKey || `${row.category}-${row.check}`}>
                   <TableCell className="font-medium text-foreground">{row.category}</TableCell>
                   <TableCell className="whitespace-nowrap text-muted-foreground">{row.check}</TableCell>
-                  <TableCell className="min-w-72 font-mono text-xs text-muted-foreground">
-                    {row.formula || '—'}
+                  <TableCell className="min-w-72">
+                    <FormulaInfo formula={row.formula} details={row.formulaDetails} />
                   </TableCell>
                   {model.years.map((year, index) => (
                     <TableCell

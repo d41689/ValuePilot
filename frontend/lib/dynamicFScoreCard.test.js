@@ -16,6 +16,20 @@ test('normalizeDynamicFScoreCard maps API card data for the current ticker', () 
         check: 'ROA > 0',
         metric_key: 'score.piotroski.roa_positive',
         formula: 'returns.roa[Y] > 0',
+        formula_details: {
+          standard_definition: 'ROA is positive.',
+          standard_formula: 'returns.roa[Y] > 0',
+          fallback_formulas: ['is.net_income[Y] > 0'],
+          used_formula: 'is.net_income[Y] > 0',
+          used_values: [
+            {
+              metric_key: 'is.net_income',
+              value_numeric: 100,
+              period_end_date: '2026-12-31',
+              fact_nature: 'actual',
+            },
+          ],
+        },
         scores: [1, 1, 1, 1, 1],
         status: '✅',
         status_tone: 'success',
@@ -40,6 +54,20 @@ test('normalizeDynamicFScoreCard maps API card data for the current ticker', () 
     check: 'ROA > 0',
     metricKey: 'score.piotroski.roa_positive',
     formula: 'returns.roa[Y] > 0',
+    formulaDetails: {
+      standardDefinition: 'ROA is positive.',
+      standardFormula: 'returns.roa[Y] > 0',
+      fallbackFormulas: ['is.net_income[Y] > 0'],
+      usedFormula: 'is.net_income[Y] > 0',
+      usedValues: [
+        {
+          metricKey: 'is.net_income',
+          valueNumeric: 100,
+          periodEndDate: '2026-12-31',
+          factNature: 'actual',
+        },
+      ],
+    },
     scores: [1, 1, 1, 1, 1],
     status: '✅',
     statusTone: 'success',

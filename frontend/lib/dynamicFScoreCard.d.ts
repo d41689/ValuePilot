@@ -5,6 +5,18 @@ export type DynamicFScoreApiRow = {
   check?: string;
   metric_key?: string;
   formula?: string;
+  formula_details?: {
+    standard_definition?: string;
+    standard_formula?: string;
+    fallback_formulas?: string[];
+    used_formula?: string;
+    used_values?: Array<{
+      metric_key?: string;
+      value_numeric?: number | null;
+      period_end_date?: string;
+      fact_nature?: string;
+    }>;
+  };
   scores?: Array<number | null>;
   status?: string;
   status_tone?: DynamicFScoreStatusTone | string;
@@ -21,10 +33,24 @@ export type DynamicFScoreRow = {
   check: string;
   metricKey: string;
   formula: string;
+  formulaDetails: DynamicFScoreFormulaDetails;
   scores: Array<number | null>;
   status: string;
   statusTone: DynamicFScoreStatusTone;
   comment: string;
+};
+
+export type DynamicFScoreFormulaDetails = {
+  standardDefinition: string;
+  standardFormula: string;
+  fallbackFormulas: string[];
+  usedFormula: string;
+  usedValues: Array<{
+    metricKey: string;
+    valueNumeric: number | null;
+    periodEndDate: string;
+    factNature: string;
+  }>;
 };
 
 export type DynamicFScoreCardModel = {
@@ -33,4 +59,5 @@ export type DynamicFScoreCardModel = {
 };
 
 export function normalizeDynamicFScoreCard(card: DynamicFScoreApiCard): DynamicFScoreCardModel;
+export function normalizeFormulaDetails(details: DynamicFScoreApiRow['formula_details']): DynamicFScoreFormulaDetails;
 export function formatDynamicFScoreValue(value: number | null | undefined): string;

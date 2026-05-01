@@ -1,5 +1,37 @@
 const STATUS_TONES = new Set(['success', 'warning', 'danger', 'secondary']);
 
+function normalizeFormulaDetails(details) {
+  if (!details || typeof details !== 'object') {
+    return {
+      standardDefinition: '',
+      standardFormula: '',
+      fallbackFormulas: [],
+      usedFormula: '',
+      usedValues: [],
+    };
+  }
+  return {
+    standardDefinition:
+      typeof details.standard_definition === 'string' ? details.standard_definition : '',
+    standardFormula: typeof details.standard_formula === 'string' ? details.standard_formula : '',
+    fallbackFormulas: Array.isArray(details.fallback_formulas)
+      ? details.fallback_formulas.filter((formula) => typeof formula === 'string')
+      : [],
+    usedFormula: typeof details.used_formula === 'string' ? details.used_formula : '',
+    usedValues: Array.isArray(details.used_values)
+      ? details.used_values.map((value) => ({
+          metricKey: typeof value?.metric_key === 'string' ? value.metric_key : '',
+          valueNumeric:
+            typeof value?.value_numeric === 'number' && Number.isFinite(value.value_numeric)
+              ? value.value_numeric
+              : null,
+          periodEndDate: typeof value?.period_end_date === 'string' ? value.period_end_date : '',
+          factNature: typeof value?.fact_nature === 'string' ? value.fact_nature : '',
+        }))
+      : [],
+  };
+}
+
 function normalizeDynamicFScoreCard(card) {
   if (!card || typeof card !== 'object') {
     return { years: [], rows: [] };
@@ -12,6 +44,7 @@ function normalizeDynamicFScoreCard(card) {
         check: typeof row.check === 'string' ? row.check : '',
         metricKey: typeof row.metric_key === 'string' ? row.metric_key : '',
         formula: typeof row.formula === 'string' ? row.formula : '',
+        formulaDetails: normalizeFormulaDetails(row.formula_details),
         scores: Array.isArray(row.scores)
           ? row.scores.map((score) => (typeof score === 'number' && Number.isFinite(score) ? score : null))
           : [],
@@ -34,4 +67,5 @@ function formatDynamicFScoreValue(value) {
 module.exports = {
   formatDynamicFScoreValue,
   normalizeDynamicFScoreCard,
+  normalizeFormulaDetails,
 };

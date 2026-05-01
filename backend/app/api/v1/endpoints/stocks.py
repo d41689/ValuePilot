@@ -28,7 +28,9 @@ PIOTROSKI_CARD_ROWS = [
         "category": "盈利",
         "check": "ROA > 0",
         "metric_key": "score.piotroski.roa_positive",
+        "standard_definition": "ROA is positive.",
         "formula": "returns.roa[Y] > 0",
+        "fallback_formulas": ["is.net_income[Y] > 0", "returns.total_capital[Y] > 0"],
         "all_pass_comment": "最近 5 年全部通过，盈利底盘稳健。",
         "pass_comment": "最近年份通过，盈利底盘保持稳健。",
         "fail_comment": "最近年份未通过，需要关注盈利质量。",
@@ -38,7 +40,9 @@ PIOTROSKI_CARD_ROWS = [
         "category": "",
         "check": "CFO > 0",
         "metric_key": "score.piotroski.cfo_positive",
+        "standard_definition": "Operating cash flow is positive.",
         "formula": "is.operating_cash_flow[Y] > 0",
+        "fallback_formulas": ["per_share.cash_flow[Y] > 0"],
         "all_pass_comment": "最近 5 年全部通过，现金流为正。",
         "pass_comment": "最近年份通过，经营现金流为正。",
         "fail_comment": "最近年份未通过，需要关注现金流质量。",
@@ -48,7 +52,9 @@ PIOTROSKI_CARD_ROWS = [
         "category": "",
         "check": "ROA 提升",
         "metric_key": "score.piotroski.roa_improving",
+        "standard_definition": "ROA improves from the prior year.",
         "formula": "returns.roa[Y] > returns.roa[Y-1]",
+        "fallback_formulas": ["returns.total_capital[Y] > returns.total_capital[Y-1]"],
         "all_pass_comment": "最近 5 年全部通过，资产回报率持续改善。",
         "pass_comment": "最近年份通过，资产回报率改善。",
         "fail_comment": "最近年份未通过，需要关注资产回报率趋势。",
@@ -58,7 +64,9 @@ PIOTROSKI_CARD_ROWS = [
         "category": "",
         "check": "CFO>ROA",
         "metric_key": "score.piotroski.accrual_quality",
+        "standard_definition": "Operating cash flow exceeds net income.",
         "formula": "is.operating_cash_flow[Y] > is.net_income[Y]",
+        "fallback_formulas": ["per_share.cash_flow[Y] > per_share.eps[Y]"],
         "all_pass_comment": "最近 5 年全部通过，利润质量稳定。",
         "pass_comment": "最近年份通过，现金流质量改善。",
         "fail_comment": "最近年份未通过，需要关注利润质量。",
@@ -68,7 +76,12 @@ PIOTROSKI_CARD_ROWS = [
         "category": "安全",
         "check": "杠杆率下降",
         "metric_key": "score.piotroski.leverage_declining",
+        "standard_definition": "Long-term leverage declines from the prior year.",
         "formula": "leverage.long_term_debt_to_assets[Y] < leverage.long_term_debt_to_assets[Y-1]",
+        "fallback_formulas": [
+            "leverage.long_term_debt_to_capital[Y] < leverage.long_term_debt_to_capital[Y-1]",
+            "cap.long_term_debt[Y] < cap.long_term_debt[Y-1]",
+        ],
         "all_pass_comment": "最近 5 年全部通过，债务压力持续减轻。",
         "pass_comment": "最近年份通过，债务压力信号改善。",
         "fail_comment": "最近年份未通过，需要关注债务压力。",
@@ -78,7 +91,9 @@ PIOTROSKI_CARD_ROWS = [
         "category": "",
         "check": "流动比率提升",
         "metric_key": "score.piotroski.current_ratio_improving",
+        "standard_definition": "Current ratio improves from the prior year.",
         "formula": "liquidity.current_ratio[Y] > liquidity.current_ratio[Y-1]",
+        "fallback_formulas": [],
         "all_pass_comment": "最近 5 年全部通过，短期偿债能力持续改善。",
         "pass_comment": "最近年份通过，短期偿债能力改善。",
         "fail_comment": "最近年份未通过，短期偿债能力承压。",
@@ -88,7 +103,9 @@ PIOTROSKI_CARD_ROWS = [
         "category": "",
         "check": "无股本稀释",
         "metric_key": "score.piotroski.no_dilution",
+        "standard_definition": "Shares outstanding do not increase from the prior year.",
         "formula": "equity.shares_outstanding[Y] <= equity.shares_outstanding[Y-1]",
+        "fallback_formulas": [],
         "all_pass_comment": "最近 5 年全部通过，股本稀释压力低。",
         "pass_comment": "最近年份通过，股本稀释压力低。",
         "fail_comment": "最近年份未通过，需要关注股本稀释。",
@@ -98,7 +115,12 @@ PIOTROSKI_CARD_ROWS = [
         "category": "效率",
         "check": "毛利率提升",
         "metric_key": "score.piotroski.gross_margin_improving",
+        "standard_definition": "Gross margin improves from the prior year.",
         "formula": "is.gross_margin[Y] > is.gross_margin[Y-1]",
+        "fallback_formulas": [
+            "ins.underwriting_margin[Y] > ins.underwriting_margin[Y-1]",
+            "is.operating_margin[Y] > is.operating_margin[Y-1]",
+        ],
         "all_pass_comment": "最近 5 年全部通过，成本和定价效率稳定。",
         "pass_comment": "最近年份通过，成本或定价效率改善。",
         "fail_comment": "最近年份未通过，成本或定价效率承压。",
@@ -108,7 +130,12 @@ PIOTROSKI_CARD_ROWS = [
         "category": "",
         "check": "资产周转率提升",
         "metric_key": "score.piotroski.asset_turnover_improving",
+        "standard_definition": "Asset turnover improves from the prior year.",
         "formula": "efficiency.asset_turnover[Y] > efficiency.asset_turnover[Y-1]",
+        "fallback_formulas": [
+            "ins.premium_turnover[Y] > ins.premium_turnover[Y-1]",
+            "efficiency.capital_turnover[Y] > efficiency.capital_turnover[Y-1]",
+        ],
         "all_pass_comment": "最近 5 年全部通过，资产使用效率持续改善。",
         "pass_comment": "最近年份通过，资产使用效率改善。",
         "fail_comment": "最近年份未通过，资产使用效率承压。",
@@ -223,6 +250,49 @@ def _row_formula(
     return fallback_formula
 
 
+def _used_values(fact: MetricFact | None) -> list[dict[str, Any]]:
+    value_json = fact.value_json if fact and isinstance(fact.value_json, dict) else {}
+    inputs = value_json.get("inputs")
+    if not isinstance(inputs, list):
+        return []
+    used_values = []
+    for item in inputs:
+        if not isinstance(item, dict):
+            continue
+        used_values.append(
+            {
+                "metric_key": item.get("metric_key"),
+                "value_numeric": item.get("value_numeric"),
+                "period_end_date": item.get("period_end_date"),
+                "fact_nature": item.get("fact_nature"),
+            }
+        )
+    return used_values
+
+
+def _latest_fact(by_year: dict[int, MetricFact], display_years: list[int]) -> MetricFact | None:
+    for year in reversed(display_years):
+        fact = by_year.get(year)
+        if fact is not None:
+            return fact
+    return None
+
+
+def _formula_details(
+    *,
+    row_config: dict[str, Any],
+    formula: str,
+    latest_fact: MetricFact | None,
+) -> dict[str, Any]:
+    return {
+        "standard_definition": row_config["standard_definition"],
+        "standard_formula": row_config["formula"],
+        "fallback_formulas": row_config["fallback_formulas"],
+        "used_formula": formula,
+        "used_values": _used_values(latest_fact),
+    }
+
+
 def _build_piotroski_f_score_card(session: SessionDep, stock_id: int) -> dict[str, Any]:
     metric_keys = [row["metric_key"] for row in PIOTROSKI_CARD_ROWS] + [PIOTROSKI_TOTAL_KEY]
     facts = session.scalars(
@@ -256,12 +326,18 @@ def _build_piotroski_f_score_card(session: SessionDep, stock_id: int) -> dict[st
         metric_facts_by_year = by_key_year[row_config["metric_key"]]
         scores = [_score_value(metric_facts_by_year.get(year)) for year in display_years]
         status, status_tone, comment = _piotroski_status_and_comment(scores, row_config)
+        formula = _row_formula(metric_facts_by_year, display_years, row_config["formula"])
         rows.append(
             {
                 "category": row_config["category"],
                 "check": row_config["check"],
                 "metric_key": row_config["metric_key"],
-                "formula": _row_formula(metric_facts_by_year, display_years, row_config["formula"]),
+                "formula": formula,
+                "formula_details": _formula_details(
+                    row_config=row_config,
+                    formula=formula,
+                    latest_fact=_latest_fact(metric_facts_by_year, display_years),
+                ),
                 "scores": scores,
                 "status": status,
                 "status_tone": status_tone,
@@ -289,6 +365,13 @@ def _build_piotroski_f_score_card(session: SessionDep, stock_id: int) -> dict[st
             "check": "F-Score",
             "metric_key": PIOTROSKI_TOTAL_KEY,
             "formula": "9 项 Piotroski 指标得分加总",
+            "formula_details": {
+                "standard_definition": "Total Piotroski F-Score sums the 9 binary component indicators.",
+                "standard_formula": "sum(9 Piotroski component scores)",
+                "fallback_formulas": ["Value Line proxy components when standard inputs are unavailable"],
+                "used_formula": "9 项 Piotroski 指标得分加总",
+                "used_values": [],
+            },
             "scores": total_scores,
             "status": "--",
             "status_tone": "secondary",
