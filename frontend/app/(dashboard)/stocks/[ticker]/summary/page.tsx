@@ -7,6 +7,7 @@ import axios from 'axios';
 
 import apiClient from '@/lib/api/client';
 import TickerSearchBox from '@/components/TickerSearchBox';
+import DynamicFScoreCard from '@/components/DynamicFScoreCard';
 import StockSummaryCard from '@/components/StockSummaryCard';
 import actualConflictHelpers from '@/lib/actualConflicts';
 import provenanceHelpers from '@/lib/factProvenance';
@@ -115,19 +116,22 @@ export default function StockSummaryPage() {
       )}
 
       {!loading && !error && summary && (
-        <StockSummaryCard
-          companyName={summary.company_name}
-          ticker={summary.ticker}
-          exchange={summary.exchange}
-          price={summary.price}
-          pe={summary.pe}
-          activeReportDate={summary.active_report_date}
-          activeReportDocumentId={summary.active_report_document_id}
-          priceProvenanceLabel={formatFactProvenanceLabel(summary.price_provenance)}
-          peProvenanceLabel={formatFactProvenanceLabel(summary.pe_provenance)}
-          actualConflictCount={summary.actual_conflict_count ?? 0}
-          actualConflictItems={actualConflictItems}
-        />
+        <>
+          <StockSummaryCard
+            companyName={summary.company_name}
+            ticker={summary.ticker}
+            exchange={summary.exchange}
+            price={summary.price}
+            pe={summary.pe}
+            activeReportDate={summary.active_report_date}
+            activeReportDocumentId={summary.active_report_document_id}
+            priceProvenanceLabel={formatFactProvenanceLabel(summary.price_provenance)}
+            peProvenanceLabel={formatFactProvenanceLabel(summary.pe_provenance)}
+            actualConflictCount={summary.actual_conflict_count ?? 0}
+            actualConflictItems={actualConflictItems}
+          />
+          {summary.ticker.toUpperCase() === 'ASML' ? <DynamicFScoreCard /> : null}
+        </>
       )}
 
       <div className="pt-4">
