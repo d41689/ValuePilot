@@ -5,6 +5,7 @@ const assert = require('node:assert/strict');
 const {
   formatDynamicFScoreValue,
   normalizeDynamicFScoreCard,
+  visibleFallbackFormulas,
 } = require('./dynamicFScoreCard');
 
 test('normalizeDynamicFScoreCard maps API card data for the current ticker', () => {
@@ -31,6 +32,7 @@ test('normalizeDynamicFScoreCard maps API card data for the current ticker', () 
           ],
         },
         scores: [1, 1, 1, 1, 1],
+        score_fact_natures: ['actual', 'actual', 'actual', 'actual', 'estimate'],
         status: '✅',
         status_tone: 'success',
         comment: '最近 5 年全部通过，盈利底盘稳健。',
@@ -69,6 +71,7 @@ test('normalizeDynamicFScoreCard maps API card data for the current ticker', () 
       ],
     },
     scores: [1, 1, 1, 1, 1],
+    scoreFactNatures: ['actual', 'actual', 'actual', 'actual', 'estimate'],
     status: '✅',
     statusTone: 'success',
     comment: '最近 5 年全部通过，盈利底盘稳健。',
@@ -84,4 +87,18 @@ test('formatDynamicFScoreValue keeps score cells compact', () => {
   assert.equal(formatDynamicFScoreValue(1), '1');
   assert.equal(formatDynamicFScoreValue(7.5), '7.5');
   assert.equal(formatDynamicFScoreValue(null), '—');
+});
+
+test('visibleFallbackFormulas removes the used formula from fallback display', () => {
+  assert.deepEqual(
+    visibleFallbackFormulas({
+      usedFormula: 'returns.total_capital[Y] > returns.total_capital[Y-1]',
+      fallbackFormulas: [
+        'returns.total_capital[Y] > returns.total_capital[Y-1]',
+        'returns.total_capital[Y] > returns.total_capital[Y-1]',
+        'returns.roa[Y] > returns.roa[Y-1]',
+      ],
+    }),
+    ['returns.roa[Y] > returns.roa[Y-1]']
+  );
 });

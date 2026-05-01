@@ -209,6 +209,21 @@ def _score_value(fact: MetricFact | None) -> int | float | None:
     return int(value) if value.is_integer() else value
 
 
+def _score_fact_nature(fact: MetricFact | None) -> str | None:
+    value_json = fact.value_json if fact and isinstance(fact.value_json, dict) else {}
+    inputs = value_json.get("inputs")
+    if isinstance(inputs, list) and any(
+        isinstance(item, dict) and item.get("fact_nature") == "estimate" for item in inputs
+    ):
+        return "estimate"
+    fact_nature = value_json.get("fact_nature")
+    if isinstance(fact_nature, str) and fact_nature:
+        return fact_nature
+    if isinstance(inputs, list) and inputs:
+        return "actual"
+    return None
+
+
 def _score_year(fact: MetricFact) -> int | None:
     value_json = fact.value_json if isinstance(fact.value_json, dict) else {}
     fiscal_year = value_json.get("fiscal_year")
@@ -284,10 +299,17 @@ def _formula_details(
     formula: str,
     latest_fact: MetricFact | None,
 ) -> dict[str, Any]:
+    fallback_formulas = []
+    seen_fallbacks = set()
+    for fallback_formula in row_config["fallback_formulas"]:
+        if fallback_formula == formula or fallback_formula in seen_fallbacks:
+            continue
+        seen_fallbacks.add(fallback_formula)
+        fallback_formulas.append(fallback_formula)
     return {
         "standard_definition": row_config["standard_definition"],
         "standard_formula": row_config["formula"],
-        "fallback_formulas": row_config["fallback_formulas"],
+        "fallback_formulas": fallback_formulas,
         "used_formula": formula,
         "used_values": _used_values(latest_fact),
     }
@@ -325,6 +347,7 @@ def _build_piotroski_f_score_card(session: SessionDep, stock_id: int) -> dict[st
     for row_config in PIOTROSKI_CARD_ROWS:
         metric_facts_by_year = by_key_year[row_config["metric_key"]]
         scores = [_score_value(metric_facts_by_year.get(year)) for year in display_years]
+        score_fact_natures = [_score_fact_nature(metric_facts_by_year.get(year)) for year in display_years]
         status, status_tone, comment = _piotroski_status_and_comment(scores, row_config)
         formula = _row_formula(metric_facts_by_year, display_years, row_config["formula"])
         rows.append(
@@ -339,6 +362,7 @@ def _build_piotroski_f_score_card(session: SessionDep, stock_id: int) -> dict[st
                     latest_fact=_latest_fact(metric_facts_by_year, display_years),
                 ),
                 "scores": scores,
+                "score_fact_natures": score_fact_natures,
                 "status": status,
                 "status_tone": status_tone,
                 "comment": comment,
@@ -346,6 +370,7 @@ def _build_piotroski_f_score_card(session: SessionDep, stock_id: int) -> dict[st
         )
 
     total_scores = [_score_value(by_key_year[PIOTROSKI_TOTAL_KEY].get(year)) for year in display_years]
+    total_score_fact_natures = [_score_fact_nature(by_key_year[PIOTROSKI_TOTAL_KEY].get(year)) for year in display_years]
     latest_total = next(
         (value for value in reversed(total_scores) if isinstance(value, (int, float))),
         None,
@@ -373,6 +398,7 @@ def _build_piotroski_f_score_card(session: SessionDep, stock_id: int) -> dict[st
                 "used_values": [],
             },
             "scores": total_scores,
+            "score_fact_natures": total_score_fact_natures,
             "status": "--",
             "status_tone": "secondary",
             "comment": total_comment,

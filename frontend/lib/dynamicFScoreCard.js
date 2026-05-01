@@ -32,6 +32,22 @@ function normalizeFormulaDetails(details) {
   };
 }
 
+function visibleFallbackFormulas(details) {
+  const usedFormula = typeof details?.usedFormula === 'string' ? details.usedFormula.trim() : '';
+  const seen = new Set();
+  return (Array.isArray(details?.fallbackFormulas) ? details.fallbackFormulas : []).filter((formula) => {
+    if (typeof formula !== 'string') {
+      return false;
+    }
+    const normalized = formula.trim();
+    if (!normalized || normalized === usedFormula || seen.has(normalized)) {
+      return false;
+    }
+    seen.add(normalized);
+    return true;
+  });
+}
+
 function normalizeDynamicFScoreCard(card) {
   if (!card || typeof card !== 'object') {
     return { years: [], rows: [] };
@@ -47,6 +63,9 @@ function normalizeDynamicFScoreCard(card) {
         formulaDetails: normalizeFormulaDetails(row.formula_details),
         scores: Array.isArray(row.scores)
           ? row.scores.map((score) => (typeof score === 'number' && Number.isFinite(score) ? score : null))
+          : [],
+        scoreFactNatures: Array.isArray(row.score_fact_natures)
+          ? row.score_fact_natures.map((nature) => (typeof nature === 'string' ? nature : null))
           : [],
         status: typeof row.status === 'string' ? row.status : '⚠️',
         statusTone: STATUS_TONES.has(row.status_tone) ? row.status_tone : 'warning',
@@ -68,4 +87,5 @@ module.exports = {
   formatDynamicFScoreValue,
   normalizeDynamicFScoreCard,
   normalizeFormulaDetails,
+  visibleFallbackFormulas,
 };

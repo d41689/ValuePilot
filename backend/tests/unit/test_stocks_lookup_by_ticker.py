@@ -25,7 +25,11 @@ def _piotroski_fact(
         value_json=value_json or {
             "status": "calculated",
             "variant": "valueline_proxy",
-            "fact_nature": "actual",
+                            "fact_nature": (
+                                "estimate"
+                                if metric_key == "score.piotroski.roa_positive" and year == 2026
+                                else "actual"
+                            ),
             "fiscal_year": year,
         },
         unit="score_component" if metric_key != "score.piotroski.total" else "score_total",
@@ -68,7 +72,11 @@ def test_lookup_stock_by_ticker_returns_dynamic_piotroski_card_from_current_stoc
                     value_json={
                         "status": "calculated",
                         "variant": "valueline_proxy",
-                        "fact_nature": "actual",
+                        "fact_nature": (
+                            "estimate"
+                            if metric_key == "score.piotroski.roa_positive" and year == 2026
+                            else "actual"
+                        ),
                         "fiscal_year": year,
                         "formula": f"{metric_key}[Y] test formula",
                         "inputs": [
@@ -76,7 +84,11 @@ def test_lookup_stock_by_ticker_returns_dynamic_piotroski_card_from_current_stoc
                                 "metric_key": f"{metric_key}.input",
                                 "value_numeric": float(value) * 10,
                                 "period_end_date": f"{year}-12-31",
-                                "fact_nature": "actual",
+                                    "fact_nature": (
+                                        "estimate"
+                                        if metric_key == "score.piotroski.roa_positive" and year == 2026
+                                        else "actual"
+                                    ),
                             }
                         ],
                     },
@@ -129,11 +141,12 @@ def test_lookup_stock_by_ticker_returns_dynamic_piotroski_card_from_current_stoc
                         "metric_key": "score.piotroski.roa_positive.input",
                         "value_numeric": 10.0,
                         "period_end_date": "2026-12-31",
-                        "fact_nature": "actual",
+                        "fact_nature": "estimate",
                     }
                 ],
             },
             "scores": [1, 1, 1, 1, 1],
+            "score_fact_natures": ["actual", "actual", "actual", "actual", "estimate"],
             "status": "✅",
             "status_tone": "success",
             "comment": "最近 5 年全部通过，盈利底盘稳健。",
@@ -158,6 +171,7 @@ def test_lookup_stock_by_ticker_returns_dynamic_piotroski_card_from_current_stoc
                 ],
             },
             "scores": [1, 1, 1, 1, 1],
+            "score_fact_natures": ["actual", "actual", "actual", "actual", "actual"],
             "status": "✅",
             "status_tone": "success",
             "comment": "最近 5 年全部通过，现金流为正。",
@@ -182,6 +196,7 @@ def test_lookup_stock_by_ticker_returns_dynamic_piotroski_card_from_current_stoc
                 ],
             },
             "scores": [1, 0, 1, 0, 1],
+            "score_fact_natures": ["actual", "actual", "actual", "actual", "actual"],
             "status": "✅",
             "status_tone": "success",
             "comment": "最近年份通过，资产回报率改善。",
@@ -206,6 +221,7 @@ def test_lookup_stock_by_ticker_returns_dynamic_piotroski_card_from_current_stoc
                 ],
             },
             "scores": [1, 1, 0, 0, 0],
+            "score_fact_natures": ["actual", "actual", "actual", "actual", "actual"],
             "status": "❌",
             "status_tone": "danger",
             "comment": "最近年份未通过，需要关注利润质量。",
@@ -233,6 +249,7 @@ def test_lookup_stock_by_ticker_returns_dynamic_piotroski_card_from_current_stoc
                 ],
             },
             "scores": [0, 0, 1, 1, 1],
+            "score_fact_natures": ["actual", "actual", "actual", "actual", "actual"],
             "status": "✅",
             "status_tone": "success",
             "comment": "最近年份通过，债务压力信号改善。",
@@ -257,6 +274,7 @@ def test_lookup_stock_by_ticker_returns_dynamic_piotroski_card_from_current_stoc
                 ],
             },
             "scores": [0, 1, 1, 1, 0],
+            "score_fact_natures": ["actual", "actual", "actual", "actual", "actual"],
             "status": "❌",
             "status_tone": "danger",
             "comment": "最近年份未通过，短期偿债能力承压。",
@@ -281,6 +299,7 @@ def test_lookup_stock_by_ticker_returns_dynamic_piotroski_card_from_current_stoc
                 ],
             },
             "scores": [1, 1, 1, 1, 1],
+            "score_fact_natures": ["actual", "actual", "actual", "actual", "actual"],
             "status": "✅",
             "status_tone": "success",
             "comment": "最近 5 年全部通过，股本稀释压力低。",
@@ -308,6 +327,7 @@ def test_lookup_stock_by_ticker_returns_dynamic_piotroski_card_from_current_stoc
                 ],
             },
             "scores": [1, 1, 1, 0, 0],
+            "score_fact_natures": ["actual", "actual", "actual", "actual", "actual"],
             "status": "❌",
             "status_tone": "danger",
             "comment": "最近年份未通过，成本或定价效率承压。",
@@ -335,6 +355,7 @@ def test_lookup_stock_by_ticker_returns_dynamic_piotroski_card_from_current_stoc
                 ],
             },
             "scores": [0, 1, 1, 1, 0],
+            "score_fact_natures": ["actual", "actual", "actual", "actual", "actual"],
             "status": "❌",
             "status_tone": "danger",
             "comment": "最近年份未通过，资产使用效率承压。",
@@ -352,6 +373,7 @@ def test_lookup_stock_by_ticker_returns_dynamic_piotroski_card_from_current_stoc
                 "used_values": [],
             },
             "scores": [7, 7, 8, 7, 7],
+            "score_fact_natures": ["actual", "actual", "actual", "actual", "actual"],
             "status": "--",
             "status_tone": "secondary",
             "comment": "最新 F-Score 为 7，基本面维持强壮。",

@@ -18,6 +18,7 @@ export type DynamicFScoreApiRow = {
     }>;
   };
   scores?: Array<number | null>;
+  score_fact_natures?: Array<string | null>;
   status?: string;
   status_tone?: DynamicFScoreStatusTone | string;
   comment?: string;
@@ -35,6 +36,7 @@ export type DynamicFScoreRow = {
   formula: string;
   formulaDetails: DynamicFScoreFormulaDetails;
   scores: Array<number | null>;
+  scoreFactNatures: Array<string | null>;
   status: string;
   statusTone: DynamicFScoreStatusTone;
   comment: string;
@@ -60,4 +62,5 @@ export type DynamicFScoreCardModel = {
 
 export function normalizeDynamicFScoreCard(card: DynamicFScoreApiCard): DynamicFScoreCardModel;
 export function normalizeFormulaDetails(details: DynamicFScoreApiRow['formula_details']): DynamicFScoreFormulaDetails;
+export function visibleFallbackFormulas(details: Pick<DynamicFScoreFormulaDetails, 'fallbackFormulas' | 'usedFormula'>): string[];
 export function formatDynamicFScoreValue(value: number | null | undefined): string;

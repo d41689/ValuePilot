@@ -19,6 +19,7 @@ import {
   normalizeDynamicFScoreCard,
   type DynamicFScoreApiCard,
   type DynamicFScoreFormulaDetails,
+  visibleFallbackFormulas,
 } from '@/lib/dynamicFScoreCard';
 
 type DynamicFScoreCardProps = {
@@ -35,7 +36,8 @@ function FormulaInfo({
   details: DynamicFScoreFormulaDetails;
 }) {
   const [open, setOpen] = useState(false);
-  const hasFallbacks = details.fallbackFormulas.length > 0;
+  const fallbackFormulas = visibleFallbackFormulas(details);
+  const hasFallbacks = fallbackFormulas.length > 0;
   const hasUsedValues = details.usedValues.length > 0;
 
   return (
@@ -75,7 +77,7 @@ function FormulaInfo({
             <div className="mt-1 font-mono text-muted-foreground">{details.usedFormula || formula || '—'}</div>
             {hasFallbacks ? (
               <div className="mt-2 space-y-1">
-                {details.fallbackFormulas.map((fallback) => (
+                {fallbackFormulas.map((fallback) => (
                   <div key={fallback} className="font-mono text-muted-foreground">
                     {fallback}
                   </div>
@@ -152,7 +154,18 @@ export default function DynamicFScoreCard({ ticker, companyName, card }: Dynamic
                       key={`${row.metricKey || row.check}-${year}`}
                       className="text-center font-semibold tabular-nums"
                     >
-                      {formatDynamicFScoreValue(row.scores[index])}
+                      <span className="inline-flex items-center justify-center gap-1">
+                        {formatDynamicFScoreValue(row.scores[index])}
+                        {row.scoreFactNatures[index] === 'estimate' ? (
+                          <Badge
+                            variant="warning"
+                            className="px-1.5 py-0 text-[10px]"
+                            aria-label="estimate"
+                          >
+                            估
+                          </Badge>
+                        ) : null}
+                      </span>
                     </TableCell>
                   ))}
                   <TableCell className="text-center">
