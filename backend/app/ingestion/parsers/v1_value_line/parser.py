@@ -90,35 +90,76 @@ class ValueLineV1Parser(BaseParser):
                 return referenced
             return ticker
 
+        def _company_name_from_header_lines() -> Optional[str]:
+            for line in search_lines:
+                clean_line = line.strip()
+                if not clean_line:
+                    continue
+                upper_line = clean_line.upper()
+                if "VALUE LINE" in upper_line or "PAGE" in upper_line:
+                    continue
+                if re.search(r"RECEN.?T", upper_line):
+                    candidate = re.split(r"RECEN.?T", clean_line, flags=re.IGNORECASE)[0].strip()
+                    if len(candidate) > 3:
+                        return candidate
+            return None
+
         def _identity_from_words() -> tuple[Optional[str], Optional[str]]:
             if not self.page_words or 1 not in self.page_words:
                 return None, None
             top_words = [
                 word for word in self.page_words[1]
-                if float(word.get("top", 0.0)) <= 55.0
+                if float(word.get("top", 0.0)) <= 65.0
             ]
             if not top_words:
                 return None, None
-            lines: dict[int, list[dict[str, Any]]] = {}
-            for word in top_words:
-                line_key = int(round(float(word.get("top", 0.0))))
-                lines.setdefault(line_key, []).append(word)
-            for line_words in lines.values():
-                ordered = sorted(line_words, key=lambda word: float(word.get("x0", 0.0)))
-                for idx, word in enumerate(ordered):
-                    text = str(word.get("text", ""))
-                    normalized = text.strip().strip("():").upper()
-                    if normalized not in exchange_code_set:
+            header_artifact_tokens = {
+                "PRICE",
+                "RATIO",
+                "P/E",
+                "YLD",
+                "LINE",
+                "VALUE",
+                "RECENT",
+                "TARGET",
+                "RANGE",
+            }
+            ordered_words = sorted(
+                top_words,
+                key=lambda word: (
+                    float(word.get("top", 0.0)),
+                    float(word.get("x0", 0.0)),
+                ),
+            )
+            for word in ordered_words:
+                text = str(word.get("text", ""))
+                normalized = text.strip().strip("():").upper()
+                if normalized not in exchange_code_set:
+                    continue
+                exchange = exchange_map.get(normalized, normalized)
+                exchange_top = float(word.get("top", 0.0))
+                exchange_x0 = float(word.get("x0", 0.0))
+                visual_line_words = sorted(
+                    [
+                        candidate
+                        for candidate in top_words
+                        if abs(float(candidate.get("top", 0.0)) - exchange_top) <= 3.0
+                        and float(candidate.get("x0", 0.0)) >= exchange_x0
+                        and float(candidate.get("x0", 0.0)) <= exchange_x0 + 120.0
+                    ],
+                    key=lambda candidate: float(candidate.get("x0", 0.0)),
+                )
+                for next_word in visual_line_words[1:8]:
+                    next_text = str(next_word.get("text", "")).strip()
+                    match = re.match(r'^[-:]\s*([A-Z]{1,5}(?:\.[A-Z]{1,4})?)$', next_text, re.IGNORECASE)
+                    if match:
+                        return exchange, _normalize_ticker(match.group(1), exchange)
+                    normalized_next = next_text.strip().strip("():").upper()
+                    if normalized_next in header_artifact_tokens:
                         continue
-                    exchange = exchange_map.get(normalized, normalized)
-                    for next_word in ordered[idx + 1: idx + 4]:
-                        next_text = str(next_word.get("text", "")).strip()
-                        match = re.match(r'^[-:]\s*([A-Z]{1,5}(?:\.[A-Z]{1,4})?)$', next_text, re.IGNORECASE)
-                        if match:
-                            return exchange, _normalize_ticker(match.group(1), exchange)
-                        match = re.match(r'^([A-Z]{1,5}(?:\.[A-Z]{1,4})?)$', next_text, re.IGNORECASE)
-                        if match:
-                            return exchange, _normalize_ticker(match.group(1), exchange)
+                    match = re.match(r'^([A-Z]{1,5}(?:\.[A-Z]{1,4})?)$', next_text, re.IGNORECASE)
+                    if match:
+                        return exchange, _normalize_ticker(match.group(1), exchange)
             return None, None
 
         def set_company_name(line: str, match_start: int, line_idx: int) -> None:
@@ -193,6 +234,8 @@ class ValueLineV1Parser(BaseParser):
             ):
                 info.ticker = word_ticker
                 info.exchange = word_exchange or info.exchange
+                if not info.company_name:
+                    info.company_name = _company_name_from_header_lines()
         
         return info
 
