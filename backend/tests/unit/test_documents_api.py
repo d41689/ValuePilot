@@ -160,6 +160,57 @@ def test_documents_list_returns_companies_and_page_count(client, db_session, use
     assert two["active_for_tickers"] == ["MSFT"]
 
 
+def test_documents_list_orders_by_ticker_then_report_date(
+    client, db_session, user_factory, auth_headers
+):
+    user = user_factory("documents_order@example.com")
+    headers = auth_headers(user)
+
+    stock_a = Stock(ticker="AOS", exchange="NYSE", company_name="SMITH (A.O.)")
+    stock_f = Stock(ticker="FICO", exchange="NYSE", company_name="Fair Isaac")
+    db_session.add_all([stock_a, stock_f])
+    db_session.commit()
+
+    fico_newer = PdfDocument(
+        user_id=user.id,
+        file_name="fico-newer.pdf",
+        source="upload",
+        file_storage_key="/tmp/fico-newer.pdf",
+        parse_status="parsed",
+        report_date=date(2026, 4, 30),
+        upload_time=datetime(2026, 5, 3),
+        stock_id=stock_f.id,
+    )
+    aos = PdfDocument(
+        user_id=user.id,
+        file_name="aos.pdf",
+        source="upload",
+        file_storage_key="/tmp/aos.pdf",
+        parse_status="parsed",
+        report_date=date(2026, 2, 28),
+        upload_time=datetime(2026, 5, 2),
+        stock_id=stock_a.id,
+    )
+    fico_older = PdfDocument(
+        user_id=user.id,
+        file_name="fico-older.pdf",
+        source="upload",
+        file_storage_key="/tmp/fico-older.pdf",
+        parse_status="parsed",
+        report_date=date(2026, 1, 31),
+        upload_time=datetime(2026, 5, 1),
+        stock_id=stock_f.id,
+    )
+    db_session.add_all([fico_newer, aos, fico_older])
+    db_session.commit()
+
+    resp = client.get("/api/v1/documents", headers=headers)
+    assert resp.status_code == 200, resp.text
+
+    payload = resp.json()
+    assert [doc["id"] for doc in payload] == [aos.id, fico_older.id, fico_newer.id]
+
+
 def test_documents_list_marks_latest_report_as_active_per_company(
     client, db_session, user_factory, auth_headers
 ):
