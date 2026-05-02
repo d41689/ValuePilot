@@ -5,6 +5,7 @@ import { useEffect, useState } from 'react';
 import { useMutation, useQuery } from '@tanstack/react-query';
 import {
   AlertTriangle,
+  Download,
   FileSearch,
   FileText,
   Loader2,
@@ -17,6 +18,7 @@ import {
 import apiClient from '@/lib/api/client';
 import activeReportHelpers from '@/lib/documentActiveReport';
 import documentCompareHelpers from '@/lib/documentCompare';
+import documentDownloadHelpers from '@/lib/documentDownload';
 import documentEvidenceHelpers from '@/lib/documentEvidence';
 import { canUploadDocuments, getDocumentsUploadNotice } from '@/lib/documentsAccess';
 import { Badge } from '@/components/ui/badge';
@@ -184,6 +186,17 @@ function formatPageCount(total: number, parsed?: number) {
 }
 
 const { buildVisibleDocumentCompareSections } = documentCompareHelpers;
+const {
+  canPickDownloadDirectory,
+  getDocumentDownloadFilename,
+  pickDownloadDirectory,
+  writeBlobToDirectory,
+} = documentDownloadHelpers as {
+  canPickDownloadDirectory: (win: Window) => boolean;
+  getDocumentDownloadFilename: (fileName: string | null | undefined, fallbackId?: number | null) => string;
+  pickDownloadDirectory: (win: Window) => Promise<unknown>;
+  writeBlobToDirectory: (directoryHandle: unknown, blob: Blob, fileName: string) => Promise<void>;
+};
 const { buildDocumentEvidenceSections } = documentEvidenceHelpers;
 const { formatActiveReportTickers, getActiveReportBadgeLabel } = activeReportHelpers;
 
@@ -197,6 +210,7 @@ export default function DocumentsPage() {
   const [detailLoading, setDetailLoading] = useState(false);
   const [activeReparseId, setActiveReparseId] = useState<number | null>(null);
   const [activeDeleteId, setActiveDeleteId] = useState<number | null>(null);
+  const [activeDownloadId, setActiveDownloadId] = useState<number | null>(null);
   const [compareLeftId, setCompareLeftId] = useState<number | null>(null);
   const [compareRightId, setCompareRightId] = useState<number | null>(null);
   const [compareData, setCompareData] = useState<CompareResponse | null>(null);
@@ -285,6 +299,47 @@ export default function DocumentsPage() {
     if (!confirmed) return;
     setActiveDeleteId(doc.id);
     deleteMutation.mutate(doc.id);
+  };
+
+  const handleDownload = async (doc: DocumentRow) => {
+    if (typeof window === 'undefined') return;
+    if (!canPickDownloadDirectory(window)) {
+      toast({
+        title: 'Download not supported',
+        description: 'This browser cannot save directly to a selected folder.',
+        variant: 'destructive',
+      });
+      return;
+    }
+
+    setActiveDownloadId(doc.id);
+    try {
+      const fileName = getDocumentDownloadFilename(doc.file_name, doc.id);
+      const directoryHandle = await pickDownloadDirectory(window);
+      const res = await apiClient.get(`/documents/${doc.id}/download`, {
+        responseType: 'blob',
+      });
+      const blob =
+        res.data instanceof Blob
+          ? res.data
+          : new Blob([res.data], { type: 'application/pdf' });
+      await writeBlobToDirectory(directoryHandle, blob, fileName);
+      toast({
+        title: 'Document downloaded',
+        description: `${fileName} was saved to the selected folder.`,
+      });
+    } catch (error: unknown) {
+      if (error instanceof DOMException && error.name === 'AbortError') {
+        return;
+      }
+      toast({
+        title: 'Download failed',
+        description: getErrorMessage(error, 'Unable to save this document.'),
+        variant: 'destructive',
+      });
+    } finally {
+      setActiveDownloadId(null);
+    }
   };
 
   const handleView = async (doc: DocumentRow, type: 'parsed' | 'raw' | 'evidence') => {
@@ -559,6 +614,19 @@ export default function DocumentsPage() {
                               <Trash2 className="h-3 w-3" />
                             )}
                             Delete
+                          </Button>
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            onClick={() => handleDownload(doc)}
+                            disabled={activeDownloadId === doc.id}
+                          >
+                            {activeDownloadId === doc.id ? (
+                              <Loader2 className="h-3 w-3 animate-spin" />
+                            ) : (
+                              <Download className="h-3 w-3" />
+                            )}
+                            Download
                           </Button>
                         </div>
                       </TableCell>

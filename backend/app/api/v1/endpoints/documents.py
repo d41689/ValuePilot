@@ -5,6 +5,7 @@ import re
 from typing import Any, Optional
 
 from fastapi import APIRouter, UploadFile, File, HTTPException, Query, Body
+from fastapi.responses import FileResponse
 from sqlalchemy import select, func, update
 import yaml
 from app.models.artifacts import DocumentPage
@@ -322,6 +323,28 @@ def delete_document(
     if result is None:
         raise HTTPException(status_code=404, detail="Document not found")
     return result
+
+
+@router.get("/{document_id}/download")
+def download_document(
+    *,
+    session: SessionDep,
+    current_user: CurrentUser,
+    document_id: int,
+) -> FileResponse:
+    doc = session.get(PdfDocument, document_id)
+    if not doc or doc.user_id != current_user.id:
+        raise HTTPException(status_code=404, detail="Document not found")
+
+    file_path = Path(doc.file_storage_key)
+    if not file_path.is_file():
+        raise HTTPException(status_code=404, detail="Stored document file not found")
+
+    return FileResponse(
+        path=file_path,
+        media_type="application/pdf",
+        filename=doc.file_name or f"document-{doc.id}.pdf",
+    )
 
 
 @router.get("/compare", response_model=dict)
