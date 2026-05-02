@@ -12,6 +12,7 @@ from fastapi import UploadFile
 from app.models.artifacts import PdfDocument, DocumentPage
 from app.models.extractions import MetricExtraction
 from app.models.facts import MetricFact
+from app.models.stocks import Stock
 from app.services.file_storage import FileStorageService
 from app.services.identity_service import IdentityService
 from app.ingestion.pdf_extractor import PdfExtractor
@@ -88,7 +89,7 @@ class IngestionService:
         # 1. Save file
         file_ext = Path(file.filename).suffix if file.filename else ".pdf"
         unique_filename = f"{uuid.uuid4()}{file_ext}"
-        saved_path_str = self.storage.save_upload_file(file, unique_filename)
+        saved_path_str = self.storage.save_upload_file(file, f"tmp/{unique_filename}")
         saved_path = Path(saved_path_str)
 
         # 2. Create PdfDocument record
@@ -272,6 +273,9 @@ class IngestionService:
                 doc.parse_status = "parsed_partial"
             else:
                 doc.parse_status = "parsed"
+
+            if parsed_company_pages == 1:
+                self._archive_single_company_value_line_pdf(doc)
             
             self.db.commit()
             self.db.refresh(doc)
@@ -284,6 +288,52 @@ class IngestionService:
             raise e
 
         return doc, page_reports
+
+    def _archive_single_company_value_line_pdf(self, doc: PdfDocument) -> Optional[dict]:
+        if not doc.stock_id or not doc.report_date:
+            return None
+
+        stock = self.db.get(Stock, doc.stock_id)
+        if stock is None:
+            return None
+
+        archived_path = self.storage.archive_value_line_pdf(
+            self.storage.get_file_path(doc.file_storage_key),
+            exchange=stock.exchange,
+            ticker=stock.ticker,
+            report_date=doc.report_date,
+        )
+        archived_path_str = str(archived_path)
+
+        matching_docs = self.db.scalars(
+            select(PdfDocument).where(
+                PdfDocument.stock_id == stock.id,
+                PdfDocument.report_date == doc.report_date,
+                PdfDocument.source == "upload",
+                PdfDocument.id != doc.id,
+                PdfDocument.file_storage_key != archived_path_str,
+            )
+        ).all()
+        archived_hash = self.storage.sha256_file(archived_path)
+        backfilled_document_count = 0
+        for matching_doc in matching_docs:
+            existing_path = self.storage.get_file_path(matching_doc.file_storage_key)
+            if existing_path.is_file() and self.storage.sha256_file(existing_path) != archived_hash:
+                LOGGER.warning(
+                    "Skipping canonical PDF backfill for document_id=%s because existing file content differs",
+                    matching_doc.id,
+                )
+                continue
+            matching_doc.file_storage_key = archived_path_str
+            self.db.add(matching_doc)
+            backfilled_document_count += 1
+
+        doc.file_storage_key = archived_path_str
+        self.db.add(doc)
+        return {
+            "file_storage_key": archived_path_str,
+            "backfilled_document_count": backfilled_document_count,
+        }
 
     def reparse_existing_document(self, *, user_id: int, document_id: int, reextract_pdf: bool = False) -> PdfDocument:
         """

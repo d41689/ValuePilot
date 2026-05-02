@@ -4,6 +4,7 @@ const assert = require('node:assert/strict');
 
 const {
   canPickDownloadDirectory,
+  getDownloadErrorMessage,
   getDocumentDownloadFilename,
   saveBlobToPickedDirectory,
 } = require('./documentDownload');
@@ -64,4 +65,23 @@ test('saveBlobToPickedDirectory fails clearly when folder picker is unavailable'
     () => saveBlobToPickedDirectory({}, new Blob(['pdf']), 'report.pdf'),
     /Folder selection is not supported/
   );
+});
+
+test('getDownloadErrorMessage parses JSON error blobs from download responses', async () => {
+  const error = {
+    message: 'Request failed with status code 404',
+    response: {
+      data: new Blob([JSON.stringify({ detail: 'Stored document file not found' })], {
+        type: 'application/json',
+      }),
+    },
+  };
+
+  assert.equal(await getDownloadErrorMessage(error), 'Stored document file not found');
+});
+
+test('getDownloadErrorMessage falls back to axios message when no backend detail exists', async () => {
+  const error = { message: 'Request failed with status code 404' };
+
+  assert.equal(await getDownloadErrorMessage(error), 'Request failed with status code 404');
 });

@@ -34,8 +34,33 @@ async function writeBlobToDirectory(directoryHandle, blob, fileName) {
   }
 }
 
+async function getDownloadErrorMessage(error, fallback = 'Unable to save this document.') {
+  const detail = error?.response?.data?.detail;
+  if (typeof detail === 'string') {
+    return detail;
+  }
+
+  const data = error?.response?.data;
+  if (data instanceof Blob) {
+    const text = await data.text();
+    if (text) {
+      try {
+        const parsed = JSON.parse(text);
+        if (typeof parsed?.detail === 'string') {
+          return parsed.detail;
+        }
+      } catch {
+        return text;
+      }
+    }
+  }
+
+  return error?.message || fallback;
+}
+
 module.exports = {
   canPickDownloadDirectory,
+  getDownloadErrorMessage,
   getDocumentDownloadFilename,
   pickDownloadDirectory,
   saveBlobToPickedDirectory,

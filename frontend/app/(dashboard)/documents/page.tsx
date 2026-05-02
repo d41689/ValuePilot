@@ -188,11 +188,13 @@ function formatPageCount(total: number, parsed?: number) {
 const { buildVisibleDocumentCompareSections } = documentCompareHelpers;
 const {
   canPickDownloadDirectory,
+  getDownloadErrorMessage,
   getDocumentDownloadFilename,
   pickDownloadDirectory,
   writeBlobToDirectory,
 } = documentDownloadHelpers as {
   canPickDownloadDirectory: (win: Window) => boolean;
+  getDownloadErrorMessage: (error: unknown, fallback?: string) => Promise<string>;
   getDocumentDownloadFilename: (fileName: string | null | undefined, fallbackId?: number | null) => string;
   pickDownloadDirectory: (win: Window) => Promise<unknown>;
   writeBlobToDirectory: (directoryHandle: unknown, blob: Blob, fileName: string) => Promise<void>;
@@ -332,9 +334,10 @@ export default function DocumentsPage() {
       if (error instanceof DOMException && error.name === 'AbortError') {
         return;
       }
+      const message = await getDownloadErrorMessage(error, 'Unable to save this document.');
       toast({
         title: 'Download failed',
-        description: getErrorMessage(error, 'Unable to save this document.'),
+        description: message,
         variant: 'destructive',
       });
     } finally {
