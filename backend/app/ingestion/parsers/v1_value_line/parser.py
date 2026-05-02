@@ -58,7 +58,23 @@ class ValueLineV1Parser(BaseParser):
         pattern1 = re.compile(rf'\b({ticker_pattern})\s*\(\s*{exchange_tokens}\s*\)', re.IGNORECASE)
 
         # Pattern 2: EXCHANGE-TICKER or EXCHANGE:TICKER e.g. "NYSE-ADM" / "NYSE: ADM"
-        pattern2 = re.compile(rf'\b{exchange_tokens}\s*[-:]\s*({ticker_pattern})(?=\s|$)', re.IGNORECASE)
+        header_metric_tokens = [
+            "PRICE",
+            "RATIO",
+            "P/E",
+            "P/ERATIO",
+            "YLD",
+            "VALUE",
+            "LINE",
+            "RECENT",
+            "TARGET",
+            "RANGE",
+        ]
+        header_metric_lookahead = "|".join(re.escape(token) for token in header_metric_tokens)
+        pattern2 = re.compile(
+            rf'\b{exchange_tokens}\s*[-:]\s*({ticker_pattern})(?=\s|$|{header_metric_lookahead})',
+            re.IGNORECASE,
+        )
 
         # Pattern 3: EXCHANGE TICKER e.g. "NASDAQ AAPL"
         pattern3 = re.compile(rf'\b{exchange_tokens}\s+({ticker_pattern})(?=\s|$)', re.IGNORECASE)
@@ -113,17 +129,7 @@ class ValueLineV1Parser(BaseParser):
             ]
             if not top_words:
                 return None, None
-            header_artifact_tokens = {
-                "PRICE",
-                "RATIO",
-                "P/E",
-                "YLD",
-                "LINE",
-                "VALUE",
-                "RECENT",
-                "TARGET",
-                "RANGE",
-            }
+            header_artifact_tokens = set(header_metric_tokens)
             ordered_words = sorted(
                 top_words,
                 key=lambda word: (

@@ -49,6 +49,13 @@ Out:
   - `docker compose run --rm api pytest -q tests/unit/test_value_line_mtdr_identity.py tests/unit/test_ingestion.py tests/unit/test_value_line_smith_parser.py`
   - `docker compose run --rm api pytest -q tests/unit/test_value_line_parser_fixture.py tests/unit/test_value_line_axs_parser.py tests/unit/test_value_line_bti_parser_fixture.py tests/unit/test_value_line_fnv_parser_fixture.py`
   - `docker compose run --rm api pytest -q`
+- 2026-05-01: Follow-up prod reparse failure: current word-coordinate identity works for `mtdr.pdf`, but text-only identity still fails on cached text line `NYSE-MTDRPRICE RATIO ...`. This can happen when the reparse button uses the default cached-text path and PDF word extraction is unavailable. Adding text-only coverage and fixing the exchange/ticker regex for ticker tokens glued to metric header words.
+- 2026-05-01: Added text-only identity coverage and a reparse regression where the cached MTDR page text is available but the stored PDF path is missing. Updated the text exchange/ticker pattern to stop before glued Value Line metric headers such as `PRICE`.
+- 2026-05-01: Verification passed:
+  - `docker compose exec api pytest -q tests/unit/test_value_line_mtdr_identity.py tests/unit/test_reparse_existing_document.py`
+  - `docker compose exec api python -m scripts.value_line_dump --pdf tests/fixtures/value_line/mtdr.pdf --out /tmp/mtdr.after.json`
+  - `docker compose exec api pytest -q tests/unit/test_ingestion.py tests/unit/test_value_line_smith_parser.py tests/unit/test_value_line_parser_fixture.py`
+  - `docker compose exec api pytest -q tests/unit/test_value_line_axs_parser.py tests/unit/test_value_line_bti_parser_fixture.py tests/unit/test_value_line_fnv_parser_fixture.py`
 
 ## Contract Checklist
 

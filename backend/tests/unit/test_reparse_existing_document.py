@@ -1,5 +1,7 @@
 from datetime import date
+from pathlib import Path
 
+from app.ingestion.pdf_extractor import PdfExtractor
 from app.models.users import User
 from app.models.stocks import Stock
 from app.models.artifacts import PdfDocument, DocumentPage
@@ -133,6 +135,50 @@ def test_reparse_existing_document_falls_back_to_pdf_words_when_cached_text_miss
     )
     assert facts
     assert any(f.value_numeric == 10.0 for f in facts)
+
+
+def test_reparse_existing_document_handles_mtdr_cached_text_without_pdf_words(db_session):
+    pdf_path = Path("tests/fixtures/value_line/mtdr.pdf")
+    pages = PdfExtractor.extract_pages_with_words(pdf_path)
+    page_number, text, _ = pages[0]
+
+    user = User(email="reparse_mtdr_cached_text@example.com")
+    db_session.add(user)
+    db_session.commit()
+
+    doc = PdfDocument(
+        user_id=user.id,
+        file_name="mtdr.pdf",
+        source="upload",
+        file_storage_key="/tmp/mtdr-missing.pdf",
+        parse_status="failed",
+        raw_text=text,
+    )
+    db_session.add(doc)
+    db_session.commit()
+
+    db_session.add(
+        DocumentPage(
+            document_id=doc.id,
+            page_number=page_number,
+            page_text=text,
+            text_extraction_method="native_text",
+        )
+    )
+    db_session.commit()
+
+    IngestionService(db_session).reparse_existing_document(
+        user_id=user.id,
+        document_id=doc.id,
+        reextract_pdf=False,
+    )
+
+    db_session.refresh(doc)
+    assert doc.parse_status == "parsed"
+    assert doc.report_date == date(2026, 4, 24)
+    assert doc.stock.ticker == "MTDR"
+    assert doc.stock.exchange == "NYSE"
+    assert doc.stock.company_name == "MATADOR RESOURCES"
 
 
 def test_reparse_existing_document_multi_page_updates_all_pages(db_session):

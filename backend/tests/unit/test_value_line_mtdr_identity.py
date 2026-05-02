@@ -15,3 +15,15 @@ def test_value_line_mtdr_identity_handles_ticker_glued_to_price_header():
     assert identity.ticker == "MTDR"
     assert identity.exchange == "NYSE"
     assert identity.company_name == "MATADOR RESOURCES"
+
+
+def test_value_line_mtdr_identity_handles_ticker_glued_to_price_header_without_words():
+    pdf_path = Path("tests/fixtures/value_line/mtdr.pdf")
+    pages = PdfExtractor.extract_pages_with_words(pdf_path)
+    text = "\n".join(page_text for _, page_text, _ in pages)
+
+    identity = ValueLineV1Parser(text).extract_identity()
+
+    assert identity.ticker == "MTDR"
+    assert identity.exchange == "NYSE"
+    assert identity.company_name == "MATADOR RESOURCES"
