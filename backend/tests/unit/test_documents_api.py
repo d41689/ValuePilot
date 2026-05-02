@@ -324,6 +324,82 @@ def test_documents_raw_text_endpoint(client, db_session, user_factory, auth_head
     assert resp.json()["raw_text"] == "hello world"
 
 
+def test_document_download_endpoint_streams_owned_pdf(
+    client, db_session, user_factory, auth_headers, tmp_path
+):
+    user = user_factory("documents_download@example.com")
+    headers = auth_headers(user)
+    pdf_path = tmp_path / "stored-report.pdf"
+    pdf_bytes = b"%PDF-1.4\nstored report\n%%EOF\n"
+    pdf_path.write_bytes(pdf_bytes)
+
+    doc = PdfDocument(
+        user_id=user.id,
+        file_name="AOS report.pdf",
+        source="upload",
+        file_storage_key=str(pdf_path),
+        parse_status="parsed",
+        upload_time=datetime.utcnow(),
+    )
+    db_session.add(doc)
+    db_session.commit()
+
+    resp = client.get(f"/api/v1/documents/{doc.id}/download", headers=headers)
+
+    assert resp.status_code == 200, resp.text
+    assert resp.content == pdf_bytes
+    assert resp.headers["content-type"].startswith("application/pdf")
+    assert "attachment" in resp.headers["content-disposition"]
+    assert "AOS%20report.pdf" in resp.headers["content-disposition"]
+
+
+def test_document_download_endpoint_requires_document_ownership(
+    client, db_session, user_factory, auth_headers, tmp_path
+):
+    owner = user_factory("documents_download_owner@example.com")
+    intruder = user_factory("documents_download_intruder@example.com")
+    pdf_path = tmp_path / "owned.pdf"
+    pdf_path.write_bytes(b"%PDF-1.4\nowned\n%%EOF\n")
+
+    doc = PdfDocument(
+        user_id=owner.id,
+        file_name="owned.pdf",
+        source="upload",
+        file_storage_key=str(pdf_path),
+        parse_status="parsed",
+        upload_time=datetime.utcnow(),
+    )
+    db_session.add(doc)
+    db_session.commit()
+
+    resp = client.get(f"/api/v1/documents/{doc.id}/download", headers=auth_headers(intruder))
+
+    assert resp.status_code == 404
+
+
+def test_document_download_endpoint_reports_missing_storage_file(
+    client, db_session, user_factory, auth_headers, tmp_path
+):
+    user = user_factory("documents_download_missing@example.com")
+    headers = auth_headers(user)
+
+    doc = PdfDocument(
+        user_id=user.id,
+        file_name="missing.pdf",
+        source="upload",
+        file_storage_key=str(tmp_path / "missing.pdf"),
+        parse_status="parsed",
+        upload_time=datetime.utcnow(),
+    )
+    db_session.add(doc)
+    db_session.commit()
+
+    resp = client.get(f"/api/v1/documents/{doc.id}/download", headers=headers)
+
+    assert resp.status_code == 404
+    assert resp.json()["detail"] == "Stored document file not found"
+
+
 def test_delete_document_removes_dependents_and_reconciles_current(
     client,
     db_session,
