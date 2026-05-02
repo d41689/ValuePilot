@@ -273,6 +273,181 @@ def test_documents_raw_text_endpoint(client, db_session, user_factory, auth_head
     assert resp.json()["raw_text"] == "hello world"
 
 
+def test_delete_document_removes_dependents_and_reconciles_current(
+    client,
+    db_session,
+    user_factory,
+    auth_headers,
+    monkeypatch,
+):
+    user = user_factory("documents_delete@example.com")
+    headers = auth_headers(user)
+
+    stock = Stock(ticker="DEL", exchange="NYSE", company_name="Delete Co")
+    db_session.add(stock)
+    db_session.commit()
+
+    old_doc = PdfDocument(
+        user_id=user.id,
+        file_name="delete-old.pdf",
+        source="upload",
+        file_storage_key="/tmp/delete-old.pdf",
+        parse_status="parsed",
+        report_date=date(2025, 12, 31),
+        upload_time=datetime.utcnow(),
+        stock_id=stock.id,
+    )
+    target_doc = PdfDocument(
+        user_id=user.id,
+        file_name="delete-target.pdf",
+        source="upload",
+        file_storage_key="/tmp/delete-target.pdf",
+        parse_status="parsed",
+        report_date=date(2026, 1, 31),
+        upload_time=datetime.utcnow(),
+        stock_id=stock.id,
+    )
+    db_session.add_all([old_doc, target_doc])
+    db_session.commit()
+
+    page = DocumentPage(
+        document_id=target_doc.id,
+        page_number=1,
+        page_text="target",
+        text_extraction_method="native_text",
+    )
+    extraction = MetricExtraction(
+        user_id=user.id,
+        document_id=target_doc.id,
+        page_number=1,
+        field_key="recent_price",
+        raw_value_text="120",
+        original_text_snippet="Recent price 120",
+        confidence_score=0.9,
+    )
+    db_session.add_all([page, extraction])
+    db_session.flush()
+
+    old_fact = MetricFact(
+        user_id=user.id,
+        stock_id=stock.id,
+        metric_key="mkt.price",
+        value_json={"raw": "100"},
+        value_numeric=100.0,
+        unit="USD",
+        period_type="AS_OF",
+        as_of_date=date(2026, 1, 31),
+        source_type="parsed",
+        source_document_id=old_doc.id,
+        is_current=False,
+    )
+    target_fact = MetricFact(
+        user_id=user.id,
+        stock_id=stock.id,
+        metric_key="mkt.price",
+        value_json={"raw": "120"},
+        value_numeric=120.0,
+        unit="USD",
+        period_type="AS_OF",
+        as_of_date=date(2026, 1, 31),
+        source_type="parsed",
+        source_ref_id=extraction.id,
+        source_document_id=target_doc.id,
+        is_current=True,
+    )
+    manual_fact = MetricFact(
+        user_id=user.id,
+        stock_id=stock.id,
+        metric_key="val.pe",
+        value_json={"raw": "20", "correction": True},
+        value_numeric=20.0,
+        period_type="AS_OF",
+        as_of_date=date(2026, 1, 31),
+        source_type="manual",
+        source_document_id=target_doc.id,
+        is_current=True,
+    )
+    stale_calculated_fact = MetricFact(
+        user_id=user.id,
+        stock_id=stock.id,
+        metric_key="score.piotroski.total",
+        value_json={"score": 9},
+        value_numeric=9.0,
+        period_type="FY",
+        period_end_date=date(2026, 12, 31),
+        source_type="calculated",
+        is_current=True,
+    )
+    db_session.add_all([old_fact, target_fact, manual_fact, stale_calculated_fact])
+    db_session.commit()
+
+    page_id = page.id
+    extraction_id = extraction.id
+    old_fact_id = old_fact.id
+    target_fact_id = target_fact.id
+    manual_fact_id = manual_fact.id
+    stale_calculated_fact_id = stale_calculated_fact.id
+    target_doc_id = target_doc.id
+    calculator_calls: list[tuple[str, int, int]] = []
+
+    def _record_ratio_call(self, *, user_id: int, stock_id: int) -> None:
+        calculator_calls.append(("ratios", user_id, stock_id))
+
+    def _record_fscore_call(self, *, user_id: int, stock_id: int) -> None:
+        calculator_calls.append(("fscore", user_id, stock_id))
+
+    monkeypatch.setattr(
+        "app.services.document_dedupe_service.ValueLineRatioCalculator.calculate_for_stock",
+        _record_ratio_call,
+    )
+    monkeypatch.setattr(
+        "app.services.document_dedupe_service.PiotroskiFScoreCalculator.calculate_for_stock",
+        _record_fscore_call,
+    )
+
+    resp = client.delete(f"/api/v1/documents/{target_doc_id}", headers=headers)
+
+    assert resp.status_code == 200, resp.text
+    payload = resp.json()
+    assert payload["deleted_document_id"] == target_doc_id
+    assert payload["deleted_fact_count"] == 2
+    assert db_session.get(PdfDocument, target_doc_id) is None
+    assert db_session.get(DocumentPage, page_id) is None
+    assert db_session.get(MetricExtraction, extraction_id) is None
+    assert db_session.get(MetricFact, target_fact_id) is None
+    assert db_session.get(MetricFact, manual_fact_id) is None
+    assert db_session.get(MetricFact, stale_calculated_fact_id) is None
+
+    refreshed_old_fact = db_session.get(MetricFact, old_fact_id)
+    assert refreshed_old_fact is not None
+    assert refreshed_old_fact.is_current is True
+    assert calculator_calls == [
+        ("ratios", user.id, stock.id),
+        ("fscore", user.id, stock.id),
+    ]
+
+
+def test_delete_document_requires_owner(client, db_session, user_factory, auth_headers):
+    owner = user_factory("documents_delete_owner@example.com")
+    intruder = user_factory("documents_delete_intruder@example.com")
+
+    doc = PdfDocument(
+        user_id=owner.id,
+        file_name="owned-delete.pdf",
+        source="upload",
+        file_storage_key="/tmp/owned-delete.pdf",
+        parse_status="parsed",
+        upload_time=datetime.utcnow(),
+    )
+    db_session.add(doc)
+    db_session.commit()
+
+    resp = client.delete(f"/api/v1/documents/{doc.id}", headers=auth_headers(intruder))
+
+    assert resp.status_code == 404
+    assert db_session.get(PdfDocument, doc.id) is not None
+
+
 def test_document_evidence_endpoint_returns_evidence_only_fields(
     client, db_session, user_factory, auth_headers
 ):

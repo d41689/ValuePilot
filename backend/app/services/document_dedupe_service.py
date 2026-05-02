@@ -203,26 +203,7 @@ class DocumentDedupeService:
                     as_of_date=as_of_date,
                 )
 
-            for affected_user_id, affected_stock_id in affected_user_stock_pairs:
-                self.db.execute(
-                    delete(MetricFact).where(
-                        MetricFact.user_id == affected_user_id,
-                        MetricFact.stock_id == affected_stock_id,
-                        MetricFact.source_type == "calculated",
-                        MetricFact.metric_key.in_(sorted(REFRESH_CALCULATED_KEYS)),
-                    )
-                )
-            self.db.flush()
-
-            for affected_user_id, affected_stock_id in affected_user_stock_pairs:
-                ValueLineRatioCalculator(self.db).calculate_for_stock(
-                    user_id=affected_user_id,
-                    stock_id=affected_stock_id,
-                )
-                PiotroskiFScoreCalculator(self.db).calculate_for_stock(
-                    user_id=affected_user_id,
-                    stock_id=affected_stock_id,
-                )
+            self._refresh_calculated_facts(affected_user_stock_pairs)
 
             self.db.commit()
             summary["affected_user_stock_pairs"] = [
@@ -231,6 +212,104 @@ class DocumentDedupeService:
             ]
             summary["preserved_non_parsed_fact_count"] = preserved_fact_count
             return summary
+        except Exception:
+            self.db.rollback()
+            raise
+
+    def delete_document(
+        self,
+        *,
+        user_id: int,
+        document_id: int,
+    ) -> Optional[dict[str, Any]]:
+        document = self.db.scalar(
+            select(PdfDocument).where(
+                PdfDocument.id == document_id,
+                PdfDocument.user_id == user_id,
+            )
+        )
+        if document is None:
+            return None
+
+        try:
+            affected_slots = self.db.execute(
+                select(
+                    MetricFact.user_id,
+                    MetricFact.stock_id,
+                    MetricFact.metric_key,
+                    MetricFact.period_type,
+                    MetricFact.period_end_date,
+                    MetricFact.as_of_date,
+                )
+                .where(
+                    MetricFact.source_document_id == document_id,
+                    MetricFact.source_type == "parsed",
+                )
+                .distinct()
+            ).all()
+            affected_user_stock_pairs = {
+                (fact_user_id, fact_stock_id)
+                for fact_user_id, fact_stock_id, *_ in affected_slots
+            }
+            if document.stock_id is not None:
+                affected_user_stock_pairs.add((document.user_id, document.stock_id))
+
+            deleted_fact_count = (
+                self.db.execute(
+                    delete(MetricFact).where(
+                        MetricFact.source_document_id == document_id
+                    )
+                ).rowcount
+                or 0
+            )
+            deleted_extraction_count = (
+                self.db.execute(
+                    delete(MetricExtraction).where(
+                        MetricExtraction.document_id == document_id
+                    )
+                ).rowcount
+                or 0
+            )
+            deleted_page_count = (
+                self.db.execute(
+                    delete(DocumentPage).where(DocumentPage.document_id == document_id)
+                ).rowcount
+                or 0
+            )
+            self.db.execute(delete(PdfDocument).where(PdfDocument.id == document_id))
+            self.db.flush()
+
+            for (
+                slot_user_id,
+                slot_stock_id,
+                metric_key,
+                period_type,
+                period_end_date,
+                as_of_date,
+            ) in affected_slots:
+                self._reconcile_parsed_fact_current_slot(
+                    user_id=slot_user_id,
+                    stock_id=slot_stock_id,
+                    metric_key=metric_key,
+                    period_type=period_type,
+                    period_end_date=period_end_date,
+                    as_of_date=as_of_date,
+                )
+
+            affected_pairs = sorted(affected_user_stock_pairs)
+            self._refresh_calculated_facts(affected_pairs)
+
+            self.db.commit()
+            return {
+                "deleted_document_id": document_id,
+                "deleted_page_count": deleted_page_count,
+                "deleted_extraction_count": deleted_extraction_count,
+                "deleted_fact_count": deleted_fact_count,
+                "affected_user_stock_pairs": [
+                    {"user_id": pair_user_id, "stock_id": pair_stock_id}
+                    for pair_user_id, pair_stock_id in affected_pairs
+                ],
+            }
         except Exception:
             self.db.rollback()
             raise
@@ -270,6 +349,31 @@ class DocumentDedupeService:
                 self.db.add(fact)
                 preserved_fact_count += 1
         return preserved_fact_count
+
+    def _refresh_calculated_facts(
+        self,
+        affected_user_stock_pairs: list[tuple[int, int]],
+    ) -> None:
+        for affected_user_id, affected_stock_id in affected_user_stock_pairs:
+            self.db.execute(
+                delete(MetricFact).where(
+                    MetricFact.user_id == affected_user_id,
+                    MetricFact.stock_id == affected_stock_id,
+                    MetricFact.source_type == "calculated",
+                    MetricFact.metric_key.in_(sorted(REFRESH_CALCULATED_KEYS)),
+                )
+            )
+        self.db.flush()
+
+        for affected_user_id, affected_stock_id in affected_user_stock_pairs:
+            ValueLineRatioCalculator(self.db).calculate_for_stock(
+                user_id=affected_user_id,
+                stock_id=affected_stock_id,
+            )
+            PiotroskiFScoreCalculator(self.db).calculate_for_stock(
+                user_id=affected_user_id,
+                stock_id=affected_stock_id,
+            )
 
     def _reconcile_parsed_fact_current_slot(
         self,
