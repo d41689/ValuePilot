@@ -31,6 +31,8 @@
 - Browser folder saving depends on `window.showDirectoryPicker`; unsupported browsers should show a clear toast.
 - Added `GET /api/v1/documents/{document_id}/download` to stream the owned stored PDF as an attachment.
 - The page chooses the target folder before fetching the PDF so canceled selections do not trigger a backend download.
+- Production download 404 can happen when the API container loses `/code/storage/uploads`; production compose must persist that directory.
+- Download requests use `responseType: blob`, so frontend error handling must parse JSON error blobs to show backend details.
 
 ## Verification
 - Red check observed before implementation: `docker compose exec api pytest -q tests/unit/test_documents_api.py -q` failed on missing download route.
@@ -38,6 +40,16 @@
 - Passed: `docker compose exec web node --test lib/documentDownload.test.js`
 - Passed: `docker compose exec web npm run lint`
 - Partial: `docker compose exec web npm run build` compiled successfully and passed type checks, then failed while prerendering existing route `/watchlist/f-score-compare` with `Cannot read properties of null (reading 'useState')`.
+- Follow-up passed: `docker compose exec web node --test lib/documentDownload.test.js`
+- Follow-up passed: `docker compose exec web npm run lint`
+- Follow-up passed: `docker compose exec api pytest -q tests/unit/test_documents_api.py -q`
+
+## Follow-up: Production 404
+- `https://invest.richmom.vip/documents` showed `Request failed with status code 404` for `/api/v1/documents/39/download`.
+- Likely root cause for existing deployed documents: production API did not persist `/code/storage/uploads`, so original uploaded PDFs can disappear after API container replacement.
+- Added production compose mount `./storage/uploads:/code/storage/uploads` for future uploads.
+- Added frontend parsing for JSON error blobs returned from download requests, so future 404s can show `Stored document file not found` instead of a generic Axios status.
+- Existing rows whose original PDF files are already missing on the server will need the original PDFs restored into `/code/storage/uploads` or re-uploaded/re-ingested.
 
 ## Contract Gate
 - Screeners unchanged; they still do not query document download output.

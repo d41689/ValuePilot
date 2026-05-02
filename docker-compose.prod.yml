@@ -46,6 +46,7 @@ services:
       EDGAR_SCHEDULER_ENABLED: "true"
     volumes:
       - ./docs:/code/docs:ro
+      - ./storage/uploads:/code/storage/uploads
     command: >
       sh -c "alembic upgrade head &&
              uvicorn app.main:app --host 0.0.0.0 --port 8000"
