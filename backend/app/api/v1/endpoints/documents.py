@@ -26,6 +26,7 @@ from app.ingestion.parsers.v1_value_line.page_json import (
     _quarter_month_order as _value_line_quarter_month_order,
 )
 from app.services.active_report_resolver import resolve_active_reports
+from app.services.document_dedupe_service import DocumentDedupeService
 from app.services.ingestion_service import IngestionService
 from app.services.calculated_metrics.value_line_ratios import ValueLineRatioCalculator
 from app.services.calculated_metrics.piotroski_f_score import PiotroskiFScoreCalculator
@@ -298,6 +299,22 @@ def reparse_document(
         return {"id": doc.id, "status": doc.parse_status}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Reparse failed: {str(e)}")
+
+
+@router.delete("/{document_id}", response_model=dict)
+def delete_document(
+    *,
+    session: SessionDep,
+    current_user: CurrentUser,
+    document_id: int,
+) -> Any:
+    result = DocumentDedupeService(session).delete_document(
+        user_id=current_user.id,
+        document_id=document_id,
+    )
+    if result is None:
+        raise HTTPException(status_code=404, detail="Document not found")
+    return result
 
 
 @router.get("/compare", response_model=dict)

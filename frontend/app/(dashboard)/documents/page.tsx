@@ -3,7 +3,16 @@
 import Link from 'next/link';
 import { useEffect, useState } from 'react';
 import { useMutation, useQuery } from '@tanstack/react-query';
-import { AlertTriangle, FileSearch, FileText, Loader2, RefreshCcw, Upload, X } from 'lucide-react';
+import {
+  AlertTriangle,
+  FileSearch,
+  FileText,
+  Loader2,
+  RefreshCcw,
+  Trash2,
+  Upload,
+  X,
+} from 'lucide-react';
 
 import apiClient from '@/lib/api/client';
 import activeReportHelpers from '@/lib/documentActiveReport';
@@ -187,6 +196,7 @@ export default function DocumentsPage() {
   const [detailError, setDetailError] = useState<string | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
   const [activeReparseId, setActiveReparseId] = useState<number | null>(null);
+  const [activeDeleteId, setActiveDeleteId] = useState<number | null>(null);
   const [compareLeftId, setCompareLeftId] = useState<number | null>(null);
   const [compareRightId, setCompareRightId] = useState<number | null>(null);
   const [compareData, setCompareData] = useState<CompareResponse | null>(null);
@@ -232,6 +242,50 @@ export default function DocumentsPage() {
       });
     },
   });
+
+  const deleteMutation = useMutation({
+    mutationFn: async (docId: number) => {
+      const res = await apiClient.delete(`/documents/${docId}`);
+      return res.data;
+    },
+    onSuccess: (_data, docId) => {
+      setActiveDeleteId(null);
+      if (detail?.doc.id === docId) {
+        setDetail(null);
+        setDetailData('');
+        setDetailEvidence([]);
+        setDetailError(null);
+      }
+      if (compareLeftId === docId) {
+        setCompareLeftId(null);
+      }
+      if (compareRightId === docId) {
+        setCompareRightId(null);
+      }
+      documentsQuery.refetch();
+      toast({
+        title: 'Document deleted',
+        description: 'The document and its parsed data were removed.',
+      });
+    },
+    onError: (error: unknown) => {
+      setActiveDeleteId(null);
+      toast({
+        title: 'Delete failed',
+        description: getErrorMessage(error, 'Unable to delete document.'),
+        variant: 'destructive',
+      });
+    },
+  });
+
+  const handleDelete = (doc: DocumentRow) => {
+    const confirmed = window.confirm(
+      `Delete document #${doc.id} (${doc.file_name}) and its parsed data?`
+    );
+    if (!confirmed) return;
+    setActiveDeleteId(doc.id);
+    deleteMutation.mutate(doc.id);
+  };
 
   const handleView = async (doc: DocumentRow, type: 'parsed' | 'raw' | 'evidence') => {
     setDetail({ doc, type });
@@ -492,6 +546,19 @@ export default function DocumentsPage() {
                             onClick={() => setCompareRightId(doc.id)}
                           >
                             Set Right
+                          </Button>
+                          <Button
+                            variant="destructive"
+                            size="sm"
+                            onClick={() => handleDelete(doc)}
+                            disabled={deleteMutation.isPending}
+                          >
+                            {deleteMutation.isPending && activeDeleteId === doc.id ? (
+                              <Loader2 className="h-3 w-3 animate-spin" />
+                            ) : (
+                              <Trash2 className="h-3 w-3" />
+                            )}
+                            Delete
                           </Button>
                         </div>
                       </TableCell>

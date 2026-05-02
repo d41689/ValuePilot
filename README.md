@@ -22,6 +22,21 @@ ValuePilot is a financial analysis engine designed to parse Value Line equity re
 - **Run Tests**: `docker-compose exec api pytest`
 - **Linting**: `docker-compose exec api ruff check .`
 
+## Document Maintenance
+
+Use the dedupe cleanup command when duplicate Value Line documents exist for the same
+user, stock, and report date. Run dry-run first to inspect the duplicate groups:
+
+```bash
+docker compose exec api python -m scripts.dedupe_documents
+```
+
+Apply the cleanup only after reviewing the dry-run output:
+
+```bash
+docker compose exec api python -m scripts.dedupe_documents --apply
+```
+
 ## Key Features (v0.1)
 - **PDF Ingestion**: Upload Value Line PDFs.
 - **Parsing**: Auto-extract Ticker, Price, P/E, Yield.
