@@ -431,7 +431,7 @@ export default function DocumentsPage() {
                   <TableHead className="w-[72px]">ID</TableHead>
                   <TableHead>File Name</TableHead>
                   <TableHead>Template</TableHead>
-                  <TableHead>Companies</TableHead>
+                  <TableHead>Ticker</TableHead>
                   <TableHead>Pages</TableHead>
                   <TableHead>Status</TableHead>
                   <TableHead>Active Report</TableHead>
