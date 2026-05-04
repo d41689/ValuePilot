@@ -119,6 +119,7 @@ DOCUMENT_REVIEW_ANNUAL_RATES_FIELDS = {
 
 DOCUMENT_REVIEW_QUARTERLY_TABLE_FIELDS = {
     "quarterly_sales_usd_millions",
+    "quarterly_revenues_usd_millions",
     "earnings_per_share",
     "quarterly_dividends_paid_per_share",
 }
@@ -576,6 +577,7 @@ def read_document_review(
         "summary": _document_review_summary(facts, document_stock.id if document_stock else None),
         "annual_rates": _document_review_annual_rates(session, doc),
         "quarterly_sales": _document_review_quarterly_sales(session, doc),
+        "quarterly_revenues": _document_review_quarterly_revenues(session, doc),
         "earnings_per_share": _document_review_earnings_per_share(session, doc),
         "quarterly_dividends_paid": _document_review_quarterly_dividends_paid(session, doc),
         "annual_financials": _document_review_annual_financials(session, doc),
@@ -1130,6 +1132,22 @@ def _document_review_quarterly_sales(
     return quarterly_sales or None
 
 
+def _document_review_quarterly_revenues(
+    session: SessionDep,
+    doc: PdfDocument,
+) -> Optional[dict[str, Any]]:
+    by_key = _document_review_quarterly_extractions(session, doc)
+    if "quarterly_revenues_usd_millions" not in by_key:
+        return None
+    quarterly_revenues = _build_value_line_quarterly_block(
+        by_key.get("quarterly_revenues_usd_millions"),
+        unit="USD_millions",
+        report_date=_iso_date(doc.report_date),
+        month_order=_value_line_quarter_month_order(doc.raw_text or ""),
+    )
+    return quarterly_revenues or None
+
+
 def _document_review_earnings_per_share(
     session: SessionDep,
     doc: PdfDocument,
@@ -1151,8 +1169,6 @@ def _document_review_quarterly_dividends_paid(
     doc: PdfDocument,
 ) -> Optional[dict[str, Any]]:
     by_key = _document_review_quarterly_extractions(session, doc)
-    if "quarterly_dividends_paid_per_share" not in by_key:
-        return None
     dividends = _build_value_line_quarterly_dividends_paid(
         doc.raw_text or "",
         by_key.get("quarterly_dividends_paid_per_share"),
@@ -1160,6 +1176,8 @@ def _document_review_quarterly_dividends_paid(
         report_date=_iso_date(doc.report_date),
         adr_layout=False,
     )
+    if not dividends.get("by_year") and not dividends.get("note"):
+        return None
     return dividends or None
 
 

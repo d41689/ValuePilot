@@ -41,6 +41,13 @@ type StockSummary = {
     metric_key: string;
     period_type: string | null;
     period_end_date: string | null;
+    selection_rule?: string | null;
+    current_value_numeric?: number | null;
+    current_value_text?: string | null;
+    current_report_date?: string | null;
+    previous_value_numeric?: number | null;
+    previous_value_text?: string | null;
+    previous_report_date?: string | null;
     observations: Array<{
       value_numeric: number | null;
       value_text: string | null;

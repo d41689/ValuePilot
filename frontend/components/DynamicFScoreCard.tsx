@@ -15,6 +15,7 @@ import {
   TableRow,
 } from '@/components/ui/table';
 import {
+  formatDynamicFScoreInputValue,
   formatDynamicFScoreValue,
   normalizeDynamicFScoreCard,
   type DynamicFScoreApiCard,
@@ -96,7 +97,7 @@ function FormulaInfo({
                     key={`${value.metricKey}-${value.periodEndDate}-${value.valueNumeric}-${index}`}
                     className="font-mono text-muted-foreground"
                   >
-                    {value.metricKey || 'unknown'} = {formatDynamicFScoreValue(value.valueNumeric)}
+                    {value.metricKey || 'unknown'} = {formatDynamicFScoreInputValue(value.valueNumeric)}
                     {value.periodEndDate ? ` · ${value.periodEndDate}` : ''}
                     {value.factNature ? ` · ${value.factNature}` : ''}
                   </div>

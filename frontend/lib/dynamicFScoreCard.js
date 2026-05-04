@@ -83,7 +83,18 @@ function formatDynamicFScoreValue(value) {
   return Number.isInteger(value) ? String(value) : value.toFixed(1);
 }
 
+function formatDynamicFScoreInputValue(value) {
+  if (value === null || value === undefined || !Number.isFinite(value)) {
+    return '—';
+  }
+  if (Number.isInteger(value)) {
+    return String(value);
+  }
+  return value.toFixed(4).replace(/\.?0+$/, '');
+}
+
 module.exports = {
+  formatDynamicFScoreInputValue,
   formatDynamicFScoreValue,
   normalizeDynamicFScoreCard,
   normalizeFormulaDetails,

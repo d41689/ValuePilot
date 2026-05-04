@@ -1249,6 +1249,52 @@ def test_lookup_stock_by_ticker_returns_active_report_metadata(client, db_sessio
     assert payload["active_report_date"] == "2026-04-09"
 
 
+def test_lookup_stock_by_ticker_prefers_duplicate_with_active_report(client, db_session):
+    user = User(email="ticker_duplicate_active@example.com")
+    stale_stock = Stock(ticker="DUP_TEST", exchange="US", company_name="Duplicate Empty", is_active=True)
+    active_stock = Stock(ticker="DUP_TEST", exchange="NDQ", company_name="Duplicate Active", is_active=True)
+    db_session.add_all([user, stale_stock, active_stock])
+    db_session.commit()
+
+    doc = PdfDocument(
+        user_id=user.id,
+        file_name="dup-active.pdf",
+        source="upload",
+        file_storage_key="/tmp/dup-active.pdf",
+        parse_status="parsed",
+        stock_id=active_stock.id,
+        report_date=date(2026, 5, 1),
+    )
+    db_session.add(doc)
+    db_session.commit()
+
+    db_session.add(
+        MetricFact(
+            user_id=user.id,
+            stock_id=active_stock.id,
+            metric_key="mkt.price",
+            value_json={"raw": "429.99", "fact_nature": "snapshot"},
+            value_numeric=429.99,
+            unit="USD",
+            period_type="AS_OF",
+            period_end_date=date(2026, 5, 1),
+            source_type="parsed",
+            source_document_id=doc.id,
+            is_current=True,
+        )
+    )
+    db_session.commit()
+
+    response = client.get("/api/v1/stocks/by_ticker/dup_test")
+    assert response.status_code == 200
+
+    payload = response.json()
+    assert payload["id"] == active_stock.id
+    assert payload["exchange"] == "NDQ"
+    assert payload["price"] == 429.99
+    assert payload["active_report_document_id"] == doc.id
+
+
 def test_lookup_stock_by_ticker_returns_actual_conflicts(client, db_session):
     user = User(email="ticker_conflicts@example.com")
     stock = Stock(ticker="CONF_TEST", exchange="NYSE", company_name="Conflict Co", is_active=True)
@@ -1370,6 +1416,15 @@ def test_lookup_stock_by_ticker_returns_actual_conflicts(client, db_session):
             "metric_key": "is.net_income",
             "period_type": "FY",
             "period_end_date": "2024-12-31",
+            "selection_rule": "latest_report_wins_for_same_actual_period",
+            "current_value_numeric": 120.0,
+            "current_value_text": None,
+            "current_source_document_id": new_doc.id,
+            "current_report_date": "2026-04-09",
+            "previous_value_numeric": 100.0,
+            "previous_value_text": None,
+            "previous_source_document_id": old_doc.id,
+            "previous_report_date": "2026-01-09",
             "observations": [
                 {
                     "source_document_id": new_doc.id,

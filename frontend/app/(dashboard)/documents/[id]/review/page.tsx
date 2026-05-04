@@ -110,6 +110,7 @@ type ReviewPayload = {
   summary: Record<string, ReviewSummaryMetric | null>;
   annual_rates: Record<string, unknown> | null;
   quarterly_sales: Record<string, unknown> | null;
+  quarterly_revenues: Record<string, unknown> | null;
   earnings_per_share: Record<string, unknown> | null;
   quarterly_dividends_paid: Record<string, unknown> | null;
   annual_financials: Record<string, unknown> | null;
@@ -326,9 +327,15 @@ export default function DocumentReviewPage() {
     [reviewQuery.data?.annual_rates]
   );
   const quarterlySalesTable = useMemo<ReviewParserTable>(
-    () => buildDocumentReviewQuarterlyTable(reviewQuery.data?.quarterly_sales ?? null),
-    [reviewQuery.data?.quarterly_sales]
+    () =>
+      buildDocumentReviewQuarterlyTable(
+        reviewQuery.data?.quarterly_revenues ?? reviewQuery.data?.quarterly_sales ?? null
+      ),
+    [reviewQuery.data?.quarterly_revenues, reviewQuery.data?.quarterly_sales]
   );
+  const quarterlySalesTitle = reviewQuery.data?.quarterly_revenues
+    ? 'QUARTERLY REVENUES'
+    : 'QUARTERLY SALES';
   const earningsPerShareTable = useMemo<ReviewParserTable>(
     () => buildDocumentReviewQuarterlyTable(reviewQuery.data?.earnings_per_share ?? null),
     [reviewQuery.data?.earnings_per_share]
@@ -625,7 +632,7 @@ export default function DocumentReviewPage() {
           </Card>
           <ReviewTableCard title="ANNUAL RATES" table={annualRatesTable} />
           <ReviewTableCard
-            title="QUARTERLY SALES"
+            title={quarterlySalesTitle}
             table={quarterlySalesTable}
             minWidth="min-w-[620px]"
           />

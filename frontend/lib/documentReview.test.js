@@ -664,6 +664,26 @@ test('buildDocumentReviewProjections maps high and low scenarios into a table', 
   );
 });
 
+test('buildDocumentReviewProjections formats ratio gains above 100 percent', () => {
+  const projections = buildDocumentReviewProjections([
+    {
+      key: 'target_projection',
+      label: 'Target & Projection',
+      items: [
+        {
+          metric_key: 'long_term_projection_high_price_gain_pct',
+          label: 'High Price Gain',
+          display_value: '1.05',
+          value_numeric: 1.05,
+          unit: 'ratio',
+        },
+      ],
+    },
+  ]);
+
+  assert.equal(projections.rows[0].cells[1].displayValue, '105.0%');
+});
+
 test('buildDocumentReviewTotalReturn maps Value Line total return into a table', () => {
   const table = buildDocumentReviewTotalReturn({
     as_of_date: '2025-12-29',

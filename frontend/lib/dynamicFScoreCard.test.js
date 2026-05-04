@@ -3,6 +3,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 
 const {
+  formatDynamicFScoreInputValue,
   formatDynamicFScoreValue,
   normalizeDynamicFScoreCard,
   visibleFallbackFormulas,
@@ -129,6 +130,13 @@ test('formatDynamicFScoreValue keeps score cells compact', () => {
   assert.equal(formatDynamicFScoreValue(1), '1');
   assert.equal(formatDynamicFScoreValue(7.5), '7.5');
   assert.equal(formatDynamicFScoreValue(null), '—');
+});
+
+test('formatDynamicFScoreInputValue keeps ratio precision in tooltips', () => {
+  assert.equal(formatDynamicFScoreInputValue(1.106791338582677), '1.1068');
+  assert.equal(formatDynamicFScoreInputValue(1.1), '1.1');
+  assert.equal(formatDynamicFScoreInputValue(8996000000), '8996000000');
+  assert.equal(formatDynamicFScoreInputValue(null), '—');
 });
 
 test('visibleFallbackFormulas removes the used formula from fallback display', () => {

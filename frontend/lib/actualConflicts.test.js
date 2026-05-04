@@ -13,6 +13,11 @@ test('buildActualConflictDisplayItems summarizes latest and previous actual valu
       metric_key: 'is.net_income',
       period_type: 'FY',
       period_end_date: '2024-12-31',
+      selection_rule: 'latest_report_wins_for_same_actual_period',
+      current_value_numeric: 120,
+      current_report_date: '2026-04-09',
+      previous_value_numeric: 100,
+      previous_report_date: '2026-01-09',
       observations: [
         {
           value_numeric: 120,
@@ -34,6 +39,9 @@ test('buildActualConflictDisplayItems summarizes latest and previous actual valu
       previousValueLabel: '100',
       latestReportLabel: '4/9/2026',
       previousReportLabel: '1/9/2026',
+      selectionRuleLabel: 'Same historical period: latest report wins.',
+      currentUsageLabel: 'Current value used: 120 from 4/9/2026',
+      previousUsageLabel: 'Previous report value: 100 from 1/9/2026',
       observationCount: 2,
     },
   ]);

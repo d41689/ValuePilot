@@ -19,6 +19,9 @@ type StockSummaryCardProps = {
     previousValueLabel: string;
     latestReportLabel: string | null;
     previousReportLabel: string | null;
+    selectionRuleLabel: string;
+    currentUsageLabel: string;
+    previousUsageLabel: string;
     observationCount: number;
   }>;
   className?: string;
@@ -82,7 +85,7 @@ export default function StockSummaryCard({
         </div>
         <div className="rounded-xl border border-amber-300/60 bg-amber-50/60 p-4">
           <div className="flex items-center justify-between gap-3">
-            <div className="text-xs uppercase text-amber-900/80">Historical Value Conflicts</div>
+            <div className="text-xs uppercase text-amber-900/80">Historical Value Restatements</div>
             <div className="text-sm font-semibold text-amber-950">
               {actualConflictCount > 0 ? `${actualConflictCount} detected` : 'None detected'}
             </div>
@@ -96,20 +99,18 @@ export default function StockSummaryCard({
                 >
                   <div className="text-sm font-medium text-foreground">{item.metricLabel}</div>
                   <div className="mt-1 text-xs text-muted-foreground">{item.periodLabel}</div>
-                  <div className="mt-2 text-sm text-foreground">
-                    {item.latestValueLabel} vs {item.previousValueLabel}
-                  </div>
+                  <div className="mt-2 text-sm text-foreground">{item.currentUsageLabel}</div>
+                  <div className="mt-1 text-sm text-amber-950/80">{item.previousUsageLabel}</div>
                   <div className="mt-1 text-xs text-muted-foreground">
-                    {item.latestReportLabel ? `Latest report ${item.latestReportLabel}` : 'Latest report'}
-                    {item.previousReportLabel ? ` · Previous report ${item.previousReportLabel}` : ''}
-                    {item.observationCount > 2 ? ` · ${item.observationCount} report versions` : ''}
+                    {item.selectionRuleLabel}
+                    {item.observationCount > 2 ? ` ${item.observationCount} report versions observed.` : ''}
                   </div>
                 </div>
               ))}
             </div>
           ) : (
             <div className="mt-2 text-sm text-amber-950/80">
-              No cross-report actual-value conflicts detected for this stock.
+              No cross-report actual-value restatements detected for this stock.
             </div>
           )}
         </div>
