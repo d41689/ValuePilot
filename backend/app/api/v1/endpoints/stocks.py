@@ -524,6 +524,44 @@ def _visible_fact_predicate(current_user_id: int, admin_user_ids: list[int]):
     )
 
 
+def _select_stock_for_ticker(session: SessionDep, ticker_normalized: str) -> Stock | None:
+    stocks = session.scalars(
+        select(Stock)
+        .where(func.lower(Stock.ticker) == ticker_normalized)
+        .order_by(Stock.id.asc())
+    ).all()
+    if not stocks:
+        return None
+    if len(stocks) == 1:
+        return stocks[0]
+
+    stock_ids = [stock.id for stock in stocks]
+    active_reports = resolve_active_reports(session, stock_ids=stock_ids)
+    fact_counts = dict(
+        session.execute(
+            select(MetricFact.stock_id, func.count(MetricFact.id))
+            .where(
+                MetricFact.stock_id.in_(stock_ids),
+                MetricFact.is_current.is_(True),
+            )
+            .group_by(MetricFact.stock_id)
+        ).all()
+    )
+
+    def score(stock: Stock) -> tuple[int, date, int, int, int]:
+        active_report = active_reports.get(stock.id)
+        report_date = active_report.report_date if active_report and active_report.report_date else date.min
+        return (
+            1 if active_report else 0,
+            report_date,
+            int(fact_counts.get(stock.id, 0)),
+            1 if stock.is_active else 0,
+            -stock.id,
+        )
+
+    return max(stocks, key=score)
+
+
 @router.get("/by_ticker/{ticker}", response_model=dict)
 def read_stock_by_ticker(
     ticker: str,
@@ -533,13 +571,7 @@ def read_stock_by_ticker(
     Get stock overview by ticker (case-insensitive).
     """
     ticker_normalized = ticker.strip().lower()
-    stmt = (
-        select(Stock)
-        .where(func.lower(Stock.ticker) == ticker_normalized)
-        .order_by(Stock.id.asc())
-        .limit(1)
-    )
-    stock = session.scalars(stmt).first()
+    stock = _select_stock_for_ticker(session, ticker_normalized)
     if not stock:
         raise HTTPException(status_code=404, detail="Stock not found")
     active_report = resolve_active_reports(session, stock_ids=[stock.id]).get(stock.id)

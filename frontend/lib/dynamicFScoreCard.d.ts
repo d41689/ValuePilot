@@ -63,4 +63,5 @@ export type DynamicFScoreCardModel = {
 export function normalizeDynamicFScoreCard(card: DynamicFScoreApiCard): DynamicFScoreCardModel;
 export function normalizeFormulaDetails(details: DynamicFScoreApiRow['formula_details']): DynamicFScoreFormulaDetails;
 export function visibleFallbackFormulas(details: Pick<DynamicFScoreFormulaDetails, 'fallbackFormulas' | 'usedFormula'>): string[];
+export function formatDynamicFScoreInputValue(value: number | null | undefined): string;
 export function formatDynamicFScoreValue(value: number | null | undefined): string;
