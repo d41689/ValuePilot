@@ -537,9 +537,9 @@ class ValueLineV1Parser(BaseParser):
         _cap_money_or_nil("total_debt", r'(?:Total|Tot\.?)\s*Debt')
         _cap_money_or_nil("debt_due_in_5_years", r'Due\s*in\s*5\s*Yrs')
         _cap_money_or_nil("lt_debt", r'LT\s*Debt')
-        _cap_money_or_nil("lt_interest", r'LT\s*Interest')
+        _cap_money_or_nil("lt_interest", r'LT\s*(?:Interest|Int\.?)')
 
-        cap_pct = re.search(r'\((\d+\.?\d*)%\s*of\s*Cap', self.text, re.IGNORECASE)
+        cap_pct = re.search(r'\((\d+\.?\d*)%\s*(?:of\s*)?Cap', self.text, re.IGNORECASE)
         if cap_pct:
             results.append(ExtractionResult(field_key="debt_percent_of_capital", raw_value_text=f"{cap_pct.group(1)}%", original_text_snippet=cap_pct.group(0), confidence_score=0.8))
 
@@ -1343,16 +1343,24 @@ class ValueLineV1Parser(BaseParser):
             header = re.search(r'(\d{4})\s+(\d{4})\s+(\d{1,2}/\d{1,2}/\d{2})', cp_block)
             if header:
                 years = [header.group(1), header.group(2), self._iso_from_mdy(header.group(3)) or header.group(3)]
-                def row3(label_pat: str) -> Optional[list[float]]:
-                    m = re.search(rf'{label_pat}\s*([0-9.]+)\s+([0-9.]+)\s+([0-9.]+)', cp_block, re.IGNORECASE)
+                value_token = r'(?:--|[-\u2013\u2014]|[0-9.]+)'
+
+                def _current_position_value(token: str) -> Optional[float]:
+                    cleaned = token.strip()
+                    if cleaned in {"--", "-", "\u2013", "\u2014"}:
+                        return None
+                    return float(cleaned)
+
+                def row3(label_pat: str) -> Optional[list[Optional[float]]]:
+                    m = re.search(rf'{label_pat}\s*({value_token})\s+({value_token})\s+({value_token})', cp_block, re.IGNORECASE)
                     if not m:
                         return None
-                    return [float(m.group(1)), float(m.group(2)), float(m.group(3))]
+                    return [_current_position_value(m.group(1)), _current_position_value(m.group(2)), _current_position_value(m.group(3))]
                 inventory_fifo = row3(r'Inventory\s*\(FIFO\)')
                 inventory_avg_cost = row3(r'Inventory\s*\((?:AvgCst|AvgCost|Avg\s*Cost)\)')
                 parsed = {
                     "years": years,
-                    "cash_assets": row3(r'Cash\s*Assets'),
+                    "cash_assets": row3(r'Cash\s*Assets?'),
                     "receivables": row3(r'Receivables'),
                     "inventory_lifo": row3(r'Inventory\s*\(LIFO\)'),
                     "inventory_fifo": inventory_fifo,
@@ -1364,10 +1372,10 @@ class ValueLineV1Parser(BaseParser):
                     "other_current_liabilities": None,
                     "current_liabilities_total": row3(r'Current\s*Liab\.'),
                 }
-                other_matches = re.findall(r'\bOther\s*([0-9.]+)\s+([0-9.]+)\s+([0-9.]+)', cp_block, re.IGNORECASE)
+                other_matches = re.findall(rf'\bOther\s*({value_token})\s+({value_token})\s+({value_token})', cp_block, re.IGNORECASE)
                 if len(other_matches) >= 2:
-                    parsed["other_current_assets"] = [float(x) for x in other_matches[0]]
-                    parsed["other_current_liabilities"] = [float(x) for x in other_matches[1]]
+                    parsed["other_current_assets"] = [_current_position_value(x) for x in other_matches[0]]
+                    parsed["other_current_liabilities"] = [_current_position_value(x) for x in other_matches[1]]
 
                 if parsed["cash_assets"] and parsed["current_assets_total"]:
                     results.append(ExtractionResult(
@@ -1522,6 +1530,57 @@ class ValueLineV1Parser(BaseParser):
                 })
             return rows
 
+        def _parse_quarterly_rows_from_words(label_compact: str, stop_compacts: list[str]) -> list[dict[str, Any]]:
+            if not self.page_words or 1 not in self.page_words:
+                return []
+            words = self.page_words[1]
+            lines: list[tuple[float, list[dict[str, Any]]]] = []
+            by_top: dict[float, list[dict[str, Any]]] = {}
+            for word in words:
+                by_top.setdefault(round(float(word.get("top", 0.0)), 1), []).append(word)
+            for top in sorted(by_top):
+                line_words = sorted(by_top[top], key=lambda word: float(word.get("x0", 0.0)))
+                lines.append((top, line_words))
+
+            def line_text(line_words: list[dict[str, Any]], *, left: Optional[float] = None, right: Optional[float] = None) -> str:
+                scoped = [
+                    word for word in line_words
+                    if (left is None or float(word.get("x0", 0.0)) >= left)
+                    and (right is None or float(word.get("x0", 0.0)) <= right)
+                ]
+                return " ".join(str(word.get("text", "")) for word in scoped if word.get("text"))
+
+            def compact(value: str) -> str:
+                return re.sub(r'[^A-Z0-9]', '', value.upper())
+
+            start_idx = None
+            for idx, (_, line_words) in enumerate(lines):
+                if label_compact in compact(line_text(line_words)):
+                    start_idx = idx
+                    break
+            if start_idx is None:
+                return []
+
+            start_words = lines[start_idx][1]
+            start_x0 = min(float(word.get("x0", 0.0)) for word in start_words)
+            start_x1 = max(float(word.get("x1", word.get("x0", 0.0))) for word in start_words)
+            left_bound = max(0.0, start_x0 - 35.0)
+            right_bound = max(220.0, start_x1 + 90.0)
+            stop_idx = len(lines)
+            stop_set = set(stop_compacts)
+            for idx in range(start_idx + 1, len(lines)):
+                line_compact = compact(line_text(lines[idx][1], left=left_bound, right=right_bound))
+                if any(stop in line_compact for stop in stop_set):
+                    stop_idx = idx
+                    break
+
+            table_lines = []
+            for _, line_words in lines[start_idx:stop_idx]:
+                text = line_text(line_words, left=left_bound, right=right_bound).strip()
+                if text:
+                    table_lines.append(text)
+            return _parse_quarterly_rows("\n".join(table_lines))
+
         qs_start = re.search(r'\b(QUARTERLYSALES|QUARTERLYREVENUES|NETPREMIUMSEARNED)\b', self.text, re.IGNORECASE)
         div_start_pat = r'(?:QUARTERLYDIVIDENDS\w*|SEMIANNUALDIVIDENDSPAID\w*|DIVIDENDSPAID\w*)'
         if qs_start:
@@ -1602,6 +1661,36 @@ class ValueLineV1Parser(BaseParser):
                         parsed_value_json=parsed,
                         confidence_score=0.8,
                     ))
+
+        existing_keys = {res.field_key for res in results}
+        if "quarterly_revenues_usd_millions" not in existing_keys and "quarterly_sales_usd_millions" not in existing_keys:
+            parsed = _parse_quarterly_rows_from_words(
+                "QUARTERLYREVENUES",
+                ["EARNINGSPERSHARE", "EARNINGSPERADR", "EARNINGSPERADS", "QUARTERLYDIVIDENDSPAID"],
+            )
+            if parsed:
+                results.append(ExtractionResult(
+                    field_key="quarterly_revenues_usd_millions",
+                    raw_value_text=None,
+                    original_text_snippet="QUARTERLY REVENUES (word layout)",
+                    parsed_value_json=parsed,
+                    confidence_score=0.7,
+                ))
+                existing_keys.add("quarterly_revenues_usd_millions")
+
+        if not any(key in existing_keys for key in ("earnings_per_share", "earnings_per_adr", "earnings_per_ads")):
+            parsed = _parse_quarterly_rows_from_words(
+                "EARNINGSPERSHARE",
+                ["QUARTERLYDIVIDENDSPAID", "SEMIANNUALDIVIDENDSPAID", "DIVIDENDSPAID"],
+            )
+            if parsed:
+                results.append(ExtractionResult(
+                    field_key="earnings_per_share",
+                    raw_value_text=None,
+                    original_text_snippet="EARNINGS PER SHARE (word layout)",
+                    parsed_value_json=parsed,
+                    confidence_score=0.7,
+                ))
 
         results.extend(self._parse_annual_table_metrics())
 

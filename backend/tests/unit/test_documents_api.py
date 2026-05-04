@@ -1519,6 +1519,68 @@ def test_document_review_endpoint_returns_parser_annual_and_quarterly_blocks(
     assert payload["quarterly_dividends_paid"]["by_year"][0]["full_year"]["value"] == 1.44
 
 
+def test_document_review_endpoint_returns_parser_quarterly_revenues_block(
+    client, db_session, user_factory, auth_headers
+):
+    user = user_factory("documents_review_quarterly_revenues@example.com")
+    headers = auth_headers(user)
+
+    stock = Stock(ticker="ADBE", exchange="NDQ", company_name="ADOBE INC.")
+    db_session.add(stock)
+    db_session.commit()
+
+    doc = PdfDocument(
+        user_id=user.id,
+        file_name="adobe-quarterly-revenues.pdf",
+        source="upload",
+        file_storage_key="/tmp/adobe-quarterly-revenues.pdf",
+        parse_status="parsed",
+        report_date=date(2025, 1, 31),
+        upload_time=datetime.utcnow(),
+        stock_id=stock.id,
+        raw_text="Quarterly Revenues Earnings Per Share QuarterlyDividendsPaid 2021 2022 No Cash Dividends Being Paid 2025",
+    )
+    db_session.add(doc)
+    db_session.commit()
+
+    db_session.add(
+        MetricExtraction(
+            user_id=user.id,
+            document_id=doc.id,
+            page_number=1,
+            field_key="quarterly_revenues_usd_millions",
+            raw_value_text=None,
+            parsed_value_json=[
+                {
+                    "calendar_year": 2024,
+                    "q1": 5182.0,
+                    "q2": 5309.0,
+                    "q3": 5408.0,
+                    "q4": 5606.0,
+                    "full_year": 21505.0,
+                    "quarter_month_order": ["Feb", "May", "Aug", "Nov"],
+                    "fiscal_year_end_month": 11,
+                }
+            ],
+            original_text_snippet="Quarterly Revenues ...",
+            confidence_score=0.8,
+            parser_version="v1",
+        )
+    )
+    db_session.commit()
+
+    resp = client.get(f"/api/v1/documents/{doc.id}/review", headers=headers)
+    assert resp.status_code == 200, resp.text
+
+    payload = resp.json()
+    assert payload["quarterly_sales"] is None
+    assert payload["quarterly_revenues"]["unit"] == "USD_millions"
+    assert payload["quarterly_revenues"]["by_year"][0]["quarters"]["Q1"]["value"] == 5182.0
+    assert payload["quarterly_revenues"]["by_year"][0]["quarters"]["Q4"]["period_end"] == "2024-11-30"
+    assert payload["quarterly_dividends_paid"]["note"] == "No cash dividends being paid"
+    assert payload["quarterly_dividends_paid"]["by_year"][-1]["calendar_year"] == 2025
+
+
 def test_document_review_endpoint_requires_document_ownership(
     client, db_session, user_factory, auth_headers
 ):

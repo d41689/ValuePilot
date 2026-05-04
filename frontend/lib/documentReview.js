@@ -1626,7 +1626,7 @@ function formatDocumentReviewProjectionValue(key, item) {
     return '—';
   }
   if (key === 'gain' || key === 'annual_total_return') {
-    const displayPercent = formatProjectionPercentValue(item.display_value);
+    const displayPercent = formatProjectionPercentValue(item.display_value, item.unit);
     if (displayPercent) {
       return displayPercent;
     }
@@ -1636,7 +1636,7 @@ function formatDocumentReviewProjectionValue(key, item) {
   }
   if (typeof item.value_numeric === 'number') {
     if (key === 'gain' || key === 'annual_total_return' || item.unit === 'percent') {
-      return formatProjectionPercentValue(item.value_numeric) || '—';
+      return formatProjectionPercentValue(item.value_numeric, item.unit) || '—';
     }
     return formatNumber(item.value_numeric);
   }
@@ -1657,8 +1657,8 @@ function formatTotalReturnValue(value) {
   return `${numeric.toFixed(1)}%`;
 }
 
-function formatProjectionPercentValue(value) {
-  const formatted = formatPercentValue(value);
+function formatProjectionPercentValue(value, unit = null) {
+  const formatted = unit === 'ratio' ? formatRatioPercentValue(value) : formatPercentValue(value);
   return formatted ? formatted.replace(/^\+/, '') : null;
 }
 
@@ -1937,6 +1937,24 @@ function formatPercentValue(value) {
   }
   const percent = Math.abs(numeric) <= 1 ? numeric * 100 : numeric;
   return `${percent.toFixed(1)}%`;
+}
+
+function formatRatioPercentValue(value) {
+  if (value === null || value === undefined || value === '') {
+    return null;
+  }
+  const raw = String(value).trim();
+  if (!raw) {
+    return null;
+  }
+  if (raw.includes('%')) {
+    return raw;
+  }
+  const numeric = Number(raw);
+  if (!Number.isFinite(numeric)) {
+    return null;
+  }
+  return `${(numeric * 100).toFixed(1)}%`;
 }
 
 function formatRatingEventLabel(event) {

@@ -1084,7 +1084,7 @@
         },
         "liabilities": {
           "accounts_payable": 22.3,
-          "debt_due": null,
+          "debt_due": 5.0,
           "other_current_liabilities": 96.1,
           "total_current_liabilities": 123.4
         }
