@@ -1416,6 +1416,15 @@ def test_lookup_stock_by_ticker_returns_actual_conflicts(client, db_session):
             "metric_key": "is.net_income",
             "period_type": "FY",
             "period_end_date": "2024-12-31",
+            "selection_rule": "latest_report_wins_for_same_actual_period",
+            "current_value_numeric": 120.0,
+            "current_value_text": None,
+            "current_source_document_id": new_doc.id,
+            "current_report_date": "2026-04-09",
+            "previous_value_numeric": 100.0,
+            "previous_value_text": None,
+            "previous_source_document_id": old_doc.id,
+            "previous_report_date": "2026-01-09",
             "observations": [
                 {
                     "source_document_id": new_doc.id,

@@ -75,6 +75,15 @@ def detect_actual_conflicts(
                 "metric_key": metric_key,
                 "period_type": period_type,
                 "period_end_date": period_end_date.isoformat() if period_end_date else None,
+                "selection_rule": "latest_report_wins_for_same_actual_period",
+                "current_value_numeric": ranked[0]["value_numeric"],
+                "current_value_text": ranked[0]["value_text"],
+                "current_source_document_id": ranked[0]["source_document_id"],
+                "current_report_date": ranked[0]["source_report_date"],
+                "previous_value_numeric": ranked[1]["value_numeric"],
+                "previous_value_text": ranked[1]["value_text"],
+                "previous_source_document_id": ranked[1]["source_document_id"],
+                "previous_report_date": ranked[1]["source_report_date"],
                 "observations": ranked,
             }
         )
