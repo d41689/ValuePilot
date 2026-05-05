@@ -213,8 +213,9 @@ def test_oracles_lens_defaults_to_latest_complete_period_and_signal_rows(client,
     assert item["conviction_score"] > 0
     assert item["score_confidence"] in {"medium", "low"}
     assert item["median_holding_streak_quarters"] == 2
-    assert item["manager_signal_summary"]["unknown_manager_type_count"] == 75
-    assert item["manager_signal_summary"]["manager_signal_quality_coverage"] == 0
+    assert item["manager_signal_summary"]["high_signal_holder_count"] > 0
+    assert item["manager_signal_summary"]["unknown_manager_type_count"] < 75
+    assert item["manager_signal_summary"]["manager_signal_quality_coverage"] > 0
     top_holder = item["top_holders"][0]
     assert top_holder["current_shares"] == 8800
     assert top_holder["previous_shares"] == 8400
@@ -223,13 +224,18 @@ def test_oracles_lens_defaults_to_latest_complete_period_and_signal_rows(client,
     assert top_holder["holder_price_estimate"] == 10000.0
     assert top_holder["filing_date"] == "2031-12-31"
     assert top_holder["accession_no"] == "new-74"
-    assert top_holder["manager_signal_weight"] == 0.6
+    assert top_holder["manager_type"] == "value_concentrated"
+    assert top_holder["manager_signal_weight"] == 1.0
+    assert top_holder["portfolio_concentration"] > 0.8
+    assert top_holder["portfolio_holding_count"] == 2
+    assert top_holder["average_holding_period_quarters"] == 1.5
+    assert top_holder["manager_profile_source"] == "derived_13f_behavior"
     assert top_holder["turnover_proxy"] == 0.5
     assert top_holder["high_turnover"] is False
     assert item["score_explanation"]["primary_reasons"]
     assert "conviction_components" in item["score_explanation"]
     assert all(flag["key"] != "stale_filing" for flag in item["caution_flags"])
-    assert any(flag["key"] == "unknown_manager_type_heavy" for flag in item["caution_flags"])
+    assert all(flag["key"] != "unknown_manager_type_heavy" for flag in item["caution_flags"])
 
 
 def test_oracles_lens_adds_value_line_quality_overlay(client, db_session):

@@ -722,8 +722,27 @@ export default function OraclesLensPage() {
                             {formatPercentValue(holder.manager_signal_weight, 0)}
                           </div>
                         </div>
+                        <div>
+                          <div className="uppercase">Manager type</div>
+                          <div className="mt-1 text-foreground">
+                            {holder.manager_type?.replaceAll('_', ' ') ?? 'unknown'}
+                          </div>
+                        </div>
+                        <div>
+                          <div className="uppercase">Portfolio concentration</div>
+                          <div className="mt-1 text-foreground">
+                            {formatPercentValue(holder.portfolio_concentration)}
+                          </div>
+                        </div>
+                        <div>
+                          <div className="uppercase">Avg holding period</div>
+                          <div className="mt-1 text-foreground">
+                            {holder.average_holding_period_quarters ?? '—'}Q
+                          </div>
+                        </div>
                       </div>
                       <div className="mt-2 truncate font-mono text-[11px] text-muted-foreground">
+                        {holder.manager_profile_source ?? 'unknown profile'} ·{' '}
                         {holder.accession_no ?? 'No accession'}
                       </div>
                     </div>

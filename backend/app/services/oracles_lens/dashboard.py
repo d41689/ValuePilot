@@ -13,6 +13,7 @@ from sqlalchemy.orm import Session
 from app.models.facts import MetricFact
 from app.models.institutions import Filing13F, Holding13F, InstitutionManager
 from app.models.stocks import Stock, StockPrice
+from app.services.oracles_lens.manager_signal import derive_manager_signal_profile
 
 
 BASELINE_NOTICE = (
@@ -63,6 +64,10 @@ class ManagerHolding:
     holding_streak_quarters: int = 1
     manager_type: str = "unknown"
     manager_signal_weight: float = 0.6
+    portfolio_concentration: float | None = None
+    portfolio_holding_count: int | None = None
+    average_holding_period_quarters: float | None = None
+    manager_profile_source: str = "unknown"
     turnover_proxy: float | None = None
     high_turnover: bool = False
 
@@ -124,14 +129,17 @@ def build_oracles_lens_dashboard(
         superinvestor_only=superinvestor_only,
     )
 
-    rows_by_stock: dict[int, list[ManagerHolding]] = defaultdict(list)
     for key, holding in current_holdings.items():
         previous = previous_holdings.get(key)
         _apply_action(holding, previous)
         holding.turnover_proxy = turnover_by_manager.get(holding.manager_id)
         holding.high_turnover = bool(holding.turnover_proxy is not None and holding.turnover_proxy >= 0.6)
         holding.holding_streak_quarters = streaks.get(key, 1)
-        holding.manager_signal_weight = _manager_signal_weight(holding)
+
+    _apply_manager_signal_profiles(current_holdings)
+
+    rows_by_stock: dict[int, list[ManagerHolding]] = defaultdict(list)
+    for holding in current_holdings.values():
         rows_by_stock[holding.stock_id].append(holding)
 
     items = [
@@ -385,13 +393,23 @@ def _apply_action(holding: ManagerHolding, previous: ManagerHolding | None) -> N
         holding.action = "flat"
 
 
-def _manager_signal_weight(holding: ManagerHolding) -> float:
-    weight = 0.6
-    if holding.high_turnover:
-        weight = min(weight, 0.3)
-    if holding.position_weight >= 0.10 and holding.holding_streak_quarters >= 4:
-        weight = max(weight, 0.75)
-    return weight
+def _apply_manager_signal_profiles(holdings: dict[tuple[int, int], ManagerHolding]) -> None:
+    by_manager: dict[int, list[ManagerHolding]] = defaultdict(list)
+    for holding in holdings.values():
+        by_manager[holding.manager_id].append(holding)
+    for manager_holdings in by_manager.values():
+        profile = derive_manager_signal_profile(
+            position_weights=[item.position_weight for item in manager_holdings],
+            holding_streak_quarters=[item.holding_streak_quarters for item in manager_holdings],
+            turnover_proxy=manager_holdings[0].turnover_proxy,
+        )
+        for holding in manager_holdings:
+            holding.manager_type = profile.manager_type
+            holding.manager_signal_weight = profile.manager_signal_weight
+            holding.portfolio_concentration = profile.portfolio_concentration
+            holding.portfolio_holding_count = profile.portfolio_holding_count
+            holding.average_holding_period_quarters = profile.average_holding_period_quarters
+            holding.manager_profile_source = profile.source
 
 
 def _stock_payload(
@@ -467,6 +485,10 @@ def _stock_payload(
                 "holding_streak_quarters": item.holding_streak_quarters,
                 "manager_type": item.manager_type,
                 "manager_signal_weight": round(item.manager_signal_weight, 4),
+                "portfolio_concentration": item.portfolio_concentration,
+                "portfolio_holding_count": item.portfolio_holding_count,
+                "average_holding_period_quarters": item.average_holding_period_quarters,
+                "manager_profile_source": item.manager_profile_source,
                 "turnover_proxy": round(item.turnover_proxy, 4) if item.turnover_proxy is not None else None,
                 "high_turnover": item.high_turnover,
                 "filing_date": item.filing_date.isoformat() if item.filing_date else None,
