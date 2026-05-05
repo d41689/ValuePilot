@@ -440,6 +440,9 @@ export default function OraclesLensPage() {
                           Discount to ref {row.valuation.discountLabel}
                         </div>
                         <div className="text-xs text-muted-foreground">
+                          {row.valuation.priceContextLabel} · {row.valuation.currentPriceDateLabel}
+                        </div>
+                        <div className="text-xs text-muted-foreground">
                           Holder estimate {row.valuation.holderRangeLabel}
                         </div>
                       </div>

@@ -148,7 +148,17 @@ def build_oracles_lens_dashboard(
     if limit > 0:
         items = items[:limit]
 
-    quality_by_stock = _quality_overlay_by_stock(session, [item["stock_id"] for item in items])
+    historical_price_context = bool(
+        latest_complete and selected.period_end_date < latest_complete.period_end_date
+    )
+    price_as_of_date = selected.period_end_date if historical_price_context else None
+    price_context = "historical_snapshot" if historical_price_context else "latest"
+    quality_by_stock = _quality_overlay_by_stock(
+        session,
+        [item["stock_id"] for item in items],
+        price_as_of_date=price_as_of_date,
+        price_context=price_context,
+    )
     valuation_by_stock = _valuation_reference_by_stock(
         session,
         {
@@ -158,6 +168,8 @@ def build_oracles_lens_dashboard(
             )
             for item in items
         },
+        price_as_of_date=price_as_of_date,
+        price_context=price_context,
     )
     for item in items:
         item["quality_overlay"] = quality_by_stock.get(item["stock_id"], _empty_quality_overlay())
@@ -607,7 +619,13 @@ def _primary_reasons(holdings: list[ManagerHolding], median_streak: int) -> list
     ]
 
 
-def _quality_overlay_by_stock(session: Session, stock_ids: list[int]) -> dict[int, dict[str, Any]]:
+def _quality_overlay_by_stock(
+    session: Session,
+    stock_ids: list[int],
+    *,
+    price_as_of_date: date | None = None,
+    price_context: str = "latest",
+) -> dict[int, dict[str, Any]]:
     unique_stock_ids = list(dict.fromkeys(stock_ids))
     if not unique_stock_ids:
         return {}
@@ -628,19 +646,31 @@ def _quality_overlay_by_stock(session: Session, stock_ids: list[int]) -> dict[in
         if label and label not in facts_by_stock[fact.stock_id]:
             facts_by_stock[fact.stock_id][label] = fact
 
-    latest_prices = _latest_prices_by_stock(session, unique_stock_ids)
+    latest_prices = _latest_prices_by_stock(session, unique_stock_ids, as_of_date=price_as_of_date)
     return {
-        stock_id: _quality_payload(facts_by_stock.get(stock_id, {}), latest_prices.get(stock_id))
+        stock_id: _quality_payload(
+            facts_by_stock.get(stock_id, {}),
+            latest_prices.get(stock_id),
+            price_context=price_context,
+        )
         for stock_id in unique_stock_ids
     }
 
 
-def _latest_prices_by_stock(session: Session, stock_ids: list[int]) -> dict[int, StockPrice]:
-    prices = (
+def _latest_prices_by_stock(
+    session: Session,
+    stock_ids: list[int],
+    *,
+    as_of_date: date | None = None,
+) -> dict[int, StockPrice]:
+    query = (
         session.query(StockPrice)
         .filter(StockPrice.stock_id.in_(stock_ids))
-        .order_by(StockPrice.stock_id.asc(), StockPrice.price_date.desc(), StockPrice.created_at.desc())
-        .all()
+    )
+    if as_of_date is not None:
+        query = query.filter(StockPrice.price_date <= as_of_date)
+    prices = (
+        query.order_by(StockPrice.stock_id.asc(), StockPrice.price_date.desc(), StockPrice.created_at.desc()).all()
     )
     result: dict[int, StockPrice] = {}
     for price in prices:
@@ -649,7 +679,12 @@ def _latest_prices_by_stock(session: Session, stock_ids: list[int]) -> dict[int,
     return result
 
 
-def _quality_payload(facts: dict[str, MetricFact], latest_price: StockPrice | None) -> dict[str, Any]:
+def _quality_payload(
+    facts: dict[str, MetricFact],
+    latest_price: StockPrice | None,
+    *,
+    price_context: str = "latest",
+) -> dict[str, Any]:
     price = float(latest_price.close) if latest_price and latest_price.close is not None else None
     owners_earnings = _fact_value(facts.get("owners_earnings"))
     owner_yield = owners_earnings / price if owners_earnings is not None and price else None
@@ -661,6 +696,8 @@ def _quality_payload(facts: dict[str, MetricFact], latest_price: StockPrice | No
         "debt_to_capital": _fact_value(facts.get("debt_to_capital")),
         "owner_earnings_yield": owner_yield,
         "latest_price": price,
+        "price_date": latest_price.price_date.isoformat() if latest_price else None,
+        "price_context": price_context,
     }
     available_metrics = sum(
         1
@@ -708,6 +745,9 @@ def _empty_quality_overlay() -> dict[str, Any]:
 def _valuation_reference_by_stock(
     session: Session,
     holder_ranges_by_stock: dict[int, tuple[float | None, float | None]],
+    *,
+    price_as_of_date: date | None = None,
+    price_context: str = "latest",
 ) -> dict[int, dict[str, Any]]:
     stock_ids = list(holder_ranges_by_stock)
     if not stock_ids:
@@ -729,12 +769,13 @@ def _valuation_reference_by_stock(
         if fact.metric_key not in facts_by_stock[fact.stock_id]:
             facts_by_stock[fact.stock_id][fact.metric_key] = fact
 
-    latest_prices = _latest_prices_by_stock(session, stock_ids)
+    latest_prices = _latest_prices_by_stock(session, stock_ids, as_of_date=price_as_of_date)
     return {
         stock_id: _valuation_payload(
             facts_by_stock.get(stock_id, {}),
             latest_prices.get(stock_id),
             holder_ranges_by_stock.get(stock_id, (None, None)),
+            price_context=price_context,
         )
         for stock_id in stock_ids
     }
@@ -744,6 +785,8 @@ def _valuation_payload(
     facts: dict[str, MetricFact],
     latest_price: StockPrice | None,
     holder_range: tuple[float | None, float | None],
+    *,
+    price_context: str = "latest",
 ) -> dict[str, Any]:
     price = float(latest_price.close) if latest_price and latest_price.close is not None else None
     holder_low, holder_high = holder_range
@@ -778,6 +821,8 @@ def _valuation_payload(
 
     return {
         "current_price": price,
+        "current_price_date": latest_price.price_date.isoformat() if latest_price else None,
+        "price_context": price_context,
         "valuation_reference": reference,
         "valuation_reference_label": reference_label,
         "valuation_reference_type": reference_type,

@@ -93,6 +93,10 @@ function normalizeValuationReference(item) {
     currentPriceLabel: typeof item?.current_price === 'number'
       ? `$${formatNumber(item.current_price, 2)}`
       : '—',
+    currentPriceDateLabel: item?.current_price_date ?? '—',
+    priceContext: item?.price_context ?? 'latest',
+    priceContextLabel:
+      item?.price_context === 'historical_snapshot' ? 'Historical snapshot' : 'Latest local price',
     referenceLabel: typeof item?.valuation_reference === 'number'
       ? `$${formatNumber(item.valuation_reference, 2)}`
       : '—',

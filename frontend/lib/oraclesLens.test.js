@@ -67,6 +67,8 @@ test('normalizeOracleLensRows emphasizes signal score with explanations', () => 
       holder_price_estimate_low: 92,
       holder_price_estimate_high: 118,
       current_price: 100,
+      current_price_date: '2031-12-31',
+      price_context: 'historical_snapshot',
       valuation_reference: 150,
       valuation_reference_label: 'Value Line 18-month target midpoint',
       valuation_reference_type: 'analyst_target_reference',
@@ -92,6 +94,8 @@ test('normalizeOracleLensRows emphasizes signal score with explanations', () => 
   assert.equal(rows[0].quality.qualityCoverageLabel, '6/6 facts');
   assert.equal(rows[0].valuation.holderRangeLabel, '$92.00–$118.00');
   assert.equal(rows[0].valuation.currentPriceLabel, '$100.00');
+  assert.equal(rows[0].valuation.currentPriceDateLabel, '2031-12-31');
+  assert.equal(rows[0].valuation.priceContextLabel, 'Historical snapshot');
   assert.equal(rows[0].valuation.referenceLabel, '$150.00');
   assert.equal(rows[0].valuation.discountLabel, '33.3%');
   assert.equal(rows[0].valuation.referenceSourceLabel, 'Value Line 18-month target midpoint');

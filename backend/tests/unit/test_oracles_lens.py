@@ -260,6 +260,8 @@ def test_oracles_lens_adds_value_line_quality_overlay(client, db_session):
         "debt_to_capital": 0.18,
         "owner_earnings_yield": 0.05,
         "latest_price": 100.0,
+        "price_date": "2032-01-02",
+        "price_context": "latest",
         "coverage": {
             "value_line": True,
             "price": True,
@@ -308,6 +310,8 @@ def test_oracles_lens_adds_conservative_valuation_reference(client, db_session):
     assert item["holder_price_estimate_low"] == 10000.0
     assert item["holder_price_estimate_high"] == 10000.0
     assert item["current_price"] == 100.0
+    assert item["current_price_date"] == "2032-01-02"
+    assert item["price_context"] == "latest"
     assert item["valuation_reference"] == 175.0
     assert item["valuation_reference_label"] == "User-entered valuation reference"
     assert item["valuation_reference_type"] == "manual_intrinsic_value"
@@ -348,6 +352,54 @@ def test_oracles_lens_labels_value_line_target_as_reference_not_intrinsic_value(
     assert item["valuation_reference_type"] == "analyst_target_reference"
     assert item["valuation_reference_confidence"] == "medium"
     assert item["valuation_unavailable_reasons"] == []
+
+
+def test_oracles_lens_uses_period_price_for_historical_snapshot(client, db_session):
+    target = _seed_oracles_lens_fixture(db_session)
+    db_session.add_all(
+        [
+            _metric_fact(target, "target.price_18m.mid", 120.0, period_end=date(2031, 9, 30)),
+            _metric_fact(target, "owners_earnings_per_share_normalized", 4.0),
+        ]
+    )
+    db_session.add_all(
+        [
+            StockPrice(
+                stock_id=target.id,
+                price_date=date(2031, 9, 30),
+                open=78.0,
+                high=82.0,
+                low=77.0,
+                close=80.0,
+                adj_close=None,
+                volume=1000,
+                source="test",
+            ),
+            StockPrice(
+                stock_id=target.id,
+                price_date=date(2032, 1, 2),
+                open=99.0,
+                high=101.0,
+                low=98.0,
+                close=100.0,
+                adj_close=None,
+                volume=1000,
+                source="test",
+            ),
+        ]
+    )
+    db_session.commit()
+
+    response = client.get("/api/v1/13f/oracles-lens?period=2031-Q3")
+    assert response.status_code == 200
+
+    item = next(row for row in response.json()["items"] if row["stock_id"] == target.id)
+    assert item["current_price"] == 80.0
+    assert item["current_price_date"] == "2031-09-30"
+    assert item["price_context"] == "historical_snapshot"
+    assert item["discount_to_reference"] == 0.333333
+    assert item["quality_overlay"]["owner_earnings_yield"] == 0.05
+    assert item["quality_overlay"]["price_context"] == "historical_snapshot"
 
 
 def test_oracles_lens_marks_old_selected_period(client, db_session):
