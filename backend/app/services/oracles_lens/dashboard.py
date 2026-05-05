@@ -181,6 +181,8 @@ def build_oracles_lens_dashboard(
         superinvestor_only=superinvestor_only,
         quality_by_stock=quality_by_stock,
         valuation_by_stock=valuation_by_stock,
+        price_context=price_context,
+        price_target_date=price_as_of_date,
     )
     return {
         "period": selected.label,
@@ -849,6 +851,8 @@ def _coverage(
     superinvestor_only: bool,
     quality_by_stock: dict[int, dict[str, Any]] | None = None,
     valuation_by_stock: dict[int, dict[str, Any]] | None = None,
+    price_context: str = "latest",
+    price_target_date: date | None = None,
 ) -> dict[str, Any]:
     query = (
         session.query(Holding13F, Filing13F, InstitutionManager)
@@ -864,13 +868,29 @@ def _coverage(
     rows = query.all()
     manager_ids = {filing.manager_id for _, filing, _ in rows}
     linked_count = sum(1 for holding, _, _ in rows if holding.stock_id is not None)
+    candidate_count = len(quality_by_stock or {})
+    price_coverage_count = sum(
+        1 for item in (quality_by_stock or {}).values() if item["coverage"]["price"]
+    )
+    price_missing_count = max(candidate_count - price_coverage_count, 0)
+    price_backfill_required = price_context == "historical_snapshot" and price_missing_count > 0
     return {
         "manager_count": len(manager_ids),
         "holding_count": len(rows),
         "linked_holding_count": linked_count,
+        "candidate_count": candidate_count,
         "manager_signal_quality_coverage": 0,
-        "price_coverage_count": sum(
-            1 for item in (quality_by_stock or {}).values() if item["coverage"]["price"]
+        "price_context": price_context,
+        "price_target_date": price_target_date.isoformat() if price_target_date else None,
+        "price_coverage_count": price_coverage_count,
+        "price_missing_count": price_missing_count,
+        "price_coverage_ratio": round(price_coverage_count / candidate_count, 4) if candidate_count else 0,
+        "price_backfill_required": price_backfill_required,
+        "price_backfill_hint": (
+            "docker compose exec api python -m scripts.backfill_13f_period_prices "
+            f"--period {period_end.isoformat()}"
+            if price_backfill_required
+            else None
         ),
         "value_line_coverage_count": sum(
             1 for item in (quality_by_stock or {}).values() if item["coverage"]["value_line"]
@@ -886,8 +906,15 @@ def _empty_coverage() -> dict[str, Any]:
         "manager_count": 0,
         "holding_count": 0,
         "linked_holding_count": 0,
+        "candidate_count": 0,
         "manager_signal_quality_coverage": 0,
+        "price_context": "latest",
+        "price_target_date": None,
         "price_coverage_count": 0,
+        "price_missing_count": 0,
+        "price_coverage_ratio": 0,
+        "price_backfill_required": False,
+        "price_backfill_hint": None,
         "value_line_coverage_count": 0,
         "valuation_reference_coverage_count": 0,
     }

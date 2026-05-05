@@ -62,6 +62,13 @@ type OracleLensPayload = {
     price_coverage_count?: number;
     value_line_coverage_count?: number;
     valuation_reference_coverage_count?: number;
+    candidate_count?: number;
+    price_context?: string;
+    price_target_date?: string | null;
+    price_missing_count?: number;
+    price_coverage_ratio?: number;
+    price_backfill_required?: boolean;
+    price_backfill_hint?: string | null;
   };
   periods?: Array<{
     label: string;
@@ -78,6 +85,13 @@ function formatInteger(value: number | null | undefined) {
     return '—';
   }
   return value.toLocaleString('en-US', { maximumFractionDigits: 0 });
+}
+
+function formatCoveragePercent(value: number | null | undefined) {
+  if (typeof value !== 'number') {
+    return '—';
+  }
+  return `${Math.round(value * 100)}%`;
 }
 
 export default function OraclesLensPage() {
@@ -172,6 +186,60 @@ export default function OraclesLensPage() {
           </CardContent>
         </Card>
       </div>
+
+      <Card className="rounded-md">
+        <CardHeader className="pb-3">
+          <CardTitle className="text-base">Price Coverage</CardTitle>
+          <p className="text-sm text-muted-foreground">
+            Local EOD price coverage for the selected snapshot. Missing historical prices require
+            an explicit backfill.
+          </p>
+        </CardHeader>
+        <CardContent>
+          <div className="grid gap-3 md:grid-cols-4">
+            <div>
+              <div className="text-xs uppercase text-muted-foreground">Context</div>
+              <div className="mt-1 font-medium">
+                {coverage?.price_context === 'historical_snapshot'
+                  ? 'Historical snapshot'
+                  : 'Latest local price'}
+              </div>
+            </div>
+            <div>
+              <div className="text-xs uppercase text-muted-foreground">Target date</div>
+              <div className="mt-1 font-medium">{coverage?.price_target_date ?? 'Latest'}</div>
+            </div>
+            <div>
+              <div className="text-xs uppercase text-muted-foreground">Coverage</div>
+              <div className="mt-1 font-medium">
+                {formatInteger(coverage?.price_coverage_count)} /{' '}
+                {formatInteger(coverage?.candidate_count)} candidates
+              </div>
+              <div className="mt-1 text-xs text-muted-foreground">
+                {formatCoveragePercent(coverage?.price_coverage_ratio)}
+              </div>
+            </div>
+            <div>
+              <div className="text-xs uppercase text-muted-foreground">Missing</div>
+              <div className="mt-1 font-medium">{formatInteger(coverage?.price_missing_count)}</div>
+              {coverage?.price_backfill_required ? (
+                <Badge variant="warning" className="mt-2 rounded-md">
+                  Backfill needed
+                </Badge>
+              ) : (
+                <Badge variant="secondary" className="mt-2 rounded-md">
+                  No price backfill flag
+                </Badge>
+              )}
+            </div>
+          </div>
+          {coverage?.price_backfill_hint ? (
+            <div className="mt-4 rounded-md border border-border/70 bg-muted/40 px-3 py-2 font-mono text-xs text-muted-foreground">
+              {coverage.price_backfill_hint}
+            </div>
+          ) : null}
+        </CardContent>
+      </Card>
 
       <Card className="rounded-md">
         <CardHeader className="pb-3">

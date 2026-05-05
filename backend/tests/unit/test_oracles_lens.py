@@ -400,6 +400,13 @@ def test_oracles_lens_uses_period_price_for_historical_snapshot(client, db_sessi
     assert item["discount_to_reference"] == 0.333333
     assert item["quality_overlay"]["owner_earnings_yield"] == 0.05
     assert item["quality_overlay"]["price_context"] == "historical_snapshot"
+    assert response.json()["coverage"]["price_context"] == "historical_snapshot"
+    assert response.json()["coverage"]["price_target_date"] == "2031-09-30"
+    assert response.json()["coverage"]["candidate_count"] == 1
+    assert response.json()["coverage"]["price_coverage_count"] == 1
+    assert response.json()["coverage"]["price_missing_count"] == 0
+    assert response.json()["coverage"]["price_coverage_ratio"] == 1.0
+    assert response.json()["coverage"]["price_backfill_required"] is False
 
 
 def test_oracles_lens_marks_old_selected_period(client, db_session):
@@ -411,6 +418,16 @@ def test_oracles_lens_marks_old_selected_period(client, db_session):
     payload = response.json()
     assert payload["period"] == "2031-Q3"
     assert payload["latest_complete_period"] == "2031-Q4"
+    assert payload["coverage"]["price_context"] == "historical_snapshot"
+    assert payload["coverage"]["price_target_date"] == "2031-09-30"
+    assert payload["coverage"]["candidate_count"] == len(payload["items"])
+    assert payload["coverage"]["price_coverage_count"] == 0
+    assert payload["coverage"]["price_missing_count"] == len(payload["items"])
+    assert payload["coverage"]["price_coverage_ratio"] == 0
+    assert payload["coverage"]["price_backfill_required"] is True
+    assert payload["coverage"]["price_backfill_hint"].startswith(
+        "docker compose exec api python -m scripts.backfill_13f_period_prices"
+    )
     selected_period = next(period for period in payload["periods"] if period["label"] == "2031-Q3")
     assert selected_period["is_selected"] is True
     latest_complete = next(period for period in payload["periods"] if period["label"] == "2031-Q4")
