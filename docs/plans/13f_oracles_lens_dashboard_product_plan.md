@@ -295,11 +295,13 @@ position_signal_weight:
   +0.40 if top 10 position
   +0.30 if position weight >= 5%
   +0.30 if holding streak >= 4 quarters
-  +0.10 to +0.20 for new/add action
+  +0.10 to +0.20 for new/add action, capped below persistence and position importance
   negative adjustment for reduce/exit
 ```
 
 The exact constants can evolve, but V1 must ship with documented defaults and tests so different engineers do not implement incompatible scoring systems.
+
+New/Add actions provide context, not dominance. Persistent high-weight ownership should generally carry more signal than one-quarter buying activity, especially when a new position is small or held by a high-turnover manager.
 
 ### 7.3 Portfolio Weight
 
@@ -366,6 +368,8 @@ Suggested action scores:
 | Exit | -1.00 |
 
 Weight by prior or current position weight.
+
+Add Intensity is a supporting context metric. It should not override signal-weighted consensus when persistent high-conviction ownership points in the other direction.
 
 ### 7.5 Quarter-End Holding Price Estimate
 
@@ -542,28 +546,64 @@ V1 anti-crowding proxy:
 
 In V1, anti-crowding is a weak proxy and should not be used as a hard default ranking determinant. `distinctive_consensus_score` may be an advanced sort option, while the default sort remains `signal_weighted_consensus_score`.
 
-### 7.12 Caution Flags
+### 7.12 Score Confidence
+
+Composite scores must carry a confidence label so users do not overread precise-looking numbers.
+
+Suggested values:
+
+```text
+score_confidence:
+  high
+  medium
+  low
+```
+
+Inputs:
+
+- manager type coverage
+- complete period coverage
+- number of quarters available for streak / turnover calculations
+- CUSIP-to-stock mapping confidence
+- price coverage
+- Value Line coverage where quality or valuation references are displayed
+
+V1 confidence example:
+
+| Confidence | Rule of Thumb |
+| --- | --- |
+| High | complete period, strong manager type coverage, 4+ quarters of history, linked stock, no major missing score inputs |
+| Medium | enough data to rank, but some manager types or historical quarters are missing |
+| Low | sparse manager metadata, partial period, weak mapping confidence, or too little history |
+
+### 7.13 Caution Flags
 
 Every candidate should carry negative evidence, not only positive signals.
 
+There are two levels of timing language:
+
+- Page-level baseline notice: all 13F data is delayed and not a buy recommendation.
+- Row-level timing flags: only show when the selected row has an additional timing-specific issue.
+
 Initial V1 flags:
 
-| Flag | Meaning |
-| --- | --- |
-| `stale_filing` | 13F filing is a delayed snapshot |
-| `low_conviction` | many holders, but mostly small weights |
-| `low_signal_quality` | consensus is driven mostly by unknown, quant, high-turnover, or low-confidence manager profiles |
-| `crowded_mega_cap` | V2 only, emitted only when market-cap or broad ownership data supports it |
-| `weak_quality_coverage` | Value Line facts are missing or sparse |
-| `price_moved_up` | current price is far above quarter-end holding price estimate |
-| `mixed_actions` | high-signal managers disagree: some add, others reduce |
-| `short_holding_streak` | position is recent and not yet persistent |
-| `high_turnover_holders` | signal comes mostly from managers with high churn |
-| `valuation_reference_missing` | no reliable valuation reference is available |
+| Group | Flags | Meaning |
+| --- | --- | --- |
+| Signal quality | `low_signal_quality`, `high_turnover_holders`, `unknown_manager_type_heavy` | signal comes from weaker or poorly classified manager profiles |
+| Conviction | `low_conviction`, `short_holding_streak`, `small_tail_positions` | ownership exists but looks small, recent, or non-core |
+| Data coverage | `weak_quality_coverage`, `valuation_reference_missing`, `missing_price`, `low_score_confidence` | supporting data is missing or weak |
+| Timing | `old_period_selected`, `partial_period`, `price_moved_materially_since_quarter_end` | the selected data is stale beyond baseline 13F delay, partial, or price moved materially |
+| Crowding | `crowded_mega_cap` | V2 only, emitted only when market-cap or broad ownership data supports it |
 
 Caution flags should appear in both the table and the stock drilldown. They are part of the product's value, not edge-case warnings.
 
-### 7.13 Valuation Reference Strength
+Flag display rule:
+
+- Main table: show at most the highest-priority 1-2 flags.
+- Drilldown: show all flags grouped by category with explanations.
+- Avoid showing the generic 13F delay as a row-level flag for every candidate; keep it as the fixed page notice.
+
+### 7.14 Valuation Reference Strength
 
 Different valuation references have different evidentiary strength. The API and UI should identify the reference type instead of showing a naked value.
 
@@ -685,6 +725,9 @@ Primary score display rule:
 - Do not show a score without a short explanation.
 - The table should pair the primary score with 1-2 reason chips, such as `3 high-signal holders`, `2 top 10 positions`, or `median streak 6Q`.
 - Unknown manager coverage must be visible when it materially affects the score.
+- The main table should visually emphasize `Signal Score` as the primary rank.
+- `Conviction`, `Holding Streak`, `Raw Holders`, `Adders`, `Reducers`, and `Caution` are supporting context, not competing headline metrics.
+- Avoid names such as `Top Ideas`, `Best Stocks`, `Highest Opportunity`, or `Most Attractive`; use `Research Candidates`, `Ownership Signals`, or `Signal-Ranked Candidates`.
 
 Hover / detail popover:
 
@@ -770,7 +813,7 @@ Caution Flags
 
 Example flags:
 
-- 13F data is stale or partial.
+- selected period is old or partial.
 - Current price moved materially above quarter-end holding price estimate.
 - Value Line quality coverage is missing.
 - Holdings are low weight despite high holder count.
@@ -865,6 +908,7 @@ Response sketch:
       "company_name": "Adobe Inc.",
       "consensus_count": 4,
       "signal_weighted_consensus_score": 3.12,
+      "score_confidence": "medium",
       "distinctive_consensus_score": 2.48,
       "conviction_score": 78,
       "adders_count": 2,
@@ -896,7 +940,7 @@ Response sketch:
         ],
         "negative_reasons": [
           "1 of 4 holders has unknown manager type",
-          "13F filing is a delayed quarter-end snapshot"
+          "Current price moved materially above quarter-end estimate"
         ],
         "conviction_components": {
           "position_importance": 24,
@@ -913,9 +957,10 @@ Response sketch:
       },
       "caution_flags": [
         {
-          "key": "stale_filing",
-          "severity": "info",
-          "label": "13F filing is a delayed quarter-end snapshot"
+          "key": "price_moved_materially_since_quarter_end",
+          "group": "timing",
+          "severity": "warning",
+          "label": "Current price moved materially since the reported quarter-end holding snapshot"
         }
       ]
     }
@@ -1059,7 +1104,8 @@ Goal:
 Tasks:
 
 - Create `app/services/oracles_lens/caution_flags.py`.
-- Emit flags for stale filing, partial coverage, low conviction, weak quality coverage, price moved up, mixed actions, short streak, high-turnover holders, and missing valuation reference.
+- Emit grouped flags for signal quality, conviction, data coverage, and timing.
+- Use the page-level baseline notice for normal 13F delay; only emit row-level timing flags for additional issues such as old selected period, partial period, or material price movement since quarter end.
 - Add tests for each flag condition.
 
 Acceptance criteria:
@@ -1086,6 +1132,7 @@ Acceptance criteria:
 
 - `GET /api/v1/13f/oracles-lens` returns ranked rows.
 - Response includes coverage summary.
+- Response includes `score_confidence`, `score_explanation`, and grouped `caution_flags`.
 - Default sort uses signal-weighted consensus rather than raw holder count.
 - Query uses current facts and EOD prices, not JSON-only comparisons.
 
@@ -1102,8 +1149,6 @@ Tasks:
   - `OraclesLensHeader`
   - `CoverageFreshnessPanel`
   - `SignalWeightedConsensusTable`
-  - `QualityOverlayColumns`
-  - `ValuationReferenceStrip`
   - `CautionFlagsPanel`
   - `HolderDrilldownPanel`
 - Use shadcn/ui components.
@@ -1114,6 +1159,8 @@ Acceptance criteria:
 - User can scan ranked stocks.
 - User can see holders and add/reduce actions.
 - User can see signal-weighted consensus, conviction, and holding duration.
+- Signal Score is visually emphasized as the sole primary ranking metric.
+- Secondary metrics and caution flags are visually subordinate explanation context.
 - User can see caution flags before opening the drilldown.
 - User can see data coverage.
 - No unsupported "cost basis" copy appears.
@@ -1259,6 +1306,8 @@ Deliver:
 Estimated scope:
 
 - Backend only.
+- Milestone 1 may validate payloads through service/API tests or a temporary developer endpoint.
+- Production UI begins in Milestone 2.
 - No quality overlay.
 - No valuation strip.
 - No bubble chart.
@@ -1334,8 +1383,9 @@ Recommended task files:
 5. `docs/tasks/YYYY-MM-DD_oracles-lens-score-explanations.md`
 6. `docs/tasks/YYYY-MM-DD_oracles-lens-dashboard-api.md`
 7. `docs/tasks/YYYY-MM-DD_oracles-lens-table-ui.md`
-8. `docs/tasks/YYYY-MM-DD_oracles-lens-quality-overlay.md`
-9. `docs/tasks/YYYY-MM-DD_oracles-lens-valuation-reference.md`
+8. `docs/tasks/YYYY-MM-DD_oracles-lens-research-next-steps.md`
+9. `docs/tasks/YYYY-MM-DD_oracles-lens-quality-overlay.md`
+10. `docs/tasks/YYYY-MM-DD_oracles-lens-valuation-reference.md`
 
 Each implementation task must follow the project workflow:
 
@@ -1357,12 +1407,12 @@ Oracle's Lens V1 is successful when:
 - The user can distinguish adding, reducing, new, and exited positions.
 - The default ranking uses signal-weighted consensus, not raw holder count.
 - The user can see manager signal quality, conviction, and holding streak.
+- Signal Score is visually emphasized as the one primary ranking metric.
+- New/Add actions are visible as context but do not dominate persistent high-weight ownership.
+- `score_confidence` is visible when score input quality is not high.
 - Every score shown in the table has visible explanation components.
 - Unknown manager coverage is visible when it affects signal confidence.
-- The user can see whether Value Line quality data is available.
-- The user can see current price vs selected valuation reference where price exists.
-- The user can see the valuation reference type and confidence.
-- The user can see caution flags that explain why the signal may be misleading.
+- The user can see grouped caution flags that explain why the signal may be misleading.
 - The user can follow suggested next research steps rather than treating the score as a conclusion.
 - Unsupported values are clearly labeled as unavailable or estimated.
 - The dashboard never claims to know actual 13F transaction prices.
