@@ -54,8 +54,11 @@ class ManagerHolding:
     value_thousands: int
     filing_total_value_thousands: int | None
     position_weight: float
+    filing_date: date | None = None
+    accession_no: str | None = None
     position_rank: int = 0
     action: str = "flat"
+    previous_shares: int | None = None
     share_delta_pct: float | None = None
     holding_streak_quarters: int = 1
     manager_type: str = "unknown"
@@ -291,6 +294,8 @@ def _holdings_for_period(
                 value_thousands=0,
                 filing_total_value_thousands=total_value,
                 position_weight=0,
+                filing_date=filing.filed_at,
+                accession_no=filing.accession_no,
             )
         grouped[key].shares += int(holding.shares or 0)
         grouped[key].value_thousands += int(holding.value_thousands or 0)
@@ -362,8 +367,10 @@ def _holding_streaks(
 def _apply_action(holding: ManagerHolding, previous: ManagerHolding | None) -> None:
     if previous is None:
         holding.action = "new"
+        holding.previous_shares = None
         holding.share_delta_pct = None
         return
+    holding.previous_shares = previous.shares
     if previous.shares <= 0:
         holding.action = "add"
         holding.share_delta_pct = None
@@ -445,11 +452,25 @@ def _stock_payload(
             {
                 "manager_id": item.manager_id,
                 "manager_name": item.manager_name,
+                "current_shares": item.shares,
+                "previous_shares": item.previous_shares,
+                "share_delta_pct": round(item.share_delta_pct, 6) if item.share_delta_pct is not None else None,
+                "current_value_thousands": item.value_thousands,
+                "holder_price_estimate": (
+                    round(item.value_thousands * 1000 / item.shares, 6)
+                    if item.shares and item.shares > 0 and item.value_thousands and item.value_thousands > 0
+                    else None
+                ),
                 "position_weight": round(item.position_weight, 6),
                 "position_rank": item.position_rank,
                 "action": item.action,
                 "holding_streak_quarters": item.holding_streak_quarters,
                 "manager_type": item.manager_type,
+                "manager_signal_weight": round(item.manager_signal_weight, 4),
+                "turnover_proxy": round(item.turnover_proxy, 4) if item.turnover_proxy is not None else None,
+                "high_turnover": item.high_turnover,
+                "filing_date": item.filing_date.isoformat() if item.filing_date else None,
+                "accession_no": item.accession_no,
             }
             for item in holdings[:3]
         ],

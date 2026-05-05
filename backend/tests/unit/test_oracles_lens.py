@@ -215,6 +215,17 @@ def test_oracles_lens_defaults_to_latest_complete_period_and_signal_rows(client,
     assert item["median_holding_streak_quarters"] == 2
     assert item["manager_signal_summary"]["unknown_manager_type_count"] == 75
     assert item["manager_signal_summary"]["manager_signal_quality_coverage"] == 0
+    top_holder = item["top_holders"][0]
+    assert top_holder["current_shares"] == 8800
+    assert top_holder["previous_shares"] == 8400
+    assert top_holder["share_delta_pct"] == 0.047619
+    assert top_holder["current_value_thousands"] == 88000
+    assert top_holder["holder_price_estimate"] == 10000.0
+    assert top_holder["filing_date"] == "2031-12-31"
+    assert top_holder["accession_no"] == "new-74"
+    assert top_holder["manager_signal_weight"] == 0.6
+    assert top_holder["turnover_proxy"] == 0.5
+    assert top_holder["high_turnover"] is False
     assert item["score_explanation"]["primary_reasons"]
     assert "conviction_components" in item["score_explanation"]
     assert all(flag["key"] != "stale_filing" for flag in item["caution_flags"])

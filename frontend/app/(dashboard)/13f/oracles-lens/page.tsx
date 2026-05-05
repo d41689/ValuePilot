@@ -95,6 +95,20 @@ function formatCoveragePercent(value: number | null | undefined) {
   return `${Math.round(value * 100)}%`;
 }
 
+function formatPercentValue(value: number | null | undefined, digits = 1) {
+  if (typeof value !== 'number') {
+    return '—';
+  }
+  return `${(value * 100).toFixed(digits)}%`;
+}
+
+function formatCurrency(value: number | null | undefined) {
+  if (typeof value !== 'number') {
+    return '—';
+  }
+  return `$${value.toLocaleString('en-US', { maximumFractionDigits: 2 })}`;
+}
+
 export default function OraclesLensPage() {
   const [selectedStockId, setSelectedStockId] = useState<number | null>(null);
   const [filters, setFilters] = useState({
@@ -636,10 +650,56 @@ export default function OraclesLensPage() {
                 <div className="mt-2 space-y-2">
                   {selectedRow.topHolders.slice(0, 3).map((holder) => (
                     <div key={holder.manager_id} className="rounded-md border border-border/70 p-2 text-sm">
-                      <div className="font-medium">{holder.manager_name}</div>
-                      <div className="mt-1 text-xs text-muted-foreground">
-                        Rank {holder.position_rank ?? '—'} · {holder.action} ·{' '}
-                        {holder.holding_streak_quarters ?? '—'}Q streak
+                      <div className="flex items-start justify-between gap-3">
+                        <div>
+                          <div className="font-medium">{holder.manager_name}</div>
+                          <div className="mt-1 text-xs text-muted-foreground">
+                            Rank {holder.position_rank ?? '—'} · {holder.action} ·{' '}
+                            {holder.holding_streak_quarters ?? '—'}Q streak
+                          </div>
+                        </div>
+                        <Badge variant="outline" className="rounded-md">
+                          {formatPercentValue(holder.position_weight)}
+                        </Badge>
+                      </div>
+                      <div className="mt-3 grid grid-cols-2 gap-2 text-xs text-muted-foreground">
+                        <div>
+                          <div className="uppercase">Shares</div>
+                          <div className="mt-1 text-foreground">
+                            {formatInteger(holder.current_shares)}
+                          </div>
+                        </div>
+                        <div>
+                          <div className="uppercase">Previous</div>
+                          <div className="mt-1 text-foreground">
+                            {formatInteger(holder.previous_shares)}
+                          </div>
+                        </div>
+                        <div>
+                          <div className="uppercase">Share delta</div>
+                          <div className="mt-1 text-foreground">
+                            {formatPercentValue(holder.share_delta_pct)}
+                          </div>
+                        </div>
+                        <div>
+                          <div className="uppercase">Holder estimate</div>
+                          <div className="mt-1 text-foreground">
+                            {formatCurrency(holder.holder_price_estimate)}
+                          </div>
+                        </div>
+                        <div>
+                          <div className="uppercase">Filed</div>
+                          <div className="mt-1 text-foreground">{holder.filing_date ?? '—'}</div>
+                        </div>
+                        <div>
+                          <div className="uppercase">Signal weight</div>
+                          <div className="mt-1 text-foreground">
+                            {formatPercentValue(holder.manager_signal_weight, 0)}
+                          </div>
+                        </div>
+                      </div>
+                      <div className="mt-2 truncate font-mono text-[11px] text-muted-foreground">
+                        {holder.accession_no ?? 'No accession'}
                       </div>
                     </div>
                   ))}
