@@ -64,6 +64,20 @@ test('normalizeOracleLensRows emphasizes signal score with explanations', () => 
           expected_metrics: 6,
         },
         unavailable_reasons: [],
+        provenance: {
+          primary_source_document_id: 2655,
+          source_document_ids: [2655],
+          facts: [
+            {
+              label: 'return_on_total_capital',
+              metric_key: 'bs.return_on_total_capital',
+              source_document_id: 2655,
+              source_type: 'parsed',
+              period_type: 'FY',
+              period_end_date: '2031-12-31',
+            },
+          ],
+        },
       },
       holder_price_estimate_low: 92,
       holder_price_estimate_high: 118,
@@ -93,6 +107,9 @@ test('normalizeOracleLensRows emphasizes signal score with explanations', () => 
   assert.equal(rows[0].quality.returnOnCapitalLabel, '24%');
   assert.equal(rows[0].quality.ownerEarningsYieldLabel, '5.2%');
   assert.equal(rows[0].quality.qualityCoverageLabel, '6/6 facts');
+  assert.equal(rows[0].quality.primarySourceDocumentId, 2655);
+  assert.deepEqual(rows[0].quality.sourceDocumentIds, [2655]);
+  assert.equal(rows[0].quality.provenanceFacts[0].metric_key, 'bs.return_on_total_capital');
   assert.equal(rows[0].valuation.holderRangeLabel, '$92.00–$118.00');
   assert.equal(rows[0].valuation.currentPriceLabel, '$100.00');
   assert.equal(rows[0].valuation.currentPriceDateLabel, '2031-12-31');
@@ -221,6 +238,9 @@ test('normalizeQualityOverlay exposes missing data as explicit product state', (
   assert.equal(quality.latestPriceLabel, '—');
   assert.equal(quality.qualityCoverageLabel, '0/6 facts');
   assert.equal(quality.hasValueLineQuality, false);
+  assert.equal(quality.primarySourceDocumentId, null);
+  assert.deepEqual(quality.sourceDocumentIds, []);
+  assert.deepEqual(quality.provenanceFacts, []);
   assert.deepEqual(quality.unavailableReasons, ['missing Value Line facts', 'missing price']);
 });
 

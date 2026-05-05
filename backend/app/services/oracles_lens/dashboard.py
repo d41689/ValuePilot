@@ -776,6 +776,34 @@ def _quality_payload(
             "expected_metrics": 6,
         },
         "unavailable_reasons": unavailable,
+        "provenance": _quality_provenance(facts),
+    }
+
+
+def _quality_provenance(facts: dict[str, MetricFact]) -> dict[str, Any]:
+    fact_rows = []
+    source_document_ids = set()
+    for label in QUALITY_METRIC_KEYS:
+        fact = facts.get(label)
+        if fact is None:
+            continue
+        if fact.source_document_id is not None:
+            source_document_ids.add(fact.source_document_id)
+        fact_rows.append(
+            {
+                "label": label,
+                "metric_key": fact.metric_key,
+                "source_document_id": fact.source_document_id,
+                "source_type": fact.source_type,
+                "period_type": fact.period_type,
+                "period_end_date": fact.period_end_date.isoformat() if fact.period_end_date else None,
+            }
+        )
+    sorted_document_ids = sorted(source_document_ids)
+    return {
+        "primary_source_document_id": sorted_document_ids[0] if sorted_document_ids else None,
+        "source_document_ids": sorted_document_ids,
+        "facts": fact_rows,
     }
 
 

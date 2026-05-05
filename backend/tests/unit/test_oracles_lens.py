@@ -2,9 +2,11 @@ from __future__ import annotations
 
 from datetime import date
 
+from app.models.artifacts import PdfDocument
 from app.models.facts import MetricFact
 from app.models.institutions import Filing13F, Holding13F, InstitutionManager
 from app.models.stocks import Stock, StockPrice
+from app.models.users import User
 
 
 def _manager(db_session, name: str, *, cik: str, superinvestor: bool = True) -> InstitutionManager:
@@ -155,6 +157,7 @@ def _metric_fact(
     *,
     period_end: date = date(2031, 12, 31),
     source_type: str = "parsed",
+    source_document_id: int | None = None,
 ) -> MetricFact:
     return MetricFact(
         user_id=1,
@@ -165,9 +168,29 @@ def _metric_fact(
         unit="ratio",
         period_type="FY",
         period_end_date=period_end,
+        source_document_id=source_document_id,
         source_type=source_type,
         is_current=True,
     )
+
+
+def _pdf_document(db_session, stock: Stock, *, report_date: date = date(2032, 1, 31)) -> PdfDocument:
+    user = User(email=f"oracles-lens-doc-{stock.id}@example.com")
+    db_session.add(user)
+    db_session.flush()
+    document = PdfDocument(
+        user_id=user.id,
+        file_name=f"{stock.ticker}-{report_date.isoformat()}.pdf",
+        source="value_line",
+        report_date=report_date,
+        file_storage_key=f"tests/{stock.ticker}-{report_date.isoformat()}.pdf",
+        parse_status="parsed",
+        parser_version="v1",
+        stock_id=stock.id,
+    )
+    db_session.add(document)
+    db_session.flush()
+    return document
 
 
 def test_oracles_lens_defaults_to_latest_complete_period_and_signal_rows(client, db_session):
@@ -240,14 +263,31 @@ def test_oracles_lens_defaults_to_latest_complete_period_and_signal_rows(client,
 
 def test_oracles_lens_adds_value_line_quality_overlay(client, db_session):
     target = _seed_oracles_lens_fixture(db_session)
+    document = _pdf_document(db_session, target)
     db_session.add_all(
         [
-            _metric_fact(target, "score.piotroski.total", 8, source_type="calculated"),
-            _metric_fact(target, "bs.return_on_total_capital", 0.24),
-            _metric_fact(target, "bs.return_on_equity", 0.31),
-            _metric_fact(target, "is.net_profit_margin", 0.22),
-            _metric_fact(target, "leverage.long_term_debt_to_capital", 0.18),
-            _metric_fact(target, "owners_earnings_per_share_normalized", 5.0),
+            _metric_fact(
+                target,
+                "score.piotroski.total",
+                8,
+                source_type="calculated",
+                source_document_id=document.id,
+            ),
+            _metric_fact(target, "bs.return_on_total_capital", 0.24, source_document_id=document.id),
+            _metric_fact(target, "bs.return_on_equity", 0.31, source_document_id=document.id),
+            _metric_fact(target, "is.net_profit_margin", 0.22, source_document_id=document.id),
+            _metric_fact(
+                target,
+                "leverage.long_term_debt_to_capital",
+                0.18,
+                source_document_id=document.id,
+            ),
+            _metric_fact(
+                target,
+                "owners_earnings_per_share_normalized",
+                5.0,
+                source_document_id=document.id,
+            ),
         ]
     )
     db_session.add(
@@ -287,6 +327,60 @@ def test_oracles_lens_adds_value_line_quality_overlay(client, db_session):
             "expected_metrics": 6,
         },
         "unavailable_reasons": [],
+        "provenance": {
+            "primary_source_document_id": document.id,
+            "source_document_ids": [document.id],
+            "facts": [
+                {
+                    "label": "piotroski_total",
+                    "metric_key": "score.piotroski.total",
+                    "source_document_id": document.id,
+                    "source_type": "calculated",
+                    "period_type": "FY",
+                    "period_end_date": "2031-12-31",
+                },
+                {
+                    "label": "return_on_total_capital",
+                    "metric_key": "bs.return_on_total_capital",
+                    "source_document_id": document.id,
+                    "source_type": "parsed",
+                    "period_type": "FY",
+                    "period_end_date": "2031-12-31",
+                },
+                {
+                    "label": "return_on_equity",
+                    "metric_key": "bs.return_on_equity",
+                    "source_document_id": document.id,
+                    "source_type": "parsed",
+                    "period_type": "FY",
+                    "period_end_date": "2031-12-31",
+                },
+                {
+                    "label": "net_profit_margin",
+                    "metric_key": "is.net_profit_margin",
+                    "source_document_id": document.id,
+                    "source_type": "parsed",
+                    "period_type": "FY",
+                    "period_end_date": "2031-12-31",
+                },
+                {
+                    "label": "debt_to_capital",
+                    "metric_key": "leverage.long_term_debt_to_capital",
+                    "source_document_id": document.id,
+                    "source_type": "parsed",
+                    "period_type": "FY",
+                    "period_end_date": "2031-12-31",
+                },
+                {
+                    "label": "owners_earnings",
+                    "metric_key": "owners_earnings_per_share_normalized",
+                    "source_document_id": document.id,
+                    "source_type": "parsed",
+                    "period_type": "FY",
+                    "period_end_date": "2031-12-31",
+                },
+            ],
+        },
     }
     assert response.json()["coverage"]["value_line_coverage_count"] >= 1
 

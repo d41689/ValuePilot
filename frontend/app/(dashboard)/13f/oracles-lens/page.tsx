@@ -1,8 +1,9 @@
 'use client';
 
 import { useMemo, useState } from 'react';
+import Link from 'next/link';
 import { useQuery } from '@tanstack/react-query';
-import { AlertTriangle, Info, PanelRightOpen, Search, SlidersHorizontal, X } from 'lucide-react';
+import { AlertTriangle, FileText, Info, PanelRightOpen, Search, SlidersHorizontal, X } from 'lucide-react';
 
 import apiClient from '@/lib/api/client';
 import oracleLensHelpers from '@/lib/oraclesLens';
@@ -666,6 +667,39 @@ export default function OraclesLensPage() {
                     <div>No quality or valuation gaps surfaced for the current row.</div>
                   )}
                 </div>
+              </div>
+
+              <div>
+                <div className="text-xs font-semibold uppercase text-muted-foreground">
+                  Value Line provenance
+                </div>
+                {selectedRow.quality.primarySourceDocumentId ? (
+                  <div className="mt-2 space-y-3">
+                    <Button asChild variant="outline" size="sm">
+                      <Link href={`/documents/${selectedRow.quality.primarySourceDocumentId}/review`}>
+                        <FileText className="h-3.5 w-3.5" />
+                        Open source report
+                      </Link>
+                    </Button>
+                    <div className="space-y-1 text-xs text-muted-foreground">
+                      {selectedRow.quality.provenanceFacts.slice(0, 6).map((fact) => (
+                        <div
+                          key={`${fact.metric_key}:${fact.source_document_id ?? 'none'}:${fact.period_end_date ?? 'none'}`}
+                          className="flex items-center justify-between gap-3 rounded-md border border-border/70 px-2 py-1.5"
+                        >
+                          <span>{fact.label?.replaceAll('_', ' ') ?? fact.metric_key}</span>
+                          <span className="font-mono">
+                            doc {fact.source_document_id ?? '—'} · {fact.period_end_date ?? '—'}
+                          </span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                ) : (
+                  <div className="mt-2 text-sm text-muted-foreground">
+                    No source document is linked to the current quality facts.
+                  </div>
+                )}
               </div>
 
               <div>

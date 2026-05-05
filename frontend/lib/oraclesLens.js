@@ -60,6 +60,13 @@ function normalizeQualityOverlay(qualityOverlay) {
   const unavailableReasons = Array.isArray(quality.unavailable_reasons)
     ? quality.unavailable_reasons
     : [];
+  const provenance = quality.provenance && typeof quality.provenance === 'object'
+    ? quality.provenance
+    : {};
+  const sourceDocumentIds = Array.isArray(provenance.source_document_ids)
+    ? provenance.source_document_ids.filter((id) => typeof id === 'number')
+    : [];
+  const provenanceFacts = Array.isArray(provenance.facts) ? provenance.facts : [];
 
   return {
     piotroskiLabel: formatNumber(quality.piotroski_total, 0),
@@ -77,6 +84,12 @@ function normalizeQualityOverlay(qualityOverlay) {
     hasValueLineQuality: Boolean(coverage.value_line),
     hasPrice: Boolean(coverage.price),
     unavailableReasons,
+    primarySourceDocumentId:
+      typeof provenance.primary_source_document_id === 'number'
+        ? provenance.primary_source_document_id
+        : null,
+    sourceDocumentIds,
+    provenanceFacts,
   };
 }
 
