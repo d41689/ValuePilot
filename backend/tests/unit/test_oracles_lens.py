@@ -180,6 +180,29 @@ def test_oracles_lens_defaults_to_latest_complete_period_and_signal_rows(client,
     assert payload["period"] == "2031-Q4"
     assert payload["period_end_date"] == "2031-12-31"
     assert payload["baseline_notice"].startswith("13F filings are delayed snapshots")
+    assert payload["periods"][:3] == [
+        {
+            "label": "2032-Q1",
+            "period_end_date": "2032-03-31",
+            "manager_count": 1,
+            "is_selected": False,
+            "is_latest_complete": False,
+        },
+        {
+            "label": "2031-Q4",
+            "period_end_date": "2031-12-31",
+            "manager_count": 75,
+            "is_selected": True,
+            "is_latest_complete": True,
+        },
+        {
+            "label": "2031-Q3",
+            "period_end_date": "2031-09-30",
+            "manager_count": 75,
+            "is_selected": False,
+            "is_latest_complete": False,
+        },
+    ]
     assert payload["coverage"]["manager_count"] == 75
     assert payload["coverage"]["linked_holding_count"] >= 3
 
@@ -336,6 +359,10 @@ def test_oracles_lens_marks_old_selected_period(client, db_session):
     payload = response.json()
     assert payload["period"] == "2031-Q3"
     assert payload["latest_complete_period"] == "2031-Q4"
+    selected_period = next(period for period in payload["periods"] if period["label"] == "2031-Q3")
+    assert selected_period["is_selected"] is True
+    latest_complete = next(period for period in payload["periods"] if period["label"] == "2031-Q4")
+    assert latest_complete["is_latest_complete"] is True
     assert payload["items"]
     assert any(
         flag["key"] == "old_period_selected"

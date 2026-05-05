@@ -97,6 +97,7 @@ def build_oracles_lens_dashboard(
             "latest_complete_period": None,
             "baseline_notice": BASELINE_NOTICE,
             "coverage": _empty_coverage(),
+            "periods": [],
             "items": [],
         }
 
@@ -175,8 +176,28 @@ def build_oracles_lens_dashboard(
         "latest_complete_period": latest_complete.label if latest_complete else None,
         "baseline_notice": BASELINE_NOTICE,
         "coverage": coverage,
+        "periods": _period_timeline(periods, selected, latest_complete),
         "items": items,
     }
+
+
+def _period_timeline(
+    periods: list[PeriodInfo],
+    selected: PeriodInfo,
+    latest_complete: PeriodInfo | None,
+) -> list[dict[str, Any]]:
+    return [
+        {
+            "label": item.label,
+            "period_end_date": item.period_end_date.isoformat(),
+            "manager_count": item.manager_count,
+            "is_selected": item.period_end_date == selected.period_end_date,
+            "is_latest_complete": bool(
+                latest_complete and item.period_end_date == latest_complete.period_end_date
+            ),
+        }
+        for item in periods
+    ]
 
 
 def _periods(session: Session, *, superinvestor_only: bool) -> list[PeriodInfo]:

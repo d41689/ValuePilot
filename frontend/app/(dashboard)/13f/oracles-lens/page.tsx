@@ -12,6 +12,13 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Checkbox } from '@/components/ui/checkbox';
 import { Input } from '@/components/ui/input';
 import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select';
+import {
   Table,
   TableBody,
   TableCell,
@@ -56,6 +63,13 @@ type OracleLensPayload = {
     value_line_coverage_count?: number;
     valuation_reference_coverage_count?: number;
   };
+  periods?: Array<{
+    label: string;
+    period_end_date: string;
+    manager_count: number;
+    is_selected: boolean;
+    is_latest_complete: boolean;
+  }>;
   items: unknown[];
 };
 
@@ -105,6 +119,7 @@ export default function OraclesLensPage() {
     [selectedRow]
   );
   const coverage = payload?.coverage;
+  const periodOptions = payload?.periods ?? [];
 
   return (
     <div className="space-y-5">
@@ -174,15 +189,41 @@ export default function OraclesLensPage() {
               <label className="text-xs font-semibold uppercase text-muted-foreground" htmlFor="period-filter">
                 Period
               </label>
-              <Input
-                id="period-filter"
-                className="mt-2"
-                placeholder={payload?.latest_complete_period ?? 'YYYY-Qn'}
-                value={filters.period}
-                onChange={(event) =>
-                  setFilters((current) => ({ ...current, period: event.target.value }))
-                }
-              />
+              {periodOptions.length ? (
+                <Select
+                  value={filters.period || '__latest'}
+                  onValueChange={(value) =>
+                    setFilters((current) => ({
+                      ...current,
+                      period: value === '__latest' ? '' : value,
+                    }))
+                  }
+                >
+                  <SelectTrigger id="period-filter" className="mt-2">
+                    <SelectValue placeholder="Latest complete" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="__latest">Latest complete</SelectItem>
+                    {periodOptions.map((periodOption) => (
+                      <SelectItem key={periodOption.label} value={periodOption.label}>
+                        {periodOption.label}
+                        {periodOption.is_latest_complete ? ' · latest complete' : ''}
+                        {periodOption.manager_count ? ` · ${periodOption.manager_count} managers` : ''}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              ) : (
+                <Input
+                  id="period-filter"
+                  className="mt-2"
+                  placeholder={payload?.latest_complete_period ?? 'YYYY-Qn'}
+                  value={filters.period}
+                  onChange={(event) =>
+                    setFilters((current) => ({ ...current, period: event.target.value }))
+                  }
+                />
+              )}
             </div>
             <div>
               <label
