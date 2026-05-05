@@ -3,6 +3,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 
 const {
+  buildOracleLensQueryParams,
   confidenceTone,
   groupCautionFlags,
   normalizeOracleLensRows,
@@ -98,6 +99,18 @@ test('normalizeOracleLensRows emphasizes signal score with explanations', () => 
     '3 high-signal managers hold this stock',
     '2 holders rank it as a top 10 position',
   ]);
+});
+
+test('buildOracleLensQueryParams serializes V1 dashboard filters', () => {
+  assert.equal(
+    buildOracleLensQueryParams({
+      period: '2031-Q4',
+      minHolders: 5,
+      minSignalScore: 2.5,
+      superinvestorOnly: false,
+    }),
+    'period=2031-Q4&min_holders=5&superinvestor_only=false&min_signal_score=2.5'
+  );
 });
 
 test('normalizeValuationReference keeps missing reference explicit', () => {

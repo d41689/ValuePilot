@@ -24,6 +24,23 @@ function formatPercent(value, digits = 1) {
   return `${(value * 100).toFixed(digits)}%`;
 }
 
+function buildOracleLensQueryParams(filters = {}) {
+  const params = new URLSearchParams();
+  if (filters.period) {
+    params.set('period', filters.period);
+  }
+  if (typeof filters.minHolders === 'number' && Number.isFinite(filters.minHolders)) {
+    params.set('min_holders', String(filters.minHolders));
+  }
+  if (typeof filters.superinvestorOnly === 'boolean') {
+    params.set('superinvestor_only', String(filters.superinvestorOnly));
+  }
+  if (typeof filters.minSignalScore === 'number' && Number.isFinite(filters.minSignalScore)) {
+    params.set('min_signal_score', String(filters.minSignalScore));
+  }
+  return params.toString();
+}
+
 function confidenceTone(confidence) {
   if (confidence === 'high') {
     return 'success';
@@ -219,6 +236,7 @@ function normalizeOracleLensRows(items) {
 }
 
 module.exports = {
+  buildOracleLensQueryParams,
   cautionTone,
   confidenceTone,
   formatNumber,

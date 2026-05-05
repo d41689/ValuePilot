@@ -2,13 +2,15 @@
 
 import { useMemo, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
-import { AlertTriangle, Info, PanelRightOpen, Search, X } from 'lucide-react';
+import { AlertTriangle, Info, PanelRightOpen, Search, SlidersHorizontal, X } from 'lucide-react';
 
 import apiClient from '@/lib/api/client';
 import oracleLensHelpers from '@/lib/oraclesLens';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import { Checkbox } from '@/components/ui/checkbox';
+import { Input } from '@/components/ui/input';
 import {
   Table,
   TableBody,
@@ -18,7 +20,12 @@ import {
   TableRow,
 } from '@/components/ui/table';
 
-const { cautionTone, normalizeOracleLensRows, suggestedResearchSteps } = oracleLensHelpers;
+const {
+  buildOracleLensQueryParams,
+  cautionTone,
+  normalizeOracleLensRows,
+  suggestedResearchSteps,
+} = oracleLensHelpers;
 
 type OracleLensPayload = {
   period: string | null;
@@ -46,10 +53,27 @@ function formatInteger(value: number | null | undefined) {
 
 export default function OraclesLensPage() {
   const [selectedStockId, setSelectedStockId] = useState<number | null>(null);
+  const [filters, setFilters] = useState({
+    period: '',
+    minHolders: '3',
+    minSignalScore: '',
+    superinvestorOnly: true,
+  });
+  const queryParams = useMemo(
+    () =>
+      buildOracleLensQueryParams({
+        period: filters.period.trim() || undefined,
+        minHolders: filters.minHolders ? Number(filters.minHolders) : undefined,
+        minSignalScore: filters.minSignalScore ? Number(filters.minSignalScore) : undefined,
+        superinvestorOnly: filters.superinvestorOnly,
+      }),
+    [filters]
+  );
   const dashboardQuery = useQuery({
-    queryKey: ['oracles-lens-dashboard'],
+    queryKey: ['oracles-lens-dashboard', queryParams],
     queryFn: async () => {
-      const res = await apiClient.get('/13f/oracles-lens');
+      const path = queryParams ? `/13f/oracles-lens?${queryParams}` : '/13f/oracles-lens';
+      const res = await apiClient.get(path);
       return res.data as OracleLensPayload;
     },
   });
@@ -117,6 +141,101 @@ export default function OraclesLensPage() {
           </CardContent>
         </Card>
       </div>
+
+      <Card className="rounded-md">
+        <CardHeader className="pb-3">
+          <CardTitle className="flex items-center gap-2 text-base">
+            <SlidersHorizontal className="h-4 w-4" />
+            Filters
+          </CardTitle>
+          <p className="text-sm text-muted-foreground">
+            Narrow the research candidates without treating the ranking as a buy signal.
+          </p>
+        </CardHeader>
+        <CardContent>
+          <div className="grid gap-4 md:grid-cols-[1.2fr_1fr_1fr_1.2fr_auto] md:items-end">
+            <div>
+              <label className="text-xs font-semibold uppercase text-muted-foreground" htmlFor="period-filter">
+                Period
+              </label>
+              <Input
+                id="period-filter"
+                className="mt-2"
+                placeholder={payload?.latest_complete_period ?? 'YYYY-Qn'}
+                value={filters.period}
+                onChange={(event) =>
+                  setFilters((current) => ({ ...current, period: event.target.value }))
+                }
+              />
+            </div>
+            <div>
+              <label
+                className="text-xs font-semibold uppercase text-muted-foreground"
+                htmlFor="min-holders-filter"
+              >
+                Min holders
+              </label>
+              <Input
+                id="min-holders-filter"
+                className="mt-2"
+                type="number"
+                min="1"
+                max="50"
+                value={filters.minHolders}
+                onChange={(event) =>
+                  setFilters((current) => ({ ...current, minHolders: event.target.value }))
+                }
+              />
+            </div>
+            <div>
+              <label
+                className="text-xs font-semibold uppercase text-muted-foreground"
+                htmlFor="min-signal-filter"
+              >
+                Min signal
+              </label>
+              <Input
+                id="min-signal-filter"
+                className="mt-2"
+                type="number"
+                min="0"
+                step="0.1"
+                placeholder="Any"
+                value={filters.minSignalScore}
+                onChange={(event) =>
+                  setFilters((current) => ({ ...current, minSignalScore: event.target.value }))
+                }
+              />
+            </div>
+            <label className="flex items-center gap-3 rounded-md border border-border/70 px-3 py-2 text-sm">
+              <Checkbox
+                checked={filters.superinvestorOnly}
+                onCheckedChange={(checked) =>
+                  setFilters((current) => ({ ...current, superinvestorOnly: Boolean(checked) }))
+                }
+              />
+              <span>
+                <span className="block font-medium">Superinvestors only</span>
+                <span className="text-xs text-muted-foreground">Noise filter</span>
+              </span>
+            </label>
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() =>
+                setFilters({
+                  period: '',
+                  minHolders: '3',
+                  minSignalScore: '',
+                  superinvestorOnly: true,
+                })
+              }
+            >
+              Reset
+            </Button>
+          </div>
+        </CardContent>
+      </Card>
 
       <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_380px]">
       <Card className="rounded-md">
