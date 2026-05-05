@@ -9,15 +9,17 @@ Last Updated: 2026-05-05
 
 ## 1. Product Positioning
 
-Oracle's Lens is a 13F-informed value investing dashboard for ValuePilot.
+Oracle's Lens is a 13F-informed research candidate discovery system for ValuePilot.
 
 The product goal is not to build a trading terminal. The goal is to help long-term investors answer three questions quickly:
 
 1. Which high-quality businesses are held by multiple selected superinvestors?
-2. Which of those holdings are improving or increasing across recent 13F quarters?
-3. Which of those businesses are currently worth deeper research based on Value Line fundamentals and valuation proxies?
+2. Which of those ownership signals are meaningful rather than noisy copycat bait?
+3. Which of those businesses are worth deeper research based on Value Line fundamentals, valuation references, and disconfirming evidence?
 
 The dashboard should be honest about data limitations. 13F filings are delayed, do not disclose transaction prices, and only report long positions in reportable securities. ValuePilot must not present inferred values as facts.
+
+Oracle's Lens is a research candidate discovery system, not a trading signal or copycat system. Its job is to reduce low-value research work by surfacing a smaller set of companies that deserve careful independent analysis.
 
 ---
 
@@ -69,9 +71,11 @@ Research
 
 Dashboard sections:
 
-1. **Consensus Radar**
-2. **Compounding Engines**
-3. **Sweet Spot Monitor**
+1. **Coverage and Data Freshness**
+2. **Signal-Weighted Consensus**
+3. **Business Quality Overlay**
+4. **Valuation Reference**
+5. **Caution Flags**
 
 The original product wording uses "Smart Money", "Oracle", and "Master" language. In the product UI, avoid overclaiming. Prefer precise labels:
 
@@ -79,6 +83,8 @@ The original product wording uses "Smart Money", "Oracle", and "Master" language
 - `13F Holder Cluster`
 - `Quarter-End Holding Price Estimate`
 - `Value Line Quality Overlay`
+- `Valuation Reference`
+- `Caution Flags`
 
 ---
 
@@ -89,14 +95,15 @@ The original product wording uses "Smart Money", "Oracle", and "Master" language
 - See a short list of stocks held by multiple selected superinvestors.
 - Understand whether managers are adding, reducing, entering, or exiting.
 - Compare 13F consensus against Value Line business quality data.
-- Identify potential research candidates where current price is below a valuation proxy.
+- Identify potential research candidates where current price is below a clearly labeled valuation reference.
+- See why a 13F signal may be stale, weak, crowded, or otherwise misleading.
 - Drill into a company without losing provenance.
 
 ### 4.2 Business Goals
 
 - Turn raw 13F ingestion into a premium research workflow.
 - Reuse ValuePilot's existing Value Line parser and normalized metric facts.
-- Create a defensible wedge that combines holdings, quality, and valuation.
+- Create a defensible wedge that combines 13F behavior, manager signal quality, holding duration, business quality, valuation references, and disconfirming evidence.
 - Avoid misleading users with unsupported "guru cost basis" claims.
 
 ---
@@ -112,6 +119,8 @@ V1 must not include:
 - 2008 / 2020 time-machine replay.
 - Broker integration or trading actions.
 - Any claim that 13F additions are fresh buys after quarter end.
+- Buy / sell recommendations.
+- Copycat ranking based only on which manager bought what.
 
 V1 may include clearly labeled estimates:
 
@@ -160,8 +169,39 @@ Price source:
   - rows with missing `stock_id`
 - Default ranking uses latest complete quarter, not partially ingested quarters.
 - A period is "complete enough" only if it has configurable minimum manager coverage.
+- V1 ranking must not treat every manager as equally informative. It must include a manager signal profile, even if some fields start as derived proxies or manually seeded metadata.
+- If manager type is unknown, display it as `Unknown` and use neutral or reduced signal weight rather than silently treating it as a high-quality long-term fundamental manager.
 
-### 6.3 Value Line Overlay Rules
+### 6.3 Manager Signal Profile
+
+The Munger-style product principle is that a 13F filing is not equally valuable from every institution. A concentrated long-term fundamental investor carries a different signal than a high-turnover quant or index-like manager.
+
+V1 should create a minimal manager signal profile from available data and explicit metadata:
+
+| Field | V1 Source | Usage |
+| --- | --- | --- |
+| `manager_type` | seeded metadata, initially nullable | classify long-term fundamental, value concentrated, activist, quant, index-like, unknown |
+| `portfolio_concentration` | latest 13F holdings distribution | higher concentration means stronger signal |
+| `average_holding_period` | historical 13F streaks | longer holding periods mean stronger signal |
+| `turnover_proxy` | quarter-to-quarter holding churn | high turnover reduces signal weight |
+| `position_weight_rank` | rank within manager portfolio | top holdings are stronger than tail positions |
+| `historical_style_relevance` | seeded metadata or later backtest | optional V2 refinement |
+
+Default V1 manager type weights:
+
+| Manager Type | Default Consensus Treatment |
+| --- | --- |
+| Long-term fundamental | full weight |
+| Value-oriented concentrated | full weight |
+| Activist | included, clearly marked |
+| Quant | reduced weight or separate filter |
+| Index / ETF-like | excluded or near-zero weight |
+| Very high turnover | reduced weight |
+| Unknown | neutral-to-reduced weight with visible coverage warning |
+
+Do not hardcode exclusions by manager name in product logic. Use manager metadata or derived profile fields.
+
+### 6.4 Value Line Overlay Rules
 
 Quality overlay may use existing facts:
 
@@ -181,7 +221,7 @@ Quality overlay may use existing facts:
 
 ## 7. Core Metrics
 
-### 7.1 Consensus Count
+### 7.1 Raw Consensus Count
 
 Number of superinvestor managers holding the stock in the selected quarter.
 
@@ -195,7 +235,27 @@ Eligibility:
 consensus_count >= 3
 ```
 
-### 7.2 Portfolio Weight
+Raw holder count is useful for explainability, but it must not be the primary ranking signal. Three concentrated long-term managers are more informative than three index-like or high-turnover holders.
+
+### 7.2 Signal-Weighted Consensus Score
+
+Primary V1 ranking metric:
+
+```text
+signal_weighted_consensus_score =
+  sum(manager_signal_weight * position_signal_weight)
+```
+
+Where:
+
+```text
+manager_signal_weight = f(manager_type, portfolio_concentration, average_holding_period, turnover_proxy)
+position_signal_weight = f(position_weight, position_weight_rank, holding_streak_quarters, action_score)
+```
+
+V1 may start with transparent heuristics. It must expose component inputs and avoid opaque "AI score" behavior.
+
+### 7.3 Portfolio Weight
 
 Per manager:
 
@@ -215,9 +275,9 @@ Dashboard aggregate:
 aggregate_weight = sum(manager_position_weight)
 ```
 
-This drives bubble size in Consensus Radar.
+This can drive bubble size in the later visual radar enhancement.
 
-### 7.3 Add Intensity
+### 7.4 Add Intensity
 
 Use shares rather than value when possible.
 
@@ -261,7 +321,7 @@ Suggested action scores:
 
 Weight by prior or current position weight.
 
-### 7.4 Quarter-End Holding Price Estimate
+### 7.5 Quarter-End Holding Price Estimate
 
 ```text
 quarter_end_holding_price = holding.value_thousands * 1000 / holding.shares
@@ -280,7 +340,7 @@ Do not label this as:
 - transaction price
 - guru cost
 
-### 7.5 Owner Earnings Yield
+### 7.6 Owner Earnings Yield
 
 ```text
 owner_earnings_yield = owners_earnings_per_share_normalized / current_price
@@ -293,7 +353,7 @@ Requirements:
 
 If price is missing, show unavailable with reason.
 
-### 7.6 Capital Allocation Grade
+### 7.7 Capital Allocation Grade
 
 V1 should use a transparent score, not an opaque AI score.
 
@@ -316,7 +376,7 @@ F: <35
 
 Every grade must expose input coverage and raw values.
 
-### 7.7 Moat Proxy
+### 7.8 Moat Proxy
 
 V1 must not implement the proposed AI moat score.
 
@@ -334,23 +394,141 @@ Possible inputs:
 - Value Line price stability
 - Value Line price growth persistence
 
+### 7.9 Conviction Score
+
+Conviction is different from simple add/reduce behavior. The product should show whether a holding is a core position or a small tail position.
+
+Suggested V1 formula:
+
+```text
+conviction_score =
+  position_weight_score
+  + position_rank_score
+  + holding_duration_score
+  + action_score
+  + manager_signal_weight
+```
+
+Inputs:
+
+| Input | Reason |
+| --- | --- |
+| Position weight | Larger weight suggests higher conviction |
+| Position rank | Top 10 positions matter more than small tail positions |
+| Holding duration | Persistent ownership is more meaningful than one quarter |
+| Recent action | New/Add/Flat/Reduce/Exit adds context |
+| Manager signal weight | Better managers should carry more signal |
+
+The UI should prefer explanations such as:
+
+```text
+2 high-signal managers hold this as a top 10 position, with a median holding streak of 7 quarters.
+```
+
+over:
+
+```text
+5 managers hold this stock.
+```
+
+### 7.10 Holding Duration and Streak
+
+13F data is especially useful for studying persistent ownership behavior.
+
+Per manager / stock:
+
+```text
+manager_holding_duration = count(consecutive quarters with current holding present)
+```
+
+Stock-level summary:
+
+```text
+median_holding_streak_quarters
+max_holding_streak_quarters
+long_term_holder_count = count(manager_holding_duration >= threshold)
+```
+
+Suggested V1 long-term threshold:
+
+```text
+4 quarters
+```
+
+Drilldown table should include:
+
+| Manager | Current Weight | Action | Holding Streak |
+| --- | ---: | --- | ---: |
+| Fund A | 8.2% | Add | 9 quarters |
+| Fund B | 3.1% | Flat | 6 quarters |
+| Fund C | 1.4% | New | 1 quarter |
+
+### 7.11 Distinctive Consensus Score
+
+High raw consensus can be weak if it simply reflects mega-cap popularity. V1 should include a distinctiveness layer:
+
+```text
+distinctive_consensus_score =
+  signal_weighted_consensus_score
+  * concentration_factor
+  * persistence_factor
+  * anti_crowding_factor
+```
+
+V1 anti-crowding proxy:
+
+- reduce score for stocks where consensus is driven mostly by small position weights
+- reduce score when holders are mostly low-signal or unknown manager types
+- flag mega-cap / broadly held names as potentially crowded when market cap data becomes available
+
+This score is a research prioritization aid, not an alpha claim.
+
+### 7.12 Caution Flags
+
+Every candidate should carry negative evidence, not only positive signals.
+
+Initial V1 flags:
+
+| Flag | Meaning |
+| --- | --- |
+| `stale_filing` | 13F filing is a delayed snapshot |
+| `low_conviction` | many holders, but mostly small weights |
+| `crowded_mega_cap` | consensus may reflect broad market exposure rather than insight |
+| `weak_quality_coverage` | Value Line facts are missing or sparse |
+| `price_moved_up` | current price is far above quarter-end holding price estimate |
+| `mixed_actions` | high-signal managers disagree: some add, others reduce |
+| `short_holding_streak` | position is recent and not yet persistent |
+| `high_turnover_holders` | signal comes mostly from managers with high churn |
+| `valuation_reference_missing` | no reliable valuation reference is available |
+
+Caution flags should appear in both the table and the stock drilldown. They are part of the product's value, not edge-case warnings.
+
 ---
 
 ## 8. User Experience
 
 ### 8.1 Page Layout
 
-Use a dense research dashboard layout:
+Use a dense research-funnel layout:
 
 ```text
 ┌──────────────────────────────────────────────────────────┐
 │ Header: Oracle's Lens                                    │
-│ Period selector | Superinvestor filter | Coverage status │
+│ Fixed 13F delay notice                                   │
+│ Period selector | Signal filter | Coverage status        │
 ├───────────────┬──────────────────────────────────────────┤
-│ Sidebar       │ Consensus Radar                          │
-│ Filters       │ Compounding Engines table                │
-│               │ Sweet Spot Monitor                       │
+│ Sidebar       │ Coverage & Data Freshness                │
+│ Filters       │ Signal-Weighted Consensus                │
+│               │ Business Quality Overlay                 │
+│               │ Valuation Reference                      │
+│               │ Caution Flags                            │
 └───────────────┴──────────────────────────────────────────┘
+```
+
+The page must show this notice in a visible fixed area, not only in a tooltip:
+
+```text
+13F filings are delayed snapshots. They show reported quarter-end holdings, not current holdings, transaction prices, or buy recommendations.
 ```
 
 Design constraints:
@@ -362,7 +540,27 @@ Design constraints:
 - Avoid decorative gradients, orbs, and oversized headings.
 - Prioritize readable tables, controls, and provenance.
 
-### 8.2 Consensus Radar
+### 8.2 Coverage and Data Freshness
+
+This section appears above the stock list.
+
+Fields:
+
+- latest complete 13F period
+- filing date range
+- manager coverage
+- holding coverage
+- CUSIP-to-stock linkage coverage
+- price coverage
+- Value Line coverage
+- partial period warning
+
+Purpose:
+
+- Make data freshness and missingness impossible to miss.
+- Prevent users from treating partial 13F periods as current market intelligence.
+
+### 8.3 Signal-Weighted Consensus
 
 V1 visualization options:
 
@@ -381,11 +579,16 @@ Columns:
 | --- | --- |
 | Ticker | Resolved stock ticker |
 | Company | Stock company name |
-| Consensus | Number of superinvestors holding |
+| Signal Score | Signal-weighted consensus score |
+| Raw Holders | Number of superinvestors holding |
+| Top Holders | Highest-signal manager names |
 | Adders | Managers classified as New or Add |
 | Reducers | Managers classified as Reduce or Exit |
+| Conviction | Position rank, weight, duration, and manager quality composite |
+| Holding Streak | Median / max consecutive holding quarters |
 | Aggregate Weight | Sum of position weights |
 | Latest 13F Period | Quarter |
+| Caution | Highest-priority caution flag |
 | Coverage | Value Line / price coverage |
 
 Hover / detail popover:
@@ -395,17 +598,20 @@ Hover / detail popover:
 - Previous shares
 - Action classification
 - Position weight
+- Position rank
+- Manager signal profile
+- Holding streak
 - Quarter-end holding price estimate
 - Filing date
 
-### 8.3 Compounding Engines
+### 8.4 Business Quality Overlay
 
 Table view with quality metrics:
 
 | Column | Description |
 | --- | --- |
 | Ticker | Stock |
-| Consensus | Number of managers |
+| Signal Score | Signal-weighted ownership score |
 | Owner Earnings Yield | OEPS / price |
 | Piotroski | Latest total and trend |
 | ROTC / ROE | Value Line return proxy |
@@ -417,13 +623,16 @@ Click behavior:
 
 - Open a side panel.
 - Side panel should show:
-  - 13F manager list
+  - 13F manager-by-manager history
+  - holding duration and action changes
   - Value Line quality facts
+  - valuation reference inputs
+  - caution flags
   - active report provenance
   - historical restatement warnings if available
   - link to document review
 
-### 8.4 Sweet Spot Monitor
+### 8.5 Valuation Reference
 
 Each stock row can show a valuation strip.
 
@@ -431,11 +640,11 @@ V1 endpoints:
 
 - Left marker: quarter-end holding price estimate range from 13F holders.
 - Middle marker: current EOD price.
-- Right marker: fair value proxy.
+- Right marker: selected valuation reference.
 
-Fair value priority:
+Valuation reference priority:
 
-1. Manual fair value fact if user supplied one.
+1. Manual valuation reference fact if user supplied one.
 2. Value Line `target.price_18m.mid`.
 3. DCF result only if a persisted/manual DCF value exists in future.
 
@@ -444,17 +653,45 @@ Visual state:
 | State | Rule |
 | --- | --- |
 | Below holder estimate | `current_price < min(quarter_end_holding_price_estimate)` |
-| Below fair value | `current_price < fair_value_proxy` |
+| Below selected valuation reference | `current_price < valuation_reference` |
 | Missing price | neutral with unavailable reason |
-| Missing fair value | no MOS calculation |
+| Missing valuation reference | no discount calculation |
 
-Do not imply immediate buy signals.
+Do not imply immediate buy signals. Value Line `target.price_18m.mid` is not intrinsic value by default. UI copy must say `Below selected valuation reference` or `Below Value Line 18-month target midpoint`, not `Below fair value`.
 
-### 8.5 Noise Filter
+### 8.6 Caution Flags Panel
+
+Every stock drilldown should include a panel titled:
+
+```text
+Why This Signal May Be Misleading
+```
+
+or:
+
+```text
+Caution Flags
+```
+
+Example flags:
+
+- 13F data is stale or partial.
+- Current price moved materially above quarter-end holding price estimate.
+- Value Line quality coverage is missing.
+- Holdings are low weight despite high holder count.
+- Signal comes mostly from high-turnover managers.
+- High-signal managers are mixed: some added, others reduced.
+- Holding streak is too short to infer long-term ownership.
+- Valuation reference is missing or weak.
+
+This panel should be visible in the drilldown, not hidden behind a tooltip.
+
+### 8.7 Noise Filter
 
 V1:
 
 - Toggle: `Superinvestors only`
+- Toggle: `Long-term / concentrated signal only` if manager signal profile coverage is sufficient.
 - Default on.
 
 V2:
@@ -468,7 +705,7 @@ V2:
 
 The original "hide Renaissance, Two Sigma, BlackRock, Vanguard" behavior requires this taxonomy. Do not hardcode name exclusions in product code.
 
-### 8.6 Time-Machine Sync
+### 8.8 Time-Machine Sync
 
 V1:
 
@@ -498,8 +735,9 @@ Query params:
 | `lookback_quarters` | int | 4 | Used for action classification |
 | `min_holders` | int | 3 | Consensus threshold |
 | `superinvestor_only` | bool | true | Filter managers |
+| `min_signal_score` | float | null | Optional signal-weighted score floor |
 | `limit` | int | 50 | Result limit |
-| `sort` | string | `consensus` | `consensus`, `add_intensity`, `aggregate_weight`, `quality` |
+| `sort` | string | `signal_weighted_consensus` | `signal_weighted_consensus`, `conviction`, `distinctive_consensus`, `add_intensity`, `aggregate_weight`, `quality` |
 
 Response sketch:
 
@@ -519,21 +757,39 @@ Response sketch:
       "ticker": "ADBE",
       "company_name": "Adobe Inc.",
       "consensus_count": 4,
+      "signal_weighted_consensus_score": 3.12,
+      "distinctive_consensus_score": 2.48,
+      "conviction_score": 78,
       "adders_count": 2,
       "reducers_count": 1,
       "aggregate_weight": 0.082,
       "add_intensity": 0.41,
+      "median_holding_streak_quarters": 6,
+      "max_holding_streak_quarters": 11,
       "holder_price_estimate_low": 248.63,
       "holder_price_estimate_high": 312.40,
       "current_price": 248.63,
-      "fair_value_proxy": 326.50,
+      "valuation_reference": 326.50,
+      "valuation_reference_label": "Value Line 18-month target midpoint",
       "owner_earnings_yield": 0.061,
       "piotroski_total": 7,
+      "manager_signal_summary": {
+        "high_signal_holder_count": 3,
+        "unknown_manager_type_count": 1,
+        "high_turnover_holder_count": 0
+      },
       "quality_coverage": {
         "value_line": true,
         "price": true,
         "owner_earnings": true
-      }
+      },
+      "caution_flags": [
+        {
+          "key": "stale_filing",
+          "severity": "info",
+          "label": "13F filing is a delayed quarter-end snapshot"
+        }
+      ]
     }
   ]
 }
@@ -549,8 +805,11 @@ Response sections:
 
 - 13F holders by quarter
 - action classifications
+- manager signal profiles
+- holding duration and streaks
 - Value Line quality metrics
 - valuation strip inputs
+- caution flags and disconfirming evidence
 - provenance and unavailable reasons
 
 ### 9.3 Reuse Existing Endpoints
@@ -589,7 +848,7 @@ Acceptance criteria:
 
 Goal:
 
-- Produce stock-level consensus rows from latest and previous holdings.
+- Produce stock-level raw consensus rows from latest and previous holdings.
 
 Tasks:
 
@@ -601,6 +860,7 @@ Tasks:
   - manager action classification
   - adders / reducers
   - quarter-end holding price estimate range
+  - holding duration / streaks
 - Add unit tests with synthetic holdings.
 
 Acceptance criteria:
@@ -608,8 +868,34 @@ Acceptance criteria:
 - Same stock held by at least 3 managers appears.
 - New/Add/Flat/Reduce/Exit classification is deterministic.
 - Put/call rows and unlinked holdings are excluded by default.
+- Consecutive holding streaks are computed from canonical 13F periods.
 
-### Phase 2: Quality Overlay Service
+### Phase 2: Manager Signal and Conviction Service
+
+Goal:
+
+- Rank ownership signals by manager quality, concentration, persistence, and position importance rather than raw holder count.
+
+Tasks:
+
+- Create `app/services/oracles_lens/manager_signal.py`.
+- Compute or load:
+  - manager type, initially `unknown` when not seeded
+  - portfolio concentration
+  - turnover proxy
+  - average holding period
+  - position weight rank
+  - manager signal weight
+- Create transparent `conviction_score` and `signal_weighted_consensus_score`.
+- Add tests for manager type weights, unknown manager handling, high-turnover downweighting, and position-rank effects.
+
+Acceptance criteria:
+
+- Unknown manager types do not receive full long-term fundamental weight silently.
+- Signal-weighted ranking differs from raw holder count when holdings are low-conviction or high-turnover.
+- Every score exposes enough components for UI explanation.
+
+### Phase 3: Quality Overlay Service
 
 Goal:
 
@@ -634,7 +920,25 @@ Acceptance criteria:
 - Missing facts do not produce fake zero values.
 - Every displayed derived metric exposes input coverage.
 
-### Phase 3: Dashboard API
+### Phase 4: Caution Flags Service
+
+Goal:
+
+- Add disconfirming evidence to every candidate.
+
+Tasks:
+
+- Create `app/services/oracles_lens/caution_flags.py`.
+- Emit flags for stale filing, partial coverage, low conviction, weak quality coverage, price moved up, mixed actions, short streak, high-turnover holders, and missing valuation reference.
+- Add tests for each flag condition.
+
+Acceptance criteria:
+
+- Drilldown and table payloads include caution flags.
+- Flags are deterministic and do not block candidate inclusion unless explicitly filtered.
+- Missing data is surfaced as an unavailable reason rather than converted to zero.
+
+### Phase 5: Dashboard API
 
 Goal:
 
@@ -652,9 +956,10 @@ Acceptance criteria:
 
 - `GET /api/v1/13f/oracles-lens` returns ranked rows.
 - Response includes coverage summary.
+- Default sort uses signal-weighted consensus rather than raw holder count.
 - Query uses current facts and EOD prices, not JSON-only comparisons.
 
-### Phase 4: Frontend Dashboard V1
+### Phase 6: Frontend Dashboard V1
 
 Goal:
 
@@ -665,9 +970,11 @@ Tasks:
 - Add route `frontend/app/(dashboard)/13f/oracles-lens/page.tsx`.
 - Add components:
   - `OraclesLensHeader`
-  - `ConsensusRadarTable`
+  - `CoverageFreshnessPanel`
+  - `SignalWeightedConsensusTable`
   - `QualityOverlayColumns`
-  - `SweetSpotStrip`
+  - `ValuationReferenceStrip`
+  - `CautionFlagsPanel`
   - `HolderDrilldownPanel`
 - Use shadcn/ui components.
 - Add empty states and unavailable reasons.
@@ -676,10 +983,12 @@ Acceptance criteria:
 
 - User can scan ranked stocks.
 - User can see holders and add/reduce actions.
+- User can see signal-weighted consensus, conviction, and holding duration.
+- User can see caution flags before opening the drilldown.
 - User can see data coverage.
 - No unsupported "cost basis" copy appears.
 
-### Phase 5: Bubble Chart Enhancement
+### Phase 7: Bubble Chart Enhancement
 
 Goal:
 
@@ -698,11 +1007,11 @@ Acceptance criteria:
 - Table remains the primary exact-data view.
 - Visual encoding is documented and tested.
 
-### Phase 6: Price and Historical Expansion
+### Phase 8: Price and Historical Expansion
 
 Goal:
 
-- Support richer Sweet Spot and historical period navigation.
+- Support richer valuation reference and historical period navigation.
 
 Tasks:
 
@@ -730,7 +1039,7 @@ Recommended palette:
 | Graphite | `#1A1A1B` | dark mode surface |
 | Warm paper | `#F2EEE7` | light mode background |
 | Champagne | `#B89B4A` | restrained accent |
-| Positive | `#2F7D5F` | margin of safety positive |
+| Positive | `#2F7D5F` | discount to selected reference |
 | Warning | `#A66A2A` | incomplete coverage |
 | Negative | `#8A3D3D` | reduce / overvalued |
 
@@ -747,15 +1056,20 @@ Implementation notes:
 
 Required copy rules:
 
+- Always show the fixed notice: "13F filings are delayed snapshots. They show reported quarter-end holdings, not current holdings, transaction prices, or buy recommendations."
 - Use "13F reported holding value" instead of "cost basis".
 - Use "quarter-end holding price estimate" instead of "average buy price".
 - Use "reported after quarter end" where timing matters.
+- Use "valuation reference" instead of "fair value" unless the value is explicitly user-entered as a fair value estimate.
+- Use "discount to selected valuation reference" instead of "margin of safety" for system-derived references.
 - Show filing period and filing date.
 - Show unavailable reasons:
   - missing price
   - missing Value Line report
   - unlinked CUSIP
   - incomplete 13F period
+  - unknown manager type
+  - missing valuation reference
 
 Forbidden copy in V1:
 
@@ -765,6 +1079,9 @@ Forbidden copy in V1:
 - "real-time smart money"
 - "AI moat score"
 - "now cheaper than their cost" unless the value is clearly labeled as an estimate
+- "below fair value" for Value Line target or system-derived references
+- "margin of safety" unless the reference is explicitly a user-provided intrinsic value estimate
+- "buy signal"
 
 ---
 
@@ -783,9 +1100,12 @@ Forbidden copy in V1:
 | --- | --- | --- |
 | 13F delay creates stale signals | Users may overtrust old data | Display period and filed date prominently |
 | CUSIP mapping errors | Wrong stock linkage | Show confidence and allow review workflow later |
-| Sparse price coverage | Sweet Spot appears empty | Start with coverage summary and refresh workflow |
+| Sparse price coverage | Valuation reference section appears empty | Start with coverage summary and refresh workflow |
 | Value Line coverage sparse | Quality overlay inconsistent | Sort/filter by coverage but do not hide missingness |
 | Cost basis misinterpretation | Product trust risk | Strict copy rules and labels |
+| Raw consensus creates false confidence | Users may follow crowded or low-conviction holdings | Default sort by signal-weighted consensus and show caution flags |
+| Manager taxonomy incomplete | High-quality and noisy managers may be blended | Use derived signal proxies, unknown manager warnings, and manual metadata review |
+| Valuation reference overread as intrinsic value | Users may infer a false margin of safety | Use conservative valuation reference language |
 | Query performance | Dashboard slow | Aggregate service, indexes, pagination |
 
 ---
@@ -798,6 +1118,8 @@ Deliver:
 
 - Coverage audit service.
 - Consensus service.
+- Manager signal profile service.
+- Holding duration / streak calculations.
 - Dashboard API without frontend.
 - Unit tests.
 
@@ -811,22 +1133,25 @@ Estimated scope:
 Deliver:
 
 - `/13f/oracles-lens` route.
-- Ranked consensus table.
+- Ranked signal-weighted consensus table.
 - Superinvestor-only toggle.
 - Period selector for available complete periods.
+- Fixed 13F delay notice.
+- Caution flag column.
 - Holder drilldown panel.
 
 Estimated scope:
 
 - Frontend + API integration.
 
-### Milestone 3: Quality and Sweet Spot Overlay
+### Milestone 3: Quality and Valuation Reference Overlay
 
 Deliver:
 
 - Owner earnings yield where available.
 - Piotroski / ROTC / net margin / debt overlay.
-- Fair value proxy and MOS strip.
+- Selected valuation reference and discount-to-reference strip.
+- Caution flags panel in drilldown.
 - Unavailable reason display.
 
 Estimated scope:
@@ -865,10 +1190,12 @@ Recommended task files:
 
 1. `docs/tasks/YYYY-MM-DD_oracles-lens-coverage-audit.md`
 2. `docs/tasks/YYYY-MM-DD_oracles-lens-consensus-service.md`
-3. `docs/tasks/YYYY-MM-DD_oracles-lens-dashboard-api.md`
-4. `docs/tasks/YYYY-MM-DD_oracles-lens-table-ui.md`
-5. `docs/tasks/YYYY-MM-DD_oracles-lens-quality-overlay.md`
-6. `docs/tasks/YYYY-MM-DD_oracles-lens-sweet-spot.md`
+3. `docs/tasks/YYYY-MM-DD_oracles-lens-manager-signal-profile.md`
+4. `docs/tasks/YYYY-MM-DD_oracles-lens-caution-flags.md`
+5. `docs/tasks/YYYY-MM-DD_oracles-lens-dashboard-api.md`
+6. `docs/tasks/YYYY-MM-DD_oracles-lens-table-ui.md`
+7. `docs/tasks/YYYY-MM-DD_oracles-lens-quality-overlay.md`
+8. `docs/tasks/YYYY-MM-DD_oracles-lens-valuation-reference.md`
 
 Each implementation task must follow the project workflow:
 
@@ -888,8 +1215,11 @@ Oracle's Lens V1 is successful when:
 - The user can open one dashboard and see 10-50 consensus candidates.
 - Each candidate shows which superinvestors hold it.
 - The user can distinguish adding, reducing, new, and exited positions.
+- The default ranking uses signal-weighted consensus, not raw holder count.
+- The user can see manager signal quality, conviction, and holding streak.
 - The user can see whether Value Line quality data is available.
-- The user can see current price vs fair value proxy where price exists.
+- The user can see current price vs selected valuation reference where price exists.
+- The user can see caution flags that explain why the signal may be misleading.
 - Unsupported values are clearly labeled as unavailable or estimated.
 - The dashboard never claims to know actual 13F transaction prices.
 
@@ -902,7 +1232,7 @@ The original "Oracle's Lens" concept is directionally strong, but V1 must be gro
 Approved V1 framing:
 
 ```text
-13F consensus + Value Line quality overlay + valuation proxy
+13F behavior signal + manager quality weighting + holding pattern + Value Line quality overlay + valuation reference + caution flags
 ```
 
 Deferred:
