@@ -10,14 +10,24 @@ from typing import Any
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
+from app.models.facts import MetricFact
 from app.models.institutions import Filing13F, Holding13F, InstitutionManager
-from app.models.stocks import Stock
+from app.models.stocks import Stock, StockPrice
 
 
 BASELINE_NOTICE = (
     "13F filings are delayed snapshots. They show reported quarter-end holdings, "
     "not current holdings, transaction prices, or buy recommendations."
 )
+
+QUALITY_METRIC_KEYS = {
+    "piotroski_total": "score.piotroski.total",
+    "return_on_total_capital": "bs.return_on_total_capital",
+    "return_on_equity": "bs.return_on_equity",
+    "net_profit_margin": "is.net_profit_margin",
+    "debt_to_capital": "leverage.long_term_debt_to_capital",
+    "owners_earnings": "owners_earnings_per_share_normalized",
+}
 
 
 @dataclass(frozen=True)
@@ -131,7 +141,16 @@ def build_oracles_lens_dashboard(
     if limit > 0:
         items = items[:limit]
 
-    coverage = _coverage(session, selected.period_end_date, superinvestor_only=superinvestor_only)
+    quality_by_stock = _quality_overlay_by_stock(session, [item["stock_id"] for item in items])
+    for item in items:
+        item["quality_overlay"] = quality_by_stock.get(item["stock_id"], _empty_quality_overlay())
+
+    coverage = _coverage(
+        session,
+        selected.period_end_date,
+        superinvestor_only=superinvestor_only,
+        quality_by_stock=quality_by_stock,
+    )
     return {
         "period": selected.label,
         "period_end_date": selected.period_end_date.isoformat(),
@@ -542,7 +561,111 @@ def _primary_reasons(holdings: list[ManagerHolding], median_streak: int) -> list
     ]
 
 
-def _coverage(session: Session, period_end: date, *, superinvestor_only: bool) -> dict[str, Any]:
+def _quality_overlay_by_stock(session: Session, stock_ids: list[int]) -> dict[int, dict[str, Any]]:
+    unique_stock_ids = list(dict.fromkeys(stock_ids))
+    if not unique_stock_ids:
+        return {}
+
+    facts = (
+        session.query(MetricFact)
+        .filter(MetricFact.stock_id.in_(unique_stock_ids))
+        .filter(MetricFact.metric_key.in_(QUALITY_METRIC_KEYS.values()))
+        .filter(MetricFact.is_current.is_(True))
+        .filter(MetricFact.value_numeric.isnot(None))
+        .order_by(MetricFact.stock_id.asc(), MetricFact.period_end_date.desc(), MetricFact.created_at.desc())
+        .all()
+    )
+    facts_by_stock: dict[int, dict[str, MetricFact]] = {stock_id: {} for stock_id in unique_stock_ids}
+    reverse_keys = {metric_key: label for label, metric_key in QUALITY_METRIC_KEYS.items()}
+    for fact in facts:
+        label = reverse_keys.get(fact.metric_key)
+        if label and label not in facts_by_stock[fact.stock_id]:
+            facts_by_stock[fact.stock_id][label] = fact
+
+    latest_prices = _latest_prices_by_stock(session, unique_stock_ids)
+    return {
+        stock_id: _quality_payload(facts_by_stock.get(stock_id, {}), latest_prices.get(stock_id))
+        for stock_id in unique_stock_ids
+    }
+
+
+def _latest_prices_by_stock(session: Session, stock_ids: list[int]) -> dict[int, StockPrice]:
+    prices = (
+        session.query(StockPrice)
+        .filter(StockPrice.stock_id.in_(stock_ids))
+        .order_by(StockPrice.stock_id.asc(), StockPrice.price_date.desc(), StockPrice.created_at.desc())
+        .all()
+    )
+    result: dict[int, StockPrice] = {}
+    for price in prices:
+        if price.stock_id not in result:
+            result[price.stock_id] = price
+    return result
+
+
+def _quality_payload(facts: dict[str, MetricFact], latest_price: StockPrice | None) -> dict[str, Any]:
+    price = float(latest_price.close) if latest_price and latest_price.close is not None else None
+    owners_earnings = _fact_value(facts.get("owners_earnings"))
+    owner_yield = owners_earnings / price if owners_earnings is not None and price else None
+    values = {
+        "piotroski_total": _fact_value(facts.get("piotroski_total")),
+        "return_on_total_capital": _fact_value(facts.get("return_on_total_capital")),
+        "return_on_equity": _fact_value(facts.get("return_on_equity")),
+        "net_profit_margin": _fact_value(facts.get("net_profit_margin")),
+        "debt_to_capital": _fact_value(facts.get("debt_to_capital")),
+        "owner_earnings_yield": owner_yield,
+        "latest_price": price,
+    }
+    available_metrics = sum(
+        1
+        for key in [
+            "piotroski_total",
+            "return_on_total_capital",
+            "return_on_equity",
+            "net_profit_margin",
+            "debt_to_capital",
+            "owner_earnings_yield",
+        ]
+        if values[key] is not None
+    )
+    unavailable: list[str] = []
+    if not facts:
+        unavailable.append("missing Value Line facts")
+    if price is None:
+        unavailable.append("missing price")
+    if owners_earnings is None:
+        unavailable.append("missing normalized owner earnings")
+    elif owner_yield is None:
+        unavailable.append("owner earnings yield unavailable without price")
+
+    return {
+        **values,
+        "coverage": {
+            "value_line": any(key in facts for key in QUALITY_METRIC_KEYS if key != "owners_earnings"),
+            "price": price is not None,
+            "owner_earnings": owners_earnings is not None,
+            "available_metrics": available_metrics,
+            "expected_metrics": 6,
+        },
+        "unavailable_reasons": unavailable,
+    }
+
+
+def _fact_value(fact: MetricFact | None) -> float | None:
+    return float(fact.value_numeric) if fact and fact.value_numeric is not None else None
+
+
+def _empty_quality_overlay() -> dict[str, Any]:
+    return _quality_payload({}, None)
+
+
+def _coverage(
+    session: Session,
+    period_end: date,
+    *,
+    superinvestor_only: bool,
+    quality_by_stock: dict[int, dict[str, Any]] | None = None,
+) -> dict[str, Any]:
     query = (
         session.query(Holding13F, Filing13F, InstitutionManager)
         .join(Filing13F, Filing13F.id == Holding13F.filing_id)
@@ -562,8 +685,12 @@ def _coverage(session: Session, period_end: date, *, superinvestor_only: bool) -
         "holding_count": len(rows),
         "linked_holding_count": linked_count,
         "manager_signal_quality_coverage": 0,
-        "price_coverage_count": 0,
-        "value_line_coverage_count": 0,
+        "price_coverage_count": sum(
+            1 for item in (quality_by_stock or {}).values() if item["coverage"]["price"]
+        ),
+        "value_line_coverage_count": sum(
+            1 for item in (quality_by_stock or {}).values() if item["coverage"]["value_line"]
+        ),
     }
 
 

@@ -2,8 +2,9 @@ from __future__ import annotations
 
 from datetime import date
 
+from app.models.facts import MetricFact
 from app.models.institutions import Filing13F, Holding13F, InstitutionManager
-from app.models.stocks import Stock
+from app.models.stocks import Stock, StockPrice
 
 
 def _manager(db_session, name: str, *, cik: str, superinvestor: bool = True) -> InstitutionManager:
@@ -147,6 +148,28 @@ def _seed_oracles_lens_fixture(db_session):
     return target
 
 
+def _metric_fact(
+    stock: Stock,
+    metric_key: str,
+    value: float,
+    *,
+    period_end: date = date(2031, 12, 31),
+    source_type: str = "parsed",
+) -> MetricFact:
+    return MetricFact(
+        user_id=1,
+        stock_id=stock.id,
+        metric_key=metric_key,
+        value_numeric=value,
+        value_json={"fact_nature": "actual"},
+        unit="ratio",
+        period_type="FY",
+        period_end_date=period_end,
+        source_type=source_type,
+        is_current=True,
+    )
+
+
 def test_oracles_lens_defaults_to_latest_complete_period_and_signal_rows(client, db_session):
     target = _seed_oracles_lens_fixture(db_session)
 
@@ -173,6 +196,57 @@ def test_oracles_lens_defaults_to_latest_complete_period_and_signal_rows(client,
     assert "conviction_components" in item["score_explanation"]
     assert all(flag["key"] != "stale_filing" for flag in item["caution_flags"])
     assert any(flag["key"] == "unknown_manager_type_heavy" for flag in item["caution_flags"])
+
+
+def test_oracles_lens_adds_value_line_quality_overlay(client, db_session):
+    target = _seed_oracles_lens_fixture(db_session)
+    db_session.add_all(
+        [
+            _metric_fact(target, "score.piotroski.total", 8, source_type="calculated"),
+            _metric_fact(target, "bs.return_on_total_capital", 0.24),
+            _metric_fact(target, "bs.return_on_equity", 0.31),
+            _metric_fact(target, "is.net_profit_margin", 0.22),
+            _metric_fact(target, "leverage.long_term_debt_to_capital", 0.18),
+            _metric_fact(target, "owners_earnings_per_share_normalized", 5.0),
+        ]
+    )
+    db_session.add(
+        StockPrice(
+            stock_id=target.id,
+            price_date=date(2032, 1, 2),
+            open=99.0,
+            high=101.0,
+            low=98.0,
+            close=100.0,
+            adj_close=None,
+            volume=1000,
+            source="test",
+        )
+    )
+    db_session.commit()
+
+    response = client.get("/api/v1/13f/oracles-lens")
+    assert response.status_code == 200
+
+    item = next(row for row in response.json()["items"] if row["stock_id"] == target.id)
+    assert item["quality_overlay"] == {
+        "piotroski_total": 8.0,
+        "return_on_total_capital": 0.24,
+        "return_on_equity": 0.31,
+        "net_profit_margin": 0.22,
+        "debt_to_capital": 0.18,
+        "owner_earnings_yield": 0.05,
+        "latest_price": 100.0,
+        "coverage": {
+            "value_line": True,
+            "price": True,
+            "owner_earnings": True,
+            "available_metrics": 6,
+            "expected_metrics": 6,
+        },
+        "unavailable_reasons": [],
+    }
+    assert response.json()["coverage"]["value_line_coverage_count"] >= 1
 
 
 def test_oracles_lens_marks_old_selected_period(client, db_session):

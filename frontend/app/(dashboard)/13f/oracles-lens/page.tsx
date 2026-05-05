@@ -133,6 +133,7 @@ export default function OraclesLensPage() {
                   <TableHead>Company</TableHead>
                   <TableHead className="text-right">Signal Score</TableHead>
                   <TableHead>Why It Appears</TableHead>
+                  <TableHead>Quality</TableHead>
                   <TableHead>Context</TableHead>
                   <TableHead>Caution</TableHead>
                 </TableRow>
@@ -160,6 +161,30 @@ export default function OraclesLensPage() {
                       </div>
                       <div className="mt-2 text-xs text-muted-foreground">
                         Manager signal coverage: {row.unknownCoverageLabel}
+                      </div>
+                    </TableCell>
+                    <TableCell>
+                      {row.quality.hasValueLineQuality ? (
+                        <div className="space-y-1 text-sm">
+                          <div className="tabular-nums">
+                            F-Score {row.quality.piotroskiLabel} · ROTC{' '}
+                            {row.quality.returnOnCapitalLabel}
+                          </div>
+                          <div className="text-xs text-muted-foreground">
+                            NPM {row.quality.netMarginLabel} · Debt/Cap{' '}
+                            {row.quality.debtToCapitalLabel}
+                          </div>
+                          <div className="text-xs text-muted-foreground">
+                            Owner yield {row.quality.ownerEarningsYieldLabel}
+                          </div>
+                        </div>
+                      ) : (
+                        <div className="text-sm text-muted-foreground">No quality facts</div>
+                      )}
+                      <div className="mt-2">
+                        <Badge variant="outline" className="rounded-md">
+                          {row.quality.qualityCoverageLabel}
+                        </Badge>
                       </div>
                     </TableCell>
                     <TableCell>

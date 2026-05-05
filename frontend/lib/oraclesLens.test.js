@@ -5,6 +5,7 @@ const assert = require('node:assert/strict');
 const {
   confidenceTone,
   normalizeOracleLensRows,
+  normalizeQualityOverlay,
   primaryCautionFlags,
 } = require('./oraclesLens');
 
@@ -41,6 +42,23 @@ test('normalizeOracleLensRows emphasizes signal score with explanations', () => 
           label: 'Selected period is old',
         },
       ],
+      quality_overlay: {
+        piotroski_total: 8,
+        return_on_total_capital: 0.24,
+        return_on_equity: 0.31,
+        net_profit_margin: 0.22,
+        debt_to_capital: 0.18,
+        owner_earnings_yield: 0.052,
+        latest_price: 100,
+        coverage: {
+          value_line: true,
+          price: true,
+          owner_earnings: true,
+          available_metrics: 6,
+          expected_metrics: 6,
+        },
+        unavailable_reasons: [],
+      },
     },
   ]);
 
@@ -50,10 +68,33 @@ test('normalizeOracleLensRows emphasizes signal score with explanations', () => 
   assert.equal(rows[0].rawHoldersLabel, '4');
   assert.equal(rows[0].aggregateWeightLabel, '8.1%');
   assert.equal(rows[0].unknownCoverageLabel, '75% typed');
+  assert.equal(rows[0].quality.piotroskiLabel, '8');
+  assert.equal(rows[0].quality.returnOnCapitalLabel, '24%');
+  assert.equal(rows[0].quality.ownerEarningsYieldLabel, '5.2%');
+  assert.equal(rows[0].quality.qualityCoverageLabel, '6/6 facts');
   assert.deepEqual(rows[0].reasonChips, [
     '3 high-signal managers hold this stock',
     '2 holders rank it as a top 10 position',
   ]);
+});
+
+test('normalizeQualityOverlay exposes missing data as explicit product state', () => {
+  const quality = normalizeQualityOverlay({
+    coverage: {
+      value_line: false,
+      price: false,
+      owner_earnings: false,
+      available_metrics: 0,
+      expected_metrics: 6,
+    },
+    unavailable_reasons: ['missing Value Line facts', 'missing price'],
+  });
+
+  assert.equal(quality.piotroskiLabel, '—');
+  assert.equal(quality.latestPriceLabel, '—');
+  assert.equal(quality.qualityCoverageLabel, '0/6 facts');
+  assert.equal(quality.hasValueLineQuality, false);
+  assert.deepEqual(quality.unavailableReasons, ['missing Value Line facts', 'missing price']);
 });
 
 test('primaryCautionFlags prioritizes severe grouped flags for the main table', () => {
