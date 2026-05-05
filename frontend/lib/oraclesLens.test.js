@@ -6,6 +6,7 @@ const {
   confidenceTone,
   normalizeOracleLensRows,
   normalizeQualityOverlay,
+  normalizeValuationReference,
   primaryCautionFlags,
 } = require('./oraclesLens');
 
@@ -59,6 +60,19 @@ test('normalizeOracleLensRows emphasizes signal score with explanations', () => 
         },
         unavailable_reasons: [],
       },
+      holder_price_estimate_low: 92,
+      holder_price_estimate_high: 118,
+      current_price: 100,
+      valuation_reference: 150,
+      valuation_reference_label: 'Value Line 18-month target midpoint',
+      valuation_reference_type: 'analyst_target_reference',
+      valuation_reference_confidence: 'medium',
+      discount_to_reference: 0.333333,
+      valuation_state: {
+        below_holder_estimate: false,
+        below_selected_valuation_reference: true,
+      },
+      valuation_unavailable_reasons: [],
     },
   ]);
 
@@ -72,10 +86,32 @@ test('normalizeOracleLensRows emphasizes signal score with explanations', () => 
   assert.equal(rows[0].quality.returnOnCapitalLabel, '24%');
   assert.equal(rows[0].quality.ownerEarningsYieldLabel, '5.2%');
   assert.equal(rows[0].quality.qualityCoverageLabel, '6/6 facts');
+  assert.equal(rows[0].valuation.holderRangeLabel, '$92.00–$118.00');
+  assert.equal(rows[0].valuation.currentPriceLabel, '$100.00');
+  assert.equal(rows[0].valuation.referenceLabel, '$150.00');
+  assert.equal(rows[0].valuation.discountLabel, '33.3%');
+  assert.equal(rows[0].valuation.referenceSourceLabel, 'Value Line 18-month target midpoint');
+  assert.equal(rows[0].valuation.belowSelectedReference, true);
   assert.deepEqual(rows[0].reasonChips, [
     '3 high-signal managers hold this stock',
     '2 holders rank it as a top 10 position',
   ]);
+});
+
+test('normalizeValuationReference keeps missing reference explicit', () => {
+  const valuation = normalizeValuationReference({
+    current_price: 100,
+    valuation_reference_type: 'missing',
+    valuation_reference_confidence: 'unavailable',
+    valuation_unavailable_reasons: ['missing valuation reference'],
+  });
+
+  assert.equal(valuation.currentPriceLabel, '$100.00');
+  assert.equal(valuation.referenceLabel, '—');
+  assert.equal(valuation.referenceSourceLabel, 'Missing valuation reference');
+  assert.equal(valuation.discountLabel, '—');
+  assert.equal(valuation.referenceConfidence, 'unavailable');
+  assert.deepEqual(valuation.unavailableReasons, ['missing valuation reference']);
 });
 
 test('normalizeQualityOverlay exposes missing data as explicit product state', () => {

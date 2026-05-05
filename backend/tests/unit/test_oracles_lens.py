@@ -249,6 +249,84 @@ def test_oracles_lens_adds_value_line_quality_overlay(client, db_session):
     assert response.json()["coverage"]["value_line_coverage_count"] >= 1
 
 
+def test_oracles_lens_adds_conservative_valuation_reference(client, db_session):
+    target = _seed_oracles_lens_fixture(db_session)
+    db_session.add_all(
+        [
+            _metric_fact(target, "target.price_18m.mid", 150.0, period_end=date(2032, 1, 1)),
+            _metric_fact(
+                target,
+                "val.fair_value",
+                175.0,
+                period_end=date(2032, 1, 2),
+                source_type="manual",
+            ),
+        ]
+    )
+    db_session.add(
+        StockPrice(
+            stock_id=target.id,
+            price_date=date(2032, 1, 2),
+            open=99.0,
+            high=101.0,
+            low=98.0,
+            close=100.0,
+            adj_close=None,
+            volume=1000,
+            source="test",
+        )
+    )
+    db_session.commit()
+
+    response = client.get("/api/v1/13f/oracles-lens")
+    assert response.status_code == 200
+
+    item = next(row for row in response.json()["items"] if row["stock_id"] == target.id)
+    assert item["holder_price_estimate_low"] == 10000.0
+    assert item["holder_price_estimate_high"] == 10000.0
+    assert item["current_price"] == 100.0
+    assert item["valuation_reference"] == 175.0
+    assert item["valuation_reference_label"] == "User-entered valuation reference"
+    assert item["valuation_reference_type"] == "manual_intrinsic_value"
+    assert item["valuation_reference_confidence"] == "user_supplied"
+    assert item["discount_to_reference"] == 0.428571
+    assert item["valuation_state"] == {
+        "below_holder_estimate": True,
+        "below_selected_valuation_reference": True,
+    }
+    assert item["valuation_unavailable_reasons"] == []
+    assert response.json()["coverage"]["valuation_reference_coverage_count"] >= 1
+
+
+def test_oracles_lens_labels_value_line_target_as_reference_not_intrinsic_value(client, db_session):
+    target = _seed_oracles_lens_fixture(db_session)
+    db_session.add(_metric_fact(target, "target.price_18m.mid", 150.0, period_end=date(2032, 1, 1)))
+    db_session.add(
+        StockPrice(
+            stock_id=target.id,
+            price_date=date(2032, 1, 2),
+            open=99.0,
+            high=101.0,
+            low=98.0,
+            close=100.0,
+            adj_close=None,
+            volume=1000,
+            source="test",
+        )
+    )
+    db_session.commit()
+
+    response = client.get("/api/v1/13f/oracles-lens")
+    assert response.status_code == 200
+
+    item = next(row for row in response.json()["items"] if row["stock_id"] == target.id)
+    assert item["valuation_reference"] == 150.0
+    assert item["valuation_reference_label"] == "Value Line 18-month target midpoint"
+    assert item["valuation_reference_type"] == "analyst_target_reference"
+    assert item["valuation_reference_confidence"] == "medium"
+    assert item["valuation_unavailable_reasons"] == []
+
+
 def test_oracles_lens_marks_old_selected_period(client, db_session):
     _seed_oracles_lens_fixture(db_session)
 

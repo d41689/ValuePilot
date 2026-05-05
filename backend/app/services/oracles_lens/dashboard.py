@@ -28,6 +28,12 @@ QUALITY_METRIC_KEYS = {
     "debt_to_capital": "leverage.long_term_debt_to_capital",
     "owners_earnings": "owners_earnings_per_share_normalized",
 }
+MANUAL_VALUATION_REFERENCE_KEY = "val.fair_value"
+VALUE_LINE_VALUATION_REFERENCE_KEY = "target.price_18m.mid"
+VALUATION_REFERENCE_KEYS = {
+    MANUAL_VALUATION_REFERENCE_KEY,
+    VALUE_LINE_VALUATION_REFERENCE_KEY,
+}
 
 
 @dataclass(frozen=True)
@@ -142,14 +148,26 @@ def build_oracles_lens_dashboard(
         items = items[:limit]
 
     quality_by_stock = _quality_overlay_by_stock(session, [item["stock_id"] for item in items])
+    valuation_by_stock = _valuation_reference_by_stock(
+        session,
+        {
+            item["stock_id"]: (
+                item.get("holder_price_estimate_low"),
+                item.get("holder_price_estimate_high"),
+            )
+            for item in items
+        },
+    )
     for item in items:
         item["quality_overlay"] = quality_by_stock.get(item["stock_id"], _empty_quality_overlay())
+        item.update(valuation_by_stock.get(item["stock_id"], _empty_valuation_reference()))
 
     coverage = _coverage(
         session,
         selected.period_end_date,
         superinvestor_only=superinvestor_only,
         quality_by_stock=quality_by_stock,
+        valuation_by_stock=valuation_by_stock,
     )
     return {
         "period": selected.label,
@@ -347,6 +365,11 @@ def _stock_payload(
     adders_count = sum(1 for item in holdings if item.action in {"new", "add"})
     reducers_count = sum(1 for item in holdings if item.action in {"reduce", "exit"})
     streak_values = [item.holding_streak_quarters for item in holdings]
+    holder_price_estimates = [
+        item.value_thousands * 1000 / item.shares
+        for item in holdings
+        if item.shares and item.shares > 0 and item.value_thousands and item.value_thousands > 0
+    ]
     median_streak = int(median(streak_values)) if streak_values else 0
     max_streak = max(streak_values) if streak_values else 0
     signal_score = sum(item.manager_signal_weight * _position_signal_weight(item) for item in holdings)
@@ -381,6 +404,8 @@ def _stock_payload(
         "add_intensity": round(_add_intensity(holdings), 4),
         "median_holding_streak_quarters": median_streak,
         "max_holding_streak_quarters": max_streak,
+        "holder_price_estimate_low": round(min(holder_price_estimates), 6) if holder_price_estimates else None,
+        "holder_price_estimate_high": round(max(holder_price_estimates), 6) if holder_price_estimates else None,
         "top_holders": [
             {
                 "manager_id": item.manager_id,
@@ -659,12 +684,105 @@ def _empty_quality_overlay() -> dict[str, Any]:
     return _quality_payload({}, None)
 
 
+def _valuation_reference_by_stock(
+    session: Session,
+    holder_ranges_by_stock: dict[int, tuple[float | None, float | None]],
+) -> dict[int, dict[str, Any]]:
+    stock_ids = list(holder_ranges_by_stock)
+    if not stock_ids:
+        return {}
+
+    facts = (
+        session.query(MetricFact)
+        .filter(MetricFact.stock_id.in_(stock_ids))
+        .filter(MetricFact.metric_key.in_(VALUATION_REFERENCE_KEYS))
+        .filter(MetricFact.is_current.is_(True))
+        .filter(MetricFact.value_numeric.isnot(None))
+        .order_by(MetricFact.stock_id.asc(), MetricFact.created_at.desc())
+        .all()
+    )
+    facts_by_stock: dict[int, dict[str, MetricFact]] = {stock_id: {} for stock_id in stock_ids}
+    for fact in facts:
+        if fact.metric_key == MANUAL_VALUATION_REFERENCE_KEY and fact.source_type != "manual":
+            continue
+        if fact.metric_key not in facts_by_stock[fact.stock_id]:
+            facts_by_stock[fact.stock_id][fact.metric_key] = fact
+
+    latest_prices = _latest_prices_by_stock(session, stock_ids)
+    return {
+        stock_id: _valuation_payload(
+            facts_by_stock.get(stock_id, {}),
+            latest_prices.get(stock_id),
+            holder_ranges_by_stock.get(stock_id, (None, None)),
+        )
+        for stock_id in stock_ids
+    }
+
+
+def _valuation_payload(
+    facts: dict[str, MetricFact],
+    latest_price: StockPrice | None,
+    holder_range: tuple[float | None, float | None],
+) -> dict[str, Any]:
+    price = float(latest_price.close) if latest_price and latest_price.close is not None else None
+    holder_low, holder_high = holder_range
+    manual = facts.get(MANUAL_VALUATION_REFERENCE_KEY)
+    target = facts.get(VALUE_LINE_VALUATION_REFERENCE_KEY)
+    reference = None
+    reference_label = None
+    reference_type = "missing"
+    reference_confidence = "unavailable"
+    if manual and manual.value_numeric is not None:
+        reference = float(manual.value_numeric)
+        reference_label = "User-entered valuation reference"
+        reference_type = "manual_intrinsic_value"
+        reference_confidence = "user_supplied"
+    elif target and target.value_numeric is not None:
+        reference = float(target.value_numeric)
+        reference_label = "Value Line 18-month target midpoint"
+        reference_type = "analyst_target_reference"
+        reference_confidence = "medium"
+
+    discount_to_reference = None
+    if price is not None and reference:
+        discount_to_reference = round((reference - price) / reference, 6)
+
+    unavailable: list[str] = []
+    if price is None:
+        unavailable.append("missing price")
+    if reference is None:
+        unavailable.append("missing valuation reference")
+    if holder_low is None or holder_high is None:
+        unavailable.append("missing holder price estimate")
+
+    return {
+        "current_price": price,
+        "valuation_reference": reference,
+        "valuation_reference_label": reference_label,
+        "valuation_reference_type": reference_type,
+        "valuation_reference_confidence": reference_confidence,
+        "discount_to_reference": discount_to_reference,
+        "valuation_state": {
+            "below_holder_estimate": bool(price is not None and holder_low is not None and price < holder_low),
+            "below_selected_valuation_reference": bool(
+                price is not None and reference is not None and price < reference
+            ),
+        },
+        "valuation_unavailable_reasons": unavailable,
+    }
+
+
+def _empty_valuation_reference() -> dict[str, Any]:
+    return _valuation_payload({}, None, (None, None))
+
+
 def _coverage(
     session: Session,
     period_end: date,
     *,
     superinvestor_only: bool,
     quality_by_stock: dict[int, dict[str, Any]] | None = None,
+    valuation_by_stock: dict[int, dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     query = (
         session.query(Holding13F, Filing13F, InstitutionManager)
@@ -691,6 +809,9 @@ def _coverage(
         "value_line_coverage_count": sum(
             1 for item in (quality_by_stock or {}).values() if item["coverage"]["value_line"]
         ),
+        "valuation_reference_coverage_count": sum(
+            1 for item in (valuation_by_stock or {}).values() if item["valuation_reference"] is not None
+        ),
     }
 
 
@@ -702,6 +823,7 @@ def _empty_coverage() -> dict[str, Any]:
         "manager_signal_quality_coverage": 0,
         "price_coverage_count": 0,
         "value_line_coverage_count": 0,
+        "valuation_reference_coverage_count": 0,
     }
 
 

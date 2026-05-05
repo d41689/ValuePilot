@@ -31,6 +31,7 @@ type OracleLensPayload = {
     manager_signal_quality_coverage?: number;
     price_coverage_count?: number;
     value_line_coverage_count?: number;
+    valuation_reference_coverage_count?: number;
   };
   items: unknown[];
 };
@@ -134,6 +135,7 @@ export default function OraclesLensPage() {
                   <TableHead className="text-right">Signal Score</TableHead>
                   <TableHead>Why It Appears</TableHead>
                   <TableHead>Quality</TableHead>
+                  <TableHead>Valuation Ref.</TableHead>
                   <TableHead>Context</TableHead>
                   <TableHead>Caution</TableHead>
                 </TableRow>
@@ -186,6 +188,38 @@ export default function OraclesLensPage() {
                           {row.quality.qualityCoverageLabel}
                         </Badge>
                       </div>
+                    </TableCell>
+                    <TableCell>
+                      <div className="space-y-1 text-sm">
+                        <div className="tabular-nums">
+                          Price {row.valuation.currentPriceLabel} · Ref{' '}
+                          {row.valuation.referenceLabel}
+                        </div>
+                        <div className="text-xs text-muted-foreground">
+                          Discount to ref {row.valuation.discountLabel}
+                        </div>
+                        <div className="text-xs text-muted-foreground">
+                          Holder estimate {row.valuation.holderRangeLabel}
+                        </div>
+                      </div>
+                      <div className="mt-2 flex flex-wrap gap-1.5">
+                        <Badge variant="outline" className="rounded-md">
+                          {row.valuation.referenceConfidence}
+                        </Badge>
+                        {row.valuation.belowSelectedReference ? (
+                          <Badge variant="success" className="rounded-md">
+                            Below selected reference
+                          </Badge>
+                        ) : null}
+                      </div>
+                      <div className="mt-2 text-xs text-muted-foreground">
+                        {row.valuation.referenceSourceLabel}
+                      </div>
+                      {row.valuation.unavailableReasons.length ? (
+                        <div className="mt-1 text-xs text-muted-foreground">
+                          {row.valuation.unavailableReasons[0]}
+                        </div>
+                      ) : null}
                     </TableCell>
                     <TableCell>
                       <div className="text-sm">{row.convictionLabel} conviction</div>

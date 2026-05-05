@@ -60,6 +60,37 @@ function normalizeQualityOverlay(qualityOverlay) {
   };
 }
 
+function normalizeValuationReference(item) {
+  const state = item?.valuation_state && typeof item.valuation_state === 'object'
+    ? item.valuation_state
+    : {};
+  const unavailableReasons = Array.isArray(item?.valuation_unavailable_reasons)
+    ? item.valuation_unavailable_reasons
+    : [];
+  return {
+    holderRangeLabel:
+      typeof item?.holder_price_estimate_low === 'number' &&
+      typeof item?.holder_price_estimate_high === 'number'
+        ? `$${formatNumber(item.holder_price_estimate_low, 2)}–$${formatNumber(item.holder_price_estimate_high, 2)}`
+        : '—',
+    currentPriceLabel: typeof item?.current_price === 'number'
+      ? `$${formatNumber(item.current_price, 2)}`
+      : '—',
+    referenceLabel: typeof item?.valuation_reference === 'number'
+      ? `$${formatNumber(item.valuation_reference, 2)}`
+      : '—',
+    referenceSourceLabel: item?.valuation_reference_label ?? 'Missing valuation reference',
+    referenceType: item?.valuation_reference_type ?? 'missing',
+    referenceConfidence: item?.valuation_reference_confidence ?? 'unavailable',
+    discountLabel: typeof item?.discount_to_reference === 'number'
+      ? formatPercent(item.discount_to_reference, 1)
+      : '—',
+    belowHolderEstimate: Boolean(state.below_holder_estimate),
+    belowSelectedReference: Boolean(state.below_selected_valuation_reference),
+    unavailableReasons,
+  };
+}
+
 function cautionTone(flag) {
   if (!flag || typeof flag !== 'object') {
     return 'secondary';
@@ -117,6 +148,7 @@ function normalizeOracleLensRows(items) {
         ? item.manager_signal_summary
         : {};
     const quality = normalizeQualityOverlay(item?.quality_overlay);
+    const valuation = normalizeValuationReference(item);
     return {
       stockId: item.stock_id,
       ticker: item.ticker ?? '—',
@@ -143,6 +175,7 @@ function normalizeOracleLensRows(items) {
           ? `${formatPercent(managerSignalSummary.manager_signal_quality_coverage, 0)} typed`
           : '—',
       quality,
+      valuation,
       topHolders: Array.isArray(item.top_holders) ? item.top_holders : [],
       cautionFlags: primaryCautionFlags(item.caution_flags),
     };
@@ -157,5 +190,6 @@ module.exports = {
   formatScore,
   normalizeOracleLensRows,
   normalizeQualityOverlay,
+  normalizeValuationReference,
   primaryCautionFlags,
 };
