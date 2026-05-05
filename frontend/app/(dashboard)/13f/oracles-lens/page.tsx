@@ -116,6 +116,7 @@ export default function OraclesLensPage() {
     minHolders: '3',
     minSignalScore: '',
     superinvestorOnly: true,
+    sort: 'signal_weighted_consensus',
   });
   const queryParams = useMemo(
     () =>
@@ -124,6 +125,7 @@ export default function OraclesLensPage() {
         minHolders: filters.minHolders ? Number(filters.minHolders) : undefined,
         minSignalScore: filters.minSignalScore ? Number(filters.minSignalScore) : undefined,
         superinvestorOnly: filters.superinvestorOnly,
+        sort: filters.sort,
       }),
     [filters]
   );
@@ -271,7 +273,7 @@ export default function OraclesLensPage() {
           </p>
         </CardHeader>
         <CardContent>
-          <div className="grid gap-4 md:grid-cols-[1.2fr_1fr_1fr_1.2fr_auto] md:items-end">
+          <div className="grid gap-4 md:grid-cols-[1.2fr_1fr_1fr_1.2fr_1.2fr_auto] md:items-end">
             <div>
               <label className="text-xs font-semibold uppercase text-muted-foreground" htmlFor="period-filter">
                 Period
@@ -363,6 +365,28 @@ export default function OraclesLensPage() {
                 <span className="text-xs text-muted-foreground">Noise filter</span>
               </span>
             </label>
+            <div>
+              <label className="text-xs font-semibold uppercase text-muted-foreground" htmlFor="sort-filter">
+                Sort
+              </label>
+              <Select
+                value={filters.sort}
+                onValueChange={(value) =>
+                  setFilters((current) => ({ ...current, sort: value }))
+                }
+              >
+                <SelectTrigger id="sort-filter" className="mt-2">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="signal_weighted_consensus">Signal score</SelectItem>
+                  <SelectItem value="conviction">Conviction</SelectItem>
+                  <SelectItem value="distinctive_consensus">Distinctive consensus</SelectItem>
+                  <SelectItem value="add_intensity">Add intensity</SelectItem>
+                  <SelectItem value="aggregate_weight">Aggregate weight</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
             <Button
               type="button"
               variant="outline"
@@ -372,6 +396,7 @@ export default function OraclesLensPage() {
                   minHolders: '3',
                   minSignalScore: '',
                   superinvestorOnly: true,
+                  sort: 'signal_weighted_consensus',
                 })
               }
             >

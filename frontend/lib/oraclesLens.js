@@ -38,6 +38,9 @@ function buildOracleLensQueryParams(filters = {}) {
   if (typeof filters.minSignalScore === 'number' && Number.isFinite(filters.minSignalScore)) {
     params.set('min_signal_score', String(filters.minSignalScore));
   }
+  if (filters.sort) {
+    params.set('sort', filters.sort);
+  }
   return params.toString();
 }
 

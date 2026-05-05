@@ -114,8 +114,9 @@ test('buildOracleLensQueryParams serializes V1 dashboard filters', () => {
       minHolders: 5,
       minSignalScore: 2.5,
       superinvestorOnly: false,
+      sort: 'conviction',
     }),
-    'period=2031-Q4&min_holders=5&superinvestor_only=false&min_signal_score=2.5'
+    'period=2031-Q4&min_holders=5&superinvestor_only=false&min_signal_score=2.5&sort=conviction'
   );
 });
 
