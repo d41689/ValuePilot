@@ -106,6 +106,18 @@ The original product wording uses "Smart Money", "Oracle", and "Master" language
 - Create a defensible wedge that combines 13F behavior, manager signal quality, holding duration, business quality, valuation references, and disconfirming evidence.
 - Avoid misleading users with unsupported "guru cost basis" claims.
 
+### 4.3 Product Decision Hierarchy
+
+When tradeoffs arise, use this priority order:
+
+1. Do not mislead users about 13F limitations.
+2. Prioritize research usefulness over visual appeal.
+3. Rank by signal quality, not raw popularity.
+4. Show disconfirming evidence next to positive evidence.
+5. Prefer explainable heuristics over opaque scores.
+6. Treat missing data as a first-class product state.
+7. Keep V1 scoped enough that each score can be audited and explained.
+
 ---
 
 ## 5. Non-Goals for V1
@@ -221,6 +233,17 @@ Quality overlay may use existing facts:
 
 ## 7. Core Metrics
 
+Score hierarchy for V1:
+
+| Role | Metric |
+| --- | --- |
+| Primary ranking | `signal_weighted_consensus_score` |
+| Secondary explanation | `conviction_score`, holding streak, top holders |
+| Risk / disconfirmation | `caution_flags` |
+| Advanced optional sort | `distinctive_consensus_score` |
+
+The UI should not present all scores with equal weight. The main table should make one ranking decision obvious, then explain it and challenge it.
+
 ### 7.1 Raw Consensus Count
 
 Number of superinvestor managers holding the stock in the selected quarter.
@@ -254,6 +277,29 @@ position_signal_weight = f(position_weight, position_weight_rank, holding_streak
 ```
 
 V1 may start with transparent heuristics. It must expose component inputs and avoid opaque "AI score" behavior.
+
+V1 heuristic example:
+
+```text
+manager_signal_weight:
+  long_term_fundamental = 1.00
+  value_concentrated = 1.00
+  activist = 0.80
+  unknown = 0.60
+  quant = 0.40
+  high_turnover = 0.30
+  index_like = 0.10 or excluded
+
+position_signal_weight:
+  base = normalized position weight
+  +0.40 if top 10 position
+  +0.30 if position weight >= 5%
+  +0.30 if holding streak >= 4 quarters
+  +0.10 to +0.20 for new/add action
+  negative adjustment for reduce/exit
+```
+
+The exact constants can evolve, but V1 must ship with documented defaults and tests so different engineers do not implement incompatible scoring systems.
 
 ### 7.3 Portfolio Weight
 
@@ -376,6 +422,8 @@ F: <35
 
 Every grade must expose input coverage and raw values.
 
+Capital Allocation Grade is a mechanical evidence summary, not a management quality rating. It should help users inspect repurchases, dividends, returns, and leverage, but it must not imply a final judgment on management skill.
+
 ### 7.8 Moat Proxy
 
 V1 must not implement the proposed AI moat score.
@@ -398,26 +446,36 @@ Possible inputs:
 
 Conviction is different from simple add/reduce behavior. The product should show whether a holding is a core position or a small tail position.
 
-Suggested V1 formula:
+Suggested V1 formula uses a capped 0-100 score:
 
 ```text
-conviction_score =
-  position_weight_score
-  + position_rank_score
-  + holding_duration_score
-  + action_score
-  + manager_signal_weight
+conviction_score_0_100 =
+  30% position importance
+  + 25% holding persistence
+  + 20% manager signal quality
+  + 15% recent action
+  + 10% multi-manager agreement
 ```
 
 Inputs:
 
-| Input | Reason |
+| Component | Max Points | Reason |
+| --- | ---: | --- |
+| Position importance | 30 | Larger and higher-ranked positions suggest higher conviction |
+| Holding persistence | 25 | Persistent ownership is more meaningful than one quarter |
+| Manager signal quality | 20 | Better manager profiles should carry more signal |
+| Recent action | 15 | New/Add/Flat/Reduce/Exit adds context |
+| Multi-manager agreement | 10 | Multiple high-signal holders strengthen the research case |
+
+Each component must be capped. UI should expose component breakdown, for example:
+
+| Component | Example |
 | --- | --- |
-| Position weight | Larger weight suggests higher conviction |
-| Position rank | Top 10 positions matter more than small tail positions |
-| Holding duration | Persistent ownership is more meaningful than one quarter |
-| Recent action | New/Add/Flat/Reduce/Exit adds context |
-| Manager signal weight | Better managers should carry more signal |
+| Position importance | 24 / 30 |
+| Holding persistence | 20 / 25 |
+| Manager quality | 16 / 20 |
+| Recent action | 10 / 15 |
+| Agreement | 8 / 10 |
 
 The UI should prefer explanations such as:
 
@@ -479,9 +537,10 @@ V1 anti-crowding proxy:
 
 - reduce score for stocks where consensus is driven mostly by small position weights
 - reduce score when holders are mostly low-signal or unknown manager types
-- flag mega-cap / broadly held names as potentially crowded when market cap data becomes available
+- without market cap data, do not emit `crowded_mega_cap`; emit `low_conviction_consensus` or `low_signal_quality` instead
+- flag mega-cap / broadly held names only when market cap or broad institutional ownership data becomes available
 
-This score is a research prioritization aid, not an alpha claim.
+In V1, anti-crowding is a weak proxy and should not be used as a hard default ranking determinant. `distinctive_consensus_score` may be an advanced sort option, while the default sort remains `signal_weighted_consensus_score`.
 
 ### 7.12 Caution Flags
 
@@ -493,7 +552,8 @@ Initial V1 flags:
 | --- | --- |
 | `stale_filing` | 13F filing is a delayed snapshot |
 | `low_conviction` | many holders, but mostly small weights |
-| `crowded_mega_cap` | consensus may reflect broad market exposure rather than insight |
+| `low_signal_quality` | consensus is driven mostly by unknown, quant, high-turnover, or low-confidence manager profiles |
+| `crowded_mega_cap` | V2 only, emitted only when market-cap or broad ownership data supports it |
 | `weak_quality_coverage` | Value Line facts are missing or sparse |
 | `price_moved_up` | current price is far above quarter-end holding price estimate |
 | `mixed_actions` | high-signal managers disagree: some add, others reduce |
@@ -502,6 +562,34 @@ Initial V1 flags:
 | `valuation_reference_missing` | no reliable valuation reference is available |
 
 Caution flags should appear in both the table and the stock drilldown. They are part of the product's value, not edge-case warnings.
+
+### 7.13 Valuation Reference Strength
+
+Different valuation references have different evidentiary strength. The API and UI should identify the reference type instead of showing a naked value.
+
+Suggested fields:
+
+```text
+valuation_reference_type:
+  manual_intrinsic_value
+  analyst_target_reference
+  mechanical_model_reference
+  price_position_reference
+  missing
+
+valuation_reference_confidence:
+  user_supplied
+  medium
+  assumption_sensitive
+  weak_context_only
+  unavailable
+```
+
+Example UI copy:
+
+```text
+Below selected valuation reference, but the reference is Value Line's 18-month target midpoint, not intrinsic value.
+```
 
 ---
 
@@ -549,6 +637,7 @@ Fields:
 - latest complete 13F period
 - filing date range
 - manager coverage
+- manager signal quality coverage, for example `75% typed, 25% unknown`
 - holding coverage
 - CUSIP-to-stock linkage coverage
 - price coverage
@@ -590,6 +679,12 @@ Columns:
 | Latest 13F Period | Quarter |
 | Caution | Highest-priority caution flag |
 | Coverage | Value Line / price coverage |
+
+Primary score display rule:
+
+- Do not show a score without a short explanation.
+- The table should pair the primary score with 1-2 reason chips, such as `3 high-signal holders`, `2 top 10 positions`, or `median streak 6Q`.
+- Unknown manager coverage must be visible when it materially affects the score.
 
 Hover / detail popover:
 
@@ -686,7 +781,19 @@ Example flags:
 
 This panel should be visible in the drilldown, not hidden behind a tooltip.
 
-### 8.7 Noise Filter
+### 8.7 Suggested Research Next Steps
+
+The dashboard should not end at a score. Drilldown should guide the user into a research workflow:
+
+1. Read the latest Value Line report.
+2. Review 10-K business quality and segment economics when that data exists.
+3. Check why high-signal managers added, reduced, or held.
+4. Compare current valuation with normalized owner earnings.
+5. Add to watchlist or reject with a recorded reason.
+
+Suggested next steps should be contextual. For example, if Value Line coverage is missing, the first step should be to upload or locate a report, not to inspect a valuation strip.
+
+### 8.8 Noise Filter
 
 V1:
 
@@ -705,7 +812,7 @@ V2:
 
 The original "hide Renaissance, Two Sigma, BlackRock, Vanguard" behavior requires this taxonomy. Do not hardcode name exclusions in product code.
 
-### 8.8 Time-Machine Sync
+### 8.9 Time-Machine Sync
 
 V1:
 
@@ -771,12 +878,33 @@ Response sketch:
       "current_price": 248.63,
       "valuation_reference": 326.50,
       "valuation_reference_label": "Value Line 18-month target midpoint",
+      "valuation_reference_type": "analyst_target_reference",
+      "valuation_reference_confidence": "medium",
       "owner_earnings_yield": 0.061,
       "piotroski_total": 7,
       "manager_signal_summary": {
         "high_signal_holder_count": 3,
         "unknown_manager_type_count": 1,
-        "high_turnover_holder_count": 0
+        "high_turnover_holder_count": 0,
+        "manager_signal_quality_coverage": 0.75
+      },
+      "score_explanation": {
+        "primary_reasons": [
+          "3 high-signal managers hold this stock",
+          "2 holders rank it as a top 10 position",
+          "Median holding streak is 6 quarters"
+        ],
+        "negative_reasons": [
+          "1 of 4 holders has unknown manager type",
+          "13F filing is a delayed quarter-end snapshot"
+        ],
+        "conviction_components": {
+          "position_importance": 24,
+          "holding_persistence": 20,
+          "manager_quality": 16,
+          "recent_action": 10,
+          "agreement": 8
+        }
       },
       "quality_coverage": {
         "value_line": true,
@@ -810,6 +938,8 @@ Response sections:
 - Value Line quality metrics
 - valuation strip inputs
 - caution flags and disconfirming evidence
+- score explanations and component breakdowns
+- suggested research next steps
 - provenance and unavailable reasons
 
 ### 9.3 Reuse Existing Endpoints
@@ -1106,6 +1236,8 @@ Forbidden copy in V1:
 | Raw consensus creates false confidence | Users may follow crowded or low-conviction holdings | Default sort by signal-weighted consensus and show caution flags |
 | Manager taxonomy incomplete | High-quality and noisy managers may be blended | Use derived signal proxies, unknown manager warnings, and manual metadata review |
 | Valuation reference overread as intrinsic value | Users may infer a false margin of safety | Use conservative valuation reference language |
+| Too many scores create confusion | Users may not know which score to trust | Define one primary ranking, secondary explanations, and separate risk flags |
+| Composite score becomes an investment conclusion | Users may overtrust a high score | Require score explanations and caution flags next to every score |
 | Query performance | Dashboard slow | Aggregate service, indexes, pagination |
 
 ---
@@ -1117,16 +1249,20 @@ Forbidden copy in V1:
 Deliver:
 
 - Coverage audit service.
-- Consensus service.
-- Manager signal profile service.
+- Raw consensus service.
+- Minimal manager signal profile service.
 - Holding duration / streak calculations.
-- Dashboard API without frontend.
+- Caution flags service.
+- Minimal dashboard API payload for table rows.
 - Unit tests.
 
 Estimated scope:
 
 - Backend only.
-- No schema change unless indexes are required.
+- No quality overlay.
+- No valuation strip.
+- No bubble chart.
+- No schema change unless indexes or manager metadata columns are explicitly approved.
 
 ### Milestone 2: Table-First Dashboard
 
@@ -1138,6 +1274,8 @@ Deliver:
 - Period selector for available complete periods.
 - Fixed 13F delay notice.
 - Caution flag column.
+- Score explanation chips.
+- Unknown manager signal coverage display.
 - Holder drilldown panel.
 
 Estimated scope:
@@ -1151,6 +1289,7 @@ Deliver:
 - Owner earnings yield where available.
 - Piotroski / ROTC / net margin / debt overlay.
 - Selected valuation reference and discount-to-reference strip.
+- Valuation reference type and confidence display.
 - Caution flags panel in drilldown.
 - Unavailable reason display.
 
@@ -1192,10 +1331,11 @@ Recommended task files:
 2. `docs/tasks/YYYY-MM-DD_oracles-lens-consensus-service.md`
 3. `docs/tasks/YYYY-MM-DD_oracles-lens-manager-signal-profile.md`
 4. `docs/tasks/YYYY-MM-DD_oracles-lens-caution-flags.md`
-5. `docs/tasks/YYYY-MM-DD_oracles-lens-dashboard-api.md`
-6. `docs/tasks/YYYY-MM-DD_oracles-lens-table-ui.md`
-7. `docs/tasks/YYYY-MM-DD_oracles-lens-quality-overlay.md`
-8. `docs/tasks/YYYY-MM-DD_oracles-lens-valuation-reference.md`
+5. `docs/tasks/YYYY-MM-DD_oracles-lens-score-explanations.md`
+6. `docs/tasks/YYYY-MM-DD_oracles-lens-dashboard-api.md`
+7. `docs/tasks/YYYY-MM-DD_oracles-lens-table-ui.md`
+8. `docs/tasks/YYYY-MM-DD_oracles-lens-quality-overlay.md`
+9. `docs/tasks/YYYY-MM-DD_oracles-lens-valuation-reference.md`
 
 Each implementation task must follow the project workflow:
 
@@ -1217,9 +1357,13 @@ Oracle's Lens V1 is successful when:
 - The user can distinguish adding, reducing, new, and exited positions.
 - The default ranking uses signal-weighted consensus, not raw holder count.
 - The user can see manager signal quality, conviction, and holding streak.
+- Every score shown in the table has visible explanation components.
+- Unknown manager coverage is visible when it affects signal confidence.
 - The user can see whether Value Line quality data is available.
 - The user can see current price vs selected valuation reference where price exists.
+- The user can see the valuation reference type and confidence.
 - The user can see caution flags that explain why the signal may be misleading.
+- The user can follow suggested next research steps rather than treating the score as a conclusion.
 - Unsupported values are clearly labeled as unavailable or estimated.
 - The dashboard never claims to know actual 13F transaction prices.
 
@@ -1232,7 +1376,13 @@ The original "Oracle's Lens" concept is directionally strong, but V1 must be gro
 Approved V1 framing:
 
 ```text
-13F behavior signal + manager quality weighting + holding pattern + Value Line quality overlay + valuation reference + caution flags
+13F behavior signal + manager quality weighting + holding pattern + score explanations + caution flags
+```
+
+V1.1 / V2 additions:
+
+```text
+Value Line quality overlay + valuation reference + expanded historical price context
 ```
 
 Deferred:
