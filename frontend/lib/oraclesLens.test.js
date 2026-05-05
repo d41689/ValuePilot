@@ -4,10 +4,12 @@ const assert = require('node:assert/strict');
 
 const {
   confidenceTone,
+  groupCautionFlags,
   normalizeOracleLensRows,
   normalizeQualityOverlay,
   normalizeValuationReference,
   primaryCautionFlags,
+  suggestedResearchSteps,
 } = require('./oraclesLens');
 
 test('normalizeOracleLensRows emphasizes signal score with explanations', () => {
@@ -112,6 +114,34 @@ test('normalizeValuationReference keeps missing reference explicit', () => {
   assert.equal(valuation.discountLabel, '—');
   assert.equal(valuation.referenceConfidence, 'unavailable');
   assert.deepEqual(valuation.unavailableReasons, ['missing valuation reference']);
+});
+
+test('groupCautionFlags preserves all flags for drilldown', () => {
+  const groups = groupCautionFlags([
+    { key: 'old_period_selected', group: 'timing', severity: 'info' },
+    { key: 'low_conviction', group: 'conviction', severity: 'warning' },
+    { key: 'low_signal_quality', group: 'signal_quality', severity: 'warning' },
+  ]);
+
+  assert.deepEqual(groups.map((group) => group.group), ['signal_quality', 'conviction', 'timing']);
+  assert.deepEqual(groups.map((group) => group.flags.length), [1, 1, 1]);
+});
+
+test('suggestedResearchSteps adapts to missing data', () => {
+  const steps = suggestedResearchSteps({
+    quality: {
+      hasValueLineQuality: false,
+      unavailableReasons: ['missing Value Line facts'],
+    },
+    valuation: {
+      unavailableReasons: ['missing valuation reference'],
+    },
+  });
+
+  assert.deepEqual(steps.slice(0, 2), [
+    'Locate or upload the latest Value Line report for this company.',
+    'Add or verify a valuation reference before interpreting discount-to-reference.',
+  ]);
 });
 
 test('normalizeQualityOverlay exposes missing data as explicit product state', () => {

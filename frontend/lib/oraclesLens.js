@@ -135,6 +135,41 @@ function primaryCautionFlags(flags, limit = 2) {
     .slice(0, limit);
 }
 
+function groupCautionFlags(flags) {
+  if (!Array.isArray(flags)) {
+    return [];
+  }
+  const grouped = new Map();
+  for (const flag of primaryCautionFlags(flags, flags.length)) {
+    const groupKey = flag?.group ?? 'other';
+    if (!grouped.has(groupKey)) {
+      grouped.set(groupKey, []);
+    }
+    grouped.get(groupKey).push(flag);
+  }
+  return [...grouped.entries()].map(([group, groupFlags]) => ({
+    group,
+    label: group.replaceAll('_', ' '),
+    flags: groupFlags,
+  }));
+}
+
+function suggestedResearchSteps(row) {
+  const qualityReasons = row?.quality?.unavailableReasons ?? [];
+  const valuationReasons = row?.valuation?.unavailableReasons ?? [];
+  const steps = [];
+  if (!row?.quality?.hasValueLineQuality || qualityReasons.includes('missing Value Line facts')) {
+    steps.push('Locate or upload the latest Value Line report for this company.');
+  }
+  if (valuationReasons.includes('missing valuation reference')) {
+    steps.push('Add or verify a valuation reference before interpreting discount-to-reference.');
+  }
+  steps.push('Review why high-signal managers added, reduced, or held the position.');
+  steps.push('Compare current valuation with normalized owner earnings.');
+  steps.push('Record a research note, watchlist decision, or rejection reason.');
+  return [...new Set(steps)].slice(0, 5);
+}
+
 function normalizeOracleLensRows(items) {
   if (!Array.isArray(items)) {
     return [];
@@ -178,6 +213,7 @@ function normalizeOracleLensRows(items) {
       valuation,
       topHolders: Array.isArray(item.top_holders) ? item.top_holders : [],
       cautionFlags: primaryCautionFlags(item.caution_flags),
+      cautionGroups: groupCautionFlags(item.caution_flags),
     };
   });
 }
@@ -188,8 +224,10 @@ module.exports = {
   formatNumber,
   formatPercent,
   formatScore,
+  groupCautionFlags,
   normalizeOracleLensRows,
   normalizeQualityOverlay,
   normalizeValuationReference,
   primaryCautionFlags,
+  suggestedResearchSteps,
 };

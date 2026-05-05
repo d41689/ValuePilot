@@ -1,12 +1,13 @@
 'use client';
 
-import { useMemo } from 'react';
+import { useMemo, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
-import { AlertTriangle, Info, Search } from 'lucide-react';
+import { AlertTriangle, Info, PanelRightOpen, Search, X } from 'lucide-react';
 
 import apiClient from '@/lib/api/client';
 import oracleLensHelpers from '@/lib/oraclesLens';
 import { Badge } from '@/components/ui/badge';
+import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import {
   Table,
@@ -17,7 +18,7 @@ import {
   TableRow,
 } from '@/components/ui/table';
 
-const { cautionTone, normalizeOracleLensRows } = oracleLensHelpers;
+const { cautionTone, normalizeOracleLensRows, suggestedResearchSteps } = oracleLensHelpers;
 
 type OracleLensPayload = {
   period: string | null;
@@ -44,6 +45,7 @@ function formatInteger(value: number | null | undefined) {
 }
 
 export default function OraclesLensPage() {
+  const [selectedStockId, setSelectedStockId] = useState<number | null>(null);
   const dashboardQuery = useQuery({
     queryKey: ['oracles-lens-dashboard'],
     queryFn: async () => {
@@ -54,6 +56,14 @@ export default function OraclesLensPage() {
 
   const payload = dashboardQuery.data;
   const rows = useMemo(() => normalizeOracleLensRows(payload?.items ?? []), [payload?.items]);
+  const selectedRow = useMemo(
+    () => rows.find((row) => row.stockId === selectedStockId) ?? null,
+    [rows, selectedStockId]
+  );
+  const researchSteps = useMemo(
+    () => (selectedRow ? suggestedResearchSteps(selectedRow) : []),
+    [selectedRow]
+  );
   const coverage = payload?.coverage;
 
   return (
@@ -108,6 +118,7 @@ export default function OraclesLensPage() {
         </Card>
       </div>
 
+      <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_380px]">
       <Card className="rounded-md">
         <CardHeader className="pb-3">
           <CardTitle className="flex items-center gap-2 text-base">
@@ -128,6 +139,7 @@ export default function OraclesLensPage() {
               No signal-ranked candidates are available for the selected coverage rules.
             </div>
           ) : (
+            <div className="overflow-x-auto">
             <Table>
               <TableHeader>
                 <TableRow>
@@ -146,6 +158,16 @@ export default function OraclesLensPage() {
                     <TableCell>
                       <div className="font-semibold">{row.ticker}</div>
                       <div className="mt-1 text-xs text-muted-foreground">{row.companyName}</div>
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        className="mt-3"
+                        onClick={() => setSelectedStockId(row.stockId)}
+                      >
+                        <PanelRightOpen className="h-3.5 w-3.5" />
+                        Review
+                      </Button>
                     </TableCell>
                     <TableCell className="text-right">
                       <div className="text-xl font-semibold tabular-nums">{row.signalScoreLabel}</div>
@@ -247,9 +269,112 @@ export default function OraclesLensPage() {
                 ))}
               </TableBody>
             </Table>
+            </div>
           )}
         </CardContent>
       </Card>
+      <Card className="rounded-md xl:sticky xl:top-4 xl:self-start">
+        <CardHeader className="pb-3">
+          <CardTitle className="flex items-center justify-between gap-2 text-base">
+            <span>Why This Signal May Be Misleading</span>
+            {selectedRow ? (
+              <Button
+                type="button"
+                variant="ghost"
+                size="icon"
+                aria-label="Close candidate review"
+                onClick={() => setSelectedStockId(null)}
+              >
+                <X className="h-4 w-4" />
+              </Button>
+            ) : null}
+          </CardTitle>
+          <p className="text-sm text-muted-foreground">
+            {selectedRow
+              ? `${selectedRow.ticker} · ${selectedRow.companyName}`
+              : 'Select a candidate to inspect all caution flags and next research steps.'}
+          </p>
+        </CardHeader>
+        <CardContent className="space-y-5">
+          {selectedRow ? (
+            <>
+              <div className="space-y-3">
+                {selectedRow.cautionGroups.length ? (
+                  selectedRow.cautionGroups.map((group) => (
+                    <div key={group.group}>
+                      <div className="text-xs font-semibold uppercase text-muted-foreground">
+                        {group.label}
+                      </div>
+                      <div className="mt-2 flex flex-wrap gap-1.5">
+                        {group.flags.map((flag) => (
+                          <Badge key={flag.key} variant={cautionTone(flag)} className="rounded-md">
+                            {flag.label ?? flag.key}
+                          </Badge>
+                        ))}
+                      </div>
+                    </div>
+                  ))
+                ) : (
+                  <div className="text-sm text-muted-foreground">
+                    No primary caution flags are currently attached to this signal.
+                  </div>
+                )}
+              </div>
+
+              <div>
+                <div className="text-xs font-semibold uppercase text-muted-foreground">
+                  Missing or weak data
+                </div>
+                <div className="mt-2 space-y-1 text-sm text-muted-foreground">
+                  {[...selectedRow.quality.unavailableReasons, ...selectedRow.valuation.unavailableReasons]
+                    .length ? (
+                    [...selectedRow.quality.unavailableReasons, ...selectedRow.valuation.unavailableReasons].map(
+                      (reason) => <div key={reason}>{reason}</div>
+                    )
+                  ) : (
+                    <div>No quality or valuation gaps surfaced for the current row.</div>
+                  )}
+                </div>
+              </div>
+
+              <div>
+                <div className="text-xs font-semibold uppercase text-muted-foreground">
+                  Top holders
+                </div>
+                <div className="mt-2 space-y-2">
+                  {selectedRow.topHolders.slice(0, 3).map((holder) => (
+                    <div key={holder.manager_id} className="rounded-md border border-border/70 p-2 text-sm">
+                      <div className="font-medium">{holder.manager_name}</div>
+                      <div className="mt-1 text-xs text-muted-foreground">
+                        Rank {holder.position_rank ?? '—'} · {holder.action} ·{' '}
+                        {holder.holding_streak_quarters ?? '—'}Q streak
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              <div>
+                <div className="text-xs font-semibold uppercase text-muted-foreground">
+                  Suggested next steps
+                </div>
+                <ol className="mt-2 list-decimal space-y-1 pl-5 text-sm text-muted-foreground">
+                  {researchSteps.map((step) => (
+                    <li key={step}>{step}</li>
+                  ))}
+                </ol>
+              </div>
+            </>
+          ) : (
+            <div className="flex gap-2 text-sm text-muted-foreground">
+              <Info className="mt-0.5 h-4 w-4 shrink-0" />
+              The table shows only the highest-priority caution flags. The review panel shows the
+              full grouped list.
+            </div>
+          )}
+        </CardContent>
+      </Card>
+      </div>
     </div>
   );
 }
