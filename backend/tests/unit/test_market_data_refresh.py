@@ -4,6 +4,7 @@ from zoneinfo import ZoneInfo
 import pytest
 
 from app.models.users import User
+from app.models.institutions import Filing13F, Holding13F, InstitutionManager
 from app.models.stocks import Stock, StockPrice
 
 
@@ -37,6 +38,49 @@ def _make_user_stock(db_session):
     db_session.add(stock)
     db_session.commit()
     return user, stock
+
+
+def _make_manager(db_session, *, name: str = "13F Fund", superinvestor: bool = True):
+    manager = InstitutionManager(
+        cik=f"9{name.lower().replace(' ', '')[:8]}",
+        legal_name=name,
+        display_name=name,
+        name_normalized=name.lower(),
+        match_status="confirmed",
+        is_superinvestor=superinvestor,
+    )
+    db_session.add(manager)
+    db_session.flush()
+    return manager
+
+
+def _make_filing_holding(db_session, manager, stock, *, period: date, accession: str):
+    filing = Filing13F(
+        manager_id=manager.id,
+        accession_no=accession,
+        period_of_report=period,
+        filed_at=period,
+        form_type="13F-HR",
+        is_latest_for_period=True,
+        reported_total_value_thousands=100_000,
+        computed_total_value_thousands=100_000,
+    )
+    db_session.add(filing)
+    db_session.flush()
+    holding = Holding13F(
+        filing_id=filing.id,
+        row_fingerprint=f"{accession}-{stock.ticker}",
+        cusip=f"{stock.id:09d}"[-9:],
+        issuer_name=stock.company_name,
+        title_of_class="COM",
+        value_thousands=10_000,
+        shares=1000,
+        share_type="SH",
+        stock_id=stock.id,
+    )
+    db_session.add(holding)
+    db_session.flush()
+    return filing, holding
 
 
 def test_compute_target_date_weekend(db_session):
@@ -172,3 +216,76 @@ def test_refresh_endpoint_returns_results(client, db_session, monkeypatch, auth_
     body = resp.json()
     assert body[0]["stock_id"] == stock.id
     assert body[0]["status"] in {"refreshed", "skipped", "failed"}
+
+
+def test_backfill_13f_linked_period_prices_skips_existing_and_uses_period_business_day(db_session):
+    from app.services.market_data_service import MarketDataService
+
+    manager = _make_manager(db_session)
+    manager_2 = _make_manager(db_session, name="13F Fund Two")
+    apple = Stock(ticker="AAPL", exchange="NDQ", company_name="Apple")
+    microsoft = Stock(ticker="MSFT", exchange="NDQ", company_name="Microsoft")
+    db_session.add_all([apple, microsoft])
+    db_session.flush()
+    period = date(2024, 3, 31)  # Sunday; target price date should be Friday.
+    target_date = date(2024, 3, 29)
+    _make_filing_holding(db_session, manager, apple, period=period, accession="backfill-a")
+    _make_filing_holding(db_session, manager_2, microsoft, period=period, accession="backfill-m")
+    db_session.add(
+        StockPrice(
+            stock_id=apple.id,
+            price_date=target_date,
+            open=90.0,
+            high=95.0,
+            low=89.0,
+            close=94.0,
+            volume=1000,
+            source="seed",
+        )
+    )
+    db_session.commit()
+
+    provider = FakeProvider()
+    service = MarketDataService(db_session, provider=provider, throttle_minutes=0)
+    results = service.backfill_13f_linked_period_prices(
+        periods=[period],
+        reason="oracles_lens_test",
+        now=datetime(2026, 5, 5, 12, 0, tzinfo=timezone.utc),
+    )
+
+    assert sorted((row["ticker"], row["status"], row["target_date"]) for row in results) == [
+        ("AAPL", "skipped", "2024-03-29"),
+        ("MSFT", "refreshed", "2024-03-29"),
+    ]
+    assert provider.calls == [("MSFT", "NDQ", target_date)]
+    microsoft_price = (
+        db_session.query(StockPrice)
+        .filter(StockPrice.stock_id == microsoft.id, StockPrice.price_date == target_date)
+        .one()
+    )
+    assert microsoft_price.close == 105.0
+    assert microsoft_price.source == "fake"
+
+
+def test_backfill_13f_linked_period_prices_excludes_non_superinvestors_by_default(db_session):
+    from app.services.market_data_service import MarketDataService
+
+    manager = _make_manager(db_session, name="Index Holder", superinvestor=False)
+    stock = Stock(ticker="SPY", exchange="NYSE", company_name="SPDR S&P 500 ETF")
+    db_session.add(stock)
+    db_session.flush()
+    _make_filing_holding(
+        db_session,
+        manager,
+        stock,
+        period=date(2024, 6, 30),
+        accession="non-superinvestor",
+    )
+    db_session.commit()
+
+    provider = FakeProvider()
+    service = MarketDataService(db_session, provider=provider, throttle_minutes=0)
+    results = service.backfill_13f_linked_period_prices(periods=[date(2024, 6, 30)], reason="test")
+
+    assert results == []
+    assert provider.calls == []
