@@ -30,6 +30,7 @@ import {
 const {
   buildOracleLensQueryParams,
   cautionTone,
+  missingDataReasons,
   normalizeOracleLensRows,
   radarBubbles,
   suggestedResearchSteps,
@@ -130,6 +131,10 @@ export default function OraclesLensPage() {
   );
   const researchSteps = useMemo(
     () => (selectedRow ? suggestedResearchSteps(selectedRow) : []),
+    [selectedRow]
+  );
+  const selectedMissingReasons = useMemo(
+    () => (selectedRow ? missingDataReasons(selectedRow) : []),
     [selectedRow]
   );
   const coverage = payload?.coverage;
@@ -616,11 +621,8 @@ export default function OraclesLensPage() {
                   Missing or weak data
                 </div>
                 <div className="mt-2 space-y-1 text-sm text-muted-foreground">
-                  {[...selectedRow.quality.unavailableReasons, ...selectedRow.valuation.unavailableReasons]
-                    .length ? (
-                    [...selectedRow.quality.unavailableReasons, ...selectedRow.valuation.unavailableReasons].map(
-                      (reason) => <div key={reason}>{reason}</div>
-                    )
+                  {selectedMissingReasons.length ? (
+                    selectedMissingReasons.map((reason) => <div key={reason.key}>{reason.label}</div>)
                   ) : (
                     <div>No quality or valuation gaps surfaced for the current row.</div>
                   )}

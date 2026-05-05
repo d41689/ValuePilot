@@ -6,6 +6,7 @@ const {
   buildOracleLensQueryParams,
   confidenceTone,
   groupCautionFlags,
+  missingDataReasons,
   normalizeOracleLensRows,
   normalizeQualityOverlay,
   normalizeValuationReference,
@@ -183,6 +184,23 @@ test('suggestedResearchSteps adapts to missing data', () => {
   assert.deepEqual(steps.slice(0, 2), [
     'Locate or upload the latest Value Line report for this company.',
     'Add or verify a valuation reference before interpreting discount-to-reference.',
+  ]);
+});
+
+test('missingDataReasons dedupes overlapping quality and valuation reasons', () => {
+  const reasons = missingDataReasons({
+    quality: {
+      unavailableReasons: ['missing price', 'missing Value Line facts'],
+    },
+    valuation: {
+      unavailableReasons: ['missing price', 'missing valuation reference'],
+    },
+  });
+
+  assert.deepEqual(reasons, [
+    { key: 'quality:missing price', label: 'missing price' },
+    { key: 'quality:missing Value Line facts', label: 'missing Value Line facts' },
+    { key: 'valuation:missing valuation reference', label: 'missing valuation reference' },
   ]);
 });
 

@@ -191,6 +191,24 @@ function suggestedResearchSteps(row) {
   return [...new Set(steps)].slice(0, 5);
 }
 
+function missingDataReasons(row) {
+  const result = [];
+  const seenLabels = new Set();
+  for (const [source, reasons] of [
+    ['quality', row?.quality?.unavailableReasons ?? []],
+    ['valuation', row?.valuation?.unavailableReasons ?? []],
+  ]) {
+    for (const reason of reasons) {
+      if (seenLabels.has(reason)) {
+        continue;
+      }
+      seenLabels.add(reason);
+      result.push({ key: `${source}:${reason}`, label: reason });
+    }
+  }
+  return result;
+}
+
 function percentLabelToNumber(label) {
   if (typeof label !== 'string') {
     return 0;
@@ -287,6 +305,7 @@ module.exports = {
   formatPercent,
   formatScore,
   groupCautionFlags,
+  missingDataReasons,
   normalizeOracleLensRows,
   normalizeQualityOverlay,
   normalizeValuationReference,
