@@ -24,8 +24,23 @@ const {
   buildOracleLensQueryParams,
   cautionTone,
   normalizeOracleLensRows,
+  radarBubbles,
   suggestedResearchSteps,
 } = oracleLensHelpers;
+
+const RADAR_SIZE_CLASSES: Record<string, string> = {
+  'h-14 w-14': 'h-14 w-14',
+  'h-16 w-16': 'h-16 w-16',
+  'h-20 w-20': 'h-20 w-20',
+  'h-24 w-24': 'h-24 w-24',
+};
+
+const RADAR_TONE_CLASSES: Record<string, string> = {
+  'border-slate-300 bg-slate-50 text-slate-950': 'border-slate-300 bg-slate-50 text-slate-950',
+  'border-emerald-300 bg-emerald-50 text-emerald-950':
+    'border-emerald-300 bg-emerald-50 text-emerald-950',
+  'border-amber-300 bg-amber-50 text-amber-950': 'border-amber-300 bg-amber-50 text-amber-950',
+};
 
 type OracleLensPayload = {
   period: string | null;
@@ -80,6 +95,7 @@ export default function OraclesLensPage() {
 
   const payload = dashboardQuery.data;
   const rows = useMemo(() => normalizeOracleLensRows(payload?.items ?? []), [payload?.items]);
+  const bubbles = useMemo(() => radarBubbles(rows), [rows]);
   const selectedRow = useMemo(
     () => rows.find((row) => row.stockId === selectedStockId) ?? null,
     [rows, selectedStockId]
@@ -234,6 +250,49 @@ export default function OraclesLensPage() {
               Reset
             </Button>
           </div>
+        </CardContent>
+      </Card>
+
+      <Card className="rounded-md">
+        <CardHeader className="pb-3">
+          <CardTitle className="text-base">Smart Money Clusters</CardTitle>
+          <p className="text-sm text-muted-foreground">
+            Compact ownership-signal view. Bubble size reflects aggregate reported weight; tone
+            reflects add/reduce context.
+          </p>
+        </CardHeader>
+        <CardContent>
+          {bubbles.length ? (
+            <div className="flex flex-wrap items-end gap-4">
+              {bubbles.map((bubble) => (
+                <div key={bubble.stockId} className="group relative">
+                  <Button
+                    type="button"
+                    variant="outline"
+                    className={`${RADAR_SIZE_CLASSES[bubble.sizeClass] ?? RADAR_SIZE_CLASSES['h-14 w-14']} ${
+                      RADAR_TONE_CLASSES[bubble.toneClass] ?? RADAR_TONE_CLASSES['border-slate-300 bg-slate-50 text-slate-950']
+                    } flex-col rounded-full border text-center shadow-none hover:bg-muted/60`}
+                    title={`${bubble.ticker}: ${bubble.holderActionLabel}`}
+                    onClick={() => setSelectedStockId(bubble.stockId)}
+                  >
+                    <span className="text-xs font-semibold">{bubble.ticker}</span>
+                    <span className="text-[10px] text-current/70">{bubble.aggregateWeightLabel}</span>
+                  </Button>
+                  <div className="pointer-events-none absolute left-1/2 top-full z-20 mt-2 hidden w-56 -translate-x-1/2 rounded-md border border-border bg-popover p-3 text-xs text-popover-foreground shadow-md group-focus-within:block group-hover:block">
+                    <div className="font-semibold">{bubble.companyName}</div>
+                    <div className="mt-1 text-muted-foreground">{bubble.holderActionLabel}</div>
+                    <div className="mt-1 text-muted-foreground">
+                      Signal {bubble.signalScoreLabel} · {bubble.confidence} confidence
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <div className="text-sm text-muted-foreground">
+              No ownership-signal clusters are available for the current filters.
+            </div>
+          )}
         </CardContent>
       </Card>
 

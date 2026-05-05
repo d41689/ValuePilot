@@ -187,6 +187,46 @@ function suggestedResearchSteps(row) {
   return [...new Set(steps)].slice(0, 5);
 }
 
+function percentLabelToNumber(label) {
+  if (typeof label !== 'string') {
+    return 0;
+  }
+  const value = Number(label.replace('%', ''));
+  return Number.isFinite(value) ? value : 0;
+}
+
+function radarBubbles(rows, limit = 12) {
+  if (!Array.isArray(rows)) {
+    return [];
+  }
+  return rows.slice(0, limit).map((row) => {
+    const weightPercent = percentLabelToNumber(row.aggregateWeightLabel);
+    const addMatch = String(row.addReduceLabel ?? '').match(/(\d+)\s+add\s+\/\s+(\d+)\s+reduce/);
+    const adders = addMatch ? Number(addMatch[1]) : 0;
+    const reducers = addMatch ? Number(addMatch[2]) : 0;
+    let sizeClass = 'h-14 w-14';
+    if (weightPercent >= 10) {
+      sizeClass = 'h-24 w-24';
+    } else if (weightPercent >= 5) {
+      sizeClass = 'h-20 w-20';
+    } else if (weightPercent >= 2) {
+      sizeClass = 'h-16 w-16';
+    }
+    let toneClass = 'border-slate-300 bg-slate-50 text-slate-950';
+    if (adders > reducers) {
+      toneClass = 'border-emerald-300 bg-emerald-50 text-emerald-950';
+    } else if (reducers > adders) {
+      toneClass = 'border-amber-300 bg-amber-50 text-amber-950';
+    }
+    return {
+      ...row,
+      sizeClass,
+      toneClass,
+      holderActionLabel: row.addReduceLabel,
+    };
+  });
+}
+
 function normalizeOracleLensRows(items) {
   if (!Array.isArray(items)) {
     return [];
@@ -247,5 +287,6 @@ module.exports = {
   normalizeQualityOverlay,
   normalizeValuationReference,
   primaryCautionFlags,
+  radarBubbles,
   suggestedResearchSteps,
 };

@@ -10,6 +10,7 @@ const {
   normalizeQualityOverlay,
   normalizeValuationReference,
   primaryCautionFlags,
+  radarBubbles,
   suggestedResearchSteps,
 } = require('./oraclesLens');
 
@@ -111,6 +112,30 @@ test('buildOracleLensQueryParams serializes V1 dashboard filters', () => {
     }),
     'period=2031-Q4&min_holders=5&superinvestor_only=false&min_signal_score=2.5'
   );
+});
+
+test('radarBubbles maps candidate rows to compact visual signals', () => {
+  const bubbles = radarBubbles([
+    {
+      stockId: 1,
+      ticker: 'BIG',
+      companyName: 'Big Weight',
+      aggregateWeightLabel: '12.0%',
+      addReduceLabel: '3 add / 0 reduce',
+    },
+    {
+      stockId: 2,
+      ticker: 'SMALL',
+      companyName: 'Small Weight',
+      aggregateWeightLabel: '1.0%',
+      addReduceLabel: '0 add / 2 reduce',
+    },
+  ]);
+
+  assert.equal(bubbles[0].sizeClass, 'h-24 w-24');
+  assert.equal(bubbles[0].toneClass.includes('emerald'), true);
+  assert.equal(bubbles[1].sizeClass, 'h-14 w-14');
+  assert.equal(bubbles[1].toneClass.includes('amber'), true);
 });
 
 test('normalizeValuationReference keeps missing reference explicit', () => {
