@@ -37,6 +37,7 @@ Out:
 - 2026-05-06: Updated the plan with amendment supersession policy, phase/health label clarification, historical-depth capability gates, persistent freshness copy, default lock keys, and tighter acceptance criteria.
 - 2026-05-06: Accepted fourth-review blockers and updated the plan with consumer-safe readiness fields, experimental behavior mapping, amendment reprocess action, Oracle's Lens default-quarter decision, and setup-check amendment criteria.
 - 2026-05-06: Accepted fifth-review cleanup and narrowed amendment admin-task triggering, added the `reprocess_amendment` lock key and MVP 2 scope item, and made Oracle's Lens unavailable behavior a V1 product decision.
+- 2026-05-06: Recorded final-review follow-ups by adding a P1 amendment task queue item and documenting confirmed-CIK revocation as a post-MVP 3 gap.
 
 ## Verification
 

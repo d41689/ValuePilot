@@ -359,6 +359,7 @@ Task types:
 | P0 | No confirmed manager / CIK whitelist | confirmed manager count = 0 | Bootstrap whitelist, match CIK, review candidates |
 | P0 | Scheduler disabled in prod | env false | Enable and redeploy |
 | P1 | CIK candidates need review | candidate count > 0 | Confirm or reject candidate |
+| P1 | Amendment pending or failed | `amendment_status` is `amendments_pending` or `amendment_failed` | Run Reprocess amendment for each pending or failed 13F/A accession |
 | P1 | Quarter index fetched but no filings | form_idx exists, filings = 0 | Check whitelist and form parser |
 | P1 | Filing parse failures | failed filings > 0 | Retry failed filings or inspect EDGAR document |
 | P1 | Current quarter stale after deadline | deadline passed, no latest quarter data | Run quarterly pipeline |
@@ -478,6 +479,8 @@ Rules:
 - Candidate matches must not be used by ingestion until confirmed.
 - Rejected candidates should be retained for audit, not deleted silently.
 - Confirming a CIK should immediately make the manager eligible for the next ingestion run.
+
+Known post-MVP 3 gap: revoking an already confirmed CIK is intentionally out of scope until the CIK review workflow has a complete audit and downstream repair design. A wrong confirmed CIK can contaminate every filing and holding for that manager, so the product must not ship a casual "undo" button. The later revocation workflow should require admin confirmation, preserve reviewer notes, mark affected quarters for reprocessing, and explain whether existing filings / holdings remain quarantined, superseded, or require engineering review.
 
 ### 13.1 CIK Confirmation Audit
 
