@@ -50,6 +50,7 @@ These decisions are part of the product contract, not open questions.
 | Manager universe | Track all Dataroma-discovered managers that can be confirmed to SEC CIKs. | Broad coverage prevents early blind spots and lets the admin dashboard measure the full available universe. |
 | Featured managers | Add a later admin flag such as `is_featured_manager` or `manager_signal_priority`, but do not block ingestion on it. | Oracle's Lens can rank or emphasize higher-quality managers without narrowing the ingestion source of truth too early. |
 | Historical target for Oracle's Lens | Four consecutive quarters is the minimum target for full trend language. | New / add / reduce / exit signals are weak with only one quarter and still shallow with two quarters. |
+| Oracle's Lens default quarter | Default to `latest_usable_quarter`, the latest complete quarter that passes readiness checks. | Showing the current filing-window quarter by default can confuse users because missing managers are expected. The current partial quarter may be available as an explicit switch with clear partial-data warnings. |
 | Setup threshold | Minimum confirmed manager CIK count remains `1` only as a setup-unblock threshold. | This threshold means the pipeline can run, not that Oracle's Lens has strong investment signal coverage. |
 
 The product should avoid presenting "all Dataroma managers" as equal investment signal. Ingestion should capture the confirmed universe broadly; investor-facing ranking should use manager signal quality, featured-manager metadata, and readiness warnings.
@@ -197,7 +198,7 @@ This checklist should be visible whenever the system is not fully ready.
 | Filing metadata ingested | `filings_13f` | filings exist for confirmed managers | Run quarter ingest |
 | Holdings parsed | `holdings_13f` | holdings exist for filings | Run / retry holdings ingest |
 | CUSIP mapping built | `cusip_ticker_map`, `holdings_13f.stock_id` | linked holding ratio above threshold | Run enrichment |
-| Quality checked | quality report / job run | latest check passed or warnings accepted | Run quality check |
+| Quality checked | quality report / job run | latest check passed or warnings accepted, and `amendment_status` is `no_amendments` or `amendments_applied` | Run quality check |
 
 ### 8.3 Current Quarter Card
 
@@ -398,6 +399,7 @@ Recommended actions:
 | Enrich stocks from EDGAR | `enrich-stocks-edgar` | Yes | Official source enrichment |
 | Quality check | `quality-check --quarter YYYY-Qn` | No for read-only check | Should be safe and frequent |
 | Retry failed filings | filtered ingest retry | Yes | Prefer targeted retry over full rerun |
+| Reprocess amendment | filtered ingest retry for 13F/A accession | Yes | For a specific failed amendment accession; success should set the amendment as the latest effective filing and supersede the prior effective filing |
 
 Manual action UX:
 
@@ -435,6 +437,7 @@ Recommended action metadata:
 | Enrich CUSIP | Must be idempotent | `cusip_ticker_map`, `holdings_13f.stock_id` | Mapping updates should preserve provenance and avoid destructive overrides without review | Upsert mappings; preserve provenance | Improves stock link coverage |
 | Bootstrap stocks | Must be idempotent | stocks and related mapping fields | Upsert by stable identity; ambiguous mappings should become review tasks instead of forced writes | Upsert by stable symbol / CUSIP identity | Improves product usability |
 | Quality check | Read-only or report-write only | quality report / job summary | Quality checks should never mutate holdings or manager identity data | Safe to rerun frequently | Updates readiness and warnings |
+| Reprocess amendment | Must be idempotent per accession | `filings_13f`, `holdings_13f`, raw amendment documents | One amendment accession should commit atomically; failure must preserve the last effective filing | Retry the specific 13F/A accession and update latest-effective flags only after parse success | Restores correctness when an amendment is pending or failed |
 
 
 Network-heavy and write-heavy actions should preview their target quarter, tracked managers, estimated filings, and rate-limit risk before execution.
@@ -620,6 +623,15 @@ Recommended `frontend_behavior` values:
 | `show_with_warning` | Show data but surface quality or coverage warnings. |
 | `show_normally` | Data is ready for normal user-facing display. |
 
+Consumer behavior must be derived conservatively from readiness level:
+
+| Readiness Level | Consumer `frontend_behavior` |
+| --- | --- |
+| `unavailable` | `hide_feature` only when the product decision is to remove the feature; otherwise `show_setup_required` |
+| `experimental` | `show_setup_required`; experimental 13F data is admin-only and must not be exposed as investment research to ordinary users |
+| `usable_with_warning` | `show_with_warning`, or `show_partial_warning` when the main caveat is filing-window partial data |
+| `ready` | `show_normally` |
+
 Example readiness payload:
 
 ```json
@@ -730,6 +742,28 @@ Proposed admin endpoints:
 - `POST /api/v1/admin/13f/jobs/retry-failed-filings`
 
 The admin readiness endpoint may include operational details such as job errors, blockers, and escalation metadata. The non-admin readiness endpoint should expose only the consumer-safe subset needed by Oracle's Lens or other user-facing features.
+
+V1 consumer-safe `GET /api/v1/13f/readiness` response should include:
+
+- `readiness_level`
+- `frontend_behavior`
+- `latest_usable_quarter`
+- `current_quarter`: `quarter`, `phase`, `health`, `is_partial_expected`, `filing_deadline`
+- `warnings`: user-safe warning codes and copy only
+- `historical_depth_quarters`
+- `historical_depth_capabilities`
+- `amendment_status`
+
+V1 consumer-safe `GET /api/v1/13f/readiness` response should exclude:
+
+- internal `blockers` and escalation metadata
+- raw `unavailable_reasons` that expose internal technical failure details
+- `counts.failed_filings` and specific failed accession counts
+- filing accession numbers, manager CIK review details, parser errors, and stack traces
+- `last_successful_job_at` and other internal operations timestamps
+- raw job ids, lock keys, dedupe keys, and retry metadata
+
+If a user-facing warning depends on an excluded operational detail, translate it into safe copy. For example, expose "Some data is still being processed" instead of the failed accession count or parser exception.
 
 The job trigger endpoint should accept a constrained enum, not arbitrary shell commands.
 
@@ -873,6 +907,8 @@ Filing deadlines should be calculated rather than hard-coded. The UI may show ap
 - When confirmed manager count is at least the configured minimum, the setup checklist can clear the manager prerequisite.
 - When linked holdings ratio is below the configured `ready` threshold, readiness is not `ready`; when it is below the `usable_with_warning` threshold, readiness should fall to `experimental` or `unavailable` depending on denominator availability.
 - When Oracle's Lens receives `show_setup_required`, it renders setup/availability copy instead of a silent empty candidate table.
+- When readiness is `experimental`, the consumer-safe endpoint returns `show_setup_required` and does not expose experimental data as ordinary investor research.
+- When the consumer-safe readiness endpoint is returned, it includes only the V1 allowlisted fields and excludes internal job, accession, parser, and escalation details.
 - When only one historical quarter exists, readiness includes snapshot-only capability and Oracle's Lens does not present trend-heavy copy as reliable.
 - When four consecutive quarters exist, readiness may enable annual ownership trend and holding-streak language if other quality checks pass.
 - When a 13F/A amendment exists for a manager and quarter, product-facing queries use the amended effective filing and exclude superseded holdings from counts.
@@ -882,7 +918,6 @@ Filing deadlines should be calculated rather than hard-coded. The UI may show ap
 
 - Should manual backfill be available for arbitrary historical depth or capped to protect EDGAR rate limits?
 - Do we want email / Slack alerts for failed scheduled jobs, or only in-app admin alerts for V1?
-- What exact field exclusion list should define the consumer-safe readiness payload versus the admin readiness payload?
 - Should `partial_success` jobs automatically create retry tasks for failed filings?
 - What official or internal calendar, if any, should be used for precise 13F filing deadlines?
 - Should the default readiness thresholds remain global, or should they become feature-specific once Oracle's Lens and future 13F features diverge?

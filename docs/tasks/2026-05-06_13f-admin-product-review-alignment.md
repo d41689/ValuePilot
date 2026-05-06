@@ -35,6 +35,7 @@ Out:
 - 2026-05-06: Started review alignment after financial-product feedback.
 - 2026-05-06: Accepted the review recommendations with one scoped product decision: V1 should ingest the full confirmed Dataroma-derived manager universe, while later ranking can emphasize featured/high-signal managers.
 - 2026-05-06: Updated the plan with amendment supersession policy, phase/health label clarification, historical-depth capability gates, persistent freshness copy, default lock keys, and tighter acceptance criteria.
+- 2026-05-06: Accepted fourth-review blockers and updated the plan with consumer-safe readiness fields, experimental behavior mapping, amendment reprocess action, Oracle's Lens default-quarter decision, and setup-check amendment criteria.
 
 ## Verification
 
