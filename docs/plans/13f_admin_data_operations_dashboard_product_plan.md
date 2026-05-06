@@ -548,6 +548,8 @@ MVP 2 should ship with documented default `lock_key` formats so duplicate preven
 | `ingest_accession` | `ingest_accession:{accession_no}` |
 | `backfill_quarters` | `backfill_quarters:{start_quarter}:{n}` |
 | `enrich_cusip` | `enrich_cusip:{quarter}` |
+| `bootstrap_stocks` | `bootstrap_stocks` |
+| `enrich_stocks_edgar` | `enrich_stocks_edgar` |
 | `bootstrap_whitelist` | `bootstrap_whitelist` |
 | `match_cik` | `match_cik` |
 | `quality_check` | `quality_check:{quarter}` |

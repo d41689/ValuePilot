@@ -4,6 +4,7 @@ from sqlalchemy import (
     String, Text, Boolean, ForeignKey, BigInteger, Date,
     DateTime, Integer, Index, UniqueConstraint,
 )
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.sql import func
 from app.core.db import Base
@@ -118,6 +119,25 @@ class Holding13F(Base):
     __table_args__ = (
         UniqueConstraint("filing_id", "row_fingerprint", name="uq_holdings_13f_filing_fingerprint"),
     )
+
+
+class JobRun(Base):
+    __tablename__ = "job_runs"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    job_type: Mapped[str] = mapped_column(String(60), nullable=False)
+    status: Mapped[str] = mapped_column(String(30), nullable=False, default="queued")
+    requested_by_user_id: Mapped[Optional[int]] = mapped_column(BigInteger, ForeignKey("users.id"), nullable=True)
+    trigger_source: Mapped[str] = mapped_column(String(30), nullable=False, default="manual")
+    dedupe_key: Mapped[Optional[str]] = mapped_column(String(200), nullable=True)
+    lock_key: Mapped[str] = mapped_column(String(200), nullable=False)
+    quarter: Mapped[Optional[str]] = mapped_column(String(10), nullable=True)
+    started_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    finished_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    input_json: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)
+    summary_json: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)
+    error_message: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
 class CusipTickerMap(Base):

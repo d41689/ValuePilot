@@ -3,7 +3,7 @@
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { useEffect, useMemo, useState } from 'react';
-import { Activity, FileText, Landmark, LayoutDashboard, Search, Upload, Star } from 'lucide-react';
+import { Activity, Database, FileText, Landmark, LayoutDashboard, Search, Upload, Star } from 'lucide-react';
 
 import { cn } from '@/lib/utils';
 
@@ -11,6 +11,7 @@ const navigation = [
   { name: 'Dashboard', href: '/home', icon: LayoutDashboard },
   { name: 'Watchlist', href: '/watchlist', icon: Star },
   { name: "Oracle's Lens", href: '/13f/oracles-lens', icon: Landmark },
+  { name: '13F Admin', href: '/admin/13f', icon: Database },
   { name: 'Documents', href: '/documents', icon: FileText },
   { name: 'Upload', href: '/upload', icon: Upload },
   { name: 'Screener', href: '/screener', icon: Search },
@@ -30,7 +31,7 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
 
   const visibleNavigation = useMemo(() => {
     if (role === 'admin') return navigation;
-    return navigation.filter((item) => item.href !== '/upload');
+    return navigation.filter((item) => item.href !== '/upload' && item.href !== '/admin/13f');
   }, [role]);
 
   return (
