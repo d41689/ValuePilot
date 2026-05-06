@@ -1,6 +1,6 @@
 'use client';
 
-import { useMemo, useState } from 'react';
+import { useMemo, useState, type ComponentProps } from 'react';
 import Link from 'next/link';
 import { useQuery } from '@tanstack/react-query';
 import { AlertTriangle, FileText, Info, PanelRightOpen, Search, SlidersHorizontal, X } from 'lucide-react';
@@ -50,6 +50,22 @@ const RADAR_TONE_CLASSES: Record<string, string> = {
     'border-emerald-300 bg-emerald-50 text-emerald-950',
   'border-amber-300 bg-amber-50 text-amber-950': 'border-amber-300 bg-amber-50 text-amber-950',
 };
+
+type BadgeVariant = ComponentProps<typeof Badge>['variant'];
+
+function safeBadgeVariant(value: string): BadgeVariant {
+  if (
+    value === 'default' ||
+    value === 'success' ||
+    value === 'warning' ||
+    value === 'secondary' ||
+    value === 'outline' ||
+    value === 'danger'
+  ) {
+    return value;
+  }
+  return 'secondary';
+}
 
 type OracleLensPayload = {
   period: string | null;
@@ -502,7 +518,7 @@ export default function OraclesLensPage() {
                     </TableCell>
                     <TableCell className="text-right">
                       <div className="text-xl font-semibold tabular-nums">{row.signalScoreLabel}</div>
-                      <Badge variant={row.confidenceTone} className="mt-2">
+                      <Badge variant={safeBadgeVariant(row.confidenceTone)} className="mt-2">
                         {row.confidence} confidence
                       </Badge>
                     </TableCell>
