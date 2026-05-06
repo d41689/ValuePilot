@@ -450,7 +450,6 @@ export default function OraclesLensPage() {
         </CardContent>
       </Card>
 
-      <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_380px]">
       <Card className="rounded-md">
         <CardHeader className="pb-3">
           <CardTitle className="flex items-center gap-2 text-base">
@@ -608,31 +607,37 @@ export default function OraclesLensPage() {
           )}
         </CardContent>
       </Card>
-      <Card className="rounded-md xl:sticky xl:top-4 xl:self-start">
-        <CardHeader className="pb-3">
-          <CardTitle className="flex items-center justify-between gap-2 text-base">
-            <span>Why This Signal May Be Misleading</span>
-            {selectedRow ? (
-              <Button
-                type="button"
-                variant="ghost"
-                size="icon"
-                aria-label="Close candidate review"
-                onClick={() => setSelectedStockId(null)}
-              >
-                <X className="h-4 w-4" />
-              </Button>
-            ) : null}
-          </CardTitle>
-          <p className="text-sm text-muted-foreground">
-            {selectedRow
-              ? `${selectedRow.ticker} · ${selectedRow.companyName}`
-              : 'Select a candidate to inspect all caution flags and next research steps.'}
-          </p>
-        </CardHeader>
-        <CardContent className="space-y-5">
-          {selectedRow ? (
-            <>
+
+      {selectedRow ? (
+        <div className="fixed inset-0 z-50 flex justify-end bg-background/60 backdrop-blur-sm">
+          <div
+            aria-hidden="true"
+            className="absolute inset-0 cursor-default"
+            onClick={() => setSelectedStockId(null)}
+          />
+          <Card className="relative h-full w-full max-w-[460px] overflow-hidden rounded-none border-y-0 border-r-0 shadow-xl">
+            <CardHeader className="border-b border-border/70 pb-3">
+              <CardTitle className="flex items-center justify-between gap-2 text-base">
+                <span>Candidate Review</span>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="icon"
+                  aria-label="Close candidate review"
+                  onClick={() => setSelectedStockId(null)}
+                >
+                  <X className="h-4 w-4" />
+                </Button>
+              </CardTitle>
+              <p className="text-sm text-muted-foreground">
+                {selectedRow.ticker} · {selectedRow.companyName}
+              </p>
+            </CardHeader>
+            <CardContent className="h-[calc(100%-84px)] space-y-5 overflow-y-auto p-5">
+              <div className="rounded-md border border-amber-300/70 bg-amber-50 px-3 py-2 text-sm text-amber-950">
+                Review the counter-evidence before treating this 13F signal as a research candidate.
+              </div>
+
               <div className="space-y-3">
                 {selectedRow.cautionGroups.length ? (
                   selectedRow.cautionGroups.map((group) => (
@@ -794,17 +799,10 @@ export default function OraclesLensPage() {
                   ))}
                 </ol>
               </div>
-            </>
-          ) : (
-            <div className="flex gap-2 text-sm text-muted-foreground">
-              <Info className="mt-0.5 h-4 w-4 shrink-0" />
-              The table shows only the highest-priority caution flags. The review panel shows the
-              full grouped list.
-            </div>
-          )}
-        </CardContent>
-      </Card>
-      </div>
+            </CardContent>
+          </Card>
+        </div>
+      ) : null}
     </div>
   );
 }
