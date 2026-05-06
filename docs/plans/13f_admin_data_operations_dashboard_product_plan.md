@@ -582,36 +582,6 @@ Example readiness payload:
 ```
 
 ### 15.2 Zero vs Unavailable
-### 15.3 Default Readiness Thresholds
-
-Some readiness thresholds must have documented defaults before implementation begins. They should be configurable, but V1 should not leave them undefined.
-
-Recommended V1 defaults:
-
-| Threshold | Default | Purpose |
-| --- | ---: | --- |
-| Minimum confirmed manager CIK count | 1 | Allows setup checklist to clear for an initial usable system without requiring the full manager universe. |
-| Linked holdings ratio for `ready` | 80% | Prevents Oracle's Lens from treating poorly mapped holdings data as fully ready. |
-| Linked holdings ratio for `usable_with_warning` | 50% | Allows partial product use with clear caveats when mapping is incomplete but not unusable. |
-
-Admins may override these thresholds later, but the default readiness model should be deterministic for MVP implementation and tests.
-
-## 16. Schema And Migration Requirements
-
-Implementation should not begin from the API layer alone. The plan requires durable read models and audit tables.
-
-Required or likely schema work:
-
-| Area | Requirement |
-| --- | --- |
-| Job history | Add or confirm a durable `job_runs` table with `status`, `dedupe_key`, `lock_key`, `input_json`, `summary_json`, timestamps, requester, and error fields. |
-| Job locking | Add a unique active-job constraint or equivalent lock mechanism based on `lock_key`. |
-| Manager / CIK audit | Add fields or an audit table for candidate source, evidence URL, similarity score, review note, reviewer, review timestamp, and prior rejected candidates. |
-| Quality reports | Add a quality report structure that can store metric value, status, unavailable reason, last checked time, and warnings. |
-| Readiness read model | Add a derived readiness payload or service layer that returns `quarter_phase`, `quarter_health`, blockers, warnings, thresholds, and frontend behavior. |
-| Filing-level retry | Ensure filings can store accession-level failure details so partial success and targeted retry are possible. |
-
-Migration design should preserve existing holdings and filings data. Any destructive cleanup or reparse should be a separate, explicit operation with audit history.
 
 Quality metrics must distinguish zero from unavailable.
 
@@ -634,6 +604,37 @@ Metric payloads should support:
   "last_checked_at": null
 }
 ```
+
+### 15.3 Default Readiness Thresholds
+
+Some readiness thresholds must have documented defaults before implementation begins. They should be configurable, but V1 should not leave them undefined.
+
+Recommended V1 defaults:
+
+| Threshold | Default | Purpose |
+| --- | ---: | --- |
+| Minimum confirmed manager CIK count | 1 | Allows setup checklist to clear for an initial usable system without requiring the full manager universe. |
+| Linked holdings ratio for `ready` | 80% | Prevents Oracle's Lens from treating poorly mapped holdings data as fully ready. |
+| Linked holdings ratio for `usable_with_warning` | 50% | Allows partial product use with clear caveats when mapping is incomplete but not unusable. |
+
+Admins may override these thresholds later, but the default readiness model should be deterministic for MVP implementation and tests. Overrides should be configurable through admin settings or an environment variable; the exact mechanism is deferred to MVP 4.
+
+## 16. Schema And Migration Requirements
+
+Implementation should not begin from the API layer alone. The plan requires durable read models and audit tables.
+
+Required or likely schema work:
+
+| Area | Requirement |
+| --- | --- |
+| Job history | Add or confirm a durable `job_runs` table with `status`, `dedupe_key`, `lock_key`, `input_json`, `summary_json`, timestamps, requester, and error fields. |
+| Job locking | Add a unique active-job constraint or equivalent lock mechanism based on `lock_key`. |
+| Manager / CIK audit | Add fields or an audit table for candidate source, evidence URL, similarity score, review note, reviewer, review timestamp, and prior rejected candidates. |
+| Quality reports | Add a quality report structure that can store metric value, status, unavailable reason, last checked time, and warnings. |
+| Readiness read model | Add a derived readiness payload or service layer that returns `quarter_phase`, `quarter_health`, blockers, warnings, thresholds, and frontend behavior. |
+| Filing-level retry | Ensure filings can store accession-level failure details so partial success and targeted retry are possible. |
+
+Migration design should preserve existing holdings and filings data. Any destructive cleanup or reparse should be a separate, explicit operation with audit history.
 
 ## 17. API Requirements
 
@@ -719,7 +720,7 @@ Filing deadlines should be calculated rather than hard-coded. The UI may show ap
 - Current quarter partial-state logic
 - Job history read model if available, otherwise latest derived status
 - Connect Oracle's Lens empty/setup/partial states to the readiness payload, even if the full admin dashboard UI is incomplete
-- Known gap: before MVP 2, task cards may lack durable job history context and should say when no job-run record exists
+- Known gap: before MVP 2, task cards may lack durable job history context and should say when no job-run record exists. Suggested copy: "No job history available. Run a job from this dashboard to populate history."
 
 ### MVP 2: Job Run Persistence And Manual Controls
 
@@ -783,7 +784,7 @@ Filing deadlines should be calculated rather than hard-coded. The UI may show ap
 - Should manual backfill be available for arbitrary historical depth or capped to protect EDGAR rate limits?
 - Do we want email / Slack alerts for failed scheduled jobs, or only in-app admin alerts for V1?
 - What exact `lock_key` should be used for each job type?
-- Which readiness payload fields should be shared with non-admin consumer APIs versus kept admin-only?
+- What exact field exclusion list should define the consumer-safe readiness payload versus the admin readiness payload?
 - Should `partial_success` jobs automatically create retry tasks for failed filings?
 - What official or internal calendar, if any, should be used for precise 13F filing deadlines?
 - Should the default readiness thresholds remain global, or should they become feature-specific once Oracle's Lens and future 13F features diverge?
