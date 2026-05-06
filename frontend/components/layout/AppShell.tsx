@@ -3,13 +3,14 @@
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { useEffect, useMemo, useState } from 'react';
-import { Activity, FileText, LayoutDashboard, Search, Upload, Star } from 'lucide-react';
+import { Activity, FileText, Landmark, LayoutDashboard, Search, Upload, Star } from 'lucide-react';
 
 import { cn } from '@/lib/utils';
 
 const navigation = [
   { name: 'Dashboard', href: '/home', icon: LayoutDashboard },
   { name: 'Watchlist', href: '/watchlist', icon: Star },
+  { name: "Oracle's Lens", href: '/13f/oracles-lens', icon: Landmark },
   { name: 'Documents', href: '/documents', icon: FileText },
   { name: 'Upload', href: '/upload', icon: Upload },
   { name: 'Screener', href: '/screener', icon: Search },

@@ -570,7 +570,11 @@ def read_document_review(
             "id": doc.id,
             "file_name": doc.file_name,
             "ticker": document_stock.ticker if document_stock else None,
-            "exchange": document_stock.exchange if document_stock else None,
+            "exchange": (
+                document_stock.listing_exchange or document_stock.exchange
+                if document_stock
+                else None
+            ),
             "company_name": document_stock.company_name if document_stock else None,
             "report_date": _iso_date(doc.report_date),
         },

@@ -4,6 +4,7 @@ from sqlalchemy import String, DateTime, Boolean, ForeignKey, Integer, Float, Da
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.sql import func
 from app.core.db import Base
+from app.core.stock_identity import canonical_market_country, normalize_listing_exchange
 
 if TYPE_CHECKING:
     from app.models.users import User
@@ -14,12 +15,29 @@ class Stock(Base):
     id: Mapped[int] = mapped_column(primary_key=True, index=True)
     ticker: Mapped[str] = mapped_column(String, index=True)
     exchange: Mapped[str] = mapped_column(String, index=True)
+    market_country: Mapped[str] = mapped_column(String, nullable=False, server_default="UNKNOWN", index=True)
+    listing_exchange: Mapped[Optional[str]] = mapped_column(String, nullable=True, index=True)
+    raw_exchange: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     company_name: Mapped[str] = mapped_column(String)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
     # Relationships
     prices: Mapped[list["StockPrice"]] = relationship(back_populates="stock")
+
+    def __init__(self, **kwargs):
+        exchange = kwargs.get("exchange")
+        ticker = kwargs.get("ticker")
+        if "market_country" not in kwargs and exchange:
+            kwargs["market_country"] = canonical_market_country(exchange, ticker=ticker)
+        if "listing_exchange" not in kwargs and exchange:
+            listing_exchange = normalize_listing_exchange(exchange)
+            if listing_exchange and listing_exchange != kwargs.get("market_country"):
+                kwargs["listing_exchange"] = listing_exchange
+        if "raw_exchange" not in kwargs and exchange:
+            kwargs["raw_exchange"] = exchange.upper()
+        for key, value in kwargs.items():
+            setattr(self, key, value)
 
 class StockPrice(Base):
     __tablename__ = "stock_prices"

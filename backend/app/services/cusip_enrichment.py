@@ -233,8 +233,8 @@ def enrich_from_dataroma(db: Session) -> int:
 def bootstrap_stocks_from_cusip_map(db: Session) -> int:
     """Upsert one Stock row per distinct ticker in cusip_ticker_map.
 
-    Uses issuer_name as company_name; exchange defaults to 'US' since
-    CUSIP-level data doesn't carry exchange info reliably.
+    Uses issuer_name as company_name; market_country defaults to 'US' since
+    CUSIP-level data doesn't carry specific exchange info reliably.
     Returns count of newly created Stock rows.
     """
     from sqlalchemy import text
@@ -255,12 +255,13 @@ def bootstrap_stocks_from_cusip_map(db: Session) -> int:
 
     created = 0
     for ticker, company_name in best.items():
-        existing = db.query(Stock).filter_by(ticker=ticker).first()
+        existing = db.query(Stock).filter_by(ticker=ticker, market_country="US", is_active=True).first()
         if existing is None:
             db.add(Stock(
                 ticker=ticker,
                 company_name=company_name,
                 exchange="US",
+                market_country="US",
                 is_active=True,
             ))
             created += 1
@@ -271,7 +272,7 @@ def bootstrap_stocks_from_cusip_map(db: Session) -> int:
 
 
 def backfill_stock_ids(db: Session) -> int:
-    """Set holdings_13f.stock_id via cusip → cusip_ticker_map.ticker → stocks.id.
+    """Set holdings_13f.stock_id via cusip → cusip_ticker_map.ticker → US stocks.id.
 
     Idempotent: only updates rows where stock_id IS NULL.
     Returns count of holdings updated.
@@ -283,6 +284,8 @@ def backfill_stock_ids(db: Session) -> int:
         SET stock_id = s.id
         FROM cusip_ticker_map c
         JOIN stocks s ON s.ticker = c.ticker
+            AND s.market_country = 'US'
+            AND s.is_active = true
         WHERE h.cusip = c.cusip
           AND c.is_active = true
           AND h.stock_id IS NULL

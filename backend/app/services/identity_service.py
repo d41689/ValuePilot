@@ -5,6 +5,7 @@ from sqlalchemy import select
 from app.models.stocks import Stock
 from app.models.artifacts import PdfDocument
 from app.ingestion.parsers.base import IdentityInfo
+from app.core.stock_identity import canonical_market_country, normalize_listing_exchange
 
 class IdentityService:
     def __init__(self, db: Session):
@@ -21,9 +22,15 @@ class IdentityService:
             raise ValueError("Could not extract ticker.")
 
         ticker = identity_info.ticker.upper()
-        exchange = identity_info.exchange.upper() if identity_info.exchange else "UNKNOWN"
+        raw_exchange = identity_info.exchange.upper() if identity_info.exchange else None
+        market_country = canonical_market_country(raw_exchange, ticker=ticker)
+        listing_exchange = normalize_listing_exchange(raw_exchange)
 
-        stmt = select(Stock).where(Stock.ticker == ticker, Stock.exchange == exchange)
+        stmt = select(Stock).where(
+            Stock.ticker == ticker,
+            Stock.market_country == market_country,
+            Stock.is_active.is_(True),
+        )
         stock = self.db.scalar(stmt)
 
         needs_review = False
@@ -39,11 +46,17 @@ class IdentityService:
                     note = (
                         f"Name mismatch: '{stock.company_name}' vs extracted '{identity_info.company_name}'"
                     )
+                else:
+                    stock.company_name = identity_info.company_name
+            _update_listing_metadata(stock, listing_exchange, raw_exchange)
             return stock, needs_review, note
 
         stock = Stock(
             ticker=ticker,
-            exchange=exchange,
+            exchange=listing_exchange or market_country,
+            market_country=market_country,
+            listing_exchange=listing_exchange,
+            raw_exchange=raw_exchange,
             company_name=identity_info.company_name or "Unknown Company",
         )
         self.db.add(stock)
@@ -77,3 +90,16 @@ class IdentityService:
 
         self.db.add(document)
         self.db.flush()
+
+
+def _update_listing_metadata(
+    stock: Stock,
+    listing_exchange: str | None,
+    raw_exchange: str | None,
+) -> None:
+    if listing_exchange and not stock.listing_exchange:
+        stock.listing_exchange = listing_exchange
+    if listing_exchange and stock.exchange == stock.market_country:
+        stock.exchange = listing_exchange
+    if raw_exchange and not stock.raw_exchange:
+        stock.raw_exchange = raw_exchange

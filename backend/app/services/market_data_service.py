@@ -13,6 +13,7 @@ from zoneinfo import ZoneInfo
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.models.institutions import Filing13F, Holding13F, InstitutionManager
 from app.models.stocks import Stock, StockPrice
 
 
@@ -250,6 +251,13 @@ def _previous_business_day(day: date) -> date:
     return current
 
 
+def _business_day_on_or_before(day: date) -> date:
+    current = day
+    while current.weekday() >= 5:
+        current -= timedelta(days=1)
+    return current
+
+
 def compute_target_date(
     now_et: datetime,
     *,
@@ -279,6 +287,136 @@ class MarketDataService:
         self.throttle_minutes = throttle_minutes
         self.open_time = open_time
         self.close_buffer_time = close_buffer_time
+
+    def _fetch_daily_payload(self, stock: Stock, target_date: date) -> dict[str, float] | None:
+        data = {}
+        if hasattr(self.provider, "fetch_daily"):
+            data = self.provider.fetch_daily([stock.ticker], target_date) or {}
+        elif hasattr(self.provider, "fetch_daily_bar"):
+            bar = self.provider.fetch_daily_bar(
+                ticker=stock.ticker,
+                exchange=stock.exchange,
+                target_date=target_date,
+            )
+            if isinstance(bar, dict):
+                data = {stock.ticker: bar}
+            elif bar is not None:
+                data = {
+                    stock.ticker: {
+                        "open": float(getattr(bar, "open", 0.0)),
+                        "high": float(getattr(bar, "high", 0.0)),
+                        "low": float(getattr(bar, "low", 0.0)),
+                        "close": float(getattr(bar, "close", 0.0)),
+                        "volume": float(getattr(bar, "volume", 0.0)),
+                    }
+                }
+        symbol_key = stock.ticker
+        return data.get(symbol_key) or data.get(symbol_key.upper()) or data.get(symbol_key.lower())
+
+    def backfill_13f_linked_period_prices(
+        self,
+        *,
+        periods: Iterable[date] | None = None,
+        superinvestor_only: bool = True,
+        reason: str = "13f_period_backfill",
+        now: Optional[datetime] = None,
+        limit: int | None = None,
+    ) -> list[dict[str, Any]]:
+        now_utc = _ensure_utc(now or datetime.now(timezone.utc))
+        requested_periods = list(periods or [])
+        query = (
+            self.db.query(Stock, Filing13F.period_of_report)
+            .join(Holding13F, Holding13F.stock_id == Stock.id)
+            .join(Filing13F, Filing13F.id == Holding13F.filing_id)
+            .join(InstitutionManager, InstitutionManager.id == Filing13F.manager_id)
+            .filter(Filing13F.is_latest_for_period.is_(True))
+            .filter(InstitutionManager.match_status == "confirmed")
+            .filter(InstitutionManager.cik.isnot(None))
+            .filter(Holding13F.stock_id.isnot(None))
+            .filter(Holding13F.put_call.is_(None))
+        )
+        if superinvestor_only:
+            query = query.filter(InstitutionManager.is_superinvestor.is_(True))
+        if requested_periods:
+            query = query.filter(Filing13F.period_of_report.in_(requested_periods))
+
+        seen: set[tuple[int, date]] = set()
+        targets: list[tuple[Stock, date, date]] = []
+        for stock, period_of_report in query.order_by(Filing13F.period_of_report.desc(), Stock.ticker.asc()).all():
+            target_date = _business_day_on_or_before(period_of_report)
+            key = (stock.id, target_date)
+            if key in seen:
+                continue
+            seen.add(key)
+            targets.append((stock, period_of_report, target_date))
+            if limit is not None and len(targets) >= limit:
+                break
+
+        results: list[dict[str, Any]] = []
+        for stock, period_of_report, target_date in targets:
+            existing = self.db.scalars(
+                select(StockPrice)
+                .where(
+                    StockPrice.stock_id == stock.id,
+                    StockPrice.price_date == target_date,
+                )
+                .order_by(StockPrice.created_at.desc())
+                .limit(1)
+            ).first()
+            if existing is not None:
+                results.append(
+                    {
+                        "stock_id": stock.id,
+                        "ticker": stock.ticker,
+                        "status": "skipped",
+                        "reason": "up_to_date",
+                        "period_of_report": period_of_report.isoformat(),
+                        "target_date": target_date.isoformat(),
+                    }
+                )
+                continue
+
+            payload = self._fetch_daily_payload(stock, target_date)
+            if not payload:
+                results.append(
+                    {
+                        "stock_id": stock.id,
+                        "ticker": stock.ticker,
+                        "status": "failed",
+                        "reason": "provider_no_data",
+                        "period_of_report": period_of_report.isoformat(),
+                        "target_date": target_date.isoformat(),
+                    }
+                )
+                continue
+
+            self.db.add(
+                StockPrice(
+                    stock_id=stock.id,
+                    price_date=target_date,
+                    open=float(payload["open"]),
+                    high=float(payload["high"]),
+                    low=float(payload["low"]),
+                    close=float(payload["close"]),
+                    adj_close=float(payload["adj_close"]) if payload.get("adj_close") is not None else None,
+                    volume=int(payload["volume"]) if payload.get("volume") is not None else None,
+                    source=getattr(self.provider, "name", "provider"),
+                    created_at=now_utc,
+                )
+            )
+            results.append(
+                {
+                    "stock_id": stock.id,
+                    "ticker": stock.ticker,
+                    "status": "refreshed",
+                    "reason": reason,
+                    "period_of_report": period_of_report.isoformat(),
+                    "target_date": target_date.isoformat(),
+                }
+            )
+
+        self.db.commit()
+        return results
 
     def refresh_stock_prices(
         self,
@@ -359,30 +497,7 @@ class MarketDataService:
                 )
                 continue
 
-            data = {}
-            if hasattr(self.provider, "fetch_daily"):
-                data = self.provider.fetch_daily([stock.ticker], target_date) or {}
-            elif hasattr(self.provider, "fetch_daily_bar"):
-                bar = self.provider.fetch_daily_bar(
-                    ticker=stock.ticker,
-                    exchange=stock.exchange,
-                    target_date=target_date,
-                )
-                if isinstance(bar, dict):
-                    data = {stock.ticker: bar}
-                elif bar is not None:
-                    data = {
-                        stock.ticker: {
-                            "open": float(getattr(bar, "open", 0.0)),
-                            "high": float(getattr(bar, "high", 0.0)),
-                            "low": float(getattr(bar, "low", 0.0)),
-                            "close": float(getattr(bar, "close", 0.0)),
-                            "volume": float(getattr(bar, "volume", 0.0)),
-                        }
-                    }
-
-            symbol_key = stock.ticker
-            payload = data.get(symbol_key) or data.get(symbol_key.upper()) or data.get(symbol_key.lower())
+            payload = self._fetch_daily_payload(stock, target_date)
             if not payload:
                 results.append(
                     {
