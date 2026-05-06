@@ -49,7 +49,7 @@ For the current calendar point, 2026-Q1 filings are in progress. The approximate
 - Do not expose raw EDGAR operations to non-admin users.
 - Do not auto-confirm low-confidence manager / CIK matches without admin review.
 
-## 4.1 Admin-Resolvable vs Escalation Required
+## 5. Admin-Resolvable vs Escalation Required
 
 The admin dashboard should cover the full operational loop for 13F ingestion: detect the problem, explain why it matters, offer a safe action when one exists, record the result, and clearly escalate issues that cannot be fixed by an administrator.
 
@@ -102,7 +102,7 @@ Escalation cards should include:
 
 This boundary keeps the dashboard powerful without pretending that every external or code-level failure can be solved by clicking a button.
 
-## 5. Admin Jobs To Be Done
+## 6. Admin Jobs To Be Done
 
 1. As an admin, I want to know whether 13F ingestion is actually ready, not merely enabled.
 2. As an admin, I want to see which setup steps are blocking data capture.
@@ -112,7 +112,7 @@ This boundary keeps the dashboard powerful without pretending that every externa
 6. As an admin, I want to know which failures require action and which will be retried automatically.
 7. As an admin, I want to know whether holdings are mapped to stocks well enough for product use.
 
-## 6. Information Architecture
+## 7. Information Architecture
 
 The dashboard should live under an admin-only route:
 
@@ -131,9 +131,9 @@ Recommended navigation tabs:
 
 For V1, these can be one page with anchored sections. The route should still be conceptually organized around these tabs so it can grow cleanly.
 
-## 7. Overview Design
+## 8. Overview Design
 
-### 7.1 Top Health Banner
+### 8.1 Top Health Banner
 
 The top banner answers: "Can 13F data be trusted right now?"
 
@@ -156,7 +156,7 @@ The banner should include:
 - Last successful job time
 - Top blocking task
 
-### 7.2 Setup Checklist
+### 8.2 Setup Checklist
 
 This checklist should be visible whenever the system is not fully ready.
 
@@ -171,7 +171,7 @@ This checklist should be visible whenever the system is not fully ready.
 | CUSIP mapping built | `cusip_ticker_map`, `holdings_13f.stock_id` | linked holding ratio above threshold | Run enrichment |
 | Quality checked | quality report / job run | latest check passed or warnings accepted | Run quality check |
 
-### 7.3 Current Quarter Card
+### 8.3 Current Quarter Card
 
 For a date like 2026-05-06, the card should say:
 
@@ -203,11 +203,11 @@ Secondary actions:
 - `Retry failed filings`
 - `Run enrichment`
 
-## 8. Quarter Status Model
+## 9. Quarter Status Model
 
 The legacy single-label status below can still be used as a display convenience, but implementation should derive it from `quarter_phase` and `quarter_health`.
 
-### 8.1 Phase vs Health
+### 9.1 Phase vs Health
 
 A quarter has two related but separate states:
 
@@ -240,7 +240,7 @@ Recommended `quarter_health` values:
 
 The UI may present a combined label such as `Filing Window Open · Partial` or `Post Deadline · Needs Review`, but APIs should preserve the separate fields.
 
-### 8.2 Status Resolution Rules
+### 9.2 Status Resolution Rules
 
 Quarter state must be derived deterministically. When multiple conditions apply, the dashboard should preserve both timing phase and operational health instead of collapsing everything into a single ambiguous status.
 
@@ -254,6 +254,8 @@ Resolution rules:
 - A quarter should be considered `complete` only when tracked managers have filed or are accepted as not filed, holdings are parsed, and quality checks pass or warnings have been explicitly accepted.
 
 Suggested precedence for `quarter_health` when multiple conditions apply:
+
+Higher entries are blocking or more urgent conditions. `complete` is intentionally last because it is the fallback state only when no higher-priority issue applies.
 
 1. `setup_required`
 2. `failed`
@@ -281,7 +283,7 @@ Suggested precedence for `quarter_health` when multiple conditions apply:
 
 Important nuance: before 2026-05-15, 2026-Q1 should generally be `Filing Window Open` or `Partial`, not `Failed`, unless actual jobs are failing.
 
-## 9. Quarter Table
+## 10. Quarter Table
 
 The Quarters table should be the operational backbone.
 
@@ -311,7 +313,7 @@ Example rows:
 
 The exact numbers above are illustrative. The product must use live counts from the database.
 
-## 10. Admin Task Queue
+## 11. Admin Task Queue
 
 The dashboard should list admin tasks in priority order. This is the most important usability layer.
 
@@ -344,7 +346,7 @@ Example task:
 > 13F scheduler is enabled, but there are no confirmed managers with CIKs. Scheduled ingestion cannot create filings or holdings.
 > Action: Run `Bootstrap whitelist`, then `Match CIK`, then review candidates.
 
-## 11. Manual Actions
+## 12. Manual Actions
 
 Admins should be able to manually trigger jobs from the UI. All actions should create an auditable job run record.
 
@@ -371,7 +373,7 @@ Manual action UX:
 - Require confirmation for network-heavy jobs.
 - Persist all job runs.
 
-### 11.1 Manual Action Safety Contract
+### 12.1 Manual Action Safety Contract
 
 Every manual action must define a safety contract before it is exposed in the UI:
 
@@ -389,20 +391,23 @@ Manual actions must use upsert, replace-safe, or skip-existing semantics whereve
 
 Recommended action metadata:
 
-| Action | Idempotency Expectation | Writes | Retry Behavior | Product Impact |
-| --- | --- | --- | --- | --- |
-| Bootstrap whitelist | Mostly idempotent | `institution_managers` | Upsert managers; do not duplicate existing rows | May unlock setup checklist |
-| Match CIK | Partially idempotent | manager candidate / status fields | Reuse or supersede prior candidates with audit history | Enables admin review, but not ingestion until confirmed |
-| Fetch quarter index | Idempotent | `raw_source_documents` | Reuse existing raw document or replace safely | Enables filing metadata ingestion |
-| Ingest holdings | Must be idempotent | `filings_13f`, `holdings_13f`, raw infotable documents | Skip existing accession numbers or replace a filing atomically | Directly affects readiness and Oracle's Lens coverage |
-| Backfill quarters | Must be idempotent per quarter | same as quarter ingestion | Resume from completed quarters and retry failed filings only | Expands historical coverage |
-| Enrich CUSIP | Must be idempotent | `cusip_ticker_map`, `holdings_13f.stock_id` | Upsert mappings; preserve provenance | Improves stock link coverage |
-| Bootstrap stocks | Must be idempotent | stocks and related mapping fields | Upsert by stable symbol / CUSIP identity | Improves product usability |
-| Quality check | Read-only or report-write only | quality report / job summary | Safe to rerun frequently | Updates readiness and warnings |
+| Action | Idempotency Expectation | Writes | Transaction / Failure Mode | Retry Behavior | Product Impact |
+| --- | --- | --- | --- | --- | --- |
+| Bootstrap whitelist | Mostly idempotent | `institution_managers` | Upsert each manager independently; failed rows should not corrupt existing rows | Upsert managers; do not duplicate existing rows | May unlock setup checklist |
+| Match CIK | Partially idempotent | manager candidate / status fields | Candidate writes should preserve prior candidates and review history | Reuse or supersede prior candidates with audit history | Enables admin review, but not ingestion until confirmed |
+| Fetch quarter index | Idempotent | `raw_source_documents` | Raw document write should be replace-safe or versioned | Reuse existing raw document or replace safely | Enables filing metadata ingestion |
+| Ingest holdings | Must be idempotent | `filings_13f`, `holdings_13f`, raw infotable documents | Each accession should be processed atomically; partial quarter success should not leave duplicate holdings | Skip existing accession numbers or replace a filing atomically | Directly affects readiness and Oracle's Lens coverage |
+| Backfill quarters | Must be idempotent per quarter | same as quarter ingestion | Each quarter should be independently resumable; failure in one quarter must not roll back completed quarters | Resume from completed quarters and retry failed filings only | Expands historical coverage |
+| Enrich CUSIP | Must be idempotent | `cusip_ticker_map`, `holdings_13f.stock_id` | Mapping updates should preserve provenance and avoid destructive overrides without review | Upsert mappings; preserve provenance | Improves stock link coverage |
+| Bootstrap stocks | Must be idempotent | stocks and related mapping fields | Upsert by stable identity; ambiguous mappings should become review tasks instead of forced writes | Upsert by stable symbol / CUSIP identity | Improves product usability |
+| Quality check | Read-only or report-write only | quality report / job summary | Quality checks should never mutate holdings or manager identity data | Safe to rerun frequently | Updates readiness and warnings |
+
 
 Network-heavy and write-heavy actions should preview their target quarter, tracked managers, estimated filings, and rate-limit risk before execution.
 
-## 12. Manager / CIK Review
+Write-heavy actions should define transaction boundaries explicitly. For holdings ingestion, the preferred boundary is one SEC accession at a time: raw infotable document, filing metadata, and derived holdings should either all commit for that accession or leave the accession retryable without duplicate derived rows.
+
+## 13. Manager / CIK Review
 
 The Managers tab should replace direct DB edits for candidate review.
 
@@ -436,7 +441,7 @@ Rules:
 - Rejected candidates should be retained for audit, not deleted silently.
 - Confirming a CIK should immediately make the manager eligible for the next ingestion run.
 
-### 12.1 CIK Confirmation Audit
+### 13.1 CIK Confirmation Audit
 
 CIK confirmation is a high-impact data operation because a wrong CIK contaminates every downstream filing and holding for that manager. Candidate review must retain provenance and review history.
 
@@ -454,7 +459,7 @@ Each candidate should retain:
 
 The confirmation UI should show the Dataroma display name, parsed manager company name, EDGAR legal name, CIK, SEC entity link, similarity score, evidence source, and any prior rejected candidates before allowing confirmation.
 
-## 13. Job Runs And Audit Trail
+## 14. Job Runs And Audit Trail
 
 The product needs a persistent job history. Logs alone are not enough.
 
@@ -491,7 +496,7 @@ Useful summary fields:
 
 This allows the UI to answer "what happened?" without scraping container logs.
 
-## 14. Data Quality And Product Readiness
+## 15. Data Quality And Product Readiness
 
 Quality should be shown as product readiness, not just engineering validation.
 
@@ -517,7 +522,7 @@ Suggested readiness levels:
 
 Oracle's Lens should consume a readiness summary so it can show a clear empty/setup/partial state instead of silently returning zero candidates.
 
-### 14.1 Readiness Contract For Consumer Features
+### 15.1 Readiness Contract For Consumer Features
 
 Oracle's Lens and other 13F-powered features must consume a readiness summary instead of inferring state directly from raw table counts.
 
@@ -576,7 +581,37 @@ Example readiness payload:
 }
 ```
 
-### 14.2 Zero vs Unavailable
+### 15.2 Zero vs Unavailable
+### 15.3 Default Readiness Thresholds
+
+Some readiness thresholds must have documented defaults before implementation begins. They should be configurable, but V1 should not leave them undefined.
+
+Recommended V1 defaults:
+
+| Threshold | Default | Purpose |
+| --- | ---: | --- |
+| Minimum confirmed manager CIK count | 1 | Allows setup checklist to clear for an initial usable system without requiring the full manager universe. |
+| Linked holdings ratio for `ready` | 80% | Prevents Oracle's Lens from treating poorly mapped holdings data as fully ready. |
+| Linked holdings ratio for `usable_with_warning` | 50% | Allows partial product use with clear caveats when mapping is incomplete but not unusable. |
+
+Admins may override these thresholds later, but the default readiness model should be deterministic for MVP implementation and tests.
+
+## 16. Schema And Migration Requirements
+
+Implementation should not begin from the API layer alone. The plan requires durable read models and audit tables.
+
+Required or likely schema work:
+
+| Area | Requirement |
+| --- | --- |
+| Job history | Add or confirm a durable `job_runs` table with `status`, `dedupe_key`, `lock_key`, `input_json`, `summary_json`, timestamps, requester, and error fields. |
+| Job locking | Add a unique active-job constraint or equivalent lock mechanism based on `lock_key`. |
+| Manager / CIK audit | Add fields or an audit table for candidate source, evidence URL, similarity score, review note, reviewer, review timestamp, and prior rejected candidates. |
+| Quality reports | Add a quality report structure that can store metric value, status, unavailable reason, last checked time, and warnings. |
+| Readiness read model | Add a derived readiness payload or service layer that returns `quarter_phase`, `quarter_health`, blockers, warnings, thresholds, and frontend behavior. |
+| Filing-level retry | Ensure filings can store accession-level failure details so partial success and targeted retry are possible. |
+
+Migration design should preserve existing holdings and filings data. Any destructive cleanup or reparse should be a separate, explicit operation with audit history.
 
 Quality metrics must distinguish zero from unavailable.
 
@@ -600,12 +635,13 @@ Metric payloads should support:
 }
 ```
 
-## 15. API Requirements
+## 17. API Requirements
 
 Proposed admin endpoints:
 
 - `GET /api/v1/admin/13f/status`
 - `GET /api/v1/admin/13f/readiness`
+- `GET /api/v1/13f/readiness`
 - `GET /api/v1/admin/13f/quarters`
 - `GET /api/v1/admin/13f/quarters/{quarter}`
 - `GET /api/v1/admin/13f/tasks`
@@ -616,6 +652,8 @@ Proposed admin endpoints:
 - `POST /api/v1/admin/13f/jobs`
 - `POST /api/v1/admin/13f/jobs/{id}/cancel`
 - `POST /api/v1/admin/13f/jobs/retry-failed-filings`
+
+The admin readiness endpoint may include operational details such as job errors, blockers, and escalation metadata. The non-admin readiness endpoint should expose only the consumer-safe subset needed by Oracle's Lens or other user-facing features.
 
 The job trigger endpoint should accept a constrained enum, not arbitrary shell commands.
 
@@ -632,7 +670,9 @@ Example job request:
 
 The job trigger endpoint must reject duplicate active jobs that share the same `lock_key` with a conflict response instead of starting another job.
 
-## 16. Permission And Safety Requirements
+`frontend_behavior=hide_feature` must be treated carefully. Before Oracle's Lens consumes this field, confirm whether the existing product should be hidden, shown with setup copy, or shown with a partial-data warning. The integration must not silently remove an existing user-visible feature without an explicit product decision.
+
+## 18. Permission And Safety Requirements
 
 - Only admin users can access the dashboard.
 - Manual ingestion actions require admin permissions.
@@ -643,7 +683,7 @@ The job trigger endpoint must reject duplicate active jobs that share the same `
 - Job execution must use allowlisted internal functions, not arbitrary command execution.
 - All manual changes to manager / CIK status must be auditable.
 
-## 17. UX Copy Principles
+## 19. UX Copy Principles
 
 Use precise language:
 
@@ -658,9 +698,9 @@ Recommended current-quarter copy:
 
 > 2026-Q1 is still inside the SEC filing window. Some managers have filed and others may file by approximately 2026-05-15. This quarter should be treated as partial until the deadline passes and quality checks complete.
 
-Filing deadlines should be calculated rather than hard-coded. The UI may show approximate dates unless the system has an official SEC deadline calendar. The default calculation should follow the 13F convention of approximately 45 days after calendar quarter end, adjusted only when the application explicitly supports a more precise deadline calendar.
+Filing deadlines should be calculated rather than hard-coded. The UI may show approximate dates unless the system has an official SEC deadline calendar. The default calculation should follow the 13F convention of 45 calendar days after calendar quarter end, adjusted only when the application explicitly supports a more precise deadline calendar.
 
-## 18. MVP Delivery Plan
+## 20. MVP Delivery Plan
 
 ### MVP 1A: Status / Readiness Read Model
 
@@ -668,6 +708,7 @@ Filing deadlines should be calculated rather than hard-coded. The UI may show ap
 - Derive setup blockers and admin tasks
 - Produce readiness summary payload for consumer features
 - Distinguish zero from unavailable for quality metrics
+- Ship `GET /api/v1/admin/13f/readiness` and a consumer-safe `GET /api/v1/13f/readiness`
 
 ### MVP 1B: Read-Only Operations Dashboard
 
@@ -677,6 +718,8 @@ Filing deadlines should be calculated rather than hard-coded. The UI may show ap
 - Admin task queue
 - Current quarter partial-state logic
 - Job history read model if available, otherwise latest derived status
+- Connect Oracle's Lens empty/setup/partial states to the readiness payload, even if the full admin dashboard UI is incomplete
+- Known gap: before MVP 2, task cards may lack durable job history context and should say when no job-run record exists
 
 ### MVP 2: Job Run Persistence And Manual Controls
 
@@ -696,12 +739,13 @@ Filing deadlines should be calculated rather than hard-coded. The UI may show ap
 - Retry search with edited name
 - Audit status changes and review notes
 
-### MVP 4: Oracle's Lens Readiness Integration
+### MVP 4: Product Gating And Readiness Refinement
 
-- Stale quarter alerts
-- Failed job alerts
-- Low coverage alerts
-- Oracle's Lens data readiness integration
+- Refine Oracle's Lens readiness behavior after the initial MVP 1B integration
+- Add stale quarter alerts
+- Add failed job alerts
+- Add low coverage alerts
+- Tune readiness thresholds based on real ingestion data
 
 ### MVP 5: Alerts
 
@@ -709,7 +753,7 @@ Filing deadlines should be calculated rather than hard-coded. The UI may show ap
 - In-app admin alerts
 - Escalation task creation for engineering-only failures
 
-## 19. Acceptance Criteria For Implementation
+## 21. Acceptance Criteria For Implementation
 
 - Admin can tell within 10 seconds whether 13F ingestion is ready.
 - Admin can see why enabled scheduler has not produced data.
@@ -718,8 +762,9 @@ Filing deadlines should be calculated rather than hard-coded. The UI may show ap
 - Admin can review and confirm manager / CIK candidates without direct DB access.
 - Admin can inspect failed filings and retry them.
 - User-facing 13F features can distinguish no data, setup required, partial quarter, and ready states.
+- Oracle's Lens consumes the readiness payload early enough that setup-required and partial-quarter states are not rendered as silent empty investment results.
 
-### 19.1 Testable Acceptance Criteria
+### 21.1 Testable Acceptance Criteria
 
 - When `institution_managers=0` and `EDGAR_SCHEDULER_ENABLED=true`, the status API returns `setup_required` and the top task is `NO_CONFIRMED_MANAGER_CIK_WHITELIST`.
 - When the current date is before the filing deadline and partial filings exist with no job failures, the quarter response includes `quarter_phase=filing_window_open` and does not return `failed` health.
@@ -728,15 +773,17 @@ Filing deadlines should be calculated rather than hard-coded. The UI may show ap
 - When no holdings exist, `linked_holding_ratio` is `null` with `unavailable_reason=NO_HOLDINGS_PARSED`, not `0%`.
 - When a quarter ingest partially succeeds, job status is `partial_success` and `summary_json` includes failed accession numbers or managers.
 - When a CIK candidate is confirmed or rejected, the audit trail records reviewer, timestamp, source, evidence URL, and review note.
+- When confirmed manager count is at least the configured minimum, the setup checklist can clear the manager prerequisite.
+- When linked holdings ratio is below the configured `ready` threshold, readiness is not `ready`; when it is below the `usable_with_warning` threshold, readiness should fall to `experimental` or `unavailable` depending on denominator availability.
+- When Oracle's Lens receives `show_setup_required`, it renders setup/availability copy instead of a silent empty candidate table.
 
-## 20. Open Questions
+## 22. Open Questions
 
-- What minimum confirmed manager count should qualify the system as "ready" for initial production use?
 - Should we track all Dataroma managers or allow a curated subset for ValuePilot?
-- What linked holdings ratio should be considered acceptable for Oracle's Lens?
 - Should manual backfill be available for arbitrary historical depth or capped to protect EDGAR rate limits?
 - Do we want email / Slack alerts for failed scheduled jobs, or only in-app admin alerts for V1?
 - What exact `lock_key` should be used for each job type?
 - Which readiness payload fields should be shared with non-admin consumer APIs versus kept admin-only?
 - Should `partial_success` jobs automatically create retry tasks for failed filings?
 - What official or internal calendar, if any, should be used for precise 13F filing deadlines?
+- Should the default readiness thresholds remain global, or should they become feature-specific once Oracle's Lens and future 13F features diverge?
