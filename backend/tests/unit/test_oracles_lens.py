@@ -79,7 +79,12 @@ def _holding(
 
 
 def _seed_oracles_lens_fixture(db_session):
+    user = User(email="oracles-lens-fixture@example.com")
+    db_session.add(user)
+    db_session.flush()
+
     target = _stock(db_session, "LENS", "Lens Corp")
+    target._test_user_id = user.id
     other = _stock(db_session, "TAIL", "Tail Position Inc")
     managers = [
         _manager(db_session, f"Long Fund {index}", cik=f"00009{index:05d}")
@@ -147,6 +152,7 @@ def _seed_oracles_lens_fixture(db_session):
         value_thousands=15_000,
     )
     db_session.commit()
+    target._test_user_id = user.id
     return target
 
 
@@ -160,7 +166,7 @@ def _metric_fact(
     source_document_id: int | None = None,
 ) -> MetricFact:
     return MetricFact(
-        user_id=1,
+        user_id=stock._test_user_id,
         stock_id=stock.id,
         metric_key=metric_key,
         value_numeric=value,
