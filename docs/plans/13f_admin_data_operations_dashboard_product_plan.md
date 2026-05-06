@@ -51,6 +51,7 @@ These decisions are part of the product contract, not open questions.
 | Featured managers | Add a later admin flag such as `is_featured_manager` or `manager_signal_priority`, but do not block ingestion on it. | Oracle's Lens can rank or emphasize higher-quality managers without narrowing the ingestion source of truth too early. |
 | Historical target for Oracle's Lens | Four consecutive quarters is the minimum target for full trend language. | New / add / reduce / exit signals are weak with only one quarter and still shallow with two quarters. |
 | Oracle's Lens default quarter | Default to `latest_usable_quarter`, the latest complete quarter that passes readiness checks. | Showing the current filing-window quarter by default can confuse users because missing managers are expected. The current partial quarter may be available as an explicit switch with clear partial-data warnings. |
+| Oracle's Lens unavailable behavior | When `readiness_level=unavailable`, keep the feature entry visible and return `frontend_behavior=show_setup_required` by default. | Hiding the feature makes setup problems look like missing navigation. V1 should explain why the feature is unavailable instead of silently removing it. |
 | Setup threshold | Minimum confirmed manager CIK count remains `1` only as a setup-unblock threshold. | This threshold means the pipeline can run, not that Oracle's Lens has strong investment signal coverage. |
 
 The product should avoid presenting "all Dataroma managers" as equal investment signal. Ingestion should capture the confirmed universe broadly; investor-facing ranking should use manager signal quality, featured-manager metadata, and readiness warnings.
@@ -101,7 +102,7 @@ These issues should be directly fixable from the dashboard through allowlisted U
 | CUSIP / stock mapping incomplete | low linked holdings ratio | Run CUSIP enrichment and stock backfill |
 | Quality check not current | no latest quality job for quarter | Run quality check |
 | Historical coverage too shallow | fewer than target backfill quarters | Run historical backfill |
-| Amendment supersedes prior filing | 13F/A exists for same manager and quarter | Reprocess accession and mark superseded filing inactive for product use |
+| Amendment supersedes prior filing | `amendment_status` is `amendments_pending` or `amendment_failed` for a manager and quarter | Reprocess accession and mark superseded filing inactive for product use |
 
 Admin actions must be constrained to known internal jobs. The UI must never expose arbitrary shell command execution.
 
@@ -547,6 +548,7 @@ MVP 2 should ship with documented default `lock_key` formats so duplicate preven
 | `bootstrap_whitelist` | `bootstrap_whitelist` |
 | `match_cik` | `match_cik` |
 | `quality_check` | `quality_check:{quarter}` |
+| `reprocess_amendment` | `reprocess_amendment:{accession_no}` |
 
 For very large quarters, implementation may create finer-grained child jobs with accession-level lock keys, but the parent job should still use the quarter-level lock key to prevent competing full-quarter runs.
 
@@ -780,7 +782,7 @@ Example job request:
 
 The job trigger endpoint must reject duplicate active jobs that share the same `lock_key` with a conflict response instead of starting another job.
 
-`frontend_behavior=hide_feature` must be treated carefully. Before Oracle's Lens consumes this field, confirm whether the existing product should be hidden, shown with setup copy, or shown with a partial-data warning. The integration must not silently remove an existing user-visible feature without an explicit product decision.
+For Oracle's Lens V1, `frontend_behavior=hide_feature` should not be the default unavailable behavior. The consumer readiness endpoint should return `show_setup_required` unless a separate product decision explicitly removes the entry point.
 
 ## 18. Permission And Safety Requirements
 
@@ -859,6 +861,7 @@ Filing deadlines should be calculated rather than hard-coded. The UI may show ap
 - Trigger backfill
 - Trigger enrichment
 - Trigger quality check
+- Trigger amendment reprocess for a specific failed 13F/A accession
 - Prevent duplicate active jobs with the same lock key
 
 ### MVP 3: Manager / CIK Review
