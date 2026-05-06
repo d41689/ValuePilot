@@ -787,7 +787,9 @@ def read_stock_by_ticker(
     return {
         "id": stock.id,
         "ticker": stock.ticker,
-        "exchange": stock.exchange,
+        "exchange": stock.listing_exchange or stock.exchange,
+        "market_country": stock.market_country,
+        "listing_exchange": stock.listing_exchange,
         "company_name": stock.company_name,
         "active_report_document_id": active_report.document_id if active_report else None,
         "active_report_date": active_report.report_date.isoformat() if active_report and active_report.report_date else None,
@@ -840,7 +842,9 @@ def read_stock(
     return {
         "id": stock.id,
         "ticker": stock.ticker,
-        "exchange": stock.exchange,
+        "exchange": stock.listing_exchange or stock.exchange,
+        "market_country": stock.market_country,
+        "listing_exchange": stock.listing_exchange,
         "company_name": stock.company_name,
         "is_active": stock.is_active,
         "created_at": stock.created_at

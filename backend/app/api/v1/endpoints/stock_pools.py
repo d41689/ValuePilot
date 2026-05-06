@@ -235,7 +235,9 @@ def _piotroski_compare_payload(
             {
                 "stock_id": stock.id,
                 "ticker": stock.ticker,
-                "exchange": stock.exchange,
+                "exchange": stock.listing_exchange or stock.exchange,
+                "market_country": stock.market_country,
+                "listing_exchange": stock.listing_exchange,
                 "company_name": stock.company_name,
                 "scores": [
                     _serialize_piotroski_compare_cell(year, by_year.get(year))
@@ -293,7 +295,9 @@ def _watchlist_rows_for_memberships(
                 "membership_id": membership.id,
                 "stock_id": stock.id,
                 "ticker": stock.ticker,
-                "exchange": stock.exchange,
+                "exchange": stock.listing_exchange or stock.exchange,
+                "market_country": stock.market_country,
+                "listing_exchange": stock.listing_exchange,
                 "company_name": stock.company_name,
                 "price": price,
                 "price_date": target_date.isoformat(),
@@ -538,7 +542,9 @@ def add_pool_member(
         "stock": {
             "id": stock.id,
             "ticker": stock.ticker,
-            "exchange": stock.exchange,
+            "exchange": stock.listing_exchange or stock.exchange,
+            "market_country": stock.market_country,
+            "listing_exchange": stock.listing_exchange,
             "company_name": stock.company_name,
         },
         "created_at": membership.created_at,
