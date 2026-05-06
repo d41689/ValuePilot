@@ -45,6 +45,7 @@ For the current calendar point, 2026-Q1 filings are in progress. The approximate
 - Do not redesign Oracle's Lens or investor-facing 13F analysis.
 - Do not treat 13F data as current holdings or buy recommendations.
 - Do not make Dataroma a source of truth for holdings.
+- Do not let Dataroma availability block pure EDGAR ingestion for already confirmed managers.
 - Do not expose raw EDGAR operations to non-admin users.
 - Do not auto-confirm low-confidence manager / CIK matches without admin review.
 
@@ -204,7 +205,65 @@ Secondary actions:
 
 ## 8. Quarter Status Model
 
-Each quarter should have one calculated status. This status drives both the admin UI and consumer-facing data readiness.
+The legacy single-label status below can still be used as a display convenience, but implementation should derive it from `quarter_phase` and `quarter_health`.
+
+### 8.1 Phase vs Health
+
+A quarter has two related but separate states:
+
+- `quarter_phase`: the calendar / SEC filing-window state.
+- `quarter_health`: the operational data-readiness state.
+
+This separation prevents a normal filing-window state from hiding real pipeline problems.
+
+Recommended `quarter_phase` values:
+
+| Phase | Meaning |
+| --- | --- |
+| `pre_window` | Quarter has not ended or the filing window has not opened. |
+| `filing_window_open` | Quarter ended and 13F filings are still expected to arrive. |
+| `post_deadline` | The approximate 13F filing deadline has passed. |
+
+Recommended `quarter_health` values:
+
+| Health | Meaning |
+| --- | --- |
+| `setup_required` | Blocking prerequisites such as confirmed manager / CIKs are missing. |
+| `not_started` | The quarter is eligible for ingestion but no index, filings, or holdings exist. |
+| `index_fetched` | A quarter index exists, but no relevant filing metadata has been inserted. |
+| `ingesting` | A job for the quarter is currently running. |
+| `partial` | Some data exists and incompleteness is expected or not yet resolved. |
+| `needs_review` | Admin action is required for candidates, failed filings, low coverage, or quality warnings. |
+| `failed` | The latest job failed before producing usable data. |
+| `complete` | The quarter is complete enough for product use. |
+| `stale` | A newer usable quarter should exist but does not. |
+
+The UI may present a combined label such as `Filing Window Open · Partial` or `Post Deadline · Needs Review`, but APIs should preserve the separate fields.
+
+### 8.2 Status Resolution Rules
+
+Quarter state must be derived deterministically. When multiple conditions apply, the dashboard should preserve both timing phase and operational health instead of collapsing everything into a single ambiguous status.
+
+Resolution rules:
+
+- If no confirmed manager CIKs exist, `quarter_health` should be `setup_required` regardless of quarter timing.
+- `filing_window_open` should not hide actual job failures. If jobs are failing, show `needs_review` or `failed` health even during the filing window.
+- Partial data before the filing deadline is expected if there are no job failures.
+- Missing data after the filing deadline should become `needs_review` or `stale` depending on last successful job time and expected coverage.
+- Active jobs should surface as `ingesting`, but blockers and failures should remain visible as supporting evidence.
+- A quarter should be considered `complete` only when tracked managers have filed or are accepted as not filed, holdings are parsed, and quality checks pass or warnings have been explicitly accepted.
+
+Suggested precedence for `quarter_health` when multiple conditions apply:
+
+1. `setup_required`
+2. `failed`
+3. `needs_review`
+4. `ingesting`
+5. `stale`
+6. `not_started`
+7. `index_fetched`
+8. `partial`
+9. `complete`
 
 | Status | Criteria | Admin Interpretation |
 | --- | --- | --- |
@@ -293,12 +352,12 @@ Recommended actions:
 
 | Action | Existing CLI Equivalent | Confirmation Required | Notes |
 | --- | --- | --- | --- |
-| Bootstrap whitelist | `bootstrap-whitelist` | Yes | Uses Dataroma discovery source |
+| Bootstrap whitelist | `bootstrap-whitelist` | Yes | Uses Dataroma only as a discovery source; EDGAR remains source of truth for filings and holdings |
 | Match CIK | `match-cik` | Yes | May create candidates requiring review |
 | Fetch quarter index | `fetch-holdings --quarter YYYY-Qn` | Yes | Name should be clearer in UI: "Fetch quarter index" |
 | Ingest holdings | `ingest-holdings --quarter YYYY-Qn` | Yes | Retry-safe for pending filings |
 | Backfill quarters | `backfill --quarters N` | Yes | Show SEC rate-limit warning |
-| Enrich CUSIP | `enrich-cusip` | Yes | Uses Dataroma as helper |
+| Enrich CUSIP | `enrich-cusip` | Yes | Uses Dataroma only as a helper; preserve provenance and do not override EDGAR-derived facts without review |
 | Bootstrap stocks | `bootstrap-stocks` | Yes | Creates stock links from mappings |
 | Enrich stocks from EDGAR | `enrich-stocks-edgar` | Yes | Official source enrichment |
 | Quality check | `quality-check --quarter YYYY-Qn` | No for read-only check | Should be safe and frequent |
@@ -311,6 +370,37 @@ Manual action UX:
 - Show dry-run style preview when possible: target quarter, tracked managers, pending filings.
 - Require confirmation for network-heavy jobs.
 - Persist all job runs.
+
+### 11.1 Manual Action Safety Contract
+
+Every manual action must define a safety contract before it is exposed in the UI:
+
+- allowlisted `job_type` enum
+- idempotency behavior
+- tables written
+- dry-run support, when practical
+- duplicate job `lock_key`
+- retry behavior
+- cancellation behavior
+- audit summary fields
+- product readiness impact
+
+Manual actions must use upsert, replace-safe, or skip-existing semantics wherever possible. Retrying a quarter or filing must not duplicate filings, holdings, raw documents, manager candidates, CUSIP mappings, or stock links.
+
+Recommended action metadata:
+
+| Action | Idempotency Expectation | Writes | Retry Behavior | Product Impact |
+| --- | --- | --- | --- | --- |
+| Bootstrap whitelist | Mostly idempotent | `institution_managers` | Upsert managers; do not duplicate existing rows | May unlock setup checklist |
+| Match CIK | Partially idempotent | manager candidate / status fields | Reuse or supersede prior candidates with audit history | Enables admin review, but not ingestion until confirmed |
+| Fetch quarter index | Idempotent | `raw_source_documents` | Reuse existing raw document or replace safely | Enables filing metadata ingestion |
+| Ingest holdings | Must be idempotent | `filings_13f`, `holdings_13f`, raw infotable documents | Skip existing accession numbers or replace a filing atomically | Directly affects readiness and Oracle's Lens coverage |
+| Backfill quarters | Must be idempotent per quarter | same as quarter ingestion | Resume from completed quarters and retry failed filings only | Expands historical coverage |
+| Enrich CUSIP | Must be idempotent | `cusip_ticker_map`, `holdings_13f.stock_id` | Upsert mappings; preserve provenance | Improves stock link coverage |
+| Bootstrap stocks | Must be idempotent | stocks and related mapping fields | Upsert by stable symbol / CUSIP identity | Improves product usability |
+| Quality check | Read-only or report-write only | quality report / job summary | Safe to rerun frequently | Updates readiness and warnings |
+
+Network-heavy and write-heavy actions should preview their target quarter, tracked managers, estimated filings, and rate-limit risk before execution.
 
 ## 12. Manager / CIK Review
 
@@ -326,6 +416,10 @@ Columns:
 - Current status
 - Last checked
 - Actions
+- Evidence source
+- Evidence URL
+- Prior rejected candidates
+- Review note
 
 Actions:
 
@@ -342,6 +436,24 @@ Rules:
 - Rejected candidates should be retained for audit, not deleted silently.
 - Confirming a CIK should immediately make the manager eligible for the next ingestion run.
 
+### 12.1 CIK Confirmation Audit
+
+CIK confirmation is a high-impact data operation because a wrong CIK contaminates every downstream filing and holding for that manager. Candidate review must retain provenance and review history.
+
+Each candidate should retain:
+
+- source
+- evidence URL
+- similarity score
+- created_at
+- last_checked_at
+- confirmed_or_rejected_by
+- confirmed_or_rejected_at
+- review note
+- prior rejected candidates for the same manager
+
+The confirmation UI should show the Dataroma display name, parsed manager company name, EDGAR legal name, CIK, SEC entity link, similarity score, evidence source, and any prior rejected candidates before allowing confirmation.
+
 ## 13. Job Runs And Audit Trail
 
 The product needs a persistent job history. Logs alone are not enough.
@@ -350,9 +462,11 @@ Recommended `job_runs` concept:
 
 - id
 - job_type
-- status: queued, running, succeeded, failed, canceled
+- status: queued, running, succeeded, partial_success, failed, cancel_requested, canceled, skipped
 - requested_by_user_id
 - trigger_source: scheduler, manual, deployment, retry
+- dedupe_key
+- lock_key
 - quarter
 - started_at
 - finished_at
@@ -372,6 +486,8 @@ Useful summary fields:
 - holdings_linked
 - quality_errors
 - quality_warnings
+
+`dedupe_key` and `lock_key` should be stable enough to prevent duplicate network-heavy or write-heavy jobs. Common examples include `job_type + quarter`, `job_type + accession`, or `job_type + quarter + manager_id`. A job that succeeds for most filings but fails for some should use `partial_success` with failure details in `summary_json`, not a misleading all-or-nothing status.
 
 This allows the UI to answer "what happened?" without scraping container logs.
 
@@ -401,11 +517,95 @@ Suggested readiness levels:
 
 Oracle's Lens should consume a readiness summary so it can show a clear empty/setup/partial state instead of silently returning zero candidates.
 
+### 14.1 Readiness Contract For Consumer Features
+
+Oracle's Lens and other 13F-powered features must consume a readiness summary instead of inferring state directly from raw table counts.
+
+The readiness contract should include:
+
+- readiness_level
+- frontend_behavior
+- latest_usable_quarter
+- current_quarter_phase
+- current_quarter_health
+- blockers
+- warnings
+- unavailable_reasons
+- key coverage ratios
+- last_successful_job_at
+
+Recommended `frontend_behavior` values:
+
+| Behavior | Meaning |
+| --- | --- |
+| `hide_feature` | Feature should not be shown because no usable data exists. |
+| `show_setup_required` | Show an admin/setup notice instead of an empty investment result. |
+| `show_partial_warning` | Show data with a clear current-quarter partial warning. |
+| `show_with_warning` | Show data but surface quality or coverage warnings. |
+| `show_normally` | Data is ready for normal user-facing display. |
+
+Example readiness payload:
+
+```json
+{
+  "feature": "oracles_lens",
+  "readiness_level": "usable_with_warning",
+  "frontend_behavior": "show_with_warning",
+  "latest_usable_quarter": "2025-Q4",
+  "current_quarter": {
+    "quarter": "2026-Q1",
+    "phase": "filing_window_open",
+    "health": "partial",
+    "is_partial_expected": true,
+    "filing_deadline": "2026-05-15"
+  },
+  "blockers": [],
+  "warnings": [
+    {
+      "code": "LOW_STOCK_LINK_COVERAGE",
+      "message": "82% of holdings are linked to stocks."
+    }
+  ],
+  "counts": {
+    "confirmed_managers": 80,
+    "filed_managers": 23,
+    "failed_filings": 3,
+    "linked_holdings_ratio": 0.82
+  },
+  "last_successful_job_at": "2026-05-06T10:30:00Z"
+}
+```
+
+### 14.2 Zero vs Unavailable
+
+Quality metrics must distinguish zero from unavailable.
+
+Rules:
+
+- `0` failed filings means filings were checked and none failed.
+- `null` failed filings with an `unavailable_reason` means filings were not checked.
+- `0%` linked holdings means holdings exist but none linked.
+- `null` linked holdings ratio means no holdings denominator exists.
+- Missing denominator data should never be displayed as `0%`.
+
+Metric payloads should support:
+
+```json
+{
+  "metric": "linked_holding_ratio",
+  "value": null,
+  "status": "unavailable",
+  "unavailable_reason": "NO_HOLDINGS_PARSED",
+  "last_checked_at": null
+}
+```
+
 ## 15. API Requirements
 
 Proposed admin endpoints:
 
 - `GET /api/v1/admin/13f/status`
+- `GET /api/v1/admin/13f/readiness`
 - `GET /api/v1/admin/13f/quarters`
 - `GET /api/v1/admin/13f/quarters/{quarter}`
 - `GET /api/v1/admin/13f/tasks`
@@ -430,12 +630,15 @@ Example job request:
 }
 ```
 
+The job trigger endpoint must reject duplicate active jobs that share the same `lock_key` with a conflict response instead of starting another job.
+
 ## 16. Permission And Safety Requirements
 
 - Only admin users can access the dashboard.
 - Manual ingestion actions require admin permissions.
 - Network-heavy jobs require confirmation.
 - Only one job of the same type and quarter should run at a time.
+- Duplicate job prevention should be enforced with a stable `lock_key`, not only disabled UI buttons.
 - EDGAR rate limits must be respected across manual and scheduled jobs.
 - Job execution must use allowlisted internal functions, not arbitrary command execution.
 - All manual changes to manager / CIK status must be auditable.
@@ -448,15 +651,25 @@ Use precise language:
 - Say "Partial data is expected before the filing deadline."
 - Say "Tracked managers" instead of implying all SEC filers.
 - Say "Linked to stocks" instead of "matched perfectly."
+- Say "Unavailable" with a reason when a metric has no valid denominator; do not show misleading `0%` values.
 - Do not say "smart money buys" or "buy signal."
 
 Recommended current-quarter copy:
 
 > 2026-Q1 is still inside the SEC filing window. Some managers have filed and others may file by approximately 2026-05-15. This quarter should be treated as partial until the deadline passes and quality checks complete.
 
+Filing deadlines should be calculated rather than hard-coded. The UI may show approximate dates unless the system has an official SEC deadline calendar. The default calculation should follow the 13F convention of approximately 45 days after calendar quarter end, adjusted only when the application explicitly supports a more precise deadline calendar.
+
 ## 18. MVP Delivery Plan
 
-### MVP 1: Read-Only Operations Dashboard
+### MVP 1A: Status / Readiness Read Model
+
+- Derive `quarter_phase` and `quarter_health`
+- Derive setup blockers and admin tasks
+- Produce readiness summary payload for consumer features
+- Distinguish zero from unavailable for quality metrics
+
+### MVP 1B: Read-Only Operations Dashboard
 
 - Overview health banner
 - Setup checklist
@@ -465,29 +678,36 @@ Recommended current-quarter copy:
 - Current quarter partial-state logic
 - Job history read model if available, otherwise latest derived status
 
-### MVP 2: Manual Job Controls
+### MVP 2: Job Run Persistence And Manual Controls
 
+- Persist job run records with `dedupe_key` and `lock_key`
 - Trigger bootstrap whitelist
 - Trigger match CIK
 - Trigger latest-quarter refresh
 - Trigger backfill
 - Trigger enrichment
 - Trigger quality check
-- Persist job run records
+- Prevent duplicate active jobs with the same lock key
 
 ### MVP 3: Manager / CIK Review
 
 - Candidate review table
 - Confirm / reject actions
 - Retry search with edited name
-- Audit status changes
+- Audit status changes and review notes
 
-### MVP 4: Alerts And Product Gating
+### MVP 4: Oracle's Lens Readiness Integration
 
 - Stale quarter alerts
 - Failed job alerts
 - Low coverage alerts
 - Oracle's Lens data readiness integration
+
+### MVP 5: Alerts
+
+- Email or Slack alerts, if needed
+- In-app admin alerts
+- Escalation task creation for engineering-only failures
 
 ## 19. Acceptance Criteria For Implementation
 
@@ -499,6 +719,16 @@ Recommended current-quarter copy:
 - Admin can inspect failed filings and retry them.
 - User-facing 13F features can distinguish no data, setup required, partial quarter, and ready states.
 
+### 19.1 Testable Acceptance Criteria
+
+- When `institution_managers=0` and `EDGAR_SCHEDULER_ENABLED=true`, the status API returns `setup_required` and the top task is `NO_CONFIRMED_MANAGER_CIK_WHITELIST`.
+- When the current date is before the filing deadline and partial filings exist with no job failures, the quarter response includes `quarter_phase=filing_window_open` and does not return `failed` health.
+- When a candidate CIK has `match_status='candidate'`, ingestion must not treat it as confirmed.
+- When a job is running for the same `job_type + quarter`, a duplicate job request returns a conflict response instead of starting another job.
+- When no holdings exist, `linked_holding_ratio` is `null` with `unavailable_reason=NO_HOLDINGS_PARSED`, not `0%`.
+- When a quarter ingest partially succeeds, job status is `partial_success` and `summary_json` includes failed accession numbers or managers.
+- When a CIK candidate is confirmed or rejected, the audit trail records reviewer, timestamp, source, evidence URL, and review note.
+
 ## 20. Open Questions
 
 - What minimum confirmed manager count should qualify the system as "ready" for initial production use?
@@ -506,3 +736,7 @@ Recommended current-quarter copy:
 - What linked holdings ratio should be considered acceptable for Oracle's Lens?
 - Should manual backfill be available for arbitrary historical depth or capped to protect EDGAR rate limits?
 - Do we want email / Slack alerts for failed scheduled jobs, or only in-app admin alerts for V1?
+- What exact `lock_key` should be used for each job type?
+- Which readiness payload fields should be shared with non-admin consumer APIs versus kept admin-only?
+- Should `partial_success` jobs automatically create retry tasks for failed filings?
+- What official or internal calendar, if any, should be used for precise 13F filing deadlines?
