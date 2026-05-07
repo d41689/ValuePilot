@@ -145,11 +145,13 @@ def test_amendment_applied_does_not_create_admin_task(client, db_session, user_f
     _clear_13f(db_session)
     admin = _admin(user_factory)
     manager = _manager(db_session)
+    failed_manager = _manager(db_session, name="Failed Amendment Manager", cik="0007654321")
+    pending_manager = _manager(db_session, name="Pending Amendment Manager", cik="0007654322")
     stock = _stock(db_session)
     doc = RawSourceDocument(
         source_system="edgar",
         document_type="infotable_xml",
-        cik=manager.cik,
+        cik=failed_manager.cik,
         accession_no="0001234567-26-000002",
         source_url="https://example.test/amendment.xml",
         http_status=200,
@@ -175,6 +177,106 @@ def test_amendment_applied_does_not_create_admin_task(client, db_session, user_f
 
     assert response.status_code == 200
     assert all(item["code"] != "AMENDMENT_PENDING_OR_FAILED" for item in response.json()["items"])
+
+
+def test_amendments_endpoint_lists_pending_failed_and_applied_accessions(client, db_session, user_factory, auth_headers):
+    _clear_13f(db_session)
+    admin = _admin(user_factory)
+    manager = _manager(db_session)
+    failed_manager = _manager(db_session, name="Failed Amendment Manager", cik="0007654321")
+    pending_manager = _manager(db_session, name="Pending Amendment Manager", cik="0007654322")
+    stock = _stock(db_session)
+    parsed_doc = RawSourceDocument(
+        source_system="edgar",
+        document_type="infotable_xml",
+        cik=manager.cik,
+        accession_no="0001234567-26-000002",
+        source_url="https://example.test/amendment-applied.xml",
+        http_status=200,
+        raw_sha256="parsed",
+        body_path="/tmp/amendment-applied.xml",
+        parse_status="parsed",
+        parsed_at=datetime.now(timezone.utc),
+    )
+    failed_doc = RawSourceDocument(
+        source_system="edgar",
+        document_type="infotable_xml",
+        cik=failed_manager.cik,
+        accession_no="0007654321-26-000003",
+        source_url="https://example.test/amendment-failed.xml",
+        http_status=200,
+        raw_sha256="failed",
+        body_path="/tmp/amendment-failed.xml",
+        parse_status="failed",
+        error_message="bad infotable XML",
+        parsed_at=datetime.now(timezone.utc),
+    )
+    db_session.add_all([parsed_doc, failed_doc])
+    db_session.flush()
+    _filing(db_session, manager, accession="0001234567-26-000001", is_latest=False)
+    applied = _filing(
+        db_session,
+        manager,
+        accession="0001234567-26-000002",
+        form_type="13F-HR/A",
+        is_latest=True,
+        raw_infotable_doc_id=parsed_doc.id,
+    )
+    _holding(db_session, applied, stock)
+    _filing(db_session, failed_manager, accession="0007654321-26-000001", is_latest=False)
+    failed = _filing(
+        db_session,
+        failed_manager,
+        accession="0007654321-26-000003",
+        form_type="13F-HR/A",
+        is_latest=True,
+        raw_infotable_doc_id=failed_doc.id,
+    )
+    _filing(db_session, pending_manager, accession="0007654322-26-000001", is_latest=False)
+    pending = _filing(
+        db_session,
+        pending_manager,
+        accession="0007654322-26-000004",
+        form_type="13F-HR/A",
+        is_latest=True,
+    )
+    db_session.commit()
+
+    response = client.get("/api/v1/admin/13f/amendments", headers=auth_headers(admin))
+
+    assert response.status_code == 200
+    by_accession = {item["accession_no"]: item for item in response.json()["items"]}
+    assert by_accession[applied.accession_no]["status"] == "applied"
+    assert by_accession[applied.accession_no]["holdings_count"] == 1
+    assert by_accession[failed.accession_no]["status"] == "failed"
+    assert by_accession[failed.accession_no]["recommended_job"]["job_type"] == "reprocess_amendment"
+    assert by_accession[failed.accession_no]["raw_infotable"]["parse_status"] == "failed"
+    assert by_accession[failed.accession_no]["raw_infotable"]["error_message"] == "bad infotable XML"
+    assert by_accession[pending.accession_no]["status"] == "pending"
+    assert by_accession[pending.accession_no]["recommended_job"]["accession_no"] == pending.accession_no
+    assert by_accession[pending.accession_no]["supersedes_accession_no"] == "0001234567-26-000001"
+
+
+def test_amendment_detail_endpoint_returns_single_accession(client, db_session, user_factory, auth_headers):
+    _clear_13f(db_session)
+    admin = _admin(user_factory)
+    manager = _manager(db_session, name="Amendment Manager")
+    _filing(db_session, manager, accession="0001234567-26-000001", is_latest=False)
+    filing = _filing(db_session, manager, accession="0001234567-26-000002", form_type="13F-HR/A")
+    db_session.commit()
+
+    response = client.get(f"/api/v1/admin/13f/amendments/{filing.accession_no}", headers=auth_headers(admin))
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["accession_no"] == filing.accession_no
+    assert payload["manager"]["legal_name"] == "Amendment Manager"
+    assert payload["quarter"] == "2025-Q4"
+    assert payload["status"] == "pending"
+    assert payload["recommended_job"] == {
+        "job_type": "reprocess_amendment",
+        "accession_no": filing.accession_no,
+    }
 
 
 def test_duplicate_active_job_lock_returns_conflict(client, db_session, user_factory, auth_headers):

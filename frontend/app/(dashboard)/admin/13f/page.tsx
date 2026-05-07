@@ -34,6 +34,7 @@ import {
 const {
   formatPercent,
   freshnessLine,
+  normalizeAmendments,
   normalizeQualityReports,
   normalizeQuarters,
   normalizeReadiness,
@@ -70,6 +71,7 @@ function formatJson(value: unknown) {
 export default function Admin13FPage() {
   const queryClient = useQueryClient();
   const [selectedJobId, setSelectedJobId] = useState<number | null>(null);
+  const [selectedAmendmentAccession, setSelectedAmendmentAccession] = useState<string | null>(null);
   const readinessQuery = useQuery({
     queryKey: ['admin-13f-readiness'],
     queryFn: async () => (await apiClient.get('/admin/13f/readiness')).data,
@@ -95,6 +97,10 @@ export default function Admin13FPage() {
     queryKey: ['admin-13f-quality'],
     queryFn: async () => (await apiClient.get('/admin/13f/quality')).data,
   });
+  const amendmentsQuery = useQuery({
+    queryKey: ['admin-13f-amendments'],
+    queryFn: async () => (await apiClient.get('/admin/13f/amendments')).data,
+  });
   const workersQuery = useQuery({
     queryKey: ['admin-13f-workers'],
     queryFn: async () => (await apiClient.get('/admin/13f/workers')).data,
@@ -105,6 +111,11 @@ export default function Admin13FPage() {
     queryFn: async () => (await apiClient.get(`/admin/13f/jobs/${selectedJobId}`)).data,
     enabled: selectedJobId !== null,
     refetchInterval: selectedJobId === null ? false : 5000,
+  });
+  const amendmentDetailQuery = useQuery({
+    queryKey: ['admin-13f-amendment-detail', selectedAmendmentAccession],
+    queryFn: async () => (await apiClient.get(`/admin/13f/amendments/${selectedAmendmentAccession}`)).data,
+    enabled: selectedAmendmentAccession !== null,
   });
   const [manualQuarter, setManualQuarter] = useState('');
   const [backfillQuarters, setBackfillQuarters] = useState('4');
@@ -120,6 +131,7 @@ export default function Admin13FPage() {
         queryClient.invalidateQueries({ queryKey: ['admin-13f-tasks'] }),
         queryClient.invalidateQueries({ queryKey: ['admin-13f-jobs'] }),
         queryClient.invalidateQueries({ queryKey: ['admin-13f-quality'] }),
+        queryClient.invalidateQueries({ queryKey: ['admin-13f-amendments'] }),
         queryClient.invalidateQueries({ queryKey: ['admin-13f-workers'] }),
       ]);
     },
@@ -167,6 +179,10 @@ export default function Admin13FPage() {
     () => normalizeQualityReports(qualityQuery.data?.items ?? []),
     [qualityQuery.data]
   );
+  const amendments = useMemo(
+    () => normalizeAmendments(amendmentsQuery.data?.items ?? []),
+    [amendmentsQuery.data]
+  );
   const workers = useMemo(
     () => normalizeWorkers(workersQuery.data?.items ?? []),
     [workersQuery.data]
@@ -174,6 +190,7 @@ export default function Admin13FPage() {
   const managers = managersQuery.data?.items ?? [];
   const jobs = jobsQuery.data?.items ?? [];
   const selectedJob = jobDetailQuery.data ?? null;
+  const selectedAmendment = amendmentDetailQuery.data ?? null;
   const isLoading =
     readinessQuery.isLoading ||
     quartersQuery.isLoading ||
@@ -181,6 +198,7 @@ export default function Admin13FPage() {
     managersQuery.isLoading ||
     jobsQuery.isLoading ||
     qualityQuery.isLoading ||
+    amendmentsQuery.isLoading ||
     workersQuery.isLoading;
 
   const latestQuarter = readiness.latestUsableQuarter === '—' ? undefined : readiness.latestUsableQuarter;
@@ -255,6 +273,7 @@ export default function Admin13FPage() {
             queryClient.invalidateQueries({ queryKey: ['admin-13f-managers'] });
             queryClient.invalidateQueries({ queryKey: ['admin-13f-jobs'] });
             queryClient.invalidateQueries({ queryKey: ['admin-13f-quality'] });
+            queryClient.invalidateQueries({ queryKey: ['admin-13f-amendments'] });
             queryClient.invalidateQueries({ queryKey: ['admin-13f-workers'] });
           }}
         >
@@ -362,6 +381,98 @@ export default function Admin13FPage() {
                 <TableRow>
                   <TableCell colSpan={5} className="py-8 text-center text-muted-foreground">
                     No persisted quality report yet. Run a quality check to populate this section.
+                  </TableCell>
+                </TableRow>
+              ) : null}
+            </TableBody>
+          </Table>
+        </CardContent>
+      </Card>
+
+      <Card className="rounded-md">
+        <CardHeader className="pb-3">
+          <CardTitle className="flex items-center gap-2 text-base">
+            <AlertTriangle className="h-4 w-4" />
+            Amendment Accessions
+          </CardTitle>
+        </CardHeader>
+        <CardContent>
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead>Accession</TableHead>
+                <TableHead>Status</TableHead>
+                <TableHead>Manager</TableHead>
+                <TableHead>Supersedes</TableHead>
+                <TableHead>Raw InfoTable</TableHead>
+                <TableHead>Holdings</TableHead>
+                <TableHead>Action</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {amendments.slice(0, 12).map((amendment) => (
+                <TableRow key={amendment.accessionNo}>
+                  <TableCell>
+                    <div className="font-mono text-xs">{amendment.accessionNo}</div>
+                    <div className="mt-1 text-xs text-muted-foreground">
+                      {amendment.quarter} · filed {amendment.filedAt ?? '—'}
+                    </div>
+                  </TableCell>
+                  <TableCell>
+                    <Badge variant={badgeVariant(amendment.statusTone)}>
+                      {amendment.status.replaceAll('_', ' ')}
+                    </Badge>
+                  </TableCell>
+                  <TableCell>
+                    <div className="font-medium">{amendment.managerName}</div>
+                    <div className="mt-1 font-mono text-xs text-muted-foreground">
+                      {amendment.managerCik}
+                    </div>
+                  </TableCell>
+                  <TableCell className="font-mono text-xs">
+                    {amendment.supersedesAccessionNo ?? '—'}
+                  </TableCell>
+                  <TableCell>
+                    <div className="text-sm">
+                      {String(amendment.rawInfotable.parse_status ?? 'missing')}
+                    </div>
+                    {amendment.rawInfotable.error_message ? (
+                      <div className="mt-1 max-w-[260px] truncate text-xs text-rose-700">
+                        {String(amendment.rawInfotable.error_message)}
+                      </div>
+                    ) : null}
+                  </TableCell>
+                  <TableCell>{formatInteger(amendment.holdingsCount)}</TableCell>
+                  <TableCell>
+                    <div className="flex flex-wrap gap-2">
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        onClick={() => setSelectedAmendmentAccession(amendment.accessionNo)}
+                      >
+                        Review
+                      </Button>
+                      {amendment.recommendedJob ? (
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="sm"
+                          onClick={() =>
+                            runJob(amendment.recommendedJob, `Reprocess ${amendment.accessionNo}`)
+                          }
+                        >
+                          Reprocess
+                        </Button>
+                      ) : null}
+                    </div>
+                  </TableCell>
+                </TableRow>
+              ))}
+              {amendments.length === 0 ? (
+                <TableRow>
+                  <TableCell colSpan={7} className="py-8 text-center text-muted-foreground">
+                    No 13F/A amendments recorded yet.
                   </TableCell>
                 </TableRow>
               ) : null}
@@ -804,6 +915,122 @@ export default function Admin13FPage() {
           </CardContent>
         </Card>
       </div>
+      {selectedAmendmentAccession !== null ? (
+        <div className="fixed inset-0 z-50 flex justify-end bg-background/60 backdrop-blur-sm">
+          <div
+            aria-hidden="true"
+            className="absolute inset-0 cursor-default"
+            onClick={() => setSelectedAmendmentAccession(null)}
+          />
+          <Card className="relative h-full w-full max-w-[560px] overflow-hidden rounded-none border-y-0 border-r-0 shadow-xl">
+            <CardHeader className="border-b border-border/70 pb-3">
+              <CardTitle className="flex items-center justify-between gap-2 text-base">
+                <span>Amendment Detail</span>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="icon"
+                  aria-label="Close amendment detail"
+                  onClick={() => setSelectedAmendmentAccession(null)}
+                >
+                  <X className="h-4 w-4" />
+                </Button>
+              </CardTitle>
+              <p className="font-mono text-xs text-muted-foreground">
+                {selectedAmendmentAccession}
+              </p>
+            </CardHeader>
+            <CardContent className="h-[calc(100%-84px)] space-y-5 overflow-y-auto p-5">
+              {selectedAmendment ? (
+                <>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <Badge variant={badgeVariant(
+                      selectedAmendment.status === 'failed'
+                        ? 'danger'
+                        : selectedAmendment.status === 'pending'
+                          ? 'warning'
+                          : selectedAmendment.status === 'applied'
+                            ? 'success'
+                            : 'secondary'
+                    )}>
+                      {String(selectedAmendment.status ?? 'unknown').replaceAll('_', ' ')}
+                    </Badge>
+                    <span className="text-sm text-muted-foreground">
+                      {selectedAmendment.form_type} · {selectedAmendment.quarter}
+                    </span>
+                  </div>
+                  <div className="grid gap-3 md:grid-cols-2">
+                    <div className="rounded-md border border-border/70 p-3">
+                      <div className="text-xs uppercase text-muted-foreground">Manager</div>
+                      <div className="mt-1 text-sm font-medium">
+                        {selectedAmendment.manager?.display_name ??
+                          selectedAmendment.manager?.legal_name ??
+                          '—'}
+                      </div>
+                      <div className="mt-1 font-mono text-xs text-muted-foreground">
+                        {selectedAmendment.manager?.cik ?? '—'}
+                      </div>
+                    </div>
+                    <div className="rounded-md border border-border/70 p-3">
+                      <div className="text-xs uppercase text-muted-foreground">Holdings</div>
+                      <div className="mt-1 text-sm">
+                        {formatInteger(selectedAmendment.holdings_count)}
+                      </div>
+                    </div>
+                    <div className="rounded-md border border-border/70 p-3">
+                      <div className="text-xs uppercase text-muted-foreground">Supersedes</div>
+                      <div className="mt-1 break-all font-mono text-xs">
+                        {selectedAmendment.supersedes_accession_no ?? '—'}
+                      </div>
+                    </div>
+                    <div className="rounded-md border border-border/70 p-3">
+                      <div className="text-xs uppercase text-muted-foreground">Latest Effective</div>
+                      <div className="mt-1 break-all font-mono text-xs">
+                        {selectedAmendment.latest_effective_accession_no ?? '—'}
+                      </div>
+                    </div>
+                  </div>
+                  {selectedAmendment.recommended_job ? (
+                    <Button
+                      type="button"
+                      variant="outline"
+                      onClick={() =>
+                        runJob(
+                          selectedAmendment.recommended_job,
+                          `Reprocess ${selectedAmendment.accession_no}`
+                        )
+                      }
+                    >
+                      Reprocess amendment
+                    </Button>
+                  ) : null}
+                  <div>
+                    <div className="text-xs font-semibold uppercase text-muted-foreground">
+                      Raw primary document
+                    </div>
+                    <div className="mt-2 max-h-56 overflow-auto rounded-md border border-border/70 bg-muted/40 p-3 font-mono text-xs">
+                      {formatJson(selectedAmendment.raw_primary)}
+                    </div>
+                  </div>
+                  <div>
+                    <div className="text-xs font-semibold uppercase text-muted-foreground">
+                      Raw InfoTable document
+                    </div>
+                    <div className="mt-2 max-h-56 overflow-auto rounded-md border border-border/70 bg-muted/40 p-3 font-mono text-xs">
+                      {formatJson(selectedAmendment.raw_infotable)}
+                    </div>
+                  </div>
+                </>
+              ) : (
+                <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                  Loading amendment detail...
+                </div>
+              )}
+            </CardContent>
+          </Card>
+        </div>
+      ) : null}
       {selectedJobId !== null ? (
         <div className="fixed inset-0 z-50 flex justify-end bg-background/60 backdrop-blur-sm">
           <div

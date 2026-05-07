@@ -108,6 +108,42 @@ function normalizeQualityReports(items) {
   }));
 }
 
+function amendmentTone(status) {
+  if (status === 'applied') return 'success';
+  if (status === 'pending') return 'warning';
+  if (status === 'failed') return 'danger';
+  return 'secondary';
+}
+
+function normalizeAmendments(items) {
+  return (Array.isArray(items) ? items : []).map((item) => {
+    const manager = item.manager && typeof item.manager === 'object' ? item.manager : {};
+    const rawInfotable =
+      item.raw_infotable && typeof item.raw_infotable === 'object' ? item.raw_infotable : {};
+    const rawPrimary =
+      item.raw_primary && typeof item.raw_primary === 'object' ? item.raw_primary : {};
+    return {
+      id: item.id,
+      accessionNo: item.accession_no ?? '—',
+      formType: item.form_type ?? '—',
+      status: item.status ?? 'unknown',
+      statusTone: amendmentTone(item.status),
+      managerName: manager.display_name ?? manager.legal_name ?? '—',
+      managerCik: manager.cik ?? '—',
+      quarter: item.quarter ?? '—',
+      filedAt: item.filed_at ?? null,
+      supersedesAccessionNo: item.supersedes_accession_no ?? null,
+      latestEffectiveAccessionNo: item.latest_effective_accession_no ?? null,
+      holdingsCount: item.holdings_count ?? 0,
+      rawPrimary,
+      rawInfotable,
+      recommendedJob: item.recommended_job && typeof item.recommended_job === 'object'
+        ? item.recommended_job
+        : null,
+    };
+  });
+}
+
 function freshnessLine(readiness) {
   const deadline = readiness.filingDeadline ? ` Filing deadline: ${readiness.filingDeadline}.` : '';
   return `Default data period: ${readiness.latestUsableQuarter}. Current quarter: ${readiness.currentQuarter} (${readiness.currentPhase}).${deadline} Amendment status: ${readiness.amendmentStatus}.`;
@@ -116,6 +152,7 @@ function freshnessLine(readiness) {
 module.exports = {
   formatPercent,
   freshnessLine,
+  normalizeAmendments,
   healthTone,
   normalizeQuarters,
   normalizeQualityReports,

@@ -187,6 +187,31 @@ def build_quality_reports(session: Session, *, limit: int = 20) -> list[dict[str
     return [_quality_report_payload(report) for report in reports]
 
 
+def build_amendments(session: Session, *, limit: int = 100) -> list[dict[str, Any]]:
+    amendments = (
+        session.query(Filing13F)
+        .filter(or_(Filing13F.form_type.endswith("/A"), Filing13F.amends_accession_no.isnot(None)))
+        .order_by(Filing13F.filed_at.desc(), Filing13F.accession_no.desc())
+        .limit(limit)
+        .all()
+    )
+    payloads = [_amendment_payload(session, filing) for filing in amendments]
+    priority = {"failed": 0, "pending": 1, "applied": 2, "superseded": 3}
+    return sorted(payloads, key=lambda item: (priority.get(item["status"], 9), item["filed_at"] or ""), reverse=False)
+
+
+def get_amendment(session: Session, accession_no: str) -> dict[str, Any]:
+    filing = (
+        session.query(Filing13F)
+        .filter(Filing13F.accession_no == accession_no)
+        .filter(or_(Filing13F.form_type.endswith("/A"), Filing13F.amends_accession_no.isnot(None)))
+        .one_or_none()
+    )
+    if filing is None:
+        raise ValueError("Amendment not found")
+    return _amendment_payload(session, filing)
+
+
 def get_quality_report_for_quarter(session: Session, quarter: str) -> dict[str, Any]:
     report = _latest_quality_report(session, quarter)
     if report is None:
@@ -682,6 +707,93 @@ def _quality_report_payload(report: QualityReport13F) -> dict[str, Any]:
         "checked_at": report.checked_at.isoformat(),
         "created_at": report.created_at.isoformat() if report.created_at else None,
     }
+
+
+def _amendment_payload(session: Session, filing: Filing13F) -> dict[str, Any]:
+    holdings_count = session.query(Holding13F).filter(Holding13F.filing_id == filing.id).count()
+    primary = filing.raw_primary_doc
+    infotable = filing.raw_infotable_doc
+    raw_docs = [doc for doc in [primary, infotable] if doc is not None]
+    has_failed_raw = any(doc.parse_status == "failed" for doc in raw_docs)
+    if has_failed_raw:
+        status = "failed"
+    elif filing.raw_infotable_doc_id is None or holdings_count == 0:
+        status = "pending"
+    elif filing.is_latest_for_period:
+        status = "applied"
+    else:
+        status = "superseded"
+    latest_effective = _latest_effective_filing(session, filing)
+    recommended_job = (
+        {"job_type": "reprocess_amendment", "accession_no": filing.accession_no}
+        if status in {"failed", "pending"}
+        else None
+    )
+    return {
+        "id": filing.id,
+        "accession_no": filing.accession_no,
+        "form_type": filing.form_type,
+        "status": status,
+        "manager": {
+            "id": filing.manager.id,
+            "legal_name": filing.manager.legal_name,
+            "display_name": filing.manager.display_name,
+            "cik": filing.manager.cik,
+        },
+        "quarter": quarter_label_for_date(filing.period_of_report),
+        "period_of_report": filing.period_of_report.isoformat(),
+        "filed_at": filing.filed_at.isoformat() if filing.filed_at else None,
+        "version_rank": filing.version_rank,
+        "is_latest_for_period": filing.is_latest_for_period,
+        "latest_effective_accession_no": latest_effective.accession_no if latest_effective else None,
+        "supersedes_accession_no": filing.amends_accession_no or _previous_accession_for_amendment(session, filing),
+        "holdings_count": holdings_count,
+        "raw_primary": _raw_document_payload(primary),
+        "raw_infotable": _raw_document_payload(infotable),
+        "recommended_job": recommended_job,
+    }
+
+
+def _raw_document_payload(document: RawSourceDocument | None) -> dict[str, Any]:
+    if document is None:
+        return {
+            "id": None,
+            "parse_status": "missing",
+            "error_message": None,
+            "source_url": None,
+            "parsed_at": None,
+        }
+    return {
+        "id": document.id,
+        "parse_status": document.parse_status,
+        "error_message": document.error_message,
+        "source_url": document.source_url,
+        "parsed_at": document.parsed_at.isoformat() if document.parsed_at else None,
+    }
+
+
+def _latest_effective_filing(session: Session, filing: Filing13F) -> Filing13F | None:
+    return (
+        session.query(Filing13F)
+        .filter(Filing13F.manager_id == filing.manager_id)
+        .filter(Filing13F.period_of_report == filing.period_of_report)
+        .filter(Filing13F.is_latest_for_period.is_(True))
+        .order_by(Filing13F.version_rank.desc(), Filing13F.filed_at.desc(), Filing13F.id.desc())
+        .first()
+    )
+
+
+def _previous_accession_for_amendment(session: Session, filing: Filing13F) -> str | None:
+    previous = (
+        session.query(Filing13F)
+        .filter(Filing13F.manager_id == filing.manager_id)
+        .filter(Filing13F.period_of_report == filing.period_of_report)
+        .filter(Filing13F.id != filing.id)
+        .filter(Filing13F.version_rank < filing.version_rank)
+        .order_by(Filing13F.version_rank.desc(), Filing13F.filed_at.desc(), Filing13F.id.desc())
+        .first()
+    )
+    return previous.accession_no if previous else None
 
 
 def _latest_quality_report(session: Session, quarter: str) -> QualityReport13F | None:

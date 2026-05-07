@@ -4,6 +4,7 @@ const assert = require('node:assert/strict');
 
 const {
   freshnessLine,
+  normalizeAmendments,
   normalizeQualityReports,
   normalizeQuarters,
   normalizeReadiness,
@@ -87,4 +88,29 @@ test('normalizeQualityReports maps persisted report counts and status', () => {
   assert.equal(reports[0].statusTone, 'warning');
   assert.equal(reports[0].warningCount, 2);
   assert.equal(reports[0].issues.length, 1);
+});
+
+test('normalizeAmendments maps accession status and reprocess action', () => {
+  const amendments = normalizeAmendments([
+    {
+      id: 11,
+      accession_no: '0001234567-26-000002',
+      form_type: '13F-HR/A',
+      status: 'failed',
+      manager: { legal_name: 'Test Manager', cik: '0001234567' },
+      quarter: '2025-Q4',
+      supersedes_accession_no: '0001234567-26-000001',
+      holdings_count: 0,
+      raw_infotable: { parse_status: 'failed', error_message: 'bad XML' },
+      recommended_job: {
+        job_type: 'reprocess_amendment',
+        accession_no: '0001234567-26-000002',
+      },
+    },
+  ]);
+
+  assert.equal(amendments[0].statusTone, 'danger');
+  assert.equal(amendments[0].managerName, 'Test Manager');
+  assert.equal(amendments[0].recommendedJob.job_type, 'reprocess_amendment');
+  assert.equal(amendments[0].rawInfotable.error_message, 'bad XML');
 });

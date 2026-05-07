@@ -7,6 +7,7 @@ from pydantic import BaseModel, Field
 
 from app.api.deps import AdminUser, SessionDep
 from app.services.thirteenf_admin_dashboard import (
+    build_amendments,
     build_admin_readiness,
     build_admin_tasks,
     build_consumer_readiness,
@@ -16,6 +17,7 @@ from app.services.thirteenf_admin_dashboard import (
     build_status,
     cancel_job,
     confirm_manager_cik,
+    get_amendment,
     get_job,
     get_quality_report_for_quarter,
     list_workers,
@@ -94,6 +96,23 @@ def read_quality_reports(
 def read_quality_report(session: SessionDep, current_user: AdminUser, quarter: str) -> Any:
     try:
         return get_quality_report_for_quarter(session, quarter)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+
+
+@admin_router.get("/amendments", response_model=dict)
+def read_amendments(
+    session: SessionDep,
+    current_user: AdminUser,
+    limit: int = Query(100, ge=1, le=500),
+) -> Any:
+    return {"items": build_amendments(session, limit=limit)}
+
+
+@admin_router.get("/amendments/{accession_no}", response_model=dict)
+def read_amendment(session: SessionDep, current_user: AdminUser, accession_no: str) -> Any:
+    try:
+        return get_amendment(session, accession_no)
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
 
