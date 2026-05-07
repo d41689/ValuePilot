@@ -457,6 +457,73 @@ def test_job_detail_endpoint_returns_timeline_events_and_retry_targets(client, d
     ]
 
 
+def test_failed_job_creates_admin_alert_task(client, db_session, user_factory, auth_headers):
+    _clear_13f(db_session)
+    admin = _admin(user_factory)
+    job = JobRun(
+        job_type="ingest_holdings",
+        status="failed",
+        requested_by_user_id=admin.id,
+        trigger_source="scheduler",
+        dedupe_key="ingest_holdings:2025-Q4",
+        lock_key="ingest_holdings:2025-Q4",
+        quarter="2025-Q4",
+        error_message="SEC parser failed",
+        input_json={"job_type": "ingest_holdings", "quarter": "2025-Q4"},
+        summary_json={
+            "failed_accessions": [
+                {"accession_no": "0001234567-26-000002", "error": "broken infotable"},
+            ]
+        },
+    )
+    db_session.add(job)
+    db_session.commit()
+
+    response = client.get("/api/v1/admin/13f/tasks", headers=auth_headers(admin))
+
+    assert response.status_code == 200
+    task = next(item for item in response.json()["items"] if item["code"] == "RECENT_JOB_FAILED")
+    assert task["priority"] == "P1"
+    assert task["metadata"]["job_id"] == job.id
+    assert task["metadata"]["job_type"] == "ingest_holdings"
+    assert task["metadata"]["status"] == "failed"
+    assert task["metadata"]["quarter"] == "2025-Q4"
+    assert task["metadata"]["failed_accessions_count"] == 1
+    assert task["metadata"]["retry_targets"][0]["accession_no"] == "0001234567-26-000002"
+
+
+def test_partial_success_job_creates_lower_priority_admin_alert_task(client, db_session, user_factory, auth_headers):
+    _clear_13f(db_session)
+    admin = _admin(user_factory)
+    job = JobRun(
+        job_type="ingest_holdings",
+        status="partial_success",
+        requested_by_user_id=admin.id,
+        trigger_source="manual",
+        dedupe_key="ingest_holdings:2025-Q4",
+        lock_key="ingest_holdings:2025-Q4",
+        quarter="2025-Q4",
+        input_json={"job_type": "ingest_holdings", "quarter": "2025-Q4"},
+        summary_json={
+            "filings_processed": 3,
+            "filings_failed": 1,
+            "failed_accessions": [
+                {"accession_no": "0001234567-26-000002", "error": "broken infotable"},
+            ],
+        },
+    )
+    db_session.add(job)
+    db_session.commit()
+
+    response = client.get("/api/v1/admin/13f/tasks", headers=auth_headers(admin))
+
+    assert response.status_code == 200
+    task = next(item for item in response.json()["items"] if item["code"] == "RECENT_JOB_PARTIAL_SUCCESS")
+    assert task["priority"] == "P2"
+    assert task["metadata"]["job_id"] == job.id
+    assert task["metadata"]["failed_accessions_count"] == 1
+
+
 def test_cancel_queued_job_releases_active_lock(client, db_session, user_factory, auth_headers):
     _clear_13f(db_session)
     admin = _admin(user_factory)

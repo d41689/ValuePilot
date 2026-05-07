@@ -267,6 +267,7 @@ def build_admin_tasks(session: Session, *, today: date | None = None) -> list[di
     if counts["candidate_managers"] > 0:
         tasks.append(_task("P1", "CIK_CANDIDATES_NEED_REVIEW", "CIK candidates need review", "Confirm or reject candidate"))
     tasks.extend(_revoked_cik_repair_tasks(session))
+    tasks.extend(_recent_job_alert_tasks(session))
     if summary["form_idx_fetched"] and summary["filings_count"] == 0:
         tasks.append(_task("P1", "QUARTER_INDEX_FETCHED_NO_FILINGS", "Quarter index fetched but no filings", "Check whitelist and form parser"))
     if summary["failed_filings"] > 0:
@@ -813,6 +814,50 @@ def _revoked_cik_repair_tasks(session: Session) -> list[dict[str, Any]]:
                     "affected_filings_count": event.affected_filings_count,
                     "affected_quarters": quarters,
                     "review_event_id": event.id,
+                },
+            )
+        )
+    return tasks
+
+
+def _recent_job_alert_tasks(session: Session, *, limit: int = 5) -> list[dict[str, Any]]:
+    jobs = (
+        session.query(JobRun)
+        .filter(JobRun.status.in_(["failed", "partial_success"]))
+        .order_by(JobRun.finished_at.desc().nullslast(), JobRun.created_at.desc())
+        .limit(limit)
+        .all()
+    )
+    tasks: list[dict[str, Any]] = []
+    for job in jobs:
+        retry_targets = _job_retry_targets(job)
+        failed_accessions_count = len(retry_targets)
+        code = "RECENT_JOB_FAILED" if job.status == "failed" else "RECENT_JOB_PARTIAL_SUCCESS"
+        priority = "P1" if job.status == "failed" else "P2"
+        title = f"{job.job_type} job {job.status.replace('_', ' ')}"
+        if job.quarter:
+            title = f"{title}: {job.quarter}"
+        recommended_action = (
+            "Review job timeline and retry failed accessions."
+            if retry_targets
+            else "Review job timeline and rerun the affected job if the failure is transient."
+        )
+        tasks.append(
+            _task_with_metadata(
+                priority,
+                code,
+                title,
+                recommended_action,
+                {
+                    "job_id": job.id,
+                    "job_type": job.job_type,
+                    "status": job.status,
+                    "quarter": job.quarter,
+                    "accession_no": (job.input_json or {}).get("accession_no") if isinstance(job.input_json, dict) else None,
+                    "failed_accessions_count": failed_accessions_count,
+                    "retry_targets": retry_targets,
+                    "error_message": job.error_message,
+                    "finished_at": job.finished_at.isoformat() if job.finished_at else None,
                 },
             )
         )

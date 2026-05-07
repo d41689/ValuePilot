@@ -682,6 +682,45 @@ export default function Admin13FPage() {
                         </span>
                       </div>
                     ) : null}
+                    {'job_id' in task.metadata ? (
+                      <div>
+                        Job:{' '}
+                        <span className="font-medium text-foreground">
+                          #{String(task.metadata.job_id ?? '—')} · {String(task.metadata.job_type ?? '—')} ·{' '}
+                          {String(task.metadata.status ?? '—')}
+                        </span>
+                      </div>
+                    ) : null}
+                    {'quarter' in task.metadata && task.metadata.quarter ? (
+                      <div>
+                        Quarter:{' '}
+                        <span className="font-medium text-foreground">
+                          {String(task.metadata.quarter)}
+                        </span>
+                      </div>
+                    ) : null}
+                    {'failed_accessions_count' in task.metadata ? (
+                      <div>
+                        Failed accessions:{' '}
+                        <span className="font-medium text-foreground">
+                          {formatInteger(Number(task.metadata.failed_accessions_count ?? 0))}
+                        </span>
+                      </div>
+                    ) : null}
+                    {Array.isArray(task.metadata.retry_targets) &&
+                    task.metadata.retry_targets.length > 0 ? (
+                      <div>
+                        Retry target:{' '}
+                        <span className="font-mono text-foreground">
+                          {String(task.metadata.retry_targets[0]?.accession_no ?? '—')}
+                        </span>
+                      </div>
+                    ) : null}
+                    {'error_message' in task.metadata && task.metadata.error_message ? (
+                      <div className="text-rose-700">
+                        Error: {String(task.metadata.error_message)}
+                      </div>
+                    ) : null}
                     {Array.isArray(task.metadata.affected_quarters) &&
                     task.metadata.affected_quarters.length > 0 ? (
                       <div>
