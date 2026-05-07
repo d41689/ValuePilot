@@ -75,6 +75,7 @@ function normalizeTasks(items) {
     evidence: item.evidence ?? '',
     recommendedAction: item.recommended_action ?? '',
     whyItMatters: item.why_it_matters ?? '',
+    metadata: item.metadata && typeof item.metadata === 'object' ? item.metadata : null,
   }));
 }
 

@@ -49,11 +49,17 @@ test('normalizeQuarters and normalizeTasks prepare table rows', () => {
     { quarter: '2025-Q4', quarter_health: 'needs_review', filed_managers: 3, tracked_managers: 5 },
   ]);
   const tasks = normalizeTasks([
-    { priority: 'P1', code: 'AMENDMENT_PENDING_OR_FAILED', title: 'Amendment pending or failed' },
+    {
+      priority: 'P1',
+      code: 'REVOKED_CIK_DOWNSTREAM_REVIEW',
+      title: 'Revoked CIK requires downstream review',
+      metadata: { manager_name: 'Revoked Manager', affected_quarters: ['2025-Q4'] },
+    },
   ]);
 
   assert.equal(quarters[0].healthTone, 'danger');
   assert.equal(tasks[0].priorityTone, 'danger');
+  assert.equal(tasks[0].metadata.manager_name, 'Revoked Manager');
 });
 
 test('normalizeWorkers exposes heartbeat status and current job', () => {

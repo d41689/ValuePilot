@@ -636,6 +636,43 @@ export default function Admin13FPage() {
                   <Badge variant={badgeVariant(task.priorityTone)}>{task.priority}</Badge>
                 </div>
                 <div className="mt-2 text-sm text-muted-foreground">{task.recommendedAction}</div>
+                {task.metadata && typeof task.metadata === 'object' ? (
+                  <div className="mt-3 grid gap-2 rounded-md border border-border/70 bg-muted/30 p-2 text-xs text-muted-foreground">
+                    {'manager_name' in task.metadata ? (
+                      <div>
+                        Manager:{' '}
+                        <span className="font-medium text-foreground">
+                          {String(task.metadata.manager_name ?? '—')}
+                        </span>
+                      </div>
+                    ) : null}
+                    {'old_cik' in task.metadata ? (
+                      <div>
+                        Prior CIK:{' '}
+                        <span className="font-mono text-foreground">
+                          {String(task.metadata.old_cik ?? '—')}
+                        </span>
+                      </div>
+                    ) : null}
+                    {'affected_filings_count' in task.metadata ? (
+                      <div>
+                        Affected filings:{' '}
+                        <span className="font-medium text-foreground">
+                          {formatInteger(Number(task.metadata.affected_filings_count ?? 0))}
+                        </span>
+                      </div>
+                    ) : null}
+                    {Array.isArray(task.metadata.affected_quarters) &&
+                    task.metadata.affected_quarters.length > 0 ? (
+                      <div>
+                        Quarters:{' '}
+                        <span className="text-foreground">
+                          {task.metadata.affected_quarters.slice(0, 5).join(', ')}
+                        </span>
+                      </div>
+                    ) : null}
+                  </div>
+                ) : null}
               </div>
             ))}
             {tasks.length === 0 ? (

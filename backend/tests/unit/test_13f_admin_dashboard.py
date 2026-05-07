@@ -638,6 +638,65 @@ def test_manager_review_events_endpoint_returns_recent_cik_events(client, db_ses
     assert payload["note"] == "Confirmed from SEC evidence"
 
 
+def test_revoked_cik_downstream_review_creates_admin_repair_task(
+    client,
+    db_session,
+    user_factory,
+    auth_headers,
+):
+    _clear_13f(db_session)
+    admin = _admin(user_factory)
+    manager = _manager(db_session, name="Revoked CIK Manager", cik="0001336528")
+    _filing(db_session, manager, accession="0001336528-26-000001", period=date(2025, 12, 31))
+    db_session.commit()
+    revoke_response = client.post(
+        f"/api/v1/admin/13f/managers/{manager.id}/revoke-cik",
+        headers=auth_headers(admin),
+        json={"note": "Wrong SEC entity"},
+    )
+    assert revoke_response.status_code == 200
+
+    task_response = client.get("/api/v1/admin/13f/tasks", headers=auth_headers(admin))
+
+    assert task_response.status_code == 200
+    tasks = task_response.json()["items"]
+    repair_task = next(item for item in tasks if item["code"] == "REVOKED_CIK_DOWNSTREAM_REVIEW")
+    assert repair_task["priority"] == "P1"
+    assert repair_task["metadata"]["manager_id"] == manager.id
+    assert repair_task["metadata"]["old_cik"] == "0001336528"
+    assert repair_task["metadata"]["affected_filings_count"] == 1
+    assert repair_task["metadata"]["affected_quarters"] == ["2025-Q4"]
+    assert "Reconfirm the correct CIK" in repair_task["recommended_action"]
+
+
+def test_revoked_cik_repair_task_clears_after_reconfirming_manager(
+    client,
+    db_session,
+    user_factory,
+    auth_headers,
+):
+    _clear_13f(db_session)
+    admin = _admin(user_factory)
+    manager = _manager(db_session, name="Revoked CIK Manager", cik="0001336528")
+    _filing(db_session, manager, accession="0001336528-26-000001", period=date(2025, 12, 31))
+    db_session.commit()
+    client.post(
+        f"/api/v1/admin/13f/managers/{manager.id}/revoke-cik",
+        headers=auth_headers(admin),
+        json={"note": "Wrong SEC entity"},
+    )
+    client.post(
+        f"/api/v1/admin/13f/managers/{manager.id}/confirm-cik",
+        headers=auth_headers(admin),
+        json={"cik": "0001336529", "note": "Correct SEC entity confirmed"},
+    )
+
+    task_response = client.get("/api/v1/admin/13f/tasks", headers=auth_headers(admin))
+
+    assert task_response.status_code == 200
+    assert all(item["code"] != "REVOKED_CIK_DOWNSTREAM_REVIEW" for item in task_response.json()["items"])
+
+
 def test_persisted_quality_report_surfaces_in_quarter_and_tasks(client, db_session, user_factory, auth_headers):
     _clear_13f(db_session)
     admin = _admin(user_factory)

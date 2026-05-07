@@ -231,6 +231,7 @@ def build_admin_tasks(session: Session, *, today: date | None = None) -> list[di
         tasks.append(_task("P0", "NO_CONFIRMED_MANAGER_CIK_WHITELIST", "No confirmed manager / CIK whitelist", "Bootstrap whitelist, match CIK, review candidates"))
     if counts["candidate_managers"] > 0:
         tasks.append(_task("P1", "CIK_CANDIDATES_NEED_REVIEW", "CIK candidates need review", "Confirm or reject candidate"))
+    tasks.extend(_revoked_cik_repair_tasks(session))
     if summary["form_idx_fetched"] and summary["filings_count"] == 0:
         tasks.append(_task("P1", "QUARTER_INDEX_FETCHED_NO_FILINGS", "Quarter index fetched but no filings", "Check whitelist and form parser"))
     if summary["failed_filings"] > 0:
@@ -735,6 +736,52 @@ def _task(priority: str, code: str, title: str, recommended_action: str) -> dict
         "evidence": code,
         "recommended_action": recommended_action,
     }
+
+
+def _task_with_metadata(priority: str, code: str, title: str, recommended_action: str, metadata: dict[str, Any]) -> dict[str, Any]:
+    task = _task(priority, code, title, recommended_action)
+    task["metadata"] = metadata
+    return task
+
+
+def _revoked_cik_repair_tasks(session: Session) -> list[dict[str, Any]]:
+    events = (
+        session.query(InstitutionManagerCikReviewEvent, InstitutionManager)
+        .join(InstitutionManager, InstitutionManager.id == InstitutionManagerCikReviewEvent.manager_id)
+        .filter(InstitutionManager.match_status == "revoked")
+        .filter(InstitutionManagerCikReviewEvent.event_type == "revoke_confirmed_cik")
+        .filter(InstitutionManagerCikReviewEvent.requires_downstream_review.is_(True))
+        .order_by(InstitutionManagerCikReviewEvent.created_at.desc(), InstitutionManagerCikReviewEvent.id.desc())
+        .all()
+    )
+    latest_by_manager: dict[int, tuple[InstitutionManagerCikReviewEvent, InstitutionManager]] = {}
+    for event, manager in events:
+        if manager.id not in latest_by_manager:
+            latest_by_manager[manager.id] = (event, manager)
+
+    tasks: list[dict[str, Any]] = []
+    for event, manager in latest_by_manager.values():
+        quarters = event.affected_quarters or []
+        quarter_text = ", ".join(quarters[:4]) if quarters else "affected quarters"
+        if len(quarters) > 4:
+            quarter_text = f"{quarter_text}, +{len(quarters) - 4} more"
+        tasks.append(
+            _task_with_metadata(
+                "P1",
+                "REVOKED_CIK_DOWNSTREAM_REVIEW",
+                f"Revoked CIK requires downstream review: {manager.legal_name}",
+                f"Reconfirm the correct CIK, then reprocess affected quarters ({quarter_text}).",
+                {
+                    "manager_id": manager.id,
+                    "manager_name": manager.legal_name,
+                    "old_cik": event.old_cik,
+                    "affected_filings_count": event.affected_filings_count,
+                    "affected_quarters": quarters,
+                    "review_event_id": event.id,
+                },
+            )
+        )
+    return tasks
 
 
 def _job_payload(job: JobRun) -> dict[str, Any]:
