@@ -2,9 +2,10 @@
 
 Controlled by EDGAR_SCHEDULER_ENABLED (default False).
 When enabled, a background thread checks weekly whether a new quarter's
-filings are available and runs the full pipeline if so.
+filings are available and enqueues a quarterly_pipeline job via the
+JobRun system. The job is executed asynchronously by the ThirteenFJobWorker.
 
-Pipeline per quarter:
+Pipeline steps (run by the worker, not the scheduler directly):
   1. Fetch form.idx + ingest filing metadata
   2. Download + parse infotable.xml for all new filings
   3. Refresh CUSIP → ticker mappings (Dataroma + EDGAR company_tickers.json)
@@ -48,7 +49,13 @@ def latest_available_quarter(today: date) -> str:
 
 
 def _quarter_already_ingested(db, quarter: str) -> bool:
-    """True if we already have at least one filing for this quarter."""
+    """True if ingestion for this quarter has already completed (at least one filing exists).
+
+    This is a fast-path skip for the common case where the quarter is fully
+    ingested. During active execution, the quarterly_pipeline lock_key prevents
+    duplicate jobs — so this check is the primary guard only after the worker
+    has finished and committed filings.
+    """
     from app.edgar.parsers.form_idx import quarter_to_year_qtr
     from app.models.institutions import Filing13F
     import calendar
@@ -81,16 +88,26 @@ def run_quarterly_pipeline(db_factory: Callable) -> None:
             logger.info("Quarterly pipeline: %s already ingested — skipping", quarter)
             return
 
-        logger.info("Quarterly pipeline: triggering ingestion job for %s", quarter)
-
         # Trigger the pipeline via the dashboard service so it's visible in the UI
-        # and benefits from lock-key duplicate prevention.
+        # and benefits from lock-key duplicate prevention. During the window between
+        # enqueue and the worker's first commit, the lock_key prevents a second job
+        # from being created even if the scheduler fires again.
         from app.services.thirteenf_admin_dashboard import trigger_job
-        trigger_job(db, requested_by_user_id=None, payload={
+        result = trigger_job(db, requested_by_user_id=None, payload={
             "job_type": "quarterly_pipeline",
             "quarter": quarter,
-            "trigger_source": "scheduler"
+            "trigger_source": "scheduler",
         })
+        if result.get("conflict"):
+            logger.info(
+                "Quarterly pipeline: job already active for %s (job_id=%s) — skipping",
+                quarter, result.get("active_job_id"),
+            )
+        else:
+            logger.info(
+                "Quarterly pipeline: job enqueued for %s (job_id=%s)",
+                quarter, result.get("id"),
+            )
 
     except Exception as exc:
         db.rollback()

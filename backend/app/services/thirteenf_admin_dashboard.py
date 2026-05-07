@@ -1571,9 +1571,9 @@ def _execute_job(session: Session, job_type: str, payload: dict[str, Any]) -> di
         session.commit()
 
         # Step 2: download + parse infotable for all new filings
+        # _execute_ingest_job commits per-filing internally; no uncommitted work remains.
         ingest_results = _execute_ingest_job(session, "ingest_holdings", {"quarter": quarter})
         results["holdings_ingestion"] = ingest_results
-        session.commit()
 
         # Step 3: refresh CUSIP -> ticker mappings
         from app.services.cusip_enrichment import enrich_from_dataroma
@@ -1603,7 +1603,7 @@ def _execute_job(session: Session, job_type: str, payload: dict[str, Any]) -> di
         results["quality_status"] = report.status
 
         status = "succeeded"
-        if ingest_results.get("status") == "partial_success":
+        if ingest_results.get("status") == "partial_success" or "edgar_enrichment_error" in results:
             status = "partial_success"
         return {**results, "status": status}
 
