@@ -19,6 +19,8 @@ from typing import Callable
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
 
+from app.core.config import settings
+
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
@@ -137,22 +139,26 @@ def create_scheduler(db_factory: Callable) -> BackgroundScheduler:
         misfire_grace_time=3600,  # allow up to 1h late firing
     )
 
-    # Run every day at 02:00 UTC.
-    # Checks for partially failed jobs and retries them if they are old enough.
-    scheduler.add_job(
-        run_smart_retries,
-        trigger=CronTrigger(hour=2, minute=0, timezone="UTC"),
-        args=[db_factory],
-        id="smart_retries",
-        name="13F Smart Retries",
-        replace_existing=True,
-        misfire_grace_time=3600,
-    )
+    if settings.THIRTEENF_SMART_RETRY_ENABLED:
+        # Run every day at 02:00 UTC.
+        # Checks for partially failed jobs and retries safe targets if they are old enough.
+        scheduler.add_job(
+            run_smart_retries,
+            trigger=CronTrigger(hour=2, minute=0, timezone="UTC"),
+            args=[db_factory],
+            id="smart_retries",
+            name="13F Smart Retries",
+            replace_existing=True,
+            misfire_grace_time=3600,
+        )
     return scheduler
 
 
 def run_smart_retries(db_factory: Callable) -> None:
     """Check for partially failed jobs and trigger targeted retries."""
+    if not settings.THIRTEENF_SMART_RETRY_ENABLED:
+        logger.info("Smart retries disabled — skipping")
+        return
     logger.info("Smart retries check: starting")
     db = db_factory()
     try:

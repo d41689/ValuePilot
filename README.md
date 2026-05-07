@@ -107,6 +107,9 @@ docker compose exec api python -m app.cli.edgar quality-check --quarter 2025-Q1
 filings are available, and runs the full pipeline if so. It is idempotent — if the quarter is
 already ingested, it skips.
 
+Smart retries are controlled separately by `THIRTEENF_SMART_RETRY_ENABLED`; production defaults it
+to true, while dev leaves it off unless explicitly enabled.
+
 Filing deadlines (when a quarter becomes available): Feb 14 (Q4), May 15 (Q1), Aug 14 (Q2), Nov 14 (Q3).
 
 **In dev, run manually:**

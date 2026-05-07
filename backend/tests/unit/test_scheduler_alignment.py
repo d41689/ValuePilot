@@ -1,6 +1,6 @@
 from datetime import date
 from unittest.mock import MagicMock, patch
-from app.services.scheduler import run_quarterly_pipeline
+from app.services.scheduler import create_scheduler, run_quarterly_pipeline, run_smart_retries
 
 
 def test_run_quarterly_pipeline_triggers_job():
@@ -57,3 +57,27 @@ def test_run_quarterly_pipeline_skips_on_lock_conflict():
         mock_trigger_job.assert_called_once()
         # No exception should propagate; the conflict is handled gracefully.
         db.rollback.assert_not_called()
+
+
+def test_create_scheduler_registers_smart_retries_only_when_enabled(monkeypatch):
+    db_factory = MagicMock()
+
+    monkeypatch.setattr("app.services.scheduler.settings.THIRTEENF_SMART_RETRY_ENABLED", False)
+    scheduler = create_scheduler(db_factory)
+    assert scheduler.get_job("smart_retries") is None
+    assert scheduler.get_job("quarterly_edgar_pipeline") is not None
+
+    monkeypatch.setattr("app.services.scheduler.settings.THIRTEENF_SMART_RETRY_ENABLED", True)
+    scheduler = create_scheduler(db_factory)
+    assert scheduler.get_job("smart_retries") is not None
+
+
+def test_run_smart_retries_noops_when_disabled(monkeypatch):
+    db_factory = MagicMock()
+
+    monkeypatch.setattr("app.services.scheduler.settings.THIRTEENF_SMART_RETRY_ENABLED", False)
+    with patch("app.services.thirteenf_admin_dashboard.smart_retry_failed_jobs") as mock_smart_retry:
+        run_smart_retries(db_factory)
+
+    mock_smart_retry.assert_not_called()
+    db_factory.assert_not_called()

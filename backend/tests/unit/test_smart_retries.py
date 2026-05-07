@@ -86,6 +86,105 @@ def test_smart_retry_handles_nested_quarterly_failures(db_session):
     assert mock_trigger.call_args[1]["payload"]["accession_no"] == "abc-def"
 
 
+def test_smart_retry_handles_quarterly_enrichment_stage_failure(db_session):
+    """Pipeline enrichment stage failures should queue an enrichment-only retry."""
+    pipeline_job = JobRun(
+        job_type="quarterly_pipeline",
+        status="partial_success",
+        lock_key="quarterly_pipeline:2025-Q4",
+        quarter="2025-Q4",
+        trigger_source="scheduler",
+        created_at=NOW - timedelta(hours=30),
+        finished_at=NOW - timedelta(hours=25),
+        summary_json={
+            "stages": [
+                {"job_type": "fetch_quarter_index", "job_id": 1, "status": "succeeded"},
+                {"job_type": "ingest_holdings", "job_id": 2, "status": "succeeded"},
+                {"job_type": "enrich_metadata", "job_id": 3, "status": "failed"},
+                {"job_type": "quality_check", "job_id": 4, "status": "succeeded"},
+            ],
+        },
+    )
+    db_session.add(pipeline_job)
+    db_session.commit()
+
+    with patch("app.services.thirteenf_admin_dashboard.trigger_job") as mock_trigger:
+        mock_trigger.return_value = {"id": 101}
+        results = smart_retry_failed_jobs(db_session, now=NOW)
+
+    assert len(results) == 1
+    assert mock_trigger.call_args[1]["payload"] == {
+        "job_type": "enrich_metadata",
+        "quarter": "2025-Q4",
+        "trigger_source": "smart_retry",
+    }
+
+
+def test_smart_retry_does_not_auto_retry_full_quarter_ingest_stage(db_session):
+    """Smart retry should avoid broad quarter ingestion reruns; accession retries stay targeted."""
+    pipeline_job = JobRun(
+        job_type="quarterly_pipeline",
+        status="partial_success",
+        lock_key="quarterly_pipeline:2025-Q4",
+        quarter="2025-Q4",
+        trigger_source="scheduler",
+        created_at=NOW - timedelta(hours=30),
+        finished_at=NOW - timedelta(hours=25),
+        summary_json={
+            "stages": [
+                {"job_type": "ingest_holdings", "job_id": 2, "status": "failed"},
+            ],
+        },
+    )
+    db_session.add(pipeline_job)
+    db_session.commit()
+
+    with patch("app.services.thirteenf_admin_dashboard.trigger_job") as mock_trigger:
+        results = smart_retry_failed_jobs(db_session, now=NOW)
+
+    assert results == []
+    mock_trigger.assert_not_called()
+
+
+def test_smart_retry_stops_stage_retry_at_max_attempts(db_session):
+    """Stage-level retries use the same max-attempt guard as accession retries."""
+    pipeline_job = JobRun(
+        job_type="quarterly_pipeline",
+        status="partial_success",
+        lock_key="quarterly_pipeline:2025-Q4",
+        quarter="2025-Q4",
+        trigger_source="scheduler",
+        created_at=NOW - timedelta(hours=30),
+        finished_at=NOW - timedelta(hours=25),
+        summary_json={
+            "stages": [{"job_type": "enrich_metadata", "job_id": 3, "status": "failed"}],
+        },
+    )
+    db_session.add(pipeline_job)
+    db_session.flush()
+    db_session.add_all(
+        [
+            JobRun(
+                job_type="enrich_metadata",
+                status="failed",
+                lock_key="enrich_metadata:2025-Q4",
+                quarter="2025-Q4",
+                trigger_source="smart_retry",
+                created_at=pipeline_job.created_at + timedelta(hours=i + 1),
+                finished_at=pipeline_job.created_at + timedelta(hours=i + 2),
+            )
+            for i in range(MAX_SMART_RETRY_ATTEMPTS)
+        ]
+    )
+    db_session.commit()
+
+    with patch("app.services.thirteenf_admin_dashboard.trigger_job") as mock_trigger:
+        results = smart_retry_failed_jobs(db_session, now=NOW)
+
+    assert results == []
+    mock_trigger.assert_not_called()
+
+
 def test_smart_retry_deduplicates_same_accession_across_jobs(db_session):
     """Same accession appearing in two different partial_success jobs must only trigger one retry."""
     job1 = _old_partial_job("dup-001", "job1", created_offset_hours=50)

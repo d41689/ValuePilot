@@ -29,6 +29,7 @@ logger = logging.getLogger(__name__)
 
 ACTIVE_JOB_STATUSES = {"queued", "running", "cancel_requested"}
 MAX_SMART_RETRY_ATTEMPTS = 3
+SMART_RETRY_AUTO_JOB_TYPES = {"ingest_accession", "enrich_metadata", "quality_check"}
 READY_LINK_RATIO = 0.80
 WARNING_LINK_RATIO = 0.50
 STUCK_QUEUED_JOB_AFTER_SECONDS = 10 * 60
@@ -169,6 +170,7 @@ def build_admin_readiness(session: Session, *, today: date | None = None) -> dic
         "last_successful_job_at": _last_successful_job_at(session),
         "top_task": tasks[0] if tasks else None,
         "scheduler_enabled": settings.EDGAR_SCHEDULER_ENABLED,
+        "smart_retry_enabled": settings.THIRTEENF_SMART_RETRY_ENABLED,
     }
 
 
@@ -190,6 +192,7 @@ def build_status(session: Session, *, today: date | None = None) -> dict[str, An
     readiness = build_admin_readiness(session, today=today)
     return {
         "scheduler_enabled": readiness["scheduler_enabled"],
+        "smart_retry_enabled": readiness["smart_retry_enabled"],
         "readiness_level": readiness["readiness_level"],
         "frontend_behavior": readiness["frontend_behavior"],
         "latest_usable_quarter": readiness["latest_usable_quarter"],
@@ -556,14 +559,14 @@ def cancel_job(session: Session, job_id: int) -> dict[str, Any]:
 
 
 def smart_retry_failed_jobs(session: Session, *, now: datetime | None = None) -> list[dict[str, Any]]:
-    """Identifies partially failed jobs and enqueues targeted retries for their failed accessions.
+    """Identifies old failed/partial jobs and enqueues safe targeted retries.
 
     Criteria for smart retry:
-      - Job status is 'partial_success'
-      - Job has 'failed_accessions' in its summary_json
+      - Job status is 'partial_success' or 'failed'
+      - Job exposes a supported retry target
       - Job is at least 24 hours old (to respect SEC rate limits and transient errors)
-      - The failed accession hasn't been successfully processed by a newer job
-      - The accession hasn't exceeded MAX_SMART_RETRY_ATTEMPTS prior smart retries
+      - The target hasn't been successfully processed by a newer job
+      - The target hasn't exceeded MAX_SMART_RETRY_ATTEMPTS prior smart retries
     """
     now_dt = now if now is not None else datetime.now(timezone.utc)
     cutoff = now_dt - timedelta(hours=24)
@@ -571,40 +574,38 @@ def smart_retry_failed_jobs(session: Session, *, now: datetime | None = None) ->
     # Find candidate jobs
     jobs = (
         session.query(JobRun)
-        .filter(JobRun.status == "partial_success")
+        .filter(JobRun.status.in_(["failed", "partial_success"]))
         .filter(JobRun.finished_at <= cutoff)
         .order_by(JobRun.finished_at.desc())
         .all()
     )
 
     results: list[dict[str, Any]] = []
-    seen_accessions: set[str] = set()
+    seen_lock_keys: set[str] = set()
 
     for job in jobs:
-        summary = job.summary_json if isinstance(job.summary_json, dict) else {}
-        # Support both top-level and nested failed_accessions (from quarterly_pipeline)
-        failures = summary.get("failed_accessions")
-        if not failures and "holdings_ingestion" in summary:
-            failures = summary["holdings_ingestion"].get("failed_accessions")
-
-        if not isinstance(failures, list):
-            continue
-
-        for failure in failures:
-            if not isinstance(failure, dict):
+        for target in _job_retry_targets(job):
+            job_type = target.get("job_type")
+            if job_type not in SMART_RETRY_AUTO_JOB_TYPES:
+                logger.info("Skipping smart retry target for job %d: unsupported job_type=%s", job.id, job_type)
                 continue
-            accession_no = failure.get("accession_no")
-            if not accession_no:
+            if job_type in {"enrich_metadata", "quality_check"} and not target.get("quarter"):
+                logger.info("Skipping smart retry target for job %d: %s requires quarter", job.id, job_type)
                 continue
-            if accession_no in seen_accessions:
-                logger.info("Skipping %s from job %d: already queued in this run", accession_no, job.id)
+            try:
+                lock_key = _JOB_LOCK_BUILDERS[job_type](target)
+            except Exception as exc:
+                logger.warning("Skipping malformed smart retry target from job %d: %s", job.id, exc)
                 continue
-            seen_accessions.add(accession_no)
+            if lock_key in seen_lock_keys:
+                logger.info("Skipping %s from job %d: already queued in this run", lock_key, job.id)
+                continue
+            seen_lock_keys.add(lock_key)
 
-            # Single query for all newer runs of this accession — avoids two round-trips per accession.
+            # Single query for all newer runs of this target — avoids two round-trips per target.
             newer_runs = (
                 session.query(JobRun)
-                .filter(JobRun.lock_key == f"ingest_accession:{accession_no}")
+                .filter(JobRun.lock_key == lock_key)
                 .filter(JobRun.created_at > job.created_at)
                 .all()
             )
@@ -614,11 +615,11 @@ def smart_retry_failed_jobs(session: Session, *, now: datetime | None = None) ->
             if prior_retries >= MAX_SMART_RETRY_ATTEMPTS:
                 logger.warning(
                     "Skipping smart retry for %s: max attempts (%d) reached",
-                    accession_no, MAX_SMART_RETRY_ATTEMPTS,
+                    lock_key, MAX_SMART_RETRY_ATTEMPTS,
                 )
                 continue
 
-            # Check if this accession has already been successfully retried or is currently being retried
+            # Check if this target has already been successfully retried or is currently being retried.
             already_active = next(
                 (r for r in newer_runs if r.status in ACTIVE_JOB_STATUSES | {"succeeded"}),
                 None,
@@ -626,25 +627,27 @@ def smart_retry_failed_jobs(session: Session, *, now: datetime | None = None) ->
             if already_active:
                 logger.info(
                     "Skipping %s: already handled by job %d (status=%s)",
-                    accession_no, already_active.id, already_active.status,
+                    lock_key, already_active.id, already_active.status,
                 )
                 continue
 
             # Trigger a targeted retry
+            retry_payload = {
+                key: target[key]
+                for key in ("job_type", "quarter", "accession_no")
+                if target.get(key) is not None
+            }
+            retry_payload["trigger_source"] = "smart_retry"
             try:
                 trigger_result = trigger_job(
                     session,
                     requested_by_user_id=None,
-                    payload={
-                        "job_type": "ingest_accession",
-                        "accession_no": accession_no,
-                        "trigger_source": "smart_retry",
-                    },
+                    payload=retry_payload,
                 )
                 if not trigger_result.get("conflict"):
                     results.append(trigger_result)
             except Exception as exc:
-                logger.warning("Failed to trigger smart retry for accession %s: %s", accession_no, exc)
+                logger.warning("Failed to trigger smart retry for %s: %s", lock_key, exc)
 
     return results
 

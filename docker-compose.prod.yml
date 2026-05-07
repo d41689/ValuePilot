@@ -44,6 +44,7 @@ services:
     environment:
       DATABASE_URL: postgresql://${VALUEPILOT_DB_USER:-valuepilot}:${VALUEPILOT_DB_PASSWORD:-valuepilot}@postgres:5432/${VALUEPILOT_PROD_DB:-valuepilot_prod}
       EDGAR_SCHEDULER_ENABLED: "true"
+      THIRTEENF_SMART_RETRY_ENABLED: "${THIRTEENF_SMART_RETRY_ENABLED:-true}"
       THIRTEENF_JOB_WORKER_ENABLED: "true"
     volumes:
       - ./docs:/code/docs:ro
