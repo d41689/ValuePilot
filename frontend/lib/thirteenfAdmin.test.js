@@ -4,6 +4,7 @@ const assert = require('node:assert/strict');
 
 const {
   freshnessLine,
+  jobPreviewLine,
   normalizeAmendments,
   normalizeCikReviewEvents,
   normalizeQualityReports,
@@ -40,8 +41,34 @@ test('normalizeReadiness preserves consumer-visible freshness fields', () => {
   assert.equal(readiness.latestUsableQuarter, '2025-Q4');
   assert.equal(readiness.currentQuarter, '2026-Q1');
   assert.equal(readiness.historicalDepth, 4);
+  assert.deepEqual(readiness.setupChecklist, []);
   assert.match(freshnessLine(readiness), /Default data period: 2025-Q4/);
   assert.match(freshnessLine(readiness), /Amendment status: amendments_applied/);
+});
+
+test('normalizeReadiness maps setup checklist states', () => {
+  const readiness = normalizeReadiness({
+    setup_checklist: [
+      {
+        code: 'SCHEDULER_CONFIGURED',
+        label: 'Scheduler configured',
+        status: 'complete',
+        complete_when: 'scheduler enabled',
+        admin_action: 'Enable scheduler',
+      },
+      {
+        code: 'HOLDINGS_INGESTED',
+        label: 'Holdings ingested',
+        status: 'blocked',
+        complete_when: 'holdings exist',
+        admin_action: 'Ingest holdings',
+      },
+    ],
+  });
+
+  assert.equal(readiness.setupChecklist[0].statusTone, 'success');
+  assert.equal(readiness.setupChecklist[1].statusTone, 'danger');
+  assert.equal(readiness.setupChecklist[1].adminAction, 'Ingest holdings');
 });
 
 test('normalizeQuarters and normalizeTasks prepare table rows', () => {
@@ -75,6 +102,24 @@ test('normalizeWorkers exposes heartbeat status and current job', () => {
   assert.equal(workers[0].workerId, 'worker-1');
   assert.equal(workers[0].status, 'running');
   assert.equal(workers[0].currentJobId, 42);
+});
+
+test('jobPreviewLine summarizes dry-run preview for confirmation', () => {
+  const line = jobPreviewLine({
+    lock_key: 'ingest_holdings:2025-Q4',
+    target_quarter: '2025-Q4',
+    rate_limit_warning: 'Respect SEC rate limits.',
+    estimated_scope: {
+      tracked_managers: 3,
+      filings_in_quarter: 8,
+      pending_filings: 5,
+      failed_filings: 1,
+    },
+  });
+
+  assert.match(line, /Lock: ingest_holdings:2025-Q4/);
+  assert.match(line, /Pending filings: 5/);
+  assert.match(line, /Respect SEC rate limits/);
 });
 
 test('normalizeQualityReports maps persisted report counts and status', () => {

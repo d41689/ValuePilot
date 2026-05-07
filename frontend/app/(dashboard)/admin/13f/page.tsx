@@ -34,6 +34,7 @@ import {
 const {
   formatPercent,
   freshnessLine,
+  jobPreviewLine,
   normalizeAmendments,
   normalizeQualityReports,
   normalizeQuarters,
@@ -206,8 +207,26 @@ export default function Admin13FPage() {
     () => normalizeWorkers(workersQuery.data?.items ?? []),
     [workersQuery.data]
   );
-  const managers = managersQuery.data?.items ?? [];
-  const jobs = jobsQuery.data?.items ?? [];
+  const managers = useMemo(
+    () => (Array.isArray(managersQuery.data?.items) ? managersQuery.data.items : []),
+    [managersQuery.data]
+  );
+  const jobs = useMemo(
+    () => (Array.isArray(jobsQuery.data?.items) ? jobsQuery.data.items : []),
+    [jobsQuery.data]
+  );
+  const activeLockKeys = useMemo(() => {
+    const keys = new Set<string>();
+    jobs.forEach((job: Record<string, unknown>) => {
+      if (
+        typeof job.lock_key === 'string' &&
+        ['queued', 'running', 'cancel_requested'].includes(String(job.status ?? ''))
+      ) {
+        keys.add(job.lock_key);
+      }
+    });
+    return keys;
+  }, [jobs]);
   const selectedJob = jobDetailQuery.data ?? null;
   const selectedAmendment = amendmentDetailQuery.data ?? null;
   const selectedQuarterDetail = quarterDetailQuery.data ?? null;
@@ -225,9 +244,53 @@ export default function Admin13FPage() {
   const targetQuarter = manualQuarter.trim() || latestQuarter;
   const targetAccession = accessionNo.trim();
 
-  function runJob(payload: Record<string, unknown>, label: string) {
-    if (typeof window !== 'undefined' && !window.confirm(`Run ${label}?`)) return;
-    triggerJob.mutate(payload);
+  function lockKeyForPayload(payload: Record<string, unknown>) {
+    const jobType = String(payload.job_type ?? '');
+    if (jobType === 'fetch_quarter_index') return `fetch_quarter_index:${String(payload.quarter ?? '')}`;
+    if (jobType === 'ingest_holdings') return `ingest_holdings:${String(payload.quarter ?? '')}`;
+    if (jobType === 'quality_check') return `quality_check:${String(payload.quarter ?? '')}`;
+    if (jobType === 'enrich_cusip') return `enrich_cusip:${String(payload.quarter ?? '')}`;
+    if (jobType === 'ingest_accession') return `ingest_accession:${String(payload.accession_no ?? '')}`;
+    if (jobType === 'reprocess_amendment') return `reprocess_amendment:${String(payload.accession_no ?? '')}`;
+    if (jobType === 'backfill_quarters') {
+      return `backfill_quarters:${String(payload.start_quarter ?? 'latest')}:${String(payload.quarters ?? '')}`;
+    }
+    if (jobType === 'bootstrap_whitelist') return 'bootstrap_whitelist';
+    if (jobType === 'match_cik') return 'match_cik';
+    if (jobType === 'bootstrap_stocks') return 'bootstrap_stocks';
+    if (jobType === 'enrich_stocks_edgar') return 'enrich_stocks_edgar';
+    return null;
+  }
+
+  function isJobActive(payload: Record<string, unknown>) {
+    const lockKey = lockKeyForPayload(payload);
+    return Boolean(lockKey && activeLockKeys.has(lockKey));
+  }
+
+  async function runJob(payload: Record<string, unknown>, label: string) {
+    const lockKey = lockKeyForPayload(payload);
+    if (lockKey && activeLockKeys.has(lockKey)) {
+      if (typeof window !== 'undefined') {
+        window.alert(`A job with lock ${lockKey} is already queued or running.`);
+      }
+      return;
+    }
+    try {
+      const dryRun = (await apiClient.post('/admin/13f/jobs', { ...payload, dry_run: true })).data;
+      if (dryRun.conflict) {
+        if (typeof window !== 'undefined') {
+          window.alert(`A job with lock ${dryRun.lock_key ?? lockKey ?? 'this action'} is already active.`);
+        }
+        return;
+      }
+      const message = `Run ${label}?\n\n${jobPreviewLine(dryRun.preview ?? dryRun)}`;
+      if (typeof window !== 'undefined' && !window.confirm(message)) return;
+      triggerJob.mutate({ ...payload, dry_run: false });
+    } catch {
+      const fallback = `Run ${label}? Preview failed, but the backend will still enforce locks.`;
+      if (typeof window !== 'undefined' && !window.confirm(fallback)) return;
+      triggerJob.mutate({ ...payload, dry_run: false });
+    }
   }
 
   function handleConfirmManager(manager: Record<string, unknown>) {
@@ -371,6 +434,55 @@ export default function Admin13FPage() {
           <div className="rounded-md border border-amber-300/70 bg-amber-50 px-3 py-2 text-sm text-amber-950">
             {freshnessLine(readiness)}
           </div>
+          <div className="grid gap-3 lg:grid-cols-[280px_minmax(0,1fr)]">
+            <div className="rounded-md border border-border/70 p-3">
+              <div className="text-xs font-semibold uppercase text-muted-foreground">
+                Current Quarter
+              </div>
+              <div className="mt-2 flex items-center justify-between gap-2">
+                <div className="text-lg font-semibold">{readiness.currentQuarter}</div>
+                <Badge variant={badgeVariant(
+                  readiness.currentHealth === 'complete'
+                    ? 'success'
+                    : readiness.currentHealth === 'setup_required' || readiness.currentHealth === 'needs_review'
+                      ? 'danger'
+                      : 'warning'
+                )}>
+                  {readiness.currentHealth.replaceAll('_', ' ')}
+                </Badge>
+              </div>
+              <div className="mt-2 text-sm text-muted-foreground">
+                Phase: {readiness.currentPhase.replaceAll('_', ' ')}
+              </div>
+              <div className="mt-1 text-sm text-muted-foreground">
+                Filing deadline: {readiness.filingDeadline ?? '—'}
+              </div>
+            </div>
+            <div className="rounded-md border border-border/70 p-3">
+              <div className="mb-3 text-xs font-semibold uppercase text-muted-foreground">
+                Setup Checklist
+              </div>
+              <div className="grid gap-2 md:grid-cols-2">
+                {readiness.setupChecklist.map((item: Record<string, string>) => (
+                  <div key={item.code} className="rounded-md border border-border/70 bg-muted/20 p-2">
+                    <div className="flex items-center justify-between gap-2">
+                      <div className="text-sm font-medium">{item.label}</div>
+                      <Badge variant={badgeVariant(item.statusTone)}>
+                        {item.status.replaceAll('_', ' ')}
+                      </Badge>
+                    </div>
+                    <div className="mt-1 text-xs text-muted-foreground">{item.completeWhen}</div>
+                    {item.status !== 'complete' ? (
+                      <div className="mt-1 text-xs text-foreground">{item.adminAction}</div>
+                    ) : null}
+                  </div>
+                ))}
+                {readiness.setupChecklist.length === 0 ? (
+                  <div className="text-sm text-muted-foreground">No setup checklist returned.</div>
+                ) : null}
+              </div>
+            </div>
+          </div>
           {readiness.topTask ? (
             <div className="flex items-start gap-2 rounded-md border border-rose-300/70 bg-rose-50 px-3 py-2 text-sm text-rose-950">
               <ShieldAlert className="mt-0.5 h-4 w-4 shrink-0" />
@@ -507,6 +619,7 @@ export default function Admin13FPage() {
                           type="button"
                           variant="ghost"
                           size="sm"
+                          disabled={isJobActive(amendment.recommendedJob)}
                           onClick={() =>
                             runJob(amendment.recommendedJob, `Reprocess ${amendment.accessionNo}`)
                           }
@@ -615,7 +728,14 @@ export default function Admin13FPage() {
                       {formatInteger(quarter.filedManagers)} / {formatInteger(quarter.trackedManagers)}
                     </TableCell>
                     <TableCell>{formatInteger(quarter.holdingsCount)}</TableCell>
-                    <TableCell>{formatPercent(quarter.linkedRatio)}</TableCell>
+                    <TableCell>
+                      <div>{formatPercent(quarter.linkedRatio)}</div>
+                      {quarter.linkedUnavailableReason ? (
+                        <div className="mt-1 text-xs text-muted-foreground">
+                          {quarter.linkedUnavailableReason}
+                        </div>
+                      ) : null}
+                    </TableCell>
                     <TableCell>{quarter.amendmentStatus?.replaceAll('_', ' ')}</TableCell>
                     <TableCell>
                       <Button
@@ -827,6 +947,7 @@ export default function Admin13FPage() {
           <Button
             type="button"
             variant="outline"
+            disabled={isJobActive({ job_type: 'bootstrap_whitelist' })}
             onClick={() => runJob({ job_type: 'bootstrap_whitelist' }, 'Bootstrap whitelist')}
           >
             Bootstrap whitelist
@@ -834,6 +955,7 @@ export default function Admin13FPage() {
           <Button
             type="button"
             variant="outline"
+            disabled={isJobActive({ job_type: 'match_cik' })}
             onClick={() => runJob({ job_type: 'match_cik' }, 'Match CIK')}
           >
             Match CIK
@@ -841,7 +963,7 @@ export default function Admin13FPage() {
           <Button
             type="button"
             variant="outline"
-            disabled={!targetQuarter}
+            disabled={!targetQuarter || isJobActive({ job_type: 'fetch_quarter_index', quarter: targetQuarter })}
             onClick={() =>
               runJob({ job_type: 'fetch_quarter_index', quarter: targetQuarter }, 'Fetch quarter index')
             }
@@ -851,7 +973,7 @@ export default function Admin13FPage() {
           <Button
             type="button"
             variant="outline"
-            disabled={!targetQuarter}
+            disabled={!targetQuarter || isJobActive({ job_type: 'ingest_holdings', quarter: targetQuarter })}
             onClick={() =>
               runJob({ job_type: 'ingest_holdings', quarter: targetQuarter }, 'Ingest holdings')
             }
@@ -861,7 +983,7 @@ export default function Admin13FPage() {
           <Button
             type="button"
             variant="outline"
-            disabled={!targetQuarter}
+            disabled={!targetQuarter || isJobActive({ job_type: 'quality_check', quarter: targetQuarter })}
             onClick={() =>
               runJob({ job_type: 'quality_check', quarter: targetQuarter }, 'Quality check')
             }
@@ -871,7 +993,7 @@ export default function Admin13FPage() {
           <Button
             type="button"
             variant="outline"
-            disabled={!targetQuarter}
+            disabled={!targetQuarter || isJobActive({ job_type: 'enrich_cusip', quarter: targetQuarter })}
             onClick={() =>
               runJob({ job_type: 'enrich_cusip', quarter: targetQuarter }, 'Enrich CUSIP mappings')
             }
@@ -881,6 +1003,7 @@ export default function Admin13FPage() {
           <Button
             type="button"
             variant="outline"
+            disabled={isJobActive({ job_type: 'bootstrap_stocks' })}
             onClick={() => runJob({ job_type: 'bootstrap_stocks' }, 'Bootstrap stocks')}
           >
             Bootstrap stocks
@@ -888,6 +1011,7 @@ export default function Admin13FPage() {
           <Button
             type="button"
             variant="outline"
+            disabled={isJobActive({ job_type: 'enrich_stocks_edgar' })}
             onClick={() => runJob({ job_type: 'enrich_stocks_edgar' }, 'Enrich stocks from EDGAR')}
           >
             Enrich stocks from EDGAR
@@ -895,6 +1019,11 @@ export default function Admin13FPage() {
           <Button
             type="button"
             variant="outline"
+            disabled={isJobActive({
+              job_type: 'backfill_quarters',
+              quarters: Number(backfillQuarters || '4'),
+              start_quarter: backfillStartQuarter.trim() || undefined,
+            })}
             onClick={() =>
               runJob(
                 {
@@ -911,7 +1040,7 @@ export default function Admin13FPage() {
           <Button
             type="button"
             variant="outline"
-            disabled={!targetAccession}
+            disabled={!targetAccession || isJobActive({ job_type: 'ingest_accession', accession_no: targetAccession })}
             onClick={() =>
               runJob({ job_type: 'ingest_accession', accession_no: targetAccession }, 'Retry accession')
             }
@@ -921,7 +1050,7 @@ export default function Admin13FPage() {
           <Button
             type="button"
             variant="outline"
-            disabled={!targetAccession}
+            disabled={!targetAccession || isJobActive({ job_type: 'reprocess_amendment', accession_no: targetAccession })}
             onClick={() =>
               runJob(
                 { job_type: 'reprocess_amendment', accession_no: targetAccession },
@@ -1178,8 +1307,19 @@ export default function Admin13FPage() {
                       <div className="mt-1 text-lg font-semibold">
                         {formatPercent(selectedQuarterDetail.summary?.linked_holding_ratio)}
                       </div>
+                      {selectedQuarterDetail.summary?.linked_holding_unavailable_reason ? (
+                        <div className="mt-1 text-xs text-muted-foreground">
+                          {String(selectedQuarterDetail.summary.linked_holding_unavailable_reason)}
+                        </div>
+                      ) : null}
                     </div>
                   </div>
+                  {selectedQuarterDetail.summary?.active_job_id ? (
+                    <div className="rounded-md border border-amber-300/70 bg-amber-50 px-3 py-2 text-sm text-amber-950">
+                      Active job #{String(selectedQuarterDetail.summary.active_job_id)} ·{' '}
+                      {String(selectedQuarterDetail.summary.active_job_type ?? 'job')}
+                    </div>
+                  ) : null}
 
                   <div>
                     <div className="mb-2 text-xs font-semibold uppercase text-muted-foreground">
@@ -1193,6 +1333,7 @@ export default function Admin13FPage() {
                             type="button"
                             variant="outline"
                             size="sm"
+                            disabled={isJobActive(action)}
                             onClick={() => runJob(action, String(action.label ?? action.job_type ?? 'Run action'))}
                           >
                             {String(action.label ?? action.job_type ?? 'Run action')}
@@ -1396,6 +1537,7 @@ export default function Admin13FPage() {
                     <Button
                       type="button"
                       variant="outline"
+                      disabled={isJobActive(selectedAmendment.recommended_job)}
                       onClick={() =>
                         runJob(
                           selectedAmendment.recommended_job,

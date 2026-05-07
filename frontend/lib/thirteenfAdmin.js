@@ -42,6 +42,16 @@ function normalizeReadiness(payload) {
     capabilities: Array.isArray(data.historical_depth_capabilities)
       ? data.historical_depth_capabilities
       : [],
+    setupChecklist: Array.isArray(data.setup_checklist)
+      ? data.setup_checklist.map((item) => ({
+          code: item.code,
+          label: item.label ?? item.code,
+          status: item.status ?? 'blocked',
+          statusTone: item.status === 'complete' ? 'success' : item.status === 'warning' ? 'warning' : 'danger',
+          completeWhen: item.complete_when ?? '',
+          adminAction: item.admin_action ?? '',
+        }))
+      : [],
     warnings: Array.isArray(data.warnings) ? data.warnings : [],
     blockers: Array.isArray(data.blockers) ? data.blockers : [],
     counts: data.counts && typeof data.counts === 'object' ? data.counts : {},
@@ -61,8 +71,11 @@ function normalizeQuarters(items) {
     trackedManagers: item.tracked_managers ?? 0,
     holdingsCount: item.holdings_count ?? 0,
     linkedRatio: item.linked_holding_ratio,
+    linkedUnavailableReason: item.linked_holding_unavailable_reason ?? null,
     amendmentStatus: item.amendment_status ?? 'unknown',
     failedFilings: item.failed_filings ?? 0,
+    activeJobId: item.active_job_id ?? null,
+    activeJobType: item.active_job_type ?? null,
   }));
 }
 
@@ -167,9 +180,28 @@ function freshnessLine(readiness) {
   return `Default data period: ${readiness.latestUsableQuarter}. Current quarter: ${readiness.currentQuarter} (${readiness.currentPhase}).${deadline} Amendment status: ${readiness.amendmentStatus}.`;
 }
 
+function jobPreviewLine(preview) {
+  if (!preview || typeof preview !== 'object') return 'No preview available.';
+  const scope = preview.estimated_scope && typeof preview.estimated_scope === 'object'
+    ? preview.estimated_scope
+    : {};
+  const parts = [
+    `Lock: ${preview.lock_key ?? '—'}`,
+    preview.target_quarter ? `Quarter: ${preview.target_quarter}` : null,
+    preview.accession_no ? `Accession: ${preview.accession_no}` : null,
+    'tracked_managers' in scope ? `Tracked managers: ${scope.tracked_managers}` : null,
+    'filings_in_quarter' in scope ? `Filings in quarter: ${scope.filings_in_quarter}` : null,
+    'pending_filings' in scope ? `Pending filings: ${scope.pending_filings}` : null,
+    'failed_filings' in scope ? `Failed filings: ${scope.failed_filings}` : null,
+    preview.rate_limit_warning ? `Warning: ${preview.rate_limit_warning}` : null,
+  ].filter(Boolean);
+  return parts.join('\n');
+}
+
 module.exports = {
   formatPercent,
   freshnessLine,
+  jobPreviewLine,
   normalizeAmendments,
   normalizeCikReviewEvents,
   healthTone,

@@ -267,6 +267,59 @@ def test_oracles_lens_defaults_to_latest_complete_period_and_signal_rows(client,
     assert all(flag["key"] != "unknown_manager_type_heavy" for flag in item["caution_flags"])
 
 
+def test_oracles_lens_uses_latest_effective_amendment_and_excludes_superseded_holdings(client, db_session):
+    manager = _manager(db_session, "Amendment Fund", cik="0000888888")
+    old_stock = _stock(db_session, "OLDAM", "Old Amendment Holding")
+    new_stock = _stock(db_session, "NEWAM", "New Amendment Holding")
+    period = date(2033, 12, 31)
+    original = _filing(
+        db_session,
+        manager,
+        accession="amend-original",
+        period=period,
+        total_value=100_000,
+    )
+    original.is_latest_for_period = False
+    amendment = Filing13F(
+        manager_id=manager.id,
+        accession_no="amend-latest",
+        period_of_report=period,
+        filed_at=period,
+        form_type="13F-HR/A",
+        amends_accession_no=original.accession_no,
+        version_rank=2,
+        is_latest_for_period=True,
+        reported_total_value_thousands=100_000,
+        computed_total_value_thousands=100_000,
+    )
+    db_session.add(amendment)
+    db_session.flush()
+    _holding(
+        db_session,
+        original,
+        old_stock,
+        cusip="111111111",
+        shares=100,
+        value_thousands=10_000,
+    )
+    _holding(
+        db_session,
+        amendment,
+        new_stock,
+        cusip="222222222",
+        shares=200,
+        value_thousands=20_000,
+    )
+    db_session.commit()
+
+    response = client.get("/api/v1/13f/oracles-lens?period=2033-Q4&min_holders=1")
+
+    assert response.status_code == 200
+    tickers = {item["ticker"] for item in response.json()["items"]}
+    assert "NEWAM" in tickers
+    assert "OLDAM" not in tickers
+
+
 def test_oracles_lens_adds_value_line_quality_overlay(client, db_session):
     target = _seed_oracles_lens_fixture(db_session)
     document = _pdf_document(db_session, target)

@@ -94,6 +94,13 @@ def build_admin_readiness(session: Session, *, today: date | None = None) -> dic
                 "message": "No confirmed manager / CIK whitelist exists.",
             }
         )
+    if not settings.EDGAR_SCHEDULER_ENABLED:
+        blockers.append(
+            {
+                "code": "EDGAR_SCHEDULER_DISABLED",
+                "message": "EDGAR scheduler is disabled.",
+            }
+        )
     if usable_summary["linked_holding_ratio"] is not None and usable_summary["linked_holding_ratio"] < READY_LINK_RATIO:
         warnings.append(
             {
@@ -142,10 +149,17 @@ def build_admin_readiness(session: Session, *, today: date | None = None) -> dic
             "filings": usable_summary["filings_count"],
             "holdings": usable_summary["holdings_count"],
             "linked_holdings_ratio": usable_summary["linked_holding_ratio"],
+            "linked_holding_unavailable_reason": usable_summary["linked_holding_unavailable_reason"],
             "failed_filings": usable_summary["failed_filings"],
         },
         "historical_depth_quarters": historical_depth,
         "historical_depth_capabilities": capabilities,
+        "setup_checklist": _setup_checklist(
+            scheduler_enabled=settings.EDGAR_SCHEDULER_ENABLED,
+            counts=counts,
+            usable_summary=usable_summary,
+            historical_depth=historical_depth,
+        ),
         "amendment_status": amendment_status,
         "last_successful_job_at": _last_successful_job_at(session),
         "top_task": tasks[0] if tasks else None,
@@ -264,6 +278,8 @@ def build_admin_tasks(session: Session, *, today: date | None = None) -> list[di
     counts = _global_counts(session, latest)
     tasks: list[dict[str, Any]] = []
 
+    if not settings.EDGAR_SCHEDULER_ENABLED:
+        tasks.append(_task("P0", "EDGAR_SCHEDULER_DISABLED", "EDGAR scheduler disabled", "Enable EDGAR_SCHEDULER_ENABLED and redeploy the API service"))
     if counts["confirmed_managers"] == 0:
         tasks.append(_task("P0", "NO_CONFIRMED_MANAGER_CIK_WHITELIST", "No confirmed manager / CIK whitelist", "Bootstrap whitelist, match CIK, review candidates"))
     if counts["candidate_managers"] > 0:
@@ -484,6 +500,7 @@ def trigger_job(session: Session, *, requested_by_user_id: int | None, payload: 
             "lock_key": lock_key,
             "dedupe_key": lock_key,
             "input_json": payload,
+            "preview": _job_preview(session, job_type, payload, lock_key),
         }
 
     job = JobRun(
@@ -524,6 +541,52 @@ def execute_job_payload(session: Session, job_type: str, payload: dict[str, Any]
     return _execute_job(session, job_type, payload)
 
 
+def _job_preview(session: Session, job_type: str, payload: dict[str, Any], lock_key: str) -> dict[str, Any]:
+    quarter = payload.get("quarter")
+    accession_no = payload.get("accession_no")
+    warnings = ["13F jobs may call EDGAR and should respect SEC rate limits."]
+    preview: dict[str, Any] = {
+        "requires_confirmation": True,
+        "lock_key": lock_key,
+        "target_quarter": quarter,
+        "accession_no": accession_no,
+        "rate_limit_warning": warnings[0],
+        "warnings": warnings,
+        "estimated_scope": {},
+    }
+
+    if quarter:
+        window = quarter_window(str(quarter))
+        filings_query = session.query(Filing13F).filter(Filing13F.period_of_report.between(window.start, window.end))
+        pending_query = filings_query.filter(Filing13F.raw_infotable_doc_id.is_(None))
+        preview["estimated_scope"] = {
+            "tracked_managers": _confirmed_manager_count(session),
+            "filings_in_quarter": filings_query.count(),
+            "pending_filings": pending_query.count(),
+            "failed_filings": _failed_filing_count(session, window),
+        }
+    elif accession_no:
+        filing = session.query(Filing13F).filter(Filing13F.accession_no == str(accession_no)).one_or_none()
+        preview["estimated_scope"] = {
+            "filing_exists": filing is not None,
+            "manager_id": filing.manager_id if filing else None,
+            "period_of_report": filing.period_of_report.isoformat() if filing else None,
+            "form_type": filing.form_type if filing else None,
+        }
+    elif job_type == "backfill_quarters":
+        preview["estimated_scope"] = {
+            "start_quarter": payload.get("start_quarter") or "latest",
+            "quarters": payload.get("quarters"),
+        }
+    elif job_type in {"bootstrap_whitelist", "match_cik"}:
+        preview["estimated_scope"] = {
+            "managers": session.query(InstitutionManager).count(),
+            "confirmed_managers": _confirmed_manager_count(session),
+            "candidate_managers": session.query(InstitutionManager).filter(InstitutionManager.match_status == "candidate").count(),
+        }
+    return preview
+
+
 def _quarter_summary(session: Session, quarter: str, *, today: date) -> dict[str, Any]:
     window = quarter_window(quarter)
     confirmed_managers = _confirmed_manager_count(session)
@@ -548,6 +611,8 @@ def _quarter_summary(session: Session, quarter: str, *, today: date) -> dict[str
     quality_report = _latest_quality_report(session, quarter)
     quality_status = quality_report.status if quality_report else "not_checked"
     phase = _quarter_phase(window, today)
+    active_job = _active_quarter_job(session, quarter)
+    has_prior_data = _has_prior_quarter_holdings(session, quarter)
     health = _quarter_health(
         confirmed_managers=confirmed_managers,
         form_idx_fetched=form_idx_fetched,
@@ -558,7 +623,10 @@ def _quarter_summary(session: Session, quarter: str, *, today: date) -> dict[str
         amendment_status=amendment_status,
         quality_status=quality_status,
         phase=phase,
+        active_job=active_job is not None,
+        has_prior_data=has_prior_data,
     )
+    linked_holding_unavailable_reason = "NO_HOLDINGS_PARSED" if linked_ratio is None else None
     return {
         "quarter": quarter,
         "quarter_start_date": window.start.isoformat(),
@@ -574,6 +642,7 @@ def _quarter_summary(session: Session, quarter: str, *, today: date) -> dict[str
         "holdings_count": holdings_count,
         "linked_holdings_count": linked_holdings_count,
         "linked_holding_ratio": round(linked_ratio, 4) if linked_ratio is not None else None,
+        "linked_holding_unavailable_reason": linked_holding_unavailable_reason,
         "failed_filings": failed_filings,
         "amendment_status": amendment_status,
         "quality_status": quality_status,
@@ -582,6 +651,8 @@ def _quarter_summary(session: Session, quarter: str, *, today: date) -> dict[str
         "quality_checked_at": quality_report.checked_at.isoformat() if quality_report else None,
         "quality_report_id": quality_report.id if quality_report else None,
         "last_successful_job_at": _last_successful_job_at(session),
+        "active_job_id": active_job.id if active_job else None,
+        "active_job_type": active_job.job_type if active_job else None,
     }
 
 
@@ -593,7 +664,7 @@ def _quarter_phase(window: QuarterWindow, today: date) -> str:
     return "post_deadline"
 
 
-def _quarter_health(*, confirmed_managers: int, form_idx_fetched: bool, filings_count: int, holdings_count: int, failed_filings: int, linked_ratio: float | None, amendment_status: str, quality_status: str, phase: str) -> str:
+def _quarter_health(*, confirmed_managers: int, form_idx_fetched: bool, filings_count: int, holdings_count: int, failed_filings: int, linked_ratio: float | None, amendment_status: str, quality_status: str, phase: str, active_job: bool, has_prior_data: bool) -> str:
     if confirmed_managers == 0:
         return "setup_required"
     if failed_filings:
@@ -602,6 +673,10 @@ def _quarter_health(*, confirmed_managers: int, form_idx_fetched: bool, filings_
         return "needs_review"
     if quality_status in {"failed", "warning"}:
         return "needs_review"
+    if active_job:
+        return "ingesting"
+    if phase == "post_deadline" and not form_idx_fetched and filings_count == 0 and has_prior_data:
+        return "stale"
     if not form_idx_fetched and filings_count == 0:
         return "not_started" if phase == "post_deadline" else "partial"
     if form_idx_fetched and filings_count == 0:
@@ -658,6 +733,94 @@ def _confirmed_manager_count(session: Session) -> int:
     )
 
 
+def _setup_checklist(
+    *,
+    scheduler_enabled: bool,
+    counts: dict[str, Any],
+    usable_summary: dict[str, Any],
+    historical_depth: int,
+) -> list[dict[str, Any]]:
+    def item(code: str, label: str, complete_when: str, complete: bool, admin_action: str, *, warning: bool = False) -> dict[str, Any]:
+        status = "complete" if complete else "warning" if warning else "blocked"
+        return {
+            "code": code,
+            "label": label,
+            "status": status,
+            "complete_when": complete_when,
+            "admin_action": admin_action,
+        }
+
+    amendment_ok = usable_summary["amendment_status"] in {"no_amendments", "amendments_applied"}
+    quality_ok = usable_summary["quality_status"] == "passed" and amendment_ok
+    return [
+        item(
+            "SCHEDULER_CONFIGURED",
+            "Scheduler configured",
+            "EDGAR_SCHEDULER_ENABLED is true",
+            scheduler_enabled,
+            "Enable EDGAR_SCHEDULER_ENABLED and redeploy the API service",
+        ),
+        item(
+            "MANAGER_WHITELIST_SEEDED",
+            "Manager whitelist seeded",
+            "At least one tracked manager exists",
+            counts["managers"] > 0,
+            "Bootstrap whitelist",
+        ),
+        item(
+            "MANAGER_CIKS_CONFIRMED",
+            "Manager CIKs confirmed",
+            "At least one manager has a confirmed CIK",
+            counts["confirmed_managers"] > 0,
+            "Bootstrap whitelist, match CIK, review candidates",
+        ),
+        item(
+            "QUARTER_INDEX_FETCHED",
+            "Quarter index fetched",
+            "Latest usable quarter has an EDGAR form index document",
+            usable_summary["form_idx_fetched"],
+            "Fetch quarter index",
+        ),
+        item(
+            "FILINGS_AVAILABLE",
+            "Filings available",
+            "Latest usable quarter has at least one effective filing",
+            usable_summary["filings_count"] > 0,
+            "Fetch quarter index or inspect whitelist coverage",
+        ),
+        item(
+            "HOLDINGS_INGESTED",
+            "Holdings ingested",
+            "Latest usable quarter has parsed holdings",
+            usable_summary["holdings_count"] > 0,
+            "Ingest holdings",
+        ),
+        item(
+            "CUSIP_ENRICHED",
+            "CUSIP enriched",
+            "Linked holding ratio is at least the ready threshold",
+            usable_summary["linked_holding_ratio"] is not None and usable_summary["linked_holding_ratio"] >= READY_LINK_RATIO,
+            "Run CUSIP enrichment and bootstrap stocks",
+            warning=usable_summary["linked_holding_ratio"] is not None,
+        ),
+        item(
+            "QUALITY_CHECKED",
+            "Quality checked",
+            "Latest quality check passed and amendments are applied or absent",
+            quality_ok,
+            "Run quality check and reprocess pending or failed amendments",
+        ),
+        item(
+            "HISTORICAL_DEPTH_TARGET",
+            "Historical depth target",
+            "At least four consecutive quarters have holdings",
+            historical_depth >= 4,
+            "Run historical backfill",
+            warning=historical_depth > 0,
+        ),
+    ]
+
+
 def _form_idx_fetched(session: Session, window: QuarterWindow) -> bool:
     year = window.start.year
     qtr = int(window.label.split("-Q", 1)[1])
@@ -666,6 +829,40 @@ def _form_idx_fetched(session: Session, window: QuarterWindow) -> bool:
         .filter(RawSourceDocument.source_system == "edgar")
         .filter(RawSourceDocument.document_type == "form_idx")
         .filter(RawSourceDocument.source_url.contains(f"/{year}/QTR{qtr}/"))
+        .first()
+        is not None
+    )
+
+
+def _active_quarter_job(session: Session, quarter: str) -> JobRun | None:
+    return (
+        session.query(JobRun)
+        .filter(JobRun.status.in_(ACTIVE_JOB_STATUSES))
+        .filter(
+            or_(
+                JobRun.quarter == quarter,
+                JobRun.lock_key.in_(
+                    [
+                        f"fetch_quarter_index:{quarter}",
+                        f"ingest_holdings:{quarter}",
+                        f"quality_check:{quarter}",
+                        f"enrich_cusip:{quarter}",
+                    ]
+                ),
+            )
+        )
+        .order_by(JobRun.created_at.desc(), JobRun.id.desc())
+        .first()
+    )
+
+
+def _has_prior_quarter_holdings(session: Session, quarter: str) -> bool:
+    window = quarter_window(quarter)
+    return (
+        session.query(Holding13F)
+        .join(Filing13F, Filing13F.id == Holding13F.filing_id)
+        .filter(Filing13F.period_of_report < window.start)
+        .filter(Filing13F.is_latest_for_period.is_(True))
         .first()
         is not None
     )

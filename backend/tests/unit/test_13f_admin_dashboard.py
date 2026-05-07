@@ -15,6 +15,7 @@ from app.models.institutions import (
 from app.models.stocks import Stock
 from app.services.edgar_ingestion import match_cik_candidates
 from app.services.edgar_quality import QualityReport, persist_quality_report
+from app.services.thirteenf_admin_dashboard import build_quarters
 from app.services.thirteenf_job_worker import execute_queued_job_once, record_worker_heartbeat
 
 
@@ -98,9 +99,10 @@ def _holding(db_session, filing: Filing13F, stock: Stock) -> Holding13F:
     return holding
 
 
-def test_admin_readiness_reports_setup_required_without_confirmed_managers(client, db_session, user_factory, auth_headers):
+def test_admin_readiness_reports_setup_required_without_confirmed_managers(client, db_session, user_factory, auth_headers, monkeypatch):
     _clear_13f(db_session)
     admin = _admin(user_factory)
+    monkeypatch.setattr("app.services.thirteenf_admin_dashboard.settings.EDGAR_SCHEDULER_ENABLED", True)
 
     response = client.get("/api/v1/admin/13f/readiness", headers=auth_headers(admin))
 
@@ -111,6 +113,24 @@ def test_admin_readiness_reports_setup_required_without_confirmed_managers(clien
     assert payload["current_quarter"]["health"] == "setup_required"
     assert payload["top_task"]["code"] == "NO_CONFIRMED_MANAGER_CIK_WHITELIST"
     assert payload["counts"]["confirmed_managers"] == 0
+    checklist_by_code = {item["code"]: item for item in payload["setup_checklist"]}
+    assert checklist_by_code["SCHEDULER_CONFIGURED"]["status"] in {"complete", "blocked"}
+    assert checklist_by_code["MANAGER_CIKS_CONFIRMED"]["status"] == "blocked"
+    assert checklist_by_code["MANAGER_CIKS_CONFIRMED"]["admin_action"] == "Bootstrap whitelist, match CIK, review candidates"
+
+
+def test_scheduler_disabled_creates_p0_setup_task(client, db_session, user_factory, auth_headers, monkeypatch):
+    _clear_13f(db_session)
+    admin = _admin(user_factory)
+    monkeypatch.setattr("app.services.thirteenf_admin_dashboard.settings.EDGAR_SCHEDULER_ENABLED", False)
+
+    response = client.get("/api/v1/admin/13f/tasks", headers=auth_headers(admin))
+
+    assert response.status_code == 200
+    tasks = response.json()["items"]
+    scheduler_task = next(item for item in tasks if item["code"] == "EDGAR_SCHEDULER_DISABLED")
+    assert scheduler_task["priority"] == "P0"
+    assert "Enable EDGAR_SCHEDULER_ENABLED" in scheduler_task["recommended_action"]
 
 
 def test_consumer_readiness_exposes_only_safe_fields(client, db_session):
@@ -132,6 +152,7 @@ def test_consumer_readiness_exposes_only_safe_fields(client, db_session):
     assert "blockers" not in payload
     assert "counts" not in payload
     assert "last_successful_job_at" not in payload
+    assert "setup_checklist" not in payload
 
 
 def test_amendment_pending_creates_p1_task_and_needs_review_health(client, db_session, user_factory, auth_headers):
@@ -334,6 +355,27 @@ def test_job_trigger_queues_job_without_running_it(client, db_session, user_fact
     assert payload["started_at"] is None
     assert payload["finished_at"] is None
     assert payload["worker_id"] is None
+
+
+def test_job_trigger_dry_run_returns_safe_preview_without_queueing(client, db_session, user_factory, auth_headers):
+    _clear_13f(db_session)
+    admin = _admin(user_factory)
+
+    response = client.post(
+        "/api/v1/admin/13f/jobs",
+        headers=auth_headers(admin),
+        json={"job_type": "ingest_holdings", "quarter": "2025-Q4", "dry_run": True},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["dry_run"] is True
+    assert payload["job_type"] == "ingest_holdings"
+    assert payload["lock_key"] == "ingest_holdings:2025-Q4"
+    assert payload["preview"]["requires_confirmation"] is True
+    assert payload["preview"]["target_quarter"] == "2025-Q4"
+    assert payload["preview"]["rate_limit_warning"]
+    assert db_session.query(JobRun).count() == 0
 
 
 def test_worker_executes_queued_job_and_records_heartbeat(db_session, monkeypatch):
@@ -628,6 +670,61 @@ def test_worker_heartbeat_endpoint_marks_stale_workers(client, db_session, user_
     worker = response.json()["items"][0]
     assert worker["worker_id"] == "stale-worker"
     assert worker["status"] == "stale"
+
+
+def test_active_quarter_job_marks_quarter_health_ingesting(client, db_session, user_factory, auth_headers):
+    _clear_13f(db_session)
+    admin = _admin(user_factory)
+    _manager(db_session)
+    db_session.add(
+        JobRun(
+            job_type="ingest_holdings",
+            status="running",
+            requested_by_user_id=admin.id,
+            trigger_source="manual",
+            dedupe_key="ingest_holdings:2025-Q4",
+            lock_key="ingest_holdings:2025-Q4",
+            quarter="2025-Q4",
+            input_json={"job_type": "ingest_holdings", "quarter": "2025-Q4"},
+        )
+    )
+    db_session.commit()
+
+    response = client.get("/api/v1/admin/13f/quarters/2025-Q4", headers=auth_headers(admin))
+
+    assert response.status_code == 200
+    assert response.json()["quarter_health"] == "ingesting"
+
+
+def test_post_deadline_missing_current_data_with_prior_history_is_stale(db_session):
+    _clear_13f(db_session)
+    manager = _manager(db_session)
+    stock = _stock(db_session)
+    prior = _filing(db_session, manager, accession="0001234567-26-000001", period=date(2025, 12, 31))
+    _holding(db_session, prior, stock)
+    db_session.commit()
+
+    quarters = build_quarters(db_session, today=date(2026, 5, 16), limit=2)
+
+    current = next(item for item in quarters if item["quarter"] == "2026-Q2")
+    latest_usable = next(item for item in quarters if item["quarter"] == "2026-Q1")
+    assert current["quarter_phase"] == "pre_window"
+    assert latest_usable["quarter_phase"] == "post_deadline"
+    assert latest_usable["quarter_health"] == "stale"
+
+
+def test_no_holdings_exposes_unavailable_reason_for_linked_ratio(client, db_session, user_factory, auth_headers):
+    _clear_13f(db_session)
+    admin = _admin(user_factory)
+    _manager(db_session)
+    db_session.commit()
+
+    response = client.get("/api/v1/admin/13f/quarters/2025-Q4", headers=auth_headers(admin))
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["linked_holding_ratio"] is None
+    assert payload["linked_holding_unavailable_reason"] == "NO_HOLDINGS_PARSED"
 
 
 def test_manager_payload_includes_cik_candidate_audit_fields(client, db_session, user_factory, auth_headers):
