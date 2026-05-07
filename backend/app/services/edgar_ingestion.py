@@ -11,7 +11,7 @@ import unicodedata
 from datetime import datetime, timezone
 from typing import Optional
 
-from sqlalchemy import text
+from sqlalchemy import text, or_
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
@@ -75,6 +75,69 @@ def _name_score(a: str, b: str) -> float:
 # ---------------------------------------------------------------------------
 # Step 0 – whitelist bootstrap
 # ---------------------------------------------------------------------------
+
+def seed_confirmed_managers(db: Session) -> int:
+    """Seed institution_managers from a predefined list of confirmed CIKs.
+
+    This bypasses the match-cik step for high-priority managers.
+    """
+    import json
+    import os
+    from pathlib import Path
+
+    seed_path = Path(__file__).parent / "seed_data" / "confirmed_managers.json"
+    if not os.path.exists(seed_path):
+        logger.warning("Seed data not found at %s", seed_path)
+        return 0
+
+    with open(seed_path, "r") as f:
+        seed_data = json.load(f)
+
+    updated = 0
+    for entry in seed_data:
+        dataroma_code = entry.get("dataroma_code")
+        cik = entry.get("cik")
+        if not cik:
+            continue
+
+        existing = (
+            db.query(InstitutionManager)
+            .filter(
+                or_(
+                    InstitutionManager.dataroma_code == dataroma_code,
+                    InstitutionManager.cik == cik,
+                )
+            )
+            .one_or_none()
+        )
+
+        if existing:
+            # Update existing record to confirmed
+            existing.cik = cik
+            existing.match_status = "confirmed"
+            if entry.get("display_name"):
+                existing.display_name = entry["display_name"]
+            if entry.get("legal_name"):
+                existing.legal_name = entry["legal_name"]
+                existing.name_normalized = _normalize_name(entry["legal_name"])
+            updated += 1
+        else:
+            # Create new confirmed record
+            record = InstitutionManager(
+                cik=cik,
+                legal_name=entry.get("legal_name") or entry.get("display_name"),
+                display_name=entry.get("display_name"),
+                name_normalized=_normalize_name(entry.get("legal_name") or entry.get("display_name")),
+                dataroma_code=dataroma_code,
+                match_status="confirmed",
+                is_superinvestor=True,
+                dataroma_synced_at=datetime.now(timezone.utc),
+            )
+            db.add(record)
+            updated += 1
+
+    return updated
+
 
 def bootstrap_whitelist(db: Session) -> int:
     """Seed institution_managers from Dataroma superinvestor list.
