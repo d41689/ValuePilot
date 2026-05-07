@@ -37,17 +37,9 @@ def upgrade() -> None:
     op.create_index("ix_job_runs_job_type", "job_runs", ["job_type"])
     op.create_index("ix_job_runs_status", "job_runs", ["status"])
     op.create_index("ix_job_runs_lock_key", "job_runs", ["lock_key"])
-    op.create_index(
-        "uq_job_runs_active_lock_key",
-        "job_runs",
-        ["lock_key"],
-        unique=True,
-        postgresql_where=sa.text("status IN ('queued', 'running', 'cancel_requested')"),
-    )
 
 
 def downgrade() -> None:
-    op.drop_index("uq_job_runs_active_lock_key", table_name="job_runs")
     op.drop_index("ix_job_runs_lock_key", table_name="job_runs")
     op.drop_index("ix_job_runs_status", table_name="job_runs")
     op.drop_index("ix_job_runs_job_type", table_name="job_runs")

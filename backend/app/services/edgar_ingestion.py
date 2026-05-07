@@ -11,7 +11,7 @@ import unicodedata
 from datetime import datetime, timezone
 from typing import Optional
 
-from sqlalchemy import text, or_
+from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
@@ -100,16 +100,15 @@ def seed_confirmed_managers(db: Session) -> int:
         if not cik:
             continue
 
-        existing = (
-            db.query(InstitutionManager)
-            .filter(
-                or_(
-                    InstitutionManager.dataroma_code == dataroma_code,
-                    InstitutionManager.cik == cik,
-                )
+        # Match by CIK first (authoritative SEC identifier), then fall back to dataroma_code.
+        # Avoids MultipleResultsFound when separate DB records each satisfy one side of an OR.
+        existing = db.query(InstitutionManager).filter_by(cik=cik).one_or_none()
+        if existing is None and dataroma_code:
+            existing = (
+                db.query(InstitutionManager)
+                .filter_by(dataroma_code=dataroma_code)
+                .one_or_none()
             )
-            .one_or_none()
-        )
 
         if existing:
             # Update existing record to confirmed

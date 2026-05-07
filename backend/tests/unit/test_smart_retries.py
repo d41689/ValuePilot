@@ -101,6 +101,51 @@ def test_smart_retry_deduplicates_same_accession_across_jobs(db_session):
     mock_trigger.assert_called_once()
 
 
+def test_smart_retry_retries_after_failed_newer_run(db_session):
+    """A newer run that itself failed must not block another smart retry."""
+    old_job = _old_partial_job("fail-001", "old_job", created_offset_hours=30)
+    db_session.add(old_job)
+    db_session.flush()
+
+    failed_retry = JobRun(
+        job_type="ingest_accession",
+        status="failed",
+        lock_key="ingest_accession:fail-001",
+        trigger_source="smart_retry",
+        created_at=old_job.created_at + timedelta(hours=1),
+        finished_at=old_job.created_at + timedelta(hours=2),
+    )
+    db_session.add(failed_retry)
+    db_session.commit()
+
+    with patch("app.services.thirteenf_admin_dashboard.trigger_job") as mock_trigger:
+        mock_trigger.return_value = {"id": 400}
+        results = smart_retry_failed_jobs(db_session, now=NOW)
+
+    assert len(results) == 1
+    mock_trigger.assert_called_once()
+
+
+def test_smart_retry_skips_malformed_failed_accessions(db_session):
+    """Jobs with non-list failed_accessions in summary_json must be skipped gracefully."""
+    bad_job = JobRun(
+        job_type="ingest_holdings",
+        status="partial_success",
+        lock_key="bad_job",
+        trigger_source="scheduler",
+        finished_at=NOW - timedelta(hours=25),
+        summary_json={"failed_accessions": "not-a-list"},
+    )
+    db_session.add(bad_job)
+    db_session.commit()
+
+    with patch("app.services.thirteenf_admin_dashboard.trigger_job") as mock_trigger:
+        results = smart_retry_failed_jobs(db_session, now=NOW)
+
+    assert len(results) == 0
+    mock_trigger.assert_not_called()
+
+
 def test_smart_retry_stops_at_max_attempts(db_session):
     """Accession that has already been smart-retried MAX times must not be queued again."""
     old_job = _old_partial_job("stuck-001", "old_job", created_offset_hours=30)
