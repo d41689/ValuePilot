@@ -5,6 +5,7 @@ const assert = require('node:assert/strict');
 const {
   freshnessLine,
   normalizeAmendments,
+  normalizeCikReviewEvents,
   normalizeQualityReports,
   normalizeQuarters,
   normalizeReadiness,
@@ -113,4 +114,25 @@ test('normalizeAmendments maps accession status and reprocess action', () => {
   assert.equal(amendments[0].managerName, 'Test Manager');
   assert.equal(amendments[0].recommendedJob.job_type, 'reprocess_amendment');
   assert.equal(amendments[0].rawInfotable.error_message, 'bad XML');
+});
+
+test('normalizeCikReviewEvents maps revocation audit scope', () => {
+  const events = normalizeCikReviewEvents([
+    {
+      id: 31,
+      event_type: 'revoke_confirmed_cik',
+      old_cik: '0001336528',
+      new_cik: null,
+      affected_filings_count: 4,
+      affected_quarters: ['2025-Q3', '2025-Q4'],
+      requires_downstream_review: true,
+      note: 'Wrong SEC entity',
+    },
+  ]);
+
+  assert.equal(events[0].eventType, 'revoke_confirmed_cik');
+  assert.equal(events[0].oldCik, '0001336528');
+  assert.equal(events[0].affectedFilingsCount, 4);
+  assert.deepEqual(events[0].affectedQuarters, ['2025-Q3', '2025-Q4']);
+  assert.equal(events[0].requiresDownstreamReview, true);
 });

@@ -40,9 +40,36 @@ class InstitutionManager(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
     filings: Mapped[List["Filing13F"]] = relationship(back_populates="manager")
+    cik_review_events: Mapped[List["InstitutionManagerCikReviewEvent"]] = relationship(
+        order_by="InstitutionManagerCikReviewEvent.created_at.desc()"
+    )
 
     __table_args__ = (
         Index("idx_institution_managers_parent_manager_id", "parent_manager_id"),
+    )
+
+
+class InstitutionManagerCikReviewEvent(Base):
+    __tablename__ = "institution_manager_cik_review_events"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    manager_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("institution_managers.id"), nullable=False)
+    event_type: Mapped[str] = mapped_column(String(40), nullable=False)
+    old_cik: Mapped[Optional[str]] = mapped_column(String(10), nullable=True)
+    new_cik: Mapped[Optional[str]] = mapped_column(String(10), nullable=True)
+    old_match_status: Mapped[Optional[str]] = mapped_column(String(20), nullable=True)
+    new_match_status: Mapped[Optional[str]] = mapped_column(String(20), nullable=True)
+    reviewed_by_user_id: Mapped[Optional[int]] = mapped_column(BigInteger, ForeignKey("users.id"), nullable=True)
+    note: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    evidence_json: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)
+    affected_filings_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    affected_quarters: Mapped[Optional[list]] = mapped_column(JSONB, nullable=True)
+    requires_downstream_review: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+    __table_args__ = (
+        Index("ix_manager_cik_review_events_manager_id", "manager_id"),
+        Index("ix_manager_cik_review_events_created_at", "created_at"),
     )
 
 

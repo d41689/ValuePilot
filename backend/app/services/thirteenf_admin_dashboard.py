@@ -12,6 +12,7 @@ from app.core.config import settings
 from app.models.institutions import (
     Filing13F,
     Holding13F,
+    InstitutionManagerCikReviewEvent,
     InstitutionManager,
     JobRun,
     QualityReport13F,
@@ -256,6 +257,20 @@ def build_managers(session: Session) -> list[dict[str, Any]]:
     return [_manager_payload(item) for item in managers]
 
 
+def list_manager_cik_review_events(session: Session, manager_id: int, *, limit: int = 50) -> list[dict[str, Any]]:
+    manager = session.get(InstitutionManager, manager_id)
+    if manager is None:
+        raise ValueError("Manager not found")
+    events = (
+        session.query(InstitutionManagerCikReviewEvent)
+        .filter(InstitutionManagerCikReviewEvent.manager_id == manager_id)
+        .order_by(InstitutionManagerCikReviewEvent.created_at.desc(), InstitutionManagerCikReviewEvent.id.desc())
+        .limit(limit)
+        .all()
+    )
+    return [_cik_review_event_payload(event) for event in events]
+
+
 def confirm_manager_cik(
     session: Session,
     manager_id: int,
@@ -267,6 +282,8 @@ def confirm_manager_cik(
     manager = session.get(InstitutionManager, manager_id)
     if manager is None:
         raise ValueError("Manager not found")
+    old_cik = manager.cik
+    old_status = manager.match_status
     confirmed_cik = cik or manager.candidate_cik
     if confirmed_cik:
         manager.cik = confirmed_cik.zfill(10)
@@ -279,6 +296,18 @@ def confirm_manager_cik(
     manager.reviewed_at = datetime.now(timezone.utc)
     manager.review_note = note
     session.add(manager)
+    session.flush()
+    session.add(
+        _cik_review_event(
+            manager,
+            event_type="confirm_candidate_cik",
+            old_cik=old_cik,
+            old_match_status=old_status,
+            reviewed_by_user_id=reviewed_by_user_id,
+            note=note,
+            evidence_json=_manager_candidate_evidence(manager),
+        )
+    )
     session.commit()
     session.refresh(manager)
     return _manager_payload(manager)
@@ -294,6 +323,8 @@ def reject_manager_cik(
     manager = session.get(InstitutionManager, manager_id)
     if manager is None:
         raise ValueError("Manager not found")
+    old_cik = manager.cik
+    old_status = manager.match_status
     prior = list(manager.prior_rejected_candidates or [])
     if manager.candidate_cik or manager.candidate_legal_name:
         prior.append(
@@ -314,6 +345,64 @@ def reject_manager_cik(
     manager.review_note = note
     manager.prior_rejected_candidates = prior
     session.add(manager)
+    session.flush()
+    session.add(
+        _cik_review_event(
+            manager,
+            event_type="reject_candidate_cik",
+            old_cik=old_cik,
+            old_match_status=old_status,
+            reviewed_by_user_id=reviewed_by_user_id,
+            note=note,
+            evidence_json=_manager_candidate_evidence(manager),
+        )
+    )
+    session.commit()
+    session.refresh(manager)
+    return _manager_payload(manager)
+
+
+def revoke_manager_cik(
+    session: Session,
+    manager_id: int,
+    *,
+    note: str | None = None,
+    reviewed_by_user_id: int | None = None,
+) -> dict[str, Any]:
+    manager = session.get(InstitutionManager, manager_id)
+    if manager is None:
+        raise ValueError("Manager not found")
+    if manager.match_status != "confirmed" or not manager.cik:
+        raise ValueError("Only confirmed managers with a CIK can be revoked")
+    if not note or not note.strip():
+        raise ValueError("note is required to revoke a confirmed CIK")
+
+    old_cik = manager.cik
+    old_status = manager.match_status
+    affected = _affected_filing_scope(session, manager.id)
+    manager.cik = None
+    manager.match_status = "revoked"
+    manager.reviewed_by_user_id = reviewed_by_user_id
+    manager.reviewed_at = datetime.now(timezone.utc)
+    manager.review_note = note.strip()
+    session.add(manager)
+    session.flush()
+    event = _cik_review_event(
+        manager,
+        event_type="revoke_confirmed_cik",
+        old_cik=old_cik,
+        old_match_status=old_status,
+        reviewed_by_user_id=reviewed_by_user_id,
+        note=note.strip(),
+        evidence_json={
+            "reason": "confirmed_cik_revoked",
+            "downstream_policy": "existing_filings_and_holdings_preserved_for_audit",
+        },
+        affected_filings_count=affected["filings_count"],
+        affected_quarters=affected["quarters"],
+        requires_downstream_review=affected["filings_count"] > 0,
+    )
+    session.add(event)
     session.commit()
     session.refresh(manager)
     return _manager_payload(manager)
@@ -670,6 +759,7 @@ def _job_payload(job: JobRun) -> dict[str, Any]:
 
 
 def _manager_payload(manager: InstitutionManager) -> dict[str, Any]:
+    latest_event = _latest_cik_review_event(manager)
     return {
         "id": manager.id,
         "cik": manager.cik,
@@ -689,6 +779,86 @@ def _manager_payload(manager: InstitutionManager) -> dict[str, Any]:
         "reviewed_at": manager.reviewed_at.isoformat() if manager.reviewed_at else None,
         "review_note": manager.review_note,
         "prior_rejected_candidates": manager.prior_rejected_candidates or [],
+        "latest_cik_review_event": _cik_review_event_payload(latest_event) if latest_event else None,
+    }
+
+
+def _latest_cik_review_event(manager: InstitutionManager) -> InstitutionManagerCikReviewEvent | None:
+    events = getattr(manager, "cik_review_events", None)
+    if isinstance(events, list) and events:
+        return sorted(events, key=lambda event: (event.created_at, event.id), reverse=True)[0]
+    return None
+
+
+def _manager_candidate_evidence(manager: InstitutionManager) -> dict[str, Any]:
+    return {
+        "candidate_cik": manager.candidate_cik,
+        "candidate_legal_name": manager.candidate_legal_name,
+        "candidate_similarity_score": manager.candidate_similarity_score,
+        "candidate_source": manager.candidate_source,
+        "candidate_evidence_url": manager.candidate_evidence_url,
+    }
+
+
+def _affected_filing_scope(session: Session, manager_id: int) -> dict[str, Any]:
+    period_rows = (
+        session.query(Filing13F.period_of_report)
+        .filter(Filing13F.manager_id == manager_id)
+        .distinct()
+        .all()
+    )
+    quarters = sorted({quarter_label_for_date(row[0]) for row in period_rows if row[0]})
+    return {
+        "filings_count": session.query(Filing13F).filter(Filing13F.manager_id == manager_id).count(),
+        "quarters": quarters,
+    }
+
+
+def _cik_review_event(
+    manager: InstitutionManager,
+    *,
+    event_type: str,
+    old_cik: str | None,
+    old_match_status: str | None,
+    reviewed_by_user_id: int | None,
+    note: str | None,
+    evidence_json: dict[str, Any] | None,
+    affected_filings_count: int = 0,
+    affected_quarters: list[str] | None = None,
+    requires_downstream_review: bool = False,
+) -> InstitutionManagerCikReviewEvent:
+    return InstitutionManagerCikReviewEvent(
+        manager_id=manager.id,
+        event_type=event_type,
+        old_cik=old_cik,
+        new_cik=manager.cik,
+        old_match_status=old_match_status,
+        new_match_status=manager.match_status,
+        reviewed_by_user_id=reviewed_by_user_id,
+        note=note,
+        evidence_json=evidence_json,
+        affected_filings_count=affected_filings_count,
+        affected_quarters=affected_quarters or [],
+        requires_downstream_review=requires_downstream_review,
+    )
+
+
+def _cik_review_event_payload(event: InstitutionManagerCikReviewEvent) -> dict[str, Any]:
+    return {
+        "id": event.id,
+        "manager_id": event.manager_id,
+        "event_type": event.event_type,
+        "old_cik": event.old_cik,
+        "new_cik": event.new_cik,
+        "old_match_status": event.old_match_status,
+        "new_match_status": event.new_match_status,
+        "reviewed_by_user_id": event.reviewed_by_user_id,
+        "note": event.note,
+        "evidence": event.evidence_json or {},
+        "affected_filings_count": event.affected_filings_count,
+        "affected_quarters": event.affected_quarters or [],
+        "requires_downstream_review": event.requires_downstream_review,
+        "created_at": event.created_at.isoformat() if event.created_at else None,
     }
 
 

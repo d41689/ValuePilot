@@ -165,6 +165,18 @@ export default function Admin13FPage() {
       ]);
     },
   });
+  const revokeManager = useMutation({
+    mutationFn: async ({ managerId, note }: { managerId: number; note: string }) =>
+      (await apiClient.post(`/admin/13f/managers/${managerId}/revoke-cik`, { note })).data,
+    onSuccess: async () => {
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ['admin-13f-readiness'] }),
+        queryClient.invalidateQueries({ queryKey: ['admin-13f-tasks'] }),
+        queryClient.invalidateQueries({ queryKey: ['admin-13f-managers'] }),
+        queryClient.invalidateQueries({ queryKey: ['admin-13f-quarters'] }),
+      ]);
+    },
+  });
 
   const readiness = useMemo(
     () => normalizeReadiness(readinessQuery.data ?? {}),
@@ -249,6 +261,34 @@ export default function Admin13FPage() {
       return;
     }
     rejectManager.mutate({ managerId, note });
+  }
+
+  function handleRevokeManager(manager: Record<string, unknown>) {
+    const managerId = Number(manager.id);
+    if (!Number.isFinite(managerId)) return;
+    const note =
+      typeof window !== 'undefined'
+        ? window.prompt('Required note: why is this confirmed CIK wrong?')
+        : null;
+    if (!note?.trim()) return;
+    const affectedEvent =
+      manager.latest_cik_review_event && typeof manager.latest_cik_review_event === 'object'
+        ? (manager.latest_cik_review_event as Record<string, unknown>)
+        : null;
+    const warning = affectedEvent?.requires_downstream_review
+      ? ' Existing filings already require downstream review.'
+      : '';
+    if (
+      typeof window !== 'undefined' &&
+      !window.confirm(
+        `Revoke CIK ${String(manager.cik ?? '—')} for ${String(
+          manager.legal_name ?? 'this manager'
+        )}? The manager will be excluded from future 13F ingestion until reconfirmed.${warning}`
+      )
+    ) {
+      return;
+    }
+    revokeManager.mutate({ managerId, note: note.trim() });
   }
 
   return (
@@ -789,70 +829,115 @@ export default function Admin13FPage() {
                   <TableHead>Name</TableHead>
                   <TableHead>CIK</TableHead>
                   <TableHead>Candidate Evidence</TableHead>
+                  <TableHead>Latest Audit</TableHead>
                   <TableHead>Status</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {managers.slice(0, 12).map((manager: Record<string, unknown>) => (
-                  <TableRow key={String(manager.id)}>
-                    <TableCell className="font-medium">{String(manager.legal_name ?? '—')}</TableCell>
-                    <TableCell>{String(manager.cik ?? '—')}</TableCell>
-                    <TableCell>
-                      <div className="space-y-1 text-sm">
-                        <div>{String(manager.candidate_legal_name ?? '—')}</div>
-                        <div className="text-xs text-muted-foreground">
-                          CIK {String(manager.candidate_cik ?? '—')} · score{' '}
-                          {typeof manager.candidate_similarity_score === 'number'
-                            ? manager.candidate_similarity_score.toFixed(2)
-                            : '—'}
-                        </div>
-                        <div className="text-xs text-muted-foreground">
-                          {String(manager.candidate_source ?? 'No candidate source')}
-                        </div>
-                        {typeof manager.candidate_evidence_url === 'string' ? (
-                          <Button asChild variant="link" size="sm" className="h-auto p-0 text-xs">
-                            <a href={manager.candidate_evidence_url} target="_blank" rel="noreferrer">
-                              Open evidence
-                            </a>
-                          </Button>
-                        ) : null}
-                        {typeof manager.review_note === 'string' && manager.review_note ? (
+                {managers.slice(0, 12).map((manager: Record<string, unknown>) => {
+                  const latestEvent =
+                    manager.latest_cik_review_event &&
+                    typeof manager.latest_cik_review_event === 'object'
+                      ? (manager.latest_cik_review_event as Record<string, unknown>)
+                      : null;
+                  const affectedQuarters = Array.isArray(latestEvent?.affected_quarters)
+                    ? latestEvent.affected_quarters
+                    : [];
+                  return (
+                    <TableRow key={String(manager.id)}>
+                      <TableCell className="font-medium">{String(manager.legal_name ?? '—')}</TableCell>
+                      <TableCell>{String(manager.cik ?? '—')}</TableCell>
+                      <TableCell>
+                        <div className="space-y-1 text-sm">
+                          <div>{String(manager.candidate_legal_name ?? '—')}</div>
                           <div className="text-xs text-muted-foreground">
-                            Review note: {manager.review_note}
+                            CIK {String(manager.candidate_cik ?? '—')} · score{' '}
+                            {typeof manager.candidate_similarity_score === 'number'
+                              ? manager.candidate_similarity_score.toFixed(2)
+                              : '—'}
                           </div>
-                        ) : null}
-                      </div>
-                    </TableCell>
-                    <TableCell>
-                      <div className="flex flex-wrap items-center gap-2">
-                        <span>{String(manager.match_status ?? '—')}</span>
-                        {manager.match_status === 'candidate' || manager.match_status === 'seeded' ? (
-                          <>
-                            <Button
-                              type="button"
-                              variant="outline"
-                              size="sm"
-                              onClick={() => handleConfirmManager(manager)}
-                            >
-                              Confirm
+                          <div className="text-xs text-muted-foreground">
+                            {String(manager.candidate_source ?? 'No candidate source')}
+                          </div>
+                          {typeof manager.candidate_evidence_url === 'string' ? (
+                            <Button asChild variant="link" size="sm" className="h-auto p-0 text-xs">
+                              <a href={manager.candidate_evidence_url} target="_blank" rel="noreferrer">
+                                Open evidence
+                              </a>
                             </Button>
+                          ) : null}
+                          {typeof manager.review_note === 'string' && manager.review_note ? (
+                            <div className="text-xs text-muted-foreground">
+                              Review note: {manager.review_note}
+                            </div>
+                          ) : null}
+                        </div>
+                      </TableCell>
+                      <TableCell>
+                        {latestEvent ? (
+                          <div className="space-y-1 text-xs">
+                            <div className="font-medium">
+                              {String(latestEvent.event_type ?? '—').replaceAll('_', ' ')}
+                            </div>
+                            <div className="text-muted-foreground">
+                              {String(latestEvent.old_cik ?? '—')} → {String(latestEvent.new_cik ?? '—')}
+                            </div>
+                            {latestEvent.requires_downstream_review ? (
+                              <div className="text-rose-700">
+                                Downstream review · {String(latestEvent.affected_filings_count ?? 0)} filings
+                              </div>
+                            ) : null}
+                            {affectedQuarters.length > 0 ? (
+                              <div className="text-muted-foreground">
+                                {affectedQuarters.slice(0, 3).join(', ')}
+                              </div>
+                            ) : null}
+                          </div>
+                        ) : (
+                          <span className="text-xs text-muted-foreground">No CIK review event</span>
+                        )}
+                      </TableCell>
+                      <TableCell>
+                        <div className="flex flex-wrap items-center gap-2">
+                          <span>{String(manager.match_status ?? '—')}</span>
+                          {manager.match_status === 'candidate' || manager.match_status === 'seeded' ? (
+                            <>
+                              <Button
+                                type="button"
+                                variant="outline"
+                                size="sm"
+                                onClick={() => handleConfirmManager(manager)}
+                              >
+                                Confirm
+                              </Button>
+                              <Button
+                                type="button"
+                                variant="ghost"
+                                size="sm"
+                                onClick={() => handleRejectManager(manager)}
+                              >
+                                Reject
+                              </Button>
+                            </>
+                          ) : null}
+                          {manager.match_status === 'confirmed' && manager.cik ? (
                             <Button
                               type="button"
                               variant="ghost"
                               size="sm"
-                              onClick={() => handleRejectManager(manager)}
+                              onClick={() => handleRevokeManager(manager)}
                             >
-                              Reject
+                              Revoke CIK
                             </Button>
-                          </>
-                        ) : null}
-                      </div>
-                    </TableCell>
-                  </TableRow>
-                ))}
+                          ) : null}
+                        </div>
+                      </TableCell>
+                    </TableRow>
+                  );
+                })}
                 {managers.length === 0 ? (
                   <TableRow>
-                    <TableCell colSpan={4} className="py-8 text-center text-muted-foreground">
+                    <TableCell colSpan={5} className="py-8 text-center text-muted-foreground">
                       No managers seeded.
                     </TableCell>
                   </TableRow>

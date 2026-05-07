@@ -144,6 +144,23 @@ function normalizeAmendments(items) {
   });
 }
 
+function normalizeCikReviewEvents(items) {
+  return (Array.isArray(items) ? items : []).map((item) => ({
+    id: item.id,
+    managerId: item.manager_id,
+    eventType: item.event_type ?? 'unknown',
+    oldCik: item.old_cik ?? null,
+    newCik: item.new_cik ?? null,
+    oldMatchStatus: item.old_match_status ?? null,
+    newMatchStatus: item.new_match_status ?? null,
+    note: item.note ?? '',
+    affectedFilingsCount: item.affected_filings_count ?? 0,
+    affectedQuarters: Array.isArray(item.affected_quarters) ? item.affected_quarters : [],
+    requiresDownstreamReview: Boolean(item.requires_downstream_review),
+    createdAt: item.created_at ?? null,
+  }));
+}
+
 function freshnessLine(readiness) {
   const deadline = readiness.filingDeadline ? ` Filing deadline: ${readiness.filingDeadline}.` : '';
   return `Default data period: ${readiness.latestUsableQuarter}. Current quarter: ${readiness.currentQuarter} (${readiness.currentPhase}).${deadline} Amendment status: ${readiness.amendmentStatus}.`;
@@ -153,6 +170,7 @@ module.exports = {
   formatPercent,
   freshnessLine,
   normalizeAmendments,
+  normalizeCikReviewEvents,
   healthTone,
   normalizeQuarters,
   normalizeQualityReports,

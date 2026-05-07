@@ -20,9 +20,11 @@ from app.services.thirteenf_admin_dashboard import (
     get_amendment,
     get_job,
     get_quality_report_for_quarter,
+    list_manager_cik_review_events,
     list_workers,
     list_jobs,
     reject_manager_cik,
+    revoke_manager_cik,
     trigger_job,
 )
 
@@ -157,6 +159,37 @@ def reject_cik(
         )
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+
+
+@admin_router.post("/managers/{manager_id}/revoke-cik", response_model=dict)
+def revoke_cik(
+    session: SessionDep,
+    current_user: AdminUser,
+    manager_id: int,
+    payload: ManagerReviewRequest,
+) -> Any:
+    try:
+        return revoke_manager_cik(
+            session,
+            manager_id,
+            note=payload.note,
+            reviewed_by_user_id=current_user.id,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+
+
+@admin_router.get("/managers/{manager_id}/cik-review-events", response_model=dict)
+def read_manager_cik_review_events(
+    session: SessionDep,
+    current_user: AdminUser,
+    manager_id: int,
+    limit: int = Query(50, ge=1, le=200),
+) -> Any:
+    try:
+        return {"items": list_manager_cik_review_events(session, manager_id, limit=limit)}
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
 
 
 @admin_router.get("/jobs", response_model=dict)

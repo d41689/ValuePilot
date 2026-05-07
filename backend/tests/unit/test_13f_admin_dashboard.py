@@ -2,7 +2,16 @@ from __future__ import annotations
 
 from datetime import date, datetime, timedelta, timezone
 
-from app.models.institutions import Filing13F, Holding13F, InstitutionManager, JobRun, JobWorkerHeartbeat, QualityReport13F, RawSourceDocument
+from app.models.institutions import (
+    Filing13F,
+    Holding13F,
+    InstitutionManager,
+    InstitutionManagerCikReviewEvent,
+    JobRun,
+    JobWorkerHeartbeat,
+    QualityReport13F,
+    RawSourceDocument,
+)
 from app.models.stocks import Stock
 from app.services.edgar_ingestion import match_cik_candidates
 from app.services.edgar_quality import QualityReport, persist_quality_report
@@ -16,6 +25,7 @@ def _clear_13f(db_session) -> None:
     db_session.query(JobWorkerHeartbeat).delete()
     db_session.query(JobRun).delete()
     db_session.query(QualityReport13F).delete()
+    db_session.query(InstitutionManagerCikReviewEvent).delete()
     db_session.query(InstitutionManager).delete()
     db_session.flush()
 
@@ -549,6 +559,83 @@ def test_reject_manager_cik_retains_prior_rejected_candidate(client, db_session,
     assert payload["reviewed_by_user_id"] == admin.id
     assert payload["prior_rejected_candidates"][0]["cik"] == "0001336528"
     assert payload["prior_rejected_candidates"][0]["review_note"] == "CIK belongs to a different adviser"
+
+
+def test_revoke_confirmed_manager_cik_records_audit_event_and_blocks_ingestion(
+    client,
+    db_session,
+    user_factory,
+    auth_headers,
+):
+    _clear_13f(db_session)
+    admin = _admin(user_factory)
+    manager = _manager(db_session, name="Wrong CIK Manager", cik="0001336528")
+    _filing(db_session, manager, accession="0001336528-26-000001", period=date(2025, 12, 31))
+    _filing(db_session, manager, accession="0001336528-25-000001", period=date(2025, 9, 30))
+    db_session.commit()
+
+    response = client.post(
+        f"/api/v1/admin/13f/managers/{manager.id}/revoke-cik",
+        headers=auth_headers(admin),
+        json={"note": "CIK belongs to a different SEC entity"},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["match_status"] == "revoked"
+    assert payload["cik"] is None
+    assert payload["review_note"] == "CIK belongs to a different SEC entity"
+    assert payload["latest_cik_review_event"]["event_type"] == "revoke_confirmed_cik"
+    assert payload["latest_cik_review_event"]["old_cik"] == "0001336528"
+    assert payload["latest_cik_review_event"]["affected_filings_count"] == 2
+    assert payload["latest_cik_review_event"]["affected_quarters"] == ["2025-Q3", "2025-Q4"]
+    assert payload["latest_cik_review_event"]["requires_downstream_review"] is True
+    assert db_session.query(InstitutionManager).filter_by(match_status="confirmed").count() == 0
+
+
+def test_revoke_confirmed_manager_cik_requires_review_note(client, db_session, user_factory, auth_headers):
+    _clear_13f(db_session)
+    admin = _admin(user_factory)
+    manager = _manager(db_session, name="Wrong CIK Manager", cik="0001336528")
+    db_session.commit()
+
+    response = client.post(
+        f"/api/v1/admin/13f/managers/{manager.id}/revoke-cik",
+        headers=auth_headers(admin),
+        json={"note": ""},
+    )
+
+    assert response.status_code == 400
+    assert "note is required" in response.json()["detail"]
+
+
+def test_manager_review_events_endpoint_returns_recent_cik_events(client, db_session, user_factory, auth_headers):
+    _clear_13f(db_session)
+    admin = _admin(user_factory)
+    manager = _manager(db_session, name="Event Manager", cik="0001336528")
+    event = InstitutionManagerCikReviewEvent(
+        manager_id=manager.id,
+        event_type="confirm_candidate_cik",
+        old_cik=None,
+        new_cik="0001336528",
+        old_match_status="candidate",
+        new_match_status="confirmed",
+        reviewed_by_user_id=admin.id,
+        note="Confirmed from SEC evidence",
+        affected_filings_count=0,
+        affected_quarters=[],
+        requires_downstream_review=False,
+    )
+    db_session.add(event)
+    db_session.commit()
+
+    response = client.get(f"/api/v1/admin/13f/managers/{manager.id}/cik-review-events", headers=auth_headers(admin))
+
+    assert response.status_code == 200
+    payload = response.json()["items"][0]
+    assert payload["event_type"] == "confirm_candidate_cik"
+    assert payload["new_cik"] == "0001336528"
+    assert payload["note"] == "Confirmed from SEC evidence"
 
 
 def test_persisted_quality_report_surfaces_in_quarter_and_tasks(client, db_session, user_factory, auth_headers):
