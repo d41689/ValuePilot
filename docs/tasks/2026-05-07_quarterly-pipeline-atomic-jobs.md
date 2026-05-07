@@ -31,11 +31,14 @@
 - 2026-05-07: Updated `quarterly_pipeline` to create visible `pipeline` stage JobRuns for `fetch_quarter_index`, `ingest_holdings`, `enrich_metadata`, and `quality_check`.
 - 2026-05-07: Added retry target metadata for failed `enrich_metadata` / `enrich_cusip` jobs so the Dashboard can show a retry-only-enrichment action.
 - 2026-05-07: Updated Dashboard lock-key handling, retry target payloads, and manual action label to use `enrich_metadata` as the enrichment retry unit.
+- 2026-05-07: Review fixes made the parent `quarterly_pipeline` retain `summary_json` on retryable stage failures instead of raising; enrichment and quality failures now surface as stage failures and parent `partial_success`.
+- 2026-05-07: Updated tests to lock the post-review behavior: enrichment failure continues to quality check, parent retry targets include `enrich_metadata`, and parent summary remains inspectable.
 
 ## Verification
 - 2026-05-07: `docker compose exec api pytest -q tests/unit/test_13f_admin_dashboard.py` passed (`38 passed`).
 - 2026-05-07: `docker compose exec api pytest -q tests/unit/test_scheduler_alignment.py` passed (`3 passed`).
 - 2026-05-07: `docker compose exec web npm run lint` passed with no ESLint warnings or errors.
+- 2026-05-07: Post-review verification repeated: `docker compose exec api pytest -q tests/unit/test_13f_admin_dashboard.py` passed (`38 passed`); `docker compose exec api pytest -q tests/unit/test_scheduler_alignment.py` passed (`3 passed`); `docker compose exec web npm run lint` passed.
 
 ## Contract Checklist
 - [x] No database schema changes.

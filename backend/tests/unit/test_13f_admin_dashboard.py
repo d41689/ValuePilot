@@ -1216,8 +1216,15 @@ def test_quarterly_pipeline_records_retryable_stage_jobs(db_session, monkeypatch
     assert stage_jobs[2].summary_json["holdings_linked"] == 5
 
 
-def test_quarterly_pipeline_stops_with_retryable_enrichment_stage_on_failure(db_session, monkeypatch):
+def test_quarterly_pipeline_continues_after_retryable_enrichment_failure(
+    client,
+    db_session,
+    user_factory,
+    auth_headers,
+    monkeypatch,
+):
     _clear_13f(db_session)
+    admin = _admin(user_factory)
 
     monkeypatch.setattr("app.services.edgar_ingestion.ingest_quarter_index", lambda session, quarter: 1)
     monkeypatch.setattr(
@@ -1230,27 +1237,56 @@ def test_quarterly_pipeline_stops_with_retryable_enrichment_stage_on_failure(db_
 
     monkeypatch.setattr("app.services.cusip_enrichment.enrich_from_dataroma", fail_enrichment)
 
-    def quality_should_not_run(session, quarter):
-        raise AssertionError("quality check should wait for enrichment retry")
+    report = QualityReport()
 
-    monkeypatch.setattr("app.services.thirteenf_admin_dashboard.run_quality_checks", quality_should_not_run)
+    monkeypatch.setattr("app.services.thirteenf_admin_dashboard.run_quality_checks", lambda session, quarter: report)
 
-    try:
-        execute_job_payload(db_session, "quarterly_pipeline", {"quarter": "2025-Q4", "_job_id": 99})
-    except RuntimeError as exc:
-        assert str(exc) == "CUSIP enrichment failed"
-    else:
-        raise AssertionError("quarterly pipeline should fail when enrichment stage fails")
+    result = execute_job_payload(db_session, "quarterly_pipeline", {"quarter": "2025-Q4", "_job_id": 99})
 
     stage_jobs = db_session.query(JobRun).order_by(JobRun.id.asc()).all()
+    assert result["status"] == "partial_success"
+    assert result["stages"] == [
+        {"job_type": "fetch_quarter_index", "job_id": stage_jobs[0].id, "status": "succeeded"},
+        {"job_type": "ingest_holdings", "job_id": stage_jobs[1].id, "status": "succeeded"},
+        {"job_type": "enrich_metadata", "job_id": stage_jobs[2].id, "status": "failed"},
+        {"job_type": "quality_check", "job_id": stage_jobs[3].id, "status": "succeeded"},
+    ]
     assert [job.job_type for job in stage_jobs] == [
         "fetch_quarter_index",
         "ingest_holdings",
         "enrich_metadata",
+        "quality_check",
     ]
-    assert [job.status for job in stage_jobs] == ["succeeded", "succeeded", "failed"]
-    assert stage_jobs[-1].error_message == "CUSIP enrichment failed"
-    assert stage_jobs[-1].input_json["parent_job_id"] == 99
+    assert [job.status for job in stage_jobs] == ["succeeded", "succeeded", "failed", "succeeded"]
+    assert stage_jobs[2].error_message == "CUSIP enrichment failed"
+    assert stage_jobs[2].input_json["parent_job_id"] == 99
+
+    parent_summary = dict(result)
+    parent_summary.pop("status")
+    parent_job = JobRun(
+        job_type="quarterly_pipeline",
+        status="partial_success",
+        requested_by_user_id=admin.id,
+        trigger_source="scheduler",
+        dedupe_key="quarterly_pipeline:2025-Q4",
+        lock_key="quarterly_pipeline:2025-Q4",
+        quarter="2025-Q4",
+        input_json={"job_type": "quarterly_pipeline", "quarter": "2025-Q4"},
+        summary_json=parent_summary,
+    )
+    db_session.add(parent_job)
+    db_session.commit()
+
+    response = client.get(f"/api/v1/admin/13f/jobs/{parent_job.id}", headers=auth_headers(admin))
+
+    assert response.status_code == 200
+    assert response.json()["retry_targets"] == [
+        {
+            "job_type": "enrich_metadata",
+            "quarter": "2025-Q4",
+            "label": "Retry enrichment for 2025-Q4",
+        }
+    ]
 
 
 def test_quality_reports_endpoint_returns_latest_reports(client, db_session, user_factory, auth_headers):

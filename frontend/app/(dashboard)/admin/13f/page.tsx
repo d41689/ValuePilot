@@ -830,15 +830,36 @@ export default function Admin13FPage() {
                     ) : null}
                     {Array.isArray(task.metadata.retry_targets) &&
                     task.metadata.retry_targets.length > 0 ? (
-                      <div>
-                        Retry target:{' '}
-                        <span className="font-mono text-foreground">
-                          {String(
-                            task.metadata.retry_targets[0]?.accession_no ??
-                              task.metadata.retry_targets[0]?.label ??
-                              '—'
-                          )}
-                        </span>
+                      <div className="space-y-1">
+                        <div className="text-muted-foreground">Retry targets:</div>
+                        <div className="flex flex-wrap gap-1">
+                          {(task.metadata.retry_targets as Record<string, unknown>[]).map((target, i) => (
+                            <Button
+                              key={`${String(target.job_type ?? '')}-${String(target.quarter ?? target.accession_no ?? 'target')}-${i}`}
+                              type="button"
+                              variant="outline"
+                              size="sm"
+                              className="h-6 text-xs"
+                              disabled={isJobActive({
+                                job_type: target.job_type,
+                                accession_no: target.accession_no,
+                                quarter: target.quarter,
+                              })}
+                              onClick={() =>
+                                runJob(
+                                  {
+                                    job_type: target.job_type,
+                                    accession_no: target.accession_no,
+                                    quarter: target.quarter,
+                                  },
+                                  String(target.label ?? target.accession_no ?? 'Retry')
+                                )
+                              }
+                            >
+                              {String(target.label ?? target.accession_no ?? 'Retry')}
+                            </Button>
+                          ))}
+                        </div>
                       </div>
                     ) : null}
                     {'error_message' in task.metadata && task.metadata.error_message ? (
@@ -1626,9 +1647,13 @@ export default function Admin13FPage() {
                       <div className="mt-1 text-sm">{selectedJob.finished_at ?? '—'}</div>
                     </div>
                   </div>
-                  {selectedJob.error_message ? (
+                  {(selectedJob.error_message ||
+                    (typeof selectedJob.summary_json === 'object' &&
+                      selectedJob.summary_json !== null &&
+                      (selectedJob.summary_json as Record<string, unknown>).pipeline_error)) ? (
                     <div className="rounded-md border border-rose-300/70 bg-rose-50 px-3 py-2 text-sm text-rose-950">
-                      {selectedJob.error_message}
+                      {selectedJob.error_message ??
+                        String((selectedJob.summary_json as Record<string, unknown>).pipeline_error ?? '')}
                     </div>
                   ) : null}
                   <div>
@@ -1638,7 +1663,7 @@ export default function Admin13FPage() {
                     <div className="mt-2 flex flex-wrap gap-2">
                       {(selectedJob.retry_targets ?? []).map((target: Record<string, unknown>, index: number) => (
                         <Button
-                          key={`${String(target.accession_no ?? 'target')}-${index}`}
+                          key={`${String(target.job_type ?? '')}-${String(target.quarter ?? target.accession_no ?? 'target')}-${index}`}
                           type="button"
                           variant="outline"
                           size="sm"
@@ -1661,6 +1686,53 @@ export default function Admin13FPage() {
                       ) : null}
                     </div>
                   </div>
+                  {Array.isArray((selectedJob.summary_json as Record<string, unknown> | null)?.stages) &&
+                  ((selectedJob.summary_json as Record<string, unknown>).stages as unknown[]).length > 0 ? (
+                    <div>
+                      <div className="text-xs font-semibold uppercase text-muted-foreground">
+                        Pipeline Stages
+                      </div>
+                      <div className="mt-2 space-y-2">
+                        {((selectedJob.summary_json as Record<string, unknown>).stages as Record<string, unknown>[]).map(
+                          (stage, index) => (
+                            <div
+                              key={`${String(stage.job_type ?? 'stage')}-${index}`}
+                              className="flex items-center justify-between rounded-md border border-border/70 px-3 py-2"
+                            >
+                              <div className="flex items-center gap-2">
+                                <Badge
+                                  variant={badgeVariant(
+                                    stage.status === 'succeeded'
+                                      ? 'success'
+                                      : stage.status === 'partial_success'
+                                        ? 'warning'
+                                        : stage.status === 'failed' || stage.status === 'conflict'
+                                          ? 'danger'
+                                          : 'secondary'
+                                  )}
+                                >
+                                  {String(stage.status ?? 'unknown').replaceAll('_', ' ')}
+                                </Badge>
+                                <span className="text-sm">
+                                  {String(stage.job_type ?? '—').replaceAll('_', ' ')}
+                                </span>
+                              </div>
+                              {stage.job_id != null ? (
+                                <Button
+                                  type="button"
+                                  variant="ghost"
+                                  size="sm"
+                                  onClick={() => setSelectedJobId(Number(stage.job_id))}
+                                >
+                                  Open
+                                </Button>
+                              ) : null}
+                            </div>
+                          )
+                        )}
+                      </div>
+                    </div>
+                  ) : null}
                   <div>
                     <div className="text-xs font-semibold uppercase text-muted-foreground">
                       Timeline

@@ -959,6 +959,7 @@ def _active_quarter_job(session: Session, quarter: str) -> JobRun | None:
                         f"ingest_holdings:{quarter}",
                         f"quality_check:{quarter}",
                         f"enrich_cusip:{quarter}",
+                        f"enrich_metadata:{quarter}",
                     ]
                 ),
             )
@@ -1341,6 +1342,40 @@ def _job_retry_targets(job: JobRun) -> list[dict[str, str]]:
     summary = job.summary_json if isinstance(job.summary_json, dict) else {}
     targets: list[dict[str, str]] = []
     seen: set[str] = set()
+
+    if job.job_type == "quarterly_pipeline":
+        quarter = job.quarter or "unknown"
+        stage_labels: dict[str, str] = {
+            "fetch_quarter_index": f"Retry index fetch for {quarter}",
+            "ingest_holdings": f"Retry holdings for {quarter}",
+            "enrich_metadata": f"Retry enrichment for {quarter}",
+            "quality_check": f"Retry quality check for {quarter}",
+        }
+        for stage in summary.get("stages", []):
+            if not isinstance(stage, dict):
+                continue
+            stage_type = stage.get("job_type")
+            if stage.get("status") not in {"failed", "partial_success", "conflict"} or not stage_type:
+                continue
+            targets.append({
+                "job_type": stage_type,
+                "quarter": job.quarter,
+                "label": stage_labels.get(stage_type, f"Retry {stage_type} for {quarter}"),
+            })
+        for failure in (summary.get("holdings_ingestion") or {}).get("failed_accessions") or []:
+            if not isinstance(failure, dict):
+                continue
+            accession_no = failure.get("accession_no")
+            if not accession_no or accession_no in seen:
+                continue
+            seen.add(accession_no)
+            targets.append({
+                "job_type": "ingest_accession",
+                "accession_no": accession_no,
+                "label": f"Retry accession {accession_no}",
+            })
+        return targets
+
     if job.job_type in {"enrich_metadata", "enrich_cusip"} and job.quarter and job.status in {"failed", "partial_success"}:
         return [
             {
@@ -1699,12 +1734,10 @@ _JOB_LOCK_BUILDERS = {
 
 def _execute_job(session: Session, job_type: str, payload: dict[str, Any]) -> dict[str, Any]:
     if job_type == "quarterly_pipeline":
-        # Orchestrate the ingestion pipeline by breaking it into visible, retryable stage jobs.
-        # This allows admins to see progress in the UI and retry specific failed segments.
         quarter = _required(payload, "quarter")
         results: dict[str, Any] = {"quarter": quarter, "stages": []}
 
-        # Stage 1: Fetch SEC form.idx for the quarter
+        # Stage 1: Fetch SEC form.idx — abort the pipeline if this fails or conflicts.
         index_stage = _execute_pipeline_stage_job(
             session,
             parent_payload=payload,
@@ -1713,8 +1746,11 @@ def _execute_job(session: Session, job_type: str, payload: dict[str, Any]) -> di
         )
         results["stages"].append(index_stage["stage"])
         results["index_filings"] = index_stage["summary"].get("filings_inserted")
+        if index_stage["stage"]["status"] not in {"succeeded", "partial_success"}:
+            results["pipeline_error"] = index_stage.get("error", "Stage fetch_quarter_index failed")
+            return {**results, "status": "failed"}
 
-        # Stage 2: Parse InfoTables for all new filings
+        # Stage 2: Parse InfoTables — abort on hard failure or conflict, continue on partial.
         ingest_stage = _execute_pipeline_stage_job(
             session,
             parent_payload=payload,
@@ -1724,8 +1760,11 @@ def _execute_job(session: Session, job_type: str, payload: dict[str, Any]) -> di
         results["stages"].append(ingest_stage["stage"])
         ingest_results = ingest_stage["summary"]
         results["holdings_ingestion"] = ingest_results
+        if ingest_stage["stage"]["status"] not in {"succeeded", "partial_success"}:
+            results["pipeline_error"] = ingest_stage.get("error", "Stage ingest_holdings failed")
+            return {**results, "status": "failed"}
 
-        # Stage 3: Enrich metadata (CUSIP -> Ticker, Stock mapping)
+        # Stage 3: Enrich metadata (CUSIP -> Ticker) — continue to quality check even on failure.
         enrich_stage = _execute_pipeline_stage_job(
             session,
             parent_payload=payload,
@@ -1736,7 +1775,7 @@ def _execute_job(session: Session, job_type: str, payload: dict[str, Any]) -> di
         enrich_results = enrich_stage["summary"]
         results["enrichment"] = enrich_results
 
-        # Stage 4: Run quality checks and persist report
+        # Stage 4: Run quality checks — always attempt if we reached this point.
         quality_stage = _execute_pipeline_stage_job(
             session,
             parent_payload=payload,
@@ -1746,10 +1785,9 @@ def _execute_job(session: Session, job_type: str, payload: dict[str, Any]) -> di
         results["stages"].append(quality_stage["stage"])
         results["quality_status"] = quality_stage["summary"].get("quality_status")
 
-        # Determine overall pipeline status based on critical stages
-        status = "succeeded"
-        if ingest_results.get("status") == "partial_success" or enrich_results.get("status") == "partial_success":
-            status = "partial_success"
+        # Any non-succeeded stage (after the critical stage 1+2 gates) → partial_success.
+        stage_statuses = {s["status"] for s in results["stages"]}
+        status = "succeeded" if stage_statuses == {"succeeded"} else "partial_success"
         return {**results, "status": status}
 
     if job_type == "enrich_metadata":
@@ -1829,6 +1867,11 @@ def _execute_pipeline_stage_job(
     job_type: str,
     payload: dict[str, Any],
 ) -> dict[str, Any]:
+    """Run a pipeline stage as a visible JobRun record.
+
+    Returns a result dict with keys "stage", "summary", and optionally "error".
+    Never raises — callers inspect the returned status to decide whether to abort.
+    """
     stage_payload = {"job_type": job_type, **payload, "trigger_source": "pipeline"}
     parent_job_id = parent_payload.get("_job_id")
     if parent_job_id is not None:
@@ -1842,7 +1885,13 @@ def _execute_pipeline_stage_job(
         .one_or_none()
     )
     if active:
-        raise ValueError(f"Stage job already active for {lock_key}")
+        error_msg = f"Stage job already active for {lock_key} (job_id={active.id})"
+        logger.warning("Pipeline stage %s skipped: %s", job_type, error_msg)
+        return {
+            "stage": {"job_type": job_type, "job_id": active.id, "status": "conflict"},
+            "summary": {"status": "conflict"},
+            "error": error_msg,
+        }
 
     parent_job = session.get(JobRun, parent_job_id) if parent_job_id is not None else None
     now = datetime.now(timezone.utc)
@@ -1859,7 +1908,24 @@ def _execute_pipeline_stage_job(
         input_json=stage_payload,
     )
     session.add(stage_job)
-    session.commit()
+    try:
+        session.commit()
+    except IntegrityError:
+        # A concurrent caller (manual trigger or another pipeline) won the INSERT race.
+        session.rollback()
+        active = (
+            session.query(JobRun)
+            .filter(JobRun.lock_key == lock_key)
+            .filter(JobRun.status.in_(ACTIVE_JOB_STATUSES))
+            .one_or_none()
+        )
+        error_msg = f"Concurrent stage job for {lock_key} (job_id={active.id if active else None})"
+        logger.warning("Pipeline stage %s INSERT conflict: %s", job_type, error_msg)
+        return {
+            "stage": {"job_type": job_type, "job_id": active.id if active else None, "status": "conflict"},
+            "summary": {"status": "conflict"},
+            "error": error_msg,
+        }
     session.refresh(stage_job)
 
     stage_payload["_job_id"] = stage_job.id
@@ -1894,7 +1960,12 @@ def _execute_pipeline_stage_job(
         stage_job.finished_at = finished_at
         session.add(stage_job)
         session.commit()
-        raise
+        logger.exception("Pipeline stage %s failed: %s", job_type, exc)
+        return {
+            "stage": {"job_type": job_type, "job_id": stage_job.id, "status": "failed"},
+            "summary": {"status": "failed"},
+            "error": str(exc),
+        }
 
 
 def _execute_ingest_job(session: Session, job_type: str, payload: dict[str, Any]) -> dict[str, Any]:
