@@ -41,6 +41,9 @@ class Settings(BaseSettings):
     EDGAR_RETRY_BACKOFF_S: str = "5,30,120"
     EDGAR_FETCH_MODE: str = "live"            # live | replay
     EDGAR_SCHEDULER_ENABLED: bool = False     # prod: true
+    THIRTEENF_JOB_WORKER_ENABLED: bool = False
+    THIRTEENF_JOB_WORKER_POLL_INTERVAL_S: float = 2.0
+    THIRTEENF_JOB_WORKER_HEARTBEAT_STALE_S: int = 90
 
     # Dataroma rate / retry
     DATAROMA_REQUEST_DELAY_S: float = 2.0

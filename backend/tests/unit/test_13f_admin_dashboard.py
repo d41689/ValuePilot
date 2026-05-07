@@ -1,15 +1,17 @@
 from __future__ import annotations
 
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 
-from app.models.institutions import Filing13F, Holding13F, InstitutionManager, JobRun, RawSourceDocument
+from app.models.institutions import Filing13F, Holding13F, InstitutionManager, JobRun, JobWorkerHeartbeat, RawSourceDocument
 from app.models.stocks import Stock
+from app.services.thirteenf_job_worker import execute_queued_job_once, record_worker_heartbeat
 
 
 def _clear_13f(db_session) -> None:
     db_session.query(Holding13F).delete()
     db_session.query(Filing13F).delete()
     db_session.query(RawSourceDocument).delete()
+    db_session.query(JobWorkerHeartbeat).delete()
     db_session.query(JobRun).delete()
     db_session.query(InstitutionManager).delete()
     db_session.flush()
@@ -199,3 +201,131 @@ def test_duplicate_active_job_lock_returns_conflict(client, db_session, user_fac
 
     assert response.status_code == 409
     assert response.json()["detail"]["active_job_id"] == job.id
+
+
+def test_job_trigger_queues_job_without_running_it(client, db_session, user_factory, auth_headers):
+    _clear_13f(db_session)
+    admin = _admin(user_factory)
+
+    response = client.post(
+        "/api/v1/admin/13f/jobs",
+        headers=auth_headers(admin),
+        json={"job_type": "quality_check", "quarter": "2025-Q4"},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["status"] == "queued"
+    assert payload["started_at"] is None
+    assert payload["finished_at"] is None
+    assert payload["worker_id"] is None
+
+
+def test_worker_executes_queued_job_and_records_heartbeat(db_session, monkeypatch):
+    _clear_13f(db_session)
+    job = JobRun(
+        job_type="quality_check",
+        status="queued",
+        trigger_source="manual",
+        dedupe_key="quality_check:2025-Q4",
+        lock_key="quality_check:2025-Q4",
+        quarter="2025-Q4",
+        input_json={"job_type": "quality_check", "quarter": "2025-Q4"},
+    )
+    db_session.add(job)
+    db_session.commit()
+
+    def fake_execute_job(session, job_type, payload):
+        assert job_type == "quality_check"
+        return {"status": "succeeded", "quality_errors": 0, "quality_warnings": 1}
+
+    monkeypatch.setattr(
+        "app.services.thirteenf_admin_dashboard.execute_job_payload",
+        fake_execute_job,
+    )
+
+    result = execute_queued_job_once(db_session, worker_id="test-worker")
+
+    assert result is not None
+    assert result.status == "succeeded"
+    assert result.worker_id == "test-worker"
+    assert result.summary_json == {"quality_errors": 0, "quality_warnings": 1}
+    heartbeat = db_session.get(JobWorkerHeartbeat, "test-worker")
+    assert heartbeat is not None
+    assert heartbeat.status == "idle"
+
+
+def test_job_detail_endpoint_returns_input_summary_and_worker(client, db_session, user_factory, auth_headers):
+    _clear_13f(db_session)
+    admin = _admin(user_factory)
+    job = JobRun(
+        job_type="quality_check",
+        status="succeeded",
+        requested_by_user_id=admin.id,
+        trigger_source="manual",
+        dedupe_key="quality_check:2025-Q4",
+        lock_key="quality_check:2025-Q4",
+        quarter="2025-Q4",
+        worker_id="test-worker",
+        input_json={"job_type": "quality_check", "quarter": "2025-Q4"},
+        summary_json={"quality_errors": 0},
+    )
+    db_session.add(job)
+    db_session.commit()
+
+    response = client.get(f"/api/v1/admin/13f/jobs/{job.id}", headers=auth_headers(admin))
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["id"] == job.id
+    assert payload["worker_id"] == "test-worker"
+    assert payload["input_json"]["quarter"] == "2025-Q4"
+    assert payload["summary_json"]["quality_errors"] == 0
+
+
+def test_cancel_queued_job_releases_active_lock(client, db_session, user_factory, auth_headers):
+    _clear_13f(db_session)
+    admin = _admin(user_factory)
+    job = JobRun(
+        job_type="quality_check",
+        status="queued",
+        requested_by_user_id=admin.id,
+        trigger_source="manual",
+        dedupe_key="quality_check:2025-Q4",
+        lock_key="quality_check:2025-Q4",
+        quarter="2025-Q4",
+        input_json={"job_type": "quality_check", "quarter": "2025-Q4"},
+    )
+    db_session.add(job)
+    db_session.commit()
+
+    response = client.post(f"/api/v1/admin/13f/jobs/{job.id}/cancel", headers=auth_headers(admin))
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "canceled"
+    replacement = client.post(
+        "/api/v1/admin/13f/jobs",
+        headers=auth_headers(admin),
+        json={"job_type": "quality_check", "quarter": "2025-Q4"},
+    )
+    assert replacement.status_code == 200
+    assert replacement.json()["status"] == "queued"
+
+
+def test_worker_heartbeat_endpoint_marks_stale_workers(client, db_session, user_factory, auth_headers):
+    _clear_13f(db_session)
+    admin = _admin(user_factory)
+    old_time = datetime.now(timezone.utc) - timedelta(minutes=10)
+    record_worker_heartbeat(
+        db_session,
+        worker_id="stale-worker",
+        status="idle",
+        now=old_time,
+    )
+
+    response = client.get("/api/v1/admin/13f/workers", headers=auth_headers(admin))
+
+    assert response.status_code == 200
+    worker = response.json()["items"][0]
+    assert worker["worker_id"] == "stale-worker"
+    assert worker["status"] == "stale"

@@ -3,6 +3,7 @@
 import { useMemo, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
+  Activity,
   AlertTriangle,
   CheckCircle2,
   Database,
@@ -11,6 +12,7 @@ import {
   Play,
   RefreshCw,
   ShieldAlert,
+  X,
 } from 'lucide-react';
 import type { ComponentProps } from 'react';
 
@@ -35,6 +37,7 @@ const {
   normalizeQuarters,
   normalizeReadiness,
   normalizeTasks,
+  normalizeWorkers,
 } = thirteenfAdmin;
 
 type BadgeVariant = ComponentProps<typeof Badge>['variant'];
@@ -58,8 +61,14 @@ function formatInteger(value: unknown) {
   return value.toLocaleString('en-US');
 }
 
+function formatJson(value: unknown) {
+  if (!value || typeof value !== 'object') return '—';
+  return JSON.stringify(value, null, 2);
+}
+
 export default function Admin13FPage() {
   const queryClient = useQueryClient();
+  const [selectedJobId, setSelectedJobId] = useState<number | null>(null);
   const readinessQuery = useQuery({
     queryKey: ['admin-13f-readiness'],
     queryFn: async () => (await apiClient.get('/admin/13f/readiness')).data,
@@ -79,6 +88,18 @@ export default function Admin13FPage() {
   const jobsQuery = useQuery({
     queryKey: ['admin-13f-jobs'],
     queryFn: async () => (await apiClient.get('/admin/13f/jobs')).data,
+    refetchInterval: 5000,
+  });
+  const workersQuery = useQuery({
+    queryKey: ['admin-13f-workers'],
+    queryFn: async () => (await apiClient.get('/admin/13f/workers')).data,
+    refetchInterval: 5000,
+  });
+  const jobDetailQuery = useQuery({
+    queryKey: ['admin-13f-job-detail', selectedJobId],
+    queryFn: async () => (await apiClient.get(`/admin/13f/jobs/${selectedJobId}`)).data,
+    enabled: selectedJobId !== null,
+    refetchInterval: selectedJobId === null ? false : 5000,
   });
   const [manualQuarter, setManualQuarter] = useState('');
   const [backfillQuarters, setBackfillQuarters] = useState('4');
@@ -93,6 +114,7 @@ export default function Admin13FPage() {
         queryClient.invalidateQueries({ queryKey: ['admin-13f-quarters'] }),
         queryClient.invalidateQueries({ queryKey: ['admin-13f-tasks'] }),
         queryClient.invalidateQueries({ queryKey: ['admin-13f-jobs'] }),
+        queryClient.invalidateQueries({ queryKey: ['admin-13f-workers'] }),
       ]);
     },
   });
@@ -128,14 +150,20 @@ export default function Admin13FPage() {
     [quartersQuery.data]
   );
   const tasks = useMemo(() => normalizeTasks(tasksQuery.data?.items ?? []), [tasksQuery.data]);
+  const workers = useMemo(
+    () => normalizeWorkers(workersQuery.data?.items ?? []),
+    [workersQuery.data]
+  );
   const managers = managersQuery.data?.items ?? [];
   const jobs = jobsQuery.data?.items ?? [];
+  const selectedJob = jobDetailQuery.data ?? null;
   const isLoading =
     readinessQuery.isLoading ||
     quartersQuery.isLoading ||
     tasksQuery.isLoading ||
     managersQuery.isLoading ||
-    jobsQuery.isLoading;
+    jobsQuery.isLoading ||
+    workersQuery.isLoading;
 
   const latestQuarter = readiness.latestUsableQuarter === '—' ? undefined : readiness.latestUsableQuarter;
   const targetQuarter = manualQuarter.trim() || latestQuarter;
@@ -198,6 +226,7 @@ export default function Admin13FPage() {
             queryClient.invalidateQueries({ queryKey: ['admin-13f-tasks'] });
             queryClient.invalidateQueries({ queryKey: ['admin-13f-managers'] });
             queryClient.invalidateQueries({ queryKey: ['admin-13f-jobs'] });
+            queryClient.invalidateQueries({ queryKey: ['admin-13f-workers'] });
           }}
         >
           <RefreshCw className="mr-2 h-4 w-4" />
@@ -259,6 +288,55 @@ export default function Admin13FPage() {
               No blocking admin task detected.
             </div>
           )}
+        </CardContent>
+      </Card>
+
+      <Card className="rounded-md">
+        <CardHeader className="pb-3">
+          <CardTitle className="flex items-center gap-2 text-base">
+            <Activity className="h-4 w-4" />
+            Worker Heartbeat
+          </CardTitle>
+        </CardHeader>
+        <CardContent>
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead>Worker</TableHead>
+                <TableHead>Status</TableHead>
+                <TableHead>Current Job</TableHead>
+                <TableHead>Last Heartbeat</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {workers.map((worker) => (
+                <TableRow key={worker.workerId}>
+                  <TableCell>
+                    <div className="font-medium">{worker.workerId}</div>
+                    <div className="mt-1 text-xs text-muted-foreground">
+                      {worker.hostname} · pid {worker.processId ?? '—'}
+                    </div>
+                  </TableCell>
+                  <TableCell>
+                    <Badge variant={badgeVariant(worker.statusTone)}>
+                      {worker.status.replaceAll('_', ' ')}
+                    </Badge>
+                  </TableCell>
+                  <TableCell>{worker.currentJobId ?? '—'}</TableCell>
+                  <TableCell className="text-xs text-muted-foreground">
+                    {worker.lastHeartbeatAt ?? '—'}
+                  </TableCell>
+                </TableRow>
+              ))}
+              {workers.length === 0 ? (
+                <TableRow>
+                  <TableCell colSpan={4} className="py-8 text-center text-muted-foreground">
+                    No worker heartbeat recorded yet. The API worker records one after it starts.
+                  </TableCell>
+                </TableRow>
+              ) : null}
+            </TableBody>
+          </Table>
         </CardContent>
       </Card>
 
@@ -581,6 +659,8 @@ export default function Admin13FPage() {
                   <TableHead>Job</TableHead>
                   <TableHead>Status</TableHead>
                   <TableHead>Lock</TableHead>
+                  <TableHead>Worker</TableHead>
+                  <TableHead>Detail</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
@@ -591,11 +671,24 @@ export default function Admin13FPage() {
                     <TableCell className="max-w-[240px] truncate text-xs text-muted-foreground">
                       {String(job.lock_key ?? '—')}
                     </TableCell>
+                    <TableCell className="text-xs text-muted-foreground">
+                      {String(job.worker_id ?? '—')}
+                    </TableCell>
+                    <TableCell>
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        onClick={() => setSelectedJobId(Number(job.id))}
+                      >
+                        Review
+                      </Button>
+                    </TableCell>
                   </TableRow>
                 ))}
                 {jobs.length === 0 ? (
                   <TableRow>
-                    <TableCell colSpan={3} className="py-8 text-center text-muted-foreground">
+                    <TableCell colSpan={5} className="py-8 text-center text-muted-foreground">
                       No job history available.
                     </TableCell>
                   </TableRow>
@@ -605,6 +698,84 @@ export default function Admin13FPage() {
           </CardContent>
         </Card>
       </div>
+      {selectedJobId !== null ? (
+        <div className="fixed inset-0 z-50 flex justify-end bg-background/60 backdrop-blur-sm">
+          <div
+            aria-hidden="true"
+            className="absolute inset-0 cursor-default"
+            onClick={() => setSelectedJobId(null)}
+          />
+          <Card className="relative h-full w-full max-w-[520px] overflow-hidden rounded-none border-y-0 border-r-0 shadow-xl">
+            <CardHeader className="border-b border-border/70 pb-3">
+              <CardTitle className="flex items-center justify-between gap-2 text-base">
+                <span>Job Detail</span>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="icon"
+                  aria-label="Close job detail"
+                  onClick={() => setSelectedJobId(null)}
+                >
+                  <X className="h-4 w-4" />
+                </Button>
+              </CardTitle>
+              <p className="text-sm text-muted-foreground">
+                {selectedJob ? `${selectedJob.job_type} · ${selectedJob.status}` : 'Loading job detail...'}
+              </p>
+            </CardHeader>
+            <CardContent className="h-[calc(100%-84px)] space-y-5 overflow-y-auto p-5">
+              {selectedJob ? (
+                <>
+                  <div className="grid gap-3 md:grid-cols-2">
+                    <div className="rounded-md border border-border/70 p-3">
+                      <div className="text-xs uppercase text-muted-foreground">Lock key</div>
+                      <div className="mt-1 break-all font-mono text-xs">{selectedJob.lock_key ?? '—'}</div>
+                    </div>
+                    <div className="rounded-md border border-border/70 p-3">
+                      <div className="text-xs uppercase text-muted-foreground">Worker</div>
+                      <div className="mt-1 break-all font-mono text-xs">{selectedJob.worker_id ?? '—'}</div>
+                    </div>
+                    <div className="rounded-md border border-border/70 p-3">
+                      <div className="text-xs uppercase text-muted-foreground">Started</div>
+                      <div className="mt-1 text-sm">{selectedJob.started_at ?? '—'}</div>
+                    </div>
+                    <div className="rounded-md border border-border/70 p-3">
+                      <div className="text-xs uppercase text-muted-foreground">Finished</div>
+                      <div className="mt-1 text-sm">{selectedJob.finished_at ?? '—'}</div>
+                    </div>
+                  </div>
+                  {selectedJob.error_message ? (
+                    <div className="rounded-md border border-rose-300/70 bg-rose-50 px-3 py-2 text-sm text-rose-950">
+                      {selectedJob.error_message}
+                    </div>
+                  ) : null}
+                  <div>
+                    <div className="text-xs font-semibold uppercase text-muted-foreground">
+                      Input
+                    </div>
+                    <div className="mt-2 max-h-64 overflow-auto rounded-md border border-border/70 bg-muted/40 p-3 font-mono text-xs">
+                      {formatJson(selectedJob.input_json)}
+                    </div>
+                  </div>
+                  <div>
+                    <div className="text-xs font-semibold uppercase text-muted-foreground">
+                      Summary
+                    </div>
+                    <div className="mt-2 max-h-64 overflow-auto rounded-md border border-border/70 bg-muted/40 p-3 font-mono text-xs">
+                      {formatJson(selectedJob.summary_json)}
+                    </div>
+                  </div>
+                </>
+              ) : (
+                <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                  Loading job detail...
+                </div>
+              )}
+            </CardContent>
+          </Card>
+        </div>
+      ) : null}
     </div>
   );
 }

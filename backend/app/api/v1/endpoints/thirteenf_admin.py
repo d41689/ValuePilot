@@ -15,6 +15,8 @@ from app.services.thirteenf_admin_dashboard import (
     build_status,
     cancel_job,
     confirm_manager_cik,
+    get_job,
+    list_workers,
     list_jobs,
     reject_manager_cik,
     trigger_job,
@@ -115,6 +117,19 @@ def read_jobs(
     limit: int = Query(100, ge=1, le=500),
 ) -> Any:
     return {"items": list_jobs(session, limit=limit)}
+
+
+@admin_router.get("/jobs/{job_id}", response_model=dict)
+def read_job(session: SessionDep, current_user: AdminUser, job_id: int) -> Any:
+    try:
+        return get_job(session, job_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+
+
+@admin_router.get("/workers", response_model=dict)
+def read_workers(session: SessionDep, current_user: AdminUser) -> Any:
+    return {"items": list_workers(session)}
 
 
 @admin_router.post("/jobs", response_model=dict)

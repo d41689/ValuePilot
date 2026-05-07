@@ -132,12 +132,30 @@ class JobRun(Base):
     dedupe_key: Mapped[Optional[str]] = mapped_column(String(200), nullable=True)
     lock_key: Mapped[str] = mapped_column(String(200), nullable=False)
     quarter: Mapped[Optional[str]] = mapped_column(String(10), nullable=True)
+    worker_id: Mapped[Optional[str]] = mapped_column(String(120), nullable=True)
     started_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    heartbeat_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
     finished_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
     input_json: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)
     summary_json: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)
     error_message: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class JobWorkerHeartbeat(Base):
+    __tablename__ = "job_worker_heartbeats"
+
+    worker_id: Mapped[str] = mapped_column(String(120), primary_key=True)
+    worker_type: Mapped[str] = mapped_column(String(60), nullable=False, default="13f_admin")
+    hostname: Mapped[Optional[str]] = mapped_column(String(120), nullable=True)
+    process_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    status: Mapped[str] = mapped_column(String(30), nullable=False, default="idle")
+    current_job_id: Mapped[Optional[int]] = mapped_column(BigInteger, ForeignKey("job_runs.id"), nullable=True)
+    last_heartbeat_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
 
 
 class CusipTickerMap(Base):

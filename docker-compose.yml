@@ -50,6 +50,7 @@ services:
       - "${HOST_API_PORT:-8001}:8000"
     environment:
       DATABASE_URL: postgresql://valuepilot:valuepilot@db:5432/valuepilot
+      THIRTEENF_JOB_WORKER_ENABLED: "${THIRTEENF_JOB_WORKER_ENABLED:-true}"
     volumes:
       - ./backend:/code
       - ./docs:/code/docs

@@ -7,6 +7,7 @@ const {
   normalizeQuarters,
   normalizeReadiness,
   normalizeTasks,
+  normalizeWorkers,
   readinessTone,
 } = require('./thirteenfAdmin');
 
@@ -50,4 +51,19 @@ test('normalizeQuarters and normalizeTasks prepare table rows', () => {
 
   assert.equal(quarters[0].healthTone, 'danger');
   assert.equal(tasks[0].priorityTone, 'danger');
+});
+
+test('normalizeWorkers exposes heartbeat status and current job', () => {
+  const workers = normalizeWorkers([
+    {
+      worker_id: 'worker-1',
+      status: 'running',
+      current_job_id: 42,
+      last_heartbeat_at: '2026-05-06T12:30:00Z',
+    },
+  ]);
+
+  assert.equal(workers[0].workerId, 'worker-1');
+  assert.equal(workers[0].status, 'running');
+  assert.equal(workers[0].currentJobId, 42);
 });

@@ -5,11 +5,12 @@ from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 from typing import Any
 
-from sqlalchemy import and_, func, or_
+from sqlalchemy import func, or_
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
 from app.models.institutions import Filing13F, Holding13F, InstitutionManager, JobRun, RawSourceDocument
+from app.services.thirteenf_job_worker import list_worker_heartbeats
 
 
 ACTIVE_JOB_STATUSES = {"queued", "running", "cancel_requested"}
@@ -249,6 +250,17 @@ def list_jobs(session: Session, *, limit: int = 100) -> list[dict[str, Any]]:
     return [_job_payload(job) for job in jobs]
 
 
+def get_job(session: Session, job_id: int) -> dict[str, Any]:
+    job = session.get(JobRun, job_id)
+    if job is None:
+        raise ValueError("Job not found")
+    return _job_payload(job)
+
+
+def list_workers(session: Session) -> list[dict[str, Any]]:
+    return list_worker_heartbeats(session)
+
+
 def trigger_job(session: Session, *, requested_by_user_id: int | None, payload: dict[str, Any]) -> dict[str, Any]:
     job_type = payload.get("job_type")
     if job_type not in _JOB_LOCK_BUILDERS:
@@ -271,7 +283,6 @@ def trigger_job(session: Session, *, requested_by_user_id: int | None, payload: 
             "input_json": payload,
         }
 
-    now = datetime.now(timezone.utc)
     job = JobRun(
         job_type=job_type,
         status="queued",
@@ -285,27 +296,6 @@ def trigger_job(session: Session, *, requested_by_user_id: int | None, payload: 
     session.add(job)
     session.commit()
     session.refresh(job)
-    try:
-        job.status = "running"
-        job.started_at = now
-        session.add(job)
-        session.commit()
-        summary = _execute_job(session, job_type, payload)
-        job.status = summary.pop("status", "succeeded")
-        job.summary_json = summary
-        job.finished_at = datetime.now(timezone.utc)
-        session.add(job)
-        session.commit()
-        session.refresh(job)
-    except Exception as exc:
-        session.rollback()
-        job = session.get(JobRun, job.id)
-        job.status = "failed"
-        job.error_message = str(exc)
-        job.finished_at = datetime.now(timezone.utc)
-        session.add(job)
-        session.commit()
-        session.refresh(job)
     return _job_payload(job)
 
 
@@ -313,12 +303,22 @@ def cancel_job(session: Session, job_id: int) -> dict[str, Any]:
     job = session.get(JobRun, job_id)
     if job is None:
         raise ValueError("Job not found")
-    if job.status in ACTIVE_JOB_STATUSES:
+    if job.status == "queued":
+        job.status = "canceled"
+        job.finished_at = datetime.now(timezone.utc)
+        session.add(job)
+        session.commit()
+        session.refresh(job)
+    elif job.status in {"running", "cancel_requested"}:
         job.status = "cancel_requested"
         session.add(job)
         session.commit()
         session.refresh(job)
     return _job_payload(job)
+
+
+def execute_job_payload(session: Session, job_type: str, payload: dict[str, Any]) -> dict[str, Any]:
+    return _execute_job(session, job_type, payload)
 
 
 def _quarter_summary(session: Session, quarter: str, *, today: date) -> dict[str, Any]:
@@ -575,7 +575,9 @@ def _job_payload(job: JobRun) -> dict[str, Any]:
         "dedupe_key": job.dedupe_key,
         "lock_key": job.lock_key,
         "quarter": job.quarter,
+        "worker_id": job.worker_id,
         "started_at": job.started_at.isoformat() if job.started_at else None,
+        "heartbeat_at": job.heartbeat_at.isoformat() if job.heartbeat_at else None,
         "finished_at": job.finished_at.isoformat() if job.finished_at else None,
         "input_json": job.input_json,
         "summary_json": job.summary_json,
