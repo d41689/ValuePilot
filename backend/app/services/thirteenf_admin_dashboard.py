@@ -537,6 +537,78 @@ def cancel_job(session: Session, job_id: int) -> dict[str, Any]:
     return _job_payload(job)
 
 
+def smart_retry_failed_jobs(session: Session, *, today: date | None = None) -> list[dict[str, Any]]:
+    """Identifies partially failed jobs and enqueues targeted retries for their failed accessions.
+
+    Criteria for smart retry:
+      - Job status is 'partial_success'
+      - Job has 'failed_accessions' in its summary_json
+      - Job is at least 24 hours old (to respect SEC rate limits and transient errors)
+      - The failed accession hasn't been successfully processed by a newer job
+    """
+    today_dt = datetime.now(timezone.utc) if today is None else datetime.combine(today, datetime.min.time(), tzinfo=timezone.utc)
+    cutoff = today_dt - timedelta(hours=24)
+
+    # Find candidate jobs
+    jobs = (
+        session.query(JobRun)
+        .filter(JobRun.status == "partial_success")
+        .filter(JobRun.finished_at <= cutoff)
+        .order_by(JobRun.finished_at.desc())
+        .all()
+    )
+
+    results: list[dict[str, Any]] = []
+    seen_accessions: set[str] = set()
+
+    for job in jobs:
+        summary = job.summary_json if isinstance(job.summary_json, dict) else {}
+        # Support both top-level and nested failed_accessions (from quarterly_pipeline)
+        failures = summary.get("failed_accessions")
+        if not failures and "holdings_ingestion" in summary:
+            failures = summary["holdings_ingestion"].get("failed_accessions")
+
+        if not isinstance(failures, list):
+            continue
+
+        for failure in failures:
+            if not isinstance(failure, dict):
+                continue
+            accession_no = failure.get("accession_no")
+            if not accession_no or accession_no in seen_accessions:
+                continue
+            seen_accessions.add(accession_no)
+
+            # Check if this accession has already been successfully retried or is currently being retried
+            already_active = (
+                session.query(JobRun)
+                .filter(JobRun.lock_key == f"ingest_accession:{accession_no}")
+                .filter(JobRun.status.in_(ACTIVE_JOB_STATUSES | {"succeeded"}))
+                .filter(JobRun.created_at > job.created_at)
+                .first()
+            )
+            if already_active:
+                continue
+
+            # Trigger a targeted retry
+            try:
+                trigger_result = trigger_job(
+                    session,
+                    requested_by_user_id=None,
+                    payload={
+                        "job_type": "ingest_accession",
+                        "accession_no": accession_no,
+                        "trigger_source": "smart_retry",
+                    },
+                )
+                if not trigger_result.get("conflict"):
+                    results.append(trigger_result)
+            except Exception as exc:
+                logger.warning("Failed to trigger smart retry for accession %s: %s", accession_no, exc)
+
+    return results
+
+
 def execute_job_payload(session: Session, job_type: str, payload: dict[str, Any]) -> dict[str, Any]:
     return _execute_job(session, job_type, payload)
 

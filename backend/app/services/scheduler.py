@@ -136,4 +136,34 @@ def create_scheduler(db_factory: Callable) -> BackgroundScheduler:
         replace_existing=True,
         misfire_grace_time=3600,  # allow up to 1h late firing
     )
+
+    # Run every day at 02:00 UTC.
+    # Checks for partially failed jobs and retries them if they are old enough.
+    scheduler.add_job(
+        run_smart_retries,
+        trigger=CronTrigger(hour=2, minute=0, timezone="UTC"),
+        args=[db_factory],
+        id="smart_retries",
+        name="13F Smart Retries",
+        replace_existing=True,
+        misfire_grace_time=3600,
+    )
     return scheduler
+
+
+def run_smart_retries(db_factory: Callable) -> None:
+    """Check for partially failed jobs and trigger targeted retries."""
+    logger.info("Smart retries check: starting")
+    db = db_factory()
+    try:
+        from app.services.thirteenf_admin_dashboard import smart_retry_failed_jobs
+        results = smart_retry_failed_jobs(db)
+        if results:
+            logger.info("Smart retries: triggered %d new jobs", len(results))
+        else:
+            logger.info("Smart retries: no eligible jobs found")
+    except Exception as exc:
+        db.rollback()
+        logger.exception("Smart retries failed: %s", exc)
+    finally:
+        db.close()
