@@ -2,7 +2,7 @@ from datetime import date, datetime
 from typing import Optional, List
 from sqlalchemy import (
     String, Text, Boolean, ForeignKey, BigInteger, Date,
-    DateTime, Integer, Float, Index, UniqueConstraint,
+    DateTime, Integer, Float, Index, UniqueConstraint, text,
 )
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -160,6 +160,14 @@ class Holding13F(Base):
 
 class JobRun(Base):
     __tablename__ = "job_runs"
+    __table_args__ = (
+        Index(
+            "uq_job_runs_active_lock_key",
+            "lock_key",
+            unique=True,
+            postgresql_where=text("status IN ('queued', 'running', 'cancel_requested')"),
+        ),
+    )
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
     job_type: Mapped[str] = mapped_column(String(60), nullable=False)

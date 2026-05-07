@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import calendar
+import logging
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 from typing import Any
 
 from sqlalchemy import func, or_
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
@@ -23,7 +25,10 @@ from app.services.edgar_quality import persist_quality_report, run_quality_check
 from app.services.thirteenf_job_worker import list_worker_heartbeats
 
 
+logger = logging.getLogger(__name__)
+
 ACTIVE_JOB_STATUSES = {"queued", "running", "cancel_requested"}
+MAX_SMART_RETRY_ATTEMPTS = 3
 READY_LINK_RATIO = 0.80
 WARNING_LINK_RATIO = 0.50
 STUCK_QUEUED_JOB_AFTER_SECONDS = 10 * 60
@@ -514,7 +519,18 @@ def trigger_job(session: Session, *, requested_by_user_id: int | None, payload: 
         input_json=payload,
     )
     session.add(job)
-    session.commit()
+    try:
+        session.commit()
+    except IntegrityError:
+        # Concurrent caller inserted an active job between our SELECT and INSERT.
+        session.rollback()
+        active = (
+            session.query(JobRun)
+            .filter(JobRun.lock_key == lock_key)
+            .filter(JobRun.status.in_(ACTIVE_JOB_STATUSES))
+            .one_or_none()
+        )
+        return {"conflict": True, "active_job_id": active.id if active else None, "lock_key": lock_key}
     session.refresh(job)
     return _job_payload(job)
 
@@ -537,7 +553,7 @@ def cancel_job(session: Session, job_id: int) -> dict[str, Any]:
     return _job_payload(job)
 
 
-def smart_retry_failed_jobs(session: Session, *, today: date | None = None) -> list[dict[str, Any]]:
+def smart_retry_failed_jobs(session: Session, *, now: datetime | None = None) -> list[dict[str, Any]]:
     """Identifies partially failed jobs and enqueues targeted retries for their failed accessions.
 
     Criteria for smart retry:
@@ -545,9 +561,10 @@ def smart_retry_failed_jobs(session: Session, *, today: date | None = None) -> l
       - Job has 'failed_accessions' in its summary_json
       - Job is at least 24 hours old (to respect SEC rate limits and transient errors)
       - The failed accession hasn't been successfully processed by a newer job
+      - The accession hasn't exceeded MAX_SMART_RETRY_ATTEMPTS prior smart retries
     """
-    today_dt = datetime.now(timezone.utc) if today is None else datetime.combine(today, datetime.min.time(), tzinfo=timezone.utc)
-    cutoff = today_dt - timedelta(hours=24)
+    now_dt = now if now is not None else datetime.now(timezone.utc)
+    cutoff = now_dt - timedelta(hours=24)
 
     # Find candidate jobs
     jobs = (
@@ -575,19 +592,40 @@ def smart_retry_failed_jobs(session: Session, *, today: date | None = None) -> l
             if not isinstance(failure, dict):
                 continue
             accession_no = failure.get("accession_no")
-            if not accession_no or accession_no in seen_accessions:
+            if not accession_no:
+                continue
+            if accession_no in seen_accessions:
+                logger.info("Skipping %s from job %d: already queued in this run", accession_no, job.id)
                 continue
             seen_accessions.add(accession_no)
 
-            # Check if this accession has already been successfully retried or is currently being retried
-            already_active = (
+            # Single query for all newer runs of this accession — avoids two round-trips per accession.
+            newer_runs = (
                 session.query(JobRun)
                 .filter(JobRun.lock_key == f"ingest_accession:{accession_no}")
-                .filter(JobRun.status.in_(ACTIVE_JOB_STATUSES | {"succeeded"}))
                 .filter(JobRun.created_at > job.created_at)
-                .first()
+                .all()
+            )
+
+            # Guard against retrying indefinitely for persistently-failing accessions.
+            prior_retries = sum(1 for r in newer_runs if r.trigger_source == "smart_retry")
+            if prior_retries >= MAX_SMART_RETRY_ATTEMPTS:
+                logger.warning(
+                    "Skipping smart retry for %s: max attempts (%d) reached",
+                    accession_no, MAX_SMART_RETRY_ATTEMPTS,
+                )
+                continue
+
+            # Check if this accession has already been successfully retried or is currently being retried
+            already_active = next(
+                (r for r in newer_runs if r.status in ACTIVE_JOB_STATUSES | {"succeeded"}),
+                None,
             )
             if already_active:
+                logger.info(
+                    "Skipping %s: already handled by job %d (status=%s)",
+                    accession_no, already_active.id, already_active.status,
+                )
                 continue
 
             # Trigger a targeted retry

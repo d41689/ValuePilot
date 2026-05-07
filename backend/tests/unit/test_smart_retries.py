@@ -1,85 +1,157 @@
 import pytest
 from datetime import datetime, timedelta, timezone
-from unittest.mock import patch, MagicMock
-from app.models.institutions import JobRun, Filing13F, InstitutionManager
-from app.services.thirteenf_admin_dashboard import smart_retry_failed_jobs, trigger_job
+from unittest.mock import patch
+from app.models.institutions import JobRun
+from app.services.thirteenf_admin_dashboard import smart_retry_failed_jobs, MAX_SMART_RETRY_ATTEMPTS
 
-def test_smart_retry_failed_jobs_filters_by_age(db_session):
-    # Setup: one old partially failed job, one recent one
-    now = datetime.now(timezone.utc)
-    old_job = JobRun(
+# Fixed reference point shared across all tests — avoids clock-dependent behaviour.
+NOW = datetime(2026, 5, 7, 2, 0, 0, tzinfo=timezone.utc)
+CUTOFF = NOW - timedelta(hours=24)
+
+
+def _old_partial_job(accession_no: str, lock_key: str, created_offset_hours: int = 30) -> JobRun:
+    return JobRun(
         job_type="ingest_holdings",
         status="partial_success",
-        lock_key="old_job",
-        finished_at=now - timedelta(hours=25),
-        summary_json={"failed_accessions": [{"accession_no": "123-456"}]}
+        lock_key=lock_key,
+        trigger_source="scheduler",
+        created_at=NOW - timedelta(hours=created_offset_hours),
+        finished_at=NOW - timedelta(hours=25),
+        summary_json={"failed_accessions": [{"accession_no": accession_no}]},
     )
+
+
+def test_smart_retry_filters_by_age(db_session):
+    """Jobs finished less than 24 h ago must be skipped; older ones retried."""
+    old_job = _old_partial_job("123-456", "old_job")
     recent_job = JobRun(
         job_type="ingest_holdings",
         status="partial_success",
         lock_key="recent_job",
-        finished_at=now - timedelta(hours=2),
-        summary_json={"failed_accessions": [{"accession_no": "789-012"}]}
+        trigger_source="scheduler",
+        finished_at=NOW - timedelta(hours=2),
+        summary_json={"failed_accessions": [{"accession_no": "789-012"}]},
     )
     db_session.add_all([old_job, recent_job])
     db_session.commit()
 
     with patch("app.services.thirteenf_admin_dashboard.trigger_job") as mock_trigger:
         mock_trigger.return_value = {"id": 999}
-        results = smart_retry_failed_jobs(db_session)
-        
-        # Should only retry the old job
-        assert len(results) == 1
-        mock_trigger.assert_called_once()
-        assert mock_trigger.call_args[1]["payload"]["accession_no"] == "123-456"
+        results = smart_retry_failed_jobs(db_session, now=NOW)
 
-def test_smart_retry_failed_jobs_skips_already_retried(db_session):
-    now = datetime.now(timezone.utc)
-    # Old job that failed
-    old_job = JobRun(
-        job_type="ingest_holdings",
-        status="partial_success",
-        lock_key="old_job",
-        created_at=now - timedelta(hours=30),
-        finished_at=now - timedelta(hours=25),
-        summary_json={"failed_accessions": [{"accession_no": "123-456"}]}
-    )
-    # Newer job that succeeded for the same accession
+    assert len(results) == 1
+    mock_trigger.assert_called_once()
+    assert mock_trigger.call_args[1]["payload"]["accession_no"] == "123-456"
+
+
+def test_smart_retry_skips_already_succeeded(db_session):
+    """Accession already successfully retried by a newer job must be skipped."""
+    old_job = _old_partial_job("123-456", "old_job", created_offset_hours=30)
     retry_job = JobRun(
         job_type="ingest_accession",
         status="succeeded",
         lock_key="ingest_accession:123-456",
-        created_at=now - timedelta(hours=10),
-        finished_at=now - timedelta(hours=9)
+        trigger_source="smart_retry",
+        created_at=old_job.created_at + timedelta(hours=1),
+        finished_at=NOW - timedelta(hours=9),
     )
     db_session.add_all([old_job, retry_job])
     db_session.commit()
 
     with patch("app.services.thirteenf_admin_dashboard.trigger_job") as mock_trigger:
-        results = smart_retry_failed_jobs(db_session)
-        # Should skip because it was already successfully retried
-        assert len(results) == 0
-        mock_trigger.assert_not_called()
+        results = smart_retry_failed_jobs(db_session, now=NOW)
 
-def test_smart_retry_failed_jobs_handles_nested_failures(db_session):
-    now = datetime.now(timezone.utc)
-    # Quarterly pipeline nested summary
+    assert len(results) == 0
+    mock_trigger.assert_not_called()
+
+
+def test_smart_retry_handles_nested_quarterly_failures(db_session):
+    """failed_accessions nested under holdings_ingestion (quarterly_pipeline format) must be extracted."""
     pipeline_job = JobRun(
         job_type="quarterly_pipeline",
         status="partial_success",
         lock_key="pipeline_job",
-        finished_at=now - timedelta(hours=25),
-        summary_json={
-            "holdings_ingestion": {
-                "failed_accessions": [{"accession_no": "abc-def"}]
-            }
-        }
+        trigger_source="scheduler",
+        finished_at=NOW - timedelta(hours=25),
+        summary_json={"holdings_ingestion": {"failed_accessions": [{"accession_no": "abc-def"}]}},
     )
     db_session.add(pipeline_job)
     db_session.commit()
 
     with patch("app.services.thirteenf_admin_dashboard.trigger_job") as mock_trigger:
         mock_trigger.return_value = {"id": 100}
-        results = smart_retry_failed_jobs(db_session)
-        assert len(results) == 1
-        assert mock_trigger.call_args[1]["payload"]["accession_no"] == "abc-def"
+        results = smart_retry_failed_jobs(db_session, now=NOW)
+
+    assert len(results) == 1
+    assert mock_trigger.call_args[1]["payload"]["accession_no"] == "abc-def"
+
+
+def test_smart_retry_deduplicates_same_accession_across_jobs(db_session):
+    """Same accession appearing in two different partial_success jobs must only trigger one retry."""
+    job1 = _old_partial_job("dup-001", "job1", created_offset_hours=50)
+    job2 = _old_partial_job("dup-001", "job2", created_offset_hours=40)
+    db_session.add_all([job1, job2])
+    db_session.commit()
+
+    with patch("app.services.thirteenf_admin_dashboard.trigger_job") as mock_trigger:
+        mock_trigger.return_value = {"id": 200}
+        results = smart_retry_failed_jobs(db_session, now=NOW)
+
+    assert len(results) == 1
+    mock_trigger.assert_called_once()
+
+
+def test_smart_retry_stops_at_max_attempts(db_session):
+    """Accession that has already been smart-retried MAX times must not be queued again."""
+    old_job = _old_partial_job("stuck-001", "old_job", created_offset_hours=30)
+    db_session.add(old_job)
+    db_session.flush()  # ensure old_job.created_at is set before building retries
+
+    # Simulate MAX prior smart-retry attempts, all partial_success (not yet succeeded).
+    prior_retries = [
+        JobRun(
+            job_type="ingest_accession",
+            status="partial_success",
+            lock_key="ingest_accession:stuck-001",
+            trigger_source="smart_retry",
+            created_at=old_job.created_at + timedelta(hours=i + 1),
+            finished_at=old_job.created_at + timedelta(hours=i + 2),
+        )
+        for i in range(MAX_SMART_RETRY_ATTEMPTS)
+    ]
+    db_session.add_all(prior_retries)
+    db_session.commit()
+
+    with patch("app.services.thirteenf_admin_dashboard.trigger_job") as mock_trigger:
+        results = smart_retry_failed_jobs(db_session, now=NOW)
+
+    assert len(results) == 0
+    mock_trigger.assert_not_called()
+
+
+def test_smart_retry_allows_retry_below_max_attempts(db_session):
+    """Accession with fewer than MAX prior retries must still be queued."""
+    old_job = _old_partial_job("partial-001", "old_job", created_offset_hours=30)
+    db_session.add(old_job)
+    db_session.flush()
+
+    prior_retries = [
+        JobRun(
+            job_type="ingest_accession",
+            status="partial_success",
+            lock_key="ingest_accession:partial-001",
+            trigger_source="smart_retry",
+            created_at=old_job.created_at + timedelta(hours=i + 1),
+            finished_at=old_job.created_at + timedelta(hours=i + 2),
+        )
+        for i in range(MAX_SMART_RETRY_ATTEMPTS - 1)
+    ]
+    db_session.add_all(prior_retries)
+    db_session.commit()
+
+    with patch("app.services.thirteenf_admin_dashboard.trigger_job") as mock_trigger:
+        mock_trigger.return_value = {"id": 300}
+        results = smart_retry_failed_jobs(db_session, now=NOW)
+
+    assert len(results) == 1
+    mock_trigger.assert_called_once()
