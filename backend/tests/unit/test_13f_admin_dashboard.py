@@ -2,9 +2,10 @@ from __future__ import annotations
 
 from datetime import date, datetime, timedelta, timezone
 
-from app.models.institutions import Filing13F, Holding13F, InstitutionManager, JobRun, JobWorkerHeartbeat, RawSourceDocument
+from app.models.institutions import Filing13F, Holding13F, InstitutionManager, JobRun, JobWorkerHeartbeat, QualityReport13F, RawSourceDocument
 from app.models.stocks import Stock
 from app.services.edgar_ingestion import match_cik_candidates
+from app.services.edgar_quality import QualityReport, persist_quality_report
 from app.services.thirteenf_job_worker import execute_queued_job_once, record_worker_heartbeat
 
 
@@ -14,6 +15,7 @@ def _clear_13f(db_session) -> None:
     db_session.query(RawSourceDocument).delete()
     db_session.query(JobWorkerHeartbeat).delete()
     db_session.query(JobRun).delete()
+    db_session.query(QualityReport13F).delete()
     db_session.query(InstitutionManager).delete()
     db_session.flush()
 
@@ -445,3 +447,72 @@ def test_reject_manager_cik_retains_prior_rejected_candidate(client, db_session,
     assert payload["reviewed_by_user_id"] == admin.id
     assert payload["prior_rejected_candidates"][0]["cik"] == "0001336528"
     assert payload["prior_rejected_candidates"][0]["review_note"] == "CIK belongs to a different adviser"
+
+
+def test_persisted_quality_report_surfaces_in_quarter_and_tasks(client, db_session, user_factory, auth_headers):
+    _clear_13f(db_session)
+    admin = _admin(user_factory)
+    manager = _manager(db_session)
+    stock = _stock(db_session)
+    filing = _filing(db_session, manager, accession="0001234567-26-000001")
+    _holding(db_session, filing, stock)
+    report = QualityReport()
+    report.add("reconciliation", "warning", "reported and computed totals differ", accession_no=filing.accession_no)
+    persist_quality_report(db_session, quarter="2025-Q4", report=report)
+    db_session.commit()
+
+    quarter_response = client.get("/api/v1/admin/13f/quarters/2025-Q4", headers=auth_headers(admin))
+    task_response = client.get("/api/v1/admin/13f/tasks", headers=auth_headers(admin))
+
+    assert quarter_response.status_code == 200
+    quarter = quarter_response.json()
+    assert quarter["quality_status"] == "warning"
+    assert quarter["quality_warnings"] == 1
+    assert quarter["quality_errors"] == 0
+    assert any(item["code"] == "QUALITY_WARNINGS" for item in task_response.json()["items"])
+
+
+def test_quality_check_job_persists_report(client, db_session, user_factory, auth_headers, monkeypatch):
+    _clear_13f(db_session)
+    admin = _admin(user_factory)
+    job = JobRun(
+        job_type="quality_check",
+        status="queued",
+        requested_by_user_id=admin.id,
+        trigger_source="manual",
+        dedupe_key="quality_check:2025-Q4",
+        lock_key="quality_check:2025-Q4",
+        quarter="2025-Q4",
+        input_json={"job_type": "quality_check", "quarter": "2025-Q4"},
+    )
+    db_session.add(job)
+    db_session.commit()
+    report = QualityReport()
+    report.add("parse_failure", "error", "failed infotable", accession_no="0001234567-26-000001")
+    monkeypatch.setattr("app.services.thirteenf_admin_dashboard.run_quality_checks", lambda session, quarter: report)
+
+    result = execute_queued_job_once(db_session, worker_id="test-worker")
+
+    assert result.status == "failed"
+    persisted = db_session.query(QualityReport13F).filter_by(quarter="2025-Q4").one()
+    assert persisted.status == "failed"
+    assert persisted.error_count == 1
+    assert persisted.warning_count == 0
+    assert persisted.source_job_id == job.id
+
+
+def test_quality_reports_endpoint_returns_latest_reports(client, db_session, user_factory, auth_headers):
+    _clear_13f(db_session)
+    admin = _admin(user_factory)
+    report = QualityReport()
+    report.add("reconciliation", "info", "ok")
+    persist_quality_report(db_session, quarter="2025-Q4", report=report)
+    db_session.commit()
+
+    response = client.get("/api/v1/admin/13f/quality", headers=auth_headers(admin))
+
+    assert response.status_code == 200
+    payload = response.json()["items"][0]
+    assert payload["quarter"] == "2025-Q4"
+    assert payload["status"] == "passed"
+    assert payload["info_count"] == 1

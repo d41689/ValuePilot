@@ -93,7 +93,9 @@ def execute_queued_job_once(session: Session, *, worker_id: str) -> JobRun | Non
     try:
         from app.services import thirteenf_admin_dashboard
 
-        summary = thirteenf_admin_dashboard.execute_job_payload(session, job.job_type, job.input_json or {})
+        payload = dict(job.input_json or {})
+        payload["_job_id"] = job.id
+        summary = thirteenf_admin_dashboard.execute_job_payload(session, job.job_type, payload)
         job = session.get(JobRun, job.id)
         job.status = summary.pop("status", "succeeded")
         job.summary_json = summary

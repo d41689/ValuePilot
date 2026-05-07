@@ -11,11 +11,13 @@ from app.services.thirteenf_admin_dashboard import (
     build_admin_tasks,
     build_consumer_readiness,
     build_managers,
+    build_quality_reports,
     build_quarters,
     build_status,
     cancel_job,
     confirm_manager_cik,
     get_job,
+    get_quality_report_for_quarter,
     list_workers,
     list_jobs,
     reject_manager_cik,
@@ -77,6 +79,23 @@ def read_quarter(session: SessionDep, current_user: AdminUser, quarter: str) -> 
 @admin_router.get("/tasks", response_model=dict)
 def read_tasks(session: SessionDep, current_user: AdminUser) -> Any:
     return {"items": build_admin_tasks(session)}
+
+
+@admin_router.get("/quality", response_model=dict)
+def read_quality_reports(
+    session: SessionDep,
+    current_user: AdminUser,
+    limit: int = Query(20, ge=1, le=100),
+) -> Any:
+    return {"items": build_quality_reports(session, limit=limit)}
+
+
+@admin_router.get("/quality/{quarter}", response_model=dict)
+def read_quality_report(session: SessionDep, current_user: AdminUser, quarter: str) -> Any:
+    try:
+        return get_quality_report_for_quarter(session, quarter)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
 
 
 @admin_router.get("/managers", response_model=dict)

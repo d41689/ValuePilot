@@ -168,6 +168,23 @@ class JobWorkerHeartbeat(Base):
     )
 
 
+class QualityReport13F(Base):
+    __tablename__ = "quality_reports_13f"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    quarter: Mapped[Optional[str]] = mapped_column(String(10), nullable=True)
+    status: Mapped[str] = mapped_column(String(30), nullable=False)
+    error_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    warning_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    info_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    unavailable_reasons: Mapped[Optional[list]] = mapped_column(JSONB, nullable=True)
+    issues_json: Mapped[Optional[list]] = mapped_column(JSONB, nullable=True)
+    summary: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    source_job_id: Mapped[Optional[int]] = mapped_column(BigInteger, ForeignKey("job_runs.id"), nullable=True)
+    checked_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
 class CusipTickerMap(Base):
     __tablename__ = "cusip_ticker_map"
 

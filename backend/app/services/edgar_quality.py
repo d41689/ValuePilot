@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from typing import Any
 
 from sqlalchemy import text
@@ -60,6 +61,47 @@ def run_quality_checks(db: Session, quarter: str | None = None) -> QualityReport
     _check_parse_failures(db, report, quarter)
 
     return report
+
+
+def persist_quality_report(
+    db: Session,
+    *,
+    quarter: str | None,
+    report: QualityReport,
+    source_job_id: int | None = None,
+    unavailable_reasons: list[str] | None = None,
+) -> Any:
+    """Persist a durable 13F quality report for admin readiness and audit."""
+    from app.models.institutions import QualityReport13F
+
+    error_count = len(report.errors)
+    warning_count = len(report.warnings)
+    info_count = len(report.issues) - error_count - warning_count
+    status = "failed" if error_count else "warning" if warning_count else "passed"
+    record = QualityReport13F(
+        quarter=quarter,
+        status=status,
+        error_count=error_count,
+        warning_count=warning_count,
+        info_count=info_count,
+        unavailable_reasons=unavailable_reasons or [],
+        issues_json=[
+            {
+                "check": issue.check,
+                "severity": issue.severity,
+                "accession_no": issue.accession_no,
+                "detail": issue.detail,
+                "value": issue.value,
+            }
+            for issue in report.issues
+        ],
+        summary=report.summary(),
+        source_job_id=source_job_id,
+        checked_at=datetime.now(timezone.utc),
+    )
+    db.add(record)
+    db.flush()
+    return record
 
 
 def _quarter_filter(quarter: str | None) -> tuple[str, dict]:

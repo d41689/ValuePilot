@@ -4,6 +4,7 @@ const assert = require('node:assert/strict');
 
 const {
   freshnessLine,
+  normalizeQualityReports,
   normalizeQuarters,
   normalizeReadiness,
   normalizeTasks,
@@ -66,4 +67,24 @@ test('normalizeWorkers exposes heartbeat status and current job', () => {
   assert.equal(workers[0].workerId, 'worker-1');
   assert.equal(workers[0].status, 'running');
   assert.equal(workers[0].currentJobId, 42);
+});
+
+test('normalizeQualityReports maps persisted report counts and status', () => {
+  const reports = normalizeQualityReports([
+    {
+      id: 7,
+      quarter: '2025-Q4',
+      status: 'warning',
+      error_count: 0,
+      warning_count: 2,
+      info_count: 4,
+      checked_at: '2026-05-06T13:00:00Z',
+      issues: [{ check: 'reconciliation', severity: 'warning' }],
+    },
+  ]);
+
+  assert.equal(reports[0].quarter, '2025-Q4');
+  assert.equal(reports[0].statusTone, 'warning');
+  assert.equal(reports[0].warningCount, 2);
+  assert.equal(reports[0].issues.length, 1);
 });

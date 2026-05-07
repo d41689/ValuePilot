@@ -13,7 +13,7 @@ function readinessTone(level) {
 function healthTone(health) {
   if (health === 'complete') return 'success';
   if (health === 'failed' || health === 'needs_review' || health === 'setup_required') return 'danger';
-  if (health === 'partial' || health === 'stale' || health === 'index_fetched' || health === 'running') return 'warning';
+  if (health === 'warning' || health === 'partial' || health === 'stale' || health === 'index_fetched' || health === 'running') return 'warning';
   return 'secondary';
 }
 
@@ -92,6 +92,22 @@ function normalizeWorkers(items) {
   }));
 }
 
+function normalizeQualityReports(items) {
+  return (Array.isArray(items) ? items : []).map((item) => ({
+    id: item.id,
+    quarter: item.quarter ?? '—',
+    status: item.status ?? 'not_checked',
+    statusTone: healthTone(item.status),
+    errorCount: item.error_count ?? null,
+    warningCount: item.warning_count ?? null,
+    infoCount: item.info_count ?? null,
+    summary: item.summary ?? '',
+    checkedAt: item.checked_at ?? null,
+    sourceJobId: item.source_job_id ?? null,
+    issues: Array.isArray(item.issues) ? item.issues : [],
+  }));
+}
+
 function freshnessLine(readiness) {
   const deadline = readiness.filingDeadline ? ` Filing deadline: ${readiness.filingDeadline}.` : '';
   return `Default data period: ${readiness.latestUsableQuarter}. Current quarter: ${readiness.currentQuarter} (${readiness.currentPhase}).${deadline} Amendment status: ${readiness.amendmentStatus}.`;
@@ -102,6 +118,7 @@ module.exports = {
   freshnessLine,
   healthTone,
   normalizeQuarters,
+  normalizeQualityReports,
   normalizeReadiness,
   normalizeTasks,
   normalizeWorkers,

@@ -9,7 +9,15 @@ from sqlalchemy import func, or_
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
-from app.models.institutions import Filing13F, Holding13F, InstitutionManager, JobRun, RawSourceDocument
+from app.models.institutions import (
+    Filing13F,
+    Holding13F,
+    InstitutionManager,
+    JobRun,
+    QualityReport13F,
+    RawSourceDocument,
+)
+from app.services.edgar_quality import persist_quality_report, run_quality_checks
 from app.services.thirteenf_job_worker import list_worker_heartbeats
 
 
@@ -174,6 +182,18 @@ def build_quarters(session: Session, *, today: date | None = None, limit: int = 
     return [_quarter_summary(session, label, today=today) for label in labels]
 
 
+def build_quality_reports(session: Session, *, limit: int = 20) -> list[dict[str, Any]]:
+    reports = session.query(QualityReport13F).order_by(QualityReport13F.checked_at.desc()).limit(limit).all()
+    return [_quality_report_payload(report) for report in reports]
+
+
+def get_quality_report_for_quarter(session: Session, quarter: str) -> dict[str, Any]:
+    report = _latest_quality_report(session, quarter)
+    if report is None:
+        raise ValueError("Quality report not found")
+    return _quality_report_payload(report)
+
+
 def build_admin_tasks(session: Session, *, today: date | None = None) -> list[dict[str, Any]]:
     today = today or date.today()
     latest = latest_usable_quarter_label(today)
@@ -193,6 +213,10 @@ def build_admin_tasks(session: Session, *, today: date | None = None) -> list[di
         tasks.append(_task("P1", "AMENDMENT_PENDING_OR_FAILED", "Amendment pending or failed", "Run Reprocess amendment for each pending or failed 13F/A accession"))
     if summary["linked_holding_ratio"] is not None and summary["linked_holding_ratio"] < READY_LINK_RATIO:
         tasks.append(_task("P2", "LOW_STOCK_LINK_COVERAGE", "Low stock link coverage", "Run CUSIP enrichment, review unmatched CUSIPs"))
+    if summary["quality_status"] == "failed":
+        tasks.append(_task("P1", "QUALITY_ERRORS", "Quality errors", "Inspect latest quality report and rerun quality check after fixes"))
+    if summary["quality_status"] == "warning":
+        tasks.append(_task("P2", "QUALITY_WARNINGS", "Quality warnings", "Review quality warnings and accept or fix"))
     historical_depth = _historical_depth_quarters(session, latest)
     if counts["confirmed_managers"] > 0 and historical_depth < 4:
         tasks.append(_task("P2", "HISTORICAL_COVERAGE_BELOW_TARGET", "Historical coverage below product target", "Run historical backfill and show feature-depth warning"))
@@ -367,6 +391,8 @@ def _quarter_summary(session: Session, quarter: str, *, today: date) -> dict[str
     form_idx_fetched = _form_idx_fetched(session, window)
     linked_ratio = linked_holdings_count / holdings_count if holdings_count else None
     amendment_status = _amendment_status(session, filings)
+    quality_report = _latest_quality_report(session, quarter)
+    quality_status = quality_report.status if quality_report else "not_checked"
     phase = _quarter_phase(window, today)
     health = _quarter_health(
         confirmed_managers=confirmed_managers,
@@ -376,6 +402,7 @@ def _quarter_summary(session: Session, quarter: str, *, today: date) -> dict[str
         failed_filings=failed_filings,
         linked_ratio=linked_ratio,
         amendment_status=amendment_status,
+        quality_status=quality_status,
         phase=phase,
     )
     return {
@@ -395,7 +422,11 @@ def _quarter_summary(session: Session, quarter: str, *, today: date) -> dict[str
         "linked_holding_ratio": round(linked_ratio, 4) if linked_ratio is not None else None,
         "failed_filings": failed_filings,
         "amendment_status": amendment_status,
-        "quality_status": "needs_review" if failed_filings or amendment_status in {"amendments_pending", "amendment_failed"} else "not_checked",
+        "quality_status": quality_status,
+        "quality_errors": quality_report.error_count if quality_report else None,
+        "quality_warnings": quality_report.warning_count if quality_report else None,
+        "quality_checked_at": quality_report.checked_at.isoformat() if quality_report else None,
+        "quality_report_id": quality_report.id if quality_report else None,
         "last_successful_job_at": _last_successful_job_at(session),
     }
 
@@ -408,12 +439,14 @@ def _quarter_phase(window: QuarterWindow, today: date) -> str:
     return "post_deadline"
 
 
-def _quarter_health(*, confirmed_managers: int, form_idx_fetched: bool, filings_count: int, holdings_count: int, failed_filings: int, linked_ratio: float | None, amendment_status: str, phase: str) -> str:
+def _quarter_health(*, confirmed_managers: int, form_idx_fetched: bool, filings_count: int, holdings_count: int, failed_filings: int, linked_ratio: float | None, amendment_status: str, quality_status: str, phase: str) -> str:
     if confirmed_managers == 0:
         return "setup_required"
     if failed_filings:
         return "failed"
     if amendment_status in {"amendments_pending", "amendment_failed"}:
+        return "needs_review"
+    if quality_status in {"failed", "warning"}:
         return "needs_review"
     if not form_idx_fetched and filings_count == 0:
         return "not_started" if phase == "post_deadline" else "partial"
@@ -634,6 +667,32 @@ def _manager_payload(manager: InstitutionManager) -> dict[str, Any]:
     }
 
 
+def _quality_report_payload(report: QualityReport13F) -> dict[str, Any]:
+    return {
+        "id": report.id,
+        "quarter": report.quarter,
+        "status": report.status,
+        "error_count": report.error_count,
+        "warning_count": report.warning_count,
+        "info_count": report.info_count,
+        "unavailable_reasons": report.unavailable_reasons or [],
+        "issues": report.issues_json or [],
+        "summary": report.summary,
+        "source_job_id": report.source_job_id,
+        "checked_at": report.checked_at.isoformat(),
+        "created_at": report.created_at.isoformat() if report.created_at else None,
+    }
+
+
+def _latest_quality_report(session: Session, quarter: str) -> QualityReport13F | None:
+    return (
+        session.query(QualityReport13F)
+        .filter(QualityReport13F.quarter == quarter)
+        .order_by(QualityReport13F.checked_at.desc(), QualityReport13F.id.desc())
+        .first()
+    )
+
+
 def _required(payload: dict[str, Any], key: str) -> str:
     value = payload.get(key)
     if not value:
@@ -658,11 +717,17 @@ _JOB_LOCK_BUILDERS = {
 
 def _execute_job(session: Session, job_type: str, payload: dict[str, Any]) -> dict[str, Any]:
     if job_type == "quality_check":
-        from app.services.edgar_quality import run_quality_checks
-
-        report = run_quality_checks(session, payload.get("quarter"))
+        quarter = payload.get("quarter")
+        report = run_quality_checks(session, quarter)
+        persisted = persist_quality_report(
+            session,
+            quarter=quarter,
+            report=report,
+            source_job_id=payload.get("_job_id"),
+        )
         return {
             "status": "failed" if report.errors else "succeeded",
+            "quality_report_id": persisted.id,
             "quality_errors": len(report.errors),
             "quality_warnings": len(report.warnings),
             "issues": [

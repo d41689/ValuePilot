@@ -149,8 +149,10 @@ def run_quarterly_pipeline(db_factory: Callable) -> None:
             logger.warning("  enrich_stocks_from_edgar failed: %s", exc)
 
         # Step 6: data quality check — log errors only
-        from app.services.edgar_quality import run_quality_checks
+        from app.services.edgar_quality import persist_quality_report, run_quality_checks
         report = run_quality_checks(db, quarter)
+        persist_quality_report(db, quarter=quarter, report=report)
+        db.commit()
         if report.errors:
             logger.error(
                 "Quality check after %s ingestion: %s",

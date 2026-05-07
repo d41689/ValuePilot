@@ -34,6 +34,7 @@ import {
 const {
   formatPercent,
   freshnessLine,
+  normalizeQualityReports,
   normalizeQuarters,
   normalizeReadiness,
   normalizeTasks,
@@ -90,6 +91,10 @@ export default function Admin13FPage() {
     queryFn: async () => (await apiClient.get('/admin/13f/jobs')).data,
     refetchInterval: 5000,
   });
+  const qualityQuery = useQuery({
+    queryKey: ['admin-13f-quality'],
+    queryFn: async () => (await apiClient.get('/admin/13f/quality')).data,
+  });
   const workersQuery = useQuery({
     queryKey: ['admin-13f-workers'],
     queryFn: async () => (await apiClient.get('/admin/13f/workers')).data,
@@ -114,6 +119,7 @@ export default function Admin13FPage() {
         queryClient.invalidateQueries({ queryKey: ['admin-13f-quarters'] }),
         queryClient.invalidateQueries({ queryKey: ['admin-13f-tasks'] }),
         queryClient.invalidateQueries({ queryKey: ['admin-13f-jobs'] }),
+        queryClient.invalidateQueries({ queryKey: ['admin-13f-quality'] }),
         queryClient.invalidateQueries({ queryKey: ['admin-13f-workers'] }),
       ]);
     },
@@ -157,6 +163,10 @@ export default function Admin13FPage() {
     [quartersQuery.data]
   );
   const tasks = useMemo(() => normalizeTasks(tasksQuery.data?.items ?? []), [tasksQuery.data]);
+  const qualityReports = useMemo(
+    () => normalizeQualityReports(qualityQuery.data?.items ?? []),
+    [qualityQuery.data]
+  );
   const workers = useMemo(
     () => normalizeWorkers(workersQuery.data?.items ?? []),
     [workersQuery.data]
@@ -170,6 +180,7 @@ export default function Admin13FPage() {
     tasksQuery.isLoading ||
     managersQuery.isLoading ||
     jobsQuery.isLoading ||
+    qualityQuery.isLoading ||
     workersQuery.isLoading;
 
   const latestQuarter = readiness.latestUsableQuarter === '—' ? undefined : readiness.latestUsableQuarter;
@@ -243,6 +254,7 @@ export default function Admin13FPage() {
             queryClient.invalidateQueries({ queryKey: ['admin-13f-tasks'] });
             queryClient.invalidateQueries({ queryKey: ['admin-13f-managers'] });
             queryClient.invalidateQueries({ queryKey: ['admin-13f-jobs'] });
+            queryClient.invalidateQueries({ queryKey: ['admin-13f-quality'] });
             queryClient.invalidateQueries({ queryKey: ['admin-13f-workers'] });
           }}
         >
@@ -305,6 +317,56 @@ export default function Admin13FPage() {
               No blocking admin task detected.
             </div>
           )}
+        </CardContent>
+      </Card>
+
+      <Card className="rounded-md">
+        <CardHeader className="pb-3">
+          <CardTitle className="flex items-center gap-2 text-base">
+            <ShieldAlert className="h-4 w-4" />
+            Quality Reports
+          </CardTitle>
+        </CardHeader>
+        <CardContent>
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead>Quarter</TableHead>
+                <TableHead>Status</TableHead>
+                <TableHead>Issues</TableHead>
+                <TableHead>Checked</TableHead>
+                <TableHead>Summary</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {qualityReports.map((report) => (
+                <TableRow key={String(report.id)}>
+                  <TableCell className="font-medium">{report.quarter}</TableCell>
+                  <TableCell>
+                    <Badge variant={badgeVariant(report.statusTone)}>
+                      {report.status.replaceAll('_', ' ')}
+                    </Badge>
+                  </TableCell>
+                  <TableCell>
+                    {formatInteger(report.errorCount)} errors · {formatInteger(report.warningCount)} warnings
+                  </TableCell>
+                  <TableCell className="text-xs text-muted-foreground">
+                    {report.checkedAt ?? '—'}
+                  </TableCell>
+                  <TableCell className="max-w-[360px] truncate text-sm text-muted-foreground">
+                    {report.summary || '—'}
+                  </TableCell>
+                </TableRow>
+              ))}
+              {qualityReports.length === 0 ? (
+                <TableRow>
+                  <TableCell colSpan={5} className="py-8 text-center text-muted-foreground">
+                    No persisted quality report yet. Run a quality check to populate this section.
+                  </TableCell>
+                </TableRow>
+              ) : null}
+            </TableBody>
+          </Table>
         </CardContent>
       </Card>
 
