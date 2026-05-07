@@ -398,6 +398,65 @@ def test_job_detail_endpoint_returns_input_summary_and_worker(client, db_session
     assert payload["summary_json"]["quality_errors"] == 0
 
 
+def test_job_detail_endpoint_returns_timeline_events_and_retry_targets(client, db_session, user_factory, auth_headers):
+    _clear_13f(db_session)
+    admin = _admin(user_factory)
+    now = datetime.now(timezone.utc)
+    job = JobRun(
+        job_type="ingest_holdings",
+        status="partial_success",
+        requested_by_user_id=admin.id,
+        trigger_source="manual",
+        dedupe_key="ingest_holdings:2025-Q4",
+        lock_key="ingest_holdings:2025-Q4",
+        quarter="2025-Q4",
+        worker_id="test-worker",
+        started_at=now - timedelta(minutes=10),
+        heartbeat_at=now - timedelta(minutes=1),
+        finished_at=now,
+        input_json={"job_type": "ingest_holdings", "quarter": "2025-Q4"},
+        summary_json={
+            "filings_processed": 3,
+            "filings_failed": 1,
+            "failed_accessions": [
+                {"accession_no": "0001234567-26-000002", "error": "broken infotable"},
+            ],
+            "issues": [
+                {
+                    "check": "parse_failure",
+                    "severity": "error",
+                    "accession_no": "0001234567-26-000003",
+                    "detail": "missing issuer",
+                }
+            ],
+        },
+    )
+    db_session.add(job)
+    db_session.commit()
+
+    response = client.get(f"/api/v1/admin/13f/jobs/{job.id}", headers=auth_headers(admin))
+
+    assert response.status_code == 200
+    payload = response.json()
+    event_types = [item["event_type"] for item in payload["events"]]
+    assert "job_created" in event_types
+    assert "job_started" in event_types
+    assert "job_finished" in event_types
+    failed_event = next(item for item in payload["events"] if item["event_type"] == "accession_failed")
+    assert failed_event["accession_no"] == "0001234567-26-000002"
+    assert failed_event["message"] == "broken infotable"
+    issue_event = next(item for item in payload["events"] if item["event_type"] == "quality_issue")
+    assert issue_event["accession_no"] == "0001234567-26-000003"
+    assert issue_event["severity"] == "error"
+    assert payload["retry_targets"] == [
+        {
+            "job_type": "ingest_accession",
+            "accession_no": "0001234567-26-000002",
+            "label": "Retry accession 0001234567-26-000002",
+        }
+    ]
+
+
 def test_cancel_queued_job_releases_active_lock(client, db_session, user_factory, auth_headers):
     _clear_13f(db_session)
     admin = _admin(user_factory)

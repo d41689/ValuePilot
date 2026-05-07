@@ -1413,6 +1413,76 @@ export default function Admin13FPage() {
                   ) : null}
                   <div>
                     <div className="text-xs font-semibold uppercase text-muted-foreground">
+                      Retry Targets
+                    </div>
+                    <div className="mt-2 flex flex-wrap gap-2">
+                      {(selectedJob.retry_targets ?? []).map((target: Record<string, unknown>, index: number) => (
+                        <Button
+                          key={`${String(target.accession_no ?? 'target')}-${index}`}
+                          type="button"
+                          variant="outline"
+                          size="sm"
+                          onClick={() =>
+                            runJob(
+                              {
+                                job_type: target.job_type,
+                                accession_no: target.accession_no,
+                              },
+                              String(target.label ?? target.accession_no ?? 'Retry target')
+                            )
+                          }
+                        >
+                          {String(target.label ?? target.accession_no ?? 'Retry target')}
+                        </Button>
+                      ))}
+                      {(selectedJob.retry_targets ?? []).length === 0 ? (
+                        <div className="text-sm text-muted-foreground">No retry target detected.</div>
+                      ) : null}
+                    </div>
+                  </div>
+                  <div>
+                    <div className="text-xs font-semibold uppercase text-muted-foreground">
+                      Timeline
+                    </div>
+                    <div className="mt-2 space-y-2">
+                      {(selectedJob.events ?? []).map((event: Record<string, unknown>, index: number) => (
+                        <div
+                          key={`${String(event.event_type ?? 'event')}-${index}`}
+                          className="rounded-md border border-border/70 p-3"
+                        >
+                          <div className="flex items-center justify-between gap-2">
+                            <div className="font-medium">
+                              {String(event.event_type ?? 'event').replaceAll('_', ' ')}
+                            </div>
+                            <Badge
+                              variant={badgeVariant(
+                                event.severity === 'error'
+                                  ? 'danger'
+                                  : event.severity === 'warning'
+                                    ? 'warning'
+                                    : 'secondary'
+                              )}
+                            >
+                              {String(event.severity ?? 'info')}
+                            </Badge>
+                          </div>
+                          <div className="mt-1 text-sm text-muted-foreground">
+                            {String(event.message ?? '—')}
+                          </div>
+                          <div className="mt-2 flex flex-wrap gap-2 font-mono text-xs text-muted-foreground">
+                            <span>{String(event.at ?? '—')}</span>
+                            {event.accession_no ? <span>{String(event.accession_no)}</span> : null}
+                            {event.worker_id ? <span>{String(event.worker_id)}</span> : null}
+                          </div>
+                        </div>
+                      ))}
+                      {(selectedJob.events ?? []).length === 0 ? (
+                        <div className="text-sm text-muted-foreground">No timeline events recorded.</div>
+                      ) : null}
+                    </div>
+                  </div>
+                  <div>
+                    <div className="text-xs font-semibold uppercase text-muted-foreground">
                       Input
                     </div>
                     <div className="mt-2 max-h-64 overflow-auto rounded-md border border-border/70 bg-muted/40 p-3 font-mono text-xs">

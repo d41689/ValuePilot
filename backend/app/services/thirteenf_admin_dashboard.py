@@ -820,6 +820,7 @@ def _revoked_cik_repair_tasks(session: Session) -> list[dict[str, Any]]:
 
 
 def _job_payload(job: JobRun) -> dict[str, Any]:
+    events = _job_events(job)
     return {
         "id": job.id,
         "job_type": job.job_type,
@@ -837,7 +838,110 @@ def _job_payload(job: JobRun) -> dict[str, Any]:
         "summary_json": job.summary_json,
         "error_message": job.error_message,
         "created_at": job.created_at.isoformat() if job.created_at else None,
+        "events": events,
+        "retry_targets": _job_retry_targets(job),
     }
+
+
+def _job_events(job: JobRun) -> list[dict[str, Any]]:
+    events: list[dict[str, Any]] = []
+    if job.created_at:
+        events.append(
+            {
+                "event_type": "job_created",
+                "at": job.created_at.isoformat(),
+                "message": f"{job.job_type} queued from {job.trigger_source}",
+                "severity": "info",
+            }
+        )
+    if job.started_at:
+        events.append(
+            {
+                "event_type": "job_started",
+                "at": job.started_at.isoformat(),
+                "message": f"{job.job_type} started",
+                "severity": "info",
+                "worker_id": job.worker_id,
+            }
+        )
+    if job.heartbeat_at:
+        events.append(
+            {
+                "event_type": "job_heartbeat",
+                "at": job.heartbeat_at.isoformat(),
+                "message": "Worker heartbeat recorded",
+                "severity": "info",
+                "worker_id": job.worker_id,
+            }
+        )
+    summary = job.summary_json if isinstance(job.summary_json, dict) else {}
+    for failure in summary.get("failed_accessions") or []:
+        if not isinstance(failure, dict):
+            continue
+        accession_no = failure.get("accession_no")
+        events.append(
+            {
+                "event_type": "accession_failed",
+                "at": job.finished_at.isoformat() if job.finished_at else None,
+                "message": failure.get("error") or "Accession failed",
+                "severity": "error",
+                "accession_no": accession_no,
+                "retry_target": {"job_type": "ingest_accession", "accession_no": accession_no} if accession_no else None,
+            }
+        )
+    for issue in summary.get("issues") or []:
+        if not isinstance(issue, dict):
+            continue
+        events.append(
+            {
+                "event_type": "quality_issue",
+                "at": job.finished_at.isoformat() if job.finished_at else None,
+                "message": issue.get("detail") or issue.get("check") or "Quality issue",
+                "severity": issue.get("severity") or "warning",
+                "accession_no": issue.get("accession_no"),
+                "check": issue.get("check"),
+            }
+        )
+    if job.error_message:
+        events.append(
+            {
+                "event_type": "job_error",
+                "at": job.finished_at.isoformat() if job.finished_at else None,
+                "message": job.error_message,
+                "severity": "error",
+            }
+        )
+    if job.finished_at:
+        events.append(
+            {
+                "event_type": "job_finished",
+                "at": job.finished_at.isoformat(),
+                "message": f"{job.job_type} finished with status {job.status}",
+                "severity": "error" if job.status == "failed" else "warning" if job.status == "partial_success" else "info",
+            }
+        )
+    return sorted(events, key=lambda item: item.get("at") or "")
+
+
+def _job_retry_targets(job: JobRun) -> list[dict[str, str]]:
+    summary = job.summary_json if isinstance(job.summary_json, dict) else {}
+    targets: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for failure in summary.get("failed_accessions") or []:
+        if not isinstance(failure, dict):
+            continue
+        accession_no = failure.get("accession_no")
+        if not accession_no or accession_no in seen:
+            continue
+        seen.add(accession_no)
+        targets.append(
+            {
+                "job_type": "ingest_accession",
+                "accession_no": accession_no,
+                "label": f"Retry accession {accession_no}",
+            }
+        )
+    return targets
 
 
 def _manager_payload(manager: InstitutionManager) -> dict[str, Any]:
