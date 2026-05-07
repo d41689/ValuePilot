@@ -1545,6 +1545,7 @@ def _required(payload: dict[str, Any], key: str) -> str:
 
 
 _JOB_LOCK_BUILDERS = {
+    "quarterly_pipeline": lambda payload: f"quarterly_pipeline:{_required(payload, 'quarter')}",
     "fetch_quarter_index": lambda payload: f"fetch_quarter_index:{_required(payload, 'quarter')}",
     "ingest_holdings": lambda payload: f"ingest_holdings:{_required(payload, 'quarter')}",
     "ingest_accession": lambda payload: f"ingest_accession:{_required(payload, 'accession_no')}",
@@ -1560,6 +1561,52 @@ _JOB_LOCK_BUILDERS = {
 
 
 def _execute_job(session: Session, job_type: str, payload: dict[str, Any]) -> dict[str, Any]:
+    if job_type == "quarterly_pipeline":
+        quarter = _required(payload, "quarter")
+        results = {"quarter": quarter}
+
+        # Step 1: fetch form.idx and seed filing metadata
+        from app.services.edgar_ingestion import ingest_quarter_index
+        results["index_filings"] = ingest_quarter_index(session, quarter)
+        session.commit()
+
+        # Step 2: download + parse infotable for all new filings
+        ingest_results = _execute_ingest_job(session, "ingest_holdings", {"quarter": quarter})
+        results["holdings_ingestion"] = ingest_results
+        session.commit()
+
+        # Step 3: refresh CUSIP -> ticker mappings
+        from app.services.cusip_enrichment import enrich_from_dataroma
+        results["cusip_mappings"] = enrich_from_dataroma(session)
+        session.commit()
+
+        # Step 4: bootstrap stocks + backfill stock_id
+        from app.services.cusip_enrichment import bootstrap_stocks_from_cusip_map, backfill_stock_ids
+        results["new_stocks"] = bootstrap_stocks_from_cusip_map(session)
+        results["holdings_linked"] = backfill_stock_ids(session)
+        session.commit()
+
+        # Step 5: EDGAR company_tickers.json for remaining unmatched
+        from app.services.cusip_enrichment import enrich_stocks_from_edgar_tickers
+        try:
+            edgar_results = enrich_stocks_from_edgar_tickers(session)
+            results["edgar_enrichment"] = edgar_results
+            session.commit()
+        except Exception as exc:
+            session.rollback()
+            results["edgar_enrichment_error"] = str(exc)
+
+        # Step 6: data quality check
+        report = run_quality_checks(session, quarter)
+        persist_quality_report(session, quarter=quarter, report=report, source_job_id=payload.get("_job_id"))
+        session.commit()
+        results["quality_status"] = report.status
+
+        status = "succeeded"
+        if ingest_results.get("status") == "partial_success":
+            status = "partial_success"
+        return {**results, "status": status}
+
     if job_type == "quality_check":
         quarter = payload.get("quarter")
         report = run_quality_checks(session, quarter)

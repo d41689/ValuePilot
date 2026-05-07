@@ -70,7 +70,7 @@ def _quarter_already_ingested(db, quarter: str) -> bool:
 # ---------------------------------------------------------------------------
 
 def run_quarterly_pipeline(db_factory: Callable) -> None:
-    """Check for new quarter and run the full ingestion pipeline if needed."""
+    """Check for new quarter and trigger the quarterly pipeline job if needed."""
     today = date.today()
     quarter = latest_available_quarter(today)
     logger.info("Quarterly pipeline check: latest available quarter = %s", quarter)
@@ -81,93 +81,20 @@ def run_quarterly_pipeline(db_factory: Callable) -> None:
             logger.info("Quarterly pipeline: %s already ingested — skipping", quarter)
             return
 
-        logger.info("Quarterly pipeline: starting ingestion for %s", quarter)
+        logger.info("Quarterly pipeline: triggering ingestion job for %s", quarter)
 
-        # Step 1: fetch form.idx and seed filing metadata
-        from app.services.edgar_ingestion import ingest_quarter_index, ingest_filing_holdings
-        from app.models.institutions import Filing13F
-        from app.edgar.parsers.form_idx import quarter_to_year_qtr
-        import calendar
-
-        n_filings = ingest_quarter_index(db, quarter)
-        db.commit()
-        logger.info("  form.idx: %d new filings indexed", n_filings)
-
-        # Step 2: download + parse infotable for all new filings
-        year, qtr = quarter_to_year_qtr(quarter)
-        q_start = date(year, (qtr - 1) * 3 + 1, 1)
-        end_month = qtr * 3
-        q_end = date(year, end_month, calendar.monthrange(year, end_month)[1])
-
-        pending = (
-            db.query(Filing13F)
-            .filter(Filing13F.period_of_report.between(q_start, q_end))
-            .filter(Filing13F.raw_infotable_doc_id.is_(None))
-            .order_by(Filing13F.filed_at)
-            .all()
-        )
-        total_holdings = 0
-        failed = 0
-        for filing in pending:
-            try:
-                n = ingest_filing_holdings(db, filing)
-                db.commit()
-                total_holdings += n
-            except Exception as exc:
-                db.rollback()
-                logger.error("  %s failed: %s", filing.accession_no, exc)
-                failed += 1
-        logger.info("  holdings: %d inserted (%d filings failed)", total_holdings, failed)
-
-        # Step 3: refresh CUSIP → ticker mappings
-        from app.services.cusip_enrichment import (
-            enrich_from_dataroma,
-            bootstrap_stocks_from_cusip_map,
-            backfill_stock_ids,
-            enrich_stocks_from_edgar_tickers,
-        )
-        n_cusip = enrich_from_dataroma(db)
-        db.commit()
-        logger.info("  enrich_from_dataroma: %d new mappings", n_cusip)
-
-        # Step 4: bootstrap stocks + backfill stock_id
-        bootstrap_stocks_from_cusip_map(db)
-        linked = backfill_stock_ids(db)
-        db.commit()
-        logger.info("  stock_id backfill: %d holdings linked", linked)
-
-        # Step 5: EDGAR company_tickers.json for remaining unmatched
-        try:
-            result = enrich_stocks_from_edgar_tickers(db)
-            db.commit()
-            logger.info(
-                "  enrich_stocks_from_edgar: %d new mappings, %d holdings linked",
-                result["new_mappings"], result["holdings_linked"],
-            )
-        except Exception as exc:
-            db.rollback()
-            logger.warning("  enrich_stocks_from_edgar failed: %s", exc)
-
-        # Step 6: data quality check — log errors only
-        from app.services.edgar_quality import persist_quality_report, run_quality_checks
-        report = run_quality_checks(db, quarter)
-        persist_quality_report(db, quarter=quarter, report=report)
-        db.commit()
-        if report.errors:
-            logger.error(
-                "Quality check after %s ingestion: %s",
-                quarter, report.summary(),
-            )
-            for issue in report.errors:
-                logger.error("  [%s] %s", issue.check, issue.detail)
-        else:
-            logger.info("Quality check: %s", report.summary())
-
-        logger.info("Quarterly pipeline complete for %s", quarter)
+        # Trigger the pipeline via the dashboard service so it's visible in the UI
+        # and benefits from lock-key duplicate prevention.
+        from app.services.thirteenf_admin_dashboard import trigger_job
+        trigger_job(db, requested_by_user_id=None, payload={
+            "job_type": "quarterly_pipeline",
+            "quarter": quarter,
+            "trigger_source": "scheduler"
+        })
 
     except Exception as exc:
         db.rollback()
-        logger.exception("Quarterly pipeline failed for %s: %s", quarter, exc)
+        logger.exception("Quarterly pipeline trigger failed for %s: %s", quarter, exc)
     finally:
         db.close()
 
