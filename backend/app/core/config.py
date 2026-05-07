@@ -53,8 +53,9 @@ class Settings(BaseSettings):
     # Raw document storage root
     EDGAR_RAW_STORAGE_DIR: str = "/code/storage/edgar_raw"
 
-    # Slack Notifications
+    # Notifications
     SLACK_WEBHOOK_URL: Optional[str] = None
+    DISCORD_WEBHOOK_URL: Optional[str] = None
     BASE_URL: str = "http://localhost:3000"  # For links in notifications
 
     model_config = SettingsConfigDict(env_file=".env", case_sensitive=True, extra="ignore")
