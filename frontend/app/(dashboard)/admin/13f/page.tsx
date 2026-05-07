@@ -249,7 +249,8 @@ export default function Admin13FPage() {
     if (jobType === 'fetch_quarter_index') return `fetch_quarter_index:${String(payload.quarter ?? '')}`;
     if (jobType === 'ingest_holdings') return `ingest_holdings:${String(payload.quarter ?? '')}`;
     if (jobType === 'quality_check') return `quality_check:${String(payload.quarter ?? '')}`;
-    if (jobType === 'enrich_cusip') return `enrich_cusip:${String(payload.quarter ?? '')}`;
+    if (jobType === 'enrich_cusip') return `enrich_cusip:${String(payload.quarter ?? 'global')}`;
+    if (jobType === 'enrich_metadata') return `enrich_metadata:${String(payload.quarter ?? 'global')}`;
     if (jobType === 'ingest_accession') return `ingest_accession:${String(payload.accession_no ?? '')}`;
     if (jobType === 'reprocess_amendment') return `reprocess_amendment:${String(payload.accession_no ?? '')}`;
     if (jobType === 'backfill_quarters') {
@@ -832,7 +833,11 @@ export default function Admin13FPage() {
                       <div>
                         Retry target:{' '}
                         <span className="font-mono text-foreground">
-                          {String(task.metadata.retry_targets[0]?.accession_no ?? '—')}
+                          {String(
+                            task.metadata.retry_targets[0]?.accession_no ??
+                              task.metadata.retry_targets[0]?.label ??
+                              '—'
+                          )}
                         </span>
                       </div>
                     ) : null}
@@ -993,12 +998,12 @@ export default function Admin13FPage() {
           <Button
             type="button"
             variant="outline"
-            disabled={!targetQuarter || isJobActive({ job_type: 'enrich_cusip', quarter: targetQuarter })}
+            disabled={!targetQuarter || isJobActive({ job_type: 'enrich_metadata', quarter: targetQuarter })}
             onClick={() =>
-              runJob({ job_type: 'enrich_cusip', quarter: targetQuarter }, 'Enrich CUSIP mappings')
+              runJob({ job_type: 'enrich_metadata', quarter: targetQuarter }, 'Retry Enrichment')
             }
           >
-            Enrich CUSIP
+            Retry Enrichment
           </Button>
           <Button
             type="button"
@@ -1642,6 +1647,7 @@ export default function Admin13FPage() {
                               {
                                 job_type: target.job_type,
                                 accession_no: target.accession_no,
+                                quarter: target.quarter,
                               },
                               String(target.label ?? target.accession_no ?? 'Retry target')
                             )

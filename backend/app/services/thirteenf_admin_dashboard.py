@@ -222,8 +222,9 @@ def get_quarter_detail(session: Session, quarter: str, *, today: date | None = N
         if filing.form_type.endswith("/A") or filing.amends_accession_no
     ]
     quality_report = _latest_quality_report(session, quarter)
+    summary = _quarter_summary(session, quarter, today=today)
     return {
-        "summary": _quarter_summary(session, quarter, today=today),
+        "summary": summary,
         "filings": filing_rows,
         "pending_filings": pending_filings,
         "failed_filings": failed_filings,
@@ -235,6 +236,7 @@ def get_quarter_detail(session: Session, quarter: str, *, today: date | None = N
             failed_filings=failed_filings,
             amendments=amendments,
             quality_report=quality_report,
+            linked_ratio=summary.get("linked_holding_ratio"),
         ),
     }
 
@@ -1141,17 +1143,19 @@ def _recent_job_alert_tasks(session: Session, *, limit: int = 5) -> list[dict[st
     tasks: list[dict[str, Any]] = []
     for job in jobs:
         retry_targets = _job_retry_targets(job)
-        failed_accessions_count = len(retry_targets)
+        has_accession_retry_targets = any(target.get("accession_no") for target in retry_targets)
+        failed_accessions_count = sum(1 for target in retry_targets if target.get("accession_no"))
         code = "RECENT_JOB_FAILED" if job.status == "failed" else "RECENT_JOB_PARTIAL_SUCCESS"
         priority = "P1" if job.status == "failed" else "P2"
         title = f"{job.job_type} job {job.status.replace('_', ' ')}"
         if job.quarter:
             title = f"{title}: {job.quarter}"
-        recommended_action = (
-            "Review job timeline and retry failed accessions."
-            if retry_targets
-            else "Review job timeline and rerun the affected job if the failure is transient."
-        )
+        if has_accession_retry_targets:
+            recommended_action = "Review job timeline and retry failed accessions."
+        elif retry_targets:
+            recommended_action = "Review job timeline and retry the failed stage."
+        else:
+            recommended_action = "Review job timeline and rerun the affected job if the failure is transient."
         tasks.append(
             _task_with_metadata(
                 priority,
@@ -1337,6 +1341,14 @@ def _job_retry_targets(job: JobRun) -> list[dict[str, str]]:
     summary = job.summary_json if isinstance(job.summary_json, dict) else {}
     targets: list[dict[str, str]] = []
     seen: set[str] = set()
+    if job.job_type in {"enrich_metadata", "enrich_cusip"} and job.quarter and job.status in {"failed", "partial_success"}:
+        return [
+            {
+                "job_type": job.job_type,
+                "quarter": job.quarter,
+                "label": f"Retry Enrichment for {job.quarter}",
+            }
+        ]
     for failure in summary.get("failed_accessions") or []:
         if not isinstance(failure, dict):
             continue
@@ -1422,6 +1434,7 @@ def _quarter_suggested_actions(
     failed_filings: list[dict[str, Any]],
     amendments: list[dict[str, Any]],
     quality_report: QualityReport13F | None,
+    linked_ratio: float | None = None,
 ) -> list[dict[str, Any]]:
     actions: list[dict[str, Any]] = []
     if pending_filings or failed_filings:
@@ -1433,6 +1446,19 @@ def _quarter_suggested_actions(
                 "reason": f"{len(pending_filings)} pending and {len(failed_filings)} failed filings need attention.",
             }
         )
+
+    # Suggest enrichment if holdings are present but not fully linked
+    has_holdings = any(f["holdings_count"] > 0 for f in pending_filings + failed_filings) or (linked_ratio is not None)
+    if has_holdings and (linked_ratio is None or linked_ratio < 0.98):
+        actions.append(
+            {
+                "job_type": "enrich_metadata",
+                "quarter": quarter,
+                "label": "Run CUSIP enrichment",
+                "reason": "Holdings are present but CUSIP-to-ticker mapping is incomplete." if linked_ratio is not None else "Holdings are present; need to link to stocks.",
+            }
+        )
+
     for amendment in amendments:
         if amendment["status"] in {"pending", "failed"}:
             actions.append(
@@ -1660,7 +1686,8 @@ _JOB_LOCK_BUILDERS = {
     "ingest_holdings": lambda payload: f"ingest_holdings:{_required(payload, 'quarter')}",
     "ingest_accession": lambda payload: f"ingest_accession:{_required(payload, 'accession_no')}",
     "backfill_quarters": lambda payload: f"backfill_quarters:{payload.get('start_quarter') or 'latest'}:{_required(payload, 'quarters')}",
-    "enrich_cusip": lambda payload: f"enrich_cusip:{_required(payload, 'quarter')}",
+    "enrich_cusip": lambda payload: f"enrich_cusip:{_required(payload, 'quarter') if payload.get('quarter') else 'global'}",
+    "enrich_metadata": lambda payload: f"enrich_metadata:{_required(payload, 'quarter') if payload.get('quarter') else 'global'}",
     "bootstrap_stocks": lambda payload: "bootstrap_stocks",
     "enrich_stocks_edgar": lambda payload: "enrich_stocks_edgar",
     "bootstrap_whitelist": lambda payload: "bootstrap_whitelist",
@@ -1672,50 +1699,61 @@ _JOB_LOCK_BUILDERS = {
 
 def _execute_job(session: Session, job_type: str, payload: dict[str, Any]) -> dict[str, Any]:
     if job_type == "quarterly_pipeline":
+        # Orchestrate the ingestion pipeline by breaking it into visible, retryable stage jobs.
+        # This allows admins to see progress in the UI and retry specific failed segments.
         quarter = _required(payload, "quarter")
-        results = {"quarter": quarter}
+        results: dict[str, Any] = {"quarter": quarter, "stages": []}
 
-        # Step 1: fetch form.idx and seed filing metadata
-        from app.services.edgar_ingestion import ingest_quarter_index
-        results["index_filings"] = ingest_quarter_index(session, quarter)
-        session.commit()
+        # Stage 1: Fetch SEC form.idx for the quarter
+        index_stage = _execute_pipeline_stage_job(
+            session,
+            parent_payload=payload,
+            job_type="fetch_quarter_index",
+            payload={"quarter": quarter},
+        )
+        results["stages"].append(index_stage["stage"])
+        results["index_filings"] = index_stage["summary"].get("filings_inserted")
 
-        # Step 2: download + parse infotable for all new filings
-        # _execute_ingest_job commits per-filing internally; no uncommitted work remains.
-        ingest_results = _execute_ingest_job(session, "ingest_holdings", {"quarter": quarter})
+        # Stage 2: Parse InfoTables for all new filings
+        ingest_stage = _execute_pipeline_stage_job(
+            session,
+            parent_payload=payload,
+            job_type="ingest_holdings",
+            payload={"quarter": quarter},
+        )
+        results["stages"].append(ingest_stage["stage"])
+        ingest_results = ingest_stage["summary"]
         results["holdings_ingestion"] = ingest_results
 
-        # Step 3: refresh CUSIP -> ticker mappings
-        from app.services.cusip_enrichment import enrich_from_dataroma
-        results["cusip_mappings"] = enrich_from_dataroma(session)
-        session.commit()
+        # Stage 3: Enrich metadata (CUSIP -> Ticker, Stock mapping)
+        enrich_stage = _execute_pipeline_stage_job(
+            session,
+            parent_payload=payload,
+            job_type="enrich_metadata",
+            payload={"quarter": quarter},
+        )
+        results["stages"].append(enrich_stage["stage"])
+        enrich_results = enrich_stage["summary"]
+        results["enrichment"] = enrich_results
 
-        # Step 4: bootstrap stocks + backfill stock_id
-        from app.services.cusip_enrichment import bootstrap_stocks_from_cusip_map, backfill_stock_ids
-        results["new_stocks"] = bootstrap_stocks_from_cusip_map(session)
-        results["holdings_linked"] = backfill_stock_ids(session)
-        session.commit()
+        # Stage 4: Run quality checks and persist report
+        quality_stage = _execute_pipeline_stage_job(
+            session,
+            parent_payload=payload,
+            job_type="quality_check",
+            payload={"quarter": quarter},
+        )
+        results["stages"].append(quality_stage["stage"])
+        results["quality_status"] = quality_stage["summary"].get("quality_status")
 
-        # Step 5: EDGAR company_tickers.json for remaining unmatched
-        from app.services.cusip_enrichment import enrich_stocks_from_edgar_tickers
-        try:
-            edgar_results = enrich_stocks_from_edgar_tickers(session)
-            results["edgar_enrichment"] = edgar_results
-            session.commit()
-        except Exception as exc:
-            session.rollback()
-            results["edgar_enrichment_error"] = str(exc)
-
-        # Step 6: data quality check
-        report = run_quality_checks(session, quarter)
-        persist_quality_report(session, quarter=quarter, report=report, source_job_id=payload.get("_job_id"))
-        session.commit()
-        results["quality_status"] = report.status
-
+        # Determine overall pipeline status based on critical stages
         status = "succeeded"
-        if ingest_results.get("status") == "partial_success" or "edgar_enrichment_error" in results:
+        if ingest_results.get("status") == "partial_success" or enrich_results.get("status") == "partial_success":
             status = "partial_success"
         return {**results, "status": status}
+
+    if job_type == "enrich_metadata":
+        return _execute_enrichment_metadata(session, payload)
 
     if job_type == "quality_check":
         quarter = payload.get("quarter")
@@ -1728,6 +1766,7 @@ def _execute_job(session: Session, job_type: str, payload: dict[str, Any]) -> di
         )
         return {
             "status": "failed" if report.errors else "succeeded",
+            "quality_status": persisted.status,
             "quality_report_id": persisted.id,
             "quality_errors": len(report.errors),
             "quality_warnings": len(report.warnings),
@@ -1783,6 +1822,81 @@ def _execute_job(session: Session, job_type: str, payload: dict[str, Any]) -> di
     raise ValueError(f"Unsupported job_type: {job_type}")
 
 
+def _execute_pipeline_stage_job(
+    session: Session,
+    *,
+    parent_payload: dict[str, Any],
+    job_type: str,
+    payload: dict[str, Any],
+) -> dict[str, Any]:
+    stage_payload = {"job_type": job_type, **payload, "trigger_source": "pipeline"}
+    parent_job_id = parent_payload.get("_job_id")
+    if parent_job_id is not None:
+        stage_payload["parent_job_id"] = parent_job_id
+
+    lock_key = _JOB_LOCK_BUILDERS[job_type](stage_payload)
+    active = (
+        session.query(JobRun)
+        .filter(JobRun.lock_key == lock_key)
+        .filter(JobRun.status.in_(ACTIVE_JOB_STATUSES))
+        .one_or_none()
+    )
+    if active:
+        raise ValueError(f"Stage job already active for {lock_key}")
+
+    parent_job = session.get(JobRun, parent_job_id) if parent_job_id is not None else None
+    now = datetime.now(timezone.utc)
+    stage_job = JobRun(
+        job_type=job_type,
+        status="running",
+        requested_by_user_id=parent_job.requested_by_user_id if parent_job else None,
+        trigger_source="pipeline",
+        dedupe_key=lock_key,
+        lock_key=lock_key,
+        quarter=stage_payload.get("quarter"),
+        started_at=now,
+        heartbeat_at=now,
+        input_json=stage_payload,
+    )
+    session.add(stage_job)
+    session.commit()
+    session.refresh(stage_job)
+
+    stage_payload["_job_id"] = stage_job.id
+    stage_job.input_json = stage_payload
+    session.add(stage_job)
+    session.commit()
+
+    try:
+        summary = _execute_job(session, job_type, stage_payload)
+        status = summary.pop("status", "succeeded")
+        finished_at = datetime.now(timezone.utc)
+        stage_job = session.get(JobRun, stage_job.id)
+        stage_job.status = status
+        stage_job.summary_json = summary
+        stage_job.error_message = None
+        stage_job.heartbeat_at = finished_at
+        stage_job.finished_at = finished_at
+        session.add(stage_job)
+        session.commit()
+        session.refresh(stage_job)
+        return {
+            "stage": {"job_type": job_type, "job_id": stage_job.id, "status": status},
+            "summary": {**summary, "status": status},
+        }
+    except Exception as exc:
+        session.rollback()
+        finished_at = datetime.now(timezone.utc)
+        stage_job = session.get(JobRun, stage_job.id)
+        stage_job.status = "failed"
+        stage_job.error_message = str(exc)
+        stage_job.heartbeat_at = finished_at
+        stage_job.finished_at = finished_at
+        session.add(stage_job)
+        session.commit()
+        raise
+
+
 def _execute_ingest_job(session: Session, job_type: str, payload: dict[str, Any]) -> dict[str, Any]:
     from app.services.edgar_ingestion import ingest_filing_holdings
 
@@ -1824,3 +1938,40 @@ def _execute_ingest_job(session: Session, job_type: str, payload: dict[str, Any]
         "holdings_inserted": holdings_inserted,
         "status": "partial_success" if failures else "succeeded",
     }
+
+
+def _execute_enrichment_metadata(session: Session, payload: dict[str, Any]) -> dict[str, Any]:
+    from app.services.cusip_enrichment import (
+        backfill_stock_ids,
+        bootstrap_stocks_from_cusip_map,
+        enrich_from_dataroma,
+        enrich_stocks_from_edgar_tickers,
+    )
+
+    results: dict[str, Any] = {}
+    try:
+        # Step 3: refresh CUSIP -> ticker mappings from Dataroma portfolios
+        results["cusip_mappings"] = enrich_from_dataroma(session)
+        session.commit()
+
+        # Step 4: bootstrap stocks from CUSIP map + backfill stock_id
+        results["new_stocks"] = bootstrap_stocks_from_cusip_map(session)
+        results["holdings_linked"] = backfill_stock_ids(session)
+        session.commit()
+
+        # Step 5: EDGAR company_tickers.json for remaining unmatched
+        try:
+            edgar_results = enrich_stocks_from_edgar_tickers(session)
+            results["edgar_enrichment"] = edgar_results
+            session.commit()
+        except Exception as exc:
+            session.rollback()
+            results["edgar_enrichment_error"] = str(exc)
+            logger.warning("EDGAR enrichment step failed: %s", exc)
+
+        status = "partial_success" if "edgar_enrichment_error" in results else "succeeded"
+        return {**results, "status": status}
+    except Exception:
+        session.rollback()
+        logger.exception("Enrichment metadata job failed")
+        raise

@@ -15,7 +15,7 @@ from app.models.institutions import (
 from app.models.stocks import Stock
 from app.services.edgar_ingestion import match_cik_candidates
 from app.services.edgar_quality import QualityReport, persist_quality_report
-from app.services.thirteenf_admin_dashboard import build_quarters
+from app.services.thirteenf_admin_dashboard import build_quarters, execute_job_payload
 from app.services.thirteenf_job_worker import execute_queued_job_once, record_worker_heartbeat
 
 
@@ -495,6 +495,46 @@ def test_job_detail_endpoint_returns_timeline_events_and_retry_targets(client, d
             "job_type": "ingest_accession",
             "accession_no": "0001234567-26-000002",
             "label": "Retry accession 0001234567-26-000002",
+        }
+    ]
+
+
+def test_enrichment_job_detail_exposes_enrichment_retry_target(client, db_session, user_factory, auth_headers):
+    _clear_13f(db_session)
+    admin = _admin(user_factory)
+    job = JobRun(
+        job_type="enrich_metadata",
+        status="failed",
+        requested_by_user_id=admin.id,
+        trigger_source="pipeline",
+        dedupe_key="enrich_metadata:2025-Q4",
+        lock_key="enrich_metadata:2025-Q4",
+        quarter="2025-Q4",
+        error_message="Dataroma unavailable",
+        input_json={"job_type": "enrich_metadata", "quarter": "2025-Q4"},
+    )
+    db_session.add(job)
+    db_session.commit()
+
+    response = client.get(f"/api/v1/admin/13f/jobs/{job.id}", headers=auth_headers(admin))
+
+    assert response.status_code == 200
+    assert response.json()["retry_targets"] == [
+        {
+            "job_type": "enrich_metadata",
+            "quarter": "2025-Q4",
+            "label": "Retry Enrichment for 2025-Q4",
+        }
+    ]
+    task_response = client.get("/api/v1/admin/13f/tasks", headers=auth_headers(admin))
+    task = next(item for item in task_response.json()["items"] if item["code"] == "RECENT_JOB_FAILED")
+    assert task["recommended_action"] == "Review job timeline and retry the failed stage."
+    assert task["metadata"]["failed_accessions_count"] == 0
+    assert task["metadata"]["retry_targets"] == [
+        {
+            "job_type": "enrich_metadata",
+            "quarter": "2025-Q4",
+            "label": "Retry Enrichment for 2025-Q4",
         }
     ]
 
@@ -1109,6 +1149,108 @@ def test_quality_check_job_persists_report(client, db_session, user_factory, aut
     assert persisted.error_count == 1
     assert persisted.warning_count == 0
     assert persisted.source_job_id == job.id
+
+
+def test_quarterly_pipeline_records_retryable_stage_jobs(db_session, monkeypatch):
+    _clear_13f(db_session)
+    calls: list[str] = []
+
+    monkeypatch.setattr(
+        "app.services.edgar_ingestion.ingest_quarter_index",
+        lambda session, quarter: calls.append(f"index:{quarter}") or 2,
+    )
+    monkeypatch.setattr(
+        "app.services.thirteenf_admin_dashboard._execute_ingest_job",
+        lambda session, job_type, payload: calls.append(f"{job_type}:{payload['quarter']}")
+        or {"filings_processed": 2, "filings_failed": 0, "holdings_inserted": 10, "status": "succeeded"},
+    )
+    monkeypatch.setattr(
+        "app.services.cusip_enrichment.enrich_from_dataroma",
+        lambda session: calls.append("enrich_cusip") or 3,
+    )
+    monkeypatch.setattr(
+        "app.services.cusip_enrichment.bootstrap_stocks_from_cusip_map",
+        lambda session: calls.append("bootstrap_stocks") or 4,
+    )
+    monkeypatch.setattr(
+        "app.services.cusip_enrichment.backfill_stock_ids",
+        lambda session: calls.append("backfill_stock_ids") or 5,
+    )
+    monkeypatch.setattr(
+        "app.services.cusip_enrichment.enrich_stocks_from_edgar_tickers",
+        lambda session: calls.append("enrich_stocks_edgar") or {"new_mappings": 6},
+    )
+    report = QualityReport()
+    monkeypatch.setattr(
+        "app.services.thirteenf_admin_dashboard.run_quality_checks",
+        lambda session, quarter: calls.append(f"quality:{quarter}") or report,
+    )
+
+    result = execute_job_payload(db_session, "quarterly_pipeline", {"quarter": "2025-Q4", "_job_id": 99})
+    stage_jobs = db_session.query(JobRun).order_by(JobRun.id.asc()).all()
+
+    assert result["status"] == "succeeded"
+    assert result["stages"] == [
+        {"job_type": "fetch_quarter_index", "job_id": stage_jobs[0].id, "status": "succeeded"},
+        {"job_type": "ingest_holdings", "job_id": stage_jobs[1].id, "status": "succeeded"},
+        {"job_type": "enrich_metadata", "job_id": stage_jobs[2].id, "status": "succeeded"},
+        {"job_type": "quality_check", "job_id": stage_jobs[3].id, "status": "succeeded"},
+    ]
+    assert calls == [
+        "index:2025-Q4",
+        "ingest_holdings:2025-Q4",
+        "enrich_cusip",
+        "bootstrap_stocks",
+        "backfill_stock_ids",
+        "enrich_stocks_edgar",
+        "quality:2025-Q4",
+    ]
+    assert [job.job_type for job in stage_jobs] == [
+        "fetch_quarter_index",
+        "ingest_holdings",
+        "enrich_metadata",
+        "quality_check",
+    ]
+    assert all(job.trigger_source == "pipeline" for job in stage_jobs)
+    assert stage_jobs[2].summary_json["cusip_mappings"] == 3
+    assert stage_jobs[2].summary_json["holdings_linked"] == 5
+
+
+def test_quarterly_pipeline_stops_with_retryable_enrichment_stage_on_failure(db_session, monkeypatch):
+    _clear_13f(db_session)
+
+    monkeypatch.setattr("app.services.edgar_ingestion.ingest_quarter_index", lambda session, quarter: 1)
+    monkeypatch.setattr(
+        "app.services.thirteenf_admin_dashboard._execute_ingest_job",
+        lambda session, job_type, payload: {"filings_processed": 1, "status": "succeeded"},
+    )
+
+    def fail_enrichment(session):
+        raise RuntimeError("CUSIP enrichment failed")
+
+    monkeypatch.setattr("app.services.cusip_enrichment.enrich_from_dataroma", fail_enrichment)
+
+    def quality_should_not_run(session, quarter):
+        raise AssertionError("quality check should wait for enrichment retry")
+
+    monkeypatch.setattr("app.services.thirteenf_admin_dashboard.run_quality_checks", quality_should_not_run)
+
+    try:
+        execute_job_payload(db_session, "quarterly_pipeline", {"quarter": "2025-Q4", "_job_id": 99})
+    except RuntimeError as exc:
+        assert str(exc) == "CUSIP enrichment failed"
+    else:
+        raise AssertionError("quarterly pipeline should fail when enrichment stage fails")
+
+    stage_jobs = db_session.query(JobRun).order_by(JobRun.id.asc()).all()
+    assert [job.job_type for job in stage_jobs] == [
+        "fetch_quarter_index",
+        "ingest_holdings",
+        "enrich_metadata",
+    ]
+    assert [job.status for job in stage_jobs] == ["succeeded", "succeeded", "failed"]
+    assert stage_jobs[-1].error_message == "CUSIP enrichment failed"
+    assert stage_jobs[-1].input_json["parent_job_id"] == 99
 
 
 def test_quality_reports_endpoint_returns_latest_reports(client, db_session, user_factory, auth_headers):
