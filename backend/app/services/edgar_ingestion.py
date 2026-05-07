@@ -237,6 +237,7 @@ def match_cik_candidates(db: Session, min_score: float = 0.6) -> int:
     with EdgarClient() as client:
         for mgr in managers:
             company_name = _extract_company_name(mgr.legal_name)
+            evidence_url = _edgar_company_search_url(company_name)
             try:
                 candidates = _search_edgar_by_company_name(client, company_name)
             except Exception as exc:
@@ -282,12 +283,27 @@ def match_cik_candidates(db: Session, min_score: float = 0.6) -> int:
                 logger.info("Confirmed %s → CIK %s (score=%.2f)", best_entity, best_cik, best_score)
             else:
                 mgr.match_status = "candidate"
-                mgr.display_name = f"[candidate_cik={best_cik} score={best_score:.2f}] {best_entity}"
                 logger.info("Candidate %s → CIK %s (score=%.2f)", company_name, best_cik, best_score)
+            mgr.candidate_cik = best_cik
+            mgr.candidate_legal_name = best_entity
+            mgr.candidate_similarity_score = best_score
+            mgr.candidate_source = "edgar_browse_company"
+            mgr.candidate_evidence_url = evidence_url
+            mgr.candidate_found_at = datetime.now(timezone.utc)
             updated += 1
 
     db.flush()
     return updated
+
+
+def _edgar_company_search_url(company_name: str) -> str:
+    import urllib.parse
+
+    return (
+        "https://www.sec.gov/cgi-bin/browse-edgar"
+        f"?company={urllib.parse.quote(company_name)}"
+        "&CIK=&type=13F-HR&dateb=&owner=include&count=10&search_text=&action=getcompany&output=atom"
+    )
 
 
 # ---------------------------------------------------------------------------

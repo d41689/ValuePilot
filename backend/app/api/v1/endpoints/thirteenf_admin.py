@@ -92,7 +92,13 @@ def confirm_cik(
     payload: ManagerReviewRequest,
 ) -> Any:
     try:
-        return confirm_manager_cik(session, manager_id, cik=payload.cik, note=payload.note)
+        return confirm_manager_cik(
+            session,
+            manager_id,
+            cik=payload.cik,
+            note=payload.note,
+            reviewed_by_user_id=current_user.id,
+        )
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
 
@@ -105,7 +111,12 @@ def reject_cik(
     payload: ManagerReviewRequest,
 ) -> Any:
     try:
-        return reject_manager_cik(session, manager_id, note=payload.note)
+        return reject_manager_cik(
+            session,
+            manager_id,
+            note=payload.note,
+            reviewed_by_user_id=current_user.id,
+        )
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
 

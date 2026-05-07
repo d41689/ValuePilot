@@ -4,6 +4,7 @@ from datetime import date, datetime, timedelta, timezone
 
 from app.models.institutions import Filing13F, Holding13F, InstitutionManager, JobRun, JobWorkerHeartbeat, RawSourceDocument
 from app.models.stocks import Stock
+from app.services.edgar_ingestion import match_cik_candidates
 from app.services.thirteenf_job_worker import execute_queued_job_once, record_worker_heartbeat
 
 
@@ -329,3 +330,118 @@ def test_worker_heartbeat_endpoint_marks_stale_workers(client, db_session, user_
     worker = response.json()["items"][0]
     assert worker["worker_id"] == "stale-worker"
     assert worker["status"] == "stale"
+
+
+def test_manager_payload_includes_cik_candidate_audit_fields(client, db_session, user_factory, auth_headers):
+    _clear_13f(db_session)
+    admin = _admin(user_factory)
+    manager = _manager(db_session, name="Bill Ackman - Pershing Square", cik=None)
+    manager.match_status = "candidate"
+    manager.candidate_cik = "0001336528"
+    manager.candidate_legal_name = "PERSHING SQUARE CAPITAL MANAGEMENT, L.P."
+    manager.candidate_similarity_score = 0.82
+    manager.candidate_source = "edgar_browse_company"
+    manager.candidate_evidence_url = "https://www.sec.gov/cgi-bin/browse-edgar?company=Pershing%20Square"
+    manager.candidate_found_at = datetime.now(timezone.utc)
+    manager.prior_rejected_candidates = [{"cik": "0000000001", "legal_name": "Wrong Manager"}]
+    db_session.commit()
+
+    response = client.get("/api/v1/admin/13f/managers", headers=auth_headers(admin))
+
+    assert response.status_code == 200
+    payload = response.json()["items"][0]
+    assert payload["candidate_cik"] == "0001336528"
+    assert payload["candidate_legal_name"] == "PERSHING SQUARE CAPITAL MANAGEMENT, L.P."
+    assert payload["candidate_similarity_score"] == 0.82
+    assert payload["candidate_source"] == "edgar_browse_company"
+    assert payload["candidate_evidence_url"].startswith("https://www.sec.gov/cgi-bin/browse-edgar")
+    assert payload["prior_rejected_candidates"][0]["cik"] == "0000000001"
+
+
+def test_match_cik_candidates_writes_candidate_audit_metadata(db_session, monkeypatch):
+    _clear_13f(db_session)
+    manager = _manager(db_session, name="Bill Ackman - Pershing Square", cik=None)
+    db_session.commit()
+
+    class DummyClient:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+    monkeypatch.setattr("app.services.edgar_ingestion.EdgarClient", DummyClient)
+    monkeypatch.setattr(
+        "app.services.edgar_ingestion._search_edgar_by_company_name",
+        lambda client, company_name: [("PERSHING SQUARE CAPITAL MANAGEMENT, L.P.", "0001336528")],
+    )
+    monkeypatch.setattr("app.services.edgar_ingestion._name_score", lambda left, right: 0.72)
+
+    updated = match_cik_candidates(db_session, min_score=0.6)
+
+    assert updated == 1
+    db_session.refresh(manager)
+    assert manager.match_status == "candidate"
+    assert manager.cik is None
+    assert manager.candidate_cik == "0001336528"
+    assert manager.candidate_legal_name == "PERSHING SQUARE CAPITAL MANAGEMENT, L.P."
+    assert manager.candidate_similarity_score is not None
+    assert manager.candidate_source == "edgar_browse_company"
+    assert "browse-edgar" in manager.candidate_evidence_url
+    assert manager.candidate_found_at is not None
+
+
+def test_confirm_manager_cik_records_reviewer_note_and_candidate_evidence(client, db_session, user_factory, auth_headers):
+    _clear_13f(db_session)
+    admin = _admin(user_factory)
+    manager = _manager(db_session, name="Bill Ackman - Pershing Square", cik=None)
+    manager.match_status = "candidate"
+    manager.candidate_cik = "0001336528"
+    manager.candidate_legal_name = "PERSHING SQUARE CAPITAL MANAGEMENT, L.P."
+    manager.candidate_similarity_score = 0.82
+    manager.candidate_source = "edgar_browse_company"
+    manager.candidate_evidence_url = "https://www.sec.gov/cgi-bin/browse-edgar?company=Pershing%20Square"
+    db_session.commit()
+
+    response = client.post(
+        f"/api/v1/admin/13f/managers/{manager.id}/confirm-cik",
+        headers=auth_headers(admin),
+        json={"note": "SEC entity page matches Dataroma manager"},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["match_status"] == "confirmed"
+    assert payload["cik"] == "0001336528"
+    assert payload["reviewed_by_user_id"] == admin.id
+    assert payload["review_note"] == "SEC entity page matches Dataroma manager"
+    db_session.refresh(manager)
+    assert manager.reviewed_by_user_id == admin.id
+    assert manager.reviewed_at is not None
+    assert manager.legal_name == "PERSHING SQUARE CAPITAL MANAGEMENT, L.P."
+
+
+def test_reject_manager_cik_retains_prior_rejected_candidate(client, db_session, user_factory, auth_headers):
+    _clear_13f(db_session)
+    admin = _admin(user_factory)
+    manager = _manager(db_session, name="Bill Ackman - Pershing Square", cik=None)
+    manager.match_status = "candidate"
+    manager.candidate_cik = "0001336528"
+    manager.candidate_legal_name = "PERSHING SQUARE CAPITAL MANAGEMENT, L.P."
+    manager.candidate_similarity_score = 0.82
+    manager.candidate_source = "edgar_browse_company"
+    manager.candidate_evidence_url = "https://www.sec.gov/cgi-bin/browse-edgar?company=Pershing%20Square"
+    db_session.commit()
+
+    response = client.post(
+        f"/api/v1/admin/13f/managers/{manager.id}/reject-cik",
+        headers=auth_headers(admin),
+        json={"note": "CIK belongs to a different adviser"},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["match_status"] == "rejected"
+    assert payload["reviewed_by_user_id"] == admin.id
+    assert payload["prior_rejected_candidates"][0]["cik"] == "0001336528"
+    assert payload["prior_rejected_candidates"][0]["review_note"] == "CIK belongs to a different adviser"

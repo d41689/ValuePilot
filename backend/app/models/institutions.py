@@ -2,7 +2,7 @@ from datetime import date, datetime
 from typing import Optional, List
 from sqlalchemy import (
     String, Text, Boolean, ForeignKey, BigInteger, Date,
-    DateTime, Integer, Index, UniqueConstraint,
+    DateTime, Integer, Float, Index, UniqueConstraint,
 )
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -24,6 +24,16 @@ class InstitutionManager(Base):
     dataroma_code: Mapped[Optional[str]] = mapped_column(String(20), nullable=True)
     match_status: Mapped[str] = mapped_column(String(20), nullable=False, default="seeded")
     is_superinvestor: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    candidate_cik: Mapped[Optional[str]] = mapped_column(String(10), nullable=True)
+    candidate_legal_name: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    candidate_similarity_score: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    candidate_source: Mapped[Optional[str]] = mapped_column(String(80), nullable=True)
+    candidate_evidence_url: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    candidate_found_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    reviewed_by_user_id: Mapped[Optional[int]] = mapped_column(BigInteger, ForeignKey("users.id"), nullable=True)
+    reviewed_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    review_note: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    prior_rejected_candidates: Mapped[Optional[list]] = mapped_column(JSONB, nullable=True)
     dataroma_synced_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
     first_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     last_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

@@ -119,8 +119,15 @@ export default function Admin13FPage() {
     },
   });
   const confirmManager = useMutation({
-    mutationFn: async ({ managerId, cik }: { managerId: number; cik: string | null }) =>
-      (await apiClient.post(`/admin/13f/managers/${managerId}/confirm-cik`, { cik })).data,
+    mutationFn: async ({
+      managerId,
+      cik,
+      note,
+    }: {
+      managerId: number;
+      cik: string | null;
+      note: string | null;
+    }) => (await apiClient.post(`/admin/13f/managers/${managerId}/confirm-cik`, { cik, note })).data,
     onSuccess: async () => {
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: ['admin-13f-readiness'] }),
@@ -130,8 +137,8 @@ export default function Admin13FPage() {
     },
   });
   const rejectManager = useMutation({
-    mutationFn: async (managerId: number) =>
-      (await apiClient.post(`/admin/13f/managers/${managerId}/reject-cik`, {})).data,
+    mutationFn: async ({ managerId, note }: { managerId: number; note: string | null }) =>
+      (await apiClient.post(`/admin/13f/managers/${managerId}/reject-cik`, { note })).data,
     onSuccess: async () => {
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: ['admin-13f-readiness'] }),
@@ -177,32 +184,42 @@ export default function Admin13FPage() {
   function handleConfirmManager(manager: Record<string, unknown>) {
     const managerId = Number(manager.id);
     if (!Number.isFinite(managerId)) return;
-    const currentCik = typeof manager.cik === 'string' ? manager.cik : '';
+    const currentCik =
+      (typeof manager.candidate_cik === 'string' ? manager.candidate_cik : '') ||
+      (typeof manager.cik === 'string' ? manager.cik : '');
     const cik =
       currentCik ||
       (typeof window !== 'undefined'
         ? window.prompt('Enter the SEC CIK to confirm for this manager')
         : null);
     if (!cik) return;
+    const note =
+      typeof window !== 'undefined'
+        ? window.prompt('Optional review note for this CIK confirmation') || null
+        : null;
     if (
       typeof window !== 'undefined' &&
       !window.confirm(`Confirm CIK ${cik} for ${String(manager.legal_name ?? 'this manager')}?`)
     ) {
       return;
     }
-    confirmManager.mutate({ managerId, cik });
+    confirmManager.mutate({ managerId, cik, note });
   }
 
   function handleRejectManager(manager: Record<string, unknown>) {
     const managerId = Number(manager.id);
     if (!Number.isFinite(managerId)) return;
+    const note =
+      typeof window !== 'undefined'
+        ? window.prompt('Optional review note for this CIK rejection') || null
+        : null;
     if (
       typeof window !== 'undefined' &&
       !window.confirm(`Reject CIK candidate for ${String(manager.legal_name ?? 'this manager')}?`)
     ) {
       return;
     }
-    rejectManager.mutate(managerId);
+    rejectManager.mutate({ managerId, note });
   }
 
   return (
@@ -598,6 +615,7 @@ export default function Admin13FPage() {
                 <TableRow>
                   <TableHead>Name</TableHead>
                   <TableHead>CIK</TableHead>
+                  <TableHead>Candidate Evidence</TableHead>
                   <TableHead>Status</TableHead>
                 </TableRow>
               </TableHeader>
@@ -606,6 +624,32 @@ export default function Admin13FPage() {
                   <TableRow key={String(manager.id)}>
                     <TableCell className="font-medium">{String(manager.legal_name ?? '—')}</TableCell>
                     <TableCell>{String(manager.cik ?? '—')}</TableCell>
+                    <TableCell>
+                      <div className="space-y-1 text-sm">
+                        <div>{String(manager.candidate_legal_name ?? '—')}</div>
+                        <div className="text-xs text-muted-foreground">
+                          CIK {String(manager.candidate_cik ?? '—')} · score{' '}
+                          {typeof manager.candidate_similarity_score === 'number'
+                            ? manager.candidate_similarity_score.toFixed(2)
+                            : '—'}
+                        </div>
+                        <div className="text-xs text-muted-foreground">
+                          {String(manager.candidate_source ?? 'No candidate source')}
+                        </div>
+                        {typeof manager.candidate_evidence_url === 'string' ? (
+                          <Button asChild variant="link" size="sm" className="h-auto p-0 text-xs">
+                            <a href={manager.candidate_evidence_url} target="_blank" rel="noreferrer">
+                              Open evidence
+                            </a>
+                          </Button>
+                        ) : null}
+                        {typeof manager.review_note === 'string' && manager.review_note ? (
+                          <div className="text-xs text-muted-foreground">
+                            Review note: {manager.review_note}
+                          </div>
+                        ) : null}
+                      </div>
+                    </TableCell>
                     <TableCell>
                       <div className="flex flex-wrap items-center gap-2">
                         <span>{String(manager.match_status ?? '—')}</span>
@@ -635,7 +679,7 @@ export default function Admin13FPage() {
                 ))}
                 {managers.length === 0 ? (
                   <TableRow>
-                    <TableCell colSpan={3} className="py-8 text-center text-muted-foreground">
+                    <TableCell colSpan={4} className="py-8 text-center text-muted-foreground">
                       No managers seeded.
                     </TableCell>
                   </TableRow>

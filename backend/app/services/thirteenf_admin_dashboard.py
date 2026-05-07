@@ -204,45 +204,70 @@ def build_admin_tasks(session: Session, *, today: date | None = None) -> list[di
 
 def build_managers(session: Session) -> list[dict[str, Any]]:
     managers = session.query(InstitutionManager).order_by(InstitutionManager.legal_name.asc()).all()
-    return [
-        {
-            "id": item.id,
-            "cik": item.cik,
-            "legal_name": item.legal_name,
-            "display_name": item.display_name,
-            "match_status": item.match_status,
-            "is_superinvestor": item.is_superinvestor,
-            "dataroma_code": item.dataroma_code,
-            "last_seen_at": item.last_seen_at.isoformat() if item.last_seen_at else None,
-        }
-        for item in managers
-    ]
+    return [_manager_payload(item) for item in managers]
 
 
-def confirm_manager_cik(session: Session, manager_id: int, *, cik: str | None = None, note: str | None = None) -> dict[str, Any]:
+def confirm_manager_cik(
+    session: Session,
+    manager_id: int,
+    *,
+    cik: str | None = None,
+    note: str | None = None,
+    reviewed_by_user_id: int | None = None,
+) -> dict[str, Any]:
     manager = session.get(InstitutionManager, manager_id)
     if manager is None:
         raise ValueError("Manager not found")
-    if cik:
-        manager.cik = cik.zfill(10)
+    confirmed_cik = cik or manager.candidate_cik
+    if confirmed_cik:
+        manager.cik = confirmed_cik.zfill(10)
     if not manager.cik:
         raise ValueError("CIK is required to confirm a manager")
+    if manager.candidate_legal_name:
+        manager.legal_name = manager.candidate_legal_name
     manager.match_status = "confirmed"
+    manager.reviewed_by_user_id = reviewed_by_user_id
+    manager.reviewed_at = datetime.now(timezone.utc)
+    manager.review_note = note
     session.add(manager)
     session.commit()
     session.refresh(manager)
-    return {"id": manager.id, "cik": manager.cik, "match_status": manager.match_status, "review_note": note}
+    return _manager_payload(manager)
 
 
-def reject_manager_cik(session: Session, manager_id: int, *, note: str | None = None) -> dict[str, Any]:
+def reject_manager_cik(
+    session: Session,
+    manager_id: int,
+    *,
+    note: str | None = None,
+    reviewed_by_user_id: int | None = None,
+) -> dict[str, Any]:
     manager = session.get(InstitutionManager, manager_id)
     if manager is None:
         raise ValueError("Manager not found")
+    prior = list(manager.prior_rejected_candidates or [])
+    if manager.candidate_cik or manager.candidate_legal_name:
+        prior.append(
+            {
+                "cik": manager.candidate_cik,
+                "legal_name": manager.candidate_legal_name,
+                "similarity_score": manager.candidate_similarity_score,
+                "source": manager.candidate_source,
+                "evidence_url": manager.candidate_evidence_url,
+                "review_note": note,
+                "reviewed_by_user_id": reviewed_by_user_id,
+                "reviewed_at": datetime.now(timezone.utc).isoformat(),
+            }
+        )
     manager.match_status = "rejected"
+    manager.reviewed_by_user_id = reviewed_by_user_id
+    manager.reviewed_at = datetime.now(timezone.utc)
+    manager.review_note = note
+    manager.prior_rejected_candidates = prior
     session.add(manager)
     session.commit()
     session.refresh(manager)
-    return {"id": manager.id, "cik": manager.cik, "match_status": manager.match_status, "review_note": note}
+    return _manager_payload(manager)
 
 
 def list_jobs(session: Session, *, limit: int = 100) -> list[dict[str, Any]]:
@@ -583,6 +608,29 @@ def _job_payload(job: JobRun) -> dict[str, Any]:
         "summary_json": job.summary_json,
         "error_message": job.error_message,
         "created_at": job.created_at.isoformat() if job.created_at else None,
+    }
+
+
+def _manager_payload(manager: InstitutionManager) -> dict[str, Any]:
+    return {
+        "id": manager.id,
+        "cik": manager.cik,
+        "legal_name": manager.legal_name,
+        "display_name": manager.display_name,
+        "match_status": manager.match_status,
+        "is_superinvestor": manager.is_superinvestor,
+        "dataroma_code": manager.dataroma_code,
+        "last_seen_at": manager.last_seen_at.isoformat() if manager.last_seen_at else None,
+        "candidate_cik": manager.candidate_cik,
+        "candidate_legal_name": manager.candidate_legal_name,
+        "candidate_similarity_score": manager.candidate_similarity_score,
+        "candidate_source": manager.candidate_source,
+        "candidate_evidence_url": manager.candidate_evidence_url,
+        "candidate_found_at": manager.candidate_found_at.isoformat() if manager.candidate_found_at else None,
+        "reviewed_by_user_id": manager.reviewed_by_user_id,
+        "reviewed_at": manager.reviewed_at.isoformat() if manager.reviewed_at else None,
+        "review_note": manager.review_note,
+        "prior_rejected_candidates": manager.prior_rejected_candidates or [],
     }
 
 
