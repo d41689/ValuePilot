@@ -183,6 +183,41 @@ def build_quarters(session: Session, *, today: date | None = None, limit: int = 
     return [_quarter_summary(session, label, today=today) for label in labels]
 
 
+def get_quarter_detail(session: Session, quarter: str, *, today: date | None = None) -> dict[str, Any]:
+    today = today or date.today()
+    window = quarter_window(quarter)
+    filings = (
+        session.query(Filing13F)
+        .filter(Filing13F.period_of_report.between(window.start, window.end))
+        .order_by(Filing13F.filed_at.asc(), Filing13F.accession_no.asc())
+        .all()
+    )
+    filing_rows = [_filing_detail_payload(session, filing) for filing in filings]
+    pending_filings = [row for row in filing_rows if row["status"] == "pending"]
+    failed_filings = [row for row in filing_rows if row["status"] == "failed"]
+    amendments = [
+        _amendment_payload(session, filing)
+        for filing in filings
+        if filing.form_type.endswith("/A") or filing.amends_accession_no
+    ]
+    quality_report = _latest_quality_report(session, quarter)
+    return {
+        "summary": _quarter_summary(session, quarter, today=today),
+        "filings": filing_rows,
+        "pending_filings": pending_filings,
+        "failed_filings": failed_filings,
+        "amendments": amendments,
+        "quality_report": _quality_report_payload(quality_report) if quality_report else None,
+        "suggested_actions": _quarter_suggested_actions(
+            quarter=quarter,
+            pending_filings=pending_filings,
+            failed_filings=failed_filings,
+            amendments=amendments,
+            quality_report=quality_report,
+        ),
+    }
+
+
 def build_quality_reports(session: Session, *, limit: int = 20) -> list[dict[str, Any]]:
     reports = session.query(QualityReport13F).order_by(QualityReport13F.checked_at.desc()).limit(limit).all()
     return [_quality_report_payload(report) for report in reports]
@@ -828,6 +863,82 @@ def _manager_payload(manager: InstitutionManager) -> dict[str, Any]:
         "prior_rejected_candidates": manager.prior_rejected_candidates or [],
         "latest_cik_review_event": _cik_review_event_payload(latest_event) if latest_event else None,
     }
+
+
+def _filing_detail_payload(session: Session, filing: Filing13F) -> dict[str, Any]:
+    holdings_count = session.query(Holding13F).filter(Holding13F.filing_id == filing.id).count()
+    primary = filing.raw_primary_doc
+    infotable = filing.raw_infotable_doc
+    raw_docs = [doc for doc in [primary, infotable] if doc is not None]
+    if any(doc.parse_status == "failed" for doc in raw_docs):
+        status = "failed"
+    elif filing.raw_infotable_doc_id is None:
+        status = "pending"
+    elif holdings_count == 0:
+        status = "parsed_no_holdings"
+    else:
+        status = "parsed"
+    return {
+        "id": filing.id,
+        "accession_no": filing.accession_no,
+        "form_type": filing.form_type,
+        "status": status,
+        "manager": {
+            "id": filing.manager.id,
+            "legal_name": filing.manager.legal_name,
+            "display_name": filing.manager.display_name,
+            "cik": filing.manager.cik,
+        },
+        "quarter": quarter_label_for_date(filing.period_of_report),
+        "period_of_report": filing.period_of_report.isoformat(),
+        "filed_at": filing.filed_at.isoformat() if filing.filed_at else None,
+        "version_rank": filing.version_rank,
+        "is_latest_for_period": filing.is_latest_for_period,
+        "amends_accession_no": filing.amends_accession_no,
+        "holdings_count": holdings_count,
+        "raw_primary": _raw_document_payload(primary),
+        "raw_infotable": _raw_document_payload(infotable),
+    }
+
+
+def _quarter_suggested_actions(
+    *,
+    quarter: str,
+    pending_filings: list[dict[str, Any]],
+    failed_filings: list[dict[str, Any]],
+    amendments: list[dict[str, Any]],
+    quality_report: QualityReport13F | None,
+) -> list[dict[str, Any]]:
+    actions: list[dict[str, Any]] = []
+    if pending_filings or failed_filings:
+        actions.append(
+            {
+                "job_type": "ingest_holdings",
+                "quarter": quarter,
+                "label": "Ingest or retry quarter holdings",
+                "reason": f"{len(pending_filings)} pending and {len(failed_filings)} failed filings need attention.",
+            }
+        )
+    for amendment in amendments:
+        if amendment["status"] in {"pending", "failed"}:
+            actions.append(
+                {
+                    "job_type": "reprocess_amendment",
+                    "accession_no": amendment["accession_no"],
+                    "label": f"Reprocess amendment {amendment['accession_no']}",
+                    "reason": f"Amendment status is {amendment['status']}.",
+                }
+            )
+    if quality_report is None or quality_report.status in {"failed", "warning"}:
+        actions.append(
+            {
+                "job_type": "quality_check",
+                "quarter": quarter,
+                "label": "Run quality check",
+                "reason": "Latest quality report is missing, failed, or warning.",
+            }
+        )
+    return actions
 
 
 def _latest_cik_review_event(manager: InstitutionManager) -> InstitutionManagerCikReviewEvent | None:

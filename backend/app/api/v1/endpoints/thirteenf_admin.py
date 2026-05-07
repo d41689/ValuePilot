@@ -19,6 +19,7 @@ from app.services.thirteenf_admin_dashboard import (
     confirm_manager_cik,
     get_amendment,
     get_job,
+    get_quarter_detail,
     get_quality_report_for_quarter,
     list_manager_cik_review_events,
     list_workers,
@@ -78,6 +79,14 @@ def read_quarter(session: SessionDep, current_user: AdminUser, quarter: str) -> 
         if item["quarter"] == quarter:
             return item
     raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Quarter not found")
+
+
+@admin_router.get("/quarters/{quarter}/detail", response_model=dict)
+def read_quarter_detail(session: SessionDep, current_user: AdminUser, quarter: str) -> Any:
+    try:
+        return get_quarter_detail(session, quarter)
+    except (ValueError, IndexError) as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
 
 
 @admin_router.get("/tasks", response_model=dict)

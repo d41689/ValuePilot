@@ -72,6 +72,7 @@ export default function Admin13FPage() {
   const queryClient = useQueryClient();
   const [selectedJobId, setSelectedJobId] = useState<number | null>(null);
   const [selectedAmendmentAccession, setSelectedAmendmentAccession] = useState<string | null>(null);
+  const [selectedQuarter, setSelectedQuarter] = useState<string | null>(null);
   const readinessQuery = useQuery({
     queryKey: ['admin-13f-readiness'],
     queryFn: async () => (await apiClient.get('/admin/13f/readiness')).data,
@@ -117,6 +118,11 @@ export default function Admin13FPage() {
     queryFn: async () => (await apiClient.get(`/admin/13f/amendments/${selectedAmendmentAccession}`)).data,
     enabled: selectedAmendmentAccession !== null,
   });
+  const quarterDetailQuery = useQuery({
+    queryKey: ['admin-13f-quarter-detail', selectedQuarter],
+    queryFn: async () => (await apiClient.get(`/admin/13f/quarters/${selectedQuarter}/detail`)).data,
+    enabled: selectedQuarter !== null,
+  });
   const [manualQuarter, setManualQuarter] = useState('');
   const [backfillQuarters, setBackfillQuarters] = useState('4');
   const [backfillStartQuarter, setBackfillStartQuarter] = useState('');
@@ -132,6 +138,7 @@ export default function Admin13FPage() {
         queryClient.invalidateQueries({ queryKey: ['admin-13f-jobs'] }),
         queryClient.invalidateQueries({ queryKey: ['admin-13f-quality'] }),
         queryClient.invalidateQueries({ queryKey: ['admin-13f-amendments'] }),
+        queryClient.invalidateQueries({ queryKey: ['admin-13f-quarter-detail'] }),
         queryClient.invalidateQueries({ queryKey: ['admin-13f-workers'] }),
       ]);
     },
@@ -203,6 +210,7 @@ export default function Admin13FPage() {
   const jobs = jobsQuery.data?.items ?? [];
   const selectedJob = jobDetailQuery.data ?? null;
   const selectedAmendment = amendmentDetailQuery.data ?? null;
+  const selectedQuarterDetail = quarterDetailQuery.data ?? null;
   const isLoading =
     readinessQuery.isLoading ||
     quartersQuery.isLoading ||
@@ -314,6 +322,7 @@ export default function Admin13FPage() {
             queryClient.invalidateQueries({ queryKey: ['admin-13f-jobs'] });
             queryClient.invalidateQueries({ queryKey: ['admin-13f-quality'] });
             queryClient.invalidateQueries({ queryKey: ['admin-13f-amendments'] });
+            queryClient.invalidateQueries({ queryKey: ['admin-13f-quarter-detail'] });
             queryClient.invalidateQueries({ queryKey: ['admin-13f-workers'] });
           }}
         >
@@ -589,6 +598,7 @@ export default function Admin13FPage() {
                   <TableHead>Holdings</TableHead>
                   <TableHead>Linked</TableHead>
                   <TableHead>Amendments</TableHead>
+                  <TableHead>Detail</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
@@ -607,11 +617,21 @@ export default function Admin13FPage() {
                     <TableCell>{formatInteger(quarter.holdingsCount)}</TableCell>
                     <TableCell>{formatPercent(quarter.linkedRatio)}</TableCell>
                     <TableCell>{quarter.amendmentStatus?.replaceAll('_', ' ')}</TableCell>
+                    <TableCell>
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        onClick={() => setSelectedQuarter(quarter.quarter)}
+                      >
+                        Review
+                      </Button>
+                    </TableCell>
                   </TableRow>
                 ))}
                 {quarters.length === 0 ? (
                   <TableRow>
-                    <TableCell colSpan={7} className="py-8 text-center text-muted-foreground">
+                    <TableCell colSpan={8} className="py-8 text-center text-muted-foreground">
                       No quarter data available.
                     </TableCell>
                   </TableRow>
@@ -1037,6 +1057,193 @@ export default function Admin13FPage() {
           </CardContent>
         </Card>
       </div>
+      {selectedQuarter !== null ? (
+        <div className="fixed inset-0 z-50 flex justify-end bg-background/60 backdrop-blur-sm">
+          <div
+            aria-hidden="true"
+            className="absolute inset-0 cursor-default"
+            onClick={() => setSelectedQuarter(null)}
+          />
+          <Card className="relative h-full w-full max-w-[640px] overflow-hidden rounded-none border-y-0 border-r-0 shadow-xl">
+            <CardHeader className="border-b border-border/70 pb-3">
+              <CardTitle className="flex items-center justify-between gap-2 text-base">
+                <span>Quarter Detail</span>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="icon"
+                  aria-label="Close quarter detail"
+                  onClick={() => setSelectedQuarter(null)}
+                >
+                  <X className="h-4 w-4" />
+                </Button>
+              </CardTitle>
+              <p className="text-sm text-muted-foreground">
+                {selectedQuarterDetail?.summary
+                  ? `${selectedQuarterDetail.summary.quarter_phase} · ${selectedQuarterDetail.summary.quarter_health}`
+                  : selectedQuarter}
+              </p>
+            </CardHeader>
+            <CardContent className="h-[calc(100%-84px)] space-y-5 overflow-y-auto p-5">
+              {selectedQuarterDetail ? (
+                <>
+                  <div className="grid gap-3 md:grid-cols-3">
+                    <div className="rounded-md border border-border/70 p-3">
+                      <div className="text-xs uppercase text-muted-foreground">Filings</div>
+                      <div className="mt-1 text-lg font-semibold">
+                        {formatInteger(selectedQuarterDetail.summary?.filings_count)}
+                      </div>
+                    </div>
+                    <div className="rounded-md border border-border/70 p-3">
+                      <div className="text-xs uppercase text-muted-foreground">Holdings</div>
+                      <div className="mt-1 text-lg font-semibold">
+                        {formatInteger(selectedQuarterDetail.summary?.holdings_count)}
+                      </div>
+                    </div>
+                    <div className="rounded-md border border-border/70 p-3">
+                      <div className="text-xs uppercase text-muted-foreground">Linked</div>
+                      <div className="mt-1 text-lg font-semibold">
+                        {formatPercent(selectedQuarterDetail.summary?.linked_holding_ratio)}
+                      </div>
+                    </div>
+                  </div>
+
+                  <div>
+                    <div className="mb-2 text-xs font-semibold uppercase text-muted-foreground">
+                      Suggested Actions
+                    </div>
+                    <div className="flex flex-wrap gap-2">
+                      {(selectedQuarterDetail.suggested_actions ?? []).map(
+                        (action: Record<string, unknown>, index: number) => (
+                          <Button
+                            key={`${String(action.job_type ?? 'action')}-${index}`}
+                            type="button"
+                            variant="outline"
+                            size="sm"
+                            onClick={() => runJob(action, String(action.label ?? action.job_type ?? 'Run action'))}
+                          >
+                            {String(action.label ?? action.job_type ?? 'Run action')}
+                          </Button>
+                        )
+                      )}
+                      {(selectedQuarterDetail.suggested_actions ?? []).length === 0 ? (
+                        <div className="text-sm text-muted-foreground">
+                          No suggested action for this quarter.
+                        </div>
+                      ) : null}
+                    </div>
+                  </div>
+
+                  <div>
+                    <div className="mb-2 text-xs font-semibold uppercase text-muted-foreground">
+                      Pending Filings
+                    </div>
+                    <div className="space-y-2">
+                      {(selectedQuarterDetail.pending_filings ?? []).map((filing: Record<string, unknown>) => (
+                        <div key={String(filing.accession_no)} className="rounded-md border border-border/70 p-3">
+                          <div className="font-mono text-xs">{String(filing.accession_no ?? '—')}</div>
+                          <div className="mt-1 text-xs text-muted-foreground">
+                            {String((filing.manager as Record<string, unknown> | undefined)?.legal_name ?? '—')} ·{' '}
+                            {String(filing.form_type ?? '—')}
+                          </div>
+                        </div>
+                      ))}
+                      {(selectedQuarterDetail.pending_filings ?? []).length === 0 ? (
+                        <div className="text-sm text-muted-foreground">No pending filings.</div>
+                      ) : null}
+                    </div>
+                  </div>
+
+                  <div>
+                    <div className="mb-2 text-xs font-semibold uppercase text-muted-foreground">
+                      Failed Filings
+                    </div>
+                    <div className="space-y-2">
+                      {(selectedQuarterDetail.failed_filings ?? []).map((filing: Record<string, unknown>) => {
+                        const infotable =
+                          filing.raw_infotable && typeof filing.raw_infotable === 'object'
+                            ? (filing.raw_infotable as Record<string, unknown>)
+                            : {};
+                        return (
+                          <div key={String(filing.accession_no)} className="rounded-md border border-rose-300/70 bg-rose-50 p-3 text-rose-950">
+                            <div className="font-mono text-xs">{String(filing.accession_no ?? '—')}</div>
+                            <div className="mt-1 text-xs">
+                              {String(infotable.error_message ?? 'Parse failed')}
+                            </div>
+                          </div>
+                        );
+                      })}
+                      {(selectedQuarterDetail.failed_filings ?? []).length === 0 ? (
+                        <div className="text-sm text-muted-foreground">No failed filings.</div>
+                      ) : null}
+                    </div>
+                  </div>
+
+                  <div>
+                    <div className="mb-2 text-xs font-semibold uppercase text-muted-foreground">
+                      Amendments
+                    </div>
+                    <div className="space-y-2">
+                      {(selectedQuarterDetail.amendments ?? []).map((amendment: Record<string, unknown>) => (
+                        <div key={String(amendment.accession_no)} className="rounded-md border border-border/70 p-3">
+                          <div className="flex items-center justify-between gap-2">
+                            <div className="font-mono text-xs">{String(amendment.accession_no ?? '—')}</div>
+                            <Badge variant={badgeVariant(
+                              amendment.status === 'failed'
+                                ? 'danger'
+                                : amendment.status === 'pending'
+                                  ? 'warning'
+                                  : amendment.status === 'applied'
+                                    ? 'success'
+                                    : 'secondary'
+                            )}>
+                              {String(amendment.status ?? 'unknown').replaceAll('_', ' ')}
+                            </Badge>
+                          </div>
+                          <div className="mt-1 text-xs text-muted-foreground">
+                            Supersedes {String(amendment.supersedes_accession_no ?? '—')}
+                          </div>
+                        </div>
+                      ))}
+                      {(selectedQuarterDetail.amendments ?? []).length === 0 ? (
+                        <div className="text-sm text-muted-foreground">No amendments for this quarter.</div>
+                      ) : null}
+                    </div>
+                  </div>
+
+                  <div>
+                    <div className="mb-2 text-xs font-semibold uppercase text-muted-foreground">
+                      Quality Report
+                    </div>
+                    {selectedQuarterDetail.quality_report ? (
+                      <div className="rounded-md border border-border/70 bg-muted/40 p-3">
+                        <div className="flex items-center justify-between gap-2">
+                          <div className="font-medium">
+                            {String(selectedQuarterDetail.quality_report.status ?? 'unknown').replaceAll('_', ' ')}
+                          </div>
+                          <div className="text-xs text-muted-foreground">
+                            {String(selectedQuarterDetail.quality_report.checked_at ?? '—')}
+                          </div>
+                        </div>
+                        <div className="mt-2 max-h-44 overflow-auto rounded-md border border-border/70 bg-background p-3 font-mono text-xs">
+                          {formatJson(selectedQuarterDetail.quality_report.issues)}
+                        </div>
+                      </div>
+                    ) : (
+                      <div className="text-sm text-muted-foreground">No quality report for this quarter.</div>
+                    )}
+                  </div>
+                </>
+              ) : (
+                <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                  Loading quarter detail...
+                </div>
+              )}
+            </CardContent>
+          </Card>
+        </div>
+      ) : null}
       {selectedAmendmentAccession !== null ? (
         <div className="fixed inset-0 z-50 flex justify-end bg-background/60 backdrop-blur-sm">
           <div

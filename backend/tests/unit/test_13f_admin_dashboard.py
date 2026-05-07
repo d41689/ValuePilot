@@ -697,6 +697,87 @@ def test_revoked_cik_repair_task_clears_after_reconfirming_manager(
     assert all(item["code"] != "REVOKED_CIK_DOWNSTREAM_REVIEW" for item in task_response.json()["items"])
 
 
+def test_quarter_detail_endpoint_returns_operational_drilldown(client, db_session, user_factory, auth_headers):
+    _clear_13f(db_session)
+    admin = _admin(user_factory)
+    manager = _manager(db_session)
+    stock = _stock(db_session)
+    parsed_doc = RawSourceDocument(
+        source_system="edgar",
+        document_type="infotable_xml",
+        cik=manager.cik,
+        accession_no="0001234567-26-000001",
+        source_url="https://example.test/parsed.xml",
+        http_status=200,
+        raw_sha256="parsed-quarter-detail",
+        body_path="/tmp/parsed.xml",
+        parse_status="parsed",
+        parsed_at=datetime.now(timezone.utc),
+    )
+    failed_doc = RawSourceDocument(
+        source_system="edgar",
+        document_type="infotable_xml",
+        cik=manager.cik,
+        accession_no="0001234567-26-000002",
+        source_url="https://example.test/failed.xml",
+        http_status=200,
+        raw_sha256="failed-quarter-detail",
+        body_path="/tmp/failed.xml",
+        parse_status="failed",
+        error_message="broken infotable",
+        parsed_at=datetime.now(timezone.utc),
+    )
+    db_session.add_all([parsed_doc, failed_doc])
+    db_session.flush()
+    parsed = _filing(
+        db_session,
+        manager,
+        accession="0001234567-26-000001",
+        raw_infotable_doc_id=parsed_doc.id,
+    )
+    _holding(db_session, parsed, stock)
+    failed = _filing(
+        db_session,
+        manager,
+        accession="0001234567-26-000002",
+        is_latest=False,
+        raw_infotable_doc_id=failed_doc.id,
+    )
+    pending = _filing(
+        db_session,
+        manager,
+        accession="0001234567-26-000003",
+        is_latest=False,
+    )
+    amendment = _filing(
+        db_session,
+        manager,
+        accession="0001234567-26-000004",
+        form_type="13F-HR/A",
+        is_latest=False,
+    )
+    report = QualityReport()
+    report.add("parse_failure", "error", "failed infotable", accession_no=failed.accession_no)
+    persist_quality_report(db_session, quarter="2025-Q4", report=report)
+    db_session.commit()
+
+    response = client.get("/api/v1/admin/13f/quarters/2025-Q4/detail", headers=auth_headers(admin))
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["summary"]["quarter"] == "2025-Q4"
+    assert {item["accession_no"] for item in payload["pending_filings"]} == {
+        pending.accession_no,
+        amendment.accession_no,
+    }
+    assert payload["failed_filings"][0]["accession_no"] == failed.accession_no
+    assert payload["failed_filings"][0]["raw_infotable"]["error_message"] == "broken infotable"
+    assert payload["amendments"][0]["accession_no"] == amendment.accession_no
+    assert payload["quality_report"]["status"] == "failed"
+    action_types = {item["job_type"] for item in payload["suggested_actions"]}
+    assert {"ingest_holdings", "quality_check", "reprocess_amendment"}.issubset(action_types)
+
+
 def test_persisted_quality_report_surfaces_in_quarter_and_tasks(client, db_session, user_factory, auth_headers):
     _clear_13f(db_session)
     admin = _admin(user_factory)
