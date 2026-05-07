@@ -90,10 +90,10 @@ def execute_queued_job_once(session: Session, *, worker_id: str) -> JobRun | Non
     if job is None:
         return None
     record_worker_heartbeat(session, worker_id=worker_id, status="running", current_job_id=job.id)
-    try:
-        from app.services import thirteenf_admin_dashboard
-        from app.services.notifications import notify_job_completion
+    from app.services import thirteenf_admin_dashboard
+    from app.services.notifications import notify_job_completion
 
+    try:
         payload = dict(job.input_json or {})
         payload["_job_id"] = job.id
         summary = thirteenf_admin_dashboard.execute_job_payload(session, job.job_type, payload)
@@ -106,16 +106,6 @@ def execute_queued_job_once(session: Session, *, worker_id: str) -> JobRun | Non
         session.add(job)
         session.commit()
         session.refresh(job)
-
-        # Notify if the job failed or had warnings
-        notify_job_completion(
-            job_id=job.id,
-            job_type=job.job_type,
-            status=job.status,
-            quarter=job.quarter,
-            summary=job.summary_json or {},
-            error_message=job.error_message,
-        )
     except Exception as exc:
         session.rollback()
         job = session.get(JobRun, job.id)
@@ -126,8 +116,10 @@ def execute_queued_job_once(session: Session, *, worker_id: str) -> JobRun | Non
         session.add(job)
         session.commit()
         session.refresh(job)
+    finally:
+        record_worker_heartbeat(session, worker_id=worker_id, status="idle")
 
-        from app.services.notifications import notify_job_completion
+    try:
         notify_job_completion(
             job_id=job.id,
             job_type=job.job_type,
@@ -136,8 +128,8 @@ def execute_queued_job_once(session: Session, *, worker_id: str) -> JobRun | Non
             summary=job.summary_json or {},
             error_message=job.error_message,
         )
-    finally:
-        record_worker_heartbeat(session, worker_id=worker_id, status="idle")
+    except Exception:
+        logger.warning("Failed to send job completion notification for job %s", job.id, exc_info=True)
     return job
 
 

@@ -107,7 +107,9 @@ def notify_job_completion(job_id: int, job_type: str, status: str, quarter: Opti
     error_summary = error_message or "Job completed with issues."
     
     if status == "partial_success":
-        failed_count = summary.get("filings_failed") or summary.get("holdings_ingestion", {}).get("filings_failed") or 0
+        top = summary.get("filings_failed")
+        nested = summary.get("holdings_ingestion", {}).get("filings_failed")
+        failed_count = top if top is not None else (nested if nested is not None else 0)
         error_summary = f"Partial success: {failed_count} filings failed to process."
 
     suggested_action = "Inspect job logs and retry failed accessions."
