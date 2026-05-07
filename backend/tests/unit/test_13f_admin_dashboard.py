@@ -524,6 +524,64 @@ def test_partial_success_job_creates_lower_priority_admin_alert_task(client, db_
     assert task["metadata"]["failed_accessions_count"] == 1
 
 
+def test_queued_job_without_active_worker_creates_admin_task(client, db_session, user_factory, auth_headers):
+    _clear_13f(db_session)
+    admin = _admin(user_factory)
+    queued_at = datetime.now(timezone.utc) - timedelta(minutes=20)
+    job = JobRun(
+        job_type="ingest_holdings",
+        status="queued",
+        requested_by_user_id=admin.id,
+        trigger_source="manual",
+        dedupe_key="ingest_holdings:2025-Q4",
+        lock_key="ingest_holdings:2025-Q4",
+        quarter="2025-Q4",
+        input_json={"job_type": "ingest_holdings", "quarter": "2025-Q4"},
+        created_at=queued_at,
+    )
+    db_session.add(job)
+    db_session.commit()
+
+    response = client.get("/api/v1/admin/13f/tasks", headers=auth_headers(admin))
+
+    assert response.status_code == 200
+    task = next(item for item in response.json()["items"] if item["code"] == "JOB_WORKER_UNAVAILABLE")
+    assert task["priority"] == "P1"
+    assert task["metadata"]["queued_jobs_count"] == 1
+    assert task["metadata"]["oldest_queued_job_id"] == job.id
+    assert task["metadata"]["oldest_queued_job_type"] == "ingest_holdings"
+    assert task["metadata"]["active_worker_count"] == 0
+
+
+def test_stuck_queued_job_with_active_worker_creates_admin_task(client, db_session, user_factory, auth_headers):
+    _clear_13f(db_session)
+    admin = _admin(user_factory)
+    queued_at = datetime.now(timezone.utc) - timedelta(minutes=30)
+    record_worker_heartbeat(db_session, worker_id="idle-worker", status="idle")
+    job = JobRun(
+        job_type="quality_check",
+        status="queued",
+        requested_by_user_id=admin.id,
+        trigger_source="manual",
+        dedupe_key="quality_check:2025-Q4",
+        lock_key="quality_check:2025-Q4",
+        quarter="2025-Q4",
+        input_json={"job_type": "quality_check", "quarter": "2025-Q4"},
+        created_at=queued_at,
+    )
+    db_session.add(job)
+    db_session.commit()
+
+    response = client.get("/api/v1/admin/13f/tasks", headers=auth_headers(admin))
+
+    assert response.status_code == 200
+    task = next(item for item in response.json()["items"] if item["code"] == "STUCK_QUEUED_JOB")
+    assert task["priority"] == "P2"
+    assert task["metadata"]["oldest_queued_job_id"] == job.id
+    assert task["metadata"]["active_worker_count"] == 1
+    assert task["metadata"]["oldest_queued_seconds"] >= 60
+
+
 def test_cancel_queued_job_releases_active_lock(client, db_session, user_factory, auth_headers):
     _clear_13f(db_session)
     admin = _admin(user_factory)

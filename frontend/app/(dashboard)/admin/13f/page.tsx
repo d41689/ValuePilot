@@ -721,6 +721,40 @@ export default function Admin13FPage() {
                         Error: {String(task.metadata.error_message)}
                       </div>
                     ) : null}
+                    {'queued_jobs_count' in task.metadata ? (
+                      <div>
+                        Queued jobs:{' '}
+                        <span className="font-medium text-foreground">
+                          {formatInteger(Number(task.metadata.queued_jobs_count ?? 0))}
+                        </span>
+                      </div>
+                    ) : null}
+                    {'oldest_queued_job_id' in task.metadata ? (
+                      <div>
+                        Oldest queued:{' '}
+                        <span className="font-medium text-foreground">
+                          #{String(task.metadata.oldest_queued_job_id ?? '—')} ·{' '}
+                          {String(task.metadata.oldest_queued_job_type ?? '—')}
+                        </span>
+                      </div>
+                    ) : null}
+                    {'oldest_queued_seconds' in task.metadata ? (
+                      <div>
+                        Queue age:{' '}
+                        <span className="font-medium text-foreground">
+                          {formatInteger(Number(task.metadata.oldest_queued_seconds ?? 0))}s
+                        </span>
+                      </div>
+                    ) : null}
+                    {'active_worker_count' in task.metadata ? (
+                      <div>
+                        Workers:{' '}
+                        <span className="font-medium text-foreground">
+                          {formatInteger(Number(task.metadata.active_worker_count ?? 0))} active /{' '}
+                          {formatInteger(Number(task.metadata.worker_count ?? 0))} seen
+                        </span>
+                      </div>
+                    ) : null}
                     {Array.isArray(task.metadata.affected_quarters) &&
                     task.metadata.affected_quarters.length > 0 ? (
                       <div>

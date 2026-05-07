@@ -15,6 +15,7 @@ from app.models.institutions import (
     InstitutionManagerCikReviewEvent,
     InstitutionManager,
     JobRun,
+    JobWorkerHeartbeat,
     QualityReport13F,
     RawSourceDocument,
 )
@@ -25,6 +26,7 @@ from app.services.thirteenf_job_worker import list_worker_heartbeats
 ACTIVE_JOB_STATUSES = {"queued", "running", "cancel_requested"}
 READY_LINK_RATIO = 0.80
 WARNING_LINK_RATIO = 0.50
+STUCK_QUEUED_JOB_AFTER_SECONDS = 10 * 60
 
 
 @dataclass(frozen=True)
@@ -268,6 +270,7 @@ def build_admin_tasks(session: Session, *, today: date | None = None) -> list[di
         tasks.append(_task("P1", "CIK_CANDIDATES_NEED_REVIEW", "CIK candidates need review", "Confirm or reject candidate"))
     tasks.extend(_revoked_cik_repair_tasks(session))
     tasks.extend(_recent_job_alert_tasks(session))
+    tasks.extend(_worker_operational_tasks(session))
     if summary["form_idx_fetched"] and summary["filings_count"] == 0:
         tasks.append(_task("P1", "QUARTER_INDEX_FETCHED_NO_FILINGS", "Quarter index fetched but no filings", "Check whitelist and form parser"))
     if summary["failed_filings"] > 0:
@@ -862,6 +865,61 @@ def _recent_job_alert_tasks(session: Session, *, limit: int = 5) -> list[dict[st
             )
         )
     return tasks
+
+
+def _worker_operational_tasks(session: Session, *, now: datetime | None = None) -> list[dict[str, Any]]:
+    now = now or datetime.now(timezone.utc)
+    queued_jobs = (
+        session.query(JobRun)
+        .filter(JobRun.status == "queued")
+        .order_by(JobRun.created_at.asc(), JobRun.id.asc())
+        .all()
+    )
+    if not queued_jobs:
+        return []
+
+    stale_cutoff = now - timedelta(seconds=settings.THIRTEENF_JOB_WORKER_HEARTBEAT_STALE_S)
+    workers = session.query(JobWorkerHeartbeat).all()
+    active_workers = [
+        worker
+        for worker in workers
+        if worker.status not in {"stopped", "error"} and worker.last_heartbeat_at >= stale_cutoff
+    ]
+    oldest = queued_jobs[0]
+    oldest_seconds = int((now - oldest.created_at).total_seconds()) if oldest.created_at else None
+    metadata = {
+        "queued_jobs_count": len(queued_jobs),
+        "oldest_queued_job_id": oldest.id,
+        "oldest_queued_job_type": oldest.job_type,
+        "oldest_queued_job_status": oldest.status,
+        "oldest_queued_seconds": oldest_seconds,
+        "oldest_queued_at": oldest.created_at.isoformat() if oldest.created_at else None,
+        "oldest_queued_quarter": oldest.quarter,
+        "worker_count": len(workers),
+        "active_worker_count": len(active_workers),
+        "stale_worker_count": max(len(workers) - len(active_workers), 0),
+    }
+    if not active_workers:
+        return [
+            _task_with_metadata(
+                "P1",
+                "JOB_WORKER_UNAVAILABLE",
+                "13F job worker unavailable",
+                "Inspect or restart the 13F job worker; queued jobs cannot run without an active heartbeat.",
+                metadata,
+            )
+        ]
+    if oldest_seconds is not None and oldest_seconds >= STUCK_QUEUED_JOB_AFTER_SECONDS:
+        return [
+            _task_with_metadata(
+                "P2",
+                "STUCK_QUEUED_JOB",
+                "13F job has been queued too long",
+                "Inspect worker heartbeat and job lock state; cancel or retry the queued job if needed.",
+                metadata,
+            )
+        ]
+    return []
 
 
 def _job_payload(job: JobRun) -> dict[str, Any]:
