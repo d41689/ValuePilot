@@ -358,10 +358,25 @@ function taskPrimaryAction(task, latestQuarter) {
   return null;
 }
 
+function managerCikReviewDefaults(manager) {
+  const data = manager && typeof manager === 'object' ? manager : {};
+  const managerName = data.legal_name || data.display_name || 'this manager';
+  const candidateName = data.candidate_legal_name || managerName;
+  const defaultCik = data.candidate_cik || data.cik || '';
+  return {
+    managerName,
+    candidateName,
+    defaultCik,
+    confirmDescription: `Confirm the SEC CIK for ${managerName}. This manager will be eligible for 13F ingestion using the confirmed identity.`,
+    rejectDescription: `Reject this CIK candidate for ${managerName}. The manager will remain unresolved until a new candidate is reviewed.`,
+  };
+}
+
 module.exports = {
   formatPercent,
   freshnessLine,
   jobPreviewRows,
+  managerCikReviewDefaults,
   jobPreviewLine,
   normalizeAmendments,
   normalizeCikReviewEvents,

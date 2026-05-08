@@ -16,7 +16,7 @@ import {
   Settings,
   X,
 } from 'lucide-react';
-import type { ComponentProps } from 'react';
+import type { ComponentProps, ReactNode } from 'react';
 
 import apiClient from '@/lib/api/client';
 import thirteenfAdmin from '@/lib/thirteenfAdmin';
@@ -46,6 +46,7 @@ const {
   formatPercent,
   freshnessLine,
   jobPreviewRows,
+  managerCikReviewDefaults,
   normalizeAmendments,
   normalizeQualityReports,
   normalizeQuarters,
@@ -81,6 +82,69 @@ function formatInteger(value: unknown) {
 function formatJson(value: unknown) {
   if (!value || typeof value !== 'object') return '—';
   return JSON.stringify(value, null, 2);
+}
+
+function SectionLabel({ children }: { children: ReactNode }) {
+  return <div className="text-xs font-semibold uppercase text-muted-foreground">{children}</div>;
+}
+
+function MetricTile({
+  label,
+  value,
+  detail,
+}: {
+  label: ReactNode;
+  value: ReactNode;
+  detail?: ReactNode;
+}) {
+  return (
+    <div className="rounded-md border border-border/70 p-3">
+      <div className="text-xs uppercase text-muted-foreground">{label}</div>
+      <div className="mt-1 text-lg font-semibold">{value}</div>
+      {detail ? <div className="text-xs text-muted-foreground">{detail}</div> : null}
+    </div>
+  );
+}
+
+function DrawerShell({
+  title,
+  description,
+  closeLabel,
+  labelledBy,
+  maxWidthClassName,
+  onClose,
+  children,
+}: {
+  title: string;
+  description?: ReactNode;
+  closeLabel: string;
+  labelledBy: string;
+  maxWidthClassName: string;
+  onClose: () => void;
+  children: ReactNode;
+}) {
+  return (
+    <div className="fixed inset-0 z-50 bg-background/60 backdrop-blur-sm">
+      <div aria-hidden="true" className="absolute inset-0 cursor-default" onClick={onClose} />
+      <Card
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby={labelledBy}
+        className={`fixed inset-y-0 right-0 flex h-dvh max-h-dvh w-full flex-col overflow-hidden rounded-none border-y-0 border-r-0 shadow-xl ${maxWidthClassName}`}
+      >
+        <CardHeader className="shrink-0 border-b border-border/70 pb-3">
+          <CardTitle className="flex items-center justify-between gap-2 text-base">
+            <span id={labelledBy}>{title}</span>
+            <Button type="button" variant="ghost" size="icon" aria-label={closeLabel} onClick={onClose}>
+              <X className="h-4 w-4" />
+            </Button>
+          </CardTitle>
+          {description ? <p className="text-sm text-muted-foreground">{description}</p> : null}
+        </CardHeader>
+        <CardContent className="min-h-0 flex-1 space-y-5 overflow-y-auto p-5">{children}</CardContent>
+      </Card>
+    </div>
+  );
 }
 
 export default function Admin13FPage() {
@@ -150,6 +214,11 @@ export default function Admin13FPage() {
   } | null>(null);
   const [pendingStaleReleaseJobId, setPendingStaleReleaseJobId] = useState<number | null>(null);
   const [showWorkerHistory, setShowWorkerHistory] = useState(false);
+  const [pendingConfirmManager, setPendingConfirmManager] = useState<Record<string, unknown> | null>(null);
+  const [confirmCik, setConfirmCik] = useState('');
+  const [confirmNote, setConfirmNote] = useState('');
+  const [pendingRejectManager, setPendingRejectManager] = useState<Record<string, unknown> | null>(null);
+  const [rejectNote, setRejectNote] = useState('');
   const [pendingRevokeManager, setPendingRevokeManager] = useState<Record<string, unknown> | null>(null);
   const [revokeNote, setRevokeNote] = useState('');
   async function refreshAdminData() {
@@ -354,42 +423,17 @@ export default function Admin13FPage() {
   function handleConfirmManager(manager: Record<string, unknown>) {
     const managerId = Number(manager.id);
     if (!Number.isFinite(managerId)) return;
-    const currentCik =
-      (typeof manager.candidate_cik === 'string' ? manager.candidate_cik : '') ||
-      (typeof manager.cik === 'string' ? manager.cik : '');
-    const cik =
-      currentCik ||
-      (typeof window !== 'undefined'
-        ? window.prompt('Enter the SEC CIK to confirm for this manager')
-        : null);
-    if (!cik) return;
-    const note =
-      typeof window !== 'undefined'
-        ? window.prompt('Optional review note for this CIK confirmation') || null
-        : null;
-    if (
-      typeof window !== 'undefined' &&
-      !window.confirm(`Confirm CIK ${cik} for ${String(manager.legal_name ?? 'this manager')}?`)
-    ) {
-      return;
-    }
-    confirmManager.mutate({ managerId, cik, note });
+    const defaults = managerCikReviewDefaults(manager);
+    setConfirmCik(String(defaults.defaultCik ?? ''));
+    setConfirmNote('');
+    setPendingConfirmManager(manager);
   }
 
   function handleRejectManager(manager: Record<string, unknown>) {
     const managerId = Number(manager.id);
     if (!Number.isFinite(managerId)) return;
-    const note =
-      typeof window !== 'undefined'
-        ? window.prompt('Optional review note for this CIK rejection') || null
-        : null;
-    if (
-      typeof window !== 'undefined' &&
-      !window.confirm(`Reject CIK candidate for ${String(manager.legal_name ?? 'this manager')}?`)
-    ) {
-      return;
-    }
-    rejectManager.mutate({ managerId, note });
+    setRejectNote('');
+    setPendingRejectManager(manager);
   }
 
   function handleRevokeManager(manager: Record<string, unknown>) {
@@ -453,25 +497,17 @@ export default function Admin13FPage() {
             </div>
           ) : null}
           <div className="grid gap-3 md:grid-cols-4">
-            <div className="rounded-md border border-border/70 p-3">
-              <div className="text-xs uppercase text-muted-foreground">Latest usable</div>
-              <div className="mt-1 text-lg font-semibold">{readiness.latestUsableQuarter}</div>
-            </div>
-            <div className="rounded-md border border-border/70 p-3">
-              <div className="text-xs uppercase text-muted-foreground">Current quarter</div>
-              <div className="mt-1 text-lg font-semibold">{readiness.currentQuarter}</div>
-              <div className="text-xs text-muted-foreground">{readiness.currentPhase}</div>
-            </div>
-            <div className="rounded-md border border-border/70 p-3">
-              <div className="text-xs uppercase text-muted-foreground">Historical depth</div>
-              <div className="mt-1 text-lg font-semibold">{readiness.historicalDepth} quarters</div>
-            </div>
-            <div className="rounded-md border border-border/70 p-3">
-              <div className="text-xs uppercase text-muted-foreground">Managers</div>
-              <div className="mt-1 text-lg font-semibold">
-                {formatInteger(readiness.counts.confirmed_managers)} confirmed
-              </div>
-            </div>
+            <MetricTile label="Latest usable" value={readiness.latestUsableQuarter} />
+            <MetricTile
+              label="Current quarter"
+              value={readiness.currentQuarter}
+              detail={readiness.currentPhase}
+            />
+            <MetricTile label="Historical depth" value={`${readiness.historicalDepth} quarters`} />
+            <MetricTile
+              label="Managers"
+              value={`${formatInteger(readiness.counts.confirmed_managers)} confirmed`}
+            />
           </div>
           <div className="rounded-md border border-amber-300/70 bg-amber-50 px-3 py-2 text-sm text-amber-950">
             {freshnessLine(readiness)}
@@ -1593,6 +1629,170 @@ export default function Admin13FPage() {
       </Dialog>
 
       <Dialog
+        open={pendingConfirmManager !== null}
+        onOpenChange={(open) => {
+          if (!open) {
+            setPendingConfirmManager(null);
+            setConfirmCik('');
+            setConfirmNote('');
+          }
+        }}
+      >
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Confirm Manager CIK</DialogTitle>
+            <DialogDescription>
+              {pendingConfirmManager
+                ? managerCikReviewDefaults(pendingConfirmManager).confirmDescription
+                : 'Confirm the SEC CIK for this manager.'}
+            </DialogDescription>
+          </DialogHeader>
+          {pendingConfirmManager ? (
+            <div className="space-y-4">
+              <div className="rounded-md border border-border/70 p-3 text-sm">
+                <SectionLabel>Manager</SectionLabel>
+                <div className="mt-1 font-medium">
+                  {String(managerCikReviewDefaults(pendingConfirmManager).managerName)}
+                </div>
+                <div className="mt-1 text-xs text-muted-foreground">
+                  Candidate: {String(managerCikReviewDefaults(pendingConfirmManager).candidateName)}
+                </div>
+              </div>
+              <div>
+                <label className="text-xs font-semibold uppercase text-muted-foreground" htmlFor="confirm-cik">
+                  SEC CIK
+                </label>
+                <Input
+                  id="confirm-cik"
+                  className="mt-2"
+                  value={confirmCik}
+                  onChange={(event) => setConfirmCik(event.target.value)}
+                  placeholder="0000000000"
+                />
+              </div>
+              <div>
+                <label className="text-xs font-semibold uppercase text-muted-foreground" htmlFor="confirm-note">
+                  Optional note
+                </label>
+                <Textarea
+                  id="confirm-note"
+                  className="mt-2"
+                  value={confirmNote}
+                  onChange={(event) => setConfirmNote(event.target.value)}
+                  placeholder="Why is this CIK correct?"
+                />
+              </div>
+            </div>
+          ) : null}
+          <DialogFooter>
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => {
+                setPendingConfirmManager(null);
+                setConfirmCik('');
+                setConfirmNote('');
+              }}
+            >
+              Cancel
+            </Button>
+            <Button
+              type="button"
+              disabled={!pendingConfirmManager || !confirmCik.trim() || confirmManager.isPending}
+              onClick={() => {
+                if (!pendingConfirmManager) return;
+                const managerId = Number(pendingConfirmManager.id);
+                if (!Number.isFinite(managerId)) return;
+                confirmManager.mutate({
+                  managerId,
+                  cik: confirmCik.trim(),
+                  note: confirmNote.trim() || null,
+                });
+                setPendingConfirmManager(null);
+                setConfirmCik('');
+                setConfirmNote('');
+              }}
+            >
+              Confirm CIK
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog
+        open={pendingRejectManager !== null}
+        onOpenChange={(open) => {
+          if (!open) {
+            setPendingRejectManager(null);
+            setRejectNote('');
+          }
+        }}
+      >
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Reject Manager CIK</DialogTitle>
+            <DialogDescription>
+              {pendingRejectManager
+                ? managerCikReviewDefaults(pendingRejectManager).rejectDescription
+                : 'Reject this CIK candidate.'}
+            </DialogDescription>
+          </DialogHeader>
+          {pendingRejectManager ? (
+            <div className="space-y-4">
+              <div className="rounded-md border border-border/70 p-3 text-sm">
+                <SectionLabel>Manager</SectionLabel>
+                <div className="mt-1 font-medium">
+                  {String(managerCikReviewDefaults(pendingRejectManager).managerName)}
+                </div>
+                <div className="mt-1 text-xs text-muted-foreground">
+                  Candidate CIK {String(pendingRejectManager.candidate_cik ?? '—')}
+                </div>
+              </div>
+              <div>
+                <label className="text-xs font-semibold uppercase text-muted-foreground" htmlFor="reject-note">
+                  Optional note
+                </label>
+                <Textarea
+                  id="reject-note"
+                  className="mt-2"
+                  value={rejectNote}
+                  onChange={(event) => setRejectNote(event.target.value)}
+                  placeholder="Why is this candidate wrong?"
+                />
+              </div>
+            </div>
+          ) : null}
+          <DialogFooter>
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => {
+                setPendingRejectManager(null);
+                setRejectNote('');
+              }}
+            >
+              Cancel
+            </Button>
+            <Button
+              type="button"
+              variant="destructive"
+              disabled={!pendingRejectManager || rejectManager.isPending}
+              onClick={() => {
+                if (!pendingRejectManager) return;
+                const managerId = Number(pendingRejectManager.id);
+                if (!Number.isFinite(managerId)) return;
+                rejectManager.mutate({ managerId, note: rejectNote.trim() || null });
+                setPendingRejectManager(null);
+                setRejectNote('');
+              }}
+            >
+              Reject CIK
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog
         open={pendingRevokeManager !== null}
         onOpenChange={(open) => {
           if (!open) {
@@ -1676,64 +1876,38 @@ export default function Admin13FPage() {
       </Dialog>
 
       {selectedQuarter !== null ? (
-        <div className="fixed inset-0 z-50 bg-background/60 backdrop-blur-sm">
-          <div
-            aria-hidden="true"
-            className="absolute inset-0 cursor-default"
-            onClick={() => setSelectedQuarter(null)}
-          />
-          <Card
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="quarter-detail-title"
-            className="fixed inset-y-0 right-0 flex h-dvh max-h-dvh w-full max-w-[640px] flex-col overflow-hidden rounded-none border-y-0 border-r-0 shadow-xl"
-          >
-            <CardHeader className="shrink-0 border-b border-border/70 pb-3">
-              <CardTitle className="flex items-center justify-between gap-2 text-base">
-                <span id="quarter-detail-title">Quarter Detail</span>
-                <Button
-                  type="button"
-                  variant="ghost"
-                  size="icon"
-                  aria-label="Close quarter detail"
-                  onClick={() => setSelectedQuarter(null)}
-                >
-                  <X className="h-4 w-4" />
-                </Button>
-              </CardTitle>
-              <p className="text-sm text-muted-foreground">
-                {selectedQuarterDetail?.summary
-                  ? `${selectedQuarterDetail.summary.quarter_phase} · ${selectedQuarterDetail.summary.quarter_health}`
-                  : selectedQuarter}
-              </p>
-            </CardHeader>
-            <CardContent className="min-h-0 flex-1 space-y-5 overflow-y-auto p-5">
+        <DrawerShell
+          title="Quarter Detail"
+          description={
+            selectedQuarterDetail?.summary
+              ? `${selectedQuarterDetail.summary.quarter_phase} · ${selectedQuarterDetail.summary.quarter_health}`
+              : selectedQuarter
+          }
+          closeLabel="Close quarter detail"
+          labelledBy="quarter-detail-title"
+          maxWidthClassName="max-w-[640px]"
+          onClose={() => setSelectedQuarter(null)}
+        >
               {selectedQuarterDetail ? (
                 <>
                   <div className="grid gap-3 md:grid-cols-3">
-                    <div className="rounded-md border border-border/70 p-3">
-                      <div className="text-xs uppercase text-muted-foreground">Filings</div>
-                      <div className="mt-1 text-lg font-semibold">
-                        {formatInteger(selectedQuarterDetail.summary?.filings_count)}
-                      </div>
-                    </div>
-                    <div className="rounded-md border border-border/70 p-3">
-                      <div className="text-xs uppercase text-muted-foreground">Holdings</div>
-                      <div className="mt-1 text-lg font-semibold">
-                        {formatInteger(selectedQuarterDetail.summary?.holdings_count)}
-                      </div>
-                    </div>
-                    <div className="rounded-md border border-border/70 p-3">
-                      <div className="text-xs uppercase text-muted-foreground">Linked</div>
-                      <div className="mt-1 text-lg font-semibold">
-                        {formatPercent(selectedQuarterDetail.summary?.linked_holding_ratio)}
-                      </div>
-                      {selectedQuarterDetail.summary?.linked_holding_unavailable_reason ? (
-                        <div className="mt-1 text-xs text-muted-foreground">
-                          {String(selectedQuarterDetail.summary.linked_holding_unavailable_reason)}
-                        </div>
-                      ) : null}
-                    </div>
+                    <MetricTile
+                      label="Filings"
+                      value={formatInteger(selectedQuarterDetail.summary?.filings_count)}
+                    />
+                    <MetricTile
+                      label="Holdings"
+                      value={formatInteger(selectedQuarterDetail.summary?.holdings_count)}
+                    />
+                    <MetricTile
+                      label="Linked"
+                      value={formatPercent(selectedQuarterDetail.summary?.linked_holding_ratio)}
+                      detail={
+                        selectedQuarterDetail.summary?.linked_holding_unavailable_reason
+                          ? String(selectedQuarterDetail.summary.linked_holding_unavailable_reason)
+                          : undefined
+                      }
+                    />
                   </div>
                   {selectedQuarterDetail.summary?.active_job_id ? (
                     <div className="rounded-md border border-amber-300/70 bg-amber-50 px-3 py-2 text-sm text-amber-950">
@@ -1875,41 +2049,17 @@ export default function Admin13FPage() {
                   Loading quarter detail...
                 </div>
               )}
-            </CardContent>
-          </Card>
-        </div>
+        </DrawerShell>
       ) : null}
       {selectedAmendmentAccession !== null ? (
-        <div className="fixed inset-0 z-50 bg-background/60 backdrop-blur-sm">
-          <div
-            aria-hidden="true"
-            className="absolute inset-0 cursor-default"
-            onClick={() => setSelectedAmendmentAccession(null)}
-          />
-          <Card
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="amendment-detail-title"
-            className="fixed inset-y-0 right-0 flex h-dvh max-h-dvh w-full max-w-[560px] flex-col overflow-hidden rounded-none border-y-0 border-r-0 shadow-xl"
-          >
-            <CardHeader className="shrink-0 border-b border-border/70 pb-3">
-              <CardTitle className="flex items-center justify-between gap-2 text-base">
-                <span id="amendment-detail-title">Amendment Detail</span>
-                <Button
-                  type="button"
-                  variant="ghost"
-                  size="icon"
-                  aria-label="Close amendment detail"
-                  onClick={() => setSelectedAmendmentAccession(null)}
-                >
-                  <X className="h-4 w-4" />
-                </Button>
-              </CardTitle>
-              <p className="font-mono text-xs text-muted-foreground">
-                {selectedAmendmentAccession}
-              </p>
-            </CardHeader>
-            <CardContent className="min-h-0 flex-1 space-y-5 overflow-y-auto p-5">
+        <DrawerShell
+          title="Amendment Detail"
+          description={<span className="font-mono text-xs">{selectedAmendmentAccession}</span>}
+          closeLabel="Close amendment detail"
+          labelledBy="amendment-detail-title"
+          maxWidthClassName="max-w-[560px]"
+          onClose={() => setSelectedAmendmentAccession(null)}
+        >
               {selectedAmendment ? (
                 <>
                   <div className="flex flex-wrap items-center gap-2">
@@ -1997,41 +2147,17 @@ export default function Admin13FPage() {
                   Loading amendment detail...
                 </div>
               )}
-            </CardContent>
-          </Card>
-        </div>
+        </DrawerShell>
       ) : null}
       {selectedJobId !== null ? (
-        <div className="fixed inset-0 z-50 bg-background/60 backdrop-blur-sm">
-          <div
-            aria-hidden="true"
-            className="absolute inset-0 cursor-default"
-            onClick={() => setSelectedJobId(null)}
-          />
-          <Card
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="job-detail-title"
-            className="fixed inset-y-0 right-0 flex h-dvh max-h-dvh w-full max-w-[520px] flex-col overflow-hidden rounded-none border-y-0 border-r-0 shadow-xl"
-          >
-            <CardHeader className="shrink-0 border-b border-border/70 pb-3">
-              <CardTitle className="flex items-center justify-between gap-2 text-base">
-                <span id="job-detail-title">Job Detail</span>
-                <Button
-                  type="button"
-                  variant="ghost"
-                  size="icon"
-                  aria-label="Close job detail"
-                  onClick={() => setSelectedJobId(null)}
-                >
-                  <X className="h-4 w-4" />
-                </Button>
-              </CardTitle>
-              <p className="text-sm text-muted-foreground">
-                {selectedJob ? `${selectedJob.job_type} · ${selectedJob.status}` : 'Loading job detail...'}
-              </p>
-            </CardHeader>
-            <CardContent className="min-h-0 flex-1 space-y-5 overflow-y-auto p-5">
+        <DrawerShell
+          title="Job Detail"
+          description={selectedJob ? `${selectedJob.job_type} · ${selectedJob.status}` : 'Loading job detail...'}
+          closeLabel="Close job detail"
+          labelledBy="job-detail-title"
+          maxWidthClassName="max-w-[520px]"
+          onClose={() => setSelectedJobId(null)}
+        >
               {selectedJob ? (
                 <>
                   <div className="grid gap-3 md:grid-cols-2">
@@ -2220,9 +2346,7 @@ export default function Admin13FPage() {
                   Loading job detail...
                 </div>
               )}
-            </CardContent>
-          </Card>
-        </div>
+        </DrawerShell>
       ) : null}
     </div>
   );

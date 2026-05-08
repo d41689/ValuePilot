@@ -1,11 +1,13 @@
 'use client';
 
 import Link from 'next/link';
-import { usePathname } from 'next/navigation';
+import { usePathname, useRouter } from 'next/navigation';
 import { useEffect, useMemo, useState } from 'react';
-import { Activity, Database, FileText, Landmark, LayoutDashboard, Search, Upload, Star } from 'lucide-react';
+import { Activity, Database, FileText, Landmark, LayoutDashboard, LogOut, Search, Upload, Star } from 'lucide-react';
 
+import * as authSession from '@/lib/authSession';
 import { cn } from '@/lib/utils';
+import { Button } from '@/components/ui/button';
 
 const navigation = [
   { name: 'Dashboard', href: '/home', icon: LayoutDashboard },
@@ -19,6 +21,7 @@ const navigation = [
 
 export default function AppShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname() ?? '';
+  const router = useRouter();
   const [role, setRole] = useState<string | null>(null);
 
   useEffect(() => {
@@ -33,6 +36,14 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
     if (role === 'admin') return navigation;
     return navigation.filter((item) => item.href !== '/upload' && item.href !== '/admin/13f');
   }, [role]);
+
+  function handleSignOut() {
+    if (typeof window !== 'undefined' && typeof document !== 'undefined') {
+      authSession.clearAuthSession(window.localStorage, document);
+    }
+    setRole(null);
+    router.replace('/login');
+  }
 
   return (
     <div className="relative min-h-screen bg-background text-foreground">
@@ -78,6 +89,10 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
             <div className="font-semibold text-foreground">Tip</div>
             <p className="mt-1">Parsed reports feed the screener instantly. Reparse after fixes.</p>
           </div>
+          <Button type="button" variant="outline" size="sm" onClick={handleSignOut}>
+            <LogOut className="h-4 w-4" />
+            Sign out
+          </Button>
         </aside>
 
         <main className="min-w-0 flex-1 overflow-auto rounded-2xl border border-border/60 bg-card/85 p-6 shadow-sm backdrop-blur">

@@ -5,6 +5,7 @@ const assert = require('node:assert/strict');
 const {
   freshnessLine,
   jobPreviewRows,
+  managerCikReviewDefaults,
   jobPreviewLine,
   normalizeAmendments,
   normalizeCikReviewEvents,
@@ -344,4 +345,18 @@ test('normalizeCikReviewEvents maps revocation audit scope', () => {
   assert.equal(events[0].affectedFilingsCount, 4);
   assert.deepEqual(events[0].affectedQuarters, ['2025-Q3', '2025-Q4']);
   assert.equal(events[0].requiresDownstreamReview, true);
+});
+
+test('managerCikReviewDefaults prepares confirm and reject dialog copy', () => {
+  const defaults = managerCikReviewDefaults({
+    legal_name: 'Test Manager',
+    candidate_cik: '0001234567',
+    cik: '0007654321',
+    candidate_legal_name: 'Test Manager LP',
+  });
+
+  assert.equal(defaults.managerName, 'Test Manager');
+  assert.equal(defaults.defaultCik, '0001234567');
+  assert.match(defaults.confirmDescription, /Confirm the SEC CIK/);
+  assert.match(defaults.rejectDescription, /Reject this CIK candidate/);
 });
