@@ -19,7 +19,7 @@ class Settings(BaseSettings):
     SQLALCHEMY_DATABASE_URI: Optional[str] = Field(None, validation_alias="DATABASE_URL")
 
     # JWT / Auth
-    SECRET_KEY: str = "change-me-in-production-use-a-long-random-string"
+    SECRET_KEY: str  # required; no default — startup fails if unset
     JWT_ALGORITHM: str = "HS256"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 30
     REFRESH_TOKEN_EXPIRE_DAYS: int = 7
@@ -38,7 +38,7 @@ class Settings(BaseSettings):
     EDGAR_REQUEST_DELAY_S: float = 0.2        # 5 req/s; prod default
     EDGAR_MAX_CONCURRENCY: int = 2
     EDGAR_MAX_RETRIES: int = 3
-    EDGAR_RETRY_BACKOFF_S: str = "5,30,120"
+    EDGAR_RETRY_BACKOFF_S: str = "5,30,120"    # comma-separated seconds; parsed by _parse_backoff()
     EDGAR_FETCH_MODE: str = "live"            # live | replay
     EDGAR_SCHEDULER_ENABLED: bool = False     # prod: true
     THIRTEENF_SMART_RETRY_ENABLED: bool = False
@@ -54,16 +54,26 @@ class Settings(BaseSettings):
     # Dataroma rate / retry
     DATAROMA_REQUEST_DELAY_S: float = 2.0
     DATAROMA_MAX_RETRIES: int = 2
-    DATAROMA_RETRY_BACKOFF_S: str = "10,60"
+    DATAROMA_RETRY_BACKOFF_S: str = "10,60"    # comma-separated seconds; parsed by _parse_backoff()
 
     # Raw document storage root
     EDGAR_RAW_STORAGE_DIR: str = "/code/storage/edgar_raw"
+
+    # Market Data
+    MARKET_DATA_PRIMARY: str = "yfinance"
+    MARKET_DATA_SECONDARY: str = "twelvedata"
+    TWELVE_DATA_API_KEY: Optional[str] = None
+
+    # Initial Setup
+    INITIAL_ADMIN_PASSWORD: Optional[str] = None
 
     # Notifications
     SLACK_WEBHOOK_URL: Optional[str] = None
     DISCORD_WEBHOOK_URL: Optional[str] = None
     BASE_URL: str = "http://localhost:3000"  # For links in notifications
 
+    # extra="ignore": docker-compose may inject deployment-only vars (e.g. VALUEPILOT_DB_*)
+    # that are not declared in Settings; silently ignoring them avoids startup failures.
     model_config = SettingsConfigDict(env_file=".env", case_sensitive=True, extra="ignore")
 
 settings = Settings()
