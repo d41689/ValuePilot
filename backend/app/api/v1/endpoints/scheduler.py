@@ -34,6 +34,7 @@ class FilingProgressResponse(BaseModel):
 
 class SchedulerStatusResponse(BaseModel):
     enabled: bool
+    smart_retry_enabled: bool
     latest_available_quarter: str
     next_run: Optional[datetime] = None
 
@@ -57,6 +58,7 @@ def get_scheduler_status():
     today = date.today()
     return SchedulerStatusResponse(
         enabled=settings.EDGAR_SCHEDULER_ENABLED,
+        smart_retry_enabled=settings.THIRTEENF_SMART_RETRY_ENABLED,
         latest_available_quarter=latest_available_quarter(today),
     )
 

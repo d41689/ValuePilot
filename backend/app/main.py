@@ -13,13 +13,24 @@ logger = logging.getLogger(__name__)
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     scheduler = None
+    job_worker = None
     if settings.EDGAR_SCHEDULER_ENABLED:
         from app.core.db import SessionLocal
         from app.services.scheduler import create_scheduler
         scheduler = create_scheduler(SessionLocal)
         scheduler.start()
         logger.info("EDGAR quarterly scheduler started")
+    if settings.THIRTEENF_JOB_WORKER_ENABLED and not app.dependency_overrides:
+        from app.core.db import SessionLocal
+        from app.services.thirteenf_job_worker import ThirteenFJobWorker
+
+        job_worker = ThirteenFJobWorker(SessionLocal)
+        job_worker.start()
+        logger.info("13F admin job worker started")
     yield
+    if job_worker is not None:
+        job_worker.stop()
+        logger.info("13F admin job worker stopped")
     if scheduler is not None:
         scheduler.shutdown(wait=False)
         logger.info("EDGAR scheduler stopped")

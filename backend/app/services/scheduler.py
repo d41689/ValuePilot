@@ -2,9 +2,10 @@
 
 Controlled by EDGAR_SCHEDULER_ENABLED (default False).
 When enabled, a background thread checks weekly whether a new quarter's
-filings are available and runs the full pipeline if so.
+filings are available and enqueues a quarterly_pipeline job via the
+JobRun system. The job is executed asynchronously by the ThirteenFJobWorker.
 
-Pipeline per quarter:
+Pipeline steps (run by the worker, not the scheduler directly):
   1. Fetch form.idx + ingest filing metadata
   2. Download + parse infotable.xml for all new filings
   3. Refresh CUSIP → ticker mappings (Dataroma + EDGAR company_tickers.json)
@@ -17,6 +18,8 @@ from typing import Callable
 
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
+
+from app.core.config import settings
 
 logger = logging.getLogger(__name__)
 
@@ -48,7 +51,13 @@ def latest_available_quarter(today: date) -> str:
 
 
 def _quarter_already_ingested(db, quarter: str) -> bool:
-    """True if we already have at least one filing for this quarter."""
+    """True if ingestion for this quarter has already completed (at least one filing exists).
+
+    This is a fast-path skip for the common case where the quarter is fully
+    ingested. During active execution, the quarterly_pipeline lock_key prevents
+    duplicate jobs — so this check is the primary guard only after the worker
+    has finished and committed filings.
+    """
     from app.edgar.parsers.form_idx import quarter_to_year_qtr
     from app.models.institutions import Filing13F
     import calendar
@@ -70,7 +79,7 @@ def _quarter_already_ingested(db, quarter: str) -> bool:
 # ---------------------------------------------------------------------------
 
 def run_quarterly_pipeline(db_factory: Callable) -> None:
-    """Check for new quarter and run the full ingestion pipeline if needed."""
+    """Check for new quarter and trigger the quarterly pipeline job if needed."""
     today = date.today()
     quarter = latest_available_quarter(today)
     logger.info("Quarterly pipeline check: latest available quarter = %s", quarter)
@@ -81,91 +90,30 @@ def run_quarterly_pipeline(db_factory: Callable) -> None:
             logger.info("Quarterly pipeline: %s already ingested — skipping", quarter)
             return
 
-        logger.info("Quarterly pipeline: starting ingestion for %s", quarter)
-
-        # Step 1: fetch form.idx and seed filing metadata
-        from app.services.edgar_ingestion import ingest_quarter_index, ingest_filing_holdings
-        from app.models.institutions import Filing13F
-        from app.edgar.parsers.form_idx import quarter_to_year_qtr
-        import calendar
-
-        n_filings = ingest_quarter_index(db, quarter)
-        db.commit()
-        logger.info("  form.idx: %d new filings indexed", n_filings)
-
-        # Step 2: download + parse infotable for all new filings
-        year, qtr = quarter_to_year_qtr(quarter)
-        q_start = date(year, (qtr - 1) * 3 + 1, 1)
-        end_month = qtr * 3
-        q_end = date(year, end_month, calendar.monthrange(year, end_month)[1])
-
-        pending = (
-            db.query(Filing13F)
-            .filter(Filing13F.period_of_report.between(q_start, q_end))
-            .filter(Filing13F.raw_infotable_doc_id.is_(None))
-            .order_by(Filing13F.filed_at)
-            .all()
-        )
-        total_holdings = 0
-        failed = 0
-        for filing in pending:
-            try:
-                n = ingest_filing_holdings(db, filing)
-                db.commit()
-                total_holdings += n
-            except Exception as exc:
-                db.rollback()
-                logger.error("  %s failed: %s", filing.accession_no, exc)
-                failed += 1
-        logger.info("  holdings: %d inserted (%d filings failed)", total_holdings, failed)
-
-        # Step 3: refresh CUSIP → ticker mappings
-        from app.services.cusip_enrichment import (
-            enrich_from_dataroma,
-            bootstrap_stocks_from_cusip_map,
-            backfill_stock_ids,
-            enrich_stocks_from_edgar_tickers,
-        )
-        n_cusip = enrich_from_dataroma(db)
-        db.commit()
-        logger.info("  enrich_from_dataroma: %d new mappings", n_cusip)
-
-        # Step 4: bootstrap stocks + backfill stock_id
-        bootstrap_stocks_from_cusip_map(db)
-        linked = backfill_stock_ids(db)
-        db.commit()
-        logger.info("  stock_id backfill: %d holdings linked", linked)
-
-        # Step 5: EDGAR company_tickers.json for remaining unmatched
-        try:
-            result = enrich_stocks_from_edgar_tickers(db)
-            db.commit()
+        # Trigger the pipeline via the dashboard service so it's visible in the UI
+        # and benefits from lock-key duplicate prevention. During the window between
+        # enqueue and the worker's first commit, the lock_key prevents a second job
+        # from being created even if the scheduler fires again.
+        from app.services.thirteenf_admin_dashboard import trigger_job
+        result = trigger_job(db, requested_by_user_id=None, payload={
+            "job_type": "quarterly_pipeline",
+            "quarter": quarter,
+            "trigger_source": "scheduler",
+        })
+        if result.get("conflict"):
             logger.info(
-                "  enrich_stocks_from_edgar: %d new mappings, %d holdings linked",
-                result["new_mappings"], result["holdings_linked"],
+                "Quarterly pipeline: job already active for %s (job_id=%s) — skipping",
+                quarter, result.get("active_job_id"),
             )
-        except Exception as exc:
-            db.rollback()
-            logger.warning("  enrich_stocks_from_edgar failed: %s", exc)
-
-        # Step 6: data quality check — log errors only
-        from app.services.edgar_quality import run_quality_checks
-        report = run_quality_checks(db, quarter)
-        if report.errors:
-            logger.error(
-                "Quality check after %s ingestion: %s",
-                quarter, report.summary(),
-            )
-            for issue in report.errors:
-                logger.error("  [%s] %s", issue.check, issue.detail)
         else:
-            logger.info("Quality check: %s", report.summary())
-
-        logger.info("Quarterly pipeline complete for %s", quarter)
+            logger.info(
+                "Quarterly pipeline: job enqueued for %s (job_id=%s)",
+                quarter, result.get("id"),
+            )
 
     except Exception as exc:
         db.rollback()
-        logger.exception("Quarterly pipeline failed for %s: %s", quarter, exc)
+        logger.exception("Quarterly pipeline trigger failed for %s: %s", quarter, exc)
     finally:
         db.close()
 
@@ -190,4 +138,38 @@ def create_scheduler(db_factory: Callable) -> BackgroundScheduler:
         replace_existing=True,
         misfire_grace_time=3600,  # allow up to 1h late firing
     )
+
+    if settings.THIRTEENF_SMART_RETRY_ENABLED:
+        # Run every day at 02:00 UTC.
+        # Checks for partially failed jobs and retries safe targets if they are old enough.
+        scheduler.add_job(
+            run_smart_retries,
+            trigger=CronTrigger(hour=2, minute=0, timezone="UTC"),
+            args=[db_factory],
+            id="smart_retries",
+            name="13F Smart Retries",
+            replace_existing=True,
+            misfire_grace_time=3600,
+        )
     return scheduler
+
+
+def run_smart_retries(db_factory: Callable) -> None:
+    """Check for partially failed jobs and trigger targeted retries."""
+    if not settings.THIRTEENF_SMART_RETRY_ENABLED:
+        logger.info("Smart retries disabled — skipping")
+        return
+    logger.info("Smart retries check: starting")
+    db = db_factory()
+    try:
+        from app.services.thirteenf_admin_dashboard import smart_retry_failed_jobs
+        results = smart_retry_failed_jobs(db)
+        if results:
+            logger.info("Smart retries: triggered %d new jobs", len(results))
+        else:
+            logger.info("Smart retries: no eligible jobs found")
+    except Exception as exc:
+        db.rollback()
+        logger.exception("Smart retries failed: %s", exc)
+    finally:
+        db.close()

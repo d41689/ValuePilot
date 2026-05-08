@@ -1,5 +1,7 @@
 import axios, { AxiosHeaders } from 'axios';
 
+import * as authSession from '@/lib/authSession';
+
 const apiClient = axios.create({
   baseURL: process.env.NEXT_PUBLIC_API_URL || '/api/v1',
   headers: {
@@ -26,10 +28,7 @@ apiClient.interceptors.response.use(
   (response) => response,
   (error) => {
     if (typeof window !== 'undefined' && error?.response?.status === 401) {
-      window.localStorage.removeItem('vp_access_token');
-      window.localStorage.removeItem('vp_refresh_token');
-      document.cookie = 'vp_access_token=; path=/; max-age=0; SameSite=Lax';
-      document.cookie = 'vp_role=; path=/; max-age=0; SameSite=Lax';
+      authSession.clearAuthSession(window.localStorage, document);
       if (!window.location.pathname.startsWith('/login')) {
         window.location.href = '/login';
       }

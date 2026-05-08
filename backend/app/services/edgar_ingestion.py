@@ -76,6 +76,134 @@ def _name_score(a: str, b: str) -> float:
 # Step 0 – whitelist bootstrap
 # ---------------------------------------------------------------------------
 
+def seed_confirmed_managers(db: Session) -> int:
+    """Seed institution_managers from a predefined list of confirmed CIKs.
+
+    This bypasses the match-cik step for high-priority managers.
+    """
+    import json
+    import os
+    from pathlib import Path
+
+    seed_path = Path(__file__).parent / "seed_data" / "confirmed_managers.json"
+    if not os.path.exists(seed_path):
+        logger.warning("Seed data not found at %s", seed_path)
+        return 0
+
+    with open(seed_path, "r") as f:
+        seed_data = json.load(f)
+
+    updated = 0
+    for entry in seed_data:
+        dataroma_code = entry.get("dataroma_code")
+        cik = entry.get("cik")
+        if not cik:
+            continue
+
+        # Match by CIK first (authoritative SEC identifier), then fall back to dataroma_code.
+        # Avoids MultipleResultsFound when separate DB records each satisfy one side of an OR.
+        existing = db.query(InstitutionManager).filter_by(cik=cik).one_or_none()
+        if existing is None and dataroma_code:
+            existing = (
+                db.query(InstitutionManager)
+                .filter_by(dataroma_code=dataroma_code)
+                .one_or_none()
+            )
+
+        if existing:
+            # Update existing record to confirmed
+            existing.cik = cik
+            existing.match_status = "confirmed"
+            if entry.get("display_name"):
+                existing.display_name = entry["display_name"]
+            if entry.get("legal_name"):
+                existing.legal_name = entry["legal_name"]
+                existing.name_normalized = _normalize_name(entry["legal_name"])
+            updated += 1
+        else:
+            # Create new confirmed record
+            record = InstitutionManager(
+                cik=cik,
+                legal_name=entry.get("legal_name") or entry.get("display_name"),
+                display_name=entry.get("display_name"),
+                name_normalized=_normalize_name(entry.get("legal_name") or entry.get("display_name")),
+                dataroma_code=dataroma_code,
+                match_status="confirmed",
+                is_superinvestor=True,
+                dataroma_synced_at=datetime.now(timezone.utc),
+            )
+            db.add(record)
+            updated += 1
+
+    return updated
+
+
+def seed_pending_cik_review_fixture(db: Session) -> int:
+    """Seed deterministic candidate managers for admin CIK review QA.
+
+    This is intentionally separate from confirmed-manager seeding so the fixture
+    never expands the ingestion whitelist without an explicit admin review.
+    """
+    import json
+    import os
+    from pathlib import Path
+
+    seed_path = Path(__file__).parent / "seed_data" / "pending_cik_review_fixture.json"
+    if not os.path.exists(seed_path):
+        logger.warning("Pending CIK fixture seed not found at %s", seed_path)
+        return 0
+
+    with open(seed_path, "r") as f:
+        seed_data = json.load(f)
+
+    updated = 0
+    for entry in seed_data:
+        dataroma_code = entry.get("dataroma_code")
+        candidate_cik = entry.get("candidate_cik")
+        legal_name = entry.get("legal_name") or entry.get("display_name")
+        if not dataroma_code or not candidate_cik or not legal_name:
+            continue
+
+        manager = (
+            db.query(InstitutionManager)
+            .filter_by(dataroma_code=dataroma_code)
+            .one_or_none()
+        )
+        if manager is None:
+            manager = InstitutionManager(
+                cik=None,
+                legal_name=legal_name,
+                display_name=entry.get("display_name"),
+                name_normalized=_normalize_name(legal_name),
+                dataroma_code=dataroma_code,
+                match_status="candidate",
+                is_superinvestor=True,
+                dataroma_synced_at=datetime.now(timezone.utc),
+            )
+            db.add(manager)
+        else:
+            manager.cik = None
+            manager.legal_name = legal_name
+            manager.display_name = entry.get("display_name")
+            manager.name_normalized = _normalize_name(legal_name)
+            manager.match_status = "candidate"
+            manager.is_superinvestor = True
+
+        manager.candidate_cik = candidate_cik
+        manager.candidate_legal_name = entry.get("candidate_legal_name")
+        manager.candidate_similarity_score = entry.get("candidate_similarity_score")
+        manager.candidate_source = entry.get("candidate_source") or "qa_fixture"
+        manager.candidate_evidence_url = entry.get("candidate_evidence_url")
+        manager.candidate_found_at = datetime.now(timezone.utc)
+        manager.reviewed_by_user_id = None
+        manager.reviewed_at = None
+        manager.review_note = None
+        updated += 1
+
+    db.flush()
+    return updated
+
+
 def bootstrap_whitelist(db: Session) -> int:
     """Seed institution_managers from Dataroma superinvestor list.
 
@@ -237,6 +365,7 @@ def match_cik_candidates(db: Session, min_score: float = 0.6) -> int:
     with EdgarClient() as client:
         for mgr in managers:
             company_name = _extract_company_name(mgr.legal_name)
+            evidence_url = _edgar_company_search_url(company_name)
             try:
                 candidates = _search_edgar_by_company_name(client, company_name)
             except Exception as exc:
@@ -282,12 +411,27 @@ def match_cik_candidates(db: Session, min_score: float = 0.6) -> int:
                 logger.info("Confirmed %s → CIK %s (score=%.2f)", best_entity, best_cik, best_score)
             else:
                 mgr.match_status = "candidate"
-                mgr.display_name = f"[candidate_cik={best_cik} score={best_score:.2f}] {best_entity}"
                 logger.info("Candidate %s → CIK %s (score=%.2f)", company_name, best_cik, best_score)
+            mgr.candidate_cik = best_cik
+            mgr.candidate_legal_name = best_entity
+            mgr.candidate_similarity_score = best_score
+            mgr.candidate_source = "edgar_browse_company"
+            mgr.candidate_evidence_url = evidence_url
+            mgr.candidate_found_at = datetime.now(timezone.utc)
             updated += 1
 
     db.flush()
     return updated
+
+
+def _edgar_company_search_url(company_name: str) -> str:
+    import urllib.parse
+
+    return (
+        "https://www.sec.gov/cgi-bin/browse-edgar"
+        f"?company={urllib.parse.quote(company_name)}"
+        "&CIK=&type=13F-HR&dateb=&owner=include&count=10&search_text=&action=getcompany&output=atom"
+    )
 
 
 # ---------------------------------------------------------------------------

@@ -41,6 +41,15 @@ class Settings(BaseSettings):
     EDGAR_RETRY_BACKOFF_S: str = "5,30,120"
     EDGAR_FETCH_MODE: str = "live"            # live | replay
     EDGAR_SCHEDULER_ENABLED: bool = False     # prod: true
+    THIRTEENF_SMART_RETRY_ENABLED: bool = False
+    THIRTEENF_JOB_WORKER_ENABLED: bool = False
+    THIRTEENF_JOB_WORKER_POLL_INTERVAL_S: float = 2.0
+    THIRTEENF_JOB_WORKER_HEARTBEAT_STALE_S: int = 90
+    THIRTEENF_READY_LINK_RATIO: float = 0.80
+    THIRTEENF_WARNING_LINK_RATIO: float = 0.50
+    THIRTEENF_READY_HISTORICAL_DEPTH: int = 4
+    THIRTEENF_MIN_HISTORICAL_DEPTH: int = 2
+    EDGAR_RATE_LIMIT_WINDOW_S: int = 60
 
     # Dataroma rate / retry
     DATAROMA_REQUEST_DELAY_S: float = 2.0
@@ -50,6 +59,11 @@ class Settings(BaseSettings):
     # Raw document storage root
     EDGAR_RAW_STORAGE_DIR: str = "/code/storage/edgar_raw"
 
-    model_config = SettingsConfigDict(env_file=".env", case_sensitive=True)
+    # Notifications
+    SLACK_WEBHOOK_URL: Optional[str] = None
+    DISCORD_WEBHOOK_URL: Optional[str] = None
+    BASE_URL: str = "http://localhost:3000"  # For links in notifications
+
+    model_config = SettingsConfigDict(env_file=".env", case_sensitive=True, extra="ignore")
 
 settings = Settings()

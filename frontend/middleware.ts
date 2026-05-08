@@ -1,30 +1,14 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { AUTH_PUBLIC_PATHS, isPublicAuthPath } from '@/lib/authRoutes';
-
-const PROTECTED_PREFIXES = ['/home', '/documents', '/watchlist', '/upload', '/stocks', '/calibration', '/screener'];
-const ADMIN_PREFIXES = ['/upload'];
+import { resolveAuthRedirect } from '@/lib/authRoutes';
 
 export function middleware(request: NextRequest) {
   const { pathname } = request.nextUrl;
   const token = request.cookies.get('vp_access_token')?.value;
   const role = request.cookies.get('vp_role')?.value;
 
-  const isProtectedRoute = PROTECTED_PREFIXES.some((prefix) => pathname === prefix || pathname.startsWith(`${prefix}/`));
-  const isAdminRoute = ADMIN_PREFIXES.some((prefix) => pathname === prefix || pathname.startsWith(`${prefix}/`));
-
-  if (isPublicAuthPath(pathname)) {
-    if (token) {
-      return NextResponse.redirect(new URL('/home', request.url));
-    }
-    return NextResponse.next();
-  }
-
-  if (isProtectedRoute && !token) {
-    return NextResponse.redirect(new URL('/login', request.url));
-  }
-
-  if (isAdminRoute && role !== 'admin') {
-    return NextResponse.redirect(new URL('/home', request.url));
+  const redirectPath = resolveAuthRedirect(pathname, { token, role });
+  if (redirectPath) {
+    return NextResponse.redirect(new URL(redirectPath, request.url));
   }
 
   return NextResponse.next();
@@ -41,5 +25,6 @@ export const config = {
     '/stocks/:path*',
     '/calibration/:path*',
     '/screener/:path*',
+    '/admin/:path*',
   ],
 };

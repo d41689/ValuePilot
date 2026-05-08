@@ -25,6 +25,42 @@ app = typer.Typer(
 
 
 @app.command()
+def seed_confirmed_managers() -> None:
+    """Seed institution_managers from a predefined list of confirmed CIKs (Step 0)."""
+    from app.services.edgar_ingestion import seed_confirmed_managers as _seed
+
+    db = SessionLocal()
+    try:
+        n = _seed(db)
+        db.commit()
+        typer.echo(f"Seeded {n} confirmed managers.")
+    except Exception as exc:
+        db.rollback()
+        typer.echo(f"Error: {exc}", err=True)
+        raise typer.Exit(1)
+    finally:
+        db.close()
+
+
+@app.command()
+def seed_pending_cik_review_fixture() -> None:
+    """Seed a deterministic pending CIK candidate for admin dashboard QA."""
+    from app.services.edgar_ingestion import seed_pending_cik_review_fixture as _seed
+
+    db = SessionLocal()
+    try:
+        n = _seed(db)
+        db.commit()
+        typer.echo(f"Seeded {n} pending CIK review fixture managers.")
+    except Exception as exc:
+        db.rollback()
+        typer.echo(f"Error: {exc}", err=True)
+        raise typer.Exit(1)
+    finally:
+        db.close()
+
+
+@app.command()
 def bootstrap_whitelist() -> None:
     """Seed institution_managers from Dataroma superinvestor list (Step 0)."""
     from app.services.edgar_ingestion import bootstrap_whitelist as _bs

@@ -2,6 +2,8 @@
 import logging
 import threading
 import time
+from collections import deque
+from datetime import datetime, timezone
 from typing import Optional
 
 import httpx
@@ -11,6 +13,9 @@ from app.core.config import settings
 logger = logging.getLogger(__name__)
 
 _GLOBAL_LOCK = threading.Lock()
+_REQUEST_EVENTS: deque[dict[str, object]] = deque(maxlen=5000)
+_REQUEST_EVENTS_LOCK = threading.Lock()
+_GLOBAL_PAUSE_UNTIL: float | None = None
 
 
 class _TokenBucket:
@@ -60,6 +65,42 @@ def _parse_backoff(raw: str) -> list[float]:
     return [float(s.strip()) for s in raw.split(",") if s.strip()]
 
 
+def _record_request(status_code: int | None, url: str) -> None:
+    with _REQUEST_EVENTS_LOCK:
+        _REQUEST_EVENTS.append(
+            {
+                "at": time.time(),
+                "status_code": status_code,
+                "url": url,
+            }
+        )
+
+
+def edgar_rate_limit_status() -> dict[str, object]:
+    window_seconds = settings.EDGAR_RATE_LIMIT_WINDOW_S
+    now = time.time()
+    cutoff = now - window_seconds
+    with _REQUEST_EVENTS_LOCK:
+        recent = [event for event in _REQUEST_EVENTS if float(event["at"]) >= cutoff]
+        pause_value = _GLOBAL_PAUSE_UNTIL
+    request_delay = settings.EDGAR_REQUEST_DELAY_S
+    estimated_capacity = int(window_seconds / request_delay) if request_delay > 0 else window_seconds * 5
+    remaining = max(estimated_capacity - len(recent), 0)
+    pause_until = None
+    if pause_value and pause_value > now:
+        pause_until = datetime.fromtimestamp(pause_value, tz=timezone.utc).isoformat()
+    return {
+        "mode": settings.EDGAR_FETCH_MODE,
+        "request_delay_s": request_delay,
+        "max_retries": settings.EDGAR_MAX_RETRIES,
+        "window_seconds": window_seconds,
+        "recent_request_count": len(recent),
+        "estimated_capacity": estimated_capacity,
+        "remaining_estimated_capacity": remaining,
+        "global_pause_until": pause_until,
+    }
+
+
 class EdgarClient:
     """Sync EDGAR HTTP client.
 
@@ -82,6 +123,8 @@ class EdgarClient:
 
     def _request(self, method: str, url: str) -> httpx.Response:
         """Execute a rate-limited request with retry on transient errors."""
+        global _GLOBAL_PAUSE_UNTIL, _bucket
+
         bucket = _get_bucket()
         last_exc: Optional[Exception] = None
 
@@ -96,9 +139,11 @@ class EdgarClient:
                 resp = self._client.request(method, url)
             except httpx.TransportError as exc:
                 logger.warning("EDGAR transport error for %s: %s", url, exc)
+                _record_request(None, url)
                 last_exc = exc
                 continue
 
+            _record_request(resp.status_code, url)
             if resp.status_code == 200:
                 return resp
 
@@ -109,8 +154,9 @@ class EdgarClient:
 
             if resp.status_code in (429, 503):
                 logger.error("EDGAR %d — global pause 60 s then resume at 1 req/s", resp.status_code)
+                with _REQUEST_EVENTS_LOCK:
+                    _GLOBAL_PAUSE_UNTIL = time.time() + 60
                 time.sleep(60)
-                global _bucket
                 with _bucket_lock:
                     _bucket = _TokenBucket(rate=1.0, burst=1)
                 last_exc = RuntimeError(f"HTTP {resp.status_code}")

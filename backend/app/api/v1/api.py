@@ -1,5 +1,5 @@
 from fastapi import APIRouter
-from app.api.v1.endpoints import admin, auth, users, documents, stocks, extractions, screener, stock_pools, institutions, scheduler, oracles_lens
+from app.api.v1.endpoints import admin, auth, users, documents, stocks, extractions, screener, stock_pools, institutions, scheduler, oracles_lens, thirteenf_admin
 
 api_router = APIRouter()
 api_router.include_router(auth.router, prefix="/auth", tags=["auth"])
@@ -12,4 +12,6 @@ api_router.include_router(extractions.router, prefix="/extractions", tags=["extr
 api_router.include_router(screener.router, prefix="/screener", tags=["screener"])
 api_router.include_router(institutions.router, tags=["institutions"])
 api_router.include_router(oracles_lens.router, prefix="/13f", tags=["13f"])
+api_router.include_router(thirteenf_admin.consumer_router, prefix="/13f", tags=["13f-readiness"])
+api_router.include_router(thirteenf_admin.admin_router, prefix="/admin/13f", tags=["admin-13f"])
 api_router.include_router(scheduler.router, tags=["scheduler"])

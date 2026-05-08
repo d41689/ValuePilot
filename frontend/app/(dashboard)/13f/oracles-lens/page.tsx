@@ -7,6 +7,7 @@ import { AlertTriangle, FileText, Info, PanelRightOpen, Search, SlidersHorizonta
 
 import apiClient from '@/lib/api/client';
 import oracleLensHelpers from '@/lib/oraclesLens';
+import thirteenfAdminHelpers from '@/lib/thirteenfAdmin';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
@@ -36,6 +37,11 @@ const {
   radarBubbles,
   suggestedResearchSteps,
 } = oracleLensHelpers;
+
+const {
+  freshnessLine: build13fFreshnessLine,
+  normalizeReadiness: normalize13fReadiness,
+} = thirteenfAdminHelpers;
 
 const RADAR_SIZE_CLASSES: Record<string, string> = {
   'h-14 w-14': 'h-14 w-14',
@@ -154,8 +160,19 @@ export default function OraclesLensPage() {
       return res.data as OracleLensPayload;
     },
   });
+  const readinessQuery = useQuery({
+    queryKey: ['13f-consumer-readiness'],
+    queryFn: async () => {
+      const res = await apiClient.get('/13f/readiness');
+      return res.data;
+    },
+  });
 
   const payload = dashboardQuery.data;
+  const readiness = useMemo(
+    () => normalize13fReadiness(readinessQuery.data ?? {}),
+    [readinessQuery.data]
+  );
   const rows = useMemo(() => normalizeOracleLensRows(payload?.items ?? []), [payload?.items]);
   const bubbles = useMemo(() => radarBubbles(rows), [rows]);
   const selectedRow = useMemo(
@@ -195,6 +212,52 @@ export default function OraclesLensPage() {
         <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
         <div>{payload?.baseline_notice ?? '13F filings are delayed snapshots.'}</div>
       </div>
+
+      <div className="flex flex-col gap-3 rounded-md border border-border/70 bg-background px-4 py-3 text-sm md:flex-row md:items-start md:justify-between">
+        <div className="flex gap-3">
+          <Info className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground" />
+          <div>
+            <div className="font-medium">13F data freshness</div>
+            <div className="mt-1 text-muted-foreground">{build13fFreshnessLine(readiness)}</div>
+            {readiness.capabilities.length ? (
+              <div className="mt-2 flex flex-wrap gap-1.5">
+                {readiness.capabilities.slice(0, 3).map((capability) => (
+                  <Badge key={capability} variant="outline" className="rounded-md">
+                    {capability.replaceAll('_', ' ')}
+                  </Badge>
+                ))}
+              </div>
+            ) : null}
+          </div>
+        </div>
+        <div className="flex shrink-0 flex-wrap gap-1.5">
+          <Badge variant={safeBadgeVariant(readiness.readinessTone)} className="rounded-md">
+            {readiness.readinessLevel.replaceAll('_', ' ')}
+          </Badge>
+          <Badge variant="outline" className="rounded-md">
+            {readiness.historicalDepth}Q history
+          </Badge>
+        </div>
+      </div>
+
+      {readiness.frontendBehavior === 'show_setup_required' ? (
+        <div className="flex gap-3 rounded-md border border-amber-300/70 bg-amber-50 px-4 py-3 text-sm text-amber-950">
+          <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
+          <div>
+            13F coverage is not ready for normal consumer use yet. The ranking may be incomplete
+            until admin setup, manager confirmation, and quality checks are finished.
+          </div>
+        </div>
+      ) : readiness.warnings.length ? (
+        <div className="flex gap-3 rounded-md border border-border/70 bg-muted/40 px-4 py-3 text-sm text-muted-foreground">
+          <Info className="mt-0.5 h-4 w-4 shrink-0" />
+          <div className="space-y-1">
+            {readiness.warnings.slice(0, 3).map((warning) => (
+              <div key={warning}>{warning}</div>
+            ))}
+          </div>
+        </div>
+      ) : null}
 
       <div className="grid gap-3 md:grid-cols-4">
         <Card className="rounded-md">

@@ -1,0 +1,62 @@
+[
+  {
+    "dataroma_code": "BRK",
+    "display_name": "Berkshire Hathaway",
+    "legal_name": "BERKSHIRE HATHAWAY INC",
+    "cik": "0001067983"
+  },
+  {
+    "dataroma_code": "SCION",
+    "display_name": "Scion Asset Management",
+    "legal_name": "Scion Asset Management, LLC",
+    "cik": "0001649339"
+  },
+  {
+    "dataroma_code": "AKRE",
+    "display_name": "Akre Capital Management",
+    "legal_name": "Akre Capital Management LLC",
+    "cik": "0001115850"
+  },
+  {
+    "dataroma_code": "PERSHING",
+    "display_name": "Pershing Square Capital Management",
+    "legal_name": "PERSHING SQUARE CAPITAL MANAGEMENT, L.P.",
+    "cik": "0001336528"
+  },
+  {
+    "dataroma_code": "DAILY",
+    "display_name": "Daily Journal Corp",
+    "legal_name": "DAILY JOURNAL CORP",
+    "cik": "0000783412"
+  },
+  {
+    "dataroma_code": "LI_LU",
+    "display_name": "Himalaya Capital",
+    "legal_name": "HIMALAYA CAPITAL MANAGEMENT LLC",
+    "cik": "0001402474"
+  },
+  {
+    "dataroma_code": "ABRAMS",
+    "display_name": "Abrams Capital Management",
+    "legal_name": "ABRAMS CAPITAL MANAGEMENT, L.P.",
+    "cik": "0001229555"
+  },
+  {
+    "dataroma_code": "BAUP",
+    "display_name": "Baupost Group",
+    "legal_name": "BAUPOST GROUP LLC /MA",
+    "cik": "0001061768"
+  },
+  {
+    "dataroma_code": "GATES",
+    "display_name": "Bill & Melinda Gates Foundation",
+    "legal_name": "BILL & MELINDA GATES FOUNDATION TRUST",
+    "cik": "0001166559"
+  },
+  {
+    "dataroma_code": "BRIDGEWATER",
+    "display_name": "Bridgewater Associates",
+    "legal_name": "BRIDGEWATER ASSOCIATES, LP",
+    "cik": "0001350685"
+  }
+]
