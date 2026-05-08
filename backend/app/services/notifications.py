@@ -116,6 +116,7 @@ def send_discord_notification(
                 "color": color,
                 "description": description,
                 "fields": [
+                    {"name": "Quarter", "value": quarter or "N/A", "inline": True},
                     {"name": "📝 Error Summary", "value": error_summary, "inline": False},
                     {"name": "💡 Suggested Action", "value": suggested_action, "inline": False},
                 ],

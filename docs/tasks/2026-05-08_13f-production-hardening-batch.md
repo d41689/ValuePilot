@@ -77,6 +77,11 @@
 - 2026-05-08: Replaced manual-job `window.confirm` dry-run flow with a structured Dialog that shows action, job type, lock key, target scope, estimated counts, and rate-limit warnings before queueing.
 - 2026-05-08: Added read-only Dashboard badges for scheduler, smart retry, and worker availability. `normalizeReadiness()` now preserves `smartRetryEnabled`.
 - 2026-05-08: Review fixes: stale release no longer overwrites `heartbeat_at`; stale lock release now uses Dialog confirmation; Dialog now wires `aria-labelledby`; worker availability ignores stopped/error workers; dry-run preview preserves `false` and `0` scope values.
+- 2026-05-08: Completed follow-on Admin UX hardening: operations health no longer treats worker API errors as no workers, worker history counts distinguish stopped rows from display-limit overflow, and the Dashboard avoids empty "Show history (0)" controls.
+- 2026-05-08: Converted Confirm/Reject CIK to Dialog flows, added admin sign-out/session clearing, protected `/admin/*` in middleware, and extracted shared drawer/metric primitives plus manager CIK dialogs from `Admin13FPage`.
+- 2026-05-08: Added deterministic pending CIK review fixture/seed support for browser QA. The fixture remains `match_status="candidate"` with `cik=None` and does not expand the ingestion whitelist.
+- 2026-05-08: Added manager review prioritization so candidate/seeded/revoked/rejected managers appear before confirmed managers in the first 12 displayed rows.
+- 2026-05-08: Full backend verification found Discord alert payload drift: tests expected Quarter as a structured embed field, while the implementation only included it in the description. Added a `Quarter` Discord field while preserving the existing description payload.
 
 ## Verification
 - 2026-05-08: `docker compose exec api pytest -q tests/unit/test_13f_admin_dashboard.py` passed (`40 passed`).
@@ -85,3 +90,11 @@
 - 2026-05-08: `docker compose exec web node --test lib/thirteenfAdmin.test.js` passed (`9 passed`).
 - 2026-05-08: `docker compose exec web npm run lint` passed with no ESLint warnings or errors.
 - 2026-05-08: Post-review verification repeated: `docker compose exec api pytest -q tests/unit/test_13f_admin_dashboard.py` passed (`40 passed`); `docker compose exec api pytest -q tests/unit/test_smart_retries.py tests/unit/test_scheduler_alignment.py` passed (`16 passed`); `docker compose exec web node --test lib/thirteenfAdmin.test.js` passed (`9 passed`); `docker compose exec web npm run lint` passed.
+- 2026-05-08: Browser QA completed for the later admin/session batch: admin `/admin/13f` shows the `QA Pending CIK Manager` fixture; Confirm CIK dialog opens and was canceled without mutation; non-admin `qa-nonadmin@example.com` direct navigation to `/admin/13f` redirects to `/home`; admin session restored to `/admin/13f`.
+- 2026-05-08: PR-prep full verification:
+  - `docker compose exec web node --test lib` passed (`104 passed`).
+  - First `docker compose exec api pytest -q` run found `tests/unit/test_notifications.py::test_send_discord_notification_calls_webhook` failing because Discord payload lacked a structured `Quarter` field.
+  - `docker compose exec api pytest -q tests/unit/test_notifications.py tests/unit/test_13f_admin_dashboard.py` passed after the notification payload fix (`52 passed`).
+  - Re-run `docker compose exec api pytest -q` passed (`280 passed`).
+  - `docker compose exec web npm run lint` passed with no ESLint warnings or errors.
+  - `docker compose exec web npm run build` passed.
