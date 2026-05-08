@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import os
 import json
 import time
 import urllib.parse
@@ -193,6 +192,8 @@ class FallbackProvider:
         return data
 
 
+from app.core.config import settings
+
 def _build_provider(kind: str) -> MarketDataProvider:
     k = (kind or "").strip().lower()
     if k in ("", "none", "null", "unconfigured"):
@@ -200,10 +201,10 @@ def _build_provider(kind: str) -> MarketDataProvider:
     if k in ("yfinance", "yahoo"):
         return YFinanceProvider()
     if k in ("twelvedata", "twelve_data", "12data"):
-        api_key = os.getenv("TWELVE_DATA_API_KEY", "").strip()
+        api_key = settings.TWELVE_DATA_API_KEY
         if not api_key:
             return NullProvider()
-        return TwelveDataProvider(api_key=api_key)
+        return TwelveDataProvider(api_key=api_key.strip())
     return NullProvider()
 
 
@@ -217,11 +218,11 @@ def get_default_provider() -> MarketDataProvider:
       primary = twelvedata (if API key present else yfinance)
       secondary = yfinance
     """
-    primary_kind = os.getenv("MARKET_DATA_PRIMARY", "").strip().lower()
-    secondary_kind = os.getenv("MARKET_DATA_SECONDARY", "").strip().lower()
+    primary_kind = settings.MARKET_DATA_PRIMARY.strip().lower()
+    secondary_kind = settings.MARKET_DATA_SECONDARY.strip().lower()
 
     if not primary_kind:
-        primary_kind = "twelvedata" if os.getenv("TWELVE_DATA_API_KEY") else "yfinance"
+        primary_kind = "twelvedata" if settings.TWELVE_DATA_API_KEY else "yfinance"
     if not secondary_kind:
         secondary_kind = "yfinance"
 

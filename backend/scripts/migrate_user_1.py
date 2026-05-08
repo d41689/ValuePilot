@@ -16,17 +16,16 @@ Requires:
 from __future__ import annotations
 
 import argparse
-import os
 import sys
 
 import bcrypt as _bcrypt
 
+from app.core.config import settings
 from app.core.db import SessionLocal
 from app.models.users import User
 
 
 TARGET_USER_ID = 1
-ENV_VAR = "INITIAL_ADMIN_PASSWORD"
 MIN_PASSWORD_LENGTH = 8
 
 
@@ -62,14 +61,14 @@ def main() -> None:
     parser.add_argument(
         "--password",
         default=None,
-        help=f"Admin password. Falls back to ${ENV_VAR} env var.",
+        help="Admin password. Falls back to INITIAL_ADMIN_PASSWORD env var.",
     )
     args = parser.parse_args()
 
-    password = args.password or os.environ.get(ENV_VAR)
+    password = args.password or settings.INITIAL_ADMIN_PASSWORD
     if not password:
         print(
-            f"Error: provide --password or set ${ENV_VAR} environment variable.",
+            "Error: provide --password or set INITIAL_ADMIN_PASSWORD environment variable.",
             file=sys.stderr,
         )
         sys.exit(1)
