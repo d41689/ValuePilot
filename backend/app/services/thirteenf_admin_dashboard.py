@@ -558,6 +558,27 @@ def cancel_job(session: Session, job_id: int) -> dict[str, Any]:
     return _job_payload(job)
 
 
+def release_stale_job_lock(session: Session, job_id: int) -> dict[str, Any]:
+    job = session.get(JobRun, job_id)
+    if job is None:
+        raise ValueError("Job not found")
+    if job.status not in {"running", "cancel_requested"}:
+        raise ValueError("Job is not running")
+    now = datetime.now(timezone.utc)
+    if not _job_is_stale(job, now=now):
+        raise ValueError("Job is not stale")
+
+    job.status = "failed"
+    job.finished_at = now
+    job.heartbeat_at = now
+    stale_reason = "Released stale running job lock by admin action"
+    job.error_message = f"{stale_reason}. Previous worker: {job.worker_id or 'unknown'}"
+    session.add(job)
+    session.commit()
+    session.refresh(job)
+    return _job_payload(job)
+
+
 def smart_retry_failed_jobs(session: Session, *, now: datetime | None = None) -> list[dict[str, Any]]:
     """Identifies old failed/partial jobs and enqueues safe targeted retries.
 
@@ -1184,15 +1205,13 @@ def _recent_job_alert_tasks(session: Session, *, limit: int = 5) -> list[dict[st
 
 def _worker_operational_tasks(session: Session, *, now: datetime | None = None) -> list[dict[str, Any]]:
     now = now or datetime.now(timezone.utc)
+    stale_running_jobs = _stale_running_jobs(session, now=now)
     queued_jobs = (
         session.query(JobRun)
         .filter(JobRun.status == "queued")
         .order_by(JobRun.created_at.asc(), JobRun.id.asc())
         .all()
     )
-    if not queued_jobs:
-        return []
-
     stale_cutoff = now - timedelta(seconds=settings.THIRTEENF_JOB_WORKER_HEARTBEAT_STALE_S)
     workers = session.query(JobWorkerHeartbeat).all()
     active_workers = [
@@ -1200,6 +1219,34 @@ def _worker_operational_tasks(session: Session, *, now: datetime | None = None) 
         for worker in workers
         if worker.status not in {"stopped", "error"} and worker.last_heartbeat_at >= stale_cutoff
     ]
+    tasks: list[dict[str, Any]] = []
+    if stale_running_jobs:
+        stale_job = stale_running_jobs[0]
+        stale_seconds = _job_stale_seconds(stale_job, now=now)
+        tasks.append(
+            _task_with_metadata(
+                "P1",
+                "STALE_RUNNING_JOB",
+                "13F job lock appears stale",
+                "Inspect the job detail and release the stale lock only after confirming the worker is no longer running it.",
+                {
+                    "stale_job_id": stale_job.id,
+                    "stale_job_type": stale_job.job_type,
+                    "stale_job_status": stale_job.status,
+                    "stale_job_lock_key": stale_job.lock_key,
+                    "stale_job_quarter": stale_job.quarter,
+                    "stale_job_worker_id": stale_job.worker_id,
+                    "stale_job_heartbeat_at": stale_job.heartbeat_at.isoformat() if stale_job.heartbeat_at else None,
+                    "stale_job_seconds": stale_seconds,
+                    "stale_running_jobs_count": len(stale_running_jobs),
+                    "active_worker_count": len(active_workers),
+                    "worker_count": len(workers),
+                },
+            )
+        )
+    if not queued_jobs:
+        return tasks
+
     oldest = queued_jobs[0]
     oldest_seconds = int((now - oldest.created_at).total_seconds()) if oldest.created_at else None
     metadata = {
@@ -1215,7 +1262,7 @@ def _worker_operational_tasks(session: Session, *, now: datetime | None = None) 
         "stale_worker_count": max(len(workers) - len(active_workers), 0),
     }
     if not active_workers:
-        return [
+        tasks.append(
             _task_with_metadata(
                 "P1",
                 "JOB_WORKER_UNAVAILABLE",
@@ -1223,9 +1270,10 @@ def _worker_operational_tasks(session: Session, *, now: datetime | None = None) 
                 "Inspect or restart the 13F job worker; queued jobs cannot run without an active heartbeat.",
                 metadata,
             )
-        ]
+        )
+        return tasks
     if oldest_seconds is not None and oldest_seconds >= STUCK_QUEUED_JOB_AFTER_SECONDS:
-        return [
+        tasks.append(
             _task_with_metadata(
                 "P2",
                 "STUCK_QUEUED_JOB",
@@ -1233,8 +1281,40 @@ def _worker_operational_tasks(session: Session, *, now: datetime | None = None) 
                 "Inspect worker heartbeat and job lock state; cancel or retry the queued job if needed.",
                 metadata,
             )
-        ]
-    return []
+        )
+    return tasks
+
+
+def _job_stale_reference_at(job: JobRun) -> datetime | None:
+    return job.heartbeat_at or job.started_at or job.created_at
+
+
+def _job_is_stale(job: JobRun, *, now: datetime | None = None) -> bool:
+    if job.status not in {"running", "cancel_requested"}:
+        return False
+    reference_at = _job_stale_reference_at(job)
+    if reference_at is None:
+        return False
+    now = now or datetime.now(timezone.utc)
+    return reference_at <= now - timedelta(seconds=settings.THIRTEENF_JOB_WORKER_HEARTBEAT_STALE_S)
+
+
+def _job_stale_seconds(job: JobRun, *, now: datetime | None = None) -> int | None:
+    reference_at = _job_stale_reference_at(job)
+    if reference_at is None:
+        return None
+    now = now or datetime.now(timezone.utc)
+    return max(int((now - reference_at).total_seconds()), 0)
+
+
+def _stale_running_jobs(session: Session, *, now: datetime) -> list[JobRun]:
+    jobs = (
+        session.query(JobRun)
+        .filter(JobRun.status.in_(["running", "cancel_requested"]))
+        .order_by(JobRun.heartbeat_at.asc().nullsfirst(), JobRun.started_at.asc().nullsfirst(), JobRun.id.asc())
+        .all()
+    )
+    return [job for job in jobs if _job_is_stale(job, now=now)]
 
 
 def _job_payload(job: JobRun) -> dict[str, Any]:
@@ -1258,6 +1338,8 @@ def _job_payload(job: JobRun) -> dict[str, Any]:
         "created_at": job.created_at.isoformat() if job.created_at else None,
         "events": events,
         "retry_targets": _job_retry_targets(job),
+        "can_release_stale_lock": _job_is_stale(job),
+        "stale_seconds": _job_stale_seconds(job),
     }
 
 

@@ -57,6 +57,7 @@ function normalizeReadiness(payload) {
     counts: data.counts && typeof data.counts === 'object' ? data.counts : {},
     topTask: data.top_task && typeof data.top_task === 'object' ? data.top_task : null,
     schedulerEnabled: Boolean(data.scheduler_enabled),
+    smartRetryEnabled: Boolean(data.smart_retry_enabled),
   };
 }
 

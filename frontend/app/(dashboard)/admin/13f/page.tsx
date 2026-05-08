@@ -21,6 +21,14 @@ import thirteenfAdmin from '@/lib/thirteenfAdmin';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog';
 import { Input } from '@/components/ui/input';
 import {
   Table,
@@ -67,6 +75,26 @@ function formatInteger(value: unknown) {
 function formatJson(value: unknown) {
   if (!value || typeof value !== 'object') return '—';
   return JSON.stringify(value, null, 2);
+}
+
+function previewScopeRows(preview: unknown) {
+  const data = preview && typeof preview === 'object' ? (preview as Record<string, unknown>) : {};
+  const scope =
+    data.estimated_scope && typeof data.estimated_scope === 'object'
+      ? (data.estimated_scope as Record<string, unknown>)
+      : {};
+  return [
+    ['Lock key', data.lock_key],
+    ['Target quarter', data.target_quarter],
+    ['Accession', data.accession_no],
+    ['Tracked managers', scope.tracked_managers],
+    ['Filings in quarter', scope.filings_in_quarter],
+    ['Pending filings', scope.pending_filings],
+    ['Failed filings', scope.failed_filings],
+    ['Start quarter', scope.start_quarter],
+    ['Quarters', scope.quarters],
+    ['Filing exists', scope.filing_exists],
+  ].filter(([, value]) => value !== undefined && value !== null && value !== '');
 }
 
 export default function Admin13FPage() {
@@ -128,21 +156,34 @@ export default function Admin13FPage() {
   const [backfillQuarters, setBackfillQuarters] = useState('4');
   const [backfillStartQuarter, setBackfillStartQuarter] = useState('');
   const [accessionNo, setAccessionNo] = useState('');
+  const [pendingJob, setPendingJob] = useState<{
+    label: string;
+    payload: Record<string, unknown>;
+    preview: Record<string, unknown>;
+    previewFailed?: boolean;
+  } | null>(null);
+  async function refreshAdminData() {
+    await Promise.all([
+      queryClient.invalidateQueries({ queryKey: ['admin-13f-readiness'] }),
+      queryClient.invalidateQueries({ queryKey: ['admin-13f-quarters'] }),
+      queryClient.invalidateQueries({ queryKey: ['admin-13f-tasks'] }),
+      queryClient.invalidateQueries({ queryKey: ['admin-13f-jobs'] }),
+      queryClient.invalidateQueries({ queryKey: ['admin-13f-quality'] }),
+      queryClient.invalidateQueries({ queryKey: ['admin-13f-amendments'] }),
+      queryClient.invalidateQueries({ queryKey: ['admin-13f-quarter-detail'] }),
+      queryClient.invalidateQueries({ queryKey: ['admin-13f-workers'] }),
+      queryClient.invalidateQueries({ queryKey: ['admin-13f-job-detail'] }),
+    ]);
+  }
   const triggerJob = useMutation({
     mutationFn: async (payload: Record<string, unknown>) =>
       (await apiClient.post('/admin/13f/jobs', payload)).data,
-    onSuccess: async () => {
-      await Promise.all([
-        queryClient.invalidateQueries({ queryKey: ['admin-13f-readiness'] }),
-        queryClient.invalidateQueries({ queryKey: ['admin-13f-quarters'] }),
-        queryClient.invalidateQueries({ queryKey: ['admin-13f-tasks'] }),
-        queryClient.invalidateQueries({ queryKey: ['admin-13f-jobs'] }),
-        queryClient.invalidateQueries({ queryKey: ['admin-13f-quality'] }),
-        queryClient.invalidateQueries({ queryKey: ['admin-13f-amendments'] }),
-        queryClient.invalidateQueries({ queryKey: ['admin-13f-quarter-detail'] }),
-        queryClient.invalidateQueries({ queryKey: ['admin-13f-workers'] }),
-      ]);
-    },
+    onSuccess: refreshAdminData,
+  });
+  const releaseStaleLock = useMutation({
+    mutationFn: async (jobId: number) =>
+      (await apiClient.post(`/admin/13f/jobs/${jobId}/release-stale-lock`)).data,
+    onSuccess: refreshAdminData,
   });
   const confirmManager = useMutation({
     mutationFn: async ({
@@ -284,14 +325,34 @@ export default function Admin13FPage() {
         }
         return;
       }
-      const message = `Run ${label}?\n\n${jobPreviewLine(dryRun.preview ?? dryRun)}`;
-      if (typeof window !== 'undefined' && !window.confirm(message)) return;
-      triggerJob.mutate({ ...payload, dry_run: false });
+      setPendingJob({
+        label,
+        payload,
+        preview: (dryRun.preview ?? dryRun) as Record<string, unknown>,
+      });
     } catch {
-      const fallback = `Run ${label}? Preview failed, but the backend will still enforce locks.`;
-      if (typeof window !== 'undefined' && !window.confirm(fallback)) return;
-      triggerJob.mutate({ ...payload, dry_run: false });
+      setPendingJob({
+        label,
+        payload,
+        preview: {
+          lock_key: lockKey,
+          rate_limit_warning: 'Preview failed; the backend will still enforce locks before queueing.',
+        },
+        previewFailed: true,
+      });
     }
+  }
+
+  function releaseStaleJobLock(jobId: unknown) {
+    const parsedJobId = Number(jobId);
+    if (!Number.isFinite(parsedJobId)) return;
+    if (
+      typeof window !== 'undefined' &&
+      !window.confirm('Release this stale job lock? Only continue after confirming the worker is no longer running it.')
+    ) {
+      return;
+    }
+    releaseStaleLock.mutate(parsedJobId);
   }
 
   function handleConfirmManager(manager: Record<string, unknown>) {
@@ -434,6 +495,17 @@ export default function Admin13FPage() {
           </div>
           <div className="rounded-md border border-amber-300/70 bg-amber-50 px-3 py-2 text-sm text-amber-950">
             {freshnessLine(readiness)}
+          </div>
+          <div className="flex flex-wrap gap-2 text-sm">
+            <Badge variant={readiness.schedulerEnabled ? 'success' : 'danger'}>
+              Scheduler {readiness.schedulerEnabled ? 'enabled' : 'disabled'}
+            </Badge>
+            <Badge variant={readiness.smartRetryEnabled ? 'success' : 'warning'}>
+              Smart retry {readiness.smartRetryEnabled ? 'enabled' : 'disabled'}
+            </Badge>
+            <Badge variant={workers.some((worker) => worker.status !== 'stale') ? 'success' : 'warning'}>
+              Workers {workers.some((worker) => worker.status !== 'stale') ? 'available' : 'not active'}
+            </Badge>
           </div>
           <div className="grid gap-3 lg:grid-cols-[280px_minmax(0,1fr)]">
             <div className="rounded-md border border-border/70 p-3">
@@ -810,6 +882,27 @@ export default function Admin13FPage() {
                           #{String(task.metadata.job_id ?? '—')} · {String(task.metadata.job_type ?? '—')} ·{' '}
                           {String(task.metadata.status ?? '—')}
                         </span>
+                      </div>
+                    ) : null}
+                    {'stale_job_id' in task.metadata ? (
+                      <div className="space-y-1">
+                        <div>
+                          Stale job:{' '}
+                          <span className="font-medium text-foreground">
+                            #{String(task.metadata.stale_job_id ?? '—')} ·{' '}
+                            {String(task.metadata.stale_job_type ?? '—')}
+                          </span>
+                        </div>
+                        <Button
+                          type="button"
+                          variant="outline"
+                          size="sm"
+                          className="h-6 text-xs"
+                          disabled={releaseStaleLock.isPending}
+                          onClick={() => releaseStaleJobLock(task.metadata?.stale_job_id)}
+                        >
+                          Release stale lock
+                        </Button>
                       </div>
                     ) : null}
                     {'quarter' in task.metadata && task.metadata.quarter ? (
@@ -1285,6 +1378,69 @@ export default function Admin13FPage() {
           </CardContent>
         </Card>
       </div>
+
+      <Dialog open={pendingJob !== null} onOpenChange={(open) => !open && setPendingJob(null)}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Confirm Job</DialogTitle>
+            <DialogDescription>
+              Review the dry-run preview before queueing this operation.
+            </DialogDescription>
+          </DialogHeader>
+          {pendingJob ? (
+            <div className="space-y-4">
+              <div className="rounded-md border border-border/70 p-3">
+                <div className="text-xs uppercase text-muted-foreground">Action</div>
+                <div className="mt-1 font-medium">{pendingJob.label}</div>
+                <div className="mt-1 font-mono text-xs text-muted-foreground">
+                  {String(pendingJob.payload.job_type ?? '—')}
+                </div>
+              </div>
+              {pendingJob.previewFailed ? (
+                <div className="rounded-md border border-amber-300/70 bg-amber-50 px-3 py-2 text-sm text-amber-950">
+                  Preview failed. The backend will still enforce locks before queueing.
+                </div>
+              ) : null}
+              <div className="grid gap-2 text-sm">
+                {previewScopeRows(pendingJob.preview).map(([label, value]) => (
+                  <div
+                    key={String(label)}
+                    className="flex justify-between gap-4 rounded-md border border-border/70 px-3 py-2"
+                  >
+                    <span className="text-muted-foreground">{String(label)}</span>
+                    <span className="break-all text-right font-medium">{String(value)}</span>
+                  </div>
+                ))}
+              </div>
+              {pendingJob.preview.rate_limit_warning ? (
+                <div className="rounded-md border border-amber-300/70 bg-amber-50 px-3 py-2 text-sm text-amber-950">
+                  {String(pendingJob.preview.rate_limit_warning)}
+                </div>
+              ) : null}
+              <pre className="max-h-40 overflow-auto rounded-md border border-border/70 bg-muted/40 p-3 text-xs">
+                {jobPreviewLine(pendingJob.preview)}
+              </pre>
+            </div>
+          ) : null}
+          <DialogFooter>
+            <Button type="button" variant="outline" onClick={() => setPendingJob(null)}>
+              Cancel
+            </Button>
+            <Button
+              type="button"
+              disabled={!pendingJob || triggerJob.isPending}
+              onClick={() => {
+                if (!pendingJob) return;
+                triggerJob.mutate({ ...pendingJob.payload, dry_run: false });
+                setPendingJob(null);
+              }}
+            >
+              Queue job
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
       {selectedQuarter !== null ? (
         <div className="fixed inset-0 z-50 flex justify-end bg-background/60 backdrop-blur-sm">
           <div
@@ -1654,6 +1810,24 @@ export default function Admin13FPage() {
                     <div className="rounded-md border border-rose-300/70 bg-rose-50 px-3 py-2 text-sm text-rose-950">
                       {selectedJob.error_message ??
                         String((selectedJob.summary_json as Record<string, unknown>).pipeline_error ?? '')}
+                    </div>
+                  ) : null}
+                  {selectedJob.can_release_stale_lock ? (
+                    <div className="rounded-md border border-amber-300/70 bg-amber-50 px-3 py-3 text-sm text-amber-950">
+                      <div className="font-medium">This running job lock appears stale.</div>
+                      <div className="mt-1">
+                        Last heartbeat age: {formatInteger(Number(selectedJob.stale_seconds ?? 0))}s.
+                      </div>
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        className="mt-3 bg-background"
+                        disabled={releaseStaleLock.isPending}
+                        onClick={() => releaseStaleJobLock(selectedJob.id)}
+                      >
+                        Release stale lock
+                      </Button>
                     </div>
                   ) : null}
                   <div>

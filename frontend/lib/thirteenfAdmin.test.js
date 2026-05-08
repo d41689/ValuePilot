@@ -36,11 +36,15 @@ test('normalizeReadiness preserves consumer-visible freshness fields', () => {
     amendment_status: 'amendments_applied',
     historical_depth_quarters: 4,
     historical_depth_capabilities: ['position_changes', 'annual_trend'],
+    scheduler_enabled: true,
+    smart_retry_enabled: true,
   });
 
   assert.equal(readiness.latestUsableQuarter, '2025-Q4');
   assert.equal(readiness.currentQuarter, '2026-Q1');
   assert.equal(readiness.historicalDepth, 4);
+  assert.equal(readiness.schedulerEnabled, true);
+  assert.equal(readiness.smartRetryEnabled, true);
   assert.deepEqual(readiness.setupChecklist, []);
   assert.match(freshnessLine(readiness), /Default data period: 2025-Q4/);
   assert.match(freshnessLine(readiness), /Amendment status: amendments_applied/);

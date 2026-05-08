@@ -664,6 +664,84 @@ def test_stuck_queued_job_with_active_worker_creates_admin_task(client, db_sessi
     assert task["metadata"]["oldest_queued_seconds"] >= 60
 
 
+def test_stale_running_job_creates_admin_task_and_can_release_lock(client, db_session, user_factory, auth_headers):
+    _clear_13f(db_session)
+    admin = _admin(user_factory)
+    stale_at = datetime.now(timezone.utc) - timedelta(minutes=10)
+    job = JobRun(
+        job_type="quality_check",
+        status="running",
+        requested_by_user_id=admin.id,
+        trigger_source="manual",
+        dedupe_key="quality_check:2025-Q4",
+        lock_key="quality_check:2025-Q4",
+        quarter="2025-Q4",
+        worker_id="dead-worker",
+        started_at=stale_at,
+        heartbeat_at=stale_at,
+        input_json={"job_type": "quality_check", "quarter": "2025-Q4"},
+    )
+    db_session.add(job)
+    db_session.commit()
+
+    task_response = client.get("/api/v1/admin/13f/tasks", headers=auth_headers(admin))
+
+    assert task_response.status_code == 200
+    task = next(item for item in task_response.json()["items"] if item["code"] == "STALE_RUNNING_JOB")
+    assert task["priority"] == "P1"
+    assert task["metadata"]["stale_job_id"] == job.id
+    assert task["metadata"]["stale_job_type"] == "quality_check"
+    assert task["metadata"]["stale_job_worker_id"] == "dead-worker"
+
+    detail_response = client.get(f"/api/v1/admin/13f/jobs/{job.id}", headers=auth_headers(admin))
+    assert detail_response.status_code == 200
+    assert detail_response.json()["can_release_stale_lock"] is True
+
+    release_response = client.post(f"/api/v1/admin/13f/jobs/{job.id}/release-stale-lock", headers=auth_headers(admin))
+
+    assert release_response.status_code == 200
+    released = release_response.json()
+    assert released["status"] == "failed"
+    assert released["can_release_stale_lock"] is False
+    assert "Released stale running job lock" in released["error_message"]
+
+    replacement = client.post(
+        "/api/v1/admin/13f/jobs",
+        headers=auth_headers(admin),
+        json={"job_type": "quality_check", "quarter": "2025-Q4"},
+    )
+    assert replacement.status_code == 200
+    assert replacement.json()["status"] == "queued"
+
+
+def test_release_stale_lock_rejects_fresh_running_job(client, db_session, user_factory, auth_headers):
+    _clear_13f(db_session)
+    admin = _admin(user_factory)
+    now = datetime.now(timezone.utc)
+    job = JobRun(
+        job_type="quality_check",
+        status="running",
+        requested_by_user_id=admin.id,
+        trigger_source="manual",
+        dedupe_key="quality_check:2025-Q4",
+        lock_key="quality_check:2025-Q4",
+        quarter="2025-Q4",
+        worker_id="live-worker",
+        started_at=now,
+        heartbeat_at=now,
+        input_json={"job_type": "quality_check", "quarter": "2025-Q4"},
+    )
+    db_session.add(job)
+    db_session.commit()
+
+    response = client.post(f"/api/v1/admin/13f/jobs/{job.id}/release-stale-lock", headers=auth_headers(admin))
+
+    assert response.status_code == 400
+    assert "not stale" in response.json()["detail"]
+    db_session.refresh(job)
+    assert job.status == "running"
+
+
 def test_cancel_queued_job_releases_active_lock(client, db_session, user_factory, auth_headers):
     _clear_13f(db_session)
     admin = _admin(user_factory)

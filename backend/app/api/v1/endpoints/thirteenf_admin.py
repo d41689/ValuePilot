@@ -25,6 +25,7 @@ from app.services.thirteenf_admin_dashboard import (
     list_workers,
     list_jobs,
     reject_manager_cik,
+    release_stale_job_lock,
     revoke_manager_cik,
     trigger_job,
 )
@@ -243,6 +244,15 @@ def cancel_admin_job(session: SessionDep, current_user: AdminUser, job_id: int) 
         return cancel_job(session, job_id)
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+
+
+@admin_router.post("/jobs/{job_id}/release-stale-lock", response_model=dict)
+def release_admin_stale_lock(session: SessionDep, current_user: AdminUser, job_id: int) -> Any:
+    try:
+        return release_stale_job_lock(session, job_id)
+    except ValueError as exc:
+        status_code = status.HTTP_404_NOT_FOUND if str(exc) == "Job not found" else status.HTTP_400_BAD_REQUEST
+        raise HTTPException(status_code=status_code, detail=str(exc)) from exc
 
 
 @admin_router.post("/jobs/retry-failed-filings", response_model=dict)
