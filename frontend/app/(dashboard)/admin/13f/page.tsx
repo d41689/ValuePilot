@@ -483,7 +483,9 @@ export default function Admin13FPage() {
                   ? 'border-emerald-300/70 bg-emerald-50 text-emerald-950'
                   : operationalHealth.level === 'blocked'
                     ? 'border-rose-300/70 bg-rose-50 text-rose-950'
-                    : 'border-amber-300/70 bg-amber-50 text-amber-950'
+                    : operationalHealth.level === 'unknown'
+                      ? 'border-border/70 bg-muted/30 text-foreground'
+                      : 'border-amber-300/70 bg-amber-50 text-amber-950'
               }`}
             >
               <div className="font-medium">
@@ -491,7 +493,9 @@ export default function Admin13FPage() {
                   ? 'Operations are clear'
                   : operationalHealth.level === 'blocked'
                     ? 'Operations need intervention'
-                    : 'Operations need attention'}
+                    : operationalHealth.level === 'unknown'
+                      ? 'Operations health unknown'
+                      : 'Operations need attention'}
               </div>
               <div className="mt-1">{operationalHealth.summary}</div>
             </div>

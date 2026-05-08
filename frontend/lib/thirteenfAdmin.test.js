@@ -182,6 +182,42 @@ test('operationsHealth treats worker API errors as indeterminate', () => {
   assert.match(health.summary, /Worker heartbeat unavailable/);
 });
 
+test('operationsHealth preserves P1 tasks when workers are indeterminate', () => {
+  const readiness = normalizeReadiness({
+    readiness_level: 'ready',
+    setup_checklist: [],
+  });
+  const health = operationsHealth(
+    readiness,
+    normalizeTasks([{ priority: 'P1', code: 'FILING_PARSE_FAILURES', title: 'Parse failures' }]),
+    false,
+    { workersIndeterminate: true }
+  );
+
+  assert.equal(health.level, 'attention');
+  assert.equal(health.tone, 'warning');
+  assert.match(health.summary, /1 P1 task/);
+  assert.match(health.summary, /worker heartbeat unavailable/);
+});
+
+test('operationsHealth preserves warning setup when workers are indeterminate', () => {
+  const readiness = normalizeReadiness({
+    readiness_level: 'ready',
+    setup_checklist: [
+      {
+        code: 'QUALITY_CHECKED',
+        label: 'Quality checked',
+        status: 'warning',
+      },
+    ],
+  });
+  const health = operationsHealth(readiness, [], false, { workersIndeterminate: true });
+
+  assert.equal(health.level, 'attention');
+  assert.equal(health.tone, 'warning');
+  assert.match(health.summary, /1 warning setup item/);
+});
+
 test('visibleWorkerRows hides stopped worker history by default', () => {
   const workers = normalizeWorkers([
     { worker_id: 'idle-1', status: 'idle', last_heartbeat_at: '2026-05-08T02:00:00Z' },

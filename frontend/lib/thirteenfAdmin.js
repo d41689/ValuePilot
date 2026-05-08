@@ -120,23 +120,35 @@ function operationsHealth(readiness, tasks, hasAvailableWorker, options = {}) {
   if (blockedSetupCount > 0) {
     reasons.push(`${blockedSetupCount} blocked setup item${blockedSetupCount === 1 ? '' : 's'}`);
   }
+  if (warningSetupCount > 0) {
+    reasons.push(`${warningSetupCount} warning setup item${warningSetupCount === 1 ? '' : 's'}`);
+  }
   if (p0Count > 0) {
     reasons.push(`${p0Count} P0 task${p0Count === 1 ? '' : 's'}`);
   }
   if (p1Count > 0) {
     reasons.push(`${p1Count} P1 task${p1Count === 1 ? '' : 's'}`);
   }
-  if (!hasAvailableWorker && !workersIndeterminate) {
+  if (workersIndeterminate) {
+    reasons.push('worker heartbeat unavailable');
+  } else if (!hasAvailableWorker) {
     reasons.push('no active worker heartbeat');
   }
 
-  if (blockedSetupCount === 0 && p0Count === 0 && workersIndeterminate) {
+  if (
+    blockedSetupCount === 0 &&
+    warningSetupCount === 0 &&
+    p0Count === 0 &&
+    p1Count === 0 &&
+    taskItems.length === 0 &&
+    workersIndeterminate
+  ) {
     return {
       level: 'unknown',
       tone: 'secondary',
       label: 'operations unknown',
       summary: 'Worker heartbeat unavailable; refresh or inspect the workers API.',
-      reasons: ['worker heartbeat unavailable'],
+      reasons,
     };
   }
 
