@@ -11,6 +11,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
+from app.edgar.client import EdgarClient, edgar_rate_limit_status
 from app.models.institutions import (
     Filing13F,
     Holding13F,
@@ -33,6 +34,22 @@ SMART_RETRY_AUTO_JOB_TYPES = {"ingest_accession", "enrich_metadata", "quality_ch
 READY_LINK_RATIO = 0.80
 WARNING_LINK_RATIO = 0.50
 STUCK_QUEUED_JOB_AFTER_SECONDS = 10 * 60
+
+
+def _ready_link_ratio() -> float:
+    return float(getattr(settings, "THIRTEENF_READY_LINK_RATIO", READY_LINK_RATIO))
+
+
+def _warning_link_ratio() -> float:
+    return float(getattr(settings, "THIRTEENF_WARNING_LINK_RATIO", WARNING_LINK_RATIO))
+
+
+def _ready_historical_depth() -> int:
+    return int(getattr(settings, "THIRTEENF_READY_HISTORICAL_DEPTH", 4))
+
+
+def _min_historical_depth() -> int:
+    return int(getattr(settings, "THIRTEENF_MIN_HISTORICAL_DEPTH", 2))
 
 
 @dataclass(frozen=True)
@@ -107,11 +124,20 @@ def build_admin_readiness(session: Session, *, today: date | None = None) -> dic
                 "message": "EDGAR scheduler is disabled.",
             }
         )
-    if usable_summary["linked_holding_ratio"] is not None and usable_summary["linked_holding_ratio"] < READY_LINK_RATIO:
+    if usable_summary["linked_holding_ratio"] is not None and usable_summary["linked_holding_ratio"] < _ready_link_ratio():
         warnings.append(
             {
                 "code": "LOW_STOCK_LINK_COVERAGE",
                 "message": f"{round(usable_summary['linked_holding_ratio'] * 100)}% of holdings are linked to stocks.",
+            }
+        )
+    revoked_scope = _unresolved_revoked_cik_review_scope(session)
+    if revoked_scope:
+        managers = ", ".join(sorted({item["manager_name"] for item in revoked_scope})[:3])
+        warnings.append(
+            {
+                "code": "REVOKED_CIK_DOWNSTREAM_REVIEW",
+                "message": f"Revoked CIK repair required for affected 13F quarters: {managers}.",
             }
         )
     if current_summary["quarter_phase"] == "filing_window_open":
@@ -160,6 +186,12 @@ def build_admin_readiness(session: Session, *, today: date | None = None) -> dic
         },
         "historical_depth_quarters": historical_depth,
         "historical_depth_capabilities": capabilities,
+        "thresholds": {
+            "ready_link_ratio": _ready_link_ratio(),
+            "warning_link_ratio": _warning_link_ratio(),
+            "ready_historical_depth": _ready_historical_depth(),
+            "minimum_historical_depth": _min_historical_depth(),
+        },
         "setup_checklist": _setup_checklist(
             scheduler_enabled=settings.EDGAR_SCHEDULER_ENABLED,
             counts=counts,
@@ -201,6 +233,10 @@ def build_status(session: Session, *, today: date | None = None) -> dict[str, An
     }
 
 
+def build_edgar_rate_limit_status() -> dict[str, Any]:
+    return edgar_rate_limit_status()
+
+
 def build_quarters(session: Session, *, today: date | None = None, limit: int = 8) -> list[dict[str, Any]]:
     today = today or date.today()
     labels = _quarter_labels_for_display(session, today=today, limit=limit)
@@ -208,20 +244,48 @@ def build_quarters(session: Session, *, today: date | None = None, limit: int = 
 
 
 def get_quarter_detail(session: Session, quarter: str, *, today: date | None = None) -> dict[str, Any]:
+    return get_quarter_detail_page(session, quarter, today=today)
+
+
+def get_quarter_detail_page(
+    session: Session,
+    quarter: str,
+    *,
+    today: date | None = None,
+    filing_limit: int = 25,
+    filing_offset: int = 0,
+    filing_status: str | None = None,
+) -> dict[str, Any]:
     today = today or date.today()
     window = quarter_window(quarter)
-    filings = (
+    base_query = (
         session.query(Filing13F)
         .filter(Filing13F.period_of_report.between(window.start, window.end))
         .order_by(Filing13F.filed_at.asc(), Filing13F.accession_no.asc())
-        .all()
     )
-    filing_rows = [_filing_detail_payload(session, filing) for filing in filings]
-    pending_filings = [row for row in filing_rows if row["status"] == "pending"]
-    failed_filings = [row for row in filing_rows if row["status"] == "failed"]
+    all_filings = base_query.all()
+    filing_counts_by_status = _filing_status_counts(session, all_filings)
+    filtered = [
+        filing
+        for filing in all_filings
+        if filing_status is None or _filing_status(session, filing) == filing_status
+    ]
+    total_filtered = len(filtered)
+    page_filings = filtered[filing_offset : filing_offset + filing_limit]
+    filing_rows = [_filing_detail_payload(session, filing) for filing in page_filings]
+    pending_filings = [
+        _filing_detail_payload(session, filing)
+        for filing in all_filings
+        if _filing_status(session, filing) == "pending"
+    ][:25]
+    failed_filings = [
+        _filing_detail_payload(session, filing)
+        for filing in all_filings
+        if _filing_status(session, filing) == "failed"
+    ][:25]
     amendments = [
         _amendment_payload(session, filing)
-        for filing in filings
+        for filing in all_filings
         if filing.form_type.endswith("/A") or filing.amends_accession_no
     ]
     quality_report = _latest_quality_report(session, quarter)
@@ -229,6 +293,14 @@ def get_quarter_detail(session: Session, quarter: str, *, today: date | None = N
     return {
         "summary": summary,
         "filings": filing_rows,
+        "filings_page": {
+            "items": filing_rows,
+            "total": total_filtered,
+            "limit": filing_limit,
+            "offset": filing_offset,
+            "status": filing_status,
+        },
+        "filing_counts_by_status": filing_counts_by_status,
         "pending_filings": pending_filings,
         "failed_filings": failed_filings,
         "amendments": amendments,
@@ -303,14 +375,14 @@ def build_admin_tasks(session: Session, *, today: date | None = None) -> list[di
         tasks.append(_task("P1", "FILING_PARSE_FAILURES", "Filing parse failures", "Retry failed filings or inspect EDGAR document"))
     if summary["amendment_status"] in {"amendments_pending", "amendment_failed"}:
         tasks.append(_task("P1", "AMENDMENT_PENDING_OR_FAILED", "Amendment pending or failed", "Run Reprocess amendment for each pending or failed 13F/A accession"))
-    if summary["linked_holding_ratio"] is not None and summary["linked_holding_ratio"] < READY_LINK_RATIO:
+    if summary["linked_holding_ratio"] is not None and summary["linked_holding_ratio"] < _ready_link_ratio():
         tasks.append(_task("P2", "LOW_STOCK_LINK_COVERAGE", "Low stock link coverage", "Run CUSIP enrichment, review unmatched CUSIPs"))
     if summary["quality_status"] == "failed":
         tasks.append(_task("P1", "QUALITY_ERRORS", "Quality errors", "Inspect latest quality report and rerun quality check after fixes"))
     if summary["quality_status"] == "warning":
         tasks.append(_task("P2", "QUALITY_WARNINGS", "Quality warnings", "Review quality warnings and accept or fix"))
     historical_depth = _historical_depth_quarters(session, latest)
-    if counts["confirmed_managers"] > 0 and historical_depth < 4:
+    if counts["confirmed_managers"] > 0 and historical_depth < _ready_historical_depth():
         tasks.append(_task("P2", "HISTORICAL_COVERAGE_BELOW_TARGET", "Historical coverage below product target", "Run historical backfill and show feature-depth warning"))
     if counts["confirmed_managers"] > 0 and historical_depth < 8:
         tasks.append(_task("P3", "EXTENDED_BACKFILL_RECOMMENDED", "Extended backfill recommended", "Run historical backfill when rate-limit budget allows"))
@@ -469,6 +541,84 @@ def revoke_manager_cik(
         requires_downstream_review=affected["filings_count"] > 0,
     )
     session.add(event)
+    session.commit()
+    session.refresh(manager)
+    return _manager_payload(manager)
+
+
+def retry_manager_cik_search(
+    session: Session,
+    manager_id: int,
+    *,
+    search_name: str,
+    note: str | None = None,
+    reviewed_by_user_id: int | None = None,
+    min_score: float = 0.6,
+) -> dict[str, Any]:
+    from app.services.edgar_ingestion import _edgar_company_search_url, _name_score, _search_edgar_by_company_name
+
+    manager = session.get(InstitutionManager, manager_id)
+    if manager is None:
+        raise ValueError("Manager not found")
+    search_name = search_name.strip()
+    if not search_name:
+        raise ValueError("search_name is required")
+
+    with EdgarClient() as client:
+        candidates = _search_edgar_by_company_name(client, search_name)
+    if not candidates:
+        raise ValueError("No EDGAR CIK candidates found")
+
+    best_score = 0.0
+    best_cik = ""
+    best_entity = ""
+    for entity_name, cik_candidate in candidates:
+        score = max(_name_score(search_name, entity_name), _name_score(manager.legal_name, entity_name))
+        if score > best_score:
+            best_score = score
+            best_cik = cik_candidate
+            best_entity = entity_name
+
+    if best_score < min_score:
+        raise ValueError(f"No EDGAR CIK candidate met the minimum similarity score ({min_score})")
+    conflict = (
+        session.query(InstitutionManager)
+        .filter_by(cik=best_cik)
+        .filter(InstitutionManager.id != manager.id)
+        .one_or_none()
+    )
+    if conflict:
+        raise ValueError(f"CIK {best_cik} is already confirmed for {conflict.legal_name}")
+
+    old_cik = manager.cik
+    old_status = manager.match_status
+    manager.cik = None
+    manager.match_status = "candidate"
+    manager.candidate_cik = best_cik
+    manager.candidate_legal_name = best_entity
+    manager.candidate_similarity_score = best_score
+    manager.candidate_source = "edgar_browse_company_edited"
+    manager.candidate_evidence_url = _edgar_company_search_url(search_name)
+    manager.candidate_found_at = datetime.now(timezone.utc)
+    manager.reviewed_by_user_id = reviewed_by_user_id
+    manager.reviewed_at = datetime.now(timezone.utc)
+    manager.review_note = note
+    session.add(manager)
+    session.flush()
+    session.add(
+        _cik_review_event(
+            manager,
+            event_type="retry_candidate_search",
+            old_cik=old_cik,
+            old_match_status=old_status,
+            reviewed_by_user_id=reviewed_by_user_id,
+            note=note,
+            evidence_json={
+                **_manager_candidate_evidence(manager),
+                "search_name": search_name,
+            },
+        )
+    )
     session.commit()
     session.refresh(manager)
     return _manager_payload(manager)
@@ -748,6 +898,7 @@ def _quarter_summary(session: Session, quarter: str, *, today: date) -> dict[str
     phase = _quarter_phase(window, today)
     active_job = _active_quarter_job(session, quarter)
     has_prior_data = _has_prior_quarter_holdings(session, quarter)
+    revoked_cik_review_required = _revoked_cik_review_required_for_quarter(session, quarter)
     health = _quarter_health(
         confirmed_managers=confirmed_managers,
         form_idx_fetched=form_idx_fetched,
@@ -760,6 +911,7 @@ def _quarter_summary(session: Session, quarter: str, *, today: date) -> dict[str
         phase=phase,
         active_job=active_job is not None,
         has_prior_data=has_prior_data,
+        revoked_cik_review_required=revoked_cik_review_required,
     )
     linked_holding_unavailable_reason = "NO_HOLDINGS_PARSED" if linked_ratio is None else None
     return {
@@ -785,6 +937,7 @@ def _quarter_summary(session: Session, quarter: str, *, today: date) -> dict[str
         "quality_warnings": quality_report.warning_count if quality_report else None,
         "quality_checked_at": quality_report.checked_at.isoformat() if quality_report else None,
         "quality_report_id": quality_report.id if quality_report else None,
+        "revoked_cik_review_required": revoked_cik_review_required,
         "last_successful_job_at": _last_successful_job_at(session),
         "active_job_id": active_job.id if active_job else None,
         "active_job_type": active_job.job_type if active_job else None,
@@ -799,7 +952,9 @@ def _quarter_phase(window: QuarterWindow, today: date) -> str:
     return "post_deadline"
 
 
-def _quarter_health(*, confirmed_managers: int, form_idx_fetched: bool, filings_count: int, holdings_count: int, failed_filings: int, linked_ratio: float | None, amendment_status: str, quality_status: str, phase: str, active_job: bool, has_prior_data: bool) -> str:
+def _quarter_health(*, confirmed_managers: int, form_idx_fetched: bool, filings_count: int, holdings_count: int, failed_filings: int, linked_ratio: float | None, amendment_status: str, quality_status: str, phase: str, active_job: bool, has_prior_data: bool, revoked_cik_review_required: bool) -> str:
+    if revoked_cik_review_required:
+        return "needs_review"
     if confirmed_managers == 0:
         return "setup_required"
     if failed_filings:
@@ -818,7 +973,7 @@ def _quarter_health(*, confirmed_managers: int, form_idx_fetched: bool, filings_
         return "index_fetched"
     if holdings_count == 0:
         return "partial"
-    if linked_ratio is not None and linked_ratio < WARNING_LINK_RATIO:
+    if linked_ratio is not None and linked_ratio < _warning_link_ratio():
         return "needs_review"
     if phase == "filing_window_open":
         return "partial"
@@ -830,11 +985,11 @@ def _readiness_level(*, confirmed_managers: int, holdings_count: int, linked_hol
         return "unavailable"
     if amendment_status in {"amendments_pending", "amendment_failed"}:
         return "experimental"
-    if linked_holding_ratio is None or linked_holding_ratio < WARNING_LINK_RATIO:
+    if linked_holding_ratio is None or linked_holding_ratio < _warning_link_ratio():
         return "experimental"
-    if historical_depth < 2:
+    if historical_depth < _min_historical_depth():
         return "experimental"
-    if linked_holding_ratio < READY_LINK_RATIO or historical_depth < 4:
+    if linked_holding_ratio < _ready_link_ratio() or historical_depth < _ready_historical_depth():
         return "usable_with_warning"
     return "ready"
 
@@ -934,7 +1089,7 @@ def _setup_checklist(
             "CUSIP_ENRICHED",
             "CUSIP enriched",
             "Linked holding ratio is at least the ready threshold",
-            usable_summary["linked_holding_ratio"] is not None and usable_summary["linked_holding_ratio"] >= READY_LINK_RATIO,
+            usable_summary["linked_holding_ratio"] is not None and usable_summary["linked_holding_ratio"] >= _ready_link_ratio(),
             "Run CUSIP enrichment and bootstrap stocks",
             warning=usable_summary["linked_holding_ratio"] is not None,
         ),
@@ -948,8 +1103,8 @@ def _setup_checklist(
         item(
             "HISTORICAL_DEPTH_TARGET",
             "Historical depth target",
-            "At least four consecutive quarters have holdings",
-            historical_depth >= 4,
+            f"At least {_ready_historical_depth()} consecutive quarters have holdings",
+            historical_depth >= _ready_historical_depth(),
             "Run historical backfill",
             warning=historical_depth > 0,
         ),
@@ -1154,6 +1309,37 @@ def _revoked_cik_repair_tasks(session: Session) -> list[dict[str, Any]]:
             )
         )
     return tasks
+
+
+def _unresolved_revoked_cik_review_scope(session: Session) -> list[dict[str, Any]]:
+    rows = (
+        session.query(InstitutionManagerCikReviewEvent, InstitutionManager)
+        .join(InstitutionManager, InstitutionManager.id == InstitutionManagerCikReviewEvent.manager_id)
+        .filter(InstitutionManager.match_status == "revoked")
+        .filter(InstitutionManagerCikReviewEvent.event_type == "revoke_confirmed_cik")
+        .filter(InstitutionManagerCikReviewEvent.requires_downstream_review.is_(True))
+        .order_by(InstitutionManagerCikReviewEvent.created_at.desc(), InstitutionManagerCikReviewEvent.id.desc())
+        .all()
+    )
+    latest_by_manager: dict[int, tuple[InstitutionManagerCikReviewEvent, InstitutionManager]] = {}
+    for event, manager in rows:
+        if manager.id not in latest_by_manager:
+            latest_by_manager[manager.id] = (event, manager)
+    return [
+        {
+            "manager_id": manager.id,
+            "manager_name": manager.legal_name,
+            "old_cik": event.old_cik,
+            "affected_quarters": event.affected_quarters or [],
+            "affected_filings_count": event.affected_filings_count,
+            "review_event_id": event.id,
+        }
+        for event, manager in latest_by_manager.values()
+    ]
+
+
+def _revoked_cik_review_required_for_quarter(session: Session, quarter: str) -> bool:
+    return any(quarter in item["affected_quarters"] for item in _unresolved_revoked_cik_review_scope(session))
 
 
 def _recent_job_alert_tasks(session: Session, *, limit: int = 5) -> list[dict[str, Any]]:
@@ -1510,19 +1696,31 @@ def _manager_payload(manager: InstitutionManager) -> dict[str, Any]:
     }
 
 
+def _filing_status(session: Session, filing: Filing13F) -> str:
+    holdings_count = session.query(Holding13F).filter(Holding13F.filing_id == filing.id).count()
+    raw_docs = [doc for doc in [filing.raw_primary_doc, filing.raw_infotable_doc] if doc is not None]
+    if any(doc.parse_status == "failed" for doc in raw_docs):
+        return "failed"
+    if filing.raw_infotable_doc_id is None:
+        return "pending"
+    if holdings_count == 0:
+        return "parsed_no_holdings"
+    return "parsed"
+
+
+def _filing_status_counts(session: Session, filings: list[Filing13F]) -> dict[str, int]:
+    counts = {"pending": 0, "failed": 0, "parsed_no_holdings": 0, "parsed": 0}
+    for filing in filings:
+        status = _filing_status(session, filing)
+        counts[status] = counts.get(status, 0) + 1
+    return counts
+
+
 def _filing_detail_payload(session: Session, filing: Filing13F) -> dict[str, Any]:
     holdings_count = session.query(Holding13F).filter(Holding13F.filing_id == filing.id).count()
     primary = filing.raw_primary_doc
     infotable = filing.raw_infotable_doc
-    raw_docs = [doc for doc in [primary, infotable] if doc is not None]
-    if any(doc.parse_status == "failed" for doc in raw_docs):
-        status = "failed"
-    elif filing.raw_infotable_doc_id is None:
-        status = "pending"
-    elif holdings_count == 0:
-        status = "parsed_no_holdings"
-    else:
-        status = "parsed"
+    status = _filing_status(session, filing)
     return {
         "id": filing.id,
         "accession_no": filing.accession_no,
@@ -1819,7 +2017,7 @@ _JOB_LOCK_BUILDERS = {
 def _execute_job(session: Session, job_type: str, payload: dict[str, Any]) -> dict[str, Any]:
     if job_type == "quarterly_pipeline":
         quarter = _required(payload, "quarter")
-        results: dict[str, Any] = {"quarter": quarter, "stages": []}
+        results: dict[str, Any] = {"summary_schema": "quarterly_pipeline_summary.v1", "quarter": quarter, "stages": []}
 
         # Stage 1: Fetch SEC form.idx — abort the pipeline if this fails or conflicts.
         index_stage = _execute_pipeline_stage_job(
@@ -2020,6 +2218,7 @@ def _execute_pipeline_stage_job(
     try:
         summary = _execute_job(session, job_type, stage_payload)
         status = summary.pop("status", "succeeded")
+        summary = _stage_summary_with_schema(job_type, summary)
         finished_at = datetime.now(timezone.utc)
         stage_job = session.get(JobRun, stage_job.id)
         stage_job.status = status
@@ -2050,6 +2249,12 @@ def _execute_pipeline_stage_job(
             "summary": {"status": "failed"},
             "error": str(exc),
         }
+
+
+def _stage_summary_with_schema(job_type: str, summary: dict[str, Any]) -> dict[str, Any]:
+    if "schema" not in summary:
+        summary = {**summary, "schema": f"{job_type}_summary.v1"}
+    return summary
 
 
 def _execute_ingest_job(session: Session, job_type: str, payload: dict[str, Any]) -> dict[str, Any]:

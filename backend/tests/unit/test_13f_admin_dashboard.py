@@ -895,6 +895,46 @@ def test_seed_pending_cik_review_fixture_creates_idempotent_candidate(db_session
     assert manager.candidate_found_at is not None
 
 
+def test_retry_manager_cik_search_with_edited_name_preserves_candidate_review(
+    client,
+    db_session,
+    user_factory,
+    auth_headers,
+    monkeypatch,
+):
+    _clear_13f(db_session)
+    admin = _admin(user_factory)
+    manager = _manager(db_session, name="Ambiguous Manager", cik=None)
+    manager.match_status = "seeded"
+    db_session.commit()
+
+    monkeypatch.setattr(
+        "app.services.edgar_ingestion._search_edgar_by_company_name",
+        lambda client, company_name: [("Edited Capital Management LP", "0007654321")],
+    )
+
+    response = client.post(
+        f"/api/v1/admin/13f/managers/{manager.id}/retry-cik-search",
+        headers=auth_headers(admin),
+        json={"search_name": "Edited Capital Management", "note": "Use legal manager name"},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["match_status"] == "candidate"
+    assert payload["cik"] is None
+    assert payload["candidate_cik"] == "0007654321"
+    assert payload["candidate_source"] == "edgar_browse_company_edited"
+    assert payload["candidate_similarity_score"] >= 0.6
+    event_response = client.get(
+        f"/api/v1/admin/13f/managers/{manager.id}/cik-review-events",
+        headers=auth_headers(admin),
+    )
+    assert event_response.status_code == 200
+    assert event_response.json()["items"][0]["event_type"] == "retry_candidate_search"
+    assert event_response.json()["items"][0]["evidence"]["search_name"] == "Edited Capital Management"
+
+
 def test_match_cik_candidates_writes_candidate_audit_metadata(db_session, monkeypatch):
     _clear_13f(db_session)
     manager = _manager(db_session, name="Bill Ackman - Pershing Square", cik=None)
@@ -1092,6 +1132,36 @@ def test_revoked_cik_downstream_review_creates_admin_repair_task(
     assert "Reconfirm the correct CIK" in repair_task["recommended_action"]
 
 
+def test_revoked_cik_marks_affected_quarter_needs_review_and_readiness_warning(
+    client,
+    db_session,
+    user_factory,
+    auth_headers,
+):
+    _clear_13f(db_session)
+    admin = _admin(user_factory)
+    manager = _manager(db_session, name="Revoked CIK Manager", cik="0001336528")
+    filing = _filing(db_session, manager, accession="0001336528-26-000001", period=date(2025, 12, 31))
+    _holding(db_session, filing, _stock(db_session))
+    db_session.commit()
+
+    revoke_response = client.post(
+        f"/api/v1/admin/13f/managers/{manager.id}/revoke-cik",
+        headers=auth_headers(admin),
+        json={"note": "Wrong SEC entity"},
+    )
+    assert revoke_response.status_code == 200
+
+    quarter_response = client.get("/api/v1/admin/13f/quarters/2025-Q4/detail", headers=auth_headers(admin))
+    readiness_response = client.get("/api/v1/admin/13f/readiness", headers=auth_headers(admin))
+
+    assert quarter_response.status_code == 200
+    assert quarter_response.json()["summary"]["quarter_health"] == "needs_review"
+    assert quarter_response.json()["summary"]["revoked_cik_review_required"] is True
+    assert readiness_response.status_code == 200
+    assert any("Revoked CIK" in warning["message"] for warning in readiness_response.json()["warnings"])
+
+
 def test_revoked_cik_repair_task_clears_after_reconfirming_manager(
     client,
     db_session,
@@ -1118,6 +1188,71 @@ def test_revoked_cik_repair_task_clears_after_reconfirming_manager(
 
     assert task_response.status_code == 200
     assert all(item["code"] != "REVOKED_CIK_DOWNSTREAM_REVIEW" for item in task_response.json()["items"])
+
+
+def test_quarter_detail_endpoint_paginates_and_filters_filing_rows(client, db_session, user_factory, auth_headers):
+    _clear_13f(db_session)
+    admin = _admin(user_factory)
+    pending_manager = _manager(db_session, name="Pending Pagination Capital", cik="0001234567")
+    parsed_manager = _manager(db_session, name="Parsed Pagination Capital", cik="0001234568")
+    failed_manager = _manager(db_session, name="Failed Pagination Capital", cik="0001234569")
+    parsed_doc = RawSourceDocument(
+        source_system="edgar",
+        document_type="infotable_xml",
+        cik=parsed_manager.cik,
+        accession_no="0001234568-26-000002",
+        source_url="https://example.test/parsed-pagination.xml",
+        http_status=200,
+        raw_sha256="parsed-pagination",
+        body_path="/tmp/parsed-pagination.xml",
+        parse_status="parsed",
+        parsed_at=datetime.now(timezone.utc),
+    )
+    failed_doc = RawSourceDocument(
+        source_system="edgar",
+        document_type="infotable_xml",
+        cik=failed_manager.cik,
+        accession_no="0001234569-26-000003",
+        source_url="https://example.test/failed-pagination.xml",
+        http_status=200,
+        raw_sha256="failed-pagination",
+        body_path="/tmp/failed-pagination.xml",
+        parse_status="failed",
+        error_message="bad XML",
+    )
+    db_session.add_all([parsed_doc, failed_doc])
+    db_session.flush()
+    _filing(db_session, pending_manager, accession="0001234567-26-000001", period=date(2025, 12, 31))
+    _filing(
+        db_session,
+        parsed_manager,
+        accession="0001234568-26-000002",
+        period=date(2025, 12, 31),
+        raw_infotable_doc_id=parsed_doc.id,
+    )
+    _filing(
+        db_session,
+        failed_manager,
+        accession="0001234569-26-000003",
+        period=date(2025, 12, 31),
+        raw_infotable_doc_id=failed_doc.id,
+    )
+    db_session.commit()
+
+    response = client.get(
+        "/api/v1/admin/13f/quarters/2025-Q4/detail?filing_status=failed&filing_limit=1&filing_offset=0",
+        headers=auth_headers(admin),
+    )
+
+    assert response.status_code == 200
+    page = response.json()["filings_page"]
+    assert page["total"] == 1
+    assert page["limit"] == 1
+    assert page["offset"] == 0
+    assert page["status"] == "failed"
+    assert [item["accession_no"] for item in page["items"]] == ["0001234569-26-000003"]
+    assert response.json()["filing_counts_by_status"]["pending"] == 1
+    assert response.json()["filing_counts_by_status"]["failed"] == 1
 
 
 def test_quarter_detail_endpoint_returns_operational_drilldown(client, db_session, user_factory, auth_headers):
@@ -1316,6 +1451,66 @@ def test_quarterly_pipeline_records_retryable_stage_jobs(db_session, monkeypatch
     assert all(job.trigger_source == "pipeline" for job in stage_jobs)
     assert stage_jobs[2].summary_json["cusip_mappings"] == 3
     assert stage_jobs[2].summary_json["holdings_linked"] == 5
+    assert stage_jobs[2].summary_json["schema"] == "enrich_metadata_summary.v1"
+    assert result["summary_schema"] == "quarterly_pipeline_summary.v1"
+
+
+def test_readiness_thresholds_are_configurable(client, db_session, user_factory, auth_headers, monkeypatch):
+    _clear_13f(db_session)
+    admin = _admin(user_factory)
+    manager = _manager(db_session)
+    filing = _filing(db_session, manager, accession="0001234567-26-000001", period=date(2025, 12, 31))
+    linked_stock = _stock(db_session)
+    _holding(db_session, filing, linked_stock)
+    unlinked = Holding13F(
+        filing_id=filing.id,
+        row_fingerprint=f"{filing.accession_no}-UNLINKED",
+        cusip="987654321",
+        issuer_name="Unlinked Corp",
+        title_of_class="COM",
+        value_thousands=1000,
+        shares=100,
+        share_type="SH",
+        stock_id=None,
+    )
+    db_session.add(unlinked)
+    db_session.commit()
+    monkeypatch.setattr("app.services.thirteenf_admin_dashboard.settings.THIRTEENF_READY_LINK_RATIO", 0.40)
+    monkeypatch.setattr("app.services.thirteenf_admin_dashboard.settings.THIRTEENF_WARNING_LINK_RATIO", 0.25)
+    monkeypatch.setattr("app.services.thirteenf_admin_dashboard.settings.THIRTEENF_READY_HISTORICAL_DEPTH", 1)
+    monkeypatch.setattr("app.services.thirteenf_admin_dashboard.settings.THIRTEENF_MIN_HISTORICAL_DEPTH", 1)
+
+    response = client.get("/api/v1/admin/13f/readiness", headers=auth_headers(admin))
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["readiness_level"] == "ready"
+    assert payload["thresholds"]["ready_link_ratio"] == 0.4
+    assert payload["thresholds"]["warning_link_ratio"] == 0.25
+
+
+def test_edgar_rate_limit_status_endpoint_returns_runtime_budget(client, db_session, user_factory, auth_headers, monkeypatch):
+    _clear_13f(db_session)
+    admin = _admin(user_factory)
+    monkeypatch.setattr(
+        "app.services.thirteenf_admin_dashboard.edgar_rate_limit_status",
+        lambda: {
+            "mode": "live",
+            "request_delay_s": 0.2,
+            "max_retries": 3,
+            "window_seconds": 60,
+            "recent_request_count": 7,
+            "estimated_capacity": 300,
+            "remaining_estimated_capacity": 293,
+            "global_pause_until": None,
+        },
+    )
+
+    response = client.get("/api/v1/admin/13f/edgar-rate-limit", headers=auth_headers(admin))
+
+    assert response.status_code == 200
+    assert response.json()["recent_request_count"] == 7
+    assert response.json()["remaining_estimated_capacity"] == 293
 
 
 def test_quarterly_pipeline_continues_after_retryable_enrichment_failure(

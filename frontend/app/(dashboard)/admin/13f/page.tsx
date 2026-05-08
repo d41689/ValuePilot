@@ -33,6 +33,13 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog';
 import { Input } from '@/components/ui/input';
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select';
 import { useToast } from '@/components/ui/use-toast';
 import {
   Table,
@@ -49,6 +56,7 @@ const {
   jobPreviewRows,
   managerCikReviewDefaults,
   normalizeAmendments,
+  normalizeEdgarRateLimit,
   normalizeQualityReports,
   normalizeQuarters,
   normalizeReadiness,
@@ -92,6 +100,8 @@ export default function Admin13FPage() {
   const [selectedJobId, setSelectedJobId] = useState<number | null>(null);
   const [selectedAmendmentAccession, setSelectedAmendmentAccession] = useState<string | null>(null);
   const [selectedQuarter, setSelectedQuarter] = useState<string | null>(null);
+  const [quarterFilingStatus, setQuarterFilingStatus] = useState('all');
+  const [quarterFilingOffset, setQuarterFilingOffset] = useState(0);
   const readinessQuery = useQuery({
     queryKey: ['admin-13f-readiness'],
     queryFn: async () => (await apiClient.get('/admin/13f/readiness')).data,
@@ -126,6 +136,11 @@ export default function Admin13FPage() {
     queryFn: async () => (await apiClient.get('/admin/13f/workers')).data,
     refetchInterval: 5000,
   });
+  const edgarRateLimitQuery = useQuery({
+    queryKey: ['admin-13f-edgar-rate-limit'],
+    queryFn: async () => (await apiClient.get('/admin/13f/edgar-rate-limit')).data,
+    refetchInterval: 30000,
+  });
   const jobDetailQuery = useQuery({
     queryKey: ['admin-13f-job-detail', selectedJobId],
     queryFn: async () => (await apiClient.get(`/admin/13f/jobs/${selectedJobId}`)).data,
@@ -138,8 +153,15 @@ export default function Admin13FPage() {
     enabled: selectedAmendmentAccession !== null,
   });
   const quarterDetailQuery = useQuery({
-    queryKey: ['admin-13f-quarter-detail', selectedQuarter],
-    queryFn: async () => (await apiClient.get(`/admin/13f/quarters/${selectedQuarter}/detail`)).data,
+    queryKey: ['admin-13f-quarter-detail', selectedQuarter, quarterFilingStatus, quarterFilingOffset],
+    queryFn: async () => {
+      const params = new URLSearchParams({
+        filing_limit: '25',
+        filing_offset: String(quarterFilingOffset),
+      });
+      if (quarterFilingStatus !== 'all') params.set('filing_status', quarterFilingStatus);
+      return (await apiClient.get(`/admin/13f/quarters/${selectedQuarter}/detail?${params.toString()}`)).data;
+    },
     enabled: selectedQuarter !== null,
   });
   const [manualQuarter, setManualQuarter] = useState('');
@@ -161,6 +183,9 @@ export default function Admin13FPage() {
   const [rejectNote, setRejectNote] = useState('');
   const [pendingRevokeManager, setPendingRevokeManager] = useState<Record<string, unknown> | null>(null);
   const [revokeNote, setRevokeNote] = useState('');
+  const [pendingRetryManager, setPendingRetryManager] = useState<Record<string, unknown> | null>(null);
+  const [retrySearchName, setRetrySearchName] = useState('');
+  const [retryNote, setRetryNote] = useState('');
   async function refreshAdminData() {
     await Promise.all([
       queryClient.invalidateQueries({ queryKey: ['admin-13f-readiness'] }),
@@ -172,6 +197,7 @@ export default function Admin13FPage() {
       queryClient.invalidateQueries({ queryKey: ['admin-13f-quarter-detail'] }),
       queryClient.invalidateQueries({ queryKey: ['admin-13f-workers'] }),
       queryClient.invalidateQueries({ queryKey: ['admin-13f-job-detail'] }),
+      queryClient.invalidateQueries({ queryKey: ['admin-13f-edgar-rate-limit'] }),
     ]);
   }
   const triggerJob = useMutation({
@@ -225,11 +251,34 @@ export default function Admin13FPage() {
       ]);
     },
   });
+  const retryCikSearch = useMutation({
+    mutationFn: async ({
+      managerId,
+      searchName,
+      note,
+    }: {
+      managerId: number;
+      searchName: string;
+      note: string | null;
+    }) =>
+      (await apiClient.post(`/admin/13f/managers/${managerId}/retry-cik-search`, {
+        search_name: searchName,
+        note,
+      })).data,
+    onSuccess: async () => {
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ['admin-13f-readiness'] }),
+        queryClient.invalidateQueries({ queryKey: ['admin-13f-tasks'] }),
+        queryClient.invalidateQueries({ queryKey: ['admin-13f-managers'] }),
+      ]);
+    },
+  });
 
   const readiness = useMemo(
     () => normalizeReadiness(readinessQuery.data ?? {}),
     [readinessQuery.data]
   );
+  const readinessThresholds = readiness.thresholds as Record<string, unknown>;
   const quarters = useMemo(
     () => normalizeQuarters(quartersQuery.data?.items ?? []),
     [quartersQuery.data]
@@ -246,6 +295,10 @@ export default function Admin13FPage() {
   const workers = useMemo(
     () => normalizeWorkers(workersQuery.data?.items ?? []),
     [workersQuery.data]
+  );
+  const edgarRateLimit = useMemo(
+    () => normalizeEdgarRateLimit(edgarRateLimitQuery.data ?? {}),
+    [edgarRateLimitQuery.data]
   );
   const hasAvailableWorker = workers.some((worker) => worker.status === 'idle' || worker.status === 'running');
   const workerRows = useMemo(
@@ -387,6 +440,14 @@ export default function Admin13FPage() {
     setPendingRevokeManager(manager);
   }
 
+  function handleRetryManager(manager: Record<string, unknown>) {
+    const managerId = Number(manager.id);
+    if (!Number.isFinite(managerId)) return;
+    setRetrySearchName(String(manager.legal_name ?? manager.display_name ?? ''));
+    setRetryNote('');
+    setPendingRetryManager(manager);
+  }
+
   function closeConfirmManagerDialog() {
     setPendingConfirmManager(null);
     setConfirmCik('');
@@ -429,6 +490,30 @@ export default function Admin13FPage() {
     if (!Number.isFinite(managerId)) return;
     revokeManager.mutate({ managerId, note: revokeNote.trim() });
     closeRevokeManagerDialog();
+  }
+
+  function closeRetryManagerDialog() {
+    setPendingRetryManager(null);
+    setRetrySearchName('');
+    setRetryNote('');
+  }
+
+  function submitRetryManagerDialog() {
+    if (!pendingRetryManager) return;
+    const managerId = Number(pendingRetryManager.id);
+    if (!Number.isFinite(managerId)) return;
+    retryCikSearch.mutate({
+      managerId,
+      searchName: retrySearchName.trim(),
+      note: retryNote.trim() || null,
+    });
+    closeRetryManagerDialog();
+  }
+
+  function openQuarterDetail(quarter: string) {
+    setSelectedQuarter(quarter);
+    setQuarterFilingStatus('all');
+    setQuarterFilingOffset(0);
   }
 
   return (
@@ -534,6 +619,15 @@ export default function Admin13FPage() {
             <Badge variant={hasAvailableWorker ? 'success' : 'warning'}>
               Workers {hasAvailableWorker ? 'available' : 'not active'}
             </Badge>
+            <Badge variant="outline">
+              Ready link {formatPercent(Number(readinessThresholds.ready_link_ratio ?? 0.8))}
+            </Badge>
+            <Badge variant="outline">
+              Warning link {formatPercent(Number(readinessThresholds.warning_link_ratio ?? 0.5))}
+            </Badge>
+            <Badge variant="outline">
+              History target {formatInteger(readinessThresholds.ready_historical_depth ?? 4)}Q
+            </Badge>
           </div>
           <div className="grid gap-3 lg:grid-cols-[280px_minmax(0,1fr)]">
             <div className="rounded-md border border-border/70 p-3">
@@ -598,6 +692,61 @@ export default function Admin13FPage() {
               No blocking admin task detected.
             </div>
           ) : null}
+        </CardContent>
+      </Card>
+
+      <Card className="rounded-md">
+        <CardHeader className="pb-3">
+          <CardTitle className="flex flex-col gap-2 text-base sm:flex-row sm:items-center sm:justify-between">
+            <span className="flex items-center gap-2">
+              <Activity className="h-4 w-4" />
+              EDGAR Rate Limit
+            </span>
+            <Badge variant={badgeVariant(edgarRateLimitQuery.isError ? 'warning' : edgarRateLimit.tone)}>
+              {edgarRateLimitQuery.isError ? 'unavailable' : String(edgarRateLimit.mode)}
+            </Badge>
+          </CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-3">
+          {edgarRateLimitQuery.isLoading ? (
+            <div className="flex items-center gap-2 text-sm text-muted-foreground">
+              <Loader2 className="h-4 w-4 animate-spin" />
+              Loading EDGAR request budget...
+            </div>
+          ) : edgarRateLimitQuery.isError ? (
+            <div className="rounded-md border border-amber-300/70 bg-amber-50 px-3 py-2 text-sm text-amber-950">
+              EDGAR budget is unavailable. Job previews still enforce lock and rate-limit safeguards.
+            </div>
+          ) : (
+            <>
+              <div className="grid gap-3 md:grid-cols-4">
+                <MetricTile
+                  label="Recent requests"
+                  value={formatInteger(edgarRateLimit.recentRequestCount)}
+                  detail={`${formatInteger(edgarRateLimit.windowSeconds)}s window`}
+                />
+                <MetricTile
+                  label="Remaining capacity"
+                  value={formatInteger(edgarRateLimit.remainingEstimatedCapacity)}
+                  detail={`of ${formatInteger(edgarRateLimit.estimatedCapacity)}`}
+                />
+                <MetricTile
+                  label="Request delay"
+                  value={`${edgarRateLimit.requestDelayS}s`}
+                  detail={`${formatInteger(edgarRateLimit.maxRetries)} retries`}
+                />
+                <MetricTile
+                  label="Usage"
+                  value={edgarRateLimit.usageRatio === null ? '—' : formatPercent(edgarRateLimit.usageRatio)}
+                />
+              </div>
+              {edgarRateLimit.globalPauseUntil ? (
+                <div className="rounded-md border border-amber-300/70 bg-amber-50 px-3 py-2 text-sm text-amber-950">
+                  EDGAR requests are paused until {String(edgarRateLimit.globalPauseUntil)}.
+                </div>
+              ) : null}
+            </>
+          )}
         </CardContent>
       </Card>
 
@@ -877,7 +1026,7 @@ export default function Admin13FPage() {
                         type="button"
                         variant="outline"
                         size="sm"
-                        onClick={() => setSelectedQuarter(quarter.quarter)}
+                        onClick={() => openQuarterDetail(quarter.quarter)}
                       >
                         Review
                       </Button>
@@ -1432,7 +1581,25 @@ export default function Admin13FPage() {
                               >
                                 Reject
                               </Button>
+                              <Button
+                                type="button"
+                                variant="ghost"
+                                size="sm"
+                                onClick={() => handleRetryManager(manager)}
+                              >
+                                Retry Search
+                              </Button>
                             </>
+                          ) : null}
+                          {manager.match_status === 'revoked' || manager.match_status === 'rejected' ? (
+                            <Button
+                              type="button"
+                              variant="outline"
+                              size="sm"
+                              onClick={() => handleRetryManager(manager)}
+                            >
+                              Retry Search
+                            </Button>
                           ) : null}
                           {manager.match_status === 'confirmed' && manager.cik ? (
                             <Button
@@ -1637,6 +1804,14 @@ export default function Admin13FPage() {
         onRevokeNoteChange={setRevokeNote}
         onCloseRevoke={closeRevokeManagerDialog}
         onSubmitRevoke={submitRevokeManagerDialog}
+        pendingRetryManager={pendingRetryManager}
+        retrySearchName={retrySearchName}
+        retryNote={retryNote}
+        retryPending={retryCikSearch.isPending}
+        onRetrySearchNameChange={setRetrySearchName}
+        onRetryNoteChange={setRetryNote}
+        onCloseRetry={closeRetryManagerDialog}
+        onSubmitRetry={submitRetryManagerDialog}
       />
 
       {selectedQuarter !== null ? (
@@ -1679,6 +1854,11 @@ export default function Admin13FPage() {
                       {String(selectedQuarterDetail.summary.active_job_type ?? 'job')}
                     </div>
                   ) : null}
+                  {selectedQuarterDetail.summary?.revoked_cik_review_required ? (
+                    <div className="rounded-md border border-rose-300/70 bg-rose-50 px-3 py-2 text-sm text-rose-950">
+                      This quarter includes filings from a manager whose CIK was revoked. Reconfirm the manager CIK before relying on downstream analytics.
+                    </div>
+                  ) : null}
 
                   <div>
                     <div className="mb-2 text-xs font-semibold uppercase text-muted-foreground">
@@ -1704,6 +1884,105 @@ export default function Admin13FPage() {
                           No suggested action for this quarter.
                         </div>
                       ) : null}
+                    </div>
+                  </div>
+
+                  <div>
+                    <div className="mb-2 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                      <div className="text-xs font-semibold uppercase text-muted-foreground">
+                        Filing Rows
+                      </div>
+                      <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+                        <Select
+                          value={quarterFilingStatus}
+                          onValueChange={(value) => {
+                            setQuarterFilingStatus(value);
+                            setQuarterFilingOffset(0);
+                          }}
+                        >
+                          <SelectTrigger className="w-full sm:w-[190px]">
+                            <SelectValue placeholder="All filing statuses" />
+                          </SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="all">All statuses</SelectItem>
+                            <SelectItem value="pending">Pending</SelectItem>
+                            <SelectItem value="failed">Failed</SelectItem>
+                            <SelectItem value="parsed_no_holdings">Parsed, no holdings</SelectItem>
+                            <SelectItem value="parsed">Parsed</SelectItem>
+                          </SelectContent>
+                        </Select>
+                        <div className="flex gap-2">
+                          <Button
+                            type="button"
+                            variant="outline"
+                            size="sm"
+                            disabled={quarterFilingOffset === 0}
+                            onClick={() => setQuarterFilingOffset((value) => Math.max(value - 25, 0))}
+                          >
+                            Prev
+                          </Button>
+                          <Button
+                            type="button"
+                            variant="outline"
+                            size="sm"
+                            disabled={
+                              !selectedQuarterDetail.filings_page ||
+                              Number(selectedQuarterDetail.filings_page.offset ?? 0) +
+                                Number(selectedQuarterDetail.filings_page.limit ?? 25) >=
+                                Number(selectedQuarterDetail.filings_page.total ?? 0)
+                            }
+                            onClick={() => setQuarterFilingOffset((value) => value + 25)}
+                          >
+                            Next
+                          </Button>
+                        </div>
+                      </div>
+                    </div>
+                    <div className="rounded-md border border-border/70">
+                      <Table>
+                        <TableHeader>
+                          <TableRow>
+                            <TableHead>Accession</TableHead>
+                            <TableHead>Status</TableHead>
+                            <TableHead>Manager</TableHead>
+                            <TableHead>Holdings</TableHead>
+                          </TableRow>
+                        </TableHeader>
+                        <TableBody>
+                          {(selectedQuarterDetail.filings_page?.items ?? []).map((filing: Record<string, unknown>) => (
+                            <TableRow key={String(filing.accession_no)}>
+                              <TableCell className="font-mono text-xs">{String(filing.accession_no ?? '—')}</TableCell>
+                              <TableCell>
+                                <Badge variant={badgeVariant(
+                                  filing.status === 'failed'
+                                    ? 'danger'
+                                    : filing.status === 'pending' || filing.status === 'parsed_no_holdings'
+                                      ? 'warning'
+                                      : 'success'
+                                )}>
+                                  {String(filing.status ?? 'unknown').replaceAll('_', ' ')}
+                                </Badge>
+                              </TableCell>
+                              <TableCell>{String((filing.manager as Record<string, unknown> | undefined)?.legal_name ?? '—')}</TableCell>
+                              <TableCell>{formatInteger(filing.holdings_count)}</TableCell>
+                            </TableRow>
+                          ))}
+                          {(selectedQuarterDetail.filings_page?.items ?? []).length === 0 ? (
+                            <TableRow>
+                              <TableCell colSpan={4} className="py-6 text-center text-muted-foreground">
+                                No filings match this filter.
+                              </TableCell>
+                            </TableRow>
+                          ) : null}
+                        </TableBody>
+                      </Table>
+                    </div>
+                    <div className="mt-2 text-xs text-muted-foreground">
+                      Showing {formatInteger((selectedQuarterDetail.filings_page?.items ?? []).length)} of{' '}
+                      {formatInteger(selectedQuarterDetail.filings_page?.total)} matching filings.
+                      Counts: pending {formatInteger(selectedQuarterDetail.filing_counts_by_status?.pending)}, failed{' '}
+                      {formatInteger(selectedQuarterDetail.filing_counts_by_status?.failed)}, parsed{' '}
+                      {formatInteger(selectedQuarterDetail.filing_counts_by_status?.parsed)}.
                     </div>
                   </div>
 

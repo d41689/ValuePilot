@@ -145,8 +145,7 @@ While MVP 1 focused on confirmation, the implementation includes a full `Revoke 
 2. Marks the manager status as `revoked`.
 3. Creates a P1 admin task `REVOKED_CIK_DOWNSTREAM_REVIEW` identifying all quarters and filings that were potentially contaminated by the incorrect CIK.
 4. Preserves existing data for audit while flagging it as requiring repair.
-
-Current gap: revoked CIK repair tasks are visible as P1 admin tasks, but affected quarter health/readiness is not yet automatically downgraded solely because an unresolved `REVOKED_CIK_DOWNSTREAM_REVIEW` task exists.
+5. Marks affected quarters as `needs_review` and adds an Admin readiness warning while unresolved downstream repair scope exists.
 
 ### 5.4 External Alerts
 
@@ -530,7 +529,7 @@ Actions:
 
 - Confirm candidate
 - Reject candidate
-- Edit search name and retry (planned; see Gap Register G3)
+- Edit search name and retry
 - Mark as ignored (currently handled as reject-with-note rather than a separate status)
 - Revoke confirmed CIK with required note and downstream repair task
 - Open SEC entity page
@@ -542,7 +541,7 @@ Rules:
 - Rejected candidates should be retained for audit, not deleted silently.
 - Confirming a CIK should immediately make the manager eligible for the next ingestion run.
 
-Current implementation note: revoking an already confirmed CIK is implemented as a high-impact workflow, not a casual undo. It requires an admin note, preserves review evidence in `InstitutionManagerCikReviewEvent`, marks the manager `revoked`, and creates a downstream P1 repair task when affected filings exist. The remaining gap is to propagate unresolved revocation repair scope directly into quarter health/readiness; see Gap Register G7.
+Current implementation note: revoking an already confirmed CIK is implemented as a high-impact workflow, not a casual undo. It requires an admin note, preserves review evidence in `InstitutionManagerCikReviewEvent`, marks the manager `revoked`, creates a downstream P1 repair task when affected filings exist, and propagates unresolved repair scope into quarter health/readiness.
 
 ### 13.1 CIK Confirmation Audit
 
@@ -934,21 +933,21 @@ Filing deadlines should be calculated rather than hard-coded. The UI may show ap
 - **Added:** Smart Retry system for automatic recovery from transient failures
 - **Added:** Stale lock release mechanism
 
-### MVP 3: Manager / CIK Review (MOSTLY COMPLETED)
+### MVP 3: Manager / CIK Review (COMPLETED FOR LAUNCH)
 
 - Candidate review table
 - Confirm / reject actions
-- Retry search with edited name (**not implemented yet; see Gap Register G3**)
+- Retry search with edited name
 - Audit status changes and review notes
 - **Added:** CIK Revocation workflow and downstream repair task generation
 
-### MVP 4: Product Gating And Readiness Refinement (IN PROGRESS)
+### MVP 4: Product Gating And Readiness Refinement (COMPLETED FOR LAUNCH)
 
 - Refine Oracle's Lens readiness behavior after the initial MVP 1B integration
 - Add stale quarter alerts (**implemented as admin tasks/health signals; continue tuning copy and thresholds**)
 - Add failed job alerts (**implemented as admin tasks plus Slack/Discord webhook notifications; Email remains a gap**)
 - Add low coverage alerts (**implemented through readiness/tasks when linked holding ratio is below threshold**)
-- Tune readiness thresholds based on real ingestion data (**not yet configurable; see Gap Register G6**)
+- Tune readiness thresholds based on real ingestion data (**implemented as environment-configurable thresholds exposed read-only in Admin readiness payloads**)
 
 ### MVP 5: Alerts (PARTIALLY COMPLETED)
 
@@ -992,6 +991,10 @@ Filing deadlines should be calculated rather than hard-coded. The UI may show ap
 - When a quarterly pipeline stage fails after index/ingest gates succeed, the parent JobRun records stage summaries and exposes retry targets for the failed stage rather than forcing a full pipeline rerun.
 - When a running job heartbeat is stale, an admin can release the lock only through the stale-lock recovery path; fresh running jobs remain protected.
 - When Slack or Discord webhook URLs are configured, failed/partial 13F jobs and quarterly pipelines with quality warnings/failures send external notifications.
+- When a manager CIK is revoked with affected filings, affected quarters return `quarter_health=needs_review` and Admin readiness includes a revoked-CIK warning until the manager is reconfirmed.
+- When an admin retries CIK search with an edited name, the result is persisted as a review candidate with source, score, evidence URL, note, and audit event; it is not used for ingestion until confirmed.
+- When an admin opens a large quarter detail view, filing rows can be paged and filtered by status while summary counts remain available.
+- When EDGAR requests are made through the shared client, Admin can see rolling-window request count, estimated capacity, remaining capacity, configured delay, retry count, and temporary pause state.
 
 ## 22. Current Implementation Gaps And Handling Plan
 
@@ -1000,14 +1003,19 @@ This section is the source of truth for product-plan requirements or production-
 | ID | Gap | Current Code State | Impact | Recommended Handling |
 | --- | --- | --- | --- | --- |
 | G1 | Email alerts | Slack and Discord webhooks are implemented through `send_slack_notification`, `send_discord_notification`, and `notify_job_completion`; Email is not implemented. | Low for launch because Slack/Discord cover proactive external alerting and in-app tasks remain the system of record. | Do not implement Email for the current launch. Revisit only if compliance, customer operations, or enterprise deployment requirements explicitly require Email. |
-| G2 | Hard EDGAR rate-limit quota view | EDGAR request delay/retry settings, rate-limit warnings, dry-run previews, and Smart Retry cooldowns exist. There is no global request ledger, remaining-quota estimate, or Admin quota tile. | Admins cannot see current EDGAR request budget or diagnose rate-limit risk before large backfills beyond warnings. | Add an EDGAR request ledger/rate limiter service, expose current rolling-window usage and backoff state, and add an Admin Operations quota panel before expanding parallel ingestion. |
-| G3 | Retry CIK search with edited name | Admin can run global `match_cik`, confirm candidates, reject candidates, and preserve prior rejected candidates. There is no per-manager edited-name retry UI/API. | Ambiguous manager identity still requires either global rematch or manual research outside the dashboard. | Add `POST /admin/13f/managers/{id}/retry-cik-search` with an optional search name, persist search evidence, and add a Dialog action in the Managers table. |
-| G4 | Quarter detail pagination/filtering | `get_quarter_detail` loads all filings for the quarter and returns all filing rows, pending rows, failed rows, and amendments in one response. | Large quarters can create slow API responses and heavy browser rendering. | Add limit/offset or cursor pagination plus status filters for filings; keep summary counts separate from paged rows; update the drawer/table UI to request pages. |
-| G5 | Typed JobRun summary contracts | Dashboard retry targets and detail views depend on `summary_json` keys such as `stages`, `failed_accessions`, and `holdings_ingestion.failed_accessions`. These contracts are implicit. | Worker summary changes can silently break retry UI or task metadata. | Define Pydantic or TypedDict summary schemas per job type, validate summaries before persisting, and add contract tests between worker execution and dashboard readers. |
-| G6 | Configurable readiness thresholds | Defaults such as `READY_LINK_RATIO = 0.80` are Python constants. | Production cannot tune readiness sensitivity without code changes. | Move readiness thresholds to `app.core.config.settings`, document environment variables, and add tests for configured threshold behavior. |
-| G7 | Revoked CIK effect on quarter health/readiness | Revocation creates audit events and P1 `REVOKED_CIK_DOWNSTREAM_REVIEW` tasks. Affected quarter health/readiness is not automatically downgraded solely due to unresolved revocation repair. | Dashboard shows the task, but quarter-level status may understate contaminated historical data. | Include unresolved revoked-CIK repair scope in `_quarter_health` and/or readiness warnings for affected quarters; clear the warning after reconfirm/reprocess flow is complete. |
 | G8 | Smart Retry admin settings UI | `THIRTEENF_SMART_RETRY_ENABLED` is exposed read-only in readiness/admin UI and controlled by environment config. | Admins cannot toggle Smart Retry from the dashboard. | Keep env-only for launch. Add a settings surface with audit trail only if operations needs runtime toggling after observing production behavior. |
 | G9 | External engineering escalation integration | In-app tasks identify engineering/external-dependency failures. No external ticket creation is implemented. | Engineering handoff still requires manual copy/paste from the dashboard. | If required, integrate a ticket system behind an allowlisted action that includes job id, accession, error summary, and evidence links. |
+
+### 22.1 Recently Closed Gaps
+
+| ID | Closed Capability | Implementation State |
+| --- | --- | --- |
+| G2 | EDGAR rate-limit quota view | Shared EDGAR client records rolling request events and pause state; `/admin/13f/edgar-rate-limit` exposes recent count, capacity estimate, remaining capacity, configured delay/retries, and pause timestamp; Admin UI displays the budget panel. |
+| G3 | Retry CIK search with edited name | `POST /admin/13f/managers/{id}/retry-cik-search` accepts an edited search name, persists candidate evidence and a `retry_candidate_search` audit event, and Admin UI exposes a dialog action. |
+| G4 | Quarter detail pagination/filtering | Quarter detail endpoint accepts filing `limit`, `offset`, and `status`; response keeps summary/status counts separate from paged rows; Admin drawer can filter and page filing rows. |
+| G5 | JobRun summary contracts | Quarterly pipeline summaries include `summary_schema=quarterly_pipeline_summary.v1`; stage summaries include per-stage `schema` keys, with tests covering the dashboard contract for retryable stage jobs. |
+| G6 | Configurable readiness thresholds | Ready/warning linked-holding ratios and historical-depth thresholds moved to settings with defaults preserving current behavior; readiness payload exposes effective thresholds. |
+| G7 | Revoked CIK effect on quarter health/readiness | Unresolved revocation repair scope marks affected quarters `needs_review`, adds `revoked_cik_review_required`, and surfaces Admin readiness warnings. |
 
 ## 23. Resolved Product Decisions
 
@@ -1015,7 +1023,7 @@ The following decisions close the prior open questions for the current launch sc
 
 | Question | Decision | Rationale / Product Rule |
 | --- | --- | --- |
-| Should manual backfill be arbitrary or capped? | Cap ordinary dashboard backfill to a conservative depth until the EDGAR quota view exists. | Default UI action should remain 4 quarters. Dashboard-supported expansion should cap at 8 quarters for normal operations. Deeper backfills require an explicit engineering/runbook path until G2 adds quota visibility. |
+| Should manual backfill be arbitrary or capped? | Keep ordinary dashboard backfill conservative even with EDGAR quota visibility. | Default UI action should remain 4 quarters. Dashboard-supported expansion should cap at 8 quarters for normal operations. Deeper backfills require an explicit engineering/runbook path until production quota observations justify a wider self-serve range. |
 | Do we need Email alerts? | No for current launch. | Slack and Discord webhook alerts are implemented and are sufficient for proactive external notification. Email is deferred and should only be added for compliance, enterprise, or customer-operations requirements. |
 | Should `partial_success` jobs create escalation tasks in addition to Smart Retry? | Yes, but with staged severity. | A `partial_success` job should remain visible as an in-app task with retry targets immediately. Smart Retry may auto-retry allowlisted targets after cooldown. If retries exceed max attempts or the failure is deterministic/parser-like, escalate to a human-facing engineering task. |
 | What calendar should drive 13F deadlines? | Use deterministic 45 calendar days after calendar quarter end for V1. | This is good enough for product copy and readiness state. A formal holiday/weekend-aware SEC calendar is deferred until observed deadline precision creates user confusion or compliance risk. |
@@ -1023,76 +1031,18 @@ The following decisions close the prior open questions for the current launch sc
 
 ## 24. Development Plan For Remaining Gaps
 
-This plan completes the remaining implementation gaps in a launch-oriented order. It intentionally excludes Email alerts from the current development path because Slack/Discord are already implemented.
+The launch-critical gaps G2-G7 are now closed in this branch. Remaining work is intentionally deferred because it depends on operational preference or a target integration system, not core 13F data correctness.
 
-### Batch A: Data Correctness And Contract Safety
+### Deferred Integrations
 
-1. **G7 Revoked CIK readiness impact**
-   - Goal: Affected quarters and readiness must visibly reflect unresolved revoked-CIK downstream repair.
-   - Scope: Add unresolved revocation repair detection to quarter summaries, quarter health, readiness warnings, and task copy.
-   - Acceptance criteria:
-     - A quarter in an unresolved `REVOKED_CIK_DOWNSTREAM_REVIEW` scope returns `quarter_health=needs_review`.
-     - Admin readiness includes a warning/blocker pointing to the affected manager and quarters.
-     - Reconfirming and reprocessing affected data clears or downgrades the warning path.
-   - Verification: backend unit tests for revoke -> affected quarter health, readiness warning, and clear path.
-
-2. **G5 Typed JobRun summary contracts**
-   - Goal: Make dashboard/job-worker contracts explicit instead of relying on ad hoc `summary_json` keys.
-   - Scope: Define per-job summary schemas for quarterly pipeline, stage jobs, ingest accession, enrichment, quality check, and smart retry outputs.
-   - Acceptance criteria:
-     - Worker writes summaries through schema helpers.
-     - Dashboard retry target extraction reads schema-normalized summaries.
-     - Invalid/missing summary fields fail tests or degrade with explicit warning metadata.
-   - Verification: contract tests between `_execute_job`, JobRun persistence, `_job_retry_targets`, and Job Detail UI payloads.
-
-3. **G4 Quarter detail pagination/filtering**
-   - Goal: Prevent large quarters from returning unbounded filings in one response.
-   - Scope: Add paged filing rows to quarter detail or a dedicated quarter filings endpoint; preserve summary counts separately.
-   - Acceptance criteria:
-     - Quarter summary returns total, pending, failed, and amendment counts without loading all row details.
-     - UI can filter filings by status and page through results.
-     - Existing suggested actions still use counts and failed targets correctly.
-   - Verification: backend pagination tests, frontend table/pager tests, and browser QA on a seeded large-quarter fixture.
-
-### Batch B: Operational Controls
-
-4. **G6 Configurable readiness thresholds**
-   - Goal: Move hard-coded readiness thresholds to settings.
-   - Scope: Add settings for linked holding ready threshold, warning threshold if needed, and historical depth target defaults.
-   - Acceptance criteria:
-     - Defaults preserve current behavior.
-     - Tests can override settings and observe readiness changes.
-     - Admin UI displays the effective threshold values read-only.
-   - Verification: backend settings override tests and frontend normalization/display tests.
-
-5. **G2 EDGAR rate-limit quota view**
-   - Goal: Give admins visibility into EDGAR request pressure before large jobs.
-   - Scope: Add request ledger or rolling counter around EDGAR fetches, current cooldown/backoff state, and Admin quota panel.
-   - Acceptance criteria:
-     - Dashboard shows recent EDGAR request count, configured delay, retry/backoff state, and whether network-heavy jobs are safe to start.
-     - Dry-run previews include quota/rate-limit context.
-     - Backfill UI respects quota state and warns before heavy runs.
-   - Verification: service tests for rolling-window accounting plus frontend display tests.
-
-6. **G3 Per-manager edited-name CIK retry**
-   - Goal: Let admins resolve ambiguous manager identity without leaving the dashboard.
-   - Scope: Add per-manager retry endpoint accepting an edited search name, record evidence, and expose a Dialog action in Managers.
-   - Acceptance criteria:
-     - Retry search never auto-confirms below threshold.
-     - Prior rejected candidates remain preserved.
-     - New candidate evidence includes edited search name, source, score, and evidence URL.
-   - Verification: backend candidate retry tests and browser QA with the pending CIK fixture.
-
-### Batch C: Deferred Integrations
-
-7. **G8 Smart Retry admin settings UI**
+1. **G8 Smart Retry admin settings UI**
    - Current decision: defer until production usage shows runtime toggling is needed.
    - Future implementation: audited settings change endpoint, confirmation dialog, and clear distinction between scheduler enabled and Smart Retry enabled.
 
-8. **G9 External engineering escalation integration**
+2. **G9 External engineering escalation integration**
    - Current decision: defer until a target ticketing system is chosen.
    - Future implementation: allowlisted "Create engineering ticket" action with job id, accession, failure category, latest error, and evidence links.
 
-9. **G1 Email alerts**
+3. **G1 Email alerts**
    - Current decision: do not implement for launch.
    - Future implementation trigger: compliance requirement, enterprise deployment need, or operations team request for Email as a required notification channel.

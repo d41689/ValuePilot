@@ -11,6 +11,7 @@ from app.services.thirteenf_admin_dashboard import (
     build_admin_readiness,
     build_admin_tasks,
     build_consumer_readiness,
+    build_edgar_rate_limit_status,
     build_managers,
     build_quality_reports,
     build_quarters,
@@ -19,13 +20,14 @@ from app.services.thirteenf_admin_dashboard import (
     confirm_manager_cik,
     get_amendment,
     get_job,
-    get_quarter_detail,
+    get_quarter_detail_page,
     get_quality_report_for_quarter,
     list_manager_cik_review_events,
     list_workers,
     list_jobs,
     reject_manager_cik,
     release_stale_job_lock,
+    retry_manager_cik_search,
     revoke_manager_cik,
     trigger_job,
 )
@@ -37,6 +39,7 @@ consumer_router = APIRouter()
 class ManagerReviewRequest(BaseModel):
     cik: str | None = None
     note: str | None = None
+    search_name: str | None = None
 
 
 class JobTriggerRequest(BaseModel):
@@ -83,11 +86,29 @@ def read_quarter(session: SessionDep, current_user: AdminUser, quarter: str) -> 
 
 
 @admin_router.get("/quarters/{quarter}/detail", response_model=dict)
-def read_quarter_detail(session: SessionDep, current_user: AdminUser, quarter: str) -> Any:
+def read_quarter_detail(
+    session: SessionDep,
+    current_user: AdminUser,
+    quarter: str,
+    filing_limit: int = Query(25, ge=1, le=200),
+    filing_offset: int = Query(0, ge=0),
+    filing_status: str | None = Query(default=None, pattern="^(pending|failed|parsed_no_holdings|parsed)$"),
+) -> Any:
     try:
-        return get_quarter_detail(session, quarter)
+        return get_quarter_detail_page(
+            session,
+            quarter,
+            filing_limit=filing_limit,
+            filing_offset=filing_offset,
+            filing_status=filing_status,
+        )
     except (ValueError, IndexError) as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+
+
+@admin_router.get("/edgar-rate-limit", response_model=dict)
+def read_edgar_rate_limit_status(session: SessionDep, current_user: AdminUser) -> Any:
+    return build_edgar_rate_limit_status()
 
 
 @admin_router.get("/tasks", response_model=dict)
@@ -182,6 +203,25 @@ def revoke_cik(
         return revoke_manager_cik(
             session,
             manager_id,
+            note=payload.note,
+            reviewed_by_user_id=current_user.id,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+
+
+@admin_router.post("/managers/{manager_id}/retry-cik-search", response_model=dict)
+def retry_cik_search(
+    session: SessionDep,
+    current_user: AdminUser,
+    manager_id: int,
+    payload: ManagerReviewRequest,
+) -> Any:
+    try:
+        return retry_manager_cik_search(
+            session,
+            manager_id,
+            search_name=payload.search_name or "",
             note=payload.note,
             reviewed_by_user_id=current_user.id,
         )

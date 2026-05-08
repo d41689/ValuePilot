@@ -9,6 +9,7 @@ const {
   jobPreviewLine,
   normalizeAmendments,
   normalizeCikReviewEvents,
+  normalizeEdgarRateLimit,
   normalizeQualityReports,
   normalizeQuarters,
   normalizeReadiness,
@@ -54,6 +55,25 @@ test('normalizeReadiness preserves consumer-visible freshness fields', () => {
   assert.deepEqual(readiness.setupChecklist, []);
   assert.match(freshnessLine(readiness), /Default data period: 2025-Q4/);
   assert.match(freshnessLine(readiness), /Amendment status: amendments_applied/);
+});
+
+test('normalizeEdgarRateLimit computes usage tone and capacity fields', () => {
+  const status = normalizeEdgarRateLimit({
+    mode: 'live',
+    request_delay_s: 0.2,
+    max_retries: 3,
+    window_seconds: 60,
+    recent_request_count: 240,
+    estimated_capacity: 300,
+    remaining_estimated_capacity: 60,
+    global_pause_until: null,
+  });
+
+  assert.equal(status.mode, 'live');
+  assert.equal(status.recentRequestCount, 240);
+  assert.equal(status.remainingEstimatedCapacity, 60);
+  assert.equal(status.usageRatio, 0.8);
+  assert.equal(status.tone, 'warning');
 });
 
 test('normalizeReadiness maps setup checklist states', () => {

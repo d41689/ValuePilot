@@ -39,6 +39,14 @@ type ManagerCikDialogsProps = {
   onRevokeNoteChange: (value: string) => void;
   onCloseRevoke: () => void;
   onSubmitRevoke: () => void;
+  pendingRetryManager: ManagerRecord | null;
+  retrySearchName: string;
+  retryNote: string;
+  retryPending: boolean;
+  onRetrySearchNameChange: (value: string) => void;
+  onRetryNoteChange: (value: string) => void;
+  onCloseRetry: () => void;
+  onSubmitRetry: () => void;
 };
 
 export function ManagerCikDialogs({
@@ -62,6 +70,14 @@ export function ManagerCikDialogs({
   onRevokeNoteChange,
   onCloseRevoke,
   onSubmitRevoke,
+  pendingRetryManager,
+  retrySearchName,
+  retryNote,
+  retryPending,
+  onRetrySearchNameChange,
+  onRetryNoteChange,
+  onCloseRetry,
+  onSubmitRetry,
 }: ManagerCikDialogsProps) {
   return (
     <>
@@ -234,6 +250,66 @@ export function ManagerCikDialogs({
               onClick={onSubmitRevoke}
             >
               Revoke CIK
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={pendingRetryManager !== null} onOpenChange={(open) => !open && onCloseRetry()}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Retry CIK Search</DialogTitle>
+            <DialogDescription>
+              Search EDGAR again with an edited manager name. A match is saved as a candidate for review.
+            </DialogDescription>
+          </DialogHeader>
+          {pendingRetryManager ? (
+            <div className="space-y-4">
+              <div className="rounded-md border border-border/70 p-3 text-sm">
+                <SectionLabel>Manager</SectionLabel>
+                <div className="mt-1 font-medium">
+                  {String(pendingRetryManager.legal_name ?? pendingRetryManager.display_name ?? 'this manager')}
+                </div>
+                <div className="mt-1 text-xs text-muted-foreground">
+                  Current status: {String(pendingRetryManager.match_status ?? '—')}
+                </div>
+              </div>
+              <div>
+                <label className="text-xs font-semibold uppercase text-muted-foreground" htmlFor="retry-search-name">
+                  Search name
+                </label>
+                <Input
+                  id="retry-search-name"
+                  className="mt-2"
+                  value={retrySearchName}
+                  onChange={(event) => onRetrySearchNameChange(event.target.value)}
+                  placeholder="Manager legal name"
+                />
+              </div>
+              <div>
+                <label className="text-xs font-semibold uppercase text-muted-foreground" htmlFor="retry-note">
+                  Optional note
+                </label>
+                <Textarea
+                  id="retry-note"
+                  className="mt-2"
+                  value={retryNote}
+                  onChange={(event) => onRetryNoteChange(event.target.value)}
+                  placeholder="Why use this edited search name?"
+                />
+              </div>
+            </div>
+          ) : null}
+          <DialogFooter>
+            <Button type="button" variant="outline" onClick={onCloseRetry}>
+              Cancel
+            </Button>
+            <Button
+              type="button"
+              disabled={!pendingRetryManager || !retrySearchName.trim() || retryPending}
+              onClick={onSubmitRetry}
+            >
+              Retry Search
             </Button>
           </DialogFooter>
         </DialogContent>

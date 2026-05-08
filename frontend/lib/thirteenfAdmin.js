@@ -55,9 +55,30 @@ function normalizeReadiness(payload) {
     warnings: Array.isArray(data.warnings) ? data.warnings : [],
     blockers: Array.isArray(data.blockers) ? data.blockers : [],
     counts: data.counts && typeof data.counts === 'object' ? data.counts : {},
+    thresholds: data.thresholds && typeof data.thresholds === 'object' ? data.thresholds : {},
     topTask: data.top_task && typeof data.top_task === 'object' ? data.top_task : null,
     schedulerEnabled: Boolean(data.scheduler_enabled),
     smartRetryEnabled: Boolean(data.smart_retry_enabled),
+  };
+}
+
+function normalizeEdgarRateLimit(payload) {
+  const data = payload && typeof payload === 'object' ? payload : {};
+  const recent = Number(data.recent_request_count ?? 0);
+  const capacity = Number(data.estimated_capacity ?? 0);
+  const remaining = Number(data.remaining_estimated_capacity ?? 0);
+  const usageRatio = capacity > 0 ? Math.min(Math.max(recent / capacity, 0), 1) : null;
+  return {
+    mode: data.mode ?? 'unknown',
+    requestDelayS: Number(data.request_delay_s ?? 0),
+    maxRetries: Number(data.max_retries ?? 0),
+    windowSeconds: Number(data.window_seconds ?? 0),
+    recentRequestCount: recent,
+    estimatedCapacity: capacity,
+    remainingEstimatedCapacity: remaining,
+    globalPauseUntil: data.global_pause_until ?? null,
+    usageRatio,
+    tone: data.global_pause_until ? 'warning' : usageRatio !== null && usageRatio >= 0.8 ? 'warning' : 'success',
   };
 }
 
@@ -401,6 +422,7 @@ module.exports = {
   jobPreviewLine,
   normalizeAmendments,
   normalizeCikReviewEvents,
+  normalizeEdgarRateLimit,
   healthTone,
   normalizeQuarters,
   normalizeQualityReports,
