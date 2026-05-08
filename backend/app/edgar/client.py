@@ -123,6 +123,8 @@ class EdgarClient:
 
     def _request(self, method: str, url: str) -> httpx.Response:
         """Execute a rate-limited request with retry on transient errors."""
+        global _GLOBAL_PAUSE_UNTIL, _bucket
+
         bucket = _get_bucket()
         last_exc: Optional[Exception] = None
 
@@ -152,11 +154,9 @@ class EdgarClient:
 
             if resp.status_code in (429, 503):
                 logger.error("EDGAR %d — global pause 60 s then resume at 1 req/s", resp.status_code)
-                global _GLOBAL_PAUSE_UNTIL
                 with _REQUEST_EVENTS_LOCK:
                     _GLOBAL_PAUSE_UNTIL = time.time() + 60
                 time.sleep(60)
-                global _bucket
                 with _bucket_lock:
                     _bucket = _TokenBucket(rate=1.0, burst=1)
                 last_exc = RuntimeError(f"HTTP {resp.status_code}")

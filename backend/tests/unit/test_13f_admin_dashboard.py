@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from datetime import date, datetime, timedelta, timezone
 
+import httpx
+
 from app.models.institutions import (
     Filing13F,
     Holding13F,
@@ -1598,6 +1600,43 @@ def test_edgar_rate_limit_status_counts_recorded_requests(monkeypatch):
     assert status["recent_request_count"] == 2
     assert status["estimated_capacity"] == 120
     assert status["remaining_estimated_capacity"] == 118
+
+
+def test_edgar_rate_limit_status_records_global_pause_after_429(monkeypatch):
+    from app.edgar import client as edgar_client
+
+    class DummyBucket:
+        def acquire(self):
+            return None
+
+    class DummyHttpClient:
+        def __init__(self):
+            self.calls = 0
+
+        def request(self, method, url):
+            self.calls += 1
+            request = httpx.Request(method, url)
+            status_code = 429 if self.calls == 1 else 200
+            return httpx.Response(status_code, content=b"ok", request=request)
+
+        def close(self):
+            return None
+
+    monkeypatch.setattr(edgar_client.settings, "EDGAR_MAX_RETRIES", 1)
+    monkeypatch.setattr(edgar_client.time, "sleep", lambda seconds: None)
+    monkeypatch.setattr(edgar_client, "_get_bucket", lambda: DummyBucket())
+    with edgar_client._REQUEST_EVENTS_LOCK:
+        edgar_client._REQUEST_EVENTS.clear()
+        edgar_client._GLOBAL_PAUSE_UNTIL = None
+    test_client = edgar_client.EdgarClient()
+    test_client._client = DummyHttpClient()
+
+    response = test_client._request("GET", "https://www.sec.gov/test-429")
+    status = edgar_client.edgar_rate_limit_status()
+
+    assert response.status_code == 200
+    assert status["recent_request_count"] == 2
+    assert status["global_pause_until"] is not None
 
 
 def test_quarterly_pipeline_continues_after_retryable_enrichment_failure(

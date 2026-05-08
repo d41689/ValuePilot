@@ -1737,11 +1737,6 @@ def _filing_status_from_count(filing: Filing13F, holdings_count: int) -> str:
     return "parsed"
 
 
-def _filing_status(session: Session, filing: Filing13F) -> str:
-    holdings_count = session.query(Holding13F).filter(Holding13F.filing_id == filing.id).count()
-    return _filing_status_from_count(filing, holdings_count)
-
-
 def _filing_status_counts(filings: list[Filing13F], filing_status_by_id: dict[int, str]) -> dict[str, int]:
     counts = {"pending": 0, "failed": 0, "parsed_no_holdings": 0, "parsed": 0}
     for filing in filings:
