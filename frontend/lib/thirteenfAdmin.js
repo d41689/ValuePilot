@@ -107,6 +107,73 @@ function normalizeWorkers(items) {
   }));
 }
 
+function operationsHealth(readiness, tasks, hasAvailableWorker) {
+  const checklist = Array.isArray(readiness?.setupChecklist) ? readiness.setupChecklist : [];
+  const taskItems = Array.isArray(tasks) ? tasks : [];
+  const blockedSetupCount = checklist.filter((item) => item.status === 'blocked').length;
+  const warningSetupCount = checklist.filter((item) => item.status === 'warning').length;
+  const p0Count = taskItems.filter((item) => item.priority === 'P0').length;
+  const p1Count = taskItems.filter((item) => item.priority === 'P1').length;
+  const reasons = [];
+
+  if (blockedSetupCount > 0) {
+    reasons.push(`${blockedSetupCount} blocked setup item${blockedSetupCount === 1 ? '' : 's'}`);
+  }
+  if (p0Count > 0) {
+    reasons.push(`${p0Count} P0 task${p0Count === 1 ? '' : 's'}`);
+  }
+  if (p1Count > 0) {
+    reasons.push(`${p1Count} P1 task${p1Count === 1 ? '' : 's'}`);
+  }
+  if (!hasAvailableWorker) {
+    reasons.push('no active worker heartbeat');
+  }
+
+  if (blockedSetupCount > 0 || p0Count > 0 || !hasAvailableWorker) {
+    return {
+      level: 'blocked',
+      tone: 'danger',
+      label: 'operations blocked',
+      summary: reasons.join(', '),
+      reasons,
+    };
+  }
+  if (warningSetupCount > 0 || p1Count > 0 || taskItems.length > 0) {
+    const warningReasons = reasons.length > 0
+      ? reasons
+      : [`${taskItems.length} task${taskItems.length === 1 ? '' : 's'} pending`];
+    return {
+      level: 'attention',
+      tone: 'warning',
+      label: 'needs attention',
+      summary: warningReasons.join(', '),
+      reasons: warningReasons,
+    };
+  }
+  return {
+    level: 'healthy',
+    tone: 'success',
+    label: 'operations healthy',
+    summary: 'No operational blockers detected.',
+    reasons: [],
+  };
+}
+
+function visibleWorkerRows(workers, showHistory, limit = 12) {
+  const items = Array.isArray(workers) ? workers : [];
+  const sorted = [...items].sort((left, right) =>
+    String(right.lastHeartbeatAt ?? '').localeCompare(String(left.lastHeartbeatAt ?? ''))
+  );
+  if (showHistory) {
+    return { rows: sorted.slice(0, limit), hiddenCount: Math.max(sorted.length - limit, 0) };
+  }
+  const rows = sorted.filter((worker) => worker.status !== 'stopped').slice(0, limit);
+  if (rows.length > 0) {
+    return { rows, hiddenCount: Math.max(sorted.length - rows.length, 0) };
+  }
+  return { rows: sorted.slice(0, Math.min(3, limit)), hiddenCount: Math.max(sorted.length - Math.min(3, limit), 0) };
+}
+
 function normalizeQualityReports(items) {
   return (Array.isArray(items) ? items : []).map((item) => ({
     id: item.id,
@@ -199,9 +266,59 @@ function jobPreviewLine(preview) {
   return parts.join('\n');
 }
 
+function jobPreviewRows(preview) {
+  const data = preview && typeof preview === 'object' ? preview : {};
+  const scope = data.estimated_scope && typeof data.estimated_scope === 'object'
+    ? data.estimated_scope
+    : {};
+  return [
+    ['Lock key', data.lock_key],
+    ['Target quarter', data.target_quarter],
+    ['Accession', data.accession_no],
+    ['Tracked managers', scope.tracked_managers],
+    ['Filings in quarter', scope.filings_in_quarter],
+    ['Pending filings', scope.pending_filings],
+    ['Failed filings', scope.failed_filings],
+    ['Start quarter', scope.start_quarter],
+    ['Quarters', scope.quarters],
+    ['Filing exists', scope.filing_exists],
+  ]
+    .filter(([, value]) => value !== undefined && value !== null)
+    .map(([label, value]) => ({ label, value }));
+}
+
+function taskPrimaryAction(task, latestQuarter) {
+  if (!task || typeof task !== 'object') return null;
+  const quarter = task.metadata?.quarter || latestQuarter;
+  const code = task.code;
+  if (code === 'EDGAR_SCHEDULER_DISABLED') {
+    return { label: 'Config change required', kind: 'manual' };
+  }
+  if (code === 'NO_CONFIRMED_MANAGER_CIK_WHITELIST') {
+    return { label: 'Bootstrap whitelist', payload: { job_type: 'bootstrap_whitelist' }, kind: 'job' };
+  }
+  if (code === 'CIK_CANDIDATES_NEED_REVIEW') {
+    return { label: 'Review managers', kind: 'anchor', target: 'managers' };
+  }
+  if ((code === 'QUALITY_ERRORS' || code === 'QUALITY_WARNINGS') && quarter) {
+    return { label: 'Run quality check', payload: { job_type: 'quality_check', quarter }, kind: 'job' };
+  }
+  if (code === 'LOW_STOCK_LINK_COVERAGE' && quarter) {
+    return { label: 'Run CUSIP enrichment', payload: { job_type: 'enrich_metadata', quarter }, kind: 'job' };
+  }
+  if (code === 'HISTORICAL_COVERAGE_BELOW_TARGET' || code === 'EXTENDED_BACKFILL_RECOMMENDED') {
+    return { label: 'Backfill quarters', payload: { job_type: 'backfill_quarters', quarters: 4 }, kind: 'job' };
+  }
+  if (code === 'FILING_PARSE_FAILURES' && quarter) {
+    return { label: 'Retry holdings ingest', payload: { job_type: 'ingest_holdings', quarter }, kind: 'job' };
+  }
+  return null;
+}
+
 module.exports = {
   formatPercent,
   freshnessLine,
+  jobPreviewRows,
   jobPreviewLine,
   normalizeAmendments,
   normalizeCikReviewEvents,
@@ -211,6 +328,9 @@ module.exports = {
   normalizeReadiness,
   normalizeTasks,
   normalizeWorkers,
+  operationsHealth,
   priorityTone,
   readinessTone,
+  taskPrimaryAction,
+  visibleWorkerRows,
 };

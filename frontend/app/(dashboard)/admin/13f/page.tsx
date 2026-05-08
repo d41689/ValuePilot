@@ -7,11 +7,13 @@ import {
   AlertTriangle,
   CheckCircle2,
   Database,
+  FolderClock,
   History,
   Loader2,
   Play,
   RefreshCw,
   ShieldAlert,
+  Settings,
   X,
 } from 'lucide-react';
 import type { ComponentProps } from 'react';
@@ -30,6 +32,7 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog';
 import { Input } from '@/components/ui/input';
+import { Textarea } from '@/components/ui/textarea';
 import {
   Table,
   TableBody,
@@ -42,13 +45,16 @@ import {
 const {
   formatPercent,
   freshnessLine,
-  jobPreviewLine,
+  jobPreviewRows,
   normalizeAmendments,
   normalizeQualityReports,
   normalizeQuarters,
   normalizeReadiness,
   normalizeTasks,
   normalizeWorkers,
+  operationsHealth,
+  taskPrimaryAction,
+  visibleWorkerRows,
 } = thirteenfAdmin;
 
 type BadgeVariant = ComponentProps<typeof Badge>['variant'];
@@ -75,26 +81,6 @@ function formatInteger(value: unknown) {
 function formatJson(value: unknown) {
   if (!value || typeof value !== 'object') return '—';
   return JSON.stringify(value, null, 2);
-}
-
-function previewScopeRows(preview: unknown) {
-  const data = preview && typeof preview === 'object' ? (preview as Record<string, unknown>) : {};
-  const scope =
-    data.estimated_scope && typeof data.estimated_scope === 'object'
-      ? (data.estimated_scope as Record<string, unknown>)
-      : {};
-  return [
-    ['Lock key', data.lock_key],
-    ['Target quarter', data.target_quarter],
-    ['Accession', data.accession_no],
-    ['Tracked managers', scope.tracked_managers],
-    ['Filings in quarter', scope.filings_in_quarter],
-    ['Pending filings', scope.pending_filings],
-    ['Failed filings', scope.failed_filings],
-    ['Start quarter', scope.start_quarter],
-    ['Quarters', scope.quarters],
-    ['Filing exists', scope.filing_exists],
-  ].filter(([, value]) => value !== undefined && value !== null);
 }
 
 export default function Admin13FPage() {
@@ -163,6 +149,9 @@ export default function Admin13FPage() {
     previewFailed?: boolean;
   } | null>(null);
   const [pendingStaleReleaseJobId, setPendingStaleReleaseJobId] = useState<number | null>(null);
+  const [showWorkerHistory, setShowWorkerHistory] = useState(false);
+  const [pendingRevokeManager, setPendingRevokeManager] = useState<Record<string, unknown> | null>(null);
+  const [revokeNote, setRevokeNote] = useState('');
   async function refreshAdminData() {
     await Promise.all([
       queryClient.invalidateQueries({ queryKey: ['admin-13f-readiness'] }),
@@ -250,6 +239,10 @@ export default function Admin13FPage() {
     [workersQuery.data]
   );
   const hasAvailableWorker = workers.some((worker) => worker.status === 'idle' || worker.status === 'running');
+  const workerRows = useMemo(
+    () => visibleWorkerRows(workers, showWorkerHistory),
+    [workers, showWorkerHistory]
+  );
   const managers = useMemo(
     () => (Array.isArray(managersQuery.data?.items) ? managersQuery.data.items : []),
     [managersQuery.data]
@@ -286,6 +279,10 @@ export default function Admin13FPage() {
   const latestQuarter = readiness.latestUsableQuarter === '—' ? undefined : readiness.latestUsableQuarter;
   const targetQuarter = manualQuarter.trim() || latestQuarter;
   const targetAccession = accessionNo.trim();
+  const operationalHealth = useMemo(
+    () => operationsHealth(readiness, tasks, hasAvailableWorker),
+    [readiness, tasks, hasAvailableWorker]
+  );
 
   function lockKeyForPayload(payload: Record<string, unknown>) {
     const jobType = String(payload.job_type ?? '');
@@ -395,29 +392,8 @@ export default function Admin13FPage() {
   function handleRevokeManager(manager: Record<string, unknown>) {
     const managerId = Number(manager.id);
     if (!Number.isFinite(managerId)) return;
-    const note =
-      typeof window !== 'undefined'
-        ? window.prompt('Required note: why is this confirmed CIK wrong?')
-        : null;
-    if (!note?.trim()) return;
-    const affectedEvent =
-      manager.latest_cik_review_event && typeof manager.latest_cik_review_event === 'object'
-        ? (manager.latest_cik_review_event as Record<string, unknown>)
-        : null;
-    const warning = affectedEvent?.requires_downstream_review
-      ? ' Existing filings already require downstream review.'
-      : '';
-    if (
-      typeof window !== 'undefined' &&
-      !window.confirm(
-        `Revoke CIK ${String(manager.cik ?? '—')} for ${String(
-          manager.legal_name ?? 'this manager'
-        )}? The manager will be excluded from future 13F ingestion until reconfirmed.${warning}`
-      )
-    ) {
-      return;
-    }
-    revokeManager.mutate({ managerId, note: note.trim() });
+    setRevokeNote('');
+    setPendingRevokeManager(manager);
   }
 
   return (
@@ -454,11 +430,16 @@ export default function Admin13FPage() {
 
       <Card className="rounded-md">
         <CardHeader className="pb-3">
-          <CardTitle className="flex items-center justify-between gap-3 text-base">
-            <span>Readiness</span>
-            <Badge variant={badgeVariant(readiness.readinessTone)}>
-              {readiness.readinessLevel.replaceAll('_', ' ')}
-            </Badge>
+          <CardTitle className="flex flex-col gap-2 text-base sm:flex-row sm:items-center sm:justify-between">
+            <span>Data Readiness & Operations Health</span>
+            <span className="flex flex-wrap gap-2">
+              <Badge variant={badgeVariant(readiness.readinessTone)}>
+                Data {readiness.readinessLevel.replaceAll('_', ' ')}
+              </Badge>
+              <Badge variant={badgeVariant(isLoading ? 'secondary' : operationalHealth.tone)}>
+                {isLoading ? 'operations loading' : operationalHealth.label}
+              </Badge>
+            </span>
           </CardTitle>
         </CardHeader>
         <CardContent className="space-y-4">
@@ -492,6 +473,26 @@ export default function Admin13FPage() {
           <div className="rounded-md border border-amber-300/70 bg-amber-50 px-3 py-2 text-sm text-amber-950">
             {freshnessLine(readiness)}
           </div>
+          {!isLoading ? (
+            <div
+              className={`rounded-md border px-3 py-2 text-sm ${
+                operationalHealth.level === 'healthy'
+                  ? 'border-emerald-300/70 bg-emerald-50 text-emerald-950'
+                  : operationalHealth.level === 'blocked'
+                    ? 'border-rose-300/70 bg-rose-50 text-rose-950'
+                    : 'border-amber-300/70 bg-amber-50 text-amber-950'
+              }`}
+            >
+              <div className="font-medium">
+                {operationalHealth.level === 'healthy'
+                  ? 'Operations are clear'
+                  : operationalHealth.level === 'blocked'
+                    ? 'Operations need intervention'
+                    : 'Operations need attention'}
+              </div>
+              <div className="mt-1">{operationalHealth.summary}</div>
+            </div>
+          ) : null}
           <div className="flex flex-wrap gap-2 text-sm">
             <Badge variant={readiness.schedulerEnabled ? 'success' : 'danger'}>
               Scheduler {readiness.schedulerEnabled ? 'enabled' : 'disabled'}
@@ -560,12 +561,12 @@ export default function Admin13FPage() {
                 <div>{readiness.topTask.recommended_action}</div>
               </div>
             </div>
-          ) : (
+          ) : !isLoading && operationalHealth.level === 'healthy' ? (
             <div className="flex items-center gap-2 rounded-md border border-emerald-300/70 bg-emerald-50 px-3 py-2 text-sm text-emerald-950">
               <CheckCircle2 className="h-4 w-4" />
               No blocking admin task detected.
             </div>
-          )}
+          ) : null}
         </CardContent>
       </Card>
 
@@ -714,12 +715,31 @@ export default function Admin13FPage() {
 
       <Card className="rounded-md">
         <CardHeader className="pb-3">
-          <CardTitle className="flex items-center gap-2 text-base">
-            <Activity className="h-4 w-4" />
-            Worker Heartbeat
+          <CardTitle className="flex flex-col gap-2 text-base sm:flex-row sm:items-center sm:justify-between">
+            <span className="flex items-center gap-2">
+              <Activity className="h-4 w-4" />
+              Worker Heartbeat
+            </span>
+            {workers.length > 0 ? (
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                onClick={() => setShowWorkerHistory((value) => !value)}
+              >
+                <FolderClock className="mr-2 h-4 w-4" />
+                {showWorkerHistory ? 'Hide history' : `Show history (${workerRows.hiddenCount})`}
+              </Button>
+            ) : null}
           </CardTitle>
         </CardHeader>
         <CardContent>
+          {workerRows.hiddenCount > 0 && !showWorkerHistory ? (
+            <div className="mb-3 rounded-md border border-border/70 bg-muted/30 px-3 py-2 text-sm text-muted-foreground">
+              Showing active and stale worker heartbeats. {workerRows.hiddenCount} stopped historical
+              worker{workerRows.hiddenCount === 1 ? '' : 's'} hidden.
+            </div>
+          ) : null}
           <Table>
             <TableHeader>
               <TableRow>
@@ -730,7 +750,7 @@ export default function Admin13FPage() {
               </TableRow>
             </TableHeader>
             <TableBody>
-              {workers.map((worker) => (
+              {workerRows.rows.map((worker) => (
                 <TableRow key={worker.workerId}>
                   <TableCell>
                     <div className="font-medium">{worker.workerId}</div>
@@ -749,7 +769,7 @@ export default function Admin13FPage() {
                   </TableCell>
                 </TableRow>
               ))}
-              {workers.length === 0 ? (
+              {workerRows.rows.length === 0 ? (
                 <TableRow>
                   <TableCell colSpan={4} className="py-8 text-center text-muted-foreground">
                     No worker heartbeat recorded yet. The API worker records one after it starts.
@@ -838,14 +858,57 @@ export default function Admin13FPage() {
             </CardTitle>
           </CardHeader>
           <CardContent className="space-y-3">
-            {tasks.map((task) => (
-              <div key={task.code} className="rounded-md border border-border/70 p-3">
-                <div className="flex items-center justify-between gap-2">
-                  <div className="font-medium">{task.title}</div>
-                  <Badge variant={badgeVariant(task.priorityTone)}>{task.priority}</Badge>
-                </div>
-                <div className="mt-2 text-sm text-muted-foreground">{task.recommendedAction}</div>
-                {task.metadata && typeof task.metadata === 'object' ? (
+            {tasks.map((task) => {
+              const primaryAction = taskPrimaryAction(task, latestQuarter);
+              return (
+                <div key={task.code} className="rounded-md border border-border/70 p-3">
+                  <div className="flex items-start justify-between gap-2">
+                    <div>
+                      <div className="font-medium">{task.title}</div>
+                      <div className="mt-2 text-sm text-muted-foreground">
+                        {task.recommendedAction}
+                      </div>
+                    </div>
+                    <Badge variant={badgeVariant(task.priorityTone)}>{task.priority}</Badge>
+                  </div>
+                  {primaryAction ? (
+                    <div className="mt-3">
+                      {primaryAction.kind === 'job' ? (
+                        <Button
+                          type="button"
+                          variant="outline"
+                          size="sm"
+                          disabled={!primaryAction.payload || isJobActive(primaryAction.payload)}
+                          onClick={() => {
+                            if (!primaryAction.payload) return;
+                            runJob(primaryAction.payload, primaryAction.label);
+                          }}
+                        >
+                          {primaryAction.label}
+                        </Button>
+                      ) : primaryAction.kind === 'anchor' ? (
+                        <Button
+                          type="button"
+                          variant="outline"
+                          size="sm"
+                          onClick={() =>
+                            document.getElementById(String(primaryAction.target))?.scrollIntoView({
+                              behavior: 'smooth',
+                              block: 'start',
+                            })
+                          }
+                        >
+                          {primaryAction.label}
+                        </Button>
+                      ) : (
+                        <Badge variant="outline">
+                          <Settings className="mr-1 h-3 w-3" />
+                          {primaryAction.label}
+                        </Badge>
+                      )}
+                    </div>
+                  ) : null}
+                  {task.metadata && typeof task.metadata === 'object' ? (
                   <div className="mt-3 grid gap-2 rounded-md border border-border/70 bg-muted/30 p-2 text-xs text-muted-foreground">
                     {'manager_name' in task.metadata ? (
                       <div>
@@ -1000,9 +1063,10 @@ export default function Admin13FPage() {
                       </div>
                     ) : null}
                   </div>
-                ) : null}
-              </div>
-            ))}
+                  ) : null}
+                </div>
+              );
+            })}
             {tasks.length === 0 ? (
               <div className="text-sm text-muted-foreground">No admin tasks.</div>
             ) : null}
@@ -1058,140 +1122,170 @@ export default function Admin13FPage() {
               />
             </div>
           </div>
-          <div className="flex flex-wrap gap-2">
-          <Button
-            type="button"
-            variant="outline"
-            disabled={isJobActive({ job_type: 'bootstrap_whitelist' })}
-            onClick={() => runJob({ job_type: 'bootstrap_whitelist' }, 'Bootstrap whitelist')}
-          >
-            Bootstrap whitelist
-          </Button>
-          <Button
-            type="button"
-            variant="outline"
-            disabled={isJobActive({ job_type: 'match_cik' })}
-            onClick={() => runJob({ job_type: 'match_cik' }, 'Match CIK')}
-          >
-            Match CIK
-          </Button>
-          <Button
-            type="button"
-            variant="outline"
-            disabled={!targetQuarter || isJobActive({ job_type: 'fetch_quarter_index', quarter: targetQuarter })}
-            onClick={() =>
-              runJob({ job_type: 'fetch_quarter_index', quarter: targetQuarter }, 'Fetch quarter index')
-            }
-          >
-            Fetch quarter index
-          </Button>
-          <Button
-            type="button"
-            variant="outline"
-            disabled={!targetQuarter || isJobActive({ job_type: 'ingest_holdings', quarter: targetQuarter })}
-            onClick={() =>
-              runJob({ job_type: 'ingest_holdings', quarter: targetQuarter }, 'Ingest holdings')
-            }
-          >
-            Ingest holdings
-          </Button>
-          <Button
-            type="button"
-            variant="outline"
-            disabled={!targetQuarter || isJobActive({ job_type: 'quality_check', quarter: targetQuarter })}
-            onClick={() =>
-              runJob({ job_type: 'quality_check', quarter: targetQuarter }, 'Quality check')
-            }
-          >
-            Quality check
-          </Button>
-          <Button
-            type="button"
-            variant="outline"
-            disabled={!targetQuarter || isJobActive({ job_type: 'enrich_metadata', quarter: targetQuarter })}
-            onClick={() =>
-              runJob({ job_type: 'enrich_metadata', quarter: targetQuarter }, 'Retry Enrichment')
-            }
-          >
-            Retry Enrichment
-          </Button>
-          <Button
-            type="button"
-            variant="outline"
-            disabled={isJobActive({ job_type: 'bootstrap_stocks' })}
-            onClick={() => runJob({ job_type: 'bootstrap_stocks' }, 'Bootstrap stocks')}
-          >
-            Bootstrap stocks
-          </Button>
-          <Button
-            type="button"
-            variant="outline"
-            disabled={isJobActive({ job_type: 'enrich_stocks_edgar' })}
-            onClick={() => runJob({ job_type: 'enrich_stocks_edgar' }, 'Enrich stocks from EDGAR')}
-          >
-            Enrich stocks from EDGAR
-          </Button>
-          <Button
-            type="button"
-            variant="outline"
-            disabled={isJobActive({
-              job_type: 'backfill_quarters',
-              quarters: Number(backfillQuarters || '4'),
-              start_quarter: backfillStartQuarter.trim() || undefined,
-            })}
-            onClick={() =>
-              runJob(
-                {
+          <div className="grid gap-3 lg:grid-cols-2">
+            <div className="rounded-md border border-border/70 p-3">
+              <div className="text-xs font-semibold uppercase text-muted-foreground">Setup</div>
+              <div className="mt-3 flex flex-wrap gap-2">
+                <Button
+                  type="button"
+                  variant="outline"
+                  disabled={isJobActive({ job_type: 'bootstrap_whitelist' })}
+                  onClick={() => runJob({ job_type: 'bootstrap_whitelist' }, 'Bootstrap whitelist')}
+                >
+                  Bootstrap whitelist
+                </Button>
+                <Button
+                  type="button"
+                  variant="outline"
+                  disabled={isJobActive({ job_type: 'match_cik' })}
+                  onClick={() => runJob({ job_type: 'match_cik' }, 'Match CIK')}
+                >
+                  Match CIK
+                </Button>
+              </div>
+            </div>
+            <div className="rounded-md border border-border/70 p-3">
+              <div className="text-xs font-semibold uppercase text-muted-foreground">Stock Reference Data</div>
+              <div className="mt-3 flex flex-wrap gap-2">
+                <Button
+                  type="button"
+                  variant="outline"
+                  disabled={isJobActive({ job_type: 'bootstrap_stocks' })}
+                  onClick={() => runJob({ job_type: 'bootstrap_stocks' }, 'Bootstrap stocks')}
+                >
+                  Bootstrap stocks
+                </Button>
+                <Button
+                  type="button"
+                  variant="outline"
+                  disabled={isJobActive({ job_type: 'enrich_stocks_edgar' })}
+                  onClick={() => runJob({ job_type: 'enrich_stocks_edgar' }, 'Enrich stocks from EDGAR')}
+                >
+                  Enrich stocks from EDGAR
+                </Button>
+              </div>
+            </div>
+            <div className="rounded-md border border-border/70 p-3">
+              <div className="text-xs font-semibold uppercase text-muted-foreground">Quarter Pipeline</div>
+              <div className="mt-2 text-xs text-muted-foreground">
+                Uses target quarter {targetQuarter ? `(${targetQuarter})` : 'after a quarter is entered'}.
+              </div>
+              <div className="mt-3 flex flex-wrap gap-2">
+                <Button
+                  type="button"
+                  variant="outline"
+                  disabled={!targetQuarter || isJobActive({ job_type: 'fetch_quarter_index', quarter: targetQuarter })}
+                  onClick={() =>
+                    runJob({ job_type: 'fetch_quarter_index', quarter: targetQuarter }, 'Fetch quarter index')
+                  }
+                >
+                  Fetch quarter index
+                </Button>
+                <Button
+                  type="button"
+                  variant="outline"
+                  disabled={!targetQuarter || isJobActive({ job_type: 'ingest_holdings', quarter: targetQuarter })}
+                  onClick={() =>
+                    runJob({ job_type: 'ingest_holdings', quarter: targetQuarter }, 'Ingest holdings')
+                  }
+                >
+                  Ingest holdings
+                </Button>
+                <Button
+                  type="button"
+                  variant="outline"
+                  disabled={!targetQuarter || isJobActive({ job_type: 'enrich_metadata', quarter: targetQuarter })}
+                  onClick={() =>
+                    runJob({ job_type: 'enrich_metadata', quarter: targetQuarter }, 'Retry Enrichment')
+                  }
+                >
+                  Retry Enrichment
+                </Button>
+                <Button
+                  type="button"
+                  variant="outline"
+                  disabled={!targetQuarter || isJobActive({ job_type: 'quality_check', quarter: targetQuarter })}
+                  onClick={() =>
+                    runJob({ job_type: 'quality_check', quarter: targetQuarter }, 'Quality check')
+                  }
+                >
+                  Quality check
+                </Button>
+              </div>
+            </div>
+            <div className="rounded-md border border-border/70 p-3">
+              <div className="text-xs font-semibold uppercase text-muted-foreground">Backfill</div>
+              <div className="mt-3">
+                <label className="text-xs font-semibold uppercase text-muted-foreground" htmlFor="backfill-start-quarter">
+                  Optional start quarter
+                </label>
+                <Input
+                  id="backfill-start-quarter"
+                  className="mt-2"
+                  placeholder="Defaults to latest usable"
+                  value={backfillStartQuarter}
+                  onChange={(event) => setBackfillStartQuarter(event.target.value)}
+                />
+              </div>
+              <Button
+                type="button"
+                variant="outline"
+                className="mt-3"
+                disabled={isJobActive({
                   job_type: 'backfill_quarters',
                   quarters: Number(backfillQuarters || '4'),
                   start_quarter: backfillStartQuarter.trim() || undefined,
-                },
-                'Backfill quarters'
-              )
-            }
-          >
-            Backfill
-          </Button>
-          <Button
-            type="button"
-            variant="outline"
-            disabled={!targetAccession || isJobActive({ job_type: 'ingest_accession', accession_no: targetAccession })}
-            onClick={() =>
-              runJob({ job_type: 'ingest_accession', accession_no: targetAccession }, 'Retry accession')
-            }
-          >
-            Retry accession
-          </Button>
-          <Button
-            type="button"
-            variant="outline"
-            disabled={!targetAccession || isJobActive({ job_type: 'reprocess_amendment', accession_no: targetAccession })}
-            onClick={() =>
-              runJob(
-                { job_type: 'reprocess_amendment', accession_no: targetAccession },
-                'Reprocess amendment'
-              )
-            }
-          >
-            Reprocess amendment
-          </Button>
-          </div>
-          <div>
-            <label className="text-xs font-semibold uppercase text-muted-foreground" htmlFor="backfill-start-quarter">
-              Optional backfill start quarter
-            </label>
-            <Input
-              id="backfill-start-quarter"
-              className="mt-2 max-w-sm"
-              placeholder="Defaults to latest usable"
-              value={backfillStartQuarter}
-              onChange={(event) => setBackfillStartQuarter(event.target.value)}
-            />
+                })}
+                onClick={() =>
+                  runJob(
+                    {
+                      job_type: 'backfill_quarters',
+                      quarters: Number(backfillQuarters || '4'),
+                      start_quarter: backfillStartQuarter.trim() || undefined,
+                    },
+                    'Backfill quarters'
+                  )
+                }
+              >
+                Backfill
+              </Button>
+            </div>
+            <div className="rounded-md border border-border/70 p-3 lg:col-span-2">
+              <div className="text-xs font-semibold uppercase text-muted-foreground">Accession / Amendment Repair</div>
+              <div className="mt-2 text-xs text-muted-foreground">
+                Enter an accession number to enable single-filing repair actions.
+              </div>
+              <div className="mt-3 flex flex-wrap gap-2">
+                <Button
+                  type="button"
+                  variant="outline"
+                  disabled={!targetAccession || isJobActive({ job_type: 'ingest_accession', accession_no: targetAccession })}
+                  onClick={() =>
+                    runJob({ job_type: 'ingest_accession', accession_no: targetAccession }, 'Retry accession')
+                  }
+                >
+                  Retry accession
+                </Button>
+                <Button
+                  type="button"
+                  variant="outline"
+                  disabled={!targetAccession || isJobActive({ job_type: 'reprocess_amendment', accession_no: targetAccession })}
+                  onClick={() =>
+                    runJob(
+                      { job_type: 'reprocess_amendment', accession_no: targetAccession },
+                      'Reprocess amendment'
+                    )
+                  }
+                >
+                  Reprocess amendment
+                </Button>
+              </div>
+            </div>
           </div>
         </CardContent>
       </Card>
 
-      <div className="grid gap-4 xl:grid-cols-2">
+      <div id="managers" className="grid scroll-mt-6 gap-4 xl:grid-cols-2">
         <Card className="rounded-md">
           <CardHeader className="pb-3">
             <CardTitle className="text-base">Managers</CardTitle>
@@ -1397,8 +1491,12 @@ export default function Admin13FPage() {
                   Preview failed. The backend will still enforce locks before queueing.
                 </div>
               ) : null}
-              <div className="grid gap-2 text-sm">
-                {previewScopeRows(pendingJob.preview).map(([label, value]) => (
+              <div>
+                <div className="mb-2 text-xs font-semibold uppercase text-muted-foreground">
+                  Impact Summary
+                </div>
+                <div className="grid gap-2 text-sm">
+                {jobPreviewRows(pendingJob.preview).map(({ label, value }: { label: string; value: unknown }) => (
                   <div
                     key={String(label)}
                     className="flex justify-between gap-4 rounded-md border border-border/70 px-3 py-2"
@@ -1407,15 +1505,13 @@ export default function Admin13FPage() {
                     <span className="break-all text-right font-medium">{String(value)}</span>
                   </div>
                 ))}
+                </div>
               </div>
               {pendingJob.preview.rate_limit_warning ? (
                 <div className="rounded-md border border-amber-300/70 bg-amber-50 px-3 py-2 text-sm text-amber-950">
                   {String(pendingJob.preview.rate_limit_warning)}
                 </div>
               ) : null}
-              <pre className="max-h-40 overflow-auto rounded-md border border-border/70 bg-muted/40 p-3 text-xs">
-                {jobPreviewLine(pendingJob.preview)}
-              </pre>
             </div>
           ) : null}
           <DialogFooter>
@@ -1474,17 +1570,105 @@ export default function Admin13FPage() {
         </DialogContent>
       </Dialog>
 
+      <Dialog
+        open={pendingRevokeManager !== null}
+        onOpenChange={(open) => {
+          if (!open) {
+            setPendingRevokeManager(null);
+            setRevokeNote('');
+          }
+        }}
+      >
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Revoke Confirmed CIK</DialogTitle>
+            <DialogDescription>
+              This excludes the manager from future 13F ingestion until a correct CIK is confirmed.
+            </DialogDescription>
+          </DialogHeader>
+          {pendingRevokeManager ? (
+            <div className="space-y-4">
+              <div className="rounded-md border border-border/70 p-3 text-sm">
+                <div className="text-xs uppercase text-muted-foreground">Manager</div>
+                <div className="mt-1 font-medium">
+                  {String(pendingRevokeManager.legal_name ?? 'this manager')}
+                </div>
+                <div className="mt-1 font-mono text-xs text-muted-foreground">
+                  CIK {String(pendingRevokeManager.cik ?? '—')}
+                </div>
+              </div>
+              {(() => {
+                const latestEvent =
+                  pendingRevokeManager.latest_cik_review_event &&
+                  typeof pendingRevokeManager.latest_cik_review_event === 'object'
+                    ? (pendingRevokeManager.latest_cik_review_event as Record<string, unknown>)
+                    : null;
+                return latestEvent?.requires_downstream_review ? (
+                  <div className="rounded-md border border-amber-300/70 bg-amber-50 px-3 py-2 text-sm text-amber-950">
+                    Existing filings already require downstream review for this manager.
+                  </div>
+                ) : null;
+              })()}
+              <div>
+                <label className="text-xs font-semibold uppercase text-muted-foreground" htmlFor="revoke-note">
+                  Required note
+                </label>
+                <Textarea
+                  id="revoke-note"
+                  className="mt-2"
+                  value={revokeNote}
+                  onChange={(event) => setRevokeNote(event.target.value)}
+                  placeholder="Why is this confirmed CIK wrong?"
+                />
+              </div>
+            </div>
+          ) : null}
+          <DialogFooter>
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => {
+                setPendingRevokeManager(null);
+                setRevokeNote('');
+              }}
+            >
+              Cancel
+            </Button>
+            <Button
+              type="button"
+              variant="destructive"
+              disabled={!pendingRevokeManager || !revokeNote.trim() || revokeManager.isPending}
+              onClick={() => {
+                if (!pendingRevokeManager) return;
+                const managerId = Number(pendingRevokeManager.id);
+                if (!Number.isFinite(managerId)) return;
+                revokeManager.mutate({ managerId, note: revokeNote.trim() });
+                setPendingRevokeManager(null);
+                setRevokeNote('');
+              }}
+            >
+              Revoke CIK
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
       {selectedQuarter !== null ? (
-        <div className="fixed inset-0 z-50 flex justify-end bg-background/60 backdrop-blur-sm">
+        <div className="fixed inset-0 z-50 bg-background/60 backdrop-blur-sm">
           <div
             aria-hidden="true"
             className="absolute inset-0 cursor-default"
             onClick={() => setSelectedQuarter(null)}
           />
-          <Card className="relative h-full w-full max-w-[640px] overflow-hidden rounded-none border-y-0 border-r-0 shadow-xl">
-            <CardHeader className="border-b border-border/70 pb-3">
+          <Card
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="quarter-detail-title"
+            className="fixed inset-y-0 right-0 flex h-dvh max-h-dvh w-full max-w-[640px] flex-col overflow-hidden rounded-none border-y-0 border-r-0 shadow-xl"
+          >
+            <CardHeader className="shrink-0 border-b border-border/70 pb-3">
               <CardTitle className="flex items-center justify-between gap-2 text-base">
-                <span>Quarter Detail</span>
+                <span id="quarter-detail-title">Quarter Detail</span>
                 <Button
                   type="button"
                   variant="ghost"
@@ -1501,7 +1685,7 @@ export default function Admin13FPage() {
                   : selectedQuarter}
               </p>
             </CardHeader>
-            <CardContent className="h-[calc(100%-84px)] space-y-5 overflow-y-auto p-5">
+            <CardContent className="min-h-0 flex-1 space-y-5 overflow-y-auto p-5">
               {selectedQuarterDetail ? (
                 <>
                   <div className="grid gap-3 md:grid-cols-3">
@@ -1674,16 +1858,21 @@ export default function Admin13FPage() {
         </div>
       ) : null}
       {selectedAmendmentAccession !== null ? (
-        <div className="fixed inset-0 z-50 flex justify-end bg-background/60 backdrop-blur-sm">
+        <div className="fixed inset-0 z-50 bg-background/60 backdrop-blur-sm">
           <div
             aria-hidden="true"
             className="absolute inset-0 cursor-default"
             onClick={() => setSelectedAmendmentAccession(null)}
           />
-          <Card className="relative h-full w-full max-w-[560px] overflow-hidden rounded-none border-y-0 border-r-0 shadow-xl">
-            <CardHeader className="border-b border-border/70 pb-3">
+          <Card
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="amendment-detail-title"
+            className="fixed inset-y-0 right-0 flex h-dvh max-h-dvh w-full max-w-[560px] flex-col overflow-hidden rounded-none border-y-0 border-r-0 shadow-xl"
+          >
+            <CardHeader className="shrink-0 border-b border-border/70 pb-3">
               <CardTitle className="flex items-center justify-between gap-2 text-base">
-                <span>Amendment Detail</span>
+                <span id="amendment-detail-title">Amendment Detail</span>
                 <Button
                   type="button"
                   variant="ghost"
@@ -1698,7 +1887,7 @@ export default function Admin13FPage() {
                 {selectedAmendmentAccession}
               </p>
             </CardHeader>
-            <CardContent className="h-[calc(100%-84px)] space-y-5 overflow-y-auto p-5">
+            <CardContent className="min-h-0 flex-1 space-y-5 overflow-y-auto p-5">
               {selectedAmendment ? (
                 <>
                   <div className="flex flex-wrap items-center gap-2">
@@ -1791,16 +1980,21 @@ export default function Admin13FPage() {
         </div>
       ) : null}
       {selectedJobId !== null ? (
-        <div className="fixed inset-0 z-50 flex justify-end bg-background/60 backdrop-blur-sm">
+        <div className="fixed inset-0 z-50 bg-background/60 backdrop-blur-sm">
           <div
             aria-hidden="true"
             className="absolute inset-0 cursor-default"
             onClick={() => setSelectedJobId(null)}
           />
-          <Card className="relative h-full w-full max-w-[520px] overflow-hidden rounded-none border-y-0 border-r-0 shadow-xl">
-            <CardHeader className="border-b border-border/70 pb-3">
+          <Card
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="job-detail-title"
+            className="fixed inset-y-0 right-0 flex h-dvh max-h-dvh w-full max-w-[520px] flex-col overflow-hidden rounded-none border-y-0 border-r-0 shadow-xl"
+          >
+            <CardHeader className="shrink-0 border-b border-border/70 pb-3">
               <CardTitle className="flex items-center justify-between gap-2 text-base">
-                <span>Job Detail</span>
+                <span id="job-detail-title">Job Detail</span>
                 <Button
                   type="button"
                   variant="ghost"
@@ -1815,7 +2009,7 @@ export default function Admin13FPage() {
                 {selectedJob ? `${selectedJob.job_type} · ${selectedJob.status}` : 'Loading job detail...'}
               </p>
             </CardHeader>
-            <CardContent className="h-[calc(100%-84px)] space-y-5 overflow-y-auto p-5">
+            <CardContent className="min-h-0 flex-1 space-y-5 overflow-y-auto p-5">
               {selectedJob ? (
                 <>
                   <div className="grid gap-3 md:grid-cols-2">

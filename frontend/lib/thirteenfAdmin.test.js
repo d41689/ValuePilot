@@ -4,6 +4,7 @@ const assert = require('node:assert/strict');
 
 const {
   freshnessLine,
+  jobPreviewRows,
   jobPreviewLine,
   normalizeAmendments,
   normalizeCikReviewEvents,
@@ -12,6 +13,9 @@ const {
   normalizeReadiness,
   normalizeTasks,
   normalizeWorkers,
+  operationsHealth,
+  taskPrimaryAction,
+  visibleWorkerRows,
   readinessTone,
 } = require('./thirteenfAdmin');
 
@@ -124,6 +128,87 @@ test('jobPreviewLine summarizes dry-run preview for confirmation', () => {
   assert.match(line, /Lock: ingest_holdings:2025-Q4/);
   assert.match(line, /Pending filings: 5/);
   assert.match(line, /Respect SEC rate limits/);
+});
+
+test('jobPreviewRows keeps zero and false dry-run scope values', () => {
+  const rows = jobPreviewRows({
+    lock_key: 'ingest_accession:0001',
+    accession_no: '0001',
+    estimated_scope: {
+      pending_filings: 0,
+      failed_filings: 0,
+      filing_exists: false,
+    },
+  });
+
+  assert.deepEqual(
+    rows.map((row) => row.label),
+    ['Lock key', 'Accession', 'Pending filings', 'Failed filings', 'Filing exists']
+  );
+  assert.equal(rows.find((row) => row.label === 'Filing exists').value, false);
+});
+
+test('operationsHealth separates data readiness from operational blockers', () => {
+  const readiness = normalizeReadiness({
+    readiness_level: 'ready',
+    setup_checklist: [
+      {
+        code: 'SCHEDULER_CONFIGURED',
+        label: 'Scheduler configured',
+        status: 'blocked',
+        admin_action: 'Enable scheduler',
+      },
+    ],
+  });
+  const health = operationsHealth(readiness, normalizeTasks([
+    { priority: 'P0', code: 'EDGAR_SCHEDULER_DISABLED', title: 'Scheduler disabled' },
+  ]), true);
+
+  assert.equal(readiness.readinessLevel, 'ready');
+  assert.equal(health.level, 'blocked');
+  assert.equal(health.tone, 'danger');
+  assert.match(health.summary, /1 blocked setup item/);
+});
+
+test('visibleWorkerRows hides stopped worker history by default', () => {
+  const workers = normalizeWorkers([
+    { worker_id: 'idle-1', status: 'idle', last_heartbeat_at: '2026-05-08T02:00:00Z' },
+    { worker_id: 'stale-1', status: 'stale', last_heartbeat_at: '2026-05-08T01:00:00Z' },
+    { worker_id: 'stopped-1', status: 'stopped', last_heartbeat_at: '2026-05-07T22:00:00Z' },
+  ]);
+
+  const collapsed = visibleWorkerRows(workers, false);
+  assert.deepEqual(collapsed.rows.map((worker) => worker.workerId), ['idle-1', 'stale-1']);
+  assert.equal(collapsed.hiddenCount, 1);
+
+  const expanded = visibleWorkerRows(workers, true);
+  assert.deepEqual(expanded.rows.map((worker) => worker.workerId), ['idle-1', 'stale-1', 'stopped-1']);
+  assert.equal(expanded.hiddenCount, 0);
+});
+
+test('taskPrimaryAction maps safe admin tasks to concrete operations', () => {
+  assert.deepEqual(
+    taskPrimaryAction(
+      normalizeTasks([{ code: 'QUALITY_ERRORS', title: 'Quality errors' }])[0],
+      '2025-Q4'
+    ),
+    {
+      label: 'Run quality check',
+      payload: { job_type: 'quality_check', quarter: '2025-Q4' },
+      kind: 'job',
+    }
+  );
+
+  assert.deepEqual(
+    taskPrimaryAction(
+      normalizeTasks([{ code: 'EDGAR_SCHEDULER_DISABLED', title: 'Scheduler disabled' }])[0],
+      '2025-Q4'
+    ),
+    {
+      label: 'Config change required',
+      kind: 'manual',
+    }
+  );
 });
 
 test('normalizeQualityReports maps persisted report counts and status', () => {
