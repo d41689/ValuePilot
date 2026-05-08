@@ -82,12 +82,13 @@ def edgar_rate_limit_status() -> dict[str, object]:
     cutoff = now - window_seconds
     with _REQUEST_EVENTS_LOCK:
         recent = [event for event in _REQUEST_EVENTS if float(event["at"]) >= cutoff]
+        pause_value = _GLOBAL_PAUSE_UNTIL
     request_delay = settings.EDGAR_REQUEST_DELAY_S
     estimated_capacity = int(window_seconds / request_delay) if request_delay > 0 else window_seconds * 5
     remaining = max(estimated_capacity - len(recent), 0)
     pause_until = None
-    if _GLOBAL_PAUSE_UNTIL and _GLOBAL_PAUSE_UNTIL > now:
-        pause_until = datetime.fromtimestamp(_GLOBAL_PAUSE_UNTIL, tz=timezone.utc).isoformat()
+    if pause_value and pause_value > now:
+        pause_until = datetime.fromtimestamp(pause_value, tz=timezone.utc).isoformat()
     return {
         "mode": settings.EDGAR_FETCH_MODE,
         "request_delay_s": request_delay,
@@ -152,7 +153,8 @@ class EdgarClient:
             if resp.status_code in (429, 503):
                 logger.error("EDGAR %d — global pause 60 s then resume at 1 req/s", resp.status_code)
                 global _GLOBAL_PAUSE_UNTIL
-                _GLOBAL_PAUSE_UNTIL = time.time() + 60
+                with _REQUEST_EVENTS_LOCK:
+                    _GLOBAL_PAUSE_UNTIL = time.time() + 60
                 time.sleep(60)
                 global _bucket
                 with _bucket_lock:

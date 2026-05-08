@@ -935,6 +935,38 @@ def test_retry_manager_cik_search_with_edited_name_preserves_candidate_review(
     assert event_response.json()["items"][0]["evidence"]["search_name"] == "Edited Capital Management"
 
 
+def test_retry_manager_cik_search_rejects_confirmed_manager_without_revocation(
+    client,
+    db_session,
+    user_factory,
+    auth_headers,
+    monkeypatch,
+):
+    _clear_13f(db_session)
+    admin = _admin(user_factory)
+    manager = _manager(db_session, name="Confirmed Manager", cik="0001234567")
+    db_session.commit()
+
+    monkeypatch.setattr(
+        "app.services.edgar_ingestion._search_edgar_by_company_name",
+        lambda client, company_name: [("Edited Capital Management LP", "0007654321")],
+    )
+
+    response = client.post(
+        f"/api/v1/admin/13f/managers/{manager.id}/retry-cik-search",
+        headers=auth_headers(admin),
+        json={"search_name": "Edited Capital Management", "note": "Use legal manager name"},
+    )
+
+    assert response.status_code == 400
+    assert "revoke-cik" in response.json()["detail"]
+    db_session.refresh(manager)
+    assert manager.match_status == "confirmed"
+    assert manager.cik == "0001234567"
+    events = db_session.query(InstitutionManagerCikReviewEvent).filter_by(manager_id=manager.id).all()
+    assert events == []
+
+
 def test_match_cik_candidates_writes_candidate_audit_metadata(db_session, monkeypatch):
     _clear_13f(db_session)
     manager = _manager(db_session, name="Bill Ackman - Pershing Square", cik=None)
@@ -1141,6 +1173,7 @@ def test_revoked_cik_marks_affected_quarter_needs_review_and_readiness_warning(
     _clear_13f(db_session)
     admin = _admin(user_factory)
     manager = _manager(db_session, name="Revoked CIK Manager", cik="0001336528")
+    _manager(db_session, name="Still Confirmed Manager", cik="0001336529")
     filing = _filing(db_session, manager, accession="0001336528-26-000001", period=date(2025, 12, 31))
     _holding(db_session, filing, _stock(db_session))
     db_session.commit()
@@ -1160,6 +1193,32 @@ def test_revoked_cik_marks_affected_quarter_needs_review_and_readiness_warning(
     assert quarter_response.json()["summary"]["revoked_cik_review_required"] is True
     assert readiness_response.status_code == 200
     assert any("Revoked CIK" in warning["message"] for warning in readiness_response.json()["warnings"])
+
+
+def test_revoked_cik_does_not_outrank_setup_required_when_no_confirmed_managers(
+    client,
+    db_session,
+    user_factory,
+    auth_headers,
+):
+    _clear_13f(db_session)
+    admin = _admin(user_factory)
+    manager = _manager(db_session, name="Only Confirmed Manager", cik="0001336528")
+    filing = _filing(db_session, manager, accession="0001336528-26-000001", period=date(2025, 12, 31))
+    _holding(db_session, filing, _stock(db_session))
+    db_session.commit()
+
+    revoke_response = client.post(
+        f"/api/v1/admin/13f/managers/{manager.id}/revoke-cik",
+        headers=auth_headers(admin),
+        json={"note": "Wrong SEC entity"},
+    )
+    quarter_response = client.get("/api/v1/admin/13f/quarters/2025-Q4/detail", headers=auth_headers(admin))
+
+    assert revoke_response.status_code == 200
+    assert quarter_response.status_code == 200
+    assert quarter_response.json()["summary"]["revoked_cik_review_required"] is True
+    assert quarter_response.json()["summary"]["quarter_health"] == "setup_required"
 
 
 def test_revoked_cik_repair_task_clears_after_reconfirming_manager(
@@ -1185,9 +1244,13 @@ def test_revoked_cik_repair_task_clears_after_reconfirming_manager(
     )
 
     task_response = client.get("/api/v1/admin/13f/tasks", headers=auth_headers(admin))
+    quarter_response = client.get("/api/v1/admin/13f/quarters/2025-Q4/detail", headers=auth_headers(admin))
 
     assert task_response.status_code == 200
     assert all(item["code"] != "REVOKED_CIK_DOWNSTREAM_REVIEW" for item in task_response.json()["items"])
+    assert quarter_response.status_code == 200
+    assert quarter_response.json()["summary"]["revoked_cik_review_required"] is False
+    assert quarter_response.json()["summary"]["quarter_health"] == "partial"
 
 
 def test_quarter_detail_endpoint_paginates_and_filters_filing_rows(client, db_session, user_factory, auth_headers):
@@ -1253,6 +1316,11 @@ def test_quarter_detail_endpoint_paginates_and_filters_filing_rows(client, db_se
     assert [item["accession_no"] for item in page["items"]] == ["0001234569-26-000003"]
     assert response.json()["filing_counts_by_status"]["pending"] == 1
     assert response.json()["filing_counts_by_status"]["failed"] == 1
+    assert [item["accession_no"] for item in response.json()["filings"]] == [
+        "0001234567-26-000001",
+        "0001234568-26-000002",
+        "0001234569-26-000003",
+    ]
 
 
 def test_quarter_detail_endpoint_returns_operational_drilldown(client, db_session, user_factory, auth_headers):
@@ -1511,6 +1579,25 @@ def test_edgar_rate_limit_status_endpoint_returns_runtime_budget(client, db_sess
     assert response.status_code == 200
     assert response.json()["recent_request_count"] == 7
     assert response.json()["remaining_estimated_capacity"] == 293
+
+
+def test_edgar_rate_limit_status_counts_recorded_requests(monkeypatch):
+    from app.edgar import client as edgar_client
+
+    monkeypatch.setattr(edgar_client.settings, "EDGAR_RATE_LIMIT_WINDOW_S", 60)
+    monkeypatch.setattr(edgar_client.settings, "EDGAR_REQUEST_DELAY_S", 0.5)
+    with edgar_client._REQUEST_EVENTS_LOCK:
+        edgar_client._REQUEST_EVENTS.clear()
+        edgar_client._GLOBAL_PAUSE_UNTIL = None
+
+    edgar_client._record_request(200, "https://www.sec.gov/test-a")
+    edgar_client._record_request(503, "https://www.sec.gov/test-b")
+
+    status = edgar_client.edgar_rate_limit_status()
+
+    assert status["recent_request_count"] == 2
+    assert status["estimated_capacity"] == 120
+    assert status["remaining_estimated_capacity"] == 118
 
 
 def test_quarterly_pipeline_continues_after_retryable_enrichment_failure(

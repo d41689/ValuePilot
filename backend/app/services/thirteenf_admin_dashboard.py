@@ -264,24 +264,39 @@ def get_quarter_detail_page(
         .order_by(Filing13F.filed_at.asc(), Filing13F.accession_no.asc())
     )
     all_filings = base_query.all()
-    filing_counts_by_status = _filing_status_counts(session, all_filings)
+    holding_counts = _holding_counts_by_filing(session, all_filings)
+    filing_status_by_id = {
+        filing.id: _filing_status_from_count(filing, holding_counts.get(filing.id, 0))
+        for filing in all_filings
+    }
+    filing_rows_by_id = {
+        filing.id: _filing_detail_payload(
+            session,
+            filing,
+            holding_count=holding_counts.get(filing.id, 0),
+            status=filing_status_by_id[filing.id],
+        )
+        for filing in all_filings
+    }
+    filing_counts_by_status = _filing_status_counts(all_filings, filing_status_by_id)
     filtered = [
         filing
         for filing in all_filings
-        if filing_status is None or _filing_status(session, filing) == filing_status
+        if filing_status is None or filing_status_by_id[filing.id] == filing_status
     ]
     total_filtered = len(filtered)
     page_filings = filtered[filing_offset : filing_offset + filing_limit]
-    filing_rows = [_filing_detail_payload(session, filing) for filing in page_filings]
+    all_filing_rows = [filing_rows_by_id[filing.id] for filing in all_filings]
+    filing_rows = [filing_rows_by_id[filing.id] for filing in page_filings]
     pending_filings = [
-        _filing_detail_payload(session, filing)
+        filing_rows_by_id[filing.id]
         for filing in all_filings
-        if _filing_status(session, filing) == "pending"
+        if filing_status_by_id[filing.id] == "pending"
     ][:25]
     failed_filings = [
-        _filing_detail_payload(session, filing)
+        filing_rows_by_id[filing.id]
         for filing in all_filings
-        if _filing_status(session, filing) == "failed"
+        if filing_status_by_id[filing.id] == "failed"
     ][:25]
     amendments = [
         _amendment_payload(session, filing)
@@ -292,7 +307,7 @@ def get_quarter_detail_page(
     summary = _quarter_summary(session, quarter, today=today)
     return {
         "summary": summary,
-        "filings": filing_rows,
+        "filings": all_filing_rows,
         "filings_page": {
             "items": filing_rows,
             "total": total_filtered,
@@ -560,6 +575,8 @@ def retry_manager_cik_search(
     manager = session.get(InstitutionManager, manager_id)
     if manager is None:
         raise ValueError("Manager not found")
+    if manager.match_status == "confirmed":
+        raise ValueError("Use revoke-cik endpoint before retrying CIK search for a confirmed manager")
     search_name = search_name.strip()
     if not search_name:
         raise ValueError("search_name is required")
@@ -953,10 +970,10 @@ def _quarter_phase(window: QuarterWindow, today: date) -> str:
 
 
 def _quarter_health(*, confirmed_managers: int, form_idx_fetched: bool, filings_count: int, holdings_count: int, failed_filings: int, linked_ratio: float | None, amendment_status: str, quality_status: str, phase: str, active_job: bool, has_prior_data: bool, revoked_cik_review_required: bool) -> str:
-    if revoked_cik_review_required:
-        return "needs_review"
     if confirmed_managers == 0:
         return "setup_required"
+    if revoked_cik_review_required:
+        return "needs_review"
     if failed_filings:
         return "failed"
     if amendment_status in {"amendments_pending", "amendment_failed"}:
@@ -1696,8 +1713,20 @@ def _manager_payload(manager: InstitutionManager) -> dict[str, Any]:
     }
 
 
-def _filing_status(session: Session, filing: Filing13F) -> str:
-    holdings_count = session.query(Holding13F).filter(Holding13F.filing_id == filing.id).count()
+def _holding_counts_by_filing(session: Session, filings: list[Filing13F]) -> dict[int, int]:
+    filing_ids = [filing.id for filing in filings]
+    if not filing_ids:
+        return {}
+    rows = (
+        session.query(Holding13F.filing_id, func.count(Holding13F.id))
+        .filter(Holding13F.filing_id.in_(filing_ids))
+        .group_by(Holding13F.filing_id)
+        .all()
+    )
+    return {int(filing_id): int(count) for filing_id, count in rows}
+
+
+def _filing_status_from_count(filing: Filing13F, holdings_count: int) -> str:
     raw_docs = [doc for doc in [filing.raw_primary_doc, filing.raw_infotable_doc] if doc is not None]
     if any(doc.parse_status == "failed" for doc in raw_docs):
         return "failed"
@@ -1708,19 +1737,34 @@ def _filing_status(session: Session, filing: Filing13F) -> str:
     return "parsed"
 
 
-def _filing_status_counts(session: Session, filings: list[Filing13F]) -> dict[str, int]:
+def _filing_status(session: Session, filing: Filing13F) -> str:
+    holdings_count = session.query(Holding13F).filter(Holding13F.filing_id == filing.id).count()
+    return _filing_status_from_count(filing, holdings_count)
+
+
+def _filing_status_counts(filings: list[Filing13F], filing_status_by_id: dict[int, str]) -> dict[str, int]:
     counts = {"pending": 0, "failed": 0, "parsed_no_holdings": 0, "parsed": 0}
     for filing in filings:
-        status = _filing_status(session, filing)
+        status = filing_status_by_id[filing.id]
         counts[status] = counts.get(status, 0) + 1
     return counts
 
 
-def _filing_detail_payload(session: Session, filing: Filing13F) -> dict[str, Any]:
-    holdings_count = session.query(Holding13F).filter(Holding13F.filing_id == filing.id).count()
+def _filing_detail_payload(
+    session: Session,
+    filing: Filing13F,
+    *,
+    holding_count: int | None = None,
+    status: str | None = None,
+) -> dict[str, Any]:
+    holdings_count = (
+        holding_count
+        if holding_count is not None
+        else session.query(Holding13F).filter(Holding13F.filing_id == filing.id).count()
+    )
     primary = filing.raw_primary_doc
     infotable = filing.raw_infotable_doc
-    status = _filing_status(session, filing)
+    status = status or _filing_status_from_count(filing, holdings_count)
     return {
         "id": filing.id,
         "accession_no": filing.accession_no,
