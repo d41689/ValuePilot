@@ -3,7 +3,6 @@ const AUTH_STORAGE_KEYS = ['vp_access_token', 'vp_refresh_token'];
 const EXPIRED_COOKIE_DATE = 'Thu, 01 Jan 1970 00:00:00 GMT';
 
 function expireCookie(cookieTarget, name) {
-  cookieTarget.cookie = `${name}=; path=/; max-age=0; expires=${EXPIRED_COOKIE_DATE}`;
   cookieTarget.cookie = `${name}=; path=/; max-age=0; expires=${EXPIRED_COOKIE_DATE}; SameSite=Lax`;
 }
 

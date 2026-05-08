@@ -33,6 +33,7 @@ import {
 } from '@/components/ui/dialog';
 import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
+import { useToast } from '@/components/ui/use-toast';
 import {
   Table,
   TableBody,
@@ -149,6 +150,7 @@ function DrawerShell({
 
 export default function Admin13FPage() {
   const queryClient = useQueryClient();
+  const { toast } = useToast();
   const [selectedJobId, setSelectedJobId] = useState<number | null>(null);
   const [selectedAmendmentAccession, setSelectedAmendmentAccession] = useState<string | null>(null);
   const [selectedQuarter, setSelectedQuarter] = useState<string | null>(null);
@@ -383,17 +385,21 @@ export default function Admin13FPage() {
   async function runJob(payload: Record<string, unknown>, label: string) {
     const lockKey = lockKeyForPayload(payload);
     if (lockKey && activeLockKeys.has(lockKey)) {
-      if (typeof window !== 'undefined') {
-        window.alert(`A job with lock ${lockKey} is already queued or running.`);
-      }
+      toast({
+        appType: 'warning',
+        title: 'Job already active',
+        description: `A job with lock ${lockKey} is already queued or running.`,
+      });
       return;
     }
     try {
       const dryRun = (await apiClient.post('/admin/13f/jobs', { ...payload, dry_run: true })).data;
       if (dryRun.conflict) {
-        if (typeof window !== 'undefined') {
-          window.alert(`A job with lock ${dryRun.lock_key ?? lockKey ?? 'this action'} is already active.`);
-        }
+        toast({
+          appType: 'warning',
+          title: 'Job already active',
+          description: `A job with lock ${dryRun.lock_key ?? lockKey ?? 'this action'} is already active.`,
+        });
         return;
       }
       setPendingJob({
@@ -1811,7 +1817,7 @@ export default function Admin13FPage() {
           {pendingRevokeManager ? (
             <div className="space-y-4">
               <div className="rounded-md border border-border/70 p-3 text-sm">
-                <div className="text-xs uppercase text-muted-foreground">Manager</div>
+                <SectionLabel>Manager</SectionLabel>
                 <div className="mt-1 font-medium">
                   {String(pendingRevokeManager.legal_name ?? 'this manager')}
                 </div>

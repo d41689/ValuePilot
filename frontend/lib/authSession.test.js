@@ -26,9 +26,7 @@ test('clearAuthSession removes ValuePilot auth tokens and expires auth cookies',
 
   assert.deepEqual(removed, ['vp_access_token', 'vp_refresh_token']);
   assert.deepEqual(cookieWrites, [
-    'vp_access_token=; path=/; max-age=0; expires=Thu, 01 Jan 1970 00:00:00 GMT',
     'vp_access_token=; path=/; max-age=0; expires=Thu, 01 Jan 1970 00:00:00 GMT; SameSite=Lax',
-    'vp_role=; path=/; max-age=0; expires=Thu, 01 Jan 1970 00:00:00 GMT',
     'vp_role=; path=/; max-age=0; expires=Thu, 01 Jan 1970 00:00:00 GMT; SameSite=Lax',
   ]);
 });

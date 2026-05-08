@@ -69,6 +69,7 @@ Revert this task's frontend changes. No backend or migration changes are include
 - 2026-05-07: Created after final 13F Admin UX hardening review.
 - 2026-05-07: Implemented shared auth session clearing, AppShell sign-out, protected `/admin/*` middleware coverage, Confirm/Reject CIK dialogs, and low-risk `Admin13FPage` display component extraction.
 - 2026-05-07: Browser QA found `next build` can leave the dev server with stale `.next` chunks; restarted `web` before final browser verification.
+- 2026-05-08: Addressed post-review cleanup: reused `clearAuthSession` from the API 401 handler, simplified cookie expiry writes, aligned the Revoke CIK dialog label with `SectionLabel`, and replaced remaining job-active `window.alert` calls with app toasts.
 
 ## Verification
 
