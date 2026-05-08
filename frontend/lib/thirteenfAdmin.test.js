@@ -15,6 +15,7 @@ const {
   normalizeTasks,
   normalizeWorkers,
   operationsHealth,
+  prioritizeManagersForReview,
   taskPrimaryAction,
   visibleWorkerRows,
   readinessTone,
@@ -359,4 +360,22 @@ test('managerCikReviewDefaults prepares confirm and reject dialog copy', () => {
   assert.equal(defaults.defaultCik, '0001234567');
   assert.match(defaults.confirmDescription, /Confirm the SEC CIK/);
   assert.match(defaults.rejectDescription, /Reject this CIK candidate/);
+});
+
+test('prioritizeManagersForReview surfaces actionable CIK review rows first', () => {
+  const managers = [
+    { id: 1, legal_name: 'Alpha Confirmed', match_status: 'confirmed', cik: '0000000001' },
+    { id: 2, legal_name: 'QA Pending CIK Manager', match_status: 'candidate', candidate_cik: '0001336528' },
+    { id: 3, legal_name: 'Beta Seeded', match_status: 'seeded' },
+    { id: 4, legal_name: 'Gamma Revoked', match_status: 'revoked', cik: null },
+    { id: 5, legal_name: 'Delta Rejected', match_status: 'rejected' },
+  ];
+
+  const rows = prioritizeManagersForReview(managers);
+
+  assert.deepEqual(
+    rows.map((manager) => manager.legal_name),
+    ['QA Pending CIK Manager', 'Beta Seeded', 'Gamma Revoked', 'Delta Rejected', 'Alpha Confirmed']
+  );
+  assert.equal(managers[0].legal_name, 'Alpha Confirmed');
 });

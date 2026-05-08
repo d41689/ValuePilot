@@ -9,6 +9,7 @@ const {
   isAdminAuthPath,
   isProtectedAuthPath,
   isPublicAuthPath,
+  resolveAuthRedirect,
 } = require('./authRoutes');
 
 test('AUTH_PUBLIC_PATHS includes login and register', () => {
@@ -28,4 +29,14 @@ test('auth protected prefixes include the admin operations surface', () => {
   assert.equal(isProtectedAuthPath('/admin/13f'), true);
   assert.equal(isAdminAuthPath('/admin/13f'), true);
   assert.equal(isProtectedAuthPath('/login'), false);
+});
+
+test('resolveAuthRedirect redirects unauthenticated and non-admin admin routes', () => {
+  assert.equal(resolveAuthRedirect('/admin/13f', { token: null, role: null }), '/login');
+  assert.equal(resolveAuthRedirect('/home', { token: null, role: undefined }), '/login');
+  assert.equal(resolveAuthRedirect('/admin/13f', { token: 'token', role: 'user' }), '/home');
+  assert.equal(resolveAuthRedirect('/admin/13f', { token: 'token', role: undefined }), '/home');
+  assert.equal(resolveAuthRedirect('/admin/13f', { token: 'token', role: 'admin' }), null);
+  assert.equal(resolveAuthRedirect('/login', { token: 'token', role: 'admin' }), '/home');
+  assert.equal(resolveAuthRedirect('/login', { token: null, role: null }), null);
 });

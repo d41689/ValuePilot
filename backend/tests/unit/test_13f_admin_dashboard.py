@@ -13,7 +13,7 @@ from app.models.institutions import (
     RawSourceDocument,
 )
 from app.models.stocks import Stock
-from app.services.edgar_ingestion import match_cik_candidates
+from app.services.edgar_ingestion import match_cik_candidates, seed_pending_cik_review_fixture
 from app.services.edgar_quality import QualityReport, persist_quality_report
 from app.services.thirteenf_admin_dashboard import build_quarters, execute_job_payload
 from app.services.thirteenf_job_worker import execute_queued_job_once, record_worker_heartbeat
@@ -870,6 +870,29 @@ def test_manager_payload_includes_cik_candidate_audit_fields(client, db_session,
     assert payload["candidate_source"] == "edgar_browse_company"
     assert payload["candidate_evidence_url"].startswith("https://www.sec.gov/cgi-bin/browse-edgar")
     assert payload["prior_rejected_candidates"][0]["cik"] == "0000000001"
+
+
+def test_seed_pending_cik_review_fixture_creates_idempotent_candidate(db_session):
+    _clear_13f(db_session)
+
+    first_count = seed_pending_cik_review_fixture(db_session)
+    db_session.commit()
+    second_count = seed_pending_cik_review_fixture(db_session)
+    db_session.commit()
+
+    manager = (
+        db_session.query(InstitutionManager)
+        .filter_by(dataroma_code="QA_PENDING_CIK")
+        .one()
+    )
+    assert first_count == 1
+    assert second_count == 1
+    assert manager.match_status == "candidate"
+    assert manager.cik is None
+    assert manager.candidate_cik == "0001336528"
+    assert manager.candidate_legal_name == "PERSHING SQUARE CAPITAL MANAGEMENT, L.P."
+    assert manager.candidate_source == "qa_fixture"
+    assert manager.candidate_found_at is not None
 
 
 def test_match_cik_candidates_writes_candidate_audit_metadata(db_session, monkeypatch):

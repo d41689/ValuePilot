@@ -372,6 +372,27 @@ function managerCikReviewDefaults(manager) {
   };
 }
 
+function managerReviewPriority(manager) {
+  const status = String(manager?.match_status ?? '').toLowerCase();
+  if (status === 'candidate') return 0;
+  if (status === 'seeded') return 1;
+  if (status === 'revoked') return 2;
+  if (status === 'rejected') return 3;
+  if (status === 'confirmed') return 4;
+  return 5;
+}
+
+function prioritizeManagersForReview(managers) {
+  const items = Array.isArray(managers) ? managers : [];
+  return [...items].sort((left, right) => {
+    const priorityDelta = managerReviewPriority(left) - managerReviewPriority(right);
+    if (priorityDelta !== 0) return priorityDelta;
+    const leftName = String(left?.legal_name ?? left?.display_name ?? '');
+    const rightName = String(right?.legal_name ?? right?.display_name ?? '');
+    return leftName.localeCompare(rightName);
+  });
+}
+
 module.exports = {
   formatPercent,
   freshnessLine,
@@ -387,6 +408,7 @@ module.exports = {
   normalizeTasks,
   normalizeWorkers,
   operationsHealth,
+  prioritizeManagersForReview,
   priorityTone,
   readinessTone,
   taskPrimaryAction,

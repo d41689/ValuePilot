@@ -1,0 +1,12 @@
+[
+  {
+    "dataroma_code": "QA_PENDING_CIK",
+    "display_name": "QA Pending CIK Manager",
+    "legal_name": "QA Pending CIK Manager",
+    "candidate_cik": "0001336528",
+    "candidate_legal_name": "PERSHING SQUARE CAPITAL MANAGEMENT, L.P.",
+    "candidate_similarity_score": 0.72,
+    "candidate_source": "qa_fixture",
+    "candidate_evidence_url": "https://www.sec.gov/cgi-bin/browse-edgar?CIK=0001336528"
+  }
+]

@@ -17,6 +17,18 @@ const isProtectedAuthPath = (pathname) =>
   AUTH_PROTECTED_PREFIXES.some((prefix) => matchesPrefix(pathname, prefix));
 const isAdminAuthPath = (pathname) =>
   AUTH_ADMIN_PREFIXES.some((prefix) => matchesPrefix(pathname, prefix));
+function resolveAuthRedirect(pathname, { token, role } = {}) {
+  if (isPublicAuthPath(pathname)) {
+    return token ? '/home' : null;
+  }
+  if (isProtectedAuthPath(pathname) && !token) {
+    return '/login';
+  }
+  if (isAdminAuthPath(pathname) && role !== 'admin') {
+    return '/home';
+  }
+  return null;
+}
 
 module.exports = {
   AUTH_ADMIN_PREFIXES,
@@ -25,4 +37,5 @@ module.exports = {
   isAdminAuthPath,
   isProtectedAuthPath,
   isPublicAuthPath,
+  resolveAuthRedirect,
 };

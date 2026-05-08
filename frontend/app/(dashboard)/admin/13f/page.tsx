@@ -14,12 +14,13 @@ import {
   RefreshCw,
   ShieldAlert,
   Settings,
-  X,
 } from 'lucide-react';
-import type { ComponentProps, ReactNode } from 'react';
+import type { ComponentProps } from 'react';
 
 import apiClient from '@/lib/api/client';
 import thirteenfAdmin from '@/lib/thirteenfAdmin';
+import { DrawerShell, MetricTile } from '@/components/admin13f/Admin13FPrimitives';
+import { ManagerCikDialogs } from '@/components/admin13f/ManagerCikDialogs';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
@@ -32,7 +33,6 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog';
 import { Input } from '@/components/ui/input';
-import { Textarea } from '@/components/ui/textarea';
 import { useToast } from '@/components/ui/use-toast';
 import {
   Table,
@@ -55,6 +55,7 @@ const {
   normalizeTasks,
   normalizeWorkers,
   operationsHealth,
+  prioritizeManagersForReview,
   taskPrimaryAction,
   visibleWorkerRows,
 } = thirteenfAdmin;
@@ -83,69 +84,6 @@ function formatInteger(value: unknown) {
 function formatJson(value: unknown) {
   if (!value || typeof value !== 'object') return '—';
   return JSON.stringify(value, null, 2);
-}
-
-function SectionLabel({ children }: { children: ReactNode }) {
-  return <div className="text-xs font-semibold uppercase text-muted-foreground">{children}</div>;
-}
-
-function MetricTile({
-  label,
-  value,
-  detail,
-}: {
-  label: ReactNode;
-  value: ReactNode;
-  detail?: ReactNode;
-}) {
-  return (
-    <div className="rounded-md border border-border/70 p-3">
-      <div className="text-xs uppercase text-muted-foreground">{label}</div>
-      <div className="mt-1 text-lg font-semibold">{value}</div>
-      {detail ? <div className="text-xs text-muted-foreground">{detail}</div> : null}
-    </div>
-  );
-}
-
-function DrawerShell({
-  title,
-  description,
-  closeLabel,
-  labelledBy,
-  maxWidthClassName,
-  onClose,
-  children,
-}: {
-  title: string;
-  description?: ReactNode;
-  closeLabel: string;
-  labelledBy: string;
-  maxWidthClassName: string;
-  onClose: () => void;
-  children: ReactNode;
-}) {
-  return (
-    <div className="fixed inset-0 z-50 bg-background/60 backdrop-blur-sm">
-      <div aria-hidden="true" className="absolute inset-0 cursor-default" onClick={onClose} />
-      <Card
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby={labelledBy}
-        className={`fixed inset-y-0 right-0 flex h-dvh max-h-dvh w-full flex-col overflow-hidden rounded-none border-y-0 border-r-0 shadow-xl ${maxWidthClassName}`}
-      >
-        <CardHeader className="shrink-0 border-b border-border/70 pb-3">
-          <CardTitle className="flex items-center justify-between gap-2 text-base">
-            <span id={labelledBy}>{title}</span>
-            <Button type="button" variant="ghost" size="icon" aria-label={closeLabel} onClick={onClose}>
-              <X className="h-4 w-4" />
-            </Button>
-          </CardTitle>
-          {description ? <p className="text-sm text-muted-foreground">{description}</p> : null}
-        </CardHeader>
-        <CardContent className="min-h-0 flex-1 space-y-5 overflow-y-auto p-5">{children}</CardContent>
-      </Card>
-    </div>
-  );
 }
 
 export default function Admin13FPage() {
@@ -315,7 +253,7 @@ export default function Admin13FPage() {
     [workers, showWorkerHistory]
   );
   const managers = useMemo(
-    () => (Array.isArray(managersQuery.data?.items) ? managersQuery.data.items : []),
+    () => prioritizeManagersForReview(Array.isArray(managersQuery.data?.items) ? managersQuery.data.items : []),
     [managersQuery.data]
   );
   const jobs = useMemo(
@@ -447,6 +385,50 @@ export default function Admin13FPage() {
     if (!Number.isFinite(managerId)) return;
     setRevokeNote('');
     setPendingRevokeManager(manager);
+  }
+
+  function closeConfirmManagerDialog() {
+    setPendingConfirmManager(null);
+    setConfirmCik('');
+    setConfirmNote('');
+  }
+
+  function submitConfirmManagerDialog() {
+    if (!pendingConfirmManager) return;
+    const managerId = Number(pendingConfirmManager.id);
+    if (!Number.isFinite(managerId)) return;
+    confirmManager.mutate({
+      managerId,
+      cik: confirmCik.trim(),
+      note: confirmNote.trim() || null,
+    });
+    closeConfirmManagerDialog();
+  }
+
+  function closeRejectManagerDialog() {
+    setPendingRejectManager(null);
+    setRejectNote('');
+  }
+
+  function submitRejectManagerDialog() {
+    if (!pendingRejectManager) return;
+    const managerId = Number(pendingRejectManager.id);
+    if (!Number.isFinite(managerId)) return;
+    rejectManager.mutate({ managerId, note: rejectNote.trim() || null });
+    closeRejectManagerDialog();
+  }
+
+  function closeRevokeManagerDialog() {
+    setPendingRevokeManager(null);
+    setRevokeNote('');
+  }
+
+  function submitRevokeManagerDialog() {
+    if (!pendingRevokeManager) return;
+    const managerId = Number(pendingRevokeManager.id);
+    if (!Number.isFinite(managerId)) return;
+    revokeManager.mutate({ managerId, note: revokeNote.trim() });
+    closeRevokeManagerDialog();
   }
 
   return (
@@ -1634,252 +1616,28 @@ export default function Admin13FPage() {
         </DialogContent>
       </Dialog>
 
-      <Dialog
-        open={pendingConfirmManager !== null}
-        onOpenChange={(open) => {
-          if (!open) {
-            setPendingConfirmManager(null);
-            setConfirmCik('');
-            setConfirmNote('');
-          }
-        }}
-      >
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>Confirm Manager CIK</DialogTitle>
-            <DialogDescription>
-              {pendingConfirmManager
-                ? managerCikReviewDefaults(pendingConfirmManager).confirmDescription
-                : 'Confirm the SEC CIK for this manager.'}
-            </DialogDescription>
-          </DialogHeader>
-          {pendingConfirmManager ? (
-            <div className="space-y-4">
-              <div className="rounded-md border border-border/70 p-3 text-sm">
-                <SectionLabel>Manager</SectionLabel>
-                <div className="mt-1 font-medium">
-                  {String(managerCikReviewDefaults(pendingConfirmManager).managerName)}
-                </div>
-                <div className="mt-1 text-xs text-muted-foreground">
-                  Candidate: {String(managerCikReviewDefaults(pendingConfirmManager).candidateName)}
-                </div>
-              </div>
-              <div>
-                <label className="text-xs font-semibold uppercase text-muted-foreground" htmlFor="confirm-cik">
-                  SEC CIK
-                </label>
-                <Input
-                  id="confirm-cik"
-                  className="mt-2"
-                  value={confirmCik}
-                  onChange={(event) => setConfirmCik(event.target.value)}
-                  placeholder="0000000000"
-                />
-              </div>
-              <div>
-                <label className="text-xs font-semibold uppercase text-muted-foreground" htmlFor="confirm-note">
-                  Optional note
-                </label>
-                <Textarea
-                  id="confirm-note"
-                  className="mt-2"
-                  value={confirmNote}
-                  onChange={(event) => setConfirmNote(event.target.value)}
-                  placeholder="Why is this CIK correct?"
-                />
-              </div>
-            </div>
-          ) : null}
-          <DialogFooter>
-            <Button
-              type="button"
-              variant="outline"
-              onClick={() => {
-                setPendingConfirmManager(null);
-                setConfirmCik('');
-                setConfirmNote('');
-              }}
-            >
-              Cancel
-            </Button>
-            <Button
-              type="button"
-              disabled={!pendingConfirmManager || !confirmCik.trim() || confirmManager.isPending}
-              onClick={() => {
-                if (!pendingConfirmManager) return;
-                const managerId = Number(pendingConfirmManager.id);
-                if (!Number.isFinite(managerId)) return;
-                confirmManager.mutate({
-                  managerId,
-                  cik: confirmCik.trim(),
-                  note: confirmNote.trim() || null,
-                });
-                setPendingConfirmManager(null);
-                setConfirmCik('');
-                setConfirmNote('');
-              }}
-            >
-              Confirm CIK
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
-
-      <Dialog
-        open={pendingRejectManager !== null}
-        onOpenChange={(open) => {
-          if (!open) {
-            setPendingRejectManager(null);
-            setRejectNote('');
-          }
-        }}
-      >
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>Reject Manager CIK</DialogTitle>
-            <DialogDescription>
-              {pendingRejectManager
-                ? managerCikReviewDefaults(pendingRejectManager).rejectDescription
-                : 'Reject this CIK candidate.'}
-            </DialogDescription>
-          </DialogHeader>
-          {pendingRejectManager ? (
-            <div className="space-y-4">
-              <div className="rounded-md border border-border/70 p-3 text-sm">
-                <SectionLabel>Manager</SectionLabel>
-                <div className="mt-1 font-medium">
-                  {String(managerCikReviewDefaults(pendingRejectManager).managerName)}
-                </div>
-                <div className="mt-1 text-xs text-muted-foreground">
-                  Candidate CIK {String(pendingRejectManager.candidate_cik ?? '—')}
-                </div>
-              </div>
-              <div>
-                <label className="text-xs font-semibold uppercase text-muted-foreground" htmlFor="reject-note">
-                  Optional note
-                </label>
-                <Textarea
-                  id="reject-note"
-                  className="mt-2"
-                  value={rejectNote}
-                  onChange={(event) => setRejectNote(event.target.value)}
-                  placeholder="Why is this candidate wrong?"
-                />
-              </div>
-            </div>
-          ) : null}
-          <DialogFooter>
-            <Button
-              type="button"
-              variant="outline"
-              onClick={() => {
-                setPendingRejectManager(null);
-                setRejectNote('');
-              }}
-            >
-              Cancel
-            </Button>
-            <Button
-              type="button"
-              variant="destructive"
-              disabled={!pendingRejectManager || rejectManager.isPending}
-              onClick={() => {
-                if (!pendingRejectManager) return;
-                const managerId = Number(pendingRejectManager.id);
-                if (!Number.isFinite(managerId)) return;
-                rejectManager.mutate({ managerId, note: rejectNote.trim() || null });
-                setPendingRejectManager(null);
-                setRejectNote('');
-              }}
-            >
-              Reject CIK
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
-
-      <Dialog
-        open={pendingRevokeManager !== null}
-        onOpenChange={(open) => {
-          if (!open) {
-            setPendingRevokeManager(null);
-            setRevokeNote('');
-          }
-        }}
-      >
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>Revoke Confirmed CIK</DialogTitle>
-            <DialogDescription>
-              This excludes the manager from future 13F ingestion until a correct CIK is confirmed.
-            </DialogDescription>
-          </DialogHeader>
-          {pendingRevokeManager ? (
-            <div className="space-y-4">
-              <div className="rounded-md border border-border/70 p-3 text-sm">
-                <SectionLabel>Manager</SectionLabel>
-                <div className="mt-1 font-medium">
-                  {String(pendingRevokeManager.legal_name ?? 'this manager')}
-                </div>
-                <div className="mt-1 font-mono text-xs text-muted-foreground">
-                  CIK {String(pendingRevokeManager.cik ?? '—')}
-                </div>
-              </div>
-              {(() => {
-                const latestEvent =
-                  pendingRevokeManager.latest_cik_review_event &&
-                  typeof pendingRevokeManager.latest_cik_review_event === 'object'
-                    ? (pendingRevokeManager.latest_cik_review_event as Record<string, unknown>)
-                    : null;
-                return latestEvent?.requires_downstream_review ? (
-                  <div className="rounded-md border border-amber-300/70 bg-amber-50 px-3 py-2 text-sm text-amber-950">
-                    Existing filings already require downstream review for this manager.
-                  </div>
-                ) : null;
-              })()}
-              <div>
-                <label className="text-xs font-semibold uppercase text-muted-foreground" htmlFor="revoke-note">
-                  Required note
-                </label>
-                <Textarea
-                  id="revoke-note"
-                  className="mt-2"
-                  value={revokeNote}
-                  onChange={(event) => setRevokeNote(event.target.value)}
-                  placeholder="Why is this confirmed CIK wrong?"
-                />
-              </div>
-            </div>
-          ) : null}
-          <DialogFooter>
-            <Button
-              type="button"
-              variant="outline"
-              onClick={() => {
-                setPendingRevokeManager(null);
-                setRevokeNote('');
-              }}
-            >
-              Cancel
-            </Button>
-            <Button
-              type="button"
-              variant="destructive"
-              disabled={!pendingRevokeManager || !revokeNote.trim() || revokeManager.isPending}
-              onClick={() => {
-                if (!pendingRevokeManager) return;
-                const managerId = Number(pendingRevokeManager.id);
-                if (!Number.isFinite(managerId)) return;
-                revokeManager.mutate({ managerId, note: revokeNote.trim() });
-                setPendingRevokeManager(null);
-                setRevokeNote('');
-              }}
-            >
-              Revoke CIK
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+      <ManagerCikDialogs
+        pendingConfirmManager={pendingConfirmManager}
+        confirmCik={confirmCik}
+        confirmNote={confirmNote}
+        confirmPending={confirmManager.isPending}
+        onConfirmCikChange={setConfirmCik}
+        onConfirmNoteChange={setConfirmNote}
+        onCloseConfirm={closeConfirmManagerDialog}
+        onSubmitConfirm={submitConfirmManagerDialog}
+        pendingRejectManager={pendingRejectManager}
+        rejectNote={rejectNote}
+        rejectPending={rejectManager.isPending}
+        onRejectNoteChange={setRejectNote}
+        onCloseReject={closeRejectManagerDialog}
+        onSubmitReject={submitRejectManagerDialog}
+        pendingRevokeManager={pendingRevokeManager}
+        revokeNote={revokeNote}
+        revokePending={revokeManager.isPending}
+        onRevokeNoteChange={setRevokeNote}
+        onCloseRevoke={closeRevokeManagerDialog}
+        onSubmitRevoke={submitRevokeManagerDialog}
+      />
 
       {selectedQuarter !== null ? (
         <DrawerShell
