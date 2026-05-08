@@ -280,8 +280,11 @@ export default function Admin13FPage() {
   const targetQuarter = manualQuarter.trim() || latestQuarter;
   const targetAccession = accessionNo.trim();
   const operationalHealth = useMemo(
-    () => operationsHealth(readiness, tasks, hasAvailableWorker),
-    [readiness, tasks, hasAvailableWorker]
+    () =>
+      operationsHealth(readiness, tasks, hasAvailableWorker, {
+        workersIndeterminate: workersQuery.isError,
+      }),
+    [readiness, tasks, hasAvailableWorker, workersQuery.isError]
   );
 
   function lockKeyForPayload(payload: Record<string, unknown>) {
@@ -720,7 +723,7 @@ export default function Admin13FPage() {
               <Activity className="h-4 w-4" />
               Worker Heartbeat
             </span>
-            {workers.length > 0 ? (
+            {workers.length > 0 && (showWorkerHistory || workerRows.hiddenCount > 0) ? (
               <Button
                 type="button"
                 variant="ghost"
@@ -728,7 +731,13 @@ export default function Admin13FPage() {
                 onClick={() => setShowWorkerHistory((value) => !value)}
               >
                 <FolderClock className="mr-2 h-4 w-4" />
-                {showWorkerHistory ? 'Hide history' : `Show history (${workerRows.hiddenCount})`}
+                {showWorkerHistory
+                  ? 'Hide history'
+                  : workerRows.stoppedHiddenCount > 0 && workerRows.overflowHiddenCount > 0
+                    ? `Show all (${workerRows.hiddenCount})`
+                    : workerRows.stoppedHiddenCount > 0
+                      ? `Show history (${workerRows.stoppedHiddenCount})`
+                      : `Show more (${workerRows.overflowHiddenCount})`}
               </Button>
             ) : null}
           </CardTitle>
@@ -736,8 +745,17 @@ export default function Admin13FPage() {
         <CardContent>
           {workerRows.hiddenCount > 0 && !showWorkerHistory ? (
             <div className="mb-3 rounded-md border border-border/70 bg-muted/30 px-3 py-2 text-sm text-muted-foreground">
-              Showing active and stale worker heartbeats. {workerRows.hiddenCount} stopped historical
-              worker{workerRows.hiddenCount === 1 ? '' : 's'} hidden.
+              Showing active and stale worker heartbeats.
+              {workerRows.stoppedHiddenCount > 0
+                ? ` ${workerRows.stoppedHiddenCount} stopped historical worker${
+                    workerRows.stoppedHiddenCount === 1 ? '' : 's'
+                  } hidden.`
+                : ''}
+              {workerRows.overflowHiddenCount > 0
+                ? ` ${workerRows.overflowHiddenCount} additional non-stopped worker${
+                    workerRows.overflowHiddenCount === 1 ? '' : 's'
+                  } hidden by the display limit.`
+                : ''}
             </div>
           ) : null}
           <Table>

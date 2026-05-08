@@ -170,6 +170,18 @@ test('operationsHealth separates data readiness from operational blockers', () =
   assert.match(health.summary, /1 blocked setup item/);
 });
 
+test('operationsHealth treats worker API errors as indeterminate', () => {
+  const readiness = normalizeReadiness({
+    readiness_level: 'ready',
+    setup_checklist: [],
+  });
+  const health = operationsHealth(readiness, [], false, { workersIndeterminate: true });
+
+  assert.equal(health.level, 'unknown');
+  assert.equal(health.tone, 'secondary');
+  assert.match(health.summary, /Worker heartbeat unavailable/);
+});
+
 test('visibleWorkerRows hides stopped worker history by default', () => {
   const workers = normalizeWorkers([
     { worker_id: 'idle-1', status: 'idle', last_heartbeat_at: '2026-05-08T02:00:00Z' },
@@ -180,10 +192,31 @@ test('visibleWorkerRows hides stopped worker history by default', () => {
   const collapsed = visibleWorkerRows(workers, false);
   assert.deepEqual(collapsed.rows.map((worker) => worker.workerId), ['idle-1', 'stale-1']);
   assert.equal(collapsed.hiddenCount, 1);
+  assert.equal(collapsed.stoppedHiddenCount, 1);
+  assert.equal(collapsed.overflowHiddenCount, 0);
 
   const expanded = visibleWorkerRows(workers, true);
   assert.deepEqual(expanded.rows.map((worker) => worker.workerId), ['idle-1', 'stale-1', 'stopped-1']);
   assert.equal(expanded.hiddenCount, 0);
+});
+
+test('visibleWorkerRows separates stopped history from limit overflow', () => {
+  const workers = normalizeWorkers([
+    ...Array.from({ length: 13 }, (_, index) => ({
+      worker_id: `idle-${index}`,
+      status: 'idle',
+      last_heartbeat_at: `2026-05-08T02:${String(index).padStart(2, '0')}:00Z`,
+    })),
+    { worker_id: 'stopped-1', status: 'stopped', last_heartbeat_at: '2026-05-07T22:00:00Z' },
+    { worker_id: 'stopped-2', status: 'stopped', last_heartbeat_at: '2026-05-07T21:00:00Z' },
+  ]);
+
+  const collapsed = visibleWorkerRows(workers, false, 12);
+
+  assert.equal(collapsed.rows.length, 12);
+  assert.equal(collapsed.hiddenCount, 3);
+  assert.equal(collapsed.stoppedHiddenCount, 2);
+  assert.equal(collapsed.overflowHiddenCount, 1);
 });
 
 test('taskPrimaryAction maps safe admin tasks to concrete operations', () => {

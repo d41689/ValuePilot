@@ -107,9 +107,10 @@ function normalizeWorkers(items) {
   }));
 }
 
-function operationsHealth(readiness, tasks, hasAvailableWorker) {
+function operationsHealth(readiness, tasks, hasAvailableWorker, options = {}) {
   const checklist = Array.isArray(readiness?.setupChecklist) ? readiness.setupChecklist : [];
   const taskItems = Array.isArray(tasks) ? tasks : [];
+  const workersIndeterminate = Boolean(options.workersIndeterminate);
   const blockedSetupCount = checklist.filter((item) => item.status === 'blocked').length;
   const warningSetupCount = checklist.filter((item) => item.status === 'warning').length;
   const p0Count = taskItems.filter((item) => item.priority === 'P0').length;
@@ -125,11 +126,21 @@ function operationsHealth(readiness, tasks, hasAvailableWorker) {
   if (p1Count > 0) {
     reasons.push(`${p1Count} P1 task${p1Count === 1 ? '' : 's'}`);
   }
-  if (!hasAvailableWorker) {
+  if (!hasAvailableWorker && !workersIndeterminate) {
     reasons.push('no active worker heartbeat');
   }
 
-  if (blockedSetupCount > 0 || p0Count > 0 || !hasAvailableWorker) {
+  if (blockedSetupCount === 0 && p0Count === 0 && workersIndeterminate) {
+    return {
+      level: 'unknown',
+      tone: 'secondary',
+      label: 'operations unknown',
+      summary: 'Worker heartbeat unavailable; refresh or inspect the workers API.',
+      reasons: ['worker heartbeat unavailable'],
+    };
+  }
+
+  if (blockedSetupCount > 0 || p0Count > 0 || (!hasAvailableWorker && !workersIndeterminate)) {
     return {
       level: 'blocked',
       tone: 'danger',
@@ -164,14 +175,34 @@ function visibleWorkerRows(workers, showHistory, limit = 12) {
   const sorted = [...items].sort((left, right) =>
     String(right.lastHeartbeatAt ?? '').localeCompare(String(left.lastHeartbeatAt ?? ''))
   );
+  const stoppedCount = sorted.filter((worker) => worker.status === 'stopped').length;
   if (showHistory) {
-    return { rows: sorted.slice(0, limit), hiddenCount: Math.max(sorted.length - limit, 0) };
+    const rows = sorted.slice(0, limit);
+    return {
+      rows,
+      hiddenCount: Math.max(sorted.length - rows.length, 0),
+      stoppedHiddenCount: Math.max(stoppedCount - rows.filter((worker) => worker.status === 'stopped').length, 0),
+      overflowHiddenCount: Math.max(sorted.length - rows.length, 0),
+    };
   }
-  const rows = sorted.filter((worker) => worker.status !== 'stopped').slice(0, limit);
+  const nonStopped = sorted.filter((worker) => worker.status !== 'stopped');
+  const rows = nonStopped.slice(0, limit);
   if (rows.length > 0) {
-    return { rows, hiddenCount: Math.max(sorted.length - rows.length, 0) };
+    const overflowHiddenCount = Math.max(nonStopped.length - rows.length, 0);
+    return {
+      rows,
+      hiddenCount: stoppedCount + overflowHiddenCount,
+      stoppedHiddenCount: stoppedCount,
+      overflowHiddenCount,
+    };
   }
-  return { rows: sorted.slice(0, Math.min(3, limit)), hiddenCount: Math.max(sorted.length - Math.min(3, limit), 0) };
+  const fallbackRows = sorted.slice(0, Math.min(3, limit));
+  return {
+    rows: fallbackRows,
+    hiddenCount: Math.max(sorted.length - fallbackRows.length, 0),
+    stoppedHiddenCount: Math.max(stoppedCount - fallbackRows.length, 0),
+    overflowHiddenCount: 0,
+  };
 }
 
 function normalizeQualityReports(items) {
