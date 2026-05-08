@@ -76,6 +76,7 @@
 - 2026-05-08: Added `POST /api/v1/admin/13f/jobs/{job_id}/release-stale-lock`; release marks the job `failed`, records an error message, sets `finished_at`, and frees the active lock without deleting audit data.
 - 2026-05-08: Replaced manual-job `window.confirm` dry-run flow with a structured Dialog that shows action, job type, lock key, target scope, estimated counts, and rate-limit warnings before queueing.
 - 2026-05-08: Added read-only Dashboard badges for scheduler, smart retry, and worker availability. `normalizeReadiness()` now preserves `smartRetryEnabled`.
+- 2026-05-08: Review fixes: stale release no longer overwrites `heartbeat_at`; stale lock release now uses Dialog confirmation; Dialog now wires `aria-labelledby`; worker availability ignores stopped/error workers; dry-run preview preserves `false` and `0` scope values.
 
 ## Verification
 - 2026-05-08: `docker compose exec api pytest -q tests/unit/test_13f_admin_dashboard.py` passed (`40 passed`).
@@ -83,3 +84,4 @@
 - 2026-05-08: `docker compose exec api pytest -q tests/unit/test_scheduler_alignment.py` passed (`5 passed`).
 - 2026-05-08: `docker compose exec web node --test lib/thirteenfAdmin.test.js` passed (`9 passed`).
 - 2026-05-08: `docker compose exec web npm run lint` passed with no ESLint warnings or errors.
+- 2026-05-08: Post-review verification repeated: `docker compose exec api pytest -q tests/unit/test_13f_admin_dashboard.py` passed (`40 passed`); `docker compose exec api pytest -q tests/unit/test_smart_retries.py tests/unit/test_scheduler_alignment.py` passed (`16 passed`); `docker compose exec web node --test lib/thirteenfAdmin.test.js` passed (`9 passed`); `docker compose exec web npm run lint` passed.

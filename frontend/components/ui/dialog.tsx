@@ -41,6 +41,7 @@ function DialogContent({
   children,
 }: React.HTMLAttributes<HTMLDivElement>) {
   const { open, onOpenChange } = useDialogContext();
+  const titleId = React.useId();
   if (!open) return null;
   return (
     <div className="fixed inset-0 z-50">
@@ -56,8 +57,11 @@ function DialogContent({
         )}
         role="dialog"
         aria-modal="true"
+        aria-labelledby={titleId}
       >
-        {children}
+        <DialogTitleIdContext.Provider value={titleId}>
+          {children}
+        </DialogTitleIdContext.Provider>
         <button
           type="button"
           className="absolute right-4 top-4 rounded-sm opacity-70 transition-opacity hover:opacity-100 focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2"
@@ -71,6 +75,8 @@ function DialogContent({
   );
 }
 
+const DialogTitleIdContext = React.createContext<string | undefined>(undefined);
+
 function DialogHeader({ className, ...props }: React.HTMLAttributes<HTMLDivElement>) {
   return <div className={cn('flex flex-col gap-1.5 text-left', className)} {...props} />;
 }
@@ -80,7 +86,15 @@ function DialogFooter({ className, ...props }: React.HTMLAttributes<HTMLDivEleme
 }
 
 function DialogTitle({ className, ...props }: React.HTMLAttributes<HTMLHeadingElement>) {
-  return <h2 className={cn('text-base font-semibold leading-none tracking-tight', className)} {...props} />;
+  const titleId = React.useContext(DialogTitleIdContext);
+  const id = props.id ?? titleId;
+  return (
+    <h2
+      {...props}
+      id={id}
+      className={cn('text-base font-semibold leading-none tracking-tight', className)}
+    />
+  );
 }
 
 function DialogDescription({ className, ...props }: React.HTMLAttributes<HTMLParagraphElement>) {

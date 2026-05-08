@@ -570,7 +570,6 @@ def release_stale_job_lock(session: Session, job_id: int) -> dict[str, Any]:
 
     job.status = "failed"
     job.finished_at = now
-    job.heartbeat_at = now
     stale_reason = "Released stale running job lock by admin action"
     job.error_message = f"{stale_reason}. Previous worker: {job.worker_id or 'unknown'}"
     session.add(job)

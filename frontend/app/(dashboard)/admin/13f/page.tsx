@@ -94,7 +94,7 @@ function previewScopeRows(preview: unknown) {
     ['Start quarter', scope.start_quarter],
     ['Quarters', scope.quarters],
     ['Filing exists', scope.filing_exists],
-  ].filter(([, value]) => value !== undefined && value !== null && value !== '');
+  ].filter(([, value]) => value !== undefined && value !== null);
 }
 
 export default function Admin13FPage() {
@@ -162,6 +162,7 @@ export default function Admin13FPage() {
     preview: Record<string, unknown>;
     previewFailed?: boolean;
   } | null>(null);
+  const [pendingStaleReleaseJobId, setPendingStaleReleaseJobId] = useState<number | null>(null);
   async function refreshAdminData() {
     await Promise.all([
       queryClient.invalidateQueries({ queryKey: ['admin-13f-readiness'] }),
@@ -248,6 +249,7 @@ export default function Admin13FPage() {
     () => normalizeWorkers(workersQuery.data?.items ?? []),
     [workersQuery.data]
   );
+  const hasAvailableWorker = workers.some((worker) => worker.status === 'idle' || worker.status === 'running');
   const managers = useMemo(
     () => (Array.isArray(managersQuery.data?.items) ? managersQuery.data.items : []),
     [managersQuery.data]
@@ -343,16 +345,10 @@ export default function Admin13FPage() {
     }
   }
 
-  function releaseStaleJobLock(jobId: unknown) {
+  function requestStaleJobLockRelease(jobId: unknown) {
     const parsedJobId = Number(jobId);
     if (!Number.isFinite(parsedJobId)) return;
-    if (
-      typeof window !== 'undefined' &&
-      !window.confirm('Release this stale job lock? Only continue after confirming the worker is no longer running it.')
-    ) {
-      return;
-    }
-    releaseStaleLock.mutate(parsedJobId);
+    setPendingStaleReleaseJobId(parsedJobId);
   }
 
   function handleConfirmManager(manager: Record<string, unknown>) {
@@ -503,8 +499,8 @@ export default function Admin13FPage() {
             <Badge variant={readiness.smartRetryEnabled ? 'success' : 'warning'}>
               Smart retry {readiness.smartRetryEnabled ? 'enabled' : 'disabled'}
             </Badge>
-            <Badge variant={workers.some((worker) => worker.status !== 'stale') ? 'success' : 'warning'}>
-              Workers {workers.some((worker) => worker.status !== 'stale') ? 'available' : 'not active'}
+            <Badge variant={hasAvailableWorker ? 'success' : 'warning'}>
+              Workers {hasAvailableWorker ? 'available' : 'not active'}
             </Badge>
           </div>
           <div className="grid gap-3 lg:grid-cols-[280px_minmax(0,1fr)]">
@@ -899,7 +895,7 @@ export default function Admin13FPage() {
                           size="sm"
                           className="h-6 text-xs"
                           disabled={releaseStaleLock.isPending}
-                          onClick={() => releaseStaleJobLock(task.metadata?.stale_job_id)}
+                          onClick={() => requestStaleJobLockRelease(task.metadata?.stale_job_id)}
                         >
                           Release stale lock
                         </Button>
@@ -1441,6 +1437,43 @@ export default function Admin13FPage() {
         </DialogContent>
       </Dialog>
 
+      <Dialog open={pendingStaleReleaseJobId !== null} onOpenChange={(open) => !open && setPendingStaleReleaseJobId(null)}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Release Stale Lock</DialogTitle>
+            <DialogDescription>
+              This marks a stale running job as failed and releases its active lock.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-3">
+            <div className="rounded-md border border-amber-300/70 bg-amber-50 px-3 py-2 text-sm text-amber-950">
+              Only continue after confirming the worker is no longer running this job.
+            </div>
+            <div className="rounded-md border border-border/70 p-3 text-sm">
+              <div className="text-xs uppercase text-muted-foreground">Job ID</div>
+              <div className="mt-1 font-medium">#{pendingStaleReleaseJobId ?? '—'}</div>
+            </div>
+          </div>
+          <DialogFooter>
+            <Button type="button" variant="outline" onClick={() => setPendingStaleReleaseJobId(null)}>
+              Cancel
+            </Button>
+            <Button
+              type="button"
+              variant="destructive"
+              disabled={pendingStaleReleaseJobId === null || releaseStaleLock.isPending}
+              onClick={() => {
+                if (pendingStaleReleaseJobId === null) return;
+                releaseStaleLock.mutate(pendingStaleReleaseJobId);
+                setPendingStaleReleaseJobId(null);
+              }}
+            >
+              Release lock
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
       {selectedQuarter !== null ? (
         <div className="fixed inset-0 z-50 flex justify-end bg-background/60 backdrop-blur-sm">
           <div
@@ -1824,7 +1857,7 @@ export default function Admin13FPage() {
                         size="sm"
                         className="mt-3 bg-background"
                         disabled={releaseStaleLock.isPending}
-                        onClick={() => releaseStaleJobLock(selectedJob.id)}
+                        onClick={() => requestStaleJobLockRelease(selectedJob.id)}
                       >
                         Release stale lock
                       </Button>

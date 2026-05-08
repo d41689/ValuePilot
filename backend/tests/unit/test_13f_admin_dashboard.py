@@ -704,6 +704,7 @@ def test_stale_running_job_creates_admin_task_and_can_release_lock(client, db_se
     assert released["status"] == "failed"
     assert released["can_release_stale_lock"] is False
     assert "Released stale running job lock" in released["error_message"]
+    assert released["heartbeat_at"] == stale_at.isoformat()
 
     replacement = client.post(
         "/api/v1/admin/13f/jobs",
