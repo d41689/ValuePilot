@@ -417,6 +417,8 @@ def create_manager(session: Session, payload: dict[str, Any]) -> dict[str, Any]:
     if not canonical_name:
         raise ValueError("canonical_name is required")
     status = payload.get("status") or "candidate"
+    if status == "active":
+        raise ValueError("status=active can only be set via the confirm-cik endpoint")
     manager = InstitutionManager(
         canonical_name=canonical_name,
         legal_name=(payload.get("legal_name") or canonical_name).strip(),
@@ -458,7 +460,9 @@ def update_manager(session: Session, manager_id: int, payload: dict[str, Any]) -
             setattr(manager, field, payload[field])
     if "canonical_name" in payload:
         manager.legal_name = payload["canonical_name"]
-    if "status" in payload:
+    if "status" in payload and payload["status"] is not None:
+        if payload["status"] == "active":
+            raise ValueError("status=active can only be set via the confirm-cik endpoint")
         manager.status = payload["status"]
         manager.match_status = _legacy_match_status_from_prd_status(payload["status"])
     session.add(manager)
@@ -593,7 +597,6 @@ def confirm_manager_cik(
         raise ValueError("CIK is required to confirm a manager")
     if manager.candidate_legal_name:
         manager.legal_name = manager.candidate_legal_name
-        manager.canonical_name = manager.candidate_legal_name
         manager.edgar_legal_name = manager.candidate_legal_name
     manager.match_status = "confirmed"
     manager.status = "active"
@@ -1188,7 +1191,7 @@ def _global_counts(session: Session, latest_quarter: str) -> dict[str, Any]:
 def _confirmed_manager_count(session: Session) -> int:
     return (
         session.query(InstitutionManager)
-        .filter(InstitutionManager.match_status == "confirmed")
+        .filter(InstitutionManager.status == "active")
         .filter(InstitutionManager.cik.isnot(None))
         .count()
     )

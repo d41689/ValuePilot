@@ -50,6 +50,21 @@ def test_admin_can_create_manager_with_prd_defaults(client, db_session, user_fac
     assert payload["cik"] is None
 
 
+def test_admin_cannot_create_active_manager_directly(client, db_session, user_factory, auth_headers):
+    _clear_13f(db_session)
+    admin = _admin(user_factory)
+
+    response = client.post(
+        "/api/v1/admin/13f/managers",
+        headers=auth_headers(admin),
+        json={"canonical_name": "Unsafe Active Manager", "status": "active"},
+    )
+
+    assert response.status_code == 400
+    assert "confirm-cik" in response.json()["detail"]
+    assert db_session.query(InstitutionManager).count() == 0
+
+
 def test_admin_can_patch_manager_without_confirming_cik(client, db_session, user_factory, auth_headers):
     _clear_13f(db_session)
     admin = _admin(user_factory)
@@ -78,6 +93,28 @@ def test_admin_can_patch_manager_without_confirming_cik(client, db_session, user
     assert payload["review_note"] == "manual cleanup"
     assert payload["status"] == "candidate"
     assert payload["cik"] is None
+
+
+def test_admin_cannot_patch_status_active_directly(client, db_session, user_factory, auth_headers):
+    _clear_13f(db_session)
+    admin = _admin(user_factory)
+    manager = InstitutionManager(canonical_name="Candidate", legal_name="Candidate", match_status="candidate")
+    db_session.add(manager)
+    db_session.commit()
+
+    response = client.patch(
+        f"/api/v1/admin/13f/managers/{manager.id}",
+        headers=auth_headers(admin),
+        json={"status": "active"},
+    )
+
+    assert response.status_code == 400
+    assert "confirm-cik" in response.json()["detail"]
+    db_session.refresh(manager)
+    assert manager.status == "candidate"
+    assert manager.match_status == "candidate"
+    assert manager.confirmed_by is None
+    assert manager.confirmed_at is None
 
 
 def test_deactivate_manager_removes_it_from_active_tracking(client, db_session, user_factory, auth_headers):
@@ -160,6 +197,7 @@ def test_confirm_cik_sets_active_status_and_does_not_enqueue_backfill(client, db
     assert payload["match_status"] == "confirmed"
     assert payload["cik"] == "0001336528"
     assert payload["edgar_legal_name"] == "PERSHING SQUARE CAPITAL MANAGEMENT, L.P."
+    assert payload["canonical_name"] == "Pershing Square"
     assert payload["confirmed_by"] == admin.id
     assert payload["confirmed_at"] is not None
     assert db_session.query(JobRun).count() == 0

@@ -64,3 +64,15 @@ Docker only:
   - `docker compose exec api pytest -q tests/unit/test_13f_admin_dashboard.py` (`50 passed`)
   - `docker compose exec api pytest -q tests/unit` (`316 passed in 38.91s`)
 - 2026-05-09: Contract check: no SEC network calls added, no backfill jobs enqueued by preview or confirmation, no frontend, no parser/holdings implementation, no PRD edits.
+- 2026-05-09: Tech Lead review follow-up accepted:
+  - Blocking: direct `status=active` through create/patch bypassed confirm-cik audit. Fixed by rejecting direct active writes and adding tests.
+  - Non-blocking: preserve admin/system `canonical_name` on CIK confirmation; only write SEC legal name into `legal_name` and `edgar_legal_name`.
+  - Non-blocking: readiness/admin confirmed-manager counts should use PRD `status=active` instead of legacy `match_status=confirmed`; updated `_confirmed_manager_count`.
+- 2026-05-09: Tech Lead review follow-up deferred:
+  - Manager list pagination is deferred to admin read-model/dashboard work.
+  - Hardcoded backfill preview request/rate-limit estimate remains an MVP 1A stub and should be replaced when real EDGAR estimation exists.
+  - Broader enum validation is already enforced by model validators; route-level polishing can happen with API hardening if needed.
+- 2026-05-09: Post-review verification passed:
+  - `docker compose exec api pytest -q tests/unit/test_13f_manager_admin_backend.py` (`8 passed`)
+  - `docker compose exec api pytest -q tests/unit/test_13f_admin_dashboard.py` (`50 passed`)
+  - `docker compose exec api pytest -q tests/unit` (`318 passed in 37.62s`)
