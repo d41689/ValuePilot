@@ -222,6 +222,7 @@ Scope In:
 - Fetch daily `form.YYYYMMDD.idx`.
 - Save raw daily index document.
 - Parse and count `13F-HR`, `13F-HR/A`, and `13F-NT`.
+- Extract and persist/enqueue the SEC `accession_number` from each matched daily index row; use it as the filing ingestion dedupe key.
 - Match only active tracked managers by CIK.
 - Update `edgar_sync_status` with success/failed/no_data/partial_success.
 - Apply 404 rules using `no_index_expected_dates`.
@@ -246,6 +247,7 @@ Files likely to change:
 
 Tests to write first:
 - Daily index fixture with HR, HR/A, NT rows counts correctly.
+- Matched daily index rows expose `accession_number` for downstream ingestion dedupe.
 - Non-tracked CIK rows are ignored.
 - 404 on expected no-index date becomes `no_data`.
 - 404 on unexpected date retries/fails according to policy.
@@ -257,6 +259,7 @@ Docker verification commands:
 
 Acceptance Criteria:
 - Daily sync identifies and records tracked HR/HR-A/NT filings without assigning report quarters from sync date.
+- Matched filing tasks/placeholders include accession number as the stable dedupe key.
 - No-index calendar can be maintained without code deploy.
 - Raw daily index content is persisted for audit.
 
@@ -300,6 +303,7 @@ Tests to write first:
 - Duplicate daily sync or ingestion request with the same `dedupe_key` is skipped while an existing job is queued/running.
 - Hourly polling does not enqueue daily sync before `DAILY_SYNC_EARLIEST_ATTEMPT_ET`.
 - Watchdog does not mark jobs abandoned before their configured timeout and lease expiry.
+- Watchdog abandonment logic checks expired `lease_expires_at`, not only `started_at` age.
 - Alert service records/sends severity and message payloads.
 
 Docker verification commands:
@@ -373,6 +377,8 @@ Scope In:
 - Create `parse_runs`.
 - Create/extend `holdings_13f`.
 - Create/extend `cusip_ticker_map`.
+- Migration includes all PRD §7.1 filing fields needed by MVP 1B, including `coverage_type`, `form_spec_version`, `xml_schema_version`, and amendment/readiness fields.
+- Migration includes all PRD §7.2 holdings fields needed by MVP 1B, including nullable `portfolio_weight_pct` and `cusip_mapping_status`.
 - Add constraints and indexes from PRD §14.
 - Encode `filings_13f.parse_status` and `parse_runs.status` as independent statuses.
 - Include `is_active_for_manager_period` partial unique index.
@@ -397,6 +403,7 @@ Tests to write first:
 - Same holding fingerprint can exist in different parse_runs but not twice in one parse_run.
 - CUSIP candidate uniqueness works.
 - `superseded` and `confirmed` statuses are accepted for temporal mappings.
+- Schema exposes `coverage_type`, `form_spec_version`, `xml_schema_version`, nullable `portfolio_weight_pct`, and `cusip_mapping_status`.
 
 Docker verification commands:
 - `docker compose exec api alembic upgrade head`
@@ -406,6 +413,7 @@ Acceptance Criteria:
 - Schema supports audit history without deleting holdings.
 - Schema supports NT active filings without requiring holdings rows.
 - Schema supports temporal CUSIP mapping without `is_active`.
+- Schema contains the PRD §7.1/§7.2 fields required by later MVP 1B tasks, not only the explicit indexes.
 
 Tech Lead Review Gate:
 - Mandatory migration review before parser or service implementation uses these tables.
@@ -416,7 +424,7 @@ Goal: Fetch filing detail/header for HR, HR/A, and NT filings, persist raw filin
 
 PRD sections: §2.1-§2.4, §4.4, §5, §6.1, §7.1.
 
-Dependencies: 13F-1A-04, 13F-1B-01, G3, G2 for any value-unit parsing touch.
+Dependencies: 13F-1A-04, 13F-1B-01, G3. G2 is required only if this task also converts `value_raw` to `value_usd` or chooses `value_parse_rule`; metadata-only extraction of `form_spec_version` / `xml_schema_version` does not require G2 completion.
 
 Scope In:
 - Fetch filing detail/header.
@@ -524,6 +532,7 @@ Scope In:
 - Compute `holding_attribution_status`.
 - Compute `holding_row_fingerprint` from raw-row anchored values, excluding parse_run_id.
 - Compute total reported and common value fields.
+- Insert MVP 1B holding rows with initial `cusip_mapping_status=pending_mapping`; 13F-1B-07 owns final enrichment status updates.
 
 Scope Out:
 - OpenFIGI enrichment.
@@ -543,10 +552,13 @@ Tests to write first:
 - Pre-2023 thousands fixture produces dollars in `value_usd`.
 - 2023+ dollars fixture preserves raw dollars.
 - `SHARED` normalizes to `OTR` and attribution `shared`.
+- `OTHER` normalizes to `OTR` and attribution `shared`.
+- `DEFINED` normalizes to `DFND`; with parseable manager numbers it becomes `reported_for_other`.
 - `DFND` with parseable manager numbers becomes `reported_for_other`.
 - Duplicate fingerprint within one parse_run is rejected.
 - Same raw holding content in two parse_runs produces the same `holding_row_fingerprint`, while uniqueness is enforced by `(parse_run_id, holding_row_fingerprint)`.
 - MVP 1B writes `portfolio_weight_pct=NULL`.
+- Initial inserted holdings use `cusip_mapping_status=pending_mapping`.
 
 Docker verification commands:
 - `docker compose exec api pytest -q tests/unit`
@@ -685,6 +697,7 @@ Tests to write first:
 - Single exact OpenFIGI common stock/ETF candidate can confirm.
 - Multiple candidates produce `needs_review`.
 - Temporal query returns superseded mapping for historical quarter.
+- Mapping with `effective_to_quarter=Q` is returned for `query_quarter=Q`, and is not returned for `query_quarter=Q+1`.
 - Overlap writes serialize through advisory lock helper and reject conflicts.
 - Null `effective_to_quarter` is handled as open-ended in lookup and overlap checks.
 - Holding rows receive the correct `cusip_mapping_status` for linked, invalid, unresolved, pending, and needs-review cases.
