@@ -419,6 +419,7 @@ UPDATE parse_runs
 ```
 
 **两阶段设计说明：**
+
 - 阶段 1 独立提交：确保即使阶段 2 失败，`parse_run.status=failed` + `error` 也能持久保存，提供完整的失败审计记录。
 - 阶段 2 整体回滚：holdings 写入和 is_current 切换仍在同一事务，保证原子性；不会出现部分 holdings 可见的中间状态。
 
@@ -752,6 +753,7 @@ LIMIT 1
 此查询同时返回当前有效的 `confirmed` mapping 和历史已 superseded 的 mapping（用于历史季度查询），不需要将 `superseded` 行排除。
 
 **Corporate action 处理：** 当公司发生拆股、合并、share class 变化时：
+
 1. 关闭旧 mapping：`UPDATE ... SET effective_to_quarter = :last_valid_quarter, mapping_status = 'superseded'`（不是 `deleted`；历史季度仍可查到它）
 2. 创建新 mapping（新 CUSIP → ticker），`effective_from_quarter = :change_effective_quarter, mapping_status = 'confirmed'`
 
@@ -861,6 +863,7 @@ as_of_quarter                  -- 数据对应季度
 ```
 
 **前端展示原则：**
+
 - 页面顶部显示 `as_of_quarter` 和数据 caveat（confidential、partial、13F-NT 等）。
 - 明确注明"本页数据为 13F 季度快照，存在最长 45 天披露延迟；不构成投资建议。"
 - `featured_holder_count` 和共识信号定位为"高质量投资人关注度参考"，不翻译为"买入推荐"。
