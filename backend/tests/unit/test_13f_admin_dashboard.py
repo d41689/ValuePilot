@@ -906,6 +906,7 @@ def test_retry_manager_cik_search_with_edited_name_preserves_candidate_review(
 ):
     _clear_13f(db_session)
     admin = _admin(user_factory)
+    monkeypatch.setattr("app.edgar.client.settings.SEC_CONTACT_EMAIL", "ops@example.com")
     manager = _manager(db_session, name="Ambiguous Manager", cik=None)
     manager.match_status = "seeded"
     db_session.commit()
@@ -1587,7 +1588,7 @@ def test_edgar_rate_limit_status_counts_recorded_requests(monkeypatch):
     from app.edgar import client as edgar_client
 
     monkeypatch.setattr(edgar_client.settings, "EDGAR_RATE_LIMIT_WINDOW_S", 60)
-    monkeypatch.setattr(edgar_client.settings, "EDGAR_REQUEST_DELAY_S", 0.5)
+    monkeypatch.setattr(edgar_client.settings, "EDGAR_REQUESTS_PER_SECOND", 2.0)
     with edgar_client._REQUEST_EVENTS_LOCK:
         edgar_client._REQUEST_EVENTS.clear()
         edgar_client._GLOBAL_PAUSE_UNTIL = None
@@ -1623,6 +1624,7 @@ def test_edgar_rate_limit_status_records_global_pause_after_429(monkeypatch):
             return None
 
     monkeypatch.setattr(edgar_client.settings, "EDGAR_MAX_RETRIES", 1)
+    monkeypatch.setattr(edgar_client.settings, "SEC_CONTACT_EMAIL", "ops@example.com")
     monkeypatch.setattr(edgar_client.time, "sleep", lambda seconds: None)
     monkeypatch.setattr(edgar_client, "_get_bucket", lambda: DummyBucket())
     with edgar_client._REQUEST_EVENTS_LOCK:
