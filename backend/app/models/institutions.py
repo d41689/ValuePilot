@@ -2,20 +2,57 @@ from datetime import date, datetime
 from typing import Optional, List
 from sqlalchemy import (
     String, Text, Boolean, ForeignKey, BigInteger, Date,
-    DateTime, Integer, Float, Index, UniqueConstraint, text,
+    DateTime, Integer, Float, Index, UniqueConstraint, event, text,
 )
 from sqlalchemy.dialects.postgresql import JSONB
-from sqlalchemy.orm import Mapped, mapped_column, relationship
+from sqlalchemy.orm import Mapped, Session, mapped_column, relationship, validates
 from sqlalchemy.sql import func
 from app.core.db import Base
+
+
+MANAGER_STATUSES = {"candidate", "active", "inactive", "ignored", "needs_review"}
+MANAGER_TYPES = {"fundamental_long", "activist", "quant", "multi_strategy", "index_like", "unknown"}
+VALUE_UNIT_OVERRIDES = {"infer", "thousands", "dollars"}
+EDGAR_SYNC_STATUSES = {"pending", "running", "success", "failed", "no_data", "partial_success"}
+NO_INDEX_REASONS = {"weekend", "federal_holiday", "edgar_special_closure", "other"}
+NO_INDEX_SOURCES = {"auto_generated", "admin_manual"}
+JOB_RUN_STATUSES = {
+    "queued",
+    "running",
+    "succeeded",
+    "partial_success",
+    "failed",
+    "cancel_requested",
+    "canceled",
+    "skipped",
+}
+
+
+def _validate_choice(field: str, value: str, choices: set[str]) -> str:
+    if value not in choices:
+        allowed = ", ".join(sorted(choices))
+        raise ValueError(f"{field} must be one of: {allowed}")
+    return value
+
+
+def _status_from_legacy_match_status(match_status: str | None) -> str:
+    if match_status == "confirmed":
+        return "active"
+    if match_status == "revoked":
+        return "needs_review"
+    if match_status == "rejected":
+        return "ignored"
+    return "candidate"
 
 
 class InstitutionManager(Base):
     __tablename__ = "institution_managers"
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    canonical_name: Mapped[str] = mapped_column(Text, nullable=False)
     cik: Mapped[Optional[str]] = mapped_column(String(10), unique=True, nullable=True)
     legal_name: Mapped[str] = mapped_column(Text, nullable=False)
+    edgar_legal_name: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     display_name: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     name_normalized: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     parent_manager_id: Mapped[Optional[int]] = mapped_column(
@@ -23,6 +60,20 @@ class InstitutionManager(Base):
     )
     dataroma_code: Mapped[Optional[str]] = mapped_column(String(20), nullable=True)
     match_status: Mapped[str] = mapped_column(String(20), nullable=False, default="seeded")
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="candidate", server_default="candidate")
+    manager_type: Mapped[str] = mapped_column(String(40), nullable=False, default="unknown", server_default="unknown")
+    is_featured: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default=text("false"))
+    source: Mapped[Optional[str]] = mapped_column(String(80), nullable=True)
+    source_url: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    confidence_score: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    value_unit_override: Mapped[str] = mapped_column(
+        String(20),
+        nullable=False,
+        default="infer",
+        server_default="infer",
+    )
+    confirmed_by: Mapped[Optional[int]] = mapped_column(BigInteger, ForeignKey("users.id"), nullable=True)
+    confirmed_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
     is_superinvestor: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     candidate_cik: Mapped[Optional[str]] = mapped_column(String(10), nullable=True)
     candidate_legal_name: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
@@ -38,6 +89,9 @@ class InstitutionManager(Base):
     first_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     last_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
 
     filings: Mapped[List["Filing13F"]] = relationship(back_populates="manager")
     cik_review_events: Mapped[List["InstitutionManagerCikReviewEvent"]] = relationship(
@@ -46,7 +100,32 @@ class InstitutionManager(Base):
 
     __table_args__ = (
         Index("idx_institution_managers_parent_manager_id", "parent_manager_id"),
+        Index("ix_institution_managers_status", "status"),
+        Index("ix_institution_managers_cik_status", "cik", "status"),
     )
+
+    @validates("status")
+    def _validate_status(self, _: str, value: str) -> str:
+        return _validate_choice("status", value, MANAGER_STATUSES)
+
+    @validates("manager_type")
+    def _validate_manager_type(self, _: str, value: str) -> str:
+        return _validate_choice("manager_type", value, MANAGER_TYPES)
+
+    @validates("value_unit_override")
+    def _validate_value_unit_override(self, _: str, value: str) -> str:
+        return _validate_choice("value_unit_override", value, VALUE_UNIT_OVERRIDES)
+
+
+@event.listens_for(InstitutionManager, "before_insert")
+@event.listens_for(InstitutionManager, "before_update")
+def _populate_manager_prd_fields(_, __, manager: InstitutionManager) -> None:
+    if not manager.canonical_name:
+        manager.canonical_name = manager.legal_name
+    if not manager.edgar_legal_name and manager.cik:
+        manager.edgar_legal_name = manager.legal_name
+    if manager.match_status in {"confirmed", "revoked", "rejected"} and manager.status in {None, "candidate"}:
+        manager.status = _status_from_legacy_match_status(manager.match_status)
 
 
 class InstitutionManagerCikReviewEvent(Base):
@@ -94,6 +173,63 @@ class RawSourceDocument(Base):
     __table_args__ = (
         Index("uq_raw_source_documents_system_url", "source_system", "source_url", unique=True),
     )
+
+
+class EdgarSyncStatus(Base):
+    __tablename__ = "edgar_sync_status"
+    __table_args__ = (
+        Index("idx_sync_status", "status", "sync_date"),
+    )
+
+    sync_date: Mapped[date] = mapped_column(Date, primary_key=True)
+    status: Mapped[str] = mapped_column(String(30), nullable=False, default="pending", server_default="pending")
+    started_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    finished_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    attempt_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
+    last_error: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    form_idx_url: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    raw_document_id: Mapped[Optional[int]] = mapped_column(
+        BigInteger, ForeignKey("raw_source_documents.id"), nullable=True
+    )
+    filings_seen_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
+    tracked_13f_hr_found_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
+    tracked_13f_nt_found_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+    @validates("status")
+    def _validate_status(self, _: str, value: str) -> str:
+        return _validate_choice("status", value, EDGAR_SYNC_STATUSES)
+
+
+class NoIndexExpectedDate(Base):
+    __tablename__ = "no_index_expected_dates"
+
+    date: Mapped[date] = mapped_column(Date, primary_key=True)
+    reason: Mapped[str] = mapped_column(String(40), nullable=False)
+    holiday_name: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    source: Mapped[str] = mapped_column(String(40), nullable=False)
+    note: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True, server_default=text("true"))
+    created_by: Mapped[Optional[int]] = mapped_column(BigInteger, ForeignKey("users.id"), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+    @validates("reason")
+    def _validate_reason(self, _: str, value: str) -> str:
+        return _validate_choice("reason", value, NO_INDEX_REASONS)
+
+    @validates("source")
+    def _validate_source(self, _: str, value: str) -> str:
+        return _validate_choice("source", value, NO_INDEX_SOURCES)
+
+    @classmethod
+    def active_for_date(cls, session: Session, expected_date: date) -> Optional["NoIndexExpectedDate"]:
+        return session.query(cls).filter(cls.date == expected_date, cls.active.is_(True)).one_or_none()
 
 
 class Filing13F(Base):
@@ -174,9 +310,12 @@ class JobRun(Base):
     status: Mapped[str] = mapped_column(String(30), nullable=False, default="queued")
     requested_by_user_id: Mapped[Optional[int]] = mapped_column(BigInteger, ForeignKey("users.id"), nullable=True)
     trigger_source: Mapped[str] = mapped_column(String(30), nullable=False, default="manual")
+    sync_date: Mapped[Optional[date]] = mapped_column(Date, nullable=True)
     dedupe_key: Mapped[Optional[str]] = mapped_column(String(200), nullable=True)
     lock_key: Mapped[str] = mapped_column(String(200), nullable=False)
     quarter: Mapped[Optional[str]] = mapped_column(String(10), nullable=True)
+    lease_token: Mapped[Optional[str]] = mapped_column(String(120), nullable=True)
+    lease_expires_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
     worker_id: Mapped[Optional[str]] = mapped_column(String(120), nullable=True)
     started_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
     heartbeat_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
@@ -185,6 +324,13 @@ class JobRun(Base):
     summary_json: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)
     error_message: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+    @validates("status")
+    def _validate_status(self, _: str, value: str) -> str:
+        return _validate_choice("status", value, JOB_RUN_STATUSES)
 
 
 class JobWorkerHeartbeat(Base):
