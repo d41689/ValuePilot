@@ -1063,7 +1063,7 @@ def _setup_checklist(
         item(
             "SCHEDULER_CONFIGURED",
             "Scheduler configured",
-            "EDGAR_SCHEDULER_ENABLED is true",
+            f"EDGAR_SCHEDULER_ENABLED is {str(scheduler_enabled).lower()}",
             scheduler_enabled,
             "Enable EDGAR_SCHEDULER_ENABLED and redeploy the API service",
         ),

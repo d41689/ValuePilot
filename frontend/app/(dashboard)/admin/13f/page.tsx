@@ -1,6 +1,6 @@
 'use client';
 
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   Activity,
@@ -192,6 +192,7 @@ export default function Admin13FPage() {
       queryClient.invalidateQueries({ queryKey: ['admin-13f-quarters'] }),
       queryClient.invalidateQueries({ queryKey: ['admin-13f-tasks'] }),
       queryClient.invalidateQueries({ queryKey: ['admin-13f-jobs'] }),
+      queryClient.invalidateQueries({ queryKey: ['admin-13f-managers'] }),
       queryClient.invalidateQueries({ queryKey: ['admin-13f-quality'] }),
       queryClient.invalidateQueries({ queryKey: ['admin-13f-amendments'] }),
       queryClient.invalidateQueries({ queryKey: ['admin-13f-quarter-detail'] }),
@@ -325,6 +326,20 @@ export default function Admin13FPage() {
     });
     return keys;
   }, [jobs]);
+
+  const prevActiveKeys = useRef(new Set<string>());
+  useEffect(() => {
+    const currentKeys = activeLockKeys;
+    const wasActive = prevActiveKeys.current;
+    const someJobFinished = Array.from(wasActive).some((key) => !currentKeys.has(key));
+
+    if (someJobFinished) {
+      refreshAdminData();
+    }
+
+    prevActiveKeys.current = currentKeys;
+  }, [activeLockKeys]);
+
   const selectedJob = jobDetailQuery.data ?? null;
   const selectedAmendment = amendmentDetailQuery.data ?? null;
   const selectedQuarterDetail = quarterDetailQuery.data ?? null;
@@ -1480,10 +1495,10 @@ export default function Admin13FPage() {
         </CardContent>
       </Card>
 
-      <div id="managers" className="grid scroll-mt-6 gap-4 xl:grid-cols-2">
+      <div id="managers" className="grid grid-cols-1 scroll-mt-6 gap-4">
         <Card className="rounded-md">
           <CardHeader className="pb-3">
-            <CardTitle className="text-base">Managers</CardTitle>
+            <CardTitle className="text-base">Managers ({managers.length})</CardTitle>
           </CardHeader>
           <CardContent>
             <Table>
@@ -1497,7 +1512,7 @@ export default function Admin13FPage() {
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {managers.slice(0, 12).map((manager: Record<string, unknown>) => {
+                {managers.slice(0, 100).map((manager: Record<string, unknown>) => {
                   const latestEvent =
                     manager.latest_cik_review_event &&
                     typeof manager.latest_cik_review_event === 'object'
