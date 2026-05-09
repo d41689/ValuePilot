@@ -1,6 +1,6 @@
 # 13F 数据自动化抓取与分析 PRD
 
-| 项目名称 | ValuePilot 13F Data Automation & Ownership Signals | 版本 | v1.10 |
+| 项目名称 | ValuePilot 13F Data Automation & Ownership Signals | 版本 | v1.11 |
 | :--- | :--- | :--- | :--- |
 | **状态** | Ready for Engineering Review | **负责人** | Product |
 
@@ -69,7 +69,7 @@
 | Report Period | `periodOfReport` | 持仓所对应的季度末日期 | 产品归属季度和分析计算 |
 | Quarter End Date | report period normalized | 例如 2026-03-31 | Oracle's Lens 展示"截至日期" |
 | Filing Deadline | quarter end + 45 calendar days | 13F 通常最晚提交日期（SEC 规则） | 基准日期 |
-| Official Filing Deadline | Filing Deadline 调整到下一个工作日（若落在周末/节假日） | 实际最晚合规提交日期（SEC FAQ Q25） | filing window 判断、告警触发、readiness 计算 |
+| Official Filing Deadline | Filing Deadline 调整到下一个工作日（若落在周末/节假日）；使用 SEC/EDGAR business day calendar（以 NYSE holidays 为 proxy；**注：federal holiday ≠ market holiday**，如 Good Friday 是 NYSE 休市但不是 federal holiday；工程实现须用 NYSE holiday list，并在配置 / 测试中标注） | 实际最晚合规提交日期（SEC FAQ Q25） | filing window 判断、告警触发、readiness 计算 |
 | Valid Filing Window | quarter end to quarter end + 180 days | 13F 合理申报范围（含延迟申报） | periodOfReport 归属验证（见 §5.3） |
 
 核心规则：
@@ -365,6 +365,7 @@ holding_row_fingerprint = sha256(
 ```text
 id
 accession_number
+job_run_id          -- FK → job_runs.id（触发本次 parse 的 job；watchdog 通过此字段查 lease 状态）
 parser_version
 fingerprint_version
 started_at
@@ -423,7 +424,7 @@ UPDATE parse_runs
 
 若进程在阶段 1 commit 后、阶段 2 完成前崩溃，catch 不会执行，`parse_run.status` 会永久停在 `running`。必须有 watchdog 机制处理此场景：
 
-- **Watchdog 规则：** `parse_run.status=running` 且 `started_at < now() - :parse_job_timeout` 且关联 `job_runs` 的 lease 已过期（`lease_expires_at < now()`）→ 标记 `parse_run.status='abandoned'`，`error='process_crash_or_timeout'`，`finished_at=now()`。
+- **Watchdog 规则：** `parse_run.status=running` 且 `started_at < now() - :parse_job_timeout` 且 `job_runs[job_run_id].lease_expires_at < now()`（即关联 job 的 lease 已过期）→ 标记 `parse_run.status='abandoned'`，`error='process_crash_or_timeout'`，`finished_at=now()`。
 - `abandoned` 状态在审计、Admin UI、告警中与 `failed` 相同处理（不阻断 is_current，可重新触发 parse）。
 - 实现位置：`quality_check` job 定期扫描，或 `ingest_holdings_for_quarter` 启动时先清理同 accession 的 stale running parse_runs。
 - `:parse_job_timeout` 与 §12.4 的 `ingest_filing` job 超时配置同源（默认 10 分钟）。
@@ -1236,7 +1237,7 @@ so current-quarter data may update until approximately [official_filing_deadline
 - 两层去重防火墙（accession-level + parse_run fingerprint）
 - `periodOfReport` routing（含异常处理；±1–2 日归一化用 valid filing window）
 - Amendment type 解析（normalized enum + raw）；RESTATEMENT 原子替换（成功后才切 active）；PARTIAL → needs_review
-- `official_filing_deadline` 计算（含工作日调整，使用 US federal market holiday calendar）
+- `official_filing_deadline` 计算（含工作日调整，使用 SEC/EDGAR business day calendar (NYSE holidays as proxy; see note)）
 - `total_13f_reported_value_usd` 和 `total_13f_common_value_usd` 写入
 - **`holding_attribution_status` 计算**（按 investment_discretion + other_managers_raw 规则，见 §6.3）
 - OpenFIGI CUSIP 映射（含时间有效性字段初始化；有效区间 overlap 检查 + advisory lock）
@@ -1312,7 +1313,7 @@ so current-quarter data may update until approximately [official_filing_deadline
 - Given a product query for a holding's `value_usd`, it always returns dollars regardless of source filing unit.
 - Given `official_filing_deadline` falls on a Saturday and the following Monday is a US federal market holiday, it is adjusted to the following Tuesday (not Monday).
 - Given `official_filing_deadline` falls on a Saturday and the following Monday is a normal business day, it is adjusted to Monday.
-- Implementation must use a US federal market holiday calendar (e.g., NYSE holidays), not weekday-only logic.
+- Implementation must use a SEC/EDGAR business day calendar (NYSE holidays as proxy; see note) (e.g., NYSE holidays), not weekday-only logic.
 - Given a 13F-NT manager, the system user-facing copy shows "This manager filed a 13F Notice; its 13(f) holdings are reported by other manager(s)." — not empty holdings or "no positions."
 - Given a Combination Report is the active filing for a manager+quarter, Oracle's Lens shows caveat and does not use it for total_portfolio_value or cross-manager comparison.
 - Given CUSIP A mapped to stock X before 2025-Q3 (mapping_status=superseded, effective_to_quarter=2025-Q2), and a new mapping to stock Y from 2025-Q3 (mapping_status=confirmed, effective_from_quarter=2025-Q3), a temporal query for Q3 2025 returns stock Y, a query for Q2 2025 returns stock X.
@@ -1326,6 +1327,10 @@ so current-quarter data may update until approximately [official_filing_deadline
 - Given CUSIP is 7 characters, system marks `invalid_cusip`; does not pad.
 - Given CUSIP mapping rate < 50% after `official_filing_deadline`, P1 alert fires within 15 minutes.
 - Given `nt_detection_supported=false`, readiness API returns at most `usable_with_warning`; `coverage_ratio.estimated=true`.
+- Given a `parse_run` with `status=running`, `started_at` older than job timeout, and its `job_run_id` pointing to a `job_runs` row with `lease_expires_at` in the past, the watchdog marks it `status=abandoned`, `error='process_crash_or_timeout'`; the old `is_current=true` parse_run is unchanged; the abandoned run is retryable.
+- Given a holding with `investment_discretion=OTR` (SEC canonical), `holding_attribution_status=shared`.
+- Given a holding with `investment_discretion=DFND` and parseable `other_managers_raw`, `holding_attribution_status=reported_for_other`.
+- Given a holding with `investment_discretion=SHARED` (non-canonical alias), parser normalizes to `OTR` before computing attribution; result is `holding_attribution_status=shared`.
 
 ---
 
@@ -1348,7 +1353,7 @@ so current-quarter data may update until approximately [official_filing_deadline
 | CUSIP active mapping 唯一性约束 | 废弃 `UNIQUE(cusip) WHERE is_active=true`；改为应用层有效区间不重叠校验（`confirmed + superseded` 行的 effective 区间不重叠） |
 | Holding attribution | `holding_attribution_status` 计算规则见 §6.3；`direct` 才计入共识统计；`shared / unresolved` 排除或加 caveat；防止 parent/subsidiary 共同申报误读 |
 | 金额单位 | `value_usd` 统一以 dollars 存储；parser 按 `form_spec_version` 和 XML schema 确定单位，不以 manager-level override 为主判断路径 |
-| Filing deadline 计算 | 使用 `official_filing_deadline`（quarter_end + 45 days，调整到下一工作日，使用 US federal market holiday calendar） |
+| Filing deadline 计算 | 使用 `official_filing_deadline`（quarter_end + 45 days，调整到下一工作日）；calendar 口径：NYSE holiday list（非 US federal holiday list；Good Friday 等 NYSE 休市须包含；Veterans Day 等 NYSE 开市日不计入） |
 | parse_run 失败审计 | parse_run 两阶段写入：阶段 1 独立事务立即持久化 `status=running`；阶段 2 holdings + is_current 切换，失败后 catch 更新 `status=failed + error`；任何情况下 failed parse_run 都有持久记录 |
 | parse_run orphan 处理 | `status=running` 超过 job timeout 且 lease 过期 → 标记 `status=abandoned`；watchdog 由 quality_check job 或 ingest 启动时清理；`abandoned` 等同 `failed` 可重试 |
 | investment_discretion 规范化 | SEC XML 原始值 `SOLE / DFND / DEFINED / OTR / OTHER / SHARED` 在 parser 层 normalize 到 `SOLE / DFND / OTR`；`DEFINED→DFND`、`OTHER/SHARED→OTR`；`DFND→reported_for_other`（或 unresolved），`OTR→shared`，`SOLE→direct` |
