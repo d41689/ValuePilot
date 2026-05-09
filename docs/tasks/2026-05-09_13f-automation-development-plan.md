@@ -68,6 +68,7 @@ Known gate: MVP 1B parser implementation is blocked until the value-unit spike i
 | G3: Schema migration review | All services depending on 13F tables | Alembic migration reviewed against PRD §7, §12, §14 | Tech Lead |
 | G4: API contract review | Frontend/admin UI work | Backend response shapes and error/unavailable contracts stabilized | Tech Lead |
 | G5: 13F-NT query contract review | Readiness and Oracle's Lens integration | Tests prove NT active filings never enter holdings query path | Tech Lead |
+| G6: CUSIP temporal mapping review | CUSIP-backed product/readiness use | Temporal lookup and overlap tests cover null end dates, inclusive quarter boundaries, and non-overlap invariants | Tech Lead |
 
 ## Development Sequence
 
@@ -266,7 +267,7 @@ Tech Lead Review Gate:
 
 Goal: Implement the job execution primitives that later ingestion tasks will use.
 
-PRD sections: §12, §15.
+PRD sections: §4.4, §12, §15.
 
 Dependencies: 13F-1A-01, 13F-1A-04.
 
@@ -275,7 +276,10 @@ Scope In:
 - Lease token acquisition and heartbeat refresh.
 - Expired lease detection.
 - Job status transitions.
+- Duplicate job policy: for daily sync and ingestion jobs, if a job with the same `dedupe_key` is already `queued` or `running`, the new request is ignored/skipped and does not enqueue another job.
 - Retry skeleton for failed sync dates and partial_success.
+- Hourly polling trigger for daily sync using `DAILY_SYNC_EARLIEST_ATTEMPT_ET` (default `20:00` ET).
+- Watchdog/quality-check scheduling policy whose interval is longer than the maximum job timeout it evaluates; for the default 10-minute `ingest_filing` timeout, use a 15-minute or slower watchdog cadence unless explicitly reviewed.
 - Alert service abstraction for P1/P2/P3, with Discord webhook support if configuration exists.
 
 Scope Out:
@@ -293,7 +297,9 @@ Tests to write first:
 - A second worker cannot take an unexpired lease.
 - Expired leases can be taken over safely.
 - Only lease owner can update running job.
-- Duplicate job with same dedupe/lock behavior is skipped or coalesced according to implementation policy.
+- Duplicate daily sync or ingestion request with the same `dedupe_key` is skipped while an existing job is queued/running.
+- Hourly polling does not enqueue daily sync before `DAILY_SYNC_EARLIEST_ATTEMPT_ET`.
+- Watchdog does not mark jobs abandoned before their configured timeout and lease expiry.
 - Alert service records/sends severity and message payloads.
 
 Docker verification commands:
@@ -302,6 +308,7 @@ Docker verification commands:
 Acceptance Criteria:
 - Job lock and lease behavior supports PRD §12 lock_key strategy.
 - Daily sync can run through job_runs rather than ad hoc execution.
+- Automatic hourly polling queues eligible daily sync work after the earliest attempt time.
 - Alerting can be called by later quality/readiness tasks.
 
 Tech Lead Review Gate:
@@ -359,7 +366,7 @@ Goal: Add the MVP 1B persistence model with audit-preserving parse_runs and temp
 
 PRD sections: §6, §7.1-§7.3, §8.3, §12.4, §14.
 
-Dependencies: 13F-1A-01, G3.
+Dependencies: 13F-1A-01.
 
 Scope In:
 - Create/extend `filings_13f`.
@@ -409,12 +416,13 @@ Goal: Fetch filing detail/header for HR, HR/A, and NT filings, persist raw filin
 
 PRD sections: §2.1-§2.4, §4.4, §5, §6.1, §7.1.
 
-Dependencies: 13F-1A-04, 13F-1B-01, G2 for any value-unit parsing touch.
+Dependencies: 13F-1A-04, 13F-1B-01, G3, G2 for any value-unit parsing touch.
 
 Scope In:
 - Fetch filing detail/header.
 - Persist raw filing document URL and raw filing document content through existing document/storage patterns.
 - Extract `periodOfReport`, `accepted_at`, `form_type`, accession metadata.
+- Extract and persist `form_spec_version` and `xml_schema_version` from XML root, namespace, schemaLocation, form header, or equivalent SEC metadata available at filing fetch time.
 - Implement quarter normalization and valid filing window checks.
 - Missing/invalid period routes to `needs_review` and does not become product-facing active holdings.
 - Calculate and store `official_filing_deadline`.
@@ -439,6 +447,7 @@ Tests to write first:
 - Missing period creates `parse_status=needs_review` with `PERIOD_MISSING`.
 - Invalid period creates `failed` or `needs_review` according to PRD §5.3.
 - Official filing deadline handles weekend plus federal holiday/special closure.
+- XML schema/version metadata is extracted and persisted on the filing record.
 
 Docker verification commands:
 - `docker compose exec api pytest -q tests/unit`
@@ -447,6 +456,7 @@ Acceptance Criteria:
 - Ownership grouping uses `periodOfReport`, never sync date or filing date.
 - All filing window logic uses `official_filing_deadline`.
 - Filing metadata ingest is idempotent by accession number.
+- `form_spec_version` and `xml_schema_version` are available to the value-unit parser and audit trail.
 
 Tech Lead Review Gate:
 - Review period routing and deadline tests before holdings parser work.
@@ -457,15 +467,15 @@ Goal: Implement 13F-NT semantics as coverage/readiness data only, never as empty
 
 PRD sections: §2.2, §4.4 step 7, §7.1, §7.3 query contract, §10.1, §16.
 
-Dependencies: 13F-1B-01, 13F-1B-02.
+Dependencies: 13F-1B-01, G3, 13F-1B-02.
 
 Scope In:
 - Fetch 13F-NT filing header.
-- Parse `other_managers_reporting` with name/CIK/file number when available.
+- Parse `other_managers_reporting` with `name`, `cik`, and `file_number` as distinct JSON keys when available, even if the referenced manager is not currently tracked.
 - Set `report_type=notice_report`.
 - Set `coverage_type=notice_reported_elsewhere`.
 - Do not create parse_run or holdings rows for NT.
-- Add backend query guard so holdings endpoints only use active HR/HR-A filings.
+- Add a service-layer query guard so any future holdings endpoint/service consumer only uses active HR/HR-A filings. This guard must be testable before endpoint work exists.
 
 Scope Out:
 - Cross-manager attribution/merge of NT holdings.
@@ -480,7 +490,8 @@ Files likely to change:
 
 Tests to write first:
 - NT filing creates active coverage record but no parse_run/holdings rows.
-- NT is excluded from holdings query path.
+- NT is excluded from the service-layer holdings query path.
+- Parsed `other_managers_reporting` preserves CIK and 13F file number in distinct JSON keys when present.
 - NT is excluded from expected filers denominator where PRD requires.
 - Holdings API does not return empty array as "no positions" for NT context; it returns unavailable/caveat metadata where endpoint applies.
 
@@ -490,7 +501,7 @@ Docker verification commands:
 Acceptance Criteria:
 - 13F-NT is never represented as "no holdings."
 - NT active filing participates only in coverage/readiness/caveat logic.
-- Query contract is protected by tests.
+- Query contract is protected by service-level tests and later reused by API endpoints.
 
 Tech Lead Review Gate:
 - Mandatory G5 review before readiness work.
@@ -501,7 +512,7 @@ Goal: Parse HR/HR-A cover page and holdings into normalized rows with lineage an
 
 PRD sections: §6.2, §7.1-§7.2, §18.1-§18.2.
 
-Dependencies: 13F-1B-00, 13F-1B-01, 13F-1B-02.
+Dependencies: 13F-1B-00, 13F-1B-01, G3, 13F-1B-02.
 
 Scope In:
 - Parse cover page `report_type`, `coverage_completeness`, `other_managers_included`, `has_confidential_treatment`.
@@ -517,6 +528,7 @@ Scope In:
 Scope Out:
 - OpenFIGI enrichment.
 - Amendment activation.
+- Computing `portfolio_weight_pct`; MVP 1B must write it as `NULL`, with MVP 2 responsible for calculation.
 - UI.
 
 Files likely to change:
@@ -533,6 +545,8 @@ Tests to write first:
 - `SHARED` normalizes to `OTR` and attribution `shared`.
 - `DFND` with parseable manager numbers becomes `reported_for_other`.
 - Duplicate fingerprint within one parse_run is rejected.
+- Same raw holding content in two parse_runs produces the same `holding_row_fingerprint`, while uniqueness is enforced by `(parse_run_id, holding_row_fingerprint)`.
+- MVP 1B writes `portfolio_weight_pct=NULL`.
 
 Docker verification commands:
 - `docker compose exec api pytest -q tests/unit`
@@ -540,6 +554,7 @@ Docker verification commands:
 Acceptance Criteria:
 - Product and analysis amount fields use dollars only.
 - Parser preserves raw audit values.
+- `portfolio_weight_pct` remains null in MVP 1B, including when totals are present.
 - Combination/confidential can coexist.
 - Attribution rules prevent shared/unresolved holdings from being counted as direct consensus later.
 
@@ -552,7 +567,7 @@ Goal: Implement audit-preserving parse execution and reparse semantics.
 
 PRD sections: §6.1-§6.5, §7.3, §12.4, §18.2 abandoned parse_run criterion.
 
-Dependencies: 13F-1B-01, 13F-1B-04, 13F-1A-05.
+Dependencies: 13F-1B-01, G3, 13F-1B-04, 13F-1A-05.
 
 Scope In:
 - Two-phase parse_run creation.
@@ -578,6 +593,7 @@ Tests to write first:
 - Failed parse_run persists with error.
 - Watchdog marks stale running parse_run `abandoned`.
 - Succeeded accession is skipped unless parser_version requires reparse.
+- Succeeded accession is reparsed when `fingerprint_version` does not match the current fingerprint version.
 
 Docker verification commands:
 - `docker compose exec api pytest -q tests/unit`
@@ -596,7 +612,7 @@ Goal: Implement amendment classification and safe active filing replacement.
 
 PRD sections: §6.6, §7.1, §13 amendment review, §18.
 
-Dependencies: 13F-1B-02, 13F-1B-05.
+Dependencies: 13F-1B-02, G3, 13F-1B-05.
 
 Scope In:
 - Parse amendment type and raw value.
@@ -638,9 +654,9 @@ Tech Lead Review Gate:
 
 Goal: Implement MVP 1B CUSIP enrichment with temporal validity and conservative auto-confirm rules.
 
-PRD sections: §8, §14 CUSIP indexes, §18 CUSIP criteria.
+PRD sections: §7.2, §8, §14 CUSIP indexes, §18 CUSIP criteria.
 
-Dependencies: 13F-1B-01, 13F-1B-04.
+Dependencies: 13F-1B-01, G3, 13F-1B-04.
 
 Scope In:
 - CUSIP validation: all-zero, short length, invalid format.
@@ -649,6 +665,7 @@ Scope In:
 - `needs_review` for ambiguous ADR/share class/security type/exchange cases.
 - Temporal lookup by quarter using `confirmed` and `superseded`.
 - Application-level overlap check under canonical CUSIP 64-bit advisory lock.
+- Enrichment writes back `holdings_13f.stock_id` and `holdings_13f.cusip_mapping_status` per holding: `linked` iff `stock_id IS NOT NULL`, `invalid_cusip` for invalid CUSIPs, `needs_review` for ambiguous mappings, `pending_mapping` for retryable provider failures, and `unresolved` when no mapping exists.
 - Admin CUSIP mapping list/create/patch/unresolved backend endpoints.
 
 Scope Out:
@@ -669,17 +686,20 @@ Tests to write first:
 - Multiple candidates produce `needs_review`.
 - Temporal query returns superseded mapping for historical quarter.
 - Overlap writes serialize through advisory lock helper and reject conflicts.
+- Null `effective_to_quarter` is handled as open-ended in lookup and overlap checks.
+- Holding rows receive the correct `cusip_mapping_status` for linked, invalid, unresolved, pending, and needs-review cases.
 
 Docker verification commands:
 - `docker compose exec api pytest -q tests/unit`
 
 Acceptance Criteria:
 - `stock_id IS NOT NULL` is the authoritative linked signal.
+- `cusip_mapping_status=linked` occurs if and only if `stock_id IS NOT NULL`.
 - OpenFIGI failures do not block ingestion.
 - Mapping intervals for `confirmed/superseded` cannot overlap for the same CUSIP.
 
 Tech Lead Review Gate:
-- Review advisory lock key design and temporal query behavior.
+- G6 review: advisory lock key design, temporal query behavior, null end-date handling, and overlap invariants.
 
 #### 13F-1B-08: Backfill Preview and Confirmed Ingestion Jobs
 
@@ -691,6 +711,8 @@ Dependencies: 13F-1A-05, 13F-1B-02.
 
 Scope In:
 - Preview estimated filings, EDGAR request count, rate limit wait, date/quarter range.
+- Use `DEFAULT_BACKFILL_START_QUARTER=2023-Q1` unless the environment overrides it.
+- If preview includes quarters before 2023-Q1, explicitly flag that the backfill must use the dual thousands/dollars fixture-validated value-unit rules.
 - Explicit confirmation endpoint or existing job endpoint behavior to enqueue backfill.
 - No silent backfill from CIK confirmation.
 - Job records for daily index backfill and filing ingestion.
@@ -706,6 +728,8 @@ Files likely to change:
 
 Tests to write first:
 - Preview does not mutate ingestion state.
+- Preview uses the configured `DEFAULT_BACKFILL_START_QUARTER` when no explicit start quarter is provided.
+- Preview warns when the requested range crosses the 2023 value-unit transition boundary.
 - Confirmation creates expected job rows.
 - Duplicate confirmation respects dedupe/lock policy.
 
@@ -714,6 +738,7 @@ Docker verification commands:
 
 Acceptance Criteria:
 - Admin sees work estimate before triggering backfill.
+- Backfill preview makes value-unit risk visible for pre-2023-Q1 ranges.
 - Backfill jobs use job_runs/locks.
 
 Tech Lead Review Gate:
@@ -829,6 +854,7 @@ Scope In:
 - Job running beyond timeout/lease alert.
 - SEC 429/403 alert hook.
 - Daily health summary payload/service.
+- Scheduled daily health summary delivery at 08:00 ET to Discord when Discord alerting is configured.
 
 Scope Out:
 - Email unless existing config enables it.
@@ -842,6 +868,7 @@ Tests to write first:
 - Each alert condition triggers severity and payload.
 - No-index dates are excluded from consecutive daily sync failure.
 - Readiness downgrade severity differs for warning vs unavailable.
+- 08:00 ET scheduler invokes the health summary service and posts through the alert/Discord abstraction.
 
 Docker verification commands:
 - `docker compose exec api pytest -q tests/unit`
@@ -849,6 +876,7 @@ Docker verification commands:
 Acceptance Criteria:
 - P1/P2/P3 semantics match PRD.
 - Alert logic is testable without real Discord.
+- Daily health summary is delivered by a scheduled trigger, not only generated as a payload.
 
 Tech Lead Review Gate:
 - Review noisy-alert risk and exclusion rules.
@@ -918,7 +946,7 @@ Scope In:
 - Display report_type, coverage_completeness, confidential treatment, amendments, and NT caveats.
 - Use `frontend/components/ui/` shadcn-style components.
 - Use Tailwind for layout and component-specific adjustments.
-- Use lucide-react icons in controls where applicable.
+- Use lucide-react for all new 13F admin control icons where an icon is needed.
 
 Scope Out:
 - MVP 3 CUSIP corporate action temporal mapping UI.
@@ -946,6 +974,7 @@ Acceptance Criteria:
 - UI does not display missing data as zero.
 - NT, combination, confidential treatment caveats are visible where relevant.
 - Controls use shared UI components and Tailwind.
+- New 13F admin icon controls consistently use lucide-react.
 
 Tech Lead Review Gate:
 - Visual/UX review plus code review for frontend standards compliance.
@@ -1117,5 +1146,6 @@ Tasks requiring human approval or fixture preparation:
 
 - 13F-1B-00 requires approved real SEC fixture set and final value-unit mapping review.
 - 13F-1B-01 requires Tech Lead migration review.
+- 13F-1B-07 requires G6 CUSIP temporal mapping review before CUSIP-backed product/readiness use.
 - 13F-1C2-02 requires API contract review before frontend starts.
 - Any PRD change or MVP 2/3 early implementation requires explicit human approval.
