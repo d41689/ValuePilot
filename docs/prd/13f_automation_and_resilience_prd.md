@@ -69,7 +69,7 @@
 | Report Period | `periodOfReport` | 持仓所对应的季度末日期 | 产品归属季度和分析计算 |
 | Quarter End Date | report period normalized | 例如 2026-03-31 | Oracle's Lens 展示"截至日期" |
 | Filing Deadline | quarter end + 45 calendar days | 13F 通常最晚提交日期（SEC 规则） | 基准日期 |
-| Official Filing Deadline | Filing Deadline 调整到下一个工作日（若落在周末/节假日）；使用 SEC/EDGAR business day calendar（以 NYSE holidays 为 proxy；**注：federal holiday ≠ market holiday**，如 Good Friday 是 NYSE 休市但不是 federal holiday；工程实现须用 NYSE holiday list，并在配置 / 测试中标注） | 实际最晚合规提交日期（SEC FAQ Q25） | filing window 判断、告警触发、readiness 计算 |
+| Official Filing Deadline | Filing Deadline 调整到下一个 SEC/EDGAR operational business day（若落在周末、SEC federal holiday 或 EDGAR 特别关闭日）；使用 SEC/EDGAR federal holiday calendar，不使用 NYSE market holiday calendar（Good Friday 通常为 NYSE 休市但 EDGAR 可开放；Veterans Day / Columbus Day 为 federal holiday 且 EDGAR 关闭） | 实际最晚合规提交日期（SEC FAQ Q25） | filing window 判断、告警触发、readiness 计算 |
 | Valid Filing Window | quarter end to quarter end + 180 days | 13F 合理申报范围（含延迟申报） | periodOfReport 归属验证（见 §5.3） |
 
 核心规则：
@@ -232,9 +232,9 @@ updated_at
 7. 为命中的 **13F-NT**：
    - 必须抓取 filing detail / header，从 `periodOfReport` 确定报告季度（不使用 daily index date 推断）。
    - 保存 raw filing document（用于审计和 period 复查）。
-   - 解析 cover page 中的 `otherManagersInfo`，获取代报该 manager 持仓的 other_managers 列表。
+   - 解析 cover page 中的 `otherManagersInfo`，获取代报该 manager 持仓的 other_managers 列表；能解析到 CIK / 13F file number 时必须保存，不能只存展示名称。
    - 不抓取 information table（13F-NT 无 holdings table）。
-   - 按 `periodOfReport` 将该 manager + quarter 标记为 `coverage_type=notice_reported_elsewhere`，并存储 `other_managers_reporting` 列表。
+   - 按 `periodOfReport` 将该 manager + quarter 标记为 `coverage_type=notice_reported_elsewhere`，并存储包含可解析 identifier 的 `other_managers_reporting` 列表。
    - **不得将 13F-NT 解读为"该 manager 当季无持仓"**：13F-NT 表示持仓由其他 manager 代报，持仓数据客观存在于那些 manager 的 filing 中。
 8. 抓取 13F-HR / 13F-HR/A 的 filing detail 和 information table。
 9. 解析 holdings。
@@ -243,7 +243,7 @@ updated_at
 
 **404 处理规则：**
 
-1. 若该日期在 `no_index_expected_dates` 列表中（已知节假日/周末，参考 NYSE 节假日作为 proxy），直接标记 `no_data`。
+1. 若该日期在 `no_index_expected_dates` 列表中（已知周末、SEC federal holiday 或 EDGAR 特别关闭日），直接标记 `no_data`。
 2. 否则重试超过 3 次且当日美东 23:59 已过，再标记 `no_data`。
 
 **每日触发时间：** Worker 采用 hourly polling，配置参数 `DAILY_SYNC_EARLIEST_ATTEMPT_ET`（默认 `20:00` 美东）作为当日首次尝试下限。
@@ -341,7 +341,8 @@ holding_row_fingerprint = sha256(
   normalized_name_of_issuer,
   normalized_title_of_class,
   normalized_cusip,
-  value_usd,                 -- 使用 normalized USD 值
+  value_raw,                 -- 使用 SEC XML 原始值，避免 derived value 修复导致 fingerprint 漂移
+  value_unit_raw,
   ssh_prnamt,
   ssh_prnamt_type,
   put_call,
@@ -497,8 +498,10 @@ coverage_completeness                 -- complete | partial | unknown
                                       -- holdings_report → complete
                                       -- combination_report → partial
                                       -- notice_report → 无直接 holdings（reported elsewhere）
-other_managers_included               -- JSON 数组：combination_report 中由其他 manager 代报的 manager 列表
-other_managers_reporting              -- JSON 数组：13F-NT 中代报本 manager 持仓的 manager 列表
+coverage_type                         -- normal | combination_partial | notice_reported_elsewhere | confidential_treatment_applied | coverage_gap
+                                      -- manager-quarter 覆盖语义；用于 readiness / Oracle's Lens caveat，不替代 report_type
+other_managers_included               -- JSON 数组：combination_report 中由其他 manager 代报的 manager 列表（name / manager_number / CIK / file_number，能解析多少存多少）
+other_managers_reporting              -- JSON 数组：13F-NT 中代报本 manager 持仓的 manager 列表（name / CIK / file_number，能解析多少存多少）
 has_confidential_treatment            -- bool：cover page Summary Page 中 confidential treatment checkbox
 confidential_treatment_status         -- none | applied | amendment_expected
                                       -- applied: 当前 public filing 已省略部分持仓
@@ -521,6 +524,7 @@ parse_warning
 parse_error
 parser_version
 form_spec_version                     -- SEC EDGAR 提交的 schema/spec 版本，用于值单位解析（见 §7.2）
+xml_schema_version                    -- 从 XML root / namespace / schemaLocation 提取的 schema version；与 form_spec_version 一起审计单位判断
 total_13f_reported_value_usd          -- 所有 holdings value 合计（仅 report_type=holdings_report 的 complete filings 有意义）
 total_13f_common_value_usd            -- common shares value 合计
 holdings_count
@@ -535,7 +539,7 @@ updated_at
 
 - `report_type=combination_report` 时，`coverage_completeness=partial`；此类 filing 在 Oracle's Lens 中必须展示 caveat，不能作为完整 manager portfolio。
 - `has_confidential_treatment=true` 时，readiness 至多 `usable_with_warning`；用户侧显示 "Some holdings may be omitted due to confidential treatment applied to this filing."
-- `form_spec_version`：从 EDGAR XML header 或 XBRL namespace 提取，用于 parser 判断值单位（见 §7.2）。
+- `form_spec_version` / `xml_schema_version`：从 EDGAR XML header、root element、namespace 或 schemaLocation 提取，用于 parser 判断值单位（见 §7.2）；不得只按 filing date 推断。
 - `official_filing_deadline` 应在 filing 入库时计算并存储，后续 filing window 判断、告警触发均引用此字段，不使用裸 `quarter_end + 45`。
 
 ### 7.2 Holdings 字段
@@ -568,9 +572,12 @@ voting_sole
 voting_shared
 voting_none
 stock_id
+cusip_mapping_status                  -- holding-level CUSIP enrichment result: linked | invalid_cusip | unresolved | pending_mapping | needs_review
+                                      -- 不等同于 cusip_ticker_map.mapping_status（mapping lifecycle）
 portfolio_weight_pct                  -- (value_usd / filing.total_13f_common_value_usd) * 100
                                       -- 分母和 numerator 均为 USD（dollars）口径，单位一致
                                       -- 仅 common shares（put_call IS NULL）有效；options 行为 null
+                                      -- 仅 coverage_completeness=complete 时可用于跨 manager 权重比较；partial filing 中为 null 或仅 caveated 展示
                                       -- MVP 1B 写入时为 null，MVP 2 计算填充
 holding_row_fingerprint
 fingerprint_version
@@ -583,10 +590,11 @@ updated_at
 
 SEC Form 13F Information Table 的值单位随 filing schema 版本变化。Parser 必须按以下规则处理，不能假设所有 filing 都是 thousands：
 
-1. **优先**：从 EDGAR XML schema / form_spec_version 确定单位声明。
+1. **优先**：从 EDGAR XML root / namespace / schemaLocation / form_spec_version 确定单位声明；parser 必须显式识别 2023-01-03 起 amended Form 13F 的 nearest-dollar 口径（而非 nearest-thousand）。
 2. **次之**：若 schema 无明确单位声明，参考 SEC Form 13F Instructions 对应年份的单位规定（工程实现时必须测试 2022 及以前、2023 及以后两套 fixtures）。
 3. **最后**：若无法确定，标记 `value_parse_rule=inferred`，`parse_warning=VALUE_UNIT_UNCERTAIN`。
 4. Manager-level `value_unit_override ≠ infer` 时：作为强制覆盖，`value_parse_rule=manager_override`。
+5. `manager_override` 在 MVP 1 表示 manager-level override；filing-level override 是 MVP 3 扩展，同一枚举值保留用于后续 filing-level audit。
 
 `value_usd` 是产品和分析层的唯一金额字段，统一以 USD（dollars）存储；`value_raw` + `value_unit_raw` + `value_parse_rule` 用于审计和 reparse。
 
@@ -820,6 +828,7 @@ Oracle's Lens 的定位是**高质量投资人关注列表 + 行为变化提示*
 | `put_call IS NOT NULL`（options） | 期权头寸结构复杂，无法直接对比 common shares | 分离展示，不计入 common weight |
 | `holding_attribution_status=shared` | 可能重复计算（parent/subsidiary 共同申报） | 排除共识计数，UI 显示 "Attribution uncertain" |
 | `holding_attribution_status=unresolved` | 归因不明 | 同上 |
+| `coverage_type=notice_reported_elsewhere`（13F-NT） | 持仓由其他 manager 代报，本 manager 无直接 holdings table | 不计入 direct consensus；保留 reported-by 关系用于 MVP 3+ 归并视图 |
 | `coverage_completeness=partial`（Combination Report） | 持仓不完整，无法用于 total portfolio value | 加 caveat，不参与跨 manager 权重比较 |
 | `has_confidential_treatment=true` | 部分持仓被保密，快照不完整 | 加 caveat |
 | `change_status=cusip_changed` | CUSIP 因 corporate action 变化，不是真实退出+新建 | UI 标注 "CUSIP Changed (Corporate Action)" |
@@ -856,6 +865,7 @@ as_of_quarter                  -- 数据对应季度
 | superinvestor overlap | 安全边际（Safety Rank） | 上层候选筛选条件 |
 
 MVP 1–2 中，13F 信号和 Value Line 字段在数据层共存（均以 `stock_id` 关联），但 Oracle's Lens UI 不自动合并成"评分"；该逻辑推迟到 MVP 3 或独立 product track。
+上表所有集成方式均为 MVP 3+ roadmap；MVP 1–2 只展示 13F 行为信号本身和必要 caveat，不做联合评分或联合排序。
 
 ---
 
@@ -1229,17 +1239,17 @@ so current-quarter data may update until approximately [official_filing_deadline
 ### MVP 1B: Filing + Holdings Ingestion + Amendment Replacement
 
 - Fetch 13F-HR / 13F-HR/A filing detail / information table
-- **Fetch 13F-NT filing header**，从 `periodOfReport` 归属季度，解析 `other_managers_reporting`，保存 raw document，标记 `coverage_type=notice_reported_elsewhere`
+- **Fetch 13F-NT filing header**，从 `periodOfReport` 归属季度，解析 `other_managers_reporting`（含 CIK / 13F file number，能解析多少存多少），保存 raw document，标记 `coverage_type=notice_reported_elsewhere`
 - **解析 cover page：** `report_type`（holdings_report / combination_report / notice_report）、`coverage_completeness`、`other_managers_included`、`has_confidential_treatment`
-- **`form_spec_version` 解析；value 单位按 schema 版本确定，存储 `value_raw` + `value_unit_raw` + `value_parse_rule` + `value_usd`**
+- **`form_spec_version` / `xml_schema_version` 解析；value 单位按 XML schema/root 版本确定，存储 `value_raw` + `value_unit_raw` + `value_parse_rule` + `value_usd`**
 - `parse_runs` 表 + 软版本化写入（不 DELETE 旧 holdings）
 - `source_row_index` 在过滤前赋值；`fingerprint_version`；`parser_version`
 - 两层去重防火墙（accession-level + parse_run fingerprint）
 - `periodOfReport` routing（含异常处理；±1–2 日归一化用 valid filing window）
-- Amendment type 解析（normalized enum + raw）；RESTATEMENT 原子替换（成功后才切 active）；PARTIAL → needs_review
-- `official_filing_deadline` 计算（含工作日调整，使用 SEC/EDGAR business day calendar (NYSE holidays as proxy; see note)）
+- Amendment type 解析（normalized enum + raw）；RESTATEMENT 原子替换（成功后才切 active）；非 RESTATEMENT amendment_type → needs_review
+- `official_filing_deadline` 计算（含工作日调整，使用 SEC/EDGAR federal holiday calendar + EDGAR 特别关闭日）
 - `total_13f_reported_value_usd` 和 `total_13f_common_value_usd` 写入
-- **`holding_attribution_status` 计算**（按 investment_discretion + other_managers_raw 规则，见 §6.3）
+- **`holding_attribution_status` 计算**（按 investment_discretion + other_managers_raw 规则，见 §7.2）
 - OpenFIGI CUSIP 映射（含时间有效性字段初始化；有效区间 overlap 检查 + advisory lock）
   - **Auto-confirm 条件（同时满足才可 `mapping_status=confirmed`）：** ①单一候选（OpenFIGI 返回唯一结果）；②CUSIP 与 FIGI 精确匹配；③`security_type IN (common_stock, etf)`；④exchange / market sector 可验证（非空且非 unknown）。
   - 多候选、`security_type=unknown`、ADR / share class 歧义、exchange 未知 → `mapping_status=needs_review`，不自动确认。
@@ -1289,10 +1299,10 @@ so current-quarter data may update until approximately [official_filing_deadline
 
 - Admin can create, edit, deactivate, and review tracked managers; `value_unit_override` defaults to `infer`.
 - Daily sync identifies and processes 13F-HR, 13F-HR/A, and 13F-NT.
-- 13F-NT filing header is fetched; `periodOfReport` determines which quarter; `other_managers_reporting` is parsed; raw document is saved; system marks `coverage_type=notice_reported_elsewhere` — NOT "no holdings."
+- 13F-NT filing header is fetched; `periodOfReport` determines which quarter; `other_managers_reporting` is parsed with CIK / 13F file number when available; raw document is saved; system marks `coverage_type=notice_reported_elsewhere` — NOT "no holdings."
 - System parses cover page `report_type` for all 13F-HR / 13F-HR/A filings; Combination Reports marked `coverage_completeness=partial`.
 - System parses `has_confidential_treatment` from Summary Page; filings with confidential treatment cause readiness to cap at `usable_with_warning`.
-- `form_spec_version` is extracted; `value_raw` + `value_unit_raw` + `value_parse_rule` + `value_usd` are stored; value_usd is always in dollars regardless of source unit.
+- `form_spec_version` / `xml_schema_version` is extracted from XML root / namespace / schema metadata; `value_raw` + `value_unit_raw` + `value_parse_rule` + `value_usd` are stored; value_usd is always in dollars regardless of source unit.
 - `official_filing_deadline` is computed with business-day adjustment; all filing window logic uses `official_filing_deadline`, not bare `quarter_end + 45`.
 - Each parse of an accession creates a new `parse_run`; product queries use `is_current=true` parse_run; old parse_run rows are retained for audit.
 - `periodOfReport` ±1–2 day auto-normalization only applies when form type is 13F-HR or 13F-HR/A AND `accepted_at` is within valid filing window. Missing or invalid period → `needs_review`, never auto-inferred.
@@ -1304,16 +1314,17 @@ so current-quarter data may update until approximately [official_filing_deadline
 
 ### 18.2 Testable Acceptance Criteria
 
-- Given a daily index containing a tracked manager and form `13F-NT`, the system fetches the NT filing header, reads `periodOfReport`, parses `other_managers_reporting`, marks `coverage_type=notice_reported_elsewhere` — not "no holdings."
+- Given a daily index containing a tracked manager and form `13F-NT`, the system fetches the NT filing header, reads `periodOfReport`, parses `other_managers_reporting` with CIK / 13F file number when available, marks `coverage_type=notice_reported_elsewhere` — not "no holdings."
 - Given a 13F-HR filing with `report_type=COMBINATION REPORT` in cover page XML, the system sets `report_type=combination_report` and `coverage_completeness=partial`.
 - Given a filing with `has_confidential_treatment=true` in Summary Page, readiness for that quarter is at most `usable_with_warning`.
 - Given a pre-2023 filing with value in thousands, `value_usd = value_raw * 1000`, `value_unit_raw=thousands`, `value_parse_rule=schema_thousands`.
 - Given `form_spec_version` indicates dollars unit, `value_usd = value_raw`, `value_unit_raw=dollars`, `value_parse_rule=schema_dollars`.
+- Given XML root / namespace / schema metadata indicates amended 2023+ Form 13F, parser uses dollars even if filing date heuristics would be ambiguous.
 - Given a filing is reparsed (same accession), a new `parse_run` is created with `is_current=true`; the old `parse_run` retains `is_current=false`; old holdings rows are NOT deleted.
 - Given a product query for a holding's `value_usd`, it always returns dollars regardless of source filing unit.
-- Given `official_filing_deadline` falls on a Saturday and the following Monday is a NYSE holiday, it is adjusted to the following Tuesday (not Monday).
+- Given `official_filing_deadline` falls on a Saturday and the following Monday is a SEC federal holiday or EDGAR special closure, it is adjusted to the following EDGAR operational business day (e.g., Tuesday when Monday is closed).
 - Given `official_filing_deadline` falls on a Saturday and the following Monday is a normal business day, it is adjusted to Monday.
-- Implementation must use a SEC/EDGAR business day calendar (NYSE holidays as proxy; see note) (e.g., NYSE holidays), not weekday-only logic.
+- Implementation must use the SEC/EDGAR federal holiday calendar plus documented EDGAR special closures, not weekday-only logic and not the NYSE market holiday calendar.
 - Given a 13F-NT manager, the system user-facing copy shows "This manager filed a 13F Notice; its 13(f) holdings are reported by other manager(s)." — not empty holdings or "no positions."
 - Given a Combination Report is the active filing for a manager+quarter, Oracle's Lens shows caveat and does not use it for total_portfolio_value or cross-manager comparison.
 - Given CUSIP A mapped to stock X before 2025-Q3 (mapping_status=superseded, effective_to_quarter=2025-Q2), and a new mapping to stock Y from 2025-Q3 (mapping_status=confirmed, effective_from_quarter=2025-Q3), a temporal query for Q3 2025 returns stock Y, a query for Q2 2025 returns stock X.
@@ -1341,7 +1352,7 @@ so current-quarter data may update until approximately [official_filing_deadline
 | Manager type V1 支持范围 | `fundamental_long`、`activist`、`quant`、`multi_strategy`、`index_like`、`unknown` |
 | Options 默认处理策略 | 变化分析默认仅 common shares；options 单独 tab/filter，`portfolio_weight_pct=null` |
 | Options value 展示口径 | Options tab 展示 `value_usd` 原始值；不计入 13F common aggregate；不展示 portfolio weight |
-| 历史回补默认起始季度 | `DEFAULT_BACKFILL_START_QUARTER=2023-Q1`，环境变量可覆盖 |
+| 历史回补默认起始季度 | `DEFAULT_BACKFILL_START_QUARTER=2023-Q1`，环境变量可覆盖；该默认值与 2023-01-03 Form 13F value unit 切换相关，早于该季度的 backfill 必须启用 thousands/dollars 双口径 fixtures |
 | `featured` managers 排序 | Oracle's Lens 默认列表置顶展示，不影响数据覆盖范围 |
 | 最低 linked holdings ratio 门槛 | < 50% 阻断 change analysis；50%–70% 展示 warning 不阻断 snapshot |
 | Admin 告警渠道 | Discord（MVP 1A）；Email 可选（`ALERT_EMAIL_ENABLED`） |
@@ -1351,9 +1362,9 @@ so current-quarter data may update until approximately [official_filing_deadline
 | Amendment accepted_at 相同时 fallback | 不自动切 active；`amendments_pending + amendment_sort_warning=true`，等待 admin 确认 |
 | CUSIP mapping 状态管理 | `is_active` boolean 已废弃；改用 `mapping_status` enum（`confirmed / superseded / needs_review / deleted`）；`superseded` 保留历史查询可访问；`deleted` 为 admin 手动停用；物理 DELETE 禁止 |
 | CUSIP active mapping 唯一性约束 | 废弃 `UNIQUE(cusip) WHERE is_active=true`；改为应用层有效区间不重叠校验（`confirmed + superseded` 行的 effective 区间不重叠） |
-| Holding attribution | `holding_attribution_status` 计算规则见 §6.3；`direct` 才计入共识统计；`shared / unresolved` 排除或加 caveat；防止 parent/subsidiary 共同申报误读 |
-| 金额单位 | `value_usd` 统一以 dollars 存储；parser 按 `form_spec_version` 和 XML schema 确定单位，不以 manager-level override 为主判断路径 |
-| Filing deadline 计算 | 使用 `official_filing_deadline`（quarter_end + 45 days，调整到下一工作日）；calendar 口径：NYSE holiday list（非 US federal holiday list；Good Friday 等 NYSE 休市须包含；Veterans Day 等 NYSE 开市日不计入） |
+| Holding attribution | `holding_attribution_status` 计算规则见 §7.2；`direct` 才计入共识统计；`shared / unresolved` 排除或加 caveat；防止 parent/subsidiary 共同申报误读 |
+| 金额单位 | `value_usd` 统一以 dollars 存储；parser 按 `form_spec_version` / `xml_schema_version` 和 XML schema 确定单位，不以 manager-level override 为主判断路径 |
+| Filing deadline 计算 | 使用 `official_filing_deadline`（quarter_end + 45 days，调整到下一个 SEC/EDGAR operational business day）；calendar 口径：SEC/EDGAR federal holidays + documented EDGAR special closures，非 NYSE market holiday list |
 | parse_run 失败审计 | parse_run 两阶段写入：阶段 1 独立事务立即持久化 `status=running`；阶段 2 holdings + is_current 切换，失败后 catch 更新 `status=failed + error`；任何情况下 failed parse_run 都有持久记录 |
 | parse_run orphan 处理 | `status=running` 超过 job timeout 且 lease 过期 → 标记 `status=abandoned`；watchdog 由 quality_check job 或 ingest 启动时清理；`abandoned` 等同 `failed` 可重试 |
 | investment_discretion 规范化 | SEC XML 原始值 `SOLE / DFND / DEFINED / OTR / OTHER / SHARED` 在 parser 层 normalize 到 `SOLE / DFND / OTR`；`DEFINED→DFND`、`OTHER/SHARED→OTR`；`DFND→reported_for_other`（或 unresolved），`OTR→shared`，`SOLE→direct` |
@@ -1366,7 +1377,7 @@ so current-quarter data may update until approximately [official_filing_deadline
 
 | 优先级 | 问题 | 背景 |
 | --- | --- | --- |
-| MVP 1B 前 | SEC EDGAR 13F XML schema 的 value 单位跨年份规则确认 | 工程必须测试 2022 及以前、2023 及以后两套 fixtures，确认 `form_spec_version` 映射规则；如 SEC FAQ Q36 或 XML schema 有明确说明，以 SEC 官方文档为准 |
+| MVP 1B 前 | SEC EDGAR 13F XML schema 的 value 单位跨年份规则确认 | 工程必须测试 2022 及以前、2023 及以后两套 fixtures，确认 `form_spec_version` / `xml_schema_version` 映射规则；如 SEC FAQ Q36 或 XML schema 有明确说明，以 SEC 官方文档为准 |
 | MVP 2 前 | Corporate action 外部数据来源确认 | §7.4 heuristic 为临时方案；接入可靠数据源后替换 |
 | MVP 2 前 | 变化计算的最低 CUSIP 映射率门槛是否需要 per-manager 设置 | 部分 manager 持有大量小市值股票，映射率天然偏低 |
 | MVP 2 前 | 13F-NT manager 的持仓变化计算策略 | 其持仓在其他 manager 的 filing 中；V1 不做跨 manager 合并，change_status=no_prior_data；MVP 2 前讨论是否支持 cross-reference |
