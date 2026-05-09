@@ -58,6 +58,15 @@ def test_sec_client_sets_user_agent_from_contact_email(monkeypatch):
     assert "ops@example.com" in user_agent
 
 
+def test_sec_user_agent_override_keeps_contact_email(monkeypatch):
+    monkeypatch.setattr(edgar_client.settings, "SEC_CONTACT_EMAIL", "ops@example.com")
+    monkeypatch.setattr(edgar_client.settings, "EDGAR_USER_AGENT", "CustomAgent/1.0")
+
+    user_agent = edgar_client.build_sec_user_agent()
+
+    assert user_agent == "CustomAgent/1.0 ops@example.com"
+
+
 def test_default_edgar_rate_limit_is_ten_requests_per_second(monkeypatch):
     monkeypatch.setattr(edgar_client.settings, "EDGAR_REQUESTS_PER_SECOND", 10.0)
 

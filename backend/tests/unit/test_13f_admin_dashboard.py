@@ -1571,6 +1571,9 @@ def test_edgar_rate_limit_status_endpoint_returns_runtime_budget(client, db_sess
             "max_retries": 3,
             "window_seconds": 60,
             "recent_request_count": 7,
+            "recent_403_count": 1,
+            "recent_429_count": 2,
+            "edgar_block_alert": True,
             "estimated_capacity": 300,
             "remaining_estimated_capacity": 293,
             "global_pause_until": None,
@@ -1581,6 +1584,9 @@ def test_edgar_rate_limit_status_endpoint_returns_runtime_budget(client, db_sess
 
     assert response.status_code == 200
     assert response.json()["recent_request_count"] == 7
+    assert response.json()["recent_403_count"] == 1
+    assert response.json()["recent_429_count"] == 2
+    assert response.json()["edgar_block_alert"] is True
     assert response.json()["remaining_estimated_capacity"] == 293
 
 

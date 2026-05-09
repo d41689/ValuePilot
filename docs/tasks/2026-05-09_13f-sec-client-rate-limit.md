@@ -63,3 +63,13 @@ Docker only:
   - `docker compose exec api pytest -q tests/unit/test_13f_admin_dashboard.py` (`50 passed`)
   - `docker compose exec api pytest -q tests/unit` (`325 passed in 39.00s`)
 - 2026-05-09: Contract check: no daily index parsing, no SEC network access in tests, no OpenFIGI, no parser/holdings implementation, no frontend, no PRD edits.
+- 2026-05-09: Tech Lead review follow-up accepted:
+  - Removed repeated `build_sec_user_agent()` calls inside the retry loop; `_request()` now validates once before any request attempt, preserving fail-fast for injected mock clients.
+  - Added coverage that `EDGAR_USER_AGENT` overrides still include `SEC_CONTACT_EMAIL`.
+  - Added API wiring coverage that 403/429 health fields are passed through by the admin rate-limit endpoint.
+- 2026-05-09: Tech Lead review follow-up deferred:
+  - Process-local vs IP-global rate limiting, 429 recovery back to 10 req/s, and global pause enforcement across concurrent threads are deferred to later multi-worker/production scheduler hardening.
+- 2026-05-09: Post-review verification passed:
+  - `docker compose exec api pytest -q tests/unit/test_edgar_client.py` (`8 passed`)
+  - `docker compose exec api pytest -q tests/unit/test_13f_admin_dashboard.py` (`50 passed`)
+  - `docker compose exec api pytest -q tests/unit` (`326 passed in 38.50s`)

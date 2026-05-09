@@ -160,8 +160,8 @@ class EdgarClient:
         bucket = _get_bucket()
         last_exc: Optional[Exception] = None
 
+        build_sec_user_agent()
         for attempt in range(settings.EDGAR_MAX_RETRIES + 1):
-            build_sec_user_agent()
             if attempt > 0:
                 delay = self._backoff[min(attempt - 1, len(self._backoff) - 1)]
                 logger.warning("EDGAR retry %d/%d in %.0fs for %s", attempt, settings.EDGAR_MAX_RETRIES, delay, url)
