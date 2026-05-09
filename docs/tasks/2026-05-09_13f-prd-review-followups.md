@@ -36,6 +36,14 @@ Out:
 - Accept: switch holding fingerprint from derived `value_usd` to raw filing value inputs.
 - Accept: correct stale section references and amendment enum wording.
 - Accept: add caveats for partial portfolios and MVP 3+ Value Line integration.
+- Accept: remove `parse_run_id` from `holding_row_fingerprint` input while keeping the per-run unique constraint.
+- Accept: add original filing collision tie-break rules to avoid unique constraint crashes.
+- Accept: remove `coverage_gap` from stored `filings_13f.coverage_type`; infer it at readiness/query layer.
+- Accept: clarify `accepted_at >= 2023-01-03` as the Form 13F unit transition boundary and call out Q4 2022 filings.
+- Accept: define denominator-zero behavior for `portfolio_weight_pct`.
+- Accept: add `no_index_expected_dates` maintenance ownership for federal holidays and EDGAR special closures.
+- Accept: require 64-bit advisory lock keys for CUSIP overlap serialization.
+- Accept: strengthen corporate action heuristic labels and 13F-NT UX copy.
 - Defer to implementation phase: existing code model migration details such as BigInt schema changes.
 
 ## Progress Notes
@@ -43,3 +51,4 @@ Out:
 - 2026-05-09: Created task log before editing PRD follow-ups.
 - 2026-05-09: Verified SEC Form 13F FAQ Q25 and SEC EDGAR Calendar semantics; filing deadline calendar should follow SEC/EDGAR federal holidays and special EDGAR closures, not NYSE market holidays.
 - 2026-05-09: Updated PRD for accepted review items and ran `rg` checks for stale NYSE proxy wording, amendment wording, field definitions, and schema-version requirements.
+- 2026-05-09: Applied second review follow-ups for fingerprint stability, original filing tie-breaks, coverage gap semantics, accepted_at unit boundary, no-index date maintenance, division-by-zero behavior, 64-bit advisory locks, and UX caveats.
