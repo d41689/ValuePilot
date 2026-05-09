@@ -1,6 +1,6 @@
 # 13F 数据自动化抓取与分析 PRD
 
-| 项目名称 | ValuePilot 13F Data Automation & Ownership Signals | 版本 | v1.9 |
+| 项目名称 | ValuePilot 13F Data Automation & Ownership Signals | 版本 | v1.10 |
 | :--- | :--- | :--- | :--- |
 | **状态** | Ready for Engineering Review | **负责人** | Product |
 
@@ -369,7 +369,7 @@ parser_version
 fingerprint_version
 started_at
 finished_at
-status              -- running / succeeded / failed
+status              -- running / succeeded / failed / abandoned
 holdings_count
 error
 is_current          -- 仅一个 parse_run per accession 可为 true（partial unique）
@@ -418,6 +418,15 @@ UPDATE parse_runs
 **两阶段设计说明：**
 - 阶段 1 独立提交：确保即使阶段 2 失败，`parse_run.status=failed` + `error` 也能持久保存，提供完整的失败审计记录。
 - 阶段 2 整体回滚：holdings 写入和 is_current 切换仍在同一事务，保证原子性；不会出现部分 holdings 可见的中间状态。
+
+**Orphan parse_run 处理（进程崩溃场景）：**
+
+若进程在阶段 1 commit 后、阶段 2 完成前崩溃，catch 不会执行，`parse_run.status` 会永久停在 `running`。必须有 watchdog 机制处理此场景：
+
+- **Watchdog 规则：** `parse_run.status=running` 且 `started_at < now() - :parse_job_timeout` 且关联 `job_runs` 的 lease 已过期（`lease_expires_at < now()`）→ 标记 `parse_run.status='abandoned'`，`error='process_crash_or_timeout'`，`finished_at=now()`。
+- `abandoned` 状态在审计、Admin UI、告警中与 `failed` 相同处理（不阻断 is_current，可重新触发 parse）。
+- 实现位置：`quality_check` job 定期扫描，或 `ingest_holdings_for_quarter` 启动时先清理同 accession 的 stale running parse_runs。
+- `:parse_job_timeout` 与 §12.4 的 `ingest_filing` job 超时配置同源（默认 10 分钟）。
 
 ### 6.4 可重入要求
 
@@ -582,15 +591,30 @@ SEC Form 13F Information Table 的值单位随 filing schema 版本变化。Pars
 
 **持仓归因规则（`holding_attribution_status` 计算）：**
 
-13F Information Table Column 4（Investment Discretion）决定该持仓的投资决策归属。Parser 在写入 holdings 时必须同时计算 `holding_attribution_status`：
+13F Information Table Column 6（Investment Discretion）决定该持仓的投资决策归属。Parser 在写入 holdings 时必须同时计算 `holding_attribution_status`。
 
-| `investment_discretion` | `other_managers_raw` | `holding_attribution_status` | 含义 |
+**XML 原始值 → 规范化映射（必须在 parser 层实施）：**
+
+| SEC XML 原始值 | 含义（SEC Form 13F Column 6 说明） | normalized `investment_discretion` |
+| --- | --- | --- |
+| `SOLE` | Sole discretion | `SOLE` |
+| `DFND` | Defined（由封面页定义，如 Combination Report 子 manager） | `DFND` |
+| `DEFINED` | 同 `DFND`（部分 filer 使用完整拼写） | `DFND`（normalize 到 `DFND`） |
+| `OTR` | Other（与封面页以外的其他 manager 共享） | `OTR` |
+| `OTHER` | 同 `OTR`（部分 filer 使用完整拼写） | `OTR`（normalize 到 `OTR`） |
+| `SHARED` | 同 `OTR`（非标准但出现在实际 XML 中） | `OTR`（normalize 到 `OTR`） |
+
+Parser 必须将所有变体 normalize 到规范值（`SOLE / DFND / OTR`）再存储；未知值存原始并标 `unresolved`。
+
+**`holding_attribution_status` 计算规则：**
+
+| normalized `investment_discretion` | `other_managers_raw` | `holding_attribution_status` | 含义 |
 | --- | --- | --- | --- |
-| `SOLE` | empty / null | `direct` | 申报机构独立持有，可直接用于共识分析 |
-| `SHARED` | any | `shared` | 多个机构共同行使投资决策，可能重复计算 |
-| `DEFINED` | parseable manager numbers | `reported_for_other` | 由封面页定义，申报机构代其他机构报告（Combination Report 常见） |
-| `DEFINED` | empty / unparseable | `unresolved` | 无法确定实际持有方，需排除或加 caveat |
-| any | any（parse 失败） | `unresolved` | 字段异常，归因不可用 |
+| `SOLE` | any | `direct` | 申报机构独立持有，可直接用于共识分析 |
+| `OTR` | any | `shared` | 与其他机构共享投资决策，可能重复计算 |
+| `DFND` | parseable manager numbers | `reported_for_other` | 由封面页定义，申报机构代其他机构报告（Combination Report 常见） |
+| `DFND` | empty / unparseable | `unresolved` | 无法确定实际持有方，需排除或加 caveat |
+| unknown / parse error | any | `unresolved` | 字段异常，归因不可用 |
 
 **产品端归因使用规则：**
 
@@ -685,7 +709,12 @@ updated_at
 
 **唯一约束（候选行级别）：** `UNIQUE (cusip, source, ticker, exchange, effective_from_quarter)`
 
-**有效区间不重叠约束：** 同一 CUSIP 的 `mapping_status IN ('confirmed', 'superseded')` 行，其 `(effective_from_quarter, effective_to_quarter)` 有效区间不得重叠。DB 层以应用校验 + 写入前检查实施；工程实现时添加 overlap 检查，违反则拒绝写入并告警。
+**有效区间不重叠约束：** 同一 CUSIP 的 `mapping_status IN ('confirmed', 'superseded')` 行，其 `(effective_from_quarter, effective_to_quarter)` 有效区间不得重叠。纯应用层 overlap check 有并发窗口（两个并发写入均通过检查后同时提交），必须配合以下机制之一消除竞争：
+
+- **MVP 方案（推荐）：** 写入 cusip_ticker_map 前，在同一事务内取 `pg_advisory_xact_lock(hashtext(cusip))`，再做 overlap 检查，再 INSERT。事务结束时锁自动释放；同一 CUSIP 的并发写入序列化执行。
+- **长期方案（P2）：** 将 `effective_from_quarter / effective_to_quarter` 转换为 `daterange` 并加 `EXCLUDE USING gist (cusip WITH =, quarter_range WITH &&) WHERE (mapping_status IN ('confirmed','superseded'))`；DB 层原生互斥。
+
+工程实现时选择 MVP 方案，并在注释中标注 long-term exclusion constraint 升级路径。
 
 **时间有效性查询（as-of 季度查询）：**
 
@@ -772,7 +801,7 @@ Oracle's Lens 的定位是**高质量投资人关注列表 + 行为变化提示*
 | --- | --- | --- |
 | Manager 持仓快照 | 某季度末 direct holdings（`holding_attribution_status=direct`），含持仓数量、权重、价值 | MVP 1B |
 | 首次进入（New Position） | 上季度无持仓、本季度有持仓（`change_status=new_position`） | MVP 2 |
-| 完全退出（Exit） | 上季度有持仓、本季度无持仓（`change_status=exited`） | MVP 2 |
+| 完全退出（Exit） | 上季度有持仓、本季度无持仓（`change_status=exited_position`） | MVP 2 |
 | 连续加仓（Consecutive Adds） | 连续 N 季度 `change_status=increased`，N ≥ 2 | MVP 2 |
 | 持有季度数（Holding Duration） | 该 manager 持有该股的连续季度数 | MVP 2 |
 | Portfolio Weight（13F Common Weight） | `portfolio_weight_pct`（仅 common shares，分母为 `total_13f_common_value_usd`） | MVP 2 |
@@ -786,7 +815,7 @@ Oracle's Lens 的定位是**高质量投资人关注列表 + 行为变化提示*
 | 场景 | 排除原因 | 处理 |
 | --- | --- | --- |
 | `manager_type=index_like` | 被动持仓，不反映主动 conviction | 从共识计数排除；可单独展示 |
-| `manager_type=high_turnover_quant` | 高换手量化，13F 滞后性使信号失效 | 同上 |
+| `manager_type=quant` | 高换手量化，13F 滞后性使信号失效（45 天延迟时头寸可能已清仓） | 同上 |
 | `put_call IS NOT NULL`（options） | 期权头寸结构复杂，无法直接对比 common shares | 分离展示，不计入 common weight |
 | `holding_attribution_status=shared` | 可能重复计算（parent/subsidiary 共同申报） | 排除共识计数，UI 显示 "Attribution uncertain" |
 | `holding_attribution_status=unresolved` | 归因不明 | 同上 |
@@ -803,7 +832,7 @@ direct_holder_count            -- holding_attribution_status=direct 的 manager 
 value_manager_direct_count     -- manager_type IN (fundamental_long, activist) 且 direct 的数量
 featured_holder_count          -- featured=true 且 direct 的数量
 top_holders[]                  -- 前 N 名 direct holders（按 portfolio_weight_pct DESC）
-recent_changes[]               -- 本季 vs 上季变化（new_position / increased / decreased / exited）
+recent_changes[]               -- 本季 vs 上季变化（new_position / increased / reduced / exited_position）
 attribution_caveat_count       -- shared + unresolved 的 holder 数（UI 提示）
 data_caveats[]                 -- 适用的 caveat 列表（confidential/partial/nt_quarter 等）
 as_of_quarter                  -- 数据对应季度
@@ -1210,7 +1239,9 @@ so current-quarter data may update until approximately [official_filing_deadline
 - `official_filing_deadline` 计算（含工作日调整，使用 US federal market holiday calendar）
 - `total_13f_reported_value_usd` 和 `total_13f_common_value_usd` 写入
 - **`holding_attribution_status` 计算**（按 investment_discretion + other_managers_raw 规则，见 §6.3）
-- OpenFIGI CUSIP 映射（含时间有效性字段初始化，`mapping_status=confirmed`；有效区间 overlap 检查）
+- OpenFIGI CUSIP 映射（含时间有效性字段初始化；有效区间 overlap 检查 + advisory lock）
+  - **Auto-confirm 条件（同时满足才可 `mapping_status=confirmed`）：** ①单一候选（OpenFIGI 返回唯一结果）；②CUSIP 与 FIGI 精确匹配；③`security_type IN (common_stock, etf)`；④exchange / market sector 可验证（非空且非 unknown）。
+  - 多候选、`security_type=unknown`、ADR / share class 歧义、exchange 未知 → `mapping_status=needs_review`，不自动确认。
 - Backfill 预览 + 确认流程
 - 所有 unique constraints 和 indexes（见 §14）
 - **工程任务必须包含：** 2022 前 thousands / 2023+ 单位格式的测试 fixtures
@@ -1319,6 +1350,10 @@ so current-quarter data may update until approximately [official_filing_deadline
 | 金额单位 | `value_usd` 统一以 dollars 存储；parser 按 `form_spec_version` 和 XML schema 确定单位，不以 manager-level override 为主判断路径 |
 | Filing deadline 计算 | 使用 `official_filing_deadline`（quarter_end + 45 days，调整到下一工作日，使用 US federal market holiday calendar） |
 | parse_run 失败审计 | parse_run 两阶段写入：阶段 1 独立事务立即持久化 `status=running`；阶段 2 holdings + is_current 切换，失败后 catch 更新 `status=failed + error`；任何情况下 failed parse_run 都有持久记录 |
+| parse_run orphan 处理 | `status=running` 超过 job timeout 且 lease 过期 → 标记 `status=abandoned`；watchdog 由 quality_check job 或 ingest 启动时清理；`abandoned` 等同 `failed` 可重试 |
+| investment_discretion 规范化 | SEC XML 原始值 `SOLE / DFND / DEFINED / OTR / OTHER / SHARED` 在 parser 层 normalize 到 `SOLE / DFND / OTR`；`DEFINED→DFND`、`OTHER/SHARED→OTR`；`DFND→reported_for_other`（或 unresolved），`OTR→shared`，`SOLE→direct` |
+| OpenFIGI auto-confirm 条件 | 必须同时满足：单一候选 + CUSIP/FIGI 精确匹配 + security_type ∈ {common_stock, etf} + exchange 可验证；否则 `needs_review`；ADR / share class 歧义一律 needs_review |
+| CUSIP overlap 并发控制 | MVP: `pg_advisory_xact_lock(hashtext(cusip))` 在同一事务内，overlap 检查后再写入；长期: daterange + EXCLUDE USING gist exclusion constraint |
 
 ---
 
