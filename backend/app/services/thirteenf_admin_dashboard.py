@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import calendar
+import csv
+import io
 import logging
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
@@ -406,8 +408,155 @@ def build_admin_tasks(session: Session, *, today: date | None = None) -> list[di
 
 
 def build_managers(session: Session) -> list[dict[str, Any]]:
-    managers = session.query(InstitutionManager).order_by(InstitutionManager.legal_name.asc()).all()
+    managers = session.query(InstitutionManager).order_by(InstitutionManager.canonical_name.asc()).all()
     return [_manager_payload(item) for item in managers]
+
+
+def create_manager(session: Session, payload: dict[str, Any]) -> dict[str, Any]:
+    canonical_name = (payload.get("canonical_name") or "").strip()
+    if not canonical_name:
+        raise ValueError("canonical_name is required")
+    status = payload.get("status") or "candidate"
+    manager = InstitutionManager(
+        canonical_name=canonical_name,
+        legal_name=(payload.get("legal_name") or canonical_name).strip(),
+        display_name=(payload.get("display_name") or canonical_name).strip(),
+        edgar_legal_name=payload.get("edgar_legal_name"),
+        status=status,
+        match_status=_legacy_match_status_from_prd_status(status),
+        manager_type=payload.get("manager_type") or "unknown",
+        is_featured=bool(payload.get("is_featured", False)),
+        source=payload.get("source"),
+        source_url=payload.get("source_url"),
+        confidence_score=payload.get("confidence_score"),
+        value_unit_override=payload.get("value_unit_override") or "infer",
+        review_note=payload.get("review_note"),
+    )
+    session.add(manager)
+    session.commit()
+    session.refresh(manager)
+    return _manager_payload(manager)
+
+
+def update_manager(session: Session, manager_id: int, payload: dict[str, Any]) -> dict[str, Any]:
+    manager = session.get(InstitutionManager, manager_id)
+    if manager is None:
+        raise ValueError("Manager not found")
+    for field in [
+        "canonical_name",
+        "display_name",
+        "edgar_legal_name",
+        "manager_type",
+        "is_featured",
+        "source",
+        "source_url",
+        "confidence_score",
+        "value_unit_override",
+        "review_note",
+    ]:
+        if field in payload:
+            setattr(manager, field, payload[field])
+    if "canonical_name" in payload:
+        manager.legal_name = payload["canonical_name"]
+    if "status" in payload:
+        manager.status = payload["status"]
+        manager.match_status = _legacy_match_status_from_prd_status(payload["status"])
+    session.add(manager)
+    session.commit()
+    session.refresh(manager)
+    return _manager_payload(manager)
+
+
+def deactivate_manager(
+    session: Session,
+    manager_id: int,
+    *,
+    note: str | None = None,
+    reviewed_by_user_id: int | None = None,
+) -> dict[str, Any]:
+    manager = session.get(InstitutionManager, manager_id)
+    if manager is None:
+        raise ValueError("Manager not found")
+    manager.status = "inactive"
+    manager.match_status = "inactive"
+    manager.review_note = note
+    manager.reviewed_by_user_id = reviewed_by_user_id
+    manager.reviewed_at = datetime.now(timezone.utc)
+    session.add(manager)
+    session.commit()
+    session.refresh(manager)
+    return _manager_payload(manager)
+
+
+def bulk_import_managers(session: Session, csv_text: str) -> dict[str, Any]:
+    if not csv_text.strip():
+        raise ValueError("csv_text is required")
+    reader = csv.DictReader(io.StringIO(csv_text))
+    if "canonical_name" not in (reader.fieldnames or []):
+        raise ValueError("CSV must include canonical_name")
+
+    created: list[dict[str, Any]] = []
+    skipped: list[dict[str, Any]] = []
+    for row_number, row in enumerate(reader, start=2):
+        canonical_name = (row.get("canonical_name") or "").strip()
+        if not canonical_name:
+            skipped.append({"row": row_number, "reason": "missing_canonical_name"})
+            continue
+        existing = (
+            session.query(InstitutionManager)
+            .filter(InstitutionManager.canonical_name == canonical_name)
+            .one_or_none()
+        )
+        if existing:
+            skipped.append({"row": row_number, "canonical_name": canonical_name, "reason": "duplicate"})
+            continue
+        manager = InstitutionManager(
+            canonical_name=canonical_name,
+            legal_name=canonical_name,
+            display_name=canonical_name,
+            status="candidate",
+            match_status="candidate",
+            manager_type=(row.get("manager_type") or "unknown").strip() or "unknown",
+            is_featured=_csv_bool(row.get("is_featured")),
+            source_url=(row.get("source_url") or "").strip() or None,
+            source=(row.get("source") or "csv_import").strip() or "csv_import",
+            value_unit_override="infer",
+        )
+        # CIKs in import files are hints only; confirmation is a separate audited action.
+        session.add(manager)
+        session.flush()
+        created.append(_manager_payload(manager))
+
+    session.commit()
+    return {
+        "created_count": len(created),
+        "skipped_count": len(skipped),
+        "items": created,
+        "skipped": skipped,
+    }
+
+
+def build_manager_backfill_preview(session: Session, manager_id: int) -> dict[str, Any]:
+    manager = session.get(InstitutionManager, manager_id)
+    if manager is None:
+        raise ValueError("Manager not found")
+    if manager.status != "active" or not manager.cik:
+        raise ValueError("Only active managers with confirmed CIK can be previewed")
+    estimated_filing_count = (
+        session.query(Filing13F)
+        .filter(Filing13F.manager_id == manager.id)
+        .count()
+    )
+    return {
+        "manager_id": manager.id,
+        "cik": manager.cik,
+        "status": "preview",
+        "will_enqueue": False,
+        "estimated_filing_count": estimated_filing_count,
+        "estimated_request_count": 1,
+        "estimated_rate_limit_wait_seconds": 0,
+        "message": "Preview only; no backfill job was created.",
+    }
 
 
 def list_manager_cik_review_events(session: Session, manager_id: int, *, limit: int = 50) -> list[dict[str, Any]]:
@@ -444,7 +593,12 @@ def confirm_manager_cik(
         raise ValueError("CIK is required to confirm a manager")
     if manager.candidate_legal_name:
         manager.legal_name = manager.candidate_legal_name
+        manager.canonical_name = manager.candidate_legal_name
+        manager.edgar_legal_name = manager.candidate_legal_name
     manager.match_status = "confirmed"
+    manager.status = "active"
+    manager.confirmed_by = reviewed_by_user_id
+    manager.confirmed_at = datetime.now(timezone.utc)
     manager.reviewed_by_user_id = reviewed_by_user_id
     manager.reviewed_at = datetime.now(timezone.utc)
     manager.review_note = note
@@ -1693,11 +1847,24 @@ def _manager_payload(manager: InstitutionManager) -> dict[str, Any]:
     return {
         "id": manager.id,
         "cik": manager.cik,
+        "canonical_name": manager.canonical_name,
         "legal_name": manager.legal_name,
+        "edgar_legal_name": manager.edgar_legal_name,
         "display_name": manager.display_name,
+        "status": manager.status,
         "match_status": manager.match_status,
+        "manager_type": manager.manager_type,
+        "is_featured": manager.is_featured,
+        "source": manager.source,
+        "source_url": manager.source_url,
+        "confidence_score": manager.confidence_score,
+        "value_unit_override": manager.value_unit_override,
+        "confirmed_by": manager.confirmed_by,
+        "confirmed_at": manager.confirmed_at.isoformat() if manager.confirmed_at else None,
         "is_superinvestor": manager.is_superinvestor,
         "dataroma_code": manager.dataroma_code,
+        "created_at": manager.created_at.isoformat() if manager.created_at else None,
+        "updated_at": manager.updated_at.isoformat() if manager.updated_at else None,
         "last_seen_at": manager.last_seen_at.isoformat() if manager.last_seen_at else None,
         "candidate_cik": manager.candidate_cik,
         "candidate_legal_name": manager.candidate_legal_name,
@@ -1711,6 +1878,18 @@ def _manager_payload(manager: InstitutionManager) -> dict[str, Any]:
         "prior_rejected_candidates": manager.prior_rejected_candidates or [],
         "latest_cik_review_event": _cik_review_event_payload(latest_event) if latest_event else None,
     }
+
+
+def _legacy_match_status_from_prd_status(status: str) -> str:
+    if status == "active":
+        return "confirmed"
+    if status in {"inactive", "ignored", "needs_review"}:
+        return status
+    return "candidate"
+
+
+def _csv_bool(value: str | None) -> bool:
+    return (value or "").strip().lower() in {"1", "true", "yes", "y"}
 
 
 def _holding_counts_by_filing(session: Session, filings: list[Filing13F]) -> dict[int, int]:

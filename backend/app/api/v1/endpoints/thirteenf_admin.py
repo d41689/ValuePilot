@@ -12,12 +12,16 @@ from app.services.thirteenf_admin_dashboard import (
     build_admin_tasks,
     build_consumer_readiness,
     build_edgar_rate_limit_status,
+    build_manager_backfill_preview,
     build_managers,
     build_quality_reports,
     build_quarters,
     build_status,
     cancel_job,
+    bulk_import_managers,
     confirm_manager_cik,
+    create_manager,
+    deactivate_manager,
     get_amendment,
     get_job,
     get_quarter_detail_page,
@@ -30,6 +34,7 @@ from app.services.thirteenf_admin_dashboard import (
     retry_manager_cik_search,
     revoke_manager_cik,
     trigger_job,
+    update_manager,
 )
 
 admin_router = APIRouter()
@@ -40,6 +45,39 @@ class ManagerReviewRequest(BaseModel):
     cik: str | None = None
     note: str | None = None
     search_name: str | None = None
+
+
+class ManagerCreateRequest(BaseModel):
+    canonical_name: str
+    legal_name: str | None = None
+    display_name: str | None = None
+    edgar_legal_name: str | None = None
+    status: str | None = None
+    manager_type: str | None = None
+    is_featured: bool = False
+    source: str | None = None
+    source_url: str | None = None
+    confidence_score: int | None = Field(default=None, ge=0, le=100)
+    value_unit_override: str | None = None
+    review_note: str | None = None
+
+
+class ManagerPatchRequest(BaseModel):
+    canonical_name: str | None = None
+    display_name: str | None = None
+    edgar_legal_name: str | None = None
+    status: str | None = None
+    manager_type: str | None = None
+    is_featured: bool | None = None
+    source: str | None = None
+    source_url: str | None = None
+    confidence_score: int | None = Field(default=None, ge=0, le=100)
+    value_unit_override: str | None = None
+    review_note: str | None = None
+
+
+class ManagerBulkImportRequest(BaseModel):
+    csv_text: str
 
 
 class JobTriggerRequest(BaseModel):
@@ -153,6 +191,73 @@ def read_amendment(session: SessionDep, current_user: AdminUser, accession_no: s
 @admin_router.get("/managers", response_model=dict)
 def read_managers(session: SessionDep, current_user: AdminUser) -> Any:
     return {"items": build_managers(session)}
+
+
+@admin_router.post("/managers", response_model=dict)
+def create_13f_manager(
+    session: SessionDep,
+    current_user: AdminUser,
+    payload: ManagerCreateRequest,
+) -> Any:
+    try:
+        return create_manager(session, payload.model_dump(exclude_unset=True))
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+
+
+@admin_router.post("/managers/bulk-import", response_model=dict)
+def bulk_import_13f_managers(
+    session: SessionDep,
+    current_user: AdminUser,
+    payload: ManagerBulkImportRequest,
+) -> Any:
+    try:
+        return bulk_import_managers(session, payload.csv_text)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+
+
+@admin_router.patch("/managers/{manager_id}", response_model=dict)
+def patch_13f_manager(
+    session: SessionDep,
+    current_user: AdminUser,
+    manager_id: int,
+    payload: ManagerPatchRequest,
+) -> Any:
+    try:
+        return update_manager(session, manager_id, payload.model_dump(exclude_unset=True))
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+
+
+@admin_router.post("/managers/{manager_id}/deactivate", response_model=dict)
+def deactivate_13f_manager(
+    session: SessionDep,
+    current_user: AdminUser,
+    manager_id: int,
+    payload: ManagerReviewRequest,
+) -> Any:
+    try:
+        return deactivate_manager(
+            session,
+            manager_id,
+            note=payload.note,
+            reviewed_by_user_id=current_user.id,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+
+
+@admin_router.get("/managers/{manager_id}/backfill-preview", response_model=dict)
+def read_manager_backfill_preview(
+    session: SessionDep,
+    current_user: AdminUser,
+    manager_id: int,
+) -> Any:
+    try:
+        return build_manager_backfill_preview(session, manager_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
 
 
 @admin_router.post("/managers/{manager_id}/confirm-cik", response_model=dict)
