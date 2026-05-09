@@ -1,6 +1,6 @@
 # 13F 数据自动化抓取与分析 PRD
 
-| 项目名称 | ValuePilot 13F Data Automation & Ownership Signals | 版本 | v1.8 |
+| 项目名称 | ValuePilot 13F Data Automation & Ownership Signals | 版本 | v1.9 |
 | :--- | :--- | :--- | :--- |
 | **状态** | Ready for Engineering Review | **负责人** | Product |
 
@@ -378,25 +378,28 @@ created_at
 
 **PARTIAL UNIQUE index:** `UNIQUE (accession_number) WHERE is_current = true`
 
-**Reparse 写入顺序（不再需要 DELETE）：**
+**Reparse 写入顺序（两阶段，不再需要 DELETE）：**
 
 ```sql
--- 以下步骤在同一事务内执行（PostgreSQL 语法示例）
+-- 阶段 1：立即持久化 parse_run 记录（独立事务，失败也保留审计）
 BEGIN;
-  -- 1. 创建新 parse_run
   INSERT INTO parse_runs (accession_number, parser_version, fingerprint_version, status, started_at)
     VALUES (:accession, :parser_version, :fingerprint_version, 'running', now())
     RETURNING id INTO :new_parse_run_id;
+COMMIT;
+-- 此时 is_current=false（新 parse_run 尚未激活），旧 parse_run 仍为 is_current=true
 
-  -- 2. bulk insert new holdings（不删除旧 holdings）
+-- 阶段 2：holdings 写入 + is_current 切换（独立事务）
+BEGIN;
+  -- 2a. bulk insert new holdings（不删除旧 holdings）
   INSERT INTO holdings_13f (parse_run_id, ...) VALUES (:new_parse_run_id, ...);
 
-  -- 3. 切换 current parse_run（旧 parse_run is_current=false，新 is_current=true）
+  -- 2b. 切换 current parse_run
   UPDATE parse_runs SET is_current = false WHERE accession_number = :accession AND is_current = true;
   UPDATE parse_runs SET is_current = true, status = 'succeeded', finished_at = now(),
                         holdings_count = :count WHERE id = :new_parse_run_id;
 
-  -- 4. 更新 filing 状态
+  -- 2c. 更新 filing 状态
   UPDATE filings_13f
     SET parse_status = 'succeeded', parser_version = :parser_version,
         total_13f_reported_value_usd = :total_all,
@@ -404,8 +407,17 @@ BEGIN;
         updated_at = now()
     WHERE accession_number = :accession;
 COMMIT;
--- 任一步失败则整体回滚；旧 parse_run 保持 is_current=true，filing 保持 retryable 状态
+
+-- 阶段 2 失败时：外层 catch 执行以下清理（不影响 is_current 状态）
+UPDATE parse_runs
+  SET status = 'failed', finished_at = now(), error = :error_message
+  WHERE id = :new_parse_run_id;
+-- 旧 parse_run 保持 is_current=true；filing 保持 retryable 状态；失败审计永久保留
 ```
+
+**两阶段设计说明：**
+- 阶段 1 独立提交：确保即使阶段 2 失败，`parse_run.status=failed` + `error` 也能持久保存，提供完整的失败审计记录。
+- 阶段 2 整体回滚：holdings 写入和 is_current 切换仍在同一事务，保证原子性；不会出现部分 holdings 可见的中间状态。
 
 ### 6.4 可重入要求
 
@@ -540,7 +552,8 @@ ssh_prnamt
 ssh_prnamt_type
 put_call                              -- NULL=common share; 'Put'; 'Call'
 investment_discretion
-other_managers_raw
+other_managers_raw                    -- Column 7 原始值（逗号分隔 manager numbers）
+holding_attribution_status            -- 持仓归因状态：direct | shared | reported_for_other | unresolved
 voting_sole
 voting_shared
 voting_none
@@ -566,6 +579,25 @@ SEC Form 13F Information Table 的值单位随 filing schema 版本变化。Pars
 4. Manager-level `value_unit_override ≠ infer` 时：作为强制覆盖，`value_parse_rule=manager_override`。
 
 `value_usd` 是产品和分析层的唯一金额字段，统一以 USD（dollars）存储；`value_raw` + `value_unit_raw` + `value_parse_rule` 用于审计和 reparse。
+
+**持仓归因规则（`holding_attribution_status` 计算）：**
+
+13F Information Table Column 4（Investment Discretion）决定该持仓的投资决策归属。Parser 在写入 holdings 时必须同时计算 `holding_attribution_status`：
+
+| `investment_discretion` | `other_managers_raw` | `holding_attribution_status` | 含义 |
+| --- | --- | --- | --- |
+| `SOLE` | empty / null | `direct` | 申报机构独立持有，可直接用于共识分析 |
+| `SHARED` | any | `shared` | 多个机构共同行使投资决策，可能重复计算 |
+| `DEFINED` | parseable manager numbers | `reported_for_other` | 由封面页定义，申报机构代其他机构报告（Combination Report 常见） |
+| `DEFINED` | empty / unparseable | `unresolved` | 无法确定实际持有方，需排除或加 caveat |
+| any | any（parse 失败） | `unresolved` | 字段异常，归因不可用 |
+
+**产品端归因使用规则：**
+
+- `/stocks/{stock_id}/holders` 和共识信号（manager consensus、superinvestor overlap）**默认仅使用 `holding_attribution_status=direct` 的 holdings**。
+- `shared` 和 `unresolved` 持仓：从共识计数中排除，或在 UI 显示 "Attribution uncertain" caveat 后单独展示。
+- `reported_for_other`：如 `other_managers_raw` 中的 manager number 可解析为已知 manager，归因到该 manager（MVP 3 扩展）；MVP 1–2 中视同 `unresolved` 处理。
+- **目的：** 防止 parent/subsidiary 共同申报、Combination Report 代报等场景导致的"同一持仓被计为多个独立 value manager 共识"的误读。
 
 ### 7.3 Parse Runs 表
 
@@ -637,30 +669,41 @@ effective_to_quarter        -- YYYY-QN or null（null = 至今有效）
 evidence_url
 reviewed_by
 reviewed_at
-is_active                   -- 软停用（PATCH is_active=false），不物理 DELETE
+mapping_status              -- confirmed | superseded | needs_review | deleted（见下方说明）
 created_at
 updated_at
 ```
 
-**唯一约束：** `UNIQUE (cusip, source, ticker, exchange, effective_from_quarter)`
+**`mapping_status` 语义：**
 
-**Active mapping 唯一性：** 建议 `UNIQUE (cusip) WHERE is_active = true`（partial unique index）；多个 source 有 active 候选时，标记 `needs_review`，由 admin 确认唯一 active。
+| 值 | 含义 | 历史查询可返回 | 共识统计可用 |
+| --- | --- | --- | --- |
+| `confirmed` | admin 审核通过、当前有效 | ✓ | ✓ |
+| `superseded` | 曾有效，因 corporate action 被新 mapping 取代；历史查询仍须返回它 | ✓ | 按时间区间判断 |
+| `needs_review` | 多 source 有候选但尚未 admin 确认 | ✗（不用于产品） | ✗ |
+| `deleted` | admin 手动停用，永久排除 | ✗ | ✗ |
 
-**时间有效性查询：** 查询 holdings 的 CUSIP 映射时，必须按 `quarter_end_date` 选择有效 mapping：
+**唯一约束（候选行级别）：** `UNIQUE (cusip, source, ticker, exchange, effective_from_quarter)`
+
+**有效区间不重叠约束：** 同一 CUSIP 的 `mapping_status IN ('confirmed', 'superseded')` 行，其 `(effective_from_quarter, effective_to_quarter)` 有效区间不得重叠。DB 层以应用校验 + 写入前检查实施；工程实现时添加 overlap 检查，违反则拒绝写入并告警。
+
+**时间有效性查询（as-of 季度查询）：**
 
 ```sql
 SELECT * FROM cusip_ticker_map
 WHERE cusip = :cusip
-  AND is_active = true
+  AND mapping_status IN ('confirmed', 'superseded')
   AND effective_from_quarter <= :query_quarter
   AND (effective_to_quarter IS NULL OR effective_to_quarter >= :query_quarter)
 ORDER BY candidate_rank ASC
 LIMIT 1
 ```
 
+此查询同时返回当前有效的 `confirmed` mapping 和历史已 superseded 的 mapping（用于历史季度查询），不需要将 `superseded` 行排除。
+
 **Corporate action 处理：** 当公司发生拆股、合并、share class 变化时：
-1. 关闭旧 mapping：`UPDATE ... SET effective_to_quarter = :last_valid_quarter, is_active = false`
-2. 创建新 mapping（新 CUSIP → ticker），`effective_from_quarter = :change_effective_quarter`
+1. 关闭旧 mapping：`UPDATE ... SET effective_to_quarter = :last_valid_quarter, mapping_status = 'superseded'`（不是 `deleted`；历史季度仍可查到它）
+2. 创建新 mapping（新 CUSIP → ticker），`effective_from_quarter = :change_effective_quarter, mapping_status = 'confirmed'`
 
 ### 8.4 CUSIP 数据质量问题
 
@@ -670,7 +713,7 @@ LIMIT 1
 | CUSIP 长度不足 9 位 | `cusip_mapping_status=invalid_cusip`，不自动补零 |
 | 同一 CUSIP 对应多个候选 | 存入多行（`candidate_rank` 区分），标记 `needs_review` |
 | CUSIP 对应已退市证券 | 保留映射，`stock_delisted=true`；前端标注已退市，价格字段 `unavailable` |
-| Admin 停用某映射 | `PATCH is_active=false`，保留历史记录 |
+| Admin 停用某映射 | `PATCH mapping_status=deleted`，保留历史记录；区别于 `superseded`（corporate action 自动设置） |
 
 ### 8.5 CUSIP 映射 job 与告警
 
@@ -718,6 +761,71 @@ nt_quarters                           -- 13F-NT 季度列表（notice_reported_e
 confidential_treatment_quarters       -- 有 confidential treatment 的季度
 partial_coverage_quarters             -- combination report 季度
 ```
+
+### 9.2 Oracle's Lens 价值投资者信号定义
+
+Oracle's Lens 的定位是**高质量投资人关注列表 + 行为变化提示**，不是结论型推荐或买卖信号。13F 数据只负责发现"谁在关注这只股票、行为如何变化"，最终候选排序须叠加估值、财务质量等基本面字段才有意义。
+
+#### 9.2.1 可展示的信号类型
+
+| 信号 | 说明 | 所需数据最低版本 |
+| --- | --- | --- |
+| Manager 持仓快照 | 某季度末 direct holdings（`holding_attribution_status=direct`），含持仓数量、权重、价值 | MVP 1B |
+| 首次进入（New Position） | 上季度无持仓、本季度有持仓（`change_status=new_position`） | MVP 2 |
+| 完全退出（Exit） | 上季度有持仓、本季度无持仓（`change_status=exited`） | MVP 2 |
+| 连续加仓（Consecutive Adds） | 连续 N 季度 `change_status=increased`，N ≥ 2 | MVP 2 |
+| 持有季度数（Holding Duration） | 该 manager 持有该股的连续季度数 | MVP 2 |
+| Portfolio Weight（13F Common Weight） | `portfolio_weight_pct`（仅 common shares，分母为 `total_13f_common_value_usd`） | MVP 2 |
+| Manager Consensus / Overlap | 同一股票的 direct-holder 数量，按 `manager_type` 过滤 | MVP 2 |
+| Superinvestor Overlap | `featured=true` manager 中持有该股的数量和变化方向 | MVP 2 |
+
+#### 9.2.2 默认降权 / 排除规则
+
+下列场景的 holdings **不计入共识统计**，或须显示 caveat：
+
+| 场景 | 排除原因 | 处理 |
+| --- | --- | --- |
+| `manager_type=index_like` | 被动持仓，不反映主动 conviction | 从共识计数排除；可单独展示 |
+| `manager_type=high_turnover_quant` | 高换手量化，13F 滞后性使信号失效 | 同上 |
+| `put_call IS NOT NULL`（options） | 期权头寸结构复杂，无法直接对比 common shares | 分离展示，不计入 common weight |
+| `holding_attribution_status=shared` | 可能重复计算（parent/subsidiary 共同申报） | 排除共识计数，UI 显示 "Attribution uncertain" |
+| `holding_attribution_status=unresolved` | 归因不明 | 同上 |
+| `coverage_completeness=partial`（Combination Report） | 持仓不完整，无法用于 total portfolio value | 加 caveat，不参与跨 manager 权重比较 |
+| `has_confidential_treatment=true` | 部分持仓被保密，快照不完整 | 加 caveat |
+| `change_status=cusip_changed` | CUSIP 因 corporate action 变化，不是真实退出+新建 | UI 标注 "CUSIP Changed (Corporate Action)" |
+
+#### 9.2.3 候选股页面（Stock Holder Aggregation）
+
+`GET /api/v1/13f/stocks/{stock_id}/holders` 聚合结果须包含：
+
+```text
+direct_holder_count            -- holding_attribution_status=direct 的 manager 数
+value_manager_direct_count     -- manager_type IN (fundamental_long, activist) 且 direct 的数量
+featured_holder_count          -- featured=true 且 direct 的数量
+top_holders[]                  -- 前 N 名 direct holders（按 portfolio_weight_pct DESC）
+recent_changes[]               -- 本季 vs 上季变化（new_position / increased / decreased / exited）
+attribution_caveat_count       -- shared + unresolved 的 holder 数（UI 提示）
+data_caveats[]                 -- 适用的 caveat 列表（confidential/partial/nt_quarter 等）
+as_of_quarter                  -- 数据对应季度
+```
+
+**前端展示原则：**
+- 页面顶部显示 `as_of_quarter` 和数据 caveat（confidential、partial、13F-NT 等）。
+- 明确注明"本页数据为 13F 季度快照，存在最长 45 天披露延迟；不构成投资建议。"
+- `featured_holder_count` 和共识信号定位为"高质量投资人关注度参考"，不翻译为"买入推荐"。
+
+#### 9.2.4 与 Value Line 数据的集成原则
+
+13F 负责发现**兴趣信号和行为变化**；最终候选股排序须叠加基本面维度，不能单独依赖 13F：
+
+| 13F 信号（行为） | Value Line 基本面维度（质量） | 集成方式 |
+| --- | --- | --- |
+| direct holder count / consensus | 财务强度（Financial Strength） | 过滤 / 加权 |
+| 首次进入 / 连续加仓 | 盈利稳定性（Earnings Stability） | 信号叠加 |
+| portfolio_weight_pct | 估值排名（Price/Earnings Ranking） | 联合排序 |
+| superinvestor overlap | 安全边际（Safety Rank） | 上层候选筛选条件 |
+
+MVP 1–2 中，13F 信号和 Value Line 字段在数据层共存（均以 `stock_id` 关联），但 Oracle's Lens UI 不自动合并成"评分"；该逻辑推迟到 MVP 3 或独立 product track。
 
 ---
 
@@ -972,14 +1080,16 @@ CREATE UNIQUE INDEX uq_active_filing_per_manager_period
   ON filings_13f (manager_id, quarter_end_date)
   WHERE is_active_for_manager_period = true;
 
--- CUSIP mapping: 候选唯一
+-- CUSIP mapping: 候选行唯一（同 source + ticker + exchange + 起始季度只有一行）
 ALTER TABLE cusip_ticker_map
   ADD CONSTRAINT uq_cusip_mapping UNIQUE (cusip, source, ticker, exchange, effective_from_quarter);
 
--- Active CUSIP mapping: 同一 CUSIP 最多一个 active
-CREATE UNIQUE INDEX uq_cusip_active_mapping
-  ON cusip_ticker_map (cusip)
-  WHERE is_active = true;
+-- CUSIP mapping 有效区间不重叠（应用层校验，不走 DB partial unique）
+-- 约束语义：同一 CUSIP，mapping_status IN ('confirmed','superseded') 的行，
+--   (effective_from_quarter, effective_to_quarter) 区间不得重叠。
+-- 由写入前 overlap 检查实施；违反则拒绝写入并告警。
+-- 原有 UNIQUE(cusip) WHERE is_active=true 索引已删除：
+--   is_active=false 语义不明（superseded vs deleted）；历史有效 mapping 不能以 inactive 排除出查询。
 
 -- Query path indexes
 CREATE INDEX idx_holdings_parse_run      ON holdings_13f (parse_run_id);
@@ -988,6 +1098,7 @@ CREATE INDEX idx_holdings_manager_quarter ON holdings_13f (manager_id, report_qu
 CREATE INDEX idx_holdings_cusip          ON holdings_13f (cusip);
 CREATE INDEX idx_holdings_stock_id       ON holdings_13f (stock_id);
 CREATE INDEX idx_holdings_put_call       ON holdings_13f (put_call);
+CREATE INDEX idx_holdings_attribution    ON holdings_13f (holding_attribution_status);
 CREATE INDEX idx_parse_runs_accession    ON parse_runs (accession_number);
 CREATE INDEX idx_filings_manager_qend    ON filings_13f (manager_id, quarter_end_date);
 CREATE INDEX idx_filings_manager_quarter ON filings_13f (manager_id, report_quarter);
@@ -997,7 +1108,7 @@ CREATE INDEX idx_sync_status             ON edgar_sync_status (status, sync_date
 CREATE INDEX idx_job_runs                ON job_runs (status, job_type, created_at);
 CREATE INDEX idx_cusip_map_temporal
   ON cusip_ticker_map (cusip, effective_from_quarter, effective_to_quarter)
-  WHERE is_active = true;
+  WHERE mapping_status IN ('confirmed', 'superseded');
 ```
 
 ---
@@ -1096,16 +1207,17 @@ so current-quarter data may update until approximately [official_filing_deadline
 - 两层去重防火墙（accession-level + parse_run fingerprint）
 - `periodOfReport` routing（含异常处理；±1–2 日归一化用 valid filing window）
 - Amendment type 解析（normalized enum + raw）；RESTATEMENT 原子替换（成功后才切 active）；PARTIAL → needs_review
-- `official_filing_deadline` 计算（含工作日调整）
+- `official_filing_deadline` 计算（含工作日调整，使用 US federal market holiday calendar）
 - `total_13f_reported_value_usd` 和 `total_13f_common_value_usd` 写入
-- OpenFIGI CUSIP 映射（含时间有效性字段初始化）
+- **`holding_attribution_status` 计算**（按 investment_discretion + other_managers_raw 规则，见 §6.3）
+- OpenFIGI CUSIP 映射（含时间有效性字段初始化，`mapping_status=confirmed`；有效区间 overlap 检查）
 - Backfill 预览 + 确认流程
 - 所有 unique constraints 和 indexes（见 §14）
 - **工程任务必须包含：** 2022 前 thousands / 2023+ 单位格式的测试 fixtures
 
 ### MVP 1C-1: Readiness + Oracle's Lens Safe Integration
 
-- **13F-NT notice-of-non-filing 标记 / expected filer exclusion**（MVP 1C 必须完成，否则不进入 ready）
+- **13F-NT `notice_reported_elsewhere` 标记 / expected filer exclusion**（MVP 1C 必须完成，否则不进入 ready；13F-NT 表示"持仓由其他机构代报"，不是"未申报"或"无持仓"）
 - Readiness summary（含 confidential_treatment、combination_report 对 readiness 的影响）
 - Data freshness display（使用 `official_filing_deadline`，非裸 `+45 days`）
 - Snapshot-only gating；zero vs unavailable 区分
@@ -1119,14 +1231,16 @@ so current-quarter data may update until approximately [official_filing_deadline
 - Parse runs 查询 API 和 Admin UI
 - 数据健康日报（Discord 摘要，含 combination/confidential 数量）
 
-### MVP 2: Change Analysis
+### MVP 2: Change Analysis + Holder Aggregation
 
 - Consecutive-quarter comparison（stock_id 优先；`coverage_completeness=complete` 限制参与变化计算）
 - CUSIP_CHANGED 场景处理
 - `change_status=no_prior_data`（13F-NT 前季不能断言无持仓）
 - Precomputed `ownership_changes` 表（P95 800ms）
 - Holdings changes endpoint 正式启用
-- CUSIP 时间有效性查询（按 `quarter_end_date` 选择有效 mapping）
+- CUSIP 时间有效性查询（按 `quarter_end_date` 选择有效 mapping，使用 `mapping_status IN ('confirmed','superseded')`）
+- **`/stocks/{stock_id}/holders` 聚合实现**（`direct_holder_count`、`value_manager_direct_count`、`featured_holder_count`、`top_holders`、`recent_changes`、`attribution_caveat_count`，见 §9.2.3）
+- Oracle's Lens 价值投资者信号展示（§9.2.1 定义的信号；§9.2.2 排除规则实施）
 
 ### MVP 3: Resilience And Backfill
 
@@ -1165,10 +1279,16 @@ so current-quarter data may update until approximately [official_filing_deadline
 - Given `form_spec_version` indicates dollars unit, `value_usd = value_raw`, `value_unit_raw=dollars`, `value_parse_rule=schema_dollars`.
 - Given a filing is reparsed (same accession), a new `parse_run` is created with `is_current=true`; the old `parse_run` retains `is_current=false`; old holdings rows are NOT deleted.
 - Given a product query for a holding's `value_usd`, it always returns dollars regardless of source filing unit.
-- Given `official_filing_deadline` falls on a Saturday, it is adjusted to the following Monday.
+- Given `official_filing_deadline` falls on a Saturday and the following Monday is a US federal market holiday, it is adjusted to the following Tuesday (not Monday).
+- Given `official_filing_deadline` falls on a Saturday and the following Monday is a normal business day, it is adjusted to Monday.
+- Implementation must use a US federal market holiday calendar (e.g., NYSE holidays), not weekday-only logic.
 - Given a 13F-NT manager, the system user-facing copy shows "This manager filed a 13F Notice; its 13(f) holdings are reported by other manager(s)." — not empty holdings or "no positions."
 - Given a Combination Report is the active filing for a manager+quarter, Oracle's Lens shows caveat and does not use it for total_portfolio_value or cross-manager comparison.
-- Given CUSIP A mapped to stock X before 2025-Q3, and CUSIP A remapped to stock Y from 2025-Q3 onwards, a query for Q3 2025 returns stock Y, a query for Q2 2025 returns stock X.
+- Given CUSIP A mapped to stock X before 2025-Q3 (mapping_status=superseded, effective_to_quarter=2025-Q2), and a new mapping to stock Y from 2025-Q3 (mapping_status=confirmed, effective_from_quarter=2025-Q3), a temporal query for Q3 2025 returns stock Y, a query for Q2 2025 returns stock X.
+- Given a corporate action closes CUSIP A's old mapping, `mapping_status=superseded` (not `deleted`); the old mapping is still returned by historical temporal queries.
+- Given a holding with `investment_discretion=SOLE` and empty `other_managers_raw`, `holding_attribution_status=direct`.
+- Given a holding with `investment_discretion=SHARED`, `holding_attribution_status=shared`; this holding is excluded from manager consensus counts.
+- Given `/stocks/{stock_id}/holders` is called without filters, the response only includes holdings with `holding_attribution_status=direct` in consensus counts; `shared` and `unresolved` are separately flagged.
 - Given a filing with missing `periodOfReport`, `parse_status=needs_review` and `PERIOD_MISSING`; no quarter assigned; excluded from active holdings.
 - Given holdings changes endpoint called with one quarter available, returns HTTP 200 with `status=unavailable`, not empty array and not HTTP 503.
 - Given a 13F-NT manager from the prior quarter, `change_status=no_prior_data` for current quarter holdings (not `new_position`).
@@ -1193,9 +1313,12 @@ so current-quarter data may update until approximately [official_filing_deadline
 | 13F-NT 支持 | MVP 1C-1 必须实现；否则不进入 `ready` |
 | Holdings changes endpoint HTTP status | HTTP 200 + body `status=unavailable`；不返回 HTTP 503；不返回空数组 |
 | Amendment accepted_at 相同时 fallback | 不自动切 active；`amendments_pending + amendment_sort_warning=true`，等待 admin 确认 |
-| CUSIP mapping 物理删除 | 禁止；使用 `PATCH is_active=false` 软停用 |
+| CUSIP mapping 状态管理 | `is_active` boolean 已废弃；改用 `mapping_status` enum（`confirmed / superseded / needs_review / deleted`）；`superseded` 保留历史查询可访问；`deleted` 为 admin 手动停用；物理 DELETE 禁止 |
+| CUSIP active mapping 唯一性约束 | 废弃 `UNIQUE(cusip) WHERE is_active=true`；改为应用层有效区间不重叠校验（`confirmed + superseded` 行的 effective 区间不重叠） |
+| Holding attribution | `holding_attribution_status` 计算规则见 §6.3；`direct` 才计入共识统计；`shared / unresolved` 排除或加 caveat；防止 parent/subsidiary 共同申报误读 |
 | 金额单位 | `value_usd` 统一以 dollars 存储；parser 按 `form_spec_version` 和 XML schema 确定单位，不以 manager-level override 为主判断路径 |
-| Filing deadline 计算 | 使用 `official_filing_deadline`（quarter_end + 45 days，调整到下一工作日） |
+| Filing deadline 计算 | 使用 `official_filing_deadline`（quarter_end + 45 days，调整到下一工作日，使用 US federal market holiday calendar） |
+| parse_run 失败审计 | parse_run 两阶段写入：阶段 1 独立事务立即持久化 `status=running`；阶段 2 holdings + is_current 切换，失败后 catch 更新 `status=failed + error`；任何情况下 failed parse_run 都有持久记录 |
 
 ---
 
