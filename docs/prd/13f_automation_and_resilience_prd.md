@@ -1311,7 +1311,7 @@ so current-quarter data may update until approximately [official_filing_deadline
 - Given `form_spec_version` indicates dollars unit, `value_usd = value_raw`, `value_unit_raw=dollars`, `value_parse_rule=schema_dollars`.
 - Given a filing is reparsed (same accession), a new `parse_run` is created with `is_current=true`; the old `parse_run` retains `is_current=false`; old holdings rows are NOT deleted.
 - Given a product query for a holding's `value_usd`, it always returns dollars regardless of source filing unit.
-- Given `official_filing_deadline` falls on a Saturday and the following Monday is a US federal market holiday, it is adjusted to the following Tuesday (not Monday).
+- Given `official_filing_deadline` falls on a Saturday and the following Monday is a NYSE holiday, it is adjusted to the following Tuesday (not Monday).
 - Given `official_filing_deadline` falls on a Saturday and the following Monday is a normal business day, it is adjusted to Monday.
 - Implementation must use a SEC/EDGAR business day calendar (NYSE holidays as proxy; see note) (e.g., NYSE holidays), not weekday-only logic.
 - Given a 13F-NT manager, the system user-facing copy shows "This manager filed a 13F Notice; its 13(f) holdings are reported by other manager(s)." — not empty holdings or "no positions."
