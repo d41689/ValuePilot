@@ -202,6 +202,25 @@ def _do_ingest_holdings(
         parse_run.holdings_count = len(holdings)
         parse_run.finished_at = datetime.now(timezone.utc)
         session.add(parse_run)
+        
+        if filing.is_amendment and filing.amendment_type == "RESTATEMENT":
+            # Atomically activate this amendment and demote the older active filing
+            from app.models.institutions import Filing13F
+            active_original = (
+                session.query(Filing13F)
+                .filter(Filing13F.manager_id == filing.manager_id)
+                .filter(Filing13F.quarter_end_date == filing.quarter_end_date)
+                .filter(Filing13F.is_active_for_manager_period.is_(True))
+                .filter(Filing13F.id != filing.id)
+                .first()
+            )
+            if active_original:
+                active_original.is_active_for_manager_period = False
+                session.add(active_original)
+            filing.is_active_for_manager_period = True
+            filing.amendment_status = "applied"
+            session.add(filing)
+            
         sp.commit()  # Release the savepoint, merging into outer transaction.
         session.commit()
         session.refresh(parse_run)

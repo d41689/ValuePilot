@@ -6,6 +6,8 @@ from typing import Any
 from fastapi import APIRouter, HTTPException, Query, status
 from pydantic import BaseModel, Field
 
+from app.schemas.thirteenf_cusip import CusipMappingCreate, CusipMappingUpdate, CusipMappingResponse
+
 from app.api.deps import AdminUser, SessionDep
 from app.services.thirteenf_admin_dashboard import (
     build_amendments,
@@ -32,6 +34,7 @@ from app.services.thirteenf_admin_dashboard import (
     list_jobs,
     reject_manager_cik,
     release_stale_job_lock,
+    resolve_amendment,
     retry_manager_cik_search,
     revoke_manager_cik,
     trigger_job,
@@ -51,6 +54,11 @@ class ManagerReviewRequest(BaseModel):
     cik: str | None = None
     note: str | None = None
     search_name: str | None = None
+
+
+class AmendmentResolveRequest(BaseModel):
+    action: str
+    note: str | None = None
 
 
 class ManagerCreateRequest(BaseModel):
@@ -250,6 +258,24 @@ def read_amendment(session: SessionDep, current_user: AdminUser, accession_no: s
         return get_amendment(session, accession_no)
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+
+
+@admin_router.post("/amendments/{accession_no}/resolve", response_model=dict)
+def resolve_13f_amendment(
+    session: SessionDep,
+    current_user: AdminUser,
+    accession_no: str,
+    payload: AmendmentResolveRequest,
+) -> Any:
+    try:
+        return resolve_amendment(
+            session,
+            accession_no,
+            action=payload.action,
+            note=payload.note,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
 
 
 @admin_router.get("/managers", response_model=dict)
@@ -504,4 +530,38 @@ def reparse_filing(
             detail=f"Reparse failed: {exc}",
         ) from exc
     return result
+
+
+@admin_router.get("/cusips", response_model=dict)
+def read_cusips(
+    session: SessionDep,
+    current_user: AdminUser,
+    limit: int = Query(100, ge=1, le=1000),
+    needs_review: bool = Query(False),
+    unresolved: bool = Query(False),
+) -> Any:
+    from app.services.thirteenf_admin_dashboard import build_cusip_mappings
+    return {"items": build_cusip_mappings(session, limit, needs_review, unresolved)}
+
+
+@admin_router.post("/cusips", response_model=CusipMappingResponse)
+def create_cusip_mapping_endpoint(
+    session: SessionDep, current_user: AdminUser, payload: CusipMappingCreate
+) -> Any:
+    from app.services.thirteenf_admin_dashboard import create_manual_cusip_mapping
+    try:
+        return create_manual_cusip_mapping(session, payload)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+
+
+@admin_router.patch("/cusips/{cusip}", response_model=CusipMappingResponse)
+def update_cusip_mapping_endpoint(
+    session: SessionDep, current_user: AdminUser, cusip: str, payload: CusipMappingUpdate
+) -> Any:
+    from app.services.thirteenf_admin_dashboard import update_manual_cusip_mapping
+    try:
+        return update_manual_cusip_mapping(session, cusip, payload)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
 

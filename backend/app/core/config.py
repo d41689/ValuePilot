@@ -62,6 +62,9 @@ class Settings(BaseSettings):
     DATAROMA_MAX_RETRIES: int = 2
     DATAROMA_RETRY_BACKOFF_S: str = "10,60"    # comma-separated seconds; parsed by _parse_backoff()
 
+    # OpenFIGI
+    OPENFIGI_API_KEY: Optional[str] = None
+
     # Raw document storage root
     EDGAR_RAW_STORAGE_DIR: str = "/code/storage/edgar_raw"
 

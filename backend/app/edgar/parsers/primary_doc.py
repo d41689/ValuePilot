@@ -29,6 +29,8 @@ class PrimaryDocSummary:
     form_spec_version: Optional[str] = None
     xml_schema_version: Optional[str] = None
     has_confidential_treatment: Optional[bool] = None
+    amendment_type: Optional[str] = None
+    is_amendment: bool = False
     # NT-specific: list of {name, file_number, cik?} from otherManagersInfo/otherManager
     other_managers_reporting: list = None  # type: ignore[assignment]
     # HR combination: list of {name, file_number, cik?} from otherManagers2Info/otherManager2
@@ -84,6 +86,11 @@ def parse_primary_doc(content: bytes) -> PrimaryDocSummary:
         type_match = re.search(r"<TYPE>\s*([^\s<]+)", text, re.IGNORECASE)
         form_type = type_match.group(1).strip() if type_match else None
 
+    amendment_type = _extract("amendmentType")
+    is_amendment = bool(amendment_type) or bool(_extract("amendmentInfo"))
+    if not is_amendment and form_type and form_type.endswith("/A"):
+        is_amendment = True
+
     xml_schema_version = _extract_schema_evidence(xml_text)
     confidential = None
     if confidential_raw is not None:
@@ -99,6 +106,8 @@ def parse_primary_doc(content: bytes) -> PrimaryDocSummary:
         form_spec_version=form_spec_version,
         xml_schema_version=xml_schema_version,
         has_confidential_treatment=confidential,
+        amendment_type=amendment_type,
+        is_amendment=is_amendment,
         other_managers_reporting=_parse_other_managers_reporting(xml_text),
         other_managers_included=_parse_other_managers_included(xml_text),
     )

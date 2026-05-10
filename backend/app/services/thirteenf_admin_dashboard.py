@@ -363,6 +363,53 @@ def get_amendment(session: Session, accession_no: str) -> dict[str, Any]:
     return _amendment_payload(session, filing)
 
 
+def resolve_amendment(session: Session, accession_no: str, action: str, note: str | None = None) -> dict[str, Any]:
+    filing = (
+        session.query(Filing13F)
+        .filter(Filing13F.accession_no == accession_no)
+        .with_for_update()
+        .one_or_none()
+    )
+    if filing is None:
+        raise ValueError("Amendment not found")
+
+    valid_actions = {"apply", "activate_as_original", "reject", "defer", "mark_informational"}
+    if action not in valid_actions:
+        raise ValueError(f"Invalid resolution action: {action}")
+
+    if action in {"apply", "activate_as_original"}:
+        # Demote current active
+        active_original = (
+            session.query(Filing13F)
+            .filter(Filing13F.manager_id == filing.manager_id)
+            .filter(Filing13F.quarter_end_date == filing.quarter_end_date)
+            .filter(Filing13F.is_active_for_manager_period.is_(True))
+            .filter(Filing13F.id != filing.id)
+            .first()
+        )
+        if active_original:
+            active_original.is_active_for_manager_period = False
+            session.add(active_original)
+        
+        filing.is_active_for_manager_period = True
+        filing.amendment_status = "applied"
+        filing.amendment_sort_warning = False
+    elif action == "reject":
+        filing.amendment_status = "rejected"
+    elif action == "defer":
+        filing.amendment_status = "amendments_pending"
+    elif action == "mark_informational":
+        filing.amendment_status = "informational"
+
+    if note:
+        filing.parse_warning = (filing.parse_warning or "") + f" [Admin Note: {note}]"
+
+    session.add(filing)
+    session.commit()
+    session.refresh(filing)
+    return _amendment_payload(session, filing)
+
+
 def get_quality_report_for_quarter(session: Session, quarter: str) -> dict[str, Any]:
     report = _latest_quality_report(session, quarter)
     if report is None:
@@ -2559,37 +2606,99 @@ def _execute_ingest_job(session: Session, job_type: str, payload: dict[str, Any]
 
 
 def _execute_enrichment_metadata(session: Session, payload: dict[str, Any]) -> dict[str, Any]:
-    from app.services.cusip_enrichment import (
-        backfill_stock_ids,
-        bootstrap_stocks_from_cusip_map,
-        enrich_from_dataroma,
-        enrich_stocks_from_edgar_tickers,
-    )
+    from app.services.cusip_enrichment import enrich_unmapped_holdings
 
     results: dict[str, Any] = {}
     try:
-        # Step 3: refresh CUSIP -> ticker mappings from Dataroma portfolios
-        results["cusip_mappings"] = enrich_from_dataroma(session)
-        session.commit()
-
-        # Step 4: bootstrap stocks from CUSIP map + backfill stock_id
-        results["new_stocks"] = bootstrap_stocks_from_cusip_map(session)
-        results["holdings_linked"] = backfill_stock_ids(session)
-        session.commit()
-
-        # Step 5: EDGAR company_tickers.json for remaining unmatched
-        try:
-            edgar_results = enrich_stocks_from_edgar_tickers(session)
-            results["edgar_enrichment"] = edgar_results
-            session.commit()
-        except Exception as exc:
-            session.rollback()
-            results["edgar_enrichment_error"] = str(exc)
-            logger.warning("EDGAR enrichment step failed: %s", exc)
-
-        status = "partial_success" if "edgar_enrichment_error" in results else "succeeded"
+        limit = payload.get("limit", 500)
+        mapped = enrich_unmapped_holdings(session, limit=limit)
+        results["holdings_mapped"] = mapped
+        status = "succeeded"
         return {**results, "status": status}
-    except Exception:
+    except Exception as exc:
         session.rollback()
         logger.exception("Enrichment metadata job failed")
-        raise
+        results["error"] = str(exc)
+        return {**results, "status": "failed"}
+def build_cusip_mappings(session: Session, limit: int, needs_review: bool, unresolved: bool) -> list[dict[str, Any]]:
+    from app.models.institutions import CusipTickerMap, Holding13F
+    
+    if unresolved:
+        # Get unique CUSIPs from holdings that are unresolved
+        unresolved_cusips = session.query(Holding13F.cusip).filter(
+            Holding13F.cusip_mapping_status == "unresolved"
+        ).distinct().limit(limit).all()
+        return [{"cusip": r[0], "status": "unresolved"} for r in unresolved_cusips]
+
+    q = session.query(CusipTickerMap).order_by(CusipTickerMap.id.desc())
+    if needs_review:
+        q = q.filter(CusipTickerMap.confidence.like("review_needed:%"))
+        
+    mappings = q.limit(limit).all()
+    return [
+        {
+            "id": m.id,
+            "cusip": m.cusip,
+            "ticker": m.ticker,
+            "issuer_name": m.issuer_name,
+            "source": m.source,
+            "mapping_reason": m.mapping_reason,
+            "confidence": m.confidence,
+            "valid_from": m.valid_from,
+            "valid_to": m.valid_to,
+            "is_active": m.is_active,
+        }
+        for m in mappings
+    ]
+
+
+def create_manual_cusip_mapping(session: Session, payload: Any) -> Any:
+    from app.services.cusip_enrichment import upsert_cusip_mapping
+    
+    mapping = upsert_cusip_mapping(
+        session,
+        cusip=payload.cusip,
+        ticker=payload.ticker,
+        issuer_name=payload.issuer_name,
+        source="manual",
+        mapping_reason=payload.mapping_reason,
+        confidence=payload.confidence,
+        valid_from=payload.valid_from,
+        valid_to=payload.valid_to,
+    )
+    session.commit()
+    session.refresh(mapping)
+    return mapping
+
+
+def update_manual_cusip_mapping(session: Session, cusip: str, payload: Any) -> Any:
+    from app.models.institutions import CusipTickerMap
+    
+    mapping = session.query(CusipTickerMap).filter_by(
+        cusip=cusip,
+        is_active=True
+    ).order_by(CusipTickerMap.id.desc()).first()
+    
+    if not mapping:
+        raise ValueError(f"No active mapping found for CUSIP {cusip}")
+        
+    if payload.ticker is not None:
+        mapping.ticker = payload.ticker
+    if payload.issuer_name is not None:
+        mapping.issuer_name = payload.issuer_name
+    if payload.mapping_reason is not None:
+        mapping.mapping_reason = payload.mapping_reason
+    if payload.confidence is not None:
+        mapping.confidence = payload.confidence
+    if payload.valid_from is not None:
+        mapping.valid_from = payload.valid_from
+    if payload.valid_to is not None:
+        mapping.valid_to = payload.valid_to
+    if payload.is_active is not None:
+        mapping.is_active = payload.is_active
+        
+    mapping.source = "manual"
+    
+    session.commit()
+    session.refresh(mapping)
+    return mapping

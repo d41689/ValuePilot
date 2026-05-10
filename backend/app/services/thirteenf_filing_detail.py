@@ -110,6 +110,17 @@ def ingest_accession_filing_detail(
     filing.other_managers_reporting = summary.other_managers_reporting or None
     filing.other_managers_included = summary.other_managers_included or None
 
+    filing.is_amendment = bool(summary.is_amendment)
+    filing.amendment_type_raw = summary.amendment_type
+    
+    # Optional amends_accession_no extraction logic could go here later.
+    # For now, rely on edgar_ingestion or later enrichment.
+
+    session.add(filing)
+    session.flush()
+
+    _apply_amendment_policy(session, filing)
+
     session.add(filing)
     session.commit()
     session.refresh(filing)
@@ -315,3 +326,78 @@ def _coverage_type(report_type: str | None, form_type: str) -> str:
     if report_type == "combination_report":
         return "combination_partial"
     return "normal"
+
+
+def _normalize_amendment_type(raw: str | None) -> str:
+    if not raw:
+        return "unknown"
+    upper = raw.strip().upper()
+    if upper == "RESTATEMENT":
+        return "RESTATEMENT"
+    if upper == "NEW HOLDINGS":
+        return "NEW_HOLDINGS"
+    if upper == "ADDITIONS, CORRECTIONS OR DELETIONS" or "ADDITIONS" in upper:
+        return "ADDITIONS_CORRECTIONS_DELETIONS"
+    return "unknown"
+
+
+def _apply_amendment_policy(session: Session, filing: Filing13F) -> None:
+    if filing.is_amendment:
+        filing.amendment_type = _normalize_amendment_type(filing.amendment_type_raw)
+        filing.is_active_for_manager_period = False
+        if filing.amendment_type == "RESTATEMENT":
+            filing.amendment_status = "pending_parse"
+        else:
+            filing.amendment_status = "amendments_pending"
+        return
+
+    # Original filing logic
+    filing.is_amendment = False
+    filing.amendment_type = None
+    
+    if not filing.quarter_end_date:
+        filing.is_active_for_manager_period = False
+        return
+
+    originals = (
+        session.query(Filing13F)
+        .filter(Filing13F.manager_id == filing.manager_id)
+        .filter(Filing13F.quarter_end_date == filing.quarter_end_date)
+        .filter(Filing13F.is_amendment.is_(False))
+        .all()
+    )
+    
+    if not originals:
+        filing.is_active_for_manager_period = True
+        return
+
+    sorted_originals = sorted(
+        originals,
+        key=lambda x: (x.accepted_at or datetime.min.replace(tzinfo=timezone.utc), x.accession_no),
+        reverse=True,
+    )
+
+    latest = sorted_originals[0]
+    tie = False
+    if len(sorted_originals) > 1:
+        second_latest = sorted_originals[1]
+        t1 = latest.accepted_at or datetime.min.replace(tzinfo=timezone.utc)
+        t2 = second_latest.accepted_at or datetime.min.replace(tzinfo=timezone.utc)
+        if t1 == t2:
+            tie = True
+
+    for orig in originals:
+        if tie:
+            orig.is_active_for_manager_period = False
+            orig.amendment_status = "amendments_pending"
+            orig.amendment_sort_warning = True
+        else:
+            if orig.id == latest.id:
+                orig.is_active_for_manager_period = True
+                orig.amendment_sort_warning = False
+                if orig.amendment_status == "amendments_pending" and orig.amendment_sort_warning:
+                    orig.amendment_status = "no_amendments_seen"
+            else:
+                orig.is_active_for_manager_period = False
+                orig.amendment_sort_warning = False
+        session.add(orig)
