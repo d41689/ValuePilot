@@ -2,6 +2,7 @@ from datetime import date
 from unittest.mock import MagicMock, patch
 from app.services.scheduler import (
     create_scheduler,
+    run_13f_health_summary,
     run_daily_sync_poll,
     run_job_watchdog,
     run_quarterly_pipeline,
@@ -94,6 +95,18 @@ def test_create_scheduler_registers_job_watchdog():
 
     assert job is not None
     assert job.func == run_job_watchdog
+
+
+def test_create_scheduler_registers_daily_health_summary_at_8am_et():
+    scheduler = create_scheduler(MagicMock())
+
+    job = scheduler.get_job("thirteenf_daily_health_summary")
+
+    assert job is not None
+    assert job.func == run_13f_health_summary
+    assert str(job.trigger.timezone) == "America/New_York"
+    assert "hour='8'" in str(job.trigger)
+    assert "minute='0'" in str(job.trigger)
 
 
 def test_run_smart_retries_noops_when_disabled(monkeypatch):

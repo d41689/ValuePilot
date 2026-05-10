@@ -159,6 +159,16 @@ def create_scheduler(db_factory: Callable) -> BackgroundScheduler:
         misfire_grace_time=900,
     )
 
+    scheduler.add_job(
+        run_13f_health_summary,
+        trigger=CronTrigger(hour=8, minute=0, timezone="America/New_York"),
+        args=[db_factory],
+        id="thirteenf_daily_health_summary",
+        name="13F daily health summary",
+        replace_existing=True,
+        misfire_grace_time=3600,
+    )
+
     if settings.THIRTEENF_SMART_RETRY_ENABLED:
         # Run every day at 02:00 UTC.
         # Checks for partially failed jobs and retries safe targets if they are old enough.
@@ -204,6 +214,21 @@ def run_job_watchdog(db_factory: Callable) -> None:
     except Exception as exc:
         db.rollback()
         logger.exception("13F job watchdog failed: %s", exc)
+    finally:
+        db.close()
+
+
+def run_13f_health_summary(db_factory: Callable) -> None:
+    """Send the daily 13F health summary through the alert abstraction."""
+    db = db_factory()
+    try:
+        from app.services.thirteenf_health import emit_daily_health_summary
+
+        result = emit_daily_health_summary(db)
+        logger.info("13F daily health summary: %s", result)
+    except Exception as exc:
+        db.rollback()
+        logger.exception("13F daily health summary failed: %s", exc)
     finally:
         db.close()
 
