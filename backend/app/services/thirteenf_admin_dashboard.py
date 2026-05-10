@@ -2495,7 +2495,20 @@ def _stage_summary_with_schema(job_type: str, summary: dict[str, Any]) -> dict[s
 def _execute_ingest_job(session: Session, job_type: str, payload: dict[str, Any]) -> dict[str, Any]:
     from app.services.edgar_ingestion import ingest_filing_holdings
 
-    if job_type in {"ingest_accession", "reprocess_amendment"}:
+    if job_type == "ingest_accession":
+        from app.services.thirteenf_filing_detail import ingest_accession_filing_detail
+
+        result = ingest_accession_filing_detail(session, payload)
+        return {
+            "filings_processed": 1,
+            "filing_id": result["filing_id"],
+            "accession_number": result["accession_number"],
+            "report_quarter": result["report_quarter"],
+            "status": "succeeded" if result["status"] in {"succeeded", "needs_review"} else "failed",
+            "detail_status": result["status"],
+        }
+
+    if job_type == "reprocess_amendment":
         accession_no = _required(payload, "accession_no")
         filing = session.query(Filing13F).filter(Filing13F.accession_no == accession_no).one_or_none()
         if filing is None:

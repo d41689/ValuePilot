@@ -11,6 +11,7 @@ We extract from <summaryPage>:
 """
 import re
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import Optional
 
 _NS_RE = re.compile(r"\{[^}]+\}")
@@ -22,6 +23,12 @@ class PrimaryDocSummary:
     period_of_report: Optional[str]   # MM-DD-YYYY or YYYY-MM-DD (raw from XML)
     table_entry_total: Optional[int]
     table_value_total: Optional[int]  # reported total value in thousands
+    accepted_at: Optional[datetime] = None
+    form_type: Optional[str] = None
+    report_type: Optional[str] = None
+    form_spec_version: Optional[str] = None
+    xml_schema_version: Optional[str] = None
+    has_confidential_treatment: Optional[bool] = None
 
 
 def _strip_ns(tag: str) -> str:
@@ -53,9 +60,53 @@ def parse_primary_doc(content: bytes) -> PrimaryDocSummary:
     period = _extract("periodOfReport") or _extract("reportCalendarOrQuarter")
     entry_total_s = _extract("tableEntryTotal")
     value_total_s = _extract("tableValueTotal")
+    report_type = _extract("reportType")
+    form_spec_version = _extract("formSpecVersion") or _extract("schemaVersion")
+    confidential_raw = _extract("isConfidentialOmitted") or _extract("isConfidentialTreatmentRequested")
+
+    acceptance_match = re.search(r"<ACCEPTANCE-DATETIME>\s*(\d{14})", text, re.IGNORECASE)
+    accepted_at = None
+    if acceptance_match:
+        accepted_at = datetime.strptime(acceptance_match.group(1), "%Y%m%d%H%M%S").replace(tzinfo=timezone.utc)
+
+    form_type = _extract("submissionType")
+    if not form_type:
+        type_match = re.search(r"<TYPE>\s*([^\s<]+)", text, re.IGNORECASE)
+        form_type = type_match.group(1).strip() if type_match else None
+
+    xml_schema_version = _extract_schema_evidence(xml_text)
+    confidential = None
+    if confidential_raw is not None:
+        confidential = confidential_raw.strip().lower() in {"true", "1", "yes", "y"}
 
     return PrimaryDocSummary(
         period_of_report=period,
         table_entry_total=int(entry_total_s) if entry_total_s and entry_total_s.isdigit() else None,
         table_value_total=int(value_total_s) if value_total_s and value_total_s.isdigit() else None,
+        accepted_at=accepted_at,
+        form_type=form_type,
+        report_type=report_type,
+        form_spec_version=form_spec_version,
+        xml_schema_version=xml_schema_version,
+        has_confidential_treatment=confidential,
     )
+
+
+def _extract_schema_evidence(xml_text: str) -> Optional[str]:
+    root = re.search(r"<(?:[^:>\s]+:)?edgarSubmission\b([^>]*)>", xml_text, re.IGNORECASE | re.DOTALL)
+    if not root:
+        return None
+    attrs = root.group(1)
+    namespace = _attr(attrs, "xmlns")
+    schema_location = _attr(attrs, "schemaLocation")
+    parts = [part for part in (namespace, schema_location) if part]
+    return " ".join(parts) if parts else None
+
+
+def _attr(attrs: str, name: str) -> Optional[str]:
+    pattern = re.compile(
+        rf'(?:\b|:){re.escape(name)}\s*=\s*["\']([^"\']+)["\']',
+        re.IGNORECASE | re.DOTALL,
+    )
+    match = pattern.search(attrs)
+    return match.group(1).strip() if match else None
