@@ -3,6 +3,47 @@ function formatPercent(value, digits = 0) {
   return `${(value * 100).toFixed(digits)}%`;
 }
 
+function dateStartUtc(dateText) {
+  const trimmed = String(dateText ?? '').trim();
+  if (!trimmed) return null;
+  return `${trimmed}T00:00:00Z`;
+}
+
+function nextDateStartUtc(dateText) {
+  const trimmed = String(dateText ?? '').trim();
+  if (!trimmed) return null;
+  const [year, month, day] = trimmed.split('-').map((part) => Number(part));
+  if (!Number.isInteger(year) || !Number.isInteger(month) || !Number.isInteger(day)) {
+    return dateStartUtc(trimmed);
+  }
+  const nextDate = new Date(Date.UTC(year, month - 1, day + 1));
+  const yyyy = String(nextDate.getUTCFullYear());
+  const mm = String(nextDate.getUTCMonth() + 1).padStart(2, '0');
+  const dd = String(nextDate.getUTCDate()).padStart(2, '0');
+  return `${yyyy}-${mm}-${dd}T00:00:00Z`;
+}
+
+function buildAdminJobsQueryPath(filters = {}) {
+  const params = new URLSearchParams({
+    page: String(filters.page ?? 1),
+    page_size: String(filters.pageSize ?? filters.page_size ?? 50),
+  });
+  const status = String(filters.status ?? '').trim();
+  const jobType = String(filters.jobType ?? filters.job_type ?? '').trim();
+  const startedFrom = dateStartUtc(filters.startedFrom ?? filters.started_from);
+  const startedTo = nextDateStartUtc(filters.startedTo ?? filters.started_to);
+  const syncDate = String(filters.syncDate ?? filters.sync_date ?? '').trim();
+  const quarter = String(filters.quarter ?? '').trim();
+
+  if (status && status !== 'all') params.set('status', status);
+  if (jobType && jobType !== 'all') params.set('job_type', jobType);
+  if (startedFrom) params.set('started_from', startedFrom);
+  if (startedTo) params.set('started_to', startedTo);
+  if (syncDate) params.set('sync_date', syncDate);
+  if (quarter) params.set('quarter', quarter);
+  return `/admin/13f/jobs?${params.toString()}`;
+}
+
 function readinessTone(level) {
   if (level === 'ready') return 'success';
   if (level === 'usable_with_warning') return 'warning';
@@ -551,6 +592,7 @@ function prioritizeManagersForReview(managers) {
 }
 
 module.exports = {
+  buildAdminJobsQueryPath,
   formatPercent,
   freshnessLine,
   jobPreviewRows,

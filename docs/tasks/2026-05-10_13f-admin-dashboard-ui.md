@@ -77,3 +77,11 @@
   - `docker compose exec web node --test lib/thirteenfAdmin.test.js` -> 25 passed.
   - `docker compose exec web npm run lint` -> passed with no warnings.
   - `docker compose exec web npm run build` -> passed.
+- 2026-05-10: Accepted re-review polish:
+  - Moved admin jobs query construction into `buildAdminJobsQueryPath` with test coverage.
+  - Changed the `started_to` filter to send the next UTC date start so selecting a day includes jobs from that full day under the backend's exclusive upper-bound filter.
+  - Expanded the job type filter options to include additional known 13F job families such as backfills, CUSIP enrichment, CIK matching, and retry jobs.
+- 2026-05-10: Re-review polish Docker verification:
+  - `docker compose exec web node --test lib/thirteenfAdmin.test.js` -> 26 passed.
+  - `docker compose exec web npm run lint` -> passed with no warnings.
+  - `docker compose exec web npm run build` -> passed.

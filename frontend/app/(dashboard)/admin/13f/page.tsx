@@ -53,6 +53,7 @@ import {
 } from '@/components/ui/table';
 
 const {
+  buildAdminJobsQueryPath,
   formatPercent,
   freshnessLine,
   jobPreviewRows,
@@ -143,14 +144,18 @@ export default function Admin13FPage() {
       jobQuarter,
     ],
     queryFn: async () => {
-      const params = new URLSearchParams({ page: '1', page_size: '50' });
-      if (jobStatusFilter !== 'all') params.set('status', jobStatusFilter);
-      if (jobTypeFilter !== 'all') params.set('job_type', jobTypeFilter);
-      if (jobStartedFrom.trim()) params.set('started_from', `${jobStartedFrom.trim()}T00:00:00Z`);
-      if (jobStartedTo.trim()) params.set('started_to', `${jobStartedTo.trim()}T00:00:00Z`);
-      if (jobSyncDate.trim()) params.set('sync_date', jobSyncDate.trim());
-      if (jobQuarter.trim()) params.set('quarter', jobQuarter.trim());
-      return (await apiClient.get(`/admin/13f/jobs?${params.toString()}`)).data;
+      return (
+        await apiClient.get(
+          buildAdminJobsQueryPath({
+            status: jobStatusFilter,
+            jobType: jobTypeFilter,
+            startedFrom: jobStartedFrom,
+            startedTo: jobStartedTo,
+            syncDate: jobSyncDate,
+            quarter: jobQuarter,
+          })
+        )
+      ).data;
     },
     refetchInterval: 5000,
   });
@@ -1997,12 +2002,22 @@ export default function Admin13FPage() {
                 </SelectTrigger>
                 <SelectContent>
                   <SelectItem value="all">All job types</SelectItem>
+                  <SelectItem value="backfill_daily_indexes">Backfill daily indexes</SelectItem>
+                  <SelectItem value="backfill_quarters">Backfill quarters</SelectItem>
+                  <SelectItem value="bootstrap_stocks">Bootstrap stocks</SelectItem>
+                  <SelectItem value="bootstrap_whitelist">Bootstrap whitelist</SelectItem>
+                  <SelectItem value="enrich_cusip">Enrich CUSIP</SelectItem>
+                  <SelectItem value="enrich_metadata">Enrich metadata</SelectItem>
+                  <SelectItem value="enrich_stocks_edgar">Enrich stocks EDGAR</SelectItem>
+                  <SelectItem value="fetch_quarter_index">Fetch quarter index</SelectItem>
                   <SelectItem value="fetch_daily_index">Fetch daily index</SelectItem>
                   <SelectItem value="ingest_accession">Ingest accession</SelectItem>
                   <SelectItem value="ingest_holdings">Ingest holdings</SelectItem>
+                  <SelectItem value="ingest_holdings_for_quarter">Ingest holdings for quarter</SelectItem>
+                  <SelectItem value="match_cik">Match CIK</SelectItem>
                   <SelectItem value="quality_check">Quality check</SelectItem>
-                  <SelectItem value="enrich_metadata">Enrich metadata</SelectItem>
                   <SelectItem value="reprocess_amendment">Reprocess amendment</SelectItem>
+                  <SelectItem value="retry_failed_filings">Retry failed filings</SelectItem>
                 </SelectContent>
               </Select>
               <Input

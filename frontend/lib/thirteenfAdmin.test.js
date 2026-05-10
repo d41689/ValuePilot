@@ -3,6 +3,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 
 const {
+  buildAdminJobsQueryPath,
   freshnessLine,
   jobPreviewRows,
   managerCikReviewDefaults,
@@ -25,6 +26,28 @@ const {
   visibleWorkerRows,
   readinessTone,
 } = require('./thirteenfAdmin');
+
+test('buildAdminJobsQueryPath encodes filters and includes the full started_to day', () => {
+  const path = buildAdminJobsQueryPath({
+    status: 'failed',
+    jobType: 'backfill_quarters',
+    startedFrom: '2026-05-15',
+    startedTo: '2026-05-15',
+    syncDate: '2026-05-14',
+    quarter: '2026-Q1',
+  });
+  const url = new URL(path, 'http://localhost');
+
+  assert.equal(url.pathname, '/admin/13f/jobs');
+  assert.equal(url.searchParams.get('page'), '1');
+  assert.equal(url.searchParams.get('page_size'), '50');
+  assert.equal(url.searchParams.get('status'), 'failed');
+  assert.equal(url.searchParams.get('job_type'), 'backfill_quarters');
+  assert.equal(url.searchParams.get('started_from'), '2026-05-15T00:00:00Z');
+  assert.equal(url.searchParams.get('started_to'), '2026-05-16T00:00:00Z');
+  assert.equal(url.searchParams.get('sync_date'), '2026-05-14');
+  assert.equal(url.searchParams.get('quarter'), '2026-Q1');
+});
 
 test('readinessTone maps readiness levels to badge variants', () => {
   assert.equal(readinessTone('ready'), 'success');
