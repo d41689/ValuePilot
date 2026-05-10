@@ -30,6 +30,17 @@ FILING_PARSE_STATUSES = {"pending", "succeeded", "failed", "partial_success", "n
 PARSE_RUN_STATUSES = {"running", "succeeded", "failed", "abandoned"}
 HOLDING_CUSIP_MAPPING_STATUSES = {"linked", "invalid_cusip", "unresolved", "pending_mapping", "needs_review"}
 CUSIP_MAPPING_STATUSES = {"confirmed", "superseded", "needs_review", "deleted"}
+OWNERSHIP_CHANGE_STATUSES = {
+    "new_position",
+    "exited_position",
+    "increased",
+    "reduced",
+    "unchanged",
+    "no_prior_data",
+    "unresolvable",
+    "cusip_changed",
+}
+OWNERSHIP_SIGNAL_CONFIDENCE_LEVELS = {"high_confidence", "medium_confidence", "low_confidence", "unavailable"}
 
 
 def _validate_choice(field: str, value: str, choices: set[str]) -> str:
@@ -435,6 +446,92 @@ class Holding13F(Base):
     @validates("cusip_mapping_status")
     def _validate_cusip_mapping_status(self, _: str, value: str) -> str:
         return _validate_choice("cusip_mapping_status", value, HOLDING_CUSIP_MAPPING_STATUSES)
+
+
+class OwnershipChange13F(Base):
+    __tablename__ = "ownership_changes"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    manager_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("institution_managers.id"), nullable=False)
+    stock_id: Mapped[Optional[int]] = mapped_column(BigInteger, ForeignKey("stocks.id"), nullable=True)
+    report_quarter: Mapped[str] = mapped_column(String(10), nullable=False)
+    quarter_end_date: Mapped[date] = mapped_column(Date, nullable=False)
+    previous_report_quarter: Mapped[Optional[str]] = mapped_column(String(10), nullable=True)
+    previous_quarter_end_date: Mapped[Optional[date]] = mapped_column(Date, nullable=True)
+    current_filing_id: Mapped[Optional[int]] = mapped_column(BigInteger, ForeignKey("filings_13f.id"), nullable=True)
+    previous_filing_id: Mapped[Optional[int]] = mapped_column(BigInteger, ForeignKey("filings_13f.id"), nullable=True)
+    current_holding_id: Mapped[Optional[int]] = mapped_column(BigInteger, ForeignKey("holdings_13f.id"), nullable=True)
+    previous_holding_id: Mapped[Optional[int]] = mapped_column(BigInteger, ForeignKey("holdings_13f.id"), nullable=True)
+    current_parse_run_id: Mapped[Optional[int]] = mapped_column(BigInteger, ForeignKey("parse_runs.id"), nullable=True)
+    previous_parse_run_id: Mapped[Optional[int]] = mapped_column(BigInteger, ForeignKey("parse_runs.id"), nullable=True)
+    security_key: Mapped[str] = mapped_column(String(120), nullable=False)
+    current_cusip: Mapped[Optional[str]] = mapped_column(String(9), nullable=True)
+    previous_cusip: Mapped[Optional[str]] = mapped_column(String(9), nullable=True)
+    ssh_prnamt_type: Mapped[str] = mapped_column(String(10), nullable=False, default="SH", server_default="SH")
+    put_call: Mapped[Optional[str]] = mapped_column(String(10), nullable=True)
+    position_type: Mapped[str] = mapped_column(String(20), nullable=False, default="common", server_default="common")
+    change_status: Mapped[str] = mapped_column(String(40), nullable=False)
+    confidence_level: Mapped[str] = mapped_column(String(40), nullable=False)
+    is_primary_signal_eligible: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default=text("false")
+    )
+    caveat_codes: Mapped[Optional[list]] = mapped_column(JSONB, nullable=True)
+    unavailable_reason: Mapped[Optional[str]] = mapped_column(String(80), nullable=True)
+    current_value_usd: Mapped[Optional[int]] = mapped_column(BigInteger, nullable=True)
+    previous_value_usd: Mapped[Optional[int]] = mapped_column(BigInteger, nullable=True)
+    value_delta_usd: Mapped[Optional[int]] = mapped_column(BigInteger, nullable=True)
+    value_delta_pct: Mapped[Optional[float]] = mapped_column(Numeric(18, 6), nullable=True)
+    current_shares: Mapped[Optional[int]] = mapped_column(BigInteger, nullable=True)
+    previous_shares: Mapped[Optional[int]] = mapped_column(BigInteger, nullable=True)
+    share_delta: Mapped[Optional[int]] = mapped_column(BigInteger, nullable=True)
+    share_change_pct: Mapped[Optional[float]] = mapped_column(Numeric(18, 6), nullable=True)
+    current_portfolio_weight_pct: Mapped[Optional[float]] = mapped_column(Numeric(12, 6), nullable=True)
+    previous_portfolio_weight_pct: Mapped[Optional[float]] = mapped_column(Numeric(12, 6), nullable=True)
+    mapping_confidence: Mapped[Optional[str]] = mapped_column(String(40), nullable=True)
+    attribution_status: Mapped[Optional[str]] = mapped_column(String(40), nullable=True)
+    has_confidential_treatment_caveat: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default=text("false")
+    )
+    has_combination_report_caveat: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default=text("false")
+    )
+    has_pending_amendment_caveat: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default=text("false")
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+    __table_args__ = (
+        Index(
+            "uq_ownership_changes_manager_quarter_security_position",
+            "manager_id",
+            "report_quarter",
+            "security_key",
+            "ssh_prnamt_type",
+            "position_type",
+            unique=True,
+        ),
+        Index("idx_ownership_changes_stock_quarter", "stock_id", "report_quarter"),
+        Index("idx_ownership_changes_manager_quarter", "manager_id", "report_quarter"),
+        Index("idx_ownership_changes_change_status", "change_status"),
+        Index("idx_ownership_changes_confidence", "confidence_level"),
+        Index(
+            "idx_ownership_changes_primary_signal",
+            "stock_id",
+            "report_quarter",
+            postgresql_where=text("is_primary_signal_eligible = true"),
+        ),
+    )
+
+    @validates("change_status")
+    def _validate_change_status(self, _: str, value: str) -> str:
+        return _validate_choice("change_status", value, OWNERSHIP_CHANGE_STATUSES)
+
+    @validates("confidence_level")
+    def _validate_confidence_level(self, _: str, value: str) -> str:
+        return _validate_choice("confidence_level", value, OWNERSHIP_SIGNAL_CONFIDENCE_LEVELS)
 
 
 class JobRun(Base):
