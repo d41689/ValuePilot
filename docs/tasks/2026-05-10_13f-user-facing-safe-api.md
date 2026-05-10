@@ -69,6 +69,11 @@ Tech Lead must review response shapes before frontend work starts (G4).
   - `docker compose exec api pytest -q tests/unit/test_13f_user_api.py` -> 7 passed.
   - `docker compose exec api pytest -q tests/unit/test_13f_user_api.py tests/unit/test_13f_readiness.py tests/unit/test_13f_admin_dashboard.py tests/unit/test_13f_nt_handler.py tests/unit/test_13f_parse_run_audit.py` -> 85 passed.
   - `docker compose exec api pytest -q tests/unit` -> 473 passed, 1 existing SQLAlchemy transaction warning.
+- 2026-05-10: G4 response-shape review requested changes for consumer readiness: admin-only warnings (`REVOKED_CIK_DOWNSTREAM_REVIEW`, `LOW_STOCK_LINK_COVERAGE`) were leaking from admin readiness, and `nt_detection_supported` was not forwarded. Added red tests, then filtered warnings through a user-safe allowlist and forwarded `nt_detection_supported`.
+- 2026-05-10: G4 fix verification:
+  - `docker compose exec api pytest -q tests/unit/test_13f_admin_dashboard.py::test_consumer_readiness_exposes_only_safe_fields tests/unit/test_13f_admin_dashboard.py::test_consumer_readiness_filters_admin_only_warnings` -> 2 passed.
+  - `docker compose exec api pytest -q tests/unit/test_13f_user_api.py tests/unit/test_13f_readiness.py tests/unit/test_13f_admin_dashboard.py tests/unit/test_13f_nt_handler.py tests/unit/test_13f_parse_run_audit.py` -> 86 passed.
+  - `docker compose exec api pytest -q tests/unit` -> 474 passed, 1 existing SQLAlchemy transaction warning.
 
 ## Contract Checklist
 
@@ -77,4 +82,5 @@ Tech Lead must review response shapes before frontend work starts (G4).
 - MVP 2 holdings changes returns HTTP 200 + structured unavailable reason with `items=null`.
 - Partial combination and confidential treatment caveats are carried in response metadata.
 - Options are separated from common holdings and have null common portfolio weight.
+- Consumer readiness now filters admin-only operational warnings and exposes `nt_detection_supported` for user-safe caveats.
 - No frontend, PRD, migration, parser, or MVP 2 computed-changes implementation.

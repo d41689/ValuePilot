@@ -234,11 +234,26 @@ def build_consumer_readiness(session: Session, *, today: date | None = None) -> 
         "frontend_behavior": readiness["frontend_behavior"],
         "latest_usable_quarter": readiness["latest_usable_quarter"],
         "current_quarter": readiness["current_quarter"],
-        "warnings": readiness["warnings"],
+        "warnings": _consumer_safe_warnings(readiness["warnings"]),
         "historical_depth_quarters": readiness["historical_depth_quarters"],
         "historical_depth_capabilities": readiness["historical_depth_capabilities"],
         "amendment_status": readiness["amendment_status"],
+        "nt_detection_supported": readiness.get("nt_detection_supported", True),
     }
+
+
+_USER_SAFE_READINESS_WARNING_CODES = {
+    "CURRENT_QUARTER_PARTIAL",
+    "NT_DETECTION_UNSUPPORTED",
+    "CONFIDENTIAL_TREATMENT",
+    "PARTIAL_COVERAGE",
+    "AMENDMENTS_PENDING",
+    "AMENDMENT_FAILED",
+}
+
+
+def _consumer_safe_warnings(warnings: list[dict[str, str]]) -> list[dict[str, str]]:
+    return [item for item in warnings if item.get("code") in _USER_SAFE_READINESS_WARNING_CODES]
 
 
 def _merge_status_messages(left: list[dict[str, str]], right: list[dict[str, str]]) -> list[dict[str, str]]:

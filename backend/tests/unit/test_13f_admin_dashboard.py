@@ -17,6 +17,7 @@ from app.models.institutions import (
 from app.models.stocks import Stock
 from app.services.edgar_ingestion import match_cik_candidates, seed_pending_cik_review_fixture
 from app.services.edgar_quality import QualityReport, persist_quality_report
+from app.services import thirteenf_admin_dashboard as dashboard
 from app.services.thirteenf_admin_dashboard import build_quarters, execute_job_payload
 from app.services.thirteenf_job_worker import execute_queued_job_once, record_worker_heartbeat
 
@@ -150,11 +151,40 @@ def test_consumer_readiness_exposes_only_safe_fields(client, db_session):
         "historical_depth_quarters",
         "historical_depth_capabilities",
         "amendment_status",
+        "nt_detection_supported",
     }
     assert "blockers" not in payload
     assert "counts" not in payload
     assert "last_successful_job_at" not in payload
     assert "setup_checklist" not in payload
+
+
+def test_consumer_readiness_filters_admin_only_warnings(monkeypatch, db_session):
+    def fake_admin_readiness(session, *, today=None):
+        return {
+            "readiness_level": "usable_with_warning",
+            "frontend_behavior": "enable_snapshot_with_caveats",
+            "latest_usable_quarter": "2026-Q1",
+            "current_quarter": {"label": "2026-Q2"},
+            "warnings": [
+                {"code": "REVOKED_CIK_DOWNSTREAM_REVIEW", "message": "Revoked CIK repair required."},
+                {"code": "LOW_STOCK_LINK_COVERAGE", "message": "25% of holdings are linked to stocks."},
+                {"code": "CURRENT_QUARTER_PARTIAL", "message": "2026-Q2 is still inside the 13F filing window."},
+                {"code": "AMENDMENTS_PENDING", "message": "Amendments are pending."},
+            ],
+            "historical_depth_quarters": 2,
+            "historical_depth_capabilities": {},
+            "amendment_status": "amendments_pending",
+            "nt_detection_supported": False,
+        }
+
+    monkeypatch.setattr(dashboard, "build_admin_readiness", fake_admin_readiness)
+
+    payload = dashboard.build_consumer_readiness(db_session)
+
+    warning_codes = [item["code"] for item in payload["warnings"]]
+    assert warning_codes == ["CURRENT_QUARTER_PARTIAL", "AMENDMENTS_PENDING"]
+    assert payload["nt_detection_supported"] is False
 
 
 def test_amendment_pending_creates_p1_task_and_needs_review_health(client, db_session, user_factory, auth_headers):
