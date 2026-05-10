@@ -21,6 +21,7 @@ from app.models.institutions import (
     InstitutionManager,
     JobRun,
     JobWorkerHeartbeat,
+    ParseRun13F,
     QualityReport13F,
     RawSourceDocument,
 )
@@ -965,9 +966,203 @@ def retry_manager_cik_search(
     return _manager_payload(manager)
 
 
-def list_jobs(session: Session, *, limit: int = 100) -> list[dict[str, Any]]:
-    jobs = session.query(JobRun).order_by(JobRun.created_at.desc()).limit(limit).all()
-    return [_job_payload(job) for job in jobs]
+def list_admin_filings(
+    session: Session,
+    *,
+    page: int = 1,
+    page_size: int = 50,
+    report_quarter: str | None = None,
+    parse_status: str | None = None,
+    form_type: str | None = None,
+    manager_id: int | None = None,
+) -> dict[str, Any]:
+    query = session.query(Filing13F).join(InstitutionManager, InstitutionManager.id == Filing13F.manager_id)
+    if report_quarter:
+        query = query.filter(Filing13F.report_quarter == report_quarter)
+    if parse_status:
+        query = query.filter(Filing13F.parse_status == parse_status)
+    if form_type:
+        query = query.filter(Filing13F.form_type == form_type)
+    if manager_id:
+        query = query.filter(Filing13F.manager_id == manager_id)
+    total = query.count()
+    filings = (
+        query.order_by(Filing13F.accepted_at.desc().nullslast(), Filing13F.id.desc())
+        .offset((page - 1) * page_size)
+        .limit(page_size)
+        .all()
+    )
+    return {
+        "items": [_admin_filing_payload(session, filing) for filing in filings],
+        "total": total,
+        "page": page,
+        "page_size": page_size,
+    }
+
+
+def get_admin_filing(session: Session, accession_number: str) -> dict[str, Any]:
+    filing = _filing_by_accession(session, accession_number)
+    if filing is None:
+        raise ValueError("Filing not found")
+    return _admin_filing_payload(session, filing, include_raw=True)
+
+
+def list_parse_runs_for_accession(session: Session, accession_number: str) -> dict[str, Any]:
+    filing = _filing_by_accession(session, accession_number)
+    if filing is None:
+        raise ValueError("Filing not found")
+    runs = (
+        session.query(ParseRun13F)
+        .filter(ParseRun13F.accession_number == filing.accession_number)
+        .order_by(ParseRun13F.is_current.desc(), ParseRun13F.started_at.desc().nullslast(), ParseRun13F.id.desc())
+        .all()
+    )
+    return {
+        "accession_number": filing.accession_number,
+        "items": [_parse_run_payload(run) for run in runs],
+    }
+
+
+def build_pending_amendments_read_model(
+    session: Session,
+    *,
+    page: int = 1,
+    page_size: int = 50,
+) -> dict[str, Any]:
+    query = (
+        session.query(Filing13F)
+        .join(InstitutionManager, InstitutionManager.id == Filing13F.manager_id)
+        .filter(Filing13F.amendment_status == "amendments_pending")
+    )
+    total = query.count()
+    group_rows = (
+        query.with_entities(
+            func.coalesce(Filing13F.amendment_type, "unknown"),
+            Filing13F.amendment_status,
+            func.count(Filing13F.id),
+        )
+        .group_by(func.coalesce(Filing13F.amendment_type, "unknown"), Filing13F.amendment_status)
+        .all()
+    )
+    groups: dict[str, dict[str, int]] = {}
+    for amendment_type, status, count in group_rows:
+        groups.setdefault(amendment_type, {})[status] = int(count)
+    filings = (
+        query.order_by(Filing13F.accepted_at.desc().nullslast(), Filing13F.id.desc())
+        .offset((page - 1) * page_size)
+        .limit(page_size)
+        .all()
+    )
+    return {
+        "items": [_admin_filing_payload(session, filing) for filing in filings],
+        "groups": groups,
+        "total": total,
+        "page": page,
+        "page_size": page_size,
+    }
+
+
+def build_holdings_coverage_summary(session: Session, *, report_quarter: str | None = None) -> dict[str, Any]:
+    query = session.query(Holding13F).join(ParseRun13F, ParseRun13F.id == Holding13F.parse_run_id).filter(ParseRun13F.is_current.is_(True))
+    filing_query = session.query(Filing13F)
+    if report_quarter:
+        query = query.filter(Holding13F.report_quarter == report_quarter)
+        filing_query = filing_query.filter(Filing13F.report_quarter == report_quarter)
+    common_query = query.filter(Holding13F.put_call.is_(None))
+    total_holdings = query.count()
+    common_holdings = common_query.count()
+    linked_common = common_query.filter(Holding13F.cusip_mapping_status == "linked").count()
+    unresolved_common = common_query.filter(Holding13F.cusip_mapping_status.in_(["unresolved", "pending_mapping", "needs_review", "invalid_cusip"])).count()
+    options_count = query.filter(Holding13F.put_call.isnot(None)).count()
+    return {
+        "report_quarter": report_quarter,
+        "total_holdings_count": total_holdings,
+        "common_holdings_count": common_holdings,
+        "linked_common_holdings_count": linked_common,
+        "unresolved_common_holdings_count": unresolved_common,
+        "options_count": options_count,
+        "linked_common_holding_ratio": linked_common / common_holdings if common_holdings else None,
+        "combination_report_count": filing_query.filter(Filing13F.report_type == "combination_report").count(),
+        "confidential_treatment_count": filing_query.filter(Filing13F.has_confidential_treatment.is_(True)).count(),
+    }
+
+
+def list_unresolved_cusip_mappings(
+    session: Session,
+    *,
+    page: int = 1,
+    page_size: int = 50,
+) -> dict[str, Any]:
+    statuses = ["unresolved", "pending_mapping", "needs_review", "invalid_cusip"]
+    base = (
+        session.query(
+            Holding13F.cusip,
+            Holding13F.cusip_mapping_status,
+            func.min(Holding13F.issuer_name),
+            func.count(Holding13F.id),
+        )
+        .filter(Holding13F.cusip_mapping_status.in_(statuses))
+        .group_by(Holding13F.cusip, Holding13F.cusip_mapping_status)
+    )
+    total = base.count()
+    rows = (
+        base.order_by(func.count(Holding13F.id).desc(), Holding13F.cusip.asc())
+        .offset((page - 1) * page_size)
+        .limit(page_size)
+        .all()
+    )
+    return {
+        "items": [
+            {
+                "cusip": cusip,
+                "cusip_mapping_status": status,
+                "issuer_name": issuer_name,
+                "holding_count": int(count),
+            }
+            for cusip, status, issuer_name, count in rows
+        ],
+        "total": total,
+        "page": page,
+        "page_size": page_size,
+    }
+
+
+def list_jobs(
+    session: Session,
+    *,
+    page: int = 1,
+    page_size: int = 50,
+    limit: int | None = None,
+    status: str | None = None,
+    job_type: str | None = None,
+    started_from: datetime | None = None,
+    started_to: datetime | None = None,
+    sync_date: date | None = None,
+    quarter: str | None = None,
+) -> dict[str, Any]:
+    if limit is not None:
+        page_size = limit
+    query = session.query(JobRun)
+    if status:
+        query = query.filter(JobRun.status == status)
+    if job_type:
+        query = query.filter(JobRun.job_type == job_type)
+    if started_from:
+        query = query.filter(JobRun.started_at >= started_from)
+    if started_to:
+        query = query.filter(JobRun.started_at < started_to)
+    if sync_date:
+        query = query.filter(JobRun.sync_date == sync_date)
+    if quarter:
+        query = query.filter(JobRun.quarter == quarter)
+    total = query.count()
+    jobs = (
+        query.order_by(JobRun.created_at.desc(), JobRun.id.desc())
+        .offset((page - 1) * page_size)
+        .limit(page_size)
+        .all()
+    )
+    return {"items": [_job_payload(job) for job in jobs], "total": total, "page": page, "page_size": page_size}
 
 
 def get_job(session: Session, job_id: int) -> dict[str, Any]:
@@ -1855,7 +2050,10 @@ def _job_payload(job: JobRun) -> dict[str, Any]:
         "dedupe_key": job.dedupe_key,
         "lock_key": job.lock_key,
         "quarter": job.quarter,
+        "sync_date": job.sync_date.isoformat() if job.sync_date else None,
         "worker_id": job.worker_id,
+        "lease_token": job.lease_token,
+        "lease_expires_at": job.lease_expires_at.isoformat() if job.lease_expires_at else None,
         "started_at": job.started_at.isoformat() if job.started_at else None,
         "heartbeat_at": job.heartbeat_at.isoformat() if job.heartbeat_at else None,
         "finished_at": job.finished_at.isoformat() if job.finished_at else None,
@@ -2093,6 +2291,87 @@ def _filing_status_counts(filings: list[Filing13F], filing_status_by_id: dict[in
         status = filing_status_by_id[filing.id]
         counts[status] = counts.get(status, 0) + 1
     return counts
+
+
+def _filing_by_accession(session: Session, accession_number: str) -> Filing13F | None:
+    return (
+        session.query(Filing13F)
+        .filter(or_(Filing13F.accession_number == accession_number, Filing13F.accession_no == accession_number))
+        .one_or_none()
+    )
+
+
+def _admin_filing_payload(session: Session, filing: Filing13F, *, include_raw: bool = False) -> dict[str, Any]:
+    holdings_count = session.query(Holding13F).filter(Holding13F.filing_id == filing.id).count()
+    payload: dict[str, Any] = {
+        "id": filing.id,
+        "accession_no": filing.accession_no,
+        "accession_number": filing.accession_number,
+        "form_type": filing.form_type,
+        "report_type": filing.report_type,
+        "coverage_completeness": filing.coverage_completeness,
+        "coverage_type": filing.coverage_type,
+        "other_managers_reporting": filing.other_managers_reporting,
+        "parse_status": filing.parse_status,
+        "parse_warning": filing.parse_warning,
+        "parse_error": filing.parse_error,
+        "parser_version": filing.parser_version,
+        "form_spec_version": filing.form_spec_version,
+        "xml_schema_version": filing.xml_schema_version,
+        "amendment_status": filing.amendment_status,
+        "amendment_type": filing.amendment_type,
+        "amendment_sort_warning": filing.amendment_sort_warning,
+        "has_confidential_treatment": filing.has_confidential_treatment,
+        "confidential_treatment_status": filing.confidential_treatment_status,
+        "manager": {
+            "id": filing.manager.id,
+            "canonical_name": filing.manager.canonical_name,
+            "legal_name": filing.manager.legal_name,
+            "display_name": filing.manager.display_name,
+            "cik": filing.manager.cik,
+        },
+        "report_quarter": filing.report_quarter,
+        "quarter": filing.report_quarter or quarter_label_for_date(filing.period_of_report),
+        "quarter_end_date": filing.quarter_end_date.isoformat() if filing.quarter_end_date else None,
+        "period_of_report": filing.period_of_report.isoformat() if filing.period_of_report else None,
+        "filing_date": filing.filing_date.isoformat() if filing.filing_date else None,
+        "filed_at": filing.filed_at.isoformat() if filing.filed_at else None,
+        "accepted_at": filing.accepted_at.isoformat() if filing.accepted_at else None,
+        "official_filing_deadline": filing.official_filing_deadline.isoformat() if filing.official_filing_deadline else None,
+        "is_active_for_manager_period": filing.is_active_for_manager_period,
+        "is_latest_for_period": filing.is_latest_for_period,
+        "version_rank": filing.version_rank,
+        "amends_accession_no": filing.amends_accession_no,
+        "amends_accession_number": filing.amends_accession_number,
+        "holdings_count": holdings_count,
+        "total_13f_reported_value_usd": float(filing.total_13f_reported_value_usd) if filing.total_13f_reported_value_usd is not None else None,
+        "total_13f_common_value_usd": float(filing.total_13f_common_value_usd) if filing.total_13f_common_value_usd is not None else None,
+        "raw_primary_doc_id": filing.raw_primary_doc_id,
+        "raw_infotable_doc_id": filing.raw_infotable_doc_id,
+        "raw_filing_url": filing.raw_filing_url,
+        "raw_infotable_url": filing.raw_infotable_url,
+    }
+    if include_raw:
+        payload["raw_primary"] = _raw_document_payload(filing.raw_primary_doc)
+        payload["raw_infotable"] = _raw_document_payload(filing.raw_infotable_doc)
+    return payload
+
+
+def _parse_run_payload(run: ParseRun13F) -> dict[str, Any]:
+    return {
+        "id": run.id,
+        "accession_number": run.accession_number,
+        "job_run_id": run.job_run_id,
+        "parser_version": run.parser_version,
+        "fingerprint_version": run.fingerprint_version,
+        "started_at": run.started_at.isoformat() if run.started_at else None,
+        "finished_at": run.finished_at.isoformat() if run.finished_at else None,
+        "status": run.status,
+        "holdings_count": run.holdings_count,
+        "error": run.error,
+        "is_current": run.is_current,
+        "created_at": run.created_at.isoformat() if run.created_at else None,
+    }
 
 
 def _filing_detail_payload(

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, datetime
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Query, status
@@ -15,8 +15,10 @@ from app.services.thirteenf_admin_dashboard import (
     build_admin_tasks,
     build_consumer_readiness,
     build_edgar_rate_limit_status,
+    build_holdings_coverage_summary,
     build_manager_backfill_preview,
     build_managers,
+    build_pending_amendments_read_model,
     build_quality_reports,
     build_quarters,
     build_status,
@@ -25,11 +27,15 @@ from app.services.thirteenf_admin_dashboard import (
     confirm_manager_cik,
     create_manager,
     deactivate_manager,
+    get_admin_filing,
     get_amendment,
     get_job,
     get_quarter_detail_page,
     get_quality_report_for_quarter,
+    list_admin_filings,
+    list_parse_runs_for_accession,
     list_manager_cik_review_events,
+    list_unresolved_cusip_mappings,
     list_workers,
     list_jobs,
     reject_manager_cik,
@@ -295,6 +301,16 @@ def read_amendments(
     return {"items": build_amendments(session, limit=limit)}
 
 
+@admin_router.get("/amendments/pending", response_model=dict)
+def read_pending_amendments(
+    session: SessionDep,
+    current_user: AdminUser,
+    page: int = Query(1, ge=1),
+    page_size: int = Query(50, ge=1, le=200),
+) -> Any:
+    return build_pending_amendments_read_model(session, page=page, page_size=page_size)
+
+
 @admin_router.get("/amendments/{accession_no}", response_model=dict)
 def read_amendment(session: SessionDep, current_user: AdminUser, accession_no: str) -> Any:
     try:
@@ -319,6 +335,44 @@ def resolve_13f_amendment(
         )
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+
+
+@admin_router.get("/filings", response_model=dict)
+def read_filings(
+    session: SessionDep,
+    current_user: AdminUser,
+    page: int = Query(1, ge=1),
+    page_size: int = Query(50, ge=1, le=200),
+    report_quarter: str | None = Query(None),
+    parse_status: str | None = Query(None),
+    form_type: str | None = Query(None),
+    manager_id: int | None = Query(None),
+) -> Any:
+    return list_admin_filings(
+        session,
+        page=page,
+        page_size=page_size,
+        report_quarter=report_quarter,
+        parse_status=parse_status,
+        form_type=form_type,
+        manager_id=manager_id,
+    )
+
+
+@admin_router.get("/filings/{accession_no}", response_model=dict)
+def read_filing(session: SessionDep, current_user: AdminUser, accession_no: str) -> Any:
+    try:
+        return get_admin_filing(session, accession_no)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+
+
+@admin_router.get("/filings/{accession_no}/parse-runs", response_model=dict)
+def read_filing_parse_runs(session: SessionDep, current_user: AdminUser, accession_no: str) -> Any:
+    try:
+        return list_parse_runs_for_accession(session, accession_no)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
 
 
 @admin_router.get("/managers", response_model=dict)
@@ -523,9 +577,28 @@ def read_manager_cik_review_events(
 def read_jobs(
     session: SessionDep,
     current_user: AdminUser,
-    limit: int = Query(100, ge=1, le=500),
+    page: int = Query(1, ge=1),
+    page_size: int = Query(50, ge=1, le=200),
+    limit: int | None = Query(None, ge=1, le=500),
+    status: str | None = Query(None),
+    job_type: str | None = Query(None),
+    started_from: datetime | None = Query(None),
+    started_to: datetime | None = Query(None),
+    sync_date: date | None = Query(None),
+    quarter: str | None = Query(None),
 ) -> Any:
-    return {"items": list_jobs(session, limit=limit)}
+    return list_jobs(
+        session,
+        page=page,
+        page_size=page_size,
+        limit=limit,
+        status=status,
+        job_type=job_type,
+        started_from=started_from,
+        started_to=started_to,
+        sync_date=sync_date,
+        quarter=quarter,
+    )
 
 
 @admin_router.get("/jobs/{job_id}", response_model=dict)
@@ -612,6 +685,37 @@ def reparse_filing(
             detail=f"Reparse failed: {exc}",
         ) from exc
     return result
+
+
+@admin_router.get("/holdings/coverage", response_model=dict)
+def read_holdings_coverage(
+    session: SessionDep,
+    current_user: AdminUser,
+    report_quarter: str | None = Query(None),
+) -> Any:
+    return build_holdings_coverage_summary(session, report_quarter=report_quarter)
+
+
+@admin_router.get("/cusip-mappings/unresolved", response_model=dict)
+def read_unresolved_cusip_mappings(
+    session: SessionDep,
+    current_user: AdminUser,
+    page: int = Query(1, ge=1),
+    page_size: int = Query(50, ge=1, le=200),
+) -> Any:
+    return list_unresolved_cusip_mappings(session, page=page, page_size=page_size)
+
+
+@admin_router.get("/cusip-mappings", response_model=dict)
+def read_cusip_mappings(
+    session: SessionDep,
+    current_user: AdminUser,
+    limit: int = Query(100, ge=1, le=1000),
+    needs_review: bool = Query(False),
+    unresolved: bool = Query(False),
+) -> Any:
+    from app.services.thirteenf_admin_dashboard import build_cusip_mappings
+    return {"items": build_cusip_mappings(session, limit, needs_review, unresolved)}
 
 
 @admin_router.get("/cusips", response_model=dict)
