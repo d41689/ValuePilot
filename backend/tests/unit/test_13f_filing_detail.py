@@ -170,6 +170,24 @@ def test_hr_period_one_day_from_quarter_end_normalizes_inside_valid_window(db_se
     assert filing.parse_warning == "PERIOD_WEEKEND_ADJUSTED"
 
 
+def test_hr_period_one_day_from_quarter_end_outside_window_needs_review(db_session):
+    _clear_13f(db_session)
+    manager = _manager(db_session)
+
+    result = ingest_accession_filing_detail(
+        db_session,
+        _payload(manager, "0001067983-24-000012"),
+        client=FakeEdgarClient(_submission(period="03-30-2024", accepted="20240330173000")),
+    )
+
+    filing = db_session.query(Filing13F).filter_by(accession_number="0001067983-24-000012").one()
+    assert result["status"] == "needs_review"
+    assert filing.parse_status == "needs_review"
+    assert filing.parse_warning == "PERIOD_WEEKEND_ADJUSTED_UNVERIFIABLE"
+    assert filing.quarter_end_date is None
+    assert filing.report_quarter is None
+
+
 def test_nt_period_one_day_from_quarter_end_needs_review_not_auto_normalized(db_session):
     _clear_13f(db_session)
     manager = _manager(db_session)
@@ -187,6 +205,42 @@ def test_nt_period_one_day_from_quarter_end_needs_review_not_auto_normalized(db_
     assert filing.quarter_end_date is None
     assert filing.report_quarter is None
     assert filing.coverage_type == "notice_reported_elsewhere"
+
+
+def test_period_three_days_from_quarter_end_needs_review(db_session):
+    _clear_13f(db_session)
+    manager = _manager(db_session)
+
+    result = ingest_accession_filing_detail(
+        db_session,
+        _payload(manager, "0001067983-24-000013"),
+        client=FakeEdgarClient(_submission(period="03-28-2024", accepted="20240515173000")),
+    )
+
+    filing = db_session.query(Filing13F).filter_by(accession_number="0001067983-24-000013").one()
+    assert result["status"] == "needs_review"
+    assert filing.parse_status == "needs_review"
+    assert filing.parse_warning == "PERIOD_TOO_FAR_FROM_QUARTER_END"
+    assert filing.quarter_end_date is None
+    assert filing.report_quarter is None
+
+
+def test_period_suspiciously_stale_needs_review(db_session):
+    _clear_13f(db_session)
+    manager = _manager(db_session)
+
+    result = ingest_accession_filing_detail(
+        db_session,
+        _payload(manager, "0001067983-25-000014"),
+        client=FakeEdgarClient(_submission(period="03-31-2024", accepted="20250415173000")),
+    )
+
+    filing = db_session.query(Filing13F).filter_by(accession_number="0001067983-25-000014").one()
+    assert result["status"] == "needs_review"
+    assert filing.parse_status == "needs_review"
+    assert filing.parse_warning == "PERIOD_SUSPICIOUSLY_STALE"
+    assert filing.quarter_end_date == date(2024, 3, 31)
+    assert filing.report_quarter == "2024-Q1"
 
 
 def test_missing_period_persists_raw_doc_and_marks_needs_review_without_quarter(db_session):

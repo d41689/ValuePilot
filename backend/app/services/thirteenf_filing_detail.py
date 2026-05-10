@@ -152,11 +152,11 @@ def route_period(
     nearest = _nearest_quarter_end(parsed)
     delta = abs((parsed - nearest).days)
     if delta == 0:
-        return _routed_success(nearest)
+        return _routed_success(nearest, accepted_at=accepted_at)
 
     if delta <= 2:
         if form_type in {"13F-HR", "13F-HR/A"} and _accepted_in_valid_window(accepted_at, nearest):
-            routed = _routed_success(nearest)
+            routed = _routed_success(nearest, accepted_at=accepted_at)
             return PeriodRouting(
                 period_of_report=routed.period_of_report,
                 quarter_end_date=routed.quarter_end_date,
@@ -250,7 +250,15 @@ def _accepted_in_valid_window(accepted_at: datetime | None, quarter_end: date) -
     return quarter_end <= accepted_date <= quarter_end + timedelta(days=180)
 
 
-def _routed_success(quarter_end: date) -> PeriodRouting:
+def _routed_success(quarter_end: date, *, accepted_at: datetime | None) -> PeriodRouting:
+    if _accepted_more_than_three_quarters_from_period(accepted_at, quarter_end):
+        return PeriodRouting(
+            period_of_report=quarter_end,
+            quarter_end_date=quarter_end,
+            report_quarter=_report_quarter(quarter_end),
+            parse_status="needs_review",
+            parse_warning="PERIOD_SUSPICIOUSLY_STALE",
+        )
     return PeriodRouting(
         period_of_report=quarter_end,
         quarter_end_date=quarter_end,
@@ -262,6 +270,16 @@ def _routed_success(quarter_end: date) -> PeriodRouting:
 def _report_quarter(quarter_end: date) -> str:
     quarter_by_month = {3: 1, 6: 2, 9: 3, 12: 4}
     return f"{quarter_end.year}-Q{quarter_by_month[quarter_end.month]}"
+
+
+def _accepted_more_than_three_quarters_from_period(accepted_at: datetime | None, quarter_end: date) -> bool:
+    if accepted_at is None:
+        return False
+    return abs(_quarter_index(accepted_at.date()) - _quarter_index(quarter_end)) > 3
+
+
+def _quarter_index(value: date) -> int:
+    return value.year * 4 + ((value.month - 1) // 3)
 
 
 def _is_non_operational_edgar_day(session: Session, value: date) -> bool:
@@ -278,7 +296,7 @@ def _normalize_report_type(raw: str | None, form_type: str) -> str:
         return "combination_report"
     if "holding" in text:
         return "holdings_report"
-    return "notice_report" if form_type == "13F-NT" else "holdings_report"
+    return "holdings_report"
 
 
 def _coverage_completeness(report_type: str | None) -> str:

@@ -65,3 +65,8 @@
   - `docker compose exec api pytest -q tests/unit/test_13f_filing_detail.py` -> 7 passed.
   - `docker compose exec api pytest -q tests/unit/test_13f_filing_detail.py tests/unit/test_13f_daily_index_sync.py tests/unit/test_13f_job_scheduler.py tests/unit/test_13f_parsers.py tests/unit/test_13f_mvp1b_schema.py` -> 61 passed.
   - `docker compose exec api pytest -q tests/unit` -> 389 passed.
+- 2026-05-09: Tech Lead review approved 1B-02 with non-blocking items. Accepted and fixed NB-1 (`PERIOD_SUSPICIOUSLY_STALE`), NB-2 (too-far period test), NB-3 (HR outside valid window test), and NB-5 (dead code cleanup). Accepted NB-4 as a pre-existing dashboard/readiness follow-up for 13F-1C1-01; no code change in this task.
+- 2026-05-09: Review-fix Docker verification:
+  - `docker compose exec api pytest -q tests/unit/test_13f_filing_detail.py` -> 10 passed.
+  - `docker compose exec api pytest -q tests/unit/test_13f_filing_detail.py tests/unit/test_13f_daily_index_sync.py tests/unit/test_13f_job_scheduler.py tests/unit/test_13f_parsers.py tests/unit/test_13f_mvp1b_schema.py` -> 64 passed.
+  - `docker compose exec api pytest -q tests/unit` -> 392 passed.
