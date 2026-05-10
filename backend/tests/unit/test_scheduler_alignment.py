@@ -109,6 +109,40 @@ def test_create_scheduler_registers_daily_health_summary_at_8am_et():
     assert "minute='0'" in str(job.trigger)
 
 
+def test_run_13f_health_summary_emits_alerts_before_summary(monkeypatch):
+    db_factory = MagicMock()
+    calls = []
+    monkeypatch.setattr(
+        "app.services.thirteenf_health.evaluate_13f_alerts",
+        lambda db, edgar_rate_limit_status=None: [
+            {
+                "severity": "P1",
+                "title": "SEC blocked",
+                "message": "429 detected",
+                "context": {"edgar_rate_limit_status": edgar_rate_limit_status},
+            }
+        ],
+    )
+    monkeypatch.setattr(
+        "app.services.thirteenf_health.emit_daily_health_summary",
+        lambda db: calls.append(("summary", None)) or {"sent": True},
+    )
+    monkeypatch.setattr(
+        "app.services.scheduler.emit_alert",
+        lambda **kwargs: calls.append(("alert", kwargs)) or {"sent": True},
+    )
+    monkeypatch.setattr(
+        "app.services.scheduler.edgar_rate_limit_status",
+        lambda: {"edgar_block_alert": True, "recent_403_count": 0, "recent_429_count": 1},
+    )
+
+    run_13f_health_summary(db_factory)
+
+    assert calls[0][0] == "alert"
+    assert calls[0][1]["context"]["edgar_rate_limit_status"]["recent_429_count"] == 1
+    assert calls[1] == ("summary", None)
+
+
 def test_run_smart_retries_noops_when_disabled(monkeypatch):
     db_factory = MagicMock()
 

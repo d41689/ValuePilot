@@ -69,13 +69,22 @@ Tech Lead must review noisy-alert risk and exclusion rules.
   - `docker compose exec api pytest -q tests/unit/test_13f_health_summary.py` -> 8 passed.
   - `docker compose exec api pytest -q tests/unit/test_13f_health_summary.py tests/unit/test_scheduler_alignment.py tests/unit/test_13f_alerts.py` -> 20 passed.
   - `docker compose exec api pytest -q tests/unit` -> 483 passed, 1 existing SQLAlchemy transaction warning.
+- 2026-05-10: Review follow-up accepted:
+  - Coverage/CUSIP alerts now require `latest_usable_quarter` itself to have a filing deadline closed by at least 3 days, preventing an older closed quarter from triggering alerts for a still-open new quarter.
+  - `amendments_pending` stale alerts now apply only to `latest_usable_quarter`; `amendment_failed` remains unqualified per PRD wording.
+  - Scheduler daily health job now emits evaluator P1/P2/P3 alerts before the P3 health summary and passes the existing EDGAR rate-limit status hook into the evaluator.
+- 2026-05-10: Review follow-up verification:
+  - `docker compose exec api pytest -q tests/unit/test_13f_health_summary.py::test_readiness_metric_alerts_do_not_use_closed_window_from_other_quarter tests/unit/test_13f_health_summary.py::test_amendments_pending_alerts_only_apply_to_latest_usable_quarter tests/unit/test_scheduler_alignment.py::test_run_13f_health_summary_emits_alerts_before_summary` -> 3 passed.
+  - `docker compose exec api pytest -q tests/unit/test_13f_health_summary.py tests/unit/test_scheduler_alignment.py tests/unit/test_13f_alerts.py` -> 23 passed.
+  - `docker compose exec api pytest -q tests/unit` -> 486 passed, 1 existing SQLAlchemy transaction warning.
 
 ## Contract Checklist
 
 - Alert severities follow PRD §15.1/§15.2 thresholds for implemented MVP 1 conditions.
 - Daily sync consecutive failure excludes weekends and active `no_index_expected_dates`.
-- Coverage and CUSIP mapping alerts require a filing window closed by at least 3 days.
+- Coverage and CUSIP mapping alerts require the evaluated `latest_usable_quarter` filing window to be closed by at least 3 days.
 - Ingest accession/filing timeout retry exhaustion triggers after 3 failed timeout jobs for the same dedupe key.
+- `amendments_pending` stale alerts are scoped to `latest_usable_quarter` to avoid permanent historical-quarter P2 noise.
 - SEC 403/429 alert hook consumes the existing EDGAR client health payload; no network call is made by evaluators.
 - Daily health summary is delivered through the existing `emit_alert` Discord abstraction and is testable with `InMemoryAlertTransport`.
 - Scheduler invokes the daily health summary at 08:00 ET; no UI, schema, PRD, or MVP 2 change-analysis implementation was added.

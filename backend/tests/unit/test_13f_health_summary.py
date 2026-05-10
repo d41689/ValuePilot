@@ -161,6 +161,50 @@ def test_cusip_warning_range_emits_p2(db_session, monkeypatch):
     assert alerts["CUSIP_MAPPING_RATIO_WARNING"]["severity"] == "P2"
 
 
+def test_readiness_metric_alerts_do_not_use_closed_window_from_other_quarter(db_session, monkeypatch):
+    _clear(db_session)
+    manager = _manager(db_session)
+    _filing(
+        db_session,
+        manager,
+        official_filing_deadline=date(2026, 2, 17),
+        report_quarter="2025-Q4",
+        quarter_end_date=date(2025, 12, 31),
+        period_of_report=date(2025, 12, 31),
+    )
+    _filing(
+        db_session,
+        manager,
+        accession_no="0001111111-26-000020",
+        accession_number="0001111111-26-000020",
+        official_filing_deadline=date(2026, 5, 15),
+        report_quarter="2026-Q1",
+        is_latest_for_period=False,
+        is_active_for_manager_period=False,
+    )
+    monkeypatch.setattr(
+        "app.services.thirteenf_health.build_readiness_summary",
+        lambda session, today=None: {
+            "readiness_level": "experimental",
+            "latest_usable_quarter": "2026-Q1",
+            "nt_detection_supported": True,
+            "metrics": {
+                "manager_coverage_ratio": {"value": 0.1, "estimated": False},
+                "linked_common_holding_ratio": {"value": 0.1, "estimated": False},
+                "expected_filer_count": 10,
+                "filed_manager_count": 1,
+                "nt_filer_count": 0,
+            },
+            "quarter_lists": {},
+        },
+    )
+
+    alerts = _codes(evaluate_13f_alerts(db_session, now=NOW))
+
+    assert "EXPECTED_FILER_COVERAGE_LOW" not in alerts
+    assert "CUSIP_MAPPING_RATIO_CRITICAL" not in alerts
+
+
 def test_amendment_and_needs_review_age_alerts(db_session):
     _clear(db_session)
     manager = _manager(db_session)
@@ -212,6 +256,48 @@ def test_amendment_and_needs_review_age_alerts(db_session):
     assert alerts["AMENDMENT_RESTATEMENT_PENDING_STALE"]["severity"] == "P2"
     assert alerts["AMENDMENT_PENDING_STALE"]["severity"] == "P2"
     assert alerts["PARSE_NEEDS_REVIEW_STALE"]["severity"] == "P3"
+
+
+def test_amendments_pending_alerts_only_apply_to_latest_usable_quarter(db_session, monkeypatch):
+    _clear(db_session)
+    manager = _manager(db_session)
+    _filing(
+        db_session,
+        manager,
+        accession_no="0001111111-25-000003",
+        accession_number="0001111111-25-000003",
+        report_quarter="2025-Q4",
+        quarter_end_date=date(2025, 12, 31),
+        period_of_report=date(2025, 12, 31),
+        amendment_status="amendments_pending",
+        amendment_type="RESTATEMENT",
+        updated_at=NOW - timedelta(hours=25),
+    )
+    _filing(
+        db_session,
+        manager,
+        accession_no="0001111111-26-000003",
+        accession_number="0001111111-26-000003",
+        amendment_status="amendments_pending",
+        amendment_type="RESTATEMENT",
+        is_latest_for_period=False,
+        is_active_for_manager_period=False,
+        updated_at=NOW - timedelta(hours=25),
+    )
+    monkeypatch.setattr(
+        "app.services.thirteenf_health.build_readiness_summary",
+        lambda session, today=None: {
+            "readiness_level": "usable_with_warning",
+            "latest_usable_quarter": "2026-Q1",
+            "nt_detection_supported": True,
+            "metrics": {},
+            "quarter_lists": {},
+        },
+    )
+
+    alerts = _codes(evaluate_13f_alerts(db_session, now=NOW))
+
+    assert alerts["AMENDMENT_RESTATEMENT_PENDING_STALE"]["context"]["count"] == 1
 
 
 def test_running_job_and_edgar_block_alerts(db_session):

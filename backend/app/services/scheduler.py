@@ -20,6 +20,8 @@ from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
 
 from app.core.config import settings
+from app.edgar.client import edgar_rate_limit_status
+from app.services.thirteenf_alerts import emit_alert
 
 logger = logging.getLogger(__name__)
 
@@ -222,10 +224,18 @@ def run_13f_health_summary(db_factory: Callable) -> None:
     """Send the daily 13F health summary through the alert abstraction."""
     db = db_factory()
     try:
-        from app.services.thirteenf_health import emit_daily_health_summary
+        from app.services.thirteenf_health import emit_daily_health_summary, evaluate_13f_alerts
 
+        alerts = evaluate_13f_alerts(db, edgar_rate_limit_status=edgar_rate_limit_status())
+        for alert in alerts:
+            emit_alert(
+                severity=alert["severity"],
+                title=alert["title"],
+                message=alert["message"],
+                context=alert.get("context"),
+            )
         result = emit_daily_health_summary(db)
-        logger.info("13F daily health summary: %s", result)
+        logger.info("13F daily health summary: alerts=%d summary=%s", len(alerts), result)
     except Exception as exc:
         db.rollback()
         logger.exception("13F daily health summary failed: %s", exc)

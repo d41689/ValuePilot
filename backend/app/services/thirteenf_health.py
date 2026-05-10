@@ -28,7 +28,7 @@ def evaluate_13f_alerts(
 
     readiness = build_readiness_summary(session, today=today)
     alerts.extend(_readiness_metric_alerts(session, readiness, today=today))
-    alerts.extend(_amendment_alerts(session, now=now))
+    alerts.extend(_amendment_alerts(session, now=now, latest_usable_quarter=readiness.get("latest_usable_quarter")))
     alerts.extend(_needs_review_alerts(session, now=now))
     alerts.extend(_ingest_timeout_retry_alerts(session))
     alerts.extend(_running_job_alerts(session, now=now))
@@ -158,7 +158,8 @@ def _recent_edgar_business_dates(session: Session, *, today: date, limit: int) -
 
 
 def _readiness_metric_alerts(session: Session, readiness: dict[str, Any], *, today: date) -> list[dict[str, Any]]:
-    if not _has_closed_filing_window(session, today=today):
+    quarter = readiness.get("latest_usable_quarter")
+    if not quarter or not _has_closed_filing_window_for_quarter(session, quarter=quarter, today=today):
         return []
     metrics = readiness.get("metrics", {})
     alerts: list[dict[str, Any]] = []
@@ -203,18 +204,27 @@ def _readiness_metric_alerts(session: Session, readiness: dict[str, Any], *, tod
     return alerts
 
 
-def _has_closed_filing_window(session: Session, *, today: date) -> bool:
+def _has_closed_filing_window_for_quarter(session: Session, *, quarter: str, today: date) -> bool:
     closed_cutoff = today - timedelta(days=3)
-    return (
-        session.query(Filing13F.id)
-        .filter(Filing13F.official_filing_deadline.isnot(None))
-        .filter(Filing13F.official_filing_deadline <= closed_cutoff)
-        .first()
-        is not None
+    deadline = (
+        session.query(func.max(Filing13F.official_filing_deadline))
+        .filter(Filing13F.report_quarter == quarter)
+        .scalar()
     )
+    return bool(deadline and deadline <= closed_cutoff)
 
 
-def _amendment_alerts(session: Session, *, now: datetime) -> list[dict[str, Any]]:
+def _amendment_alerts(
+    session: Session,
+    *,
+    now: datetime,
+    latest_usable_quarter: str | None,
+) -> list[dict[str, Any]]:
+    pending_quarter_filters = (
+        [Filing13F.report_quarter == latest_usable_quarter]
+        if latest_usable_quarter
+        else []
+    )
     return [
         *_stale_filing_alerts(
             session,
@@ -232,6 +242,7 @@ def _amendment_alerts(session: Session, *, now: datetime) -> list[dict[str, Any]
             filters=[
                 Filing13F.amendment_status == "amendments_pending",
                 func.lower(Filing13F.amendment_type) == "restatement",
+                *pending_quarter_filters,
             ],
             cutoff=now - timedelta(hours=24),
         ),
@@ -243,6 +254,7 @@ def _amendment_alerts(session: Session, *, now: datetime) -> list[dict[str, Any]
             filters=[
                 Filing13F.amendment_status == "amendments_pending",
                 func.coalesce(func.lower(Filing13F.amendment_type), "") != "restatement",
+                *pending_quarter_filters,
             ],
             cutoff=now - timedelta(hours=48),
         ),
