@@ -844,6 +844,7 @@ def trigger_job(session: Session, *, requested_by_user_id: int | None, payload: 
         trigger_source=payload.get("trigger_source") or "manual",
         dedupe_key=lock_key,
         lock_key=lock_key,
+        sync_date=date.fromisoformat(payload["sync_date"]) if payload.get("sync_date") else None,
         quarter=payload.get("quarter"),
         input_json=payload,
     )
@@ -2220,6 +2221,7 @@ def _required(payload: dict[str, Any], key: str) -> str:
 
 _JOB_LOCK_BUILDERS = {
     "quarterly_pipeline": lambda payload: f"quarterly_pipeline:{_required(payload, 'quarter')}",
+    "fetch_daily_index": lambda payload: f"fetch_daily_index:{_required(payload, 'sync_date')}",
     "fetch_quarter_index": lambda payload: f"fetch_quarter_index:{_required(payload, 'quarter')}",
     "ingest_holdings": lambda payload: f"ingest_holdings:{_required(payload, 'quarter')}",
     "ingest_accession": lambda payload: f"ingest_accession:{_required(payload, 'accession_no')}",
@@ -2334,6 +2336,18 @@ def _execute_job(session: Session, job_type: str, payload: dict[str, Any]) -> di
 
         quarter = _required(payload, "quarter")
         return {"quarter": quarter, "filings_inserted": ingest_quarter_index(session, quarter), "status": "succeeded"}
+    if job_type == "fetch_daily_index":
+        from app.services.thirteenf_daily_sync import run_daily_index_sync
+
+        sync_date = date.fromisoformat(_required(payload, "sync_date"))
+        result = run_daily_index_sync(session, sync_date)
+        job_status = {
+            "success": "succeeded",
+            "no_data": "succeeded",
+            "partial_success": "partial_success",
+            "failed": "failed",
+        }.get(result.get("status"), "failed")
+        return {"daily_sync": result, "status": job_status}
     if job_type == "backfill_quarters":
         from app.services.edgar_ingestion import backfill_quarters
 

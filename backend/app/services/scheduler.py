@@ -139,6 +139,16 @@ def create_scheduler(db_factory: Callable) -> BackgroundScheduler:
         misfire_grace_time=3600,  # allow up to 1h late firing
     )
 
+    scheduler.add_job(
+        run_daily_sync_poll,
+        trigger=CronTrigger(minute=0, timezone="UTC"),
+        args=[db_factory],
+        id="daily_13f_sync_poll",
+        name="Daily 13F form.idx sync poll",
+        replace_existing=True,
+        misfire_grace_time=900,
+    )
+
     if settings.THIRTEENF_SMART_RETRY_ENABLED:
         # Run every day at 02:00 UTC.
         # Checks for partially failed jobs and retries safe targets if they are old enough.
@@ -152,6 +162,25 @@ def create_scheduler(db_factory: Callable) -> BackgroundScheduler:
             misfire_grace_time=3600,
         )
     return scheduler
+
+
+def run_daily_sync_poll(db_factory: Callable) -> None:
+    """Hourly poll that queues eligible daily 13F sync jobs."""
+    db = db_factory()
+    try:
+        from app.services.thirteenf_scheduler import (
+            mark_retry_exhausted_daily_syncs_no_data,
+            queue_daily_sync_poll,
+        )
+
+        mark_retry_exhausted_daily_syncs_no_data(db)
+        result = queue_daily_sync_poll(db)
+        logger.info("Daily 13F sync poll: %s", result)
+    except Exception as exc:
+        db.rollback()
+        logger.exception("Daily 13F sync poll failed: %s", exc)
+    finally:
+        db.close()
 
 
 def run_smart_retries(db_factory: Callable) -> None:
