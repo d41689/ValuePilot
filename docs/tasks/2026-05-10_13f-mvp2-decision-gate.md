@@ -94,6 +94,7 @@ Rationale:
 Implementation constraint for MVP2-01+:
 - Change analysis must be unavailable or warning-capped when the relevant scope fails mapping thresholds.
 - Threshold denominators are per reporting quarter, common shares only, across expected filers for that quarter.
+- Threshold calculations should use holdings eligible for direct common-share analysis; holdings blocked by pending amendment, notice filing, or unresolved attribution should be excluded or separately counted.
 - Options are excluded from common-weight and consensus calculations.
 - Below 70%, do not show `new_position`, `exited_position`, `increased`, or `reduced` as primary labels.
 - Even when quarter-level mapping passes, stock-level holder aggregation should expose mapping confidence and caveats for the specific `stock_id`.
@@ -118,6 +119,7 @@ Implementation constraint for MVP2-01+:
 - `/stocks/{stock_id}/holders` direct consensus must count only `holding_attribution_status=direct`.
 - Reported-for-other / shared / unresolved attribution stays excluded from direct consensus in MVP 2.
 - Holder aggregation should expose counts separately enough to avoid overstating consensus: `direct_holder_count` as the primary count, with reported-elsewhere / unresolved attribution caveats or counts when available.
+- If attribution resolution is incomplete, MVP 2 may expose `reported_elsewhere_known=true/false` instead of exact reported-elsewhere counts.
 
 Approval status: Pending Tech Lead / human owner.
 
@@ -151,14 +153,15 @@ Approval status: Pending Tech Lead / human owner.
 Recommendation: MVP 2 should classify ownership change signals into explicit confidence levels:
 
 - `high_confidence`: direct filing, common shares, stable `stock_id`, quarter-level mapping readiness `>= 70%`, consecutive reliable quarters available, no unresolved amendment/confidential-treatment caveat.
-- `medium_confidence`: direct filing and common shares, but with mapping, possible corporate-action, or confidential-treatment caveat.
+- `medium_confidence`: direct filing and common shares, but with mapping, possible corporate-action, or confidential-treatment caveat. Confidential treatment affecting the current or comparison quarter may downgrade to `low_confidence` depending on impact.
 - `low_confidence`: incomplete mapping, adjacent 13F-NT, Combination Report, confidential treatment, no reliable prior quarter, or unresolved attribution.
 - `unavailable`: missing prior quarter, prior/current 13F-NT for direct manager changes, unresolved attribution, pending amendment, failed mapping, or below blocking threshold.
 
 Oracle's Lens should only use `high_confidence` and selected `medium_confidence` signals in primary ranking or prominent display.
 
 Implementation constraint for MVP2-01+:
-- `ownership_changes` or its read model must be able to represent signal confidence, caveat codes, primary-display eligibility, and unavailable reason.
+- `ownership_changes` or its read model must be able to represent or derive signal confidence, caveat codes, primary-display eligibility, and unavailable reason.
+- D5 confidence tier is a runtime-derivable classification from PRD-defined fields; it does not mandate a dedicated column in the `ownership_changes` schema. MVP2-01 schema design will determine the storage approach.
 - UI/API copy must distinguish facts, inferred signals, weak signals, and unavailable states.
 
 Approval status: Pending Tech Lead / human owner.
@@ -172,7 +175,7 @@ Rules:
 - Emit `exited_position` only when the current quarter has reliable direct holdings data proving the security is absent.
 - Emit `increased`, `reduced`, or `unchanged` only when both quarters have reliable direct common-share positions for the same security identity.
 - Emit `cusip_changed` when CUSIP differs but temporal mapping resolves both rows to the same `stock_id`; this is not an exit + new pair.
-- Emit `change_status=no_prior_data` or return API `status=unavailable` instead of strong labels when the prior/current quarter is missing, unresolved, 13F-NT, Combination-only for total-value comparisons, below mapping threshold, or blocked by pending/failed amendments.
+- Emit `change_status=no_prior_data` or return API `status=unavailable` instead of strong labels when the prior/current quarter is missing, unresolved, 13F-NT, a Combination Report where the signal depends on complete manager-level holdings, below mapping threshold, or blocked by pending/failed amendments.
 
 Implementation constraint for MVP2-01+:
 - `new_position` and `exited_position` must never be inferred from missing data.
@@ -195,6 +198,7 @@ Approval status: Pending Tech Lead / human owner.
 - [ ] D4 MVP 2 scope freeze approved.
 - [ ] D5 ownership signal confidence levels approved.
 - [ ] D6 change signal display rules approved.
+- [ ] Human owner approved MVP 2 scope freeze and exclusions.
 - [ ] MVP2-01 explicitly approved to start.
 
 ## Progress Notes
@@ -207,3 +211,9 @@ Approval status: Pending Tech Lead / human owner.
   - Clarified D2 threshold denominator as per reporting quarter, common shares only, across expected filers.
   - Clarified D3 terminology: `change_status=no_prior_data` is the computation enum, while API responses may use `status=unavailable`.
   - Added D5 signal confidence and D6 change display rules so MVP2-01 can design the schema/precompute contract with the required fields.
+- 2026-05-10: Accepted second-round review feedback:
+  - Clarified that mapping thresholds use holdings eligible for direct common-share analysis, while pending-amendment, notice, and unresolved-attribution holdings are excluded or counted separately.
+  - Broadened the Combination Report display rule from total-value-only comparisons to any signal depending on complete manager-level holdings.
+  - Clarified that confidential-treatment caveats may downgrade signal confidence to `low_confidence` depending on impact.
+  - Clarified that reported-elsewhere aggregation can expose known/unknown status when exact counts are unavailable.
+  - Clarified that D5 confidence can be derived at runtime and does not force a dedicated schema column.
