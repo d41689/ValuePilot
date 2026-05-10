@@ -13,6 +13,7 @@
 - CUSIP mapping rate threshold strategy for change analysis.
 - 13F-NT cross-reference strategy for changes and holder aggregation.
 - MVP 2 scope freeze against PRD §17 / §9.2.
+- Ownership signal confidence and display rules.
 - Decision record and approval checklist.
 
 ## Scope Out
@@ -20,7 +21,6 @@
 - `ownership_changes` schema.
 - Consecutive-quarter computation.
 - `/stocks/{stock_id}/holders` implementation.
-- Oracle's Lens investor signal UI.
 - Any MVP 3 feature: Dataroma, batch reparse, corporate action UI, filing-level value-unit override, full historical backfill.
 - PRD edits.
 
@@ -54,7 +54,7 @@
 ## Current Status
 
 - Tech Lead approved entering `MVP2-00 Pre-MVP2 Decision Gate`.
-- Tech Lead did not approve MVP2-01 schema, MVP2-02 computation, MVP2-03 stock holders aggregation, or Oracle's Lens investor signal UI.
+- Tech Lead did not approve implementing MVP2-01 schema, MVP2-02 computation, MVP2-03 stock holders aggregation, or Oracle's Lens investor signal UI until this gate closes.
 - This task intentionally makes no implementation changes.
 
 ## Decision Record Draft
@@ -72,6 +72,8 @@ Implementation constraint for MVP2-01+:
 - Do not adjust historical `value_usd`, `ssh_prnamt`, or holdings quantities from heuristic signals.
 - Do not present heuristic corporate actions as facts.
 - `change_status=cusip_changed` is a caveat / classification aid, not a corrected historical position.
+- Heuristic corporate-action signals may downgrade confidence, but must not create corrected values.
+- User-facing copy should avoid implying confirmed corporate action. Preferred language: "Potential identifier change; change signal may be incomplete."
 
 Approval status: Pending Tech Lead / human owner.
 
@@ -91,13 +93,16 @@ Rationale:
 
 Implementation constraint for MVP2-01+:
 - Change analysis must be unavailable or warning-capped when the relevant scope fails mapping thresholds.
-- The denominator remains common shares only; options are excluded from common-weight and consensus calculations.
+- Threshold denominators are per reporting quarter, common shares only, across expected filers for that quarter.
+- Options are excluded from common-weight and consensus calculations.
+- Below 70%, do not show `new_position`, `exited_position`, `increased`, or `reduced` as primary labels.
+- Even when quarter-level mapping passes, stock-level holder aggregation should expose mapping confidence and caveats for the specific `stock_id`.
 
 Approval status: Pending Tech Lead / human owner.
 
 ### D3. 13F-NT Cross-Reference Strategy
 
-Recommendation: MVP 2 should preserve the MVP 1 rule: when a prior or current quarter is 13F-NT (`notice_reported_elsewhere`), direct holdings changes for that manager should return `change_status=no_prior_data` or unavailable rather than merging across reported-by managers.
+Recommendation: MVP 2 should preserve the MVP 1 rule: when a prior or current quarter is 13F-NT (`notice_reported_elsewhere`), direct holdings changes for that manager should return `change_status=no_prior_data` rather than merging across reported-by managers. API responses may use `status=unavailable` where the endpoint has no reliable direct-change data to display.
 
 Recommendation: Do not implement cross-manager reported-by consolidation in MVP 2. Keep it as MVP 3+ scope.
 
@@ -109,8 +114,10 @@ Rationale:
 
 Implementation constraint for MVP2-01+:
 - 13F-NT must never produce empty holdings or "no positions" semantics.
+- User-facing copy must say the manager filed a 13F Notice and its holdings may be reported by another manager; the manager is excluded from direct-holder consensus.
 - `/stocks/{stock_id}/holders` direct consensus must count only `holding_attribution_status=direct`.
 - Reported-for-other / shared / unresolved attribution stays excluded from direct consensus in MVP 2.
+- Holder aggregation should expose counts separately enough to avoid overstating consensus: `direct_holder_count` as the primary count, with reported-elsewhere / unresolved attribution caveats or counts when available.
 
 Approval status: Pending Tech Lead / human owner.
 
@@ -118,11 +125,13 @@ Approval status: Pending Tech Lead / human owner.
 
 Recommendation: MVP 2 includes only:
 - Consecutive-quarter ownership change analysis.
+- `CUSIP_CHANGED` detection and handling: when CUSIP changes but both rows map to the same `stock_id`, classify as the same security with `change_status=cusip_changed`, not exit + new position.
 - Precomputed ownership-change read model sufficient for P95 target.
 - Formal activation of `GET /api/v1/13f/managers/{manager_id}/holdings/changes`.
 - `GET /api/v1/13f/stocks/{stock_id}/holders` aggregation with PRD §9.2.3 fields.
 - Portfolio weight calculation for common shares when denominator is available.
 - Direct-holder consensus and caveat-safe user responses.
+- Oracle's Lens investor signal UI display for PRD §9.2.1 signals, applying PRD §9.2.2 exclusion rules.
 
 Explicitly excluded from MVP 2:
 - Dataroma as a CUSIP source.
@@ -131,6 +140,43 @@ Explicitly excluded from MVP 2:
 - Filing-level `value_unit_override`.
 - Full historical backfill beyond already supported job primitives.
 - AI moat score, buy/sell recommendations, or total AUM claims.
+
+MVP 2 outputs ownership behavior signals for research prioritization, not investment recommendations.
+Options are excluded from direct-holder consensus and common-share holder counts by default.
+
+Approval status: Pending Tech Lead / human owner.
+
+### D5. Ownership Signal Confidence for MVP 2
+
+Recommendation: MVP 2 should classify ownership change signals into explicit confidence levels:
+
+- `high_confidence`: direct filing, common shares, stable `stock_id`, quarter-level mapping readiness `>= 70%`, consecutive reliable quarters available, no unresolved amendment/confidential-treatment caveat.
+- `medium_confidence`: direct filing and common shares, but with mapping, possible corporate-action, or confidential-treatment caveat.
+- `low_confidence`: incomplete mapping, adjacent 13F-NT, Combination Report, confidential treatment, no reliable prior quarter, or unresolved attribution.
+- `unavailable`: missing prior quarter, prior/current 13F-NT for direct manager changes, unresolved attribution, pending amendment, failed mapping, or below blocking threshold.
+
+Oracle's Lens should only use `high_confidence` and selected `medium_confidence` signals in primary ranking or prominent display.
+
+Implementation constraint for MVP2-01+:
+- `ownership_changes` or its read model must be able to represent signal confidence, caveat codes, primary-display eligibility, and unavailable reason.
+- UI/API copy must distinguish facts, inferred signals, weak signals, and unavailable states.
+
+Approval status: Pending Tech Lead / human owner.
+
+### D6. Change Signal Display Rules for MVP 2
+
+Recommendation: Strong change labels are allowed only when both the current and comparison quarter have reliable direct data.
+
+Rules:
+- Emit `new_position` only when the prior quarter has reliable direct holdings data proving the security was absent.
+- Emit `exited_position` only when the current quarter has reliable direct holdings data proving the security is absent.
+- Emit `increased`, `reduced`, or `unchanged` only when both quarters have reliable direct common-share positions for the same security identity.
+- Emit `cusip_changed` when CUSIP differs but temporal mapping resolves both rows to the same `stock_id`; this is not an exit + new pair.
+- Emit `change_status=no_prior_data` or return API `status=unavailable` instead of strong labels when the prior/current quarter is missing, unresolved, 13F-NT, Combination-only for total-value comparisons, below mapping threshold, or blocked by pending/failed amendments.
+
+Implementation constraint for MVP2-01+:
+- `new_position` and `exited_position` must never be inferred from missing data.
+- Below the ready mapping threshold, strong labels are not primary labels even if raw comparison rows exist.
 
 Approval status: Pending Tech Lead / human owner.
 
@@ -147,9 +193,17 @@ Approval status: Pending Tech Lead / human owner.
 - [ ] D2 CUSIP mapping threshold strategy approved.
 - [ ] D3 13F-NT cross-reference strategy approved.
 - [ ] D4 MVP 2 scope freeze approved.
+- [ ] D5 ownership signal confidence levels approved.
+- [ ] D6 change signal display rules approved.
 - [ ] MVP2-01 explicitly approved to start.
 
 ## Progress Notes
 
 - 2026-05-10: Created decision gate after Tech Lead approved entering MVP2-00 and blocked MVP2-01/02/03 until decisions close.
 - 2026-05-10: Drafted conservative Senior Engineer recommendations that keep MVP 2 within PRD §17 and defer cross-manager 13F-NT consolidation and external corporate-action source selection.
+- 2026-05-10: Accepted review feedback:
+  - Added `CUSIP_CHANGED` handling explicitly to D4 scope-in.
+  - Resolved the D4 ambiguity by keeping Oracle's Lens investor signal UI in MVP 2, consistent with PRD §17.
+  - Clarified D2 threshold denominator as per reporting quarter, common shares only, across expected filers.
+  - Clarified D3 terminology: `change_status=no_prior_data` is the computation enum, while API responses may use `status=unavailable`.
+  - Added D5 signal confidence and D6 change display rules so MVP2-01 can design the schema/precompute contract with the required fields.
