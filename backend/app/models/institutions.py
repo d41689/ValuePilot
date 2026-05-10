@@ -2,7 +2,7 @@ from datetime import date, datetime
 from typing import Optional, List
 from sqlalchemy import (
     String, Text, Boolean, ForeignKey, BigInteger, Date,
-    DateTime, Integer, Float, Index, UniqueConstraint, event, text,
+    DateTime, Integer, Float, Index, UniqueConstraint, event, text, Numeric,
 )
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, Session, mapped_column, relationship, validates
@@ -26,6 +26,10 @@ JOB_RUN_STATUSES = {
     "canceled",
     "skipped",
 }
+FILING_PARSE_STATUSES = {"pending", "succeeded", "failed", "partial_success", "needs_review"}
+PARSE_RUN_STATUSES = {"running", "succeeded", "failed", "abandoned"}
+HOLDING_CUSIP_MAPPING_STATUSES = {"linked", "invalid_cusip", "unresolved", "pending_mapping", "needs_review"}
+CUSIP_MAPPING_STATUSES = {"confirmed", "superseded", "needs_review", "deleted"}
 
 
 def _validate_choice(field: str, value: str, choices: set[str]) -> str:
@@ -238,13 +242,45 @@ class Filing13F(Base):
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
     manager_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("institution_managers.id"), nullable=False)
     accession_no: Mapped[str] = mapped_column(String(20), unique=True, nullable=False)
+    accession_number: Mapped[Optional[str]] = mapped_column(String(20), nullable=True)
+    cik: Mapped[Optional[str]] = mapped_column(String(10), nullable=True)
     period_of_report: Mapped[date] = mapped_column(Date, nullable=False)
     filed_at: Mapped[date] = mapped_column(Date, nullable=False)
     form_type: Mapped[str] = mapped_column(String(10), nullable=False)
+    report_type: Mapped[Optional[str]] = mapped_column(String(40), nullable=True)
+    coverage_completeness: Mapped[str] = mapped_column(String(30), nullable=False, default="unknown", server_default="unknown")
+    coverage_type: Mapped[str] = mapped_column(String(40), nullable=False, default="normal", server_default="normal")
+    other_managers_included: Mapped[Optional[list]] = mapped_column(JSONB, nullable=True)
+    other_managers_reporting: Mapped[Optional[list]] = mapped_column(JSONB, nullable=True)
     amends_accession_no: Mapped[Optional[str]] = mapped_column(String(20), nullable=True)
+    amends_accession_number: Mapped[Optional[str]] = mapped_column(String(20), nullable=True)
     version_rank: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
     is_latest_for_period: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     has_confidential_treatment: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    confidential_treatment_status: Mapped[str] = mapped_column(String(40), nullable=False, default="none", server_default="none")
+    filing_date: Mapped[Optional[date]] = mapped_column(Date, nullable=True)
+    accepted_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    report_quarter: Mapped[Optional[str]] = mapped_column(String(10), nullable=True)
+    quarter_end_date: Mapped[Optional[date]] = mapped_column(Date, nullable=True)
+    official_filing_deadline: Mapped[Optional[date]] = mapped_column(Date, nullable=True)
+    is_amendment: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default=text("false"))
+    amendment_type: Mapped[Optional[str]] = mapped_column(String(80), nullable=True)
+    amendment_type_raw: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    is_active_for_manager_period: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default=text("false"))
+    raw_filing_url: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    raw_infotable_url: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    parse_status: Mapped[str] = mapped_column(String(30), nullable=False, default="pending", server_default="pending")
+    parse_warning: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    parse_error: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    parser_version: Mapped[Optional[str]] = mapped_column(String(80), nullable=True)
+    form_spec_version: Mapped[Optional[str]] = mapped_column(String(80), nullable=True)
+    xml_schema_version: Mapped[Optional[str]] = mapped_column(String(120), nullable=True)
+    total_13f_reported_value_usd: Mapped[Optional[int]] = mapped_column(BigInteger, nullable=True)
+    total_13f_common_value_usd: Mapped[Optional[int]] = mapped_column(BigInteger, nullable=True)
+    holdings_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
+    common_holdings_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
+    amendment_status: Mapped[str] = mapped_column(String(40), nullable=False, default="no_amendments_seen", server_default="no_amendments_seen")
+    amendment_sort_warning: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default=text("false"))
     reported_total_value_thousands: Mapped[Optional[int]] = mapped_column(BigInteger, nullable=True)
     computed_total_value_thousands: Mapped[Optional[int]] = mapped_column(BigInteger, nullable=True)
     raw_primary_doc_id: Mapped[Optional[int]] = mapped_column(
@@ -254,9 +290,16 @@ class Filing13F(Base):
         BigInteger, ForeignKey("raw_source_documents.id"), nullable=True
     )
     ingested_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
 
     manager: Mapped["InstitutionManager"] = relationship(back_populates="filings")
     holdings: Mapped[List["Holding13F"]] = relationship(back_populates="filing")
+    parse_runs: Mapped[List["ParseRun13F"]] = relationship(
+        primaryjoin="foreign(ParseRun13F.accession_number) == Filing13F.accession_number",
+        viewonly=True,
+    )
     raw_primary_doc: Mapped[Optional["RawSourceDocument"]] = relationship(
         foreign_keys=[raw_primary_doc_id]
     )
@@ -264,34 +307,134 @@ class Filing13F(Base):
         foreign_keys=[raw_infotable_doc_id]
     )
 
+    __table_args__ = (
+        Index(
+            "uq_active_filing_per_manager_period",
+            "manager_id",
+            "quarter_end_date",
+            unique=True,
+            postgresql_where=text("is_active_for_manager_period = true"),
+        ),
+        Index("idx_filings_manager_qend", "manager_id", "quarter_end_date"),
+        Index("idx_filings_manager_quarter", "manager_id", "report_quarter"),
+        Index("idx_filings_active", "is_active_for_manager_period"),
+        Index("idx_filings_parser_version", "parser_version"),
+        Index("uq_filings_13f_accession_number", "accession_number", unique=True),
+    )
+
+    @validates("parse_status")
+    def _validate_parse_status(self, _: str, value: str) -> str:
+        return _validate_choice("parse_status", value, FILING_PARSE_STATUSES)
+
+
+@event.listens_for(Filing13F, "before_insert")
+@event.listens_for(Filing13F, "before_update")
+def _populate_filing_prd_fields(_, __, filing: Filing13F) -> None:
+    if not filing.accession_number and filing.accession_no:
+        filing.accession_number = filing.accession_no
+    if not filing.accession_no and filing.accession_number:
+        filing.accession_no = filing.accession_number
+    if not filing.amends_accession_number and filing.amends_accession_no:
+        filing.amends_accession_number = filing.amends_accession_no
+    if not filing.filing_date and filing.filed_at:
+        filing.filing_date = filing.filed_at
+
+
+class ParseRun13F(Base):
+    __tablename__ = "parse_runs"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    accession_number: Mapped[str] = mapped_column(String(20), nullable=False)
+    job_run_id: Mapped[Optional[int]] = mapped_column(BigInteger, ForeignKey("job_runs.id"), nullable=True)
+    parser_version: Mapped[str] = mapped_column(String(80), nullable=False)
+    fingerprint_version: Mapped[str] = mapped_column(String(40), nullable=False, default="v1", server_default="v1")
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    finished_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    status: Mapped[str] = mapped_column(String(30), nullable=False, default="running", server_default="running")
+    holdings_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
+    error: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    is_current: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default=text("false"))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+    holdings: Mapped[List["Holding13F"]] = relationship(back_populates="parse_run")
+
+    __table_args__ = (
+        Index("idx_parse_runs_accession", "accession_number"),
+        Index(
+            "uq_parse_runs_current_accession",
+            "accession_number",
+            unique=True,
+            postgresql_where=text("is_current = true"),
+        ),
+    )
+
+    @validates("status")
+    def _validate_status(self, _: str, value: str) -> str:
+        return _validate_choice("status", value, PARSE_RUN_STATUSES)
+
 
 class Holding13F(Base):
     __tablename__ = "holdings_13f"
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
     filing_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("filings_13f.id"), nullable=False)
+    parse_run_id: Mapped[Optional[int]] = mapped_column(BigInteger, ForeignKey("parse_runs.id"), nullable=True)
+    manager_id: Mapped[Optional[int]] = mapped_column(BigInteger, ForeignKey("institution_managers.id"), nullable=True)
+    accession_number: Mapped[Optional[str]] = mapped_column(String(20), nullable=True)
+    report_quarter: Mapped[Optional[str]] = mapped_column(String(10), nullable=True)
+    quarter_end_date: Mapped[Optional[date]] = mapped_column(Date, nullable=True)
     row_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
+    holding_row_fingerprint: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
     cusip: Mapped[str] = mapped_column(String(9), nullable=False)
     issuer_name: Mapped[str] = mapped_column(Text, nullable=False)
+    name_of_issuer: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     title_of_class: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     value_thousands: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    value_raw: Mapped[Optional[str]] = mapped_column(String(40), nullable=True)
+    value_unit_raw: Mapped[Optional[str]] = mapped_column(String(20), nullable=True)
+    value_parse_rule: Mapped[Optional[str]] = mapped_column(String(40), nullable=True)
+    value_usd: Mapped[Optional[int]] = mapped_column(BigInteger, nullable=True)
     shares: Mapped[Optional[int]] = mapped_column(BigInteger, nullable=True)
+    ssh_prnamt: Mapped[Optional[int]] = mapped_column(BigInteger, nullable=True)
     share_type: Mapped[Optional[str]] = mapped_column(String(10), nullable=True)
+    ssh_prnamt_type: Mapped[Optional[str]] = mapped_column(String(10), nullable=True)
     put_call: Mapped[Optional[str]] = mapped_column(String(10), nullable=True)
     investment_discretion: Mapped[Optional[str]] = mapped_column(String(10), nullable=True)
+    other_managers_raw: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    holding_attribution_status: Mapped[Optional[str]] = mapped_column(String(40), nullable=True)
     voting_sole: Mapped[Optional[int]] = mapped_column(BigInteger, nullable=True)
     voting_shared: Mapped[Optional[int]] = mapped_column(BigInteger, nullable=True)
     voting_none: Mapped[Optional[int]] = mapped_column(BigInteger, nullable=True)
     stock_id: Mapped[Optional[int]] = mapped_column(
         BigInteger, ForeignKey("stocks.id"), nullable=True
     )
+    cusip_mapping_status: Mapped[str] = mapped_column(String(40), nullable=False, default="pending_mapping", server_default="pending_mapping")
+    portfolio_weight_pct: Mapped[Optional[float]] = mapped_column(Numeric(12, 6), nullable=True)
+    fingerprint_version: Mapped[str] = mapped_column(String(40), nullable=False, default="v1", server_default="v1")
+    source_row_index: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
 
     filing: Mapped["Filing13F"] = relationship(back_populates="holdings")
+    parse_run: Mapped[Optional["ParseRun13F"]] = relationship(back_populates="holdings")
 
     __table_args__ = (
         UniqueConstraint("filing_id", "row_fingerprint", name="uq_holdings_13f_filing_fingerprint"),
+        UniqueConstraint("parse_run_id", "holding_row_fingerprint", name="uq_holdings_fingerprint"),
+        Index("idx_holdings_parse_run", "parse_run_id"),
+        Index("idx_holdings_manager_qend", "manager_id", "quarter_end_date"),
+        Index("idx_holdings_manager_quarter", "manager_id", "report_quarter"),
+        Index("idx_holdings_cusip", "cusip"),
+        Index("idx_holdings_stock_id", "stock_id"),
+        Index("idx_holdings_put_call", "put_call"),
+        Index("idx_holdings_attribution", "holding_attribution_status"),
     )
+
+    @validates("cusip_mapping_status")
+    def _validate_cusip_mapping_status(self, _: str, value: str) -> str:
+        return _validate_choice("cusip_mapping_status", value, HOLDING_CUSIP_MAPPING_STATUSES)
 
 
 class JobRun(Base):
@@ -375,17 +518,38 @@ class CusipTickerMap(Base):
     issuer_name: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     security_type: Mapped[Optional[str]] = mapped_column(String(30), nullable=True)
     exchange: Mapped[Optional[str]] = mapped_column(String(30), nullable=True)
+    stock_id: Mapped[Optional[int]] = mapped_column(BigInteger, ForeignKey("stocks.id"), nullable=True)
     is_13f_reportable: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     source: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
+    candidate_rank: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     mapping_reason: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     confidence: Mapped[Optional[str]] = mapped_column(String(20), nullable=True)
+    effective_from_quarter: Mapped[Optional[str]] = mapped_column(String(10), nullable=True)
+    effective_to_quarter: Mapped[Optional[str]] = mapped_column(String(10), nullable=True)
+    evidence_url: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    reviewed_by: Mapped[Optional[int]] = mapped_column(BigInteger, ForeignKey("users.id"), nullable=True)
+    reviewed_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    mapping_status: Mapped[str] = mapped_column(String(30), nullable=False, default="needs_review", server_default="needs_review")
     valid_from: Mapped[Optional[date]] = mapped_column(Date, nullable=True)
     valid_to: Mapped[Optional[date]] = mapped_column(Date, nullable=True)
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
     )
 
     __table_args__ = (
         UniqueConstraint("cusip", "valid_from", name="uq_cusip_ticker_map_cusip_valid_from"),
+        UniqueConstraint("cusip", "source", "ticker", "exchange", "effective_from_quarter", name="uq_cusip_mapping"),
+        Index(
+            "idx_cusip_map_temporal",
+            "cusip",
+            "effective_from_quarter",
+            "effective_to_quarter",
+            postgresql_where=text("mapping_status IN ('confirmed', 'superseded')"),
+        ),
     )
+
+    @validates("mapping_status")
+    def _validate_mapping_status(self, _: str, value: str) -> str:
+        return _validate_choice("mapping_status", value, CUSIP_MAPPING_STATUSES)
