@@ -77,6 +77,11 @@ Tech Lead must review noisy-alert risk and exclusion rules.
   - `docker compose exec api pytest -q tests/unit/test_13f_health_summary.py::test_readiness_metric_alerts_do_not_use_closed_window_from_other_quarter tests/unit/test_13f_health_summary.py::test_amendments_pending_alerts_only_apply_to_latest_usable_quarter tests/unit/test_scheduler_alignment.py::test_run_13f_health_summary_emits_alerts_before_summary` -> 3 passed.
   - `docker compose exec api pytest -q tests/unit/test_13f_health_summary.py tests/unit/test_scheduler_alignment.py tests/unit/test_13f_alerts.py` -> 23 passed.
   - `docker compose exec api pytest -q tests/unit` -> 486 passed, 1 existing SQLAlchemy transaction warning.
+- 2026-05-10: Re-review follow-up: accepted the `latest_usable_quarter=None` edge case. `amendments_pending` stale alerts now suppress when no latest usable quarter exists; `amendment_failed` remains global.
+- 2026-05-10: Re-review follow-up verification:
+  - `docker compose exec api pytest -q tests/unit/test_13f_health_summary.py` -> 11 passed.
+  - `docker compose exec api pytest -q tests/unit/test_13f_health_summary.py tests/unit/test_scheduler_alignment.py tests/unit/test_13f_alerts.py` -> 24 passed.
+  - `docker compose exec api pytest -q tests/unit` -> 487 passed, 1 existing SQLAlchemy transaction warning.
 
 ## Contract Checklist
 
@@ -85,6 +90,7 @@ Tech Lead must review noisy-alert risk and exclusion rules.
 - Coverage and CUSIP mapping alerts require the evaluated `latest_usable_quarter` filing window to be closed by at least 3 days.
 - Ingest accession/filing timeout retry exhaustion triggers after 3 failed timeout jobs for the same dedupe key.
 - `amendments_pending` stale alerts are scoped to `latest_usable_quarter` to avoid permanent historical-quarter P2 noise.
+- If no `latest_usable_quarter` exists, `amendments_pending` stale alerts are suppressed rather than scanning all quarters.
 - SEC 403/429 alert hook consumes the existing EDGAR client health payload; no network call is made by evaluators.
 - Daily health summary is delivered through the existing `emit_alert` Discord abstraction and is testable with `InMemoryAlertTransport`.
 - Scheduler invokes the daily health summary at 08:00 ET; no UI, schema, PRD, or MVP 2 change-analysis implementation was added.

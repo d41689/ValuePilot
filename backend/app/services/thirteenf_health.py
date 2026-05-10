@@ -220,12 +220,7 @@ def _amendment_alerts(
     now: datetime,
     latest_usable_quarter: str | None,
 ) -> list[dict[str, Any]]:
-    pending_quarter_filters = (
-        [Filing13F.report_quarter == latest_usable_quarter]
-        if latest_usable_quarter
-        else []
-    )
-    return [
+    alerts = [
         *_stale_filing_alerts(
             session,
             code="AMENDMENT_FAILED_STALE",
@@ -234,31 +229,40 @@ def _amendment_alerts(
             filters=[Filing13F.amendment_status == "amendment_failed"],
             cutoff=now - timedelta(hours=24),
         ),
-        *_stale_filing_alerts(
-            session,
-            code="AMENDMENT_RESTATEMENT_PENDING_STALE",
-            severity="P2",
-            title="Restatement amendment is pending too long",
-            filters=[
-                Filing13F.amendment_status == "amendments_pending",
-                func.lower(Filing13F.amendment_type) == "restatement",
-                *pending_quarter_filters,
-            ],
-            cutoff=now - timedelta(hours=24),
-        ),
-        *_stale_filing_alerts(
-            session,
-            code="AMENDMENT_PENDING_STALE",
-            severity="P2",
-            title="Amendment is pending too long",
-            filters=[
-                Filing13F.amendment_status == "amendments_pending",
-                func.coalesce(func.lower(Filing13F.amendment_type), "") != "restatement",
-                *pending_quarter_filters,
-            ],
-            cutoff=now - timedelta(hours=48),
-        ),
     ]
+    if latest_usable_quarter is None:
+        return alerts
+
+    pending_quarter_filters = [Filing13F.report_quarter == latest_usable_quarter]
+    alerts.extend(
+        [
+            *_stale_filing_alerts(
+                session,
+                code="AMENDMENT_RESTATEMENT_PENDING_STALE",
+                severity="P2",
+                title="Restatement amendment is pending too long",
+                filters=[
+                    Filing13F.amendment_status == "amendments_pending",
+                    func.lower(Filing13F.amendment_type) == "restatement",
+                    *pending_quarter_filters,
+                ],
+                cutoff=now - timedelta(hours=24),
+            ),
+            *_stale_filing_alerts(
+                session,
+                code="AMENDMENT_PENDING_STALE",
+                severity="P2",
+                title="Amendment is pending too long",
+                filters=[
+                    Filing13F.amendment_status == "amendments_pending",
+                    func.coalesce(func.lower(Filing13F.amendment_type), "") != "restatement",
+                    *pending_quarter_filters,
+                ],
+                cutoff=now - timedelta(hours=48),
+            ),
+        ]
+    )
+    return alerts
 
 
 def _needs_review_alerts(session: Session, *, now: datetime) -> list[dict[str, Any]]:

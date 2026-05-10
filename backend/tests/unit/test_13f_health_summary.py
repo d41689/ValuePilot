@@ -205,7 +205,7 @@ def test_readiness_metric_alerts_do_not_use_closed_window_from_other_quarter(db_
     assert "CUSIP_MAPPING_RATIO_CRITICAL" not in alerts
 
 
-def test_amendment_and_needs_review_age_alerts(db_session):
+def test_amendment_and_needs_review_age_alerts(db_session, monkeypatch):
     _clear(db_session)
     manager = _manager(db_session)
     _filing(
@@ -249,6 +249,16 @@ def test_amendment_and_needs_review_age_alerts(db_session):
         updated_at=NOW - timedelta(days=8),
     )
     db_session.flush()
+    monkeypatch.setattr(
+        "app.services.thirteenf_health.build_readiness_summary",
+        lambda session, today=None: {
+            "readiness_level": "usable_with_warning",
+            "latest_usable_quarter": "2026-Q1",
+            "nt_detection_supported": True,
+            "metrics": {},
+            "quarter_lists": {},
+        },
+    )
 
     alerts = _codes(evaluate_13f_alerts(db_session, now=NOW))
 
@@ -298,6 +308,35 @@ def test_amendments_pending_alerts_only_apply_to_latest_usable_quarter(db_sessio
     alerts = _codes(evaluate_13f_alerts(db_session, now=NOW))
 
     assert alerts["AMENDMENT_RESTATEMENT_PENDING_STALE"]["context"]["count"] == 1
+
+
+def test_amendments_pending_alerts_suppress_when_latest_usable_quarter_unknown(db_session, monkeypatch):
+    _clear(db_session)
+    manager = _manager(db_session)
+    _filing(
+        db_session,
+        manager,
+        accession_no="0001111111-26-000030",
+        accession_number="0001111111-26-000030",
+        amendment_status="amendments_pending",
+        amendment_type="RESTATEMENT",
+        updated_at=NOW - timedelta(hours=25),
+    )
+    monkeypatch.setattr(
+        "app.services.thirteenf_health.build_readiness_summary",
+        lambda session, today=None: {
+            "readiness_level": "unavailable",
+            "latest_usable_quarter": None,
+            "nt_detection_supported": True,
+            "metrics": {},
+            "quarter_lists": {},
+        },
+    )
+
+    alerts = _codes(evaluate_13f_alerts(db_session, now=NOW))
+
+    assert "AMENDMENT_RESTATEMENT_PENDING_STALE" not in alerts
+    assert "AMENDMENT_PENDING_STALE" not in alerts
 
 
 def test_running_job_and_edgar_block_alerts(db_session):
