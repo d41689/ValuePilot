@@ -103,7 +103,10 @@ def latest_usable_quarter_label(today: date | None = None) -> str:
 
 
 def build_admin_readiness(session: Session, *, today: date | None = None) -> dict[str, Any]:
+    from app.services.thirteenf_readiness import build_readiness_summary
+
     today = today or date.today()
+    prd_readiness = build_readiness_summary(session, today=today)
     current = current_quarter(today)
     latest_usable = latest_usable_quarter_label(today)
     current_summary = _quarter_summary(session, current.label, today=today)
@@ -163,7 +166,7 @@ def build_admin_readiness(session: Session, *, today: date | None = None) -> dic
     frontend_behavior = _frontend_behavior(readiness_level, current_summary)
     tasks = build_admin_tasks(session, today=today)
 
-    return {
+    payload = {
         "feature": "oracles_lens",
         "readiness_level": readiness_level,
         "frontend_behavior": frontend_behavior,
@@ -206,6 +209,22 @@ def build_admin_readiness(session: Session, *, today: date | None = None) -> dic
         "scheduler_enabled": settings.EDGAR_SCHEDULER_ENABLED,
         "smart_retry_enabled": settings.THIRTEENF_SMART_RETRY_ENABLED,
     }
+    if prd_readiness["current_evaluated_quarter"] is not None:
+        payload["readiness_level"] = prd_readiness["readiness_level"]
+        payload["latest_usable_quarter"] = prd_readiness["latest_usable_quarter"] or latest_usable
+    payload["blockers"] = _merge_status_messages(payload["blockers"], prd_readiness["blockers"])
+    payload["warnings"] = _merge_status_messages(payload["warnings"], prd_readiness["warnings"])
+    payload["unavailable_reasons"] = [item["code"] for item in payload["blockers"]]
+    payload["counts"] = payload["counts"] | {
+        "active_managers": prd_readiness["metrics"]["active_manager_count"],
+        "expected_filers": prd_readiness["metrics"]["expected_filer_count"],
+        "nt_filers": prd_readiness["metrics"]["nt_filer_count"],
+        "filed_managers": prd_readiness["metrics"]["filed_manager_count"],
+    }
+    payload["metrics"] = prd_readiness["metrics"]
+    payload["quarter_lists"] = prd_readiness["quarter_lists"]
+    payload["nt_detection_supported"] = prd_readiness["nt_detection_supported"]
+    return payload
 
 
 def build_consumer_readiness(session: Session, *, today: date | None = None) -> dict[str, Any]:
@@ -220,6 +239,18 @@ def build_consumer_readiness(session: Session, *, today: date | None = None) -> 
         "historical_depth_capabilities": readiness["historical_depth_capabilities"],
         "amendment_status": readiness["amendment_status"],
     }
+
+
+def _merge_status_messages(left: list[dict[str, str]], right: list[dict[str, str]]) -> list[dict[str, str]]:
+    merged: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for item in [*left, *right]:
+        code = item["code"]
+        if code in seen:
+            continue
+        seen.add(code)
+        merged.append(item)
+    return merged
 
 
 def build_status(session: Session, *, today: date | None = None) -> dict[str, Any]:
