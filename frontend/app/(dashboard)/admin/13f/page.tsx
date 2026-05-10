@@ -1364,7 +1364,7 @@ export default function Admin13FPage() {
             {tasks.map((task) => {
               const primaryAction = taskPrimaryAction(task, latestQuarter);
               return (
-                <div key={task.code} className="rounded-md border border-border/70 p-3">
+                <div key={task.renderKey ?? task.code} className="rounded-md border border-border/70 p-3">
                   <div className="flex items-start justify-between gap-2">
                     <div>
                       <div className="font-medium">{task.title}</div>

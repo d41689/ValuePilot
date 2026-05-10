@@ -123,6 +123,16 @@ test('normalizeQuarters and normalizeTasks prepare table rows', () => {
   assert.equal(tasks[0].metadata.manager_name, 'Revoked Manager');
 });
 
+test('normalizeTasks gives duplicate task codes unique render keys', () => {
+  const tasks = normalizeTasks([
+    { priority: 'P2', code: 'RECENT_JOB_FAILED', title: 'Recent job failed' },
+    { priority: 'P2', code: 'RECENT_JOB_FAILED', title: 'Another recent job failed' },
+  ]);
+
+  assert.equal(tasks[0].code, 'RECENT_JOB_FAILED');
+  assert.notEqual(tasks[0].renderKey, tasks[1].renderKey);
+});
+
 test('normalizeWorkers exposes heartbeat status and current job', () => {
   const workers = normalizeWorkers([
     {

@@ -102,7 +102,8 @@ function normalizeQuarters(items) {
 }
 
 function normalizeTasks(items) {
-  return (Array.isArray(items) ? items : []).map((item) => ({
+  return (Array.isArray(items) ? items : []).map((item, index) => ({
+    renderKey: `${item.code ?? 'task'}-${index}`,
     priority: item.priority ?? 'P3',
     priorityTone: priorityTone(item.priority),
     code: item.code,

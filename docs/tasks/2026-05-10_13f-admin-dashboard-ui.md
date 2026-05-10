@@ -63,3 +63,8 @@
   - `docker compose exec web node --test lib/thirteenfAdmin.test.js` -> 24 passed.
   - `docker compose exec web npm run lint` -> passed with existing `refreshAdminData` hook dependency warning in `app/(dashboard)/admin/13f/page.tsx`.
   - `docker compose exec web npm run build` -> passed with the same existing lint warning.
+- 2026-05-10: Fixed authenticated UI warning where multiple admin tasks with the same code, such as `RECENT_JOB_FAILED`, produced duplicate React keys. Added normalizer coverage for duplicate task codes.
+- 2026-05-10: Duplicate-key fix verification:
+  - `docker compose exec web node --test lib/thirteenfAdmin.test.js` -> 25 passed.
+  - `docker compose exec web npm run lint` -> passed with existing `refreshAdminData` hook dependency warning.
+  - `docker compose exec web npm run build` -> passed with the same existing warning.
