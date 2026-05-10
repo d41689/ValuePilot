@@ -45,6 +45,12 @@ from app.services.thirteenf_daily_sync import (
     list_no_index_dates,
     update_no_index_date,
 )
+from app.services.thirteenf_user_api import (
+    build_user_manager_holding_changes,
+    build_user_manager_holdings,
+    build_user_manager_quarters,
+    build_user_managers,
+)
 
 admin_router = APIRouter()
 consumer_router = APIRouter()
@@ -129,6 +135,43 @@ def read_admin_readiness(session: SessionDep, current_user: AdminUser) -> Any:
 @consumer_router.get("/readiness", response_model=dict)
 def read_consumer_readiness(session: SessionDep) -> Any:
     return build_consumer_readiness(session)
+
+
+@consumer_router.get("/managers", response_model=dict)
+def read_user_managers(session: SessionDep) -> Any:
+    return build_user_managers(session)
+
+
+@consumer_router.get("/managers/{manager_id}/quarters", response_model=dict)
+def read_user_manager_quarters(manager_id: int, session: SessionDep) -> Any:
+    try:
+        return build_user_manager_quarters(session, manager_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@consumer_router.get("/managers/{manager_id}/holdings", response_model=dict)
+def read_user_manager_holdings(
+    manager_id: int,
+    session: SessionDep,
+    quarter: str | None = Query(None),
+) -> Any:
+    try:
+        return build_user_manager_holdings(session, manager_id, quarter=quarter)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@consumer_router.get("/managers/{manager_id}/holdings/changes", response_model=dict)
+def read_user_manager_holding_changes(
+    manager_id: int,
+    session: SessionDep,
+    quarter: str | None = Query(None),
+) -> Any:
+    try:
+        return build_user_manager_holding_changes(session, manager_id, quarter=quarter)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
 @admin_router.get("/quarters", response_model=dict)
