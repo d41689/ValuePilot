@@ -7,8 +7,10 @@ import {
   AlertTriangle,
   CheckCircle2,
   Database,
+  FileText,
   FolderClock,
   History,
+  Link2,
   Loader2,
   Play,
   RefreshCw,
@@ -55,12 +57,16 @@ const {
   freshnessLine,
   jobPreviewRows,
   managerCikReviewDefaults,
+  normalizeAdminFilings,
   normalizeAmendments,
   normalizeEdgarRateLimit,
+  normalizeHoldingsCoverage,
+  normalizeParseRuns,
   normalizeQualityReports,
   normalizeQuarters,
   normalizeReadiness,
   normalizeTasks,
+  normalizeUnresolvedCusips,
   normalizeWorkers,
   operationsHealth,
   prioritizeManagersForReview,
@@ -99,9 +105,11 @@ export default function Admin13FPage() {
   const { toast } = useToast();
   const [selectedJobId, setSelectedJobId] = useState<number | null>(null);
   const [selectedAmendmentAccession, setSelectedAmendmentAccession] = useState<string | null>(null);
+  const [selectedFilingAccession, setSelectedFilingAccession] = useState<string | null>(null);
   const [selectedQuarter, setSelectedQuarter] = useState<string | null>(null);
   const [quarterFilingStatus, setQuarterFilingStatus] = useState('all');
   const [quarterFilingOffset, setQuarterFilingOffset] = useState(0);
+  const [filingParseStatus, setFilingParseStatus] = useState('all');
   const readinessQuery = useQuery({
     queryKey: ['admin-13f-readiness'],
     queryFn: async () => (await apiClient.get('/admin/13f/readiness')).data,
@@ -131,6 +139,36 @@ export default function Admin13FPage() {
     queryKey: ['admin-13f-amendments'],
     queryFn: async () => (await apiClient.get('/admin/13f/amendments')).data,
   });
+  const pendingAmendmentsQuery = useQuery({
+    queryKey: ['admin-13f-amendments-pending'],
+    queryFn: async () => (await apiClient.get('/admin/13f/amendments/pending?page=1&page_size=50')).data,
+  });
+  const filingsQuery = useQuery({
+    queryKey: ['admin-13f-filings', filingParseStatus],
+    queryFn: async () => {
+      const params = new URLSearchParams({ page: '1', page_size: '50' });
+      if (filingParseStatus !== 'all') params.set('parse_status', filingParseStatus);
+      return (await apiClient.get(`/admin/13f/filings?${params.toString()}`)).data;
+    },
+  });
+  const coverageQuarter =
+    typeof readinessQuery.data?.latest_usable_quarter === 'string'
+      ? readinessQuery.data.latest_usable_quarter
+      : null;
+  const holdingsCoverageQuery = useQuery({
+    queryKey: ['admin-13f-holdings-coverage', coverageQuarter],
+    queryFn: async () => {
+      const params = new URLSearchParams();
+      if (coverageQuarter) params.set('report_quarter', coverageQuarter);
+      const suffix = params.toString() ? `?${params.toString()}` : '';
+      return (await apiClient.get(`/admin/13f/holdings/coverage${suffix}`)).data;
+    },
+    enabled: Boolean(coverageQuarter),
+  });
+  const unresolvedCusipsQuery = useQuery({
+    queryKey: ['admin-13f-unresolved-cusips'],
+    queryFn: async () => (await apiClient.get('/admin/13f/cusip-mappings/unresolved?page=1&page_size=50')).data,
+  });
   const workersQuery = useQuery({
     queryKey: ['admin-13f-workers'],
     queryFn: async () => (await apiClient.get('/admin/13f/workers')).data,
@@ -151,6 +189,12 @@ export default function Admin13FPage() {
     queryKey: ['admin-13f-amendment-detail', selectedAmendmentAccession],
     queryFn: async () => (await apiClient.get(`/admin/13f/amendments/${selectedAmendmentAccession}`)).data,
     enabled: selectedAmendmentAccession !== null,
+  });
+  const parseRunsQuery = useQuery({
+    queryKey: ['admin-13f-parse-runs', selectedFilingAccession],
+    queryFn: async () =>
+      (await apiClient.get(`/admin/13f/filings/${selectedFilingAccession}/parse-runs?page=1&page_size=50`)).data,
+    enabled: selectedFilingAccession !== null,
   });
   const quarterDetailQuery = useQuery({
     queryKey: ['admin-13f-quarter-detail', selectedQuarter, quarterFilingStatus, quarterFilingOffset],
@@ -195,6 +239,11 @@ export default function Admin13FPage() {
       queryClient.invalidateQueries({ queryKey: ['admin-13f-managers'] }),
       queryClient.invalidateQueries({ queryKey: ['admin-13f-quality'] }),
       queryClient.invalidateQueries({ queryKey: ['admin-13f-amendments'] }),
+      queryClient.invalidateQueries({ queryKey: ['admin-13f-amendments-pending'] }),
+      queryClient.invalidateQueries({ queryKey: ['admin-13f-filings'] }),
+      queryClient.invalidateQueries({ queryKey: ['admin-13f-holdings-coverage'] }),
+      queryClient.invalidateQueries({ queryKey: ['admin-13f-unresolved-cusips'] }),
+      queryClient.invalidateQueries({ queryKey: ['admin-13f-parse-runs'] }),
       queryClient.invalidateQueries({ queryKey: ['admin-13f-quarter-detail'] }),
       queryClient.invalidateQueries({ queryKey: ['admin-13f-workers'] }),
       queryClient.invalidateQueries({ queryKey: ['admin-13f-job-detail'] }),
@@ -293,6 +342,27 @@ export default function Admin13FPage() {
     () => normalizeAmendments(amendmentsQuery.data?.items ?? []),
     [amendmentsQuery.data]
   );
+  const pendingAmendments = useMemo(
+    () => normalizeAdminFilings(pendingAmendmentsQuery.data ?? {}),
+    [pendingAmendmentsQuery.data]
+  );
+  const pendingAmendmentGroups = pendingAmendmentsQuery.data?.groups ?? {};
+  const adminFilings = useMemo(
+    () => normalizeAdminFilings(filingsQuery.data ?? {}),
+    [filingsQuery.data]
+  );
+  const holdingsCoverage = useMemo(
+    () => normalizeHoldingsCoverage(holdingsCoverageQuery.data ?? {}),
+    [holdingsCoverageQuery.data]
+  );
+  const unresolvedCusips = useMemo(
+    () => normalizeUnresolvedCusips(unresolvedCusipsQuery.data ?? {}),
+    [unresolvedCusipsQuery.data]
+  );
+  const parseRuns = useMemo(
+    () => normalizeParseRuns(parseRunsQuery.data ?? {}),
+    [parseRunsQuery.data]
+  );
   const workers = useMemo(
     () => normalizeWorkers(workersQuery.data?.items ?? []),
     [workersQuery.data]
@@ -351,6 +421,10 @@ export default function Admin13FPage() {
     jobsQuery.isLoading ||
     qualityQuery.isLoading ||
     amendmentsQuery.isLoading ||
+    pendingAmendmentsQuery.isLoading ||
+    filingsQuery.isLoading ||
+    holdingsCoverageQuery.isLoading ||
+    unresolvedCusipsQuery.isLoading ||
     workersQuery.isLoading;
 
   const latestQuarter = readiness.latestUsableQuarter === '—' ? undefined : readiness.latestUsableQuarter;
@@ -554,6 +628,11 @@ export default function Admin13FPage() {
             queryClient.invalidateQueries({ queryKey: ['admin-13f-jobs'] });
             queryClient.invalidateQueries({ queryKey: ['admin-13f-quality'] });
             queryClient.invalidateQueries({ queryKey: ['admin-13f-amendments'] });
+            queryClient.invalidateQueries({ queryKey: ['admin-13f-amendments-pending'] });
+            queryClient.invalidateQueries({ queryKey: ['admin-13f-filings'] });
+            queryClient.invalidateQueries({ queryKey: ['admin-13f-holdings-coverage'] });
+            queryClient.invalidateQueries({ queryKey: ['admin-13f-unresolved-cusips'] });
+            queryClient.invalidateQueries({ queryKey: ['admin-13f-parse-runs'] });
             queryClient.invalidateQueries({ queryKey: ['admin-13f-quarter-detail'] });
             queryClient.invalidateQueries({ queryKey: ['admin-13f-workers'] });
           }}
@@ -815,6 +894,210 @@ export default function Admin13FPage() {
         </CardContent>
       </Card>
 
+      <div className="grid gap-5 xl:grid-cols-[minmax(0,1.35fr)_minmax(320px,0.65fr)]">
+        <Card className="rounded-md">
+          <CardHeader className="pb-3">
+            <CardTitle className="flex flex-col gap-2 text-base sm:flex-row sm:items-center sm:justify-between">
+              <span className="flex items-center gap-2">
+                <Database className="h-4 w-4" />
+                Holdings Coverage
+              </span>
+              <Badge variant="outline">{holdingsCoverage.reportQuarter}</Badge>
+            </CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-3">
+            {holdingsCoverageQuery.isLoading ? (
+              <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                <Loader2 className="h-4 w-4 animate-spin" />
+                Loading holdings coverage...
+              </div>
+            ) : holdingsCoverageQuery.isError || !coverageQuarter ? (
+              <div className="rounded-md border border-border/70 bg-muted/30 px-3 py-2 text-sm text-muted-foreground">
+                Coverage is unavailable until a latest usable quarter is available.
+              </div>
+            ) : (
+              <>
+                <div className="grid gap-3 md:grid-cols-4">
+                  <MetricTile label="Total holdings" value={formatInteger(holdingsCoverage.totalHoldingsCount)} />
+                  <MetricTile label="Common holdings" value={formatInteger(holdingsCoverage.commonHoldingsCount)} />
+                  <MetricTile
+                    label="Linked common"
+                    value={holdingsCoverage.linkedCommonHoldingRatioLabel}
+                    detail={`${formatInteger(holdingsCoverage.linkedCommonHoldingsCount)} linked`}
+                  />
+                  <MetricTile label="Options" value={formatInteger(holdingsCoverage.optionsCount)} />
+                </div>
+                <div className="flex flex-wrap gap-2 text-sm">
+                  <Badge variant={holdingsCoverage.unresolvedCommonHoldingsCount > 0 ? 'warning' : 'success'}>
+                    {formatInteger(holdingsCoverage.unresolvedCommonHoldingsCount)} unresolved common
+                  </Badge>
+                  <Badge variant={holdingsCoverage.combinationReportCount > 0 ? 'warning' : 'secondary'}>
+                    {formatInteger(holdingsCoverage.combinationReportCount)} combination reports
+                  </Badge>
+                  <Badge variant={holdingsCoverage.confidentialTreatmentCount > 0 ? 'warning' : 'secondary'}>
+                    {formatInteger(holdingsCoverage.confidentialTreatmentCount)} confidential treatment
+                  </Badge>
+                </div>
+              </>
+            )}
+          </CardContent>
+        </Card>
+
+        <Card className="rounded-md">
+          <CardHeader className="pb-3">
+            <CardTitle className="flex items-center gap-2 text-base">
+              <Link2 className="h-4 w-4" />
+              Unresolved CUSIPs
+            </CardTitle>
+          </CardHeader>
+          <CardContent>
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>CUSIP</TableHead>
+                  <TableHead>Status</TableHead>
+                  <TableHead>Issuer</TableHead>
+                  <TableHead>Rows</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {unresolvedCusips.items.slice(0, 6).map((item: Record<string, unknown>) => (
+                  <TableRow key={`${String(item.cusip)}-${String(item.cusipMappingStatus)}`}>
+                    <TableCell className="font-mono text-xs">{String(item.cusip)}</TableCell>
+                    <TableCell>
+                      <Badge variant={badgeVariant(String(item.statusTone))}>
+                        {String(item.cusipMappingStatus).replaceAll('_', ' ')}
+                      </Badge>
+                    </TableCell>
+                    <TableCell className="max-w-[180px] truncate text-sm text-muted-foreground">
+                      {String(item.issuerName)}
+                    </TableCell>
+                    <TableCell>{formatInteger(item.holdingCount)}</TableCell>
+                  </TableRow>
+                ))}
+                {unresolvedCusips.items.length === 0 ? (
+                  <TableRow>
+                    <TableCell colSpan={4} className="py-8 text-center text-muted-foreground">
+                      No unresolved current CUSIP mappings.
+                    </TableCell>
+                  </TableRow>
+                ) : null}
+              </TableBody>
+            </Table>
+            <div className="mt-3 text-xs text-muted-foreground">
+              Showing {formatInteger(unresolvedCusips.items.length)} of {formatInteger(unresolvedCusips.total)} current unresolved groups.
+            </div>
+          </CardContent>
+        </Card>
+      </div>
+
+      <Card className="rounded-md">
+        <CardHeader className="pb-3">
+          <CardTitle className="flex flex-col gap-2 text-base lg:flex-row lg:items-center lg:justify-between">
+            <span className="flex items-center gap-2">
+              <FileText className="h-4 w-4" />
+              Filings
+            </span>
+            <div className="w-full max-w-[220px]">
+              <Select value={filingParseStatus} onValueChange={setFilingParseStatus}>
+                <SelectTrigger aria-label="Filter filings by parse status">
+                  <SelectValue placeholder="Parse status" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">All parse statuses</SelectItem>
+                  <SelectItem value="pending">Pending</SelectItem>
+                  <SelectItem value="succeeded">Succeeded</SelectItem>
+                  <SelectItem value="partial_success">Partial success</SelectItem>
+                  <SelectItem value="failed">Failed</SelectItem>
+                  <SelectItem value="needs_review">Needs review</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+          </CardTitle>
+        </CardHeader>
+        <CardContent>
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead>Accession</TableHead>
+                <TableHead>Manager</TableHead>
+                <TableHead>Report</TableHead>
+                <TableHead>Status</TableHead>
+                <TableHead>Caveats</TableHead>
+                <TableHead>Deadline</TableHead>
+                <TableHead>Runs</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {adminFilings.items.map((filing: Record<string, unknown>) => (
+                <TableRow key={String(filing.accessionNumber)}>
+                  <TableCell>
+                    <div className="font-mono text-xs">{String(filing.accessionNumber)}</div>
+                    <div className="mt-1 text-xs text-muted-foreground">
+                      {String(filing.formType)} · {String(filing.reportQuarter)}
+                    </div>
+                  </TableCell>
+                  <TableCell>
+                    <div className="font-medium">{String(filing.managerName)}</div>
+                    <div className="text-xs text-muted-foreground">{String(filing.managerCik)}</div>
+                  </TableCell>
+                  <TableCell>
+                    <div className="text-sm">{String(filing.reportType).replaceAll('_', ' ')}</div>
+                    <div className="text-xs text-muted-foreground">
+                      {String(filing.coverageCompleteness).replaceAll('_', ' ')} · {String(filing.coverageType).replaceAll('_', ' ')}
+                    </div>
+                  </TableCell>
+                  <TableCell>
+                    <Badge variant={badgeVariant(String(filing.statusTone))}>
+                      {String(filing.parseStatus).replaceAll('_', ' ')}
+                    </Badge>
+                    <div className="mt-1 text-xs text-muted-foreground">
+                      {String(filing.amendmentStatus).replaceAll('_', ' ')}
+                    </div>
+                  </TableCell>
+                  <TableCell>
+                    <div className="flex max-w-[240px] flex-wrap gap-1">
+                      {(Array.isArray(filing.caveatCodes) ? filing.caveatCodes : []).map((code) => (
+                        <Badge key={String(code)} variant={code === 'NOTICE_REPORTED_ELSEWHERE' ? 'warning' : 'outline'}>
+                          {String(code).replaceAll('_', ' ').toLowerCase()}
+                        </Badge>
+                      ))}
+                      {(Array.isArray(filing.caveatCodes) ? filing.caveatCodes : []).length === 0 ? (
+                        <span className="text-sm text-muted-foreground">—</span>
+                      ) : null}
+                    </div>
+                  </TableCell>
+                  <TableCell className="text-xs text-muted-foreground">
+                    {String(filing.officialFilingDeadline ?? '—')}
+                  </TableCell>
+                  <TableCell>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      onClick={() => setSelectedFilingAccession(String(filing.accessionNumber))}
+                    >
+                      <History className="mr-2 h-3.5 w-3.5" />
+                      Parse runs
+                    </Button>
+                  </TableCell>
+                </TableRow>
+              ))}
+              {adminFilings.items.length === 0 ? (
+                <TableRow>
+                  <TableCell colSpan={7} className="py-8 text-center text-muted-foreground">
+                    No filings match this filter.
+                  </TableCell>
+                </TableRow>
+              ) : null}
+            </TableBody>
+          </Table>
+          <div className="mt-3 text-xs text-muted-foreground">
+            Showing {formatInteger(adminFilings.items.length)} of {formatInteger(adminFilings.total)} filings. Holdings count uses — when unavailable.
+          </div>
+        </CardContent>
+      </Card>
+
       <Card className="rounded-md">
         <CardHeader className="pb-3">
           <CardTitle className="flex items-center gap-2 text-base">
@@ -823,6 +1106,16 @@ export default function Admin13FPage() {
           </CardTitle>
         </CardHeader>
         <CardContent>
+          <div className="mb-4 flex flex-wrap gap-2">
+            {Object.entries(pendingAmendmentGroups as Record<string, Record<string, number>>).map(([type, statuses]) => (
+              <Badge key={type} variant="warning">
+                {type}: {formatInteger(statuses.amendments_pending ?? 0)} pending
+              </Badge>
+            ))}
+            {pendingAmendments.total > 0 ? (
+              <Badge variant="outline">{formatInteger(pendingAmendments.total)} pending total</Badge>
+            ) : null}
+          </div>
           <Table>
             <TableHeader>
               <TableRow>
@@ -2107,6 +2400,88 @@ export default function Admin13FPage() {
                   Loading quarter detail...
                 </div>
               )}
+        </DrawerShell>
+      ) : null}
+      {selectedFilingAccession !== null ? (
+        <DrawerShell
+          title="Parse Run History"
+          description={<span className="font-mono text-xs">{selectedFilingAccession}</span>}
+          closeLabel="Close parse run history"
+          labelledBy="parse-run-history-title"
+          maxWidthClassName="max-w-[620px]"
+          onClose={() => setSelectedFilingAccession(null)}
+        >
+          {parseRunsQuery.isLoading ? (
+            <div className="flex items-center gap-2 text-sm text-muted-foreground">
+              <Loader2 className="h-4 w-4 animate-spin" />
+              Loading parse runs...
+            </div>
+          ) : parseRunsQuery.isError ? (
+            <div className="rounded-md border border-rose-300/70 bg-rose-50 px-3 py-2 text-sm text-rose-950">
+              Parse run history is unavailable for this accession.
+            </div>
+          ) : (
+            <>
+              <div className="grid gap-3 md:grid-cols-3">
+                <MetricTile label="Runs" value={formatInteger(parseRuns.total)} />
+                <MetricTile
+                  label="Current"
+                  value={parseRuns.items.find((run: Record<string, unknown>) => run.isCurrent)?.parserVersion ?? '—'}
+                />
+                <MetricTile
+                  label="Latest status"
+                  value={String(parseRuns.items[0]?.status ?? '—').replaceAll('_', ' ')}
+                />
+              </div>
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead>Parser</TableHead>
+                    <TableHead>Status</TableHead>
+                    <TableHead>Holdings</TableHead>
+                    <TableHead>Finished</TableHead>
+                    <TableHead>Error</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {parseRuns.items.map((run: Record<string, unknown>) => (
+                    <TableRow key={String(run.id)}>
+                      <TableCell>
+                        <div className="font-medium">{String(run.parserVersion)}</div>
+                        {run.isCurrent ? (
+                          <Badge variant="success" className="mt-1">
+                            current
+                          </Badge>
+                        ) : null}
+                      </TableCell>
+                      <TableCell>
+                        <Badge variant={badgeVariant(String(run.statusTone))}>
+                          {String(run.status).replaceAll('_', ' ')}
+                        </Badge>
+                      </TableCell>
+                      <TableCell>{formatInteger(run.holdingsCount)}</TableCell>
+                      <TableCell className="text-xs text-muted-foreground">
+                        {String(run.finishedAt ?? '—')}
+                      </TableCell>
+                      <TableCell className="max-w-[180px] truncate text-xs text-muted-foreground">
+                        {String(run.error ?? '—')}
+                      </TableCell>
+                    </TableRow>
+                  ))}
+                  {parseRuns.items.length === 0 ? (
+                    <TableRow>
+                      <TableCell colSpan={5} className="py-6 text-center text-muted-foreground">
+                        No parse runs have been recorded for this accession.
+                      </TableCell>
+                    </TableRow>
+                  ) : null}
+                </TableBody>
+              </Table>
+              <div className="text-xs text-muted-foreground">
+                Showing {formatInteger(parseRuns.items.length)} of {formatInteger(parseRuns.total)} parse runs.
+              </div>
+            </>
+          )}
         </DrawerShell>
       ) : null}
       {selectedAmendmentAccession !== null ? (

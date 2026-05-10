@@ -261,6 +261,135 @@ function amendmentTone(status) {
   return 'secondary';
 }
 
+function parseStatusTone(status) {
+  if (status === 'succeeded') return 'success';
+  if (status === 'failed' || status === 'needs_review') return 'danger';
+  if (status === 'partial_success' || status === 'pending' || status === 'running') return 'warning';
+  return 'secondary';
+}
+
+function normalizePagination(payload) {
+  const data = payload && typeof payload === 'object' ? payload : {};
+  return {
+    total: Number(data.total ?? 0),
+    page: Number(data.page ?? 1),
+    pageSize: Number(data.page_size ?? data.pageSize ?? 50),
+  };
+}
+
+function filingCaveatCodes(item) {
+  const codes = [];
+  if (item?.coverage_type === 'notice_reported_elsewhere' || item?.form_type === '13F-NT') {
+    codes.push('NOTICE_REPORTED_ELSEWHERE');
+  }
+  if (item?.coverage_completeness === 'partial' || item?.report_type === 'combination_report') {
+    codes.push('COMBINATION_REPORT');
+  }
+  if (item?.has_confidential_treatment || (item?.confidential_treatment_status && item.confidential_treatment_status !== 'none')) {
+    codes.push('CONFIDENTIAL_TREATMENT');
+  }
+  if (item?.amendment_status === 'amendments_pending') {
+    codes.push('AMENDMENTS_PENDING');
+  }
+  if (item?.amendment_status === 'amendment_failed') {
+    codes.push('AMENDMENT_FAILED');
+  }
+  return codes;
+}
+
+function normalizeAdminFilings(payload) {
+  const page = normalizePagination(payload);
+  const data = payload && typeof payload === 'object' ? payload : {};
+  return {
+    ...page,
+    items: (Array.isArray(data.items) ? data.items : []).map((item) => {
+      const manager = item.manager && typeof item.manager === 'object' ? item.manager : {};
+      const holdingsCount = item.holdings_count;
+      return {
+        id: item.id,
+        accessionNumber: item.accession_number ?? item.accession_no ?? '—',
+        accessionNo: item.accession_no ?? item.accession_number ?? '—',
+        formType: item.form_type ?? '—',
+        reportType: item.report_type ?? 'unknown',
+        coverageCompleteness: item.coverage_completeness ?? 'unknown',
+        coverageType: item.coverage_type ?? 'unknown',
+        parseStatus: item.parse_status ?? 'unknown',
+        statusTone: parseStatusTone(item.parse_status),
+        amendmentStatus: item.amendment_status ?? 'unknown',
+        amendmentType: item.amendment_type ?? '—',
+        hasConfidentialTreatment: Boolean(item.has_confidential_treatment),
+        confidentialTreatmentStatus: item.confidential_treatment_status ?? 'none',
+        managerId: manager.id ?? null,
+        managerName: manager.display_name ?? manager.legal_name ?? manager.canonical_name ?? '—',
+        managerCik: manager.cik ?? '—',
+        reportQuarter: item.report_quarter ?? item.quarter ?? '—',
+        officialFilingDeadline: item.official_filing_deadline ?? null,
+        isActiveForManagerPeriod: Boolean(item.is_active_for_manager_period),
+        holdingsCount: typeof holdingsCount === 'number' ? holdingsCount : null,
+        holdingsCountLabel: typeof holdingsCount === 'number' ? holdingsCount.toLocaleString('en-US') : '—',
+        caveatCodes: filingCaveatCodes(item),
+        raw: item,
+      };
+    }),
+  };
+}
+
+function normalizeParseRuns(payload) {
+  const page = normalizePagination(payload);
+  const data = payload && typeof payload === 'object' ? payload : {};
+  return {
+    ...page,
+    accessionNumber: data.accession_number ?? '—',
+    items: (Array.isArray(data.items) ? data.items : []).map((item) => ({
+      id: item.id,
+      parserVersion: item.parser_version ?? '—',
+      fingerprintVersion: item.fingerprint_version ?? '—',
+      status: item.status ?? 'unknown',
+      statusTone: parseStatusTone(item.status),
+      isCurrent: Boolean(item.is_current),
+      holdingsCount: typeof item.holdings_count === 'number' ? item.holdings_count : null,
+      startedAt: item.started_at ?? null,
+      finishedAt: item.finished_at ?? null,
+      jobRunId: item.job_run_id ?? null,
+      error: item.error ?? null,
+    })),
+  };
+}
+
+function normalizeHoldingsCoverage(payload) {
+  const data = payload && typeof payload === 'object' ? payload : {};
+  const ratio = typeof data.linked_common_holding_ratio === 'number'
+    ? data.linked_common_holding_ratio
+    : null;
+  return {
+    reportQuarter: data.report_quarter ?? '—',
+    totalHoldingsCount: Number(data.total_holdings_count ?? 0),
+    commonHoldingsCount: Number(data.common_holdings_count ?? 0),
+    linkedCommonHoldingsCount: Number(data.linked_common_holdings_count ?? 0),
+    unresolvedCommonHoldingsCount: Number(data.unresolved_common_holdings_count ?? 0),
+    optionsCount: Number(data.options_count ?? 0),
+    linkedCommonHoldingRatio: ratio,
+    linkedCommonHoldingRatioLabel: ratio === null ? '—' : formatPercent(ratio),
+    combinationReportCount: Number(data.combination_report_count ?? 0),
+    confidentialTreatmentCount: Number(data.confidential_treatment_count ?? 0),
+  };
+}
+
+function normalizeUnresolvedCusips(payload) {
+  const page = normalizePagination(payload);
+  const data = payload && typeof payload === 'object' ? payload : {};
+  return {
+    ...page,
+    items: (Array.isArray(data.items) ? data.items : []).map((item) => ({
+      cusip: item.cusip ?? '—',
+      cusipMappingStatus: item.cusip_mapping_status ?? 'unknown',
+      statusTone: item.cusip_mapping_status === 'invalid_cusip' ? 'danger' : 'warning',
+      issuerName: item.issuer_name ?? '—',
+      holdingCount: Number(item.holding_count ?? 0),
+    })),
+  };
+}
+
 function normalizeAmendments(items) {
   return (Array.isArray(items) ? items : []).map((item) => {
     const manager = item.manager && typeof item.manager === 'object' ? item.manager : {};
@@ -421,13 +550,17 @@ module.exports = {
   managerCikReviewDefaults,
   jobPreviewLine,
   normalizeAmendments,
+  normalizeAdminFilings,
   normalizeCikReviewEvents,
   normalizeEdgarRateLimit,
+  normalizeHoldingsCoverage,
+  normalizeParseRuns,
   healthTone,
   normalizeQuarters,
   normalizeQualityReports,
   normalizeReadiness,
   normalizeTasks,
+  normalizeUnresolvedCusips,
   normalizeWorkers,
   operationsHealth,
   prioritizeManagersForReview,
