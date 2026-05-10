@@ -343,9 +343,48 @@ def read_manager_backfill_preview(
     session: SessionDep,
     current_user: AdminUser,
     manager_id: int,
+    start_quarter: str | None = Query(None),
+    end_quarter: str | None = Query(None),
 ) -> Any:
     try:
-        return build_manager_backfill_preview(session, manager_id)
+        return build_manager_backfill_preview(session, manager_id, start_quarter, end_quarter)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+
+
+@admin_router.post("/managers/{manager_id}/backfill", response_model=dict)
+def create_manager_backfill(
+    session: SessionDep,
+    current_user: AdminUser,
+    manager_id: int,
+    start_quarter: str | None = Query(None),
+    end_quarter: str | None = Query(None),
+) -> Any:
+    try:
+        from app.services.thirteenf_admin_dashboard import _validate_manager_backfill_request, trigger_job
+        _validate_manager_backfill_request(
+            session,
+            manager_id,
+            start_quarter=start_quarter,
+            end_quarter=end_quarter,
+        )
+        job_payload = {
+            "job_type": "sync_manager_backfill",
+            "manager_id": manager_id,
+        }
+        if start_quarter:
+            job_payload["start_quarter"] = start_quarter
+        if end_quarter:
+            job_payload["end_quarter"] = end_quarter
+            
+        result = trigger_job(session, requested_by_user_id=current_user.id, payload=job_payload)
+        
+        if result.get("conflict"):
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail={"active_job_id": result["active_job_id"], "lock_key": result["lock_key"]},
+            )
+        return result
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
 
@@ -564,4 +603,3 @@ def update_cusip_mapping_endpoint(
         return update_manual_cusip_mapping(session, cusip, payload)
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
-

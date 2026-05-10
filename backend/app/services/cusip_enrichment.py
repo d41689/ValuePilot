@@ -205,6 +205,64 @@ def enrich_unmapped_holdings(db: Session, client: Optional[OpenFigiClient] = Non
     return mapped_count
 
 
+def enrich_from_dataroma(db: Session, limit: int = 100) -> int:
+    """Compatibility entrypoint for legacy enrichment jobs.
+
+    MVP 1B enrichment is OpenFIGI-backed; the older job name is still used by
+    admin pipeline code and tests. Keep this wrapper narrow so the pipeline can
+    call the current enrichment implementation without reviving a Dataroma
+    dependency.
+    """
+    return enrich_unmapped_holdings(db, limit=limit)
+
+
+def bootstrap_stocks_from_cusip_map(db: Session) -> int:
+    """Create Stock rows for high-confidence active CUSIP mappings with tickers."""
+    mappings = (
+        db.query(CusipTickerMap)
+        .filter(CusipTickerMap.is_active.is_(True))
+        .filter(CusipTickerMap.ticker.isnot(None))
+        .filter(~CusipTickerMap.confidence.like("review_needed:%"))
+        .all()
+    )
+    created = 0
+    for mapping in mappings:
+        existing = (
+            db.query(Stock)
+            .filter_by(ticker=mapping.ticker, market_country="US", is_active=True)
+            .first()
+        )
+        if existing:
+            continue
+        db.add(
+            Stock(
+                ticker=mapping.ticker,
+                company_name=mapping.issuer_name or mapping.ticker,
+                exchange="US",
+                market_country="US",
+                is_active=True,
+            )
+        )
+        created += 1
+    if created:
+        db.commit()
+    return created
+
+
+def backfill_stock_ids(db: Session) -> int:
+    """Apply existing CUSIP mappings to holdings and return linked holding count."""
+    cusips = [row[0] for row in db.query(Holding13F.cusip).filter(Holding13F.cusip.isnot(None)).distinct().all()]
+    if not cusips:
+        return 0
+    _apply_mappings_to_holdings(db, cusips)
+    return db.query(Holding13F).filter(Holding13F.stock_id.isnot(None)).count()
+
+
+def enrich_stocks_from_edgar_tickers(db: Session) -> dict[str, int]:
+    """Compatibility placeholder for legacy stock enrichment pipeline stage."""
+    return {"new_mappings": 0}
+
+
 def _apply_mappings_to_holdings(db: Session, cusips: List[str]) -> None:
     """Update stock_id and cusip_mapping_status on holdings for the given CUSIPs."""
     holdings = (

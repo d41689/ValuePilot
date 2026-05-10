@@ -26,6 +26,7 @@ JOB_TIMEOUT_SECONDS_BY_TYPE = {
     "ingest_holdings_for_quarter": 60 * 60,
     "ingest_holdings": 60 * 60,
     "backfill_daily_indexes": 4 * 60 * 60,
+    "sync_manager_backfill": 60 * 60,
     "enrich_cusip": 30 * 60,
 }
 

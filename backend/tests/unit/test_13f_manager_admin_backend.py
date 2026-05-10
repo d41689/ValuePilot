@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+
 from app.models.institutions import (
     Filing13F,
     Holding13F,
@@ -203,7 +205,7 @@ def test_confirm_cik_sets_active_status_and_does_not_enqueue_backfill(client, db
     assert db_session.query(JobRun).count() == 0
 
 
-def test_backfill_preview_estimates_without_enqueuing_jobs(client, db_session, user_factory, auth_headers):
+def test_backfill_preview_estimates_without_enqueuing_jobs(client, db_session, user_factory, auth_headers, monkeypatch):
     _clear_13f(db_session)
     admin = _admin(user_factory)
     manager = InstitutionManager(
@@ -215,6 +217,31 @@ def test_backfill_preview_estimates_without_enqueuing_jobs(client, db_session, u
     )
     db_session.add(manager)
     db_session.commit()
+
+    class FakeEdgarClient:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def get(self, url):
+            return json.dumps(
+                {
+                    "cik": "1234567",
+                    "name": "Active Manager",
+                    "filings": {
+                        "recent": {
+                            "accessionNumber": ["0000000000-23-000001"],
+                            "form": ["13F-HR"],
+                            "filingDate": ["2023-05-15"],
+                            "reportDate": ["2023-03-31"],
+                        }
+                    },
+                }
+            ).encode("utf-8")
+
+    monkeypatch.setattr("app.edgar.client.EdgarClient", FakeEdgarClient)
 
     response = client.get(
         f"/api/v1/admin/13f/managers/{manager.id}/backfill-preview",

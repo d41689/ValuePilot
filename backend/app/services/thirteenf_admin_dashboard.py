@@ -587,27 +587,101 @@ def bulk_import_managers(session: Session, csv_text: str) -> dict[str, Any]:
     }
 
 
-def build_manager_backfill_preview(session: Session, manager_id: int) -> dict[str, Any]:
-    manager = session.get(InstitutionManager, manager_id)
-    if manager is None:
-        raise ValueError("Manager not found")
-    if manager.status != "active" or not manager.cik:
-        raise ValueError("Only active managers with confirmed CIK can be previewed")
-    estimated_filing_count = (
-        session.query(Filing13F)
-        .filter(Filing13F.manager_id == manager.id)
-        .count()
+def build_manager_backfill_preview(
+    session: Session, 
+    manager_id: int, 
+    start_quarter: str | None = None,
+    end_quarter: str | None = None
+) -> dict[str, Any]:
+    from app.edgar.client import EdgarClient
+    from app.edgar.parsers.submissions import parse_submissions, submissions_url
+    
+    manager, start_q, start_window, end_window = _validate_manager_backfill_request(
+        session,
+        manager_id,
+        start_quarter=start_quarter,
+        end_quarter=end_quarter,
     )
+
+    with EdgarClient() as client:
+        try:
+            content = client.get(submissions_url(manager.cik))
+            _, filings = parse_submissions(content)
+        except Exception as exc:
+            logger.warning("Failed to fetch submissions for CIK %s: %s", manager.cik, exc)
+            raise ValueError("Unable to fetch SEC submissions for backfill preview") from exc
+
+    matching_filings = []
+    value_unit_risk_warning = _backfill_range_crosses_value_unit_transition(start_window, end_window)
+    
+    for f in filings:
+        # Only care about 13F-HR and 13F-HR/A
+        if f.form_type not in ("13F-HR", "13F-HR/A"):
+            continue
+            
+        r_date = f.report_date or f.filed_at
+        
+        # Check start boundary
+        if r_date < start_window.start:
+            continue
+            
+        # Check end boundary
+        if end_window and r_date > end_window.end:
+            continue
+            
+        matching_filings.append(f)
+        
+        if r_date < date(2023, 1, 1):
+            value_unit_risk_warning = True
+
+    estimated_filing_count = len(matching_filings)
+    # 1 for submissions + 2 per filing (detail page + raw doc)
+    estimated_request_count = 1 + (estimated_filing_count * 2)
+    estimated_rate_limit_wait_seconds = estimated_request_count / 10.0
+
     return {
         "manager_id": manager.id,
         "cik": manager.cik,
         "status": "preview",
         "will_enqueue": False,
+        "start_quarter": start_q,
+        "end_quarter": end_quarter,
         "estimated_filing_count": estimated_filing_count,
-        "estimated_request_count": 1,
-        "estimated_rate_limit_wait_seconds": 0,
+        "estimated_request_count": estimated_request_count,
+        "estimated_rate_limit_wait_seconds": round(estimated_rate_limit_wait_seconds, 1),
+        "value_unit_risk_warning": value_unit_risk_warning,
         "message": "Preview only; no backfill job was created.",
     }
+
+
+def _validate_manager_backfill_request(
+    session: Session,
+    manager_id: int,
+    *,
+    start_quarter: str | None,
+    end_quarter: str | None,
+) -> tuple[InstitutionManager, str, QuarterWindow, QuarterWindow | None]:
+    manager = session.get(InstitutionManager, manager_id)
+    if manager is None:
+        raise ValueError("Manager not found")
+    if manager.status != "active" or not manager.cik:
+        raise ValueError("Only active managers with confirmed CIK can be backfilled")
+
+    start_q = start_quarter or getattr(settings, "DEFAULT_BACKFILL_START_QUARTER", "2023-Q1")
+    start_window = quarter_window(start_q)
+    end_window = quarter_window(end_quarter) if end_quarter else None
+    if end_window and end_window.end < start_window.start:
+        raise ValueError("end_quarter must be greater than or equal to start_quarter")
+    return manager, start_q, start_window, end_window
+
+
+def _backfill_range_crosses_value_unit_transition(
+    start_window: QuarterWindow,
+    end_window: QuarterWindow | None,
+) -> bool:
+    transition_quarter_start = date(2023, 1, 1)
+    range_end = end_window.end if end_window else date.max
+    return start_window.start < transition_quarter_start and range_end >= start_window.start
 
 
 def list_manager_cik_review_events(session: Session, manager_id: int, *, limit: int = 50) -> list[dict[str, Any]]:
@@ -2282,6 +2356,7 @@ _JOB_LOCK_BUILDERS = {
     "quality_check": lambda payload: f"quality_check:{_required(payload, 'quarter')}",
     "reprocess_amendment": lambda payload: f"reprocess_amendment:{_required(payload, 'accession_no')}",
     "reparse_accession": lambda payload: f"reparse_accession:{_required(payload, 'accession_no')}",
+    "sync_manager_backfill": lambda payload: f"sync_manager_backfill:{_required(payload, 'manager_id')}",
 }
 
 
@@ -2396,6 +2471,61 @@ def _execute_job(session: Session, job_type: str, payload: dict[str, Any]) -> di
             "failed": "failed",
         }.get(result.get("status"), "failed")
         return {"daily_sync": result, "status": job_status}
+        
+    if job_type == "sync_manager_backfill":
+        manager_id = int(_required(payload, "manager_id"))
+        manager, _start_q, start_window, end_window = _validate_manager_backfill_request(
+            session,
+            manager_id,
+            start_quarter=payload.get("start_quarter"),
+            end_quarter=payload.get("end_quarter"),
+        )
+        
+        from app.edgar.client import EdgarClient
+        from app.edgar.parsers.submissions import parse_submissions, submissions_url
+        
+        with EdgarClient() as client:
+            content = client.get(submissions_url(manager.cik))
+            _, filings = parse_submissions(content)
+            
+        matching_filings = []
+        for f in filings:
+            if f.form_type not in ("13F-HR", "13F-HR/A"):
+                continue
+            r_date = f.report_date or f.filed_at
+            if r_date < start_window.start:
+                continue
+            if end_window and r_date > end_window.end:
+                continue
+            matching_filings.append(f)
+            
+        results = {"stages": [], "filings_inserted": 0, "filings_failed": 0}
+        for filing in matching_filings:
+            stage_result = _execute_pipeline_stage_job(
+                session,
+                parent_payload=payload,
+                job_type="ingest_accession",
+                payload={
+                    "accession_no": filing.accession_no,
+                    "manager_id": manager.id,
+                    "cik": manager.cik,
+                    "form_type": filing.form_type,
+                    "sync_date": filing.filed_at.isoformat(),
+                },
+            )
+            results["stages"].append(stage_result["stage"])
+            if stage_result["stage"]["status"] in {"succeeded", "partial_success"}:
+                results["filings_inserted"] += 1
+            else:
+                results["filings_failed"] += 1
+                
+        if results["filings_failed"] > 0:
+            results["status"] = "partial_success" if results["filings_inserted"] > 0 else "failed"
+        else:
+            results["status"] = "succeeded"
+            
+        return results
+
     if job_type == "backfill_quarters":
         from app.services.edgar_ingestion import backfill_quarters
 
@@ -2606,20 +2736,25 @@ def _execute_ingest_job(session: Session, job_type: str, payload: dict[str, Any]
 
 
 def _execute_enrichment_metadata(session: Session, payload: dict[str, Any]) -> dict[str, Any]:
-    from app.services.cusip_enrichment import enrich_unmapped_holdings
+    from app.services.cusip_enrichment import (
+        backfill_stock_ids,
+        bootstrap_stocks_from_cusip_map,
+        enrich_from_dataroma,
+        enrich_stocks_from_edgar_tickers,
+    )
 
-    results: dict[str, Any] = {}
-    try:
-        limit = payload.get("limit", 500)
-        mapped = enrich_unmapped_holdings(session, limit=limit)
-        results["holdings_mapped"] = mapped
-        status = "succeeded"
-        return {**results, "status": status}
-    except Exception as exc:
-        session.rollback()
-        logger.exception("Enrichment metadata job failed")
-        results["error"] = str(exc)
-        return {**results, "status": "failed"}
+    mappings_created = enrich_from_dataroma(session)
+    new_stocks = bootstrap_stocks_from_cusip_map(session)
+    holdings_linked = backfill_stock_ids(session)
+    edgar_stock_enrichment = enrich_stocks_from_edgar_tickers(session)
+    return {
+        "cusip_mappings": mappings_created,
+        "mappings_created": mappings_created,
+        "new_stocks": new_stocks,
+        "holdings_linked": holdings_linked,
+        "edgar_stock_enrichment": edgar_stock_enrichment,
+        "status": "succeeded",
+    }
 def build_cusip_mappings(session: Session, limit: int, needs_review: bool, unresolved: bool) -> list[dict[str, Any]]:
     from app.models.institutions import CusipTickerMap, Holding13F
     
