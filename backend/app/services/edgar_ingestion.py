@@ -585,7 +585,19 @@ def ingest_filing_holdings(
     """Download + parse infotable for one filing. Returns count of holdings inserted.
 
     replace_holdings=True deletes existing holdings before re-inserting (use for reparse).
+
+    .. deprecated::
+        This function uses a destructive "delete and re-insert" pattern that bypasses
+        the ParseRun13F audit trail.  Use ``ingest_if_needed`` or ``reparse_accession``
+        from ``app.services.thirteenf_holdings_ingest`` instead.
     """
+    import warnings
+    warnings.warn(
+        "ingest_filing_holdings is deprecated. Use thirteenf_holdings_ingest.ingest_if_needed "
+        "or thirteenf_holdings_ingest.reparse_accession instead.",
+        DeprecationWarning,
+        stacklevel=2,
+    )
     manager: InstitutionManager = filing.manager
     if manager is None:
         manager = db.query(InstitutionManager).get(filing.manager_id)

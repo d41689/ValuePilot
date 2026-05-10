@@ -29,6 +29,16 @@ class PrimaryDocSummary:
     form_spec_version: Optional[str] = None
     xml_schema_version: Optional[str] = None
     has_confidential_treatment: Optional[bool] = None
+    # NT-specific: list of {name, file_number, cik?} from otherManagersInfo/otherManager
+    other_managers_reporting: list = None  # type: ignore[assignment]
+    # HR combination: list of {name, file_number, cik?} from otherManagers2Info/otherManager2
+    other_managers_included: list = None  # type: ignore[assignment]
+
+    def __post_init__(self) -> None:
+        if self.other_managers_reporting is None:
+            self.other_managers_reporting = []
+        if self.other_managers_included is None:
+            self.other_managers_included = []
 
 
 def _strip_ns(tag: str) -> str:
@@ -89,6 +99,8 @@ def parse_primary_doc(content: bytes) -> PrimaryDocSummary:
         form_spec_version=form_spec_version,
         xml_schema_version=xml_schema_version,
         has_confidential_treatment=confidential,
+        other_managers_reporting=_parse_other_managers_reporting(xml_text),
+        other_managers_included=_parse_other_managers_included(xml_text),
     )
 
 
@@ -110,3 +122,80 @@ def _attr(attrs: str, name: str) -> Optional[str]:
     )
     match = pattern.search(attrs)
     return match.group(1).strip() if match else None
+
+
+_OTHER_MANAGER_BLOCK_RE = re.compile(
+    r"<(?:[^:>]*:)?otherManager\b[^>]*>(.*?)</(?:[^:>]*:)?otherManager>",
+    re.DOTALL | re.IGNORECASE,
+)
+
+_OTHER_MANAGER2_BLOCK_RE = re.compile(
+    r"<(?:[^:>]*:)?otherManager2\b[^>]*>(.*?)</(?:[^:>]*:)?otherManager2>",
+    re.DOTALL | re.IGNORECASE,
+)
+
+
+def _parse_other_managers_reporting(xml_text: str) -> list:
+    """Extract otherManagersInfo entries from a 13F-NT cover page.
+
+    Returns a list of dicts with distinct keys: name, file_number, and cik
+    (cik omitted when absent in the XML). Preserves order of appearance.
+    """
+    result = []
+    for block in _OTHER_MANAGER_BLOCK_RE.finditer(xml_text):
+        inner = block.group(1)
+
+        def _get(tag: str) -> Optional[str]:
+            m = re.search(
+                rf"<(?:[^:>]*:)?{re.escape(tag)}\s*>(.*?)</",
+                inner,
+                re.IGNORECASE | re.DOTALL,
+            )
+            return m.group(1).strip() if m else None
+
+        entry: dict = {}
+        name = _get("name")
+        file_number = _get("form13FFileNumber")
+        cik = _get("cik")
+        if name:
+            entry["name"] = name
+        if file_number:
+            entry["file_number"] = file_number
+        if cik:
+            entry["cik"] = cik
+        if entry:
+            result.append(entry)
+    return result
+
+
+def _parse_other_managers_included(xml_text: str) -> list:
+    """Extract otherManagers2Info entries from a 13F-HR combination report cover page.
+
+    Returns a list of dicts with distinct keys: name, file_number, and cik
+    (cik omitted when absent). Used to populate other_managers_included on Filing13F.
+    """
+    result = []
+    for block in _OTHER_MANAGER2_BLOCK_RE.finditer(xml_text):
+        inner = block.group(1)
+
+        def _get(tag: str) -> Optional[str]:
+            m = re.search(
+                rf"<(?:[^:>]*:)?{re.escape(tag)}\s*>(.*?)</",
+                inner,
+                re.IGNORECASE | re.DOTALL,
+            )
+            return m.group(1).strip() if m else None
+
+        entry: dict = {}
+        name = _get("name")
+        file_number = _get("form13FFileNumber")
+        cik = _get("cik")
+        if name:
+            entry["name"] = name
+        if file_number:
+            entry["file_number"] = file_number
+        if cik:
+            entry["cik"] = cik
+        if entry:
+            result.append(entry)
+    return result

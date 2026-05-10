@@ -107,6 +107,8 @@ def ingest_accession_filing_detail(
     filing.parse_status = routing.parse_status
     filing.parse_warning = routing.parse_warning
     filing.parse_error = routing.parse_error
+    filing.other_managers_reporting = summary.other_managers_reporting or None
+    filing.other_managers_included = summary.other_managers_included or None
 
     session.add(filing)
     session.commit()

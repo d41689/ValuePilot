@@ -478,3 +478,30 @@ def retry_failed_filings(session: SessionDep, current_user: AdminUser, payload: 
             detail={"active_job_id": result["active_job_id"], "lock_key": result["lock_key"]},
         )
     return result
+
+
+@admin_router.post("/filings/{accession_no}/reparse", response_model=dict)
+def reparse_filing(
+    session: SessionDep,
+    current_user: AdminUser,
+    accession_no: str,
+) -> Any:
+    """Reparse an existing filing by accession number (PRD §6.3-§6.5).
+
+    Creates a new parse_run for the accession:
+    - On success, the new parse_run becomes is_current=True; old holdings are retained.
+    - On failure, the old current parse_run is restored; the failed run is persisted for audit.
+    """
+    from app.services.thirteenf_holdings_ingest import reparse_accession
+
+    try:
+        result = reparse_accession(session, accession_no)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Reparse failed: {exc}",
+        ) from exc
+    return result
+

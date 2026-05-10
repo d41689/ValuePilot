@@ -190,6 +190,50 @@ def mark_stale_running_jobs_abandoned(
     return {"abandoned": len(abandoned)}
 
 
+def mark_stale_parse_runs_abandoned(
+    session: Session,
+    *,
+    now: datetime | None = None,
+    timeout_seconds: int = 10 * 60,
+) -> dict[str, int]:
+    """Watchdog: mark running parse_runs as 'abandoned' when they have timed out.
+
+    PRD §12.4: a parse_run stuck in 'running' beyond `timeout_seconds` with no
+    active job lease is considered abandoned. We check started_at age rather than
+    a lease_expires_at (parse_runs do not hold job leases themselves).
+
+    Args:
+        session: SQLAlchemy session.
+        now: Override for current time (for testing).
+        timeout_seconds: Maximum age of a running parse_run before it is abandoned.
+    """
+    from app.models.institutions import ParseRun13F  # local import to avoid circular
+
+    now = now or datetime.now(timezone.utc)
+    cutoff = now - timedelta(seconds=timeout_seconds)
+
+    stale_runs = (
+        session.query(ParseRun13F)
+        .filter(ParseRun13F.status == "running")
+        .filter(ParseRun13F.started_at.isnot(None))
+        .filter(ParseRun13F.started_at < cutoff)
+        .all()
+    )
+
+    abandoned_count = 0
+    for run in stale_runs:
+        run.status = "abandoned"
+        run.error = "parse_run_watchdog_timeout"
+        run.finished_at = now
+        session.add(run)
+        abandoned_count += 1
+
+    if abandoned_count:
+        session.commit()
+
+    return {"abandoned": abandoned_count}
+
+
 def job_timeout_seconds(job_type: str) -> int:
     return JOB_TIMEOUT_SECONDS_BY_TYPE.get(job_type, 10 * 60)
 

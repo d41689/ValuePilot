@@ -2234,6 +2234,7 @@ _JOB_LOCK_BUILDERS = {
     "match_cik": lambda payload: "match_cik",
     "quality_check": lambda payload: f"quality_check:{_required(payload, 'quarter')}",
     "reprocess_amendment": lambda payload: f"reprocess_amendment:{_required(payload, 'accession_no')}",
+    "reparse_accession": lambda payload: f"reparse_accession:{_required(payload, 'accession_no')}",
 }
 
 
@@ -2357,7 +2358,7 @@ def _execute_job(session: Session, job_type: str, payload: dict[str, Any]) -> di
             "filings_inserted": sum(value for value in results.values() if value > 0),
             "status": "partial_success" if any(value < 0 for value in results.values()) else "succeeded",
         }
-    if job_type in {"ingest_holdings", "ingest_accession", "reprocess_amendment"}:
+    if job_type in {"ingest_holdings", "ingest_accession", "reprocess_amendment", "reparse_accession"}:
         return _execute_ingest_job(session, job_type, payload)
     if job_type == "enrich_cusip":
         from app.services.cusip_enrichment import enrich_from_dataroma
@@ -2493,7 +2494,7 @@ def _stage_summary_with_schema(job_type: str, summary: dict[str, Any]) -> dict[s
 
 
 def _execute_ingest_job(session: Session, job_type: str, payload: dict[str, Any]) -> dict[str, Any]:
-    from app.services.edgar_ingestion import ingest_filing_holdings
+    from app.services.thirteenf_holdings_ingest import ingest_if_needed, reparse_accession
 
     if job_type == "ingest_accession":
         from app.services.thirteenf_filing_detail import ingest_accession_filing_detail
@@ -2508,42 +2509,51 @@ def _execute_ingest_job(session: Session, job_type: str, payload: dict[str, Any]
             "detail_status": result["status"],
         }
 
-    if job_type == "reprocess_amendment":
+    if job_type in {"reprocess_amendment", "reparse_accession"}:
         accession_no = _required(payload, "accession_no")
-        filing = session.query(Filing13F).filter(Filing13F.accession_no == accession_no).one_or_none()
-        if filing is None:
-            raise ValueError(f"Filing {accession_no} not found")
-        count = ingest_filing_holdings(
-            session,
-            filing,
-            force_refresh=job_type == "reprocess_amendment",
-            replace_holdings=True,
-        )
-        return {"filings_processed": 1, "holdings_inserted": count, "status": "succeeded"}
+        result = reparse_accession(session, accession_no)
+        return {
+            "filings_processed": 1,
+            "parse_run_id": result["parse_run_id"],
+            "holdings_count": result["holdings_count"],
+            "status": "succeeded",
+        }
 
+    # job_type == "ingest_holdings": bulk quarterly ingest via ingest_if_needed.
     quarter = _required(payload, "quarter")
     window = quarter_window(quarter)
     filings = (
         session.query(Filing13F)
         .filter(Filing13F.period_of_report.between(window.start, window.end))
-        .filter(Filing13F.raw_infotable_doc_id.is_(None))
+        .filter(Filing13F.raw_infotable_doc_id.isnot(None))
         .order_by(Filing13F.filed_at.asc(), Filing13F.accession_no.asc())
         .all()
     )
-    holdings_inserted = 0
+    total_holdings = 0
+    skipped = 0
     failures: list[dict[str, str]] = []
     for filing in filings:
         try:
-            holdings_inserted += ingest_filing_holdings(session, filing)
-            session.commit()
+            from app.edgar.fetcher import load_body
+
+            infotable_doc = filing.raw_infotable_doc
+            if infotable_doc is None:
+                continue
+            infotable_bytes = load_body(infotable_doc)
+            result = ingest_if_needed(session, filing, infotable_bytes)
+            if result.get("skipped"):
+                skipped += 1
+            else:
+                total_holdings += result.get("holdings_count", 0)
         except Exception as exc:
             session.rollback()
             failures.append({"accession_no": filing.accession_no, "error": str(exc)})
     return {
         "filings_processed": len(filings),
+        "filings_skipped": skipped,
         "filings_failed": len(failures),
         "failed_accessions": failures,
-        "holdings_inserted": holdings_inserted,
+        "holdings_inserted": total_holdings,
         "status": "partial_success" if failures else "succeeded",
     }
 
