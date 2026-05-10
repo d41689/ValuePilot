@@ -242,6 +242,26 @@ def test_admin_filings_list_and_detail_expose_caveat_fields(client, db_session, 
     assert detail["manager"]["id"] == manager.id
 
 
+def test_admin_filings_list_filters_by_manager_id(client, db_session, user_factory, auth_headers):
+    _clear_13f(db_session)
+    admin = _admin(user_factory)
+    target_manager = _manager(db_session, "Target Manager")
+    other_manager = _manager(db_session, "Other Manager")
+    target_filing = _filing(db_session, target_manager)
+    _filing(db_session, other_manager)
+    db_session.commit()
+
+    response = client.get(
+        f"/api/v1/admin/13f/filings?manager_id={target_manager.id}&page=1&page_size=50",
+        headers=auth_headers(admin),
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["total"] == 1
+    assert payload["items"][0]["accession_number"] == target_filing.accession_number
+
+
 def test_parse_runs_endpoint_returns_audit_history(client, db_session, user_factory, auth_headers):
     _clear_13f(db_session)
     admin = _admin(user_factory)
@@ -252,13 +272,16 @@ def test_parse_runs_endpoint_returns_audit_history(client, db_session, user_fact
     db_session.commit()
 
     response = client.get(
-        f"/api/v1/admin/13f/filings/{filing.accession_number}/parse-runs",
+        f"/api/v1/admin/13f/filings/{filing.accession_number}/parse-runs?page=1&page_size=50",
         headers=auth_headers(admin),
     )
 
     assert response.status_code == 200
     payload = response.json()
     assert payload["accession_number"] == filing.accession_number
+    assert payload["total"] == 2
+    assert payload["page"] == 1
+    assert payload["page_size"] == 50
     assert [item["parser_version"] for item in payload["items"]] == [
         "13f-parser/new",
         "13f-parser/old",
@@ -378,9 +401,11 @@ def test_unresolved_cusip_mappings_endpoint_groups_unresolved_holdings(client, d
     manager = _manager(db_session)
     filing = _filing(db_session, manager)
     parse_run = _parse_run(db_session, filing, parser_version="13f-parser", status="succeeded", current=True)
+    superseded_run = _parse_run(db_session, filing, parser_version="13f-parser-old", status="succeeded", current=False)
     _holding(db_session, filing, parse_run, index=7, cusip="000000007")
     _holding(db_session, filing, parse_run, index=70, cusip="000000007")
     _holding(db_session, filing, parse_run, index=8, mapping_status="needs_review")
+    _holding(db_session, filing, superseded_run, index=9, cusip="000000009")
     db_session.commit()
 
     response = client.get(

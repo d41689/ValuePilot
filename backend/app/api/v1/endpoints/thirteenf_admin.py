@@ -368,9 +368,15 @@ def read_filing(session: SessionDep, current_user: AdminUser, accession_no: str)
 
 
 @admin_router.get("/filings/{accession_no}/parse-runs", response_model=dict)
-def read_filing_parse_runs(session: SessionDep, current_user: AdminUser, accession_no: str) -> Any:
+def read_filing_parse_runs(
+    session: SessionDep,
+    current_user: AdminUser,
+    accession_no: str,
+    page: int = Query(1, ge=1),
+    page_size: int = Query(50, ge=1, le=200),
+) -> Any:
     try:
-        return list_parse_runs_for_accession(session, accession_no)
+        return list_parse_runs_for_accession(session, accession_no, page=page, page_size=page_size)
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
 

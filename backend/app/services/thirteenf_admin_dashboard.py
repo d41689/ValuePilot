@@ -1007,19 +1007,30 @@ def get_admin_filing(session: Session, accession_number: str) -> dict[str, Any]:
     return _admin_filing_payload(session, filing, include_raw=True)
 
 
-def list_parse_runs_for_accession(session: Session, accession_number: str) -> dict[str, Any]:
+def list_parse_runs_for_accession(
+    session: Session,
+    accession_number: str,
+    *,
+    page: int = 1,
+    page_size: int = 50,
+) -> dict[str, Any]:
     filing = _filing_by_accession(session, accession_number)
     if filing is None:
         raise ValueError("Filing not found")
+    query = session.query(ParseRun13F).filter(ParseRun13F.accession_number == filing.accession_number)
+    total = query.count()
     runs = (
-        session.query(ParseRun13F)
-        .filter(ParseRun13F.accession_number == filing.accession_number)
-        .order_by(ParseRun13F.is_current.desc(), ParseRun13F.started_at.desc().nullslast(), ParseRun13F.id.desc())
+        query.order_by(ParseRun13F.is_current.desc(), ParseRun13F.started_at.desc().nullslast(), ParseRun13F.id.desc())
+        .offset((page - 1) * page_size)
+        .limit(page_size)
         .all()
     )
     return {
         "accession_number": filing.accession_number,
         "items": [_parse_run_payload(run) for run in runs],
+        "total": total,
+        "page": page,
+        "page_size": page_size,
     }
 
 
@@ -1101,6 +1112,8 @@ def list_unresolved_cusip_mappings(
             func.min(Holding13F.issuer_name),
             func.count(Holding13F.id),
         )
+        .join(ParseRun13F, ParseRun13F.id == Holding13F.parse_run_id)
+        .filter(ParseRun13F.is_current.is_(True))
         .filter(Holding13F.cusip_mapping_status.in_(statuses))
         .group_by(Holding13F.cusip, Holding13F.cusip_mapping_status)
     )

@@ -67,3 +67,11 @@
   - `docker compose exec api pytest -q tests/unit/test_13f_admin_read_models.py` -> 6 passed.
   - `docker compose exec api pytest -q tests/unit/test_13f_admin_dashboard.py tests/unit/test_13f_user_api.py` -> 58 passed.
   - `docker compose exec api pytest -q tests/unit` -> 493 passed, 1 existing SQLAlchemy transaction rollback warning.
+- 2026-05-10: Accepted Tech Lead review follow-ups:
+  - Added pagination envelope to parse-runs-by-accession.
+  - Scoped unresolved CUSIP mappings to current parse runs so counts match current holdings coverage semantics.
+  - Added explicit `manager_id` filter coverage for filings list.
+- 2026-05-10: Follow-up Docker verification:
+  - `docker compose exec api pytest -q tests/unit/test_13f_admin_read_models.py` -> 7 passed.
+  - `docker compose exec api pytest -q tests/unit/test_13f_admin_dashboard.py tests/unit/test_13f_user_api.py` -> 58 passed.
+  - `docker compose exec api pytest -q tests/unit` -> 494 passed, 1 existing SQLAlchemy transaction rollback warning.
