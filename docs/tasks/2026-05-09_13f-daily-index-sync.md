@@ -96,3 +96,13 @@ Docker only:
   - `docker compose exec api pytest -q tests/unit/test_13f_parsers.py` -> `15 passed in 0.03s`
   - `docker compose exec api pytest -q tests/unit/test_13f_admin_dashboard.py tests/unit/test_13f_manager_admin_backend.py` -> `58 passed in 10.52s`
   - `docker compose exec api pytest -q tests/unit` -> `340 passed in 38.07s`
+- 2026-05-09: Tech Lead reviews approved 13F-1A-04. Accepted Claude review NB-1/NB-3/NB-4:
+  - Dedupe now skips only active `ingest_accession` jobs with status `queued`, `running`, or `cancel_requested`; failed/completed jobs no longer permanently block re-queue.
+  - `matched_accessions` now includes `job_enqueued` so 13F-NT and already-active HR/HR-A rows are explicit.
+  - Added idempotency and failed-job requeue tests.
+- 2026-05-09: Deferred Claude review NB-2 to 13F-1A-05: PRD §4.4 retry-count + end-of-day ET -> `no_data` requires scheduler timing policy and should not be implemented inside the single-run sync helper.
+- 2026-05-09: Docker verification after review fixes passed:
+  - `docker compose exec api pytest -q tests/unit/test_13f_daily_index_sync.py` -> `5 passed in 0.14s`
+  - `docker compose exec api pytest -q tests/unit/test_13f_no_index_dates.py` -> `4 passed in 0.85s`
+  - `docker compose exec api pytest -q tests/unit/test_13f_parsers.py tests/unit/test_13f_admin_dashboard.py tests/unit/test_13f_manager_admin_backend.py` -> `73 passed in 10.38s`
+  - `docker compose exec api pytest -q tests/unit` -> `342 passed in 39.73s`

@@ -18,6 +18,7 @@ from app.models.institutions import (
 
 INGESTIBLE_13F_FORMS = {"13F-HR", "13F-HR/A"}
 AUTO_GENERATED_NO_INDEX_REASONS = {"weekend", "federal_holiday"}
+ACTIVE_JOB_STATUSES = {"queued", "running", "cancel_requested"}
 
 
 def run_daily_index_sync(session: Session, sync_date: date, *, client: Any | None = None) -> dict[str, Any]:
@@ -46,7 +47,7 @@ def run_daily_index_sync(session: Session, sync_date: date, *, client: Any | Non
         records = parse_daily_13f_form_idx(body)
         active_managers = _active_manager_by_cik(session)
         matched = _matched_records(records, active_managers)
-        jobs_created = _enqueue_ingest_placeholders(session, sync_date, matched)
+        enqueued_accessions = _enqueue_ingest_placeholders(session, sync_date, matched)
 
         sync.status = "success"
         sync.raw_document_id = raw_doc.id
@@ -56,7 +57,11 @@ def run_daily_index_sync(session: Session, sync_date: date, *, client: Any | Non
         sync.finished_at = datetime.now(timezone.utc)
         session.add(sync)
         session.commit()
-        return _sync_result(sync, matched_accessions=_matched_payload(matched), jobs_created=jobs_created)
+        return _sync_result(
+            sync,
+            matched_accessions=_matched_payload(matched, enqueued_accessions=enqueued_accessions),
+            jobs_created=len(enqueued_accessions),
+        )
     except httpx.HTTPStatusError as exc:
         return _handle_http_error(session, sync, exc)
     except Exception as exc:
@@ -162,8 +167,8 @@ def _enqueue_ingest_placeholders(
     session: Session,
     sync_date: date,
     matched: list[tuple[FormIdxRecord, InstitutionManager]],
-) -> int:
-    created = 0
+) -> set[str]:
+    enqueued_accessions: set[str] = set()
     for record, manager in matched:
         if record.form_type not in INGESTIBLE_13F_FORMS:
             continue
@@ -172,6 +177,7 @@ def _enqueue_ingest_placeholders(
             session.query(JobRun)
             .filter(JobRun.job_type == "ingest_accession")
             .filter(JobRun.dedupe_key == accession)
+            .filter(JobRun.status.in_(ACTIVE_JOB_STATUSES))
             .one_or_none()
         )
         if existing is not None:
@@ -196,9 +202,9 @@ def _enqueue_ingest_placeholders(
                 },
             )
         )
-        created += 1
+        enqueued_accessions.add(accession)
     session.flush()
-    return created
+    return enqueued_accessions
 
 
 def _handle_http_error(session: Session, sync: EdgarSyncStatus, exc: httpx.HTTPStatusError) -> dict[str, Any]:
@@ -240,7 +246,11 @@ def _sync_result(
     }
 
 
-def _matched_payload(matched: list[tuple[FormIdxRecord, InstitutionManager]]) -> list[dict[str, Any]]:
+def _matched_payload(
+    matched: list[tuple[FormIdxRecord, InstitutionManager]],
+    *,
+    enqueued_accessions: set[str],
+) -> list[dict[str, Any]]:
     return [
         {
             "manager_id": manager.id,
@@ -248,6 +258,7 @@ def _matched_payload(matched: list[tuple[FormIdxRecord, InstitutionManager]]) ->
             "form_type": record.form_type,
             "accession_number": record.accession_number,
             "filename": record.filename,
+            "job_enqueued": record.accession_number in enqueued_accessions,
         }
         for record, manager in matched
     ]
