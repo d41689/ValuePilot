@@ -92,3 +92,16 @@ Docker only:
   - `docker compose exec api pytest -q tests/unit/test_13f_alerts.py tests/unit/test_scheduler_alignment.py tests/unit/test_13f_admin_dashboard.py` included in related run -> `67 passed in 9.16s`
   - `docker compose exec api pytest -q tests/unit/test_13f_daily_index_sync.py tests/unit/test_smart_retries.py` -> `16 passed in 0.20s`
   - `docker compose exec api pytest -q tests/unit` -> `354 passed in 40.34s`
+- 2026-05-09: Tech Lead reviews approved 13F-1A-05. Accepted review feedback:
+  - Registered `run_job_watchdog` in APScheduler using `THIRTEENF_WATCHDOG_INTERVAL_MINUTES`.
+  - Replaced single default watchdog timeout with per-job-type timeout lookup matching PRD §12.4 (`fetch_daily_index` 5 min, filing/accession 10 min, quarter ingestion 60 min, backfill daily indexes 4 hours, CUSIP enrichment 30 min).
+  - Added lease renewal during `execute_queued_job_once` when a heartbeat session factory is available; `ThirteenFJobWorker` now passes its DB factory so longer jobs keep their lease fresh.
+  - Added P3 and invalid-severity alert tests.
+- 2026-05-09: Deferred review feedback:
+  - Did not change the `23:59` retry EOD marker because PRD §4.4 says "23:59 已过"; current next-day behavior is tested and sufficient. Revisit only if Tech Lead wants second-level precision.
+- 2026-05-09: Docker verification after review fixes passed:
+  - `docker compose exec api pytest -q tests/unit/test_13f_job_scheduler.py` -> `11 passed in 0.14s`
+  - `docker compose exec api pytest -q tests/unit/test_scheduler_alignment.py tests/unit/test_13f_alerts.py` -> `11 passed in 0.07s`
+  - `docker compose exec api pytest -q tests/unit/test_13f_job_scheduler.py tests/unit/test_13f_alerts.py tests/unit/test_scheduler_alignment.py tests/unit/test_13f_admin_dashboard.py` -> `72 passed in 9.22s`
+  - `docker compose exec api pytest -q tests/unit/test_13f_daily_index_sync.py tests/unit/test_smart_retries.py` -> `16 passed in 0.21s`
+  - `docker compose exec api pytest -q tests/unit` -> `359 passed in 39.92s`

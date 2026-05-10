@@ -1,6 +1,12 @@
 from datetime import date
 from unittest.mock import MagicMock, patch
-from app.services.scheduler import create_scheduler, run_daily_sync_poll, run_quarterly_pipeline, run_smart_retries
+from app.services.scheduler import (
+    create_scheduler,
+    run_daily_sync_poll,
+    run_job_watchdog,
+    run_quarterly_pipeline,
+    run_smart_retries,
+)
 
 
 def test_run_quarterly_pipeline_triggers_job():
@@ -79,6 +85,15 @@ def test_create_scheduler_registers_hourly_daily_sync_poll():
 
     assert job is not None
     assert job.func == run_daily_sync_poll
+
+
+def test_create_scheduler_registers_job_watchdog():
+    scheduler = create_scheduler(MagicMock())
+
+    job = scheduler.get_job("thirteenf_job_watchdog")
+
+    assert job is not None
+    assert job.func == run_job_watchdog
 
 
 def test_run_smart_retries_noops_when_disabled(monkeypatch):

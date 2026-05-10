@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import threading
 from datetime import date, datetime, timedelta, timezone
 from unittest.mock import patch
 
@@ -9,6 +10,7 @@ from app.models.institutions import EdgarSyncStatus, JobRun
 from app.services.thirteenf_job_worker import (
     claim_next_job,
     complete_leased_job,
+    execute_queued_job_once,
     heartbeat_job_lease,
     mark_stale_running_jobs_abandoned,
 )
@@ -202,6 +204,35 @@ def test_watchdog_requires_timeout_and_expired_lease(db_session):
     assert abandoned_target.error_message == "job_lease_expired_or_timeout"
 
 
+def test_watchdog_uses_per_job_type_timeouts_by_default(db_session):
+    fetch_daily_index = _job(
+        job_type="fetch_daily_index",
+        status="running",
+        lock_key="fetch",
+        dedupe_key="fetch",
+        started_at=NOW - timedelta(minutes=7),
+        lease_expires_at=NOW - timedelta(seconds=1),
+    )
+    quarter_ingest = _job(
+        job_type="ingest_holdings_for_quarter",
+        status="running",
+        lock_key="quarter",
+        dedupe_key="quarter",
+        started_at=NOW - timedelta(minutes=30),
+        lease_expires_at=NOW - timedelta(seconds=1),
+    )
+    db_session.add_all([fetch_daily_index, quarter_ingest])
+    db_session.commit()
+
+    result = mark_stale_running_jobs_abandoned(db_session, now=NOW)
+
+    assert result == {"abandoned": 1}
+    db_session.refresh(fetch_daily_index)
+    db_session.refresh(quarter_ingest)
+    assert fetch_daily_index.status == "failed"
+    assert quarter_ingest.status == "running"
+
+
 def test_fetch_daily_index_job_executes_daily_sync(db_session):
     db_session.add(_job())
     db_session.commit()
@@ -234,3 +265,35 @@ def test_trigger_fetch_daily_index_job_sets_sync_date(db_session):
     assert job.sync_date == date(2026, 5, 8)
     assert job.dedupe_key == "fetch_daily_index:2026-05-08"
     assert job.lock_key == "fetch_daily_index:2026-05-08"
+
+
+def test_execute_queued_job_once_renews_lease_during_long_job(monkeypatch, db_session):
+    db_session.add(_job())
+    db_session.commit()
+    heartbeat_seen = threading.Event()
+    heartbeat_calls: list[dict] = []
+
+    def fake_heartbeat(session, **kwargs):
+        heartbeat_calls.append(kwargs)
+        heartbeat_seen.set()
+        return object()
+
+    def fake_execute_job_payload(session, job_type, payload):
+        assert heartbeat_seen.wait(timeout=1.0)
+        return {"status": "succeeded"}
+
+    monkeypatch.setattr("app.services.thirteenf_job_worker.heartbeat_job_lease", fake_heartbeat)
+    monkeypatch.setattr("app.services.thirteenf_admin_dashboard.execute_job_payload", fake_execute_job_payload)
+
+    job = execute_queued_job_once(
+        db_session,
+        worker_id="worker-a",
+        heartbeat_session_factory=lambda: object(),
+        heartbeat_interval_s=0.01,
+        lease_seconds=300,
+    )
+
+    assert job.status == "succeeded"
+    assert heartbeat_calls
+    assert heartbeat_calls[0]["worker_id"] == "worker-a"
+    assert heartbeat_calls[0]["lease_token"]

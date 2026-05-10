@@ -17,6 +17,18 @@ from app.models.institutions import JobRun, JobWorkerHeartbeat
 
 logger = logging.getLogger(__name__)
 
+JOB_TIMEOUT_SECONDS_BY_TYPE = {
+    "fetch_daily_index": 5 * 60,
+    "process_daily_index": 5 * 60,
+    "ingest_filing": 10 * 60,
+    "ingest_accession": 10 * 60,
+    "reprocess_amendment": 10 * 60,
+    "ingest_holdings_for_quarter": 60 * 60,
+    "ingest_holdings": 60 * 60,
+    "backfill_daily_indexes": 4 * 60 * 60,
+    "enrich_cusip": 30 * 60,
+}
+
 
 def record_worker_heartbeat(
     session: Session,
@@ -153,37 +165,58 @@ def mark_stale_running_jobs_abandoned(
     session: Session,
     *,
     now: datetime | None = None,
-    timeout_seconds: int = 600,
+    timeout_seconds: int | None = None,
 ) -> dict[str, int]:
     now = now or datetime.now(timezone.utc)
-    timeout_cutoff = now - timedelta(seconds=timeout_seconds)
     jobs = (
         session.query(JobRun)
         .filter(JobRun.status == "running")
         .filter(JobRun.started_at.isnot(None))
-        .filter(JobRun.started_at < timeout_cutoff)
         .filter(JobRun.lease_expires_at.isnot(None))
         .filter(JobRun.lease_expires_at < now)
         .all()
     )
+    abandoned = []
     for job in jobs:
+        job_timeout = timeout_seconds or job_timeout_seconds(job.job_type)
+        if job.started_at >= now - timedelta(seconds=job_timeout):
+            continue
+        abandoned.append(job)
         job.status = "failed"
         job.error_message = "job_lease_expired_or_timeout"
         job.finished_at = now
         session.add(job)
     session.commit()
-    return {"abandoned": len(jobs)}
+    return {"abandoned": len(abandoned)}
 
 
-def execute_queued_job_once(session: Session, *, worker_id: str) -> JobRun | None:
+def job_timeout_seconds(job_type: str) -> int:
+    return JOB_TIMEOUT_SECONDS_BY_TYPE.get(job_type, 10 * 60)
+
+
+def execute_queued_job_once(
+    session: Session,
+    *,
+    worker_id: str,
+    lease_seconds: int | None = None,
+    heartbeat_session_factory: Callable[[], Session] | None = None,
+    heartbeat_interval_s: float | None = None,
+) -> JobRun | None:
     record_worker_heartbeat(session, worker_id=worker_id, status="idle")
-    job = claim_next_job(session, worker_id=worker_id)
+    job = claim_next_job(session, worker_id=worker_id, lease_seconds=lease_seconds)
     if job is None:
         return None
     record_worker_heartbeat(session, worker_id=worker_id, status="running", current_job_id=job.id)
     from app.services import thirteenf_admin_dashboard
     from app.services.notifications import notify_job_completion
 
+    stop_lease_heartbeat = _start_lease_heartbeat(
+        job,
+        worker_id=worker_id,
+        heartbeat_session_factory=heartbeat_session_factory,
+        heartbeat_interval_s=heartbeat_interval_s,
+        lease_seconds=lease_seconds,
+    )
     try:
         payload = dict(job.input_json or {})
         payload["_job_id"] = job.id
@@ -209,6 +242,7 @@ def execute_queued_job_once(session: Session, *, worker_id: str) -> JobRun | Non
             now=datetime.now(timezone.utc),
         )
     finally:
+        stop_lease_heartbeat()
         record_worker_heartbeat(session, worker_id=worker_id, status="idle")
 
     try:
@@ -234,6 +268,49 @@ def _lease_owner_matches(job: JobRun | None, *, worker_id: str, lease_token: str
         and bool(job.lease_token)
         and job.lease_token == lease_token
     )
+
+
+def _start_lease_heartbeat(
+    job: JobRun,
+    *,
+    worker_id: str,
+    heartbeat_session_factory: Callable[[], Session] | None,
+    heartbeat_interval_s: float | None,
+    lease_seconds: int | None,
+) -> Callable[[], None]:
+    if heartbeat_session_factory is None or not job.lease_token:
+        return lambda: None
+
+    stop_event = threading.Event()
+    interval = heartbeat_interval_s or max(1.0, (lease_seconds or settings.THIRTEENF_JOB_LEASE_SECONDS) / 3)
+
+    def _run() -> None:
+        while not stop_event.is_set():
+            heartbeat_session = heartbeat_session_factory()
+            try:
+                heartbeat_job_lease(
+                    heartbeat_session,
+                    job_id=job.id,
+                    worker_id=worker_id,
+                    lease_token=job.lease_token,
+                    lease_seconds=lease_seconds,
+                )
+            except Exception:
+                logger.warning("Failed to renew lease for job %s", job.id, exc_info=True)
+            finally:
+                close = getattr(heartbeat_session, "close", None)
+                if callable(close):
+                    close()
+            stop_event.wait(interval)
+
+    thread = threading.Thread(target=_run, name=f"lease-heartbeat-{job.id}", daemon=True)
+    thread.start()
+
+    def _stop() -> None:
+        stop_event.set()
+        thread.join(timeout=1.0)
+
+    return _stop
 
 
 class ThirteenFJobWorker:
@@ -266,7 +343,11 @@ class ThirteenFJobWorker:
         while not self._stop_event.is_set():
             session = self.db_factory()
             try:
-                job = execute_queued_job_once(session, worker_id=self.worker_id)
+                job = execute_queued_job_once(
+                    session,
+                    worker_id=self.worker_id,
+                    heartbeat_session_factory=self.db_factory,
+                )
                 if job is None:
                     record_worker_heartbeat(session, worker_id=self.worker_id, status="idle")
             except Exception as exc:

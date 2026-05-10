@@ -149,6 +149,16 @@ def create_scheduler(db_factory: Callable) -> BackgroundScheduler:
         misfire_grace_time=900,
     )
 
+    scheduler.add_job(
+        run_job_watchdog,
+        trigger=CronTrigger(minute=f"*/{settings.THIRTEENF_WATCHDOG_INTERVAL_MINUTES}", timezone="UTC"),
+        args=[db_factory],
+        id="thirteenf_job_watchdog",
+        name="13F job lease watchdog",
+        replace_existing=True,
+        misfire_grace_time=900,
+    )
+
     if settings.THIRTEENF_SMART_RETRY_ENABLED:
         # Run every day at 02:00 UTC.
         # Checks for partially failed jobs and retries safe targets if they are old enough.
@@ -179,6 +189,21 @@ def run_daily_sync_poll(db_factory: Callable) -> None:
     except Exception as exc:
         db.rollback()
         logger.exception("Daily 13F sync poll failed: %s", exc)
+    finally:
+        db.close()
+
+
+def run_job_watchdog(db_factory: Callable) -> None:
+    """Mark timed-out running jobs only after their lease has expired."""
+    db = db_factory()
+    try:
+        from app.services.thirteenf_job_worker import mark_stale_running_jobs_abandoned
+
+        result = mark_stale_running_jobs_abandoned(db)
+        logger.info("13F job watchdog: %s", result)
+    except Exception as exc:
+        db.rollback()
+        logger.exception("13F job watchdog failed: %s", exc)
     finally:
         db.close()
 

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import pytest
+
 from app.services.thirteenf_alerts import InMemoryAlertTransport, emit_alert
 
 
@@ -45,3 +47,17 @@ def test_alert_service_sends_to_transport_when_discord_configured(monkeypatch):
             },
         }
     ]
+
+
+def test_alert_service_accepts_p3_without_webhook(monkeypatch):
+    monkeypatch.setattr("app.services.thirteenf_alerts.settings.DISCORD_WEBHOOK_URL", None)
+
+    alert = emit_alert(severity="P3", title="Needs review stale", message="Manual review is overdue")
+
+    assert alert["severity"] == "P3"
+    assert alert["sent"] is False
+
+
+def test_alert_service_rejects_unknown_severity():
+    with pytest.raises(ValueError):
+        emit_alert(severity="P4", title="Bad severity", message="Invalid")
