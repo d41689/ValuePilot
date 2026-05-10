@@ -41,6 +41,7 @@ OWNERSHIP_CHANGE_STATUSES = {
     "cusip_changed",
 }
 OWNERSHIP_SIGNAL_CONFIDENCE_LEVELS = {"high_confidence", "medium_confidence", "low_confidence", "unavailable"}
+OWNERSHIP_POSITION_TYPES = {"common", "put_option", "call_option"}
 
 
 def _validate_choice(field: str, value: str, choices: set[str]) -> str:
@@ -532,6 +533,10 @@ class OwnershipChange13F(Base):
     @validates("confidence_level")
     def _validate_confidence_level(self, _: str, value: str) -> str:
         return _validate_choice("confidence_level", value, OWNERSHIP_SIGNAL_CONFIDENCE_LEVELS)
+
+    @validates("position_type")
+    def _validate_position_type(self, _: str, value: str) -> str:
+        return _validate_choice("position_type", value, OWNERSHIP_POSITION_TYPES)
 
 
 class JobRun(Base):

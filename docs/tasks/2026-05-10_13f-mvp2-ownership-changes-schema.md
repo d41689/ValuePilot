@@ -69,8 +69,13 @@
   - `docker compose exec api pytest -q tests/unit/test_13f_mvp2_ownership_changes_schema.py` -> 15 passed.
   - `docker compose exec api pytest -q tests/unit` -> 509 passed, 1 existing SQLAlchemy rollback warning.
   - `docker compose exec api pytest -q` -> 528 passed, 1 existing SQLAlchemy rollback warning.
+- 2026-05-10: Review follow-up verification:
+  - `docker compose exec api pytest -q tests/unit/test_13f_mvp2_ownership_changes_schema.py` -> 18 passed.
+  - `docker compose exec api pytest -q` -> 531 passed, 1 existing SQLAlchemy rollback warning.
 - 2026-05-10: Contract notes:
   - The schema stores/derives D5/D6 outputs through `change_status`, `confidence_level`, `is_primary_signal_eligible`, `caveat_codes`, and `unavailable_reason`.
   - `CUSIP_CHANGED` is represented by `change_status='cusip_changed'` with previous/current CUSIP columns.
   - Idempotency uniqueness includes `ssh_prnamt_type` and `position_type`, matching the PRD §7.4 security matching rule that separates share/unit type and options.
+  - `position_type` is constrained to `common`, `put_option`, and `call_option`; generic `option` is intentionally invalid so Put/Call rows cannot collide.
+  - `caveat_codes` is a JSON list of string codes, e.g. `["possible_split_or_merger", "combination_partial"]`. Structured/free-text caveat details should be carried by API serializers or future review fields, not mixed into this list.
   - No computation service, API response activation, frontend UI, PRD edit, cross-manager NT consolidation, or external corporate action source was added.

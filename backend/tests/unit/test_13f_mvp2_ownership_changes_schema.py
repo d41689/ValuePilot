@@ -6,6 +6,7 @@ from sqlalchemy.exc import IntegrityError
 
 from app.models.institutions import (
     OWNERSHIP_CHANGE_STATUSES,
+    OWNERSHIP_POSITION_TYPES,
     OWNERSHIP_SIGNAL_CONFIDENCE_LEVELS,
     InstitutionManager,
     OwnershipChange13F,
@@ -145,6 +146,21 @@ def test_ownership_signal_confidence_accepts_decision_gate_values(confidence):
     assert row.confidence_level == confidence
 
 
+@pytest.mark.parametrize("position_type", sorted(OWNERSHIP_POSITION_TYPES))
+def test_ownership_position_type_accepts_isolated_position_values(position_type):
+    row = OwnershipChange13F(
+        manager_id=1,
+        report_quarter="2026-Q1",
+        quarter_end_date=date(2026, 3, 31),
+        security_key="stock:1",
+        position_type=position_type,
+        change_status="unchanged",
+        confidence_level="high_confidence",
+    )
+
+    assert row.position_type == position_type
+
+
 def test_ownership_change_rejects_unknown_statuses():
     with pytest.raises(ValueError):
         OwnershipChange13F(
@@ -168,6 +184,17 @@ def test_ownership_change_rejects_unknown_statuses():
             confidence_level="certain",
         )
 
+    with pytest.raises(ValueError):
+        OwnershipChange13F(
+            manager_id=1,
+            report_quarter="2026-Q1",
+            quarter_end_date=date(2026, 3, 31),
+            security_key="stock:1",
+            position_type="option",
+            change_status="unchanged",
+            confidence_level="high_confidence",
+        )
+
 
 def test_ownership_change_unique_manager_quarter_security_position(db_session):
     manager = _manager(db_session)
@@ -179,3 +206,5 @@ def test_ownership_change_unique_manager_quarter_security_position(db_session):
             _ownership_change(db_session, manager, stock, change_status="reduced")
 
     _ownership_change(db_session, manager, stock, ssh_prnamt_type="PRN", change_status="unchanged")
+    _ownership_change(db_session, manager, stock, position_type="put_option", change_status="unchanged")
+    _ownership_change(db_session, manager, stock, position_type="call_option", change_status="unchanged")
