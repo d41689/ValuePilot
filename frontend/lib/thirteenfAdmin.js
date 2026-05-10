@@ -306,6 +306,8 @@ function normalizeAdminFilings(payload) {
     items: (Array.isArray(data.items) ? data.items : []).map((item) => {
       const manager = item.manager && typeof item.manager === 'object' ? item.manager : {};
       const holdingsCount = item.holdings_count;
+      const isNoticeReportedElsewhere =
+        item.coverage_type === 'notice_reported_elsewhere' || item.form_type === '13F-NT';
       return {
         id: item.id,
         accessionNumber: item.accession_number ?? item.accession_no ?? '—',
@@ -326,8 +328,12 @@ function normalizeAdminFilings(payload) {
         reportQuarter: item.report_quarter ?? item.quarter ?? '—',
         officialFilingDeadline: item.official_filing_deadline ?? null,
         isActiveForManagerPeriod: Boolean(item.is_active_for_manager_period),
-        holdingsCount: typeof holdingsCount === 'number' ? holdingsCount : null,
-        holdingsCountLabel: typeof holdingsCount === 'number' ? holdingsCount.toLocaleString('en-US') : '—',
+        holdingsCount: isNoticeReportedElsewhere ? null : typeof holdingsCount === 'number' ? holdingsCount : null,
+        holdingsCountLabel: isNoticeReportedElsewhere
+          ? '—'
+          : typeof holdingsCount === 'number'
+            ? holdingsCount.toLocaleString('en-US')
+            : '—',
         caveatCodes: filingCaveatCodes(item),
         raw: item,
       };

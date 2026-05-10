@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   Activity,
@@ -110,6 +110,12 @@ export default function Admin13FPage() {
   const [quarterFilingStatus, setQuarterFilingStatus] = useState('all');
   const [quarterFilingOffset, setQuarterFilingOffset] = useState(0);
   const [filingParseStatus, setFilingParseStatus] = useState('all');
+  const [jobStatusFilter, setJobStatusFilter] = useState('all');
+  const [jobTypeFilter, setJobTypeFilter] = useState('all');
+  const [jobStartedFrom, setJobStartedFrom] = useState('');
+  const [jobStartedTo, setJobStartedTo] = useState('');
+  const [jobSyncDate, setJobSyncDate] = useState('');
+  const [jobQuarter, setJobQuarter] = useState('');
   const readinessQuery = useQuery({
     queryKey: ['admin-13f-readiness'],
     queryFn: async () => (await apiClient.get('/admin/13f/readiness')).data,
@@ -127,8 +133,25 @@ export default function Admin13FPage() {
     queryFn: async () => (await apiClient.get('/admin/13f/managers')).data,
   });
   const jobsQuery = useQuery({
-    queryKey: ['admin-13f-jobs'],
-    queryFn: async () => (await apiClient.get('/admin/13f/jobs')).data,
+    queryKey: [
+      'admin-13f-jobs',
+      jobStatusFilter,
+      jobTypeFilter,
+      jobStartedFrom,
+      jobStartedTo,
+      jobSyncDate,
+      jobQuarter,
+    ],
+    queryFn: async () => {
+      const params = new URLSearchParams({ page: '1', page_size: '50' });
+      if (jobStatusFilter !== 'all') params.set('status', jobStatusFilter);
+      if (jobTypeFilter !== 'all') params.set('job_type', jobTypeFilter);
+      if (jobStartedFrom.trim()) params.set('started_from', `${jobStartedFrom.trim()}T00:00:00Z`);
+      if (jobStartedTo.trim()) params.set('started_to', `${jobStartedTo.trim()}T00:00:00Z`);
+      if (jobSyncDate.trim()) params.set('sync_date', jobSyncDate.trim());
+      if (jobQuarter.trim()) params.set('quarter', jobQuarter.trim());
+      return (await apiClient.get(`/admin/13f/jobs?${params.toString()}`)).data;
+    },
     refetchInterval: 5000,
   });
   const qualityQuery = useQuery({
@@ -230,7 +253,7 @@ export default function Admin13FPage() {
   const [pendingRetryManager, setPendingRetryManager] = useState<Record<string, unknown> | null>(null);
   const [retrySearchName, setRetrySearchName] = useState('');
   const [retryNote, setRetryNote] = useState('');
-  async function refreshAdminData() {
+  const refreshAdminData = useCallback(async () => {
     await Promise.all([
       queryClient.invalidateQueries({ queryKey: ['admin-13f-readiness'] }),
       queryClient.invalidateQueries({ queryKey: ['admin-13f-quarters'] }),
@@ -249,7 +272,7 @@ export default function Admin13FPage() {
       queryClient.invalidateQueries({ queryKey: ['admin-13f-job-detail'] }),
       queryClient.invalidateQueries({ queryKey: ['admin-13f-edgar-rate-limit'] }),
     ]);
-  }
+  }, [queryClient]);
   const triggerJob = useMutation({
     mutationFn: async (payload: Record<string, unknown>) =>
       (await apiClient.post('/admin/13f/jobs', payload)).data,
@@ -408,7 +431,7 @@ export default function Admin13FPage() {
     }
 
     prevActiveKeys.current = currentKeys;
-  }, [activeLockKeys]);
+  }, [activeLockKeys, refreshAdminData]);
 
   const selectedJob = jobDetailQuery.data ?? null;
   const selectedAmendment = amendmentDetailQuery.data ?? null;
@@ -663,7 +686,7 @@ export default function Admin13FPage() {
               Loading 13F operations state...
             </div>
           ) : null}
-          <div className="grid gap-3 md:grid-cols-4">
+          <div className="grid gap-3 md:grid-cols-5">
             <MetricTile label="Latest usable" value={readiness.latestUsableQuarter} />
             <MetricTile
               label="Current quarter"
@@ -674,6 +697,13 @@ export default function Admin13FPage() {
             <MetricTile
               label="Managers"
               value={`${formatInteger(readiness.counts.confirmed_managers)} confirmed`}
+            />
+            <MetricTile
+              label="NT filers"
+              value={formatInteger(
+                readiness.counts.nt_filer_count ?? readiness.counts.nt_filers
+              )}
+              detail="reported elsewhere"
             />
           </div>
           <div className="rounded-md border border-amber-300/70 bg-amber-50 px-3 py-2 text-sm text-amber-950">
@@ -1943,7 +1973,63 @@ export default function Admin13FPage() {
               Job Runs
             </CardTitle>
           </CardHeader>
-          <CardContent>
+          <CardContent className="space-y-4">
+            <div className="grid gap-3 md:grid-cols-3 xl:grid-cols-6">
+              <Select value={jobStatusFilter} onValueChange={setJobStatusFilter}>
+                <SelectTrigger aria-label="Filter jobs by status">
+                  <SelectValue placeholder="Status" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">All statuses</SelectItem>
+                  <SelectItem value="queued">Queued</SelectItem>
+                  <SelectItem value="running">Running</SelectItem>
+                  <SelectItem value="succeeded">Succeeded</SelectItem>
+                  <SelectItem value="partial_success">Partial success</SelectItem>
+                  <SelectItem value="failed">Failed</SelectItem>
+                  <SelectItem value="cancel_requested">Cancel requested</SelectItem>
+                  <SelectItem value="canceled">Canceled</SelectItem>
+                  <SelectItem value="skipped">Skipped</SelectItem>
+                </SelectContent>
+              </Select>
+              <Select value={jobTypeFilter} onValueChange={setJobTypeFilter}>
+                <SelectTrigger aria-label="Filter jobs by type">
+                  <SelectValue placeholder="Job type" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">All job types</SelectItem>
+                  <SelectItem value="fetch_daily_index">Fetch daily index</SelectItem>
+                  <SelectItem value="ingest_accession">Ingest accession</SelectItem>
+                  <SelectItem value="ingest_holdings">Ingest holdings</SelectItem>
+                  <SelectItem value="quality_check">Quality check</SelectItem>
+                  <SelectItem value="enrich_metadata">Enrich metadata</SelectItem>
+                  <SelectItem value="reprocess_amendment">Reprocess amendment</SelectItem>
+                </SelectContent>
+              </Select>
+              <Input
+                type="date"
+                aria-label="Started from"
+                value={jobStartedFrom}
+                onChange={(event) => setJobStartedFrom(event.target.value)}
+              />
+              <Input
+                type="date"
+                aria-label="Started to"
+                value={jobStartedTo}
+                onChange={(event) => setJobStartedTo(event.target.value)}
+              />
+              <Input
+                type="date"
+                aria-label="Sync date"
+                value={jobSyncDate}
+                onChange={(event) => setJobSyncDate(event.target.value)}
+              />
+              <Input
+                aria-label="Job quarter"
+                placeholder="2026-Q1"
+                value={jobQuarter}
+                onChange={(event) => setJobQuarter(event.target.value)}
+              />
+            </div>
             <Table>
               <TableHeader>
                 <TableRow>

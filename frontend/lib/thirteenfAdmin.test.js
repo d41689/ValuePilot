@@ -390,6 +390,7 @@ test('normalizeAdminFilings exposes caveat-driving fields without inferring from
         coverage_completeness: 'unknown',
         parse_status: 'succeeded',
         manager: { legal_name: 'Notice Manager' },
+        holdings_count: 0,
       },
     ],
     total: 2,
@@ -408,6 +409,7 @@ test('normalizeAdminFilings exposes caveat-driving fields without inferring from
   ]);
   assert.equal(filings.items[0].holdingsCountLabel, '0');
   assert.deepEqual(filings.items[1].caveatCodes, ['NOTICE_REPORTED_ELSEWHERE']);
+  assert.equal(filings.items[1].holdingsCountLabel, '—');
 });
 
 test('normalizeParseRuns preserves pagination and current audit marker', () => {

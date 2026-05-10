@@ -68,3 +68,12 @@
   - `docker compose exec web node --test lib/thirteenfAdmin.test.js` -> 25 passed.
   - `docker compose exec web npm run lint` -> passed with existing `refreshAdminData` hook dependency warning.
   - `docker compose exec web npm run build` -> passed with the same existing warning.
+- 2026-05-10: Accepted Tech Lead UI review follow-ups:
+  - Added Overview `NT filers` metric from readiness counts.
+  - Added Jobs filters for status, job type, started date range, sync date, and quarter.
+  - Display 13F-NT / notice-reported-elsewhere filing holdings count as unavailable (`—`) even if backend sends `0`.
+  - Converted `refreshAdminData` to `useCallback` and added the hook dependency, clearing the previous lint warning.
+- 2026-05-10: Follow-up Docker verification:
+  - `docker compose exec web node --test lib/thirteenfAdmin.test.js` -> 25 passed.
+  - `docker compose exec web npm run lint` -> passed with no warnings.
+  - `docker compose exec web npm run build` -> passed.
