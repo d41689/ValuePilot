@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import date
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Query, status
@@ -35,6 +36,11 @@ from app.services.thirteenf_admin_dashboard import (
     revoke_manager_cik,
     trigger_job,
     update_manager,
+)
+from app.services.thirteenf_daily_sync import (
+    create_no_index_date,
+    list_no_index_dates,
+    update_no_index_date,
 )
 
 admin_router = APIRouter()
@@ -88,6 +94,18 @@ class JobTriggerRequest(BaseModel):
     accession_no: str | None = None
     dry_run: bool = False
     trigger_source: str | None = None
+
+
+class NoIndexDateCreateRequest(BaseModel):
+    date: date
+    reason: str
+    holiday_name: str | None = None
+    note: str | None = None
+
+
+class NoIndexDatePatchRequest(BaseModel):
+    note: str | None = None
+    active: bool | None = None
 
 
 @admin_router.get("/status", response_model=dict)
@@ -147,6 +165,52 @@ def read_quarter_detail(
 @admin_router.get("/edgar-rate-limit", response_model=dict)
 def read_edgar_rate_limit_status(session: SessionDep, current_user: AdminUser) -> Any:
     return build_edgar_rate_limit_status()
+
+
+@admin_router.get("/no-index-dates", response_model=dict)
+def read_no_index_dates(
+    session: SessionDep,
+    current_user: AdminUser,
+    year: int | None = Query(default=None, ge=1994, le=2100),
+) -> Any:
+    return {"items": list_no_index_dates(session, year=year)}
+
+
+@admin_router.post("/no-index-dates", response_model=dict)
+def create_13f_no_index_date(
+    session: SessionDep,
+    current_user: AdminUser,
+    payload: NoIndexDateCreateRequest,
+) -> Any:
+    try:
+        return create_no_index_date(
+            session,
+            expected_date=payload.date,
+            reason=payload.reason,
+            holiday_name=payload.holiday_name,
+            note=payload.note,
+            created_by=current_user.id,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+
+
+@admin_router.patch("/no-index-dates/{expected_date}", response_model=dict)
+def patch_13f_no_index_date(
+    session: SessionDep,
+    current_user: AdminUser,
+    expected_date: date,
+    payload: NoIndexDatePatchRequest,
+) -> Any:
+    try:
+        return update_no_index_date(
+            session,
+            expected_date,
+            note=payload.note,
+            active=payload.active,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
 
 
 @admin_router.get("/tasks", response_model=dict)

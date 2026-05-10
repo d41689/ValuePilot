@@ -30,11 +30,16 @@ class FormIdxRecord:
         return stem
 
     @property
+    def accession_number(self) -> str:
+        return self.accession_no
+
+    @property
     def cik_padded(self) -> str:
         return self.cik.zfill(10)
 
 
 _FORM_TYPES = frozenset({"13F-HR", "13F-HR/A"})
+_DAILY_13F_FORM_TYPES = frozenset({"13F-HR", "13F-HR/A", "13F-NT"})
 
 # Data line: form_type  company_name  cik  YYYY-MM-DD  edgar/data/...
 # We anchor on the well-known structured fields: date and edgar/data path.
@@ -97,6 +102,10 @@ def parse_form_idx(content: bytes, form_types: frozenset[str] = _FORM_TYPES) -> 
     return records
 
 
+def parse_daily_13f_form_idx(content: bytes) -> list[FormIdxRecord]:
+    return parse_form_idx(content, form_types=_DAILY_13F_FORM_TYPES)
+
+
 def quarter_to_year_qtr(quarter: str) -> tuple[int, int]:
     """Parse '2025-Q1' → (2025, 1)."""
     parts = quarter.upper().split("-Q")
@@ -107,3 +116,9 @@ def quarter_to_year_qtr(quarter: str) -> tuple[int, int]:
 
 def form_idx_url(year: int, qtr: int) -> str:
     return f"https://www.sec.gov/Archives/edgar/full-index/{year}/QTR{qtr}/form.idx"
+
+
+def daily_form_idx_url(sync_date: date) -> str:
+    qtr = (sync_date.month - 1) // 3 + 1
+    stamp = sync_date.strftime("%Y%m%d")
+    return f"https://www.sec.gov/Archives/edgar/daily-index/{sync_date.year}/QTR{qtr}/form.{stamp}.idx"
