@@ -35,6 +35,13 @@ class _HoldingKey:
     position_type: str
 
 
+@dataclass(frozen=True)
+class _Pair:
+    key: _HoldingKey
+    current: Holding13F | None
+    previous: Holding13F | None
+
+
 def previous_report_quarter(report_quarter: str) -> str:
     """Return the immediately preceding quarter label for `YYYY-QN`."""
     year_part, quarter_part = report_quarter.split("-Q", 1)
@@ -181,17 +188,20 @@ def _compute_rows(
     previous_holdings: Iterable[Holding13F],
     mapping_warning: bool,
 ) -> list[OwnershipChange13F]:
-    current_by_key = {_holding_key(holding): holding for holding in current_holdings}
-    previous_by_key = {_holding_key(holding): holding for holding in previous_holdings}
     rows: list[OwnershipChange13F] = []
-    for key in sorted(current_by_key.keys() | previous_by_key.keys(), key=lambda item: item.security_key):
-        current = current_by_key.get(key)
-        previous = previous_by_key.get(key)
-        status, confidence, primary, caveats = _classify_change(current=current, previous=previous)
+    for pair in _matched_pairs(current_holdings, previous_holdings):
+        status, confidence, primary, caveats = _classify_change(current=pair.current, previous=pair.previous)
         if mapping_warning and status in {"new_position", "exited_position", "increased", "reduced"}:
             confidence = "low_confidence"
             primary = False
             caveats = [*caveats, MAPPING_WARNING_CAVEAT]
+        confidence, primary, caveats = _adjust_for_filing_caveats(
+            confidence=confidence,
+            primary=primary,
+            caveats=caveats,
+            current_filing=current_filing,
+            previous_filing=previous_filing,
+        )
         rows.append(
             _build_change_row(
                 manager_id=manager_id,
@@ -201,8 +211,9 @@ def _compute_rows(
                 previous_quarter_end_date=previous_filing.quarter_end_date,
                 current_filing=current_filing,
                 previous_filing=previous_filing,
-                current_holding=current,
-                previous_holding=previous,
+                current_holding=pair.current,
+                previous_holding=pair.previous,
+                key=pair.key,
                 change_status=status,
                 confidence_level=confidence,
                 is_primary_signal_eligible=primary,
@@ -211,6 +222,38 @@ def _compute_rows(
             )
         )
     return rows
+
+
+def _matched_pairs(current_holdings: Iterable[Holding13F], previous_holdings: Iterable[Holding13F]) -> list[_Pair]:
+    """Match by stock identity first, then CUSIP for stragglers.
+
+    PRD §7.4 requires CUSIP fallback when either side lacks `stock_id`.
+    This prevents a holding that gained a stock mapping between quarters from
+    becoming a false exited_position + new_position pair.
+    """
+    current_by_stock = {_stock_key(holding): holding for holding in current_holdings if holding.stock_id}
+    previous_by_stock = {_stock_key(holding): holding for holding in previous_holdings if holding.stock_id}
+    pairs: list[_Pair] = []
+    matched_current_ids: set[int] = set()
+    matched_previous_ids: set[int] = set()
+
+    for key in sorted(current_by_stock.keys() & previous_by_stock.keys(), key=lambda item: item.security_key):
+        current = current_by_stock[key]
+        previous = previous_by_stock[key]
+        pairs.append(_Pair(key=key, current=current, previous=previous))
+        matched_current_ids.add(current.id)
+        matched_previous_ids.add(previous.id)
+
+    current_remaining = [holding for holding in current_holdings if holding.id not in matched_current_ids]
+    previous_remaining = [holding for holding in previous_holdings if holding.id not in matched_previous_ids]
+    current_by_cusip = {_cusip_key(holding): holding for holding in current_remaining}
+    previous_by_cusip = {_cusip_key(holding): holding for holding in previous_remaining}
+
+    for key in sorted(current_by_cusip.keys() | previous_by_cusip.keys(), key=lambda item: item.security_key):
+        current = current_by_cusip.get(key)
+        previous = previous_by_cusip.get(key)
+        pairs.append(_Pair(key=_pair_key(current, previous), current=current, previous=previous))
+    return pairs
 
 
 def _classify_change(
@@ -250,9 +293,10 @@ def _build_change_row(
     is_primary_signal_eligible: bool,
     caveat_codes: list[str],
     unavailable_reason: str | None,
+    key: _HoldingKey | None = None,
 ) -> OwnershipChange13F:
     representative = current_holding or previous_holding
-    key = _holding_key(representative)
+    key = key or _holding_key(representative)
     current_value = _value_usd(current_holding)
     previous_value = _value_usd(previous_holding)
     current_shares = _shares(current_holding)
@@ -303,11 +347,30 @@ def _build_change_row(
 
 
 def _holding_key(holding: Holding13F) -> _HoldingKey:
+    return _stock_key(holding) if holding.stock_id else _cusip_key(holding)
+
+
+def _stock_key(holding: Holding13F) -> _HoldingKey:
     return _HoldingKey(
-        security_key=f"stock:{holding.stock_id}" if holding.stock_id else f"cusip:{holding.cusip}",
+        security_key=f"stock:{holding.stock_id}",
         ssh_prnamt_type=holding.ssh_prnamt_type or "SH",
         position_type=_position_type(holding),
     )
+
+
+def _cusip_key(holding: Holding13F) -> _HoldingKey:
+    return _HoldingKey(
+        security_key=f"cusip:{holding.cusip}",
+        ssh_prnamt_type=holding.ssh_prnamt_type or "SH",
+        position_type=_position_type(holding),
+    )
+
+
+def _pair_key(current: Holding13F | None, previous: Holding13F | None) -> _HoldingKey:
+    representative = current or previous
+    if current and previous and current.stock_id and previous.stock_id:
+        return _stock_key(current)
+    return _cusip_key(representative)
 
 
 def _linked_common_mapping_ratio(holdings: Iterable[Holding13F]) -> float | None:
@@ -382,3 +445,37 @@ def _has_pending_amendment_caveat(filing: Filing13F | None) -> bool:
     if not filing:
         return False
     return filing.amendment_status in {"amendments_pending", "amendment_failed"}
+
+
+def _adjust_for_filing_caveats(
+    *,
+    confidence: str,
+    primary: bool,
+    caveats: list[str],
+    current_filing: Filing13F | None,
+    previous_filing: Filing13F | None,
+) -> tuple[str, bool, list[str]]:
+    adjusted = list(caveats)
+    if _has_confidential_caveat(current_filing) or _has_confidential_caveat(previous_filing):
+        adjusted.append("confidential_treatment")
+        confidence = "medium_confidence" if confidence == "high_confidence" else confidence
+        primary = False
+    if _has_combination_caveat(current_filing) or _has_combination_caveat(previous_filing):
+        adjusted.append("combination_report")
+        confidence = "low_confidence"
+        primary = False
+    if _has_pending_amendment_caveat(current_filing) or _has_pending_amendment_caveat(previous_filing):
+        adjusted.append("pending_amendment")
+        confidence = "low_confidence"
+        primary = False
+    return confidence, primary, _dedupe_codes(adjusted)
+
+
+def _dedupe_codes(codes: list[str]) -> list[str]:
+    seen: set[str] = set()
+    result: list[str] = []
+    for code in codes:
+        if code not in seen:
+            result.append(code)
+            seen.add(code)
+    return result

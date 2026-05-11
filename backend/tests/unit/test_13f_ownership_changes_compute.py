@@ -53,6 +53,8 @@ def _filing(
     coverage_completeness: str = "complete",
     coverage_type: str = "normal",
     amendment_status: str = "no_amendments_seen",
+    has_confidential_treatment: bool = False,
+    confidential_treatment_status: str = "none",
 ) -> Filing13F:
     qend = _quarter_end(quarter)
     filing = Filing13F(
@@ -67,6 +69,8 @@ def _filing(
         report_type=report_type,
         coverage_completeness=coverage_completeness,
         coverage_type=coverage_type,
+        has_confidential_treatment=has_confidential_treatment,
+        confidential_treatment_status=confidential_treatment_status,
         report_quarter=quarter,
         quarter_end_date=qend,
         official_filing_deadline=qend,
@@ -185,6 +189,78 @@ def test_compute_changes_classifies_strong_labels_and_cusip_changed(db_session):
     assert by_stock[changed.id].caveat_codes == ["cusip_changed"]
 
 
+def test_stock_mapping_added_between_quarters_matches_by_cusip_not_exit_and_new(db_session):
+    manager = _manager(db_session)
+    stock = _stock(db_session, "MAP")
+    previous = _filing(
+        db_session,
+        manager,
+        quarter="2025-Q4",
+        accession="0000000007-25-000001",
+    )
+    current = _filing(
+        db_session,
+        manager,
+        quarter="2026-Q1",
+        accession="0000000007-26-000001",
+    )
+    previous_run = _parse_run(db_session, previous)
+    current_run = _parse_run(db_session, current)
+    _holding(db_session, previous, previous_run, None, cusip="123456789", shares=10, value_usd=100, row="prev")
+    _holding(db_session, current, current_run, stock, cusip="123456789", shares=15, value_usd=150, row="curr")
+
+    result = compute_ownership_changes_for_manager_quarter(
+        db_session,
+        manager_id=manager.id,
+        report_quarter="2026-Q1",
+    )
+
+    assert result["created"] == 1
+    row = _rows(db_session)[0]
+    assert row.change_status == "increased"
+    assert row.stock_id == stock.id
+    assert row.security_key == "cusip:123456789"
+    assert row.current_holding_id is not None
+    assert row.previous_holding_id is not None
+    assert row.share_delta == 5
+
+
+def test_reduced_and_unchanged_statuses_are_emitted(db_session):
+    manager = _manager(db_session)
+    reduced = _stock(db_session, "RED")
+    unchanged = _stock(db_session, "SAME")
+    previous = _filing(
+        db_session,
+        manager,
+        quarter="2025-Q4",
+        accession="0000000008-25-000001",
+    )
+    current = _filing(
+        db_session,
+        manager,
+        quarter="2026-Q1",
+        accession="0000000008-26-000001",
+    )
+    previous_run = _parse_run(db_session, previous)
+    current_run = _parse_run(db_session, current)
+    _holding(db_session, previous, previous_run, reduced, cusip="123456781", shares=20, value_usd=200, row="red")
+    _holding(db_session, current, current_run, reduced, cusip="123456781", shares=5, value_usd=50, row="red")
+    _holding(db_session, previous, previous_run, unchanged, cusip="123456782", shares=7, value_usd=70, row="same")
+    _holding(db_session, current, current_run, unchanged, cusip="123456782", shares=7, value_usd=80, row="same")
+
+    compute_ownership_changes_for_manager_quarter(
+        db_session,
+        manager_id=manager.id,
+        report_quarter="2026-Q1",
+    )
+
+    by_stock = {row.stock_id: row for row in _rows(db_session)}
+    assert by_stock[reduced.id].change_status == "reduced"
+    assert by_stock[reduced.id].share_delta == -15
+    assert by_stock[unchanged.id].change_status == "unchanged"
+    assert by_stock[unchanged.id].share_delta == 0
+
+
 def test_prior_nt_yields_no_prior_data_not_new_position(db_session):
     manager = _manager(db_session)
     stock = _stock(db_session, "NTQ")
@@ -220,6 +296,66 @@ def test_prior_nt_yields_no_prior_data_not_new_position(db_session):
     assert row.is_primary_signal_eligible is False
     assert row.unavailable_reason == "prior_quarter_13f_nt"
     assert row.caveat_codes == ["prior_quarter_13f_nt"]
+
+
+def test_missing_prior_filing_yields_no_prior_data(db_session):
+    manager = _manager(db_session)
+    stock = _stock(db_session, "MIS")
+    current = _filing(
+        db_session,
+        manager,
+        quarter="2026-Q1",
+        accession="0000000009-26-000001",
+    )
+    current_run = _parse_run(db_session, current)
+    _holding(db_session, current, current_run, stock, cusip="223456789", shares=10, value_usd=1000, row="missing")
+
+    compute_ownership_changes_for_manager_quarter(
+        db_session,
+        manager_id=manager.id,
+        report_quarter="2026-Q1",
+    )
+
+    row = _rows(db_session)[0]
+    assert row.change_status == "no_prior_data"
+    assert row.unavailable_reason == "missing_prior_quarter"
+    assert row.is_primary_signal_eligible is False
+
+
+def test_confidential_treatment_downgrades_primary_signal(db_session):
+    manager = _manager(db_session)
+    stock = _stock(db_session, "CNF")
+    previous = _filing(
+        db_session,
+        manager,
+        quarter="2025-Q4",
+        accession="0000000010-25-000001",
+    )
+    current = _filing(
+        db_session,
+        manager,
+        quarter="2026-Q1",
+        accession="0000000010-26-000001",
+        has_confidential_treatment=True,
+        confidential_treatment_status="requested",
+    )
+    previous_run = _parse_run(db_session, previous)
+    current_run = _parse_run(db_session, current)
+    _holding(db_session, previous, previous_run, stock, cusip="323456789", shares=10, value_usd=1000, row="conf")
+    _holding(db_session, current, current_run, stock, cusip="323456789", shares=20, value_usd=2000, row="conf")
+
+    compute_ownership_changes_for_manager_quarter(
+        db_session,
+        manager_id=manager.id,
+        report_quarter="2026-Q1",
+    )
+
+    row = _rows(db_session)[0]
+    assert row.change_status == "increased"
+    assert row.confidence_level == "medium_confidence"
+    assert row.is_primary_signal_eligible is False
+    assert row.has_confidential_treatment_caveat is True
+    assert row.caveat_codes == ["confidential_treatment"]
 
 
 def test_compute_changes_separates_put_and_call_position_types(db_session):
