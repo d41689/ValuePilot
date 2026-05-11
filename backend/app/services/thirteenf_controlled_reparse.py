@@ -67,6 +67,17 @@ def controlled_reparse_accession(
     before = _snapshot(session, filing)
     override = _override_for_id(session, override_id) if override_id is not None else None
 
+    if override is not None and override.accession_number != accession_number:
+        raise ValueError(
+            f"Override {override_id} belongs to {override.accession_number!r}, "
+            f"not {accession_number!r}."
+        )
+    if override is not None and override.status != "pending_reparse":
+        raise ValueError(
+            f"Override {override_id} has status {override.status!r}; "
+            "only 'pending_reparse' overrides may be applied."
+        )
+
     try:
         result = reparse_accession(session, accession_number, infotable_bytes=infotable_bytes)
     except Exception:
@@ -91,7 +102,7 @@ def controlled_reparse_accession(
 
     gate_passed, validation_errors = _run_validation_gate(validation_gate, session, filing, new_run)
     if not gate_passed:
-        _restore_current_pointer(session, accession_number, before["current_parse_run_id"], new_run.id)
+        _restore_current_pointer(session, before["current_parse_run_id"], new_run.id)
         if override is not None:
             override.status = "reparse_failed"
             override.result_parse_run_id = new_run.id
@@ -119,7 +130,8 @@ def controlled_reparse_accession(
         override.status = "applied"
         override.result_parse_run_id = new_run.id
         session.add_all([filing, override])
-        session.commit()
+
+    session.commit()
 
     after = _snapshot(session, filing)
     return ControlledReparseResult(
@@ -153,13 +165,11 @@ def _override_for_id(session: Session, override_id: int) -> FilingValueUnitOverr
 
 
 def _run_validation_gate(
-    validation_gate: ValidationGate | None,
+    validation_gate: ValidationGate,
     session: Session,
     filing: Filing13F,
     parse_run: ParseRun13F,
 ) -> tuple[bool, list[str]]:
-    if validation_gate is None:
-        return True, []
     result = validation_gate(session, filing, parse_run)
     if isinstance(result, tuple):
         passed, errors = result
@@ -169,10 +179,12 @@ def _run_validation_gate(
 
 def _restore_current_pointer(
     session: Session,
-    accession_number: str,
     old_parse_run_id: int | None,
     new_parse_run_id: int,
 ) -> None:
+    # Demote before promote: the non-deferrable partial unique index on
+    # (accession_number WHERE is_current) fires at flush time, so the new run
+    # must be deactivated before the old run is reactivated.
     new_run = session.get(ParseRun13F, new_parse_run_id)
     if new_run is not None:
         new_run.is_current = False
@@ -243,8 +255,8 @@ def _impact_summary(
         "holdings_rows_before": before_holdings,
         "holdings_rows_after": after_holdings,
         "holdings_rows_created": holdings_rows_created,
-        "holdings_rows_changed": abs(holdings_rows_created - before_holdings),
-        "ownership_changes_invalidated": int(before["ownership_changes_count"] or 0),
+        "holdings_row_count_delta": abs(holdings_rows_created - before_holdings),
+        "ownership_changes_recompute_count": int(before["ownership_changes_count"] or 0),
         "ownership_changes_recompute_scope": {
             "manager_id": filing.manager_id,
             "report_quarter": filing.report_quarter,

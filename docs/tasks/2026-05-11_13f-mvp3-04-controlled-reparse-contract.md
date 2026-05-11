@@ -66,9 +66,11 @@ Acceptance criteria:
 - 2026-05-11: Impact summary includes filings affected, parse runs created, final current-pointer change, current holdings before/after, candidate holdings rows created, ownership-change recompute scope, parse-status impact, and quality-finding deltas.
 - 2026-05-11: MVP3-03 carryovers handled: `status='applied'` partial unique index remains deferred until batch/control workflow transition rules are finalized; `created_by_user_id` remains deferred because this task does not introduce request/approval separation; `(filing_id, status)` index remains deferred because this task does not add a pending-override query path.
 - 2026-05-11: Scope guard: no batch reparse, admin API/UI, historical backfill, corporate-action UI, parser feature change, or PRD edit.
+- 2026-05-11: Post-review fixes applied — removed unused `accession_number` param from `_restore_current_pointer`; added flush-ordering comment (non-deferrable partial unique index constraint); added override-to-filing ownership guard; added `pending_reparse` starting-state guard; made `session.commit()` unconditional in success path; removed dead None guard from `_run_validation_gate`; renamed `ownership_changes_invalidated` → `ownership_changes_recompute_count` and `holdings_rows_changed` → `holdings_row_count_delta`; added 4 tests (success-without-override, parse-crash, non-pending-override, mismatched-override).
+- 2026-05-11: Review verdict — contract clean, ready to serve as foundation for MVP3-05 batch reparse. Two deferred items carried forward: (1) parse-crash test mocks reparse_accession in isolation; DB-error integration test deferred to MVP3-05 when reparse service grows more complex rollback paths. (2) `impact_summary` remains `dict[str, Any]`; extract to `ImpactSummary` dataclass before MVP3-05 batch layer is built so the aggregation field contract is explicit.
 
 ## Verification Results
 
-- `docker compose exec api pytest -q tests/unit/test_13f_mvp3_controlled_reparse.py` -> 3 passed.
-- `docker compose exec api pytest -q tests/unit/test_13f_mvp3_controlled_reparse.py tests/unit/test_13f_parse_run_audit.py tests/unit/test_13f_mvp3_value_unit_override_schema.py` -> 25 passed.
-- `docker compose exec api pytest -q` -> 570 passed, 1 pre-existing SQLAlchemy rollback warning in `test_duplicate_fingerprint_within_same_parse_run_raises`.
+- `docker compose exec api pytest -q tests/unit/test_13f_mvp3_controlled_reparse.py` -> 3 passed (initial).
+- `docker compose exec api pytest -q tests/unit/test_13f_mvp3_controlled_reparse.py` -> 7 passed (after post-review fixes).
+- `docker compose exec api pytest -q` -> 574 passed, 1 pre-existing SQLAlchemy rollback warning in `test_duplicate_fingerprint_within_same_parse_run_raises`.

@@ -2,6 +2,9 @@ from __future__ import annotations
 
 from datetime import date, datetime, timezone
 from itertools import count
+from unittest import mock
+
+import pytest
 
 from app.models.institutions import (
     Filing13F,
@@ -149,7 +152,7 @@ def test_controlled_reparse_success_applies_override_and_returns_impact_summary(
     assert result.impact_summary["current_pointers_changed"] == 1
     assert result.impact_summary["holdings_rows_before"] == 1
     assert result.impact_summary["holdings_rows_after"] == 2
-    assert result.impact_summary["holdings_rows_changed"] == 1
+    assert result.impact_summary["holdings_row_count_delta"] == 1
     assert result.impact_summary["ownership_changes_recompute_scope"] == {
         "manager_id": manager.id,
         "report_quarter": "2026-Q1",
@@ -168,16 +171,12 @@ def test_controlled_reparse_requires_explicit_validation_gate(db_session):
     filing = _filing(db_session, manager, "0009900001-26-000003")
     initial = ingest_holdings_for_filing(db_session, filing, _infotable(rows=1))
 
-    try:
+    with pytest.raises(ValueError, match="validation_gate is required"):
         controlled_reparse_accession(
             db_session,
             filing.accession_number,
             infotable_bytes=_infotable(rows=2),
         )
-    except ValueError as exc:
-        assert "validation_gate is required" in str(exc)
-    else:
-        raise AssertionError("controlled_reparse_accession must require an explicit validation gate")
 
     runs = db_session.query(ParseRun13F).filter_by(accession_number=filing.accession_number).all()
     assert [run.id for run in runs] == [initial["parse_run_id"]]
@@ -213,7 +212,7 @@ def test_controlled_reparse_validation_failure_restores_old_current_and_marks_ov
     assert result.impact_summary["holdings_rows_before"] == 1
     assert result.impact_summary["holdings_rows_after"] == 1
     assert result.impact_summary["holdings_rows_created"] == 2
-    assert result.impact_summary["holdings_rows_changed"] == 1
+    assert result.impact_summary["holdings_row_count_delta"] == 1
     assert old_run.is_current is True
     assert new_run.is_current is False
     assert new_holdings == 2
@@ -221,3 +220,100 @@ def test_controlled_reparse_validation_failure_restores_old_current_and_marks_ov
     assert refreshed_filing.effective_value_unit_override_id is None
     assert refreshed_override.status == "reparse_failed"
     assert refreshed_override.result_parse_run_id == new_run.id
+
+
+def test_controlled_reparse_success_without_override_commits_new_parse_run(db_session):
+    manager = _manager(db_session)
+    filing = _filing(db_session, manager, "0009900001-26-000004")
+    initial = ingest_holdings_for_filing(db_session, filing, _infotable(rows=1))
+    baseline_run = db_session.get(ParseRun13F, initial["parse_run_id"])
+
+    result = controlled_reparse_accession(
+        db_session,
+        filing.accession_number,
+        infotable_bytes=_infotable(rows=2),
+        validation_gate=lambda *_: (True, []),
+    )
+    db_session.expire_all()
+
+    old_run = db_session.get(ParseRun13F, baseline_run.id)
+    new_run = db_session.get(ParseRun13F, result.new_parse_run_id)
+
+    assert result.status == "succeeded"
+    assert result.new_parse_run_id is not None
+    assert old_run.is_current is False
+    assert new_run.is_current is True
+
+
+def test_controlled_reparse_parse_crash_marks_override_failed_and_preserves_old_current(db_session):
+    manager = _manager(db_session)
+    reviewer = _reviewer(db_session)
+    filing = _filing(db_session, manager, "0009900001-26-000005")
+    initial = ingest_holdings_for_filing(db_session, filing, _infotable(rows=1))
+    baseline_run = db_session.get(ParseRun13F, initial["parse_run_id"])
+    override = _override(db_session, filing, reviewer, baseline_run)
+
+    with mock.patch(
+        "app.services.thirteenf_controlled_reparse.reparse_accession",
+        side_effect=RuntimeError("simulated parse crash"),
+    ):
+        result = controlled_reparse_accession(
+            db_session,
+            filing.accession_number,
+            infotable_bytes=_infotable(rows=2),
+            override_id=override.id,
+            validation_gate=lambda *_: (True, []),
+        )
+
+    db_session.expire_all()
+    refreshed_override = db_session.get(FilingValueUnitOverride13F, override.id)
+    old_run = db_session.get(ParseRun13F, baseline_run.id)
+
+    assert result.status == "failed"
+    assert result.new_parse_run_id is None
+    assert result.validation_errors == ["parse_failed"]
+    assert old_run.is_current is True
+    assert refreshed_override.status == "reparse_failed"
+    assert refreshed_override.result_parse_run_id is None
+
+
+def test_controlled_reparse_rejects_non_pending_override(db_session):
+    manager = _manager(db_session)
+    reviewer = _reviewer(db_session)
+    filing = _filing(db_session, manager, "0009900001-26-000006")
+    initial = ingest_holdings_for_filing(db_session, filing, _infotable(rows=1))
+    baseline_run = db_session.get(ParseRun13F, initial["parse_run_id"])
+    override = _override(db_session, filing, reviewer, baseline_run)
+    override.status = "applied"
+    db_session.add(override)
+    db_session.flush()
+
+    with pytest.raises(ValueError, match="pending_reparse"):
+        controlled_reparse_accession(
+            db_session,
+            filing.accession_number,
+            infotable_bytes=_infotable(rows=2),
+            override_id=override.id,
+            validation_gate=lambda *_: (True, []),
+        )
+
+
+def test_controlled_reparse_rejects_override_belonging_to_different_filing(db_session):
+    manager_a = _manager(db_session)
+    manager_b = _manager(db_session)
+    reviewer = _reviewer(db_session)
+    filing_a = _filing(db_session, manager_a, "0009900001-26-000007")
+    filing_b = _filing(db_session, manager_b, "0009900001-26-000008")
+    initial_a = ingest_holdings_for_filing(db_session, filing_a, _infotable(rows=1))
+    ingest_holdings_for_filing(db_session, filing_b, _infotable(rows=1))
+    baseline_run_a = db_session.get(ParseRun13F, initial_a["parse_run_id"])
+    override_for_a = _override(db_session, filing_a, reviewer, baseline_run_a)
+
+    with pytest.raises(ValueError, match="belongs to"):
+        controlled_reparse_accession(
+            db_session,
+            filing_b.accession_number,
+            infotable_bytes=_infotable(rows=2),
+            override_id=override_for_a.id,
+            validation_gate=lambda *_: (True, []),
+        )
