@@ -8,6 +8,8 @@ from app.services.cusip_enrichment import (
     upsert_cusip_mapping,
     evaluate_openfigi_matches,
     enrich_unmapped_holdings,
+    enrich_cusips_from_openfigi,
+    enrich_from_dataroma,
 )
 from app.services.cusip_validation import is_valid_cusip
 from app.openfigi.client import OpenFigiClient
@@ -47,6 +49,22 @@ def test_evaluate_openfigi_matches():
     conf, reason, ticker, name = evaluate_openfigi_matches([])
     assert conf == "low"
     assert ticker is None
+
+
+def test_openfigi_enrichment_entrypoints_are_explicitly_non_dataroma(monkeypatch, db_session):
+    calls: list[int] = []
+
+    def fake_enrich(session, *, client=None, limit=100):
+        calls.append(limit)
+        return 7
+
+    monkeypatch.setattr("app.services.cusip_enrichment.enrich_unmapped_holdings", fake_enrich)
+
+    assert enrich_cusips_from_openfigi(db_session, limit=25) == 7
+    assert enrich_from_dataroma(db_session, limit=30) == 7
+    assert calls == [25, 30]
+    assert "Dataroma is not used" in enrich_cusips_from_openfigi.__doc__
+    assert "does not call Dataroma" in enrich_from_dataroma.__doc__
 
 
 def test_upsert_cusip_mapping_no_overlap(db_session):

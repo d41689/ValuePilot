@@ -205,15 +205,22 @@ def enrich_unmapped_holdings(db: Session, client: Optional[OpenFigiClient] = Non
     return mapped_count
 
 
-def enrich_from_dataroma(db: Session, limit: int = 100) -> int:
-    """Compatibility entrypoint for legacy enrichment jobs.
+def enrich_cusips_from_openfigi(db: Session, limit: int = 100) -> int:
+    """OpenFIGI-backed CUSIP enrichment entrypoint.
 
-    MVP 1B enrichment is OpenFIGI-backed; the older job name is still used by
-    admin pipeline code and tests. Keep this wrapper narrow so the pipeline can
-    call the current enrichment implementation without reviving a Dataroma
-    dependency.
+    Dataroma is not used for CUSIP or security-identity mapping. It remains a
+    manager-discovery hint only.
     """
     return enrich_unmapped_holdings(db, limit=limit)
+
+
+def enrich_from_dataroma(db: Session, limit: int = 100) -> int:
+    """Deprecated compatibility alias; does not call Dataroma.
+
+    Use enrich_cusips_from_openfigi for new code. This alias exists only for
+    older callers while MVP3-01 removes legacy naming from active surfaces.
+    """
+    return enrich_cusips_from_openfigi(db, limit=limit)
 
 
 def bootstrap_stocks_from_cusip_map(db: Session) -> int:

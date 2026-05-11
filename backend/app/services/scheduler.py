@@ -8,7 +8,7 @@ JobRun system. The job is executed asynchronously by the ThirteenFJobWorker.
 Pipeline steps (run by the worker, not the scheduler directly):
   1. Fetch form.idx + ingest filing metadata
   2. Download + parse infotable.xml for all new filings
-  3. Refresh CUSIP → ticker mappings (Dataroma + EDGAR company_tickers.json)
+  3. Refresh CUSIP → ticker mappings (OpenFIGI + EDGAR company_tickers.json)
   4. Backfill holdings_13f.stock_id
   5. Run data quality checks; log any errors
 """

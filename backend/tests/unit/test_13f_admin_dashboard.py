@@ -1503,7 +1503,7 @@ def test_quarterly_pipeline_records_retryable_stage_jobs(db_session, monkeypatch
         or {"filings_processed": 2, "filings_failed": 0, "holdings_inserted": 10, "status": "succeeded"},
     )
     monkeypatch.setattr(
-        "app.services.cusip_enrichment.enrich_from_dataroma",
+        "app.services.cusip_enrichment.enrich_cusips_from_openfigi",
         lambda session: calls.append("enrich_cusip") or 3,
     )
     monkeypatch.setattr(
@@ -1696,7 +1696,7 @@ def test_quarterly_pipeline_continues_after_retryable_enrichment_failure(
     def fail_enrichment(session):
         raise RuntimeError("CUSIP enrichment failed")
 
-    monkeypatch.setattr("app.services.cusip_enrichment.enrich_from_dataroma", fail_enrichment)
+    monkeypatch.setattr("app.services.cusip_enrichment.enrich_cusips_from_openfigi", fail_enrichment)
 
     report = QualityReport()
 

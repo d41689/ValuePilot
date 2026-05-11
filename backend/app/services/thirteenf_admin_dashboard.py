@@ -2876,9 +2876,9 @@ def _execute_job(session: Session, job_type: str, payload: dict[str, Any]) -> di
     if job_type in {"ingest_holdings", "ingest_accession", "reprocess_amendment", "reparse_accession"}:
         return _execute_ingest_job(session, job_type, payload)
     if job_type == "enrich_cusip":
-        from app.services.cusip_enrichment import enrich_from_dataroma
+        from app.services.cusip_enrichment import enrich_cusips_from_openfigi
 
-        return {"mappings_created": enrich_from_dataroma(session), "status": "succeeded"}
+        return {"mappings_created": enrich_cusips_from_openfigi(session), "status": "succeeded"}
     if job_type == "bootstrap_stocks":
         from app.services.cusip_enrichment import bootstrap_stocks_from_cusip_map, backfill_stock_ids
 
@@ -3077,11 +3077,11 @@ def _execute_enrichment_metadata(session: Session, payload: dict[str, Any]) -> d
     from app.services.cusip_enrichment import (
         backfill_stock_ids,
         bootstrap_stocks_from_cusip_map,
-        enrich_from_dataroma,
+        enrich_cusips_from_openfigi,
         enrich_stocks_from_edgar_tickers,
     )
 
-    mappings_created = enrich_from_dataroma(session)
+    mappings_created = enrich_cusips_from_openfigi(session)
     new_stocks = bootstrap_stocks_from_cusip_map(session)
     holdings_linked = backfill_stock_ids(session)
     edgar_stock_enrichment = enrich_stocks_from_edgar_tickers(session)

@@ -44,5 +44,5 @@ source = "sec_co_tickers"   # was "edgar_company_tickers" (21 chars → 20 limit
 
 - `shrsOrPrnAmt` is a wrapper element in infotable XML; unwrap it to read `sshPrnamt` / `sshPrnamtType`.
 - `xslForm13F_X02/` paths in EDGAR filing index are XSLT-rendered HTML, not machine-readable XML — skip them when scanning for infotable URLs.
-- `cusip_ticker_map.source` is VARCHAR(50); valid source strings: `"dataroma"`, `"sec_co_tickers"`, `"manual"`.
+- `cusip_ticker_map.source` is VARCHAR(50); valid source strings: `"openfigi"`, `"sec_co_tickers"`, `"manual"`. Dataroma is not a CUSIP or security-identity source.
 - Kahn Brothers (`0001039565-*`) reports values in dollars, not thousands — reconciliation warnings for this filer are True Positives, not bugs.

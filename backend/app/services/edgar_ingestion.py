@@ -16,7 +16,6 @@ from sqlalchemy.orm import Session
 
 from app.core.config import settings
 from app.dataroma.client import DataromaClient
-from app.dataroma.parsers.holdings import parse_holdings
 from app.dataroma.parsers.managers import parse_managers
 from app.edgar.client import EdgarClient
 from app.edgar.fetcher import fetch_and_store, load_body
