@@ -59,6 +59,7 @@ def run_quality_checks(db: Session, quarter: str | None = None) -> QualityReport
     _check_duplicate_fingerprints(db, report, quarter)
     _check_period_alignment(db, report, quarter)
     _check_parse_failures(db, report, quarter)
+    _check_value_unit_sanity(db, report, quarter)
 
     return report
 
@@ -101,7 +102,66 @@ def persist_quality_report(
     )
     db.add(record)
     db.flush()
+    _persist_quality_findings(db, record, report)
     return record
+
+
+def _persist_quality_findings(db: Session, record: Any, report: QualityReport) -> None:
+    """Persist per-issue findings as durable validation records.
+
+    The aggregate quality report remains the run-level summary. Finding rows are
+    the audit asset used by MVP3 workflows to compare before/after validation.
+    """
+    from app.models.institutions import QualityFinding13F
+
+    for issue in report.issues:
+        value = issue.value if isinstance(issue.value, dict) else {}
+        entity_type = value.get("entity_type") or ("filing" if issue.accession_no else None)
+        entity_id = value.get("entity_id")
+        manager_id = value.get("manager_id")
+        accession_number = issue.accession_no or value.get("accession_number")
+
+        existing = (
+            db.query(QualityFinding13F)
+            .filter(QualityFinding13F.status == "open")
+            .filter(QualityFinding13F.rule_code == issue.check)
+            .filter(QualityFinding13F.quarter.is_(None) if record.quarter is None else QualityFinding13F.quarter == record.quarter)
+            .filter(
+                QualityFinding13F.accession_number.is_(None)
+                if accession_number is None
+                else QualityFinding13F.accession_number == accession_number
+            )
+            .filter(QualityFinding13F.entity_type.is_(None) if entity_type is None else QualityFinding13F.entity_type == entity_type)
+            .filter(QualityFinding13F.entity_id.is_(None) if entity_id is None else QualityFinding13F.entity_id == entity_id)
+            .filter(QualityFinding13F.manager_id.is_(None) if manager_id is None else QualityFinding13F.manager_id == manager_id)
+            .one_or_none()
+        )
+        if existing is None:
+            db.add(
+                QualityFinding13F(
+                    validation_run_id=record.id,
+                    rule_code=issue.check,
+                    severity=issue.severity,
+                    entity_type=entity_type,
+                    entity_id=entity_id,
+                    quarter=record.quarter,
+                    manager_id=manager_id,
+                    accession_number=accession_number,
+                    detail=issue.detail,
+                    value_json=issue.value if isinstance(issue.value, dict) else {"value": issue.value},
+                    status="open",
+                    first_seen_at=record.checked_at,
+                    last_seen_at=record.checked_at,
+                )
+            )
+            continue
+
+        existing.validation_run_id = record.id
+        existing.severity = issue.severity
+        existing.detail = issue.detail
+        existing.value_json = issue.value if isinstance(issue.value, dict) else {"value": issue.value}
+        existing.last_seen_at = record.checked_at
+        db.add(existing)
 
 
 def _quarter_filter(quarter: str | None) -> tuple[str, dict]:
@@ -291,3 +351,68 @@ def _check_parse_failures(db: Session, report: QualityReport, quarter: str | Non
 
     if not rows:
         report.add("parse_failure", "info", "No parse failures found")
+
+
+def _check_value_unit_sanity(db: Session, report: QualityReport, quarter: str | None) -> None:
+    """Flag filing-level value jumps that often indicate 1000x value-unit errors."""
+    qf, qp = _quarter_filter(quarter)
+    rows = db.execute(text(f"""
+        WITH ordered AS (
+            SELECT
+                f.id,
+                f.manager_id,
+                f.accession_no,
+                f.period_of_report,
+                f.reported_total_value_thousands,
+                LAG(f.reported_total_value_thousands) OVER (
+                    PARTITION BY f.manager_id
+                    ORDER BY f.period_of_report
+                ) AS previous_value
+            FROM filings_13f f
+            WHERE f.reported_total_value_thousands IS NOT NULL
+              AND f.reported_total_value_thousands > 0
+              AND f.manager_id IS NOT NULL
+        )
+        SELECT
+            id,
+            manager_id,
+            accession_no,
+            reported_total_value_thousands,
+            previous_value,
+            GREATEST(
+                reported_total_value_thousands::numeric / GREATEST(previous_value, 1),
+                previous_value::numeric / GREATEST(reported_total_value_thousands, 1)
+            ) AS jump_ratio
+        FROM ordered f
+        WHERE previous_value IS NOT NULL
+          AND previous_value > 0
+          AND GREATEST(
+              reported_total_value_thousands::numeric / GREATEST(previous_value, 1),
+              previous_value::numeric / GREATEST(reported_total_value_thousands, 1)
+          ) >= 1000
+        {qf}
+        LIMIT 20
+    """), qp).fetchall()
+
+    for row in rows:
+        ratio = float(row.jump_ratio)
+        report.add(
+            "value_unit_sanity",
+            "warning",
+            (
+                "Suspicious reported value jump "
+                f"{ratio:.1f}x: previous={row.previous_value:,} current={row.reported_total_value_thousands:,}"
+            ),
+            accession_no=row.accession_no,
+            value={
+                "entity_type": "filing",
+                "entity_id": row.id,
+                "manager_id": row.manager_id,
+                "previous_value_thousands": row.previous_value,
+                "current_value_thousands": row.reported_total_value_thousands,
+                "ratio": ratio,
+            },
+        )
+
+    if not rows:
+        report.add("value_unit_sanity", "info", "No suspicious 1000x reported value jumps found")

@@ -11,12 +11,13 @@ from app.models.institutions import (
     InstitutionManagerCikReviewEvent,
     JobRun,
     JobWorkerHeartbeat,
+    QualityFinding13F,
     QualityReport13F,
     RawSourceDocument,
 )
 from app.models.stocks import Stock
 from app.services.edgar_ingestion import match_cik_candidates, seed_pending_cik_review_fixture
-from app.services.edgar_quality import QualityReport, persist_quality_report
+from app.services.edgar_quality import QualityReport, persist_quality_report, run_quality_checks
 from app.services import thirteenf_admin_dashboard as dashboard
 from app.services.thirteenf_admin_dashboard import build_quarters, execute_job_payload
 from app.services.thirteenf_job_worker import execute_queued_job_once, record_worker_heartbeat
@@ -28,6 +29,7 @@ def _clear_13f(db_session) -> None:
     db_session.query(RawSourceDocument).delete()
     db_session.query(JobWorkerHeartbeat).delete()
     db_session.query(JobRun).delete()
+    db_session.query(QualityFinding13F).delete()
     db_session.query(QualityReport13F).delete()
     db_session.query(InstitutionManagerCikReviewEvent).delete()
     db_session.query(InstitutionManager).delete()
@@ -1487,6 +1489,40 @@ def test_quality_check_job_persists_report(client, db_session, user_factory, aut
     assert persisted.error_count == 1
     assert persisted.warning_count == 0
     assert persisted.source_job_id == job.id
+    finding = db_session.query(QualityFinding13F).filter_by(validation_run_id=persisted.id).one()
+    assert finding.rule_code == "parse_failure"
+    assert finding.severity == "error"
+    assert finding.entity_type == "filing"
+    assert finding.accession_number == "0001234567-26-000001"
+    assert finding.quarter == "2025-Q4"
+    assert finding.status == "open"
+    assert finding.first_seen_at == persisted.checked_at
+    assert finding.last_seen_at == persisted.checked_at
+
+    finding_id = finding.id
+    db_session.delete(persisted)
+    db_session.commit()
+    assert db_session.query(QualityFinding13F).filter_by(id=finding_id).one_or_none() is None
+
+
+def test_quality_check_flags_suspicious_value_unit_jumps(db_session):
+    _clear_13f(db_session)
+    manager = _manager(db_session)
+    prior = _filing(db_session, manager, accession="0001234567-25-000001", period=date(2025, 9, 30))
+    current = _filing(db_session, manager, accession="0001234567-26-000001", period=date(2025, 12, 31))
+    prior.reported_total_value_thousands = 100
+    current.reported_total_value_thousands = 100_000
+    db_session.add_all([prior, current])
+    db_session.commit()
+
+    report = run_quality_checks(db_session, "2025-Q4")
+
+    issue = next(item for item in report.issues if item.check == "value_unit_sanity")
+    assert issue.severity == "warning"
+    assert issue.accession_no == "0001234567-26-000001"
+    assert issue.value["manager_id"] == manager.id
+    assert issue.value["entity_type"] == "filing"
+    assert issue.value["ratio"] == 1000.0
 
 
 def test_quarterly_pipeline_records_retryable_stage_jobs(db_session, monkeypatch):

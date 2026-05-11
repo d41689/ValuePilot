@@ -42,6 +42,8 @@ OWNERSHIP_CHANGE_STATUSES = {
 }
 OWNERSHIP_SIGNAL_CONFIDENCE_LEVELS = {"high_confidence", "medium_confidence", "low_confidence", "unavailable"}
 OWNERSHIP_POSITION_TYPES = {"common", "put_option", "call_option"}
+QUALITY_FINDING_STATUSES = {"open", "resolved", "ignored"}
+QUALITY_FINDING_SEVERITIES = {"error", "warning", "info"}
 
 
 def _validate_choice(field: str, value: str, choices: set[str]) -> str:
@@ -609,6 +611,41 @@ class QualityReport13F(Base):
     source_job_id: Mapped[Optional[int]] = mapped_column(BigInteger, ForeignKey("job_runs.id"), nullable=True)
     checked_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class QualityFinding13F(Base):
+    __tablename__ = "quality_findings_13f"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    validation_run_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("quality_reports_13f.id", ondelete="CASCADE"), nullable=False
+    )
+    rule_code: Mapped[str] = mapped_column(String(80), nullable=False)
+    severity: Mapped[str] = mapped_column(String(20), nullable=False)
+    entity_type: Mapped[Optional[str]] = mapped_column(String(40), nullable=True)
+    entity_id: Mapped[Optional[int]] = mapped_column(BigInteger, nullable=True)
+    quarter: Mapped[Optional[str]] = mapped_column(String(10), nullable=True)
+    manager_id: Mapped[Optional[int]] = mapped_column(BigInteger, ForeignKey("institution_managers.id"), nullable=True)
+    accession_number: Mapped[Optional[str]] = mapped_column(String(20), nullable=True)
+    detail: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    value_json: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="open", server_default="open")
+    first_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    last_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    resolved_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    resolution_note: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+    @validates("severity")
+    def _validate_severity(self, _: str, value: str) -> str:
+        return _validate_choice("severity", value, QUALITY_FINDING_SEVERITIES)
+
+    @validates("status")
+    def _validate_finding_status(self, _: str, value: str) -> str:
+        return _validate_choice("status", value, QUALITY_FINDING_STATUSES)
 
 
 class CusipTickerMap(Base):
