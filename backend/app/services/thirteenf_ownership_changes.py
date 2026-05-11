@@ -9,7 +9,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal
-from typing import Iterable
+from typing import Sequence
 
 from sqlalchemy.orm import Session
 
@@ -184,8 +184,8 @@ def _compute_rows(
     previous_report_quarter: str,
     current_filing: Filing13F,
     previous_filing: Filing13F,
-    current_holdings: Iterable[Holding13F],
-    previous_holdings: Iterable[Holding13F],
+    current_holdings: Sequence[Holding13F],
+    previous_holdings: Sequence[Holding13F],
     mapping_warning: bool,
 ) -> list[OwnershipChange13F]:
     rows: list[OwnershipChange13F] = []
@@ -224,7 +224,7 @@ def _compute_rows(
     return rows
 
 
-def _matched_pairs(current_holdings: Iterable[Holding13F], previous_holdings: Iterable[Holding13F]) -> list[_Pair]:
+def _matched_pairs(current_holdings: Sequence[Holding13F], previous_holdings: Sequence[Holding13F]) -> list[_Pair]:
     """Match by stock identity first, then CUSIP for stragglers.
 
     PRD §7.4 requires CUSIP fallback when either side lacks `stock_id`.
@@ -373,7 +373,7 @@ def _pair_key(current: Holding13F | None, previous: Holding13F | None) -> _Holdi
     return _cusip_key(representative)
 
 
-def _linked_common_mapping_ratio(holdings: Iterable[Holding13F]) -> float | None:
+def _linked_common_mapping_ratio(holdings: Sequence[Holding13F]) -> float | None:
     common_holdings = [
         holding
         for holding in holdings

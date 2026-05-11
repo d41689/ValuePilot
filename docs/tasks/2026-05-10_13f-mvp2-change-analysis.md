@@ -68,6 +68,7 @@ Tech Lead should review:
 - 2026-05-10: Added TDD coverage for strong label classification, `cusip_changed`, prior 13F-NT, put/call isolation, CUSIP mapping threshold caps, and idempotent recomputation.
 - 2026-05-10: Implemented `compute_ownership_changes_for_manager_quarter` as a backend-only precompute service. It replaces rows for a manager/quarter, uses active HR/HR-A current parse-run direct holdings, preserves option/common identity, and writes unavailable/low-confidence rows rather than strong labels when data quality gates fail.
 - 2026-05-10: Review follow-up accepted BF-1 and NF-1. Added two-pass matching so holdings that gain `stock_id` between quarters still match by CUSIP fallback instead of producing false exit+new signals. Added filing-caveat confidence adjustment so confidential, combination, and pending amendment caveats cannot remain primary high-confidence signals.
+- 2026-05-10: Post-approval polish: tightened repeated-iteration helper signatures to `Sequence[Holding13F]` and added dedicated combination-report and pending-amendment caveat downgrade tests.
 
 ## Verification Results
 
@@ -75,6 +76,9 @@ Tech Lead should review:
 - `docker compose exec api pytest -q tests/unit/test_13f_mvp2_ownership_changes_schema.py tests/unit/test_13f_ownership_changes_compute.py` — 28 passed after review follow-up.
 - `docker compose exec api pytest -q` — 537 passed, 1 pre-existing SQLAlchemy rollback warning in `test_duplicate_fingerprint_within_same_parse_run_raises`.
 - `docker compose exec api pytest -q` — 541 passed after review follow-up, 1 pre-existing SQLAlchemy rollback warning in `test_duplicate_fingerprint_within_same_parse_run_raises`.
+- `docker compose exec api alembic upgrade head` — passed after post-approval polish.
+- `docker compose exec api pytest -q tests/unit/test_13f_mvp2_ownership_changes_schema.py tests/unit/test_13f_ownership_changes_compute.py` — 30 passed after post-approval polish.
+- `docker compose exec api pytest -q` — 543 passed after post-approval polish, 1 pre-existing SQLAlchemy rollback warning in `test_duplicate_fingerprint_within_same_parse_run_raises`.
 
 ## Final Notes
 

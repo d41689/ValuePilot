@@ -358,6 +358,76 @@ def test_confidential_treatment_downgrades_primary_signal(db_session):
     assert row.caveat_codes == ["confidential_treatment"]
 
 
+def test_combination_report_downgrades_primary_signal(db_session):
+    manager = _manager(db_session)
+    stock = _stock(db_session, "COMB")
+    previous = _filing(
+        db_session,
+        manager,
+        quarter="2025-Q4",
+        accession="0000000011-25-000001",
+    )
+    current = _filing(
+        db_session,
+        manager,
+        quarter="2026-Q1",
+        accession="0000000011-26-000001",
+        report_type="combination_report",
+    )
+    previous_run = _parse_run(db_session, previous)
+    current_run = _parse_run(db_session, current)
+    _holding(db_session, previous, previous_run, stock, cusip="423456789", shares=10, value_usd=1000, row="comb")
+    _holding(db_session, current, current_run, stock, cusip="423456789", shares=20, value_usd=2000, row="comb")
+
+    compute_ownership_changes_for_manager_quarter(
+        db_session,
+        manager_id=manager.id,
+        report_quarter="2026-Q1",
+    )
+
+    row = _rows(db_session)[0]
+    assert row.change_status == "increased"
+    assert row.confidence_level == "low_confidence"
+    assert row.is_primary_signal_eligible is False
+    assert row.has_combination_report_caveat is True
+    assert row.caveat_codes == ["combination_report"]
+
+
+def test_pending_amendment_downgrades_primary_signal(db_session):
+    manager = _manager(db_session)
+    stock = _stock(db_session, "AMD")
+    previous = _filing(
+        db_session,
+        manager,
+        quarter="2025-Q4",
+        accession="0000000012-25-000001",
+    )
+    current = _filing(
+        db_session,
+        manager,
+        quarter="2026-Q1",
+        accession="0000000012-26-000001",
+        amendment_status="amendments_pending",
+    )
+    previous_run = _parse_run(db_session, previous)
+    current_run = _parse_run(db_session, current)
+    _holding(db_session, previous, previous_run, stock, cusip="523456789", shares=10, value_usd=1000, row="amend")
+    _holding(db_session, current, current_run, stock, cusip="523456789", shares=20, value_usd=2000, row="amend")
+
+    compute_ownership_changes_for_manager_quarter(
+        db_session,
+        manager_id=manager.id,
+        report_quarter="2026-Q1",
+    )
+
+    row = _rows(db_session)[0]
+    assert row.change_status == "increased"
+    assert row.confidence_level == "low_confidence"
+    assert row.is_primary_signal_eligible is False
+    assert row.has_pending_amendment_caveat is True
+    assert row.caveat_codes == ["pending_amendment"]
+
+
 def test_compute_changes_separates_put_and_call_position_types(db_session):
     manager = _manager(db_session)
     stock = _stock(db_session, "OPT")
