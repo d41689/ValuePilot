@@ -69,8 +69,10 @@ Tech Lead should review:
 - 2026-05-10: Added red tests for no-computed-changes unavailable response and available precomputed `OwnershipChange13F` rows with explicit `no_prior_data` caveats.
 - 2026-05-10: Implemented a thin manager changes read model backed only by `ownership_changes`; no inline change recomputation added.
 - 2026-05-10: Added quarter query validation to the consumer holdings changes route.
+- 2026-05-11: Accepted Tech Lead follow-up coverage: added clean `available` path test, latest-quarter fallback test, invalid quarter validation test, and unresolved stock identity test.
+- 2026-05-11: Added top-level `quarter_end_date` to available changes responses and aligned latest-quarter fallback ordering with `nullslast()`.
 
 ## Verification Results
 
-- `docker compose exec api pytest -q tests/unit/test_13f_user_api.py` - passed, 12 tests.
-- `docker compose exec api pytest -q tests/unit/test_13f_user_api.py tests/unit/test_13f_ownership_changes_compute.py tests/unit/test_13f_mvp2_ownership_changes_schema.py` - passed, 42 tests.
+- `docker compose exec api pytest -q tests/unit/test_13f_user_api.py` - passed, 15 tests.
+- `docker compose exec api pytest -q tests/unit/test_13f_user_api.py tests/unit/test_13f_ownership_changes_compute.py tests/unit/test_13f_mvp2_ownership_changes_schema.py` - passed, 45 tests.

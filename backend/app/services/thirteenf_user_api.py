@@ -162,6 +162,7 @@ def build_user_manager_holding_changes(
         "status": "available_with_caveat" if has_caveats else "available",
         "manager": _manager_payload(manager),
         "quarter": as_of_quarter,
+        "quarter_end_date": _iso(changes[0][0].quarter_end_date),
         "reason": None,
         "items": items,
     }
@@ -284,7 +285,7 @@ def _latest_manager_change_quarter(session: Session, manager_id: int) -> str | N
     row = (
         session.query(OwnershipChange13F.report_quarter)
         .filter(OwnershipChange13F.manager_id == manager_id)
-        .order_by(OwnershipChange13F.quarter_end_date.desc(), OwnershipChange13F.report_quarter.desc())
+        .order_by(OwnershipChange13F.quarter_end_date.desc().nullslast(), OwnershipChange13F.report_quarter.desc())
         .first()
     )
     return row[0] if row else None
