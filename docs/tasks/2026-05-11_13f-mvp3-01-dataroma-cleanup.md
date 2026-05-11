@@ -57,9 +57,15 @@ Acceptance criteria:
 
 - 2026-05-11: Started after product owner explicitly approved MVP3-01 with scope limited to legacy Dataroma surface cleanup, naming clarification, and source-authority ambiguity removal.
 - 2026-05-11: Chose compatibility-wrapper approach: active CUSIP enrichment call sites now use OpenFIGI naming; the old `enrich_from_dataroma` symbol remains only as a deprecated alias that explicitly does not call Dataroma.
+- 2026-05-11: Post-review follow-up: cleaned stale plan-doc references that still described Dataroma as CUSIP helper/source, and recorded that the deprecated alias lifecycle should be revisited in a future compatibility cleanup.
+
+## Follow-Up Backlog
+
+- Decide whether and when to remove the deprecated `enrich_from_dataroma` compatibility alias after confirming no external scripts or operational runbooks import it.
 
 ## Verification Results
 
 - `docker compose exec api pytest -q tests/unit/test_13f_cusip_enrichment.py` → 7 passed.
 - `docker compose exec api pytest -q tests/unit/test_13f_admin_dashboard.py` → 51 passed.
 - `rg` check: active CUSIP enrichment call sites use `enrich_cusips_from_openfigi`; remaining `enrich_from_dataroma` references are the deprecated compatibility alias and its unit test.
+- Post-review docs sweep: removed stale Dataroma-as-CUSIP-helper/source wording from `docs/plans/13f_admin_data_operations_dashboard_product_plan.md` and `docs/plans/sec_edgar_13f_ingestion_plan.md`.

@@ -85,7 +85,7 @@ Dataroma 在本方案中只作为**辅助发现源（discovery / bootstrap layer
 **设计要求**：
 - Dataroma 相关抓取逻辑必须与 EDGAR 主链路解耦
 - 任何生产查询不得因 Dataroma 失败而返回错误结果
-- Dataroma 相关字段应标记 `source='dataroma'`，便于后续审计与替换
+- Dataroma discovery / raw-fetch artifacts may retain Dataroma provenance labels for audit. CUSIP / security-identity mappings must not use `source='dataroma'`.
 
 ---
 
@@ -295,7 +295,7 @@ CREATE TABLE cusip_ticker_map (
     security_type     VARCHAR(30),    -- common_stock / adr / preferred / note / option / other
     exchange          VARCHAR(30),
     is_13f_reportable BOOLEAN DEFAULT TRUE, -- 是否在 SEC 官方 13f 证券名单中
-    source            VARCHAR(20),    -- 'dataroma' | 'edgar_search' | 'manual'
+    source            VARCHAR(20),    -- current: 'openfigi' | 'sec_co_tickers' | 'manual'; legacy drafts referenced 'dataroma'
     mapping_reason    TEXT,           -- 可记录证据 URL、匹配规则说明、人工备注或来源摘要，不限于单一 URL
     confidence        VARCHAR(20),    -- high / medium / low
     valid_from        DATE,
@@ -308,10 +308,12 @@ CREATE UNIQUE INDEX uq_cusip_ticker_map_cusip_valid_from
     ON cusip_ticker_map(cusip, valid_from);
 ```
 
-映射填充优先级：
-1. **Dataroma holdings 页**（直接有 ticker，覆盖白名单机构持仓的部分 CUSIP）
-2. **EDGAR 搜索接口或其他官方可验证来源**
+映射填充优先级（MVP3-01 更新）：
+1. **OpenFIGI / 官方可验证来源**（当前 CUSIP → stock 权威路径）
+2. **SEC company_tickers / EDGAR 相关验证数据**
 3. 手动补充
+
+> Legacy note: this historical draft previously referenced Dataroma as a CUSIP helper. MVP3-01 explicitly scopes Dataroma out of CUSIP / security-identity mapping.
 
 **设计约束**：
 - 不假设一个 CUSIP 永远只对应一个 ticker
@@ -417,16 +419,19 @@ CREATE UNIQUE INDEX uq_cusip_ticker_map_cusip_valid_from
    - 验证是否在 SEC 每季度发布的 "Official List of Section 13(f) Securities" 中
 ```
 
-### Step 3：CUSIP 映射填充（Dataroma 优先）
+### Step 3：CUSIP 映射填充（OpenFIGI / verified source 优先）
 
 ```
-对每个白名单机构：
-  1. 抓取 dataroma.com/m/holdings.php?m={dataroma_code}
-  2. 解析 HTML 表格中的可用标识字段：优先 ticker，其次页面中可获得的 CUSIP 与 issuer_name
-  3. 写入 cusip_ticker_map（source='dataroma'，记录证据 URL）
-  
-对剩余未映射的 CUSIP：
-  4. 查 EDGAR 搜索接口或其他官方可验证来源（source='edgar_search'）
+对每个待映射 CUSIP：
+  1. 查询 OpenFIGI / 官方可验证来源
+  2. 满足 auto-confirm 条件时写入 cusip_ticker_map（source='openfigi'）
+  3. 不满足条件时保留 needs_review / pending_mapping
+
+对剩余未映射的 ticker / issuer：
+  4. 查 SEC company_tickers 或 EDGAR 相关验证数据（source='sec_co_tickers'）
+
+Legacy note:
+  - Dataroma holdings pages are not a CUSIP source and must not write source='dataroma' mappings.
 
 覆盖规则：
   - 高置信度且带有效时间区间的既有映射，不应被低置信度新结果直接覆盖
@@ -625,7 +630,7 @@ prod 的 docker-compose / 部署配置应显式设置 EDGAR_SCHEDULER_ENABLED=tr
 - [x] 调度器实现，通过 `EDGAR_SCHEDULER_ENABLED` 控制是否启动（prod 显式开启，dev 默认关闭）
   > `app/services/scheduler.py:create_scheduler()`；使用 APScheduler BackgroundScheduler，每周一 06:00 UTC 触发；通过 FastAPI lifespan 在 API 启动时自动启动；`docker-compose.prod.yml` 已设置 `EDGAR_SCHEDULER_ENABLED=true`
 - [x] 定时任务每季度自动运行：Dataroma 白名单同步 + EDGAR 新申报抓取
-  > `run_quarterly_pipeline()`；先检查 DB 中是否已有该季度数据（幂等），再按顺序执行：form.idx → infotable 解析 → enrich_from_dataroma → bootstrap_stocks → backfill_stock_ids → enrich_stocks_from_edgar_tickers → quality_check
+  > `run_quarterly_pipeline()`；先检查 DB 中是否已有该季度数据（幂等），再按顺序执行：form.idx → infotable 解析 → enrich_cusips_from_openfigi → bootstrap_stocks → backfill_stock_ids → enrich_stocks_from_edgar_tickers → quality_check
   > 季度可用时间由 `latest_available_quarter()` 计算：Q4→2/14、Q1→5/15、Q2→8/14、Q3→11/14
 - [x] **申报进度看板**：监控白名单机构在季末 45 天内的申报进度
   > `GET /api/v1/scheduler/filing-progress?quarter=2025-Q4`；返回 80 家机构的申报状态（已申报/未申报）、截止日期、剩余天数
