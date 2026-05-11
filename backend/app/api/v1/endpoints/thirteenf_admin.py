@@ -56,6 +56,7 @@ from app.services.thirteenf_user_api import (
     build_user_manager_holdings,
     build_user_manager_quarters,
     build_user_managers,
+    build_user_stock_holders,
 )
 
 admin_router = APIRouter()
@@ -176,6 +177,19 @@ def read_user_manager_holding_changes(
 ) -> Any:
     try:
         return build_user_manager_holding_changes(session, manager_id, quarter=quarter)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@consumer_router.get("/stocks/{stock_id}/holders", response_model=dict)
+def read_user_stock_holders(
+    stock_id: int,
+    session: SessionDep,
+    quarter: str | None = Query(None),
+    limit: int = Query(10, ge=1, le=50),
+) -> Any:
+    try:
+        return build_user_stock_holders(session, stock_id, quarter=quarter, limit=limit)
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 

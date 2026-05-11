@@ -12,7 +12,8 @@ from typing import Any
 
 from sqlalchemy.orm import Session
 
-from app.models.institutions import Filing13F, Holding13F, InstitutionManager
+from app.models.institutions import Filing13F, Holding13F, InstitutionManager, OwnershipChange13F
+from app.models.stocks import Stock
 from app.services.thirteenf_holdings_query import HR_FORM_TYPES, active_hr_holdings_query
 
 
@@ -29,6 +30,9 @@ FILING_WINDOW_CAVEAT = (
     "The filing window for this quarter may still be open. The snapshot can change until "
     "the official filing deadline passes."
 )
+VALUE_MANAGER_TYPES = {"fundamental_long", "activist"}
+CONSENSUS_EXCLUDED_MANAGER_TYPES = {"index_like", "quant"}
+RECENT_CHANGE_STATUSES = {"new_position", "increased", "reduced", "exited_position"}
 
 
 def build_user_managers(session: Session) -> dict[str, Any]:
@@ -128,11 +132,98 @@ def build_user_manager_holding_changes(
     }
 
 
+def build_user_stock_holders(
+    session: Session,
+    stock_id: int,
+    quarter: str | None = None,
+    *,
+    limit: int = 10,
+) -> dict[str, Any]:
+    stock = session.get(Stock, stock_id)
+    if not stock:
+        raise ValueError("Stock not found")
+    as_of_quarter = quarter or _latest_stock_holder_quarter(session, stock_id)
+    if not as_of_quarter:
+        return {
+            "status": "unavailable",
+            "stock_id": stock_id,
+            "as_of_quarter": quarter,
+            "reason": {"code": "NO_ACTIVE_HOLDERS", "message": "No active 13F holders are available for this stock."},
+            "direct_holder_count": 0,
+            "value_manager_direct_count": 0,
+            "featured_holder_count": 0,
+            "top_holders": [],
+            "recent_changes": [],
+            "attribution_caveat_count": 0,
+            "data_caveats": [],
+        }
+
+    base_query = active_hr_holdings_query(session).join(
+        InstitutionManager,
+        InstitutionManager.id == Holding13F.manager_id,
+    ).filter(
+        Holding13F.stock_id == stock_id,
+        Holding13F.report_quarter == as_of_quarter,
+        Holding13F.put_call.is_(None),
+    )
+    direct_holdings = (
+        base_query.filter(Holding13F.holding_attribution_status == "direct")
+        .order_by(Holding13F.portfolio_weight_pct.desc().nullslast(), Holding13F.value_usd.desc().nullslast())
+        .all()
+    )
+    consensus_holdings = [
+        holding for holding in direct_holdings if holding.filing.manager.manager_type not in CONSENSUS_EXCLUDED_MANAGER_TYPES
+    ]
+    attribution_caveat_count = (
+        base_query.filter(Holding13F.holding_attribution_status.in_(["shared", "unresolved"]))
+        .count()
+    )
+    data_caveats = _stock_holder_data_caveats(direct_holdings)
+    recent_changes = _stock_recent_changes(session, stock_id=stock_id, quarter=as_of_quarter)
+    return {
+        "status": "available_with_caveat" if data_caveats or attribution_caveat_count else "available",
+        "stock_id": stock_id,
+        "ticker": stock.ticker,
+        "exchange": stock.exchange,
+        "company_name": stock.company_name,
+        "as_of_quarter": as_of_quarter,
+        "direct_holder_count": len({holding.manager_id for holding in consensus_holdings}),
+        "value_manager_direct_count": len(
+            {
+                holding.manager_id
+                for holding in consensus_holdings
+                if holding.filing.manager.manager_type in VALUE_MANAGER_TYPES
+            }
+        ),
+        "featured_holder_count": len(
+            {holding.manager_id for holding in consensus_holdings if holding.filing.manager.is_featured}
+        ),
+        "top_holders": [_top_holder_payload(holding) for holding in consensus_holdings[:limit]],
+        "recent_changes": recent_changes,
+        "attribution_caveat_count": attribution_caveat_count,
+        "data_caveats": data_caveats,
+    }
+
+
 def _require_manager(session: Session, manager_id: int) -> InstitutionManager:
     manager = session.get(InstitutionManager, manager_id)
     if not manager or manager.status != "active" or not manager.cik:
         raise ValueError("Manager not found")
     return manager
+
+
+def _latest_stock_holder_quarter(session: Session, stock_id: int) -> str | None:
+    row = (
+        active_hr_holdings_query(session)
+        .filter(
+            Holding13F.stock_id == stock_id,
+            Holding13F.put_call.is_(None),
+            Holding13F.holding_attribution_status == "direct",
+        )
+        .order_by(Holding13F.quarter_end_date.desc().nullslast(), Holding13F.report_quarter.desc().nullslast())
+        .first()
+    )
+    return row.report_quarter if row else None
 
 
 def _active_filing(session: Session, manager_id: int, quarter: str | None = None) -> Filing13F | None:
@@ -155,6 +246,61 @@ def _manager_payload(manager: InstitutionManager) -> dict[str, Any]:
         "is_featured": manager.is_featured,
         "manager_type": manager.manager_type,
     }
+
+
+def _top_holder_payload(holding: Holding13F) -> dict[str, Any]:
+    return {
+        "manager": _manager_payload(holding.filing.manager),
+        "holding_id": holding.id,
+        "accession_number": holding.accession_number,
+        "report_quarter": holding.report_quarter,
+        "value_usd": holding.value_usd,
+        "ssh_prnamt": holding.ssh_prnamt,
+        "portfolio_weight_pct": float(holding.portfolio_weight_pct) if holding.portfolio_weight_pct is not None else None,
+        "confidence": {
+            "attribution_status": holding.holding_attribution_status,
+            "cusip_mapping_status": holding.cusip_mapping_status,
+        },
+    }
+
+
+def _stock_recent_changes(session: Session, *, stock_id: int, quarter: str) -> list[dict[str, Any]]:
+    rows = (
+        session.query(OwnershipChange13F, InstitutionManager)
+        .join(InstitutionManager, InstitutionManager.id == OwnershipChange13F.manager_id)
+        .filter(
+            OwnershipChange13F.stock_id == stock_id,
+            OwnershipChange13F.report_quarter == quarter,
+            OwnershipChange13F.is_primary_signal_eligible.is_(True),
+            OwnershipChange13F.change_status.in_(RECENT_CHANGE_STATUSES),
+            InstitutionManager.manager_type.notin_(CONSENSUS_EXCLUDED_MANAGER_TYPES),
+        )
+        .order_by(OwnershipChange13F.change_status, InstitutionManager.display_name, InstitutionManager.canonical_name)
+        .all()
+    )
+    return [
+        {
+            "manager": _manager_payload(manager),
+            "change_status": change.change_status,
+            "confidence_level": change.confidence_level,
+            "caveat_codes": change.caveat_codes or [],
+            "current_value_usd": change.current_value_usd,
+            "previous_value_usd": change.previous_value_usd,
+            "current_shares": change.current_shares,
+            "previous_shares": change.previous_shares,
+            "share_delta": change.share_delta,
+        }
+        for change, manager in rows
+    ]
+
+
+def _stock_holder_data_caveats(holdings: list[Holding13F]) -> list[dict[str, str]]:
+    by_code: dict[str, dict[str, str]] = {}
+    for holding in holdings:
+        for caveat in _filing_caveats(holding.filing):
+            if caveat["code"] in {"COMBINATION_REPORT", "CONFIDENTIAL_TREATMENT"}:
+                by_code[caveat["code"]] = caveat
+    return list(by_code.values())
 
 
 def _quarter_payload(filing: Filing13F) -> dict[str, Any]:
