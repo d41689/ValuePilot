@@ -71,12 +71,16 @@ Tech Lead should review:
 - 2026-05-10: Started MVP2-03 after MVP2-02 approval.
 - 2026-05-10: Added TDD coverage for stock holder aggregation response shape, direct/common consensus counts, attribution caveat count, value-manager and featured counts, top-holder ordering, recent changes, and confidential/combination caveats.
 - 2026-05-10: Implemented `build_user_stock_holders` and mounted `GET /api/v1/13f/stocks/{stock_id}/holders`. Default consensus excludes `manager_type=index_like|quant`, options, and non-direct attribution. Shared/unresolved attribution is surfaced only as `attribution_caveat_count`.
+- 2026-05-10: Review follow-up accepted NB-1/NB-3/NB-4/NB-5/NB-6 and reduced NB-2 risk. `attribution_caveat_count` now counts distinct managers, same-quarter option exclusion is tested, no-holder unavailable response is tested, stock-level data caveats include `FILING_WINDOW_OPEN`, quarter query validation rejects invalid labels, and holder rows eager-load filing/manager relationships.
 
 ## Verification Results
 
 - `docker compose exec api alembic upgrade head` — passed.
 - `docker compose exec api pytest -q tests/unit/test_13f_user_api.py tests/unit/test_13f_ownership_changes_compute.py tests/unit/test_13f_mvp2_ownership_changes_schema.py` — 39 passed.
 - `docker compose exec api pytest -q` — 545 passed, 1 pre-existing SQLAlchemy rollback warning in `test_duplicate_fingerprint_within_same_parse_run_raises`.
+- `docker compose exec api alembic upgrade head` — passed after review follow-up.
+- `docker compose exec api pytest -q tests/unit/test_13f_user_api.py tests/unit/test_13f_ownership_changes_compute.py tests/unit/test_13f_mvp2_ownership_changes_schema.py` — 41 passed after review follow-up.
+- `docker compose exec api pytest -q` — 547 passed after review follow-up, 1 pre-existing SQLAlchemy rollback warning in `test_duplicate_fingerprint_within_same_parse_run_raises`.
 
 ## Final Notes
 

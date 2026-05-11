@@ -185,7 +185,7 @@ def read_user_manager_holding_changes(
 def read_user_stock_holders(
     stock_id: int,
     session: SessionDep,
-    quarter: str | None = Query(None),
+    quarter: str | None = Query(None, pattern=r"^\d{4}-Q[1-4]$"),
     limit: int = Query(10, ge=1, le=50),
 ) -> Any:
     try:

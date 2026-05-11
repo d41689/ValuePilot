@@ -10,6 +10,7 @@ from __future__ import annotations
 from datetime import date
 from typing import Any
 
+from sqlalchemy.orm import joinedload
 from sqlalchemy.orm import Session
 
 from app.models.institutions import Filing13F, Holding13F, InstitutionManager, OwnershipChange13F
@@ -168,6 +169,7 @@ def build_user_stock_holders(
     )
     direct_holdings = (
         base_query.filter(Holding13F.holding_attribution_status == "direct")
+        .options(joinedload(Holding13F.filing).joinedload(Filing13F.manager))
         .order_by(Holding13F.portfolio_weight_pct.desc().nullslast(), Holding13F.value_usd.desc().nullslast())
         .all()
     )
@@ -176,6 +178,8 @@ def build_user_stock_holders(
     ]
     attribution_caveat_count = (
         base_query.filter(Holding13F.holding_attribution_status.in_(["shared", "unresolved"]))
+        .with_entities(Holding13F.manager_id)
+        .distinct()
         .count()
     )
     data_caveats = _stock_holder_data_caveats(direct_holdings)
@@ -298,7 +302,7 @@ def _stock_holder_data_caveats(holdings: list[Holding13F]) -> list[dict[str, str
     by_code: dict[str, dict[str, str]] = {}
     for holding in holdings:
         for caveat in _filing_caveats(holding.filing):
-            if caveat["code"] in {"COMBINATION_REPORT", "CONFIDENTIAL_TREATMENT"}:
+            if caveat["code"] in {"COMBINATION_REPORT", "CONFIDENTIAL_TREATMENT", "FILING_WINDOW_OPEN"}:
                 by_code[caveat["code"]] = caveat
     return list(by_code.values())
 

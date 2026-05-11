@@ -384,9 +384,18 @@ def test_stock_holders_aggregation_counts_only_direct_common_holders(client, db_
             attribution_status=attribution,
             portfolio_weight_pct=weight,
         )
-    option_filing = _filing(db_session, featured, "0000000100-26-999999", report_quarter="2025-Q4", quarter_end_date=date(2025, 12, 31))
-    option_run = _parse_run(db_session, option_filing)
-    _holding(db_session, option_filing, option_run, index=99, stock=stock, put_call="PUT")
+        if manager == featured:
+            _holding(db_session, filing, parse_run, index=99, stock=stock, put_call="PUT")
+        if manager == shared:
+            _holding(
+                db_session,
+                filing,
+                parse_run,
+                index=100,
+                stock=stock,
+                attribution_status="shared",
+                portfolio_weight_pct=31.0,
+            )
     _ownership_change(db_session, featured, stock, change_status="new_position")
     _ownership_change(db_session, activist, stock, change_status="increased")
     _ownership_change(db_session, quant, stock, change_status="cusip_changed")
@@ -441,4 +450,31 @@ def test_stock_holders_aggregation_surfaces_data_caveats(client, db_session):
     payload = response.json()
     assert payload["status"] == "available_with_caveat"
     codes = {item["code"] for item in payload["data_caveats"]}
-    assert {"CONFIDENTIAL_TREATMENT", "COMBINATION_REPORT"}.issubset(codes)
+    assert {"CONFIDENTIAL_TREATMENT", "COMBINATION_REPORT", "FILING_WINDOW_OPEN"}.issubset(codes)
+
+
+def test_stock_holders_aggregation_unavailable_when_no_holders(client, db_session):
+    _clear_13f(db_session)
+    stock = _stock(db_session, "NONE")
+    db_session.commit()
+
+    response = client.get(f"/api/v1/13f/stocks/{stock.id}/holders")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["status"] == "unavailable"
+    assert payload["reason"]["code"] == "NO_ACTIVE_HOLDERS"
+    assert payload["direct_holder_count"] == 0
+    assert payload["top_holders"] == []
+    assert payload["recent_changes"] == []
+    assert payload["data_caveats"] == []
+
+
+def test_stock_holders_rejects_invalid_quarter(client, db_session):
+    _clear_13f(db_session)
+    stock = _stock(db_session, "BADQ")
+    db_session.commit()
+
+    response = client.get(f"/api/v1/13f/stocks/{stock.id}/holders?quarter=2026-Q5")
+
+    assert response.status_code == 422
