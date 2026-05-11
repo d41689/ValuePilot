@@ -366,3 +366,32 @@ test('normalizeStockHolderAggregation keeps unavailable stock holders explicit',
   assert.deepEqual(holders.recentChanges, []);
   assert.deepEqual(holders.dataCaveats, []);
 });
+
+test('normalizeStockHolderAggregation flags attribution-only caveats', () => {
+  const holders = normalizeStockHolderAggregation({
+    status: 'available',
+    stock_id: 12,
+    ticker: 'CAVEAT',
+    as_of_quarter: '2026-Q1',
+    direct_holder_count: 1,
+    value_manager_direct_count: 1,
+    featured_holder_count: 0,
+    attribution_caveat_count: 2,
+    top_holders: [
+      {
+        holding_id: 601,
+        portfolio_weight_pct: null,
+        manager: {
+          id: 8,
+          display_name: 'Careful Partners',
+        },
+      },
+    ],
+    recent_changes: [],
+    data_caveats: [],
+  });
+
+  assert.equal(holders.hasCaveats, true);
+  assert.equal(holders.attributionCaveatCountLabel, '2');
+  assert.equal(holders.topHolders[0].portfolioWeightLabel, '—');
+});

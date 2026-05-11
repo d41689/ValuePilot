@@ -177,8 +177,10 @@ export default function OraclesLensPage() {
     () => rows.find((row) => row.stockId === selectedStockId) ?? null,
     [rows, selectedStockId]
   );
-  const selectedHolderQuarter =
-    filters.period.trim() || payload?.period || payload?.latest_complete_period || '';
+  const selectedHolderQuarter = useMemo(
+    () => filters.period.trim() || payload?.period || payload?.latest_complete_period || '',
+    [filters.period, payload?.latest_complete_period, payload?.period]
+  );
   const stockHoldersQuery = useQuery({
     queryKey: ['13f-stock-holders', selectedStockId, selectedHolderQuarter],
     enabled: selectedStockId !== null,
@@ -737,7 +739,9 @@ export default function OraclesLensPage() {
             </CardHeader>
             <CardContent className="h-[calc(100%-84px)] space-y-5 overflow-y-auto p-5">
               <div className="rounded-md border border-amber-300/70 bg-amber-50 px-3 py-2 text-sm text-amber-950">
-                Review the counter-evidence before treating this 13F signal as a research candidate.
+                13F filings are delayed quarterly snapshots and may be up to 45 days behind
+                quarter end. Review the counter-evidence before treating this signal as a
+                research candidate.
               </div>
 
               <div className="space-y-3">
@@ -899,9 +903,14 @@ export default function OraclesLensPage() {
                               {holder.isFeatured ? ' · featured' : ''}
                             </div>
                           </div>
-                          <Badge variant="outline" className="rounded-md">
-                            {holder.portfolioWeightLabel}
-                          </Badge>
+                          <div className="text-right">
+                            <div className="text-[10px] font-semibold uppercase text-muted-foreground">
+                              13F common weight
+                            </div>
+                            <Badge variant="outline" className="mt-1 rounded-md">
+                              {holder.portfolioWeightLabel}
+                            </Badge>
+                          </div>
                         </div>
                         <div className="mt-3 grid grid-cols-2 gap-2 text-xs text-muted-foreground">
                           <div>

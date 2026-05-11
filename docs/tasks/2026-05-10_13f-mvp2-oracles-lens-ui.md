@@ -69,10 +69,12 @@ Tech Lead should review:
 - 2026-05-10: Added `normalizeStockHolderAggregation` with TDD coverage for available-with-caveat and unavailable stock-holder responses.
 - 2026-05-10: Wired the Oracle's Lens candidate drawer to fetch `GET /api/v1/13f/stocks/{stock_id}/holders` for the selected/latest period and display direct consensus counts, top direct holders, recent direct changes, and data caveats.
 - 2026-05-10: Kept UI copy scoped to delayed 13F research context; no buy/sell recommendation, total AUM, current-holdings, or MVP 3 cross-manager attribution language added.
+- 2026-05-10: Accepted Tech Lead follow-up items: added visible `13F common weight` label, added explicit 45-day delay copy inside the drawer, memoized selected holder quarter, and covered attribution-only caveats in normalizer tests.
+- 2026-05-10: Did not convert `portfolio_weight_pct=0` to unavailable in the frontend. Per PRD §16, unavailable weight should arrive as `NULL`; preserving numeric zero avoids hiding a valid backend value.
 
 ## Verification Results
 
-- `docker compose exec web node --test lib/oraclesLens.test.js` - passed, 12 tests.
-- `docker compose exec web node --test lib` - passed, 113 tests.
+- `docker compose exec web node --test lib/oraclesLens.test.js` - passed, 13 tests.
+- `docker compose exec web node --test lib` - passed, 114 tests.
 - `docker compose exec web npm run lint` - passed with no warnings or errors.
 - `docker compose exec web npm run build` - passed.
