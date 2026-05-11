@@ -81,6 +81,11 @@ def upgrade() -> None:
         ["id"],
         ondelete="SET NULL",
     )
+    op.create_check_constraint(
+        "chk_filings_13f_override_requires_audit_pointer",
+        "filings_13f",
+        "effective_value_unit_override = 'infer' OR effective_value_unit_override_id IS NOT NULL",
+    )
     op.create_index(
         "ix_filings_13f_effective_value_unit_override",
         "filings_13f",
@@ -91,6 +96,7 @@ def upgrade() -> None:
 
 def downgrade() -> None:
     op.drop_index("ix_filings_13f_effective_value_unit_override", table_name="filings_13f")
+    op.drop_constraint("chk_filings_13f_override_requires_audit_pointer", "filings_13f", type_="check")
     op.drop_constraint("fk_filings_13f_effective_value_unit_override", "filings_13f", type_="foreignkey")
     op.drop_column("filings_13f", "effective_value_unit_override_id")
     op.drop_column("filings_13f", "effective_value_unit_override")

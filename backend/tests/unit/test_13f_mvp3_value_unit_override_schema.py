@@ -11,6 +11,7 @@ from app.models.institutions import (
     FilingValueUnitOverride13F,
     InstitutionManager,
     ParseRun13F,
+    VALUE_UNIT_OVERRIDE_EXPLICIT,
     VALUE_UNIT_OVERRIDES,
 )
 from app.models.users import User
@@ -128,6 +129,9 @@ def test_value_unit_override_schema_columns_and_indexes_exist(db_session):
     filing_indexes = {index["name"] for index in inspector.get_indexes("filings_13f")}
     assert "ix_filings_13f_effective_value_unit_override" in filing_indexes
 
+    filing_checks = {constraint["name"] for constraint in inspector.get_check_constraints("filings_13f")}
+    assert "chk_filings_13f_override_requires_audit_pointer" in filing_checks
+
     override_indexes = {index["name"] for index in inspector.get_indexes("filing_value_unit_overrides")}
     assert "ix_filing_value_unit_overrides_filing_id" in override_indexes
     assert "ix_filing_value_unit_overrides_accession" in override_indexes
@@ -147,6 +151,22 @@ def test_filing_effective_value_unit_override_accepts_prd_values(override_value)
     )
 
     assert filing.effective_value_unit_override == override_value
+
+
+@pytest.mark.parametrize("override_value", sorted(VALUE_UNIT_OVERRIDE_EXPLICIT))
+def test_filing_value_unit_override_event_accepts_explicit_values(override_value):
+    row = FilingValueUnitOverride13F(
+        filing_id=1,
+        accession_number="0000000001-26-000001",
+        old_parse_rule="header_total_value_thousands",
+        new_override_value=override_value,
+        reason="Admin reviewed value units.",
+        reviewer_id=1,
+        reviewed_at=datetime(2026, 5, 11, 12, 0, tzinfo=timezone.utc),
+        status="pending_reparse",
+    )
+
+    assert row.new_override_value == override_value
 
 
 @pytest.mark.parametrize("status", sorted(FILING_VALUE_UNIT_OVERRIDE_STATUSES))
@@ -173,6 +193,17 @@ def test_filing_value_unit_override_rejects_unknown_values():
             filed_at=date(2026, 5, 15),
             form_type="13F-HR",
             effective_value_unit_override="auto_fix",
+        )
+
+    with pytest.raises(ValueError):
+        FilingValueUnitOverride13F(
+            filing_id=1,
+            accession_number="0000000001-26-000001",
+            new_override_value="infer",
+            reason="Invalid override.",
+            reviewer_id=1,
+            reviewed_at=datetime(2026, 5, 11, 12, 0, tzinfo=timezone.utc),
+            status="pending_reparse",
         )
 
     with pytest.raises(ValueError):
@@ -260,6 +291,7 @@ def test_filing_delete_cascades_override_events_with_effective_pointer(db_sessio
     override_id = override.id
     db_session.delete(filing)
     db_session.flush()
+    db_session.expire_all()
 
     assert db_session.get(Filing13F, filing_id) is None
     assert db_session.get(FilingValueUnitOverride13F, override_id) is None

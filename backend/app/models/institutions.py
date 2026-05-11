@@ -2,7 +2,7 @@ from datetime import date, datetime
 from typing import Optional, List
 from sqlalchemy import (
     String, Text, Boolean, ForeignKey, BigInteger, Date,
-    DateTime, Integer, Float, Index, UniqueConstraint, event, text, Numeric,
+    DateTime, Integer, Float, Index, UniqueConstraint, CheckConstraint, event, text, Numeric,
 )
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, Session, mapped_column, relationship, validates
@@ -13,6 +13,7 @@ from app.core.db import Base
 MANAGER_STATUSES = {"candidate", "active", "inactive", "ignored", "needs_review"}
 MANAGER_TYPES = {"fundamental_long", "activist", "quant", "multi_strategy", "index_like", "unknown"}
 VALUE_UNIT_OVERRIDES = {"infer", "thousands", "dollars"}
+VALUE_UNIT_OVERRIDE_EXPLICIT = {"thousands", "dollars"}
 EDGAR_SYNC_STATUSES = {"pending", "running", "success", "failed", "no_data", "partial_success"}
 NO_INDEX_REASONS = {"weekend", "federal_holiday", "edgar_special_closure", "other"}
 NO_INDEX_SOURCES = {"auto_generated", "admin_manual"}
@@ -331,10 +332,12 @@ class Filing13F(Base):
         back_populates="filing",
         foreign_keys="FilingValueUnitOverride13F.filing_id",
         cascade="all, delete-orphan",
+        passive_deletes=True,
     )
     effective_value_unit_override_event: Mapped[Optional["FilingValueUnitOverride13F"]] = relationship(
         foreign_keys=[effective_value_unit_override_id],
         post_update=True,
+        passive_deletes=True,
     )
     parse_runs: Mapped[List["ParseRun13F"]] = relationship(
         primaryjoin="foreign(ParseRun13F.accession_number) == Filing13F.accession_number",
@@ -360,6 +363,10 @@ class Filing13F(Base):
         Index("idx_filings_active", "is_active_for_manager_period"),
         Index("idx_filings_parser_version", "parser_version"),
         Index("uq_filings_13f_accession_number", "accession_number", unique=True),
+        CheckConstraint(
+            "effective_value_unit_override = 'infer' OR effective_value_unit_override_id IS NOT NULL",
+            name="chk_filings_13f_override_requires_audit_pointer",
+        ),
     )
 
     @validates("parse_status")
@@ -472,7 +479,7 @@ class FilingValueUnitOverride13F(Base):
 
     @validates("new_override_value")
     def _validate_new_override_value(self, _: str, value: str) -> str:
-        return _validate_choice("new_override_value", value, VALUE_UNIT_OVERRIDES)
+        return _validate_choice("new_override_value", value, VALUE_UNIT_OVERRIDE_EXPLICIT)
 
     @validates("reviewer_id")
     def _validate_reviewer_id(self, _: str, value: int) -> int:
