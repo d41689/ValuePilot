@@ -327,6 +327,15 @@ class Filing13F(Base):
 
     manager: Mapped["InstitutionManager"] = relationship(back_populates="filings")
     holdings: Mapped[List["Holding13F"]] = relationship(back_populates="filing")
+    override_events: Mapped[List["FilingValueUnitOverride13F"]] = relationship(
+        back_populates="filing",
+        foreign_keys="FilingValueUnitOverride13F.filing_id",
+        cascade="all, delete-orphan",
+    )
+    effective_value_unit_override_event: Mapped[Optional["FilingValueUnitOverride13F"]] = relationship(
+        foreign_keys=[effective_value_unit_override_id],
+        post_update=True,
+    )
     parse_runs: Mapped[List["ParseRun13F"]] = relationship(
         primaryjoin="foreign(ParseRun13F.accession_number) == Filing13F.accession_number",
         viewonly=True,
@@ -418,17 +427,22 @@ class FilingValueUnitOverride13F(Base):
         nullable=False,
     )
     accession_number: Mapped[str] = mapped_column(String(20), nullable=False)
-    old_parse_rule: Mapped[Optional[str]] = mapped_column(String(80), nullable=True)
+    old_parse_rule: Mapped[str] = mapped_column(String(80), nullable=False)
     new_override_value: Mapped[str] = mapped_column(String(20), nullable=False)
     reason: Mapped[str] = mapped_column(Text, nullable=False)
     evidence_json: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)
-    reviewer_id: Mapped[Optional[int]] = mapped_column(
+    reviewer_id: Mapped[int] = mapped_column(
         BigInteger,
-        ForeignKey("users.id", ondelete="SET NULL"),
-        nullable=True,
+        ForeignKey("users.id"),
+        nullable=False,
     )
     reviewed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
-    created_parse_run_id: Mapped[Optional[int]] = mapped_column(
+    baseline_parse_run_id: Mapped[Optional[int]] = mapped_column(
+        BigInteger,
+        ForeignKey("parse_runs.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    result_parse_run_id: Mapped[Optional[int]] = mapped_column(
         BigInteger,
         ForeignKey("parse_runs.id", ondelete="SET NULL"),
         nullable=True,
@@ -451,9 +465,20 @@ class FilingValueUnitOverride13F(Base):
         Index("ix_filing_value_unit_overrides_reviewed_at", "reviewed_at"),
     )
 
+    filing: Mapped["Filing13F"] = relationship(
+        back_populates="override_events",
+        foreign_keys=[filing_id],
+    )
+
     @validates("new_override_value")
     def _validate_new_override_value(self, _: str, value: str) -> str:
         return _validate_choice("new_override_value", value, VALUE_UNIT_OVERRIDES)
+
+    @validates("reviewer_id")
+    def _validate_reviewer_id(self, _: str, value: int) -> int:
+        if value is None:
+            raise ValueError("reviewer_id is required for filing value-unit overrides")
+        return value
 
     @validates("status")
     def _validate_override_status(self, _: str, value: str) -> str:

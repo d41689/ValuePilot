@@ -10,8 +10,10 @@ from app.models.institutions import (
     Filing13F,
     FilingValueUnitOverride13F,
     InstitutionManager,
+    ParseRun13F,
     VALUE_UNIT_OVERRIDES,
 )
+from app.models.users import User
 
 
 def _manager(db_session) -> InstitutionManager:
@@ -46,7 +48,34 @@ def _filing(db_session, manager: InstitutionManager) -> Filing13F:
     return filing
 
 
+def _reviewer(db_session) -> User:
+    user = User(email="mvp3-reviewer@example.com", role="admin")
+    db_session.add(user)
+    db_session.flush()
+    return user
+
+
+def _parse_run(
+    db_session,
+    filing: Filing13F,
+    *,
+    status: str = "succeeded",
+    is_current: bool = False,
+) -> ParseRun13F:
+    parse_run = ParseRun13F(
+        accession_number=filing.accession_number,
+        parser_version="13f-parser-test",
+        fingerprint_version="v1",
+        status=status,
+        is_current=is_current,
+    )
+    db_session.add(parse_run)
+    db_session.flush()
+    return parse_run
+
+
 def _override(db_session, filing: Filing13F, **overrides) -> FilingValueUnitOverride13F:
+    reviewer = overrides.pop("reviewer", None) or _reviewer(db_session)
     payload = {
         "filing_id": filing.id,
         "accession_number": filing.accession_number,
@@ -58,6 +87,7 @@ def _override(db_session, filing: Filing13F, **overrides) -> FilingValueUnitOver
             "reported_total_value_thousands": 123_456_789,
             "computed_total_value_thousands": 123_456,
         },
+        "reviewer_id": reviewer.id,
         "reviewed_at": datetime(2026, 5, 11, 12, 0, tzinfo=timezone.utc),
         "status": "pending_reparse",
     }
@@ -88,11 +118,15 @@ def test_value_unit_override_schema_columns_and_indexes_exist(db_session):
         "evidence_json",
         "reviewer_id",
         "reviewed_at",
-        "created_parse_run_id",
+        "baseline_parse_run_id",
+        "result_parse_run_id",
         "status",
         "created_at",
         "updated_at",
     } <= override_columns
+
+    filing_indexes = {index["name"] for index in inspector.get_indexes("filings_13f")}
+    assert "ix_filings_13f_effective_value_unit_override" in filing_indexes
 
     override_indexes = {index["name"] for index in inspector.get_indexes("filing_value_unit_overrides")}
     assert "ix_filing_value_unit_overrides_filing_id" in override_indexes
@@ -122,6 +156,7 @@ def test_filing_value_unit_override_status_accepts_contract_values(status):
         accession_number="0000000001-26-000001",
         new_override_value="dollars",
         reason="Admin reviewed value units.",
+        reviewer_id=1,
         reviewed_at=datetime(2026, 5, 11, 12, 0, tzinfo=timezone.utc),
         status=status,
     )
@@ -146,6 +181,7 @@ def test_filing_value_unit_override_rejects_unknown_values():
             accession_number="0000000001-26-000001",
             new_override_value="auto_fix",
             reason="Invalid override.",
+            reviewer_id=1,
             reviewed_at=datetime(2026, 5, 11, 12, 0, tzinfo=timezone.utc),
             status="pending_reparse",
         )
@@ -156,6 +192,7 @@ def test_filing_value_unit_override_rejects_unknown_values():
             accession_number="0000000001-26-000001",
             new_override_value="dollars",
             reason="Invalid status.",
+            reviewer_id=1,
             reviewed_at=datetime(2026, 5, 11, 12, 0, tzinfo=timezone.utc),
             status="silently_applied",
         )
@@ -164,7 +201,15 @@ def test_filing_value_unit_override_rejects_unknown_values():
 def test_filing_level_override_audit_pointer_does_not_change_manager_override(db_session):
     manager = _manager(db_session)
     filing = _filing(db_session, manager)
-    override = _override(db_session, filing)
+    baseline_run = _parse_run(db_session, filing, status="succeeded", is_current=True)
+    result_run = _parse_run(db_session, filing, status="succeeded")
+    override = _override(
+        db_session,
+        filing,
+        baseline_parse_run_id=baseline_run.id,
+        result_parse_run_id=result_run.id,
+        status="applied",
+    )
 
     filing.effective_value_unit_override = "dollars"
     filing.effective_value_unit_override_id = override.id
@@ -180,4 +225,41 @@ def test_filing_level_override_audit_pointer_does_not_change_manager_override(db
     assert persisted_manager.value_unit_override == "infer"
     assert persisted_override.accession_number == filing.accession_number
     assert persisted_override.evidence_json["source"] == "admin_review"
-    assert persisted_override.created_parse_run_id is None
+    assert persisted_override.baseline_parse_run_id == baseline_run.id
+    assert persisted_override.result_parse_run_id == result_run.id
+    assert persisted_filing.effective_value_unit_override_event.id == persisted_override.id
+    assert persisted_filing.override_events[0].id == persisted_override.id
+
+
+def test_filing_value_unit_override_requires_reviewer(db_session):
+    manager = _manager(db_session)
+    filing = _filing(db_session, manager)
+
+    with pytest.raises(ValueError):
+        FilingValueUnitOverride13F(
+            filing_id=filing.id,
+            accession_number=filing.accession_number,
+            old_parse_rule="header_total_value_thousands",
+            new_override_value="dollars",
+            reason="Missing reviewer should fail.",
+            reviewer_id=None,
+            reviewed_at=datetime(2026, 5, 11, 12, 0, tzinfo=timezone.utc),
+            status="pending_reparse",
+        )
+
+
+def test_filing_delete_cascades_override_events_with_effective_pointer(db_session):
+    manager = _manager(db_session)
+    filing = _filing(db_session, manager)
+    override = _override(db_session, filing)
+    filing.effective_value_unit_override = "dollars"
+    filing.effective_value_unit_override_id = override.id
+    db_session.flush()
+
+    filing_id = filing.id
+    override_id = override.id
+    db_session.delete(filing)
+    db_session.flush()
+
+    assert db_session.get(Filing13F, filing_id) is None
+    assert db_session.get(FilingValueUnitOverride13F, override_id) is None

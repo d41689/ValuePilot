@@ -54,11 +54,13 @@ Acceptance criteria:
 - 2026-05-11: Added Alembic revision `20260511130000` with `filing_value_unit_overrides` plus `filings_13f.effective_value_unit_override(_id)`.
 - 2026-05-11: Added ORM contract and validators. Filing-level override uses the same `infer` / `thousands` / `dollars` value set as existing manager-level override, but does not replace or mutate `InstitutionManager.value_unit_override`.
 - 2026-05-11: Scope guard: no parser behavior, reparse execution, admin route/UI, validation job, backfill, or PRD changes were made.
+- 2026-05-11: Review follow-up accepted and fixed: reviewer is now required, `baseline_parse_run_id` names the pre-override reference run, `result_parse_run_id` records the reparse run that applies the override, `old_parse_rule` is required, Filing ORM relationships are traversable, and tests cover the filings index plus mutual-FK cascade delete.
+- 2026-05-11: Review follow-up deferred by design: no pointer-pair CHECK constraint yet because `infer` with an audit pointer is a valid explicit reset-to-inference event; no partial unique `status='applied'` index yet because effective pointer defines current state and MVP3-04 will finalize lifecycle transition rules; no `created_by_user_id` yet because MVP3-03 records the approving reviewer and leaves request/approval separation to the admin workflow task.
 
 ## Verification Results
 
-- `docker compose exec api pytest -q tests/unit/test_13f_mvp3_value_unit_override_schema.py` -> 10 passed.
+- `docker compose exec api pytest -q tests/unit/test_13f_mvp3_value_unit_override_schema.py` -> 12 passed after review follow-up.
 - `docker compose exec api alembic downgrade 20260511120000` -> passed.
 - `docker compose exec api alembic upgrade head` -> passed.
-- `docker compose exec api pytest -q tests/unit/test_13f_mvp3_value_unit_override_schema.py tests/unit/test_13f_schema_foundation.py` -> 50 passed.
-- `docker compose exec api pytest -q` -> 563 passed, 1 pre-existing SQLAlchemy rollback warning in `test_duplicate_fingerprint_within_same_parse_run_raises`.
+- `docker compose exec api pytest -q tests/unit/test_13f_mvp3_value_unit_override_schema.py tests/unit/test_13f_schema_foundation.py` -> 52 passed after review follow-up.
+- `docker compose exec api pytest -q` -> 565 passed, 1 pre-existing SQLAlchemy rollback warning in `test_duplicate_fingerprint_within_same_parse_run_raises`.
