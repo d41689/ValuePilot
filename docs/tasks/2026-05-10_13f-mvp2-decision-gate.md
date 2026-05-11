@@ -75,7 +75,7 @@ Implementation constraint for MVP2-01+:
 - Heuristic corporate-action signals may downgrade confidence, but must not create corrected values.
 - User-facing copy should avoid implying confirmed corporate action. Preferred language: "Potential identifier change; change signal may be incomplete."
 
-Approval status: Pending Tech Lead / human owner.
+Approval status: Approved by Tech Lead / human owner; MVP 2 implementation and end-to-end verification completed.
 
 ### D2. CUSIP Mapping Rate Threshold
 
@@ -192,14 +192,14 @@ Approval status: Pending Tech Lead / human owner.
 
 ## Approval Checklist
 
-- [ ] D1 Corporate action MVP 2 strategy approved.
-- [ ] D2 CUSIP mapping threshold strategy approved.
-- [ ] D3 13F-NT cross-reference strategy approved.
-- [ ] D4 MVP 2 scope freeze approved.
-- [ ] D5 ownership signal confidence levels approved.
-- [ ] D6 change signal display rules approved.
-- [ ] Human owner approved MVP 2 scope freeze and exclusions.
-- [ ] MVP2-01 explicitly approved to start.
+- [x] D1 Corporate action MVP 2 strategy approved.
+- [x] D2 CUSIP mapping threshold strategy approved.
+- [x] D3 13F-NT cross-reference strategy approved.
+- [x] D4 MVP 2 scope freeze approved.
+- [x] D5 ownership signal confidence levels approved.
+- [x] D6 change signal display rules approved.
+- [x] Human owner approved MVP 2 scope freeze and exclusions.
+- [x] MVP2-01 explicitly approved to start.
 
 ## Progress Notes
 
@@ -217,3 +217,4 @@ Approval status: Pending Tech Lead / human owner.
   - Clarified that confidential-treatment caveats may downgrade signal confidence to `low_confidence` depending on impact.
   - Clarified that reported-elsewhere aggregation can expose known/unknown status when exact counts are unavailable.
   - Clarified that D5 confidence can be derived at runtime and does not force a dedicated schema column.
+- 2026-05-11: Closed the approval checklist after Tech Lead final acceptance approved MVP 2 closure and entry into MVP 3 decision gate / backlog planning.

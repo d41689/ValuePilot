@@ -90,3 +90,5 @@ Tech Lead should review:
 
 - No blocking residual risk found in this verification pass.
 - The full backend suite still emits the known SQLAlchemy rollback warning noted above; it did not fail the suite and is outside MVP 2 scope.
+- MVP 3 decision gate should clarify `/stocks/{stock_id}/holders` count labels: current `direct_holder_count` is intentionally the direct consensus count after manager-type exclusions; consider adding `all_direct_holder_count` or renaming the current field before a public contract freeze.
+- MVP 3 planning should explicitly decide whether to remove/refactor legacy Dataroma client/stub surfaces now that MVP 2 uses OpenFIGI-backed CUSIP mapping and Dataroma remains excluded as a CUSIP source.
