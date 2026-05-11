@@ -24,6 +24,39 @@ function formatPercent(value, digits = 1) {
   return `${(value * 100).toFixed(digits)}%`;
 }
 
+function formatStoredPercent(value, digits = 1) {
+  if (typeof value !== 'number' || Number.isNaN(value)) {
+    return '—';
+  }
+  return `${value.toFixed(digits)}%`;
+}
+
+function formatCurrency(value, digits = 0) {
+  if (typeof value !== 'number' || Number.isNaN(value)) {
+    return '—';
+  }
+  return `$${formatNumber(value, digits)}`;
+}
+
+function titleizeCode(value) {
+  const label = String(value ?? 'unknown').toLowerCase().replaceAll('_', ' ');
+  return `${label.slice(0, 1).toUpperCase()}${label.slice(1)}`;
+}
+
+function changeStatusLabel(value) {
+  const labels = {
+    new_position: 'New position',
+    increased: 'Increased',
+    reduced: 'Reduced',
+    exited_position: 'Exited',
+    unchanged: 'Unchanged',
+    cusip_changed: 'Identifier changed',
+    no_prior_data: 'No prior data',
+    unavailable: 'Unavailable',
+  };
+  return labels[value] ?? titleizeCode(value);
+}
+
 function buildOracleLensQueryParams(filters = {}) {
   const params = new URLSearchParams();
   if (filters.period) {
@@ -313,6 +346,77 @@ function normalizeOracleLensRows(items) {
   });
 }
 
+function normalizeStockHolderAggregation(payload) {
+  const data = payload && typeof payload === 'object' ? payload : {};
+  const topHolders = Array.isArray(data.top_holders) ? data.top_holders : [];
+  const recentChanges = Array.isArray(data.recent_changes) ? data.recent_changes : [];
+  const dataCaveats = Array.isArray(data.data_caveats) ? data.data_caveats : [];
+  const reason = data.reason && typeof data.reason === 'object' ? data.reason : {};
+
+  return {
+    status: data.status ?? 'unavailable',
+    isUnavailable: data.status === 'unavailable',
+    hasCaveats:
+      data.status === 'available_with_caveat' ||
+      (typeof data.attribution_caveat_count === 'number' && data.attribution_caveat_count > 0) ||
+      dataCaveats.length > 0,
+    stockId: typeof data.stock_id === 'number' ? data.stock_id : null,
+    ticker: data.ticker ?? '—',
+    exchange: data.exchange ?? '—',
+    companyName: data.company_name ?? '—',
+    asOfQuarter: data.as_of_quarter ?? null,
+    asOfQuarterLabel: data.as_of_quarter ?? '—',
+    directHolderCountLabel: formatNumber(data.direct_holder_count, 0),
+    valueManagerDirectCountLabel: formatNumber(data.value_manager_direct_count, 0),
+    featuredHolderCountLabel: formatNumber(data.featured_holder_count, 0),
+    attributionCaveatCountLabel: formatNumber(data.attribution_caveat_count, 0),
+    reasonCode: reason.code ?? null,
+    reasonMessage: reason.message ?? null,
+    topHolders: topHolders.map((item, index) => {
+      const manager = item?.manager && typeof item.manager === 'object' ? item.manager : {};
+      return {
+        key: `${item?.holding_id ?? manager.id ?? 'holder'}:${index}`,
+        holdingId: typeof item?.holding_id === 'number' ? item.holding_id : null,
+        managerId: typeof manager.id === 'number' ? manager.id : null,
+        managerName: manager.display_name ?? manager.canonical_name ?? 'Unknown manager',
+        managerType: manager.manager_type ?? 'unknown',
+        isFeatured: Boolean(manager.is_featured),
+        valueLabel: formatCurrency(item?.value_usd, 0),
+        sharesLabel: formatNumber(item?.ssh_prnamt, 0),
+        portfolioWeightLabel: formatStoredPercent(item?.portfolio_weight_pct, 1),
+        attributionStatus: item?.confidence?.attribution_status ?? 'unknown',
+        cusipMappingStatus: item?.confidence?.cusip_mapping_status ?? 'unknown',
+        accessionNumber: item?.accession_number ?? null,
+      };
+    }),
+    recentChanges: recentChanges.map((item, index) => {
+      const manager = item?.manager && typeof item.manager === 'object' ? item.manager : {};
+      return {
+        key: `${manager.id ?? 'manager'}:${item?.change_status ?? 'change'}:${index}`,
+        managerId: typeof manager.id === 'number' ? manager.id : null,
+        managerName: manager.display_name ?? manager.canonical_name ?? 'Unknown manager',
+        managerType: manager.manager_type ?? 'unknown',
+        isFeatured: Boolean(manager.is_featured),
+        changeStatus: item?.change_status ?? 'unavailable',
+        changeStatusLabel: changeStatusLabel(item?.change_status),
+        confidenceLevel: item?.confidence_level ?? 'unavailable',
+        currentValueLabel: formatCurrency(item?.current_value_usd, 0),
+        previousValueLabel: formatCurrency(item?.previous_value_usd, 0),
+        currentSharesLabel: formatNumber(item?.current_shares, 0),
+        previousSharesLabel: formatNumber(item?.previous_shares, 0),
+        shareDeltaLabel: formatNumber(item?.share_delta, 0),
+        caveatCodes: Array.isArray(item?.caveat_codes) ? item.caveat_codes : [],
+      };
+    }),
+    dataCaveats: dataCaveats.map((item, index) => ({
+      key: `${item?.code ?? 'caveat'}:${index}`,
+      code: item?.code ?? 'UNKNOWN',
+      label: titleizeCode(item?.code),
+      message: item?.message ?? '',
+    })),
+  };
+}
+
 module.exports = {
   buildOracleLensQueryParams,
   cautionTone,
@@ -324,6 +428,7 @@ module.exports = {
   missingDataReasons,
   normalizeOracleLensRows,
   normalizeQualityOverlay,
+  normalizeStockHolderAggregation,
   normalizeValuationReference,
   primaryCautionFlags,
   radarBubbles,

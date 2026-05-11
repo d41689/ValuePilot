@@ -9,6 +9,7 @@ const {
   missingDataReasons,
   normalizeOracleLensRows,
   normalizeQualityOverlay,
+  normalizeStockHolderAggregation,
   normalizeValuationReference,
   primaryCautionFlags,
   radarBubbles,
@@ -261,4 +262,107 @@ test('confidenceTone maps confidence to badge variants', () => {
   assert.equal(confidenceTone('high'), 'success');
   assert.equal(confidenceTone('medium'), 'warning');
   assert.equal(confidenceTone('low'), 'secondary');
+});
+
+test('normalizeStockHolderAggregation exposes direct consensus and caveats', () => {
+  const holders = normalizeStockHolderAggregation({
+    status: 'available_with_caveat',
+    stock_id: 10,
+    ticker: 'LENS',
+    exchange: 'NYSE',
+    company_name: 'Lens Corp',
+    as_of_quarter: '2026-Q1',
+    direct_holder_count: 3,
+    value_manager_direct_count: 2,
+    featured_holder_count: 1,
+    attribution_caveat_count: 1,
+    top_holders: [
+      {
+        holding_id: 501,
+        value_usd: 1250000,
+        ssh_prnamt: 42000,
+        portfolio_weight_pct: 3.25,
+        manager: {
+          id: 7,
+          display_name: 'Patient Capital',
+          manager_type: 'fundamental_long',
+          is_featured: true,
+        },
+        confidence: {
+          attribution_status: 'direct',
+          cusip_mapping_status: 'linked',
+        },
+      },
+    ],
+    recent_changes: [
+      {
+        change_status: 'increased',
+        confidence_level: 'high_confidence',
+        current_value_usd: 1250000,
+        previous_value_usd: 900000,
+        current_shares: 42000,
+        previous_shares: 30000,
+        share_delta: 12000,
+        caveat_codes: ['mapping_warning'],
+        manager: {
+          id: 7,
+          display_name: 'Patient Capital',
+          manager_type: 'fundamental_long',
+          is_featured: true,
+        },
+      },
+    ],
+    data_caveats: [
+      {
+        code: 'FILING_WINDOW_OPEN',
+        message: 'The filing window can still change this quarter.',
+      },
+    ],
+  });
+
+  assert.equal(holders.status, 'available_with_caveat');
+  assert.equal(holders.hasCaveats, true);
+  assert.equal(holders.directHolderCountLabel, '3');
+  assert.equal(holders.valueManagerDirectCountLabel, '2');
+  assert.equal(holders.featuredHolderCountLabel, '1');
+  assert.equal(holders.attributionCaveatCountLabel, '1');
+  assert.equal(holders.asOfQuarterLabel, '2026-Q1');
+  assert.equal(holders.topHolders[0].managerName, 'Patient Capital');
+  assert.equal(holders.topHolders[0].valueLabel, '$1,250,000');
+  assert.equal(holders.topHolders[0].portfolioWeightLabel, '3.3%');
+  assert.equal(holders.topHolders[0].sharesLabel, '42,000');
+  assert.equal(holders.recentChanges[0].changeStatusLabel, 'Increased');
+  assert.equal(holders.recentChanges[0].shareDeltaLabel, '12,000');
+  assert.deepEqual(holders.recentChanges[0].caveatCodes, ['mapping_warning']);
+  assert.equal(holders.dataCaveats[0].label, 'Filing window open');
+});
+
+test('normalizeStockHolderAggregation keeps unavailable stock holders explicit', () => {
+  const holders = normalizeStockHolderAggregation({
+    status: 'unavailable',
+    stock_id: 11,
+    ticker: 'NONE',
+    as_of_quarter: null,
+    direct_holder_count: 0,
+    value_manager_direct_count: 0,
+    featured_holder_count: 0,
+    attribution_caveat_count: 0,
+    top_holders: [],
+    recent_changes: [],
+    data_caveats: [],
+    reason: {
+      code: 'NO_ACTIVE_HOLDERS',
+      message: 'No direct 13F holders are available for this stock.',
+    },
+  });
+
+  assert.equal(holders.isUnavailable, true);
+  assert.equal(holders.hasCaveats, false);
+  assert.equal(holders.directHolderCountLabel, '0');
+  assert.equal(holders.asOfQuarterLabel, '—');
+  assert.equal(holders.reasonCode, 'NO_ACTIVE_HOLDERS');
+  assert.equal(holders.reasonMessage, 'No direct 13F holders are available for this stock.');
+  assert.deepEqual(holders.topHolders, []);
+  assert.deepEqual(holders.recentChanges, []);
+  assert.deepEqual(holders.dataCaveats, []);
 });
