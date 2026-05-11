@@ -44,6 +44,12 @@ OWNERSHIP_SIGNAL_CONFIDENCE_LEVELS = {"high_confidence", "medium_confidence", "l
 OWNERSHIP_POSITION_TYPES = {"common", "put_option", "call_option"}
 QUALITY_FINDING_STATUSES = {"open", "resolved", "ignored"}
 QUALITY_FINDING_SEVERITIES = {"error", "warning", "info"}
+FILING_VALUE_UNIT_OVERRIDE_STATUSES = {
+    "pending_reparse",
+    "applied",
+    "reparse_failed",
+    "deactivated",
+}
 
 
 def _validate_choice(field: str, value: str, choices: set[str]) -> str:
@@ -297,6 +303,17 @@ class Filing13F(Base):
     amendment_sort_warning: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default=text("false"))
     reported_total_value_thousands: Mapped[Optional[int]] = mapped_column(BigInteger, nullable=True)
     computed_total_value_thousands: Mapped[Optional[int]] = mapped_column(BigInteger, nullable=True)
+    effective_value_unit_override: Mapped[str] = mapped_column(
+        String(20),
+        nullable=False,
+        default="infer",
+        server_default="infer",
+    )
+    effective_value_unit_override_id: Mapped[Optional[int]] = mapped_column(
+        BigInteger,
+        ForeignKey("filing_value_unit_overrides.id", ondelete="SET NULL"),
+        nullable=True,
+    )
     raw_primary_doc_id: Mapped[Optional[int]] = mapped_column(
         BigInteger, ForeignKey("raw_source_documents.id"), nullable=True
     )
@@ -339,6 +356,10 @@ class Filing13F(Base):
     @validates("parse_status")
     def _validate_parse_status(self, _: str, value: str) -> str:
         return _validate_choice("parse_status", value, FILING_PARSE_STATUSES)
+
+    @validates("effective_value_unit_override")
+    def _validate_effective_value_unit_override(self, _: str, value: str) -> str:
+        return _validate_choice("effective_value_unit_override", value, VALUE_UNIT_OVERRIDES)
 
 
 @event.listens_for(Filing13F, "before_insert")
@@ -385,6 +406,58 @@ class ParseRun13F(Base):
     @validates("status")
     def _validate_status(self, _: str, value: str) -> str:
         return _validate_choice("status", value, PARSE_RUN_STATUSES)
+
+
+class FilingValueUnitOverride13F(Base):
+    __tablename__ = "filing_value_unit_overrides"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    filing_id: Mapped[int] = mapped_column(
+        BigInteger,
+        ForeignKey("filings_13f.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    accession_number: Mapped[str] = mapped_column(String(20), nullable=False)
+    old_parse_rule: Mapped[Optional[str]] = mapped_column(String(80), nullable=True)
+    new_override_value: Mapped[str] = mapped_column(String(20), nullable=False)
+    reason: Mapped[str] = mapped_column(Text, nullable=False)
+    evidence_json: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)
+    reviewer_id: Mapped[Optional[int]] = mapped_column(
+        BigInteger,
+        ForeignKey("users.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    reviewed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    created_parse_run_id: Mapped[Optional[int]] = mapped_column(
+        BigInteger,
+        ForeignKey("parse_runs.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    status: Mapped[str] = mapped_column(
+        String(30),
+        nullable=False,
+        default="pending_reparse",
+        server_default="pending_reparse",
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+    __table_args__ = (
+        Index("ix_filing_value_unit_overrides_filing_id", "filing_id"),
+        Index("ix_filing_value_unit_overrides_accession", "accession_number"),
+        Index("ix_filing_value_unit_overrides_status", "status"),
+        Index("ix_filing_value_unit_overrides_reviewed_at", "reviewed_at"),
+    )
+
+    @validates("new_override_value")
+    def _validate_new_override_value(self, _: str, value: str) -> str:
+        return _validate_choice("new_override_value", value, VALUE_UNIT_OVERRIDES)
+
+    @validates("status")
+    def _validate_override_status(self, _: str, value: str) -> str:
+        return _validate_choice("status", value, FILING_VALUE_UNIT_OVERRIDE_STATUSES)
 
 
 class Holding13F(Base):
