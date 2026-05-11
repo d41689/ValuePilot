@@ -121,15 +121,49 @@ def build_user_manager_holding_changes(
     quarter: str | None = None,
 ) -> dict[str, Any]:
     manager = _require_manager(session, manager_id)
+    as_of_quarter = quarter or _latest_manager_change_quarter(session, manager_id)
+    if not as_of_quarter:
+        return _unavailable_holding_changes(
+            manager,
+            quarter,
+            code="NO_COMPUTED_CHANGES",
+            message="No precomputed 13F holding changes are available for this manager.",
+        )
+
+    changes = (
+        session.query(OwnershipChange13F, Stock)
+        .outerjoin(Stock, Stock.id == OwnershipChange13F.stock_id)
+        .filter(
+            OwnershipChange13F.manager_id == manager_id,
+            OwnershipChange13F.report_quarter == as_of_quarter,
+        )
+        .order_by(
+            OwnershipChange13F.is_primary_signal_eligible.desc(),
+            OwnershipChange13F.change_status,
+            Stock.ticker.nullslast(),
+            OwnershipChange13F.security_key,
+        )
+        .all()
+    )
+    if not changes:
+        return _unavailable_holding_changes(
+            manager,
+            as_of_quarter,
+            code="NO_COMPUTED_CHANGES",
+            message="No precomputed 13F holding changes are available for this manager and quarter.",
+        )
+
+    items = [_manager_change_payload(change, stock) for change, stock in changes]
+    has_caveats = any(
+        item["caveat_codes"] or item["unavailable_reason"] or item["confidence_level"] in {"low_confidence", "unavailable"}
+        for item in items
+    )
     return {
-        "status": "unavailable",
+        "status": "available_with_caveat" if has_caveats else "available",
         "manager": _manager_payload(manager),
-        "quarter": quarter,
-        "reason": {
-            "code": "MVP2_NOT_IMPLEMENTED",
-            "message": "13F holding change analysis is not available in MVP 1.",
-        },
-        "items": None,
+        "quarter": as_of_quarter,
+        "reason": None,
+        "items": items,
     }
 
 
@@ -209,6 +243,22 @@ def build_user_stock_holders(
     }
 
 
+def _unavailable_holding_changes(
+    manager: InstitutionManager,
+    quarter: str | None,
+    *,
+    code: str,
+    message: str,
+) -> dict[str, Any]:
+    return {
+        "status": "unavailable",
+        "manager": _manager_payload(manager),
+        "quarter": quarter,
+        "reason": {"code": code, "message": message},
+        "items": None,
+    }
+
+
 def _require_manager(session: Session, manager_id: int) -> InstitutionManager:
     manager = session.get(InstitutionManager, manager_id)
     if not manager or manager.status != "active" or not manager.cik:
@@ -228,6 +278,16 @@ def _latest_stock_holder_quarter(session: Session, stock_id: int) -> str | None:
         .first()
     )
     return row.report_quarter if row else None
+
+
+def _latest_manager_change_quarter(session: Session, manager_id: int) -> str | None:
+    row = (
+        session.query(OwnershipChange13F.report_quarter)
+        .filter(OwnershipChange13F.manager_id == manager_id)
+        .order_by(OwnershipChange13F.quarter_end_date.desc(), OwnershipChange13F.report_quarter.desc())
+        .first()
+    )
+    return row[0] if row else None
 
 
 def _active_filing(session: Session, manager_id: int, quarter: str | None = None) -> Filing13F | None:
@@ -265,6 +325,57 @@ def _top_holder_payload(holding: Holding13F) -> dict[str, Any]:
             "attribution_status": holding.holding_attribution_status,
             "cusip_mapping_status": holding.cusip_mapping_status,
         },
+    }
+
+
+def _manager_change_payload(change: OwnershipChange13F, stock: Stock | None) -> dict[str, Any]:
+    return {
+        "id": change.id,
+        "stock": _stock_payload(stock, change),
+        "report_quarter": change.report_quarter,
+        "quarter_end_date": _iso(change.quarter_end_date),
+        "previous_report_quarter": change.previous_report_quarter,
+        "previous_quarter_end_date": _iso(change.previous_quarter_end_date),
+        "change_status": change.change_status,
+        "confidence_level": change.confidence_level,
+        "is_primary_signal_eligible": change.is_primary_signal_eligible,
+        "caveat_codes": change.caveat_codes or [],
+        "unavailable_reason": change.unavailable_reason,
+        "security_key": change.security_key,
+        "position_type": change.position_type,
+        "ssh_prnamt_type": change.ssh_prnamt_type,
+        "put_call": change.put_call,
+        "current_cusip": change.current_cusip,
+        "previous_cusip": change.previous_cusip,
+        "current_value_usd": change.current_value_usd,
+        "previous_value_usd": change.previous_value_usd,
+        "value_delta_usd": change.value_delta_usd,
+        "value_delta_pct": float(change.value_delta_pct) if change.value_delta_pct is not None else None,
+        "current_shares": change.current_shares,
+        "previous_shares": change.previous_shares,
+        "share_delta": change.share_delta,
+        "share_change_pct": float(change.share_change_pct) if change.share_change_pct is not None else None,
+        "current_portfolio_weight_pct": (
+            float(change.current_portfolio_weight_pct)
+            if change.current_portfolio_weight_pct is not None
+            else None
+        ),
+        "previous_portfolio_weight_pct": (
+            float(change.previous_portfolio_weight_pct)
+            if change.previous_portfolio_weight_pct is not None
+            else None
+        ),
+        "mapping_confidence": change.mapping_confidence,
+        "attribution_status": change.attribution_status,
+    }
+
+
+def _stock_payload(stock: Stock | None, change: OwnershipChange13F) -> dict[str, Any]:
+    return {
+        "id": stock.id if stock else change.stock_id,
+        "ticker": stock.ticker if stock else None,
+        "exchange": stock.exchange if stock else None,
+        "company_name": stock.company_name if stock else None,
     }
 
 

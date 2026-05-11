@@ -170,15 +170,19 @@ def _ownership_change(
     manager: InstitutionManager,
     stock: Stock,
     *,
+    report_quarter: str = "2026-Q1",
+    quarter_end_date: date = date(2026, 3, 31),
     change_status: str = "increased",
     confidence_level: str = "high_confidence",
     primary: bool = True,
+    caveat_codes: list[str] | None = None,
+    unavailable_reason: str | None = None,
 ) -> OwnershipChange13F:
     change = OwnershipChange13F(
         manager_id=manager.id,
         stock_id=stock.id,
-        report_quarter="2026-Q1",
-        quarter_end_date=date(2026, 3, 31),
+        report_quarter=report_quarter,
+        quarter_end_date=quarter_end_date,
         previous_report_quarter="2025-Q4",
         previous_quarter_end_date=date(2025, 12, 31),
         security_key=f"stock:{stock.id}",
@@ -189,7 +193,8 @@ def _ownership_change(
         change_status=change_status,
         confidence_level=confidence_level,
         is_primary_signal_eligible=primary,
-        caveat_codes=[],
+        caveat_codes=caveat_codes or [],
+        unavailable_reason=unavailable_reason,
         current_value_usd=200000,
         previous_value_usd=100000,
         current_shares=200,
@@ -201,7 +206,7 @@ def _ownership_change(
     return change
 
 
-def test_holdings_changes_returns_200_unavailable(client, db_session):
+def test_holdings_changes_returns_200_unavailable_when_no_computed_rows(client, db_session):
     _clear_13f(db_session)
     manager = _manager(db_session)
 
@@ -210,8 +215,47 @@ def test_holdings_changes_returns_200_unavailable(client, db_session):
     assert response.status_code == 200
     payload = response.json()
     assert payload["status"] == "unavailable"
-    assert payload["reason"]["code"] == "MVP2_NOT_IMPLEMENTED"
+    assert payload["reason"]["code"] == "NO_COMPUTED_CHANGES"
     assert payload["items"] is None
+
+
+def test_holdings_changes_returns_precomputed_change_rows(client, db_session):
+    _clear_13f(db_session)
+    manager = _manager(db_session)
+    increased = _stock(db_session, "ADD")
+    no_prior = _stock(db_session, "NT")
+    _ownership_change(db_session, manager, increased)
+    _ownership_change(
+        db_session,
+        manager,
+        no_prior,
+        change_status="no_prior_data",
+        confidence_level="unavailable",
+        primary=False,
+        caveat_codes=["prior_quarter_13f_nt"],
+        unavailable_reason="prior_quarter_13f_nt",
+    )
+    db_session.commit()
+
+    response = client.get(f"/api/v1/13f/managers/{manager.id}/holdings/changes?quarter=2026-Q1")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["status"] == "available_with_caveat"
+    assert payload["quarter"] == "2026-Q1"
+    assert payload["reason"] is None
+    assert len(payload["items"]) == 2
+    by_ticker = {item["stock"]["ticker"]: item for item in payload["items"]}
+    assert by_ticker["ADD"]["change_status"] == "increased"
+    assert by_ticker["ADD"]["confidence_level"] == "high_confidence"
+    assert by_ticker["ADD"]["is_primary_signal_eligible"] is True
+    assert by_ticker["ADD"]["current_value_usd"] == 200000
+    assert by_ticker["ADD"]["share_delta"] == 100
+    assert by_ticker["NT"]["change_status"] == "no_prior_data"
+    assert by_ticker["NT"]["confidence_level"] == "unavailable"
+    assert by_ticker["NT"]["is_primary_signal_eligible"] is False
+    assert by_ticker["NT"]["caveat_codes"] == ["prior_quarter_13f_nt"]
+    assert by_ticker["NT"]["unavailable_reason"] == "prior_quarter_13f_nt"
 
 
 def test_managers_endpoint_lists_only_active_cik_managers(client, db_session):

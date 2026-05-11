@@ -173,7 +173,7 @@ def read_user_manager_holdings(
 def read_user_manager_holding_changes(
     manager_id: int,
     session: SessionDep,
-    quarter: str | None = Query(None),
+    quarter: str | None = Query(None, pattern=r"^\d{4}-Q[1-4]$"),
 ) -> Any:
     try:
         return build_user_manager_holding_changes(session, manager_id, quarter=quarter)
