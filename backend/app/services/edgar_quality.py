@@ -391,6 +391,7 @@ def _check_value_unit_sanity(db: Session, report: QualityReport, quarter: str | 
               previous_value::numeric / GREATEST(reported_total_value_thousands, 1)
           ) >= 1000
         {qf}
+        ORDER BY jump_ratio DESC, accession_no ASC
         LIMIT 20
     """), qp).fetchall()
 

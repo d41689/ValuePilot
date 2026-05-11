@@ -55,6 +55,12 @@ Acceptance criteria:
 - 2026-05-11: Started after MVP3-01 approval and completion. Scope limited to persisted quality findings and validation-rule persistence.
 - 2026-05-11: Added `quality_findings_13f` as finding-level source of truth linked to aggregate `quality_reports_13f`, with cascade cleanup for existing report deletion paths.
 - 2026-05-11: Extended `persist_quality_report` to upsert open finding rows and added `value_unit_sanity` warning for suspicious 1000x filing-level reported value jumps.
+- 2026-05-11: Review follow-up: ordered `value_unit_sanity` findings by worst `jump_ratio` before applying the limit, covered finding upsert re-run behavior, and documented that point-in-time diagnostic snapshots remain in `quality_reports_13f.issues_json` while `quality_findings_13f.value_json` tracks the latest observation.
+
+## Follow-Up Backlog
+
+- Before MVP3-04 controlled reparse UI/API work, document the before/after query pattern: use `quality_reports_13f.issues_json` for immutable per-run snapshots and `quality_findings_13f` for current lifecycle state / latest observation.
+- Consider a later DB hardening migration for a partial unique index on open finding identity, a composite lookup index, and a DB-level `updated_at` trigger if validation jobs become concurrent or high-volume.
 
 ## Verification Results
 
@@ -63,3 +69,4 @@ Acceptance criteria:
 - `docker compose exec api alembic upgrade head` → reapplied `20260511120000`.
 - `docker compose exec api pytest -q tests/unit/test_13f_admin_dashboard.py` → 52 passed.
 - `docker compose exec api pytest -q tests/unit/test_13f_admin_dashboard.py tests/unit/test_13f_admin_read_models.py tests/unit/test_13f_manager_admin_backend.py tests/unit/test_13f_daily_index_sync.py` → 72 passed.
+- Review follow-up: `docker compose exec api pytest -q tests/unit/test_13f_admin_dashboard.py tests/unit/test_13f_admin_read_models.py tests/unit/test_13f_manager_admin_backend.py tests/unit/test_13f_daily_index_sync.py` → 72 passed.

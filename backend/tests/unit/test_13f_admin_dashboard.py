@@ -1499,8 +1499,24 @@ def test_quality_check_job_persists_report(client, db_session, user_factory, aut
     assert finding.first_seen_at == persisted.checked_at
     assert finding.last_seen_at == persisted.checked_at
 
+    first_seen_at = finding.first_seen_at
+    rerun_report = QualityReport()
+    rerun_report.add("parse_failure", "error", "failed infotable again", accession_no="0001234567-26-000001")
+    rerun_record = persist_quality_report(
+        db_session,
+        quarter="2025-Q4",
+        report=rerun_report,
+        source_job_id=job.id,
+    )
+    rerun_finding = db_session.query(QualityFinding13F).filter_by(rule_code="parse_failure").one()
+    assert rerun_finding.id == finding.id
+    assert rerun_finding.validation_run_id == rerun_record.id
+    assert rerun_finding.first_seen_at == first_seen_at
+    assert rerun_finding.last_seen_at == rerun_record.checked_at
+    assert rerun_finding.detail == "failed infotable again"
+
     finding_id = finding.id
-    db_session.delete(persisted)
+    db_session.delete(rerun_record)
     db_session.commit()
     assert db_session.query(QualityFinding13F).filter_by(id=finding_id).one_or_none() is None
 
