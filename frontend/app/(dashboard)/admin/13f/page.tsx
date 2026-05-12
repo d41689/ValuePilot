@@ -36,6 +36,7 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog';
 import { Input } from '@/components/ui/input';
+import { Textarea } from '@/components/ui/textarea';
 import {
   Select,
   SelectContent,
@@ -101,6 +102,21 @@ function formatJson(value: unknown) {
   if (!value || typeof value !== 'object') return '—';
   return JSON.stringify(value, null, 2);
 }
+
+// MVP5-05: canonical 8-value manager_type vocabulary mirrors
+// ``app/models/institutions.MANAGER_TYPES`` (MVP4-11 D1). The editor
+// presents these in the order that matches the
+// ``MANAGER_SIGNAL_WEIGHTS`` table — highest signal quality first.
+const MANAGER_TYPE_OPTIONS: { value: string; label: string }[] = [
+  { value: 'long_term_fundamental', label: 'Long-term fundamental (weight 1.00)' },
+  { value: 'value_concentrated', label: 'Value concentrated (weight 1.00)' },
+  { value: 'activist', label: 'Activist (weight 0.80)' },
+  { value: 'multi_strategy', label: 'Multi-strategy (weight 0.60, V1 conservative)' },
+  { value: 'unknown', label: 'Unknown (weight 0.60)' },
+  { value: 'quant', label: 'Quant (weight 0.40)' },
+  { value: 'high_turnover', label: 'High turnover (weight 0.30)' },
+  { value: 'index_like', label: 'Index-like (weight 0.10)' },
+];
 
 export default function Admin13FPage() {
   const queryClient = useQueryClient();
@@ -248,6 +264,69 @@ export default function Admin13FPage() {
       (await apiClient.get('/admin/13f/oracles-lens/unknown-manager-priority')).data,
     refetchInterval: 60_000,
   });
+  // MVP5-05: inline manager_type editor state. Single dialog
+  // instance lifted to component scope so we don't render N dialogs
+  // per managers row; the dialog reads ``managerTypeEditor`` to
+  // know which manager is being edited.
+  const [managerTypeEditor, setManagerTypeEditor] = useState<
+    | { managerId: number; currentType: string; managerName: string }
+    | null
+  >(null);
+  const [managerTypeDraft, setManagerTypeDraft] = useState<string>('unknown');
+  const [managerTypeNote, setManagerTypeNote] = useState<string>('');
+  const managerTypeMutation = useMutation({
+    mutationFn: async (payload: {
+      managerId: number;
+      newManagerType: string;
+      note: string;
+    }) => {
+      return (
+        await apiClient.patch(
+          `/admin/13f/managers/${payload.managerId}/manager-type`,
+          {
+            new_manager_type: payload.newManagerType,
+            note: payload.note || null,
+          },
+        )
+      ).data;
+    },
+    onSuccess: (result) => {
+      toast({
+        title: result.changed
+          ? `Manager type updated to ${result.new_manager_type}`
+          : `No change — manager_type stayed ${result.new_manager_type}`,
+      });
+      // MVP5-05: invalidate both managers and the MVP4-07b priority
+      // queue so the editor's effect is visible immediately.
+      queryClient.invalidateQueries({ queryKey: ['admin-13f-managers'] });
+      queryClient.invalidateQueries({
+        queryKey: ['admin-13f-oracles-lens-unknown-manager-priority'],
+      });
+      setManagerTypeEditor(null);
+      setManagerTypeNote('');
+    },
+    onError: (error: unknown) => {
+      const message =
+        error && typeof error === 'object' && 'message' in error
+          ? String((error as { message?: unknown }).message)
+          : 'Failed to update manager_type';
+      toast({ title: message, variant: 'destructive' });
+    },
+  });
+  const openManagerTypeEditor = (manager: {
+    id: number;
+    manager_type: string | null | undefined;
+    legal_name: string | null | undefined;
+  }) => {
+    const currentType = (manager.manager_type as string | null | undefined) || 'unknown';
+    setManagerTypeEditor({
+      managerId: manager.id,
+      currentType,
+      managerName: manager.legal_name || `Manager #${manager.id}`,
+    });
+    setManagerTypeDraft(currentType);
+    setManagerTypeNote('');
+  };
   const [manualQuarter, setManualQuarter] = useState('');
   const [backfillQuarters, setBackfillQuarters] = useState('4');
   const [backfillStartQuarter, setBackfillStartQuarter] = useState('');
@@ -2132,7 +2211,16 @@ export default function Admin13FPage() {
                   }>).map((row) => (
                     <TableRow key={row.manager_id}>
                       <TableCell>
-                        <div className="font-medium">{row.canonical_name}</div>
+                        {/* MVP5-05: deep-link to the manager row in
+                            the managers section so the admin can
+                            classify without searching. Fragment-only
+                            link keeps it client-side. */}
+                        <a
+                          href={`#manager-row-${row.manager_id}`}
+                          className="font-medium hover:underline"
+                        >
+                          {row.canonical_name}
+                        </a>
                         <div className="font-mono text-xs text-muted-foreground">
                           #{row.manager_id}
                         </div>
@@ -2362,6 +2450,7 @@ export default function Admin13FPage() {
                 <TableRow>
                   <TableHead>Name</TableHead>
                   <TableHead>CIK</TableHead>
+                  <TableHead>Manager Type</TableHead>
                   <TableHead>Candidate Evidence</TableHead>
                   <TableHead>Latest Audit</TableHead>
                   <TableHead>Status</TableHead>
@@ -2377,10 +2466,42 @@ export default function Admin13FPage() {
                   const affectedQuarters = Array.isArray(latestEvent?.affected_quarters)
                     ? latestEvent.affected_quarters
                     : [];
+                  const managerType =
+                    (manager.manager_type as string | null | undefined) || 'unknown';
                   return (
-                    <TableRow key={String(manager.id)}>
+                    // MVP5-05: stable anchor so MVP4-07b priority Card
+                    // deep links can scroll to this row precisely.
+                    <TableRow
+                      key={String(manager.id)}
+                      id={`manager-row-${String(manager.id)}`}
+                      className="scroll-mt-6"
+                    >
                       <TableCell className="font-medium">{String(manager.legal_name ?? '—')}</TableCell>
                       <TableCell>{String(manager.cik ?? '—')}</TableCell>
+                      <TableCell>
+                        <div className="flex items-center gap-2">
+                          <Badge
+                            variant={managerType === 'unknown' ? 'warning' : 'secondary'}
+                          >
+                            {managerType.replaceAll('_', ' ')}
+                          </Badge>
+                          <Button
+                            type="button"
+                            variant="ghost"
+                            size="sm"
+                            className="h-7 px-2 text-xs"
+                            onClick={() =>
+                              openManagerTypeEditor({
+                                id: manager.id as number,
+                                manager_type: manager.manager_type as string | null | undefined,
+                                legal_name: manager.legal_name as string | null | undefined,
+                              })
+                            }
+                          >
+                            Edit
+                          </Button>
+                        </div>
+                      </TableCell>
                       <TableCell>
                         <div className="space-y-1 text-sm">
                           <div>{String(manager.candidate_legal_name ?? '—')}</div>
@@ -2618,6 +2739,92 @@ export default function Admin13FPage() {
           </CardContent>
         </Card>
       </div>
+
+      {/* MVP5-05: inline manager_type editor. Single Dialog
+          instance rendered once; ``managerTypeEditor`` state holds
+          the manager being edited. PATCH writes the column + an
+          audit row in one transaction (see
+          ``app/services/manager_type_review.py``). */}
+      <Dialog
+        open={managerTypeEditor !== null}
+        onOpenChange={(open) => {
+          if (!open) {
+            setManagerTypeEditor(null);
+            setManagerTypeNote('');
+          }
+        }}
+      >
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Edit manager type</DialogTitle>
+            <DialogDescription>
+              {managerTypeEditor
+                ? `${managerTypeEditor.managerName} · currently ${managerTypeEditor.currentType.replaceAll('_', ' ')}`
+                : null}
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-3">
+            <div className="space-y-1">
+              <label className="text-xs font-medium text-muted-foreground" htmlFor="mvp5-05-type">
+                Manager type
+              </label>
+              <Select value={managerTypeDraft} onValueChange={setManagerTypeDraft}>
+                <SelectTrigger id="mvp5-05-type" aria-label="Manager type">
+                  <SelectValue placeholder="Select manager type" />
+                </SelectTrigger>
+                <SelectContent>
+                  {MANAGER_TYPE_OPTIONS.map((option) => (
+                    <SelectItem key={option.value} value={option.value}>
+                      {option.label}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="space-y-1">
+              <label className="text-xs font-medium text-muted-foreground" htmlFor="mvp5-05-note">
+                Note (optional)
+              </label>
+              <Textarea
+                id="mvp5-05-note"
+                value={managerTypeNote}
+                onChange={(event) => setManagerTypeNote(event.target.value)}
+                placeholder="Evidence or rationale for this classification"
+                rows={3}
+              />
+            </div>
+          </div>
+          <DialogFooter>
+            <Button
+              type="button"
+              variant="ghost"
+              onClick={() => {
+                setManagerTypeEditor(null);
+                setManagerTypeNote('');
+              }}
+            >
+              Cancel
+            </Button>
+            <Button
+              type="button"
+              disabled={!managerTypeEditor || managerTypeMutation.isPending}
+              onClick={() => {
+                if (!managerTypeEditor) return;
+                managerTypeMutation.mutate({
+                  managerId: managerTypeEditor.managerId,
+                  newManagerType: managerTypeDraft,
+                  note: managerTypeNote,
+                });
+              }}
+            >
+              {managerTypeMutation.isPending ? (
+                <Loader2 className="mr-2 h-3.5 w-3.5 animate-spin" />
+              ) : null}
+              Save
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       <Dialog open={pendingJob !== null} onOpenChange={(open) => !open && setPendingJob(null)}>
         <DialogContent>

@@ -73,6 +73,11 @@ class ManagerReviewRequest(BaseModel):
     search_name: str | None = None
 
 
+class ManagerTypeUpdateRequest(BaseModel):
+    new_manager_type: str
+    note: str | None = None
+
+
 class AmendmentResolveRequest(BaseModel):
     action: str
     note: str | None = None
@@ -600,6 +605,63 @@ def read_manager_cik_review_events(
         return {"items": list_manager_cik_review_events(session, manager_id, limit=limit)}
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+
+
+@admin_router.patch("/managers/{manager_id}/manager-type", response_model=dict)
+def patch_manager_type(
+    session: SessionDep,
+    current_user: AdminUser,
+    manager_id: int,
+    payload: ManagerTypeUpdateRequest,
+) -> Any:
+    """MVP5-05: apply an admin classification of
+    ``InstitutionManager.manager_type``. Writes a row to
+    ``institution_manager_type_review_events`` so the change is
+    auditable. No-op when the new value matches the current value."""
+    from app.services.manager_type_review import (
+        ManagerTypeUpdateError,
+        update_manager_type,
+    )
+    try:
+        return update_manager_type(
+            session,
+            manager_id,
+            new_manager_type=payload.new_manager_type,
+            reviewer_user_id=current_user.id,
+            note=payload.note,
+        )
+    except ManagerTypeUpdateError as exc:
+        message = str(exc)
+        # "manager not found" → 404; everything else (taxonomy validation
+        # failure) → 400.
+        if message.startswith("manager not found"):
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND, detail=message,
+            ) from exc
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail=message,
+        ) from exc
+
+
+@admin_router.get(
+    "/managers/{manager_id}/manager-type-events", response_model=dict,
+)
+def read_manager_type_review_events(
+    session: SessionDep,
+    current_user: AdminUser,
+    manager_id: int,
+    limit: int = Query(10, ge=1, le=100),
+) -> Any:
+    """MVP5-05: most recent ``manager_type`` audit events for a
+    manager. Powers the inline editor's history strip."""
+    from app.services.manager_type_review import (
+        list_manager_type_review_events,
+    )
+    return {
+        "items": list_manager_type_review_events(
+            session, manager_id, limit=limit,
+        ),
+    }
 
 
 @admin_router.get("/jobs", response_model=dict)

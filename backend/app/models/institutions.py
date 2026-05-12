@@ -137,6 +137,9 @@ class InstitutionManager(Base):
     cik_review_events: Mapped[List["InstitutionManagerCikReviewEvent"]] = relationship(
         order_by="InstitutionManagerCikReviewEvent.created_at.desc()"
     )
+    manager_type_review_events: Mapped[List["InstitutionManagerTypeReviewEvent"]] = relationship(
+        order_by="InstitutionManagerTypeReviewEvent.created_at.desc()"
+    )
 
     __table_args__ = (
         Index("idx_institution_managers_parent_manager_id", "parent_manager_id"),
@@ -189,6 +192,30 @@ class InstitutionManagerCikReviewEvent(Base):
     __table_args__ = (
         Index("ix_manager_cik_review_events_manager_id", "manager_id"),
         Index("ix_manager_cik_review_events_created_at", "created_at"),
+    )
+
+
+class InstitutionManagerTypeReviewEvent(Base):
+    """MVP5-05 audit log for ``InstitutionManager.manager_type``
+    changes driven by the admin editor. Separate table from the
+    CIK-review log because the column set is different and the
+    CIK-review table name would lie about its contents if we
+    overloaded it.
+    """
+    __tablename__ = "institution_manager_type_review_events"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    manager_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("institution_managers.id"), nullable=False)
+    old_manager_type: Mapped[Optional[str]] = mapped_column(String(40), nullable=True)
+    new_manager_type: Mapped[str] = mapped_column(String(40), nullable=False)
+    reviewed_by_user_id: Mapped[Optional[int]] = mapped_column(BigInteger, ForeignKey("users.id"), nullable=True)
+    note: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    evidence_json: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+    __table_args__ = (
+        Index("ix_manager_type_review_events_manager_id", "manager_id"),
+        Index("ix_manager_type_review_events_created_at", "created_at"),
     )
 
 
