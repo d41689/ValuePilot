@@ -303,6 +303,18 @@ def compute_signal_weighted_scores(
         )
         conviction = compute_conviction_components(contributions)
 
+        # MVP4-06: distinctive consensus (plan §7.11) — same passenger
+        # pattern. Multiplies the signal-weighted total by three
+        # in-[0,1] factors, so distinctive ≤ signal_weighted by
+        # construction.
+        from app.services.oracles_lens.distinctive_consensus import (
+            compute_distinctive_consensus,
+        )
+        distinctive = compute_distinctive_consensus(
+            signal_weighted_score=total,
+            contributions=contributions,
+        )
+
         quarter_end = _quarter_end_date(quarter)
         signal_id = _upsert_signal(
             session,
@@ -318,12 +330,14 @@ def compute_signal_weighted_scores(
             computed_at=now,
             source_job_id=source_job_id,
             conviction_score=Decimal(conviction.total),
+            distinctive_consensus_score=distinctive.distinctive_consensus_score,
         )
         components_written += _replace_components(
             session,
             signal_id=signal_id,
             contributions=contributions,
             conviction=conviction,
+            distinctive=distinctive,
         )
         filings_scored += 1
 
@@ -605,6 +619,7 @@ def _upsert_signal(
     computed_at: datetime,
     source_job_id: Optional[int],
     conviction_score: Optional[Decimal] = None,
+    distinctive_consensus_score: Optional[Decimal] = None,
 ) -> int:
     """ORM upsert via ``INSERT ... ON CONFLICT DO UPDATE`` per MVP4-01 D4."""
     stmt = pg_insert(OraclesLensSignal).values(
@@ -615,6 +630,7 @@ def _upsert_signal(
         raw_consensus_count=raw_consensus_count,
         signal_weighted_consensus_score=score_value,
         conviction_score=conviction_score,
+        distinctive_consensus_score=distinctive_consensus_score,
         score_confidence=score_confidence,
         caution_flag_codes=caution_flag_codes,
         score_explanation=score_explanation,
@@ -625,6 +641,7 @@ def _upsert_signal(
         "raw_consensus_count": stmt.excluded.raw_consensus_count,
         "signal_weighted_consensus_score": stmt.excluded.signal_weighted_consensus_score,
         "conviction_score": stmt.excluded.conviction_score,
+        "distinctive_consensus_score": stmt.excluded.distinctive_consensus_score,
         "score_confidence": stmt.excluded.score_confidence,
         "caution_flag_codes": stmt.excluded.caution_flag_codes,
         "score_explanation": stmt.excluded.score_explanation,
@@ -648,6 +665,7 @@ def _replace_components(
     signal_id: int,
     contributions: list[_HolderContribution],
     conviction=None,
+    distinctive=None,
 ) -> int:
     """Replace component rows for a score: delete existing then bulk
     insert. Component breakdown is per-holder for the
@@ -719,6 +737,64 @@ def _replace_components(
                 )
             )
             written += 1
+
+    # MVP4-06: distinctive consensus components — stock-level (no
+    # per-manager breakdown). evidence_json carries the input that
+    # drove each factor so the drilldown can render
+    # "signal-weighted 3.12 × 0.82 concentration × 0.75 persistence
+    # × 0.92 quality = 1.77 distinctive".
+    if distinctive is not None:
+        aggregate_weight = sum(
+            (c.position_signal_weight.base for c in contributions), Decimal("0"),
+        )
+        avg_manager_weight = (
+            sum((c.manager_weight for c in contributions), Decimal("0"))
+            / Decimal(len(contributions))
+            if contributions else Decimal("0")
+        )
+        streaks = [max(c.holding_streak_quarters, 0) for c in contributions]
+        median_streak = (
+            sorted(streaks)[len(streaks) // 2] if streaks else 0
+        )
+        distinctive_rows = [
+            (
+                "distinctive_concentration_factor",
+                distinctive.concentration_factor,
+                {"aggregate_weight": str(aggregate_weight)},
+            ),
+            (
+                "distinctive_persistence_factor",
+                distinctive.persistence_factor,
+                {"median_streak_quarters": median_streak},
+            ),
+            (
+                "distinctive_anti_crowding_factor",
+                distinctive.anti_crowding_factor,
+                {"avg_manager_signal_weight": str(avg_manager_weight)},
+            ),
+            (
+                "distinctive_total",
+                distinctive.distinctive_consensus_score,
+                {
+                    "concentration_factor": str(distinctive.concentration_factor),
+                    "persistence_factor": str(distinctive.persistence_factor),
+                    "anti_crowding_factor": str(distinctive.anti_crowding_factor),
+                },
+            ),
+        ]
+        for component_name, value, evidence in distinctive_rows:
+            session.add(
+                OraclesLensScoreComponent(
+                    score_id=signal_id,
+                    component_name=component_name,
+                    manager_id=None,
+                    numeric_value=value,
+                    string_value=None,
+                    evidence_json=evidence,
+                )
+            )
+            written += 1
+
     session.flush()
     return written
 
