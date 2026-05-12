@@ -7,6 +7,10 @@ from fastapi import APIRouter, HTTPException, Query, status
 from pydantic import BaseModel, Field
 
 from app.schemas.thirteenf_cusip import CusipMappingCreate, CusipMappingUpdate, CusipMappingResponse
+from app.schemas.thirteenf_corporate_action import (
+    CorporateActionMappingConfirmRequest,
+    CorporateActionMappingPreviewRequest,
+)
 
 from app.api.deps import AdminUser, SessionDep
 from app.services.thirteenf_admin_dashboard import (
@@ -770,3 +774,53 @@ def update_cusip_mapping_endpoint(
         return update_manual_cusip_mapping(session, cusip, payload)
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+
+
+@admin_router.post("/cusips/corporate-actions/preview", response_model=dict)
+def preview_corporate_action_mapping_endpoint(
+    session: SessionDep,
+    current_user: AdminUser,
+    payload: CorporateActionMappingPreviewRequest,
+) -> Any:
+    from app.services.thirteenf_corporate_action_mapping import (
+        CorporateActionMappingError,
+        preview_corporate_action_confirmation,
+    )
+
+    try:
+        return preview_corporate_action_confirmation(
+            session,
+            cusip=payload.cusip,
+            effective_from_quarter=payload.effective_from_quarter,
+            effective_to_quarter=payload.effective_to_quarter,
+        )
+    except CorporateActionMappingError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+
+
+@admin_router.post("/cusips/corporate-actions/confirm", response_model=dict)
+def confirm_corporate_action_mapping_endpoint(
+    session: SessionDep,
+    current_user: AdminUser,
+    payload: CorporateActionMappingConfirmRequest,
+) -> Any:
+    from app.services.thirteenf_corporate_action_mapping import (
+        CorporateActionMappingError,
+        confirm_corporate_action_mapping,
+    )
+
+    try:
+        return confirm_corporate_action_mapping(
+            session,
+            cusip=payload.cusip,
+            new_ticker=payload.new_ticker,
+            new_issuer_name=payload.new_issuer_name,
+            effective_from_quarter=payload.effective_from_quarter,
+            effective_to_quarter=payload.effective_to_quarter,
+            evidence_url=payload.evidence_url,
+            reason=payload.reason,
+            reviewer_id=current_user.id,
+            prior_mapping_id=payload.prior_mapping_id,
+        )
+    except CorporateActionMappingError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
