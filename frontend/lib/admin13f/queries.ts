@@ -52,6 +52,40 @@ export function useManagersQuery() {
   });
 }
 
+// MVP6-02 — manager detail audit logs.
+
+export function useManagerCikReviewEventsQuery(
+  managerId: number | null,
+  limit = 25,
+) {
+  return useQuery({
+    queryKey: ['admin-13f-manager-cik-review-events', managerId, limit],
+    queryFn: async () =>
+      (
+        await apiClient.get(
+          `/admin/13f/managers/${managerId}/cik-review-events?limit=${limit}`,
+        )
+      ).data,
+    enabled: managerId !== null,
+  });
+}
+
+export function useManagerTypeEventsQuery(
+  managerId: number | null,
+  limit = 25,
+) {
+  return useQuery({
+    queryKey: ['admin-13f-manager-type-events', managerId, limit],
+    queryFn: async () =>
+      (
+        await apiClient.get(
+          `/admin/13f/managers/${managerId}/manager-type-events?limit=${limit}`,
+        )
+      ).data,
+    enabled: managerId !== null,
+  });
+}
+
 // MVP4-07b admin priority Card
 export function useUnknownManagerPriorityQuery() {
   return useQuery({

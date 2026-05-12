@@ -1,5 +1,6 @@
 'use client';
 
+import Link from 'next/link';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import {
@@ -64,7 +65,6 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog';
 import { Input } from '@/components/ui/input';
-import { Textarea } from '@/components/ui/textarea';
 import {
   Select,
   SelectContent,
@@ -86,7 +86,6 @@ const {
   formatPercent,
   freshnessLine,
   jobPreviewRows,
-  managerCikReviewDefaults,
   normalizeAdminFilings,
   normalizeAmendments,
   normalizeEdgarRateLimit,
@@ -99,7 +98,6 @@ const {
   normalizeUnresolvedCusips,
   normalizeWorkers,
   operationsHealth,
-  prioritizeManagersForReview,
   taskPrimaryAction,
   visibleWorkerRows,
 } = thirteenfAdmin;
@@ -130,20 +128,10 @@ function formatJson(value: unknown) {
   return JSON.stringify(value, null, 2);
 }
 
-// MVP5-05: canonical 8-value manager_type vocabulary mirrors
-// ``app/models/institutions.MANAGER_TYPES`` (MVP4-11 D1). The editor
-// presents these in the order that matches the
-// ``MANAGER_SIGNAL_WEIGHTS`` table — highest signal quality first.
-const MANAGER_TYPE_OPTIONS: { value: string; label: string }[] = [
-  { value: 'long_term_fundamental', label: 'Long-term fundamental (weight 1.00)' },
-  { value: 'value_concentrated', label: 'Value concentrated (weight 1.00)' },
-  { value: 'activist', label: 'Activist (weight 0.80)' },
-  { value: 'multi_strategy', label: 'Multi-strategy (weight 0.60, V1 conservative)' },
-  { value: 'unknown', label: 'Unknown (weight 0.60)' },
-  { value: 'quant', label: 'Quant (weight 0.40)' },
-  { value: 'high_turnover', label: 'High turnover (weight 0.30)' },
-  { value: 'index_like', label: 'Index-like (weight 0.10)' },
-];
+// MVP6-02: ``MANAGER_TYPE_OPTIONS`` moved to
+// ``frontend/components/admin13f/ManagerTypeEditorDialog.tsx``
+// (the lifted component owns the vocabulary now that its only
+// caller on this page is gone).
 
 export default function Admin13FPage() {
   const queryClient = useQueryClient();
@@ -199,69 +187,9 @@ export default function Admin13FPage() {
   });
   const needsValidationQuery = useNeedsValidationQuery();
   const unknownManagerPriorityQuery = useUnknownManagerPriorityQuery();
-  // MVP5-05: inline manager_type editor state. Single dialog
-  // instance lifted to component scope so we don't render N dialogs
-  // per managers row; the dialog reads ``managerTypeEditor`` to
-  // know which manager is being edited.
-  const [managerTypeEditor, setManagerTypeEditor] = useState<
-    | { managerId: number; currentType: string; managerName: string }
-    | null
-  >(null);
-  const [managerTypeDraft, setManagerTypeDraft] = useState<string>('unknown');
-  const [managerTypeNote, setManagerTypeNote] = useState<string>('');
-  const managerTypeMutation = useMutation({
-    mutationFn: async (payload: {
-      managerId: number;
-      newManagerType: string;
-      note: string;
-    }) => {
-      return (
-        await apiClient.patch(
-          `/admin/13f/managers/${payload.managerId}/manager-type`,
-          {
-            new_manager_type: payload.newManagerType,
-            note: payload.note || null,
-          },
-        )
-      ).data;
-    },
-    onSuccess: (result) => {
-      toast({
-        title: result.changed
-          ? `Manager type updated to ${result.new_manager_type}`
-          : `No change — manager_type stayed ${result.new_manager_type}`,
-      });
-      // MVP5-05: invalidate both managers and the MVP4-07b priority
-      // queue so the editor's effect is visible immediately.
-      queryClient.invalidateQueries({ queryKey: ['admin-13f-managers'] });
-      queryClient.invalidateQueries({
-        queryKey: ['admin-13f-oracles-lens-unknown-manager-priority'],
-      });
-      setManagerTypeEditor(null);
-      setManagerTypeNote('');
-    },
-    onError: (error: unknown) => {
-      const message =
-        error && typeof error === 'object' && 'message' in error
-          ? String((error as { message?: unknown }).message)
-          : 'Failed to update manager_type';
-      toast({ title: message, variant: 'destructive' });
-    },
-  });
-  const openManagerTypeEditor = (manager: {
-    id: number;
-    manager_type: string | null | undefined;
-    legal_name: string | null | undefined;
-  }) => {
-    const currentType = (manager.manager_type as string | null | undefined) || 'unknown';
-    setManagerTypeEditor({
-      managerId: manager.id,
-      currentType,
-      managerName: manager.legal_name || `Manager #${manager.id}`,
-    });
-    setManagerTypeDraft(currentType);
-    setManagerTypeNote('');
-  };
+  // MVP6-02: manager_type editor state + mutation moved to the new
+  // ``/admin/13f/managers`` and ``/admin/13f/managers/[id]`` routes
+  // along with the Managers section that hosted it.
   const [manualQuarter, setManualQuarter] = useState('');
   const [backfillQuarters, setBackfillQuarters] = useState('4');
   const [backfillStartQuarter, setBackfillStartQuarter] = useState('');
@@ -506,10 +434,10 @@ export default function Admin13FPage() {
     () => visibleWorkerRows(workers, showWorkerHistory),
     [workers, showWorkerHistory]
   );
-  const managers = useMemo(
-    () => prioritizeManagersForReview(Array.isArray(managersQuery.data?.items) ? managersQuery.data.items : []),
-    [managersQuery.data]
-  );
+  // MVP6-02: ``managers`` memoized list removed — its only consumer
+  // was the Managers section on this page, now moved to
+  // ``/admin/13f/managers``. The Overview hub Managers card reads
+  // ``managersQuery.data?.items?.length`` directly.
   const jobs = useMemo(
     () => (Array.isArray(jobsQuery.data?.items) ? jobsQuery.data.items : []),
     [jobsQuery.data]
@@ -636,36 +564,12 @@ export default function Admin13FPage() {
     setPendingStaleReleaseJobId(parsedJobId);
   }
 
-  function handleConfirmManager(manager: Record<string, unknown>) {
-    const managerId = Number(manager.id);
-    if (!Number.isFinite(managerId)) return;
-    const defaults = managerCikReviewDefaults(manager);
-    setConfirmCik(String(defaults.defaultCik ?? ''));
-    setConfirmNote('');
-    setPendingConfirmManager(manager);
-  }
-
-  function handleRejectManager(manager: Record<string, unknown>) {
-    const managerId = Number(manager.id);
-    if (!Number.isFinite(managerId)) return;
-    setRejectNote('');
-    setPendingRejectManager(manager);
-  }
-
-  function handleRevokeManager(manager: Record<string, unknown>) {
-    const managerId = Number(manager.id);
-    if (!Number.isFinite(managerId)) return;
-    setRevokeNote('');
-    setPendingRevokeManager(manager);
-  }
-
-  function handleRetryManager(manager: Record<string, unknown>) {
-    const managerId = Number(manager.id);
-    if (!Number.isFinite(managerId)) return;
-    setRetrySearchName(String(manager.legal_name ?? manager.display_name ?? ''));
-    setRetryNote('');
-    setPendingRetryManager(manager);
-  }
+  // MVP6-02: ``handleConfirm/Reject/Revoke/RetryManager`` removed
+  // along with the Managers section that called them. The CIK review
+  // dialogs (``<ManagerCikDialogs>``) remain rendered on the index
+  // page with their state + submit/close helpers intact, so the
+  // CIK review flow can be re-triggered from the new Managers
+  // page in a future ticket without re-plumbing here.
 
   function closeConfirmManagerDialog() {
     setPendingConfirmManager(null);
@@ -774,8 +678,8 @@ export default function Admin13FPage() {
           Surfaces
         </div>
         <div className="grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-4">
-          <a
-            href="#managers"
+          <Link
+            href="/admin/13f/managers"
             className="block rounded-md border border-border/70 p-3 transition-colors hover:bg-muted/40"
           >
             <div className="text-xs uppercase text-muted-foreground">Managers</div>
@@ -783,7 +687,7 @@ export default function Admin13FPage() {
               {managersQuery.isPending ? '—' : `${managersQuery.data?.items?.length ?? 0} managers`}
             </div>
             <div className="text-xs text-muted-foreground">CIK review · classification · backfill</div>
-          </a>
+          </Link>
           <a
             href="#sync"
             className="block rounded-md border border-border/70 p-3 transition-colors hover:bg-muted/40"
@@ -2229,16 +2133,15 @@ export default function Admin13FPage() {
                   }>).map((row) => (
                     <TableRow key={row.manager_id}>
                       <TableCell>
-                        {/* MVP5-05: deep-link to the manager row in
-                            the managers section so the admin can
-                            classify without searching. Fragment-only
-                            link keeps it client-side. */}
-                        <a
-                          href={`#manager-row-${row.manager_id}`}
+                        {/* MVP6-02: deep-link upgraded from
+                            ``#manager-row-{id}`` anchor to the real
+                            ``/admin/13f/managers/{id}`` detail route. */}
+                        <Link
+                          href={`/admin/13f/managers/${row.manager_id}`}
                           className="font-medium hover:underline"
                         >
                           {row.canonical_name}
-                        </a>
+                        </Link>
                         <div className="font-mono text-xs text-muted-foreground">
                           #{row.manager_id}
                         </div>
@@ -2460,181 +2363,20 @@ export default function Admin13FPage() {
       <div id="managers" className="grid grid-cols-1 scroll-mt-6 gap-4">
         <Card className="rounded-md">
           <CardHeader className="pb-3">
-            <CardTitle className="text-base">Managers ({managers.length})</CardTitle>
+            <CardTitle className="text-base">Managers</CardTitle>
           </CardHeader>
-          <CardContent>
-            <Table>
-              <TableHeader>
-                <TableRow>
-                  <TableHead>Name</TableHead>
-                  <TableHead>CIK</TableHead>
-                  <TableHead>Manager Type</TableHead>
-                  <TableHead>Candidate Evidence</TableHead>
-                  <TableHead>Latest Audit</TableHead>
-                  <TableHead>Status</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {managers.slice(0, 100).map((manager: Record<string, unknown>) => {
-                  const latestEvent =
-                    manager.latest_cik_review_event &&
-                    typeof manager.latest_cik_review_event === 'object'
-                      ? (manager.latest_cik_review_event as Record<string, unknown>)
-                      : null;
-                  const affectedQuarters = Array.isArray(latestEvent?.affected_quarters)
-                    ? latestEvent.affected_quarters
-                    : [];
-                  const managerType =
-                    (manager.manager_type as string | null | undefined) || 'unknown';
-                  return (
-                    // MVP5-05: stable anchor so MVP4-07b priority Card
-                    // deep links can scroll to this row precisely.
-                    <TableRow
-                      key={String(manager.id)}
-                      id={`manager-row-${String(manager.id)}`}
-                      className="scroll-mt-6"
-                    >
-                      <TableCell className="font-medium">{String(manager.legal_name ?? '—')}</TableCell>
-                      <TableCell>{String(manager.cik ?? '—')}</TableCell>
-                      <TableCell>
-                        <div className="flex items-center gap-2">
-                          <Badge
-                            variant={managerType === 'unknown' ? 'warning' : 'secondary'}
-                          >
-                            {managerType.replaceAll('_', ' ')}
-                          </Badge>
-                          <Button
-                            type="button"
-                            variant="ghost"
-                            size="sm"
-                            className="h-7 px-2 text-xs"
-                            onClick={() =>
-                              openManagerTypeEditor({
-                                id: manager.id as number,
-                                manager_type: manager.manager_type as string | null | undefined,
-                                legal_name: manager.legal_name as string | null | undefined,
-                              })
-                            }
-                          >
-                            Edit
-                          </Button>
-                        </div>
-                      </TableCell>
-                      <TableCell>
-                        <div className="space-y-1 text-sm">
-                          <div>{String(manager.candidate_legal_name ?? '—')}</div>
-                          <div className="text-xs text-muted-foreground">
-                            CIK {String(manager.candidate_cik ?? '—')} · score{' '}
-                            {typeof manager.candidate_similarity_score === 'number'
-                              ? manager.candidate_similarity_score.toFixed(2)
-                              : '—'}
-                          </div>
-                          <div className="text-xs text-muted-foreground">
-                            {String(manager.candidate_source ?? 'No candidate source')}
-                          </div>
-                          {typeof manager.candidate_evidence_url === 'string' ? (
-                            <Button asChild variant="link" size="sm" className="h-auto p-0 text-xs">
-                              <a href={manager.candidate_evidence_url} target="_blank" rel="noreferrer">
-                                Open evidence
-                              </a>
-                            </Button>
-                          ) : null}
-                          {typeof manager.review_note === 'string' && manager.review_note ? (
-                            <div className="text-xs text-muted-foreground">
-                              Review note: {manager.review_note}
-                            </div>
-                          ) : null}
-                        </div>
-                      </TableCell>
-                      <TableCell>
-                        {latestEvent ? (
-                          <div className="space-y-1 text-xs">
-                            <div className="font-medium">
-                              {String(latestEvent.event_type ?? '—').replaceAll('_', ' ')}
-                            </div>
-                            <div className="text-muted-foreground">
-                              {String(latestEvent.old_cik ?? '—')} → {String(latestEvent.new_cik ?? '—')}
-                            </div>
-                            {latestEvent.requires_downstream_review ? (
-                              <div className="text-rose-700">
-                                Downstream review · {String(latestEvent.affected_filings_count ?? 0)} filings
-                              </div>
-                            ) : null}
-                            {affectedQuarters.length > 0 ? (
-                              <div className="text-muted-foreground">
-                                {affectedQuarters.slice(0, 3).join(', ')}
-                              </div>
-                            ) : null}
-                          </div>
-                        ) : (
-                          <span className="text-xs text-muted-foreground">No CIK review event</span>
-                        )}
-                      </TableCell>
-                      <TableCell>
-                        <div className="flex flex-wrap items-center gap-2">
-                          <span>{String(manager.match_status ?? '—')}</span>
-                          {manager.match_status === 'candidate' || manager.match_status === 'seeded' ? (
-                            <>
-                              <Button
-                                type="button"
-                                variant="outline"
-                                size="sm"
-                                onClick={() => handleConfirmManager(manager)}
-                              >
-                                Confirm
-                              </Button>
-                              <Button
-                                type="button"
-                                variant="ghost"
-                                size="sm"
-                                onClick={() => handleRejectManager(manager)}
-                              >
-                                Reject
-                              </Button>
-                              <Button
-                                type="button"
-                                variant="ghost"
-                                size="sm"
-                                onClick={() => handleRetryManager(manager)}
-                              >
-                                Retry Search
-                              </Button>
-                            </>
-                          ) : null}
-                          {manager.match_status === 'revoked' || manager.match_status === 'rejected' ? (
-                            <Button
-                              type="button"
-                              variant="outline"
-                              size="sm"
-                              onClick={() => handleRetryManager(manager)}
-                            >
-                              Retry Search
-                            </Button>
-                          ) : null}
-                          {manager.match_status === 'confirmed' && manager.cik ? (
-                            <Button
-                              type="button"
-                              variant="ghost"
-                              size="sm"
-                              onClick={() => handleRevokeManager(manager)}
-                            >
-                              Revoke CIK
-                            </Button>
-                          ) : null}
-                        </div>
-                      </TableCell>
-                    </TableRow>
-                  );
-                })}
-                {managers.length === 0 ? (
-                  <TableRow>
-                    <TableCell colSpan={5} className="py-8 text-center text-muted-foreground">
-                      No managers seeded.
-                    </TableCell>
-                  </TableRow>
-                ) : null}
-              </TableBody>
-            </Table>
+          <CardContent className="space-y-2 text-sm text-muted-foreground">
+            <p>
+              Manager management lives on the dedicated{' '}
+              <Link href="/admin/13f/managers" className="font-medium text-foreground hover:underline">
+                Managers page
+              </Link>
+              {' '}— list with filters, CIK review, manager_type classification,
+              and per-manager audit history (CIK + manager_type events).
+            </p>
+            <Button asChild size="sm" variant="outline">
+              <Link href="/admin/13f/managers">Open Managers page →</Link>
+            </Button>
           </CardContent>
         </Card>
 
@@ -2757,92 +2499,6 @@ export default function Admin13FPage() {
           </CardContent>
         </Card>
       </div>
-
-      {/* MVP5-05: inline manager_type editor. Single Dialog
-          instance rendered once; ``managerTypeEditor`` state holds
-          the manager being edited. PATCH writes the column + an
-          audit row in one transaction (see
-          ``app/services/manager_type_review.py``). */}
-      <Dialog
-        open={managerTypeEditor !== null}
-        onOpenChange={(open) => {
-          if (!open) {
-            setManagerTypeEditor(null);
-            setManagerTypeNote('');
-          }
-        }}
-      >
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>Edit manager type</DialogTitle>
-            <DialogDescription>
-              {managerTypeEditor
-                ? `${managerTypeEditor.managerName} · currently ${managerTypeEditor.currentType.replaceAll('_', ' ')}`
-                : null}
-            </DialogDescription>
-          </DialogHeader>
-          <div className="space-y-3">
-            <div className="space-y-1">
-              <label className="text-xs font-medium text-muted-foreground" htmlFor="mvp5-05-type">
-                Manager type
-              </label>
-              <Select value={managerTypeDraft} onValueChange={setManagerTypeDraft}>
-                <SelectTrigger id="mvp5-05-type" aria-label="Manager type">
-                  <SelectValue placeholder="Select manager type" />
-                </SelectTrigger>
-                <SelectContent>
-                  {MANAGER_TYPE_OPTIONS.map((option) => (
-                    <SelectItem key={option.value} value={option.value}>
-                      {option.label}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
-            <div className="space-y-1">
-              <label className="text-xs font-medium text-muted-foreground" htmlFor="mvp5-05-note">
-                Note (optional)
-              </label>
-              <Textarea
-                id="mvp5-05-note"
-                value={managerTypeNote}
-                onChange={(event) => setManagerTypeNote(event.target.value)}
-                placeholder="Evidence or rationale for this classification"
-                rows={3}
-              />
-            </div>
-          </div>
-          <DialogFooter>
-            <Button
-              type="button"
-              variant="ghost"
-              onClick={() => {
-                setManagerTypeEditor(null);
-                setManagerTypeNote('');
-              }}
-            >
-              Cancel
-            </Button>
-            <Button
-              type="button"
-              disabled={!managerTypeEditor || managerTypeMutation.isPending}
-              onClick={() => {
-                if (!managerTypeEditor) return;
-                managerTypeMutation.mutate({
-                  managerId: managerTypeEditor.managerId,
-                  newManagerType: managerTypeDraft,
-                  note: managerTypeNote,
-                });
-              }}
-            >
-              {managerTypeMutation.isPending ? (
-                <Loader2 className="mr-2 h-3.5 w-3.5 animate-spin" />
-              ) : null}
-              Save
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
 
       <Dialog open={pendingJob !== null} onOpenChange={(open) => !open && setPendingJob(null)}>
         <DialogContent>

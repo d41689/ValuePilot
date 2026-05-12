@@ -34,7 +34,7 @@ interface NavEntry {
 
 const NAV_ENTRIES: NavEntry[] = [
   { label: 'Overview', href: '/admin/13f', shipped: true },
-  { label: 'Managers', href: '/admin/13f#managers', shipped: false },
+  { label: 'Managers', href: '/admin/13f/managers', shipped: true },
   { label: 'Daily Sync', href: '/admin/13f#sync', shipped: false },
   { label: 'Filings', href: '/admin/13f#filings', shipped: false },
   { label: 'Holdings', href: '/admin/13f#holdings', shipped: false },
@@ -64,7 +64,19 @@ export function AdminPageLayout({
         className="flex flex-wrap items-center gap-2 border-b border-border/70 pb-3"
       >
         {NAV_ENTRIES.map((entry) => {
-          const active = pathname === entry.href.split('#')[0] && entry.shipped;
+          // Active when on the exact route or one of its sub-routes
+          // (so e.g. /admin/13f/managers/123 highlights "Managers"),
+          // and only for shipped routes — anchor fallbacks never light
+          // up as active.
+          const baseHref = entry.href.split('#')[0];
+          let active = false;
+          if (entry.shipped && pathname) {
+            if (baseHref === '/admin/13f') {
+              active = pathname === '/admin/13f';
+            } else {
+              active = pathname === baseHref || pathname.startsWith(`${baseHref}/`);
+            }
+          }
           return (
             <Link
               key={entry.label}
