@@ -36,7 +36,7 @@ const NAV_ENTRIES: NavEntry[] = [
   { label: 'Overview', href: '/admin/13f', shipped: true },
   { label: 'Managers', href: '/admin/13f/managers', shipped: true },
   { label: 'Daily Sync', href: '/admin/13f/sync', shipped: true },
-  { label: 'Filings', href: '/admin/13f#filings', shipped: false },
+  { label: 'Filings', href: '/admin/13f/filings', shipped: true },
   { label: 'Holdings', href: '/admin/13f#holdings', shipped: false },
   { label: 'Jobs', href: '/admin/13f#jobs', shipped: false },
   { label: 'Readiness', href: '/admin/13f#readiness', shipped: false },

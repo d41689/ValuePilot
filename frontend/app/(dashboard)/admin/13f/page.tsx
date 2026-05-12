@@ -8,7 +8,6 @@ import {
   AlertTriangle,
   CheckCircle2,
   Database,
-  FileText,
   FolderClock,
   History,
   Link2,
@@ -33,16 +32,12 @@ import { AdminLoadingState } from '@/components/admin13f/AdminLoadingState';
 import { DrawerShell, MetricTile } from '@/components/admin13f/Admin13FPrimitives';
 import { ManagerCikDialogs } from '@/components/admin13f/ManagerCikDialogs';
 import {
-  useAmendmentDetailQuery,
-  useAmendmentsQuery,
   useEdgarRateLimitQuery,
-  useFilingsQuery,
   useHoldingsCoverageQuery,
   useJobDetailQuery,
   useJobsQuery,
   useManagersQuery,
   useNeedsValidationQuery,
-  useParseRunsQuery,
   usePendingAmendmentsQuery,
   useQualityQuery,
   useQuarterDetailQuery,
@@ -86,11 +81,8 @@ const {
   formatPercent,
   freshnessLine,
   jobPreviewRows,
-  normalizeAdminFilings,
-  normalizeAmendments,
   normalizeEdgarRateLimit,
   normalizeHoldingsCoverage,
-  normalizeParseRuns,
   normalizeQualityReports,
   normalizeQuarters,
   normalizeReadiness,
@@ -137,12 +129,11 @@ export default function Admin13FPage() {
   const queryClient = useQueryClient();
   const { toast } = useToast();
   const [selectedJobId, setSelectedJobId] = useState<number | null>(null);
-  const [selectedAmendmentAccession, setSelectedAmendmentAccession] = useState<string | null>(null);
-  const [selectedFilingAccession, setSelectedFilingAccession] = useState<string | null>(null);
+  // MVP6-04: selectedFiling/AmendmentAccession + filingParseStatus
+  // moved to /admin/13f/filings. The two detail drawers are gone too.
   const [selectedQuarter, setSelectedQuarter] = useState<string | null>(null);
   const [quarterFilingStatus, setQuarterFilingStatus] = useState('all');
   const [quarterFilingOffset, setQuarterFilingOffset] = useState(0);
-  const [filingParseStatus, setFilingParseStatus] = useState('all');
   const [jobStatusFilter, setJobStatusFilter] = useState('all');
   const [jobTypeFilter, setJobTypeFilter] = useState('all');
   const [jobStartedFrom, setJobStartedFrom] = useState('');
@@ -166,9 +157,10 @@ export default function Admin13FPage() {
     quarter: jobQuarter,
   });
   const qualityQuery = useQualityQuery();
-  const amendmentsQuery = useAmendmentsQuery();
+  // MVP6-04: amendmentsQuery + filingsQuery removed — fully consumed by
+  // ``/admin/13f/filings``. pendingAmendmentsQuery stays because the
+  // Overview hub Filings card KPI reads its count.
   const pendingAmendmentsQuery = usePendingAmendmentsQuery();
-  const filingsQuery = useFilingsQuery(filingParseStatus);
   const coverageQuarter =
     typeof readinessQuery.data?.latest_usable_quarter === 'string'
       ? readinessQuery.data.latest_usable_quarter
@@ -178,8 +170,8 @@ export default function Admin13FPage() {
   const workersQuery = useWorkersQuery();
   const edgarRateLimitQuery = useEdgarRateLimitQuery();
   const jobDetailQuery = useJobDetailQuery(selectedJobId);
-  const amendmentDetailQuery = useAmendmentDetailQuery(selectedAmendmentAccession);
-  const parseRunsQuery = useParseRunsQuery(selectedFilingAccession);
+  // MVP6-04: amendmentDetailQuery + parseRunsQuery now live on
+  // /admin/13f/filings; the queries module hook still exists.
   const quarterDetailQuery = useQuarterDetailQuery({
     selectedQuarter,
     quarterFilingStatus,
@@ -396,19 +388,12 @@ export default function Admin13FPage() {
     () => normalizeQualityReports(qualityQuery.data?.items ?? []),
     [qualityQuery.data]
   );
-  const amendments = useMemo(
-    () => normalizeAmendments(amendmentsQuery.data?.items ?? []),
-    [amendmentsQuery.data]
-  );
-  const pendingAmendments = useMemo(
-    () => normalizeAdminFilings(pendingAmendmentsQuery.data ?? {}),
-    [pendingAmendmentsQuery.data]
-  );
-  const pendingAmendmentGroups = pendingAmendmentsQuery.data?.groups ?? {};
-  const adminFilings = useMemo(
-    () => normalizeAdminFilings(filingsQuery.data ?? {}),
-    [filingsQuery.data]
-  );
+  // MVP6-04: ``amendments`` / ``pendingAmendments`` /
+  // ``pendingAmendmentGroups`` / ``adminFilings`` memos moved to
+  // ``/admin/13f/filings`` along with the sections that consumed
+  // them. The underlying queries are still fired here so the
+  // Overview hub Filings card KPI (``pendingAmendmentsQuery.data
+  // ?.items?.length``) keeps working.
   const holdingsCoverage = useMemo(
     () => normalizeHoldingsCoverage(holdingsCoverageQuery.data ?? {}),
     [holdingsCoverageQuery.data]
@@ -417,10 +402,7 @@ export default function Admin13FPage() {
     () => normalizeUnresolvedCusips(unresolvedCusipsQuery.data ?? {}),
     [unresolvedCusipsQuery.data]
   );
-  const parseRuns = useMemo(
-    () => normalizeParseRuns(parseRunsQuery.data ?? {}),
-    [parseRunsQuery.data]
-  );
+  // MVP6-04: parseRuns memo moved to /admin/13f/filings.
   const workers = useMemo(
     () => normalizeWorkers(workersQuery.data?.items ?? []),
     [workersQuery.data]
@@ -469,7 +451,7 @@ export default function Admin13FPage() {
   }, [activeLockKeys, refreshAdminData]);
 
   const selectedJob = jobDetailQuery.data ?? null;
-  const selectedAmendment = amendmentDetailQuery.data ?? null;
+  // MVP6-04: selectedAmendment moved to /admin/13f/filings.
   const selectedQuarterDetail = quarterDetailQuery.data ?? null;
   const isLoading =
     readinessQuery.isLoading ||
@@ -478,9 +460,7 @@ export default function Admin13FPage() {
     managersQuery.isLoading ||
     jobsQuery.isLoading ||
     qualityQuery.isLoading ||
-    amendmentsQuery.isLoading ||
     pendingAmendmentsQuery.isLoading ||
-    filingsQuery.isLoading ||
     holdingsCoverageQuery.isLoading ||
     unresolvedCusipsQuery.isLoading ||
     workersQuery.isLoading;
@@ -698,8 +678,8 @@ export default function Admin13FPage() {
             </div>
             <div className="text-xs text-muted-foreground">EDGAR rate limit · no-index calendar</div>
           </Link>
-          <a
-            href="#filings"
+          <Link
+            href="/admin/13f/filings"
             className="block rounded-md border border-border/70 p-3 transition-colors hover:bg-muted/40"
           >
             <div className="text-xs uppercase text-muted-foreground">Filings</div>
@@ -709,7 +689,7 @@ export default function Admin13FPage() {
                 : `${pendingAmendmentsQuery.data?.items?.length ?? 0} pending`}
             </div>
             <div className="text-xs text-muted-foreground">Parse status · amendments · reparse</div>
-          </a>
+          </Link>
           <a
             href="#holdings"
             className="block rounded-md border border-border/70 p-3 transition-colors hover:bg-muted/40"
@@ -1114,216 +1094,6 @@ export default function Admin13FPage() {
           </CardContent>
         </Card>
       </div>
-
-      <Card className="rounded-md">
-        <CardHeader className="pb-3">
-          <CardTitle className="flex flex-col gap-2 text-base lg:flex-row lg:items-center lg:justify-between">
-            <span className="flex items-center gap-2">
-              <FileText className="h-4 w-4" />
-              Filings
-            </span>
-            <div className="w-full max-w-[220px]">
-              <Select value={filingParseStatus} onValueChange={setFilingParseStatus}>
-                <SelectTrigger aria-label="Filter filings by parse status">
-                  <SelectValue placeholder="Parse status" />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="all">All parse statuses</SelectItem>
-                  <SelectItem value="pending">Pending</SelectItem>
-                  <SelectItem value="succeeded">Succeeded</SelectItem>
-                  <SelectItem value="partial_success">Partial success</SelectItem>
-                  <SelectItem value="failed">Failed</SelectItem>
-                  <SelectItem value="needs_review">Needs review</SelectItem>
-                </SelectContent>
-              </Select>
-            </div>
-          </CardTitle>
-        </CardHeader>
-        <CardContent>
-          <Table>
-            <TableHeader>
-              <TableRow>
-                <TableHead>Accession</TableHead>
-                <TableHead>Manager</TableHead>
-                <TableHead>Report</TableHead>
-                <TableHead>Status</TableHead>
-                <TableHead>Caveats</TableHead>
-                <TableHead>Deadline</TableHead>
-                <TableHead>Runs</TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {adminFilings.items.map((filing: Record<string, unknown>) => (
-                <TableRow key={String(filing.accessionNumber)}>
-                  <TableCell>
-                    <div className="font-mono text-xs">{String(filing.accessionNumber)}</div>
-                    <div className="mt-1 text-xs text-muted-foreground">
-                      {String(filing.formType)} · {String(filing.reportQuarter)}
-                    </div>
-                  </TableCell>
-                  <TableCell>
-                    <div className="font-medium">{String(filing.managerName)}</div>
-                    <div className="text-xs text-muted-foreground">{String(filing.managerCik)}</div>
-                  </TableCell>
-                  <TableCell>
-                    <div className="text-sm">{String(filing.reportType).replaceAll('_', ' ')}</div>
-                    <div className="text-xs text-muted-foreground">
-                      {String(filing.coverageCompleteness).replaceAll('_', ' ')} · {String(filing.coverageType).replaceAll('_', ' ')}
-                    </div>
-                  </TableCell>
-                  <TableCell>
-                    <Badge variant={badgeVariant(String(filing.statusTone))}>
-                      {String(filing.parseStatus).replaceAll('_', ' ')}
-                    </Badge>
-                    <div className="mt-1 text-xs text-muted-foreground">
-                      {String(filing.amendmentStatus).replaceAll('_', ' ')}
-                    </div>
-                  </TableCell>
-                  <TableCell>
-                    <div className="flex max-w-[240px] flex-wrap gap-1">
-                      {(Array.isArray(filing.caveatCodes) ? filing.caveatCodes : []).map((code) => (
-                        <Badge key={String(code)} variant={code === 'NOTICE_REPORTED_ELSEWHERE' ? 'warning' : 'outline'}>
-                          {String(code).replaceAll('_', ' ').toLowerCase()}
-                        </Badge>
-                      ))}
-                      {(Array.isArray(filing.caveatCodes) ? filing.caveatCodes : []).length === 0 ? (
-                        <span className="text-sm text-muted-foreground">—</span>
-                      ) : null}
-                    </div>
-                  </TableCell>
-                  <TableCell className="text-xs text-muted-foreground">
-                    {String(filing.officialFilingDeadline ?? '—')}
-                  </TableCell>
-                  <TableCell>
-                    <Button
-                      type="button"
-                      variant="outline"
-                      size="sm"
-                      onClick={() => setSelectedFilingAccession(String(filing.accessionNumber))}
-                    >
-                      <History className="mr-2 h-3.5 w-3.5" />
-                      Parse runs
-                    </Button>
-                  </TableCell>
-                </TableRow>
-              ))}
-              {adminFilings.items.length === 0 ? (
-                <TableRow>
-                  <TableCell colSpan={7} className="py-8 text-center text-muted-foreground">
-                    No filings match this filter.
-                  </TableCell>
-                </TableRow>
-              ) : null}
-            </TableBody>
-          </Table>
-          <div className="mt-3 text-xs text-muted-foreground">
-            Showing {formatInteger(adminFilings.items.length)} of {formatInteger(adminFilings.total)} filings. Holdings count uses — when unavailable.
-          </div>
-        </CardContent>
-      </Card>
-
-      <Card className="rounded-md">
-        <CardHeader className="pb-3">
-          <CardTitle className="flex items-center gap-2 text-base">
-            <AlertTriangle className="h-4 w-4" />
-            Amendment Accessions
-          </CardTitle>
-        </CardHeader>
-        <CardContent>
-          <div className="mb-4 flex flex-wrap gap-2">
-            {Object.entries(pendingAmendmentGroups as Record<string, Record<string, number>>).map(([type, statuses]) => (
-              <Badge key={type} variant="warning">
-                {type}: {formatInteger(statuses.amendments_pending ?? 0)} pending
-              </Badge>
-            ))}
-            {pendingAmendments.total > 0 ? (
-              <Badge variant="outline">{formatInteger(pendingAmendments.total)} pending total</Badge>
-            ) : null}
-          </div>
-          <Table>
-            <TableHeader>
-              <TableRow>
-                <TableHead>Accession</TableHead>
-                <TableHead>Status</TableHead>
-                <TableHead>Manager</TableHead>
-                <TableHead>Supersedes</TableHead>
-                <TableHead>Raw InfoTable</TableHead>
-                <TableHead>Holdings</TableHead>
-                <TableHead>Action</TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {amendments.slice(0, 12).map((amendment) => (
-                <TableRow key={amendment.accessionNo}>
-                  <TableCell>
-                    <div className="font-mono text-xs">{amendment.accessionNo}</div>
-                    <div className="mt-1 text-xs text-muted-foreground">
-                      {amendment.quarter} · filed {amendment.filedAt ?? '—'}
-                    </div>
-                  </TableCell>
-                  <TableCell>
-                    <Badge variant={badgeVariant(amendment.statusTone)}>
-                      {amendment.status.replaceAll('_', ' ')}
-                    </Badge>
-                  </TableCell>
-                  <TableCell>
-                    <div className="font-medium">{amendment.managerName}</div>
-                    <div className="mt-1 font-mono text-xs text-muted-foreground">
-                      {amendment.managerCik}
-                    </div>
-                  </TableCell>
-                  <TableCell className="font-mono text-xs">
-                    {amendment.supersedesAccessionNo ?? '—'}
-                  </TableCell>
-                  <TableCell>
-                    <div className="text-sm">
-                      {String(amendment.rawInfotable.parse_status ?? 'missing')}
-                    </div>
-                    {amendment.rawInfotable.error_message ? (
-                      <div className="mt-1 max-w-[260px] truncate text-xs text-rose-700">
-                        {String(amendment.rawInfotable.error_message)}
-                      </div>
-                    ) : null}
-                  </TableCell>
-                  <TableCell>{formatInteger(amendment.holdingsCount)}</TableCell>
-                  <TableCell>
-                    <div className="flex flex-wrap gap-2">
-                      <Button
-                        type="button"
-                        variant="outline"
-                        size="sm"
-                        onClick={() => setSelectedAmendmentAccession(amendment.accessionNo)}
-                      >
-                        Review
-                      </Button>
-                      {amendment.recommendedJob ? (
-                        <Button
-                          type="button"
-                          variant="ghost"
-                          size="sm"
-                          disabled={isJobActive(amendment.recommendedJob)}
-                          onClick={() =>
-                            runJob(amendment.recommendedJob, `Reprocess ${amendment.accessionNo}`)
-                          }
-                        >
-                          Reprocess
-                        </Button>
-                      ) : null}
-                    </div>
-                  </TableCell>
-                </TableRow>
-              ))}
-              {amendments.length === 0 ? (
-                <TableRow>
-                  <TableCell colSpan={7} className="py-8 text-center text-muted-foreground">
-                    No 13F/A amendments recorded yet.
-                  </TableCell>
-                </TableRow>
-              ) : null}
-            </TableBody>
-          </Table>
-        </CardContent>
-      </Card>
 
       <Card className="rounded-md">
         <CardHeader className="pb-3">
@@ -2908,186 +2678,6 @@ export default function Admin13FPage() {
                 <div className="flex items-center gap-2 text-sm text-muted-foreground">
                   <Loader2 className="h-4 w-4 animate-spin" />
                   Loading quarter detail...
-                </div>
-              )}
-        </DrawerShell>
-      ) : null}
-      {selectedFilingAccession !== null ? (
-        <DrawerShell
-          title="Parse Run History"
-          description={<span className="font-mono text-xs">{selectedFilingAccession}</span>}
-          closeLabel="Close parse run history"
-          labelledBy="parse-run-history-title"
-          maxWidthClassName="max-w-[620px]"
-          onClose={() => setSelectedFilingAccession(null)}
-        >
-          {parseRunsQuery.isLoading ? (
-            <div className="flex items-center gap-2 text-sm text-muted-foreground">
-              <Loader2 className="h-4 w-4 animate-spin" />
-              Loading parse runs...
-            </div>
-          ) : parseRunsQuery.isError ? (
-            <div className="rounded-md border border-rose-300/70 bg-rose-50 px-3 py-2 text-sm text-rose-950">
-              Parse run history is unavailable for this accession.
-            </div>
-          ) : (
-            <>
-              <div className="grid gap-3 md:grid-cols-3">
-                <MetricTile label="Runs" value={formatInteger(parseRuns.total)} />
-                <MetricTile
-                  label="Current"
-                  value={parseRuns.items.find((run: Record<string, unknown>) => run.isCurrent)?.parserVersion ?? '—'}
-                />
-                <MetricTile
-                  label="Latest status"
-                  value={String(parseRuns.items[0]?.status ?? '—').replaceAll('_', ' ')}
-                />
-              </div>
-              <Table>
-                <TableHeader>
-                  <TableRow>
-                    <TableHead>Parser</TableHead>
-                    <TableHead>Status</TableHead>
-                    <TableHead>Holdings</TableHead>
-                    <TableHead>Finished</TableHead>
-                    <TableHead>Error</TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {parseRuns.items.map((run: Record<string, unknown>) => (
-                    <TableRow key={String(run.id)}>
-                      <TableCell>
-                        <div className="font-medium">{String(run.parserVersion)}</div>
-                        {run.isCurrent ? (
-                          <Badge variant="success" className="mt-1">
-                            current
-                          </Badge>
-                        ) : null}
-                      </TableCell>
-                      <TableCell>
-                        <Badge variant={badgeVariant(String(run.statusTone))}>
-                          {String(run.status).replaceAll('_', ' ')}
-                        </Badge>
-                      </TableCell>
-                      <TableCell>{formatInteger(run.holdingsCount)}</TableCell>
-                      <TableCell className="text-xs text-muted-foreground">
-                        {String(run.finishedAt ?? '—')}
-                      </TableCell>
-                      <TableCell className="max-w-[180px] truncate text-xs text-muted-foreground">
-                        {String(run.error ?? '—')}
-                      </TableCell>
-                    </TableRow>
-                  ))}
-                  {parseRuns.items.length === 0 ? (
-                    <TableRow>
-                      <TableCell colSpan={5} className="py-6 text-center text-muted-foreground">
-                        No parse runs have been recorded for this accession.
-                      </TableCell>
-                    </TableRow>
-                  ) : null}
-                </TableBody>
-              </Table>
-              <div className="text-xs text-muted-foreground">
-                Showing {formatInteger(parseRuns.items.length)} of {formatInteger(parseRuns.total)} parse runs.
-              </div>
-            </>
-          )}
-        </DrawerShell>
-      ) : null}
-      {selectedAmendmentAccession !== null ? (
-        <DrawerShell
-          title="Amendment Detail"
-          description={<span className="font-mono text-xs">{selectedAmendmentAccession}</span>}
-          closeLabel="Close amendment detail"
-          labelledBy="amendment-detail-title"
-          maxWidthClassName="max-w-[560px]"
-          onClose={() => setSelectedAmendmentAccession(null)}
-        >
-              {selectedAmendment ? (
-                <>
-                  <div className="flex flex-wrap items-center gap-2">
-                    <Badge variant={badgeVariant(
-                      selectedAmendment.status === 'failed'
-                        ? 'danger'
-                        : selectedAmendment.status === 'pending'
-                          ? 'warning'
-                          : selectedAmendment.status === 'applied'
-                            ? 'success'
-                            : 'secondary'
-                    )}>
-                      {String(selectedAmendment.status ?? 'unknown').replaceAll('_', ' ')}
-                    </Badge>
-                    <span className="text-sm text-muted-foreground">
-                      {selectedAmendment.form_type} · {selectedAmendment.quarter}
-                    </span>
-                  </div>
-                  <div className="grid gap-3 md:grid-cols-2">
-                    <div className="rounded-md border border-border/70 p-3">
-                      <div className="text-xs uppercase text-muted-foreground">Manager</div>
-                      <div className="mt-1 text-sm font-medium">
-                        {selectedAmendment.manager?.display_name ??
-                          selectedAmendment.manager?.legal_name ??
-                          '—'}
-                      </div>
-                      <div className="mt-1 font-mono text-xs text-muted-foreground">
-                        {selectedAmendment.manager?.cik ?? '—'}
-                      </div>
-                    </div>
-                    <div className="rounded-md border border-border/70 p-3">
-                      <div className="text-xs uppercase text-muted-foreground">Holdings</div>
-                      <div className="mt-1 text-sm">
-                        {formatInteger(selectedAmendment.holdings_count)}
-                      </div>
-                    </div>
-                    <div className="rounded-md border border-border/70 p-3">
-                      <div className="text-xs uppercase text-muted-foreground">Supersedes</div>
-                      <div className="mt-1 break-all font-mono text-xs">
-                        {selectedAmendment.supersedes_accession_no ?? '—'}
-                      </div>
-                    </div>
-                    <div className="rounded-md border border-border/70 p-3">
-                      <div className="text-xs uppercase text-muted-foreground">Latest Effective</div>
-                      <div className="mt-1 break-all font-mono text-xs">
-                        {selectedAmendment.latest_effective_accession_no ?? '—'}
-                      </div>
-                    </div>
-                  </div>
-                  {selectedAmendment.recommended_job ? (
-                    <Button
-                      type="button"
-                      variant="outline"
-                      disabled={isJobActive(selectedAmendment.recommended_job)}
-                      onClick={() =>
-                        runJob(
-                          selectedAmendment.recommended_job,
-                          `Reprocess ${selectedAmendment.accession_no}`
-                        )
-                      }
-                    >
-                      Reprocess amendment
-                    </Button>
-                  ) : null}
-                  <div>
-                    <div className="text-xs font-semibold uppercase text-muted-foreground">
-                      Raw primary document
-                    </div>
-                    <div className="mt-2 max-h-56 overflow-auto rounded-md border border-border/70 bg-muted/40 p-3 font-mono text-xs">
-                      {formatJson(selectedAmendment.raw_primary)}
-                    </div>
-                  </div>
-                  <div>
-                    <div className="text-xs font-semibold uppercase text-muted-foreground">
-                      Raw InfoTable document
-                    </div>
-                    <div className="mt-2 max-h-56 overflow-auto rounded-md border border-border/70 bg-muted/40 p-3 font-mono text-xs">
-                      {formatJson(selectedAmendment.raw_infotable)}
-                    </div>
-                  </div>
-                </>
-              ) : (
-                <div className="flex items-center gap-2 text-sm text-muted-foreground">
-                  <Loader2 className="h-4 w-4 animate-spin" />
-                  Loading amendment detail...
                 </div>
               )}
         </DrawerShell>
