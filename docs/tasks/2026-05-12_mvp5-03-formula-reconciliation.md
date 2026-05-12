@@ -220,16 +220,63 @@ PO #3 #3 / PO #4 #3, SME #6 #1):
 - `docker compose exec web npm run lint` -> No ESLint warnings or errors.
 - `docker compose exec web npm run build` -> compiled successfully.
 
+## Phase 1 Validation Outcome (2026-05-12)
+
+Phase 1 comparison utility validated against dev DB. PO
+direction recorded:
+
+- **Phase 1 utility contract**: validated. Empty-state call
+  against current dev DB returns
+  `{"quarter": null, "score_version": "v1.0",
+  "total_stocks_compared": 0, ..., "items": []}` — the
+  correct shape for "no persisted scores yet."
+- **Synthetic divergence detection**: validated. A 30-stock
+  seeded scenario (legacy_rank=23 / persisted_rank=1 on
+  stock_id 1; legacy=1.0 / persisted=0.68 on stock_id 3)
+  produces the expected
+  `TOP10_RANK_SWAP=1, MAGNITUDE_DIFF_25_PCT=2` flags with
+  correct per-item attribution.
+- **Dev DB not suitable for PO sign-off**: all 4022 holdings
+  in dev are `cusip_mapping_status="pending_mapping"` and
+  `holding_attribution_status=None`. The persisted scoring
+  path therefore writes zero `oracles_lens_signals` rows in
+  dev, so a real legacy-vs-persisted ranking comparison
+  cannot run there. **This is a dev-environment data state,
+  not an MVP5-03 code defect.**
+
+**Status as recorded by the PO:**
+
+- MVP5-03 Phase 1: **Accepted** (utility complete and
+  technically validated).
+- Synthetic divergence validation: **Accepted**.
+- Dev DB real-data sign-off: **Not applicable**.
+- Phase 3 server-default flip: **Pending staging/prod
+  comparison**.
+- Dev CUSIP linking pipeline: backlogged under
+  `docs/tasks/2026-05-12_backlog-dev-cusip-linking-fixture.md`;
+  **not an MVP5 blocker**.
+
+**Explicit instruction to engineering:** do not flip the
+backend server default until the PO has reviewed a real-data
+comparison report from a staging/prod environment that has
+linked CUSIPs and at least one persisted scoring backfill
+applied.
+
 ## Phase 3 Sign-Off Tracker
 
-- [x] Phase 1 comparison utility deployed (2026-05-12, this
-      commit).
-- [ ] Comparison report run against the current active production
-      quarter. Output archived to
+- [x] Phase 1 comparison utility deployed (2026-05-12).
+- [x] Phase 1 utility contract validated against dev DB
+      (empty-state + synthetic divergence detection, see
+      "Phase 1 Validation Outcome" above).
+- [ ] Comparison report run against the current active
+      production quarter (**blocked on staging/prod
+      environment with linked CUSIPs + at least one
+      persisted scoring backfill**). Output archived to
       `docs/tasks/YYYY-MM-DD_mvp5-03-comparison-report.md`.
 - [ ] PO reviewed the comparison report; sign-off recorded
       inline.
-- [ ] Server default flipped from `Query(False)` to `Query(True)`.
+- [ ] Server default flipped from `Query(False)` to
+      `Query(True)`.
 
 ## Phase 4 Retirement Tracker
 

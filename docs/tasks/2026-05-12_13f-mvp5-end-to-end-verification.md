@@ -209,8 +209,21 @@ report.
 
 - [x] Phase 1 comparison utility deployed
       (`build_formula_comparison` + admin endpoint).
+- [x] **Phase 1 utility contract validated against dev DB
+      (2026-05-12).** Empty-state call returns the correct
+      `{quarter: null, ...}` shape; synthetic 30-stock
+      seeded scenario produces correct
+      `TOP10_RANK_SWAP=1, MAGNITUDE_DIFF_25_PCT=2` flags with
+      per-item attribution. **Real-data sign-off not run in
+      dev** because all 4022 dev holdings are
+      `cusip_mapping_status="pending_mapping"` → persisted
+      scoring writes zero signal rows. See
+      "MVP5-03 Phase 1 Validation Outcome" in the MVP5-03
+      task file.
 - [ ] Comparison report run against the current active
-      production quarter. Output archived to
+      production quarter (**blocked on staging/prod
+      environment with linked CUSIPs + at least one
+      persisted scoring backfill**). Output archived to
       `docs/tasks/YYYY-MM-DD_mvp5-03-comparison-report.md`.
 - [ ] PO reviewed the comparison report. Sign-off recorded
       inline.
@@ -268,18 +281,30 @@ Four reviewer prompts filed in
 
 ## Recommendation
 
-**Open the MVP5-03 Phase 3 sign-off process this week.**
+**Open the MVP5-03 Phase 3 sign-off process when a
+staging/prod environment with linked CUSIPs is available.**
 
 Pre-condition: PO obtains a production-shape comparison
 report by running the Phase 1 utility against the current
-active quarter (`GET /api/v1/admin/13f/oracles-lens/formula-comparison`).
-If the report shows `top10_swap_count == 0` and
-`magnitude_diff_count` falls within an acceptable threshold
-(PO judgment; suggest reviewing items individually if any
-are flagged), sign off and ship the one-line server-default
-flip as a hotfix-style ticket. If the report flags
-material divergence, the formula reconciliation needs
+active quarter (`GET /api/v1/admin/13f/oracles-lens/formula-comparison`)
+in an environment where holdings have
+`cusip_mapping_status="linked"` and at least one persisted
+scoring backfill has populated `oracles_lens_signals`. Dev
+DB is **not** suitable (validated 2026-05-12; all 4022 dev
+holdings are `pending_mapping`).
+
+If the staging/prod report shows `top10_swap_count == 0`
+and `magnitude_diff_count` falls within an acceptable
+threshold (PO judgment; suggest reviewing items individually
+if any are flagged), sign off and ship the one-line
+server-default flip as a hotfix-style ticket. If the report
+flags material divergence, the formula reconciliation needs
 deeper investigation before Phase 3 can close.
+
+**Engineering must not flip the server default ahead of PO
+sign-off** even if a low-volume dev / CI run looks clean —
+the dev environment doesn't generate persisted signals so
+any "clean" dev result is a false positive.
 
 Pre-MVP6 candidates that should be triaged after Phase 3
 closes:

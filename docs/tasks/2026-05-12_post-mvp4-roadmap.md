@@ -247,6 +247,12 @@ Items that don't belong to any single feature track:
 - `admin_router.get("/oracles-lens")` `score_version` query param
   for shadow-compute reads — YAGNI for now; add when a shadow
   pipeline lands (TL #1 #1 alt-fix, rejected for current scope).
+- Dev CUSIP linking / linked-CUSIP fixture support so Oracle's
+  Lens scoring is reproducible locally. Filed at
+  `docs/tasks/2026-05-12_backlog-dev-cusip-linking-fixture.md`
+  after MVP5-03 Phase 1 validation revealed dev DB has 4022
+  holdings all in `pending_mapping`. Non-blocking — MVP5-03
+  Phase 3 sign-off is staging/prod-only regardless.
 
 ---
 
