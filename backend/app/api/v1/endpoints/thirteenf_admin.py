@@ -947,6 +947,23 @@ def oracles_lens_unknown_manager_priority_endpoint(
     return build_unknown_manager_priority(session)
 
 
+@admin_router.get("/oracles-lens/formula-comparison", response_model=dict)
+def oracles_lens_formula_comparison_endpoint(
+    session: SessionDep,
+    current_user: AdminUser,
+    quarter: str | None = Query(default=None),
+) -> Any:
+    """MVP5-03 Phase 1: per-stock comparison of the legacy in-memory
+    dashboard formula against the persisted MVP4-03 scorer. The PO
+    runs this against the latest scored quarter and reviews the
+    output before flipping the ``use_persisted_scores`` server
+    default to ``True`` (Phase 3)."""
+    from app.services.oracles_lens.formula_comparison import (
+        build_formula_comparison,
+    )
+    return build_formula_comparison(session, quarter=quarter)
+
+
 # ---------------------------------------------------------------------------
 # MVP3-08: Batch Reparse by Quarter endpoints
 # ---------------------------------------------------------------------------

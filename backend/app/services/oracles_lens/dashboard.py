@@ -606,11 +606,20 @@ def _position_signal_weight(holding: ManagerHolding) -> float:
         score += 0.3
     if holding.holding_streak_quarters >= 4:
         score += 0.3
+    # MVP5-03 Phase 2: action magnitudes aligned to the persisted
+    # constants in ``app/services/oracles_lens/constants.py`` so the
+    # legacy in-memory path no longer disagrees with the canonical
+    # scorer on which action is the stronger signal. Rationale
+    # (SME #6 #1): a brand-new position is a more decisive signal
+    # than an incremental add to an existing position, and a full
+    # exit is a more decisive signal than a partial reduce.
     if holding.action == "new":
-        score += 0.1
-    elif holding.action == "add":
         score += 0.2
+    elif holding.action == "add":
+        score += 0.1
     elif holding.action == "reduce":
+        score -= 0.1
+    elif holding.action == "exit":
         score -= 0.2
     return max(score, 0)
 
