@@ -107,6 +107,7 @@ Implementation constraints for the relevant MVP 3 task:
 
 Implementation choice:
 - MVP3-05 should default to quarter reparse before manager reparse. Manager reparse may be added after the quarter workflow is proven because it can affect a broader cross-quarter surface.
+- 2026-05-11 supersede note: MVP3-05 review accepted shipping both quarter and manager scopes together at the **service layer**, because controlled reparse is a per-filing safety unit and both scopes share the same execution path (only the candidate query differs); manager-scope isolation tests cover the contract. The "quarter-first" ordering applies to the **admin UI rollout** instead: the future admin endpoint / dashboard for batch reparse must ship the quarter surface before exposing manager surface to admins.
 
 ### D4. CUSIP Corporate Action Temporal Mapping UI
 
@@ -183,6 +184,7 @@ Sequence rationale: resolve source naming ambiguity, validation persistence, and
 - 2026-05-11: Applied Tech Lead review feedback: D2 now explicitly flags the PRD §17 Dataroma CUSIP source removal as a human-owner scope-change decision, D1 is framed against the PRD §19 2023-Q1 default, D3 now depends on value-unit override and validation readiness, and the task sequence now puts Dataroma cleanup / validation / override before batch reparse and historical backfill.
 - 2026-05-11: Applied product owner review feedback: closed D1/D2/D4/D5/D6 as product decisions, added the MVP 3 data-safety principle for auditable before/after summaries, tightened D3 validation and impact-summary gates, split controlled reparse from batch reparse, and moved historical backfill to the final MVP 3 task.
 - 2026-05-11: Product owner re-review approved MVP3-01 to start. Added accepted P2 refinements: quarter-first reparse default, required corporate-action evidence / reason notes, value-unit sanity validation candidate, validation-gated backfill naming, and explicit MVP 3 scope-freeze checklist approval.
+- 2026-05-11: MVP3-05 review supersede on D3 implementation choice: quarter-first sequencing applies to the future admin UI rollout, not the service layer. MVP3-05 ships both scopes at the service layer with full per-scope test coverage; the admin endpoint / dashboard task must still expose quarter scope before manager scope.
 
 ## Verification Results
 

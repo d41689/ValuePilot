@@ -7,7 +7,7 @@ summary. It intentionally does not implement batch reparse or admin API/UI.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass, field
 from typing import Any, Callable
 
 from sqlalchemy.orm import Session
@@ -26,13 +26,42 @@ ValidationGate = Callable[[Session, Filing13F, ParseRun13F], bool | tuple[bool, 
 
 
 @dataclass(frozen=True)
+class ImpactSummary:
+    """Typed before/after impact summary for a single controlled reparse.
+
+    Extracted in MVP3-05 (carryover from MVP3-04 review) so that the batch
+    reparse layer can aggregate per-filing impact with an explicit field
+    contract instead of a free-form dict.
+    """
+
+    filings_affected: int
+    parse_runs_created: int
+    current_pointers_changed: int
+    holdings_rows_before: int
+    holdings_rows_after: int
+    holdings_rows_created: int
+    holdings_row_count_delta: int
+    ownership_changes_recompute_count: int
+    ownership_changes_recompute_scope: dict[str, Any]
+    readiness_level_impact: dict[str, Any]
+    quality_finding_delta: dict[str, Any]
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+    # Dict-style access keeps API serializers and existing call sites stable.
+    def __getitem__(self, key: str) -> Any:
+        return getattr(self, key)
+
+
+@dataclass(frozen=True)
 class ControlledReparseResult:
     status: str
     accession_number: str
     old_parse_run_id: int | None
     new_parse_run_id: int | None
-    impact_summary: dict[str, Any]
-    validation_errors: list[str]
+    impact_summary: ImpactSummary
+    validation_errors: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -40,8 +69,8 @@ class ControlledReparseResult:
             "accession_number": self.accession_number,
             "old_parse_run_id": self.old_parse_run_id,
             "new_parse_run_id": self.new_parse_run_id,
-            "impact_summary": self.impact_summary,
-            "validation_errors": self.validation_errors,
+            "impact_summary": self.impact_summary.to_dict(),
+            "validation_errors": list(self.validation_errors),
         }
 
 
@@ -242,33 +271,35 @@ def _impact_summary(
     *,
     new_parse_run_id: int | None = None,
     new_parse_run_holdings_count: int | None = None,
-) -> dict[str, Any]:
+) -> ImpactSummary:
     before_holdings = int(before["holdings_count"] or 0)
     after_holdings = int(after["holdings_count"] or 0)
     # Kept separate from current holdings because validation failure restores the
     # old current pointer while retaining the audited candidate parse run.
     holdings_rows_created = new_parse_run_holdings_count if new_parse_run_id is not None else after_holdings
-    return {
-        "filings_affected": 1,
-        "parse_runs_created": 1 if new_parse_run_id is not None else 0,
-        "current_pointers_changed": 1 if before["current_parse_run_id"] != after["current_parse_run_id"] else 0,
-        "holdings_rows_before": before_holdings,
-        "holdings_rows_after": after_holdings,
-        "holdings_rows_created": holdings_rows_created,
-        "holdings_row_count_delta": abs(holdings_rows_created - before_holdings),
-        "ownership_changes_recompute_count": int(before["ownership_changes_count"] or 0),
-        "ownership_changes_recompute_scope": {
+    open_before = int(before["open_quality_findings_count"] or 0)
+    open_after = int(after["open_quality_findings_count"] or 0)
+    return ImpactSummary(
+        filings_affected=1,
+        parse_runs_created=1 if new_parse_run_id is not None else 0,
+        current_pointers_changed=1 if before["current_parse_run_id"] != after["current_parse_run_id"] else 0,
+        holdings_rows_before=before_holdings,
+        holdings_rows_after=after_holdings,
+        holdings_rows_created=holdings_rows_created,
+        holdings_row_count_delta=abs(holdings_rows_created - before_holdings),
+        ownership_changes_recompute_count=int(before["ownership_changes_count"] or 0),
+        ownership_changes_recompute_scope={
             "manager_id": filing.manager_id,
             "report_quarter": filing.report_quarter,
             "accession_number": filing.accession_number,
         },
-        "readiness_level_impact": {
+        readiness_level_impact={
             "parse_status_before": before["filing_parse_status"],
             "parse_status_after": after["filing_parse_status"],
         },
-        "quality_finding_delta": {
-            "open_before": before["open_quality_findings_count"],
-            "open_after": after["open_quality_findings_count"],
-            "delta": after["open_quality_findings_count"] - before["open_quality_findings_count"],
+        quality_finding_delta={
+            "open_before": open_before,
+            "open_after": open_after,
+            "delta": open_after - open_before,
         },
-    }
+    )
