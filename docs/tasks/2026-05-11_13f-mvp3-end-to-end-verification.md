@@ -289,7 +289,11 @@ Triaged with the three verdicts above:
   `app/edgar/parsers/value_units.py` enforces the accepted_at form
   correctly).
 - **Readiness service does not consume new MVP3-06/07 finding
-  rule_codes** — SME C2. Filed as
-  `docs/tasks/2026-05-11_13f-mvp3-09-readiness-integration.md` (stub).
-  Touches the user-facing readiness contract and `_quarter_health`;
-  needs its own Tech Lead + PO review before implementation begins.
+  rule_codes** — SME C2 — **RESOLVED** by MVP3-09. The readiness
+  service now emits `OWNERSHIP_CHANGES_NEEDS_RECOMPUTE` and
+  `HISTORICAL_BACKFILL_NEEDS_VALIDATION` warnings (never blockers)
+  when open findings of either MVP3-06 / MVP3-07 rule_code exist, and
+  the admin per-quarter summary surfaces the open-finding counts
+  independently of the latest `QualityReport13F.status`. See
+  `docs/tasks/2026-05-11_13f-mvp3-09-readiness-integration.md`.
+  Cumulative test count: **640 passed**.

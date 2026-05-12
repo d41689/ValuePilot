@@ -6,13 +6,21 @@ from typing import Any
 from sqlalchemy import distinct
 from sqlalchemy.orm import Session
 
-from app.models.institutions import Filing13F, Holding13F, InstitutionManager
+from app.models.institutions import Filing13F, Holding13F, InstitutionManager, QualityFinding13F
 from app.services.thirteenf_holdings_query import HR_FORM_TYPES, active_hr_holdings_query, nt_only_manager_ids
 
 
 READY_COVERAGE_THRESHOLD = 0.80
 READY_PARSE_SUCCESS_THRESHOLD = 0.95
 READY_CUSIP_MAPPING_THRESHOLD = 0.70
+
+# MVP3-09: cross-task QualityFinding rule_codes that the readiness service
+# treats as warnings (never blockers). Sourced from the MVP3-06 corporate-action
+# mapping service and the MVP3-07 historical backfill service respectively.
+_RECOMPUTE_FINDING_RULE_CODE = "OWNERSHIP_CHANGE_NEEDS_RECOMPUTE_CUSIP_CORPORATE_ACTION"
+_BACKFILL_FINDING_RULE_CODE = "HISTORICAL_BACKFILL_NEEDS_VALIDATION"
+RECOMPUTE_WARNING_CODE = "OWNERSHIP_CHANGES_NEEDS_RECOMPUTE"
+BACKFILL_WARNING_CODE = "HISTORICAL_BACKFILL_NEEDS_VALIDATION"
 
 
 def build_readiness_summary(
@@ -59,6 +67,26 @@ def build_readiness_summary(
         warnings.append(_message("AMENDMENTS_PENDING", "Amendments are pending for a usable quarter."))
     if quarter_lists["amendment_failed_quarters"]:
         warnings.append(_message("AMENDMENT_FAILED", "An amendment failed for a usable quarter."))
+    # MVP3-09: cross-task findings. Warnings only — neither code makes a quarter
+    # unavailable. The recompute warning signals that corporate-action mapping
+    # changes (MVP3-06) have not been applied to ownership_changes yet, so the
+    # quarter's change deltas may be stale. The backfill warning signals that
+    # MVP3-07 historical backfill ingested filings the validation gate has not
+    # cleared.
+    if quarter_lists["ownership_changes_needs_recompute_quarters"]:
+        warnings.append(
+            _message(
+                RECOMPUTE_WARNING_CODE,
+                "Recent corporate-action mapping changes; ownership-change deltas may be stale until recompute completes.",
+            )
+        )
+    if quarter_lists["historical_backfill_needs_validation_quarters"]:
+        warnings.append(
+            _message(
+                BACKFILL_WARNING_CODE,
+                "Backfilled filings awaiting validation gate.",
+            )
+        )
 
     readiness_level = _readiness_level(
         blockers=blockers,
@@ -214,7 +242,26 @@ def _quarter_lists(session: Session, quarters: list[str]) -> dict[str, list[str]
         "partial_coverage_quarters": _quarters_matching(session, Filing13F.coverage_completeness == "partial"),
         "amendment_pending_quarters": _quarters_matching(session, Filing13F.amendment_status == "amendments_pending"),
         "amendment_failed_quarters": _quarters_matching(session, Filing13F.amendment_status == "amendment_failed"),
+        # MVP3-09: read-only consumers of the MVP3-06 / MVP3-07 audit trail.
+        "ownership_changes_needs_recompute_quarters": _quarters_with_open_finding(
+            session, _RECOMPUTE_FINDING_RULE_CODE
+        ),
+        "historical_backfill_needs_validation_quarters": _quarters_with_open_finding(
+            session, _BACKFILL_FINDING_RULE_CODE
+        ),
     }
+
+
+def _quarters_with_open_finding(session: Session, rule_code: str) -> list[str]:
+    rows = (
+        session.query(QualityFinding13F.quarter)
+        .filter(QualityFinding13F.rule_code == rule_code)
+        .filter(QualityFinding13F.status == "open")
+        .filter(QualityFinding13F.quarter.isnot(None))
+        .distinct()
+        .all()
+    )
+    return sorted({row.quarter for row in rows if row.quarter})
 
 
 def _quarters_matching(session: Session, condition: Any) -> list[str]:

@@ -22,6 +22,7 @@ from app.models.institutions import (
     JobRun,
     JobWorkerHeartbeat,
     ParseRun13F,
+    QualityFinding13F,
     QualityReport13F,
     RawSourceDocument,
 )
@@ -1445,6 +1446,15 @@ def _quarter_summary(session: Session, quarter: str, *, today: date) -> dict[str
     amendment_status = _amendment_status(session, filings)
     quality_report = _latest_quality_report(session, quarter)
     quality_status = quality_report.status if quality_report else "not_checked"
+    # MVP3-09 / SME C2: query open findings by rule_code directly so a later
+    # passing MVP3-02 quality_check run cannot mask open MVP3-06 / MVP3-07
+    # work by overwriting the latest QualityReport13F.status for the quarter.
+    open_recompute_finding_count = _open_finding_count(
+        session, quarter, _MVP3_RECOMPUTE_FINDING_RULE_CODE
+    )
+    open_backfill_validation_finding_count = _open_finding_count(
+        session, quarter, _MVP3_BACKFILL_FINDING_RULE_CODE
+    )
     phase = _quarter_phase(window, today)
     active_job = _active_quarter_job(session, quarter)
     has_prior_data = _has_prior_quarter_holdings(session, quarter)
@@ -1462,6 +1472,9 @@ def _quarter_summary(session: Session, quarter: str, *, today: date) -> dict[str
         active_job=active_job is not None,
         has_prior_data=has_prior_data,
         revoked_cik_review_required=revoked_cik_review_required,
+        open_cross_task_finding_count=(
+            open_recompute_finding_count + open_backfill_validation_finding_count
+        ),
     )
     linked_holding_unavailable_reason = "NO_HOLDINGS_PARSED" if linked_ratio is None else None
     return {
@@ -1487,6 +1500,11 @@ def _quarter_summary(session: Session, quarter: str, *, today: date) -> dict[str
         "quality_warnings": quality_report.warning_count if quality_report else None,
         "quality_checked_at": quality_report.checked_at.isoformat() if quality_report else None,
         "quality_report_id": quality_report.id if quality_report else None,
+        # MVP3-09: surface open MVP3-06 / MVP3-07 findings independently of
+        # the latest QualityReport13F.status so the dashboard reflects them
+        # even when a later quality_check overwrites the latest report.
+        "open_recompute_finding_count": open_recompute_finding_count,
+        "open_backfill_validation_finding_count": open_backfill_validation_finding_count,
         "revoked_cik_review_required": revoked_cik_review_required,
         "last_successful_job_at": _last_successful_job_at(session),
         "active_job_id": active_job.id if active_job else None,
@@ -1502,7 +1520,22 @@ def _quarter_phase(window: QuarterWindow, today: date) -> str:
     return "post_deadline"
 
 
-def _quarter_health(*, confirmed_managers: int, form_idx_fetched: bool, filings_count: int, holdings_count: int, failed_filings: int, linked_ratio: float | None, amendment_status: str, quality_status: str, phase: str, active_job: bool, has_prior_data: bool, revoked_cik_review_required: bool) -> str:
+def _quarter_health(
+    *,
+    confirmed_managers: int,
+    form_idx_fetched: bool,
+    filings_count: int,
+    holdings_count: int,
+    failed_filings: int,
+    linked_ratio: float | None,
+    amendment_status: str,
+    quality_status: str,
+    phase: str,
+    active_job: bool,
+    has_prior_data: bool,
+    revoked_cik_review_required: bool,
+    open_cross_task_finding_count: int = 0,
+) -> str:
     if confirmed_managers == 0:
         return "setup_required"
     if revoked_cik_review_required:
@@ -1510,6 +1543,10 @@ def _quarter_health(*, confirmed_managers: int, form_idx_fetched: bool, filings_
     if failed_filings:
         return "failed"
     if amendment_status in {"amendments_pending", "amendment_failed"}:
+        return "needs_review"
+    # MVP3-09: a passing latest QualityReport13F must not mask open
+    # MVP3-06 / MVP3-07 findings on the same quarter.
+    if open_cross_task_finding_count > 0:
         return "needs_review"
     if quality_status in {"failed", "warning"}:
         return "needs_review"
@@ -2668,6 +2705,25 @@ def _latest_quality_report(session: Session, quarter: str) -> QualityReport13F |
         .filter(QualityReport13F.quarter == quarter)
         .order_by(QualityReport13F.checked_at.desc(), QualityReport13F.id.desc())
         .first()
+    )
+
+
+# MVP3-09 / SME C2: cross-task finding rule_codes consumed by the admin
+# dashboard. Sourced from MVP3-06 corporate-action mapping and MVP3-07
+# historical backfill respectively. Kept as private constants here because
+# the readiness service defines its own copies — extracting to a shared
+# module would be the right call once a third reader emerges.
+_MVP3_RECOMPUTE_FINDING_RULE_CODE = "OWNERSHIP_CHANGE_NEEDS_RECOMPUTE_CUSIP_CORPORATE_ACTION"
+_MVP3_BACKFILL_FINDING_RULE_CODE = "HISTORICAL_BACKFILL_NEEDS_VALIDATION"
+
+
+def _open_finding_count(session: Session, quarter: str, rule_code: str) -> int:
+    return (
+        session.query(QualityFinding13F)
+        .filter(QualityFinding13F.quarter == quarter)
+        .filter(QualityFinding13F.rule_code == rule_code)
+        .filter(QualityFinding13F.status == "open")
+        .count()
     )
 
 
