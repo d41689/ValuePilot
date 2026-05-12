@@ -8,19 +8,23 @@ from sqlalchemy.orm import Session
 
 from app.models.institutions import Filing13F, Holding13F, InstitutionManager, QualityFinding13F
 from app.services.thirteenf_holdings_query import HR_FORM_TYPES, active_hr_holdings_query, nt_only_manager_ids
+from app.services.thirteenf_quality_codes import (
+    HISTORICAL_BACKFILL_NEEDS_VALIDATION as _BACKFILL_FINDING_RULE_CODE,
+    OWNERSHIP_CHANGE_NEEDS_RECOMPUTE_CUSIP_CORPORATE_ACTION as _RECOMPUTE_FINDING_RULE_CODE,
+)
 
 
 READY_COVERAGE_THRESHOLD = 0.80
 READY_PARSE_SUCCESS_THRESHOLD = 0.95
 READY_CUSIP_MAPPING_THRESHOLD = 0.70
 
-# MVP3-09: cross-task QualityFinding rule_codes that the readiness service
-# treats as warnings (never blockers). Sourced from the MVP3-06 corporate-action
-# mapping service and the MVP3-07 historical backfill service respectively.
-_RECOMPUTE_FINDING_RULE_CODE = "OWNERSHIP_CHANGE_NEEDS_RECOMPUTE_CUSIP_CORPORATE_ACTION"
-_BACKFILL_FINDING_RULE_CODE = "HISTORICAL_BACKFILL_NEEDS_VALIDATION"
+# Readiness-warning codes are a separate vocabulary from the rule_codes
+# above: rule_codes filter QualityFinding13F rows; warning codes surface
+# to the readiness API consumer. They share a string for backfill but
+# diverge for recompute (rule_code is OWNERSHIP_CHANGE_..., warning code
+# is OWNERSHIP_CHANGES_... plural).
 RECOMPUTE_WARNING_CODE = "OWNERSHIP_CHANGES_NEEDS_RECOMPUTE"
-BACKFILL_WARNING_CODE = "HISTORICAL_BACKFILL_NEEDS_VALIDATION"
+BACKFILL_WARNING_CODE = _BACKFILL_FINDING_RULE_CODE
 
 
 def build_readiness_summary(

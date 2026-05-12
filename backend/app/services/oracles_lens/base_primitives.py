@@ -33,6 +33,10 @@ from app.models.institutions import (
     QualityFinding13F,
 )
 from app.services.thirteenf_holdings_query import HR_FORM_TYPES
+from app.services.thirteenf_quality_codes import (
+    HISTORICAL_BACKFILL_NEEDS_VALIDATION as _BACKFILL_FINDING_RULE_CODE,
+    OWNERSHIP_CHANGE_NEEDS_RECOMPUTE_CUSIP_CORPORATE_ACTION as _RECOMPUTE_FINDING_RULE_CODE,
+)
 
 # ---------------------------------------------------------------------------
 # Canonical caveat codes (consumed by MVP4-05 caution-flags surface)
@@ -58,14 +62,6 @@ HISTORICAL_BACKFILL_NEEDS_VALIDATION_CAVEAT = "HISTORICAL_BACKFILL_NEEDS_VALIDAT
 # D2: walking back across the data-window floor; pre-window ownership is
 # not observable, so streak/intensity inputs are right-censored.
 PRE_2023_PRE_HISTORY_UNAVAILABLE_CAVEAT = "PRE_2023_PRE_HISTORY_UNAVAILABLE"
-
-
-# QualityFinding rule_codes consumed for D3 (b) / (e). Kept private to this
-# module — the canonical strings already live as module constants in
-# thirteenf_corporate_action_mapping / thirteenf_historical_backfill; the
-# shared rule_code constants module (MVP4-09) will dedupe these later.
-_RECOMPUTE_FINDING_RULE_CODE = "OWNERSHIP_CHANGE_NEEDS_RECOMPUTE_CUSIP_CORPORATE_ACTION"
-_BACKFILL_FINDING_RULE_CODE = "HISTORICAL_BACKFILL_NEEDS_VALIDATION"
 
 
 # ---------------------------------------------------------------------------

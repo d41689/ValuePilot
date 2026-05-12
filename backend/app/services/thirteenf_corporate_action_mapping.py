@@ -39,10 +39,16 @@ from app.models.institutions import (
     QualityFinding13F,
     QualityReport13F,
 )
+from app.services.thirteenf_quality_codes import (
+    OWNERSHIP_CHANGE_NEEDS_RECOMPUTE_CUSIP_CORPORATE_ACTION,
+)
 
 logger = logging.getLogger(__name__)
 
-CORPORATE_ACTION_RULE_CODE = "OWNERSHIP_CHANGE_NEEDS_RECOMPUTE_CUSIP_CORPORATE_ACTION"
+# Module-local readability alias for the canonical constant in
+# ``thirteenf_quality_codes`` (MVP4-09); the canonical name is the source
+# of truth and is exported there.
+CORPORATE_ACTION_RULE_CODE = OWNERSHIP_CHANGE_NEEDS_RECOMPUTE_CUSIP_CORPORATE_ACTION
 _QUALITY_REPORT_STATUS = "warning"
 _PREVIEW_SAMPLE_LIMIT = 25
 

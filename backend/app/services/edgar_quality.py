@@ -13,14 +13,17 @@ from typing import Any
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
+from app.services.thirteenf_quality_codes import VALUE_UNIT_SANITY
+
 _CUSIP_RE = re.compile(r"^[A-Z0-9]{9}$")
 _RECONCILE_THRESHOLD = 0.001  # 0.1%
 
-# Persisted as ``QualityFinding13F.rule_code`` via _persist_quality_findings.
-# Kept UPPER_SNAKE for parity with MVP3-06 / MVP3-07 rule codes so a future
-# admin findings dashboard can filter by rule_code without per-source casing
-# normalization (TL1, MVP3 end-to-end review).
-VALUE_UNIT_SANITY_RULE_CODE = "VALUE_UNIT_SANITY"
+# Module-local readability alias for the canonical constant in
+# ``thirteenf_quality_codes`` (MVP4-09). The canonical name is the source
+# of truth; this alias is kept because ``edgar_quality`` references the
+# constant in three places and the short suffixed name reads naturally
+# next to ``report.add(...)``.
+VALUE_UNIT_SANITY_RULE_CODE = VALUE_UNIT_SANITY
 
 
 @dataclass

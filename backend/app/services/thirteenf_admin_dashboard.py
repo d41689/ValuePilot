@@ -2709,12 +2709,11 @@ def _latest_quality_report(session: Session, quarter: str) -> QualityReport13F |
 
 
 # MVP3-09 / SME C2: cross-task finding rule_codes consumed by the admin
-# dashboard. Sourced from MVP3-06 corporate-action mapping and MVP3-07
-# historical backfill respectively. Kept as private constants here because
-# the readiness service defines its own copies — extracting to a shared
-# module would be the right call once a third reader emerges.
-_MVP3_RECOMPUTE_FINDING_RULE_CODE = "OWNERSHIP_CHANGE_NEEDS_RECOMPUTE_CUSIP_CORPORATE_ACTION"
-_MVP3_BACKFILL_FINDING_RULE_CODE = "HISTORICAL_BACKFILL_NEEDS_VALIDATION"
+# dashboard. Consolidated into ``thirteenf_quality_codes`` by MVP4-09.
+from app.services.thirteenf_quality_codes import (
+    HISTORICAL_BACKFILL_NEEDS_VALIDATION as _MVP3_BACKFILL_FINDING_RULE_CODE,
+    OWNERSHIP_CHANGE_NEEDS_RECOMPUTE_CUSIP_CORPORATE_ACTION as _MVP3_RECOMPUTE_FINDING_RULE_CODE,
+)
 
 
 def _open_finding_count(session: Session, quarter: str, rule_code: str) -> int:

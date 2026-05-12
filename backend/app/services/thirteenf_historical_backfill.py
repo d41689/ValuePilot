@@ -46,10 +46,14 @@ from app.models.institutions import (
     QualityFinding13F,
     QualityReport13F,
 )
+from app.services.thirteenf_quality_codes import HISTORICAL_BACKFILL_NEEDS_VALIDATION
 
 logger = logging.getLogger(__name__)
 
-HISTORICAL_BACKFILL_RULE_CODE = "HISTORICAL_BACKFILL_NEEDS_VALIDATION"
+# Module-local readability alias for the canonical constant in
+# ``thirteenf_quality_codes`` (MVP4-09); the canonical name is the source
+# of truth and is exported there.
+HISTORICAL_BACKFILL_RULE_CODE = HISTORICAL_BACKFILL_NEEDS_VALIDATION
 JOB_TYPE = "historical_backfill"
 _ACTIVE_JOB_STATUSES = ("queued", "running", "cancel_requested")
 # Conservative report-quarter proxy for PRD §7.2's canonical value-unit
