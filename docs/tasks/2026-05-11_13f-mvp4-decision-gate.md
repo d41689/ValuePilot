@@ -229,6 +229,15 @@ The §7.13 service in MVP4-05 must consume `thirteenf_readiness.warnings`
 and per-holding `QualityFinding13F` rows, and use the same canonical
 code names in the score payload as the readiness API.
 
+**SME re-confirm note for MVP4-05 task file (2026-05-11, non-blocking):**
+MVP4-05's caution-flags surface includes **both** readiness pass-through
+codes (the 8 above) **and** score-service-emitted row-level codes
+(`NT_QUARTER_STREAK_BREAK` from rule (d), `stale_until_recompute` from
+rule (b), and any future score-derived row codes). When the MVP4-05
+task file is authored, it must call out both channels explicitly —
+pass-throughs flow on the readiness channel, score-emitted codes flow
+on the per-holder explanation channel.
+
 Open question: any V1 metrics the product owner wants to defer to V2
 to reduce surface area? Conversely, anything the plan listed that the
 owner wants pulled into V1?
@@ -327,6 +336,16 @@ canonical vocabulary and decides admin-set vs behavior-derived
 precedence. **This is filed as `MVP4-11 manager_type taxonomy
 reconciliation` in the revised task sequence below and must complete
 before MVP4-03 starts.**
+
+**SME re-confirm note for MVP4-11 task file (2026-05-11,
+non-blocking):** when MVP4-11's task file is opened, include
+"admin UI exposes which managers' `manager_type=unknown` status
+materially affects `score_confidence` on the latest usable quarter"
+as an explicit sub-deliverable. The user-facing surface already
+exists (`oracles_lens/dashboard.py` emits `unknown_manager_type_count`
+and `unknown_manager_type_heavy`), so this is an admin-side
+prioritization aid: it lets admins decide which managers to
+type-classify rather than guessing.
 
 The MVP3 end-to-end review left the following carryovers. Proposal
 classification:
@@ -479,9 +498,11 @@ the second pair is required by the gate's prior decisions.
 - [x] D6 carryover triage approved with TL revision — IntegrityError
       moved to MVP4-01 design note; sequencing constraints on
       MVP4-09 / MVP4-10 — **Tech Lead** primary.
+- [x] SME re-confirm on D3 caveat propagation, D2 caveat code, and
+      D5 manager_type taxonomy sub-task framing. **HOLD CLOSED**
+      2026-05-11. Two non-blocking notes captured inline for the
+      future MVP4-05 and MVP4-11 task files.
 - [ ] Human owner approves MVP 4 scope freeze and exclusions.
-- [ ] SME re-confirm on D3 caveat propagation, D2 caveat code, and
-      D5 manager_type taxonomy sub-task framing.
 - [ ] MVP4-01 task file lands with the four pre-start conditions
       resolved (storage shape, JobRun integration, scoring
       source-of-truth, insert conflict strategy).
@@ -553,6 +574,35 @@ the second pair is required by the gate's prior decisions.
   - SME re-confirm is pending on the applied D2 / D3 / D5
     remediations; the approval checklist tracks two unchecked SME
     items. PO and TL approvals are recorded as checked.
+- 2026-05-11: **SME re-confirm verdict: HOLD CLOSED — MVP4 gate
+  financially-correct.** All four remediations confirmed:
+  - D2 `PRE_2023_PRE_HISTORY_UNAVAILABLE` caveat code: confirmed,
+    including the MVP4-03 / MVP4-04 consumer scope and the optional
+    readiness roll-up.
+  - D3 caveat propagation rules (a–e): all five confirmed, including
+    the strict-drop interpretation for rule (a) (PRD §7.2 line
+    588–592 makes the fallback structurally unevaluable), and the
+    fifth rule (e) on `HISTORICAL_BACKFILL_NEEDS_VALIDATION`
+    confirmed as a correct extrapolation from rule (b)'s pattern
+    with `score_confidence` demoted to `low` (data may be wrong tier,
+    not the snapshot-incomplete tier).
+  - D3 caution-flags vocabulary: confirmed against the readiness
+    service's actual exports. One non-blocking note captured inline:
+    MVP4-05 task file must call out that the caution-flags surface
+    includes both readiness pass-through codes and score-service-
+    emitted row-level codes (`NT_QUARTER_STREAK_BREAK`,
+    `stale_until_recompute`).
+  - D5 `MVP4-11 manager_type taxonomy reconciliation`: confirmed,
+    including the three-surface mismatch table. One non-blocking
+    note captured inline: MVP4-11's task file should include
+    "admin UI exposes which managers' `manager_type=unknown`
+    materially affects `score_confidence` on the latest usable
+    quarter" as a sub-deliverable so admins can prioritize
+    type-classification work.
+  - MVP4 is now unblocked from the 13F-domain-correctness
+    standpoint. The only remaining checklist items are
+    human-owner scope freeze and MVP4-01 pre-start condition
+    resolution.
 
 ## Verification Results
 
