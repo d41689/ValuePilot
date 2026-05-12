@@ -2,8 +2,15 @@
 
 ## Status
 
-**Authorized to start.** First of two Pre-MVP6 Stabilization
-Gate tickets. Must complete before MVP6 feature work can open.
+**Accepted (PO sign-off 2026-05-12 after acceptance run).** Dev /
+admin validation blocker resolved. The seeder is for dev / admin
+verification only and **must not** be wired into pytest fixtures —
+running pytest against a seeded DB fails 177 / 781 tests because
+the suites read directly from the dev DB. Use the `--reset-only`
+flag before pytest, then re-seed afterwards if needed.
+
+First of two Pre-MVP6 Stabilization Gate tickets. Pre-MVP6-02
+(IA split plan) is the second.
 
 PO decision recorded 2026-05-12: "先让 dev 环境有真实可验证数据,
 再把 admin 从巨型单页变成可运营控制台。然后再谈 MVP6 新功能。"
