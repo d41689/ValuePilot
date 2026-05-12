@@ -235,6 +235,11 @@ class _HolderContribution:
     position_signal_weight: PositionSignalWeightResult
     contribution: Decimal
     caveats: list[str]
+    # Raw primitive inputs preserved so downstream consumers
+    # (MVP4-04 conviction, MVP4-05 caution flags) don't have to
+    # re-derive them from the position_signal_weight bonuses.
+    holding_streak_quarters: int = 0
+    add_intensity: Optional[Decimal] = None
 
 
 def compute_signal_weighted_scores(
@@ -284,6 +289,15 @@ def compute_signal_weighted_scores(
             contributions, aggregate_caveats, score_confidence,
         )
 
+        # MVP4-04: conviction (plan §7.9) is a passenger on the same
+        # compute pass; same row, same upsert, additional component
+        # rows. ``ConvictionComponents`` is a pure-function output;
+        # no extra DB queries.
+        from app.services.oracles_lens.conviction_score import (
+            compute_conviction_components,
+        )
+        conviction = compute_conviction_components(contributions)
+
         quarter_end = _quarter_end_date(quarter)
         signal_id = _upsert_signal(
             session,
@@ -298,9 +312,13 @@ def compute_signal_weighted_scores(
             score_explanation=score_explanation,
             computed_at=now,
             source_job_id=source_job_id,
+            conviction_score=Decimal(conviction.total),
         )
         components_written += _replace_components(
-            session, signal_id=signal_id, contributions=contributions,
+            session,
+            signal_id=signal_id,
+            contributions=contributions,
+            conviction=conviction,
         )
         filings_scored += 1
 
@@ -470,6 +488,8 @@ def _contributions_for_stock(
                 position_signal_weight=position_signal_weight,
                 contribution=contribution,
                 caveats=per_holder_caveats,
+                holding_streak_quarters=streak_result.streak_quarters,
+                add_intensity=add_intensity_result.value,
             )
         )
 
@@ -566,6 +586,7 @@ def _upsert_signal(
     score_explanation: dict[str, Any],
     computed_at: datetime,
     source_job_id: Optional[int],
+    conviction_score: Optional[Decimal] = None,
 ) -> int:
     """ORM upsert via ``INSERT ... ON CONFLICT DO UPDATE`` per MVP4-01 D4."""
     stmt = pg_insert(OraclesLensSignal).values(
@@ -575,6 +596,7 @@ def _upsert_signal(
         score_version=score_version,
         raw_consensus_count=raw_consensus_count,
         signal_weighted_consensus_score=score_value,
+        conviction_score=conviction_score,
         score_confidence=score_confidence,
         caution_flag_codes=caution_flag_codes,
         score_explanation=score_explanation,
@@ -584,6 +606,7 @@ def _upsert_signal(
     update_set = {
         "raw_consensus_count": stmt.excluded.raw_consensus_count,
         "signal_weighted_consensus_score": stmt.excluded.signal_weighted_consensus_score,
+        "conviction_score": stmt.excluded.conviction_score,
         "score_confidence": stmt.excluded.score_confidence,
         "caution_flag_codes": stmt.excluded.caution_flag_codes,
         "score_explanation": stmt.excluded.score_explanation,
@@ -606,9 +629,13 @@ def _replace_components(
     *,
     signal_id: int,
     contributions: list[_HolderContribution],
+    conviction=None,
 ) -> int:
     """Replace component rows for a score: delete existing then bulk
-    insert. Component breakdown is per-holder, per-component."""
+    insert. Component breakdown is per-holder for the
+    signal-weighted inputs; conviction (MVP4-04) writes one row per
+    component-name with the stock-level aggregate.
+    """
     session.query(OraclesLensScoreComponent).filter(
         OraclesLensScoreComponent.score_id == signal_id
     ).delete(synchronize_session=False)
@@ -647,6 +674,33 @@ def _replace_components(
             ),
         ])
         written += 2
+
+    # MVP4-04: conviction component breakdown is stock-level (not
+    # per-holder), so manager_id=None on each row. The capped
+    # 0-100 conviction_total is also written for easy drilldown
+    # read and matches the parent OraclesLensSignal.conviction_score
+    # value.
+    if conviction is not None:
+        conviction_rows = [
+            ("conviction_position_importance", conviction.position_importance),
+            ("conviction_holding_persistence", conviction.holding_persistence),
+            ("conviction_manager_quality", conviction.manager_quality),
+            ("conviction_recent_action", conviction.recent_action),
+            ("conviction_agreement", conviction.agreement),
+            ("conviction_total", conviction.total),
+        ]
+        for component_name, value in conviction_rows:
+            session.add(
+                OraclesLensScoreComponent(
+                    score_id=signal_id,
+                    component_name=component_name,
+                    manager_id=None,
+                    numeric_value=Decimal(value),
+                    string_value=None,
+                    evidence_json={"holder_count": len(contributions)},
+                )
+            )
+            written += 1
     session.flush()
     return written
 
