@@ -621,6 +621,11 @@ engineer; recorded here so the source of truth lives on the gate.
       `docs/tasks/2026-05-11_13f-mvp4-01-score-schema-orm.md`.
 - [x] MVP4-01 Score schema explicitly approved to start.
       Delegated 2026-05-11.
+- [x] MVP4-12 end-to-end verification complete.
+      `docs/tasks/2026-05-12_13f-mvp4-end-to-end-verification.md`
+      records 754 passed / 0 warnings, all eleven MVP4 sub-tasks
+      shipped, D1–D6 individually verified against shipped code,
+      scope-freeze tally zero. 2026-05-12.
 
 ## Progress Notes
 
