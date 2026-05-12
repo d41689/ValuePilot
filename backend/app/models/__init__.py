@@ -11,3 +11,4 @@ from app.models import artifacts  # noqa: F401
 from app.models import extractions  # noqa: F401
 from app.models import facts  # noqa: F401
 from app.models import institutions  # noqa: F401
+from app.models import oracles_lens  # noqa: F401

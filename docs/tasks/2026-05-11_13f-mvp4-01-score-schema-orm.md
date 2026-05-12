@@ -191,7 +191,50 @@ Acceptance criteria:
   freeze + pre-start condition resolution + start authorization to
   the implementation engineer. All four pre-start decisions are
   recorded both here and on the decision gate.
+- 2026-05-11: Wrote TDD coverage first under
+  `tests/unit/test_13f_mvp4_score_schema.py` (13 tests):
+  - unique constraint on `(stock_id, report_quarter, score_version)`
+    enforced;
+  - different `score_version` rows coexist for the same stock × quarter
+    (validates the lock_key scoping decision from pre-start
+    condition #2);
+  - `score_confidence` accepts the 4-value vocabulary
+    (`high_confidence` / `medium_confidence` / `low_confidence` /
+    `unavailable`) and rejects other values;
+  - `caution_flag_codes` JSONB round-trip (8 canonical codes);
+  - `oracles_lens_score_components.score_id ON DELETE CASCADE`
+    deletes components when parent score is removed;
+  - `source_job_id` accepts NULL and accepts a real `job_runs.id`;
+  - `SCORE_VERSION` importable from
+    `app.services.oracles_lens.constants`;
+  - `oracles_lens_score_backfill` is registered in
+    `JOB_TIMEOUT_SECONDS_BY_TYPE` with a timeout ≥ 30 min.
+- 2026-05-11: Implemented `app/models/oracles_lens.py` with both
+  ORM models, reusing the existing `OWNERSHIP_SIGNAL_CONFIDENCE_LEVELS`
+  vocabulary for `score_confidence` (consistent with MVP2
+  ownership_changes) rather than inventing a parallel
+  `high`/`medium`/`low`/`unavailable` set. Registered the module in
+  `app/models/__init__.py` so the relationship registry is loaded
+  on startup.
+- 2026-05-11: Added `app/services/oracles_lens/constants.py` with
+  `SCORE_VERSION = "v1.0"`. Plan §7.2 manager/position weight
+  tables intentionally **not** loaded here — those constants depend
+  on the manager_type taxonomy reconciled in MVP4-11, and adding
+  them now would freeze a vocabulary the reconciliation task is
+  supposed to pick.
+- 2026-05-11: Added `oracles_lens_score_backfill` to
+  `thirteenf_job_worker.JOB_TIMEOUT_SECONDS_BY_TYPE` with a 60-minute
+  timeout (matches the `ingest_holdings_for_quarter` precedent for a
+  backfill that touches every active manager-quarter).
+- 2026-05-11: Alembic revision
+  `20260511140000-mvp4_01_oracles_lens_score_schema.py`. Two
+  `create_table`s with the FK / unique-constraint / index set listed
+  in the acceptance criteria above. Downgrade drops the two new
+  tables in dependency order.
 
 ## Verification Results
 
-- Pending Docker run.
+- `docker compose exec api alembic upgrade head` — passed.
+- `docker compose exec api alembic downgrade -1 && alembic upgrade head` — passed (round-trip clean).
+- `docker compose exec api pytest -q tests/unit/test_13f_mvp4_score_schema.py` — 13 passed.
+- `docker compose exec api pytest -q` — 653 passed (was 640 pre-MVP4-01; +13), 4 SQLAlchemy rollback warnings (three pre-existing from MVP1B / MVP3-05 / MVP3-07, plus one new in `test_unique_constraint_on_stock_quarter_version` — same benign `rollback()`-inside-test pattern; covered by the MVP4-10 conftest savepoint hardening backlog ticket).

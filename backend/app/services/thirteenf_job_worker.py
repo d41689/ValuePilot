@@ -28,6 +28,11 @@ JOB_TIMEOUT_SECONDS_BY_TYPE = {
     "backfill_daily_indexes": 4 * 60 * 60,
     "sync_manager_backfill": 60 * 60,
     "enrich_cusip": 30 * 60,
+    # MVP4-01: scoring backfill spans every active manager-quarter; mirrors
+    # the ingest_holdings_for_quarter precedent. Recompute is by-design
+    # idempotent (ORM upsert) so timeouts here are about wall-clock cost,
+    # not retry safety.
+    "oracles_lens_score_backfill": 60 * 60,
 }
 
 
