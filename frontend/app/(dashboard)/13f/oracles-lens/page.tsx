@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useMemo, useState, type ComponentProps } from 'react';
+import { useEffect, useMemo, useRef, useState, type ComponentProps } from 'react';
 import Link from 'next/link';
 import { useQuery } from '@tanstack/react-query';
 import {
@@ -141,6 +141,12 @@ export default function OraclesLensPage() {
   // boundary around the whole page just for a debug-only feature.
   // Initial render sees the default (true); a client-side effect
   // pulls the URL value once on mount.
+  //
+  // MVP5-04 retirement note: when MVP5-03 Phase 4 retires
+  // ``?persisted=0`` (after one full scoring cycle confirms no
+  // ranking divergence under the new server default), delete the
+  // ``useState`` + ``useEffect`` block below and inline
+  // ``usePersistedScores: true`` in ``buildOracleLensQueryParams``.
   const [usePersistedScores, setUsePersistedScores] = useState(true);
   useEffect(() => {
     if (typeof window !== 'undefined') {
@@ -149,6 +155,36 @@ export default function OraclesLensPage() {
     }
   }, []);
   const [selectedStockId, setSelectedStockId] = useState<number | null>(null);
+  // MVP5-04: ARIA dialog focus management on the slide-out drilldown.
+  // ``closeButtonRef`` is the element to focus when the panel opens;
+  // ``previousFocusRef`` remembers the trigger so we can restore focus
+  // when the panel closes (avoids leaving keyboard users stranded at
+  // the document body).
+  const closeButtonRef = useRef<HTMLButtonElement>(null);
+  const previousFocusRef = useRef<HTMLElement | null>(null);
+  const openDrilldown = (stockId: number) => {
+    if (typeof document !== 'undefined') {
+      previousFocusRef.current = document.activeElement as HTMLElement | null;
+    }
+    setSelectedStockId(stockId);
+  };
+  const closeDrilldown = () => {
+    setSelectedStockId(null);
+  };
+  useEffect(() => {
+    if (selectedStockId !== null) {
+      // Wait one microtask so the panel is in the DOM before we focus.
+      const handle = window.setTimeout(() => {
+        closeButtonRef.current?.focus();
+      }, 0);
+      return () => window.clearTimeout(handle);
+    }
+    // Panel just closed — restore focus to the triggering element.
+    if (previousFocusRef.current && typeof previousFocusRef.current.focus === 'function') {
+      previousFocusRef.current.focus();
+      previousFocusRef.current = null;
+    }
+  }, [selectedStockId]);
   const [filters, setFilters] = useState({
     period: '',
     minHolders: '3',
@@ -567,7 +603,7 @@ export default function OraclesLensPage() {
                       RADAR_TONE_CLASSES[bubble.toneClass] ?? RADAR_TONE_CLASSES['border-slate-300 bg-slate-50 text-slate-950']
                     } flex-col rounded-full border text-center shadow-none hover:bg-muted/60`}
                     title={`${bubble.ticker}: ${bubble.holderActionLabel}`}
-                    onClick={() => setSelectedStockId(bubble.stockId)}
+                    onClick={() => openDrilldown(bubble.stockId)}
                   >
                     <span className="text-xs font-semibold">{bubble.ticker}</span>
                     <span className="text-[10px] text-current/70">{bubble.aggregateWeightLabel}</span>
@@ -634,7 +670,7 @@ export default function OraclesLensPage() {
                         variant="outline"
                         size="sm"
                         className="mt-3"
-                        onClick={() => setSelectedStockId(row.stockId)}
+                        onClick={() => openDrilldown(row.stockId)}
                       >
                         <PanelRightOpen className="h-3.5 w-3.5" />
                         Review
@@ -758,18 +794,29 @@ export default function OraclesLensPage() {
           <div
             aria-hidden="true"
             className="absolute inset-0 cursor-default"
-            onClick={() => setSelectedStockId(null)}
+            onClick={closeDrilldown}
           />
-          <Card className="relative h-full w-full max-w-[460px] overflow-hidden rounded-none border-y-0 border-r-0 shadow-xl">
+          {/* MVP5-04: ARIA dialog semantics on the slide-out so
+              screenreaders announce it as a modal and let users tab
+              within the panel. Focus moves to the close button on
+              open and restores to the trigger on close (see
+              useEffect on selectedStockId). */}
+          <Card
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="oracles-lens-drilldown-title"
+            className="relative h-full w-full max-w-[460px] overflow-hidden rounded-none border-y-0 border-r-0 shadow-xl"
+          >
             <CardHeader className="border-b border-border/70 pb-3">
               <CardTitle className="flex items-center justify-between gap-2 text-base">
-                <span>Candidate Review</span>
+                <span id="oracles-lens-drilldown-title">Candidate Review</span>
                 <Button
+                  ref={closeButtonRef}
                   type="button"
                   variant="ghost"
                   size="icon"
                   aria-label="Close candidate review"
-                  onClick={() => setSelectedStockId(null)}
+                  onClick={closeDrilldown}
                 >
                   <X className="h-4 w-4" />
                 </Button>
@@ -889,14 +936,54 @@ export default function OraclesLensPage() {
                   </div>
                   {/* MVP4-07a: surfaces the structured payload MVP4-03
                       writes into score_explanation.confidence_demotion_reasons
-                      (PO MVP4-01 P2 #4 contract). The user can see
-                      "score_confidence is medium because PARTIAL_COVERAGE"
-                      without consulting the registry. */}
+                      (PO MVP4-01 P2 #4 contract). MVP5-04: renders the
+                      friendly investor-facing label by default; the raw
+                      rule_code stays one click away inside <details> so
+                      operators can still debug without leaking
+                      UPPER_SNAKE jargon into the investor surface. */}
                   <ul className="mt-2 space-y-1 text-xs text-muted-foreground">
                     {selectedRow.confidenceDemotionReasons.map((reason) => (
                       <li key={reason.code}>
-                        <span className="font-mono">{reason.code}</span>
-                        {reason.demotedTo ? ` → ${reason.demotedTo}` : null}
+                        <span>{reason.label}</span>
+                        {reason.demotedToLabel
+                          ? ` → score confidence: ${reason.demotedToLabel}`
+                          : null}
+                        <details className="ml-1 inline">
+                          <summary className="cursor-pointer text-[10px] text-muted-foreground/70">
+                            code
+                          </summary>
+                          <code className="ml-1 font-mono text-[10px]">
+                            {reason.code}
+                          </code>
+                        </details>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              ) : null}
+
+              {selectedRow.excludedHolders.length ? (
+                <div>
+                  <div className="text-xs font-semibold uppercase text-muted-foreground">
+                    Holders excluded from score
+                  </div>
+                  {/* MVP5-04 + MVP5-02: amendment-blocked holders are
+                      dropped from the score aggregate; their existence
+                      stays visible here so the user can tell why a
+                      stock has fewer effective holders than it appears
+                      to have in the raw 13F list. */}
+                  <ul className="mt-2 space-y-1 text-xs text-muted-foreground">
+                    {selectedRow.excludedHolders.map((holder) => (
+                      <li
+                        key={holder.managerId}
+                        className="flex items-center justify-between gap-2"
+                      >
+                        <span className="font-medium text-foreground/80">
+                          {holder.managerCanonicalName || `Manager #${holder.managerId}`}
+                        </span>
+                        <Badge variant="outline" className="text-[10px]">
+                          {holder.exclusionReasonLabel}
+                        </Badge>
                       </li>
                     ))}
                   </ul>

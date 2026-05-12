@@ -450,13 +450,18 @@ test('normalizeOracleLensRows surfaces MVP4-03b score_source and MVP4-05 confide
   assert.equal(row.scoreSource, 'persisted');
   assert.equal(row.confidenceDemotionReasons.length, 2,
     'malformed entries must be dropped, valid ones preserved');
+  // MVP5-04 extended each entry with friendly label + humanized tier.
   assert.deepEqual(row.confidenceDemotionReasons[0], {
     code: 'PARTIAL_COVERAGE',
+    label: 'Partial filing coverage',
     demotedTo: 'medium_confidence',
+    demotedToLabel: 'medium confidence',
   });
   assert.deepEqual(row.confidenceDemotionReasons[1], {
     code: 'AMENDMENTS_PENDING',
+    label: 'Amendment not yet ingested',
     demotedTo: 'medium_confidence',
+    demotedToLabel: 'medium confidence',
   });
   // In-memory baseline still recognized — score_source is null when
   // the backend doesn't supply it.
@@ -472,4 +477,87 @@ test('normalizeOracleLensRows surfaces MVP4-03b score_source and MVP4-05 confide
   ]);
   assert.equal(legacyRows[0].scoreSource, null);
   assert.deepEqual(legacyRows[0].confidenceDemotionReasons, []);
+  assert.deepEqual(legacyRows[0].excludedHolders, []);
+});
+
+
+test('MVP5-04 labelForDemotionReason maps known codes and falls back to raw', () => {
+  // Re-require to access the exported helpers without re-binding
+  // the names at the top of the file.
+  const oracle = require('./oraclesLens.js');
+  // Happy path: every canonical caveat code in the union of LOW +
+  // MEDIUM + CONFIDENTIAL must resolve to a non-empty human string,
+  // and the string must not equal the raw code (i.e. mapping is
+  // really happening, not silent fall-through).
+  const canonicalCodes = [
+    'PARTIAL_COVERAGE',
+    'NT_QUARTER_STREAK_BREAK',
+    'PRE_2023_PRE_HISTORY_UNAVAILABLE',
+    'AMENDMENTS_PENDING',
+    'AMENDMENT_FAILED',
+    'HISTORICAL_BACKFILL_NEEDS_VALIDATION',
+    'CONFIDENTIAL_TREATMENT',
+    'stale_until_recompute',
+  ];
+  for (const code of canonicalCodes) {
+    const label = oracle.labelForDemotionReason(code);
+    assert.equal(typeof label, 'string');
+    assert.notEqual(label, code, `${code} should have a friendly label`);
+    assert.ok(label.length > 0);
+  }
+  // Fallback: an unknown rule_code returns the raw string so the
+  // operator-facing <details> still has something to show.
+  assert.equal(
+    oracle.labelForDemotionReason('SOMETHING_BRAND_NEW'),
+    'SOMETHING_BRAND_NEW',
+  );
+});
+
+
+test('MVP5-04 normalizeOracleLensRows surfaces excludedHolders with friendly labels', () => {
+  const rows = normalizeOracleLensRows([
+    {
+      stock_id: 99,
+      ticker: 'EXCL',
+      company_name: 'Exclusion Co',
+      signal_weighted_consensus_score: 1.5,
+      score_confidence: 'medium_confidence',
+      consensus_count: 3,
+      score_source: 'persisted',
+      score_explanation: {
+        primary_reasons: [],
+        confidence_demotion_reasons: [],
+        excluded_holder_count: 2,
+        excluded_holders: [
+          {
+            manager_id: 11,
+            manager_canonical_name: 'Pending Capital LLC',
+            exclusion_reason: 'AMENDMENT_PENDING_EXCLUDED',
+          },
+          {
+            manager_id: 12,
+            manager_canonical_name: 'Failed Capital LP',
+            exclusion_reason: 'AMENDMENT_FAILED_EXCLUDED',
+          },
+          { malformed: true }, // must be dropped — missing required fields
+        ],
+      },
+    },
+  ]);
+
+  assert.equal(rows.length, 1);
+  const row = rows[0];
+  assert.equal(row.excludedHolders.length, 2, 'malformed entries dropped');
+  assert.deepEqual(row.excludedHolders[0], {
+    managerId: 11,
+    managerCanonicalName: 'Pending Capital LLC',
+    exclusionReason: 'AMENDMENT_PENDING_EXCLUDED',
+    exclusionReasonLabel: 'Amendment not yet ingested',
+  });
+  assert.deepEqual(row.excludedHolders[1], {
+    managerId: 12,
+    managerCanonicalName: 'Failed Capital LP',
+    exclusionReason: 'AMENDMENT_FAILED_EXCLUDED',
+    exclusionReasonLabel: 'Amendment ingestion failed',
+  });
 });

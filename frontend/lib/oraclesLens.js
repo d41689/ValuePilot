@@ -305,6 +305,47 @@ function radarBubbles(rows, limit = 12) {
   });
 }
 
+// MVP5-04: friendly labels for caveat / exclusion rule_codes so the
+// drilldown surfaces human-readable strings instead of UPPER_SNAKE
+// rule_code identifiers. The raw code stays accessible via a
+// <details> element for operator debugging — the goal is investor
+// comprehension, not hiding the codes outright. Unmapped codes fall
+// back to the raw string so an unknown caveat doesn't blank-render.
+const DEMOTION_REASON_LABELS = {
+  PARTIAL_COVERAGE: 'Partial filing coverage',
+  NT_QUARTER_STREAK_BREAK: 'NT filing broke holding streak',
+  PRE_2023_PRE_HISTORY_UNAVAILABLE: 'Pre-2023 history not available',
+  AMENDMENTS_PENDING: 'Amendment not yet ingested',
+  AMENDMENT_FAILED: 'Amendment ingestion failed',
+  HISTORICAL_BACKFILL_NEEDS_VALIDATION: 'Historical data needs validation',
+  CONFIDENTIAL_TREATMENT: 'Confidential treatment requested',
+  stale_until_recompute: 'Score is stale — recompute needed',
+};
+
+// MVP5-04: friendly labels for the MVP5-02 amendment-exclusion
+// reason codes so the drilldown can render
+// "Holders excluded: amendment not yet ingested" instead of
+// "AMENDMENT_PENDING_EXCLUDED".
+const EXCLUSION_REASON_LABELS = {
+  AMENDMENT_PENDING_EXCLUDED: 'Amendment not yet ingested',
+  AMENDMENT_FAILED_EXCLUDED: 'Amendment ingestion failed',
+};
+
+function labelForDemotionReason(code) {
+  return DEMOTION_REASON_LABELS[code] ?? code;
+}
+
+function labelForExclusionReason(code) {
+  return EXCLUSION_REASON_LABELS[code] ?? code;
+}
+
+function humanizeTier(tier) {
+  if (typeof tier !== 'string' || !tier) {
+    return null;
+  }
+  return tier.replaceAll('_', ' ');
+}
+
 function normalizeOracleLensRows(items) {
   if (!Array.isArray(items)) {
     return [];
@@ -330,7 +371,39 @@ function normalizeOracleLensRows(items) {
       .filter((entry) => entry && typeof entry === 'object' && typeof entry.code === 'string')
       .map((entry) => ({
         code: entry.code,
+        // MVP5-04: friendly investor-facing label resolved via the
+        // canonical map. Unmapped codes fall back to the raw code.
+        label: labelForDemotionReason(entry.code),
         demotedTo: typeof entry.demoted_to === 'string' ? entry.demoted_to : null,
+        // MVP5-04: humanized "medium_confidence" → "medium confidence"
+        // so the drilldown copy doesn't leak SQL-shaped vocabulary.
+        demotedToLabel: humanizeTier(
+          typeof entry.demoted_to === 'string' ? entry.demoted_to : null,
+        ),
+      }));
+    // MVP5-04: surface MVP5-02 ``excluded_holders`` so the drilldown
+    // can render "Holders excluded from score" with friendly reason
+    // tags. Defensive normalize: drop entries missing the required
+    // string fields.
+    const rawExcludedHolders = Array.isArray(explanation.excluded_holders)
+      ? explanation.excluded_holders
+      : [];
+    const excludedHolders = rawExcludedHolders
+      .filter(
+        (entry) =>
+          entry
+          && typeof entry === 'object'
+          && typeof entry.manager_id === 'number'
+          && typeof entry.exclusion_reason === 'string',
+      )
+      .map((entry) => ({
+        managerId: entry.manager_id,
+        managerCanonicalName:
+          typeof entry.manager_canonical_name === 'string'
+            ? entry.manager_canonical_name
+            : '',
+        exclusionReason: entry.exclusion_reason,
+        exclusionReasonLabel: labelForExclusionReason(entry.exclusion_reason),
       }));
     return {
       stockId: item.stock_id,
@@ -364,6 +437,7 @@ function normalizeOracleLensRows(items) {
       cautionGroups: groupCautionFlags(item.caution_flags),
       scoreSource: typeof item.score_source === 'string' ? item.score_source : null,
       confidenceDemotionReasons,
+      excludedHolders,
     };
   });
 }
@@ -443,10 +517,15 @@ module.exports = {
   buildOracleLensQueryParams,
   cautionTone,
   confidenceTone,
+  DEMOTION_REASON_LABELS,
+  EXCLUSION_REASON_LABELS,
   formatNumber,
   formatPercent,
   formatScore,
   groupCautionFlags,
+  humanizeTier,
+  labelForDemotionReason,
+  labelForExclusionReason,
   missingDataReasons,
   normalizeOracleLensRows,
   normalizeQualityOverlay,

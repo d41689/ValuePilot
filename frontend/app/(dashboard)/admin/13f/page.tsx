@@ -2085,12 +2085,21 @@ export default function Admin13FPage() {
           {unknownManagerPriorityQuery.isPending ? (
             <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />
           ) : !unknownManagerPriorityQuery.data?.quarter ? (
+            // MVP5-04: directional hint so the admin knows the
+            // *next action* on a fresh instance is the Historical
+            // Backfill section above, not a vague "run a backfill."
             <div className="text-sm text-muted-foreground">
-              No persisted Oracle&apos;s Lens scores yet — run a backfill to populate this list.
+              No Oracle&apos;s Lens scores computed yet. Use the Historical Backfill
+              section above to score a quarter, then return here to prioritize
+              manager classification.
             </div>
           ) : !unknownManagerPriorityQuery.data.items?.length ? (
+            // MVP5-04: reframed as a positive all-clear (with the
+            // quarter label) so the admin doesn't read it as a bug.
             <div className="text-sm text-muted-foreground">
-              No unknown-typed managers contribute to the latest scored quarter.
+              All contributing managers are typed for {String(unknownManagerPriorityQuery.data.quarter)}. Signal
+              weights are fully resolved — no classification debt for this
+              quarter.
             </div>
           ) : (
             <>
@@ -2101,6 +2110,11 @@ export default function Admin13FPage() {
                 contribute to. Classifying the top rows lifts the most
                 <code className="font-mono"> score_confidence</code>.
               </p>
+              {/* MVP5-04: overflow-x-auto wrapper so the
+                  worst_score_confidence column doesn't clip on narrow
+                  viewports (matches the main Oracle's Lens table
+                  treatment). */}
+              <div className="overflow-x-auto">
               <Table>
                 <TableHeader>
                   <TableRow>
@@ -2143,6 +2157,7 @@ export default function Admin13FPage() {
                   ))}
                 </TableBody>
               </Table>
+              </div>
             </>
           )}
         </CardContent>
