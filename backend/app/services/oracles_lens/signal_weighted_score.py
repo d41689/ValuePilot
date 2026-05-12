@@ -252,6 +252,26 @@ class _HolderContribution:
     add_intensity: Optional[Decimal] = None
 
 
+@dataclass(frozen=True)
+class _ExcludedHolder:
+    """MVP5-02: a holder dropped from the score-side aggregate because
+    their filing's ``amendment_status`` flags a pending or failed
+    amendment. Their caveats still feed ``aggregate_caveats`` so the
+    page-level caution panel sees the AMENDMENTS_PENDING /
+    AMENDMENT_FAILED code, but their (manager_weight ×
+    position_signal_weight) does NOT contribute to the score."""
+    manager_id: int
+    manager_canonical_name: str
+    exclusion_reason: str
+    caveats: list[str]
+
+
+# MVP5-02 stable exclusion-reason constants. Frontend and admin
+# consumers can switch on these.
+EXCLUSION_REASON_AMENDMENT_PENDING = "AMENDMENT_PENDING_EXCLUDED"
+EXCLUSION_REASON_AMENDMENT_FAILED = "AMENDMENT_FAILED_EXCLUDED"
+
+
 def compute_signal_weighted_scores(
     session: Session,
     *,
@@ -287,7 +307,7 @@ def compute_signal_weighted_scores(
     now = datetime.now(timezone.utc)
 
     for stock_id in eligible_stock_ids:
-        contributions = _contributions_for_stock(
+        contributions, excluded = _contributions_for_stock(
             session,
             quarter=quarter,
             stock_id=stock_id,
@@ -295,15 +315,22 @@ def compute_signal_weighted_scores(
             derived_profile_cache=derived_profile_cache,
         )
         if len(contributions) < min_holders:
-            # Could happen if some holders were filtered out (e.g. no
-            # portfolio_weight available); honor the eligibility floor.
+            # MVP5-02: the floor counts INCLUDED contributions only.
+            # If amendment-blocked exclusion drops the included list
+            # below the floor, the stock is dropped entirely — a
+            # score over 1-2 holders is statistically meaningless.
             continue
 
         total = sum((c.contribution for c in contributions), Decimal("0"))
-        aggregate_caveats = _aggregate_caveats(contributions)
+        # MVP5-02: aggregate_caveats unions caveats from BOTH included
+        # contributions and excluded holders, so page-level codes like
+        # AMENDMENTS_PENDING still surface in caution_flag_codes even
+        # though the excluded holder's contribution was dropped.
+        aggregate_caveats = _aggregate_caveats(contributions, excluded)
         score_confidence = determine_score_confidence(aggregate_caveats)
         score_explanation = _build_score_explanation(
             contributions, aggregate_caveats, score_confidence,
+            excluded=excluded,
         )
 
         # MVP4-04: conviction (plan §7.9) is a passenger on the same
@@ -561,7 +588,7 @@ def _contributions_for_stock(
     stock_id: int,
     top_n_by_manager: dict[int, set[int]],
     derived_profile_cache: _DerivedProfileCache,
-) -> list[_HolderContribution]:
+) -> tuple[list[_HolderContribution], list[_ExcludedHolder]]:
     """For one (stock, quarter), iterate active linked direct holders
     and produce a contribution per holder."""
     holdings = (
@@ -580,6 +607,7 @@ def _contributions_for_stock(
     )
 
     contributions: list[_HolderContribution] = []
+    excluded: list[_ExcludedHolder] = []
     for holding, manager, filing in holdings:
         # Per-holder caveats from MVP4-02 primitives + filing flags.
         per_holder_caveats: list[str] = []
@@ -619,6 +647,32 @@ def _contributions_for_stock(
             per_holder_caveats.append(_AMENDMENTS_PENDING)
         elif filing.amendment_status == "amendment_failed":
             per_holder_caveats.append(_AMENDMENT_FAILED)
+
+        # MVP5-02: amendment-pending / amendment-failed holders are
+        # excluded from the score-side aggregate. Their caveats still
+        # flow into ``per_holder_caveats`` → ``aggregate_caveats`` via
+        # the ``_ExcludedHolder`` record so the page-level caution
+        # panel keeps the AMENDMENTS_PENDING / AMENDMENT_FAILED signal.
+        if filing.amendment_status == "amendments_pending":
+            excluded.append(
+                _ExcludedHolder(
+                    manager_id=manager.id,
+                    manager_canonical_name=manager.canonical_name,
+                    exclusion_reason=EXCLUSION_REASON_AMENDMENT_PENDING,
+                    caveats=per_holder_caveats,
+                )
+            )
+            continue
+        if filing.amendment_status == "amendment_failed":
+            excluded.append(
+                _ExcludedHolder(
+                    manager_id=manager.id,
+                    manager_canonical_name=manager.canonical_name,
+                    exclusion_reason=EXCLUSION_REASON_AMENDMENT_FAILED,
+                    caveats=per_holder_caveats,
+                )
+            )
+            continue
 
         is_top_10 = stock_id in top_n_by_manager.get(manager.id, set())
 
@@ -665,15 +719,28 @@ def _contributions_for_stock(
             )
         )
 
-    return contributions
+    return contributions, excluded
 
 
-def _aggregate_caveats(contributions: list[_HolderContribution]) -> list[str]:
+def _aggregate_caveats(
+    contributions: list[_HolderContribution],
+    excluded: list[_ExcludedHolder] | None = None,
+) -> list[str]:
     """Union of per-holder caveats, deduped while preserving first-seen
-    order so the response shape is deterministic."""
+    order so the response shape is deterministic.
+
+    MVP5-02: also unions caveats from excluded holders so AMENDMENTS_PENDING
+    / AMENDMENT_FAILED (and any other per-holder caveats on the excluded
+    filing) still surface at the page level even though the holder's
+    contribution was dropped from the score.
+    """
     seen: list[str] = []
     for c in contributions:
         for code in c.caveats:
+            if code not in seen:
+                seen.append(code)
+    for e in excluded or []:
+        for code in e.caveats:
             if code not in seen:
                 seen.append(code)
     return seen
@@ -683,6 +750,8 @@ def _build_score_explanation(
     contributions: list[_HolderContribution],
     aggregate_caveats: list[str],
     score_confidence: str,
+    *,
+    excluded: list[_ExcludedHolder] | None = None,
 ) -> dict[str, Any]:
     """Composite summary surfaced in the main ranking table per plan
     §8.3. Detail per-component breakdown lives in
@@ -749,10 +818,25 @@ def _build_score_explanation(
             manager_type_source_counts.get(c.manager_type_source, 0) + 1
         )
 
+    # MVP5-02: surface amendment-blocked holders so the drilldown can
+    # render "1 holder excluded — amendment pending" without joining
+    # to another table. Empty list/zero when nothing is excluded so
+    # downstream consumers can rely on the field shape.
+    excluded_payload = [
+        {
+            "manager_id": e.manager_id,
+            "manager_canonical_name": e.manager_canonical_name,
+            "exclusion_reason": e.exclusion_reason,
+        }
+        for e in (excluded or [])
+    ]
+
     return {
         "primary_reasons": primary_reasons,
         "confidence_demotion_reasons": confidence_demotion_reasons,
         "manager_type_source_counts": manager_type_source_counts,
+        "excluded_holder_count": len(excluded_payload),
+        "excluded_holders": excluded_payload,
     }
 
 

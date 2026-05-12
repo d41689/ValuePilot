@@ -245,10 +245,13 @@ def _holding(db_session, filing: Filing13F, stock: Stock) -> Holding13F:
 def test_amendments_pending_filing_emits_caveat(db_session):
     stock = _stock(db_session)
     # One holder filed an amendment-pending filing; the others are
-    # clean.
+    # clean. MVP5-02 excludes the amendment-pending holder from the
+    # score aggregate but still surfaces its caveat at the page level,
+    # so we pad clean holders to 3 so the post-exclusion count stays
+    # at or above the min_holders=3 floor.
     pending_mgr = _manager(db_session)
     _holding(db_session, _filing(db_session, pending_mgr, amendment_status="amendments_pending"), stock)
-    for _ in range(2):
+    for _ in range(3):
         mgr = _manager(db_session)
         _holding(db_session, _filing(db_session, mgr), stock)
 
@@ -266,7 +269,9 @@ def test_amendment_failed_filing_emits_caveat(db_session):
     stock = _stock(db_session)
     failed_mgr = _manager(db_session)
     _holding(db_session, _filing(db_session, failed_mgr, amendment_status="amendment_failed"), stock)
-    for _ in range(2):
+    for _ in range(3):
+        # MVP5-02: 3 clean + 1 excluded amendment-failed = 3 included
+        # after exclusion. Same rationale as amendments_pending above.
         mgr = _manager(db_session)
         _holding(db_session, _filing(db_session, mgr), stock)
 
@@ -289,7 +294,10 @@ def test_build_oracles_lens_response_exposes_structured_caution_flags(db_session
     stock = _stock(db_session)
     pending_mgr = _manager(db_session)
     _holding(db_session, _filing(db_session, pending_mgr, amendment_status="amendments_pending"), stock)
-    for _ in range(2):
+    # MVP5-02: pad clean holders to 3 so the amendments-pending
+    # exclusion still leaves the included count at the
+    # min_holders=3 floor.
+    for _ in range(3):
         mgr = _manager(db_session)
         _holding(db_session, _filing(db_session, mgr), stock)
     compute_signal_weighted_scores(db_session, quarter="2026-Q1")
@@ -356,8 +364,14 @@ def test_confidence_demotion_reasons_surface_low_and_medium_caveats(db_session):
     )
     db_session.flush()
 
-    # Two clean holders so the stock is eligible for scoring.
-    for _ in range(2):
+    # MVP5-02: the multi_caveat_mgr is amendments-pending so its
+    # contribution is excluded from the score aggregate. Pad clean
+    # holders to 3 so the post-exclusion included count satisfies the
+    # min_holders=3 floor. The excluded holder's caveats
+    # (STALE_UNTIL_RECOMPUTE from the open finding +
+    # AMENDMENTS_PENDING from filing.amendment_status) still flow into
+    # aggregate_caveats so confidence_demotion_reasons surfaces both.
+    for _ in range(3):
         mgr = _manager(db_session)
         _holding(db_session, _filing(db_session, mgr), stock)
 
