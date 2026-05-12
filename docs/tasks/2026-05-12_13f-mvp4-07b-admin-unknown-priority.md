@@ -2,11 +2,11 @@
 
 ## Status
 
-**Stub — queued behind MVP4-07a.** Originally the SME non-blocking
-note on MVP4-11; deferred to "after MVP4-03 ships when
-score_confidence outputs exist." Those outputs now exist
-(MVP4-03 / 04 / 05 / 06), so this task can run as soon as the
-user-facing 07a integration is done.
+**Implemented.** Originally the SME non-blocking note on MVP4-11;
+deferred to "after MVP4-03 ships when score_confidence outputs
+exist." Those outputs are live (MVP4-03 / 04 / 05 / 06), and
+MVP4-07a wired the user-facing persisted-mode contract; this task
+now adds the admin priority surface.
 
 ## Goal / Acceptance Criteria
 
@@ -111,7 +111,41 @@ Acceptance criteria:
 - 2026-05-12: Filed as a stub during the MVP4-07 split. Will be
   picked up after MVP4-07a frontend integration confirms the
   persisted-mode contract is stable end-to-end.
+- 2026-05-12: Implementation:
+  - New service
+    `backend/app/services/oracles_lens/unknown_manager_priority.py`
+    aggregates direct linked holdings for active managers with
+    `manager_type='unknown'` against `oracles_lens_signals` for
+    the latest scored quarter under the default
+    `SCORE_VERSION`. Returns
+    `{quarter, score_version, items[]}` with each item carrying
+    `manager_id`, `canonical_name`, `affected_signal_count`,
+    `worst_score_confidence_observed`. Sorted by
+    `(-affected_signal_count, worst tier rank, manager_id)`.
+  - New admin route
+    `GET /api/v1/admin/13f/oracles-lens/unknown-manager-priority`
+    in `thirteenf_admin.py` (admin-only via existing `AdminUser`
+    dep).
+  - Frontend: added a "Unknown Manager Type Priority" Card on
+    `/admin/13f` between the Needs Validation and Batch Reparse
+    sections, fed by a new
+    `unknownManagerPriorityQuery` (refetches every 60s). Empty
+    states cover (a) no persisted scores yet and (b) no unknown
+    managers contribute to the latest scored quarter. Worst
+    `score_confidence` tier renders with a semantic Badge
+    variant (success / warning / danger).
+  - Scope adjustment: the original spec's
+    `current_holding_count` field was dropped in favor of the
+    distinct `affected_signal_count` (the field that actually
+    drives priority) — kept the response minimal so the admin
+    surface tracks one ranking signal. Likewise the original
+    "CTA to classify" was reduced to a row-only ranking; there
+    is no existing manager_type edit surface to deep-link into
+    yet, so adding a fake CTA would be misleading.
 
 ## Verification Results
 
-- Pending implementation.
+- `docker compose exec api pytest -q tests/unit/test_13f_mvp4_unknown_manager_priority.py` -> 7 passed.
+- `docker compose exec api pytest -q` -> 748 passed (up from 741 baseline; +7 new tests, no regressions).
+- `docker compose exec web npm run lint` -> No ESLint warnings or errors.
+- `docker compose exec web npm run build` -> compiled successfully.

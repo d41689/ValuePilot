@@ -16,6 +16,7 @@ import {
   RefreshCw,
   ShieldAlert,
   Settings,
+  UserSearch,
 } from 'lucide-react';
 import type { ComponentProps } from 'react';
 
@@ -239,6 +240,12 @@ export default function Admin13FPage() {
   const needsValidationQuery = useQuery({
     queryKey: ['admin-13f-backfill-needs-validation'],
     queryFn: async () => (await apiClient.get('/admin/13f/backfill/needs-validation')).data,
+    refetchInterval: 60_000,
+  });
+  const unknownManagerPriorityQuery = useQuery({
+    queryKey: ['admin-13f-oracles-lens-unknown-manager-priority'],
+    queryFn: async () =>
+      (await apiClient.get('/admin/13f/oracles-lens/unknown-manager-priority')).data,
     refetchInterval: 60_000,
   });
   const [manualQuarter, setManualQuarter] = useState('');
@@ -2047,6 +2054,96 @@ export default function Admin13FPage() {
                 ))}
               </TableBody>
             </Table>
+          )}
+        </CardContent>
+      </Card>
+
+      {/* MVP4-07b: Unknown Manager Type Priority */}
+      <Card className="rounded-md">
+        <CardHeader className="pb-3">
+          <CardTitle className="flex flex-col gap-2 text-base sm:flex-row sm:items-center sm:justify-between">
+            <span className="flex items-center gap-2">
+              <UserSearch className="h-4 w-4" />
+              Unknown Manager Type Priority
+              {unknownManagerPriorityQuery.data?.items?.length ? (
+                <Badge variant="warning">
+                  {(unknownManagerPriorityQuery.data.items as unknown[]).length} pending
+                </Badge>
+              ) : null}
+            </span>
+            {unknownManagerPriorityQuery.data?.quarter ? (
+              <span className="text-xs font-mono text-muted-foreground">
+                {unknownManagerPriorityQuery.data.quarter}
+                {unknownManagerPriorityQuery.data.score_version ? (
+                  <> · {unknownManagerPriorityQuery.data.score_version}</>
+                ) : null}
+              </span>
+            ) : null}
+          </CardTitle>
+        </CardHeader>
+        <CardContent>
+          {unknownManagerPriorityQuery.isPending ? (
+            <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />
+          ) : !unknownManagerPriorityQuery.data?.quarter ? (
+            <div className="text-sm text-muted-foreground">
+              No persisted Oracle&apos;s Lens scores yet — run a backfill to populate this list.
+            </div>
+          ) : !unknownManagerPriorityQuery.data.items?.length ? (
+            <div className="text-sm text-muted-foreground">
+              No unknown-typed managers contribute to the latest scored quarter.
+            </div>
+          ) : (
+            <>
+              <p className="mb-3 text-xs text-muted-foreground">
+                Managers with{' '}
+                <code className="font-mono">manager_type=unknown</code> ranked by
+                how many of the latest persisted Oracle&apos;s Lens scores they
+                contribute to. Classifying the top rows lifts the most
+                <code className="font-mono"> score_confidence</code>.
+              </p>
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead>Manager</TableHead>
+                    <TableHead>Affected signals</TableHead>
+                    <TableHead>Worst score_confidence</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {(unknownManagerPriorityQuery.data.items as Array<{
+                    manager_id: number;
+                    canonical_name: string;
+                    affected_signal_count: number;
+                    worst_score_confidence_observed: string;
+                  }>).map((row) => (
+                    <TableRow key={row.manager_id}>
+                      <TableCell>
+                        <div className="font-medium">{row.canonical_name}</div>
+                        <div className="font-mono text-xs text-muted-foreground">
+                          #{row.manager_id}
+                        </div>
+                      </TableCell>
+                      <TableCell>
+                        <Badge variant="warning">{row.affected_signal_count}</Badge>
+                      </TableCell>
+                      <TableCell>
+                        <Badge
+                          variant={
+                            row.worst_score_confidence_observed === 'high_confidence'
+                              ? 'success'
+                              : row.worst_score_confidence_observed === 'medium_confidence'
+                                ? 'warning'
+                                : 'danger'
+                          }
+                        >
+                          {row.worst_score_confidence_observed}
+                        </Badge>
+                      </TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            </>
           )}
         </CardContent>
       </Card>

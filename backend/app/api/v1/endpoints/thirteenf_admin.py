@@ -926,6 +926,22 @@ def backfill_needs_validation_endpoint(
     return {"quarters": sorted(by_quarter.values(), key=lambda x: x["quarter"])}
 
 
+@admin_router.get("/oracles-lens/unknown-manager-priority", response_model=dict)
+def oracles_lens_unknown_manager_priority_endpoint(
+    session: SessionDep,
+    current_user: AdminUser,
+) -> Any:
+    """MVP4-07b: ranked list of ``manager_type=unknown`` managers
+    whose admin classification would most stabilize Oracle's Lens
+    score_confidence on the latest persisted quarter. See
+    ``app/services/oracles_lens/unknown_manager_priority.py``.
+    """
+    from app.services.oracles_lens.unknown_manager_priority import (
+        build_unknown_manager_priority,
+    )
+    return build_unknown_manager_priority(session)
+
+
 # ---------------------------------------------------------------------------
 # MVP3-08: Batch Reparse by Quarter endpoints
 # ---------------------------------------------------------------------------
