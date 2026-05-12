@@ -255,6 +255,7 @@ def execute_historical_backfill(
             validation_gate=validation_gate,
             dry_run=dry_run,
             aggregate=aggregate,
+            job_run_id=job_run_id,
         )
         per_quarter.append(quarter_summary)
 
@@ -300,6 +301,7 @@ def _execute_quarter(
     validation_gate: ValidationGate,
     dry_run: bool,
     aggregate: dict[str, Any],
+    job_run_id: int,
 ) -> dict[str, Any]:
     quarter_results: list[dict[str, Any]] = []
     now = datetime.now(timezone.utc)
@@ -374,6 +376,8 @@ def _execute_quarter(
             f"dry_run={dry_run}."
         ),
         issues_json=quarter_results,
+        source_job_id=job_run_id,
+        is_dry_run=dry_run,
         checked_at=now,
     )
     session.add(report)

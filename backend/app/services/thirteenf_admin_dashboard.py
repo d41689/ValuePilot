@@ -381,8 +381,13 @@ def get_quarter_detail_page(
     }
 
 
-def build_quality_reports(session: Session, *, limit: int = 20) -> list[dict[str, Any]]:
-    reports = session.query(QualityReport13F).order_by(QualityReport13F.checked_at.desc()).limit(limit).all()
+def build_quality_reports(
+    session: Session, *, limit: int = 20, include_dry_run: bool = False,
+) -> list[dict[str, Any]]:
+    query = session.query(QualityReport13F)
+    if not include_dry_run:
+        query = query.filter(QualityReport13F.is_dry_run.is_(False))
+    reports = query.order_by(QualityReport13F.checked_at.desc()).limit(limit).all()
     return [_quality_report_payload(report) for report in reports]
 
 
@@ -2700,9 +2705,13 @@ def _previous_accession_for_amendment(session: Session, filing: Filing13F) -> st
 
 
 def _latest_quality_report(session: Session, quarter: str) -> QualityReport13F | None:
+    # Dry-run reports never count as the latest "real" view of a
+    # quarter's health — a passing dry-run must not mask a missing or
+    # failed production parse.
     return (
         session.query(QualityReport13F)
         .filter(QualityReport13F.quarter == quarter)
+        .filter(QualityReport13F.is_dry_run.is_(False))
         .order_by(QualityReport13F.checked_at.desc(), QualityReport13F.id.desc())
         .first()
     )

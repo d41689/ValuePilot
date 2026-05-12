@@ -298,8 +298,13 @@ def read_quality_reports(
     session: SessionDep,
     current_user: AdminUser,
     limit: int = Query(20, ge=1, le=100),
+    include_dry_run: bool = Query(False),
 ) -> Any:
-    return {"items": build_quality_reports(session, limit=limit)}
+    return {
+        "items": build_quality_reports(
+            session, limit=limit, include_dry_run=include_dry_run,
+        )
+    }
 
 
 @admin_router.get("/quality/{quarter}", response_model=dict)
