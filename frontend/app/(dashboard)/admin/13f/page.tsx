@@ -688,8 +688,8 @@ export default function Admin13FPage() {
             </div>
             <div className="text-xs text-muted-foreground">CIK review · classification · backfill</div>
           </Link>
-          <a
-            href="#sync"
+          <Link
+            href="/admin/13f/sync"
             className="block rounded-md border border-border/70 p-3 transition-colors hover:bg-muted/40"
           >
             <div className="text-xs uppercase text-muted-foreground">Daily Sync</div>
@@ -697,7 +697,7 @@ export default function Admin13FPage() {
               {edgarRateLimitQuery.isPending ? '—' : edgarRateLimit.mode}
             </div>
             <div className="text-xs text-muted-foreground">EDGAR rate limit · no-index calendar</div>
-          </a>
+          </Link>
           <a
             href="#filings"
             className="block rounded-md border border-border/70 p-3 transition-colors hover:bg-muted/40"

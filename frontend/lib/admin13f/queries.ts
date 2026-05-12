@@ -164,6 +164,18 @@ export function useEdgarRateLimitQuery() {
   });
 }
 
+// MVP6-03 — no-index calendar.
+
+export function useNoIndexDatesQuery(year: number | null = null) {
+  return useQuery({
+    queryKey: ['admin-13f-no-index-dates', year],
+    queryFn: async () => {
+      const suffix = year ? `?year=${year}` : '';
+      return (await apiClient.get(`/admin/13f/no-index-dates${suffix}`)).data;
+    },
+  });
+}
+
 // ===========================================================================
 // Quality / amendments / needs-validation
 // ===========================================================================
