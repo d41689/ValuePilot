@@ -198,7 +198,7 @@ MVP4-03 / 07b totals because the latter consume it as a fixture.)
 
 | Decision | Status | Evidence in shipped code |
 | -------- | ------ | ------------------------ |
-| D1 Oracle's Lens V1 scope (signal-weighted + conviction + caution + distinctive only) | CLOSED | The four score columns on `oracles_lens_signals` (`signal_weighted_consensus_score`, `conviction_score`, `caution_flags`, `distinctive_consensus_score`) are the only persisted metrics; Value Line overlay (D4) stays out. |
+| D1 Oracle's Lens V1 scope (signal-weighted + conviction + caution + distinctive only) | CLOSED | The four score columns on `oracles_lens_signals` (`signal_weighted_consensus_score`, `conviction_score`, `caution_flags`, `distinctive_consensus_score`) are the only persisted V1 score metrics; Value Line overlay (D4) stays out. Note (PO post-review precision): `oracles_lens_signals` also carries `add_intensity` and `holding_streak_quarters` as plan-§7.3/§7.10 base-primitive columns; these are reserved-null in V1 (the upsert path does not populate them) and exist to keep V2 scoring extensions append-only rather than alter-table. Not scope leakage — they are plan-mandated carriers, not score metrics. |
 | D2 No pre-2023 production backfill | CLOSED | `DEFAULT_BACKFILL_START_QUARTER=2023-Q1`; pre-2023 without `dry_run` → 400; MVP4-08 stamps `is_dry_run` so dashboards never conflate the curated dry-run with production. |
 | D3 V1 metric surface (with SME caveat-propagation rules) + distinctive visible-but-off | CLOSED | Class A delta-only suppression confirmed in MVP4-05 (`action_adjustment=0`, snapshot bonuses preserved); distinctive consensus is the visible-but-off sort option in the Oracle's Lens dashboard. |
 | D4 Value Line overlay deferred | CLOSED | No Value Line code, schema, or UI was introduced across MVP4. |
@@ -244,3 +244,143 @@ that should be triaged from the deferred list above:
 3. Pre-2023 historical backfill productionization — only if an
    investor-data ask requires it; the dry-run path is currently
    the upper bound.
+
+## Eight-Reviewer Pass — Outcome Log (2026-05-12)
+
+Four reviewer roles ran two passes each (Tech Lead × 2, Product
+Owner × 2, Domain SME × 2, Frontend/UX × 2). Prompts:
+`docs/tasks/2026-05-12_13f-mvp4-review-prompts.md`. Raw reviews:
+`docs/13f/mvp4-reviews.md`.
+
+### Accepted and fixed in this verification commit
+
+- **TL #1 #1** — `constants.py` `SCORE_VERSION` comment overstated
+  read-side concurrent-version support. Tightened to make explicit
+  that the compute side is version-aware but every read path
+  resolves the constant; bumping the string is a one-way deploy.
+- **TL #1 #6 (narrow scope)** — `HISTORICAL_BACKFILL_NEEDS_VALIDATION`
+  is dual-use (rule_code + caveat). `base_primitives.py` and
+  `caution_flags.py` no longer redeclare the string literal; both
+  bind to the canonical `thirteenf_quality_codes` import. MVP4-09
+  sentinel test extended to pin both bindings.
+- **SME #5 #5 + SME #6 #5** — `confidence_demotion_reasons` was
+  silently dropping non-tier-winning caveats. Fixed at
+  `signal_weighted_score.py:_build_score_explanation`; new test
+  `test_confidence_demotion_reasons_surface_low_and_medium_caveats`
+  asserts a holder with both a low and medium caveat surfaces both
+  in the drilldown.
+- **SME #6 #7** — added a ratio-design comment at
+  `compute_portfolio_weight` documenting that numerator and
+  denominator come from the same filing in the same unit, so the
+  Kahn Brothers `$-not-$K` unit error cancels in the division and
+  no defensive cap is needed for this path.
+- **PO #3 D1** — annotated the D1 row above to record that
+  `add_intensity` and `holding_streak_quarters` are reserved-null
+  base-primitive columns, not score metrics.
+
+### Accepted and deferred to MVP 5 backlog
+
+- **SME #6 #1** — dashboard `_position_signal_weight` has
+  `new=+0.10, add=+0.20`, but `constants.ACTION_ADJUSTMENT_*` is
+  `new=+0.20, add=+0.10`. The dashboard ordering predates MVP4 and
+  is semantically inverted (a new position is more decisive than
+  adding to an existing one). Roll into the **formula
+  reconciliation** MVP5 ticket; the reconciler should normalize
+  toward the persisted values.
+- **SME #6 #6** — `resolve_manager_type(manager, derived_profile=None)`
+  is called at `signal_weighted_score.py:510` with `derived_profile`
+  hardcoded to `None`. The MVP4-11 three-tier precedence
+  (admin → behavior → fallback_unknown) collapses to two tiers in
+  production; `derive_manager_signal_profile` is unreachable in
+  live scoring. The 0.60 fallback over-weights `high_turnover`
+  managers and under-weights `long_term_fundamental` managers who
+  haven't been admin-typed. **Wire the behavior path into the
+  scoring call before any investor-facing GA.** MVP5 critical.
+- **TL #1 #5 + PO #3 #3 + PO #4 #3** — flip the
+  `/api/v1/oracles-lens` `use_persisted_scores` server default to
+  `True`; define `?persisted=0` retirement condition (formula
+  reconciliation complete + one full scoring cycle with no
+  ranking divergence). Combine into the formula reconciliation
+  MVP5 ticket. The retirement decision is product-owner sign-off,
+  not automated pass/fail.
+- **TL #2 backlog #1** — extract `_HolderContribution` data-loading
+  out of `signal_weighted_score.py` into a dedicated
+  `score_data_loader` once a fourth scoring algorithm needs more
+  than two new fields on the dataclass. V1.x re-evaluation.
+- **PO #3 #4 + PO #4 #4** — Class B caveat exclusion. SME-confirmed
+  narrow scope: amendments (`AMENDMENTS_PENDING` + `AMENDMENT_FAILED`)
+  in MVP5; verify whether CUSIP-unresolved is already excluded by
+  the `cusip_mapping_status == "linked"` eligibility filter
+  (likely yes); defer NT / combination / confidential omission to
+  V2.
+- **PO #3 bonus + FE #7 #6 + FE #8 #6** — manager-type editor on
+  manager detail page. Single sprint; closes the MVP4-07b loop.
+  Once it exists, the priority-queue rows deep-link to it.
+- **FE #8 #2** — persisted badge label rename. Defer to a real UX
+  consultation; "persisted" is jargon but admin-facing V1.
+- **FE #8 #3** — `DEMOTION_REASON_LABELS` friendly map in
+  `oraclesLens.js`. Lands with **SME #6 #5 follow-up** (drilldown
+  surfaces all active caveats, not just tier-winning ones) as the
+  MVP5 frontend hardening pass.
+- **FE #8 #5** — empty-state copy refinement (directional hint on
+  the no-backfill case; positive framing on the no-unknowns case).
+- **FE #8 #7** — A11y: `role="dialog"` + `aria-modal` + focus trap
+  on the slide-out panel; `overflow-x-auto` wrapper on the admin
+  priority Table.
+- **SME #6 #3** — rename `anti_crowding_factor` to
+  "high-quality manager agreement factor" in §7.11 doc + tooltip.
+  Naming-only; lands in the docs pass.
+- **TL #2 backlog #4 / TL #1 follow-up** — architecture note in
+  `CLAUDE.md` codifying "ORM upsert for idempotent rewrites;
+  IntegrityError translation for exclusive-lock guards" so the
+  next contributor doesn't re-litigate.
+
+### Rejected (with reasons)
+
+- **SME #5 #4 — move `PRE_2023_PRE_HISTORY_UNAVAILABLE` from
+  `_MEDIUM_CAVEATS` to `_LOW_CAVEATS`.** REJECT. Direct contradiction
+  between SME #5 (wants low) and SME #6 (validates medium). SME #6's
+  argument prevails: pre-2023 history unavailability degrades the
+  cross-quarter delta only; the current-quarter snapshot itself
+  remains valid, so `low_confidence` would overclaim the loss.
+  Medium is the correct tier. **Next:** capture this SME-vs-SME
+  resolution in the MVP5 gate's caveat-tier section so the
+  question doesn't get re-raised at GA.
+- **SME #5 #7 — BLOCK on Kahn Brothers; require
+  `min(weight, Decimal("1.0"))` cap before MVP5 opens.** REJECT the
+  BLOCK. `compute_portfolio_weight` is ratio-based; numerator and
+  denominator come from the same filing in the same unit; the
+  1000× unit error cancels in the division (SME #6 verified). The
+  defensive cap would protect against a *different* class of bug
+  (e.g., a holding with `value_thousands > total_value`), not the
+  Kahn Brothers scenario. **Next:** the ratio-design comment we
+  added is the proportional fix; a generic `min(weight, 1.0)` cap
+  as a data-integrity safety net is a separate MVP5 candidate
+  ("score-input sanity guards") that should be scoped from
+  observed corruption cases, not theoretical ones.
+- **PO #4 D1 "REOPEN / SCOPE LEAK"** for the `add_intensity` and
+  `holding_streak_quarters` schema columns. REJECT the REOPEN
+  framing. Those columns are plan-§7.3/§7.10 base primitives,
+  explicitly designed in MVP4-02 as reserved carriers for future
+  V2 scoring components. They are not score metrics and were not
+  smuggled past the gate. **Next:** PO #3's milder "annotation
+  needed" framing is what we accepted above; PO #4's escalation is
+  not warranted.
+- **TL #1 #1 alt-fix — add `score_version` as an admin query
+  param on the read endpoints to support concurrent v1.0 / v1.1
+  reads.** REJECT. No current shadow-compute consumer wants this;
+  YAGNI. **Next:** if MVP5 ships a shadow-compute pipeline, this
+  becomes a one-line `Query(SCORE_VERSION)` add on
+  `read_oracles_lens` plus a tiny test. Not worth opening now.
+- **FE #8 #2 — rename "persisted" badge to "v1 scored" /
+  "canonical score" now.** REJECT now. The V1 dashboard is
+  primarily admin/operator-facing; "persisted" carries the right
+  meaning for that audience. **Next:** real label work belongs in
+  the MVP5 frontend hardening pass with a brief UX consultation,
+  not a unilateral rename.
+- **FE #7 #6 / FE #8 #6 — add a deep-link CTA on the admin
+  priority Card now, pointing to a stub route or a future page.**
+  REJECT. PO #4 explicitly aligned with the no-CTA design pending
+  a real editor. A link pointing at a stub or 404 is a UX
+  regression, not a fix. **Next:** ship the manager-type editor
+  in MVP5 first; the CTA lands in the same task.

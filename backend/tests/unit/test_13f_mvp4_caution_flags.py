@@ -9,6 +9,8 @@ from app.models.institutions import (
     Holding13F,
     InstitutionManager,
     ParseRun13F,
+    QualityFinding13F,
+    QualityReport13F,
 )
 from app.models.oracles_lens import OraclesLensSignal
 from app.models.stocks import Stock
@@ -21,6 +23,9 @@ from app.services.oracles_lens.caution_flags import (
 from app.services.oracles_lens.signal_weighted_score import (
     build_oracles_lens_response,
     compute_signal_weighted_scores,
+)
+from app.services.thirteenf_quality_codes import (
+    OWNERSHIP_CHANGE_NEEDS_RECOMPUTE_CUSIP_CORPORATE_ACTION,
 )
 
 
@@ -305,3 +310,71 @@ def test_build_oracles_lens_response_exposes_structured_caution_flags(db_session
     assert flag["severity"] == "medium"
     assert flag["scope"] == "row"
     assert flag["label"]
+
+
+def test_confidence_demotion_reasons_surface_low_and_medium_caveats(db_session):
+    """MVP4 review SME #5/#6 finding: when a stock has both a low and a
+    medium caveat, ``confidence_demotion_reasons`` must list both, not
+    just the tier-winning ones. The pre-fix loop silently dropped the
+    medium caveats once the low tier won."""
+    stock = _stock(db_session)
+
+    # Holder A: has BOTH a low caveat (STALE_UNTIL_RECOMPUTE via an open
+    # OWNERSHIP_CHANGE finding) and a medium caveat (AMENDMENTS_PENDING).
+    multi_caveat_mgr = _manager(db_session)
+    filing_a = _filing(
+        db_session, multi_caveat_mgr, amendment_status="amendments_pending",
+    )
+    _holding(db_session, filing_a, stock)
+    seed_report = QualityReport13F(
+        quarter="2026-Q1",
+        status="warning",
+        error_count=0,
+        warning_count=1,
+        info_count=0,
+        summary="seed: corporate-action recompute pending",
+        checked_at=datetime(2026, 3, 31, tzinfo=timezone.utc),
+    )
+    db_session.add(seed_report)
+    db_session.flush()
+    db_session.add(
+        QualityFinding13F(
+            validation_run_id=seed_report.id,
+            rule_code=OWNERSHIP_CHANGE_NEEDS_RECOMPUTE_CUSIP_CORPORATE_ACTION,
+            severity="warning",
+            entity_type="ownership_change",
+            entity_id=None,
+            quarter="2026-Q1",
+            manager_id=multi_caveat_mgr.id,
+            accession_number=filing_a.accession_number,
+            detail="seed: corporate-action recompute pending",
+            value_json={},
+            status="open",
+            first_seen_at=datetime(2026, 3, 31, tzinfo=timezone.utc),
+            last_seen_at=datetime(2026, 3, 31, tzinfo=timezone.utc),
+        )
+    )
+    db_session.flush()
+
+    # Two clean holders so the stock is eligible for scoring.
+    for _ in range(2):
+        mgr = _manager(db_session)
+        _holding(db_session, _filing(db_session, mgr), stock)
+
+    compute_signal_weighted_scores(db_session, quarter="2026-Q1")
+
+    payload = build_oracles_lens_response(db_session, period="2026-Q1")
+    item = next((i for i in payload["items"] if i["stock_id"] == stock.id), None)
+    assert item is not None
+    reasons = item.get("score_explanation", {}).get(
+        "confidence_demotion_reasons", []
+    )
+    reasons_by_code = {entry["code"]: entry for entry in reasons}
+
+    # The low caveat is in the list with its own tier label.
+    assert "stale_until_recompute" in reasons_by_code
+    assert reasons_by_code["stale_until_recompute"]["demoted_to"] == "low_confidence"
+
+    # The medium caveat survives instead of being silently dropped.
+    assert "AMENDMENTS_PENDING" in reasons_by_code
+    assert reasons_by_code["AMENDMENTS_PENDING"]["demoted_to"] == "medium_confidence"

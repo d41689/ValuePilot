@@ -30,6 +30,10 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
+from app.services.thirteenf_quality_codes import (
+    HISTORICAL_BACKFILL_NEEDS_VALIDATION as _HISTORICAL_BACKFILL_FINDING_RULE_CODE,
+)
+
 
 # ---------------------------------------------------------------------------
 # Caveat code constants — caveat-collection sites import these by name so
@@ -41,7 +45,10 @@ CAVEAT_CONFIDENTIAL_TREATMENT = "CONFIDENTIAL_TREATMENT"
 CAVEAT_PARTIAL_COVERAGE = "PARTIAL_COVERAGE"
 CAVEAT_NT_QUARTER_STREAK_BREAK = "NT_QUARTER_STREAK_BREAK"
 CAVEAT_STALE_UNTIL_RECOMPUTE = "stale_until_recompute"
-CAVEAT_HISTORICAL_BACKFILL_NEEDS_VALIDATION = "HISTORICAL_BACKFILL_NEEDS_VALIDATION"
+# Dual-use string: same value is the QualityFinding13F.rule_code (canonical
+# in thirteenf_quality_codes) AND the row-level caveat on score rows. Bind
+# to the canonical source so the two surfaces can't desync silently.
+CAVEAT_HISTORICAL_BACKFILL_NEEDS_VALIDATION = _HISTORICAL_BACKFILL_FINDING_RULE_CODE
 CAVEAT_PRE_2023_PRE_HISTORY_UNAVAILABLE = "PRE_2023_PRE_HISTORY_UNAVAILABLE"
 
 # Readiness vocabulary canonical name for the recompute concept

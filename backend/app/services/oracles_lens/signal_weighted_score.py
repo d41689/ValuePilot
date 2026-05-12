@@ -573,20 +573,23 @@ def _build_score_explanation(
         )
 
     # D3 / P2 #4: confidence demotion reasons traceable from the codes.
+    # Surface *every* active caveat that contributed to a demotion, not
+    # just the tier-winning ones. If a stock has both a low caveat (e.g.
+    # ``stale_until_recompute``) and a medium caveat (e.g.
+    # ``AMENDMENTS_PENDING``), an investor seeing ``low_confidence`` in
+    # the UI should still see the medium caveat in the drilldown — its
+    # snapshot integrity issue is independent of the staleness reason.
+    # ``demoted_to`` records the per-caveat tier, not the aggregate tier.
     confidence_demotion_reasons: list[dict[str, str]] = []
-    if score_confidence == "low_confidence":
-        target = "low_confidence"
+    if score_confidence in ("low_confidence", "medium_confidence"):
         for code in aggregate_caveats:
             if code in _LOW_CAVEATS:
                 confidence_demotion_reasons.append(
-                    {"code": code, "demoted_to": target}
+                    {"code": code, "demoted_to": "low_confidence"}
                 )
-    elif score_confidence == "medium_confidence":
-        target = "medium_confidence"
-        for code in aggregate_caveats:
-            if code in _MEDIUM_CAVEATS or code == CONFIDENTIAL_TREATMENT_CAVEAT:
+            elif code in _MEDIUM_CAVEATS or code == CONFIDENTIAL_TREATMENT_CAVEAT:
                 confidence_demotion_reasons.append(
-                    {"code": code, "demoted_to": target}
+                    {"code": code, "demoted_to": "medium_confidence"}
                 )
 
     return {

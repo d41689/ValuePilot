@@ -54,10 +54,12 @@ NT_QUARTER_STREAK_BREAK_CAVEAT = "NT_QUARTER_STREAK_BREAK"
 STALE_UNTIL_RECOMPUTE_CAVEAT = "stale_until_recompute"
 
 # D3 rule (e): open HISTORICAL_BACKFILL_NEEDS_VALIDATION finding means the
-# underlying holding row is awaiting validation; readiness pass-through
-# spelling preserved so the user-facing API surfaces a single canonical
-# string for this concept.
-HISTORICAL_BACKFILL_NEEDS_VALIDATION_CAVEAT = "HISTORICAL_BACKFILL_NEEDS_VALIDATION"
+# underlying holding row is awaiting validation. Dual-use string — same
+# value serves as the QualityFinding13F.rule_code (canonical in
+# thirteenf_quality_codes) AND the row-level caveat code on score rows.
+# Bind to the canonical source so a rename in either direction can't
+# silently desync the two surfaces.
+HISTORICAL_BACKFILL_NEEDS_VALIDATION_CAVEAT = _BACKFILL_FINDING_RULE_CODE
 
 # D2: walking back across the data-window floor; pre-window ownership is
 # not observable, so streak/intensity inputs are right-censored.
@@ -108,6 +110,13 @@ def compute_portfolio_weight(holding: Holding13F) -> PortfolioWeightResult:
     if not denominator or not holding.value_thousands:
         return PortfolioWeightResult(value=None)
 
+    # Ratio-based by design: numerator and denominator come from the same
+    # filing and are stored in the same unit. For filers like Kahn Brothers
+    # (CIK 0001039565) who report in dollars rather than thousands, both
+    # ``holding.value_thousands`` and ``computed_total_value_thousands`` end
+    # up in raw dollars; the 1000× unit error cancels in the division. A
+    # future signal that uses ``value_usd`` directly (not a ratio) would
+    # need its own per-filer unit guard.
     weight = Decimal(holding.value_thousands) / Decimal(denominator)
     return PortfolioWeightResult(value=weight)
 

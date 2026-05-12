@@ -35,6 +35,20 @@ def test_writer_modules_use_canonical_module_as_source_of_truth():
     )
     assert backfill.HISTORICAL_BACKFILL_RULE_CODE == qc.HISTORICAL_BACKFILL_NEEDS_VALIDATION
 
+    # Dual-use string: same value is a finding rule_code AND a row-level
+    # caveat on score rows. Pin the score-side aliases to the canonical
+    # module so a rename in either direction surfaces here.
+    from app.services.oracles_lens import base_primitives, caution_flags
+
+    assert (
+        base_primitives.HISTORICAL_BACKFILL_NEEDS_VALIDATION_CAVEAT
+        == qc.HISTORICAL_BACKFILL_NEEDS_VALIDATION
+    )
+    assert (
+        caution_flags.CAVEAT_HISTORICAL_BACKFILL_NEEDS_VALIDATION
+        == qc.HISTORICAL_BACKFILL_NEEDS_VALIDATION
+    )
+
 
 def test_canonical_module_has_no_unexpected_extras():
     """Defend against the module growing arbitrary string constants. If

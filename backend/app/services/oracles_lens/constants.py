@@ -20,7 +20,21 @@ from decimal import Decimal
 # a parallel column of scores instead of overwriting the existing ones.
 # Used in oracles_lens_signals.score_version and in the JobRun lock_key
 # (`oracles_lens_score:{period}:{score_version}`) so a v1.0 production
-# run and a v1.1 shadow run can proceed concurrently.
+# compute run and a v1.1 shadow compute run can write rows side-by-side
+# without colliding on the unique key.
+#
+# The read side is currently *single-version*. Every reader
+# (``build_oracles_lens_response``, the admin endpoints, the dashboard
+# persisted-mode path, the unknown-manager-priority service) resolves
+# the score version from this constant — none of them accept a version
+# parameter. Bumping this string is therefore a one-way production
+# switch: the moment it lands in a deploy, every read path serves the
+# new version, with no rollback short of redeploying the old constant.
+# A shadow-compute pipeline can pre-populate v1.1 rows while v1.0 is
+# still being served, but flipping the constant is the cutover moment.
+# If concurrent multi-version reads are needed before MVP5, expose
+# ``score_version`` as an admin-only query param on the read endpoints
+# first.
 SCORE_VERSION: str = "v1.0"
 
 
