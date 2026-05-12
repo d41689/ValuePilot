@@ -177,6 +177,7 @@ Sequence rationale: resolve source naming ambiguity, validation persistence, and
 - [x] D6 persisted quality reports approved as validation source of truth, with alerts only as notification surfaces.
 - [x] Human owner approved MVP 3 scope freeze and exclusions.
 - [x] MVP3-01 Legacy Dataroma Surface Cleanup / Naming Clarification explicitly approved to start.
+- [x] MVP3-01 through MVP3-07 implementation tasks completed and individually reviewed; tracking continues in `docs/tasks/2026-05-11_13f-mvp3-end-to-end-verification.md`.
 
 ## Progress Notes
 
@@ -185,6 +186,7 @@ Sequence rationale: resolve source naming ambiguity, validation persistence, and
 - 2026-05-11: Applied product owner review feedback: closed D1/D2/D4/D5/D6 as product decisions, added the MVP 3 data-safety principle for auditable before/after summaries, tightened D3 validation and impact-summary gates, split controlled reparse from batch reparse, and moved historical backfill to the final MVP 3 task.
 - 2026-05-11: Product owner re-review approved MVP3-01 to start. Added accepted P2 refinements: quarter-first reparse default, required corporate-action evidence / reason notes, value-unit sanity validation candidate, validation-gated backfill naming, and explicit MVP 3 scope-freeze checklist approval.
 - 2026-05-11: MVP3-05 review supersede on D3 implementation choice: quarter-first sequencing applies to the future admin UI rollout, not the service layer. MVP3-05 ships both scopes at the service layer with full per-scope test coverage; the admin endpoint / dashboard task must still expose quarter scope before manager scope.
+- 2026-05-11: MVP3-01 through MVP3-07 all merged. Entered MVP3 end-to-end verification. Baseline: 614 backend tests pass, frontend lint + build pass. Three cross-task reviews (Tech Lead, Product Owner, 13F Domain SME) are out for verdict; results land in `docs/tasks/2026-05-11_13f-mvp3-end-to-end-verification.md`. Next-milestone gate (MVP3-08 admin UI vs MVP4 scope opening) waits on those verdicts.
 
 ## Verification Results
 
