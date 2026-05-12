@@ -132,6 +132,13 @@ def controlled_reparse_accession(
     gate_passed, validation_errors = _run_validation_gate(validation_gate, session, filing, new_run)
     if not gate_passed:
         _restore_current_pointer(session, before["current_parse_run_id"], new_run.id)
+        # SME C1: also undo amendment activation, not just the parse_run pointer.
+        _restore_active_filing(
+            session,
+            filing_id=filing.id,
+            filing_was_active=bool(before["filing_is_active_for_manager_period"]),
+            prior_active_filing_id=before["prior_active_filing_id"],
+        )
         if override is not None:
             override.status = "reparse_failed"
             override.result_parse_run_id = new_run.id
@@ -227,6 +234,44 @@ def _restore_current_pointer(
             session.flush()
 
 
+def _restore_active_filing(
+    session: Session,
+    *,
+    filing_id: int,
+    filing_was_active: bool,
+    prior_active_filing_id: int | None,
+) -> None:
+    """Undo any amendment activation that the parser committed before the
+    validation gate ran.
+
+    Background: ingest_holdings_for_filing flips
+    ``Filing13F.is_active_for_manager_period`` for a RESTATEMENT amendment as
+    part of its success path, before controlled_reparse_accession evaluates
+    the validation gate. If the gate fails we need to roll that flip back
+    too — otherwise a failed-validation amendment stays "active" and product
+    queries return holdings the gate rejected.
+
+    Demote before promote, same reason as _restore_current_pointer: the
+    partial unique index ``uq_active_filing_per_manager_period`` fires on
+    flush.
+    """
+    filing = session.get(Filing13F, filing_id)
+    # Only act when the parser-side flip actually changed the active state.
+    if filing is None or filing.is_active_for_manager_period == filing_was_active:
+        return
+
+    filing.is_active_for_manager_period = filing_was_active
+    session.add(filing)
+    session.flush()
+
+    if prior_active_filing_id is not None:
+        prior = session.get(Filing13F, prior_active_filing_id)
+        if prior is not None and not prior.is_active_for_manager_period:
+            prior.is_active_for_manager_period = True
+            session.add(prior)
+            session.flush()
+
+
 def _snapshot(session: Session, filing: Filing13F) -> dict[str, Any]:
     current_run = (
         session.query(ParseRun13F)
@@ -251,12 +296,26 @@ def _snapshot(session: Session, filing: Filing13F) -> dict[str, Any]:
         .filter(OwnershipChange13F.current_filing_id == filing.id)
         .count()
     )
+    # SME C1: also capture pre-parse active state so a failed validation gate
+    # can roll back amendment activation, not just the parse_run pointer.
+    prior_active_filing_id: int | None = None
+    if filing.is_amendment and not filing.is_active_for_manager_period:
+        prior_active_filing_id = (
+            session.query(Filing13F.id)
+            .filter(Filing13F.manager_id == filing.manager_id)
+            .filter(Filing13F.quarter_end_date == filing.quarter_end_date)
+            .filter(Filing13F.is_active_for_manager_period.is_(True))
+            .filter(Filing13F.id != filing.id)
+            .scalar()
+        )
     return {
         "current_parse_run_id": current_parse_run_id,
         "holdings_count": holdings_count,
         "filing_parse_status": filing.parse_status,
         "open_quality_findings_count": open_findings_count,
         "ownership_changes_count": ownership_changes_count,
+        "filing_is_active_for_manager_period": bool(filing.is_active_for_manager_period),
+        "prior_active_filing_id": prior_active_filing_id,
     }
 
 

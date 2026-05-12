@@ -1533,7 +1533,7 @@ def test_quality_check_flags_suspicious_value_unit_jumps(db_session):
 
     report = run_quality_checks(db_session, "2025-Q4")
 
-    issue = next(item for item in report.issues if item.check == "value_unit_sanity")
+    issue = next(item for item in report.issues if item.check == "VALUE_UNIT_SANITY")
     assert issue.severity == "warning"
     assert issue.accession_no == "0001234567-26-000001"
     assert issue.value["manager_id"] == manager.id

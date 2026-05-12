@@ -110,6 +110,10 @@ appended to this document as they arrive.
       pre-2023 dry-run gate, no overwrite of existing parse runs,
       per-quarter validation gate, `HISTORICAL_BACKFILL_NEEDS_VALIDATION`
       findings audit trail.
+- [x] MVP3-08 consolidated admin UI for batch reparse, corporate-action,
+      and historical backfill (preview + confirm + needs-validation
+      surface). Approved by Tech Lead and Product Owner during this
+      end-to-end review.
 - [x] No MVP 4 scope included.
 
 ## Verification Results
@@ -138,28 +142,110 @@ logs):
 - After MVP3-06: 598 passed (+10).
 - After MVP3-06 followup: 599 passed (+1).
 - After MVP3-07: 614 passed (+15).
+- After MVP3-08 admin UI: 633 passed (+19).
+- After end-to-end review followups (SME C1 regression test): 634 passed (+1).
 
 ## Review Verdicts
 
-Pending receipt. Verdicts will be appended in this section as the
-Tech Lead, Product Owner, and Domain SME reviewers respond.
+All three cross-task reviews complete. Action items applied or filed as
+follow-ups below.
 
 ### Tech Lead (cross-task architecture)
 
-_Pending._
+**Verdict:** approved after one pre-merge fix.
+
+One pre-merge action item (applied this session):
+- **TL1 — rule_code casing normalization in `edgar_quality.py`.** The
+  MVP3-02 `"value_unit_sanity"` literal was the only lowercase rule_code
+  introduced in MVP3 scope (MVP3-06 and MVP3-07 both use UPPER_SNAKE
+  module constants). Renamed to `"VALUE_UNIT_SANITY"`, extracted as
+  module-level `VALUE_UNIT_SANITY_RULE_CODE` constant, both `report.add(...)`
+  call sites updated, and the matching assertion in
+  `tests/unit/test_13f_admin_dashboard.py:1536` updated. A future admin
+  findings dashboard can now filter `quality_findings_13f.rule_code`
+  without per-source casing logic. Pre-merge because renaming after
+  prod rows accumulate would require a backfill migration.
+
+All other cross-task surfaces — JobRun lock_key conventions, the
+`IntegrityError → typed-error` translator pattern, advisory-lock helper
+duplication, `ImpactSummary` vs plain-dict aggregation, `ValidationGate`
+per-filing vs per-quarter signatures, the three benign `SAWarning` test
+events — accepted as consistent / intentionally different / correctly
+deferred per the Tech Lead's prior guidance. Cumulative scope-out
+deferral was resolved by MVP3-08 shipping the consolidated admin UI.
 
 ### Product Owner (D1–D6 closure + next milestone)
 
-_Pending._
+**Verdict:** D1–D6 all CLOSED, MVP3-08 approved, recommend opening MVP4.
+
+| Decision | Status | Key evidence |
+| -------- | ------ | ------------ |
+| D1 Historical backfill strategy | CLOSED | `DEFAULT_BACKFILL_START_QUARTER=2023-Q1`; pre-2023 without `dry_run` → 400; delegates to MVP1B ingestion; skips existing active filings; `HISTORICAL_BACKFILL_NEEDS_VALIDATION` findings stay open until gate passes. |
+| D2 Dataroma legacy surface | CLOSED | All CUSIP enrichment call sites use `enrich_cusips_from_openfigi`; `enrich_from_dataroma` is a deprecated alias; MVP3-06 hardcodes `source='manual'`. |
+| D3 Controlled + batch reparse | CLOSED | MVP3-04 shipped before MVP3-05; explicit `validation_gate` required; quarter-first sequencing recorded as inline supersede note in the decision gate; MVP3-08 disables the manager-scope UI panel per the supersede note. |
+| D4 Corporate-action manual confirmation | CLOSED | `source='manual'` + `confidence='manual'` hardcoded; evidence + reason dual-guarded (Pydantic `min_length` + service `.strip()`); ownership_changes not mutated, only QualityFinding rows written. |
+| D5 Filing-level value-unit override | CLOSED | MVP3-03 migration adds `filing_value_unit_overrides` + `filings_13f` pointer; `controlled_reparse_accession` is the only path that can flip override status to `applied`. |
+| D6 Data integrity validation jobs | CLOSED | `quality_findings_13f` is the source of truth; alerts are notification surfaces only; at least one validation candidate (value-unit sanity) implemented. |
+
+Cumulative scope-freeze tally is **zeroed**: MVP3-08 delivered the
+backend HTTP endpoints + minimum-viable admin UI for batch reparse,
+corporate-action mapping, and historical backfill — the three UI debts
+opened during MVP3-05/06/07. No pre-2023 historical backfill needed
+ahead of MVP4 unless an investor-data ask requires it; MVP4 PRD should
+explicitly revisit D1 if so.
+
+Recommendation: **open MVP4.**
 
 ### 13F Domain SME (financial-data correctness)
 
-_Pending._
+**Verdict:** mostly clean — two real concerns and one documentation
+drift to address before declaring the audit-semantic surface complete.
+
+Applied this session:
+- **C1 — Amendment activation leak in controlled reparse (real bug).**
+  `_do_ingest_holdings` activates a RESTATEMENT amendment and demotes
+  the prior active filing as a side-effect of successful parse, and
+  commits before `controlled_reparse_accession` runs the validation
+  gate. Without intervention, a failed-validation amendment stays
+  active. Fixed in `thirteenf_controlled_reparse._snapshot()` (now
+  captures `filing_is_active_for_manager_period` and the prior
+  active filing id for amendment candidates) and a new
+  `_restore_active_filing` helper invoked on validation failure
+  (demote-then-promote ordering to respect
+  `uq_active_filing_per_manager_period`). New regression test:
+  `test_controlled_reparse_validation_failure_restores_active_filing_for_amendment`.
+  Containment held — only MVP3-04 single-filing reparse with a
+  pending-amendment accession was exposed; MVP3-05 batch candidates
+  require `is_active_for_manager_period=True` so the leak was not
+  reachable via batch.
+- **C3 — `_PRE_2023_BOUNDARY` naming drift (documentation).** Renamed
+  to `_PRE_DOLLARS_BOUNDARY_REPORT_QUARTER` in
+  `thirteenf_historical_backfill.py` with a multi-line comment
+  explaining the report-quarter proxy is conservative versus PRD
+  §7.2's canonical `accepted_at >= 2023-01-03` rule (the parser at
+  `app/edgar/parsers/value_units.py` enforces the accepted_at form
+  correctly; the proxy only governs the backfill-preview risk flag).
+  No semantic change.
+
+Deferred to a separate task:
+- **C2 — Readiness service does not consume new MVP3-06/07 rule_codes.**
+  `build_readiness_summary` ignores `QualityFinding13F` entirely;
+  `_quarter_health` reads only the latest `QualityReport13F.status`,
+  so a routine MVP3-02 `quality_check` can mask open MVP3-06/07
+  warnings. Fix touches the user-facing readiness contract and the
+  admin dashboard; it deserves its own review gate. Filed as
+  `docs/tasks/2026-05-11_13f-mvp3-09-readiness-integration.md` (stub
+  — not started; awaiting Tech Lead + PO go-ahead).
+
+Minor observations recorded but not acted on this session: dry-run
+quality reports conflate with real runs in dashboards (consider
+`source_job_id` linkage); `_finalize_impact` shallow-copies the batch
+aggregate dict; `confirm_corporate_action_mapping` commits inside the
+service (consistent with siblings, currently fine).
 
 ## Residual Risk / Follow-up
 
-Carried forward from per-task reviews, to be triaged once the three
-verdicts above land:
+Triaged with the three verdicts above:
 
 - **Shared advisory-lock helper** — `_cusip_lock_id` is duplicated
   between `app/services/cusip_enrichment.py` (MVP1B) and
@@ -185,21 +271,25 @@ verdicts above land:
 - **`'corporate_action'` `QualityReport13F.status` vocabulary value** —
   MVP3-06 review deferred adding a new status enum until a concrete
   filtering use case emerges. Same revisit window.
-- **Cumulative admin-UI deferral** — three MVP3 tasks each deferred
-  their admin UI surface (batch reparse trigger / corporate-action
-  preview+confirm / backfill preview+confirm + needs_validation
-  surface). Product Owner verdict will decide whether to scope
-  MVP3-08 admin UI or open MVP4 with backend-API-only admin tools.
-- **Test-fixture rollback warnings** — three `SAWarning` events
-  during test teardown, all from deliberate-rollback paths in
-  IntegrityError translators. Not a regression but a `conftest.py`
-  hygiene item; could be silenced with a savepoint-style fixture
-  wrapper if Tech Lead considers it noise.
-- **Pre-2023 boundary semantics** — MVP3-07 uses
-  `_PRE_2023_BOUNDARY=(2023, 1)` keyed on `report_quarter`. PRD §7.2
-  describes the value-unit transition in terms of filing `accepted_at
-  >= 2023-01-03`. Domain SME review should confirm the
-  report-quarter approximation is acceptable for the dry-run gate
-  (it is conservative: it triggers for Q4 2022 even when that filing
-  was actually submitted after 2023-01-03 and would parse as
-  dollars).
+- **Cumulative admin-UI deferral** — **RESOLVED** by MVP3-08; the
+  three deferred surfaces (batch reparse trigger, corporate-action
+  preview+confirm, backfill preview+confirm + needs_validation queue)
+  now ship in the consolidated admin panel.
+- **Test-fixture rollback warnings** — accepted by Tech Lead as
+  structurally benign; not a merge blocker. Backlog item: restructure
+  `conftest.py` to use `connection.begin_nested()` (savepoints) so
+  service-level rollbacks don't reach the outer connection
+  transaction. Touches all ~634 tests; defer to a focused conftest
+  hardening task in the MVP4 backlog.
+- **Pre-2023 boundary semantics** — **RESOLVED** as SME C3. The
+  constant has been renamed `_PRE_DOLLARS_BOUNDARY_REPORT_QUARTER`
+  with an explanatory comment that it is a conservative
+  report-quarter proxy for PRD §7.2's canonical
+  `accepted_at >= 2023-01-03` rule (the parser at
+  `app/edgar/parsers/value_units.py` enforces the accepted_at form
+  correctly).
+- **Readiness service does not consume new MVP3-06/07 finding
+  rule_codes** — SME C2. Filed as
+  `docs/tasks/2026-05-11_13f-mvp3-09-readiness-integration.md` (stub).
+  Touches the user-facing readiness contract and `_quarter_health`;
+  needs its own Tech Lead + PO review before implementation begins.

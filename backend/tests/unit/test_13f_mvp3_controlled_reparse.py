@@ -317,3 +317,82 @@ def test_controlled_reparse_rejects_override_belonging_to_different_filing(db_se
             override_id=override_for_a.id,
             validation_gate=lambda *_: (True, []),
         )
+
+
+def _restatement_amendment(
+    db_session,
+    manager: InstitutionManager,
+    *,
+    accession: str,
+    is_active: bool = False,
+) -> Filing13F:
+    """Pending RESTATEMENT amendment row used by the SME C1 regression test."""
+    filing = Filing13F(
+        manager_id=manager.id,
+        cik=manager.cik,
+        accession_no=accession,
+        accession_number=accession,
+        form_type="13F-HR/A",
+        period_of_report=date(2026, 3, 31),
+        filed_at=date(2026, 5, 18),
+        filing_date=date(2026, 5, 18),
+        accepted_at=datetime(2026, 5, 18, 17, tzinfo=timezone.utc),
+        report_quarter="2026-Q1",
+        quarter_end_date=date(2026, 3, 31),
+        is_active_for_manager_period=is_active,
+        # is_latest_for_period uses a partial unique index per
+        # (manager_id, quarter_end_date) WHERE is_latest_for_period=true;
+        # the original is the current latest until the amendment is activated.
+        is_latest_for_period=False,
+        parse_status="pending",
+        report_type="holdings_report",
+        coverage_completeness="complete",
+        is_amendment=True,
+        amendment_type="RESTATEMENT",
+    )
+    db_session.add(filing)
+    db_session.flush()
+    return filing
+
+
+def test_controlled_reparse_validation_failure_restores_active_filing_for_amendment(db_session):
+    """SME C1 regression: a pending RESTATEMENT amendment whose validation gate
+    fails must not be left active. ingest_holdings_for_filing flips
+    is_active_for_manager_period as part of its success path (committed
+    before the validation gate runs); the controlled-reparse contract must
+    roll that flip back on validation failure, including re-promoting the
+    prior active original filing.
+    """
+    manager = _manager(db_session)
+    # Accessions seeded from _CIK_SEQ so re-runs of this test do not collide
+    # with rows committed by a previous run that survived conftest teardown.
+    seed = next(_CIK_SEQ)
+    original = _filing(db_session, manager, f"{seed:010d}-26-000001")
+    amendment = _restatement_amendment(
+        db_session,
+        manager,
+        accession=f"{seed:010d}-26-000002",
+    )
+    db_session.flush()
+
+    assert original.is_active_for_manager_period is True
+    assert amendment.is_active_for_manager_period is False
+
+    result = controlled_reparse_accession(
+        db_session,
+        amendment.accession_number,
+        infotable_bytes=_infotable(rows=1),
+        validation_gate=lambda *_: (False, ["value_unit_sanity_still_open"]),
+    )
+
+    db_session.expire_all()
+    refreshed_amendment = db_session.get(Filing13F, amendment.id)
+    refreshed_original = db_session.get(Filing13F, original.id)
+
+    assert result.status == "validation_failed"
+    assert refreshed_amendment.is_active_for_manager_period is False, (
+        "amendment must not stay active after validation gate failure"
+    )
+    assert refreshed_original.is_active_for_manager_period is True, (
+        "prior active original must be restored when amendment activation is rolled back"
+    )

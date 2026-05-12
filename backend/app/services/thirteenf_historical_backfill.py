@@ -52,7 +52,16 @@ logger = logging.getLogger(__name__)
 HISTORICAL_BACKFILL_RULE_CODE = "HISTORICAL_BACKFILL_NEEDS_VALIDATION"
 JOB_TYPE = "historical_backfill"
 _ACTIVE_JOB_STATUSES = ("queued", "running", "cancel_requested")
-_PRE_2023_BOUNDARY = (2023, 1)  # any quarter strictly before 2023-Q1 is pre-2023
+# Conservative report-quarter proxy for PRD §7.2's canonical value-unit
+# transition rule, which is keyed on filing ``accepted_at >= 2023-01-03`` (the
+# parser at ``app/edgar/parsers/value_units.py`` enforces the accepted_at form
+# correctly). Q4 2022 is the boundary case: filings for period_of_report
+# 2022-12-31 are commonly submitted in Jan-Feb 2023 and parse correctly as
+# dollars under the accepted_at rule, but at backfill-preview time we do not
+# know each accession's accepted_at; flagging any report_quarter < 2023-Q1 is
+# the safe over-approximation that keeps the value-unit risk visible to the
+# admin. (SME C3, MVP3 end-to-end review.)
+_PRE_DOLLARS_BOUNDARY_REPORT_QUARTER = (2023, 1)
 
 
 # Discovery returns metadata for accessions to consider for a (manager, quarter).
@@ -494,7 +503,7 @@ def _enumerate_quarters(start_quarter: str, end_quarter: str) -> list[str]:
 
 
 def _range_includes_pre_2023(quarters: list[str]) -> bool:
-    return any(_quarter_key(q) < _PRE_2023_BOUNDARY for q in quarters)
+    return any(_quarter_key(q) < _PRE_DOLLARS_BOUNDARY_REPORT_QUARTER for q in quarters)
 
 
 def _resolve_managers(

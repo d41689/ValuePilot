@@ -16,6 +16,12 @@ from sqlalchemy.orm import Session
 _CUSIP_RE = re.compile(r"^[A-Z0-9]{9}$")
 _RECONCILE_THRESHOLD = 0.001  # 0.1%
 
+# Persisted as ``QualityFinding13F.rule_code`` via _persist_quality_findings.
+# Kept UPPER_SNAKE for parity with MVP3-06 / MVP3-07 rule codes so a future
+# admin findings dashboard can filter by rule_code without per-source casing
+# normalization (TL1, MVP3 end-to-end review).
+VALUE_UNIT_SANITY_RULE_CODE = "VALUE_UNIT_SANITY"
+
 
 @dataclass
 class QualityIssue:
@@ -398,7 +404,7 @@ def _check_value_unit_sanity(db: Session, report: QualityReport, quarter: str | 
     for row in rows:
         ratio = float(row.jump_ratio)
         report.add(
-            "value_unit_sanity",
+            VALUE_UNIT_SANITY_RULE_CODE,
             "warning",
             (
                 "Suspicious reported value jump "
@@ -416,4 +422,4 @@ def _check_value_unit_sanity(db: Session, report: QualityReport, quarter: str | 
         )
 
     if not rows:
-        report.add("value_unit_sanity", "info", "No suspicious 1000x reported value jumps found")
+        report.add(VALUE_UNIT_SANITY_RULE_CODE, "info", "No suspicious 1000x reported value jumps found")
