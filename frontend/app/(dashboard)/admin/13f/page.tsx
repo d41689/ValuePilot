@@ -1,7 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useMutation, useQueryClient } from '@tanstack/react-query';
 import {
   Activity,
   AlertTriangle,
@@ -22,8 +22,36 @@ import type { ComponentProps } from 'react';
 
 import apiClient from '@/lib/api/client';
 import thirteenfAdmin from '@/lib/thirteenfAdmin';
+import { AdminPageLayout } from '@/components/admin13f/AdminPageLayout';
+import { AdminLoadingState } from '@/components/admin13f/AdminLoadingState';
+// AdminEmptyState + AdminErrorState ship as new shared components
+// in MVP6-01 but the existing page's inline empty-state divs are
+// preserved byte-for-byte (per the MVP6-01 SR2 scope refinement);
+// MVP6-02..07 route-owner tickets adopt them in each section as
+// they migrate.
 import { DrawerShell, MetricTile } from '@/components/admin13f/Admin13FPrimitives';
 import { ManagerCikDialogs } from '@/components/admin13f/ManagerCikDialogs';
+import {
+  useAmendmentDetailQuery,
+  useAmendmentsQuery,
+  useEdgarRateLimitQuery,
+  useFilingsQuery,
+  useHoldingsCoverageQuery,
+  useJobDetailQuery,
+  useJobsQuery,
+  useManagersQuery,
+  useNeedsValidationQuery,
+  useParseRunsQuery,
+  usePendingAmendmentsQuery,
+  useQualityQuery,
+  useQuarterDetailQuery,
+  useQuartersQuery,
+  useReadinessQuery,
+  useTasksQuery,
+  useUnknownManagerPriorityQuery,
+  useUnresolvedCusipsQuery,
+  useWorkersQuery,
+} from '@/lib/admin13f/queries';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
@@ -55,7 +83,6 @@ import {
 } from '@/components/ui/table';
 
 const {
-  buildAdminJobsQueryPath,
   formatPercent,
   freshnessLine,
   jobPreviewRows,
@@ -134,136 +161,44 @@ export default function Admin13FPage() {
   const [jobStartedTo, setJobStartedTo] = useState('');
   const [jobSyncDate, setJobSyncDate] = useState('');
   const [jobQuarter, setJobQuarter] = useState('');
-  const readinessQuery = useQuery({
-    queryKey: ['admin-13f-readiness'],
-    queryFn: async () => (await apiClient.get('/admin/13f/readiness')).data,
+  // MVP6-01 Tier 3: the 20 admin/13f useQuery hooks moved to
+  // ``frontend/lib/admin13f/queries.ts``. Same queryKey + queryFn
+  // shapes as before so the inline mutation ``invalidateQueries``
+  // calls further down still hit the right caches.
+  const readinessQuery = useReadinessQuery();
+  const quartersQuery = useQuartersQuery();
+  const tasksQuery = useTasksQuery();
+  const managersQuery = useManagersQuery();
+  const jobsQuery = useJobsQuery({
+    status: jobStatusFilter,
+    jobType: jobTypeFilter,
+    startedFrom: jobStartedFrom,
+    startedTo: jobStartedTo,
+    syncDate: jobSyncDate,
+    quarter: jobQuarter,
   });
-  const quartersQuery = useQuery({
-    queryKey: ['admin-13f-quarters'],
-    queryFn: async () => (await apiClient.get('/admin/13f/quarters')).data,
-  });
-  const tasksQuery = useQuery({
-    queryKey: ['admin-13f-tasks'],
-    queryFn: async () => (await apiClient.get('/admin/13f/tasks')).data,
-  });
-  const managersQuery = useQuery({
-    queryKey: ['admin-13f-managers'],
-    queryFn: async () => (await apiClient.get('/admin/13f/managers')).data,
-  });
-  const jobsQuery = useQuery({
-    queryKey: [
-      'admin-13f-jobs',
-      jobStatusFilter,
-      jobTypeFilter,
-      jobStartedFrom,
-      jobStartedTo,
-      jobSyncDate,
-      jobQuarter,
-    ],
-    queryFn: async () => {
-      return (
-        await apiClient.get(
-          buildAdminJobsQueryPath({
-            status: jobStatusFilter,
-            jobType: jobTypeFilter,
-            startedFrom: jobStartedFrom,
-            startedTo: jobStartedTo,
-            syncDate: jobSyncDate,
-            quarter: jobQuarter,
-          })
-        )
-      ).data;
-    },
-    refetchInterval: 5000,
-  });
-  const qualityQuery = useQuery({
-    queryKey: ['admin-13f-quality'],
-    queryFn: async () => (await apiClient.get('/admin/13f/quality')).data,
-  });
-  const amendmentsQuery = useQuery({
-    queryKey: ['admin-13f-amendments'],
-    queryFn: async () => (await apiClient.get('/admin/13f/amendments')).data,
-  });
-  const pendingAmendmentsQuery = useQuery({
-    queryKey: ['admin-13f-amendments-pending'],
-    queryFn: async () => (await apiClient.get('/admin/13f/amendments/pending?page=1&page_size=50')).data,
-  });
-  const filingsQuery = useQuery({
-    queryKey: ['admin-13f-filings', filingParseStatus],
-    queryFn: async () => {
-      const params = new URLSearchParams({ page: '1', page_size: '50' });
-      if (filingParseStatus !== 'all') params.set('parse_status', filingParseStatus);
-      return (await apiClient.get(`/admin/13f/filings?${params.toString()}`)).data;
-    },
-  });
+  const qualityQuery = useQualityQuery();
+  const amendmentsQuery = useAmendmentsQuery();
+  const pendingAmendmentsQuery = usePendingAmendmentsQuery();
+  const filingsQuery = useFilingsQuery(filingParseStatus);
   const coverageQuarter =
     typeof readinessQuery.data?.latest_usable_quarter === 'string'
       ? readinessQuery.data.latest_usable_quarter
       : null;
-  const holdingsCoverageQuery = useQuery({
-    queryKey: ['admin-13f-holdings-coverage', coverageQuarter],
-    queryFn: async () => {
-      const params = new URLSearchParams();
-      if (coverageQuarter) params.set('report_quarter', coverageQuarter);
-      const suffix = params.toString() ? `?${params.toString()}` : '';
-      return (await apiClient.get(`/admin/13f/holdings/coverage${suffix}`)).data;
-    },
-    enabled: Boolean(coverageQuarter),
+  const holdingsCoverageQuery = useHoldingsCoverageQuery(coverageQuarter);
+  const unresolvedCusipsQuery = useUnresolvedCusipsQuery();
+  const workersQuery = useWorkersQuery();
+  const edgarRateLimitQuery = useEdgarRateLimitQuery();
+  const jobDetailQuery = useJobDetailQuery(selectedJobId);
+  const amendmentDetailQuery = useAmendmentDetailQuery(selectedAmendmentAccession);
+  const parseRunsQuery = useParseRunsQuery(selectedFilingAccession);
+  const quarterDetailQuery = useQuarterDetailQuery({
+    selectedQuarter,
+    quarterFilingStatus,
+    quarterFilingOffset,
   });
-  const unresolvedCusipsQuery = useQuery({
-    queryKey: ['admin-13f-unresolved-cusips'],
-    queryFn: async () => (await apiClient.get('/admin/13f/cusip-mappings/unresolved?page=1&page_size=50')).data,
-  });
-  const workersQuery = useQuery({
-    queryKey: ['admin-13f-workers'],
-    queryFn: async () => (await apiClient.get('/admin/13f/workers')).data,
-    refetchInterval: 5000,
-  });
-  const edgarRateLimitQuery = useQuery({
-    queryKey: ['admin-13f-edgar-rate-limit'],
-    queryFn: async () => (await apiClient.get('/admin/13f/edgar-rate-limit')).data,
-    refetchInterval: 30000,
-  });
-  const jobDetailQuery = useQuery({
-    queryKey: ['admin-13f-job-detail', selectedJobId],
-    queryFn: async () => (await apiClient.get(`/admin/13f/jobs/${selectedJobId}`)).data,
-    enabled: selectedJobId !== null,
-    refetchInterval: selectedJobId === null ? false : 5000,
-  });
-  const amendmentDetailQuery = useQuery({
-    queryKey: ['admin-13f-amendment-detail', selectedAmendmentAccession],
-    queryFn: async () => (await apiClient.get(`/admin/13f/amendments/${selectedAmendmentAccession}`)).data,
-    enabled: selectedAmendmentAccession !== null,
-  });
-  const parseRunsQuery = useQuery({
-    queryKey: ['admin-13f-parse-runs', selectedFilingAccession],
-    queryFn: async () =>
-      (await apiClient.get(`/admin/13f/filings/${selectedFilingAccession}/parse-runs?page=1&page_size=50`)).data,
-    enabled: selectedFilingAccession !== null,
-  });
-  const quarterDetailQuery = useQuery({
-    queryKey: ['admin-13f-quarter-detail', selectedQuarter, quarterFilingStatus, quarterFilingOffset],
-    queryFn: async () => {
-      const params = new URLSearchParams({
-        filing_limit: '25',
-        filing_offset: String(quarterFilingOffset),
-      });
-      if (quarterFilingStatus !== 'all') params.set('filing_status', quarterFilingStatus);
-      return (await apiClient.get(`/admin/13f/quarters/${selectedQuarter}/detail?${params.toString()}`)).data;
-    },
-    enabled: selectedQuarter !== null,
-  });
-  const needsValidationQuery = useQuery({
-    queryKey: ['admin-13f-backfill-needs-validation'],
-    queryFn: async () => (await apiClient.get('/admin/13f/backfill/needs-validation')).data,
-    refetchInterval: 60_000,
-  });
-  const unknownManagerPriorityQuery = useQuery({
-    queryKey: ['admin-13f-oracles-lens-unknown-manager-priority'],
-    queryFn: async () =>
-      (await apiClient.get('/admin/13f/oracles-lens/unknown-manager-priority')).data,
-    refetchInterval: 60_000,
-  });
+  const needsValidationQuery = useNeedsValidationQuery();
+  const unknownManagerPriorityQuery = useUnknownManagerPriorityQuery();
   // MVP5-05: inline manager_type editor state. Single dialog
   // instance lifted to component scope so we don't render N dialogs
   // per managers row; the dialog reads ``managerTypeEditor`` to
@@ -801,17 +736,10 @@ export default function Admin13FPage() {
   }
 
   return (
-    <div className="space-y-5">
-      <div className="flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
-        <div>
-          <div className="text-xs font-semibold uppercase text-muted-foreground">
-            Admin Data Operations
-          </div>
-          <h1 className="mt-1 text-2xl font-semibold tracking-tight">13F Operations</h1>
-          <p className="mt-2 max-w-3xl text-sm text-muted-foreground">
-            Readiness, quarter health, admin tasks, manager review, and safe ingestion jobs.
-          </p>
-        </div>
+    <AdminPageLayout
+      title="13F Operations"
+      description="Readiness, quarter health, admin tasks, manager review, and safe ingestion jobs."
+      actions={
         <Button
           type="button"
           variant="outline"
@@ -835,7 +763,97 @@ export default function Admin13FPage() {
           <RefreshCw className="mr-2 h-4 w-4" />
           Refresh
         </Button>
-      </div>
+      }
+    >
+      {/* MVP6-01 Overview hub — navigation cards linking to each
+          functional surface. While MVP6-02..07 are pending, each card
+          is an anchor link to the relevant section below; once a
+          route ships, that ticket flips the href to a real route. */}
+      <section aria-label="13F admin surfaces">
+        <div className="mb-2 text-xs font-semibold uppercase text-muted-foreground">
+          Surfaces
+        </div>
+        <div className="grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-4">
+          <a
+            href="#managers"
+            className="block rounded-md border border-border/70 p-3 transition-colors hover:bg-muted/40"
+          >
+            <div className="text-xs uppercase text-muted-foreground">Managers</div>
+            <div className="mt-1 text-base font-semibold">
+              {managersQuery.isPending ? '—' : `${managersQuery.data?.items?.length ?? 0} managers`}
+            </div>
+            <div className="text-xs text-muted-foreground">CIK review · classification · backfill</div>
+          </a>
+          <a
+            href="#sync"
+            className="block rounded-md border border-border/70 p-3 transition-colors hover:bg-muted/40"
+          >
+            <div className="text-xs uppercase text-muted-foreground">Daily Sync</div>
+            <div className="mt-1 text-base font-semibold">
+              {edgarRateLimitQuery.isPending ? '—' : edgarRateLimit.mode}
+            </div>
+            <div className="text-xs text-muted-foreground">EDGAR rate limit · no-index calendar</div>
+          </a>
+          <a
+            href="#filings"
+            className="block rounded-md border border-border/70 p-3 transition-colors hover:bg-muted/40"
+          >
+            <div className="text-xs uppercase text-muted-foreground">Filings</div>
+            <div className="mt-1 text-base font-semibold">
+              {pendingAmendmentsQuery.isPending
+                ? '—'
+                : `${pendingAmendmentsQuery.data?.items?.length ?? 0} pending`}
+            </div>
+            <div className="text-xs text-muted-foreground">Parse status · amendments · reparse</div>
+          </a>
+          <a
+            href="#holdings"
+            className="block rounded-md border border-border/70 p-3 transition-colors hover:bg-muted/40"
+          >
+            <div className="text-xs uppercase text-muted-foreground">Holdings</div>
+            <div className="mt-1 text-base font-semibold">
+              {holdingsCoverageQuery.isPending
+                ? '—'
+                : holdingsCoverage.linkedRatioLabel || '—'}
+            </div>
+            <div className="text-xs text-muted-foreground">Coverage · CUSIP workflow</div>
+          </a>
+          <a
+            href="#jobs"
+            className="block rounded-md border border-border/70 p-3 transition-colors hover:bg-muted/40"
+          >
+            <div className="text-xs uppercase text-muted-foreground">Jobs</div>
+            <div className="mt-1 text-base font-semibold">
+              {jobsQuery.isPending ? '—' : `${jobsQuery.data?.items?.length ?? 0} runs`}
+            </div>
+            <div className="text-xs text-muted-foreground">Queue · retry · stale-lock</div>
+          </a>
+          <a
+            href="#readiness"
+            className="block rounded-md border border-border/70 p-3 transition-colors hover:bg-muted/40"
+          >
+            <div className="text-xs uppercase text-muted-foreground">Readiness</div>
+            <div className="mt-1 text-base font-semibold">
+              {readinessQuery.isPending
+                ? '—'
+                : readiness.readinessLevel.replaceAll('_', ' ')}
+            </div>
+            <div className="text-xs text-muted-foreground">Blockers · quality findings</div>
+          </a>
+          <a
+            href="#oracles-lens"
+            className="block rounded-md border border-border/70 p-3 transition-colors hover:bg-muted/40"
+          >
+            <div className="text-xs uppercase text-muted-foreground">Oracle&apos;s Lens</div>
+            <div className="mt-1 text-base font-semibold">
+              {unknownManagerPriorityQuery.isPending
+                ? '—'
+                : `${(unknownManagerPriorityQuery.data?.items as unknown[] | undefined)?.length ?? 0} unknown`}
+            </div>
+            <div className="text-xs text-muted-foreground">Unknown-manager priority queue</div>
+          </a>
+        </div>
+      </section>
 
       <Card className="rounded-md">
         <CardHeader className="pb-3">
@@ -853,10 +871,10 @@ export default function Admin13FPage() {
         </CardHeader>
         <CardContent className="space-y-4">
           {isLoading ? (
-            <div className="flex items-center gap-2 text-sm text-muted-foreground">
-              <Loader2 className="h-4 w-4 animate-spin" />
-              Loading 13F operations state...
-            </div>
+            <AdminLoadingState
+              variant="compact"
+              label="Loading 13F operations state..."
+            />
           ) : null}
           <div className="grid gap-3 md:grid-cols-5">
             <MetricTile label="Latest usable" value={readiness.latestUsableQuarter} />
@@ -3617,6 +3635,6 @@ export default function Admin13FPage() {
               )}
         </DrawerShell>
       ) : null}
-    </div>
+    </AdminPageLayout>
   );
 }

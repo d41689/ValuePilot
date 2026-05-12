@@ -2,10 +2,12 @@
 
 ## Status
 
-**DRAFT — not yet opened.** This plan becomes active once
-Pre-MVP6-02 (`docs/tasks/2026-05-12_pre-mvp6-02-admin-ia-split-plan.md`)
-gets PO sign-off. Until then, treat this file as a preview of the
-MVP6 task sequence; **do not start any MVP6 ticket yet**.
+**ACTIVE (PO sign-off 2026-05-12).** Pre-MVP6-02 D1–D7
+decisions accepted as written, including the five engineering
+refinements (staged migration via in-place extraction,
+Tier 2/3 shared layer, query module, toast vs alert convention,
+MVP6-01 renamed to "Overview Hub + Layout Shell",
+MVP6-07 soft dependency via coming-soon links).
 
 Authoritative source for the seven D1–D7 design decisions that
 shape this plan is Pre-MVP6-02. This file is the execution-side
@@ -133,9 +135,10 @@ gate, not outputs of MVP6.
   (`backend/scripts/seed_13f_dev_fixture.py`) stays a manual
   dev tool through MVP6; CI integration is a separate ticket.
 
-## Open Until PO Sign-Off
+## Sign-Off Trail
 
-- [ ] PO signs off on Pre-MVP6-02 D1–D7 decisions.
-- [ ] PO authorizes MVP6 kickoff (i.e. MVP6-01 opens).
-- [ ] This file flips from **DRAFT** to **active** when the
-      above two close.
+- [x] PO signed off on Pre-MVP6-02 D1–D7 decisions (2026-05-12).
+- [x] PO authorized MVP6 kickoff (2026-05-12).
+- [x] This file is **ACTIVE** as of 2026-05-12.
+- [x] MVP6-01 task spec opened at
+      `docs/tasks/2026-05-12_mvp6-01-overview-hub-layout-shell.md`.
