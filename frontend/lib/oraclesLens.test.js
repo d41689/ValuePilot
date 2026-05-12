@@ -125,7 +125,10 @@ test('normalizeOracleLensRows emphasizes signal score with explanations', () => 
   ]);
 });
 
-test('buildOracleLensQueryParams serializes V1 dashboard filters', () => {
+test('buildOracleLensQueryParams serializes V1 dashboard filters and defaults to persisted mode', () => {
+  // MVP4-07a: default callers (no usePersistedScores) get
+  // use_persisted_scores=true appended so the page consumes the
+  // canonical MVP4-03+ persisted-scores table.
   assert.equal(
     buildOracleLensQueryParams({
       period: '2031-Q4',
@@ -134,8 +137,23 @@ test('buildOracleLensQueryParams serializes V1 dashboard filters', () => {
       superinvestorOnly: false,
       sort: 'conviction',
     }),
-    'period=2031-Q4&min_holders=5&superinvestor_only=false&min_signal_score=2.5&sort=conviction'
+    'period=2031-Q4&min_holders=5&superinvestor_only=false&min_signal_score=2.5&sort=conviction&use_persisted_scores=true'
   );
+});
+
+test('buildOracleLensQueryParams honors usePersistedScores=false debug opt-out', () => {
+  // MVP4-07a: the one-release-cycle escape hatch (?persisted=0 on
+  // the page) must turn the persisted flag OFF entirely, not pass
+  // use_persisted_scores=false. The backend treats the param's
+  // absence as the legacy in-memory path.
+  const params = buildOracleLensQueryParams({
+    period: '2026-Q1',
+    minHolders: 3,
+    sort: 'signal_weighted_consensus',
+    usePersistedScores: false,
+  });
+  assert.ok(!params.includes('use_persisted_scores'),
+    `expected no use_persisted_scores param, got: ${params}`);
 });
 
 test('radarBubbles maps candidate rows to compact visual signals', () => {
@@ -394,4 +412,64 @@ test('normalizeStockHolderAggregation flags attribution-only caveats', () => {
   assert.equal(holders.hasCaveats, true);
   assert.equal(holders.attributionCaveatCountLabel, '2');
   assert.equal(holders.topHolders[0].portfolioWeightLabel, '—');
+});
+
+test('normalizeOracleLensRows surfaces MVP4-03b score_source and MVP4-05 confidence_demotion_reasons', () => {
+  // Persisted-mode payload: backend marks score_source="persisted"
+  // and includes confidence_demotion_reasons inside
+  // score_explanation. The page renders both — a "persisted" badge
+  // in the ranking row and a list of {code, demotedTo} pairs in
+  // the drilldown.
+  const rows = normalizeOracleLensRows([
+    {
+      stock_id: 42,
+      ticker: 'PERS',
+      company_name: 'Persisted Co',
+      signal_weighted_consensus_score: 3.2,
+      score_confidence: 'medium_confidence',
+      conviction_score: 73,
+      consensus_count: 4,
+      score_source: 'persisted',
+      score_explanation: {
+        primary_reasons: ['4 high-signal managers hold this stock'],
+        confidence_demotion_reasons: [
+          { code: 'PARTIAL_COVERAGE', demoted_to: 'medium_confidence' },
+          { code: 'AMENDMENTS_PENDING', demoted_to: 'medium_confidence' },
+          { malformed: true }, // must be ignored — no `code`
+        ],
+      },
+      caution_flags: [
+        { code: 'PARTIAL_COVERAGE', severity: 'medium', scope: 'row', label: 'Combination Report' },
+        { code: 'AMENDMENTS_PENDING', severity: 'medium', scope: 'row', label: 'Amendment pending' },
+      ],
+    },
+  ]);
+
+  assert.equal(rows.length, 1);
+  const row = rows[0];
+  assert.equal(row.scoreSource, 'persisted');
+  assert.equal(row.confidenceDemotionReasons.length, 2,
+    'malformed entries must be dropped, valid ones preserved');
+  assert.deepEqual(row.confidenceDemotionReasons[0], {
+    code: 'PARTIAL_COVERAGE',
+    demotedTo: 'medium_confidence',
+  });
+  assert.deepEqual(row.confidenceDemotionReasons[1], {
+    code: 'AMENDMENTS_PENDING',
+    demotedTo: 'medium_confidence',
+  });
+  // In-memory baseline still recognized — score_source is null when
+  // the backend doesn't supply it.
+  const legacyRows = normalizeOracleLensRows([
+    {
+      stock_id: 43,
+      ticker: 'LEGY',
+      company_name: 'Legacy Co',
+      signal_weighted_consensus_score: 2.0,
+      score_confidence: 'high_confidence',
+      consensus_count: 3,
+    },
+  ]);
+  assert.equal(legacyRows[0].scoreSource, null);
+  assert.deepEqual(legacyRows[0].confidenceDemotionReasons, []);
 });

@@ -1,6 +1,6 @@
 'use client';
 
-import { useMemo, useState, type ComponentProps } from 'react';
+import { useEffect, useMemo, useState, type ComponentProps } from 'react';
 import Link from 'next/link';
 import { useQuery } from '@tanstack/react-query';
 import {
@@ -105,6 +105,9 @@ type OracleLensPayload = {
     price_coverage_ratio?: number;
     price_backfill_required?: boolean;
     price_backfill_hint?: string | null;
+    // MVP4-03b/MVP4-07a: count of items whose score came from the
+    // canonical oracles_lens_signals table (persisted mode).
+    persisted_score_count?: number;
   };
   periods?: Array<{
     label: string;
@@ -131,6 +134,20 @@ function formatCoveragePercent(value: number | null | undefined) {
 }
 
 export default function OraclesLensPage() {
+  // MVP4-07a: persisted-mode is the default; ``?persisted=0`` is the
+  // one-release-cycle debug escape hatch for A/B comparing against the
+  // legacy in-memory dashboard formula. We read window.location
+  // directly (not useSearchParams) to avoid needing a Suspense
+  // boundary around the whole page just for a debug-only feature.
+  // Initial render sees the default (true); a client-side effect
+  // pulls the URL value once on mount.
+  const [usePersistedScores, setUsePersistedScores] = useState(true);
+  useEffect(() => {
+    if (typeof window !== 'undefined') {
+      const flag = new URLSearchParams(window.location.search).get('persisted');
+      setUsePersistedScores(flag !== '0');
+    }
+  }, []);
   const [selectedStockId, setSelectedStockId] = useState<number | null>(null);
   const [filters, setFilters] = useState({
     period: '',
@@ -147,8 +164,9 @@ export default function OraclesLensPage() {
         minSignalScore: filters.minSignalScore ? Number(filters.minSignalScore) : undefined,
         superinvestorOnly: filters.superinvestorOnly,
         sort: filters.sort,
+        usePersistedScores,
       }),
-    [filters]
+    [filters, usePersistedScores]
   );
   const dashboardQuery = useQuery({
     queryKey: ['oracles-lens-dashboard', queryParams],
@@ -362,6 +380,24 @@ export default function OraclesLensPage() {
           {coverage?.price_backfill_hint ? (
             <div className="mt-4 rounded-md border border-border/70 bg-muted/40 px-3 py-2 font-mono text-xs text-muted-foreground">
               {coverage.price_backfill_hint}
+            </div>
+          ) : null}
+          {/* MVP4-07a: when the page is reading from the canonical
+              persisted-scores table (MVP4-03b), tell the operator how
+              many items in the current view come from it. The line
+              is hidden in legacy in-memory mode (count is 0 or
+              missing) so it doesn't add visual noise to the default
+              path. */}
+          {typeof coverage?.persisted_score_count === 'number' &&
+          coverage.persisted_score_count > 0 ? (
+            <div className="mt-4 flex items-center gap-2 text-xs text-muted-foreground">
+              <Badge variant="outline" className="rounded-md">
+                {coverage.persisted_score_count} persisted
+              </Badge>
+              <span>
+                items use the canonical Oracle&apos;s Lens score table
+                ({usePersistedScores ? 'persisted mode' : 'in-memory mode'}).
+              </span>
             </div>
           ) : null}
         </CardContent>
@@ -609,6 +645,11 @@ export default function OraclesLensPage() {
                       <Badge variant={safeBadgeVariant(row.confidenceTone)} className="mt-2">
                         {row.confidence} confidence
                       </Badge>
+                      {row.scoreSource === 'persisted' ? (
+                        <Badge variant="outline" className="ml-1 mt-2 rounded-md">
+                          persisted
+                        </Badge>
+                      ) : null}
                     </TableCell>
                     <TableCell>
                       <div className="flex flex-wrap gap-1.5">
@@ -840,6 +881,27 @@ export default function OraclesLensPage() {
                   </div>
                 )}
               </div>
+
+              {selectedRow.confidenceDemotionReasons.length ? (
+                <div>
+                  <div className="text-xs font-semibold uppercase text-muted-foreground">
+                    Confidence demoted by
+                  </div>
+                  {/* MVP4-07a: surfaces the structured payload MVP4-03
+                      writes into score_explanation.confidence_demotion_reasons
+                      (PO MVP4-01 P2 #4 contract). The user can see
+                      "score_confidence is medium because PARTIAL_COVERAGE"
+                      without consulting the registry. */}
+                  <ul className="mt-2 space-y-1 text-xs text-muted-foreground">
+                    {selectedRow.confidenceDemotionReasons.map((reason) => (
+                      <li key={reason.code}>
+                        <span className="font-mono">{reason.code}</span>
+                        {reason.demotedTo ? ` → ${reason.demotedTo}` : null}
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              ) : null}
 
               <div>
                 <div className="text-xs font-semibold uppercase text-muted-foreground">

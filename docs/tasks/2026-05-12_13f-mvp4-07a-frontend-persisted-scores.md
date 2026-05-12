@@ -111,7 +111,52 @@ Acceptance criteria:
 - 2026-05-12: Started after MVP4-06 distinctive consensus landed.
   All four V1 persisted score columns now exist; 07a is the
   integration step. 07b admin UI is queued.
+- 2026-05-12: Implementation:
+  - `buildOracleLensQueryParams` defaults to emitting
+    `use_persisted_scores=true`; callers can opt out by passing
+    `usePersistedScores: false`.
+  - Oracle's Lens page reads `?persisted=0` from
+    `window.location.search` (via a client-side `useEffect`, not
+    `useSearchParams`, to avoid needing a Suspense boundary just
+    for a debug-only feature) and threads the value into the
+    filters chain.
+  - `normalizeOracleLensRows` now surfaces `scoreSource` (from
+    the persisted item's `score_source`) and
+    `confidenceDemotionReasons` (a sanitized list of
+    `{code, demotedTo}` pairs read from
+    `score_explanation.confidence_demotion_reasons`).
+  - Ranking-table row renders a `persisted` outline badge next to
+    the existing confidence badge when the score came from the
+    canonical table.
+  - Coverage header surfaces
+    `coverage.persisted_score_count` as a small badge + a
+    one-line note when the count is > 0.
+  - Drilldown adds a "Confidence demoted by" panel listing the
+    sanitized reasons (code + demoted_to arrow). Surfaces the
+    MVP4-01 PO P2 #4 contract end-to-end.
+  - `OracleLensPayload.coverage` TypeScript type extended with
+    optional `persisted_score_count` so the new field type-checks.
+- 2026-05-12: Tests:
+  - Updated the existing
+    `buildOracleLensQueryParams serializes V1 dashboard filters`
+    assertion to include the new `use_persisted_scores=true`
+    default.
+  - New `buildOracleLensQueryParams honors usePersistedScores=false
+    debug opt-out` confirms the param is OMITTED entirely when
+    the caller opts out (backend treats absence as legacy
+    in-memory path).
+  - New
+    `normalizeOracleLensRows surfaces MVP4-03b score_source and
+    MVP4-05 confidence_demotion_reasons` test confirms persisted
+    payload parses with badge + reasons, legacy in-memory shape
+    yields `scoreSource=null` + `confidenceDemotionReasons=[]`,
+    and malformed reason entries are dropped.
+- 2026-05-12: Scope guard — no new backend endpoint, no schema
+  change, no server-side code change in `dashboard.py`.
 
 ## Verification Results
 
-- Pending Docker run.
+- `docker compose exec web node --test lib/oraclesLens.test.js` -> 15 passed (was 14; +1 new MVP4-07a test).
+- `docker compose exec web npm run lint` -> No ESLint warnings or errors.
+- `docker compose exec web npm run build` -> compiled successfully; static pages prerender clean (the `useSearchParams`-needs-Suspense issue was avoided by reading `window.location` on mount instead).
+- `docker compose exec api pytest -q` -> 741 passed (unchanged), 0 warnings — backend contract is stable, no shape regression from the new frontend caller.

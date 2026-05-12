@@ -74,6 +74,13 @@ function buildOracleLensQueryParams(filters = {}) {
   if (filters.sort) {
     params.set('sort', filters.sort);
   }
+  // MVP4-07a: default to the persisted MVP4-03/04/05/06 score path
+  // unless the caller explicitly opts out with usePersistedScores=false
+  // (kept available for one release as a debug escape hatch in case
+  // the canonical scores diverge from the legacy in-memory formula).
+  if (filters.usePersistedScores !== false) {
+    params.set('use_persisted_scores', 'true');
+  }
   return params.toString();
 }
 
@@ -312,6 +319,19 @@ function normalizeOracleLensRows(items) {
         : {};
     const quality = normalizeQualityOverlay(item?.quality_overlay);
     const valuation = normalizeValuationReference(item);
+    // MVP4-07a: surface MVP4-03b's per-item score_source and
+    // MVP4-05 / MVP4-01 P2#4's confidence_demotion_reasons so the
+    // ranking table can render a "persisted" badge and the drilldown
+    // can render "score_confidence is medium because PARTIAL_COVERAGE".
+    const rawDemotionReasons = Array.isArray(explanation.confidence_demotion_reasons)
+      ? explanation.confidence_demotion_reasons
+      : [];
+    const confidenceDemotionReasons = rawDemotionReasons
+      .filter((entry) => entry && typeof entry === 'object' && typeof entry.code === 'string')
+      .map((entry) => ({
+        code: entry.code,
+        demotedTo: typeof entry.demoted_to === 'string' ? entry.demoted_to : null,
+      }));
     return {
       stockId: item.stock_id,
       ticker: item.ticker ?? '—',
@@ -342,6 +362,8 @@ function normalizeOracleLensRows(items) {
       topHolders: Array.isArray(item.top_holders) ? item.top_holders : [],
       cautionFlags: primaryCautionFlags(item.caution_flags),
       cautionGroups: groupCautionFlags(item.caution_flags),
+      scoreSource: typeof item.score_source === 'string' ? item.score_source : null,
+      confidenceDemotionReasons,
     };
   });
 }
