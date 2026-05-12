@@ -20,6 +20,15 @@ def read_oracles_lens_dashboard(
     min_signal_score: float | None = Query(None),
     limit: int = Query(50, ge=1, le=500),
     sort: str = Query("signal_weighted_consensus"),
+    use_persisted_scores: bool = Query(
+        False,
+        description=(
+            "MVP4-03b: when true, return only stocks with a persisted "
+            "oracles_lens_signals row for the requested period and the "
+            "current SCORE_VERSION; the signal-weighted score comes "
+            "from the table rather than the in-memory dashboard formula."
+        ),
+    ),
     db: Session = Depends(get_db),
 ) -> Any:
     try:
@@ -32,6 +41,7 @@ def read_oracles_lens_dashboard(
             min_signal_score=min_signal_score,
             limit=limit,
             sort=sort,
+            use_persisted_scores=use_persisted_scores,
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc

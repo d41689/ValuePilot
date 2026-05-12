@@ -298,3 +298,36 @@ TDD (test file `tests/unit/test_13f_mvp4_signal_weighted_score.py`):
 
 - `docker compose exec api pytest -q tests/unit/test_13f_mvp4_signal_weighted_score.py` -> 20 passed.
 - `docker compose exec api pytest -q` -> **701 passed** (was 681 pre-MVP4-03; +20), 0 warnings.
+
+## Class B Caveat Backlog (2026-05-11 PO design call)
+
+The MVP4-03 caveat-handling rule is **Class A — delta-only
+suppression**: certain caveats invalidate only the cross-quarter
+delta, so we zero ``action_adjustment`` but keep the snapshot
+bonuses (top-10, 5%, streak). Product rationale: a manager who
+genuinely holds AAPL at 8.2% portfolio weight in their top 10 with
+a 6-quarter streak is still a real snapshot signal even when we
+cannot trust their quarter-over-quarter add/reduce classification.
+Zeroing the whole `position_signal_weight` would lose the 13F
+snapshot's actual value.
+
+**Backlog item — Class B snapshot-integrity caveats.** A separate
+caveat class corrupts the snapshot itself and should suppress the
+entire holder contribution from the primary score. Class B handling
+is not implemented in MVP4-03; it is a future filter task. Members:
+
+- pending amendment affecting the current quarter's filing
+- failed amendment affecting the current quarter's filing
+- unresolved CUSIP mapping (no `stock_id`)
+- 13F-NT / notice reported elsewhere (no direct holdings)
+- combination report when complete manager-level weight is required
+- confidential treatment that omits the current holder
+
+When wired up, Class B holders are dropped from the per-stock
+contribution sum (not just demoted to flat action) and counted
+separately in the response shape so the user sees both the
+qualifying-holder count and the excluded-holder count. This work
+should land before any production launch that exposes the
+signal-weighted score externally; until then, score_confidence
+demotion plus the per-holder caveat array on the API surface
+remain the user-facing signal that the underlying data is partial.

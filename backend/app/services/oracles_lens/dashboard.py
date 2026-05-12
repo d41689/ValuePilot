@@ -12,7 +12,9 @@ from sqlalchemy.orm import Session
 
 from app.models.facts import MetricFact
 from app.models.institutions import Filing13F, Holding13F, InstitutionManager
+from app.models.oracles_lens import OraclesLensSignal
 from app.models.stocks import Stock, StockPrice
+from app.services.oracles_lens.constants import SCORE_VERSION
 from app.services.oracles_lens.manager_signal import derive_manager_signal_profile
 
 
@@ -82,7 +84,17 @@ def build_oracles_lens_dashboard(
     min_signal_score: float | None = None,
     limit: int = 50,
     sort: str = "signal_weighted_consensus",
+    use_persisted_scores: bool = False,
 ) -> dict[str, Any]:
+    """Build the Oracle's Lens dashboard payload.
+
+    MVP4-03b: when ``use_persisted_scores=True``, the per-stock
+    score fields come from ``oracles_lens_signals`` (MVP4-03's
+    plan-§7.2 implementation) and stocks without a persisted row
+    for the (period, ``SCORE_VERSION``) are excluded. When
+    ``use_persisted_scores=False`` (default), the existing
+    in-memory formula in ``_stock_payload`` is used unchanged.
+    """
     periods = _periods(session, superinvestor_only=superinvestor_only)
     latest_complete = _latest_complete_period(periods, min_manager_coverage=min_holders)
 
@@ -152,6 +164,12 @@ def build_oracles_lens_dashboard(
         for stock_holdings in rows_by_stock.values()
         if len(stock_holdings) >= min_holders
     ]
+    if use_persisted_scores:
+        items, persisted_score_count = _apply_persisted_scores(
+            session, items, period_label=selected.label,
+        )
+    else:
+        persisted_score_count = 0
     if min_signal_score is not None:
         items = [item for item in items if item["signal_weighted_consensus_score"] >= min_signal_score]
 
@@ -195,6 +213,9 @@ def build_oracles_lens_dashboard(
         price_context=price_context,
         price_target_date=price_as_of_date,
     )
+    # MVP4-03b: surface how many items came from persisted scoring so
+    # observability stays honest when the persisted path is exercised.
+    coverage["persisted_score_count"] = persisted_score_count
     return {
         "period": selected.label,
         "period_end_date": selected.period_end_date.isoformat(),
@@ -204,6 +225,59 @@ def build_oracles_lens_dashboard(
         "periods": _period_timeline(periods, selected, latest_complete),
         "items": items,
     }
+
+
+def _apply_persisted_scores(
+    session: Session,
+    items: list[dict[str, Any]],
+    *,
+    period_label: str,
+    score_version: str = SCORE_VERSION,
+) -> tuple[list[dict[str, Any]], int]:
+    """Override per-item score fields with persisted oracles_lens_signals.
+
+    Stocks without a persisted row for (period_label, score_version)
+    are dropped from the returned list — no in-memory fallback to
+    avoid mixing the dashboard's legacy formula with MVP4-03's
+    plan-§7.2 implementation inside a single response. The two
+    formulas disagree; users should see one or the other, not both
+    side-by-side.
+    """
+    if not items:
+        return [], 0
+    stock_ids = [item["stock_id"] for item in items]
+    rows = (
+        session.query(OraclesLensSignal)
+        .filter(OraclesLensSignal.report_quarter == period_label)
+        .filter(OraclesLensSignal.score_version == score_version)
+        .filter(OraclesLensSignal.stock_id.in_(stock_ids))
+        .all()
+    )
+    persisted_by_stock = {row.stock_id: row for row in rows}
+
+    out: list[dict[str, Any]] = []
+    for item in items:
+        row = persisted_by_stock.get(item["stock_id"])
+        if row is None:
+            # No persisted score for this stock under the requested
+            # score_version → exclude from the response.
+            continue
+        item["signal_weighted_consensus_score"] = (
+            float(row.signal_weighted_consensus_score)
+            if row.signal_weighted_consensus_score is not None
+            else None
+        )
+        item["score_confidence"] = row.score_confidence
+        item["caution_flag_codes"] = list(row.caution_flag_codes or [])
+        # Merge persisted explanation keys (e.g.
+        # confidence_demotion_reasons) into the existing one so the
+        # dashboard's narrative survives the override.
+        existing_explanation = dict(item.get("score_explanation") or {})
+        existing_explanation.update(row.score_explanation or {})
+        item["score_explanation"] = existing_explanation
+        item["score_source"] = "persisted"
+        out.append(item)
+    return out, len(out)
 
 
 def _period_timeline(

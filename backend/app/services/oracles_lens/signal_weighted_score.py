@@ -119,7 +119,53 @@ def compute_position_signal_weight(
     add_intensity: Optional[Decimal],
     caveats: Iterable[str],
 ) -> PositionSignalWeightResult:
-    """Plan §7.2 position_signal_weight formula. Pure function; no DB."""
+    """Plan §7.2 position_signal_weight formula. Pure function; no DB.
+
+    Caveat-handling rule (PO-approved, 2026-05-11):
+
+    **Class A — delta-only caveats.** Suppress only
+    ``action_adjustment``; snapshot-derived inputs (portfolio_weight
+    base, top-10 bonus, weight-5% bonus, streak bonus) are still
+    rewarded because they describe the *current quarter's* holding
+    fact, not the cross-quarter delta. Score confidence is still
+    demoted to ``low`` (separately, by
+    ``determine_score_confidence``).
+
+    Class A includes:
+    - ``stale_until_recompute`` (MVP3-06 corporate-action recompute
+      pending — cross-quarter delta untrusted)
+    - ``HISTORICAL_BACKFILL_NEEDS_VALIDATION`` (MVP3-07 backfill
+      validation pending — cross-quarter delta untrusted)
+    - ``PRE_2023_PRE_HISTORY_UNAVAILABLE`` (D2 — streak / add
+      intensity right-censored; surfaces via the streak / intensity
+      caveats already collected by MVP4-02 primitives)
+    - ``OWNERSHIP_CHANGE_NEEDS_RECOMPUTE_*`` (alias for
+      ``stale_until_recompute``)
+
+    Product rationale: "this manager really does hold AAPL at 8.2%
+    portfolio weight in their top 10 with a 6-quarter streak" remains
+    a true snapshot signal even when we cannot trust the
+    quarter-over-quarter add/reduce/exit classification. A
+    snapshot-only contribution + a ``low`` confidence label is
+    honest; zeroing the whole position-signal-weight would lose the
+    13F snapshot's actual value.
+
+    **Class B — snapshot-integrity caveats** (NOT handled here).
+    These corrupt the snapshot itself and should suppress the entire
+    holder contribution from the primary score, not just the action
+    component:
+    - pending amendment affecting the current quarter's filing
+    - failed amendment affecting the current quarter's filing
+    - unresolved CUSIP mapping (no stock_id)
+    - 13F-NT / notice reported elsewhere (no direct holdings)
+    - combination report when complete manager-level weight is
+      required
+    - confidential treatment that omits the current holder
+
+    Class B handling is filed as a future task — see the MVP4-03
+    task log's "Class B caveats" backlog note. MVP4-03 ships only
+    the Class A suppression rule.
+    """
     caveat_set = set(caveats or ())
     base = Decimal(portfolio_weight) if portfolio_weight is not None else Decimal("0")
 
