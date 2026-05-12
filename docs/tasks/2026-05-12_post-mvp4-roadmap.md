@@ -1,12 +1,52 @@
 # Post-MVP4 Forward Roadmap
 
-Compiled 2026-05-12 after MVP4 end-to-end review closed. This is a
-**survey doc**, not a commitment. Items are sourced from existing
-PRDs / plans / review backlog; nothing here adds new scope beyond
-what's already approved or filed as backlog.
+Compiled 2026-05-12 after MVP4 end-to-end review closed; updated
+2026-05-12 after MVP5 closure + the PO Pre-MVP6 stabilization
+decision. This is a **survey + commitment doc** — the Pre-MVP6
+Stabilization Gate section is a recorded PO decision; the rest is
+still a survey.
 
 Pointer doc only — when an item is opened, the owner creates a real
 `docs/tasks/YYYY-MM-DD_*.md` task file and removes the line here.
+
+## Current PO Decision (2026-05-12)
+
+**Do NOT start MVP6 feature development yet.** Open the two
+Pre-MVP6 Stabilization Gate tickets first; only after both close
+does MVP6 (recommended theme: **13F Admin Operations Console**)
+get a real decision gate.
+
+PO rationale verbatim: "现在问题不是 '还缺下一个大功能', 而是
+已有 13F 系统在 dev/admin 侧无法被正常验证和使用. 如果直接进入
+MVP6, 后面会出现一个很危险的局面: 功能越来越多, 但 admin/13f
+仍然看起来像坏的, dev 环境仍然无法复现真实数据链路, PO /
+reviewer 仍然无法做真实产品验收."
+
+See [[strict-mvp-scope-discipline]] +
+[[tool-validation-vs-product-signoff]] for the underlying rules
+this decision applies.
+
+## Pre-MVP6 Stabilization Gate
+
+Two short tickets that must complete before MVP6 opens:
+
+- **Pre-MVP6-01** — 13F Dev Data Bootstrap and Admin Verification.
+  Make the dev environment a viable verification surface. Path B
+  (synthetic fixture seeder) chosen over Path A (OpenFIGI). Task
+  spec: `docs/tasks/2026-05-12_pre-mvp6-01-13f-dev-data-bootstrap.md`.
+- **Pre-MVP6-02** — Admin 13F Information Architecture Split Plan.
+  Planning gate (NOT coding) that produces the route map +
+  component-extraction map + MVP6 task sequence. Task spec:
+  `docs/tasks/2026-05-12_pre-mvp6-02-admin-ia-split-plan.md`.
+
+Why both before MVP6:
+
+- Pre-MVP6-01 makes the admin verifiable. Without it, every MVP6
+  ticket would ship into a "looks broken" dev environment and
+  reviewers couldn't actually accept anything.
+- Pre-MVP6-02 makes the admin split plannable. Without it, MVP6-01
+  would start with seven competing opinions about what the routes
+  should look like.
 
 ## Source Documents
 
@@ -248,26 +288,73 @@ Items that don't belong to any single feature track:
   for shadow-compute reads — YAGNI for now; add when a shadow
   pipeline lands (TL #1 #1 alt-fix, rejected for current scope).
 - Dev CUSIP linking / linked-CUSIP fixture support so Oracle's
-  Lens scoring is reproducible locally. Filed at
-  `docs/tasks/2026-05-12_backlog-dev-cusip-linking-fixture.md`
-  after MVP5-03 Phase 1 validation revealed dev DB has 4022
-  holdings all in `pending_mapping`. Non-blocking — MVP5-03
-  Phase 3 sign-off is staging/prod-only regardless.
+  Lens scoring is reproducible locally. **Superseded** by
+  Pre-MVP6-01 (`2026-05-12_pre-mvp6-01-13f-dev-data-bootstrap.md`)
+  which broadens scope from CUSIP-only to a full
+  multi-quarter / multi-caveat synthetic fixture. Original
+  backlog file kept with a "Superseded by" pointer.
 
 ---
 
-## Suggested Sequencing Decisions (open questions for the PO)
+## MVP6 Theme: 13F Admin Operations Console
 
-1. **PO demand signal on pre-2023 backfill** — answers whether
-   Track B's only remaining item enters MVP5 or perpetually
-   defers.
-2. **MVP5 critical ordering** — wire behavior-derived manager_type
-   path (Track A1 critical) vs Class B amendment exclusion (Track
-   A1 critical). Both must land before GA; order matters for
-   sprint planning.
-3. **Watchlist parallelism** — open Track D Watchlist V1
-   immediately after MVP5 opens (parallel to Track A2), or stack
-   it after Oracle's Lens Milestone 3 lands? Frontend and backend
-   work are largely independent.
-4. **Track C admin gaps** — fold G1 email + G9 ticket creation
-   into MVP5 scope or into a separate admin-hardening track?
+**Recommended theme** (PO 2026-05-12): MVP6 focuses on admin
+operational usability, not new investor-facing features.
+Rationale: the 13F backend is strong, Oracle's Lens scoring
+ships, but the admin surface (the single 3300-line
+`/admin/13f/page.tsx`) is the operational bottleneck. Until
+admin can run the system, expanding to Watchlist V1 or
+Oracle's Lens Milestone 3 just adds debt.
+
+Proposed MVP6 sequence (locked after Pre-MVP6-02 sign-off):
+
+- **MVP6-01** Split `/admin/13f` into Overview hub + the
+  shared layout / nav scaffold.
+- **MVP6-02** Managers page + Manager Detail page.
+- **MVP6-03** Daily Sync page + no-index calendar UI.
+- **MVP6-04** Filings page + amendments integration.
+- **MVP6-05** Holdings Coverage page + CUSIP workflow.
+- **MVP6-06** Jobs page hardening (filters, retry, stale-lock).
+- **MVP6-07** Readiness page (Oracle's Lens readiness levels
+  detail + blockers).
+- **MVP6-08** Admin E2E verification.
+
+A smaller-step alternative if the team prefers shorter sprints
+is **MVP6-01..03 only** (Overview hub + Managers + Daily Sync)
+as the most-used entries.
+
+## Tracks Deferred Past MVP6 (2026-05-12 PO decision)
+
+All previously-discussed pre-MVP6 candidates are pushed past
+MVP6 unless a hard demand signal lands first:
+
+- **Track A2 Oracle's Lens Milestone 3** (quality + valuation
+  overlay) — deferred to MVP7 or later. Reason: don't add new
+  signal layers until the admin track can verify them.
+- **Track A3 / A4 / A5 / A6** later Oracle's Lens milestones
+  + V1.1 / V2 additions — unchanged, deferred.
+- **Track B Pre-2023 historical backfill productionization**
+  — unchanged, no investor demand signal.
+- **Track C G1 (email alerts) / G9 (external ticketing)** —
+  deferred. Slack / Discord webhooks suffice unless production
+  observation says otherwise.
+- **Track D Watchlist V1** — deferred to MVP7 or later. Reason
+  per PO: "Watchlist 会增加新的用户产品面, 但底层 13F admin 仍然
+  不易运营". Re-open after MVP6 lands.
+- **MVP5-03 Phase 4** `?persisted=0` retirement — still gated
+  on Phase 3 staging/prod sign-off → one observation cycle.
+  No change.
+
+## Resolved Sequencing Decisions (recorded for audit)
+
+The MVP4-era open questions are now answered:
+
+1. PO demand signal on pre-2023 backfill — **No demand
+   signal**; Track B stays deferred indefinitely.
+2. MVP5 critical ordering — **Answered**; MVP5-01 → MVP5-02 →
+   MVP5-03 → MVP5-04/05/06 → MVP5-07 was the shipped order.
+3. Watchlist parallelism — **Answered**; do not open
+   Watchlist alongside MVP5 or MVP6. Re-open post-MVP6.
+4. Track C admin gaps — **Answered**; deferred past MVP6.
+   Reopen only if production observation surfaces a webhook
+   coverage gap.

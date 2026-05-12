@@ -2,7 +2,26 @@
 
 ## Status
 
-**Non-blocking backlog.** Not on the MVP5 critical path; filed
+**Superseded by `docs/tasks/2026-05-12_pre-mvp6-01-13f-dev-data-bootstrap.md`
+on 2026-05-12.** The PO Pre-MVP6 Stabilization Gate decision
+promoted this narrow CUSIP-only backlog into the broader
+Pre-MVP6-01 ticket. The newer ticket:
+
+- Adopts **Path B** (synthetic fixture seeder) as the
+  approved approach (this file kept both as options).
+- Broadens scope beyond CUSIP linking to a full multi-quarter
+  / multi-caveat fixture covering the four caveat cases
+  (amendments / NT / combination / confidential treatment).
+- Adds an acceptance bar (`oracles_lens_signals > 0`,
+  Readiness shows non-empty health, `/admin/13f` panels
+  render with real data) that this backlog only implied.
+
+The original framing is kept below as historical record. **All
+new work goes through Pre-MVP6-01, not here.**
+
+---
+
+**Original (pre-2026-05-12) status:** Non-blocking backlog. Not on the MVP5 critical path; filed
 so MVP5-03 Phase 3 sign-off has a reproducible local path
 when needed. Track E (cross-track engineering debt) per
 `docs/tasks/2026-05-12_post-mvp4-roadmap.md`.
