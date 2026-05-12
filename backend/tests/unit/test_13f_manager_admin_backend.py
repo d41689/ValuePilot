@@ -79,7 +79,7 @@ def test_admin_can_patch_manager_without_confirming_cik(client, db_session, user
         headers=auth_headers(admin),
         json={
             "display_name": "Updated Display",
-            "manager_type": "fundamental_long",
+            "manager_type": "long_term_fundamental",
             "source_url": "https://example.test/source",
             "confidence_score": 72,
             "review_note": "manual cleanup",
@@ -89,7 +89,7 @@ def test_admin_can_patch_manager_without_confirming_cik(client, db_session, user
     assert response.status_code == 200
     payload = response.json()
     assert payload["display_name"] == "Updated Display"
-    assert payload["manager_type"] == "fundamental_long"
+    assert payload["manager_type"] == "long_term_fundamental"
     assert payload["source_url"] == "https://example.test/source"
     assert payload["confidence_score"] == 72
     assert payload["review_note"] == "manual cleanup"
@@ -156,7 +156,7 @@ def test_bulk_import_creates_candidate_managers_only(client, db_session, user_fa
         json={
             "csv_text": (
                 "canonical_name,source_url,manager_type,is_featured,cik\n"
-                "Akre Capital,https://example.test/akre,fundamental_long,true,0001166559\n"
+                "Akre Capital,https://example.test/akre,long_term_fundamental,true,0001166559\n"
                 "Baupost Group,,unknown,false,\n"
             )
         },

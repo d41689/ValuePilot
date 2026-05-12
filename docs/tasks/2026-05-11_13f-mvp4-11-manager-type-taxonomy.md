@@ -2,12 +2,12 @@
 
 ## Status
 
-**Decision-staging — not yet authorized to implement.** This task log
-lays out the vocabulary mismatch and proposes D1–D5 resolutions. The
-human owner (or delegated reviewer) must approve the decisions below
-before any code changes land. MVP4-11 is a hard prerequisite for
-MVP4-03 / MVP4-04; the signal-weighted-score `manager_signal_weight`
-table is undefined until the canonical taxonomy is picked.
+**Approved — authorized to implement (2026-05-11).** D1–D5 all
+accepted by Product Owner; refinements applied below. Subsequent
+audit found no DB-level CHECK constraint on
+`institution_managers.manager_type` — enforcement is purely the
+SQLAlchemy `@validates` validator — so the scope is further reduced:
+no alembic migration is required, only Python-level updates.
 
 ## Goal / Acceptance Criteria
 
@@ -135,6 +135,13 @@ Canonical set (8 values):
 }
 ```
 
+**Framing rule:** *Canonical `manager_type` vocabulary follows
+Oracle's Lens scoring vocabulary, not legacy admin enum names.*
+The admin enum was an early-MVP1 construct that predated the
+Oracle's Lens scoring contract; the scoring contract is what users
+see and what V1 is judged against, so the scoring vocabulary wins
+the naming tie.
+
 Rationale:
 - The plan §7.2 weight table is the user-facing scoring contract;
   it is the documented vocabulary.
@@ -143,6 +150,9 @@ Rationale:
 - Live DB has zero rows using the legacy `fundamental_long` string,
   so the enum rename is purely a constraint change. No row backfill
   needed.
+- Subsequent audit confirmed no DB-level CHECK constraint on
+  `institution_managers.manager_type`; enforcement is purely the
+  SQLAlchemy `@validates` validator. No alembic migration required.
 - `multi_strategy` is preserved because the admin team has the
   concept; D3 below handles its weight.
 
@@ -155,7 +165,9 @@ no semantic gain.
 ### D2. Admin-Set vs Behavior-Derived Precedence
 
 **Proposal:** admin always wins. Behavior is the fallback when the
-admin enum value is `unknown`.
+admin enum value is `unknown`. The three-way source label
+(`admin` / `behavior` / `fallback_unknown`) captures the case where
+both admin and behavior fail to determine a type.
 
 Concretely:
 
@@ -167,9 +179,14 @@ def resolve_manager_type(manager) -> ManagerTypeResolution:
             source="admin",
         )
     derived = derive_manager_signal_profile(manager)
+    if derived is not None and derived.manager_type != "unknown":
+        return ManagerTypeResolution(
+            canonical_type=derived.manager_type,
+            source="behavior",
+        )
     return ManagerTypeResolution(
-        canonical_type=derived.manager_type,
-        source="behavior_fallback",
+        canonical_type="unknown",
+        source="fallback_unknown",
     )
 ```
 
@@ -179,9 +196,10 @@ Rationale:
 - The admin default is `unknown`, which already creates a natural
   fallback trigger — no need to introduce a separate
   `admin_override_active` flag.
-- Source attribution (`admin` vs `behavior_fallback`) is captured
-  for the score_explanation payload so the user sees how the
-  manager weight was derived.
+- Three source labels make the
+  "is this score's confidence low because we have no admin label,
+  or because behavior couldn't classify?" question unambiguous in
+  the score_explanation payload.
 
 Alternatives considered:
 - Behavior always wins → loses admin agency.
@@ -190,29 +208,41 @@ Alternatives considered:
 - Orthogonal storage of both types → adds complexity for no
   immediate consumer.
 
-### D3. `multi_strategy` Weight
+### D3. `multi_strategy` Weight (V1 Conservative Fallback)
 
-**Proposal:** fall back to the `unknown` weight (currently 0.60 in
-the plan §7.2 example). Do not define a separate weight for
-`multi_strategy` in V1.
+**Proposal:** V1 ships `multi_strategy` with the same weight as
+`unknown` (`Decimal("0.60")`). This is a **conservative V1 fallback,
+not an independent calibration**. The label remains in the admin
+enum for filtering / display; the weight is explicitly tagged as
+re-tunable.
 
 Rationale:
-- Multi-strategy managers are heterogeneous by definition; a
-  single weight would be a guess.
-- Admins can still label managers as `multi_strategy` for
-  filtering / display purposes; only the scoring weight falls back.
-- A future tuning round can introduce a calibrated weight if
-  evidence supports it; that fits MVP4 D5's "no pre-launch tuning"
-  policy (PO clarification).
+- Multi-strategy is not a single investment style; it can include
+  fundamental long, event-driven, quant, credit, arbitrage, macro,
+  and hedge overlays simultaneously. The label by itself does not
+  imply a consistent 13F long-equity signal quality.
+- Assigning a precise number like `0.50` would suggest a product
+  judgement ("multi-strategy is more credible than quant but less
+  than unknown") we have no data basis for.
+- A V2 tuning round can revisit using holding-duration,
+  concentration, turnover, and top-10 position persistence
+  evidence — not the label.
 
-Alternative considered: assign a fixed weight (e.g. 0.50 between
-`unknown` and `quant`). Rejected because it would commit V1 to a
-calibration we have no evidence for.
+The weight table comment must make this V1-only intent explicit so
+a future engineer doesn't mistake the value for a calibrated
+constant.
+
+Alternative considered: define a fixed weight (e.g. 0.50). Rejected
+because it would commit V1 to a calibration we have no evidence for
+and would mislead future tuners about how the value was chosen.
 
 ### D4. Plan §7.2 Weight Table Location and Tunability
 
 **Proposal:** ship the example weights from plan §7.2 in
-`app/services/oracles_lens/constants.py` as a typed dict:
+`app/services/oracles_lens/constants.py` as a typed dict.
+`multi_strategy` carries `Decimal("0.60")` **explicitly** (not
+`None`) per D3, with a comment marking it as a V1 fallback rather
+than an independent calibration:
 
 ```python
 MANAGER_SIGNAL_WEIGHTS: dict[str, Decimal] = {
@@ -220,10 +250,14 @@ MANAGER_SIGNAL_WEIGHTS: dict[str, Decimal] = {
     "value_concentrated":    Decimal("1.00"),
     "activist":              Decimal("0.80"),
     "unknown":               Decimal("0.60"),
+    # V1 conservative fallback: multi_strategy does not imply a
+    # consistent long-equity signal quality. Re-tune in V2 from
+    # behavior evidence (holding duration / concentration /
+    # turnover), not from the label.
+    "multi_strategy":        Decimal("0.60"),
     "quant":                 Decimal("0.40"),
     "high_turnover":         Decimal("0.30"),
     "index_like":            Decimal("0.10"),
-    "multi_strategy":        None,  # falls back to "unknown" per D3
 }
 ```
 
@@ -236,9 +270,11 @@ Rationale:
 - Co-locates with `SCORE_VERSION`, which is the same kind of
   scoring-calibration knob.
 - Decimal type avoids float-precision drift in score components.
-- `multi_strategy: None` makes the fallback intent explicit at
-  the table level — `resolve_manager_type` / signal-weighted
-  service substitutes `unknown`'s weight.
+- Explicit `Decimal("0.60")` for `multi_strategy` (vs `None` with
+  runtime substitution) keeps the scoring service simple: it just
+  looks up the key. The V1-fallback intent lives in the comment +
+  tests; if a future engineer changes the value they must update
+  both.
 
 ### D5. Admin UI Sub-Deliverable (SME Non-Blocking Note)
 
@@ -260,27 +296,99 @@ Rationale:
 Alternative considered: do the UI now. Rejected because there is no
 `score_confidence` field on managers yet to drive the UI off.
 
+## Product Owner Decisions (2026-05-11)
+
+### D1 Canonical Taxonomy
+
+Approved. Use Oracle's Lens plan / behavior-derived spelling as the
+canonical `manager_type` vocabulary:
+
+- `long_term_fundamental`
+- `value_concentrated`
+- `activist`
+- `quant`
+- `high_turnover`
+- `index_like`
+- `multi_strategy`
+- `unknown`
+
+Legacy `fundamental_long` is replaced by `long_term_fundamental`.
+Live DB audit shows all 80 managers are currently `unknown`, so this
+is a constraint / vocabulary migration only with no row migration
+required. Post-approval audit further confirmed no DB CHECK
+constraint on `manager_type` — no alembic migration needed at all.
+
+### D2 Admin vs Behavior Precedence
+
+Approved. Admin-set `manager_type` wins when it is not `unknown`. If
+the admin value is `unknown`, fall back to the behavior-derived
+profile. If neither yields a non-`unknown` type, return `unknown`
+with `source='fallback_unknown'`.
+
+The effective type's source must be explainable as
+`admin`, `behavior`, or `fallback_unknown` and must be carried in
+the `ManagerTypeResolution` payload so future
+`score_explanation` consumers can attribute the weighting.
+
+### D3 Multi-Strategy Weight (V1 Conservative Fallback)
+
+Approved with explicit V1-only caveat. In V1, `multi_strategy`
+receives the same weight as `unknown` (`Decimal("0.60")`). This is
+a **conservative fallback, not an independent calibration**.
+Multi-strategy does not imply a consistent 13F long-equity signal
+quality.
+
+The weight value is re-tunable in V2 using holding-duration,
+portfolio concentration, turnover proxy, and top-10 position
+persistence evidence — not the label itself.
+
+### D4 Weight Constants Location
+
+Approved. Store the manager signal weights in
+`app/services/oracles_lens/constants.py` as typed Python constants
+using `Decimal`. Co-locate with `SCORE_VERSION`. The
+`multi_strategy` entry is written explicitly (not `None`) with a
+comment tagging it as a V1 fallback, and tests cover all 8
+canonical manager types so a future engineer adding a 9th type
+must update both places.
+
+### D5 Admin UI Sub-Deliverable
+
+Approved. Defer the admin-UI prioritization surface (expose which
+`manager_type=unknown` managers materially affect `score_confidence`
+on the latest usable quarter) to **MVP4-11b**, post-MVP4-03.
+
+MVP4-11b trigger conditions:
+
+- MVP4-03 signal-weighted-score service has landed.
+- Latest usable quarter has score outputs.
+- `score_confidence` / `unknown_manager_type_count` /
+  `unknown_manager_type_heavy` are available.
+
+MVP4-11 scope is backend taxonomy reconciliation only.
+
 ## Conditional Scope (Subject To D1–D5 Approval)
 
 ### Scope In
 
-- Alembic migration renaming `fundamental_long` →
-  `long_term_fundamental` in the `manager_type` enum constraint,
-  plus adding `value_concentrated` and `high_turnover`. Zero rows
-  to migrate (per audit above).
-- Update `app/models/institutions.MANAGER_TYPES` to the new
-  canonical set.
+- Update `app/models/institutions.MANAGER_TYPES` to the canonical
+  8-value set (D1).
 - Update `app/services/thirteenf_user_api.VALUE_MANAGER_TYPES` to
-  `{"long_term_fundamental", "activist"}`.
+  `{"long_term_fundamental", "activist"}` (the only file still
+  carrying the legacy `fundamental_long` literal).
 - New module `app/services/oracles_lens/manager_taxonomy.py`:
-  - `MANAGER_TYPES_CANONICAL` (re-export of the model's set for
-    discoverability from the scoring side).
   - `ManagerTypeResolution` dataclass
     (`canonical_type`, `source`, `weight`).
-  - `resolve_manager_type(manager)` function per D2.
+  - `resolve_manager_type(manager)` function implementing D2's
+    three-way precedence.
 - Update `app/services/oracles_lens/constants.py` with
-  `MANAGER_SIGNAL_WEIGHTS` per D4.
+  `MANAGER_SIGNAL_WEIGHTS` per D4 (8 keys, all `Decimal`).
 - New `tests/unit/test_13f_mvp4_manager_taxonomy.py`.
+
+**No alembic migration.** Post-approval audit confirmed
+`institution_managers.manager_type` has no DB-level CHECK
+constraint; enforcement is purely the SQLAlchemy `@validates`
+validator on the Python set. Changing the set is sufficient.
 
 ### Scope Out
 
@@ -323,24 +431,27 @@ Tests to write first:
   `long_term_fundamental` is included in `VALUE_MANAGER_TYPES`
   filters where the old code expected `fundamental_long`.
 
-Docker verification commands:
-- `docker compose exec api alembic upgrade head`
-- `docker compose exec api alembic downgrade -1 && alembic upgrade head`
+Docker verification commands (no migration; alembic round-trip
+removed from the list):
 - `docker compose exec api pytest -q tests/unit/test_13f_mvp4_manager_taxonomy.py`
 - `docker compose exec api pytest -q`
 
 ## Approval Checklist
 
-- [ ] D1 canonical taxonomy approved (8-value set; rename
+- [x] D1 canonical taxonomy approved (8-value set; rename
       `fundamental_long`; add `value_concentrated` +
       `high_turnover`; keep `multi_strategy`).
-- [ ] D2 admin-wins-with-behavior-fallback precedence approved.
-- [ ] D3 `multi_strategy` falls back to `unknown` weight approved.
-- [ ] D4 weight table location (`oracles_lens/constants.py`) and
-      `Decimal` typing approved.
-- [ ] D5 admin UI sub-deliverable filed as MVP4-11b (post-MVP4-03)
+- [x] D2 admin-wins precedence with three-way source
+      (`admin` / `behavior` / `fallback_unknown`) approved.
+- [x] D3 `multi_strategy` weight is a V1 conservative fallback to
+      `unknown=0.60`, not an independent calibration. Re-tunable
+      in V2 from behavior evidence.
+- [x] D4 weight table location (`oracles_lens/constants.py`) and
+      `Decimal` typing approved; `multi_strategy` written
+      explicitly with V1-fallback comment.
+- [x] D5 admin UI sub-deliverable filed as MVP4-11b (post-MVP4-03)
       approved.
-- [ ] MVP4-11 implementation explicitly approved to start.
+- [x] MVP4-11 implementation explicitly approved to start.
 
 ## Progress Notes
 
@@ -356,9 +467,45 @@ Docker verification commands:
   `app/services/thirteenf_user_api.py:34-35`. Confirmed live DB
   has zero rows using `fundamental_long`; the rename is a
   constraint change only.
+- 2026-05-11: Product Owner approved D1–D5 with refinements:
+  framing rule added to D1 (canonical follows Oracle's Lens
+  vocabulary, not legacy admin); D2 expanded to three source
+  labels (`admin` / `behavior` / `fallback_unknown`) for
+  unambiguous score-explanation attribution; D3 reworded as
+  V1 conservative fallback (not an independent calibration); D4
+  weight table writes `multi_strategy: Decimal("0.60")`
+  explicitly with V1-fallback comment instead of `None`; D5
+  defers admin-UI surface to MVP4-11b post-MVP4-03. Implementation
+  authorized.
+- 2026-05-11: Post-approval audit — no DB-level CHECK constraint
+  on `institution_managers.manager_type`. Scope reduced: no
+  alembic migration needed, only Python-side updates +
+  `@validates` set update.
+- 2026-05-11: Implemented per PO decisions:
+  - `MANAGER_TYPES` updated to the 8-value canonical set; legacy
+    `fundamental_long` removed.
+  - `VALUE_MANAGER_TYPES` updated to use `long_term_fundamental`.
+  - New `app/services/oracles_lens/manager_taxonomy.py` with
+    `ManagerTypeResolution` dataclass (carrying `canonical_type`,
+    `source`, `weight`) and `resolve_manager_type(manager, *,
+    derived_profile=None)`. Three source labels exposed as
+    module-level constants (`SOURCE_ADMIN`, `SOURCE_BEHAVIOR`,
+    `SOURCE_FALLBACK_UNKNOWN`) so callers import canonical strings.
+  - `manager_taxonomy.resolve_manager_type` accepts a precomputed
+    `DerivedManagerSignalProfile` rather than computing one itself
+    — separates concerns and lets the caller cache the profile
+    across multiple resolve calls in one scoring batch.
+  - `MANAGER_SIGNAL_WEIGHTS` added to
+    `app/services/oracles_lens/constants.py` per D4 (Decimal
+    type, all 8 canonical keys present, `multi_strategy` written
+    explicitly at 0.60 with V1-fallback comment).
+- 2026-05-11: Found two legacy test files still carrying
+  `fundamental_long` literals
+  (`tests/unit/test_13f_user_api.py`,
+  `tests/unit/test_13f_manager_admin_backend.py`). Renamed via
+  global sed; verified no behavior change beyond the literal.
 
 ## Verification Results
 
-- Documentation-only decision-staging task; Docker verification not
-  required for this stage. Verification commands above will run
-  after D1–D5 are approved and implementation lands.
+- `docker compose exec api pytest -q tests/unit/test_13f_mvp4_manager_taxonomy.py` -> 12 passed.
+- `docker compose exec api pytest -q` -> **681 passed** (was 669 pre-MVP4-11; +12), **0 warnings** (carryover from MVP4-10).

@@ -31,7 +31,11 @@ FILING_WINDOW_CAVEAT = (
     "The filing window for this quarter may still be open. The snapshot can change until "
     "the official filing deadline passes."
 )
-VALUE_MANAGER_TYPES = {"fundamental_long", "activist"}
+# MVP4-11 D1: canonical name is ``long_term_fundamental`` (Oracle's
+# Lens scoring vocabulary). Set membership is semantically unchanged —
+# still "value-investor managers for consensus aggregation" — only the
+# literal is renamed from the legacy ``fundamental_long``.
+VALUE_MANAGER_TYPES = {"long_term_fundamental", "activist"}
 CONSENSUS_EXCLUDED_MANAGER_TYPES = {"index_like", "quant"}
 RECENT_CHANGE_STATUSES = {"new_position", "increased", "reduced", "exited_position"}
 

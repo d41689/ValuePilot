@@ -11,7 +11,22 @@ from app.core.db import Base
 
 
 MANAGER_STATUSES = {"candidate", "active", "inactive", "ignored", "needs_review"}
-MANAGER_TYPES = {"fundamental_long", "activist", "quant", "multi_strategy", "index_like", "unknown"}
+# MVP4-11: canonical manager_type vocabulary follows Oracle's Lens
+# scoring vocabulary (plan §7.2 / derive_manager_signal_profile), not
+# legacy admin enum names. ``fundamental_long`` is replaced by
+# ``long_term_fundamental``; ``value_concentrated`` and ``high_turnover``
+# are added so the admin enum covers every key the signal-weighted
+# score uses.
+MANAGER_TYPES = {
+    "long_term_fundamental",
+    "value_concentrated",
+    "activist",
+    "quant",
+    "high_turnover",
+    "index_like",
+    "multi_strategy",
+    "unknown",
+}
 VALUE_UNIT_OVERRIDES = {"infer", "thousands", "dollars"}
 VALUE_UNIT_OVERRIDE_EXPLICIT = {"thousands", "dollars"}
 EDGAR_SYNC_STATUSES = {"pending", "running", "success", "failed", "no_data", "partial_success"}

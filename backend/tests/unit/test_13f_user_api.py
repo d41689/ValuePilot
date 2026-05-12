@@ -31,7 +31,7 @@ def _manager(
     db_session,
     name: str = "Safe API Manager",
     *,
-    manager_type: str = "fundamental_long",
+    manager_type: str = "long_term_fundamental",
     is_featured: bool = True,
 ) -> InstitutionManager:
     cik = str(next(_CIK_COUNTER))
@@ -456,11 +456,11 @@ def test_holdings_endpoint_uses_active_current_hr_query_contract(client, db_sess
 def test_stock_holders_aggregation_counts_only_direct_common_holders(client, db_session):
     _clear_13f(db_session)
     stock = _stock(db_session, "AGG")
-    featured = _manager(db_session, "Featured Fundamental", manager_type="fundamental_long", is_featured=True)
+    featured = _manager(db_session, "Featured Fundamental", manager_type="long_term_fundamental", is_featured=True)
     activist = _manager(db_session, "Activist Holder", manager_type="activist", is_featured=False)
     quant = _manager(db_session, "Quant Holder", manager_type="quant", is_featured=False)
-    shared = _manager(db_session, "Shared Attribution", manager_type="fundamental_long", is_featured=True)
-    unresolved = _manager(db_session, "Unresolved Attribution", manager_type="fundamental_long", is_featured=True)
+    shared = _manager(db_session, "Shared Attribution", manager_type="long_term_fundamental", is_featured=True)
+    unresolved = _manager(db_session, "Unresolved Attribution", manager_type="long_term_fundamental", is_featured=True)
 
     for index, (manager, attribution, weight) in enumerate(
         [
