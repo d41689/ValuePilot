@@ -159,7 +159,63 @@ Acceptance criteria:
 - 2026-05-12: Task spec filed per the MVP5 execution plan. No
   code changes yet; awaiting PO go-ahead before implementation
   starts.
+- 2026-05-12: Implementation:
+  - New helper `_derive_manager_profile` in
+    `app/services/oracles_lens/signal_weighted_score.py`. Lazily
+    pulls a manager's full current-quarter eligible portfolio,
+    computes `portfolio_weight` + streak per holding, derives
+    `turnover_proxy` from previous-quarter `stock_id` symmetric
+    difference (same algorithm as the in-memory dashboard's
+    `_manager_turnover_proxy`), and calls
+    `derive_manager_signal_profile`. Returns the profile (which
+    may have `manager_type='unknown'` — the resolver still
+    falls back).
+  - `_DerivedProfileCache` dict[int, Optional[Profile]] threads
+    from `compute_signal_weighted_scores` down into
+    `_contributions_for_stock`. Populated lazily on first hit
+    per manager; subsequent stocks held by the same manager
+    reuse the cached profile.
+  - Inside `_contributions_for_stock`, the
+    `derived_profile=None` hardcode at line 510 is replaced
+    with `derived_profile = _derive_manager_profile(...)`
+    triggered only when `manager.manager_type == "unknown"`.
+    Admin-typed managers skip derivation entirely (cost-free
+    for the common case).
+  - `_build_score_explanation` now emits a
+    `manager_type_source_counts` summary
+    (`{"admin": N, "behavior": N, "fallback_unknown": N}`) in
+    addition to the existing `primary_reasons` and
+    `confidence_demotion_reasons`. Per-holder detail still
+    lives in `oracles_lens_score_components.evidence_json` on
+    the `manager_signal_weight` rows (already there pre-MVP5-01
+    via MVP4-03).
+  - Fixture audit: every existing MVP4 scoring test fixture
+    admin-types its managers explicitly
+    (`long_term_fundamental` or other non-unknown). The
+    behavior path therefore never fires inside the MVP4-03 / 04
+    / 05 / 06 test files, and they pass unchanged. The MVP4-07b
+    unknown-manager-priority tests use admin `manager_type=
+    "unknown"` for the manager being prioritized, but the
+    priority query filters by the admin column, not the
+    resolution source, so those tests also pass unchanged.
+
+  Tests:
+  - New `test_13f_mvp5_01_wire_behavior_manager_type.py` with
+    4 end-to-end cases through `compute_signal_weighted_scores`:
+    admin path (long_term_fundamental → weight 1.00 source
+    admin), behavior path (turnover_proxy=1.0 →
+    high_turnover → weight 0.30 source behavior),
+    fallback_unknown (low-turnover + low-concentration +
+    short-streak → unknown → weight 0.60 source
+    fallback_unknown), and a cache-correctness test (manager
+    held by 3 scored stocks produces identical resolution per
+    stock).
 
 ## Verification Results
 
-- Pending implementation.
+- `docker compose exec api pytest -q tests/unit/test_13f_mvp5_01_wire_behavior_manager_type.py` -> 4 passed.
+- `docker compose exec api pytest -q` -> **759 passed** (was
+  755 after the MVP4-review-fixes commit `ab7afeb`; +4 new
+  MVP5-01 tests, no regressions on the existing 755).
+- `docker compose exec web npm run lint` -> No ESLint warnings or errors.
+- `docker compose exec web npm run build` -> compiled successfully.

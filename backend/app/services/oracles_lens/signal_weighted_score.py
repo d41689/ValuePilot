@@ -51,6 +51,7 @@ from app.services.oracles_lens.base_primitives import (
     PARTIAL_COVERAGE_CAVEAT,
     PRE_2023_PRE_HISTORY_UNAVAILABLE_CAVEAT,
     STALE_UNTIL_RECOMPUTE_CAVEAT,
+    _previous_quarter,
     compute_add_intensity,
     compute_holding_streak,
     compute_portfolio_weight,
@@ -68,6 +69,10 @@ from app.services.oracles_lens.constants import (
     POSITION_TOP_N_THRESHOLD,
     POSITION_WEIGHT_5PCT_THRESHOLD,
     SCORE_VERSION,
+)
+from app.services.oracles_lens.manager_signal import (
+    DerivedManagerSignalProfile,
+    derive_manager_signal_profile,
 )
 from app.services.oracles_lens.manager_taxonomy import resolve_manager_type
 from app.services.thirteenf_holdings_query import HR_FORM_TYPES
@@ -271,6 +276,12 @@ def compute_signal_weighted_scores(
         session, quarter=quarter, top_n=POSITION_TOP_N_THRESHOLD,
     )
 
+    # Cache for the MVP5-01 behavior-derived profile path. Populated
+    # lazily inside the per-stock loop so we only pay the cost for
+    # managers whose admin ``manager_type`` is ``"unknown"`` AND who
+    # actually appear as holders in this scoring batch.
+    derived_profile_cache: _DerivedProfileCache = {}
+
     filings_scored = 0
     components_written = 0
     now = datetime.now(timezone.utc)
@@ -281,6 +292,7 @@ def compute_signal_weighted_scores(
             quarter=quarter,
             stock_id=stock_id,
             top_n_by_manager=top_n_by_manager,
+            derived_profile_cache=derived_profile_cache,
         )
         if len(contributions) < min_holders:
             # Could happen if some holders were filtered out (e.g. no
@@ -348,6 +360,119 @@ def compute_signal_weighted_scores(
         "filings_scored": filings_scored,
         "components_written": components_written,
     }
+
+
+# ---------------------------------------------------------------------------
+# Behavior-derived profile cache (MVP5-01)
+# ---------------------------------------------------------------------------
+
+
+# Sentinel for "behavior derivation attempted, no usable profile" so the
+# cache distinguishes "never tried" from "tried, can't classify."
+_DerivedProfileCache = dict[int, Optional[DerivedManagerSignalProfile]]
+
+
+def _derive_manager_profile(
+    session: Session,
+    *,
+    manager_id: int,
+    quarter: str,
+    cache: _DerivedProfileCache,
+) -> Optional[DerivedManagerSignalProfile]:
+    """Lazily compute the behavior-derived signal profile for a manager
+    whose admin ``manager_type`` is ``"unknown"``, caching the result
+    so the per-stock scoring loop only pays the cost once per manager.
+
+    Pulls the manager's full current-quarter portfolio (eligible HR
+    active / linked / direct holdings), computes ``portfolio_weight``
+    + ``holding_streak_quarters`` per holding, and derives
+    ``turnover_proxy`` from the symmetric difference of current vs
+    previous-quarter stock_ids — same shape as the in-memory
+    dashboard's ``_manager_turnover_proxy``.
+
+    Returns ``None`` only when the manager has no eligible current-
+    quarter holdings (so behavior derivation has no signal at all).
+    A return value with ``manager_type=='unknown'`` from
+    ``derive_manager_signal_profile`` IS cached and IS returned —
+    the resolver upstream will treat it as a fallback_unknown.
+    """
+    if manager_id in cache:
+        return cache[manager_id]
+
+    holdings = (
+        session.query(Holding13F)
+        .join(ParseRun13F, Holding13F.parse_run_id == ParseRun13F.id)
+        .join(
+            Filing13F,
+            Filing13F.accession_number == ParseRun13F.accession_number,
+        )
+        .filter(Filing13F.form_type.in_(HR_FORM_TYPES))
+        .filter(Filing13F.is_active_for_manager_period.is_(True))
+        .filter(ParseRun13F.is_current.is_(True))
+        .filter(Holding13F.manager_id == manager_id)
+        .filter(Holding13F.report_quarter == quarter)
+        .filter(Holding13F.cusip_mapping_status == "linked")
+        .filter(Holding13F.holding_attribution_status == "direct")
+        .all()
+    )
+    if not holdings:
+        cache[manager_id] = None
+        return None
+
+    position_weights: list[float] = []
+    holding_streak_quarters: list[int] = []
+    for holding in holdings:
+        weight_result = compute_portfolio_weight(holding)
+        if weight_result.value is None:
+            continue
+        position_weights.append(float(weight_result.value))
+        streak_result = compute_holding_streak(
+            session,
+            manager_id=manager_id,
+            stock_id=holding.stock_id,
+            current_quarter=quarter,
+        )
+        holding_streak_quarters.append(streak_result.streak_quarters)
+
+    if not position_weights:
+        cache[manager_id] = None
+        return None
+
+    current_stock_ids = {h.stock_id for h in holdings}
+    previous_quarter = _previous_quarter(quarter)
+    previous_stock_rows = (
+        session.query(Holding13F.stock_id)
+        .join(ParseRun13F, Holding13F.parse_run_id == ParseRun13F.id)
+        .join(
+            Filing13F,
+            Filing13F.accession_number == ParseRun13F.accession_number,
+        )
+        .filter(Filing13F.form_type.in_(HR_FORM_TYPES))
+        .filter(Filing13F.is_active_for_manager_period.is_(True))
+        .filter(ParseRun13F.is_current.is_(True))
+        .filter(Holding13F.manager_id == manager_id)
+        .filter(Holding13F.report_quarter == previous_quarter)
+        .filter(Holding13F.cusip_mapping_status == "linked")
+        .filter(Holding13F.holding_attribution_status == "direct")
+        .distinct()
+        .all()
+    )
+    previous_stock_ids = {row[0] for row in previous_stock_rows}
+
+    union = current_stock_ids | previous_stock_ids
+    if not union:
+        turnover_proxy: Optional[float] = None
+    else:
+        changed = current_stock_ids.symmetric_difference(previous_stock_ids)
+        turnover_proxy = len(changed) / len(union)
+
+    profile = derive_manager_signal_profile(
+        position_weights=position_weights,
+        holding_streak_quarters=holding_streak_quarters,
+        turnover_proxy=turnover_proxy,
+    )
+    cache[manager_id] = profile
+    return profile
 
 
 # ---------------------------------------------------------------------------
@@ -435,6 +560,7 @@ def _contributions_for_stock(
     quarter: str,
     stock_id: int,
     top_n_by_manager: dict[int, set[int]],
+    derived_profile_cache: _DerivedProfileCache,
 ) -> list[_HolderContribution]:
     """For one (stock, quarter), iterate active linked direct holders
     and produce a contribution per holder."""
@@ -504,10 +630,24 @@ def _contributions_for_stock(
             caveats=per_holder_caveats,
         )
 
-        # MVP4-03 passes derived_profile=None; admin enum is the
-        # current driver of manager weight. Behavior fallback can be
-        # wired when a real consumer of derived profiles exists in V1.
-        type_resolution = resolve_manager_type(manager, derived_profile=None)
+        # MVP5-01: when admin manager_type is "unknown", lazily compute
+        # the behavior-derived profile so the MVP4-11 three-tier
+        # precedence (admin → behavior → fallback_unknown) is real in
+        # production scoring. The cache is keyed on manager_id and
+        # populated on first hit; subsequent stocks held by the same
+        # manager reuse the cached profile.
+        if (manager.manager_type or "unknown") == "unknown":
+            derived_profile = _derive_manager_profile(
+                session,
+                manager_id=manager.id,
+                quarter=quarter,
+                cache=derived_profile_cache,
+            )
+        else:
+            derived_profile = None
+        type_resolution = resolve_manager_type(
+            manager, derived_profile=derived_profile,
+        )
 
         contribution = type_resolution.weight * position_signal_weight.value
         contributions.append(
@@ -592,9 +732,27 @@ def _build_score_explanation(
                     {"code": code, "demoted_to": "medium_confidence"}
                 )
 
+    # MVP5-01: per-tier counts of how each holder's manager_type was
+    # resolved (admin / behavior / fallback_unknown). Slim summary at
+    # the score_explanation level; per-holder detail lives in
+    # ``oracles_lens_score_components`` (evidence_json on the
+    # ``manager_signal_weight`` rows). Lets the dashboard render a
+    # one-line "5 admin / 2 behavior / 1 fallback" attribution without
+    # joining to the components table.
+    manager_type_source_counts: dict[str, int] = {
+        "admin": 0,
+        "behavior": 0,
+        "fallback_unknown": 0,
+    }
+    for c in contributions:
+        manager_type_source_counts[c.manager_type_source] = (
+            manager_type_source_counts.get(c.manager_type_source, 0) + 1
+        )
+
     return {
         "primary_reasons": primary_reasons,
         "confidence_demotion_reasons": confidence_demotion_reasons,
+        "manager_type_source_counts": manager_type_source_counts,
     }
 
 
