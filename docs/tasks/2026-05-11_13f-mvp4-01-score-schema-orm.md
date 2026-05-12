@@ -103,6 +103,16 @@ Acceptance criteria:
    (stock_id, report_quarter, score_version) DO UPDATE SET ...`).
    IntegrityError translator stays perpetual; no helper extraction
    in MVP4.
+5. **Row-level caveats + confidence demotion reasons = JSONB
+   reuse, no new column** (added by PO re-review P2 #4).
+   `caution_flag_codes JSONB` carries the per-row code array.
+   `score_explanation JSONB` carries a
+   `confidence_demotion_reasons` key with the shape
+   `[{"code": "<flag>", "demoted_to": "<level>"}, ...]` populated
+   by MVP4-05 whenever `score_confidence` is demoted below
+   `high_confidence`. The MVP4-01 schema already exposes both
+   columns; this resolution names the contract so MVP4-03 / MVP4-05
+   do not invent a parallel mechanism.
 
 ## Scope In
 
@@ -231,6 +241,13 @@ Acceptance criteria:
   `create_table`s with the FK / unique-constraint / index set listed
   in the acceptance criteria above. Downgrade drops the two new
   tables in dependency order.
+- 2026-05-11: PO re-review pass on the gate added a fifth pre-start
+  condition (row-level caveats + confidence demotion reasons).
+  MVP4-01's schema already exposes the two JSONB columns required
+  (`caution_flag_codes`, `score_explanation`); no schema change.
+  The `score_explanation.confidence_demotion_reasons` key contract
+  is captured here so MVP4-03 / MVP4-05 will not invent a parallel
+  mechanism.
 
 ## Verification Results
 

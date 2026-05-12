@@ -1,5 +1,17 @@
 # 13F MVP4 Decision Gate
 
+## Status
+
+- **Gate status:** CLOSED (2026-05-11).
+- **MVP4-01 status:** Approved to start; task log at
+  `docs/tasks/2026-05-11_13f-mvp4-01-score-schema-orm.md`.
+- **Approvals:** Product Owner ✓ (initial + re-review),
+  Tech Lead ✓ (REVISED-APPROVE conditional, conditions met),
+  13F Domain SME ✓ (HOLD CLOSED), Human Owner ✓ (delegated
+  scope freeze + start authorization 2026-05-11).
+- This document is now an immutable decision record. Subsequent
+  scope changes reopen the gate.
+
 ## Goal / Acceptance Criteria
 
 Define the MVP 4 scope and decision record before any user-facing
@@ -347,6 +359,8 @@ and `unknown_manager_type_heavy`), so this is an admin-side
 prioritization aid: it lets admins decide which managers to
 type-classify rather than guessing.
 
+### D6. MVP3 Carryover Triage
+
 The MVP3 end-to-end review left the following carryovers. Proposal
 classification:
 
@@ -390,6 +404,17 @@ rules) + D4 = Value Line overlay deferred + D5 = config module +
 separate component-audit table + score_version + manager_type
 taxonomy prerequisite + D6 = three new backlog tickets +
 IntegrityError as MVP4-01 design note.
+
+> **Numbering does not imply chronological order.** `MVP4-08`,
+> `MVP4-09`, `MVP4-10`, and `MVP4-11` are **parallel prerequisites
+> that must complete before `MVP4-03` starts** (see
+> "Parallel pre-MVP4-03 prerequisites" below). In particular,
+> **`MVP4-11 manager_type taxonomy reconciliation` is a hard
+> blocker for MVP4-03** despite its high number — the
+> signal-weighted score's manager-weight table is undefined until
+> the taxonomy is reconciled. The numbering reflects functional
+> grouping (main path vs parallel tickets vs verification), not
+> calendar order.
 
 Main path (sequential):
 
@@ -474,6 +499,28 @@ the second pair is required by the gate's prior decisions.
    from MVP3-05 / MVP3-07. Upsert is cleaner for idempotent
    recompute; translator extracted-as-helper is only needed if
    upsert is rejected. Decide before MVP4-03 starts.
+5. **Row-level caveat + confidence-demotion representation
+   (PO re-review P2 #4):** MVP4-01 schema must explicitly leave
+   room for the D3 caveat-propagation surface that MVP4-05 will
+   consume. The schema MUST support:
+   - **Row-level caveat codes** — the per-row payload must carry
+     the canonical readiness pass-through codes (the 8 listed in
+     D3's caution-flags vocabulary block) **and** score-service-
+     emitted row codes (`NT_QUARTER_STREAK_BREAK`,
+     `stale_until_recompute`). Both flow on the same per-holder
+     channel.
+   - **Confidence demotion reasons** — when `score_confidence` is
+     demoted below `high_confidence`, the schema must carry the
+     reason(s) that caused the demotion so an admin / user can
+     answer "why is this score's confidence only `medium`?"
+     without re-running the demotion table by hand.
+   No new column needed: `caution_flag_codes JSONB` carries the
+   row-level code array, and `score_explanation JSONB` carries a
+   `confidence_demotion_reasons` key with the shape
+   `[{"code": "<flag>", "demoted_to": "<level>"}, ...]`. MVP4-05's
+   service is responsible for populating that key consistently.
+   MVP4-01's acceptance must call this out so MVP4-03 / MVP4-05 do
+   not invent a parallel mechanism.
 
 ### MVP4-01 Pre-Start Condition Resolutions (2026-05-11)
 
@@ -517,6 +564,23 @@ engineer; recorded here so the source of truth lives on the gate.
    perpetual; D6's "third-caller rule" does not trigger. Score
    recompute is by-design idempotent, so upsert is both the
    simpler write path and the cleaner failure-mode story.
+
+5. **Row-level caveats + confidence demotion reasons — RESOLVED:
+   reuse the existing JSONB pair, no new column.**
+   - `caution_flag_codes JSONB` (array of strings) carries the
+     row-level caveat codes (canonical readiness pass-through plus
+     score-service-emitted row codes per D3).
+   - `score_explanation JSONB` carries a
+     `confidence_demotion_reasons` key with the shape
+     `[{"code": "<flag>", "demoted_to": "<level>"}, ...]` populated
+     by MVP4-05 whenever `score_confidence` is demoted below
+     `high_confidence`.
+   Rationale: the demotion mapping is deterministic given the D3
+   rules, so the codes plus a stable JSON key let MVP4-05 surface
+   "why was confidence demoted" without adding a normalized column.
+   If a future filter use case requires querying by demotion code
+   relationally, the field can be promoted to a separate table at
+   that point; MVP4 does not have that consumer.
 
 ## Approval Checklist
 
@@ -665,6 +729,26 @@ engineer; recorded here so the source of truth lives on the gate.
   - MVP4-01 task file: filed at
     `docs/tasks/2026-05-11_13f-mvp4-01-score-schema-orm.md`,
     approved to start.
+- 2026-05-11: **Product Owner re-review pass on the closed gate.**
+  Approved. Four documentation-consistency fixes applied:
+  - P1 #1: numbering note added in front of the task sequence
+    making it explicit that MVP4-08/09/10/11 are parallel
+    prerequisites despite their high numbers, with MVP4-11 called
+    out as a hard blocker for MVP4-03.
+  - P1 #2: added the Status block at the top of the document so
+    future readers see at a glance that the gate is CLOSED and
+    MVP4-01 is approved.
+  - P1 #3: restored the missing `### D6. MVP3 Carryover Triage`
+    header that was lost during the post-review revisions; the
+    multiple references to "D6" elsewhere now have a matching
+    section anchor.
+  - P2 #4: added a fifth pre-start condition (row-level caveats +
+    confidence-demotion reasons) and a matching fifth resolution.
+    No schema change — `caution_flag_codes JSONB` plus a
+    standardized `score_explanation.confidence_demotion_reasons`
+    JSONB key cover the surface MVP4-05 needs.
+  MVP4-01 task log will be updated in the same commit to mirror
+  the new condition.
 
 ## Verification Results
 
