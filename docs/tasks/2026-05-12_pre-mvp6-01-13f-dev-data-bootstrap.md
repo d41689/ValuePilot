@@ -186,7 +186,112 @@ One reviewer role suffices:
   linking backlog. PO selected Path B (synthetic seeder)
   over Path A (real OpenFIGI). Engineer's call on file
   layout (`app/scripts/` vs `tests/fixtures/dev_seed/`).
+- 2026-05-12: Implementation:
+  - New `backend/scripts/seed_13f_dev_fixture.py` invoked as
+    `docker compose exec api python -m scripts.seed_13f_dev_fixture`.
+  - Three CLI modes:
+    - default: idempotent seed (skip-if-exists by deterministic
+      key — CIK / ticker / accession / fingerprint).
+    - `--reset`: wipe prior devseed rows (matched by the
+      DEVSEED / 9999 shibboleth), then reseed. Use when the
+      seeder's own logic changes.
+    - `--reset-only`: wipe devseed rows and exit. **Required
+      before running pytest against the dev DB** — devseed
+      rows pollute test invariants in `test_13f_user_api.py`
+      and similar suites that read directly from the dev DB
+      (177 of 781 tests fail under a seeded DB because they
+      assume an empty / specific universe shape).
+  - Seeded shape:
+    - 8 stocks (DEVSEED1..DEVSEED8) with linked CUSIP rows
+      (synthetic CUSIPs `DEV000001`..`DEV000008`).
+    - 32 managers (4 per canonical 8-value taxonomy) with
+      deterministic CIKs `9999000001`..`9999000032`.
+    - 2 quarters: 2025-Q4 (prior) + 2026-Q1 (current).
+    - 64 filings + 64 parse_runs + 252 holdings.
+    - All four caveat cases present:
+      - manager #0 → `amendment_status="amendments_pending"`
+        on current quarter (fires MVP5-02 exclusion +
+        AMENDMENTS_PENDING caveat).
+      - manager #1 → 13F-NT on **prior** quarter (fires
+        NT_QUARTER_STREAK_BREAK when current-quarter streak
+        compute walks back; putting NT on current would have
+        made the manager invisible without firing the caveat).
+      - manager #2 → `coverage_completeness="partial"` on
+        current quarter (fires PARTIAL_COVERAGE).
+      - manager #3 → `has_confidential_treatment=True` on
+        current quarter (fires CONFIDENTIAL_TREATMENT).
+  - Real-SEC-shape 20-char accession format
+    (`XXXXXXXXXX-YY-NNNNNN`) so the synthetic accessions
+    fit the `VARCHAR(20)` column without a schema change
+    (per CLAUDE.md: fixture must conform to schema, not the
+    other way around).
 
 ## Verification Results
 
-- Pending implementation.
+### Acceptance criteria (all pass after seed + scoring run):
+
+```
+oracles_lens_signals_count: 8                              ✓ (>0)
+linked_holdings_count:      252                            ✓ (200-500 target window)
+succeeded_filings_count:    64                             ✓ (non-zero, multi-status)
+devseed_typed_managers:     28                             ✓ (mixed sample)
+devseed_unknown_managers:   4                              ✓ (priority queue populates)
+signals_with_excluded_holders: 4                           ✓ (MVP5-02 exclusion fires)
+distinct_caveat_codes: [AMENDMENTS_PENDING,
+                        CONFIDENTIAL_TREATMENT,
+                        NT_QUARTER_STREAK_BREAK,
+                        PARTIAL_COVERAGE]                  ✓ (4-of-4 caveat cases)
+```
+
+### Endpoint probes:
+
+- `/api/v1/13f/oracles-lens?period=2026-Q1&use_persisted_scores=true&min_holders=3`
+  returns 8 candidate rows (DEVSEED1..DEVSEED8) with real
+  ranking + `medium_confidence` labels.
+- `/api/v1/13f/readiness` → `readiness_level: experimental`
+  (one of the three valid states `ready / usable_with_warning
+  / experimental`); `historical_depth_quarters: 2`.
+- `build_formula_comparison(quarter="2026-Q1")` →
+  `total_stocks_compared: 8`, `magnitude_diff_count: 5`,
+  `top10_swap_count: 0`. The five magnitude-diff flags reflect
+  the legacy `min(weight*4, 1.0)` vs persisted-raw base
+  divergence on small-position holders. Useful as a sanity
+  check that the Phase 1 utility produces real output on
+  representative data — **NOT a staging/prod sign-off** per
+  [[tool-validation-vs-product-signoff]].
+
+### Idempotency:
+
+- Run #1 (default after `--reset-only`): 252 holdings / 64
+  filings / 64 parse_runs created.
+- Run #2 (default, no flag, against already-seeded DB):
+  `filings created: 0, parse_runs created: 0, holdings created: 0`.
+  No crashes. Acceptance summary identical.
+
+### Test-suite regression check:
+
+- `docker compose exec api python -m scripts.seed_13f_dev_fixture --reset-only`
+- `docker compose exec api pytest -q` → **781 passed**
+  (unchanged from the MVP5 baseline).
+- The seeder is **not** wired into pytest fixtures; running
+  pytest against a seeded DB fails 177 / 781 tests because of
+  invariant pollution. Use `--reset-only` before pytest.
+  Documented in the seeder docstring and the module's
+  `--help` output.
+
+### Frontend:
+
+- `docker compose exec web npm run lint` → clean.
+- `docker compose exec web npm run build` → compiled
+  successfully (no frontend changes in this commit; sanity
+  check only).
+
+## Final Devseed State Notes
+
+After this commit, dev DB carries the devseed fixture so an
+operator logging in as the existing admin
+(`d41689@gmail.com`) can browse `/admin/13f` and see real,
+non-empty panels. To run pytest, invoke
+`--reset-only` first, then re-seed afterwards if needed.
+A future ticket can wire the seeder into a Makefile target
+or CI; out of scope here.
