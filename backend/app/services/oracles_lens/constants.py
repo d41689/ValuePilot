@@ -44,3 +44,23 @@ MANAGER_SIGNAL_WEIGHTS: dict[str, Decimal] = {
     "high_turnover":         Decimal("0.30"),
     "index_like":            Decimal("0.10"),
 }
+
+
+# MVP4-03 plan §7.2 position_signal_weight calibration. V1 example
+# values; re-tune in V2 by bumping SCORE_VERSION and shipping new
+# constants together (no DB override).
+POSITION_BASE_BONUS_TOP_10: Decimal = Decimal("0.40")
+POSITION_BASE_BONUS_WEIGHT_5PCT: Decimal = Decimal("0.30")
+POSITION_BASE_BONUS_STREAK: Decimal = Decimal("0.30")
+POSITION_STREAK_THRESHOLD: int = 4
+POSITION_WEIGHT_5PCT_THRESHOLD: Decimal = Decimal("0.05")
+POSITION_TOP_N_THRESHOLD: int = 10
+
+# Action adjustments per plan §7.2 ("+0.10 to +0.20 for new/add
+# action ... negative adjustment for reduce/exit"). Symmetric
+# magnitudes are a V1 calibration choice; tune in V2 if production
+# data argues for asymmetry.
+ACTION_ADJUSTMENT_NEW: Decimal = Decimal("0.20")
+ACTION_ADJUSTMENT_ADD: Decimal = Decimal("0.10")
+ACTION_ADJUSTMENT_REDUCE: Decimal = Decimal("-0.10")
+ACTION_ADJUSTMENT_EXIT: Decimal = Decimal("-0.20")
