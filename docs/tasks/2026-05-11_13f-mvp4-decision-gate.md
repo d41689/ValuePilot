@@ -107,6 +107,24 @@ Open question: does any investor-data ask require pre-2023 holdings
 in MVP4? If yes, this becomes a sub-task with explicit risk
 acceptance.
 
+**SME remediation (2026-05-11):** Because pre-2023 holdings are absent
+from production data, any holder whose true position began before
+2023-Q1 will show `streak=1` in 2023-Q1 with no `new_position` flag
+(per PRD §7.4 `no_prior_data` semantics). The §7.10 streak and §7.9
+persistence component will therefore understate conviction silently
+for right-censored holders. V1 must emit a new per-row caveat code
+when the holder's earliest observed quarter equals the data-window
+floor:
+
+  `PRE_2023_PRE_HISTORY_UNAVAILABLE` — "Holding duration and
+  'New' classification reflect data starting 2023-Q1; pre-2023
+  ownership for this holder is not observed."
+
+The code is row-level (carried on the per-holder explanation payload)
+and may roll up to readiness as a structural caveat analogous to
+`NT_DETECTION_UNSUPPORTED`. The scoring services in MVP4-03 / MVP4-04
+must consume it before producing the streak / persistence component.
+
 ### D3. Oracle's Lens V1 Score Surface
 
 Proposal: V1 ships the following metrics from the Oracle's Lens plan:
@@ -131,6 +149,85 @@ Proposal: V1 ships the following metrics from the Oracle's Lens plan:
 Rationale: §7.1–§7.5 + §7.9–§7.13 form a coherent 13F-only V1. The
 Value Line overlay metrics (§7.6–§7.8, §7.14) require Value Line data
 plumbing and are gated on D4.
+
+**PO clarification (2026-05-11):** Distinctive Consensus Score (§7.11)
+ships as a **visible-but-off-by-default sort option in the UI** — it
+appears in the sort dropdown as a selectable column/sort key, not
+hidden behind an admin toggle. Hiding it behind an admin toggle would
+make it uncommunicable to users and untestable in production. The
+plan's own caveat (anti-crowding is a weak proxy in V1) supports the
+off-by-default posture without removing user accessibility.
+
+**SME remediations (2026-05-11) — caveat propagation rules.** D3's
+V1 metrics must each handle the existing 13F caveats explicitly.
+Without these rules the surface lies about precision:
+
+a) **Partial-coverage holdings (`coverage_completeness='partial'`,
+   PRD §7.2 line 588–592):** `portfolio_weight_pct` is mandated NULL
+   on Combination Reports. Plan §7.2's
+   `position_signal_weight` adders (`+0.40 if top 10`, `+0.30 if
+   position weight >= 5%`) are silently unevaluable for these
+   holders. V1 must drop partial-coverage holdings from the
+   signal-weighted sum and emit a per-holding caveat
+   (`PARTIAL_COVERAGE`), and §7.12 score_confidence must demote to
+   at most `medium` whenever any contributing row carries
+   `coverage_completeness='partial'`.
+
+b) **Open `OWNERSHIP_CHANGE_NEEDS_RECOMPUTE_CUSIP_CORPORATE_ACTION`
+   findings (from MVP3-06).** Stored `change_status` may be
+   `exited_position + new_position` for the same economic security
+   pre-recompute. §7.4 add intensity and §7.10 streak must either
+   exclude affected rows until recompute completes, or snap the
+   contribution to flat with a `stale_until_recompute` per-holding
+   caveat. §7.12 score_confidence demotes to at most `low` whenever
+   any contributing row has an open finding.
+
+c) **Confidential treatment
+   (`has_confidential_treatment=true`).** PRD §9.2.2 keeps these
+   in the consensus count but tags the row. V1 score payload's
+   per-holder explanation must propagate the `CONFIDENTIAL_TREATMENT`
+   flag at the row level (not only at the quarter-level readiness
+   warning) so a user looking at one stock can tell which of the
+   N holders are on a confidential-treatment filing. §7.12
+   score_confidence demotes to at most `medium` when any
+   contributing row is confidential.
+
+d) **NT quarter in streak (PRD §9.1).** An NT quarter is
+   `no_direct_holdings_data` — neither a break nor a continuation.
+   §7.10 streak must reset to the post-NT run, must not classify
+   the holding as exit, and must emit an explicit
+   `NT_QUARTER_STREAK_BREAK` caveat on that row. §7.12
+   score_confidence demotes to at most `medium` when any
+   contributing manager had an NT quarter inside the lookback
+   window.
+
+e) **Open `HISTORICAL_BACKFILL_NEEDS_VALIDATION` findings (from
+   MVP3-07).** V1 scores must either exclude unvalidated backfill
+   data or demote `score_confidence` to at most `low` while emitting
+   `HISTORICAL_BACKFILL_NEEDS_VALIDATION` at the row level.
+
+**SME remediation (2026-05-11) — caution-flags surface (§7.13)
+vocabulary.** Plan §7.13's V1 list uses code names that do not match
+existing readiness codes (e.g. `partial_period` vs
+`PARTIAL_COVERAGE`). V1 must consume the canonical readiness
+vocabulary as a transparent pass-through rather than inventing a
+parallel namespace. Per-row caution_flags must surface, in addition
+to plan §7.13's own codes, the following readiness-derived codes
+when applicable:
+
+  - `CONFIDENTIAL_TREATMENT`
+  - `PARTIAL_COVERAGE`
+  - `AMENDMENTS_PENDING`
+  - `AMENDMENT_FAILED`
+  - `NT_DETECTION_UNSUPPORTED` (page-level banner; row-level when
+    a contributing manager is NT-affected in the lookback window)
+  - `OWNERSHIP_CHANGES_NEEDS_RECOMPUTE` (MVP3-09)
+  - `HISTORICAL_BACKFILL_NEEDS_VALIDATION` (MVP3-09)
+  - `PRE_2023_PRE_HISTORY_UNAVAILABLE` (D2 above)
+
+The §7.13 service in MVP4-05 must consume `thirteenf_readiness.warnings`
+and per-holding `QualityFinding13F` rows, and use the same canonical
+code names in the score payload as the readiness API.
 
 Open question: any V1 metrics the product owner wants to defer to V2
 to reduce surface area? Conversely, anything the plan listed that the
@@ -175,7 +272,61 @@ exercise (e.g., 4-quarter retrospective comparing
 signal-weighted vs raw consensus) before V1 ships, or accept the
 plan's example defaults as the launch constants?
 
-### D6. MVP3 Carryover Triage
+**PO clarifications (2026-05-11):**
+- **No pre-launch tuning.** Plan §7.2 example constants are
+  well-reasoned, transparent, and documented; pre-launch tuning
+  against the current 477-filing / 80-manager dataset would not
+  produce statistically robust calibration and would delay shipping
+  without materially improving V1 outcomes. The right forcing
+  function for tuning is observed production signal data, not a
+  pre-ship retrospective on the same synthetic baseline.
+- **Component inputs MUST be exposed in the UI drilldown** (not in
+  the main ranking table). The main table exposes only the composite
+  score with 1–2 reason chips per plan §8.3; the
+  `HolderDrilldownPanel` component must include the per-manager
+  component breakdown. This is required by the Data Safety Principle
+  "Component inputs must be exposable" and matches the plan §7.9 /
+  §9.1 API response sketch (`score_explanation.conviction_components`).
+
+**TL revisions (2026-05-11) — module / storage / versioning shape:**
+- **Constants module shape: typed Python module**
+  (`app/services/oracles_lens/constants.py`) with named module-level
+  constants, not a `.json` / `.toml` file. Type-safe, importable in
+  tests, automatically git-audited. A DB-table form would require
+  per-row timestamping or versioning to preserve the same audit
+  property, and tuning still requires re-running the scoring job
+  regardless of where constants live — the deploy requirement is the
+  only thing that changes.
+- **Component audit shape: separate
+  `oracles_lens_score_components` table** keyed on
+  `(score_id, component_name)`, not a JSONB blob on the score row.
+  Same pattern as `quality_findings_13f` so component-level queries
+  ("which stocks had `position_importance > 25` on V1 scores")
+  and backfill validation are first-class.
+- **`score_version` shipped from day one** as a `VARCHAR(20)` string
+  label (e.g. `"v1.0"`) on the score row. Already mandated by the
+  "MVP 4 Data Safety Principles" section above. No separate
+  `versions` FK table needed in V1.
+
+**SME remediation (2026-05-11) — manager_type taxonomy prerequisite
+(blocking).** D5's "ship plan §7.2 example constants as defaults" is
+currently **undefined** because the existing manager_type surfaces do
+not agree with the plan's weight keys:
+
+| Surface | Values | Notes |
+| --- | --- | --- |
+| `InstitutionManager.manager_type` (admin-set column) | `fundamental_long`, `activist`, `quant`, `multi_strategy`, `index_like`, `unknown` | Default `unknown`; admin-tunable |
+| `oracles_lens.manager_signal.derive_manager_signal_profile()` (behavior-derived) | `long_term_fundamental`, `value_concentrated`, `high_turnover`, `unknown` | Computed |
+| Plan §7.2 weight keys | `long_term_fundamental`, `value_concentrated`, `activist`, `unknown`, `quant`, `high_turnover`, `index_like` | Spans both other surfaces |
+
+Three plan-weight keys (`long_term_fundamental` vs admin's
+`fundamental_long` naming, `value_concentrated`, `high_turnover`)
+have no admin path; the admin's `multi_strategy` has no plan weight.
+D5 cannot ship until a new MVP4 sub-task reconciles these to one
+canonical vocabulary and decides admin-set vs behavior-derived
+precedence. **This is filed as `MVP4-11 manager_type taxonomy
+reconciliation` in the revised task sequence below and must complete
+before MVP4-03 starts.**
 
 The MVP3 end-to-end review left the following carryovers. Proposal
 classification:
@@ -183,7 +334,7 @@ classification:
 | Item | Proposal | Rationale |
 | --- | --- | --- |
 | Shared advisory-lock helper (cusip_enrichment + corporate_action_mapping) | Defer to perpetual backlog | Still only two callers; extracting is cleanup work without a forcing function. |
-| Shared `IntegrityError → typed-error` helper | Defer to perpetual backlog | Same reason — two callers (batch reparse + historical backfill). |
+| Shared `IntegrityError → typed-error` helper | **MVP4-01 design note** | TL revision: MVP4-01 must decide scoring insert conflict strategy (ORM upsert vs IntegrityError translator) before MVP4-03 starts. If upsert is chosen the third-caller rule does not trigger and the helper stays perpetual; if not, extract before MVP4-03 merges. Not a standalone backlog ticket. |
 | Shared rule_code constants module | **MVP4 backlog** (`MVP4-XX rule-code constants`) | Five rule_codes across three services now. A user-facing findings filter in the admin dashboard or readiness API will need a single source of truth. |
 | Signed `holdings_rows_net_delta` field | Defer to perpetual backlog | No active consumer needs the signed delta; revisit when MVP3-08 admin UI surfaces this column. |
 | `'corporate_action'` `QualityReport13F.status` vocabulary | Defer to perpetual backlog | Per MVP3-06 review; revisit when a concrete filter use case appears. |
@@ -194,46 +345,146 @@ classification:
 Open question: any items the product owner wants to escalate to
 **MVP4-01-required** rather than backlog?
 
+**TL sequencing constraint (2026-05-11):**
+- `MVP4-09 shared rule_code constants module` must land **before
+  MVP4-03 starts** (scoring services may define new rule_codes and
+  drift would force a retrofit).
+- `MVP4-10 conftest savepoint hardening` must land **before MVP4-03
+  test authoring begins** to avoid pattern divergence across
+  scoring-service test files.
+- The `IntegrityError translator` decision moved out of D6 and into
+  MVP4-01 acceptance criteria (see "MVP4-01 Pre-Start Conditions"
+  below).
+
 ## Proposed MVP 4 Task Sequence
 
+**Revised 2026-05-11** after Tech Lead review identified a
+dependency inversion (signal-weighted score §7.2 consumes
+`holding_streak_quarters` from §7.10) and SME review added the
+manager_type taxonomy prerequisite. The original ordering would have
+shipped an incomplete signal-weighted score at MVP4-02 merge that
+would need a retrofit later.
+
 Sequence assumes D1 = Oracle's Lens V1 + D2 = no pre-2023 production
-+ D3 = the V1 metric surface above + D4 = Value Line overlay deferred
-+ D5 = heuristic constants in config + D6 = three new backlog tickets.
++ D3 = the revised V1 metric surface (with SME caveat propagation
+rules) + D4 = Value Line overlay deferred + D5 = config module +
+separate component-audit table + score_version + manager_type
+taxonomy prerequisite + D6 = three new backlog tickets +
+IntegrityError as MVP4-01 design note.
 
-1. `MVP4-01` Score schema + ORM (precomputed
-   `oracles_lens_signals` table or column extensions on existing
-   `ownership_changes` / `holdings_13f`).
-2. `MVP4-02` Signal-weighted consensus score service + API contract +
-   tests.
-3. `MVP4-03` Conviction score + holding duration / streak service +
-   API contract + tests.
-4. `MVP4-04` Caution flags service + API contract + tests.
-5. `MVP4-05` Distinctive consensus score service + API contract +
-   tests (advanced sort, off by default).
-6. `MVP4-06` Oracle's Lens dashboard frontend V1 (page layout, ranking
-   table, secondary explainers, caution flags panel).
-7. `MVP4-07` Shared rule_code constants module (from D6).
-8. `MVP4-08` Conftest savepoint hardening (from D6).
-9. `MVP4-09` Backfill quality_report source linkage (from D6).
-10. `MVP4-10` MVP 4 end-to-end verification.
+Main path (sequential):
 
-Note: MVP4-07 / 08 / 09 can run in parallel with MVP4-01 through
-MVP4-06; they touch different surfaces.
+1. `MVP4-01` Score schema + ORM. Must resolve the pre-start
+   conditions below (precomputed `oracles_lens_signals` table vs
+   column extension; JobRun integration; scoring source-of-truth;
+   IntegrityError vs upsert) before opening the migration.
+2. `MVP4-02` Holding streak + portfolio weight base service
+   (plan §7.3 / §7.4 / §7.10). These are shared primitive inputs
+   consumed by MVP4-03 and MVP4-04.
+3. `MVP4-03` Signal-weighted consensus score service + API +
+   tests (plan §7.2). Depends on MVP4-02 streak. Primary ranking
+   metric.
+4. `MVP4-04` Conviction score service + API + tests (plan §7.9).
+   Depends on MVP4-02 streak. Parallel-safe with MVP4-03.
+5. `MVP4-05` Caution flags service + API + tests (plan §7.13 +
+   D3's caveat-propagation pass-throughs from
+   `thirteenf_readiness`). Scope is conditional on the scoring
+   source-of-truth decision in MVP4-01 (see pre-start conditions).
+   Starts after MVP4-03 and MVP4-04.
+6. `MVP4-06` Distinctive consensus score service + API + tests
+   (plan §7.11). Depends on MVP4-03. Parallel-safe with
+   MVP4-04 / MVP4-05.
+7. `MVP4-07` Oracle's Lens dashboard frontend V1 (page layout,
+   ranking table, distinctive-consensus as visible-but-off
+   sort option, secondary explainers, caution flags panel,
+   drilldown component-input exposure per PO clarification).
+   G4 contract boundary: the four backend service APIs
+   (MVP4-03 / 04 / 05 / 06) must have passed response-shape review
+   before this task file opens.
+
+Parallel pre-MVP4-03 prerequisites (must complete before MVP4-03
+starts):
+
+8. `MVP4-08` Backfill `quality_report` source linkage. Fully
+   independent of scoring work; parallel throughout MVP4.
+9. `MVP4-09` Shared rule_code constants module. Must land before
+   MVP4-03 starts to avoid rule_code drift across scoring services.
+10. `MVP4-10` Conftest savepoint hardening. Must land before
+    MVP4-03 test authoring begins to avoid pattern divergence.
+11. `MVP4-11` Manager_type taxonomy reconciliation. Must land
+    before MVP4-03 starts; resolves the three-surface mismatch
+    documented in D5 SME remediation. Picks one canonical
+    taxonomy, defines admin-set vs behavior-derived precedence,
+    and updates `derive_manager_signal_profile` + admin UI to a
+    single vocabulary.
+
+Closing task:
+
+12. `MVP4-12` MVP 4 end-to-end verification.
+
+### MVP4-01 Pre-Start Conditions
+
+MVP4-01's task file must resolve four design decisions before its
+migration work begins. Tech Lead review identified the first two;
+the second pair is required by the gate's prior decisions.
+
+1. **Storage shape (TL note):** precomputed
+   `oracles_lens_signals` table vs column extensions on existing
+   `ownership_changes` / `holdings_13f`. PO noted this is a TL
+   schema call that must be explicit in MVP4-01 before migration
+   work begins.
+2. **JobRun integration (TL cross-cutting #1):** the scoring
+   backfill follows the same write-path-under-failure pattern as
+   MVP3-07 historical backfill. MVP4-01 must include:
+   - a new `job_type` constant for `oracles_lens_score_backfill`,
+   - a new `lock_key` prefix
+     (e.g. `"oracles_lens_score:{period}:{score_version}"`),
+   - a `JobRun` row per recompute run for audit-trail parity with
+     MVP3-07.
+3. **Scoring source-of-truth (TL cross-cutting #2):** plan §6.1
+   lists `holdings_13f` as the scoring source of truth, but the
+   gate must confirm that no scoring input flows through
+   `ownership_changes`. If anything does, then open
+   `OWNERSHIP_CHANGE_NEEDS_RECOMPUTE_CUSIP_CORPORATE_ACTION`
+   findings from MVP3-06 can produce silently incorrect scores;
+   MVP4-05 caution flag scope must then include a
+   `stale_recompute_pending` flag wired to those findings.
+4. **Insert conflict strategy (TL D6 revision):** decide whether
+   scoring inserts use ORM upsert (`INSERT ... ON CONFLICT DO
+   UPDATE`) or the IntegrityError → typed-error translator pattern
+   from MVP3-05 / MVP3-07. Upsert is cleaner for idempotent
+   recompute; translator extracted-as-helper is only needed if
+   upsert is rejected. Decide before MVP4-03 starts.
 
 ## Approval Checklist
 
-- [ ] D1 primary deliverable framing approved (Oracle's Lens V1 +
+- [x] D1 primary deliverable framing approved (Oracle's Lens V1 +
       tech-debt subtrack) — **product owner**.
-- [ ] D2 pre-2023 historical backfill stays at "curated dry-run only"
-      for MVP4 — **product owner**.
-- [ ] D3 V1 score surface approved (or revised list of in / deferred
-      metrics) — **product owner**.
-- [ ] D4 Value Line overlay deferred to V2 — **product owner**.
-- [ ] D5 heuristic constants approach approved (config-style module +
-      persist component inputs) — **product owner** with Tech Lead
-      review.
-- [ ] D6 carryover triage approved — **Tech Lead** primary.
+- [x] D2 pre-2023 historical backfill stays at "curated dry-run only"
+      for MVP4 — **product owner**. SME remediation
+      (`PRE_2023_PRE_HISTORY_UNAVAILABLE` caveat code) applied.
+- [x] D3 V1 score surface approved (10 metrics, distinctive consensus
+      visible-but-off-by-default in UI dropdown per PO clarification)
+      — **product owner**. SME caveat-propagation remediations (a–e)
+      and caution-flags vocabulary pass-through applied; awaiting SME
+      re-confirm.
+- [x] D4 Value Line overlay deferred to V2 — **product owner**.
+- [x] D5 heuristic constants approach approved (typed Python module +
+      separate `oracles_lens_score_components` audit table +
+      `score_version` from day one + drilldown component exposure
+      per PO and TL revisions) — **product owner** and **Tech Lead**.
+      SME prerequisite — manager_type taxonomy reconciliation —
+      filed as `MVP4-11`; awaiting SME re-confirm that the new
+      sub-task adequately addresses the three-surface mismatch.
+- [x] D6 carryover triage approved with TL revision — IntegrityError
+      moved to MVP4-01 design note; sequencing constraints on
+      MVP4-09 / MVP4-10 — **Tech Lead** primary.
 - [ ] Human owner approves MVP 4 scope freeze and exclusions.
+- [ ] SME re-confirm on D3 caveat propagation, D2 caveat code, and
+      D5 manager_type taxonomy sub-task framing.
+- [ ] MVP4-01 task file lands with the four pre-start conditions
+      resolved (storage shape, JobRun integration, scoring
+      source-of-truth, insert conflict strategy).
 - [ ] MVP4-01 Score schema explicitly approved to start.
 
 ## Progress Notes
@@ -242,6 +493,66 @@ MVP4-06; they touch different surfaces.
   MVP 4 decision gate / scope planning. Sources: MVP3-09 closure,
   PO end-to-end verdict ("recommend opening MVP4"), Oracle's Lens
   product plan, MVP3 end-to-end review carryovers.
+- 2026-05-11: Three cross-task reviews complete (Product Owner, Tech
+  Lead, 13F Domain SME). Gate revised inline with all accepted
+  feedback; details below.
+  - **Product Owner verdict: APPROVE TO START MVP4-01** with two
+    clarifications, applied above:
+    - D3: Distinctive Consensus Score (§7.11) ships as
+      visible-but-off-by-default sort option in the UI dropdown,
+      not behind an admin toggle.
+    - D5: No pre-launch tuning; component inputs must be exposed in
+      the `HolderDrilldownPanel` (not the main ranking table).
+    - PO also flagged that MVP4-01 must explicitly resolve the
+      precomputed-table-vs-column-extension storage shape, since
+      D5 / the gate left that open. Captured as pre-start condition #1.
+  - **Tech Lead verdict: APPROVE TO START MVP4-01 once PO lands
+    D1–D4, with REVISED D5, REVISED D6, and a REVISED task
+    sequence.** Applied above:
+    - D5: typed Python `constants.py` module (not JSON/TOML); separate
+      `oracles_lens_score_components` audit table (not JSONB blob);
+      `score_version` from day one (already mandated by Data Safety
+      Principles, now closed as a resolved decision).
+    - D6: `IntegrityError → typed-error` translator is **not** a
+      perpetual deferral and **not** a standalone backlog ticket.
+      Decide ORM upsert vs translator in MVP4-01 before MVP4-03
+      starts. MVP4-09 rule_code constants must land before
+      MVP4-03 starts; MVP4-10 conftest hardening before MVP4-03
+      test authoring begins.
+    - Task sequence: original `MVP4-02 signal-weighted before
+      MVP4-03 conviction+streak` was a dependency inversion. New
+      sequence introduces `MVP4-02 holding streak + portfolio
+      weight base` shared primitives consumed by both
+      `MVP4-03 signal-weighted` and `MVP4-04 conviction`. Frontend
+      promoted to `MVP4-07`; carryovers renumbered to
+      `MVP4-08 / 09 / 10`; verification is `MVP4-12`.
+    - Two cross-cutting items must be added to MVP4-01 acceptance
+      criteria (captured as pre-start conditions #2 and #3): JobRun
+      integration for score recompute, and scoring source-of-truth
+      vs `ownership_changes` stale-recompute dependency.
+  - **13F Domain SME verdict: HOLD pending four remediations,
+    all applied above:**
+    - D2: New per-row caveat code
+      `PRE_2023_PRE_HISTORY_UNAVAILABLE` for right-censored holders
+      whose earliest observation falls on the data-window floor.
+    - D3: Per-row caveat propagation rules (a–e) for
+      `coverage_completeness='partial'`,
+      `OWNERSHIP_CHANGE_NEEDS_RECOMPUTE`, `has_confidential_treatment`,
+      NT quarter in streak, and `HISTORICAL_BACKFILL_NEEDS_VALIDATION`.
+      Each rule specifies how `score_confidence` (§7.12) demotes
+      and which row-level caveat propagates.
+    - D3 caution-flags vocabulary: plan §7.13 must consume the
+      canonical readiness vocabulary as a transparent pass-through
+      rather than inventing parallel codes.
+    - D5: New `MVP4-11 manager_type taxonomy reconciliation`
+      sub-task; the three existing manager_type surfaces
+      (`InstitutionManager.manager_type` admin enum,
+      `derive_manager_signal_profile` behavior output, plan §7.2
+      weight keys) do not agree. Resolved by MVP4-11 picking one
+      canonical taxonomy before MVP4-03 starts.
+  - SME re-confirm is pending on the applied D2 / D3 / D5
+    remediations; the approval checklist tracks two unchecked SME
+    items. PO and TL approvals are recorded as checked.
 
 ## Verification Results
 
