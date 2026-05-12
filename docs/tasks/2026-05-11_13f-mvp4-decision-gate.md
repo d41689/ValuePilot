@@ -475,6 +475,49 @@ the second pair is required by the gate's prior decisions.
    recompute; translator extracted-as-helper is only needed if
    upsert is rejected. Decide before MVP4-03 starts.
 
+### MVP4-01 Pre-Start Condition Resolutions (2026-05-11)
+
+Human owner delegated the four resolutions to the implementation
+engineer; recorded here so the source of truth lives on the gate.
+
+1. **Storage shape — RESOLVED: precomputed `oracles_lens_signals`
+   table.**
+   Rationale: aligns with MVP3-06's no-mutation principle (scoring
+   is derived, not a property of the audit row); supports
+   `score_version` as a clean column on the score row; recompute
+   replaces rows without touching `holdings_13f` or
+   `ownership_changes`. The plan §6.1 source-of-truth list also
+   implies scoring is a separate concept from ingestion. The added
+   table + FK cost is already accepted under D5's separate
+   `oracles_lens_score_components` audit table.
+
+2. **JobRun integration — RESOLVED: accept TL's spec exactly.**
+   - `job_type = "oracles_lens_score_backfill"`.
+   - `lock_key = f"oracles_lens_score:{period}:{score_version}"`.
+   - One `JobRun` row per recompute run.
+   The `score_version` segment in the lock_key permits a future
+   v1.0 production run and a v1.1 shadow run to proceed
+   concurrently without collision.
+
+3. **Scoring source-of-truth — RESOLVED: read `holdings_13f`
+   (PRD §7.3 query contract: active HR/HR-A + current parse_run),
+   compute cross-quarter joins inside the scoring service.**
+   Rationale: keeps the source of truth single; avoids coupling
+   the scoring pipeline to the `ownership_changes` recompute
+   pipeline; honors MVP3-06's no-silent-rewrite principle. The
+   `OWNERSHIP_CHANGE_NEEDS_RECOMPUTE_CUSIP_CORPORATE_ACTION`
+   finding still affects MVP4-05 caution-flag scope — D3 rule (b)
+   already specifies `stale_until_recompute` per-holding caveat
+   when an open finding exists for the holder × period
+   combination. No new condition added to MVP4-05.
+
+4. **Insert conflict strategy — RESOLVED: ORM upsert
+   (`INSERT ... ON CONFLICT (stock_id, period, score_version) DO
+   UPDATE SET ...`).** The IntegrityError translator stays
+   perpetual; D6's "third-caller rule" does not trigger. Score
+   recompute is by-design idempotent, so upsert is both the
+   simpler write path and the cleaner failure-mode story.
+
 ## Approval Checklist
 
 - [x] D1 primary deliverable framing approved (Oracle's Lens V1 +
@@ -502,11 +545,18 @@ the second pair is required by the gate's prior decisions.
       D5 manager_type taxonomy sub-task framing. **HOLD CLOSED**
       2026-05-11. Two non-blocking notes captured inline for the
       future MVP4-05 and MVP4-11 task files.
-- [ ] Human owner approves MVP 4 scope freeze and exclusions.
-- [ ] MVP4-01 task file lands with the four pre-start conditions
+- [x] Human owner approves MVP 4 scope freeze and exclusions.
+      Delegated to implementation engineer 2026-05-11; scope
+      frozen at the 12-task list above (Oracle's Lens V1 + three
+      MVP3 carryover items + manager_type taxonomy + e2e
+      verification). No additions accepted in MVP4 without
+      reopening this gate.
+- [x] MVP4-01 task file lands with the four pre-start conditions
       resolved (storage shape, JobRun integration, scoring
-      source-of-truth, insert conflict strategy).
-- [ ] MVP4-01 Score schema explicitly approved to start.
+      source-of-truth, insert conflict strategy). See
+      `docs/tasks/2026-05-11_13f-mvp4-01-score-schema-orm.md`.
+- [x] MVP4-01 Score schema explicitly approved to start.
+      Delegated 2026-05-11.
 
 ## Progress Notes
 
@@ -603,6 +653,18 @@ the second pair is required by the gate's prior decisions.
     standpoint. The only remaining checklist items are
     human-owner scope freeze and MVP4-01 pre-start condition
     resolution.
+- 2026-05-11: **Human owner delegated the final three checklist
+  items to the implementation engineer.** All three are resolved
+  here:
+  - Scope freeze: MVP4 is frozen at the 12-task list above.
+    Future additions reopen this gate.
+  - MVP4-01 pre-start conditions: all four resolved in the new
+    "MVP4-01 Pre-Start Condition Resolutions" section above
+    (precomputed `oracles_lens_signals` table; TL's JobRun spec
+    accepted; scoring reads `holdings_13f`; ORM upsert).
+  - MVP4-01 task file: filed at
+    `docs/tasks/2026-05-11_13f-mvp4-01-score-schema-orm.md`,
+    approved to start.
 
 ## Verification Results
 
