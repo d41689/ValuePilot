@@ -255,6 +255,11 @@ def _apply_persisted_scores(
     )
     persisted_by_stock = {row.stock_id: row for row in rows}
 
+    # Import here so the dashboard module doesn't take a hard
+    # dependency on the caution_flags surface when persisted mode
+    # is disabled.
+    from app.services.oracles_lens.caution_flags import enrich_caveat_codes
+
     out: list[dict[str, Any]] = []
     for item in items:
         row = persisted_by_stock.get(item["stock_id"])
@@ -268,7 +273,15 @@ def _apply_persisted_scores(
             else None
         )
         item["score_confidence"] = row.score_confidence
-        item["caution_flag_codes"] = list(row.caution_flag_codes or [])
+        raw_codes = list(row.caution_flag_codes or [])
+        item["caution_flag_codes"] = raw_codes
+        # MVP4-05: also surface the structured caution_flags so a
+        # persisted-mode response is shape-compatible with the
+        # signal-weighted read helper. Existing in-memory
+        # caution_flags (if any) are replaced with the persisted
+        # enrichment because the persisted source is canonical in
+        # persisted mode.
+        item["caution_flags"] = enrich_caveat_codes(raw_codes)
         # Merge persisted explanation keys (e.g.
         # confidence_demotion_reasons) into the existing one so the
         # dashboard's narrative survives the override.

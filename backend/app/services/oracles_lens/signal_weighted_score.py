@@ -84,6 +84,11 @@ _MEDIUM_CAVEATS = frozenset({
     PARTIAL_COVERAGE_CAVEAT,
     NT_QUARTER_STREAK_BREAK_CAVEAT,
     PRE_2023_PRE_HISTORY_UNAVAILABLE_CAVEAT,
+    # MVP4-05 — amendment-status caveats from Filing13F.amendment_status.
+    # Same tier as PARTIAL_COVERAGE because the holder's snapshot may
+    # change when the amendment lands.
+    "AMENDMENTS_PENDING",
+    "AMENDMENT_FAILED",
 })
 # Per-row CONFIDENTIAL_TREATMENT is sourced from
 # Filing13F.has_confidential_treatment at compute time (not a
@@ -461,6 +466,19 @@ def _contributions_for_stock(
 
         if filing.has_confidential_treatment:
             per_holder_caveats.append(CONFIDENTIAL_TREATMENT_CAVEAT)
+
+        # MVP4-05: surface filing-level amendment caveats on every
+        # contribution from that filing so the user-facing caution
+        # panel sees "this holder's filing has a pending amendment"
+        # without re-querying.
+        from app.services.oracles_lens.caution_flags import (
+            CAVEAT_AMENDMENT_FAILED as _AMENDMENT_FAILED,
+            CAVEAT_AMENDMENTS_PENDING as _AMENDMENTS_PENDING,
+        )
+        if filing.amendment_status == "amendments_pending":
+            per_holder_caveats.append(_AMENDMENTS_PENDING)
+        elif filing.amendment_status == "amendment_failed":
+            per_holder_caveats.append(_AMENDMENT_FAILED)
 
         is_top_10 = stock_id in top_n_by_manager.get(manager.id, set())
 
@@ -859,8 +877,11 @@ def build_oracles_lens_response(
         .all()
     )
 
+    from app.services.oracles_lens.caution_flags import enrich_caveat_codes
+
     items: list[dict[str, Any]] = []
     for signal, stock in rows:
+        raw_codes = signal.caution_flag_codes or []
         items.append({
             "stock_id": stock.id,
             "ticker": stock.ticker,
@@ -872,16 +893,25 @@ def build_oracles_lens_response(
                 else None
             ),
             "score_confidence": signal.score_confidence,
-            "caution_flag_codes": signal.caution_flag_codes or [],
+            "caution_flag_codes": raw_codes,
+            # MVP4-05: structured surface for the user-facing caution
+            # panel. Same source as caution_flag_codes but enriched
+            # with severity / scope / label per the registry, with the
+            # score-emitted ↔ readiness-vocabulary alias deduped.
+            "caution_flags": enrich_caveat_codes(list(raw_codes)),
             "score_explanation": signal.score_explanation or {},
-            # Reserved fields for MVP4-04 / 05 / 06; null in MVP4-03 so
-            # the frontend in MVP4-07 receives a stable shape.
-            "conviction_score": None,
+            "conviction_score": (
+                int(signal.conviction_score)
+                if signal.conviction_score is not None
+                else None
+            ),
             "distinctive_consensus_score": (
                 str(signal.distinctive_consensus_score)
                 if signal.distinctive_consensus_score is not None
                 else None
             ),
+            # Reserved fields for MVP4-06; null until that service
+            # lands so the frontend in MVP4-07 receives a stable shape.
             "add_intensity": None,
             "median_holding_streak_quarters": None,
         })
