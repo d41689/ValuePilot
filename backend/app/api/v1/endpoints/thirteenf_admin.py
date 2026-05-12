@@ -824,3 +824,160 @@ def confirm_corporate_action_mapping_endpoint(
         )
     except CorporateActionMappingError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+
+
+# ---------------------------------------------------------------------------
+# MVP3-08: Historical Backfill endpoints
+# ---------------------------------------------------------------------------
+
+
+class _BackfillPreviewRequest(BaseModel):
+    start_quarter: str | None = Field(None)
+    end_quarter: str | None = Field(None)
+    manager_ids: list[int] | None = Field(None)
+
+
+class _BackfillEnqueueRequest(BaseModel):
+    start_quarter: str | None = Field(None)
+    end_quarter: str | None = Field(None)
+    manager_ids: list[int] | None = Field(None)
+    dry_run: bool = Field(False)
+
+
+@admin_router.post("/backfill/preview", response_model=dict)
+def backfill_preview_endpoint(
+    session: SessionDep,
+    current_user: AdminUser,
+    payload: _BackfillPreviewRequest,
+) -> Any:
+    from app.services.thirteenf_historical_backfill import preview_historical_backfill
+    return preview_historical_backfill(
+        session,
+        start_quarter=payload.start_quarter,
+        end_quarter=payload.end_quarter,
+        manager_ids=payload.manager_ids,
+    )
+
+
+@admin_router.post("/backfill/enqueue", response_model=dict)
+def backfill_enqueue_endpoint(
+    session: SessionDep,
+    current_user: AdminUser,
+    payload: _BackfillEnqueueRequest,
+) -> Any:
+    from app.services.thirteenf_historical_backfill import (
+        HistoricalBackfillError,
+        enqueue_historical_backfill,
+    )
+    try:
+        job = enqueue_historical_backfill(
+            session,
+            start_quarter=payload.start_quarter,
+            end_quarter=payload.end_quarter,
+            manager_ids=payload.manager_ids,
+            dry_run=payload.dry_run,
+            requested_by_user_id=current_user.id,
+            trigger_source="admin",
+        )
+        return {
+            "job_id": job.id,
+            "status": job.status,
+            "job_type": job.job_type,
+            "lock_key": job.lock_key,
+            "dry_run": bool((job.input_json or {}).get("dry_run", False)),
+        }
+    except HistoricalBackfillError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+
+
+@admin_router.get("/backfill/needs-validation", response_model=dict)
+def backfill_needs_validation_endpoint(
+    session: SessionDep,
+    current_user: AdminUser,
+) -> Any:
+    from sqlalchemy import func
+    from app.models.institutions import QualityFinding13F
+    from app.services.thirteenf_historical_backfill import HISTORICAL_BACKFILL_RULE_CODE
+
+    rows = (
+        session.query(
+            QualityFinding13F.quarter,
+            QualityFinding13F.validation_run_id,
+            func.count(QualityFinding13F.id).label("open_count"),
+        )
+        .filter(
+            QualityFinding13F.rule_code == HISTORICAL_BACKFILL_RULE_CODE,
+            QualityFinding13F.status == "open",
+        )
+        .group_by(QualityFinding13F.quarter, QualityFinding13F.validation_run_id)
+        .order_by(QualityFinding13F.quarter.asc())
+        .all()
+    )
+
+    by_quarter: dict[str, dict] = {}
+    for quarter, report_id, open_count in rows:
+        key = quarter or "unknown"
+        if key not in by_quarter:
+            by_quarter[key] = {"quarter": key, "open_count": 0, "quality_report_ids": []}
+        by_quarter[key]["open_count"] += open_count
+        if report_id not in by_quarter[key]["quality_report_ids"]:
+            by_quarter[key]["quality_report_ids"].append(report_id)
+
+    return {"quarters": sorted(by_quarter.values(), key=lambda x: x["quarter"])}
+
+
+# ---------------------------------------------------------------------------
+# MVP3-08: Batch Reparse by Quarter endpoints
+# ---------------------------------------------------------------------------
+
+
+class _ReparseByQuarterRequest(BaseModel):
+    quarter: str | None = Field(None)
+
+
+@admin_router.post("/jobs/reparse-by-quarter/preview", response_model=dict)
+def reparse_by_quarter_preview_endpoint(
+    session: SessionDep,
+    current_user: AdminUser,
+    payload: _ReparseByQuarterRequest,
+) -> Any:
+    from app.services.thirteenf_batch_reparse import (
+        BatchReparseScopeError,
+        preview_batch_reparse,
+    )
+    if not payload.quarter:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="quarter is required.")
+    try:
+        return preview_batch_reparse(session, quarter=payload.quarter)
+    except BatchReparseScopeError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+
+
+@admin_router.post("/jobs/reparse-by-quarter/enqueue", response_model=dict)
+def reparse_by_quarter_enqueue_endpoint(
+    session: SessionDep,
+    current_user: AdminUser,
+    payload: _ReparseByQuarterRequest,
+) -> Any:
+    from app.services.thirteenf_batch_reparse import (
+        BatchReparseScopeError,
+        enqueue_batch_reparse,
+    )
+    if not payload.quarter:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="quarter is required.")
+    try:
+        job = enqueue_batch_reparse(
+            session,
+            quarter=payload.quarter,
+            requested_by_user_id=current_user.id,
+            trigger_source="admin",
+        )
+        return {
+            "job_id": job.id,
+            "status": job.status,
+            "job_type": job.job_type,
+            "lock_key": job.lock_key,
+            "quarter": payload.quarter,
+        }
+    except BatchReparseScopeError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc

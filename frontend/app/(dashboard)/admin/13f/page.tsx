@@ -236,6 +236,11 @@ export default function Admin13FPage() {
     },
     enabled: selectedQuarter !== null,
   });
+  const needsValidationQuery = useQuery({
+    queryKey: ['admin-13f-backfill-needs-validation'],
+    queryFn: async () => (await apiClient.get('/admin/13f/backfill/needs-validation')).data,
+    refetchInterval: 60_000,
+  });
   const [manualQuarter, setManualQuarter] = useState('');
   const [backfillQuarters, setBackfillQuarters] = useState('4');
   const [backfillStartQuarter, setBackfillStartQuarter] = useState('');
@@ -258,6 +263,23 @@ export default function Admin13FPage() {
   const [pendingRetryManager, setPendingRetryManager] = useState<Record<string, unknown> | null>(null);
   const [retrySearchName, setRetrySearchName] = useState('');
   const [retryNote, setRetryNote] = useState('');
+  // MVP3-08: Historical Backfill
+  const [hbStartQ, setHbStartQ] = useState('');
+  const [hbEndQ, setHbEndQ] = useState('');
+  const [hbDryRun, setHbDryRun] = useState(false);
+  const [hbPreview, setHbPreview] = useState<Record<string, unknown> | null>(null);
+  // MVP3-08: Batch Reparse by Quarter
+  const [brQuarter, setBrQuarter] = useState('');
+  const [brPreview, setBrPreview] = useState<Record<string, unknown> | null>(null);
+  // MVP3-08: Corporate Action Confirm
+  const [caOpen, setCaOpen] = useState(false);
+  const [caCusip, setCaCusip] = useState('');
+  const [caFromQ, setCaFromQ] = useState('');
+  const [caToQ, setCaToQ] = useState('');
+  const [caNewTicker, setCaNewTicker] = useState('');
+  const [caEvidence, setCaEvidence] = useState('');
+  const [caReason, setCaReason] = useState('');
+  const [caPreview, setCaPreview] = useState<Record<string, unknown> | null>(null);
   const refreshAdminData = useCallback(async () => {
     await Promise.all([
       queryClient.invalidateQueries({ queryKey: ['admin-13f-readiness'] }),
@@ -349,6 +371,65 @@ export default function Admin13FPage() {
         queryClient.invalidateQueries({ queryKey: ['admin-13f-tasks'] }),
         queryClient.invalidateQueries({ queryKey: ['admin-13f-managers'] }),
       ]);
+    },
+  });
+  // MVP3-08 mutations
+  const hbPreviewMutation = useMutation({
+    mutationFn: async (body: Record<string, unknown>) =>
+      (await apiClient.post('/admin/13f/backfill/preview', body)).data,
+    onSuccess: (data) => setHbPreview(data),
+  });
+  const hbEnqueueMutation = useMutation({
+    mutationFn: async (body: Record<string, unknown>) =>
+      (await apiClient.post('/admin/13f/backfill/enqueue', body)).data,
+    onSuccess: async () => {
+      setHbPreview(null);
+      toast({ title: 'Backfill job queued', description: 'Historical backfill enqueued.' });
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ['admin-13f-jobs'] }),
+        queryClient.invalidateQueries({ queryKey: ['admin-13f-backfill-needs-validation'] }),
+      ]);
+    },
+    onError: (err: unknown) => {
+      const msg = (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail ?? 'Enqueue failed.';
+      toast({ title: 'Backfill error', description: msg, variant: 'destructive' });
+    },
+  });
+  const brPreviewMutation = useMutation({
+    mutationFn: async (body: Record<string, unknown>) =>
+      (await apiClient.post('/admin/13f/jobs/reparse-by-quarter/preview', body)).data,
+    onSuccess: (data) => setBrPreview(data),
+  });
+  const brEnqueueMutation = useMutation({
+    mutationFn: async (body: Record<string, unknown>) =>
+      (await apiClient.post('/admin/13f/jobs/reparse-by-quarter/enqueue', body)).data,
+    onSuccess: async () => {
+      setBrPreview(null);
+      toast({ title: 'Batch reparse queued', description: `Quarter ${brQuarter} reparse enqueued.` });
+      await queryClient.invalidateQueries({ queryKey: ['admin-13f-jobs'] });
+    },
+    onError: (err: unknown) => {
+      const msg = (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail ?? 'Enqueue failed.';
+      toast({ title: 'Reparse error', description: msg, variant: 'destructive' });
+    },
+  });
+  const caPreviewMutation = useMutation({
+    mutationFn: async (body: Record<string, unknown>) =>
+      (await apiClient.post('/admin/13f/cusips/corporate-actions/preview', body)).data,
+    onSuccess: (data) => setCaPreview(data),
+  });
+  const caConfirmMutation = useMutation({
+    mutationFn: async (body: Record<string, unknown>) =>
+      (await apiClient.post('/admin/13f/cusips/corporate-actions/confirm', body)).data,
+    onSuccess: async () => {
+      setCaOpen(false);
+      setCaPreview(null);
+      setCaCusip(''); setCaFromQ(''); setCaToQ(''); setCaNewTicker(''); setCaEvidence(''); setCaReason('');
+      toast({ title: 'Corporate action confirmed', description: 'Temporal mapping confirmed. Affected ownership_changes flagged for recomputation.' });
+    },
+    onError: (err: unknown) => {
+      const msg = (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail ?? 'Confirm failed.';
+      toast({ title: 'Corporate action error', description: msg, variant: 'destructive' });
     },
   });
 
@@ -1822,6 +1903,341 @@ export default function Admin13FPage() {
           </div>
         </CardContent>
       </Card>
+
+      {/* MVP3-08: Historical Backfill */}
+      <Card className="rounded-md">
+        <CardHeader className="pb-3">
+          <CardTitle className="flex items-center gap-2 text-base">
+            <History className="h-4 w-4" />
+            Historical Backfill
+          </CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <div className="grid gap-3 md:grid-cols-3">
+            <div>
+              <label className="text-xs font-semibold uppercase text-muted-foreground" htmlFor="hb-start-q">
+                Start quarter
+              </label>
+              <Input
+                id="hb-start-q"
+                className="mt-2"
+                placeholder="2023-Q1 (default)"
+                value={hbStartQ}
+                onChange={(e) => { setHbStartQ(e.target.value); setHbPreview(null); }}
+              />
+            </div>
+            <div>
+              <label className="text-xs font-semibold uppercase text-muted-foreground" htmlFor="hb-end-q">
+                End quarter
+              </label>
+              <Input
+                id="hb-end-q"
+                className="mt-2"
+                placeholder="latest (default)"
+                value={hbEndQ}
+                onChange={(e) => { setHbEndQ(e.target.value); setHbPreview(null); }}
+              />
+            </div>
+            <div className="flex flex-col justify-end gap-2">
+              <label className="flex items-center gap-2 text-xs font-semibold uppercase text-muted-foreground">
+                <input
+                  type="checkbox"
+                  checked={hbDryRun}
+                  onChange={(e) => setHbDryRun(e.target.checked)}
+                  className="h-3.5 w-3.5"
+                />
+                Dry run (required for pre-2023)
+              </label>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                disabled={hbPreviewMutation.isPending}
+                onClick={() => hbPreviewMutation.mutate({
+                  start_quarter: hbStartQ.trim() || undefined,
+                  end_quarter: hbEndQ.trim() || undefined,
+                })}
+              >
+                {hbPreviewMutation.isPending ? <Loader2 className="mr-2 h-3 w-3 animate-spin" /> : null}
+                Preview scope
+              </Button>
+            </div>
+          </div>
+          {hbPreview ? (
+            <div className="space-y-2">
+              {hbPreview['value_unit_risk_warning'] ? (
+                <div className="rounded-md border border-amber-300/70 bg-amber-50 px-3 py-2 text-sm text-amber-950">
+                  <AlertTriangle className="mr-1 inline h-3.5 w-3.5" />
+                  Pre-2023 range detected — value-unit parsing risk. Enable <strong>Dry run</strong> before enqueueing.
+                </div>
+              ) : null}
+              <div className="rounded-md border border-border/70 p-3 text-sm">
+                <div className="grid grid-cols-3 gap-3">
+                  <div>
+                    <div className="text-xs text-muted-foreground">Range</div>
+                    <div className="font-mono text-xs">{String(hbPreview['start_quarter'])} → {String(hbPreview['end_quarter'])}</div>
+                  </div>
+                  <div>
+                    <div className="text-xs text-muted-foreground">Quarters</div>
+                    <div className="font-semibold">{(hbPreview['quarters'] as unknown[])?.length ?? 0}</div>
+                  </div>
+                  <div>
+                    <div className="text-xs text-muted-foreground">Managers in scope</div>
+                    <div className="font-semibold">{String(hbPreview['manager_count'])}</div>
+                  </div>
+                </div>
+              </div>
+              <Button
+                type="button"
+                variant="outline"
+                disabled={
+                  hbEnqueueMutation.isPending ||
+                  (!!hbPreview['requires_dry_run'] && !hbDryRun)
+                }
+                onClick={() => hbEnqueueMutation.mutate({
+                  start_quarter: hbStartQ.trim() || undefined,
+                  end_quarter: hbEndQ.trim() || undefined,
+                  dry_run: hbDryRun,
+                })}
+              >
+                {hbEnqueueMutation.isPending ? <Loader2 className="mr-2 h-3.5 w-3.5 animate-spin" /> : null}
+                Enqueue backfill{hbDryRun ? ' (dry run)' : ''}
+              </Button>
+            </div>
+          ) : null}
+        </CardContent>
+      </Card>
+
+      {/* MVP3-08: Needs-Validation Queue */}
+      <Card className="rounded-md">
+        <CardHeader className="pb-3">
+          <CardTitle className="flex items-center gap-2 text-base">
+            <ShieldAlert className="h-4 w-4" />
+            Needs Validation
+            {needsValidationQuery.data?.quarters?.length ? (
+              <Badge variant="warning">{(needsValidationQuery.data.quarters as unknown[]).length} quarter{(needsValidationQuery.data.quarters as unknown[]).length !== 1 ? 's' : ''}</Badge>
+            ) : null}
+          </CardTitle>
+        </CardHeader>
+        <CardContent>
+          {needsValidationQuery.isPending ? (
+            <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />
+          ) : !needsValidationQuery.data?.quarters?.length ? (
+            <div className="text-sm text-muted-foreground">No quarters awaiting validation.</div>
+          ) : (
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>Quarter</TableHead>
+                  <TableHead>Open findings</TableHead>
+                  <TableHead>Quality report IDs</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {(needsValidationQuery.data.quarters as Array<{ quarter: string; open_count: number; quality_report_ids: number[] }>).map((row) => (
+                  <TableRow key={row.quarter}>
+                    <TableCell className="font-mono text-xs">{row.quarter}</TableCell>
+                    <TableCell>
+                      <Badge variant="warning">{row.open_count}</Badge>
+                    </TableCell>
+                    <TableCell className="font-mono text-xs text-muted-foreground">
+                      {row.quality_report_ids.join(', ')}
+                    </TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          )}
+        </CardContent>
+      </Card>
+
+      {/* MVP3-08: Batch Reparse by Quarter */}
+      <Card className="rounded-md">
+        <CardHeader className="pb-3">
+          <CardTitle className="flex items-center gap-2 text-base">
+            <RefreshCw className="h-4 w-4" />
+            Batch Reparse
+          </CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <div className="grid gap-3 md:grid-cols-2">
+            <div className="rounded-md border border-border/70 p-3">
+              <div className="mb-2 text-xs font-semibold uppercase text-muted-foreground">By Quarter</div>
+              <label className="text-xs text-muted-foreground" htmlFor="br-quarter">Target quarter</label>
+              <Input
+                id="br-quarter"
+                className="mt-1"
+                placeholder="YYYY-Qn"
+                value={brQuarter}
+                onChange={(e) => { setBrQuarter(e.target.value); setBrPreview(null); }}
+              />
+              <div className="mt-3 flex gap-2">
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  disabled={!brQuarter.trim() || brPreviewMutation.isPending}
+                  onClick={() => brPreviewMutation.mutate({ quarter: brQuarter.trim() })}
+                >
+                  {brPreviewMutation.isPending ? <Loader2 className="mr-1 h-3 w-3 animate-spin" /> : null}
+                  Preview
+                </Button>
+              </div>
+              {brPreview ? (
+                <div className="mt-3 space-y-2">
+                  <div className="rounded-md border border-border/70 p-2 text-sm">
+                    <div className="grid grid-cols-2 gap-2">
+                      <div>
+                        <div className="text-xs text-muted-foreground">Candidates</div>
+                        <div className="font-semibold">{String((brPreview['estimated_scope'] as Record<string, unknown>)?.['candidate_count'] ?? 0)}</div>
+                      </div>
+                      <div>
+                        <div className="text-xs text-muted-foreground">Missing raw infotable</div>
+                        <div className="font-semibold">{String((brPreview['estimated_scope'] as Record<string, unknown>)?.['missing_raw_infotable_count'] ?? 0)}</div>
+                      </div>
+                    </div>
+                  </div>
+                  {(brPreview['warnings'] as string[] | undefined)?.map((w, i) => (
+                    <div key={i} className="rounded-md border border-amber-300/70 bg-amber-50 px-2 py-1 text-xs text-amber-950">{w}</div>
+                  ))}
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    disabled={brEnqueueMutation.isPending}
+                    onClick={() => brEnqueueMutation.mutate({ quarter: brQuarter.trim() })}
+                  >
+                    {brEnqueueMutation.isPending ? <Loader2 className="mr-1 h-3 w-3 animate-spin" /> : null}
+                    Enqueue reparse
+                  </Button>
+                </div>
+              ) : null}
+            </div>
+            <div className="rounded-md border border-border/40 p-3 opacity-50">
+              <div className="mb-2 text-xs font-semibold uppercase text-muted-foreground">By Manager</div>
+              <div className="text-xs text-muted-foreground">Coming soon — D3: quarter scope ships first in admin UI.</div>
+            </div>
+          </div>
+        </CardContent>
+      </Card>
+
+      {/* MVP3-08: Corporate Action Confirmation */}
+      <Card className="rounded-md">
+        <CardHeader className="pb-3">
+          <CardTitle className="flex items-center gap-2 text-base">
+            <Link2 className="h-4 w-4" />
+            Corporate Action Mapping
+          </CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <div className="text-sm text-muted-foreground">
+            Manually confirm a CUSIP temporal mapping after a corporate action (spin-off, merger, rename).
+            Evidence URL and reason are required per D4.
+          </div>
+          <Button
+            type="button"
+            variant="outline"
+            onClick={() => setCaOpen(true)}
+          >
+            Confirm corporate action mapping
+          </Button>
+        </CardContent>
+      </Card>
+
+      {caOpen ? (
+        <DrawerShell
+          title="Confirm Corporate Action Mapping"
+          description="D4: manual confirmation only. Evidence URL and reason are required."
+          closeLabel="Close corporate action confirm"
+          labelledBy="ca-confirm-title"
+          maxWidthClassName="max-w-xl"
+          onClose={() => { setCaOpen(false); setCaPreview(null); }}
+        >
+          <div className="flex-1 space-y-4 overflow-y-auto p-4">
+            <div className="grid gap-3 md:grid-cols-2">
+              <div>
+                <label className="text-xs font-semibold uppercase text-muted-foreground" htmlFor="ca-cusip">CUSIP (9 chars)</label>
+                <Input id="ca-cusip" className="mt-1 font-mono" maxLength={9} value={caCusip} onChange={(e) => { setCaCusip(e.target.value.toUpperCase()); setCaPreview(null); }} />
+              </div>
+              <div>
+                <label className="text-xs font-semibold uppercase text-muted-foreground" htmlFor="ca-new-ticker">New ticker (optional)</label>
+                <Input id="ca-new-ticker" className="mt-1 font-mono" maxLength={10} value={caNewTicker} onChange={(e) => setCaNewTicker(e.target.value.toUpperCase())} />
+              </div>
+              <div>
+                <label className="text-xs font-semibold uppercase text-muted-foreground" htmlFor="ca-from-q">Effective from quarter</label>
+                <Input id="ca-from-q" className="mt-1 font-mono" placeholder="YYYY-Qn" value={caFromQ} onChange={(e) => { setCaFromQ(e.target.value); setCaPreview(null); }} />
+              </div>
+              <div>
+                <label className="text-xs font-semibold uppercase text-muted-foreground" htmlFor="ca-to-q">Effective to quarter (optional)</label>
+                <Input id="ca-to-q" className="mt-1 font-mono" placeholder="leave empty = open-ended" value={caToQ} onChange={(e) => { setCaToQ(e.target.value); setCaPreview(null); }} />
+              </div>
+            </div>
+            <div>
+              <label className="text-xs font-semibold uppercase text-muted-foreground" htmlFor="ca-evidence">Evidence URL (required)</label>
+              <Input id="ca-evidence" className="mt-1" placeholder="https://sec.gov/..." value={caEvidence} onChange={(e) => setCaEvidence(e.target.value)} />
+            </div>
+            <div>
+              <label className="text-xs font-semibold uppercase text-muted-foreground" htmlFor="ca-reason">Reason (required)</label>
+              <Input id="ca-reason" className="mt-1" placeholder="e.g. Spin-off effective YYYY-Qn" value={caReason} onChange={(e) => setCaReason(e.target.value)} />
+            </div>
+            <div className="flex gap-2">
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                disabled={caCusip.length !== 9 || !caFromQ.trim() || caPreviewMutation.isPending}
+                onClick={() => caPreviewMutation.mutate({
+                  cusip: caCusip,
+                  effective_from_quarter: caFromQ.trim(),
+                  effective_to_quarter: caToQ.trim() || undefined,
+                })}
+              >
+                {caPreviewMutation.isPending ? <Loader2 className="mr-1 h-3 w-3 animate-spin" /> : null}
+                Preview affected rows
+              </Button>
+            </div>
+            {caPreview ? (
+              <div className="space-y-2">
+                <div className="rounded-md border border-border/70 p-3 text-sm">
+                  <div className="grid grid-cols-2 gap-3">
+                    <div>
+                      <div className="text-xs text-muted-foreground">Affected ownership_changes</div>
+                      <div className="font-semibold">{String(caPreview['affected_ownership_changes_count'])}</div>
+                    </div>
+                    <div>
+                      <div className="text-xs text-muted-foreground">Overlapping mapping IDs</div>
+                      <div className="font-mono text-xs">{(caPreview['overlapping_mapping_ids'] as number[])?.join(', ') || 'none'}</div>
+                    </div>
+                  </div>
+                </div>
+                {(caPreview['overlapping_mapping_ids'] as number[])?.length ? (
+                  <div className="rounded-md border border-amber-300/70 bg-amber-50 px-3 py-2 text-sm text-amber-950">
+                    <AlertTriangle className="mr-1 inline h-3.5 w-3.5" />
+                    Overlapping mappings detected. Provide <strong>prior_mapping_id</strong> to supersede, or adjust the effective quarter window.
+                  </div>
+                ) : null}
+                <Button
+                  type="button"
+                  disabled={
+                    !caEvidence.trim() || !caReason.trim() || caConfirmMutation.isPending
+                  }
+                  onClick={() => caConfirmMutation.mutate({
+                    cusip: caCusip,
+                    new_ticker: caNewTicker.trim() || undefined,
+                    effective_from_quarter: caFromQ.trim(),
+                    effective_to_quarter: caToQ.trim() || undefined,
+                    evidence_url: caEvidence.trim(),
+                    reason: caReason.trim(),
+                  })}
+                >
+                  {caConfirmMutation.isPending ? <Loader2 className="mr-2 h-3.5 w-3.5 animate-spin" /> : null}
+                  Confirm mapping
+                </Button>
+              </div>
+            ) : null}
+          </div>
+        </DrawerShell>
+      ) : null}
 
       <div id="managers" className="grid grid-cols-1 scroll-mt-6 gap-4">
         <Card className="rounded-md">
