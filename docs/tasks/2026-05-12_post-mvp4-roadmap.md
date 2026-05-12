@@ -115,9 +115,9 @@ Pass Outcome Log.
 
 **Naming/docs pass (one ticket):**
 
-- Rename `anti_crowding_factor` to a "high-quality manager
-  agreement factor" (SME #6 #3). Update §7.11 doc + dashboard
-  tooltip + variable names.
+- Rename `anti_crowding_factor` → `quality_agreement_factor`
+  (SME #6 #3). Update §7.11 doc + variable names. **Resolved
+  in MVP5-06.**
 - Architecture note in `CLAUDE.md`: "ORM upsert for idempotent
   rewrites; IntegrityError translation for exclusive-lock guards"
   so future contributors don't re-litigate (TL #1 #2 follow-up,

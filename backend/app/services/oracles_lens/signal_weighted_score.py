@@ -1013,8 +1013,13 @@ def _replace_components(
                 {"median_streak_quarters": median_streak},
             ),
             (
-                "distinctive_anti_crowding_factor",
-                distinctive.anti_crowding_factor,
+                # MVP5-06: renamed from ``distinctive_anti_crowding_factor``
+                # per SME #6 #3. Existing rows in production carrying the
+                # legacy string are rewritten on the next recompute
+                # because ``_replace_components`` deletes and re-inserts
+                # all component rows for the signal; no migration needed.
+                "distinctive_quality_agreement_factor",
+                distinctive.quality_agreement_factor,
                 {"avg_manager_signal_weight": str(avg_manager_weight)},
             ),
             (
@@ -1023,7 +1028,7 @@ def _replace_components(
                 {
                     "concentration_factor": str(distinctive.concentration_factor),
                     "persistence_factor": str(distinctive.persistence_factor),
-                    "anti_crowding_factor": str(distinctive.anti_crowding_factor),
+                    "quality_agreement_factor": str(distinctive.quality_agreement_factor),
                 },
             ),
         ]

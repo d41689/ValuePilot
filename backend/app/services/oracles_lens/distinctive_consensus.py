@@ -10,7 +10,7 @@ soften one that looks artificially strong.
         signal_weighted_consensus_score
       × concentration_factor
       × persistence_factor
-      × anti_crowding_factor
+      × quality_agreement_factor
 
 V1 calibration (constants are dial-able by bumping ``SCORE_VERSION``
 and re-shipping):
@@ -21,14 +21,16 @@ and re-shipping):
 - ``persistence_factor`` saturates at a 4-quarter median streak
   (matches the streak bonus threshold in MVP4-03's
   ``position_signal_weight``).
-- ``anti_crowding_factor`` is the mean ``manager_signal_weight``
+- ``quality_agreement_factor`` is the mean ``manager_signal_weight``
   across contributors. All long_term_fundamental holders → 1.0;
-  all unknown → 0.60.
+  all unknown → 0.60. (Renamed from ``anti_crowding_factor`` in
+  MVP5-06 per SME #6 #3: the factor measures *holder-quality
+  agreement*, not crowding volume; the old name was misleading.)
 
-Plan §7.11 explicitly says V1 anti-crowding is a weak proxy. The
-factors are computed honestly but ``distinctive`` is intended as an
-**advanced sort option**, not the default ranking — per PO MVP4
-gate D3.
+Plan §7.11 explicitly says V1 quality-agreement (née anti-crowding)
+is a weak proxy. The factors are computed honestly but
+``distinctive`` is intended as an **advanced sort option**, not the
+default ranking — per PO MVP4 gate D3.
 """
 from __future__ import annotations
 
@@ -51,7 +53,7 @@ class DistinctiveConsensusResult:
     distinctive_consensus_score: Decimal
     concentration_factor: Decimal
     persistence_factor: Decimal
-    anti_crowding_factor: Decimal
+    quality_agreement_factor: Decimal
 
 
 def compute_distinctive_consensus(
@@ -67,7 +69,7 @@ def compute_distinctive_consensus(
             distinctive_consensus_score=zero,
             concentration_factor=zero,
             persistence_factor=zero,
-            anti_crowding_factor=zero,
+            quality_agreement_factor=zero,
         )
 
     aggregate_weight = sum(
@@ -89,17 +91,17 @@ def compute_distinctive_consensus(
     avg_manager_weight = sum(
         (c.manager_weight for c in contributions), Decimal("0")
     ) / Decimal(len(contributions))
-    anti_crowding_factor = min(avg_manager_weight, Decimal("1"))
+    quality_agreement_factor = min(avg_manager_weight, Decimal("1"))
 
     composite = (
         signal_weighted_score
         * concentration_factor
         * persistence_factor
-        * anti_crowding_factor
+        * quality_agreement_factor
     )
     return DistinctiveConsensusResult(
         distinctive_consensus_score=composite,
         concentration_factor=concentration_factor,
         persistence_factor=persistence_factor,
-        anti_crowding_factor=anti_crowding_factor,
+        quality_agreement_factor=quality_agreement_factor,
     )

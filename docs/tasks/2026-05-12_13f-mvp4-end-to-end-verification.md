@@ -327,13 +327,13 @@ Owner × 2, Domain SME × 2, Frontend/UX × 2). Prompts:
 - **FE #8 #7** — A11y: `role="dialog"` + `aria-modal` + focus trap
   on the slide-out panel; `overflow-x-auto` wrapper on the admin
   priority Table.
-- **SME #6 #3** — rename `anti_crowding_factor` to
-  "high-quality manager agreement factor" in §7.11 doc + tooltip.
-  Naming-only; lands in the docs pass.
+- **SME #6 #3** — rename `anti_crowding_factor` →
+  `quality_agreement_factor` in §7.11 doc + variable names.
+  Naming-only. **Resolved in MVP5-06.**
 - **TL #2 backlog #4 / TL #1 follow-up** — architecture note in
   `CLAUDE.md` codifying "ORM upsert for idempotent rewrites;
   IntegrityError translation for exclusive-lock guards" so the
-  next contributor doesn't re-litigate.
+  next contributor doesn't re-litigate. **Resolved in MVP5-06.**
 
 ### Rejected (with reasons)
 

@@ -136,7 +136,7 @@ def test_persistence_factor_uses_median_not_mean():
     assert result.persistence_factor == Decimal("0.25")  # 1/4
 
 
-def test_anti_crowding_factor_caps_at_one_for_all_high_signal():
+def test_quality_agreement_factor_caps_at_one_for_all_high_signal():
     contributions = [
         _contribution(
             portfolio_weight=Decimal("0.02"),
@@ -150,10 +150,10 @@ def test_anti_crowding_factor_caps_at_one_for_all_high_signal():
         signal_weighted_score=Decimal("1.0"),
         contributions=contributions,
     )
-    assert result.anti_crowding_factor == Decimal("1.0")
+    assert result.quality_agreement_factor == Decimal("1.0")
 
 
-def test_anti_crowding_factor_low_for_unknown_heavy_mix():
+def test_quality_agreement_factor_low_for_unknown_heavy_mix():
     """All holders unknown (weight 0.60) → factor 0.60."""
     contributions = [
         _contribution(
@@ -168,7 +168,7 @@ def test_anti_crowding_factor_low_for_unknown_heavy_mix():
         signal_weighted_score=Decimal("1.0"),
         contributions=contributions,
     )
-    assert result.anti_crowding_factor == Decimal("0.60")
+    assert result.quality_agreement_factor == Decimal("0.60")
 
 
 # ===========================================================================
@@ -194,7 +194,7 @@ def test_composite_equals_signal_times_three_factors():
         Decimal("3.0")
         * result.concentration_factor
         * result.persistence_factor
-        * result.anti_crowding_factor
+        * result.quality_agreement_factor
     )
     assert result.distinctive_consensus_score == expected
 
@@ -245,7 +245,7 @@ def test_empty_contributions_returns_zero():
     assert result.distinctive_consensus_score == Decimal("0")
     assert result.concentration_factor == Decimal("0")
     assert result.persistence_factor == Decimal("0")
-    assert result.anti_crowding_factor == Decimal("0")
+    assert result.quality_agreement_factor == Decimal("0")
 
 
 # ===========================================================================
@@ -400,7 +400,7 @@ def test_compute_pass_writes_distinctive_component_rows(db_session):
     assert {
         "distinctive_concentration_factor",
         "distinctive_persistence_factor",
-        "distinctive_anti_crowding_factor",
+        "distinctive_quality_agreement_factor",
         "distinctive_total",
     }.issubset(names)
 
