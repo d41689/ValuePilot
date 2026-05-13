@@ -14,6 +14,7 @@ const {
   primaryCautionFlags,
   radarBubbles,
   suggestedResearchSteps,
+  uniquePeriodOptions,
 } = require('./oraclesLens');
 
 test('normalizeOracleLensRows emphasizes signal score with explanations', () => {
@@ -154,6 +155,34 @@ test('buildOracleLensQueryParams honors usePersistedScores=false debug opt-out',
   });
   assert.ok(!params.includes('use_persisted_scores'),
     `expected no use_persisted_scores param, got: ${params}`);
+});
+
+test('uniquePeriodOptions removes duplicate labels for stable select keys', () => {
+  const options = uniquePeriodOptions([
+    {
+      label: '2026-Q2',
+      period_end_date: '2026-06-30',
+      manager_count: 4,
+      is_latest_complete: true,
+    },
+    {
+      label: '2026-Q2',
+      period_end_date: '2026-06-30',
+      manager_count: 2,
+      is_latest_complete: false,
+    },
+    {
+      label: '2026-Q1',
+      period_end_date: '2026-03-31',
+      manager_count: 3,
+      is_latest_complete: false,
+    },
+  ]);
+
+  assert.deepEqual(options.map((option) => option.key), ['2026-Q2', '2026-Q1']);
+  assert.equal(new Set(options.map((option) => option.key)).size, options.length);
+  assert.equal(options[0].manager_count, 4);
+  assert.equal(options[0].is_latest_complete, true);
 });
 
 test('radarBubbles maps candidate rows to compact visual signals', () => {

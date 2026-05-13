@@ -84,6 +84,30 @@ function buildOracleLensQueryParams(filters = {}) {
   return params.toString();
 }
 
+function uniquePeriodOptions(periods) {
+  if (!Array.isArray(periods)) {
+    return [];
+  }
+  const seenLabels = new Set();
+  const options = [];
+  for (const period of periods) {
+    if (!period || typeof period !== 'object') {
+      continue;
+    }
+    const label = typeof period.label === 'string' ? period.label : '';
+    if (!label || seenLabels.has(label)) {
+      continue;
+    }
+    seenLabels.add(label);
+    options.push({
+      ...period,
+      key: label,
+      label,
+    });
+  }
+  return options;
+}
+
 function confidenceTone(confidence) {
   if (confidence === 'high') {
     return 'success';
@@ -534,4 +558,5 @@ module.exports = {
   primaryCautionFlags,
   radarBubbles,
   suggestedResearchSteps,
+  uniquePeriodOptions,
 };

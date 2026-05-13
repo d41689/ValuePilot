@@ -48,6 +48,7 @@ const {
   normalizeStockHolderAggregation,
   radarBubbles,
   suggestedResearchSteps,
+  uniquePeriodOptions,
 } = oracleLensHelpers;
 
 const {
@@ -267,7 +268,7 @@ export default function OraclesLensPage() {
     [selectedRow]
   );
   const coverage = payload?.coverage;
-  const periodOptions = payload?.periods ?? [];
+  const periodOptions = uniquePeriodOptions(payload?.periods);
 
   return (
     <div className="space-y-5">
@@ -471,7 +472,7 @@ export default function OraclesLensPage() {
                   <SelectContent>
                     <SelectItem value="__latest">Latest complete</SelectItem>
                     {periodOptions.map((periodOption) => (
-                      <SelectItem key={periodOption.label} value={periodOption.label}>
+                      <SelectItem key={periodOption.key} value={periodOption.label}>
                         {periodOption.label}
                         {periodOption.is_latest_complete ? ' · latest complete' : ''}
                         {periodOption.manager_count ? ` · ${periodOption.manager_count} managers` : ''}
