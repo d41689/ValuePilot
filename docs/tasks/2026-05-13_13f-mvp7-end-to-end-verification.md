@@ -216,27 +216,23 @@ scoring or schema logic.
 
 ## Post-MVP7 Decision Inputs
 
-When MVP7-06 closes, the following candidates are ready for the
-next decision gate (NOT committed yet — inputs to the next gate,
-not outputs of this one):
+**Initial draft ranking (engineer-proposed, pre-review).** PO
+revised this in the four-role review — final ranking adopted is
+in the "Review Outcomes" section below. The original list is
+preserved here for traceability:
 
-1. **MVP5-03 Phase 3** server-default flip — still the open GA
-   gate. Watchlist × 13F now exposes the same persisted-vs-
-   in-memory question to a wider surface; Phase 3 unblocks both
-   surfaces in one move.
-2. **Track A2** Oracle's Lens Milestone 3 (quality + valuation
-   overlay) — natural depth-expansion of the Watchlist 13F
-   signal we just shipped. Adds valuation reference + quality
-   overlay alongside the conviction/distinctiveness chips.
-3. **Watchlist click-to-sort UX track** — table-wide sort across
-   existing columns (MOS / Price / FV) + the four new 13F columns.
-4. **MVP6-08 SME backlog FLAGs cluster** — four small admin-UX
-   tickets queued from the MVP6 closing review.
-5. **Mobile per-row stacked 13F view** — deferred from MVP7-04
-   D4 SR. Re-open when mobile usage signal appears.
-6. **Track C G1 + G9** admin email + external ticketing — only
-   if production observation surfaces a Slack / Discord coverage
-   gap.
+1. ~~MVP5-03 Phase 3 server-default flip~~ (kept at #1)
+2. ~~Track A2 Oracle's Lens M3 valuation + quality overlay~~
+   (moved to #3)
+3. ~~Watchlist click-to-sort UX track~~ (moved to #4)
+4. ~~MVP6-08 SME backlog FLAGs cluster~~ (merged into the
+   reviewer's #2 "SME flags cluster" along with the MVP7-06
+   deferred SME items)
+5. Mobile per-row stacked 13F view (unchanged)
+6. Track C G1 + G9 admin gaps (unchanged)
+
+PO-revised ranking is the canonical one — see Review Outcomes
+(Product Owner verdict) below.
 
 ## Review Pattern
 
@@ -301,11 +297,39 @@ threshold items deferred to MVP8.
 ### Product Owner — APPROVE-WITH-CONDITIONS
 
 Five sub-tasks reconcile with verification doc. No new migrations,
-no new scoring formulas, no silent feature creep. MVP8 ranking
-locked: (1) MVP5-03 Phase 3; (2) copy / SME flag cluster including
-"13F common weight"; (3) Track A2 valuation + quality overlay;
-(4) Watchlist click-to-sort UX; (5) Mobile stacked 13F view;
-(6) Track C G1 / G9 admin gaps.
+no new scoring formulas, no silent feature creep.
+
+**MVP8 ranking (PO-locked 2026-05-13, supersedes the engineer
+draft above):**
+
+1. **MVP5-03 Phase 3** server-default flip — still the open GA
+   gate. Watchlist × 13F now exposes the same persisted-vs-
+   in-memory question to a wider surface; Phase 3 unblocks both
+   surfaces in one move.
+2. **SME flag cluster** — merge MVP6-08 SME FLAGs (manager_type
+   editor note required, Kahn Brothers TP signal, Batch Reparse
+   skip banner, Quality Reports drilldown) with the MVP7-06
+   deferred SME FLAGs (distinctiveness threshold review, MOS × 13F
+   threshold review, Δ Holders portfolio-weight context,
+   manager_type derived-vs-admin dual-display). **Note: 2 of the
+   10 acute copy items already shipped in MVP7-06 review-fix
+   commit `f20e6eb`** ("Top N% conviction" suffix +
+   "13F common weight" terminology). 8 items remaining; can be
+   one packaged ticket or split if PO wants finer control.
+3. **Track A2** Oracle's Lens Milestone 3 — quality + valuation
+   overlay. Natural depth-expansion once trust-risk fixes
+   (cluster #2) ship.
+4. **Watchlist click-to-sort UX** — table-wide sort across all
+   `/watchlist` columns. Small scope, can land in parallel with
+   Track A2 if the team has capacity.
+5. **Mobile per-row stacked 13F view** — deferred from MVP7-04
+   D4 SR. Re-open when mobile usage signal appears.
+6. **Track C G1 + G9** admin email + external ticketing — only
+   if production observation surfaces a Slack / Discord coverage
+   gap.
+
+PO direction: open MVP8 decision gate immediately after MVP7-06
+closes, no release window required.
 
 ### Frontend / UX — RECOMMEND-CHANGE, no BLOCK
 
