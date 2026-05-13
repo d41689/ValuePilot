@@ -43,6 +43,7 @@ import {
 import apiClient from '@/lib/api/client';
 import thirteenfAdmin from '@/lib/thirteenfAdmin';
 import { AdminPageLayout } from '@/components/admin13f/AdminPageLayout';
+import { AdminErrorState } from '@/components/admin13f/AdminErrorState';
 import { AdminLoadingState } from '@/components/admin13f/AdminLoadingState';
 import { DrawerShell, MetricTile } from '@/components/admin13f/Admin13FPrimitives';
 import {
@@ -59,6 +60,7 @@ import {
   useUnknownManagerPriorityQuery,
   useWorkersQuery,
 } from '@/lib/admin13f/queries';
+import { lockKeyForPayload } from '@/lib/admin13f/lockKey';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
@@ -168,33 +170,7 @@ function formatJson(value: unknown): string {
   return JSON.stringify(value, null, 2);
 }
 
-function lockKeyForPayload(payload: Record<string, unknown>): string | null {
-  const jobType = String(payload.job_type ?? '');
-  if (jobType === 'fetch_quarter_index')
-    return `fetch_quarter_index:${String(payload.quarter ?? '')}`;
-  if (jobType === 'ingest_holdings')
-    return `ingest_holdings:${String(payload.quarter ?? '')}`;
-  if (jobType === 'quality_check')
-    return `quality_check:${String(payload.quarter ?? '')}`;
-  if (jobType === 'enrich_cusip')
-    return `enrich_cusip:${String(payload.quarter ?? 'global')}`;
-  if (jobType === 'enrich_metadata')
-    return `enrich_metadata:${String(payload.quarter ?? 'global')}`;
-  if (jobType === 'ingest_accession')
-    return `ingest_accession:${String(payload.accession_no ?? '')}`;
-  if (jobType === 'reprocess_amendment')
-    return `reprocess_amendment:${String(payload.accession_no ?? '')}`;
-  if (jobType === 'backfill_quarters') {
-    return `backfill_quarters:${String(payload.start_quarter ?? 'latest')}:${String(
-      payload.quarters ?? '',
-    )}`;
-  }
-  if (jobType === 'bootstrap_whitelist') return 'bootstrap_whitelist';
-  if (jobType === 'match_cik') return 'match_cik';
-  if (jobType === 'bootstrap_stocks') return 'bootstrap_stocks';
-  if (jobType === 'enrich_stocks_edgar') return 'enrich_stocks_edgar';
-  return null;
-}
+// MVP6-08 follow-up: lockKeyForPayload moved to lib/admin13f/lockKey.ts.
 
 export default function ReadinessAdminPage() {
   const queryClient = useQueryClient();
@@ -430,7 +406,7 @@ export default function ReadinessAdminPage() {
               value={formatInteger(
                 readiness.counts.nt_filer_count ?? readiness.counts.nt_filers,
               )}
-              detail="reported elsewhere"
+              detail="NT-HR amendment expected"
             />
           </div>
           <div className="rounded-md border border-amber-300/70 bg-amber-50 px-3 py-2 text-sm text-amber-950">
@@ -781,6 +757,13 @@ export default function ReadinessAdminPage() {
           </CardTitle>
         </CardHeader>
         <CardContent>
+          {quartersQuery.isError ? (
+            <AdminErrorState
+              error={quartersQuery.error}
+              onRetry={() => quartersQuery.refetch()}
+              title="Failed to load quarters"
+            />
+          ) : null}
           <Table>
             <TableHeader>
               <TableRow>

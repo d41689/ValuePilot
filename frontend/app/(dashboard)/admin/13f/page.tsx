@@ -22,6 +22,7 @@ import { AdminPageLayout } from '@/components/admin13f/AdminPageLayout';
 import { JobPendingDialog, type PendingJob } from '@/components/admin13f/JobPendingDialog';
 import { ReleaseStaleLockDialog } from '@/components/admin13f/ReleaseStaleLockDialog';
 import { ManagerCikDialogs } from '@/components/admin13f/ManagerCikDialogs';
+import { lockKeyForPayload } from '@/lib/admin13f/lockKey';
 import {
   useEdgarRateLimitQuery,
   useHoldingsCoverageQuery,
@@ -315,24 +316,8 @@ export default function Admin13FPage() {
   const targetQuarter = manualQuarter.trim() || latestQuarter;
   const targetAccession = accessionNo.trim();
 
-  function lockKeyForPayload(payload: Record<string, unknown>) {
-    const jobType = String(payload.job_type ?? '');
-    if (jobType === 'fetch_quarter_index') return `fetch_quarter_index:${String(payload.quarter ?? '')}`;
-    if (jobType === 'ingest_holdings') return `ingest_holdings:${String(payload.quarter ?? '')}`;
-    if (jobType === 'quality_check') return `quality_check:${String(payload.quarter ?? '')}`;
-    if (jobType === 'enrich_cusip') return `enrich_cusip:${String(payload.quarter ?? 'global')}`;
-    if (jobType === 'enrich_metadata') return `enrich_metadata:${String(payload.quarter ?? 'global')}`;
-    if (jobType === 'ingest_accession') return `ingest_accession:${String(payload.accession_no ?? '')}`;
-    if (jobType === 'reprocess_amendment') return `reprocess_amendment:${String(payload.accession_no ?? '')}`;
-    if (jobType === 'backfill_quarters') {
-      return `backfill_quarters:${String(payload.start_quarter ?? 'latest')}:${String(payload.quarters ?? '')}`;
-    }
-    if (jobType === 'bootstrap_whitelist') return 'bootstrap_whitelist';
-    if (jobType === 'match_cik') return 'match_cik';
-    if (jobType === 'bootstrap_stocks') return 'bootstrap_stocks';
-    if (jobType === 'enrich_stocks_edgar') return 'enrich_stocks_edgar';
-    return null;
-  }
+  // MVP6-08 follow-up: lockKeyForPayload moved to lib/admin13f/lockKey.ts
+  // so the three route copies (index, jobs, readiness) cannot drift.
 
   function isJobActive(payload: Record<string, unknown>) {
     const lockKey = lockKeyForPayload(payload);

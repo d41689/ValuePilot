@@ -118,6 +118,7 @@ export default function HoldingsAdminPage() {
   const [caNewTicker, setCaNewTicker] = useState('');
   const [caEvidence, setCaEvidence] = useState('');
   const [caReason, setCaReason] = useState('');
+  const [caPriorMappingId, setCaPriorMappingId] = useState('');
   const [caPreview, setCaPreview] = useState<Record<string, unknown> | null>(null);
 
   const caPreviewMutation = useMutation({
@@ -125,7 +126,18 @@ export default function HoldingsAdminPage() {
       (
         await apiClient.post('/admin/13f/cusips/corporate-actions/preview', body)
       ).data,
-    onSuccess: (data) => setCaPreview(data),
+    onSuccess: (data) => {
+      setCaPreview(data);
+      // Auto-suggest prior_mapping_id when exactly one overlapping mapping
+      // exists — the only unambiguous case. Multi-overlap requires the
+      // operator to pick.
+      const overlaps = Array.isArray(data?.overlapping_mapping_ids)
+        ? (data.overlapping_mapping_ids as unknown[])
+        : [];
+      if (overlaps.length === 1 && !caPriorMappingId) {
+        setCaPriorMappingId(String(overlaps[0]));
+      }
+    },
     onError: (err: unknown) => {
       const msg =
         (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail ??
@@ -148,6 +160,7 @@ export default function HoldingsAdminPage() {
       setCaNewTicker('');
       setCaEvidence('');
       setCaReason('');
+      setCaPriorMappingId('');
       toast({
         title: 'Corporate action confirmed',
         description:
@@ -337,6 +350,7 @@ export default function HoldingsAdminPage() {
           onClose={() => {
             setCaOpen(false);
             setCaPreview(null);
+            setCaPriorMappingId('');
           }}
         >
           <div className="flex-1 space-y-4 overflow-y-auto p-4">
@@ -356,6 +370,7 @@ export default function HoldingsAdminPage() {
                   onChange={(e) => {
                     setCaCusip(e.target.value.toUpperCase());
                     setCaPreview(null);
+                    setCaPriorMappingId('');
                   }}
                 />
               </div>
@@ -389,6 +404,7 @@ export default function HoldingsAdminPage() {
                   onChange={(e) => {
                     setCaFromQ(e.target.value);
                     setCaPreview(null);
+                    setCaPriorMappingId('');
                   }}
                 />
               </div>
@@ -407,6 +423,7 @@ export default function HoldingsAdminPage() {
                   onChange={(e) => {
                     setCaToQ(e.target.value);
                     setCaPreview(null);
+                    setCaPriorMappingId('');
                   }}
                 />
               </div>
@@ -439,6 +456,24 @@ export default function HoldingsAdminPage() {
                 placeholder="e.g. Spin-off effective YYYY-Qn"
                 value={caReason}
                 onChange={(e) => setCaReason(e.target.value)}
+              />
+            </div>
+            <div>
+              <label
+                className="text-xs font-semibold uppercase text-muted-foreground"
+                htmlFor="ca-prior-mapping-id"
+              >
+                Prior mapping ID to supersede (required when overlapping)
+              </label>
+              <Input
+                id="ca-prior-mapping-id"
+                className="mt-1 font-mono"
+                inputMode="numeric"
+                placeholder="cusip_ticker_map.id from preview"
+                value={caPriorMappingId}
+                onChange={(e) =>
+                  setCaPriorMappingId(e.target.value.replace(/[^0-9]/g, ''))
+                }
               />
             </div>
             <div className="flex gap-2">
@@ -485,9 +520,11 @@ export default function HoldingsAdminPage() {
                 {(caPreview['overlapping_mapping_ids'] as number[])?.length ? (
                   <div className="rounded-md border border-amber-300/70 bg-amber-50 px-3 py-2 text-sm text-amber-950">
                     <AlertTriangle className="mr-1 inline h-3.5 w-3.5" />
-                    Overlapping mappings detected. Provide{' '}
-                    <strong>prior_mapping_id</strong> to supersede, or adjust the
-                    effective quarter window.
+                    Overlapping mappings detected. Enter a{' '}
+                    <strong>Prior mapping ID</strong> above (
+                    {(caPreview['overlapping_mapping_ids'] as number[]).join(', ')})
+                    to supersede, or close this drawer and adjust the effective
+                    quarter window so it does not overlap.
                   </div>
                 ) : null}
                 <Button
@@ -495,7 +532,9 @@ export default function HoldingsAdminPage() {
                   disabled={
                     !caEvidence.trim() ||
                     !caReason.trim() ||
-                    caConfirmMutation.isPending
+                    caConfirmMutation.isPending ||
+                    ((caPreview['overlapping_mapping_ids'] as number[])?.length > 0 &&
+                      !caPriorMappingId.trim())
                   }
                   onClick={() =>
                     caConfirmMutation.mutate({
@@ -505,6 +544,9 @@ export default function HoldingsAdminPage() {
                       effective_to_quarter: caToQ.trim() || undefined,
                       evidence_url: caEvidence.trim(),
                       reason: caReason.trim(),
+                      prior_mapping_id: caPriorMappingId.trim()
+                        ? Number(caPriorMappingId.trim())
+                        : undefined,
                     })
                   }
                 >

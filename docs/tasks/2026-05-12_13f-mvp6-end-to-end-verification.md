@@ -215,7 +215,7 @@ Controls Card + shared dialog mounts.
 
 | Decision | Status | Evidence |
 | -------- | ------ | -------- |
-| **D1** Eight routes total (Overview + 7 functional) | HELD | All eight routes ship and prerender. `AdminPageLayout` nav has eight entries, every one `shipped: true` post-MVP6-07. |
+| **D1** Eight routes total (Overview + 7 functional) | HELD | All eight Next.js routes ship and prerender (Overview + 6 functional list pages + 1 dynamic detail `managers/[id]`). `AdminPageLayout` nav has seven entries (Overview + 6 functional list pages), every one `shipped: true` post-MVP6-07. The Overview hub's KPI strip has 7 `<Link>` cards (one per nav entry minus self). |
 | **D2** Three-step migration (extract → per-page lift → closing gate) | HELD | MVP6-01 extracted Tier 2 + Tier 3 in place; MVP6-02..07 each lifted one section + flipped the corresponding nav entry; MVP6-08 (this doc) is the closing gate. |
 | **D3** Three-tier component extraction (UI primitives / admin13f layer / queries module) | HELD | `@/components/ui/*` primitives unchanged (Tier 1). `frontend/components/admin13f/` has 9 files (Tier 2): `Admin13FPrimitives` + 4 state components + `AdminPageLayout` + 3 dialog components. `frontend/lib/admin13f/queries.ts` is the single Tier 3 module. |
 | **D4** First batch = MVP6-01 + MVP6-02; minimum operational shape per ticket | HELD | MVP6-01 shipped the shared layer first; MVP6-02 shipped Managers second. Every subsequent ticket explicitly recorded scope refinements deferring non-V1 features (no bulk edits, no quarter filter where backend missing, etc.). |
@@ -327,3 +327,103 @@ MVP5-03 Phase 3 are the two natural front-runners — the
 former because the admin surface that gated it is now
 operable, the latter because it's the GA gate that's been
 waiting since MVP5-07.
+
+## Review Outcomes (2026-05-12)
+
+Two of the four review roles ran against shipped code:
+
+### Staff Engineer — APPROVE-WITH-FIXES
+
+All 10 cross-cutting items PASS or FLAG (no FAIL). Two FLAGs
+landed as code-level fixes in the same MVP6-08 review-fix
+commit:
+
+- **FLAG #8** — `lockKeyForPayload` was duplicated on three
+  routes with non-byte-identical formatting (single-line vs
+  multi-line `if`s, mismatched return-type annotations).
+  Extracted to `frontend/lib/admin13f/lockKey.ts`; the three
+  route files now import the single canonical helper.
+- **FLAG #5** — `AdminErrorState` was unused on
+  `/admin/13f/jobs` and `/admin/13f/readiness` (D5 convention
+  consistency gap). Adopted on the two primary tables (Job
+  Runs on jobs route, Quarters on readiness route) with
+  `error` + `onRetry` + custom `title` wiring.
+
+### Financial Data Product Reviewer (13F SME) — 2 BLOCKs + 3 MVP7 FLAGs
+
+Both BLOCKs landed in the same MVP6-08 review-fix commit:
+
+- **BLOCK Item 3** — Corporate Action confirm DrawerShell on
+  `/admin/13f/holdings` told the operator to "Provide
+  `prior_mapping_id` to supersede" but the form had no input
+  for the value. The backend service accepts the field
+  (`thirteenf_corporate_action.py:22`); the affordance gap
+  was a copy-vs-form mismatch. Fix: added a new
+  `caPriorMappingId` state + form input
+  (`#ca-prior-mapping-id`), threaded into the confirm payload
+  with `prior_mapping_id: Number(...)`, gated the Confirm
+  button (disabled when overlaps detected but field empty),
+  auto-populated when the preview returns exactly one
+  overlapping mapping. Warning copy rewritten to surface the
+  overlapping IDs inline.
+- **BLOCK Item 8** — NT filers MetricTile on
+  `/admin/13f/readiness` had `detail="reported elsewhere"`,
+  but the IA split left no other admin surface for NT filer
+  detail. Replaced with `detail="NT-HR amendment expected"`,
+  which does not promise a destination.
+
+MVP7-backlog FLAGs (filed, not landed in MVP6):
+
+- `manager_type` editor: make `note` required when
+  transitioning away from `unknown`; thread `evidence_json`
+  from the dialog to the audit row.
+- Historical Backfill pre-2023: add per-filer caveat block
+  for Kahn Brothers (CIK `0001039565` — values in dollars
+  per CLAUDE.md) so operators recognize reconciliation
+  warnings as True Positives.
+- Batch Reparse: promote `missing_raw_infotable_count > 0`
+  from a MetricTile to an amber banner with explicit
+  skip-count language; align the generic `warnings` array
+  copy with the actual skip behavior.
+- Quality Reports: V2 per-finding drilldown panel (replaces
+  the raw JSON dump in the Quarter Detail drawer).
+
+NEEDS-PRODUCTION-DATA:
+
+- SME Item 4 (Kahn dry-run output shape) — requires
+  staging/prod environment with linked CUSIPs + Kahn filings
+  in scope. Defer alongside MVP5-03 Phase 3.
+
+### Frontend / UX — optional, not run
+
+Skipped in favor of consolidating the Staff Engineer + SME
+fixes. Browser-interaction items (Tab order in drawers,
+focus-return on Escape, deep-link click flows) can run
+during MVP7 admin smoke-testing without re-opening the MVP6
+gate.
+
+### Product Owner — pending
+
+PO sign-off on the MVP6 closure is the gating output. The
+two BLOCKs + two FLAGs from the engineering reviews are now
+addressed in shipped code; PO reviews the consolidated
+state and ranks Post-MVP6 candidates.
+
+### Final verification after review-fix commit
+
+- `docker compose exec web npm run lint` → No ESLint
+  warnings or errors.
+- `docker compose exec web npm run build` → compiled
+  successfully. Bundle deltas vs pre-fix:
+  `/admin/13f` 7.43 → 7.19 kB (lockKey lifted out),
+  `/admin/13f/filings` 6.07 → 5.97 kB,
+  `/admin/13f/holdings` 5.26 → 5.38 kB (new input + state),
+  `/admin/13f/jobs` 8.02 → 8.08 kB (AdminErrorState added,
+  lockKey lifted out),
+  `/admin/13f/readiness` 9.85 → 10.1 kB (AdminErrorState +
+  NT copy edit + lockKey lifted out),
+  `/admin/13f/sync` 5.42 → 5.32 kB.
+- `docker compose exec web node --test lib/oraclesLens.test.js`
+  → 17 passed.
+- `docker compose exec api pytest -q` → 781 passed, 0
+  warnings.
