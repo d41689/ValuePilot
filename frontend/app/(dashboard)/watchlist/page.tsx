@@ -19,6 +19,10 @@ import {
   isOverviewWatchlistId,
   sortWatchlistMembers,
 } from '@/lib/watchlistState';
+import {
+  buildSnapshotsByStockId,
+  useWatchlist13FSnapshots,
+} from '@/lib/watchlist13f';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader } from '@/components/ui/card';
 import {
@@ -154,6 +158,23 @@ export default function WatchlistPage() {
   const sortedMembers = useMemo(() => {
     return sortWatchlistMembers(members);
   }, [members]);
+
+  // MVP7-02: per-stock 13F snapshots for the active watchlist. The
+  // Map is consumed by the 13F column cells (MVP7-03), the MOS × 13F
+  // glyph (MVP7-04), and the per-row drawer (MVP7-05). MVP7-02 only
+  // wires the data; render is deferred.
+  const watchlistStockIds = useMemo(
+    () => sortedMembers.map((row) => row.stock_id),
+    [sortedMembers],
+  );
+  const snapshotsQuery = useWatchlist13FSnapshots(watchlistStockIds);
+  const snapshotsByStockId = useMemo(
+    () => buildSnapshotsByStockId(snapshotsQuery.data),
+    [snapshotsQuery.data],
+  );
+  // Referenced here so an unused-var lint doesn't trip while MVP7-03
+  // is still upstream. Will be consumed by row render in MVP7-03.
+  void snapshotsByStockId;
 
   const refreshPrices = useMutation({
     mutationFn: async ({ stockIds }: RefreshPricesPayload) => {
