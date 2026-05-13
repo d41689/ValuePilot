@@ -452,3 +452,29 @@ def test_snapshot_rejects_empty_stock_ids(client, db_session):
         json={"stock_ids": [], "period": "2031-Q4"},
     )
     assert response.status_code == 422  # pydantic min_length=1
+
+
+def test_snapshot_route_order_not_swallowed_by_stock_id_int_param(client, db_session):
+    """MVP7-06 review-fix regression test.
+
+    Route-order guard: ``stocks_13f.router`` MUST be registered BEFORE
+    ``stocks.router`` in ``backend/app/api/v1/api.py`` so the literal
+    ``/stocks/13f-snapshots`` path matches before the
+    ``/stocks/{stock_id}`` (GET-only, ``stock_id: int``) route in
+    ``stocks.py`` tries to coerce the ``13f-snapshots`` segment to int
+    and rejects POST with 405.
+
+    Without this ordering the endpoint silently returns 405 in
+    production while tests using the test client may pass (the test
+    client iterates routes differently in some Starlette versions).
+    This test explicitly asserts the POST does NOT return 405.
+    """
+    response = client.post(
+        "/api/v1/stocks/13f-snapshots",
+        json={"stock_ids": [1], "period": "2031-Q4"},
+    )
+    assert response.status_code != 405, (
+        "POST /api/v1/stocks/13f-snapshots returned 405 — the route was "
+        "swallowed by /stocks/{stock_id}. Verify stocks_13f.router is "
+        "registered BEFORE stocks.router in backend/app/api/v1/api.py."
+    )

@@ -113,24 +113,25 @@ const PCT_FORMATTER = new Intl.NumberFormat('en-US', {
 
 /**
  * Display label for the conviction percentile chip per
- * Pre-MVP7-01 D1: "Top 15%" / "Mid N%" / "Bot N%".
+ * Pre-MVP7-01 D1, with the MVP7-06 SME-flag suffix appended so
+ * the chip cannot be misread as an overall ranking or
+ * signal-weighted consensus position.
  *
- * - ``percentile > 0.85`` → "Top 15%" (or smaller if even higher
- *   percentile).
- * - ``percentile > 0.50`` → "Mid {1 - percentile}%" — the
- *   "distance from top" reading.
- * - ``percentile <= 0.50`` → "Bot {percentile}%".
+ * - ``percentile > 0.85`` → "Top N% conviction" (N = distance
+ *   from the top).
+ * - ``percentile > 0.50`` → "Mid N% conviction".
+ * - ``percentile <= 0.50`` → "Bot N% conviction".
  */
 export function formatConvictionLabel(percentile: number): string {
   if (percentile > 0.85) {
     const topPct = 1 - percentile;
-    return `Top ${PCT_FORMATTER.format(Math.max(topPct, 0))}`;
+    return `Top ${PCT_FORMATTER.format(Math.max(topPct, 0))} conviction`;
   }
   if (percentile > 0.5) {
     const fromTop = 1 - percentile;
-    return `Mid ${PCT_FORMATTER.format(fromTop)}`;
+    return `Mid ${PCT_FORMATTER.format(fromTop)} conviction`;
   }
-  return `Bot ${PCT_FORMATTER.format(Math.max(percentile, 0))}`;
+  return `Bot ${PCT_FORMATTER.format(Math.max(percentile, 0))} conviction`;
 }
 
 export function convictionTone(percentile: number): BadgeVariant {

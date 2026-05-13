@@ -282,3 +282,110 @@ it's the open GA gate that's been waiting since MVP5-07, and
 Watchlist × 13F now amplifies the cost of NOT having that
 persisted-scoring contract validated. Track A2 (valuation
 overlay) is the natural follow-on once Phase 3 closes.
+
+## Review Outcomes (2026-05-13)
+
+All four review roles ran against shipped code:
+
+### Staff Engineer — APPROVE
+
+D1-D5 all hold against implementation. Both endpoints explicitly
+`use_persisted_scores=False` and don't import `oracles_lens_signals`.
+`stocks_13f.router` correctly registered before `stocks.router`.
+
+### 13F Domain SME — FLAG, no BLOCK
+
+V1 acceptable. Two copy items flagged as priority pre-close fixes;
+threshold items deferred to MVP8.
+
+### Product Owner — APPROVE-WITH-CONDITIONS
+
+Five sub-tasks reconcile with verification doc. No new migrations,
+no new scoring formulas, no silent feature creep. MVP8 ranking
+locked: (1) MVP5-03 Phase 3; (2) copy / SME flag cluster including
+"13F common weight"; (3) Track A2 valuation + quality overlay;
+(4) Watchlist click-to-sort UX; (5) Mobile stacked 13F view;
+(6) Track C G1 / G9 admin gaps.
+
+### Frontend / UX — RECOMMEND-CHANGE, no BLOCK
+
+Responsive + click + Conviction-button focusability all OK.
+A11y + accession-URL items recommended for MVP8.
+
+### Pre-MVP8 fixes landed in this commit
+
+Four reviewer recommendations addressed in MVP7-06 review-fix
+commit (next commit after this doc edit):
+
+1. **Conviction chip label** — `formatConvictionLabel` now returns
+   `"Top N% conviction"` / `"Mid N% conviction"` / `"Bot N% conviction"`.
+   SME flag: prevents misreading as overall ranking or
+   signal-weighted consensus position.
+2. **Top holder card terminology** — `"of portfolio"` replaced
+   with `"13F common weight"` per PRD unified terminology
+   requirement. SME + PO double-flag (the SME explicitly named
+   this as the priority pre-close fix, and the PO ranked the
+   "copy / SME cluster" as MVP8 #2 priority — landing the most
+   acute term here closes the misleading reading without
+   widening MVP7 scope).
+3. **Route-order regression test** — new
+   `test_snapshot_route_order_not_swallowed_by_stock_id_int_param`
+   in `test_mvp7_01_stocks_13f_snapshots.py`. POSTs to
+   `/api/v1/stocks/13f-snapshots` and asserts non-405. Documents
+   the registration-order constraint and the failure mode
+   (`stocks_13f.router` BEFORE `stocks.router`) so the next
+   contributor can't accidentally swap them.
+4. **Accession link** — the original `<Link>` pointed at an
+   EDGAR browse URL with empty CIK, which lands on an unhelpful
+   search page (looks clickable, isn't useful). Replaced with
+   `<span>` rendering the accession number as plain text plus
+   a `title` tooltip. The proper accession-to-filing URL needs
+   CIK (`https://www.sec.gov/Archives/edgar/data/{CIK}/{accession-no-dashes}/`),
+   which is not in the `top_holders` payload today. Queued for
+   MVP8 (threads `cik` through `_stock_payload.top_holders` →
+   `StockDetailTopHolder` schema → drawer Link).
+
+### Deferred to MVP8 backlog
+
+Not retro-fitted into MVP7; filed for MVP8 candidate ordering:
+
+- **DrawerShell → `@/components/ui/`** (Staff Engineer follow-up).
+  Cross-cutting refactor affecting 8+ admin/13f route mounts
+  plus the new watchlist mount. Track-E ticket.
+- **Drawer Escape close + open-autofocus + close-focus-return**
+  (Frontend reviewer; reviewer themselves marked as MVP8 a11y
+  fix). Same cross-cutting reach as the DrawerShell move.
+- **Long manager name truncate** (Frontend reviewer; pending
+  visual QA decision).
+- **manager_type derived vs admin-classified dual-display in
+  drawer** (SME flag; design question, not a defect).
+- **Distinctiveness threshold review** — V1 ships at
+  `consensus_count ≤ 8 AND coverage ≥ 0.7 → distinctive`;
+  `crowded` tier reachability noted as low because behavior-
+  derivation pushes coverage high on simple fixtures. SME
+  recommended MVP8 floor review (potentially gate on raw
+  `unknown_manager_type_count` instead of derived coverage).
+- **MOS × 13F threshold review** — V1 ships at
+  `mos ≥ 0.20 AND delta_holders ≥ +1 → aligned`. SME recommended
+  MVP8 evaluation of raising to `0.30 / +3` or splitting into a
+  two-tier aligned signal.
+- **Δ Holders chip portfolio-weight context** — non-blocker
+  (the drawer's per-manager magnitude already covers depth).
+
+### Post-fix verification
+
+- `docker compose exec api pytest -q tests/unit/test_mvp7_01_stocks_13f_snapshots.py`
+  → **20 passed** (= 19 + 1 new route-order regression test).
+- `docker compose exec api pytest -q` → **807 passed**, 0
+  warnings (= 800 MVP6-08 baseline + 19 MVP7-01 + 6 MVP7-05 +
+  1 route-order regression test).
+- `docker compose exec web npm run lint` → No ESLint warnings or
+  errors.
+- `docker compose exec web npm run build` → compiled successfully.
+  `/watchlist` bundle 20.5 → 20.4 kB (tiny shrink from the
+  removed broken Link wrapper); First Load JS 199 kB unchanged.
+
+**MVP 7 is closed.** PO sign-off applied 2026-05-13 with the
+four review-fix items landed in the same branch. The five
+MVP8-backlog FLAGs are queued for the next decision gate
+alongside the six Post-MVP7 candidate inputs.

@@ -238,7 +238,12 @@ function TopHolderCard({ holder }: { holder: Watchlist13FTopHolder }) {
           <div className="font-semibold">
             {formatPercent(holder.position_weight, 1)}
           </div>
-          <div className="text-xs text-muted-foreground">of portfolio</div>
+          {/* PRD frontend terminology: position_weight is the holding's
+              weight within the filer's reported 13F common-stock portfolio
+              (denominator excludes non-common holdings). Reviewer SME +
+              PO flagged "of portfolio" as misleading (reads as total AUM
+              weight). */}
+          <div className="text-xs text-muted-foreground">13F common weight</div>
         </div>
       </div>
       <div className="mt-2 flex flex-wrap gap-3 text-xs text-muted-foreground">
@@ -248,15 +253,22 @@ function TopHolderCard({ holder }: { holder: Watchlist13FTopHolder }) {
         ) : null}
         {holder.filing_date ? <span>{holder.filing_date}</span> : null}
         {holder.accession_no ? (
-          <Link
-            href={`https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&CIK=&type=13F&dateb=&owner=include&count=40&action=getcompany`}
-            target="_blank"
-            rel="noreferrer"
-            className="font-mono hover:underline"
+          // MVP7-06 review-fix: the original Link pointed at a generic
+          // EDGAR browse page with empty CIK, which is misleading
+          // (looks clickable, lands on an unhelpful search page). The
+          // proper accession-to-filing URL requires CIK
+          // (https://www.sec.gov/Archives/edgar/data/{CIK}/{accession-no-dashes}/),
+          // which is not currently in the top_holders payload. Queued
+          // for MVP8 backlog: thread ``cik`` through
+          // ``_stock_payload.top_holders`` → ``StockDetailTopHolder`` →
+          // this Link. For now, render as plain text with the accession
+          // in a title tooltip so operators can copy-paste into EDGAR.
+          <span
+            className="font-mono"
             title={`EDGAR accession ${holder.accession_no}`}
           >
             {holder.accession_no}
-          </Link>
+          </span>
         ) : null}
       </div>
     </div>
