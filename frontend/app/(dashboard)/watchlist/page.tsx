@@ -3,9 +3,18 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useMutation, useQuery } from '@tanstack/react-query';
 import Link from 'next/link';
-import { BarChart3, MoreHorizontal, Plus, RefreshCcw, Trash2 } from 'lucide-react';
+import {
+  BarChart3,
+  ChevronDown,
+  ChevronUp,
+  MoreHorizontal,
+  Plus,
+  RefreshCcw,
+  Trash2,
+} from 'lucide-react';
 
 import apiClient from '@/lib/api/client';
+import { cn } from '@/lib/utils';
 import { showAppToast } from '@/lib/appToast';
 import {
   OVERVIEW_WATCHLIST_ID,
@@ -22,9 +31,12 @@ import {
 import {
   buildSnapshotsByStockId,
   groupHeaderLabel,
+  mosCrossSignal,
+  responsive13FCellClass,
   useWatchlist13FSnapshots,
 } from '@/lib/watchlist13f';
 import { Watchlist13FColumns } from '@/components/watchlist/Watchlist13FColumns';
+import { MosCrossSignalGlyph } from '@/components/watchlist/MosCrossSignalGlyph';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader } from '@/components/ui/card';
 import {
@@ -186,6 +198,25 @@ export default function WatchlistPage() {
           ? 'error'
           : 'success';
   const groupHeaderText = groupHeaderLabel(snapshotsPeriod, snapshotsDeadline);
+
+  // MVP7-04: D4 responsive collapse state. At xl viewport (≥
+  // 1280px) the 13F columns are always shown; at md (768–1279px)
+  // they collapse behind a toggle button persisted in
+  // localStorage; at sm (< 768px) they are always hidden.
+  const [mdExpanded, setMdExpanded] = useState(false);
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const stored = window.localStorage.getItem('watchlist-13f-expanded');
+    if (stored === 'true') setMdExpanded(true);
+  }, []);
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    window.localStorage.setItem(
+      'watchlist-13f-expanded',
+      mdExpanded ? 'true' : 'false',
+    );
+  }, [mdExpanded]);
+  const responsiveCellClass = responsive13FCellClass(mdExpanded);
 
   const refreshPrices = useMutation({
     mutationFn: async ({ stockIds }: RefreshPricesPayload) => {
@@ -551,13 +582,37 @@ export default function WatchlistPage() {
             </div>
           )}
           {members.length > 0 && (
-            <Table className="min-w-[1400px]">
+            <>
+              {/* MVP7-04: toggle visible only at md viewport
+                  (768–1279px). At xl+ the 13F group is always
+                  shown; at sm the toggle + group are both hidden. */}
+              <div className="mb-3 hidden md:flex xl:hidden">
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={() => setMdExpanded((prev) => !prev)}
+                  aria-expanded={mdExpanded}
+                  aria-controls="watchlist-13f-columns"
+                >
+                  {mdExpanded ? 'Hide 13F' : 'Show 13F'}
+                  {mdExpanded ? (
+                    <ChevronUp className="ml-1 h-3.5 w-3.5" aria-hidden="true" />
+                  ) : (
+                    <ChevronDown className="ml-1 h-3.5 w-3.5" aria-hidden="true" />
+                  )}
+                </Button>
+              </div>
+              <Table className={mdExpanded ? 'min-w-[1400px]' : 'min-w-[1080px] xl:min-w-[1400px]'}>
               <TableHeader>
                 <TableRow className="border-b-0">
                   <TableHead colSpan={8} className="border-r-0" />
                   <TableHead
                     colSpan={4}
-                    className="border-l border-border/60 text-center"
+                    className={cn(
+                      responsiveCellClass,
+                      'border-l border-border/60 text-center',
+                    )}
                     title={
                       snapshotsDeadline
                         ? `13F filing deadline for ${snapshotsPeriod ?? 'latest period'}.`
@@ -568,7 +623,7 @@ export default function WatchlistPage() {
                   </TableHead>
                   <TableHead />
                 </TableRow>
-                <TableRow>
+                <TableRow id="watchlist-13f-columns">
                   <TableHead>Ticker</TableHead>
                   <TableHead>Company</TableHead>
                   <TableHead>F-Score 3Y</TableHead>
@@ -577,10 +632,12 @@ export default function WatchlistPage() {
                   <TableHead>MOS</TableHead>
                   <TableHead>Δ Today</TableHead>
                   <TableHead>Last Update</TableHead>
-                  <TableHead className="border-l border-border/60">Conviction</TableHead>
-                  <TableHead>Δ Holders</TableHead>
-                  <TableHead>Distinctiveness</TableHead>
-                  <TableHead>Caveats</TableHead>
+                  <TableHead className={cn(responsiveCellClass, 'border-l border-border/60')}>
+                    Conviction
+                  </TableHead>
+                  <TableHead className={responsiveCellClass}>Δ Holders</TableHead>
+                  <TableHead className={responsiveCellClass}>Distinctiveness</TableHead>
+                  <TableHead className={responsiveCellClass}>Caveats</TableHead>
                   <TableHead />
                 </TableRow>
               </TableHeader>
@@ -617,6 +674,15 @@ export default function WatchlistPage() {
                       }
                     >
                       {formatPercent(row.mos)}
+                      {(() => {
+                        const snap = snapshotsByStockId.get(row.stock_id);
+                        const signal = mosCrossSignal({
+                          mos: row.mos,
+                          deltaHolders:
+                            snap && snap.available === true ? snap.delta_holders : null,
+                        });
+                        return <MosCrossSignalGlyph signal={signal} />;
+                      })()}
                     </TableCell>
                     <TableCell>{formatNumber(row.delta_today)}</TableCell>
                     <TableCell>{formatDate(row.price_updated_at)}</TableCell>
@@ -625,6 +691,8 @@ export default function WatchlistPage() {
                       period={snapshotsPeriod}
                       universeSize={snapshotsUniverseSize}
                       queryStatus={snapshotsQueryStatus}
+                      mdExpanded={mdExpanded}
+                      firstCellLeadingClass="border-l border-border/60"
                     />
                     <TableCell>
                       <div className="flex items-center gap-2">
@@ -645,6 +713,7 @@ export default function WatchlistPage() {
                 ))}
               </TableBody>
             </Table>
+            </>
           )}
         </CardContent>
       </Card>

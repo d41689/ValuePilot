@@ -15,6 +15,7 @@ import { AlertTriangle } from 'lucide-react';
 
 import { Badge } from '@/components/ui/badge';
 import { TableCell } from '@/components/ui/table';
+import { cn } from '@/lib/utils';
 import {
   caveatSeverityLabel,
   caveatSeverityTone,
@@ -24,6 +25,7 @@ import {
   distinctivenessTone,
   formatConvictionLabel,
   formatDeltaHolders,
+  responsive13FCellClass,
   unavailableTooltip,
   type Watchlist13FSnapshot,
 } from '@/lib/watchlist13f';
@@ -39,21 +41,33 @@ interface Watchlist13FColumnsProps {
    * conviction tooltip copy. */
   universeSize: number;
   queryStatus: QueryStatus;
+  /** MVP7-04: whether the 13F column group is expanded at md
+   * viewport. Controls whether the four cells render at
+   * 768–1279px. xl always shows; below md always hides. */
+  mdExpanded: boolean;
+  /** Class applied to the first 13F column to draw the vertical
+   * separator from the main watchlist columns. */
+  firstCellLeadingClass?: string;
 }
 
 function PlaceholderCells({
   text,
   title,
+  responsiveClass,
+  firstCellLeadingClass,
 }: {
   text: string;
   title?: string;
+  responsiveClass: string;
+  firstCellLeadingClass?: string;
 }) {
+  const baseCellClass = cn(responsiveClass, 'text-muted-foreground');
   return (
     <>
-      <TableCell title={title} className="text-muted-foreground">{text}</TableCell>
-      <TableCell title={title} className="text-muted-foreground">{text}</TableCell>
-      <TableCell title={title} className="text-muted-foreground">{text}</TableCell>
-      <TableCell title={title} className="text-muted-foreground">{text}</TableCell>
+      <TableCell title={title} className={cn(baseCellClass, firstCellLeadingClass)}>{text}</TableCell>
+      <TableCell title={title} className={baseCellClass}>{text}</TableCell>
+      <TableCell title={title} className={baseCellClass}>{text}</TableCell>
+      <TableCell title={title} className={baseCellClass}>{text}</TableCell>
     </>
   );
 }
@@ -63,13 +77,29 @@ export function Watchlist13FColumns({
   period,
   universeSize,
   queryStatus,
+  mdExpanded,
+  firstCellLeadingClass,
 }: Watchlist13FColumnsProps) {
+  const responsiveClass = responsive13FCellClass(mdExpanded);
   if (queryStatus === 'pending' || queryStatus === 'idle') {
-    return <PlaceholderCells text="—" />;
+    return (
+      <PlaceholderCells
+        text="—"
+        responsiveClass={responsiveClass}
+        firstCellLeadingClass={firstCellLeadingClass}
+      />
+    );
   }
 
   if (queryStatus === 'error') {
-    return <PlaceholderCells text="⚠" title="13F snapshot failed to load." />;
+    return (
+      <PlaceholderCells
+        text="⚠"
+        title="13F snapshot failed to load."
+        responsiveClass={responsiveClass}
+        firstCellLeadingClass={firstCellLeadingClass}
+      />
+    );
   }
 
   if (!snapshot) {
@@ -77,6 +107,8 @@ export function Watchlist13FColumns({
       <PlaceholderCells
         text="—"
         title={unavailableTooltip('no_qualifying_period', period)}
+        responsiveClass={responsiveClass}
+        firstCellLeadingClass={firstCellLeadingClass}
       />
     );
   }
@@ -86,6 +118,8 @@ export function Watchlist13FColumns({
       <PlaceholderCells
         text="—"
         title={unavailableTooltip(snapshot.unavailable_reason, period)}
+        responsiveClass={responsiveClass}
+        firstCellLeadingClass={firstCellLeadingClass}
       />
     );
   }
@@ -102,7 +136,7 @@ export function Watchlist13FColumns({
 
   return (
     <>
-      <TableCell>
+      <TableCell className={cn(responsiveClass, firstCellLeadingClass)}>
         <Badge
           variant={convictionTone(snapshot.conviction_percentile)}
           title={convictionTooltip}
@@ -110,7 +144,7 @@ export function Watchlist13FColumns({
           {convictionLabel}
         </Badge>
       </TableCell>
-      <TableCell>
+      <TableCell className={responsiveClass}>
         <Badge
           variant={deltaHoldersTone(snapshot.delta_holders)}
           title={deltaTooltip}
@@ -118,7 +152,7 @@ export function Watchlist13FColumns({
           {formatDeltaHolders(snapshot.delta_holders)}
         </Badge>
       </TableCell>
-      <TableCell>
+      <TableCell className={responsiveClass}>
         <Badge
           variant={distinctivenessTone(snapshot.distinctiveness_tier)}
           title={distinctivenessTooltip}
@@ -126,7 +160,7 @@ export function Watchlist13FColumns({
           {distinctivenessLabel(snapshot.distinctiveness_tier)}
         </Badge>
       </TableCell>
-      <TableCell>
+      <TableCell className={responsiveClass}>
         <Badge
           variant={caveatSeverityTone(snapshot.caveat_severity)}
           title={caveatTooltip}

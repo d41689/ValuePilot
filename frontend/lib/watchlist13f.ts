@@ -245,3 +245,58 @@ export function groupHeaderLabel(
   if (!periodFilingDeadline) return `13F (${period})`;
   return `13F (${period}, as of ${periodFilingDeadline})`;
 }
+
+// ----- MVP7-04 cross-signal helpers --------------------------------------
+
+export type MosCrossSignal =
+  | 'aligned'
+  | 'exit-divergence'
+  | 'buy-divergence'
+  | 'neutral';
+
+/**
+ * MOS × 13F cross-signal (Pre-MVP7-01 D5). Returns ``'neutral'``
+ * for any input where MOS or Δ Holders is unavailable.
+ *
+ * - ``aligned``: MOS ≥ 20% AND Δ Holders ≥ +1
+ * - ``exit-divergence``: MOS ≥ 20% AND Δ Holders ≤ −1
+ * - ``buy-divergence``: MOS ≤ 0 AND Δ Holders ≥ +1
+ * - ``neutral``: otherwise
+ */
+export function mosCrossSignal(args: {
+  mos: number | null | undefined;
+  deltaHolders: number | null | undefined;
+}): MosCrossSignal {
+  const { mos, deltaHolders } = args;
+  if (mos === null || mos === undefined) return 'neutral';
+  if (deltaHolders === null || deltaHolders === undefined) return 'neutral';
+  if (mos >= 0.2 && deltaHolders >= 1) return 'aligned';
+  if (mos >= 0.2 && deltaHolders <= -1) return 'exit-divergence';
+  if (mos <= 0 && deltaHolders >= 1) return 'buy-divergence';
+  return 'neutral';
+}
+
+export function mosCrossSignalTooltip(signal: MosCrossSignal): string {
+  switch (signal) {
+    case 'aligned':
+      return 'Aligned: smart money is adding into your value setup.';
+    case 'exit-divergence':
+      return 'Re-examine: smart money is exiting while you see value.';
+    case 'buy-divergence':
+      return 'Re-examine FV: smart money is adding despite no margin of safety.';
+    case 'neutral':
+      return '';
+  }
+}
+
+/**
+ * Tailwind class string for a 13F cell that respects D4 responsive
+ * tiers. The caller passes the current ``mdExpanded`` state.
+ *
+ * - At xl (≥ 1280px): always shown.
+ * - At md (768–1279px): shown when ``mdExpanded`` is true.
+ * - Below md: hidden.
+ */
+export function responsive13FCellClass(mdExpanded: boolean): string {
+  return mdExpanded ? 'hidden md:table-cell xl:table-cell' : 'hidden xl:table-cell';
+}
