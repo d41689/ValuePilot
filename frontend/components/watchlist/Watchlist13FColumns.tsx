@@ -48,6 +48,11 @@ interface Watchlist13FColumnsProps {
   /** Class applied to the first 13F column to draw the vertical
    * separator from the main watchlist columns. */
   firstCellLeadingClass?: string;
+  /** MVP7-05: row-level stock_id for the drawer trigger. */
+  stockId: number;
+  /** MVP7-05: invoked when the operator clicks the Conviction
+   * badge on a row whose snapshot is available. */
+  onOpenDetail?: (stockId: number) => void;
 }
 
 function PlaceholderCells({
@@ -79,6 +84,8 @@ export function Watchlist13FColumns({
   queryStatus,
   mdExpanded,
   firstCellLeadingClass,
+  stockId,
+  onOpenDetail,
 }: Watchlist13FColumnsProps) {
   const responsiveClass = responsive13FCellClass(mdExpanded);
   if (queryStatus === 'pending' || queryStatus === 'idle') {
@@ -134,15 +141,30 @@ export function Watchlist13FColumns({
       ? 'No caveat flags on this signal.'
       : `Caveat codes: ${snapshot.caveat_codes.join(', ')}`;
 
+  const convictionBadge = (
+    <Badge
+      variant={convictionTone(snapshot.conviction_percentile)}
+      title={onOpenDetail ? `${convictionTooltip} (click for detail)` : convictionTooltip}
+    >
+      {convictionLabel}
+    </Badge>
+  );
+
   return (
     <>
       <TableCell className={cn(responsiveClass, firstCellLeadingClass)}>
-        <Badge
-          variant={convictionTone(snapshot.conviction_percentile)}
-          title={convictionTooltip}
-        >
-          {convictionLabel}
-        </Badge>
+        {onOpenDetail ? (
+          <button
+            type="button"
+            onClick={() => onOpenDetail(stockId)}
+            className="inline-flex cursor-pointer border-0 bg-transparent p-0"
+            aria-label={`Open 13F detail for stock ${stockId}`}
+          >
+            {convictionBadge}
+          </button>
+        ) : (
+          convictionBadge
+        )}
       </TableCell>
       <TableCell className={responsiveClass}>
         <Badge

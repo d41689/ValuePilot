@@ -300,3 +300,151 @@ export function mosCrossSignalTooltip(signal: MosCrossSignal): string {
 export function responsive13FCellClass(mdExpanded: boolean): string {
   return mdExpanded ? 'hidden md:table-cell xl:table-cell' : 'hidden xl:table-cell';
 }
+
+// ----- MVP7-05 detail-endpoint types + hook -------------------------------
+
+export type StockDetailTopHolderAction =
+  | 'new'
+  | 'add'
+  | 'reduce'
+  | 'exit'
+  | 'flat';
+
+export type Watchlist13FTopHolder = {
+  manager_id: number;
+  manager_name: string;
+  manager_type: string;
+  manager_signal_weight: number;
+  position_weight: number;
+  position_rank: number | null;
+  action: StockDetailTopHolderAction | string;
+  share_delta_pct: number | null;
+  current_shares: number | null;
+  previous_shares: number | null;
+  current_value_thousands: number | null;
+  holding_streak_quarters: number;
+  portfolio_concentration: number | null;
+  portfolio_holding_count: number | null;
+  average_holding_period_quarters: number | null;
+  filing_date: string | null;
+  accession_no: string | null;
+};
+
+export type Watchlist13FCaveatFlag = {
+  key: string;
+  group: string;
+  severity: 'warning' | 'info';
+  label: string;
+};
+
+export type Watchlist13FAvailableDetail = {
+  stock_id: number;
+  ticker: string;
+  company_name: string | null;
+  available: true;
+  conviction_score: number;
+  conviction_percentile: number;
+  delta_holders: number;
+  adders_count: number;
+  reducers_count: number;
+  consensus_count: number;
+  distinctiveness_tier: 'distinctive' | 'mixed' | 'crowded';
+  caveat_severity: 'ok' | 'caution' | 'high-caution';
+  score_confidence: 'high' | 'medium' | 'low';
+  top_holders: Watchlist13FTopHolder[];
+  caveat_flags: Watchlist13FCaveatFlag[];
+};
+
+export type Watchlist13FUnavailableDetail = {
+  stock_id: number;
+  ticker: string | null;
+  company_name: string | null;
+  available: false;
+  unavailable_reason:
+    | 'no_holders'
+    | 'below_min_holders'
+    | 'no_qualifying_period';
+};
+
+export type Watchlist13FDetailPayload = {
+  period: string | null;
+  period_filing_deadline: string | null;
+  universe_size: number;
+  detail: Watchlist13FAvailableDetail | Watchlist13FUnavailableDetail;
+};
+
+/**
+ * Fetch detail-level 13F data for one stock when the user opens the
+ * drawer. ``enabled`` gated on stockId !== null so the query stays
+ * dormant until a row is selected.
+ */
+export function useWatchlistStock13FDetail(
+  stockId: number | null,
+  period?: string,
+) {
+  return useQuery({
+    queryKey: ['watchlist-13f-stock-detail', stockId, period ?? 'latest'],
+    queryFn: async () => {
+      if (stockId === null) {
+        throw new Error('stockId is required');
+      }
+      const params = period ? { params: { period } } : undefined;
+      const res = await apiClient.get(
+        `/stocks/${stockId}/13f-detail`,
+        params,
+      );
+      return res.data as Watchlist13FDetailPayload;
+    },
+    enabled: stockId !== null,
+    staleTime: 60_000,
+  });
+}
+
+// Action vocabulary from the dashboard's ``_apply_action``:
+// new / add / reduce / exit / flat. The labels and tone here are
+// V1 — refine if the SME wants different copy.
+export function topHolderActionLabel(action: string): string {
+  switch (action) {
+    case 'new':
+      return 'New position';
+    case 'add':
+      return 'Added';
+    case 'reduce':
+      return 'Reduced';
+    case 'exit':
+      return 'Exited';
+    case 'flat':
+      return 'Unchanged';
+    default:
+      return action;
+  }
+}
+
+export function topHolderActionTone(action: string): BadgeVariant {
+  switch (action) {
+    case 'new':
+    case 'add':
+      return 'success';
+    case 'reduce':
+    case 'exit':
+      return 'danger';
+    case 'flat':
+    default:
+      return 'secondary';
+  }
+}
+
+export function caveatGroupLabel(group: string): string {
+  switch (group) {
+    case 'signal_quality':
+      return 'Signal quality';
+    case 'conviction':
+      return 'Conviction';
+    case 'data_coverage':
+      return 'Data coverage';
+    case 'timing':
+      return 'Timing';
+    default:
+      return group.replace(/_/g, ' ');
+  }
+}

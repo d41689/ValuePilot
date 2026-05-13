@@ -76,3 +76,68 @@ class StockSnapshotResponse(BaseModel):
         ),
     )
     snapshots: list[AvailableStockSnapshot | UnavailableStockSnapshot]
+
+
+# ----- MVP7-05 detail endpoint -------------------------------------------
+
+class StockDetailTopHolder(BaseModel):
+    manager_id: int
+    manager_name: str
+    manager_type: str
+    manager_signal_weight: float
+    position_weight: float
+    position_rank: Optional[int] = None
+    action: str
+    share_delta_pct: Optional[float] = None
+    current_shares: Optional[int] = None
+    previous_shares: Optional[int] = None
+    current_value_thousands: Optional[int] = None
+    holding_streak_quarters: int
+    portfolio_concentration: Optional[float] = None
+    portfolio_holding_count: Optional[int] = None
+    average_holding_period_quarters: Optional[float] = None
+    filing_date: Optional[str] = None
+    accession_no: Optional[str] = None
+
+
+class StockDetailCaveatFlag(BaseModel):
+    key: str
+    group: str
+    severity: Literal["warning", "info"]
+    label: str
+
+
+class AvailableStockDetail(BaseModel):
+    stock_id: int
+    ticker: str
+    company_name: Optional[str] = None
+    available: Literal[True] = True
+    # Same column-summary fields as the batch endpoint, for header
+    # recap consistency.
+    conviction_score: float
+    conviction_percentile: float = Field(..., ge=0.0, le=1.0)
+    delta_holders: int
+    adders_count: int
+    reducers_count: int
+    consensus_count: int
+    distinctiveness_tier: DistinctivenessTier
+    caveat_severity: CaveatSeverity
+    score_confidence: ScoreConfidence
+    # Detail-only fields.
+    top_holders: list[StockDetailTopHolder]
+    caveat_flags: list[StockDetailCaveatFlag]
+
+
+class UnavailableStockDetail(BaseModel):
+    stock_id: int
+    ticker: Optional[str] = None
+    company_name: Optional[str] = None
+    available: Literal[False] = False
+    unavailable_reason: UnavailableReason
+
+
+class StockDetailResponse(BaseModel):
+    period: Optional[str] = None
+    period_filing_deadline: Optional[str] = None
+    universe_size: int
+    detail: AvailableStockDetail | UnavailableStockDetail

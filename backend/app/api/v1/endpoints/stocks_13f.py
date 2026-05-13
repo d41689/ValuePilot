@@ -22,9 +22,14 @@ from sqlalchemy.orm import Session
 
 from app.api.deps import get_db
 from app.schemas.stocks_13f_snapshot import (
+    AvailableStockDetail,
     AvailableStockSnapshot,
+    StockDetailCaveatFlag,
+    StockDetailResponse,
+    StockDetailTopHolder,
     StockSnapshotRequest,
     StockSnapshotResponse,
+    UnavailableStockDetail,
     UnavailableStockSnapshot,
 )
 from app.services.oracles_lens.dashboard import build_oracles_lens_dashboard
@@ -231,4 +236,213 @@ def read_stocks_13f_snapshots(
         period_filing_deadline=filing_deadline,
         universe_size=universe_size,
         snapshots=snapshots,
+    )
+
+
+# ----- MVP7-05 detail endpoint -------------------------------------------
+
+
+def _top_holder_from_payload(holder: dict[str, Any]) -> StockDetailTopHolder:
+    return StockDetailTopHolder(
+        manager_id=int(holder["manager_id"]),
+        manager_name=str(holder.get("manager_name") or ""),
+        manager_type=str(holder.get("manager_type") or "unknown"),
+        manager_signal_weight=float(holder.get("manager_signal_weight") or 0),
+        position_weight=float(holder.get("position_weight") or 0),
+        position_rank=(
+            int(holder["position_rank"])
+            if holder.get("position_rank") is not None
+            else None
+        ),
+        action=str(holder.get("action") or "flat"),
+        share_delta_pct=(
+            float(holder["share_delta_pct"])
+            if holder.get("share_delta_pct") is not None
+            else None
+        ),
+        current_shares=(
+            int(holder["current_shares"])
+            if holder.get("current_shares") is not None
+            else None
+        ),
+        previous_shares=(
+            int(holder["previous_shares"])
+            if holder.get("previous_shares") is not None
+            else None
+        ),
+        current_value_thousands=(
+            int(holder["current_value_thousands"])
+            if holder.get("current_value_thousands") is not None
+            else None
+        ),
+        holding_streak_quarters=int(holder.get("holding_streak_quarters") or 0),
+        portfolio_concentration=(
+            float(holder["portfolio_concentration"])
+            if holder.get("portfolio_concentration") is not None
+            else None
+        ),
+        portfolio_holding_count=(
+            int(holder["portfolio_holding_count"])
+            if holder.get("portfolio_holding_count") is not None
+            else None
+        ),
+        average_holding_period_quarters=(
+            float(holder["average_holding_period_quarters"])
+            if holder.get("average_holding_period_quarters") is not None
+            else None
+        ),
+        filing_date=(
+            str(holder["filing_date"])
+            if holder.get("filing_date") is not None
+            else None
+        ),
+        accession_no=(
+            str(holder["accession_no"])
+            if holder.get("accession_no") is not None
+            else None
+        ),
+    )
+
+
+def _caveat_flag_from_payload(flag: dict[str, Any]) -> StockDetailCaveatFlag:
+    severity = str(flag.get("severity") or "info")
+    if severity not in {"warning", "info"}:
+        severity = "info"
+    return StockDetailCaveatFlag(
+        key=str(flag.get("key") or ""),
+        group=str(flag.get("group") or "general"),
+        severity=severity,  # type: ignore[arg-type]
+        label=str(flag.get("label") or ""),
+    )
+
+
+def _stock_meta(db: Session, stock_id: int) -> tuple[str, str | None] | None:
+    """Return ``(ticker, company_name)`` for the stock, or ``None`` when the
+    stock_id doesn't exist."""
+    from app.models.stocks import Stock
+
+    stock = db.get(Stock, stock_id)
+    if stock is None:
+        return None
+    return (stock.ticker or "", stock.company_name)
+
+
+@router.get("/{stock_id}/13f-detail", response_model=StockDetailResponse)
+def read_stock_13f_detail(
+    stock_id: int,
+    period: str | None = None,
+    db: Session = Depends(get_db),
+) -> StockDetailResponse:
+    """MVP7-05: detail panel for one watchlist row. Returns the same
+    column-summary fields as the batch endpoint plus ``top_holders[:3]``
+    and the full ``caveat_flags`` list."""
+    meta = _stock_meta(db, stock_id)
+    if meta is None:
+        raise HTTPException(status_code=404, detail=f"Stock {stock_id} not found.")
+    ticker, company_name = meta
+
+    period_arg = None if period in (None, "latest") else period
+    try:
+        dashboard = build_oracles_lens_dashboard(
+            db,
+            period=period_arg,
+            limit=0,
+            use_persisted_scores=False,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    period_label = dashboard.get("period")
+    period_end_iso = dashboard.get("period_end_date")
+    filing_deadline = _period_filing_deadline(period_end_iso)
+    items: list[dict[str, Any]] = dashboard.get("items") or []
+    sorted_items = sorted(
+        items,
+        key=lambda i: float(i.get("conviction_score") or 0),
+        reverse=True,
+    )
+    universe_size = len(sorted_items)
+
+    if period_label is None or period_end_iso is None or universe_size == 0:
+        return StockDetailResponse(
+            period=period_label,
+            period_filing_deadline=filing_deadline,
+            universe_size=universe_size,
+            detail=UnavailableStockDetail(
+                stock_id=stock_id,
+                ticker=ticker,
+                company_name=company_name,
+                unavailable_reason="no_qualifying_period",
+            ),
+        )
+
+    rank_by_stock: dict[int, int] = {}
+    for index, item in enumerate(sorted_items, start=1):
+        sid = int(item.get("stock_id") or 0)
+        if sid:
+            rank_by_stock[sid] = index
+
+    item = next(
+        (i for i in items if int(i.get("stock_id") or 0) == stock_id),
+        None,
+    )
+    if item is None:
+        holdings_count = _holdings_count_for_stock(db, stock_id, period_end_iso)
+        return StockDetailResponse(
+            period=period_label,
+            period_filing_deadline=filing_deadline,
+            universe_size=universe_size,
+            detail=UnavailableStockDetail(
+                stock_id=stock_id,
+                ticker=ticker,
+                company_name=company_name,
+                unavailable_reason=(
+                    "below_min_holders" if holdings_count > 0 else "no_holders"
+                ),
+            ),
+        )
+
+    rank = rank_by_stock.get(stock_id, universe_size)
+    percentile = 1.0 - (rank - 1) / universe_size
+
+    manager_summary = item.get("manager_signal_summary") or {}
+    coverage = float(manager_summary.get("manager_signal_quality_coverage") or 0.0)
+    consensus_count = int(item.get("consensus_count") or 0)
+    caveat_flags = item.get("caution_flags") or []
+
+    top_holders = [
+        _top_holder_from_payload(holder)
+        for holder in (item.get("top_holders") or [])
+    ]
+    structured_caveats = [
+        _caveat_flag_from_payload(flag)
+        for flag in caveat_flags
+        if isinstance(flag, dict)
+    ]
+
+    detail = AvailableStockDetail(
+        stock_id=stock_id,
+        ticker=ticker,
+        company_name=company_name,
+        conviction_score=float(item.get("conviction_score") or 0),
+        conviction_percentile=percentile,
+        delta_holders=(
+            int(item.get("adders_count") or 0)
+            - int(item.get("reducers_count") or 0)
+        ),
+        adders_count=int(item.get("adders_count") or 0),
+        reducers_count=int(item.get("reducers_count") or 0),
+        consensus_count=consensus_count,
+        distinctiveness_tier=_distinctiveness_tier(consensus_count, coverage),
+        caveat_severity=_caveat_severity_from_flags(caveat_flags),
+        score_confidence=str(item.get("score_confidence") or "low"),
+        top_holders=top_holders,
+        caveat_flags=structured_caveats,
+    )
+
+    return StockDetailResponse(
+        period=period_label,
+        period_filing_deadline=filing_deadline,
+        universe_size=universe_size,
+        detail=detail,
     )

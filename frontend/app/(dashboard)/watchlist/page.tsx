@@ -36,6 +36,7 @@ import {
   useWatchlist13FSnapshots,
 } from '@/lib/watchlist13f';
 import { Watchlist13FColumns } from '@/components/watchlist/Watchlist13FColumns';
+import { Watchlist13FDrawer } from '@/components/watchlist/Watchlist13FDrawer';
 import { MosCrossSignalGlyph } from '@/components/watchlist/MosCrossSignalGlyph';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader } from '@/components/ui/card';
@@ -217,6 +218,10 @@ export default function WatchlistPage() {
     );
   }, [mdExpanded]);
   const responsiveCellClass = responsive13FCellClass(mdExpanded);
+
+  // MVP7-05: drawer-trigger state. Clicking a row's Conviction
+  // badge opens the per-stock detail drawer.
+  const [drawerStockId, setDrawerStockId] = useState<number | null>(null);
 
   const refreshPrices = useMutation({
     mutationFn: async ({ stockIds }: RefreshPricesPayload) => {
@@ -693,6 +698,8 @@ export default function WatchlistPage() {
                       queryStatus={snapshotsQueryStatus}
                       mdExpanded={mdExpanded}
                       firstCellLeadingClass="border-l border-border/60"
+                      stockId={row.stock_id}
+                      onOpenDetail={(stockId) => setDrawerStockId(stockId)}
                     />
                     <TableCell>
                       <div className="flex items-center gap-2">
@@ -717,6 +724,13 @@ export default function WatchlistPage() {
           )}
         </CardContent>
       </Card>
+
+      {drawerStockId !== null ? (
+        <Watchlist13FDrawer
+          stockId={drawerStockId}
+          onClose={() => setDrawerStockId(null)}
+        />
+      ) : null}
     </div>
   );
 }
