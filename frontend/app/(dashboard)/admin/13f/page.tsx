@@ -5,27 +5,20 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import {
   AlertTriangle,
-  CheckCircle2,
-  Database,
-  Loader2,
   Play,
   RefreshCw,
-  ShieldAlert,
   Settings,
-  UserSearch,
 } from 'lucide-react';
 import type { ComponentProps } from 'react';
 
 import apiClient from '@/lib/api/client';
 import thirteenfAdmin from '@/lib/thirteenfAdmin';
 import { AdminPageLayout } from '@/components/admin13f/AdminPageLayout';
-import { AdminLoadingState } from '@/components/admin13f/AdminLoadingState';
 // AdminEmptyState + AdminErrorState ship as new shared components
 // in MVP6-01 but the existing page's inline empty-state divs are
 // preserved byte-for-byte (per the MVP6-01 SR2 scope refinement);
 // MVP6-02..07 route-owner tickets adopt them in each section as
 // they migrate.
-import { DrawerShell, MetricTile } from '@/components/admin13f/Admin13FPrimitives';
 import { JobPendingDialog, type PendingJob } from '@/components/admin13f/JobPendingDialog';
 import { ReleaseStaleLockDialog } from '@/components/admin13f/ReleaseStaleLockDialog';
 import { ManagerCikDialogs } from '@/components/admin13f/ManagerCikDialogs';
@@ -34,48 +27,22 @@ import {
   useHoldingsCoverageQuery,
   useJobsQuery,
   useManagersQuery,
-  useNeedsValidationQuery,
   usePendingAmendmentsQuery,
-  useQualityQuery,
-  useQuarterDetailQuery,
-  useQuartersQuery,
   useReadinessQuery,
   useTasksQuery,
   useUnknownManagerPriorityQuery,
-  useWorkersQuery,
 } from '@/lib/admin13f/queries';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from '@/components/ui/select';
 import { useToast } from '@/components/ui/use-toast';
-import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from '@/components/ui/table';
 
 const {
-  formatPercent,
-  freshnessLine,
   normalizeEdgarRateLimit,
   normalizeHoldingsCoverage,
-  normalizeQualityReports,
-  normalizeQuarters,
   normalizeReadiness,
   normalizeTasks,
-  normalizeWorkers,
-  operationsHealth,
   taskPrimaryAction,
 } = thirteenfAdmin;
 
@@ -100,11 +67,8 @@ function formatInteger(value: unknown) {
   return value.toLocaleString('en-US');
 }
 
-function formatJson(value: unknown) {
-  if (!value || typeof value !== 'object') return '—';
-  return JSON.stringify(value, null, 2);
-}
-
+// MVP6-07: ``formatJson`` removed along with the Quarter Detail Drawer
+// that consumed it.
 // MVP6-02: ``MANAGER_TYPE_OPTIONS`` moved to
 // ``frontend/components/admin13f/ManagerTypeEditorDialog.tsx``
 // (the lifted component owns the vocabulary now that its only
@@ -113,18 +77,17 @@ function formatJson(value: unknown) {
 export default function Admin13FPage() {
   const queryClient = useQueryClient();
   const { toast } = useToast();
+  // MVP6-07: selectedQuarter + quarterFilingStatus + quarterFilingOffset
+  // moved to /admin/13f/readiness along with the Quarter Detail drawer.
   // MVP6-06: selectedJobId + Job Runs filter state moved to /admin/13f/jobs.
   // MVP6-04: selectedFiling/AmendmentAccession + filingParseStatus
   // moved to /admin/13f/filings. The two detail drawers are gone too.
-  const [selectedQuarter, setSelectedQuarter] = useState<string | null>(null);
-  const [quarterFilingStatus, setQuarterFilingStatus] = useState('all');
-  const [quarterFilingOffset, setQuarterFilingOffset] = useState(0);
   // MVP6-01 Tier 3: the 20 admin/13f useQuery hooks moved to
   // ``frontend/lib/admin13f/queries.ts``. Same queryKey + queryFn
   // shapes as before so the inline mutation ``invalidateQueries``
   // calls further down still hit the right caches.
   const readinessQuery = useReadinessQuery();
-  const quartersQuery = useQuartersQuery();
+  // MVP6-07: quartersQuery moved to /admin/13f/readiness.
   const tasksQuery = useTasksQuery();
   const managersQuery = useManagersQuery();
   // MVP6-06: jobsQuery stays on the index page because the Overview
@@ -139,7 +102,7 @@ export default function Admin13FPage() {
     syncDate: '',
     quarter: '',
   });
-  const qualityQuery = useQualityQuery();
+  // MVP6-07: qualityQuery moved to /admin/13f/readiness.
   // MVP6-04: amendmentsQuery + filingsQuery removed — fully consumed by
   // ``/admin/13f/filings``. pendingAmendmentsQuery stays because the
   // Overview hub Filings card KPI reads its count.
@@ -150,18 +113,13 @@ export default function Admin13FPage() {
       : null;
   const holdingsCoverageQuery = useHoldingsCoverageQuery(coverageQuarter);
   // MVP6-05: useUnresolvedCusipsQuery moved to /admin/13f/holdings.
-  const workersQuery = useWorkersQuery();
+  // MVP6-07: workersQuery + needsValidationQuery + quarterDetailQuery
+  // moved to /admin/13f/readiness.
   const edgarRateLimitQuery = useEdgarRateLimitQuery();
   // MVP6-06: jobDetailQuery moved to /admin/13f/jobs along with the
   // Job Detail Drawer.
   // MVP6-04: amendmentDetailQuery + parseRunsQuery now live on
   // /admin/13f/filings; the queries module hook still exists.
-  const quarterDetailQuery = useQuarterDetailQuery({
-    selectedQuarter,
-    quarterFilingStatus,
-    quarterFilingOffset,
-  });
-  const needsValidationQuery = useNeedsValidationQuery();
   const unknownManagerPriorityQuery = useUnknownManagerPriorityQuery();
   // MVP6-02: manager_type editor state + mutation moved to the new
   // ``/admin/13f/managers`` and ``/admin/13f/managers/[id]`` routes
@@ -291,16 +249,11 @@ export default function Admin13FPage() {
     () => normalizeReadiness(readinessQuery.data ?? {}),
     [readinessQuery.data]
   );
-  const readinessThresholds = readiness.thresholds as Record<string, unknown>;
-  const quarters = useMemo(
-    () => normalizeQuarters(quartersQuery.data?.items ?? []),
-    [quartersQuery.data]
-  );
+  // MVP6-07: readinessThresholds + quarters + qualityReports +
+  // workers + hasAvailableWorker + operationalHealth memos moved
+  // to /admin/13f/readiness along with the surfaces that consumed
+  // them.
   const tasks = useMemo(() => normalizeTasks(tasksQuery.data?.items ?? []), [tasksQuery.data]);
-  const qualityReports = useMemo(
-    () => normalizeQualityReports(qualityQuery.data?.items ?? []),
-    [qualityQuery.data]
-  );
   // MVP6-04: ``amendments`` / ``pendingAmendments`` /
   // ``pendingAmendmentGroups`` / ``adminFilings`` memos moved to
   // ``/admin/13f/filings`` along with the sections that consumed
@@ -313,15 +266,10 @@ export default function Admin13FPage() {
   );
   // MVP6-05: unresolvedCusips memo moved to /admin/13f/holdings.
   // MVP6-04: parseRuns memo moved to /admin/13f/filings.
-  const workers = useMemo(
-    () => normalizeWorkers(workersQuery.data?.items ?? []),
-    [workersQuery.data]
-  );
   const edgarRateLimit = useMemo(
     () => normalizeEdgarRateLimit(edgarRateLimitQuery.data ?? {}),
     [edgarRateLimitQuery.data]
   );
-  const hasAvailableWorker = workers.some((worker) => worker.status === 'idle' || worker.status === 'running');
   // MVP6-06: workerRows memo (table-row paging logic for the Worker
   // Heartbeat Card) moved to /admin/13f/jobs.
   // MVP6-02: ``managers`` memoized list removed — its only consumer
@@ -358,30 +306,14 @@ export default function Admin13FPage() {
     prevActiveKeys.current = currentKeys;
   }, [activeLockKeys, refreshAdminData]);
 
+  // MVP6-07: selectedQuarterDetail + isLoading aggregate + operationalHealth
+  // memo moved to /admin/13f/readiness.
   // MVP6-06: selectedJob (job detail drawer data) moved to /admin/13f/jobs.
   // MVP6-04: selectedAmendment moved to /admin/13f/filings.
-  const selectedQuarterDetail = quarterDetailQuery.data ?? null;
-  const isLoading =
-    readinessQuery.isLoading ||
-    quartersQuery.isLoading ||
-    tasksQuery.isLoading ||
-    managersQuery.isLoading ||
-    jobsQuery.isLoading ||
-    qualityQuery.isLoading ||
-    pendingAmendmentsQuery.isLoading ||
-    holdingsCoverageQuery.isLoading ||
-    workersQuery.isLoading;
 
   const latestQuarter = readiness.latestUsableQuarter === '—' ? undefined : readiness.latestUsableQuarter;
   const targetQuarter = manualQuarter.trim() || latestQuarter;
   const targetAccession = accessionNo.trim();
-  const operationalHealth = useMemo(
-    () =>
-      operationsHealth(readiness, tasks, hasAvailableWorker, {
-        workersIndeterminate: workersQuery.isError,
-      }),
-    [readiness, tasks, hasAvailableWorker, workersQuery.isError]
-  );
 
   function lockKeyForPayload(payload: Record<string, unknown>) {
     const jobType = String(payload.job_type ?? '');
@@ -520,12 +452,6 @@ export default function Admin13FPage() {
     closeRetryManagerDialog();
   }
 
-  function openQuarterDetail(quarter: string) {
-    setSelectedQuarter(quarter);
-    setQuarterFilingStatus('all');
-    setQuarterFilingOffset(0);
-  }
-
   return (
     <AdminPageLayout
       title="13F Operations"
@@ -619,8 +545,8 @@ export default function Admin13FPage() {
             </div>
             <div className="text-xs text-muted-foreground">Queue · retry · stale-lock</div>
           </Link>
-          <a
-            href="#readiness"
+          <Link
+            href="/admin/13f/readiness"
             className="block rounded-md border border-border/70 p-3 transition-colors hover:bg-muted/40"
           >
             <div className="text-xs uppercase text-muted-foreground">Readiness</div>
@@ -630,9 +556,9 @@ export default function Admin13FPage() {
                 : readiness.readinessLevel.replaceAll('_', ' ')}
             </div>
             <div className="text-xs text-muted-foreground">Blockers · quality findings</div>
-          </a>
-          <a
-            href="#oracles-lens"
+          </Link>
+          <Link
+            href="/admin/13f/readiness"
             className="block rounded-md border border-border/70 p-3 transition-colors hover:bg-muted/40"
           >
             <div className="text-xs uppercase text-muted-foreground">Oracle&apos;s Lens</div>
@@ -642,217 +568,19 @@ export default function Admin13FPage() {
                 : `${(unknownManagerPriorityQuery.data?.items as unknown[] | undefined)?.length ?? 0} unknown`}
             </div>
             <div className="text-xs text-muted-foreground">Unknown-manager priority queue</div>
-          </a>
+          </Link>
         </div>
       </section>
 
-      <Card className="rounded-md">
-        <CardHeader className="pb-3">
-          <CardTitle className="flex flex-col gap-2 text-base sm:flex-row sm:items-center sm:justify-between">
-            <span>Data Readiness & Operations Health</span>
-            <span className="flex flex-wrap gap-2">
-              <Badge variant={badgeVariant(readiness.readinessTone)}>
-                Data {readiness.readinessLevel.replaceAll('_', ' ')}
-              </Badge>
-              <Badge variant={badgeVariant(isLoading ? 'secondary' : operationalHealth.tone)}>
-                {isLoading ? 'operations loading' : operationalHealth.label}
-              </Badge>
-            </span>
-          </CardTitle>
-        </CardHeader>
-        <CardContent className="space-y-4">
-          {isLoading ? (
-            <AdminLoadingState
-              variant="compact"
-              label="Loading 13F operations state..."
-            />
-          ) : null}
-          <div className="grid gap-3 md:grid-cols-5">
-            <MetricTile label="Latest usable" value={readiness.latestUsableQuarter} />
-            <MetricTile
-              label="Current quarter"
-              value={readiness.currentQuarter}
-              detail={readiness.currentPhase}
-            />
-            <MetricTile label="Historical depth" value={`${readiness.historicalDepth} quarters`} />
-            <MetricTile
-              label="Managers"
-              value={`${formatInteger(readiness.counts.confirmed_managers)} confirmed`}
-            />
-            <MetricTile
-              label="NT filers"
-              value={formatInteger(
-                readiness.counts.nt_filer_count ?? readiness.counts.nt_filers
-              )}
-              detail="reported elsewhere"
-            />
-          </div>
-          <div className="rounded-md border border-amber-300/70 bg-amber-50 px-3 py-2 text-sm text-amber-950">
-            {freshnessLine(readiness)}
-          </div>
-          {!isLoading ? (
-            <div
-              className={`rounded-md border px-3 py-2 text-sm ${
-                operationalHealth.level === 'healthy'
-                  ? 'border-emerald-300/70 bg-emerald-50 text-emerald-950'
-                  : operationalHealth.level === 'blocked'
-                    ? 'border-rose-300/70 bg-rose-50 text-rose-950'
-                    : operationalHealth.level === 'unknown'
-                      ? 'border-border/70 bg-muted/30 text-foreground'
-                      : 'border-amber-300/70 bg-amber-50 text-amber-950'
-              }`}
-            >
-              <div className="font-medium">
-                {operationalHealth.level === 'healthy'
-                  ? 'Operations are clear'
-                  : operationalHealth.level === 'blocked'
-                    ? 'Operations need intervention'
-                    : operationalHealth.level === 'unknown'
-                      ? 'Operations health unknown'
-                      : 'Operations need attention'}
-              </div>
-              <div className="mt-1">{operationalHealth.summary}</div>
-            </div>
-          ) : null}
-          <div className="flex flex-wrap gap-2 text-sm">
-            <Badge variant={readiness.schedulerEnabled ? 'success' : 'danger'}>
-              Scheduler {readiness.schedulerEnabled ? 'enabled' : 'disabled'}
-            </Badge>
-            <Badge variant={readiness.smartRetryEnabled ? 'success' : 'warning'}>
-              Smart retry {readiness.smartRetryEnabled ? 'enabled' : 'disabled'}
-            </Badge>
-            <Badge variant={hasAvailableWorker ? 'success' : 'warning'}>
-              Workers {hasAvailableWorker ? 'available' : 'not active'}
-            </Badge>
-            <Badge variant="outline">
-              Ready link {formatPercent(Number(readinessThresholds.ready_link_ratio ?? 0.8))}
-            </Badge>
-            <Badge variant="outline">
-              Warning link {formatPercent(Number(readinessThresholds.warning_link_ratio ?? 0.5))}
-            </Badge>
-            <Badge variant="outline">
-              History target {formatInteger(readinessThresholds.ready_historical_depth ?? 4)}Q
-            </Badge>
-          </div>
-          <div className="grid gap-3 lg:grid-cols-[280px_minmax(0,1fr)]">
-            <div className="rounded-md border border-border/70 p-3">
-              <div className="text-xs font-semibold uppercase text-muted-foreground">
-                Current Quarter
-              </div>
-              <div className="mt-2 flex items-center justify-between gap-2">
-                <div className="text-lg font-semibold">{readiness.currentQuarter}</div>
-                <Badge variant={badgeVariant(
-                  readiness.currentHealth === 'complete'
-                    ? 'success'
-                    : readiness.currentHealth === 'setup_required' || readiness.currentHealth === 'needs_review'
-                      ? 'danger'
-                      : 'warning'
-                )}>
-                  {readiness.currentHealth.replaceAll('_', ' ')}
-                </Badge>
-              </div>
-              <div className="mt-2 text-sm text-muted-foreground">
-                Phase: {readiness.currentPhase.replaceAll('_', ' ')}
-              </div>
-              <div className="mt-1 text-sm text-muted-foreground">
-                Filing deadline: {readiness.filingDeadline ?? '—'}
-              </div>
-            </div>
-            <div className="rounded-md border border-border/70 p-3">
-              <div className="mb-3 text-xs font-semibold uppercase text-muted-foreground">
-                Setup Checklist
-              </div>
-              <div className="grid gap-2 md:grid-cols-2">
-                {readiness.setupChecklist.map((item: Record<string, string>) => (
-                  <div key={item.code} className="rounded-md border border-border/70 bg-muted/20 p-2">
-                    <div className="flex items-center justify-between gap-2">
-                      <div className="text-sm font-medium">{item.label}</div>
-                      <Badge variant={badgeVariant(item.statusTone)}>
-                        {item.status.replaceAll('_', ' ')}
-                      </Badge>
-                    </div>
-                    <div className="mt-1 text-xs text-muted-foreground">{item.completeWhen}</div>
-                    {item.status !== 'complete' ? (
-                      <div className="mt-1 text-xs text-foreground">{item.adminAction}</div>
-                    ) : null}
-                  </div>
-                ))}
-                {readiness.setupChecklist.length === 0 ? (
-                  <div className="text-sm text-muted-foreground">No setup checklist returned.</div>
-                ) : null}
-              </div>
-            </div>
-          </div>
-          {readiness.topTask ? (
-            <div className="flex items-start gap-2 rounded-md border border-rose-300/70 bg-rose-50 px-3 py-2 text-sm text-rose-950">
-              <ShieldAlert className="mt-0.5 h-4 w-4 shrink-0" />
-              <div>
-                <div className="font-medium">{readiness.topTask.title}</div>
-                <div>{readiness.topTask.recommended_action}</div>
-              </div>
-            </div>
-          ) : !isLoading && operationalHealth.level === 'healthy' ? (
-            <div className="flex items-center gap-2 rounded-md border border-emerald-300/70 bg-emerald-50 px-3 py-2 text-sm text-emerald-950">
-              <CheckCircle2 className="h-4 w-4" />
-              No blocking admin task detected.
-            </div>
-          ) : null}
-        </CardContent>
-      </Card>
+      {/* MVP6-07: Data Readiness & Operations Health Card moved to
+          /admin/13f/readiness. Overview hub is now a thin nav hub
+          (KPI strip + Tasks Card + Manual Controls + dialog mounts). */}
 
       {/* MVP6-06: EDGAR Rate Limit Card moved to /admin/13f/jobs.
           Overview hub still surfaces the mode chip in the header
           strip via ``edgarRateLimit.mode``. */}
 
-      <Card className="rounded-md">
-        <CardHeader className="pb-3">
-          <CardTitle className="flex items-center gap-2 text-base">
-            <ShieldAlert className="h-4 w-4" />
-            Quality Reports
-          </CardTitle>
-        </CardHeader>
-        <CardContent>
-          <Table>
-            <TableHeader>
-              <TableRow>
-                <TableHead>Quarter</TableHead>
-                <TableHead>Status</TableHead>
-                <TableHead>Issues</TableHead>
-                <TableHead>Checked</TableHead>
-                <TableHead>Summary</TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {qualityReports.map((report) => (
-                <TableRow key={String(report.id)}>
-                  <TableCell className="font-medium">{report.quarter}</TableCell>
-                  <TableCell>
-                    <Badge variant={badgeVariant(report.statusTone)}>
-                      {report.status.replaceAll('_', ' ')}
-                    </Badge>
-                  </TableCell>
-                  <TableCell>
-                    {formatInteger(report.errorCount)} errors · {formatInteger(report.warningCount)} warnings
-                  </TableCell>
-                  <TableCell className="text-xs text-muted-foreground">
-                    {report.checkedAt ?? '—'}
-                  </TableCell>
-                  <TableCell className="max-w-[360px] truncate text-sm text-muted-foreground">
-                    {report.summary || '—'}
-                  </TableCell>
-                </TableRow>
-              ))}
-              {qualityReports.length === 0 ? (
-                <TableRow>
-                  <TableCell colSpan={5} className="py-8 text-center text-muted-foreground">
-                    No persisted quality report yet. Run a quality check to populate this section.
-                  </TableCell>
-                </TableRow>
-              ) : null}
-            </TableBody>
-          </Table>
-        </CardContent>
-      </Card>
+      {/* MVP6-07: Quality Reports Card moved to /admin/13f/readiness. */}
 
       {/* MVP6-05: Holdings Coverage + Unresolved CUSIPs moved to
           /admin/13f/holdings. */}
@@ -861,75 +589,10 @@ export default function Admin13FPage() {
           ``hasAvailableWorker`` derivation stays on this page so
           the Tasks Card readiness gating still works. */}
 
-      <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_360px]">
-        <Card className="rounded-md">
-          <CardHeader className="pb-3">
-            <CardTitle className="flex items-center gap-2 text-base">
-              <Database className="h-4 w-4" />
-              Quarters
-            </CardTitle>
-          </CardHeader>
-          <CardContent>
-            <Table>
-              <TableHeader>
-                <TableRow>
-                  <TableHead>Quarter</TableHead>
-                  <TableHead>Phase</TableHead>
-                  <TableHead>Health</TableHead>
-                  <TableHead>Filed</TableHead>
-                  <TableHead>Holdings</TableHead>
-                  <TableHead>Linked</TableHead>
-                  <TableHead>Amendments</TableHead>
-                  <TableHead>Detail</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {quarters.map((quarter) => (
-                  <TableRow key={quarter.quarter}>
-                    <TableCell className="font-medium">{quarter.quarter}</TableCell>
-                    <TableCell>{quarter.phase}</TableCell>
-                    <TableCell>
-                      <Badge variant={badgeVariant(quarter.healthTone)}>
-                        {quarter.health?.replaceAll('_', ' ')}
-                      </Badge>
-                    </TableCell>
-                    <TableCell>
-                      {formatInteger(quarter.filedManagers)} / {formatInteger(quarter.trackedManagers)}
-                    </TableCell>
-                    <TableCell>{formatInteger(quarter.holdingsCount)}</TableCell>
-                    <TableCell>
-                      <div>{formatPercent(quarter.linkedRatio)}</div>
-                      {quarter.linkedUnavailableReason ? (
-                        <div className="mt-1 text-xs text-muted-foreground">
-                          {quarter.linkedUnavailableReason}
-                        </div>
-                      ) : null}
-                    </TableCell>
-                    <TableCell>{quarter.amendmentStatus?.replaceAll('_', ' ')}</TableCell>
-                    <TableCell>
-                      <Button
-                        type="button"
-                        variant="outline"
-                        size="sm"
-                        onClick={() => openQuarterDetail(quarter.quarter)}
-                      >
-                        Review
-                      </Button>
-                    </TableCell>
-                  </TableRow>
-                ))}
-                {quarters.length === 0 ? (
-                  <TableRow>
-                    <TableCell colSpan={8} className="py-8 text-center text-muted-foreground">
-                      No quarter data available.
-                    </TableCell>
-                  </TableRow>
-                ) : null}
-              </TableBody>
-            </Table>
-          </CardContent>
-        </Card>
+      {/* MVP6-07: Quarters Card moved to /admin/13f/readiness along
+          with the Quarter Detail Drawer. */}
 
+      <div className="grid grid-cols-1 gap-4">
         <Card className="rounded-md">
           <CardHeader className="pb-3">
             <CardTitle className="flex items-center gap-2 text-base">
@@ -1367,161 +1030,8 @@ export default function Admin13FPage() {
 
       {/* MVP6-06: Historical Backfill Card moved to /admin/13f/jobs. */}
 
-      {/* MVP3-08: Needs-Validation Queue */}
-      <Card className="rounded-md">
-        <CardHeader className="pb-3">
-          <CardTitle className="flex items-center gap-2 text-base">
-            <ShieldAlert className="h-4 w-4" />
-            Needs Validation
-            {needsValidationQuery.data?.quarters?.length ? (
-              <Badge variant="warning">{(needsValidationQuery.data.quarters as unknown[]).length} quarter{(needsValidationQuery.data.quarters as unknown[]).length !== 1 ? 's' : ''}</Badge>
-            ) : null}
-          </CardTitle>
-        </CardHeader>
-        <CardContent>
-          {needsValidationQuery.isPending ? (
-            <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />
-          ) : !needsValidationQuery.data?.quarters?.length ? (
-            <div className="text-sm text-muted-foreground">No quarters awaiting validation.</div>
-          ) : (
-            <Table>
-              <TableHeader>
-                <TableRow>
-                  <TableHead>Quarter</TableHead>
-                  <TableHead>Open findings</TableHead>
-                  <TableHead>Quality report IDs</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {(needsValidationQuery.data.quarters as Array<{ quarter: string; open_count: number; quality_report_ids: number[] }>).map((row) => (
-                  <TableRow key={row.quarter}>
-                    <TableCell className="font-mono text-xs">{row.quarter}</TableCell>
-                    <TableCell>
-                      <Badge variant="warning">{row.open_count}</Badge>
-                    </TableCell>
-                    <TableCell className="font-mono text-xs text-muted-foreground">
-                      {row.quality_report_ids.join(', ')}
-                    </TableCell>
-                  </TableRow>
-                ))}
-              </TableBody>
-            </Table>
-          )}
-        </CardContent>
-      </Card>
-
-      {/* MVP4-07b: Unknown Manager Type Priority */}
-      <Card className="rounded-md">
-        <CardHeader className="pb-3">
-          <CardTitle className="flex flex-col gap-2 text-base sm:flex-row sm:items-center sm:justify-between">
-            <span className="flex items-center gap-2">
-              <UserSearch className="h-4 w-4" />
-              Unknown Manager Type Priority
-              {unknownManagerPriorityQuery.data?.items?.length ? (
-                <Badge variant="warning">
-                  {(unknownManagerPriorityQuery.data.items as unknown[]).length} pending
-                </Badge>
-              ) : null}
-            </span>
-            {unknownManagerPriorityQuery.data?.quarter ? (
-              <span className="text-xs font-mono text-muted-foreground">
-                {unknownManagerPriorityQuery.data.quarter}
-                {unknownManagerPriorityQuery.data.score_version ? (
-                  <> · {unknownManagerPriorityQuery.data.score_version}</>
-                ) : null}
-              </span>
-            ) : null}
-          </CardTitle>
-        </CardHeader>
-        <CardContent>
-          {unknownManagerPriorityQuery.isPending ? (
-            <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />
-          ) : !unknownManagerPriorityQuery.data?.quarter ? (
-            // MVP5-04: directional hint so the admin knows the
-            // *next action* on a fresh instance is the Historical
-            // Backfill section above, not a vague "run a backfill."
-            <div className="text-sm text-muted-foreground">
-              No Oracle&apos;s Lens scores computed yet. Use the Historical Backfill
-              section above to score a quarter, then return here to prioritize
-              manager classification.
-            </div>
-          ) : !unknownManagerPriorityQuery.data.items?.length ? (
-            // MVP5-04: reframed as a positive all-clear (with the
-            // quarter label) so the admin doesn't read it as a bug.
-            <div className="text-sm text-muted-foreground">
-              All contributing managers are typed for {String(unknownManagerPriorityQuery.data.quarter)}. Signal
-              weights are fully resolved — no classification debt for this
-              quarter.
-            </div>
-          ) : (
-            <>
-              <p className="mb-3 text-xs text-muted-foreground">
-                Managers with{' '}
-                <code className="font-mono">manager_type=unknown</code> ranked by
-                how many of the latest persisted Oracle&apos;s Lens scores they
-                contribute to. Classifying the top rows lifts the most
-                <code className="font-mono"> score_confidence</code>.
-              </p>
-              {/* MVP5-04: overflow-x-auto wrapper so the
-                  worst_score_confidence column doesn't clip on narrow
-                  viewports (matches the main Oracle's Lens table
-                  treatment). */}
-              <div className="overflow-x-auto">
-              <Table>
-                <TableHeader>
-                  <TableRow>
-                    <TableHead>Manager</TableHead>
-                    <TableHead>Affected signals</TableHead>
-                    <TableHead>Worst score_confidence</TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {(unknownManagerPriorityQuery.data.items as Array<{
-                    manager_id: number;
-                    canonical_name: string;
-                    affected_signal_count: number;
-                    worst_score_confidence_observed: string;
-                  }>).map((row) => (
-                    <TableRow key={row.manager_id}>
-                      <TableCell>
-                        {/* MVP6-02: deep-link upgraded from
-                            ``#manager-row-{id}`` anchor to the real
-                            ``/admin/13f/managers/{id}`` detail route. */}
-                        <Link
-                          href={`/admin/13f/managers/${row.manager_id}`}
-                          className="font-medium hover:underline"
-                        >
-                          {row.canonical_name}
-                        </Link>
-                        <div className="font-mono text-xs text-muted-foreground">
-                          #{row.manager_id}
-                        </div>
-                      </TableCell>
-                      <TableCell>
-                        <Badge variant="warning">{row.affected_signal_count}</Badge>
-                      </TableCell>
-                      <TableCell>
-                        <Badge
-                          variant={
-                            row.worst_score_confidence_observed === 'high_confidence'
-                              ? 'success'
-                              : row.worst_score_confidence_observed === 'medium_confidence'
-                                ? 'warning'
-                                : 'danger'
-                          }
-                        >
-                          {row.worst_score_confidence_observed}
-                        </Badge>
-                      </TableCell>
-                    </TableRow>
-                  ))}
-                </TableBody>
-              </Table>
-              </div>
-            </>
-          )}
-        </CardContent>
-      </Card>
+      {/* MVP6-07: Needs Validation + Unknown Manager Type Priority
+          Cards moved to /admin/13f/readiness. */}
 
       {/* MVP6-06: Batch Reparse Card moved to /admin/13f/jobs. */}
 
@@ -1608,286 +1118,7 @@ export default function Admin13FPage() {
         onSubmitRetry={submitRetryManagerDialog}
       />
 
-      {selectedQuarter !== null ? (
-        <DrawerShell
-          title="Quarter Detail"
-          description={
-            selectedQuarterDetail?.summary
-              ? `${selectedQuarterDetail.summary.quarter_phase} · ${selectedQuarterDetail.summary.quarter_health}`
-              : selectedQuarter
-          }
-          closeLabel="Close quarter detail"
-          labelledBy="quarter-detail-title"
-          maxWidthClassName="max-w-[640px]"
-          onClose={() => setSelectedQuarter(null)}
-        >
-              {selectedQuarterDetail ? (
-                <>
-                  <div className="grid gap-3 md:grid-cols-3">
-                    <MetricTile
-                      label="Filings"
-                      value={formatInteger(selectedQuarterDetail.summary?.filings_count)}
-                    />
-                    <MetricTile
-                      label="Holdings"
-                      value={formatInteger(selectedQuarterDetail.summary?.holdings_count)}
-                    />
-                    <MetricTile
-                      label="Linked"
-                      value={formatPercent(selectedQuarterDetail.summary?.linked_holding_ratio)}
-                      detail={
-                        selectedQuarterDetail.summary?.linked_holding_unavailable_reason
-                          ? String(selectedQuarterDetail.summary.linked_holding_unavailable_reason)
-                          : undefined
-                      }
-                    />
-                  </div>
-                  {selectedQuarterDetail.summary?.active_job_id ? (
-                    <div className="rounded-md border border-amber-300/70 bg-amber-50 px-3 py-2 text-sm text-amber-950">
-                      Active job #{String(selectedQuarterDetail.summary.active_job_id)} ·{' '}
-                      {String(selectedQuarterDetail.summary.active_job_type ?? 'job')}
-                    </div>
-                  ) : null}
-                  {selectedQuarterDetail.summary?.revoked_cik_review_required ? (
-                    <div className="rounded-md border border-rose-300/70 bg-rose-50 px-3 py-2 text-sm text-rose-950">
-                      This quarter includes filings from a manager whose CIK was revoked. Reconfirm the manager CIK before relying on downstream analytics.
-                    </div>
-                  ) : null}
-
-                  <div>
-                    <div className="mb-2 text-xs font-semibold uppercase text-muted-foreground">
-                      Suggested Actions
-                    </div>
-                    <div className="flex flex-wrap gap-2">
-                      {(selectedQuarterDetail.suggested_actions ?? []).map(
-                        (action: Record<string, unknown>, index: number) => (
-                          <Button
-                            key={`${String(action.job_type ?? 'action')}-${index}`}
-                            type="button"
-                            variant="outline"
-                            size="sm"
-                            disabled={isJobActive(action)}
-                            onClick={() => runJob(action, String(action.label ?? action.job_type ?? 'Run action'))}
-                          >
-                            {String(action.label ?? action.job_type ?? 'Run action')}
-                          </Button>
-                        )
-                      )}
-                      {(selectedQuarterDetail.suggested_actions ?? []).length === 0 ? (
-                        <div className="text-sm text-muted-foreground">
-                          No suggested action for this quarter.
-                        </div>
-                      ) : null}
-                    </div>
-                  </div>
-
-                  <div>
-                    <div className="mb-2 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-                      <div className="text-xs font-semibold uppercase text-muted-foreground">
-                        Filing Rows
-                      </div>
-                      <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
-                        <Select
-                          value={quarterFilingStatus}
-                          onValueChange={(value) => {
-                            setQuarterFilingStatus(value);
-                            setQuarterFilingOffset(0);
-                          }}
-                        >
-                          <SelectTrigger className="w-full sm:w-[190px]">
-                            <SelectValue placeholder="All filing statuses" />
-                          </SelectTrigger>
-                          <SelectContent>
-                            <SelectItem value="all">All statuses</SelectItem>
-                            <SelectItem value="pending">Pending</SelectItem>
-                            <SelectItem value="failed">Failed</SelectItem>
-                            <SelectItem value="parsed_no_holdings">Parsed, no holdings</SelectItem>
-                            <SelectItem value="parsed">Parsed</SelectItem>
-                          </SelectContent>
-                        </Select>
-                        <div className="flex gap-2">
-                          <Button
-                            type="button"
-                            variant="outline"
-                            size="sm"
-                            disabled={quarterFilingOffset === 0}
-                            onClick={() => setQuarterFilingOffset((value) => Math.max(value - 25, 0))}
-                          >
-                            Prev
-                          </Button>
-                          <Button
-                            type="button"
-                            variant="outline"
-                            size="sm"
-                            disabled={
-                              !selectedQuarterDetail.filings_page ||
-                              Number(selectedQuarterDetail.filings_page.offset ?? 0) +
-                                Number(selectedQuarterDetail.filings_page.limit ?? 25) >=
-                                Number(selectedQuarterDetail.filings_page.total ?? 0)
-                            }
-                            onClick={() => setQuarterFilingOffset((value) => value + 25)}
-                          >
-                            Next
-                          </Button>
-                        </div>
-                      </div>
-                    </div>
-                    <div className="rounded-md border border-border/70">
-                      <Table>
-                        <TableHeader>
-                          <TableRow>
-                            <TableHead>Accession</TableHead>
-                            <TableHead>Status</TableHead>
-                            <TableHead>Manager</TableHead>
-                            <TableHead>Holdings</TableHead>
-                          </TableRow>
-                        </TableHeader>
-                        <TableBody>
-                          {(selectedQuarterDetail.filings_page?.items ?? []).map((filing: Record<string, unknown>) => (
-                            <TableRow key={String(filing.accession_no)}>
-                              <TableCell className="font-mono text-xs">{String(filing.accession_no ?? '—')}</TableCell>
-                              <TableCell>
-                                <Badge variant={badgeVariant(
-                                  filing.status === 'failed'
-                                    ? 'danger'
-                                    : filing.status === 'pending' || filing.status === 'parsed_no_holdings'
-                                      ? 'warning'
-                                      : 'success'
-                                )}>
-                                  {String(filing.status ?? 'unknown').replaceAll('_', ' ')}
-                                </Badge>
-                              </TableCell>
-                              <TableCell>{String((filing.manager as Record<string, unknown> | undefined)?.legal_name ?? '—')}</TableCell>
-                              <TableCell>{formatInteger(filing.holdings_count)}</TableCell>
-                            </TableRow>
-                          ))}
-                          {(selectedQuarterDetail.filings_page?.items ?? []).length === 0 ? (
-                            <TableRow>
-                              <TableCell colSpan={4} className="py-6 text-center text-muted-foreground">
-                                No filings match this filter.
-                              </TableCell>
-                            </TableRow>
-                          ) : null}
-                        </TableBody>
-                      </Table>
-                    </div>
-                    <div className="mt-2 text-xs text-muted-foreground">
-                      Showing {formatInteger((selectedQuarterDetail.filings_page?.items ?? []).length)} of{' '}
-                      {formatInteger(selectedQuarterDetail.filings_page?.total)} matching filings.
-                      Counts: pending {formatInteger(selectedQuarterDetail.filing_counts_by_status?.pending)}, failed{' '}
-                      {formatInteger(selectedQuarterDetail.filing_counts_by_status?.failed)}, parsed{' '}
-                      {formatInteger(selectedQuarterDetail.filing_counts_by_status?.parsed)}.
-                    </div>
-                  </div>
-
-                  <div>
-                    <div className="mb-2 text-xs font-semibold uppercase text-muted-foreground">
-                      Pending Filings
-                    </div>
-                    <div className="space-y-2">
-                      {(selectedQuarterDetail.pending_filings ?? []).map((filing: Record<string, unknown>) => (
-                        <div key={String(filing.accession_no)} className="rounded-md border border-border/70 p-3">
-                          <div className="font-mono text-xs">{String(filing.accession_no ?? '—')}</div>
-                          <div className="mt-1 text-xs text-muted-foreground">
-                            {String((filing.manager as Record<string, unknown> | undefined)?.legal_name ?? '—')} ·{' '}
-                            {String(filing.form_type ?? '—')}
-                          </div>
-                        </div>
-                      ))}
-                      {(selectedQuarterDetail.pending_filings ?? []).length === 0 ? (
-                        <div className="text-sm text-muted-foreground">No pending filings.</div>
-                      ) : null}
-                    </div>
-                  </div>
-
-                  <div>
-                    <div className="mb-2 text-xs font-semibold uppercase text-muted-foreground">
-                      Failed Filings
-                    </div>
-                    <div className="space-y-2">
-                      {(selectedQuarterDetail.failed_filings ?? []).map((filing: Record<string, unknown>) => {
-                        const infotable =
-                          filing.raw_infotable && typeof filing.raw_infotable === 'object'
-                            ? (filing.raw_infotable as Record<string, unknown>)
-                            : {};
-                        return (
-                          <div key={String(filing.accession_no)} className="rounded-md border border-rose-300/70 bg-rose-50 p-3 text-rose-950">
-                            <div className="font-mono text-xs">{String(filing.accession_no ?? '—')}</div>
-                            <div className="mt-1 text-xs">
-                              {String(infotable.error_message ?? 'Parse failed')}
-                            </div>
-                          </div>
-                        );
-                      })}
-                      {(selectedQuarterDetail.failed_filings ?? []).length === 0 ? (
-                        <div className="text-sm text-muted-foreground">No failed filings.</div>
-                      ) : null}
-                    </div>
-                  </div>
-
-                  <div>
-                    <div className="mb-2 text-xs font-semibold uppercase text-muted-foreground">
-                      Amendments
-                    </div>
-                    <div className="space-y-2">
-                      {(selectedQuarterDetail.amendments ?? []).map((amendment: Record<string, unknown>) => (
-                        <div key={String(amendment.accession_no)} className="rounded-md border border-border/70 p-3">
-                          <div className="flex items-center justify-between gap-2">
-                            <div className="font-mono text-xs">{String(amendment.accession_no ?? '—')}</div>
-                            <Badge variant={badgeVariant(
-                              amendment.status === 'failed'
-                                ? 'danger'
-                                : amendment.status === 'pending'
-                                  ? 'warning'
-                                  : amendment.status === 'applied'
-                                    ? 'success'
-                                    : 'secondary'
-                            )}>
-                              {String(amendment.status ?? 'unknown').replaceAll('_', ' ')}
-                            </Badge>
-                          </div>
-                          <div className="mt-1 text-xs text-muted-foreground">
-                            Supersedes {String(amendment.supersedes_accession_no ?? '—')}
-                          </div>
-                        </div>
-                      ))}
-                      {(selectedQuarterDetail.amendments ?? []).length === 0 ? (
-                        <div className="text-sm text-muted-foreground">No amendments for this quarter.</div>
-                      ) : null}
-                    </div>
-                  </div>
-
-                  <div>
-                    <div className="mb-2 text-xs font-semibold uppercase text-muted-foreground">
-                      Quality Report
-                    </div>
-                    {selectedQuarterDetail.quality_report ? (
-                      <div className="rounded-md border border-border/70 bg-muted/40 p-3">
-                        <div className="flex items-center justify-between gap-2">
-                          <div className="font-medium">
-                            {String(selectedQuarterDetail.quality_report.status ?? 'unknown').replaceAll('_', ' ')}
-                          </div>
-                          <div className="text-xs text-muted-foreground">
-                            {String(selectedQuarterDetail.quality_report.checked_at ?? '—')}
-                          </div>
-                        </div>
-                        <div className="mt-2 max-h-44 overflow-auto rounded-md border border-border/70 bg-background p-3 font-mono text-xs">
-                          {formatJson(selectedQuarterDetail.quality_report.issues)}
-                        </div>
-                      </div>
-                    ) : (
-                      <div className="text-sm text-muted-foreground">No quality report for this quarter.</div>
-                    )}
-                  </div>
-                </>
-              ) : (
-                <div className="flex items-center gap-2 text-sm text-muted-foreground">
-                  <Loader2 className="h-4 w-4 animate-spin" />
-                  Loading quarter detail...
-                </div>
-              )}
-        </DrawerShell>
-      ) : null}
+      {/* MVP6-07: Quarter Detail Drawer moved to /admin/13f/readiness. */}
       {/* MVP6-06: Job Detail Drawer moved to /admin/13f/jobs. */}
     </AdminPageLayout>
   );
