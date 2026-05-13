@@ -21,8 +21,10 @@ import {
 } from '@/lib/watchlistState';
 import {
   buildSnapshotsByStockId,
+  groupHeaderLabel,
   useWatchlist13FSnapshots,
 } from '@/lib/watchlist13f';
+import { Watchlist13FColumns } from '@/components/watchlist/Watchlist13FColumns';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader } from '@/components/ui/card';
 import {
@@ -159,10 +161,10 @@ export default function WatchlistPage() {
     return sortWatchlistMembers(members);
   }, [members]);
 
-  // MVP7-02: per-stock 13F snapshots for the active watchlist. The
-  // Map is consumed by the 13F column cells (MVP7-03), the MOS × 13F
-  // glyph (MVP7-04), and the per-row drawer (MVP7-05). MVP7-02 only
-  // wires the data; render is deferred.
+  // MVP7-02: per-stock 13F snapshots for the active watchlist.
+  // MVP7-03 consumes the Map to render the four 13F columns; MVP7-04
+  // will wire the responsive collapse + MOS × 13F glyph; MVP7-05
+  // will wire the per-row drawer.
   const watchlistStockIds = useMemo(
     () => sortedMembers.map((row) => row.stock_id),
     [sortedMembers],
@@ -172,9 +174,18 @@ export default function WatchlistPage() {
     () => buildSnapshotsByStockId(snapshotsQuery.data),
     [snapshotsQuery.data],
   );
-  // Referenced here so an unused-var lint doesn't trip while MVP7-03
-  // is still upstream. Will be consumed by row render in MVP7-03.
-  void snapshotsByStockId;
+  const snapshotsPeriod = snapshotsQuery.data?.period ?? null;
+  const snapshotsDeadline = snapshotsQuery.data?.period_filing_deadline ?? null;
+  const snapshotsUniverseSize = snapshotsQuery.data?.universe_size ?? 0;
+  const snapshotsQueryStatus: 'idle' | 'pending' | 'error' | 'success' =
+    watchlistStockIds.length === 0
+      ? 'idle'
+      : snapshotsQuery.isPending
+        ? 'pending'
+        : snapshotsQuery.isError
+          ? 'error'
+          : 'success';
+  const groupHeaderText = groupHeaderLabel(snapshotsPeriod, snapshotsDeadline);
 
   const refreshPrices = useMutation({
     mutationFn: async ({ stockIds }: RefreshPricesPayload) => {
@@ -540,8 +551,23 @@ export default function WatchlistPage() {
             </div>
           )}
           {members.length > 0 && (
-            <Table className="min-w-[1080px]">
+            <Table className="min-w-[1400px]">
               <TableHeader>
+                <TableRow className="border-b-0">
+                  <TableHead colSpan={8} className="border-r-0" />
+                  <TableHead
+                    colSpan={4}
+                    className="border-l border-border/60 text-center"
+                    title={
+                      snapshotsDeadline
+                        ? `13F filing deadline for ${snapshotsPeriod ?? 'latest period'}.`
+                        : undefined
+                    }
+                  >
+                    {groupHeaderText}
+                  </TableHead>
+                  <TableHead />
+                </TableRow>
                 <TableRow>
                   <TableHead>Ticker</TableHead>
                   <TableHead>Company</TableHead>
@@ -551,6 +577,10 @@ export default function WatchlistPage() {
                   <TableHead>MOS</TableHead>
                   <TableHead>Δ Today</TableHead>
                   <TableHead>Last Update</TableHead>
+                  <TableHead className="border-l border-border/60">Conviction</TableHead>
+                  <TableHead>Δ Holders</TableHead>
+                  <TableHead>Distinctiveness</TableHead>
+                  <TableHead>Caveats</TableHead>
                   <TableHead />
                 </TableRow>
               </TableHeader>
@@ -590,6 +620,12 @@ export default function WatchlistPage() {
                     </TableCell>
                     <TableCell>{formatNumber(row.delta_today)}</TableCell>
                     <TableCell>{formatDate(row.price_updated_at)}</TableCell>
+                    <Watchlist13FColumns
+                      snapshot={snapshotsByStockId.get(row.stock_id)}
+                      period={snapshotsPeriod}
+                      universeSize={snapshotsUniverseSize}
+                      queryStatus={snapshotsQueryStatus}
+                    />
                     <TableCell>
                       <div className="flex items-center gap-2">
                         <Button asChild variant="outline">
