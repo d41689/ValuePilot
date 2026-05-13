@@ -10,7 +10,6 @@ import {
   Database,
   FolderClock,
   History,
-  Link2,
   Loader2,
   Play,
   RefreshCw,
@@ -45,7 +44,6 @@ import {
   useReadinessQuery,
   useTasksQuery,
   useUnknownManagerPriorityQuery,
-  useUnresolvedCusipsQuery,
   useWorkersQuery,
 } from '@/lib/admin13f/queries';
 import { Badge } from '@/components/ui/badge';
@@ -87,7 +85,6 @@ const {
   normalizeQuarters,
   normalizeReadiness,
   normalizeTasks,
-  normalizeUnresolvedCusips,
   normalizeWorkers,
   operationsHealth,
   taskPrimaryAction,
@@ -166,7 +163,7 @@ export default function Admin13FPage() {
       ? readinessQuery.data.latest_usable_quarter
       : null;
   const holdingsCoverageQuery = useHoldingsCoverageQuery(coverageQuarter);
-  const unresolvedCusipsQuery = useUnresolvedCusipsQuery();
+  // MVP6-05: useUnresolvedCusipsQuery moved to /admin/13f/holdings.
   const workersQuery = useWorkersQuery();
   const edgarRateLimitQuery = useEdgarRateLimitQuery();
   const jobDetailQuery = useJobDetailQuery(selectedJobId);
@@ -212,15 +209,8 @@ export default function Admin13FPage() {
   // MVP3-08: Batch Reparse by Quarter
   const [brQuarter, setBrQuarter] = useState('');
   const [brPreview, setBrPreview] = useState<Record<string, unknown> | null>(null);
-  // MVP3-08: Corporate Action Confirm
-  const [caOpen, setCaOpen] = useState(false);
-  const [caCusip, setCaCusip] = useState('');
-  const [caFromQ, setCaFromQ] = useState('');
-  const [caToQ, setCaToQ] = useState('');
-  const [caNewTicker, setCaNewTicker] = useState('');
-  const [caEvidence, setCaEvidence] = useState('');
-  const [caReason, setCaReason] = useState('');
-  const [caPreview, setCaPreview] = useState<Record<string, unknown> | null>(null);
+  // MVP6-05: Corporate Action Confirm state moved to
+  // /admin/13f/holdings along with the form/drawer that consumed it.
   const refreshAdminData = useCallback(async () => {
     await Promise.all([
       queryClient.invalidateQueries({ queryKey: ['admin-13f-readiness'] }),
@@ -354,25 +344,8 @@ export default function Admin13FPage() {
       toast({ title: 'Reparse error', description: msg, variant: 'destructive' });
     },
   });
-  const caPreviewMutation = useMutation({
-    mutationFn: async (body: Record<string, unknown>) =>
-      (await apiClient.post('/admin/13f/cusips/corporate-actions/preview', body)).data,
-    onSuccess: (data) => setCaPreview(data),
-  });
-  const caConfirmMutation = useMutation({
-    mutationFn: async (body: Record<string, unknown>) =>
-      (await apiClient.post('/admin/13f/cusips/corporate-actions/confirm', body)).data,
-    onSuccess: async () => {
-      setCaOpen(false);
-      setCaPreview(null);
-      setCaCusip(''); setCaFromQ(''); setCaToQ(''); setCaNewTicker(''); setCaEvidence(''); setCaReason('');
-      toast({ title: 'Corporate action confirmed', description: 'Temporal mapping confirmed. Affected ownership_changes flagged for recomputation.' });
-    },
-    onError: (err: unknown) => {
-      const msg = (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail ?? 'Confirm failed.';
-      toast({ title: 'Corporate action error', description: msg, variant: 'destructive' });
-    },
-  });
+  // MVP6-05: caPreviewMutation + caConfirmMutation moved to
+  // /admin/13f/holdings.
 
   const readiness = useMemo(
     () => normalizeReadiness(readinessQuery.data ?? {}),
@@ -398,10 +371,7 @@ export default function Admin13FPage() {
     () => normalizeHoldingsCoverage(holdingsCoverageQuery.data ?? {}),
     [holdingsCoverageQuery.data]
   );
-  const unresolvedCusips = useMemo(
-    () => normalizeUnresolvedCusips(unresolvedCusipsQuery.data ?? {}),
-    [unresolvedCusipsQuery.data]
-  );
+  // MVP6-05: unresolvedCusips memo moved to /admin/13f/holdings.
   // MVP6-04: parseRuns memo moved to /admin/13f/filings.
   const workers = useMemo(
     () => normalizeWorkers(workersQuery.data?.items ?? []),
@@ -462,7 +432,6 @@ export default function Admin13FPage() {
     qualityQuery.isLoading ||
     pendingAmendmentsQuery.isLoading ||
     holdingsCoverageQuery.isLoading ||
-    unresolvedCusipsQuery.isLoading ||
     workersQuery.isLoading;
 
   const latestQuarter = readiness.latestUsableQuarter === '—' ? undefined : readiness.latestUsableQuarter;
@@ -690,8 +659,8 @@ export default function Admin13FPage() {
             </div>
             <div className="text-xs text-muted-foreground">Parse status · amendments · reparse</div>
           </Link>
-          <a
-            href="#holdings"
+          <Link
+            href="/admin/13f/holdings"
             className="block rounded-md border border-border/70 p-3 transition-colors hover:bg-muted/40"
           >
             <div className="text-xs uppercase text-muted-foreground">Holdings</div>
@@ -701,7 +670,7 @@ export default function Admin13FPage() {
                 : holdingsCoverage.linkedRatioLabel || '—'}
             </div>
             <div className="text-xs text-muted-foreground">Coverage · CUSIP workflow</div>
-          </a>
+          </Link>
           <a
             href="#jobs"
             className="block rounded-md border border-border/70 p-3 transition-colors hover:bg-muted/40"
@@ -998,102 +967,8 @@ export default function Admin13FPage() {
         </CardContent>
       </Card>
 
-      <div className="grid gap-5 xl:grid-cols-[minmax(0,1.35fr)_minmax(320px,0.65fr)]">
-        <Card className="rounded-md">
-          <CardHeader className="pb-3">
-            <CardTitle className="flex flex-col gap-2 text-base sm:flex-row sm:items-center sm:justify-between">
-              <span className="flex items-center gap-2">
-                <Database className="h-4 w-4" />
-                Holdings Coverage
-              </span>
-              <Badge variant="outline">{holdingsCoverage.reportQuarter}</Badge>
-            </CardTitle>
-          </CardHeader>
-          <CardContent className="space-y-3">
-            {holdingsCoverageQuery.isLoading ? (
-              <div className="flex items-center gap-2 text-sm text-muted-foreground">
-                <Loader2 className="h-4 w-4 animate-spin" />
-                Loading holdings coverage...
-              </div>
-            ) : holdingsCoverageQuery.isError || !coverageQuarter ? (
-              <div className="rounded-md border border-border/70 bg-muted/30 px-3 py-2 text-sm text-muted-foreground">
-                Coverage is unavailable until a latest usable quarter is available.
-              </div>
-            ) : (
-              <>
-                <div className="grid gap-3 md:grid-cols-4">
-                  <MetricTile label="Total holdings" value={formatInteger(holdingsCoverage.totalHoldingsCount)} />
-                  <MetricTile label="Common holdings" value={formatInteger(holdingsCoverage.commonHoldingsCount)} />
-                  <MetricTile
-                    label="Linked common"
-                    value={holdingsCoverage.linkedCommonHoldingRatioLabel}
-                    detail={`${formatInteger(holdingsCoverage.linkedCommonHoldingsCount)} linked`}
-                  />
-                  <MetricTile label="Options" value={formatInteger(holdingsCoverage.optionsCount)} />
-                </div>
-                <div className="flex flex-wrap gap-2 text-sm">
-                  <Badge variant={holdingsCoverage.unresolvedCommonHoldingsCount > 0 ? 'warning' : 'success'}>
-                    {formatInteger(holdingsCoverage.unresolvedCommonHoldingsCount)} unresolved common
-                  </Badge>
-                  <Badge variant={holdingsCoverage.combinationReportCount > 0 ? 'warning' : 'secondary'}>
-                    {formatInteger(holdingsCoverage.combinationReportCount)} combination reports
-                  </Badge>
-                  <Badge variant={holdingsCoverage.confidentialTreatmentCount > 0 ? 'warning' : 'secondary'}>
-                    {formatInteger(holdingsCoverage.confidentialTreatmentCount)} confidential treatment
-                  </Badge>
-                </div>
-              </>
-            )}
-          </CardContent>
-        </Card>
-
-        <Card className="rounded-md">
-          <CardHeader className="pb-3">
-            <CardTitle className="flex items-center gap-2 text-base">
-              <Link2 className="h-4 w-4" />
-              Unresolved CUSIPs
-            </CardTitle>
-          </CardHeader>
-          <CardContent>
-            <Table>
-              <TableHeader>
-                <TableRow>
-                  <TableHead>CUSIP</TableHead>
-                  <TableHead>Status</TableHead>
-                  <TableHead>Issuer</TableHead>
-                  <TableHead>Rows</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {unresolvedCusips.items.slice(0, 6).map((item: Record<string, unknown>) => (
-                  <TableRow key={`${String(item.cusip)}-${String(item.cusipMappingStatus)}`}>
-                    <TableCell className="font-mono text-xs">{String(item.cusip)}</TableCell>
-                    <TableCell>
-                      <Badge variant={badgeVariant(String(item.statusTone))}>
-                        {String(item.cusipMappingStatus).replaceAll('_', ' ')}
-                      </Badge>
-                    </TableCell>
-                    <TableCell className="max-w-[180px] truncate text-sm text-muted-foreground">
-                      {String(item.issuerName)}
-                    </TableCell>
-                    <TableCell>{formatInteger(item.holdingCount)}</TableCell>
-                  </TableRow>
-                ))}
-                {unresolvedCusips.items.length === 0 ? (
-                  <TableRow>
-                    <TableCell colSpan={4} className="py-8 text-center text-muted-foreground">
-                      No unresolved current CUSIP mappings.
-                    </TableCell>
-                  </TableRow>
-                ) : null}
-              </TableBody>
-            </Table>
-            <div className="mt-3 text-xs text-muted-foreground">
-              Showing {formatInteger(unresolvedCusips.items.length)} of {formatInteger(unresolvedCusips.total)} current unresolved groups.
-            </div>
-          </CardContent>
-        </Card>
-      </div>
+      {/* MVP6-05: Holdings Coverage + Unresolved CUSIPs moved to
+          /admin/13f/holdings. */}
 
       <Card className="rounded-md">
         <CardHeader className="pb-3">
@@ -2012,123 +1887,8 @@ export default function Admin13FPage() {
         </CardContent>
       </Card>
 
-      {/* MVP3-08: Corporate Action Confirmation */}
-      <Card className="rounded-md">
-        <CardHeader className="pb-3">
-          <CardTitle className="flex items-center gap-2 text-base">
-            <Link2 className="h-4 w-4" />
-            Corporate Action Mapping
-          </CardTitle>
-        </CardHeader>
-        <CardContent className="space-y-4">
-          <div className="text-sm text-muted-foreground">
-            Manually confirm a CUSIP temporal mapping after a corporate action (spin-off, merger, rename).
-            Evidence URL and reason are required per D4.
-          </div>
-          <Button
-            type="button"
-            variant="outline"
-            onClick={() => setCaOpen(true)}
-          >
-            Confirm corporate action mapping
-          </Button>
-        </CardContent>
-      </Card>
-
-      {caOpen ? (
-        <DrawerShell
-          title="Confirm Corporate Action Mapping"
-          description="D4: manual confirmation only. Evidence URL and reason are required."
-          closeLabel="Close corporate action confirm"
-          labelledBy="ca-confirm-title"
-          maxWidthClassName="max-w-xl"
-          onClose={() => { setCaOpen(false); setCaPreview(null); }}
-        >
-          <div className="flex-1 space-y-4 overflow-y-auto p-4">
-            <div className="grid gap-3 md:grid-cols-2">
-              <div>
-                <label className="text-xs font-semibold uppercase text-muted-foreground" htmlFor="ca-cusip">CUSIP (9 chars)</label>
-                <Input id="ca-cusip" className="mt-1 font-mono" maxLength={9} value={caCusip} onChange={(e) => { setCaCusip(e.target.value.toUpperCase()); setCaPreview(null); }} />
-              </div>
-              <div>
-                <label className="text-xs font-semibold uppercase text-muted-foreground" htmlFor="ca-new-ticker">New ticker (optional)</label>
-                <Input id="ca-new-ticker" className="mt-1 font-mono" maxLength={10} value={caNewTicker} onChange={(e) => setCaNewTicker(e.target.value.toUpperCase())} />
-              </div>
-              <div>
-                <label className="text-xs font-semibold uppercase text-muted-foreground" htmlFor="ca-from-q">Effective from quarter</label>
-                <Input id="ca-from-q" className="mt-1 font-mono" placeholder="YYYY-Qn" value={caFromQ} onChange={(e) => { setCaFromQ(e.target.value); setCaPreview(null); }} />
-              </div>
-              <div>
-                <label className="text-xs font-semibold uppercase text-muted-foreground" htmlFor="ca-to-q">Effective to quarter (optional)</label>
-                <Input id="ca-to-q" className="mt-1 font-mono" placeholder="leave empty = open-ended" value={caToQ} onChange={(e) => { setCaToQ(e.target.value); setCaPreview(null); }} />
-              </div>
-            </div>
-            <div>
-              <label className="text-xs font-semibold uppercase text-muted-foreground" htmlFor="ca-evidence">Evidence URL (required)</label>
-              <Input id="ca-evidence" className="mt-1" placeholder="https://sec.gov/..." value={caEvidence} onChange={(e) => setCaEvidence(e.target.value)} />
-            </div>
-            <div>
-              <label className="text-xs font-semibold uppercase text-muted-foreground" htmlFor="ca-reason">Reason (required)</label>
-              <Input id="ca-reason" className="mt-1" placeholder="e.g. Spin-off effective YYYY-Qn" value={caReason} onChange={(e) => setCaReason(e.target.value)} />
-            </div>
-            <div className="flex gap-2">
-              <Button
-                type="button"
-                variant="outline"
-                size="sm"
-                disabled={caCusip.length !== 9 || !caFromQ.trim() || caPreviewMutation.isPending}
-                onClick={() => caPreviewMutation.mutate({
-                  cusip: caCusip,
-                  effective_from_quarter: caFromQ.trim(),
-                  effective_to_quarter: caToQ.trim() || undefined,
-                })}
-              >
-                {caPreviewMutation.isPending ? <Loader2 className="mr-1 h-3 w-3 animate-spin" /> : null}
-                Preview affected rows
-              </Button>
-            </div>
-            {caPreview ? (
-              <div className="space-y-2">
-                <div className="rounded-md border border-border/70 p-3 text-sm">
-                  <div className="grid grid-cols-2 gap-3">
-                    <div>
-                      <div className="text-xs text-muted-foreground">Affected ownership_changes</div>
-                      <div className="font-semibold">{String(caPreview['affected_ownership_changes_count'])}</div>
-                    </div>
-                    <div>
-                      <div className="text-xs text-muted-foreground">Overlapping mapping IDs</div>
-                      <div className="font-mono text-xs">{(caPreview['overlapping_mapping_ids'] as number[])?.join(', ') || 'none'}</div>
-                    </div>
-                  </div>
-                </div>
-                {(caPreview['overlapping_mapping_ids'] as number[])?.length ? (
-                  <div className="rounded-md border border-amber-300/70 bg-amber-50 px-3 py-2 text-sm text-amber-950">
-                    <AlertTriangle className="mr-1 inline h-3.5 w-3.5" />
-                    Overlapping mappings detected. Provide <strong>prior_mapping_id</strong> to supersede, or adjust the effective quarter window.
-                  </div>
-                ) : null}
-                <Button
-                  type="button"
-                  disabled={
-                    !caEvidence.trim() || !caReason.trim() || caConfirmMutation.isPending
-                  }
-                  onClick={() => caConfirmMutation.mutate({
-                    cusip: caCusip,
-                    new_ticker: caNewTicker.trim() || undefined,
-                    effective_from_quarter: caFromQ.trim(),
-                    effective_to_quarter: caToQ.trim() || undefined,
-                    evidence_url: caEvidence.trim(),
-                    reason: caReason.trim(),
-                  })}
-                >
-                  {caConfirmMutation.isPending ? <Loader2 className="mr-2 h-3.5 w-3.5 animate-spin" /> : null}
-                  Confirm mapping
-                </Button>
-              </div>
-            ) : null}
-          </div>
-        </DrawerShell>
-      ) : null}
+      {/* MVP6-05: Corporate Action Mapping Card + DrawerShell moved
+          to /admin/13f/holdings along with the MVP3-08 confirm flow. */}
 
       <div id="managers" className="grid grid-cols-1 scroll-mt-6 gap-4">
         <Card className="rounded-md">
