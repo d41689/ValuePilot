@@ -1,7 +1,7 @@
 # `metric_facts.is_current` Semantics — Decision Gate
 
-**Status: Open, awaiting PO direction**
-**Date: 2026-05-13**
+**Status: CLOSED 2026-05-14 — Option A selected (status quo + read-side tiebreak, locked as data contract)**
+**Date: 2026-05-13 (opened), 2026-05-14 (closed)**
 **Blocks**: opinion-metric staleness handling (VL targets / projections /
 quality ratings) and any future "stale-fact suppression" feature.
 **Does NOT block**: MVP8-A2 P2 (VL target as-of date label) — D1 of the
@@ -208,7 +208,17 @@ Lens).
 
 ## 7. Sign-Off
 
-- [ ] PO selects option (A / B / C / D).
-- [ ] If A — note added to CLAUDE.md recording the deliberate
-      design choice + read-side guard expectations.
-- [ ] If B / C / D — implementation ticket opened referencing this gate.
+- [x] **PO selects Option A 2026-05-14** (status quo + read-side
+      tiebreak). Rationale: financial-data accuracy first principle is
+      "do not break the original time-series facts". Multiple
+      `is_current=True` rows for fiscal metrics are CORRECT by design.
+      Opinion-metric staleness is handled at the read layer via
+      `_m3_facts_by_stock` tiebreak + `(VL report dated YYYY-MM-DD)` UI
+      label. Option B opinion-key allowlist is reserved for the case
+      where a second opinion-metric consumer arrives that cannot use
+      the read-side tiebreak pattern.
+- [x] CLAUDE.md updated with the locked contract + read-side guard
+      expectations.
+- [x] Memory updated (`feedback_metric_facts_is_current_semantics`)
+      to reflect the locked decision.
+- [x] No implementation ticket needed (Option A is the existing state).
