@@ -1,365 +1,228 @@
 # Project Context
-**ValuePilot v0.1** is a financial analysis engine designed to parse, store, and analyze equity reports.
-The v0.1 scope is strictly limited to **Value Line equity report PDFs** (single-page standard layout).
-The system focuses on precise data extraction, strict data lineage (audit trails), and normalized storage for screening and formulas.
 
+**ValuePilot v0.1** is a financial analysis engine designed to parse, store, and analyze equity reports. The v0.1 scope is strictly limited to **Value Line equity report PDFs** (single-page standard layout). The system focuses on precise data extraction, strict data lineage (audit trails), and normalized storage for screening and formulas.
+
+The 13F automation track (parallel to the v0.1 PRD) adds EDGAR ingestion + Oracle's Lens scoring + Watchlist × 13F surface; its contracts are merged into this workbook below.
 
 # Tech Stack
-- **Language**: Python 3.10+
-- **Database**: PostgreSQL (Relational, strictly typed)
-- **ORM**: SQLAlchemy (Screening rules are compiled to SQLAlchemy expressions)
+
+- **Language**: Python (backend), TypeScript / React (frontend)
+- **Database**: PostgreSQL (relational, strictly typed)
+- **ORM**: SQLAlchemy (screening rules compile to SQLAlchemy expressions)
 - **Parsing**: Template-based extraction (PDF text layer first, OCR fallback)
 - **Data Exchange**: JSON for semi-structured data (`parsed_value_json`, `rule_json`)
+- **Frontend UI**: shadcn/ui + Tailwind + lucide-react icons
 
-# Development & Execution Environment (Docker Compose)
+# Development Environment (Docker Compose)
 
-ValuePilot is developed and run via **Docker Compose**. Agents MUST assume the local runtime is containerized.
+All tooling runs inside containers. Agents MUST assume the local runtime is containerized.
 
-## Canonical Commands
+Canonical commands:
 
-- Start services:
-  - `docker compose up -d --build`
-- View logs:
-  - `docker compose logs -f`
-- Run commands inside a service container:
-  - `docker compose exec <service> <command>`
-  - Example: `docker compose exec api pytest -q`
+- Start services: `docker compose up -d --build`
+- View logs: `docker compose logs -f`
+- Run inside a service: `docker compose exec <service> <command>` (e.g., `docker compose exec api pytest -q`)
 
-## Rules
-- DO NOT run Python tooling directly on the host when a containerized alternative exists.
-- Always prefer running tests, linters, migrations, and scripts via `docker compose exec`.
+Do NOT run Python tooling directly on the host when a containerized alternative exists.
 
-# Architecture & Data Modeling Principles
+# Data Layer
 
-## 1. The "Three-Layer" Storage Pattern
-We strictly separate raw artifacts, extraction lineage, and queryable facts.
-1.  **`pdf_documents`**: Stores the file and metadata.
-2.  **`metric_extractions`**: The **Audit Trail**. Stores exactly what the parser found (raw text, snippets, page numbers). **NEVER** query this table for screeners.
-3.  **`metric_facts`**: The **Source of Truth**. Stores normalized, queryable data (numeric values, canonical keys). **ALWAYS** use this table for screeners, formulas, and UI display.
+## Three-layer storage pattern
 
-## 2. Stock Identity Resolution
-- **Stocks are Global Master Data**.
-- **Ingestion Logic**:
-  1. Match by `ticker` + `exchange`.
-  2. If matched, compare `company_name` similarity.
-  3. If similarity is low, set `pdf_documents.identity_needs_review = true`. **DO NOT** auto-link without confirmation.
+We strictly separate raw artifacts, extraction lineage, and queryable facts:
 
-## 3. Metric Normalization (Critical)
-All data written to `metric_facts.value_numeric` MUST be normalized to base units.
-- **Currency**: Absolute amounts (e.g., "1.2 bil" -> `1,200,000,000`).
-- **Percentages**: Ratios between 0 and 1 (e.g., "5.2%" -> `0.052`).
-- **Prices/Per Share**: Absolute currency (e.g., EPS 3.25 -> `3.25`).
-- **Scale Tokens**: Handle `k`, `m`/`mil`, `b`/`bil`, `t`/`tril` case-insensitively.
+1. **`pdf_documents`** — stores the file and metadata.
+2. **`metric_extractions`** — the **audit trail**. Stores exactly what the parser found (raw text, snippets, page numbers). **NEVER** query this table for screeners.
+3. **`metric_facts`** — the **source of truth**. Stores normalized, queryable data (numeric values, canonical keys). **ALWAYS** use this table for screeners, formulas, and UI display.
 
-# Business Rules & Constraints
+## Stock identity resolution
 
-## Parsing Logic
-- **Scope**: Only support "Value Line" templates for v0.1. Mark others as `unsupported_template`.
-- **Strategy**: Try Native Text Layer -> If density low -> Fallback to OCR.
-- **Mapping**: Map template-specific field names (e.g., `18_month_target_low`) to **Canonical Metric Keys** (e.g., `target_18m_low`).
-  - Refer to `value_line_v1_field_map.json` for authoritative mappings.
+Stocks are global master data. Ingestion logic:
 
-## Data Integrity
-- **Immutability**: parsed records in `metric_extractions` are **immutable**.
-- **Corrections**: If a user corrects a value:
+1. Match by `ticker` + `exchange`.
+2. If matched, compare `company_name` similarity.
+3. If similarity is low, set `pdf_documents.identity_needs_review = true`. **DO NOT** auto-link without confirmation.
+
+## Metric normalization
+
+All data written to `metric_facts.value_numeric` MUST be normalized to base units:
+
+- **Currency**: absolute amounts (e.g., "1.2 bil" → `1,200,000,000`).
+- **Percentages**: ratios between 0 and 1 (e.g., "5.2%" → `0.052`).
+- **Prices / per-share**: absolute currency (e.g., EPS 3.25 → `3.25`).
+- **Scale tokens**: handle `k`, `m`/`mil`, `b`/`bil`, `t`/`tril` case-insensitively.
+
+## `metric_facts.is_current` semantics (locked 2026-05-14)
+
+`metric_facts.is_current=True` is **per-period currency**, NOT one row per `(stock_id, metric_key)`. Two metric categories share the column with different uniqueness contracts:
+
+- **Fiscal time series** — `per_share.eps`, `is.net_income`, `score.piotroski.total`, `bs.total_equity`, `leverage.long_term_debt_to_capital`, etc. Each FY/Q row is genuinely "current for that period". ADBE has 42 `is_current=True` rows for `per_share.eps` by design — one per fiscal year. The existing reconciliation (`_reconcile_parsed_fact_current_slot` in `ingestion_service.py`) scopes uniqueness to `(stock_id, metric_key, period_type, period_end_date, source_type)`.
+- **Opinion / as-of facts** — `target.price_18m.*`, `proj.long_term.*`, `quality.earnings_predictability`, `quality.financial_strength`, etc. `period_end_date` is effectively the publication date, not a fiscal period. Multiple `is_current=True` rows coexist when Value Line re-publishes; older publications are NOT automatically demoted.
+
+**Locked design (PO 2026-05-14, Option A):** status quo + read-side tiebreak. Opinion-metric staleness is handled at the read layer via `_m3_facts_by_stock` in `oracles_lens/dashboard.py` (tiebreak `period_end_date DESC NULLS LAST, created_at DESC`), surfaced in UI as `(VL report dated YYYY-MM-DD)`. Rationale: financial-data accuracy first principle is "do not break the original time-series facts".
+
+**Never** add a cleanup migration, Alembic op, or one-off script that enforces "at most one `is_current=True` per `(stock_id, metric_key)`" without scoping by metric category. Naive global dedup wipes ~99% of fiscal time series and breaks the Piotroski calculator, screener, formula engine, and Oracle's Lens quality overlay.
+
+If a future opinion-metric consumer cannot use the read-side tiebreak pattern, reopen `docs/tasks/2026-05-13_metric-facts-current-semantics-decision-gate.md` for Option B (opinion-key allowlist). Do NOT implement Option B without that gate reopening.
+
+## Data integrity + manual corrections
+
+- **Immutability**: parsed records in `metric_extractions` are immutable.
+- **Manual corrections** (user edits a parsed value):
   1. DO NOT update `metric_extractions`.
   2. Insert a NEW row into `metric_facts` with `source_type = 'manual'` and `is_current = true`.
-  3. Set previous fact's `is_current = false`.
+  3. Demote the prior row scoped to the same `(stock_id, metric_key, period_type, period_end_date, source_type='manual')` to `is_current = false`. Match the reconciliation pattern in `_reconcile_parsed_fact_current_slot`. **DO NOT** demote rows that differ in `period_end_date` — per-period currency is the contract (see `is_current` semantics above).
 
-## Formulas & Screeners
-- **Dependency**: Formulas form a DAG (Directed Acyclic Graph).
-- **Trigger**: When a `metric_fact` is updated/inserted, trigger recalculation for dependent formulas.
-- **Filtering**: Screeners MUST use `value_numeric` fields, not JSON fields.
+## Schema changes — no band-aids
+
+When runtime code hits a DB constraint violation (column too short, wrong type, missing index, etc.), the correct fix is **always a migration**, not a code-level workaround.
+
+**Wrong:**
+```python
+source = source[:20]                    # silently truncates data
+source = "sec_co_tickers"               # renamed to sneak under a 20-char limit
+```
+
+**Right:**
+1. Alembic migration: `op.alter_column("table", "column", existing_type=sa.String(20), type_=sa.String(50), existing_nullable=True)`.
+2. Update the SQLAlchemy model to match.
+3. Remove every code-level guard/truncation introduced as a workaround.
+4. Apply with `alembic upgrade head`.
+
+**Why:** band-aids hide root causes, silently truncate data, and leave the system in a state where any new value longer than the limit will fail again — or worse, succeed silently with corrupted data.
+
+## Alembic conventions
+
+- Filename: `backend/alembic/versions/YYYYMMDDHHMMSS-<slug>.py`. Use the `Create Date` timestamp from the revision header. Keep `<slug>` readable.
+- `down_revision` must match the **`revision` variable** inside the parent file, not the filename.
+- Never change `revision` / `down_revision` identifiers when renaming a file.
+- Always verify applied state with `\d <table>` in psql after `alembic upgrade head`.
+
+## Write-conflict handling: upsert vs IntegrityError
+
+Two distinct patterns; the choice between them is **semantic**, not stylistic.
+
+**Use ORM upsert (`INSERT ... ON CONFLICT (...) DO UPDATE`) when:**
+
+- The write is idempotent: re-running with the same inputs is supposed to produce the same row.
+- "Last writer wins" is the correct semantics — there's no domain meaning to "I lost the race."
+- Example: `oracles_lens_signals` recompute. Two concurrent scoring runs against the same `(stock_id, report_quarter, score_version)` should agree on the result; one overwriting the other is fine.
+
+**Use `IntegrityError → typed error translator` when:**
+
+- The conflict carries domain meaning — "another instance is already active" — that callers must distinguish from success.
+- The unique index is a mutual-exclusion lock, not a deduplication hint.
+- Example: `JobRun.lock_key` races (MVP3-05 batch reparse, MVP3-07 historical backfill). The losing caller must abort with a typed error so the API returns 409, not silently latches onto the winner's run.
+
+**Anti-pattern:** upserting a JobRun row to "steal" an active lock destroys the mutual-exclusion guarantee. Similarly, raising `IntegrityError` for idempotent score writes spams logs with non-events.
+
+When adding a new table with a unique constraint, write the rationale next to the constraint definition in the model so the choice survives a future refactor.
+
+# Parsing
+
+## Scope, strategy, mapping
+
+- **Scope**: only support "Value Line" templates for v0.1. Mark others as `unsupported_template`.
+- **Strategy**: try native text layer; fall back to OCR if density is low.
+- **Mapping**: map template-specific field names (e.g., `18_month_target_low`) to **canonical metric keys** (e.g., `target_18m_low`). Authoritative mappings live in `value_line_v1_field_map.json`.
+
+## Parser fixture alignment workflow (required)
+
+When asked to align a parser to an expected fixture, use project scripts inside Docker. Do NOT use OS-level `diff` for JSON comparisons.
+
+- Generate `*.parser.json`: `docker compose exec api python -m scripts.value_line_dump --pdf tests/fixtures/value_line/<name>.pdf --out tests/fixtures/value_line/<name>_v1.parser.json`
+- Key-by-key JSON diff: `docker compose exec api python -m scripts.json_diff tests/fixtures/value_line/<name>_v1.expected.json tests/fixtures/value_line/<name>_v1.parser.json tests/fixtures/value_line/<name>_v1.diff.json`
+- Iterate: use the diff JSON as the source of truth for mismatched paths/values. Adjust parser code minimally (TDD), regenerate, re-run, repeat until the diff is `{}`.
+- Verify with `docker compose exec api pytest -q` (or the targeted fixture test) during iteration; full suite at the closing gate per the Verification Discipline section.
+
+## EDGAR / 13F pipeline gotchas
+
+- `shrsOrPrnAmt` is a wrapper element in infotable XML; unwrap it to read `sshPrnamt` / `sshPrnamtType`.
+- `xslForm13F_X02/` paths in EDGAR filing index are XSLT-rendered HTML, not machine-readable XML — skip them when scanning for infotable URLs.
+- `cusip_ticker_map.source` is VARCHAR(50); valid source strings: `"openfigi"`, `"sec_co_tickers"`, `"manual"`. Dataroma is not a CUSIP or security-identity source.
+- Kahn Brothers (`0001039565-*`) reports values in dollars, not thousands — reconciliation warnings for this filer are True Positives, not bugs.
+
+# Frontend UI Standard
+
+- Use **shadcn/ui + Tailwind** for all product frontend. Shared controls live in `frontend/components/ui/` and follow the shadcn pattern: Radix primitives where appropriate, `class-variance-authority` for variants, `cn()` for class merging, Tailwind utility classes for styling.
+- Do NOT render raw HTML form/control primitives directly in app, feature, or shared business components. Use shared UI components: `Button`, `Input`, `Textarea`, `Select`, `DropdownMenu`, `Checkbox`, `Table`, `Card`, `Badge`, `Toast`.
+- If a needed shadcn/ui component does not exist yet, add it under `frontend/components/ui/` first, then use it from product code.
+- Use Tailwind classes for layout and component-specific adjustments only. Keep reusable interaction states, focus rings, disabled states, and base sizing inside shared UI components.
+- Use lucide-react icons inside controls when an icon exists. Avoid hand-rolled SVG controls in product UI.
+
+**Enforced by** `frontend/lib/uiStandard.test.js`, which scans `app/`, `components/`, `features/` for forbidden raw HTML primitives. The scanner matches substrings **anywhere in the file, including code comments** — when writing explanatory comments about this rule, use phrasing like "raw HTML button element" instead of spelling out the literal angle-bracket form.
 
 # Coding Standards
 
-## Naming Conventions
-- **Metric Keys**: `snake_case` ONLY. NO leading numbers. (e.g., `target_18m_low`, not `18m_target`).
-- **Tables**: `snake_case` plural (e.g., `metric_facts`, `stock_pools`).
-- **Alembic Revision Filenames**: `backend/alembic/versions/YYYYMMDDHHMMSS-description.py`
-  - Use the `Create Date` timestamp from the revision header for `YYYYMMDDHHMMSS`.
-  - Keep `{description}` readable (prefer existing underscore-separated slugs).
-  - Never change `revision` / `down_revision` identifiers inside the file when renaming.
+## Naming
 
-## Error Handling
-- **Normalization Failures**: If a value cannot be normalized (e.g., unknown unit), store the `raw_value` in JSON but leave `value_numeric` as `NULL`. Flag specific error metadata.
-- **Traceability**: Every parsed metric MUST include `document_id`, `page_number`, and `original_text_snippet`.
+- **Metric keys**: `snake_case` ONLY. NO leading numbers. (`target_18m_low`, not `18m_target`).
+- **Tables**: `snake_case` plural (`metric_facts`, `stock_pools`).
+- See the Alembic conventions section above for migration filename rules.
 
-## Frontend UI Standard
-- **Use shadcn/ui + Tailwind for frontend UI.** Shared controls live in `frontend/components/ui/` and follow the shadcn pattern: Radix primitives where appropriate, `class-variance-authority` for variants, `cn()` for class merging, and Tailwind utility classes for styling.
-- **Do not render raw form/control primitives directly in app, feature, or shared business components.** Use shared UI components such as `Button`, `Input`, `Textarea`, `Select`, `DropdownMenu`, `Checkbox`, `Table`, `Card`, `Badge`, and `Toast`.
-- **If a needed shadcn/ui component does not exist yet, add it under `frontend/components/ui/` first**, then use it from product code. Avoid one-off styled `<input>`, `<select>`, `<textarea>`, `<button>`, `<details>`, or raw table markup outside `components/ui`.
-- **Use Tailwind classes for layout and component-specific adjustments only.** Keep reusable interaction states, focus rings, disabled states, and base sizing inside shared UI components.
-- **Use lucide-react icons inside controls when an icon exists.** Avoid hand-rolled SVG controls in product UI.
+## Error handling
 
-# Development Workflow (Agent Instructions)
+- **Normalization failures**: if a value cannot be normalized (e.g., unknown unit), store the `raw_value` in JSON but leave `value_numeric` as `NULL`. Flag specific error metadata.
+- **Traceability**: every parsed metric MUST include `document_id`, `page_number`, and `original_text_snippet`.
 
-## 1. Task Logging (Required)
+# Development Workflow
+
+## Task logging (required)
 
 Before making any code changes, create a task entry in `docs/tasks/`:
-- File naming: `YYYY-MM-DD_<short-task-name>.md`
-- Must include:
-  - Goal / Acceptance Criteria
-  - Scope (in / out)
-  - Files to change
-  - Test plan (what will be run in Docker)
 
-Agents MUST keep the task file updated as work progresses (notes, decisions, gotchas).
+- File naming: `YYYY-MM-DD_<short-task-name>.md`.
+- Required content: Goal / Acceptance Criteria, Scope (in / out), PRD references (when applicable), Files to change, Test plan (Docker commands).
+- Keep the task file updated as work progresses (notes, decisions, gotchas, sign-off trail).
 
-## 2. Test-First Implementation (TDD)
+## Test-first implementation
 
-For any feature or bugfix:
 1. Write or update tests first (red).
 2. Implement the minimal production code to pass (green).
 3. Refactor safely while keeping tests green.
 
-Definition of Done:
-- All relevant tests pass in Docker
-- No contract violations vs PRD (data lineage, normalization, safety)
-- Clear change summary in the task log
+## Running tests (Docker only)
 
-## 3. Running Tests (Docker Only)
+Iteration commands (during development):
 
-Agents MUST run verification commands inside containers, e.g.:
-- `docker compose exec api pytest -q`
-- `docker compose exec api pytest -q tests/test_value_line_parse_ao_smith.py`
-- `docker compose exec api alembic upgrade head` (when migrations change)
+- `docker compose exec api pytest -q tests/unit/test_<x>.py` (targeted)
+- `docker compose exec web node --test lib/<x>.test.js` (targeted)
 
-If tests fail:
-- Fix bugs and re-run until all tests are green.
+These are FAST signals during iteration. They do NOT substitute for the canonical CI commands at closing gates (see below).
 
-## 3.1 Parser Fixture Alignment Workflow (Required)
+## Verification Discipline (closing gates)
 
-When given a task of the form:
-1) a specific Value Line PDF fixture and its expected parse output (`*.expected.json`),
-2) generate `*.parser.json` using this project's parser,
-3) compare `*.parser.json` vs `*.expected.json` and adjust parser code until they match,
+When declaring work "ready", "shipped", "closed", or otherwise green, run the **EXACT command CI runs**, not a similar or more-targeted version. A glob is not a list of files.
 
-Agents MUST use the project scripts below (inside Docker), and MUST NOT use OS-level `diff` for JSON comparisons.
+Canonical CI commands for this repo:
 
-- Generate `*.parser.json` (canonical):
-  - `docker compose exec api python -m scripts.value_line_dump --pdf tests/fixtures/value_line/<name>.pdf --out tests/fixtures/value_line/<name>_v1.parser.json`
-- Key-by-key JSON diff (canonical):
-  - `docker compose exec api python -m scripts.json_diff tests/fixtures/value_line/<name>_v1.expected.json tests/fixtures/value_line/<name>_v1.parser.json tests/fixtures/value_line/<name>_v1.diff.json`
-- Iterate:
-  - Use the diff JSON file as the source of truth for mismatched paths/values.
-  - Adjust parser code minimally (TDD), regenerate `*.parser.json`, re-run `scripts.json_diff`, and repeat until the diff output is `{}`.
-- Verify:
-  - `docker compose exec api pytest -q` (or at least the relevant fixture test(s)).
+- Backend tests: `docker compose exec api pytest -q` (full suite, not specific files).
+- Frontend unit tests: `docker compose exec web sh -lc 'node --test lib/*.test.js'` (the glob, not specific files — discovers source-scanner tests like `lib/uiStandard.test.js`).
+- Frontend lint: `docker compose exec web npm run lint`.
+- Frontend build: `docker compose exec web npm run build`.
+- Migrations (when changed): `docker compose exec api alembic upgrade head`.
 
-## 4. Safety & Data Contract Checks (Always-On)
+**Long-lived branches** mask CI failures — CI only fires on push. If a branch will accumulate >10 commits before pushing, run the canonical CI commands at each closing gate as a substitute for actual CI.
+
+**Regex-based source scanners** (`lib/uiStandard.test.js`, similar tools) match substrings anywhere in the file, including comments. See the Frontend UI Standard section for the comment-style guidance this implies.
+
+## Safety contract checks
 
 - Screeners MUST query `metric_facts` and filter on `is_current = true`.
 - Screeners MUST filter on `value_numeric` for numeric comparisons (not JSON).
 - Rule evaluation MUST compile `rule_json` to SQLAlchemy expressions (never raw SQL).
 - Formula evaluation MUST use a restricted AST engine (never eval/exec).
-- Parsing MUST respect scale tokens (mil/bil/%) and normalization before writing `value_numeric`.
+- Parsing MUST respect scale tokens and normalize before writing `value_numeric`.
 - Every parsed metric MUST include `document_id`, `page_number`, and `original_text_snippet`.
 
-## 5. Minimal Verification Checklist (Per PR)
+## Minimal per-PR checklist
 
-- [ ] `docker compose up -d --build` succeeds
-- [ ] Migrations apply cleanly (if changed)
-- [ ] `pytest` is green inside container
-- [ ] No raw SQL generation from user input
-- [ ] `metric_facts` remains the only queryable source of truth (Active Value uses `is_current = true`)
-# End-to-End Agent-Driven Development Flow (Authoritative)
-
-This section defines the **canonical development lifecycle** for ValuePilot.
-All human contributors and Agents MUST follow this flow once the PRD is established.
+- [ ] `docker compose up -d --build` succeeds.
+- [ ] Migrations apply cleanly (if changed).
+- [ ] Canonical CI commands green inside containers (see Verification Discipline).
+- [ ] No raw SQL generation from user input.
+- [ ] `metric_facts` remains the only queryable source of truth (`is_current = true` for active values).
 
 ---
 
-## Phase 0: PRD Baseline (Human Only)
-
-**Role**: Tech Lead / Human Owner  
-**Input**: `docs/prd/value-pilot-prd-v0.1.md`  
-**Output**: Approved, frozen PRD
-
-Rules:
-- The PRD is the highest-level contract.
-- No Agent may modify PRD content unless explicitly instructed.
-- All downstream work MUST reference PRD sections explicitly.
-
----
-
-## Phase 1: Task Creation (Human → Orchestrator Agent)
-
-**Role**: Human (author), Orchestrator Agent (assistant)  
-**Input**: PRD section(s), user intent  
-**Output**: Task file in `docs/tasks/`
-
-### Step 1.1 Create Task File (Human)
-
-Create:
-`docs/tasks/YYYY-MM-DD_<short-task-name>.md`
-
-Minimum required content:
-- Goal / Acceptance Criteria
-- Scope (In / Out)
-- PRD References (exact sections)
-- Test Plan (Docker commands)
-
-### Step 1.2 Task Decomposition (Orchestrator Agent)
-
-The Orchestrator MAY:
-- Propose subtasks
-- Identify risks and contracts touched
-- Suggest verification steps
-
-The Orchestrator MUST NOT:
-- Change scope
-- Invent requirements
-- Modify schema or PRD
-
----
-
-## Phase 2: Planning (Orchestrator Agent → Human Approval)
-
-**Role**: Orchestrator Agent  
-**Input**: Task file  
-**Output**: Execution Plan (written into task file)
-
-Plan MUST include:
-- Files to be changed
-- Order of execution
-- Contract checks (schema, normalization, safety)
-- Rollback strategy
-
-Human MUST approve the plan before implementation begins.
-
----
-
-## Phase 3: Test-First Implementation (Agent Execution)
-
-**Role**: Implementation Agent (Parser / Rules / Schema / UI)
-
-### Step 3.1 Write Tests First (Red)
-
-Agent MUST:
-- Write failing tests that encode acceptance criteria
-- Commit test intent clearly (no placeholders)
-
-### Step 3.2 Minimal Implementation (Green)
-
-Agent MUST:
-- Implement only what is required to satisfy tests
-- Avoid opportunistic refactors
-
-### Step 3.3 Refactor Safely (Green)
-
-Agent MAY:
-- Improve structure or readability
-- ONLY if all tests remain green
-
----
-
-## Phase 4: Verification (Agent + Docker)
-
-**Role**: Implementation Agent  
-**Runtime**: Docker Compose ONLY
-
-Required commands (as applicable):
-- `docker compose exec api pytest -q`
-- `docker compose exec api pytest -q <specific-test>`
-- `docker compose exec api alembic upgrade head`
-
-Agent MUST:
-- Fix all failures
-- Re-run tests until green
-- Record verification results in task file
-
----
-
-## Phase 5: Contract Gate (Self-Check)
-
-**Role**: Implementation Agent  
-**Output**: Contract checklist in task file
-
-Agent MUST explicitly confirm:
-- `metric_facts` is the only source queried by screeners
-- `value_numeric` is normalized and used for comparisons
-- No raw SQL from user input
-- No eval/exec for formulas
-- Lineage fields are present
-- `is_current` semantics preserved
-
----
-
-## Phase 6: Human Review & Merge
-
-**Role**: Tech Lead / Human Owner
-
-Human reviews ONLY:
-- Contract adherence
-- Test coverage of critical paths
-- Absence of unnecessary complexity
-
-If approved:
-- Merge changes
-- Mark task as DONE
-
----
-
-## Phase 7: Post-Merge Recording
-
-**Role**: Human or Agent (if instructed)
-
-Required:
-- Update task file with final notes
-- Update PRD / AGENTS.md if semantics changed
-
----
-
-# Canonical Prompts by Role (Reference)
-
-## Orchestrator Agent Prompt
-
-"You are the Orchestrator Agent for the ValuePilot project.
-Your job is to decompose approved tasks into executable steps.
-You MUST:
-- Respect the PRD as immutable
-- Propose clear subtasks and verification steps
-You MUST NOT:
-- Modify schema or requirements
-- Invent new functionality
-Output only structured plans."
-
----
-
-## Implementation Agent Prompt
-
-"You are an Implementation Agent for ValuePilot.
-You MUST:
-- Follow the approved execution plan
-- Use Test-Driven Development
-- Run all verification via Docker Compose
-- Respect all data contracts and safety rules
-You MUST NOT:
-- Modify PRD or schema without approval
-- Use eval, exec, or raw SQL for user input
-- Skip tests or verification steps"
-
----
-
-## Verifier Agent Prompt
-
-"You are the Verifier Agent for ValuePilot.
-Your job is to ensure correctness, safety, and contract compliance.
-You MUST:
-- Validate behavior against PRD and AGENTS.md
-- Run tests inside Docker containers
-- Flag any contract violations
-You MUST NOT:
-- Suggest scope expansion
-- Modify production code"
-
----
-
-## Human Review Prompt (Checklist)
-
-"As the Tech Lead, verify:
-- Acceptance criteria satisfied
-- Tests are green in Docker
-- Contracts respected (normalization, lineage, safety)
-- No unnecessary complexity introduced"
+Role-specific review prompts live in `docs/tasks/*-review-prompts.md` and should be followed case by case.
