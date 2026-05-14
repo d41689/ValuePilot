@@ -167,7 +167,8 @@ def test_endpoint_returns_400_on_invalid_taxonomy(
     response = client.patch(
         f"/api/v1/admin/13f/managers/{manager.id}/manager-type",
         headers=auth_headers(admin),
-        json={"new_manager_type": "fundamental_long"},
+        # note provided so the model_validator passes; taxonomy check fires next.
+        json={"new_manager_type": "fundamental_long", "note": "re-classifying"},
     )
     assert response.status_code == 400
     assert "new_manager_type" in response.json()["detail"]
@@ -180,7 +181,8 @@ def test_endpoint_returns_404_when_manager_missing(
     response = client.patch(
         "/api/v1/admin/13f/managers/999999999/manager-type",
         headers=auth_headers(admin),
-        json={"new_manager_type": "long_term_fundamental"},
+        # note provided so the model_validator passes; service-layer 404 fires next.
+        json={"new_manager_type": "long_term_fundamental", "note": "re-classifying"},
     )
     assert response.status_code == 404
 
@@ -220,3 +222,69 @@ def test_history_endpoint_returns_audit_events_newest_first(
     assert items[0]["old_manager_type"] == "long_term_fundamental"
     assert items[1]["new_manager_type"] == "long_term_fundamental"
     assert items[1]["old_manager_type"] == "unknown"
+
+
+# ===========================================================================
+# MVP8-03A A1: note required for non-unknown classification
+# ===========================================================================
+
+
+def test_endpoint_returns_400_when_note_missing_for_non_unknown_classification(
+    client, db_session, user_factory, auth_headers,
+):
+    """A non-unknown classification without a note must be rejected at the
+    request-validation layer (422) or endpoint layer (400)."""
+    admin = user_factory(email="mvp8-03a-a1-no-note@example.com", role="admin")
+    manager = _manager(db_session, manager_type="unknown")
+    response = client.patch(
+        f"/api/v1/admin/13f/managers/{manager.id}/manager-type",
+        headers=auth_headers(admin),
+        json={"new_manager_type": "long_term_fundamental"},  # note absent
+    )
+    assert response.status_code in (400, 422)
+
+
+def test_endpoint_succeeds_when_note_provided_for_non_unknown_classification(
+    client, db_session, user_factory, auth_headers,
+):
+    """A non-unknown classification with a note must succeed and thread
+    evidence_json into the audit event when supplied."""
+    admin = user_factory(email="mvp8-03a-a1-with-note@example.com", role="admin")
+    manager = _manager(db_session, manager_type="unknown")
+    response = client.patch(
+        f"/api/v1/admin/13f/managers/{manager.id}/manager-type",
+        headers=auth_headers(admin),
+        json={
+            "new_manager_type": "long_term_fundamental",
+            "note": "concentrated long-horizon portfolio confirmed",
+            "evidence_json": {"url": "https://example.com/source"},
+        },
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["changed"] is True
+    assert body["new_manager_type"] == "long_term_fundamental"
+
+    # Audit event must carry both note and evidence_json.
+    history_resp = client.get(
+        f"/api/v1/admin/13f/managers/{manager.id}/manager-type-events",
+        headers=auth_headers(admin),
+    )
+    assert history_resp.status_code == 200
+    event = history_resp.json()["items"][0]
+    assert event["note"] == "concentrated long-horizon portfolio confirmed"
+    assert event["evidence_json"] == {"url": "https://example.com/source"}
+
+
+def test_endpoint_allows_unknown_classification_without_note(
+    client, db_session, user_factory, auth_headers,
+):
+    """Reclassifying to 'unknown' must succeed even without a note."""
+    admin = user_factory(email="mvp8-03a-a1-to-unknown@example.com", role="admin")
+    manager = _manager(db_session, manager_type="long_term_fundamental")
+    response = client.patch(
+        f"/api/v1/admin/13f/managers/{manager.id}/manager-type",
+        headers=auth_headers(admin),
+        json={"new_manager_type": "unknown"},
+    )
+    assert response.status_code == 200

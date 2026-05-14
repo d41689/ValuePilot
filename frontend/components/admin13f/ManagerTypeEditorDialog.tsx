@@ -13,8 +13,8 @@
  */
 'use client';
 
+import { useState, type Dispatch, type SetStateAction } from 'react';
 import { Loader2 } from 'lucide-react';
-import { type Dispatch, type SetStateAction } from 'react';
 
 import { Button } from '@/components/ui/button';
 import {
@@ -25,6 +25,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog';
+import { Input } from '@/components/ui/input';
 import {
   Select,
   SelectContent,
@@ -58,7 +59,7 @@ interface ManagerTypeEditorDialogProps {
   setDraft: Dispatch<SetStateAction<string>>;
   note: string;
   setNote: Dispatch<SetStateAction<string>>;
-  onSave: (payload: { managerId: number; newManagerType: string; note: string }) => void;
+  onSave: (payload: { managerId: number; newManagerType: string; note: string; evidenceUrl: string }) => void;
   isPending: boolean;
 }
 
@@ -72,14 +73,22 @@ export function ManagerTypeEditorDialog({
   onSave,
   isPending,
 }: ManagerTypeEditorDialogProps) {
+  const [evidenceUrl, setEvidenceUrl] = useState('');
+
+  const noteRequired = draft !== 'unknown';
+  const saveDisabled = !editor || isPending || (noteRequired && !note.trim());
+
+  function handleClose() {
+    setEditor(null);
+    setNote('');
+    setEvidenceUrl('');
+  }
+
   return (
     <Dialog
       open={editor !== null}
       onOpenChange={(open) => {
-        if (!open) {
-          setEditor(null);
-          setNote('');
-        }
+        if (!open) handleClose();
       }}
     >
       <DialogContent>
@@ -111,7 +120,8 @@ export function ManagerTypeEditorDialog({
           </div>
           <div className="space-y-1">
             <label className="text-xs font-medium text-muted-foreground" htmlFor="mvp6-mt-note">
-              Note (optional)
+              Note{noteRequired ? <span className="ml-0.5 text-destructive">*</span> : ' (optional)'}
+              {noteRequired ? ' (required when classifying)' : null}
             </label>
             <Textarea
               id="mvp6-mt-note"
@@ -121,27 +131,33 @@ export function ManagerTypeEditorDialog({
               rows={3}
             />
           </div>
+          <div className="space-y-1">
+            <label className="text-xs font-medium text-muted-foreground" htmlFor="mvp6-mt-evidence-url">
+              Evidence URL (optional)
+            </label>
+            <Input
+              id="mvp6-mt-evidence-url"
+              type="url"
+              value={evidenceUrl}
+              onChange={(event) => setEvidenceUrl(event.target.value)}
+              placeholder="https://…"
+            />
+          </div>
         </div>
         <DialogFooter>
-          <Button
-            type="button"
-            variant="ghost"
-            onClick={() => {
-              setEditor(null);
-              setNote('');
-            }}
-          >
+          <Button type="button" variant="ghost" onClick={handleClose}>
             Cancel
           </Button>
           <Button
             type="button"
-            disabled={!editor || isPending}
+            disabled={saveDisabled}
             onClick={() => {
               if (!editor) return;
               onSave({
                 managerId: editor.managerId,
                 newManagerType: draft,
                 note,
+                evidenceUrl,
               });
             }}
           >

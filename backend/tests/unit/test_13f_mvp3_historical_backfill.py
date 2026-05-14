@@ -131,6 +131,51 @@ def test_preview_does_not_mutate(db_session):
     assert db_session.query(QualityFinding13F).count() == findings_before
 
 
+def test_preview_kahn_brothers_in_scope_true_when_cik_matches(db_session):
+    """MVP8-03A A2: preview must set kahn_brothers_in_scope=True when CIK
+    0001039565 (Kahn Brothers) is in scope.
+
+    The dev fixture may have already seeded Kahn Brothers, so we query for it
+    rather than blindly inserting (which would hit the unique CIK constraint).
+    We scope the preview to Kahn's ID so the assertion is reliable regardless
+    of other managers in the DB.
+    """
+    from sqlalchemy import select as sa_select
+
+    kahn = db_session.execute(
+        sa_select(InstitutionManager).where(InstitutionManager.cik == "0001039565")
+    ).scalar_one_or_none()
+    if kahn is None:
+        kahn = InstitutionManager(
+            canonical_name="Kahn Brothers Advisors LLC",
+            legal_name="Kahn Brothers Advisors LLC",
+            edgar_legal_name="Kahn Brothers Advisors LLC",
+            cik="0001039565",
+            status="active",
+            match_status="confirmed",
+        )
+        db_session.add(kahn)
+        db_session.flush()
+    preview = preview_historical_backfill(
+        db_session, start_quarter="2023-Q1", manager_ids=[kahn.id]
+    )
+    assert preview["kahn_brothers_in_scope"] is True
+
+
+def test_preview_kahn_brothers_in_scope_false_when_cik_absent(db_session):
+    """MVP8-03A A2: kahn_brothers_in_scope must be False when the scoped
+    manager list contains no Kahn Brothers manager.
+
+    Uses manager_ids to restrict the preview to a freshly-created non-Kahn
+    manager so the result is independent of other active managers in the DB.
+    """
+    generic = _manager(db_session)
+    preview = preview_historical_backfill(
+        db_session, start_quarter="2023-Q1", manager_ids=[generic.id]
+    )
+    assert preview["kahn_brothers_in_scope"] is False
+
+
 # ----- Enqueue -----------------------------------------------------------
 
 

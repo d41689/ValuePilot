@@ -82,11 +82,13 @@ export default function ManagersPage() {
       managerId: number;
       newManagerType: string;
       note: string;
+      evidenceUrl: string;
     }) =>
       (
         await apiClient.patch(`/admin/13f/managers/${payload.managerId}/manager-type`, {
           new_manager_type: payload.newManagerType,
           note: payload.note || null,
+          evidence_json: payload.evidenceUrl ? { url: payload.evidenceUrl } : null,
         })
       ).data,
     onSuccess: (result) => {

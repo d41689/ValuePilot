@@ -111,6 +111,7 @@ def preview_historical_backfill(
     managers = _resolve_managers(session, manager_ids)
     pre_2023 = _range_includes_pre_2023(quarters)
 
+    kahn_in_scope = any(m.cik == "0001039565" for m in managers)
     return {
         "start_quarter": start_q,
         "end_quarter": end_q,
@@ -119,6 +120,7 @@ def preview_historical_backfill(
         "manager_ids": [m.id for m in managers],
         "value_unit_risk_warning": pre_2023,
         "requires_dry_run": pre_2023,
+        "kahn_brothers_in_scope": kahn_in_scope,
     }
 
 

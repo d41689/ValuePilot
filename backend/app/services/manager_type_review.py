@@ -32,6 +32,7 @@ def update_manager_type(
     new_manager_type: str,
     reviewer_user_id: int | None,
     note: str | None = None,
+    evidence_json: dict | None = None,
 ) -> dict[str, Any]:
     """Apply an admin classification.
 
@@ -78,6 +79,7 @@ def update_manager_type(
         new_manager_type=new_manager_type,
         reviewed_by_user_id=reviewer_user_id,
         note=note,
+        evidence_json=evidence_json,
     )
     session.add(event)
     session.flush()

@@ -724,6 +724,14 @@ export default function JobsAdminPage() {
                   <strong>Dry run</strong> before enqueueing.
                 </div>
               ) : null}
+              {hbPreview['kahn_brothers_in_scope'] ? (
+                <div className="rounded-md border border-amber-300/70 bg-amber-50 px-3 py-2 text-sm text-amber-950">
+                  <AlertTriangle className="mr-1 inline h-3.5 w-3.5" />
+                  Kahn Brothers (CIK 0001039565) is in scope. This filer reports values in
+                  dollars, not thousands — reconciliation warnings during ingestion are True
+                  Positives, not parse errors.
+                </div>
+              ) : null}
               <div className="rounded-md border border-border/70 p-3 text-sm">
                 <div className="grid grid-cols-3 gap-3">
                   <div>
@@ -849,6 +857,21 @@ export default function JobsAdminPage() {
                       {w}
                     </div>
                   ))}
+                  {((brPreview['estimated_scope'] as Record<string, unknown>)?.[
+                    'missing_raw_infotable_count'
+                  ] as number) > 0 ? (
+                    <div className="rounded-md border border-amber-300/70 bg-amber-50 px-3 py-2 text-sm text-amber-950">
+                      <AlertTriangle className="mr-1 inline h-3.5 w-3.5" />
+                      {String(
+                        (brPreview['estimated_scope'] as Record<string, unknown>)?.[
+                          'missing_raw_infotable_count'
+                        ] ?? 0,
+                      )}{' '}
+                      filing(s) are missing raw infotable XML. Reparse cannot recover discarded
+                      raw XML — these filings will produce empty holdings unless re-fetched from
+                      EDGAR first.
+                    </div>
+                  ) : null}
                   <Button
                     type="button"
                     variant="outline"

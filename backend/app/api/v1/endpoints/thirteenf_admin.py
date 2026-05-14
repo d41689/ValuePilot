@@ -4,7 +4,7 @@ from datetime import date, datetime
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Query, status
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from app.schemas.thirteenf_cusip import CusipMappingCreate, CusipMappingUpdate, CusipMappingResponse
 from app.schemas.thirteenf_corporate_action import (
@@ -76,6 +76,15 @@ class ManagerReviewRequest(BaseModel):
 class ManagerTypeUpdateRequest(BaseModel):
     new_manager_type: str
     note: str | None = None
+    evidence_json: dict | None = None
+
+    @model_validator(mode="after")
+    def _note_required_for_classification(self) -> "ManagerTypeUpdateRequest":
+        if self.new_manager_type != "unknown" and not (self.note or "").strip():
+            raise ValueError(
+                "note is required when classifying to a non-unknown manager_type"
+            )
+        return self
 
 
 class AmendmentResolveRequest(BaseModel):
@@ -629,6 +638,7 @@ def patch_manager_type(
             new_manager_type=payload.new_manager_type,
             reviewer_user_id=current_user.id,
             note=payload.note,
+            evidence_json=payload.evidence_json,
         )
     except ManagerTypeUpdateError as exc:
         message = str(exc)
