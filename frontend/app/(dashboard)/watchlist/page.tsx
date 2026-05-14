@@ -3,9 +3,20 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useMutation, useQuery } from '@tanstack/react-query';
 import Link from 'next/link';
-import { BarChart3, MoreHorizontal, Plus, RefreshCcw, Trash2 } from 'lucide-react';
+import {
+  ArrowDown,
+  ArrowUp,
+  BarChart3,
+  ChevronDown,
+  ChevronUp,
+  MoreHorizontal,
+  Plus,
+  RefreshCcw,
+  Trash2,
+} from 'lucide-react';
 
 import apiClient from '@/lib/api/client';
+import { cn } from '@/lib/utils';
 import { showAppToast } from '@/lib/appToast';
 import {
   OVERVIEW_WATCHLIST_ID,
@@ -17,8 +28,24 @@ import {
   getRefreshPricesButtonPresentation,
   hasFairValueEditChanges,
   isOverviewWatchlistId,
-  sortWatchlistMembers,
 } from '@/lib/watchlistState';
+import {
+  DEFAULT_SORT_STATE,
+  nextSortState,
+  sortMembers,
+  type WatchlistSortKey,
+  type WatchlistSortState,
+} from '@/lib/watchlistSort';
+import {
+  buildSnapshotsByStockId,
+  groupHeaderLabel,
+  mosCrossSignal,
+  responsive13FCellClass,
+  useWatchlist13FSnapshots,
+} from '@/lib/watchlist13f';
+import { Watchlist13FColumns } from '@/components/watchlist/Watchlist13FColumns';
+import { Watchlist13FDrawer } from '@/components/watchlist/Watchlist13FDrawer';
+import { MosCrossSignalGlyph } from '@/components/watchlist/MosCrossSignalGlyph';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader } from '@/components/ui/card';
 import {
@@ -91,6 +118,51 @@ type RefreshPricesPayload = {
   stockIds: number[];
 };
 
+// MVP7-06: a clickable TableHead that toggles the active sort key
+// + direction via `nextSortState`. Renders an arrow indicator when
+// active, plus `aria-sort` on the th for screen-reader announcement
+// (WCAG 1.3.1).
+function SortableHeader({
+  sortKey,
+  label,
+  sortState,
+  onSort,
+  className,
+}: {
+  sortKey: Exclude<WatchlistSortKey, 'default'>;
+  label: React.ReactNode;
+  sortState: WatchlistSortState;
+  onSort: (next: WatchlistSortState) => void;
+  className?: string;
+}) {
+  const active = sortState.key === sortKey;
+  const ariaSort: 'ascending' | 'descending' | 'none' = !active
+    ? 'none'
+    : sortState.direction === 'asc'
+      ? 'ascending'
+      : 'descending';
+  return (
+    <TableHead aria-sort={ariaSort} className={className}>
+      <Button
+        type="button"
+        variant="ghost"
+        size="sm"
+        className="-ml-2 h-auto gap-1 px-2 py-1 font-medium hover:underline"
+        onClick={() => onSort(nextSortState(sortState, sortKey))}
+      >
+        <span>{label}</span>
+        {active ? (
+          sortState.direction === 'asc' ? (
+            <ArrowUp className="h-3 w-3" aria-hidden="true" />
+          ) : (
+            <ArrowDown className="h-3 w-3" aria-hidden="true" />
+          )
+        ) : null}
+      </Button>
+    </TableHead>
+  );
+}
+
 type RefreshPriceResult = {
   stock_id: number;
   status: string;
@@ -151,9 +223,67 @@ export default function WatchlistPage() {
 
   const members = useMemo(() => membersQuery.data ?? [], [membersQuery.data]);
 
-  const sortedMembers = useMemo(() => {
-    return sortWatchlistMembers(members);
-  }, [members]);
+  // MVP7-06: column click-to-sort state. Defaults to legacy MOS-desc
+  // sort (DEFAULT_SORT_STATE.key === 'default').
+  const [sortState, setSortState] = useState<WatchlistSortState>(DEFAULT_SORT_STATE);
+
+  // MVP7-02: per-stock 13F snapshots for the active watchlist.
+  // MVP7-03 consumes the Map to render the four 13F columns; MVP7-04
+  // will wire the responsive collapse + MOS × 13F glyph; MVP7-05
+  // will wire the per-row drawer. MVP7-06 keeps watchlistStockIds
+  // derived from `members` (not the sorted output) so column-sort
+  // re-renders don't churn the snapshots query: the query key is the
+  // SET of stock IDs (internally sorted in useWatchlist13FSnapshots),
+  // independent of display order.
+  const watchlistStockIds = useMemo(
+    () => members.map((row) => row.stock_id),
+    [members],
+  );
+  const snapshotsQuery = useWatchlist13FSnapshots(watchlistStockIds);
+  const snapshotsByStockId = useMemo(
+    () => buildSnapshotsByStockId(snapshotsQuery.data),
+    [snapshotsQuery.data],
+  );
+
+  const sortedMembers = useMemo(
+    () => sortMembers(members, snapshotsByStockId, sortState),
+    [members, snapshotsByStockId, sortState],
+  );
+  const snapshotsPeriod = snapshotsQuery.data?.period ?? null;
+  const snapshotsDeadline = snapshotsQuery.data?.period_filing_deadline ?? null;
+  const snapshotsUniverseSize = snapshotsQuery.data?.universe_size ?? 0;
+  const snapshotsQueryStatus: 'idle' | 'pending' | 'error' | 'success' =
+    watchlistStockIds.length === 0
+      ? 'idle'
+      : snapshotsQuery.isPending
+        ? 'pending'
+        : snapshotsQuery.isError
+          ? 'error'
+          : 'success';
+  const groupHeaderText = groupHeaderLabel(snapshotsPeriod, snapshotsDeadline);
+
+  // MVP7-04: D4 responsive collapse state. At xl viewport (≥
+  // 1280px) the 13F columns are always shown; at md (768–1279px)
+  // they collapse behind a toggle button persisted in
+  // localStorage; at sm (< 768px) they are always hidden.
+  const [mdExpanded, setMdExpanded] = useState(false);
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const stored = window.localStorage.getItem('watchlist-13f-expanded');
+    if (stored === 'true') setMdExpanded(true);
+  }, []);
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    window.localStorage.setItem(
+      'watchlist-13f-expanded',
+      mdExpanded ? 'true' : 'false',
+    );
+  }, [mdExpanded]);
+  const responsiveCellClass = responsive13FCellClass(mdExpanded);
+
+  // MVP7-05: drawer-trigger state. Clicking a row's Conviction
+  // badge opens the per-stock detail drawer.
+  const [drawerStockId, setDrawerStockId] = useState<number | null>(null);
 
   const refreshPrices = useMutation({
     mutationFn: async ({ stockIds }: RefreshPricesPayload) => {
@@ -519,17 +649,94 @@ export default function WatchlistPage() {
             </div>
           )}
           {members.length > 0 && (
-            <Table className="min-w-[1080px]">
+            <>
+              {/* MVP7-04: toggle visible only at md viewport
+                  (768–1279px). At xl+ the 13F group is always
+                  shown; at sm the toggle + group are both hidden. */}
+              <div className="mb-3 hidden md:flex xl:hidden">
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={() => setMdExpanded((prev) => !prev)}
+                  aria-expanded={mdExpanded}
+                  aria-controls="watchlist-13f-columns"
+                >
+                  {mdExpanded ? 'Hide 13F' : 'Show 13F'}
+                  {mdExpanded ? (
+                    <ChevronUp className="ml-1 h-3.5 w-3.5" aria-hidden="true" />
+                  ) : (
+                    <ChevronDown className="ml-1 h-3.5 w-3.5" aria-hidden="true" />
+                  )}
+                </Button>
+              </div>
+              <Table className={mdExpanded ? 'min-w-[1400px]' : 'min-w-[1080px] xl:min-w-[1400px]'}>
               <TableHeader>
-                <TableRow>
-                  <TableHead>Ticker</TableHead>
-                  <TableHead>Company</TableHead>
+                <TableRow className="border-b-0">
+                  <TableHead colSpan={8} className="border-r-0" />
+                  <TableHead
+                    colSpan={4}
+                    className={cn(
+                      responsiveCellClass,
+                      'border-l border-border/60 text-center',
+                    )}
+                    title={
+                      snapshotsDeadline
+                        ? `13F filing deadline for ${snapshotsPeriod ?? 'latest period'}.`
+                        : undefined
+                    }
+                  >
+                    {groupHeaderText}
+                  </TableHead>
+                  <TableHead />
+                </TableRow>
+                <TableRow id="watchlist-13f-columns">
+                  <SortableHeader
+                    sortKey="ticker"
+                    label="Ticker"
+                    sortState={sortState}
+                    onSort={setSortState}
+                  />
+                  <SortableHeader
+                    sortKey="company"
+                    label="Company"
+                    sortState={sortState}
+                    onSort={setSortState}
+                  />
                   <TableHead>F-Score 3Y</TableHead>
                   <TableHead>Price</TableHead>
                   <TableHead>Fair Value</TableHead>
                   <TableHead>MOS</TableHead>
                   <TableHead>Δ Today</TableHead>
                   <TableHead>Last Update</TableHead>
+                  <SortableHeader
+                    sortKey="conviction"
+                    label="Conviction"
+                    sortState={sortState}
+                    onSort={setSortState}
+                    className={cn(responsiveCellClass, 'border-l border-border/60')}
+                  />
+                  <SortableHeader
+                    sortKey="delta_holders"
+                    label="Δ Holders"
+                    sortState={sortState}
+                    onSort={setSortState}
+                    className={responsiveCellClass}
+                  />
+                  <SortableHeader
+                    sortKey="distinctiveness"
+                    label="Distinctiveness"
+                    sortState={sortState}
+                    onSort={setSortState}
+                    className={responsiveCellClass}
+                  />
+                  <SortableHeader
+                    sortKey="caveat_severity"
+                    label="Caveats"
+                    sortState={sortState}
+                    onSort={setSortState}
+                    className={responsiveCellClass}
+                  />
                   <TableHead />
                 </TableRow>
               </TableHeader>
@@ -566,9 +773,28 @@ export default function WatchlistPage() {
                       }
                     >
                       {formatPercent(row.mos)}
+                      {(() => {
+                        const snap = snapshotsByStockId.get(row.stock_id);
+                        const signal = mosCrossSignal({
+                          mos: row.mos,
+                          deltaHolders:
+                            snap && snap.available === true ? snap.delta_holders : null,
+                        });
+                        return <MosCrossSignalGlyph signal={signal} />;
+                      })()}
                     </TableCell>
                     <TableCell>{formatNumber(row.delta_today)}</TableCell>
                     <TableCell>{formatDate(row.price_updated_at)}</TableCell>
+                    <Watchlist13FColumns
+                      snapshot={snapshotsByStockId.get(row.stock_id)}
+                      period={snapshotsPeriod}
+                      universeSize={snapshotsUniverseSize}
+                      queryStatus={snapshotsQueryStatus}
+                      mdExpanded={mdExpanded}
+                      firstCellLeadingClass="border-l border-border/60"
+                      stockId={row.stock_id}
+                      onOpenDetail={(stockId) => setDrawerStockId(stockId)}
+                    />
                     <TableCell>
                       <div className="flex items-center gap-2">
                         <Button asChild variant="outline">
@@ -588,9 +814,17 @@ export default function WatchlistPage() {
                 ))}
               </TableBody>
             </Table>
+            </>
           )}
         </CardContent>
       </Card>
+
+      {drawerStockId !== null ? (
+        <Watchlist13FDrawer
+          stockId={drawerStockId}
+          onClose={() => setDrawerStockId(null)}
+        />
+      ) : null}
     </div>
   );
 }

@@ -20,6 +20,9 @@ class HoldingRow:
     voting_shared: Optional[int]
     voting_none: Optional[int]
     row_fingerprint: str
+    source_row_index: int = 0
+    value_raw_str: Optional[str] = None
+    other_managers_raw: Optional[str] = None
 
 
 # EDGAR namespaces vary across filings; strip them for robust parsing
@@ -75,10 +78,10 @@ def _fingerprint(row: dict) -> str:
 
 def parse_infotable(content: bytes) -> list[HoldingRow]:
     """Parse infotable XML bytes → list of HoldingRow."""
-    # Strip XML declaration encoding issues; EDGAR often uses UTF-8
     root = ET.fromstring(content)
 
     rows: list[HoldingRow] = []
+    source_row_index = 0
     for elem in root.iter():
         if _strip_ns(elem.tag) != "infoTable":
             continue
@@ -100,11 +103,12 @@ def parse_infotable(content: bytes) -> list[HoldingRow]:
         cusip = raw.get("cusip", "").upper()
         issuer_name = raw.get("nameOfIssuer", "") or raw.get("issuerName", "")
         title_of_class = raw.get("titleOfClass") or None
-        value_raw = raw.get("value") or raw.get("sshPrnamt")  # fallback
+        value_raw_s = raw.get("value") or raw.get("sshPrnamt")  # fallback
         shares_raw = raw.get("sshPrnamt") or raw.get("shares")
         share_type = raw.get("sshPrnamtType") or raw.get("shareType") or None
         put_call = raw.get("putCall") or None
         inv_discretion = raw.get("investmentDiscretion") or None
+        other_managers_raw = raw.get("otherManager") or raw.get("otherManagers") or None
 
         if voting_elem is not None:
             voting_sole = _int(_text(voting_elem, "Sole") or _text(voting_elem, "sole"))
@@ -115,7 +119,7 @@ def parse_infotable(content: bytes) -> list[HoldingRow]:
             voting_shared = _int(raw.get("votingAuthorityShared"))
             voting_none = _int(raw.get("votingAuthorityNone"))
 
-        value_thousands = _int(value_raw) or 0
+        value_thousands = _int(value_raw_s) or 0
         shares = _int(shares_raw)
 
         row_data = {
@@ -136,8 +140,12 @@ def parse_infotable(content: bytes) -> list[HoldingRow]:
             HoldingRow(
                 **row_data,
                 row_fingerprint=_fingerprint(row_data),
+                source_row_index=source_row_index,
+                value_raw_str=value_raw_s or None,
+                other_managers_raw=other_managers_raw,
             )
         )
+        source_row_index += 1
 
     return rows
 

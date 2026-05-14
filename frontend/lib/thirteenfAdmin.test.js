@@ -3,6 +3,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 
 const {
+  buildAdminJobsQueryPath,
   freshnessLine,
   jobPreviewRows,
   managerCikReviewDefaults,
@@ -10,10 +11,14 @@ const {
   normalizeAmendments,
   normalizeCikReviewEvents,
   normalizeEdgarRateLimit,
+  normalizeAdminFilings,
+  normalizeHoldingsCoverage,
+  normalizeParseRuns,
   normalizeQualityReports,
   normalizeQuarters,
   normalizeReadiness,
   normalizeTasks,
+  normalizeUnresolvedCusips,
   normalizeWorkers,
   operationsHealth,
   prioritizeManagersForReview,
@@ -21,6 +26,28 @@ const {
   visibleWorkerRows,
   readinessTone,
 } = require('./thirteenfAdmin');
+
+test('buildAdminJobsQueryPath encodes filters and includes the full started_to day', () => {
+  const path = buildAdminJobsQueryPath({
+    status: 'failed',
+    jobType: 'backfill_quarters',
+    startedFrom: '2026-05-15',
+    startedTo: '2026-05-15',
+    syncDate: '2026-05-14',
+    quarter: '2026-Q1',
+  });
+  const url = new URL(path, 'http://localhost');
+
+  assert.equal(url.pathname, '/admin/13f/jobs');
+  assert.equal(url.searchParams.get('page'), '1');
+  assert.equal(url.searchParams.get('page_size'), '50');
+  assert.equal(url.searchParams.get('status'), 'failed');
+  assert.equal(url.searchParams.get('job_type'), 'backfill_quarters');
+  assert.equal(url.searchParams.get('started_from'), '2026-05-15T00:00:00Z');
+  assert.equal(url.searchParams.get('started_to'), '2026-05-16T00:00:00Z');
+  assert.equal(url.searchParams.get('sync_date'), '2026-05-14');
+  assert.equal(url.searchParams.get('quarter'), '2026-Q1');
+});
 
 test('readinessTone maps readiness levels to badge variants', () => {
   assert.equal(readinessTone('ready'), 'success');
@@ -117,6 +144,16 @@ test('normalizeQuarters and normalizeTasks prepare table rows', () => {
   assert.equal(quarters[0].healthTone, 'danger');
   assert.equal(tasks[0].priorityTone, 'danger');
   assert.equal(tasks[0].metadata.manager_name, 'Revoked Manager');
+});
+
+test('normalizeTasks gives duplicate task codes unique render keys', () => {
+  const tasks = normalizeTasks([
+    { priority: 'P2', code: 'RECENT_JOB_FAILED', title: 'Recent job failed' },
+    { priority: 'P2', code: 'RECENT_JOB_FAILED', title: 'Another recent job failed' },
+  ]);
+
+  assert.equal(tasks[0].code, 'RECENT_JOB_FAILED');
+  assert.notEqual(tasks[0].renderKey, tasks[1].renderKey);
 });
 
 test('normalizeWorkers exposes heartbeat status and current job', () => {
@@ -345,6 +382,119 @@ test('normalizeAmendments maps accession status and reprocess action', () => {
   assert.equal(amendments[0].managerName, 'Test Manager');
   assert.equal(amendments[0].recommendedJob.job_type, 'reprocess_amendment');
   assert.equal(amendments[0].rawInfotable.error_message, 'bad XML');
+});
+
+test('normalizeAdminFilings exposes caveat-driving fields without inferring from form type alone', () => {
+  const filings = normalizeAdminFilings({
+    items: [
+      {
+        id: 1,
+        accession_number: '0001234567-26-000001',
+        form_type: '13F-HR/A',
+        report_type: 'combination_report',
+        coverage_completeness: 'partial',
+        coverage_type: 'combination_partial',
+        has_confidential_treatment: true,
+        confidential_treatment_status: 'applied',
+        amendment_status: 'amendments_pending',
+        amendment_type: 'RESTATEMENT',
+        parse_status: 'needs_review',
+        official_filing_deadline: '2026-05-15',
+        report_quarter: '2026-Q1',
+        manager: { display_name: 'Admin Manager', cik: '0001234567' },
+        holdings_count: 0,
+      },
+      {
+        id: 2,
+        accession_number: '0001234567-26-000002',
+        form_type: '13F-NT',
+        report_type: 'notice_report',
+        coverage_type: 'notice_reported_elsewhere',
+        coverage_completeness: 'unknown',
+        parse_status: 'succeeded',
+        manager: { legal_name: 'Notice Manager' },
+        holdings_count: 0,
+      },
+    ],
+    total: 2,
+    page: 1,
+    page_size: 50,
+  });
+
+  assert.equal(filings.total, 2);
+  assert.equal(filings.pageSize, 50);
+  assert.equal(filings.items[0].managerName, 'Admin Manager');
+  assert.equal(filings.items[0].statusTone, 'danger');
+  assert.deepEqual(filings.items[0].caveatCodes, [
+    'COMBINATION_REPORT',
+    'CONFIDENTIAL_TREATMENT',
+    'AMENDMENTS_PENDING',
+  ]);
+  assert.equal(filings.items[0].holdingsCountLabel, '0');
+  assert.deepEqual(filings.items[1].caveatCodes, ['NOTICE_REPORTED_ELSEWHERE']);
+  assert.equal(filings.items[1].holdingsCountLabel, '—');
+});
+
+test('normalizeParseRuns preserves pagination and current audit marker', () => {
+  const runs = normalizeParseRuns({
+    accession_number: '0001234567-26-000001',
+    items: [
+      { id: 10, parser_version: 'v2', status: 'succeeded', is_current: true, holdings_count: 12 },
+      { id: 9, parser_version: 'v1', status: 'failed', is_current: false, error: 'bad XML' },
+    ],
+    total: 2,
+    page: 1,
+    page_size: 50,
+  });
+
+  assert.equal(runs.accessionNumber, '0001234567-26-000001');
+  assert.equal(runs.total, 2);
+  assert.equal(runs.items[0].isCurrent, true);
+  assert.equal(runs.items[0].statusTone, 'success');
+  assert.equal(runs.items[1].statusTone, 'danger');
+});
+
+test('normalizeHoldingsCoverage keeps unavailable ratios distinct from zero', () => {
+  const empty = normalizeHoldingsCoverage({
+    report_quarter: '2026-Q1',
+    common_holdings_count: 0,
+    linked_common_holding_ratio: null,
+  });
+  const populated = normalizeHoldingsCoverage({
+    report_quarter: '2026-Q1',
+    total_holdings_count: 3,
+    common_holdings_count: 2,
+    linked_common_holdings_count: 1,
+    unresolved_common_holdings_count: 1,
+    options_count: 1,
+    linked_common_holding_ratio: 0.5,
+  });
+
+  assert.equal(empty.linkedCommonHoldingRatioLabel, '—');
+  assert.equal(empty.commonHoldingsCount, 0);
+  assert.equal(populated.linkedCommonHoldingRatioLabel, '50%');
+  assert.equal(populated.optionsCount, 1);
+});
+
+test('normalizeUnresolvedCusips maps current unresolved groups for admin review', () => {
+  const unresolved = normalizeUnresolvedCusips({
+    items: [
+      {
+        cusip: '000000007',
+        cusip_mapping_status: 'unresolved',
+        issuer_name: 'Issuer 7',
+        holding_count: 2,
+      },
+    ],
+    total: 1,
+    page: 1,
+    page_size: 50,
+  });
+
+  assert.equal(unresolved.total, 1);
+  assert.equal(unresolved.items[0].cusip, '000000007');
+  assert.equal(unresolved.items[0].statusTone, 'warning');
+  assert.equal(unresolved.items[0].holdingCount, 2);
 });
 
 test('normalizeCikReviewEvents maps revocation audit scope', () => {

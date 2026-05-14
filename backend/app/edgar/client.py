@@ -4,7 +4,7 @@ import threading
 import time
 from collections import deque
 from datetime import datetime, timezone
-from typing import Optional
+from typing import Optional, Protocol
 
 import httpx
 
@@ -16,6 +16,14 @@ _GLOBAL_LOCK = threading.Lock()
 _REQUEST_EVENTS: deque[dict[str, object]] = deque(maxlen=5000)
 _REQUEST_EVENTS_LOCK = threading.Lock()
 _GLOBAL_PAUSE_UNTIL: float | None = None
+
+
+class _HttpClient(Protocol):
+    def request(self, method: str, url: str) -> httpx.Response:
+        ...
+
+    def close(self) -> None:
+        ...
 
 
 class _TokenBucket:
@@ -42,9 +50,13 @@ class _TokenBucket:
                 self._tokens -= 1.0
 
 
-# Module-level singleton bucket (5 req/s default, configurable via EDGAR_REQUEST_DELAY_S)
+# Module-level singleton bucket (10 req/s default, configurable via EDGAR_REQUESTS_PER_SECOND)
 def _make_bucket() -> _TokenBucket:
-    rate = 1.0 / settings.EDGAR_REQUEST_DELAY_S if settings.EDGAR_REQUEST_DELAY_S > 0 else 5.0
+    rate = settings.EDGAR_REQUESTS_PER_SECOND
+    if rate <= 0 and settings.EDGAR_REQUEST_DELAY_S > 0:
+        rate = 1.0 / settings.EDGAR_REQUEST_DELAY_S
+    if rate <= 0:
+        rate = 10.0
     return _TokenBucket(rate=rate, burst=1)
 
 
@@ -62,7 +74,17 @@ def _get_bucket() -> _TokenBucket:
 
 
 def _parse_backoff(raw: str) -> list[float]:
-    return [float(s.strip()) for s in raw.split(",") if s.strip()]
+    return [min(float(s.strip()), 300.0) for s in raw.split(",") if s.strip()]
+
+
+def build_sec_user_agent() -> str:
+    contact_email = (settings.SEC_CONTACT_EMAIL or "").strip()
+    if not contact_email:
+        raise RuntimeError("SEC_CONTACT_EMAIL is required for EDGAR requests")
+    configured = (settings.EDGAR_USER_AGENT or "").strip()
+    if configured:
+        return configured if contact_email in configured else f"{configured} {contact_email}"
+    return f"{settings.PROJECT_NAME} {contact_email}"
 
 
 def _record_request(status_code: int | None, url: str) -> None:
@@ -83,18 +105,28 @@ def edgar_rate_limit_status() -> dict[str, object]:
     with _REQUEST_EVENTS_LOCK:
         recent = [event for event in _REQUEST_EVENTS if float(event["at"]) >= cutoff]
         pause_value = _GLOBAL_PAUSE_UNTIL
-    request_delay = settings.EDGAR_REQUEST_DELAY_S
-    estimated_capacity = int(window_seconds / request_delay) if request_delay > 0 else window_seconds * 5
+    request_rate = settings.EDGAR_REQUESTS_PER_SECOND
+    if request_rate <= 0 and settings.EDGAR_REQUEST_DELAY_S > 0:
+        request_rate = 1.0 / settings.EDGAR_REQUEST_DELAY_S
+    if request_rate <= 0:
+        request_rate = 10.0
+    estimated_capacity = int(window_seconds * request_rate)
     remaining = max(estimated_capacity - len(recent), 0)
+    recent_403_count = sum(1 for event in recent if event["status_code"] == 403)
+    recent_429_count = sum(1 for event in recent if event["status_code"] == 429)
     pause_until = None
     if pause_value and pause_value > now:
         pause_until = datetime.fromtimestamp(pause_value, tz=timezone.utc).isoformat()
     return {
         "mode": settings.EDGAR_FETCH_MODE,
-        "request_delay_s": request_delay,
+        "request_delay_s": 1.0 / request_rate,
+        "requests_per_second": request_rate,
         "max_retries": settings.EDGAR_MAX_RETRIES,
         "window_seconds": window_seconds,
         "recent_request_count": len(recent),
+        "recent_403_count": recent_403_count,
+        "recent_429_count": recent_429_count,
+        "edgar_block_alert": recent_403_count > 0 or recent_429_count > 0,
         "estimated_capacity": estimated_capacity,
         "remaining_estimated_capacity": remaining,
         "global_pause_until": pause_until,
@@ -113,9 +145,9 @@ class EdgarClient:
     EFTS_BASE = "https://efts.sec.gov"
     DATA_BASE = "https://data.sec.gov"
 
-    def __init__(self) -> None:
-        self._client = httpx.Client(
-            headers={"User-Agent": settings.EDGAR_USER_AGENT, "Accept-Encoding": "gzip"},
+    def __init__(self, http_client: _HttpClient | None = None) -> None:
+        self._client = http_client or httpx.Client(
+            headers={"User-Agent": build_sec_user_agent(), "Accept-Encoding": "gzip"},
             timeout=30,
             follow_redirects=True,
         )
@@ -128,6 +160,7 @@ class EdgarClient:
         bucket = _get_bucket()
         last_exc: Optional[Exception] = None
 
+        build_sec_user_agent()
         for attempt in range(settings.EDGAR_MAX_RETRIES + 1):
             if attempt > 0:
                 delay = self._backoff[min(attempt - 1, len(self._backoff) - 1)]

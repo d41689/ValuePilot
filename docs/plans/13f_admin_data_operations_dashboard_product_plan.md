@@ -453,7 +453,7 @@ Recommended actions:
 | Fetch quarter index | `fetch-holdings --quarter YYYY-Qn` | Yes | Name should be clearer in UI: "Fetch quarter index" |
 | Ingest holdings | `ingest-holdings --quarter YYYY-Qn` | Yes | Retry-safe for pending filings |
 | Backfill quarters | `backfill --quarters N` | Yes | Show SEC rate-limit warning |
-| Enrich CUSIP | `enrich-cusip` | Yes | Uses Dataroma only as a helper; preserve provenance and do not override EDGAR-derived facts without review |
+| Enrich CUSIP | `enrich-cusip` | Yes | Uses OpenFIGI / verified mappings; Dataroma is not a CUSIP or security-identity source |
 | Bootstrap stocks | `bootstrap-stocks` | Yes | Creates stock links from mappings |
 | Enrich stocks from EDGAR | `enrich-stocks-edgar` | Yes | Official source enrichment |
 | Quality check | `quality-check --quarter YYYY-Qn` | No for read-only check | Should be safe and frequent |

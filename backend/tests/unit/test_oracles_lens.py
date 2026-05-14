@@ -202,7 +202,7 @@ def _pdf_document(db_session, stock: Stock, *, report_date: date = date(2032, 1,
 def test_oracles_lens_defaults_to_latest_complete_period_and_signal_rows(client, db_session):
     target = _seed_oracles_lens_fixture(db_session)
 
-    response = client.get("/api/v1/13f/oracles-lens")
+    response = client.get("/api/v1/13f/oracles-lens?use_persisted_scores=false")
     assert response.status_code == 200
 
     payload = response.json()
@@ -312,7 +312,7 @@ def test_oracles_lens_uses_latest_effective_amendment_and_excludes_superseded_ho
     )
     db_session.commit()
 
-    response = client.get("/api/v1/13f/oracles-lens?period=2033-Q4&min_holders=1")
+    response = client.get("/api/v1/13f/oracles-lens?period=2033-Q4&min_holders=1&use_persisted_scores=false")
 
     assert response.status_code == 200
     tickers = {item["ticker"] for item in response.json()["items"]}
@@ -364,7 +364,7 @@ def test_oracles_lens_adds_value_line_quality_overlay(client, db_session):
     )
     db_session.commit()
 
-    response = client.get("/api/v1/13f/oracles-lens")
+    response = client.get("/api/v1/13f/oracles-lens?use_persisted_scores=false")
     assert response.status_code == 200
 
     item = next(row for row in response.json()["items"] if row["stock_id"] == target.id)
@@ -444,6 +444,89 @@ def test_oracles_lens_adds_value_line_quality_overlay(client, db_session):
     assert response.json()["coverage"]["value_line_coverage_count"] >= 1
 
 
+def test_oracles_lens_reads_piotroski_from_value_json_when_value_numeric_null(
+    client, db_session,
+):
+    """D2 regression: ``score.piotroski.total`` stores the composite score in
+    ``value_json['partial_score']`` with ``value_numeric=NULL`` (269/272 dev
+    rows). The pre-D2 ``_quality_overlay_by_stock`` filtered
+    ``value_numeric.isnot(None)`` and silently dropped these rows. After D2
+    the legacy dashboard must surface Piotroski for stocks whose score lives
+    only in ``value_json``.
+    """
+    target = _seed_oracles_lens_fixture(db_session)
+    document = _pdf_document(db_session, target)
+    # Piotroski fact: value_numeric=None, value_json carries partial_score.
+    db_session.add(
+        MetricFact(
+            user_id=target._test_user_id,
+            stock_id=target.id,
+            metric_key="score.piotroski.total",
+            value_numeric=None,
+            value_json={
+                "partial_score": 6,
+                "max_available_score": 8,
+                "status": "partial",
+                "fact_nature": "actual",
+            },
+            unit=None,
+            period_type="FY",
+            period_end_date=date(2031, 12, 31),
+            source_document_id=document.id,
+            source_type="calculated",
+            is_current=True,
+        )
+    )
+    db_session.commit()
+
+    response = client.get("/api/v1/13f/oracles-lens?use_persisted_scores=false")
+    assert response.status_code == 200
+
+    item = next(row for row in response.json()["items"] if row["stock_id"] == target.id)
+    overlay = item["quality_overlay"]
+    assert overlay["piotroski_total"] == 6.0
+    assert overlay["coverage"]["value_line"] is True
+
+
+def test_oracles_lens_value_numeric_takes_precedence_over_partial_score(
+    client, db_session,
+):
+    """D2 post-review (Backend B5): when BOTH ``value_numeric`` and
+    ``value_json['partial_score']`` are set with different values, the
+    column wins. The value_json fallback only fires when value_numeric is
+    null — never as a silent override of the canonical column.
+    """
+    target = _seed_oracles_lens_fixture(db_session)
+    document = _pdf_document(db_session, target)
+    db_session.add(
+        MetricFact(
+            user_id=target._test_user_id,
+            stock_id=target.id,
+            metric_key="score.piotroski.total",
+            value_numeric=8.0,  # canonical column — should win
+            value_json={
+                "partial_score": 3,  # divergent fallback — should NOT win
+                "max_available_score": 8,
+                "status": "partial",
+                "fact_nature": "actual",
+            },
+            unit=None,
+            period_type="FY",
+            period_end_date=date(2031, 12, 31),
+            source_document_id=document.id,
+            source_type="calculated",
+            is_current=True,
+        )
+    )
+    db_session.commit()
+
+    response = client.get("/api/v1/13f/oracles-lens?use_persisted_scores=false")
+    assert response.status_code == 200
+    item = next(row for row in response.json()["items"] if row["stock_id"] == target.id)
+    # value_numeric (8.0) wins over value_json.partial_score (3).
+    assert item["quality_overlay"]["piotroski_total"] == 8.0
+
+
 def test_oracles_lens_adds_conservative_valuation_reference(client, db_session):
     target = _seed_oracles_lens_fixture(db_session)
     db_session.add_all(
@@ -473,7 +556,7 @@ def test_oracles_lens_adds_conservative_valuation_reference(client, db_session):
     )
     db_session.commit()
 
-    response = client.get("/api/v1/13f/oracles-lens")
+    response = client.get("/api/v1/13f/oracles-lens?use_persisted_scores=false")
     assert response.status_code == 200
 
     item = next(row for row in response.json()["items"] if row["stock_id"] == target.id)
@@ -513,7 +596,7 @@ def test_oracles_lens_labels_value_line_target_as_reference_not_intrinsic_value(
     )
     db_session.commit()
 
-    response = client.get("/api/v1/13f/oracles-lens")
+    response = client.get("/api/v1/13f/oracles-lens?use_persisted_scores=false")
     assert response.status_code == 200
 
     item = next(row for row in response.json()["items"] if row["stock_id"] == target.id)
@@ -560,7 +643,7 @@ def test_oracles_lens_uses_period_price_for_historical_snapshot(client, db_sessi
     )
     db_session.commit()
 
-    response = client.get("/api/v1/13f/oracles-lens?period=2031-Q3")
+    response = client.get("/api/v1/13f/oracles-lens?period=2031-Q3&use_persisted_scores=false")
     assert response.status_code == 200
 
     item = next(row for row in response.json()["items"] if row["stock_id"] == target.id)
@@ -582,7 +665,7 @@ def test_oracles_lens_uses_period_price_for_historical_snapshot(client, db_sessi
 def test_oracles_lens_marks_old_selected_period(client, db_session):
     _seed_oracles_lens_fixture(db_session)
 
-    response = client.get("/api/v1/13f/oracles-lens?period=2031-Q3")
+    response = client.get("/api/v1/13f/oracles-lens?period=2031-Q3&use_persisted_scores=false")
     assert response.status_code == 200
 
     payload = response.json()

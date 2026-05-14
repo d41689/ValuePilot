@@ -1,9 +1,16 @@
 from __future__ import annotations
 
+from datetime import date, datetime
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Query, status
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
+
+from app.schemas.thirteenf_cusip import CusipMappingCreate, CusipMappingUpdate, CusipMappingResponse
+from app.schemas.thirteenf_corporate_action import (
+    CorporateActionMappingConfirmRequest,
+    CorporateActionMappingPreviewRequest,
+)
 
 from app.api.deps import AdminUser, SessionDep
 from app.services.thirteenf_admin_dashboard import (
@@ -12,24 +19,48 @@ from app.services.thirteenf_admin_dashboard import (
     build_admin_tasks,
     build_consumer_readiness,
     build_edgar_rate_limit_status,
+    build_holdings_coverage_summary,
+    build_manager_backfill_preview,
     build_managers,
+    build_pending_amendments_read_model,
     build_quality_reports,
     build_quarters,
     build_status,
     cancel_job,
+    bulk_import_managers,
     confirm_manager_cik,
+    create_manager,
+    deactivate_manager,
+    get_admin_filing,
     get_amendment,
     get_job,
     get_quarter_detail_page,
     get_quality_report_for_quarter,
+    list_admin_filings,
+    list_parse_runs_for_accession,
     list_manager_cik_review_events,
+    list_unresolved_cusip_mappings,
     list_workers,
     list_jobs,
     reject_manager_cik,
     release_stale_job_lock,
+    resolve_amendment,
     retry_manager_cik_search,
     revoke_manager_cik,
     trigger_job,
+    update_manager,
+)
+from app.services.thirteenf_daily_sync import (
+    create_no_index_date,
+    list_no_index_dates,
+    update_no_index_date,
+)
+from app.services.thirteenf_user_api import (
+    build_user_manager_holding_changes,
+    build_user_manager_holdings,
+    build_user_manager_quarters,
+    build_user_managers,
+    build_user_stock_holders,
 )
 
 admin_router = APIRouter()
@@ -42,6 +73,58 @@ class ManagerReviewRequest(BaseModel):
     search_name: str | None = None
 
 
+class ManagerTypeUpdateRequest(BaseModel):
+    new_manager_type: str
+    note: str | None = None
+    evidence_json: dict | None = None
+
+    @model_validator(mode="after")
+    def _note_required_for_classification(self) -> "ManagerTypeUpdateRequest":
+        if self.new_manager_type != "unknown" and not (self.note or "").strip():
+            raise ValueError(
+                "note is required when classifying to a non-unknown manager_type"
+            )
+        return self
+
+
+class AmendmentResolveRequest(BaseModel):
+    action: str
+    note: str | None = None
+
+
+class ManagerCreateRequest(BaseModel):
+    canonical_name: str
+    legal_name: str | None = None
+    display_name: str | None = None
+    edgar_legal_name: str | None = None
+    status: str | None = None
+    manager_type: str | None = None
+    is_featured: bool = False
+    source: str | None = None
+    source_url: str | None = None
+    confidence_score: int | None = Field(default=None, ge=0, le=100)
+    value_unit_override: str | None = None
+    review_note: str | None = None
+
+
+class ManagerPatchRequest(BaseModel):
+    canonical_name: str | None = None
+    display_name: str | None = None
+    edgar_legal_name: str | None = None
+    status: str | None = None
+    manager_type: str | None = None
+    is_featured: bool | None = None
+    source: str | None = None
+    source_url: str | None = None
+    confidence_score: int | None = Field(default=None, ge=0, le=100)
+    value_unit_override: str | None = None
+    review_note: str | None = None
+
+
+class ManagerBulkImportRequest(BaseModel):
+    csv_text: str
+
+
 class JobTriggerRequest(BaseModel):
     job_type: str
     quarter: str | None = None
@@ -50,6 +133,18 @@ class JobTriggerRequest(BaseModel):
     accession_no: str | None = None
     dry_run: bool = False
     trigger_source: str | None = None
+
+
+class NoIndexDateCreateRequest(BaseModel):
+    date: date
+    reason: str
+    holiday_name: str | None = None
+    note: str | None = None
+
+
+class NoIndexDatePatchRequest(BaseModel):
+    note: str | None = None
+    active: bool | None = None
 
 
 @admin_router.get("/status", response_model=dict)
@@ -65,6 +160,56 @@ def read_admin_readiness(session: SessionDep, current_user: AdminUser) -> Any:
 @consumer_router.get("/readiness", response_model=dict)
 def read_consumer_readiness(session: SessionDep) -> Any:
     return build_consumer_readiness(session)
+
+
+@consumer_router.get("/managers", response_model=dict)
+def read_user_managers(session: SessionDep) -> Any:
+    return build_user_managers(session)
+
+
+@consumer_router.get("/managers/{manager_id}/quarters", response_model=dict)
+def read_user_manager_quarters(manager_id: int, session: SessionDep) -> Any:
+    try:
+        return build_user_manager_quarters(session, manager_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@consumer_router.get("/managers/{manager_id}/holdings", response_model=dict)
+def read_user_manager_holdings(
+    manager_id: int,
+    session: SessionDep,
+    quarter: str | None = Query(None),
+) -> Any:
+    try:
+        return build_user_manager_holdings(session, manager_id, quarter=quarter)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@consumer_router.get("/managers/{manager_id}/holdings/changes", response_model=dict)
+def read_user_manager_holding_changes(
+    manager_id: int,
+    session: SessionDep,
+    quarter: str | None = Query(None, pattern=r"^\d{4}-Q[1-4]$"),
+) -> Any:
+    try:
+        return build_user_manager_holding_changes(session, manager_id, quarter=quarter)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@consumer_router.get("/stocks/{stock_id}/holders", response_model=dict)
+def read_user_stock_holders(
+    stock_id: int,
+    session: SessionDep,
+    quarter: str | None = Query(None, pattern=r"^\d{4}-Q[1-4]$"),
+    limit: int = Query(10, ge=1, le=50),
+) -> Any:
+    try:
+        return build_user_stock_holders(session, stock_id, quarter=quarter, limit=limit)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
 @admin_router.get("/quarters", response_model=dict)
@@ -111,6 +256,52 @@ def read_edgar_rate_limit_status(session: SessionDep, current_user: AdminUser) -
     return build_edgar_rate_limit_status()
 
 
+@admin_router.get("/no-index-dates", response_model=dict)
+def read_no_index_dates(
+    session: SessionDep,
+    current_user: AdminUser,
+    year: int | None = Query(default=None, ge=1994, le=2100),
+) -> Any:
+    return {"items": list_no_index_dates(session, year=year)}
+
+
+@admin_router.post("/no-index-dates", response_model=dict)
+def create_13f_no_index_date(
+    session: SessionDep,
+    current_user: AdminUser,
+    payload: NoIndexDateCreateRequest,
+) -> Any:
+    try:
+        return create_no_index_date(
+            session,
+            expected_date=payload.date,
+            reason=payload.reason,
+            holiday_name=payload.holiday_name,
+            note=payload.note,
+            created_by=current_user.id,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+
+
+@admin_router.patch("/no-index-dates/{expected_date}", response_model=dict)
+def patch_13f_no_index_date(
+    session: SessionDep,
+    current_user: AdminUser,
+    expected_date: date,
+    payload: NoIndexDatePatchRequest,
+) -> Any:
+    try:
+        return update_no_index_date(
+            session,
+            expected_date,
+            note=payload.note,
+            active=payload.active,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+
+
 @admin_router.get("/tasks", response_model=dict)
 def read_tasks(session: SessionDep, current_user: AdminUser) -> Any:
     return {"items": build_admin_tasks(session)}
@@ -121,8 +312,13 @@ def read_quality_reports(
     session: SessionDep,
     current_user: AdminUser,
     limit: int = Query(20, ge=1, le=100),
+    include_dry_run: bool = Query(False),
 ) -> Any:
-    return {"items": build_quality_reports(session, limit=limit)}
+    return {
+        "items": build_quality_reports(
+            session, limit=limit, include_dry_run=include_dry_run,
+        )
+    }
 
 
 @admin_router.get("/quality/{quarter}", response_model=dict)
@@ -142,6 +338,16 @@ def read_amendments(
     return {"items": build_amendments(session, limit=limit)}
 
 
+@admin_router.get("/amendments/pending", response_model=dict)
+def read_pending_amendments(
+    session: SessionDep,
+    current_user: AdminUser,
+    page: int = Query(1, ge=1),
+    page_size: int = Query(50, ge=1, le=200),
+) -> Any:
+    return build_pending_amendments_read_model(session, page=page, page_size=page_size)
+
+
 @admin_router.get("/amendments/{accession_no}", response_model=dict)
 def read_amendment(session: SessionDep, current_user: AdminUser, accession_no: str) -> Any:
     try:
@@ -150,9 +356,177 @@ def read_amendment(session: SessionDep, current_user: AdminUser, accession_no: s
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
 
 
+@admin_router.post("/amendments/{accession_no}/resolve", response_model=dict)
+def resolve_13f_amendment(
+    session: SessionDep,
+    current_user: AdminUser,
+    accession_no: str,
+    payload: AmendmentResolveRequest,
+) -> Any:
+    try:
+        return resolve_amendment(
+            session,
+            accession_no,
+            action=payload.action,
+            note=payload.note,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+
+
+@admin_router.get("/filings", response_model=dict)
+def read_filings(
+    session: SessionDep,
+    current_user: AdminUser,
+    page: int = Query(1, ge=1),
+    page_size: int = Query(50, ge=1, le=200),
+    report_quarter: str | None = Query(None),
+    parse_status: str | None = Query(None),
+    form_type: str | None = Query(None),
+    manager_id: int | None = Query(None),
+) -> Any:
+    return list_admin_filings(
+        session,
+        page=page,
+        page_size=page_size,
+        report_quarter=report_quarter,
+        parse_status=parse_status,
+        form_type=form_type,
+        manager_id=manager_id,
+    )
+
+
+@admin_router.get("/filings/{accession_no}", response_model=dict)
+def read_filing(session: SessionDep, current_user: AdminUser, accession_no: str) -> Any:
+    try:
+        return get_admin_filing(session, accession_no)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+
+
+@admin_router.get("/filings/{accession_no}/parse-runs", response_model=dict)
+def read_filing_parse_runs(
+    session: SessionDep,
+    current_user: AdminUser,
+    accession_no: str,
+    page: int = Query(1, ge=1),
+    page_size: int = Query(50, ge=1, le=200),
+) -> Any:
+    try:
+        return list_parse_runs_for_accession(session, accession_no, page=page, page_size=page_size)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+
+
 @admin_router.get("/managers", response_model=dict)
 def read_managers(session: SessionDep, current_user: AdminUser) -> Any:
     return {"items": build_managers(session)}
+
+
+@admin_router.post("/managers", response_model=dict)
+def create_13f_manager(
+    session: SessionDep,
+    current_user: AdminUser,
+    payload: ManagerCreateRequest,
+) -> Any:
+    try:
+        return create_manager(session, payload.model_dump(exclude_unset=True))
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+
+
+@admin_router.post("/managers/bulk-import", response_model=dict)
+def bulk_import_13f_managers(
+    session: SessionDep,
+    current_user: AdminUser,
+    payload: ManagerBulkImportRequest,
+) -> Any:
+    try:
+        return bulk_import_managers(session, payload.csv_text)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+
+
+@admin_router.patch("/managers/{manager_id}", response_model=dict)
+def patch_13f_manager(
+    session: SessionDep,
+    current_user: AdminUser,
+    manager_id: int,
+    payload: ManagerPatchRequest,
+) -> Any:
+    try:
+        return update_manager(session, manager_id, payload.model_dump(exclude_unset=True))
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+
+
+@admin_router.post("/managers/{manager_id}/deactivate", response_model=dict)
+def deactivate_13f_manager(
+    session: SessionDep,
+    current_user: AdminUser,
+    manager_id: int,
+    payload: ManagerReviewRequest,
+) -> Any:
+    try:
+        return deactivate_manager(
+            session,
+            manager_id,
+            note=payload.note,
+            reviewed_by_user_id=current_user.id,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+
+
+@admin_router.get("/managers/{manager_id}/backfill-preview", response_model=dict)
+def read_manager_backfill_preview(
+    session: SessionDep,
+    current_user: AdminUser,
+    manager_id: int,
+    start_quarter: str | None = Query(None),
+    end_quarter: str | None = Query(None),
+) -> Any:
+    try:
+        return build_manager_backfill_preview(session, manager_id, start_quarter, end_quarter)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+
+
+@admin_router.post("/managers/{manager_id}/backfill", response_model=dict)
+def create_manager_backfill(
+    session: SessionDep,
+    current_user: AdminUser,
+    manager_id: int,
+    start_quarter: str | None = Query(None),
+    end_quarter: str | None = Query(None),
+) -> Any:
+    try:
+        from app.services.thirteenf_admin_dashboard import _validate_manager_backfill_request, trigger_job
+        _validate_manager_backfill_request(
+            session,
+            manager_id,
+            start_quarter=start_quarter,
+            end_quarter=end_quarter,
+        )
+        job_payload = {
+            "job_type": "sync_manager_backfill",
+            "manager_id": manager_id,
+        }
+        if start_quarter:
+            job_payload["start_quarter"] = start_quarter
+        if end_quarter:
+            job_payload["end_quarter"] = end_quarter
+            
+        result = trigger_job(session, requested_by_user_id=current_user.id, payload=job_payload)
+        
+        if result.get("conflict"):
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail={"active_job_id": result["active_job_id"], "lock_key": result["lock_key"]},
+            )
+        return result
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
 
 
 @admin_router.post("/managers/{manager_id}/confirm-cik", response_model=dict)
@@ -242,13 +616,90 @@ def read_manager_cik_review_events(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
 
 
+@admin_router.patch("/managers/{manager_id}/manager-type", response_model=dict)
+def patch_manager_type(
+    session: SessionDep,
+    current_user: AdminUser,
+    manager_id: int,
+    payload: ManagerTypeUpdateRequest,
+) -> Any:
+    """MVP5-05: apply an admin classification of
+    ``InstitutionManager.manager_type``. Writes a row to
+    ``institution_manager_type_review_events`` so the change is
+    auditable. No-op when the new value matches the current value."""
+    from app.services.manager_type_review import (
+        ManagerTypeUpdateError,
+        update_manager_type,
+    )
+    try:
+        return update_manager_type(
+            session,
+            manager_id,
+            new_manager_type=payload.new_manager_type,
+            reviewer_user_id=current_user.id,
+            note=payload.note,
+            evidence_json=payload.evidence_json,
+        )
+    except ManagerTypeUpdateError as exc:
+        message = str(exc)
+        # "manager not found" → 404; everything else (taxonomy validation
+        # failure) → 400.
+        if message.startswith("manager not found"):
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND, detail=message,
+            ) from exc
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail=message,
+        ) from exc
+
+
+@admin_router.get(
+    "/managers/{manager_id}/manager-type-events", response_model=dict,
+)
+def read_manager_type_review_events(
+    session: SessionDep,
+    current_user: AdminUser,
+    manager_id: int,
+    limit: int = Query(10, ge=1, le=100),
+) -> Any:
+    """MVP5-05: most recent ``manager_type`` audit events for a
+    manager. Powers the inline editor's history strip."""
+    from app.services.manager_type_review import (
+        list_manager_type_review_events,
+    )
+    return {
+        "items": list_manager_type_review_events(
+            session, manager_id, limit=limit,
+        ),
+    }
+
+
 @admin_router.get("/jobs", response_model=dict)
 def read_jobs(
     session: SessionDep,
     current_user: AdminUser,
-    limit: int = Query(100, ge=1, le=500),
+    page: int = Query(1, ge=1),
+    page_size: int = Query(50, ge=1, le=200),
+    limit: int | None = Query(None, ge=1, le=500),
+    status: str | None = Query(None),
+    job_type: str | None = Query(None),
+    started_from: datetime | None = Query(None),
+    started_to: datetime | None = Query(None),
+    sync_date: date | None = Query(None),
+    quarter: str | None = Query(None),
 ) -> Any:
-    return {"items": list_jobs(session, limit=limit)}
+    return list_jobs(
+        session,
+        page=page,
+        page_size=page_size,
+        limit=limit,
+        status=status,
+        job_type=job_type,
+        started_from=started_from,
+        started_to=started_to,
+        sync_date=sync_date,
+        quarter=quarter,
+    )
 
 
 @admin_router.get("/jobs/{job_id}", response_model=dict)
@@ -309,3 +760,334 @@ def retry_failed_filings(session: SessionDep, current_user: AdminUser, payload: 
             detail={"active_job_id": result["active_job_id"], "lock_key": result["lock_key"]},
         )
     return result
+
+
+@admin_router.post("/filings/{accession_no}/reparse", response_model=dict)
+def reparse_filing(
+    session: SessionDep,
+    current_user: AdminUser,
+    accession_no: str,
+) -> Any:
+    """Reparse an existing filing by accession number (PRD §6.3-§6.5).
+
+    Creates a new parse_run for the accession:
+    - On success, the new parse_run becomes is_current=True; old holdings are retained.
+    - On failure, the old current parse_run is restored; the failed run is persisted for audit.
+    """
+    from app.services.thirteenf_holdings_ingest import reparse_accession
+
+    try:
+        result = reparse_accession(session, accession_no)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Reparse failed: {exc}",
+        ) from exc
+    return result
+
+
+@admin_router.get("/holdings/coverage", response_model=dict)
+def read_holdings_coverage(
+    session: SessionDep,
+    current_user: AdminUser,
+    report_quarter: str | None = Query(None),
+) -> Any:
+    return build_holdings_coverage_summary(session, report_quarter=report_quarter)
+
+
+@admin_router.get("/cusip-mappings/unresolved", response_model=dict)
+def read_unresolved_cusip_mappings(
+    session: SessionDep,
+    current_user: AdminUser,
+    page: int = Query(1, ge=1),
+    page_size: int = Query(50, ge=1, le=200),
+) -> Any:
+    return list_unresolved_cusip_mappings(session, page=page, page_size=page_size)
+
+
+@admin_router.get("/cusip-mappings", response_model=dict)
+def read_cusip_mappings(
+    session: SessionDep,
+    current_user: AdminUser,
+    limit: int = Query(100, ge=1, le=1000),
+    needs_review: bool = Query(False),
+    unresolved: bool = Query(False),
+) -> Any:
+    from app.services.thirteenf_admin_dashboard import build_cusip_mappings
+    return {"items": build_cusip_mappings(session, limit, needs_review, unresolved)}
+
+
+@admin_router.get("/cusips", response_model=dict)
+def read_cusips(
+    session: SessionDep,
+    current_user: AdminUser,
+    limit: int = Query(100, ge=1, le=1000),
+    needs_review: bool = Query(False),
+    unresolved: bool = Query(False),
+) -> Any:
+    from app.services.thirteenf_admin_dashboard import build_cusip_mappings
+    return {"items": build_cusip_mappings(session, limit, needs_review, unresolved)}
+
+
+@admin_router.post("/cusips", response_model=CusipMappingResponse)
+def create_cusip_mapping_endpoint(
+    session: SessionDep, current_user: AdminUser, payload: CusipMappingCreate
+) -> Any:
+    from app.services.thirteenf_admin_dashboard import create_manual_cusip_mapping
+    try:
+        return create_manual_cusip_mapping(session, payload)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+
+
+@admin_router.patch("/cusips/{cusip}", response_model=CusipMappingResponse)
+def update_cusip_mapping_endpoint(
+    session: SessionDep, current_user: AdminUser, cusip: str, payload: CusipMappingUpdate
+) -> Any:
+    from app.services.thirteenf_admin_dashboard import update_manual_cusip_mapping
+    try:
+        return update_manual_cusip_mapping(session, cusip, payload)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+
+
+@admin_router.post("/cusips/corporate-actions/preview", response_model=dict)
+def preview_corporate_action_mapping_endpoint(
+    session: SessionDep,
+    current_user: AdminUser,
+    payload: CorporateActionMappingPreviewRequest,
+) -> Any:
+    from app.services.thirteenf_corporate_action_mapping import (
+        CorporateActionMappingError,
+        preview_corporate_action_confirmation,
+    )
+
+    try:
+        return preview_corporate_action_confirmation(
+            session,
+            cusip=payload.cusip,
+            effective_from_quarter=payload.effective_from_quarter,
+            effective_to_quarter=payload.effective_to_quarter,
+        )
+    except CorporateActionMappingError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+
+
+@admin_router.post("/cusips/corporate-actions/confirm", response_model=dict)
+def confirm_corporate_action_mapping_endpoint(
+    session: SessionDep,
+    current_user: AdminUser,
+    payload: CorporateActionMappingConfirmRequest,
+) -> Any:
+    from app.services.thirteenf_corporate_action_mapping import (
+        CorporateActionMappingError,
+        confirm_corporate_action_mapping,
+    )
+
+    try:
+        return confirm_corporate_action_mapping(
+            session,
+            cusip=payload.cusip,
+            new_ticker=payload.new_ticker,
+            new_issuer_name=payload.new_issuer_name,
+            effective_from_quarter=payload.effective_from_quarter,
+            effective_to_quarter=payload.effective_to_quarter,
+            evidence_url=payload.evidence_url,
+            reason=payload.reason,
+            reviewer_id=current_user.id,
+            prior_mapping_id=payload.prior_mapping_id,
+        )
+    except CorporateActionMappingError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+
+
+# ---------------------------------------------------------------------------
+# MVP3-08: Historical Backfill endpoints
+# ---------------------------------------------------------------------------
+
+
+class _BackfillPreviewRequest(BaseModel):
+    start_quarter: str | None = Field(None)
+    end_quarter: str | None = Field(None)
+    manager_ids: list[int] | None = Field(None)
+
+
+class _BackfillEnqueueRequest(BaseModel):
+    start_quarter: str | None = Field(None)
+    end_quarter: str | None = Field(None)
+    manager_ids: list[int] | None = Field(None)
+    dry_run: bool = Field(False)
+
+
+@admin_router.post("/backfill/preview", response_model=dict)
+def backfill_preview_endpoint(
+    session: SessionDep,
+    current_user: AdminUser,
+    payload: _BackfillPreviewRequest,
+) -> Any:
+    from app.services.thirteenf_historical_backfill import preview_historical_backfill
+    return preview_historical_backfill(
+        session,
+        start_quarter=payload.start_quarter,
+        end_quarter=payload.end_quarter,
+        manager_ids=payload.manager_ids,
+    )
+
+
+@admin_router.post("/backfill/enqueue", response_model=dict)
+def backfill_enqueue_endpoint(
+    session: SessionDep,
+    current_user: AdminUser,
+    payload: _BackfillEnqueueRequest,
+) -> Any:
+    from app.services.thirteenf_historical_backfill import (
+        HistoricalBackfillError,
+        enqueue_historical_backfill,
+    )
+    try:
+        job = enqueue_historical_backfill(
+            session,
+            start_quarter=payload.start_quarter,
+            end_quarter=payload.end_quarter,
+            manager_ids=payload.manager_ids,
+            dry_run=payload.dry_run,
+            requested_by_user_id=current_user.id,
+            trigger_source="admin",
+        )
+        return {
+            "job_id": job.id,
+            "status": job.status,
+            "job_type": job.job_type,
+            "lock_key": job.lock_key,
+            "dry_run": bool((job.input_json or {}).get("dry_run", False)),
+        }
+    except HistoricalBackfillError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+
+
+@admin_router.get("/backfill/needs-validation", response_model=dict)
+def backfill_needs_validation_endpoint(
+    session: SessionDep,
+    current_user: AdminUser,
+) -> Any:
+    from sqlalchemy import func
+    from app.models.institutions import QualityFinding13F
+    from app.services.thirteenf_historical_backfill import HISTORICAL_BACKFILL_RULE_CODE
+
+    rows = (
+        session.query(
+            QualityFinding13F.quarter,
+            QualityFinding13F.validation_run_id,
+            func.count(QualityFinding13F.id).label("open_count"),
+        )
+        .filter(
+            QualityFinding13F.rule_code == HISTORICAL_BACKFILL_RULE_CODE,
+            QualityFinding13F.status == "open",
+        )
+        .group_by(QualityFinding13F.quarter, QualityFinding13F.validation_run_id)
+        .order_by(QualityFinding13F.quarter.asc())
+        .all()
+    )
+
+    by_quarter: dict[str, dict] = {}
+    for quarter, report_id, open_count in rows:
+        key = quarter or "unknown"
+        if key not in by_quarter:
+            by_quarter[key] = {"quarter": key, "open_count": 0, "quality_report_ids": []}
+        by_quarter[key]["open_count"] += open_count
+        if report_id not in by_quarter[key]["quality_report_ids"]:
+            by_quarter[key]["quality_report_ids"].append(report_id)
+
+    return {"quarters": sorted(by_quarter.values(), key=lambda x: x["quarter"])}
+
+
+@admin_router.get("/oracles-lens/unknown-manager-priority", response_model=dict)
+def oracles_lens_unknown_manager_priority_endpoint(
+    session: SessionDep,
+    current_user: AdminUser,
+) -> Any:
+    """MVP4-07b: ranked list of ``manager_type=unknown`` managers
+    whose admin classification would most stabilize Oracle's Lens
+    score_confidence on the latest persisted quarter. See
+    ``app/services/oracles_lens/unknown_manager_priority.py``.
+    """
+    from app.services.oracles_lens.unknown_manager_priority import (
+        build_unknown_manager_priority,
+    )
+    return build_unknown_manager_priority(session)
+
+
+@admin_router.get("/oracles-lens/formula-comparison", response_model=dict)
+def oracles_lens_formula_comparison_endpoint(
+    session: SessionDep,
+    current_user: AdminUser,
+    quarter: str | None = Query(default=None),
+) -> Any:
+    """MVP5-03 Phase 1: per-stock comparison of the legacy in-memory
+    dashboard formula against the persisted MVP4-03 scorer. The PO
+    runs this against the latest scored quarter and reviews the
+    output before flipping the ``use_persisted_scores`` server
+    default to ``True`` (Phase 3)."""
+    from app.services.oracles_lens.formula_comparison import (
+        build_formula_comparison,
+    )
+    return build_formula_comparison(session, quarter=quarter)
+
+
+# ---------------------------------------------------------------------------
+# MVP3-08: Batch Reparse by Quarter endpoints
+# ---------------------------------------------------------------------------
+
+
+class _ReparseByQuarterRequest(BaseModel):
+    quarter: str | None = Field(None)
+
+
+@admin_router.post("/jobs/reparse-by-quarter/preview", response_model=dict)
+def reparse_by_quarter_preview_endpoint(
+    session: SessionDep,
+    current_user: AdminUser,
+    payload: _ReparseByQuarterRequest,
+) -> Any:
+    from app.services.thirteenf_batch_reparse import (
+        BatchReparseScopeError,
+        preview_batch_reparse,
+    )
+    if not payload.quarter:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="quarter is required.")
+    try:
+        return preview_batch_reparse(session, quarter=payload.quarter)
+    except BatchReparseScopeError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+
+
+@admin_router.post("/jobs/reparse-by-quarter/enqueue", response_model=dict)
+def reparse_by_quarter_enqueue_endpoint(
+    session: SessionDep,
+    current_user: AdminUser,
+    payload: _ReparseByQuarterRequest,
+) -> Any:
+    from app.services.thirteenf_batch_reparse import (
+        BatchReparseScopeError,
+        enqueue_batch_reparse,
+    )
+    if not payload.quarter:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="quarter is required.")
+    try:
+        job = enqueue_batch_reparse(
+            session,
+            quarter=payload.quarter,
+            requested_by_user_id=current_user.id,
+            trigger_source="admin",
+        )
+        return {
+            "job_id": job.id,
+            "status": job.status,
+            "job_type": job.job_type,
+            "lock_key": job.lock_key,
+            "quarter": payload.quarter,
+        }
+    except BatchReparseScopeError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc

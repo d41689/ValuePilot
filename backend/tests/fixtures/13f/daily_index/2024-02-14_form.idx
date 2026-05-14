@@ -1,0 +1,10 @@
+Description:           Daily Index of EDGAR Dissemination Feed by Form Type
+Last Data Received:    February 14, 2024
+
+Form Type   Company Name                                                  CIK         Date Filed  File Name
+------------------------------------------------------------------------------------------------------------------------
+13F-HR      ACTIVE TRACKED MANAGER LP                                     1067983     2024-02-14  edgar/data/1067983/0001067983-24-000006.txt
+13F-HR/A    INACTIVE MANAGER LLC                                          1035055     2024-02-14  edgar/data/1035055/0001035055-24-000001.txt
+13F-NT      ACTIVE TRACKED MANAGER LP                                     1067983     2024-02-14  edgar/data/1067983/0001067983-24-000007.txt
+13F-HR      UNTRACKED MANAGER INC                                         9999999     2024-02-14  edgar/data/9999999/0009999999-24-000001.txt
+10-K        OTHER OPERATING COMPANY                                       1111111     2024-02-14  edgar/data/1111111/0001111111-24-000001.txt

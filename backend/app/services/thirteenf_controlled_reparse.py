@@ -1,0 +1,364 @@
+"""MVP3 controlled 13F reparse contract.
+
+This module wraps the existing audit-preserving single-accession reparse path
+with validation-gated activation semantics and a structured before/after impact
+summary. It intentionally does not implement batch reparse or admin API/UI.
+"""
+
+from __future__ import annotations
+
+from dataclasses import asdict, dataclass, field
+from typing import Any, Callable
+
+from sqlalchemy.orm import Session
+
+from app.models.institutions import (
+    Filing13F,
+    FilingValueUnitOverride13F,
+    Holding13F,
+    OwnershipChange13F,
+    ParseRun13F,
+    QualityFinding13F,
+)
+from app.services.thirteenf_holdings_ingest import reparse_accession
+
+ValidationGate = Callable[[Session, Filing13F, ParseRun13F], bool | tuple[bool, list[str]]]
+
+
+@dataclass(frozen=True)
+class ImpactSummary:
+    """Typed before/after impact summary for a single controlled reparse.
+
+    Extracted in MVP3-05 (carryover from MVP3-04 review) so that the batch
+    reparse layer can aggregate per-filing impact with an explicit field
+    contract instead of a free-form dict.
+    """
+
+    filings_affected: int
+    parse_runs_created: int
+    current_pointers_changed: int
+    holdings_rows_before: int
+    holdings_rows_after: int
+    holdings_rows_created: int
+    holdings_row_count_delta: int
+    ownership_changes_recompute_count: int
+    ownership_changes_recompute_scope: dict[str, Any]
+    readiness_level_impact: dict[str, Any]
+    quality_finding_delta: dict[str, Any]
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+    # Dict-style access keeps API serializers and existing call sites stable.
+    def __getitem__(self, key: str) -> Any:
+        return getattr(self, key)
+
+
+@dataclass(frozen=True)
+class ControlledReparseResult:
+    status: str
+    accession_number: str
+    old_parse_run_id: int | None
+    new_parse_run_id: int | None
+    impact_summary: ImpactSummary
+    validation_errors: list[str] = field(default_factory=list)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "status": self.status,
+            "accession_number": self.accession_number,
+            "old_parse_run_id": self.old_parse_run_id,
+            "new_parse_run_id": self.new_parse_run_id,
+            "impact_summary": self.impact_summary.to_dict(),
+            "validation_errors": list(self.validation_errors),
+        }
+
+
+def controlled_reparse_accession(
+    session: Session,
+    accession_number: str,
+    *,
+    infotable_bytes: bytes | None = None,
+    override_id: int | None = None,
+    validation_gate: ValidationGate | None = None,
+) -> ControlledReparseResult:
+    """Run a validation-gated single-accession reparse.
+
+    The existing parser path creates and audits the new parse_run. This wrapper
+    records impact, reverts current-pointer activation when validation fails, and
+    applies a filing-level value-unit override only after the controlled reparse
+    succeeds.
+    """
+    if validation_gate is None:
+        raise ValueError("validation_gate is required for controlled reparse")
+
+    filing = _filing_for_accession(session, accession_number)
+    before = _snapshot(session, filing)
+    override = _override_for_id(session, override_id) if override_id is not None else None
+
+    if override is not None and override.accession_number != accession_number:
+        raise ValueError(
+            f"Override {override_id} belongs to {override.accession_number!r}, "
+            f"not {accession_number!r}."
+        )
+    if override is not None and override.status != "pending_reparse":
+        raise ValueError(
+            f"Override {override_id} has status {override.status!r}; "
+            "only 'pending_reparse' overrides may be applied."
+        )
+
+    try:
+        result = reparse_accession(session, accession_number, infotable_bytes=infotable_bytes)
+    except Exception:
+        after_failure = _snapshot(session, filing)
+        if override is not None:
+            override.status = "reparse_failed"
+            session.add(override)
+            session.commit()
+        return ControlledReparseResult(
+            status="failed",
+            accession_number=accession_number,
+            old_parse_run_id=before["current_parse_run_id"],
+            new_parse_run_id=None,
+            impact_summary=_impact_summary(filing, before, after_failure),
+            validation_errors=["parse_failed"],
+        )
+
+    new_run = session.get(ParseRun13F, result["parse_run_id"])
+    if new_run is None:
+        raise RuntimeError(f"Controlled reparse did not persist parse_run {result['parse_run_id']}")
+    new_run_holdings_count = _holdings_count_for_parse_run(session, new_run.id)
+
+    gate_passed, validation_errors = _run_validation_gate(validation_gate, session, filing, new_run)
+    if not gate_passed:
+        _restore_current_pointer(session, before["current_parse_run_id"], new_run.id)
+        # SME C1: also undo amendment activation, not just the parse_run pointer.
+        _restore_active_filing(
+            session,
+            filing_id=filing.id,
+            filing_was_active=bool(before["filing_is_active_for_manager_period"]),
+            prior_active_filing_id=before["prior_active_filing_id"],
+        )
+        if override is not None:
+            override.status = "reparse_failed"
+            override.result_parse_run_id = new_run.id
+            session.add(override)
+        session.commit()
+        after_validation_failure = _snapshot(session, filing)
+        return ControlledReparseResult(
+            status="validation_failed",
+            accession_number=accession_number,
+            old_parse_run_id=before["current_parse_run_id"],
+            new_parse_run_id=new_run.id,
+            impact_summary=_impact_summary(
+                filing,
+                before,
+                after_validation_failure,
+                new_parse_run_id=new_run.id,
+                new_parse_run_holdings_count=new_run_holdings_count,
+            ),
+            validation_errors=validation_errors,
+        )
+
+    if override is not None:
+        filing.effective_value_unit_override = override.new_override_value
+        filing.effective_value_unit_override_id = override.id
+        override.status = "applied"
+        override.result_parse_run_id = new_run.id
+        session.add_all([filing, override])
+
+    session.commit()
+
+    after = _snapshot(session, filing)
+    return ControlledReparseResult(
+        status="succeeded",
+        accession_number=accession_number,
+        old_parse_run_id=before["current_parse_run_id"],
+        new_parse_run_id=new_run.id,
+        impact_summary=_impact_summary(
+            filing,
+            before,
+            after,
+            new_parse_run_id=new_run.id,
+            new_parse_run_holdings_count=new_run_holdings_count,
+        ),
+        validation_errors=[],
+    )
+
+
+def _filing_for_accession(session: Session, accession_number: str) -> Filing13F:
+    filing = session.query(Filing13F).filter(Filing13F.accession_number == accession_number).one_or_none()
+    if filing is None:
+        raise ValueError(f"Filing not found for accession: {accession_number}")
+    return filing
+
+
+def _override_for_id(session: Session, override_id: int) -> FilingValueUnitOverride13F:
+    override = session.get(FilingValueUnitOverride13F, override_id)
+    if override is None:
+        raise ValueError(f"Filing value-unit override not found: {override_id}")
+    return override
+
+
+def _run_validation_gate(
+    validation_gate: ValidationGate,
+    session: Session,
+    filing: Filing13F,
+    parse_run: ParseRun13F,
+) -> tuple[bool, list[str]]:
+    result = validation_gate(session, filing, parse_run)
+    if isinstance(result, tuple):
+        passed, errors = result
+        return bool(passed), list(errors or [])
+    return bool(result), []
+
+
+def _restore_current_pointer(
+    session: Session,
+    old_parse_run_id: int | None,
+    new_parse_run_id: int,
+) -> None:
+    # Demote before promote: the non-deferrable partial unique index on
+    # (accession_number WHERE is_current) fires at flush time, so the new run
+    # must be deactivated before the old run is reactivated.
+    new_run = session.get(ParseRun13F, new_parse_run_id)
+    if new_run is not None:
+        new_run.is_current = False
+        session.add(new_run)
+        session.flush()
+    if old_parse_run_id is not None:
+        old_run = session.get(ParseRun13F, old_parse_run_id)
+        if old_run is not None:
+            old_run.is_current = True
+            session.add(old_run)
+            session.flush()
+
+
+def _restore_active_filing(
+    session: Session,
+    *,
+    filing_id: int,
+    filing_was_active: bool,
+    prior_active_filing_id: int | None,
+) -> None:
+    """Undo any amendment activation that the parser committed before the
+    validation gate ran.
+
+    Background: ingest_holdings_for_filing flips
+    ``Filing13F.is_active_for_manager_period`` for a RESTATEMENT amendment as
+    part of its success path, before controlled_reparse_accession evaluates
+    the validation gate. If the gate fails we need to roll that flip back
+    too — otherwise a failed-validation amendment stays "active" and product
+    queries return holdings the gate rejected.
+
+    Demote before promote, same reason as _restore_current_pointer: the
+    partial unique index ``uq_active_filing_per_manager_period`` fires on
+    flush.
+    """
+    filing = session.get(Filing13F, filing_id)
+    # Only act when the parser-side flip actually changed the active state.
+    if filing is None or filing.is_active_for_manager_period == filing_was_active:
+        return
+
+    filing.is_active_for_manager_period = filing_was_active
+    session.add(filing)
+    session.flush()
+
+    if prior_active_filing_id is not None:
+        prior = session.get(Filing13F, prior_active_filing_id)
+        if prior is not None and not prior.is_active_for_manager_period:
+            prior.is_active_for_manager_period = True
+            session.add(prior)
+            session.flush()
+
+
+def _snapshot(session: Session, filing: Filing13F) -> dict[str, Any]:
+    current_run = (
+        session.query(ParseRun13F)
+        .filter(ParseRun13F.accession_number == filing.accession_number)
+        .filter(ParseRun13F.is_current.is_(True))
+        .one_or_none()
+    )
+    current_parse_run_id = current_run.id if current_run is not None else None
+    holdings_count = (
+        session.query(Holding13F).filter(Holding13F.parse_run_id == current_parse_run_id).count()
+        if current_parse_run_id is not None
+        else 0
+    )
+    open_findings_count = (
+        session.query(QualityFinding13F)
+        .filter(QualityFinding13F.accession_number == filing.accession_number)
+        .filter(QualityFinding13F.status == "open")
+        .count()
+    )
+    ownership_changes_count = (
+        session.query(OwnershipChange13F)
+        .filter(OwnershipChange13F.current_filing_id == filing.id)
+        .count()
+    )
+    # SME C1: also capture pre-parse active state so a failed validation gate
+    # can roll back amendment activation, not just the parse_run pointer.
+    prior_active_filing_id: int | None = None
+    if filing.is_amendment and not filing.is_active_for_manager_period:
+        prior_active_filing_id = (
+            session.query(Filing13F.id)
+            .filter(Filing13F.manager_id == filing.manager_id)
+            .filter(Filing13F.quarter_end_date == filing.quarter_end_date)
+            .filter(Filing13F.is_active_for_manager_period.is_(True))
+            .filter(Filing13F.id != filing.id)
+            .scalar()
+        )
+    return {
+        "current_parse_run_id": current_parse_run_id,
+        "holdings_count": holdings_count,
+        "filing_parse_status": filing.parse_status,
+        "open_quality_findings_count": open_findings_count,
+        "ownership_changes_count": ownership_changes_count,
+        "filing_is_active_for_manager_period": bool(filing.is_active_for_manager_period),
+        "prior_active_filing_id": prior_active_filing_id,
+    }
+
+
+def _holdings_count_for_parse_run(session: Session, parse_run_id: int) -> int:
+    return session.query(Holding13F).filter(Holding13F.parse_run_id == parse_run_id).count()
+
+
+def _impact_summary(
+    filing: Filing13F,
+    before: dict[str, Any],
+    after: dict[str, Any],
+    *,
+    new_parse_run_id: int | None = None,
+    new_parse_run_holdings_count: int | None = None,
+) -> ImpactSummary:
+    before_holdings = int(before["holdings_count"] or 0)
+    after_holdings = int(after["holdings_count"] or 0)
+    # Kept separate from current holdings because validation failure restores the
+    # old current pointer while retaining the audited candidate parse run.
+    holdings_rows_created = new_parse_run_holdings_count if new_parse_run_id is not None else after_holdings
+    open_before = int(before["open_quality_findings_count"] or 0)
+    open_after = int(after["open_quality_findings_count"] or 0)
+    return ImpactSummary(
+        filings_affected=1,
+        parse_runs_created=1 if new_parse_run_id is not None else 0,
+        current_pointers_changed=1 if before["current_parse_run_id"] != after["current_parse_run_id"] else 0,
+        holdings_rows_before=before_holdings,
+        holdings_rows_after=after_holdings,
+        holdings_rows_created=holdings_rows_created,
+        holdings_row_count_delta=abs(holdings_rows_created - before_holdings),
+        ownership_changes_recompute_count=int(before["ownership_changes_count"] or 0),
+        ownership_changes_recompute_scope={
+            "manager_id": filing.manager_id,
+            "report_quarter": filing.report_quarter,
+            "accession_number": filing.accession_number,
+        },
+        readiness_level_impact={
+            "parse_status_before": before["filing_parse_status"],
+            "parse_status_after": after["filing_parse_status"],
+        },
+        quality_finding_delta={
+            "open_before": open_before,
+            "open_after": open_after,
+            "delta": open_after - open_before,
+        },
+    )

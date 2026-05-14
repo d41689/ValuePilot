@@ -81,13 +81,13 @@ Fetches `form.idx` indexes and downloads + parses all filings for the last N qua
 
 **Step 3 — Build the CUSIP → ticker map**
 ```bash
-# Round 1: match by name against Dataroma holdings pages
+# Round 1: map pending CUSIPs through OpenFIGI
 docker compose exec api python -m app.cli.edgar enrich-cusip
 
 # Round 2: bootstrap stocks table + backfill stock_id
 docker compose exec api python -m app.cli.edgar bootstrap-stocks
 
-# Round 3: match remaining CUSIPs against SEC company_tickers.json
+# Round 3: match remaining tickers against SEC company_tickers.json
 docker compose exec api python -m app.cli.edgar enrich-stocks-edgar
 ```
 
@@ -170,6 +170,6 @@ docker compose exec api python -m app.cli.edgar backfill-reported-totals
 
 ### Known Limitations
 
-- **~10% of holdings have no `stock_id`** — small, foreign, or delisted securities not found in Dataroma or SEC `company_tickers.json`. Appear in API responses with `ticker: null`.
+- **~10% of holdings have no `stock_id`** — small, foreign, or delisted securities not mapped through OpenFIGI or SEC `company_tickers.json`. Appear in API responses with `ticker: null`.
 - **Kahn Brothers reconciliation warnings are expected** — they report values in dollars, not thousands (genuine filer non-compliance; not a pipeline bug).
 - **2025-Q1 has limited data** — the original backfill ran `--quarters 5` from April 2026, which excludes 2025-Q1. Run `backfill --quarters 8` to fill the gap.
