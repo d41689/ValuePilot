@@ -174,5 +174,8 @@ quality_overlay: {
 - [x] Frontend compact M3 panel shipped (has-data + no-data paths).
 - [x] pytest -q → 819 passed (2 pre-existing isolation-flaky failures pass in
       isolation); lint clean; build clean.
-- [ ] Manual probe passed.
-- [ ] **MVP8-A2 closed.**
+- [x] curl probe passed 2026-05-13:
+      FICO (757) → has_value_line=true, piotroski 6/7, EP 100%, VL $1125–$2489 mid $1807;
+      ADBE (1254) → has_value_line=true, piotroski 5/7, EP 75%, VL $203–$417 mid $310;
+      AAPL (1237, no VL data) → has_value_line=false (explicit empty state).
+- [x] **MVP8-A2 closed 2026-05-13.**
