@@ -192,5 +192,6 @@ no click handlers.
       sort changes don't churn the 13F snapshots query.
 - [x] `node --test lib/watchlistSort.test.js` → 24 passed; lint
       clean; build clean (/watchlist route 22.7 kB First Load).
-- [ ] Manual probe passed (8 steps above).
-- [ ] **MVP7-06 closed.**
+- [x] Manual probe passed 2026-05-14 — `/watchlist` 13F columns
+      sort correctly (user confirmation).
+- [x] **MVP7-06 closed 2026-05-14.**
