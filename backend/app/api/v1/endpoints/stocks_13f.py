@@ -41,7 +41,6 @@ router = APIRouter()
 _DISTINCTIVE_MAX_CONSENSUS = 8
 _DISTINCTIVE_MIN_COVERAGE = 0.7
 _CROWDED_MIN_CONSENSUS = 20
-_CROWDED_MAX_COVERAGE = 0.5
 # MVP8-03B B2: ``crowded`` gates on the admin-unknown ratio rather than
 # the derived coverage. ``derive_manager_signal_profile`` overwrites the
 # admin classification with a behavior-derived one, so the original

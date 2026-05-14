@@ -242,10 +242,13 @@ function TopHolderCard({ holder }: { holder: Watchlist13FTopHolder }) {
             {holder.manager_name || `Manager #${holder.manager_id}`}
           </Link>
           <div className="mt-1 flex flex-wrap gap-2 text-xs">
-            {/* MVP8-03B B1: when admin and derived manager_type diverge,
-                surface both so reviewers see what admin curated vs what
-                behavior derivation inferred. Equal values render once. */}
+            {/* MVP8-03B B1: when admin has made a non-unknown classification
+                that diverges from behavior derivation, surface both so
+                reviewers see the divergence. Suppressed when admin is
+                "unknown" (uncurated) to avoid noise-polluting every holder
+                card before admin curation completes. */}
             {holder.manager_type_admin_classified &&
+            holder.manager_type_admin_classified !== 'unknown' &&
             holder.manager_type_admin_classified !== holder.manager_type ? (
               <>
                 <Badge
