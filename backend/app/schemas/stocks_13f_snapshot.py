@@ -138,6 +138,10 @@ class AvailableStockDetail(BaseModel):
     # Detail-only fields.
     top_holders: list[StockDetailTopHolder]
     caveat_flags: list[StockDetailCaveatFlag]
+    # MVP8-A2: compact M3 quality/valuation overlay from Value Line facts.
+    # None when the endpoint cannot fetch facts (should not happen in normal
+    # flow). {"has_value_line": false} when no VL data exists for the stock.
+    quality_overlay: Optional[dict] = None
 
 
 class UnavailableStockDetail(BaseModel):

@@ -21,6 +21,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_db
+from app.models.facts import MetricFact
 from app.schemas.stocks_13f_snapshot import (
     AvailableStockDetail,
     AvailableStockSnapshot,
@@ -35,6 +36,78 @@ from app.schemas.stocks_13f_snapshot import (
 from app.services.oracles_lens.dashboard import build_oracles_lens_dashboard
 
 router = APIRouter()
+
+# MVP8-A2: metric keys used by the drawer M3 panel.
+_M3_METRIC_KEYS: list[str] = [
+    "score.piotroski.total",
+    "target.price_18m.mid",
+    "target.price_18m.low",
+    "target.price_18m.high",
+    "proj.long_term.low_price",
+    "proj.long_term.high_price",
+    "quality.earnings_predictability",
+]
+
+
+def _m3_panel_for_stock(db: Session, stock_id: int) -> dict[str, Any]:
+    """Compact M3 quality/valuation overlay for the Watchlist drawer.
+
+    Returns ``{"has_value_line": False}`` when no Value Line facts exist
+    for the stock. Never raises — missing data is a first-class state.
+    """
+    facts = (
+        db.query(MetricFact)
+        .filter(
+            MetricFact.stock_id == stock_id,
+            MetricFact.metric_key.in_(_M3_METRIC_KEYS),
+            MetricFact.is_current.is_(True),
+        )
+        .order_by(
+            MetricFact.metric_key.asc(),
+            MetricFact.period_end_date.desc().nullslast(),
+            MetricFact.created_at.desc(),
+        )
+        .all()
+    )
+    if not facts:
+        return {"has_value_line": False}
+
+    by_key: dict[str, MetricFact] = {}
+    for fact in facts:
+        if fact.metric_key not in by_key:
+            by_key[fact.metric_key] = fact
+
+    # Piotroski is stored in value_json (value_numeric is null for most rows).
+    piotroski_score: int | None = None
+    piotroski_max: int | None = None
+    piotroski_status: str | None = None
+    piotroski_fact = by_key.get("score.piotroski.total")
+    if piotroski_fact and isinstance(piotroski_fact.value_json, dict):
+        vj = piotroski_fact.value_json
+        raw_score = vj.get("partial_score")
+        raw_max = vj.get("max_available_score")
+        piotroski_score = int(raw_score) if raw_score is not None else None
+        piotroski_max = int(raw_max) if raw_max is not None else None
+        piotroski_status = vj.get("status")
+
+    def _num(key: str) -> float | None:
+        fact = by_key.get(key)
+        if fact is not None and fact.value_numeric is not None:
+            return float(fact.value_numeric)
+        return None
+
+    return {
+        "has_value_line": True,
+        "piotroski_score": piotroski_score,
+        "piotroski_max": piotroski_max,
+        "piotroski_status": piotroski_status,
+        "earnings_predictability": _num("quality.earnings_predictability"),
+        "vl_target_mid": _num("target.price_18m.mid"),
+        "vl_target_low": _num("target.price_18m.low"),
+        "vl_target_high": _num("target.price_18m.high"),
+        "vl_3y_low": _num("proj.long_term.low_price"),
+        "vl_3y_high": _num("proj.long_term.high_price"),
+    }
 
 
 # Distinctiveness tier thresholds (Pre-MVP7-01 D1 heuristic, V1).
@@ -502,6 +575,7 @@ def read_stock_13f_detail(
         score_confidence=_normalize_score_confidence(item.get("score_confidence")),
         top_holders=top_holders,
         caveat_flags=structured_caveats,
+        quality_overlay=_m3_panel_for_stock(db, stock_id),
     )
 
     return StockDetailResponse(

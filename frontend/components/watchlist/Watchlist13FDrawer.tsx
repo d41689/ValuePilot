@@ -190,6 +190,8 @@ function AvailableBody({
         </div>
       </section>
 
+      <QualityOverlaySection overlay={detail.quality_overlay ?? null} />
+
       <section className="space-y-3">
         <div className="text-xs font-semibold uppercase text-muted-foreground">
           Top Holders
@@ -318,6 +320,90 @@ function TopHolderCard({ holder }: { holder: Watchlist13FTopHolder }) {
         ) : null}
       </div>
     </div>
+  );
+}
+
+type M3Overlay = NonNullable<Watchlist13FAvailableDetail['quality_overlay']>;
+
+function QualityOverlaySection({ overlay }: { overlay: M3Overlay | null }) {
+  const fmtPrice = (v: number | null | undefined) =>
+    v != null ? `$${v.toLocaleString(undefined, { maximumFractionDigits: 0 })}` : null;
+  const fmtPct = (v: number | null | undefined) =>
+    v != null ? `${v.toFixed(0)}%` : null;
+
+  const piotroskiTone = (score: number | null, max: number | null) => {
+    if (score == null || max == null || max === 0) return 'outline' as const;
+    const ratio = score / max;
+    if (ratio >= 0.78) return 'success' as const;
+    if (ratio >= 0.56) return 'secondary' as const;
+    return 'outline' as const;
+  };
+
+  return (
+    <section className="space-y-3">
+      <div className="text-xs font-semibold uppercase text-muted-foreground">
+        Quality &amp; Valuation
+      </div>
+      {overlay == null || !overlay.has_value_line ? (
+        <div className="text-xs text-muted-foreground">
+          Value Line data not yet available for this stock.
+        </div>
+      ) : (
+        <div className="space-y-2">
+          <div className="flex flex-wrap gap-2">
+            {overlay.piotroski_score != null && overlay.piotroski_max != null ? (
+              <Badge
+                variant={piotroskiTone(overlay.piotroski_score, overlay.piotroski_max)}
+                title={
+                  overlay.piotroski_status === 'partial'
+                    ? 'Partial score — one or more Piotroski indicators are missing from Value Line data.'
+                    : 'Piotroski F-Score'
+                }
+              >
+                Piotroski {overlay.piotroski_score}/{overlay.piotroski_max}
+                {overlay.piotroski_status === 'partial' ? '*' : ''}
+              </Badge>
+            ) : null}
+            {overlay.earnings_predictability != null ? (
+              <Badge variant="outline">
+                Earnings Predictability {fmtPct(overlay.earnings_predictability)}
+              </Badge>
+            ) : null}
+          </div>
+
+          {(overlay.vl_target_mid != null ||
+            overlay.vl_target_low != null ||
+            overlay.vl_target_high != null) ? (
+            <div className="text-xs text-muted-foreground">
+              <span className="font-medium text-foreground">VL 18-month target</span>
+              {overlay.vl_target_low != null && overlay.vl_target_high != null ? (
+                <span>
+                  {' '}{fmtPrice(overlay.vl_target_low)}–{fmtPrice(overlay.vl_target_high)}
+                  {overlay.vl_target_mid != null ? (
+                    <span> (mid {fmtPrice(overlay.vl_target_mid)})</span>
+                  ) : null}
+                </span>
+              ) : overlay.vl_target_mid != null ? (
+                <span> {fmtPrice(overlay.vl_target_mid)}</span>
+              ) : null}
+            </div>
+          ) : null}
+
+          {overlay.vl_3y_low != null && overlay.vl_3y_high != null ? (
+            <div className="text-xs text-muted-foreground">
+              <span className="font-medium text-foreground">VL 3–5 year range</span>
+              {' '}{fmtPrice(overlay.vl_3y_low)}–{fmtPrice(overlay.vl_3y_high)}
+            </div>
+          ) : null}
+
+          {overlay.piotroski_status === 'partial' ? (
+            <div className="text-[10px] text-muted-foreground">
+              * Partial score — one or more Piotroski indicators missing from available Value Line data.
+            </div>
+          ) : null}
+        </div>
+      )}
+    </section>
   );
 }
 

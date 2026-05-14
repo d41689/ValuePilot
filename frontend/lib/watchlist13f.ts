@@ -377,6 +377,19 @@ export type Watchlist13FAvailableDetail = {
   score_confidence: 'high' | 'medium' | 'low';
   top_holders: Watchlist13FTopHolder[];
   caveat_flags: Watchlist13FCaveatFlag[];
+  // MVP8-A2: compact M3 quality/valuation overlay from Value Line facts.
+  quality_overlay: {
+    has_value_line: boolean;
+    piotroski_score: number | null;
+    piotroski_max: number | null;
+    piotroski_status: string | null;
+    earnings_predictability: number | null;
+    vl_target_mid: number | null;
+    vl_target_low: number | null;
+    vl_target_high: number | null;
+    vl_3y_low: number | null;
+    vl_3y_high: number | null;
+  } | null;
 };
 
 export type Watchlist13FUnavailableDetail = {
