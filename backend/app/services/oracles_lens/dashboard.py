@@ -65,6 +65,12 @@ class ManagerHolding:
     share_delta_pct: float | None = None
     holding_streak_quarters: int = 1
     manager_type: str = "unknown"
+    # MVP8-03B B1: preserve the InstitutionManager.manager_type as the
+    # admin-classified value before _apply_manager_signal_profiles
+    # overwrites ``manager_type`` with the behavior-derived profile. The
+    # drawer renders both so reviewers can spot admin-vs-derived
+    # divergence in context.
+    manager_type_admin_classified: str = "unknown"
     manager_signal_weight: float = 0.6
     portfolio_concentration: float | None = None
     portfolio_holding_count: int | None = None
@@ -391,6 +397,7 @@ def _holdings_for_period(
                 position_weight=0,
                 filing_date=filing.filed_at,
                 accession_no=filing.accession_no,
+                manager_type_admin_classified=manager.manager_type or "unknown",
             )
         grouped[key].shares += int(holding.shares or 0)
         grouped[key].value_thousands += int(holding.value_thousands or 0)
@@ -532,9 +539,21 @@ def _stock_payload(
         min_holders=min_holders,
     )
     unknown_count = sum(1 for item in holdings if item.manager_type == "unknown")
+    admin_unknown_count = sum(
+        1 for item in holdings if item.manager_type_admin_classified == "unknown"
+    )
     high_turnover_count = sum(1 for item in holdings if item.high_turnover)
     typed_count = consensus_count - unknown_count
     quality_coverage = typed_count / consensus_count if consensus_count else 0
+    # MVP8-03B B4: portfolio-weight context for the Δ Holders chip — sum
+    # of position_weight across adders / reducers so the chip tooltip can
+    # show "+3 holders · adders weighted 8.2% · reducers weighted 1.1%".
+    adders_portfolio_weight_sum = sum(
+        item.position_weight for item in holdings if item.action in {"new", "add"}
+    )
+    reducers_portfolio_weight_sum = sum(
+        item.position_weight for item in holdings if item.action in {"reduce", "exit"}
+    )
 
     return {
         "stock_id": holdings[0].stock_id,
@@ -571,6 +590,7 @@ def _stock_payload(
                 "action": item.action,
                 "holding_streak_quarters": item.holding_streak_quarters,
                 "manager_type": item.manager_type,
+                "manager_type_admin_classified": item.manager_type_admin_classified,
                 "manager_signal_weight": round(item.manager_signal_weight, 4),
                 "portfolio_concentration": item.portfolio_concentration,
                 "portfolio_holding_count": item.portfolio_holding_count,
@@ -586,8 +606,11 @@ def _stock_payload(
         "manager_signal_summary": {
             "high_signal_holder_count": sum(1 for item in holdings if item.manager_signal_weight >= 0.75),
             "unknown_manager_type_count": unknown_count,
+            "admin_unknown_manager_type_count": admin_unknown_count,
             "high_turnover_holder_count": high_turnover_count,
             "manager_signal_quality_coverage": round(quality_coverage, 4),
+            "adders_portfolio_weight_sum": round(adders_portfolio_weight_sum, 6),
+            "reducers_portfolio_weight_sum": round(reducers_portfolio_weight_sum, 6),
         },
         "score_explanation": {
             "primary_reasons": _primary_reasons(holdings, median_streak),

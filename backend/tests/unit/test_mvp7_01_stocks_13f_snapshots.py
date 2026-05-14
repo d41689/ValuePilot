@@ -336,17 +336,34 @@ def test_distinctiveness_tier_distinctive_threshold():
 
 
 def test_distinctiveness_tier_crowded_threshold():
-    assert _distinctiveness_tier(consensus_count=20, coverage=0.49) == "crowded"
-    assert _distinctiveness_tier(consensus_count=30, coverage=0.1) == "crowded"
+    # MVP8-03B B2: ``crowded`` now gates on admin_unknown_ratio > 0.5,
+    # not derived coverage < 0.5. The derived-coverage rule almost never
+    # fired in production (audit on 2025-Q3: 0 ``crowded`` stocks)
+    # because behavior derivation overrides admin's ``unknown``
+    # classification, inflating coverage. The new rule reflects whether
+    # the operator has actually vetted each holder.
+    assert _distinctiveness_tier(
+        consensus_count=20, coverage=1.0, admin_unknown_ratio=0.6,
+    ) == "crowded"
+    assert _distinctiveness_tier(
+        consensus_count=30, coverage=0.8, admin_unknown_ratio=1.0,
+    ) == "crowded"
 
 
 def test_distinctiveness_tier_mixed_fallback():
     # Just below distinctive coverage threshold.
     assert _distinctiveness_tier(consensus_count=5, coverage=0.69) == "mixed"
     # Just below crowded consensus threshold.
-    assert _distinctiveness_tier(consensus_count=19, coverage=0.4) == "mixed"
+    assert _distinctiveness_tier(
+        consensus_count=19, coverage=0.4, admin_unknown_ratio=1.0,
+    ) == "mixed"
     # Distinctive consensus but crowded coverage — falls through to mixed.
     assert _distinctiveness_tier(consensus_count=6, coverage=0.4) == "mixed"
+    # MVP8-03B B2: high consensus with admin curation done (low admin
+    # unknown ratio) is NOT crowded — stays mixed.
+    assert _distinctiveness_tier(
+        consensus_count=25, coverage=0.9, admin_unknown_ratio=0.3,
+    ) == "mixed"
 
 
 def test_caveat_severity_aggregation_ok_on_empty():

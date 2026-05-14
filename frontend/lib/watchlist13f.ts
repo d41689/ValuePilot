@@ -29,6 +29,10 @@ export type Watchlist13FAvailableSnapshot = {
   delta_holders: number;
   adders_count: number;
   reducers_count: number;
+  // MVP8-03B B4: portfolio-weight context for the Δ Holders chip
+  // tooltip — sum of position_weight across adders / reducers.
+  adders_portfolio_weight_sum: number;
+  reducers_portfolio_weight_sum: number;
   consensus_count: number;
   distinctiveness_tier: 'distinctive' | 'mixed' | 'crowded';
   caveat_severity: 'ok' | 'caution' | 'high-caution';
@@ -251,15 +255,24 @@ export function groupHeaderLabel(
 
 export type MosCrossSignal =
   | 'aligned'
+  | 'weak-aligned'
   | 'exit-divergence'
   | 'buy-divergence'
   | 'neutral';
 
 /**
- * MOS × 13F cross-signal (Pre-MVP7-01 D5). Returns ``'neutral'``
- * for any input where MOS or Δ Holders is unavailable.
+ * MOS × 13F cross-signal. Returns ``'neutral'`` for any input where
+ * MOS or Δ Holders is unavailable.
  *
- * - ``aligned``: MOS ≥ 20% AND Δ Holders ≥ +1
+ * MVP8-03B B3 (2026-05-13): two-tier alignment — V1's
+ * ``(MOS ≥ 0.20, Δ ≥ +1)`` is preserved as the new ``weak-aligned``
+ * tier; ``aligned`` is reserved for the stronger
+ * ``(MOS ≥ 0.30, Δ ≥ +3)`` cross-signal so the visual emphasis
+ * actually tracks high-confidence cases. SME flag from the
+ * MVP7-06 four-role review.
+ *
+ * - ``aligned``: MOS ≥ 30% AND Δ Holders ≥ +3
+ * - ``weak-aligned``: MOS ≥ 20% AND Δ Holders ≥ +1 (and below aligned)
  * - ``exit-divergence``: MOS ≥ 20% AND Δ Holders ≤ −1
  * - ``buy-divergence``: MOS ≤ 0 AND Δ Holders ≥ +1
  * - ``neutral``: otherwise
@@ -271,7 +284,8 @@ export function mosCrossSignal(args: {
   const { mos, deltaHolders } = args;
   if (mos === null || mos === undefined) return 'neutral';
   if (deltaHolders === null || deltaHolders === undefined) return 'neutral';
-  if (mos >= 0.2 && deltaHolders >= 1) return 'aligned';
+  if (mos >= 0.3 && deltaHolders >= 3) return 'aligned';
+  if (mos >= 0.2 && deltaHolders >= 1) return 'weak-aligned';
   if (mos >= 0.2 && deltaHolders <= -1) return 'exit-divergence';
   if (mos <= 0 && deltaHolders >= 1) return 'buy-divergence';
   return 'neutral';
@@ -280,7 +294,9 @@ export function mosCrossSignal(args: {
 export function mosCrossSignalTooltip(signal: MosCrossSignal): string {
   switch (signal) {
     case 'aligned':
-      return 'Aligned: smart money is adding into your value setup.';
+      return 'Aligned: smart money is meaningfully adding (Δ ≥ +3) into a deep value setup (MOS ≥ 30%).';
+    case 'weak-aligned':
+      return 'Weakly aligned: smart money is adding (Δ ≥ +1) and there is some margin of safety (MOS ≥ 20%), but neither signal is strong.';
     case 'exit-divergence':
       return 'Re-examine: smart money is exiting while you see value.';
     case 'buy-divergence':
@@ -315,6 +331,10 @@ export type Watchlist13FTopHolder = {
   manager_id: number;
   manager_name: string;
   manager_type: string;
+  // MVP8-03B B1: admin-classified manager_type alongside the canonical
+  // (behavior-derived where applicable) one. Drawer renders both when
+  // they differ.
+  manager_type_admin_classified: string;
   manager_signal_weight: number;
   position_weight: number;
   position_rank: number | null;
@@ -348,6 +368,9 @@ export type Watchlist13FAvailableDetail = {
   delta_holders: number;
   adders_count: number;
   reducers_count: number;
+  // MVP8-03B B4: portfolio-weight context.
+  adders_portfolio_weight_sum: number;
+  reducers_portfolio_weight_sum: number;
   consensus_count: number;
   distinctiveness_tier: 'distinctive' | 'mixed' | 'crowded';
   caveat_severity: 'ok' | 'caution' | 'high-caution';

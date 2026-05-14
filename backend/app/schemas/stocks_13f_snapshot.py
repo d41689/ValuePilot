@@ -40,6 +40,10 @@ class AvailableStockSnapshot(BaseModel):
     delta_holders: int
     adders_count: int
     reducers_count: int
+    # MVP8-03B B4: portfolio-weight context for the Δ Holders chip
+    # tooltip. Sum of position_weight across adders / reducers.
+    adders_portfolio_weight_sum: float = 0.0
+    reducers_portfolio_weight_sum: float = 0.0
     consensus_count: int
     distinctiveness_tier: DistinctivenessTier
     caveat_severity: CaveatSeverity
@@ -84,6 +88,10 @@ class StockDetailTopHolder(BaseModel):
     manager_id: int
     manager_name: str
     manager_type: str
+    # MVP8-03B B1: admin-classified manager_type alongside the canonical
+    # (behavior-derived where applicable) one. Drawer renders dual chip
+    # when they differ.
+    manager_type_admin_classified: str = "unknown"
     manager_signal_weight: float
     position_weight: float
     position_rank: Optional[int] = None
@@ -119,6 +127,10 @@ class AvailableStockDetail(BaseModel):
     delta_holders: int
     adders_count: int
     reducers_count: int
+    # MVP8-03B B4: portfolio-weight context for the Δ Holders chip
+    # tooltip + drawer recap.
+    adders_portfolio_weight_sum: float = 0.0
+    reducers_portfolio_weight_sum: float = 0.0
     consensus_count: int
     distinctiveness_tier: DistinctivenessTier
     caveat_severity: CaveatSeverity

@@ -167,6 +167,27 @@ function AvailableBody({
           {detail.consensus_count} qualifying holders · ranked vs {universeSize}{' '}
           stocks
         </div>
+        {/* MVP8-03B B4: portfolio-weight context for the Δ Holders chip
+           — surfaced inline in the drawer so users see depth alongside
+           the count. Mean position weight is more interpretable than
+           the raw sum (it answers "did adders hold this stock
+           meaningfully in their portfolios?"). */}
+        <div className="text-xs text-muted-foreground">
+          {detail.adders_count} adders · mean position weight{' '}
+          {formatPercent(
+            detail.adders_count > 0
+              ? detail.adders_portfolio_weight_sum / detail.adders_count
+              : 0,
+            1,
+          )}{' '}
+          · {detail.reducers_count} reducers · mean position weight{' '}
+          {formatPercent(
+            detail.reducers_count > 0
+              ? detail.reducers_portfolio_weight_sum / detail.reducers_count
+              : 0,
+            1,
+          )}
+        </div>
       </section>
 
       <section className="space-y-3">
@@ -221,7 +242,29 @@ function TopHolderCard({ holder }: { holder: Watchlist13FTopHolder }) {
             {holder.manager_name || `Manager #${holder.manager_id}`}
           </Link>
           <div className="mt-1 flex flex-wrap gap-2 text-xs">
-            <Badge variant="outline">{titleizeCode(holder.manager_type)}</Badge>
+            {/* MVP8-03B B1: when admin and derived manager_type diverge,
+                surface both so reviewers see what admin curated vs what
+                behavior derivation inferred. Equal values render once. */}
+            {holder.manager_type_admin_classified &&
+            holder.manager_type_admin_classified !== holder.manager_type ? (
+              <>
+                <Badge
+                  variant="outline"
+                  title="Behavior-derived manager type (overrides admin classification)."
+                >
+                  Derived: {titleizeCode(holder.manager_type)}
+                </Badge>
+                <Badge
+                  variant="outline"
+                  title="Admin-classified manager type from the curated InstitutionManager record."
+                  className="border-dashed text-muted-foreground"
+                >
+                  Admin: {titleizeCode(holder.manager_type_admin_classified)}
+                </Badge>
+              </>
+            ) : (
+              <Badge variant="outline">{titleizeCode(holder.manager_type)}</Badge>
+            )}
             <Badge variant={topHolderActionTone(holder.action)}>
               {topHolderActionLabel(holder.action)}
               {showDeltaPct ? (

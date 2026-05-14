@@ -42,9 +42,22 @@ _DISTINCTIVE_MAX_CONSENSUS = 8
 _DISTINCTIVE_MIN_COVERAGE = 0.7
 _CROWDED_MIN_CONSENSUS = 20
 _CROWDED_MAX_COVERAGE = 0.5
+# MVP8-03B B2: ``crowded`` gates on the admin-unknown ratio rather than
+# the derived coverage. ``derive_manager_signal_profile`` overwrites the
+# admin classification with a behavior-derived one, so the original
+# derived-coverage rule almost never fired (audit on 2025-Q3 universe:
+# 0 ``crowded`` stocks). The admin-unknown ratio reflects whether the
+# operator has actually vetted each holder, not whether the scorer can
+# guess from behavior.
+_CROWDED_MIN_ADMIN_UNKNOWN_RATIO = 0.5
 
 
-def _distinctiveness_tier(consensus_count: int, coverage: float) -> str:
+def _distinctiveness_tier(
+    consensus_count: int,
+    coverage: float,
+    *,
+    admin_unknown_ratio: float = 0.0,
+) -> str:
     if (
         consensus_count <= _DISTINCTIVE_MAX_CONSENSUS
         and coverage >= _DISTINCTIVE_MIN_COVERAGE
@@ -52,7 +65,7 @@ def _distinctiveness_tier(consensus_count: int, coverage: float) -> str:
         return "distinctive"
     if (
         consensus_count >= _CROWDED_MIN_CONSENSUS
-        and coverage < _CROWDED_MAX_COVERAGE
+        and admin_unknown_ratio > _CROWDED_MIN_ADMIN_UNKNOWN_RATIO
     ):
         return "crowded"
     return "mixed"
@@ -88,6 +101,8 @@ def _snapshot_from_item(item: dict[str, Any], percentile: float) -> AvailableSto
     manager_summary = item.get("manager_signal_summary") or {}
     coverage = float(manager_summary.get("manager_signal_quality_coverage") or 0.0)
     consensus_count = int(item.get("consensus_count") or 0)
+    admin_unknown_count = int(manager_summary.get("admin_unknown_manager_type_count") or 0)
+    admin_unknown_ratio = (admin_unknown_count / consensus_count) if consensus_count else 0.0
     caveat_flags = item.get("caution_flags") or []
     caveat_codes = [
         flag.get("key", "")
@@ -104,8 +119,12 @@ def _snapshot_from_item(item: dict[str, Any], percentile: float) -> AvailableSto
         ),
         adders_count=int(item.get("adders_count") or 0),
         reducers_count=int(item.get("reducers_count") or 0),
+        adders_portfolio_weight_sum=float(manager_summary.get("adders_portfolio_weight_sum") or 0.0),
+        reducers_portfolio_weight_sum=float(manager_summary.get("reducers_portfolio_weight_sum") or 0.0),
         consensus_count=consensus_count,
-        distinctiveness_tier=_distinctiveness_tier(consensus_count, coverage),
+        distinctiveness_tier=_distinctiveness_tier(
+            consensus_count, coverage, admin_unknown_ratio=admin_unknown_ratio,
+        ),
         caveat_severity=_caveat_severity_from_flags(caveat_flags),
         caveat_codes=caveat_codes,
         score_confidence=str(item.get("score_confidence") or "low"),
@@ -256,6 +275,9 @@ def _top_holder_from_payload(holder: dict[str, Any]) -> StockDetailTopHolder:
         manager_id=int(holder["manager_id"]),
         manager_name=str(holder.get("manager_name") or ""),
         manager_type=str(holder.get("manager_type") or "unknown"),
+        manager_type_admin_classified=str(
+            holder.get("manager_type_admin_classified") or "unknown"
+        ),
         manager_signal_weight=float(holder.get("manager_signal_weight") or 0),
         position_weight=float(holder.get("position_weight") or 0),
         position_rank=(
@@ -426,6 +448,8 @@ def read_stock_13f_detail(
     manager_summary = item.get("manager_signal_summary") or {}
     coverage = float(manager_summary.get("manager_signal_quality_coverage") or 0.0)
     consensus_count = int(item.get("consensus_count") or 0)
+    admin_unknown_count = int(manager_summary.get("admin_unknown_manager_type_count") or 0)
+    admin_unknown_ratio = (admin_unknown_count / consensus_count) if consensus_count else 0.0
     caveat_flags = item.get("caution_flags") or []
 
     top_holders = [
@@ -450,8 +474,12 @@ def read_stock_13f_detail(
         ),
         adders_count=int(item.get("adders_count") or 0),
         reducers_count=int(item.get("reducers_count") or 0),
+        adders_portfolio_weight_sum=float(manager_summary.get("adders_portfolio_weight_sum") or 0.0),
+        reducers_portfolio_weight_sum=float(manager_summary.get("reducers_portfolio_weight_sum") or 0.0),
         consensus_count=consensus_count,
-        distinctiveness_tier=_distinctiveness_tier(consensus_count, coverage),
+        distinctiveness_tier=_distinctiveness_tier(
+            consensus_count, coverage, admin_unknown_ratio=admin_unknown_ratio,
+        ),
         caveat_severity=_caveat_severity_from_flags(caveat_flags),
         score_confidence=str(item.get("score_confidence") or "low"),
         top_holders=top_holders,

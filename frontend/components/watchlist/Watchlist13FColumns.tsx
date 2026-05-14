@@ -15,6 +15,7 @@ import { AlertTriangle } from 'lucide-react';
 
 import { Badge } from '@/components/ui/badge';
 import { TableCell } from '@/components/ui/table';
+import oraclesLens from '@/lib/oraclesLens';
 import { cn } from '@/lib/utils';
 import {
   caveatSeverityLabel,
@@ -134,7 +135,22 @@ export function Watchlist13FColumns({
   const convictionLabel = formatConvictionLabel(snapshot.conviction_percentile);
   const periodLabel = period ?? 'latest period';
   const convictionTooltip = `Conviction percentile across ${universeSize} ranked stocks for ${periodLabel}.`;
-  const deltaTooltip = `${snapshot.adders_count} adders, ${snapshot.reducers_count} reducers this quarter.`;
+  // MVP8-03B B4: append portfolio-weight context so the chip tooltip
+  // conveys depth ("how much capital is rotating") alongside count.
+  // Mean position weight across the side is more interpretable than
+  // the raw sum — it answers "did adders hold this stock meaningfully
+  // in their portfolios?" in one number.
+  const addersMean =
+    snapshot.adders_count > 0
+      ? snapshot.adders_portfolio_weight_sum / snapshot.adders_count
+      : 0;
+  const reducersMean =
+    snapshot.reducers_count > 0
+      ? snapshot.reducers_portfolio_weight_sum / snapshot.reducers_count
+      : 0;
+  const deltaTooltip =
+    `${snapshot.adders_count} adders (mean position weight ${oraclesLens.formatPercent(addersMean, 1)}), ` +
+    `${snapshot.reducers_count} reducers (mean position weight ${oraclesLens.formatPercent(reducersMean, 1)}) this quarter.`;
   const distinctivenessTooltip = `${snapshot.consensus_count} qualifying ranked holders. Tier derived from coverage × consensus density.`;
   const caveatTooltip =
     snapshot.caveat_severity === 'ok'

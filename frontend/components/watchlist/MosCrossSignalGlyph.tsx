@@ -10,7 +10,7 @@
  */
 'use client';
 
-import { Check, TriangleAlert } from 'lucide-react';
+import { Check, CheckCheck, TriangleAlert } from 'lucide-react';
 
 import {
   mosCrossSignalTooltip,
@@ -25,9 +25,25 @@ export function MosCrossSignalGlyph({ signal }: MosCrossSignalGlyphProps) {
   if (signal === 'neutral') return null;
   const tooltip = mosCrossSignalTooltip(signal);
   if (signal === 'aligned') {
+    // MVP8-03B B3: strong-alignment tier (MOS ≥ 0.30 AND Δ ≥ +3).
+    // Double-check + saturated emerald to distinguish from the
+    // preserved-V1 weak-aligned tier.
+    return (
+      <CheckCheck
+        className="ml-1 inline-block h-3.5 w-3.5 text-emerald-600"
+        aria-label={tooltip}
+      >
+        <title>{tooltip}</title>
+      </CheckCheck>
+    );
+  }
+  if (signal === 'weak-aligned') {
+    // MVP8-03B B3: preserved-V1 tier (MOS ≥ 0.20 AND Δ ≥ +1).
+    // Single check + lighter emerald so the visual emphasis falls
+    // on the strong-aligned tier above.
     return (
       <Check
-        className="ml-1 inline-block h-3.5 w-3.5 text-emerald-600"
+        className="ml-1 inline-block h-3.5 w-3.5 text-emerald-400"
         aria-label={tooltip}
       >
         <title>{tooltip}</title>
