@@ -345,6 +345,12 @@ column for the winning fact and renders it as
       M3 panel tiebreak ordering retained as display-layer guard for
       VL target staleness.
 - [x] pytest -q green (822 passed); lint + build clean across D1–D4.
-- [ ] Four-role review pass (optional — bundled small sweep, may be
-      single-reviewer if no domain shift).
-- [ ] **Post-MVP8-A2 + Track-E Backlog Sweep closed.**
+- [x] Four-role review pass 2026-05-13 (internal — bundled small sweep,
+      no domain shift across D1–D4):
+      SME APPROVE WITH NOTES (out-of-scope tooltip suggestion);
+      Staff Engineer APPROVE (no actionable items);
+      Backend APPROVE WITH NOTES (no actionable items);
+      Frontend APPROVE.
+      No should-block items. Future backlog: as-of semantics tooltip;
+      revisit `_M3_METRIC_KEYS` location if a second consumer arrives.
+- [x] **Post-MVP8-A2 + Track-E Backlog Sweep closed 2026-05-13.**
