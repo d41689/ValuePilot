@@ -331,11 +331,14 @@ function QualityOverlaySection({ overlay }: { overlay: M3Overlay | null }) {
     v != null ? `${v.toFixed(0)}%` : null;
 
   const piotroskiTone = (score: number | null, max: number | null) => {
+    // Data absent (no score / no max) → outline (neutral, distinct from
+    // "data says this is weak"). Per F1 reviewer note: low ratios should
+    // LOOK like disconfirming evidence, not visually neutral.
     if (score == null || max == null || max === 0) return 'outline' as const;
     const ratio = score / max;
     if (ratio >= 0.78) return 'success' as const;
     if (ratio >= 0.56) return 'secondary' as const;
-    return 'outline' as const;
+    return 'warning' as const;
   };
 
   return (
@@ -345,7 +348,7 @@ function QualityOverlaySection({ overlay }: { overlay: M3Overlay | null }) {
       </div>
       {overlay == null || !overlay.has_value_line ? (
         <div className="text-xs text-muted-foreground">
-          Value Line data not yet available for this stock.
+          Value Line data is not available for this stock in the current dataset.
         </div>
       ) : (
         <div className="space-y-2">

@@ -178,4 +178,26 @@ quality_overlay: {
       FICO (757) → has_value_line=true, piotroski 6/7, EP 100%, VL $1125–$2489 mid $1807;
       ADBE (1254) → has_value_line=true, piotroski 5/7, EP 75%, VL $203–$417 mid $310;
       AAPL (1237, no VL data) → has_value_line=false (explicit empty state).
+- [x] Four-role review pass (SME / Staff Engineer / Backend / Frontend), bundled
+      with Track-E sweep — verdicts 2026-05-13: SME APPROVE WITH NOTES, Staff
+      APPROVE WITH NOTES, Backend APPROVE WITH NOTES, Frontend REJECT (one
+      should-block: F2 evidence URL stored-XSS gap). Review prompts at
+      `docs/tasks/2026-05-13_mvp8-a2-track-e-review-prompts.md`.
+      Post-review hardening applies three reviewer items:
+      (1) F2 blocker — `ManagerTypeEditorDialog` evidence URL validator
+          tightened to `http:` / `https:` only, rejecting `javascript:`,
+          `data:`, `ftp:` schemes;
+      (2) F1 nit — `QualityOverlaySection` Piotroski `<56%` tone changed
+          from `outline` → `warning` so low scores visually signal
+          disconfirming evidence (per product plan §3, §4);
+      (3) P3 nit — empty-state copy changed from "Value Line data not yet
+          available" → "Value Line data is not available for this stock in
+          the current dataset" to avoid implying future coverage for stocks
+          that may never be ingested.
+      Remaining future-backlog items (filed for separate tickets):
+      P2 VL target as-of date; SME duplicate-`is_current` ingestion fix;
+      A2 unify `_quality_overlay_by_stock` + `_m3_panel_for_stock` Piotroski
+      `value_json` read; B2 typed `QualityOverlay` Pydantic schema; F3
+      DrawerShell `useRef` stable-callback; F4 explicit `useRef.focus()` +
+      focus-restoration on unmount.
 - [x] **MVP8-A2 closed 2026-05-13.**

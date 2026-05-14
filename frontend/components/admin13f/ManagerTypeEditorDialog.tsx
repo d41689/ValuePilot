@@ -76,8 +76,20 @@ export function ManagerTypeEditorDialog({
   const [evidenceUrl, setEvidenceUrl] = useState('');
 
   const noteRequired = draft !== 'unknown';
+  // Stored-XSS guard: evidence_json is durable audit data and may be rendered
+  // as a link by future consumers. Reject non-HTTP(S) schemes so a saved
+  // "javascript:..." or "data:..." URL cannot become a click-to-execute
+  // payload downstream. F2 reviewer block (Track-E post-review).
   const evidenceUrlInvalid =
-    evidenceUrl.trim() !== '' && (() => { try { new URL(evidenceUrl.trim()); return false; } catch { return true; } })();
+    evidenceUrl.trim() !== '' &&
+    (() => {
+      try {
+        const u = new URL(evidenceUrl.trim());
+        return !(u.protocol === 'http:' || u.protocol === 'https:');
+      } catch {
+        return true;
+      }
+    })();
   const saveDisabled =
     !editor || isPending || (noteRequired && !note.trim()) || evidenceUrlInvalid;
 
