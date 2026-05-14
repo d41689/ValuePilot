@@ -17,7 +17,7 @@ from __future__ import annotations
 from datetime import timedelta
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_db
@@ -137,6 +137,15 @@ def _holdings_count_for_stock(session: Session, stock_id: int, period_end: str) 
 @router.post("/13f-snapshots", response_model=StockSnapshotResponse)
 def read_stocks_13f_snapshots(
     body: StockSnapshotRequest,
+    use_persisted_scores: bool = Query(
+        True,
+        description=(
+            "MVP8-01 (Phase 3, 2026-05-13): default ``True`` — lockstep "
+            "with ``/oracles-lens``. The ``false`` escape hatch forces "
+            "the legacy in-memory dashboard formula for the observation "
+            "window; Phase 4 will retire it."
+        ),
+    ),
     db: Session = Depends(get_db),
 ) -> StockSnapshotResponse:
     # Translate the API's "latest" sentinel into the dashboard's
@@ -149,7 +158,7 @@ def read_stocks_13f_snapshots(
             db,
             period=period_arg,
             limit=0,                  # disable top-50 truncation; we need the full universe for percentile
-            use_persisted_scores=False,  # MVP7-01 SR3 — Phase 3 gating
+            use_persisted_scores=use_persisted_scores,
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -331,6 +340,15 @@ def _stock_meta(db: Session, stock_id: int) -> tuple[str, str | None] | None:
 def read_stock_13f_detail(
     stock_id: int,
     period: str | None = None,
+    use_persisted_scores: bool = Query(
+        True,
+        description=(
+            "MVP8-01 (Phase 3, 2026-05-13): default ``True`` — lockstep "
+            "with ``/oracles-lens``. The ``false`` escape hatch forces "
+            "the legacy in-memory dashboard formula for the observation "
+            "window; Phase 4 will retire it."
+        ),
+    ),
     db: Session = Depends(get_db),
 ) -> StockDetailResponse:
     """MVP7-05: detail panel for one watchlist row. Returns the same
@@ -347,7 +365,7 @@ def read_stock_13f_detail(
             db,
             period=period_arg,
             limit=0,
-            use_persisted_scores=False,
+            use_persisted_scores=use_persisted_scores,
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc

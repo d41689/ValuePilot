@@ -154,7 +154,7 @@ def test_detail_available_includes_top_holders_and_caveat_flags(client, db_sessi
     fixture = _seed_detail_fixture(db_session)
     response = client.get(
         f"/api/v1/stocks/{fixture['target_id']}/13f-detail",
-        params={"period": "2031-Q4"},
+        params={"period": "2031-Q4", "use_persisted_scores": "false"},
     )
     assert response.status_code == 200
     payload = response.json()
@@ -190,7 +190,7 @@ def test_detail_available_includes_top_holders_and_caveat_flags(client, db_sessi
 def test_detail_404_for_unknown_stock(client, db_session):
     response = client.get(
         "/api/v1/stocks/999999/13f-detail",
-        params={"period": "2031-Q4"},
+        params={"period": "2031-Q4", "use_persisted_scores": "false"},
     )
     assert response.status_code == 404
 
@@ -199,7 +199,7 @@ def test_detail_no_holders_unavailable_branch(client, db_session):
     fixture = _seed_detail_fixture(db_session)
     response = client.get(
         f"/api/v1/stocks/{fixture['empty_id']}/13f-detail",
-        params={"period": "2031-Q4"},
+        params={"period": "2031-Q4", "use_persisted_scores": "false"},
     )
     assert response.status_code == 200
     payload = response.json()
@@ -213,7 +213,7 @@ def test_detail_below_min_holders_unavailable_branch(client, db_session):
     fixture = _seed_detail_fixture(db_session)
     response = client.get(
         f"/api/v1/stocks/{fixture['partial_id']}/13f-detail",
-        params={"period": "2031-Q4"},
+        params={"period": "2031-Q4", "use_persisted_scores": "false"},
     )
     assert response.status_code == 200
     detail = response.json()["detail"]
@@ -242,7 +242,7 @@ def test_detail_top_holder_action_field_uses_dashboard_vocabulary(client, db_ses
     fixture = _seed_detail_fixture(db_session)
     response = client.get(
         f"/api/v1/stocks/{fixture['target_id']}/13f-detail",
-        params={"period": "2031-Q4"},
+        params={"period": "2031-Q4", "use_persisted_scores": "false"},
     )
     detail = response.json()["detail"]
     actions = {h["action"] for h in detail["top_holders"]}

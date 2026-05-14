@@ -21,12 +21,16 @@ def read_oracles_lens_dashboard(
     limit: int = Query(50, ge=1, le=500),
     sort: str = Query("signal_weighted_consensus"),
     use_persisted_scores: bool = Query(
-        False,
+        True,
         description=(
-            "MVP4-03b: when true, return only stocks with a persisted "
-            "oracles_lens_signals row for the requested period and the "
-            "current SCORE_VERSION; the signal-weighted score comes "
-            "from the table rather than the in-memory dashboard formula."
+            "MVP8-01 (MVP5-03 Phase 3, 2026-05-13): server default is "
+            "now ``True`` — the persisted ``oracles_lens_signals`` rows "
+            "for the requested period at the current SCORE_VERSION are "
+            "the canonical signal-weighted score path. Setting "
+            "``use_persisted_scores=false`` is the observation-window "
+            "escape hatch that forces the legacy in-memory dashboard "
+            "formula; Phase 4 will retire that flag after one full "
+            "scoring cycle with no material divergence."
         ),
     ),
     db: Session = Depends(get_db),

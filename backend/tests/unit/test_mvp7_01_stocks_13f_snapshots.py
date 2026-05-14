@@ -234,7 +234,7 @@ def _seed_snapshot_fixture(db_session) -> dict[str, Stock | int]:
 def test_snapshot_available_true_for_qualifying_stock(client, db_session):
     fixture = _seed_snapshot_fixture(db_session)
     response = client.post(
-        "/api/v1/stocks/13f-snapshots",
+        "/api/v1/stocks/13f-snapshots?use_persisted_scores=false",
         json={"stock_ids": [fixture["target_full_id"]], "period": "2031-Q4"},
     )
     assert response.status_code == 200
@@ -255,7 +255,7 @@ def test_snapshot_available_true_for_qualifying_stock(client, db_session):
 def test_snapshot_no_holders_unavailable_reason(client, db_session):
     fixture = _seed_snapshot_fixture(db_session)
     response = client.post(
-        "/api/v1/stocks/13f-snapshots",
+        "/api/v1/stocks/13f-snapshots?use_persisted_scores=false",
         json={"stock_ids": [fixture["target_empty_id"]], "period": "2031-Q4"},
     )
     assert response.status_code == 200
@@ -267,7 +267,7 @@ def test_snapshot_no_holders_unavailable_reason(client, db_session):
 def test_snapshot_below_min_holders_unavailable_reason(client, db_session):
     fixture = _seed_snapshot_fixture(db_session)
     response = client.post(
-        "/api/v1/stocks/13f-snapshots",
+        "/api/v1/stocks/13f-snapshots?use_persisted_scores=false",
         json={"stock_ids": [fixture["target_partial_id"]], "period": "2031-Q4"},
     )
     assert response.status_code == 200
@@ -279,7 +279,7 @@ def test_snapshot_below_min_holders_unavailable_reason(client, db_session):
 def test_snapshot_delta_holders_signed_integer(client, db_session):
     fixture = _seed_snapshot_fixture(db_session)
     response = client.post(
-        "/api/v1/stocks/13f-snapshots",
+        "/api/v1/stocks/13f-snapshots?use_persisted_scores=false",
         json={"stock_ids": [fixture["target_full_id"]], "period": "2031-Q4"},
     )
     snap = response.json()["snapshots"][0]
@@ -294,7 +294,7 @@ def test_snapshot_delta_holders_signed_integer(client, db_session):
 def test_snapshot_distinctive_tier(client, db_session):
     fixture = _seed_snapshot_fixture(db_session)
     response = client.post(
-        "/api/v1/stocks/13f-snapshots",
+        "/api/v1/stocks/13f-snapshots?use_persisted_scores=false",
         json={"stock_ids": [fixture["target_distinctive_id"]], "period": "2031-Q4"},
     )
     snap = response.json()["snapshots"][0]
@@ -308,7 +308,7 @@ def test_snapshot_distinctive_tier(client, db_session):
 def test_snapshot_caveat_severity_high_caution_on_warning_flag(client, db_session):
     fixture = _seed_snapshot_fixture(db_session)
     response = client.post(
-        "/api/v1/stocks/13f-snapshots",
+        "/api/v1/stocks/13f-snapshots?use_persisted_scores=false",
         json={"stock_ids": [fixture["target_crowded_id"]], "period": "2031-Q4"},
     )
     snap = response.json()["snapshots"][0]
@@ -379,7 +379,7 @@ def test_period_filing_deadline_handles_invalid_input():
 def test_snapshot_percentile_top_ranked_is_one(client, db_session):
     fixture = _seed_snapshot_fixture(db_session)
     response = client.post(
-        "/api/v1/stocks/13f-snapshots",
+        "/api/v1/stocks/13f-snapshots?use_persisted_scores=false",
         json={
             "stock_ids": [
                 fixture["target_full_id"],
@@ -405,7 +405,7 @@ def test_snapshot_mixed_batch_preserves_input_order(client, db_session):
         fixture["target_distinctive_id"],
     ]
     response = client.post(
-        "/api/v1/stocks/13f-snapshots",
+        "/api/v1/stocks/13f-snapshots?use_persisted_scores=false",
         json={"stock_ids": requested, "period": "2031-Q4"},
     )
     payload = response.json()
@@ -420,7 +420,7 @@ def test_snapshot_mixed_batch_preserves_input_order(client, db_session):
 def test_snapshot_specific_period_override(client, db_session):
     fixture = _seed_snapshot_fixture(db_session)
     response = client.post(
-        "/api/v1/stocks/13f-snapshots",
+        "/api/v1/stocks/13f-snapshots?use_persisted_scores=false",
         json={"stock_ids": [fixture["target_full_id"]], "period": "2031-Q4"},
     )
     payload = response.json()
@@ -435,7 +435,7 @@ def test_snapshot_no_qualifying_period_returns_universe_size_zero(client, db_ses
     stock = _stock(db_session, "VOID", "Void Inc")
     db_session.commit()
     response = client.post(
-        "/api/v1/stocks/13f-snapshots",
+        "/api/v1/stocks/13f-snapshots?use_persisted_scores=false",
         json={"stock_ids": [stock.id], "period": "2050-Q1"},
     )
     assert response.status_code == 200
@@ -448,7 +448,7 @@ def test_snapshot_no_qualifying_period_returns_universe_size_zero(client, db_ses
 
 def test_snapshot_rejects_empty_stock_ids(client, db_session):
     response = client.post(
-        "/api/v1/stocks/13f-snapshots",
+        "/api/v1/stocks/13f-snapshots?use_persisted_scores=false",
         json={"stock_ids": [], "period": "2031-Q4"},
     )
     assert response.status_code == 422  # pydantic min_length=1
@@ -470,7 +470,7 @@ def test_snapshot_route_order_not_swallowed_by_stock_id_int_param(client, db_ses
     This test explicitly asserts the POST does NOT return 405.
     """
     response = client.post(
-        "/api/v1/stocks/13f-snapshots",
+        "/api/v1/stocks/13f-snapshots?use_persisted_scores=false",
         json={"stock_ids": [1], "period": "2031-Q4"},
     )
     assert response.status_code != 405, (
