@@ -66,6 +66,10 @@ _ACTIVE_JOB_STATUSES = ("queued", "running", "cancel_requested")
 # the safe over-approximation that keeps the value-unit risk visible to the
 # admin. (SME C3, MVP3 end-to-end review.)
 _PRE_DOLLARS_BOUNDARY_REPORT_QUARTER = (2023, 1)
+# Documented project-level exception: this filer reports values in dollars,
+# not thousands. Reconciliation warnings during ingestion are True Positives.
+# (CLAUDE.md + MVP8-03A A2)
+_KAHN_BROTHERS_CIK = "0001039565"
 
 
 # Discovery returns metadata for accessions to consider for a (manager, quarter).
@@ -111,7 +115,7 @@ def preview_historical_backfill(
     managers = _resolve_managers(session, manager_ids)
     pre_2023 = _range_includes_pre_2023(quarters)
 
-    kahn_in_scope = any(m.cik == "0001039565" for m in managers)
+    kahn_in_scope = any(m.cik == _KAHN_BROTHERS_CIK for m in managers)
     return {
         "start_quarter": start_q,
         "end_quarter": end_q,

@@ -1161,48 +1161,49 @@ export default function ReadinessAdminPage() {
                       </div>
                     </div>
                     <div className="mt-2 max-h-60 overflow-auto space-y-1.5">
-                      {(selectedQuarterDetail.quality_report.issues as Array<{
-                        check: string;
-                        severity: string;
-                        accession_no?: string;
-                        detail?: string;
-                      }> | undefined)?.length ? (
-                        (selectedQuarterDetail.quality_report.issues as Array<{
+                      {(() => {
+                        type QIssue = {
                           check: string;
                           severity: string;
                           accession_no?: string;
                           detail?: string;
-                        }>).map((issue, i) => (
-                          <div
-                            key={i}
-                            className="rounded-md border border-border/70 bg-background px-2.5 py-2 text-xs"
-                          >
-                            <div className="flex items-center gap-2">
-                              <Badge
-                                variant={
-                                  issue.severity === 'error'
-                                    ? 'danger'
-                                    : issue.severity === 'warning'
-                                      ? 'warning'
-                                      : 'secondary'
-                                }
-                                className="shrink-0 text-[10px]"
-                              >
-                                {issue.severity}
-                              </Badge>
-                              <span className="font-mono">{issue.check}</span>
-                              {issue.accession_no ? (
-                                <span className="text-muted-foreground">{issue.accession_no}</span>
+                        };
+                        const issues = selectedQuarterDetail.quality_report.issues as
+                          | QIssue[]
+                          | undefined;
+                        return issues?.length ? (
+                          issues.map((issue, i) => (
+                            <div
+                              key={i}
+                              className="rounded-md border border-border/70 bg-background px-2.5 py-2 text-xs"
+                            >
+                              <div className="flex items-center gap-2">
+                                <Badge
+                                  variant={
+                                    issue.severity === 'error'
+                                      ? 'danger'
+                                      : issue.severity === 'warning'
+                                        ? 'warning'
+                                        : 'secondary'
+                                  }
+                                  className="shrink-0 text-[10px]"
+                                >
+                                  {issue.severity}
+                                </Badge>
+                                <span className="font-mono">{issue.check}</span>
+                                {issue.accession_no ? (
+                                  <span className="text-muted-foreground">{issue.accession_no}</span>
+                                ) : null}
+                              </div>
+                              {issue.detail ? (
+                                <div className="mt-1 text-muted-foreground">{issue.detail}</div>
                               ) : null}
                             </div>
-                            {issue.detail ? (
-                              <div className="mt-1 text-muted-foreground">{issue.detail}</div>
-                            ) : null}
-                          </div>
-                        ))
-                      ) : (
-                        <div className="text-xs text-muted-foreground">No issues recorded.</div>
-                      )}
+                          ))
+                        ) : (
+                          <div className="text-xs text-muted-foreground">No issues recorded.</div>
+                        );
+                      })()}
                     </div>
                   </div>
                 ) : (

@@ -180,10 +180,14 @@ list makes the signal immediately legible.
 - [x] A4 Quality Reports V2 per-finding drilldown shipped.
 - [x] pytest -q → 818 passed; lint clean; build clean (commit `4a159a5`).
 - [x] Four-role review pass (SME / Staff Engineer / Backend / Frontend) — all
-      APPROVE 2026-05-13. One scoped-out note: `*` required indicator is
-      visual-only (no `aria-required`); a11y suite is explicitly out of scope
-      for this ticket. Cosmetic: A4 inline type cast is duplicated; deferred
-      per scope.
+      APPROVE 2026-05-13 (external agent review). No should-block items.
+      Post-review hardening commit `6c1f8b3` applies two reviewer nits:
+      (1) `_KAHN_BROTHERS_CIK` constant extracted in
+          `thirteenf_historical_backfill.py`;
+      (2) A4 `issues` type cast deduplicated via IIFE in `readiness/page.tsx`.
+      Remaining future-backlog items (evidence URL validation, `aria-required`,
+      EDGAR re-fetch path, QR recommended-action field) filed for separate
+      tickets.
 - [x] **MVP8-03A closed 2026-05-13.**
 
 ## Files Expected To Change
