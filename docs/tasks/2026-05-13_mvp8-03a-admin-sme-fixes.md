@@ -174,11 +174,11 @@ list makes the signal immediately legible.
 
 ## Sign-Off Trail
 
-- [ ] A1 note required + evidence_json backend + frontend shipped.
-- [ ] A2 Kahn Brothers caveat banner shipped.
-- [ ] A3 missing_raw_infotable_count amber banner shipped.
-- [ ] A4 Quality Reports V2 per-finding drilldown shipped.
-- [ ] pytest -q green; lint clean; build clean.
+- [x] A1 note required + evidence_json backend + frontend shipped.
+- [x] A2 Kahn Brothers caveat banner shipped.
+- [x] A3 missing_raw_infotable_count amber banner shipped.
+- [x] A4 Quality Reports V2 per-finding drilldown shipped.
+- [x] pytest -q → 818 passed; lint clean; build clean (commit `4a159a5`).
 - [ ] Four-role review pass.
 - [ ] **MVP8-03A closed.**
 
