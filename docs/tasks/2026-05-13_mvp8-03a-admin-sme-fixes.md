@@ -179,8 +179,12 @@ list makes the signal immediately legible.
 - [x] A3 missing_raw_infotable_count amber banner shipped.
 - [x] A4 Quality Reports V2 per-finding drilldown shipped.
 - [x] pytest -q → 818 passed; lint clean; build clean (commit `4a159a5`).
-- [ ] Four-role review pass.
-- [ ] **MVP8-03A closed.**
+- [x] Four-role review pass (SME / Staff Engineer / Backend / Frontend) — all
+      APPROVE 2026-05-13. One scoped-out note: `*` required indicator is
+      visual-only (no `aria-required`); a11y suite is explicitly out of scope
+      for this ticket. Cosmetic: A4 inline type cast is duplicated; deferred
+      per scope.
+- [x] **MVP8-03A closed 2026-05-13.**
 
 ## Files Expected To Change
 
