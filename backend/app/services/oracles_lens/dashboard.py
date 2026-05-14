@@ -787,6 +787,50 @@ def _primary_reasons(holdings: list[ManagerHolding], median_streak: int) -> list
     ]
 
 
+def _m3_facts_by_stock(
+    session: Session,
+    stock_ids: list[int],
+    metric_keys: list[str],
+) -> dict[int, dict[str, MetricFact]]:
+    """Most-recent ``is_current=True`` ``MetricFact`` per (stock_id, metric_key).
+
+    Shared by both the legacy Oracle's Lens quality overlay and the
+    MVP8-A2 drawer M3 panel. Does NOT filter on ``value_numeric.isnot(None)``
+    — composite scores (e.g. ``score.piotroski.total``) store their value in
+    ``value_json['partial_score']`` with ``value_numeric=NULL``. Callers
+    extract the value via :func:`_fact_value`, which falls back to
+    ``value_json['partial_score']`` when ``value_numeric`` is null.
+
+    Tiebreak ordering: ``period_end_date DESC NULLS LAST, created_at DESC``.
+    The duplicate-``is_current`` row case (multiple ``is_current=True`` rows
+    for the same metric_key) is masked by this ordering until the upstream
+    ingestion-side fix lands (D4 of this sweep ticket).
+    """
+    unique_stock_ids = list(dict.fromkeys(stock_ids))
+    if not unique_stock_ids or not metric_keys:
+        return {stock_id: {} for stock_id in unique_stock_ids}
+
+    facts = (
+        session.query(MetricFact)
+        .filter(MetricFact.stock_id.in_(unique_stock_ids))
+        .filter(MetricFact.metric_key.in_(metric_keys))
+        .filter(MetricFact.is_current.is_(True))
+        .order_by(
+            MetricFact.stock_id.asc(),
+            MetricFact.metric_key.asc(),
+            MetricFact.period_end_date.desc().nullslast(),
+            MetricFact.created_at.desc(),
+        )
+        .all()
+    )
+    result: dict[int, dict[str, MetricFact]] = {stock_id: {} for stock_id in unique_stock_ids}
+    for fact in facts:
+        bucket = result[fact.stock_id]
+        if fact.metric_key not in bucket:
+            bucket[fact.metric_key] = fact
+    return result
+
+
 def _quality_overlay_by_stock(
     session: Session,
     stock_ids: list[int],
@@ -798,21 +842,16 @@ def _quality_overlay_by_stock(
     if not unique_stock_ids:
         return {}
 
-    facts = (
-        session.query(MetricFact)
-        .filter(MetricFact.stock_id.in_(unique_stock_ids))
-        .filter(MetricFact.metric_key.in_(QUALITY_METRIC_KEYS.values()))
-        .filter(MetricFact.is_current.is_(True))
-        .filter(MetricFact.value_numeric.isnot(None))
-        .order_by(MetricFact.stock_id.asc(), MetricFact.period_end_date.desc(), MetricFact.created_at.desc())
-        .all()
+    facts_by_metric_key = _m3_facts_by_stock(
+        session, unique_stock_ids, list(QUALITY_METRIC_KEYS.values())
     )
-    facts_by_stock: dict[int, dict[str, MetricFact]] = {stock_id: {} for stock_id in unique_stock_ids}
     reverse_keys = {metric_key: label for label, metric_key in QUALITY_METRIC_KEYS.items()}
-    for fact in facts:
-        label = reverse_keys.get(fact.metric_key)
-        if label and label not in facts_by_stock[fact.stock_id]:
-            facts_by_stock[fact.stock_id][label] = fact
+    facts_by_stock: dict[int, dict[str, MetricFact]] = {stock_id: {} for stock_id in unique_stock_ids}
+    for stock_id, by_key in facts_by_metric_key.items():
+        for metric_key, fact in by_key.items():
+            label = reverse_keys.get(metric_key)
+            if label is not None:
+                facts_by_stock[stock_id][label] = fact
 
     latest_prices = _latest_prices_by_stock(session, unique_stock_ids, as_of_date=price_as_of_date)
     return {
@@ -931,7 +970,24 @@ def _quality_provenance(facts: dict[str, MetricFact]) -> dict[str, Any]:
 
 
 def _fact_value(fact: MetricFact | None) -> float | None:
-    return float(fact.value_numeric) if fact and fact.value_numeric is not None else None
+    """Read the numeric value of a MetricFact.
+
+    Falls back to ``value_json['partial_score']`` when ``value_numeric`` is
+    null. Composite scores (e.g. ``score.piotroski.total``) store their
+    integer score in ``value_json``; only 3/272 dev rows have
+    ``value_numeric`` populated for Piotroski. Pre-D2 the legacy quality
+    overlay silently dropped those rows; this fallback fixes it without
+    special-casing the metric_key.
+    """
+    if fact is None:
+        return None
+    if fact.value_numeric is not None:
+        return float(fact.value_numeric)
+    if isinstance(fact.value_json, dict):
+        raw = fact.value_json.get("partial_score")
+        if raw is not None:
+            return float(raw)
+    return None
 
 
 def _empty_quality_overlay() -> dict[str, Any]:

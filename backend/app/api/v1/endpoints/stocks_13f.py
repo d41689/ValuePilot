@@ -21,7 +21,6 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_db
-from app.models.facts import MetricFact
 from app.schemas.stocks_13f_snapshot import (
     AvailableStockDetail,
     AvailableStockSnapshot,
@@ -33,7 +32,10 @@ from app.schemas.stocks_13f_snapshot import (
     UnavailableStockDetail,
     UnavailableStockSnapshot,
 )
-from app.services.oracles_lens.dashboard import build_oracles_lens_dashboard
+from app.services.oracles_lens.dashboard import (
+    _m3_facts_by_stock,
+    build_oracles_lens_dashboard,
+)
 
 router = APIRouter()
 
@@ -54,28 +56,16 @@ def _m3_panel_for_stock(db: Session, stock_id: int) -> dict[str, Any]:
 
     Returns ``{"has_value_line": False}`` when no Value Line facts exist
     for the stock. Never raises — missing data is a first-class state.
-    """
-    facts = (
-        db.query(MetricFact)
-        .filter(
-            MetricFact.stock_id == stock_id,
-            MetricFact.metric_key.in_(_M3_METRIC_KEYS),
-            MetricFact.is_current.is_(True),
-        )
-        .order_by(
-            MetricFact.metric_key.asc(),
-            MetricFact.period_end_date.desc().nullslast(),
-            MetricFact.created_at.desc(),
-        )
-        .all()
-    )
-    if not facts:
-        return {"has_value_line": False}
 
-    by_key: dict[str, MetricFact] = {}
-    for fact in facts:
-        if fact.metric_key not in by_key:
-            by_key[fact.metric_key] = fact
+    Data fetching delegated to :func:`_m3_facts_by_stock` in the
+    ``oracles_lens.dashboard`` service so the legacy Oracle's Lens
+    quality overlay and this drawer panel share the same
+    most-recent-per-(stock, metric_key) read primitive (D2 of
+    post-MVP8-A2 sweep).
+    """
+    by_key = _m3_facts_by_stock(db, [stock_id], _M3_METRIC_KEYS).get(stock_id, {})
+    if not by_key:
+        return {"has_value_line": False}
 
     # Piotroski is stored in value_json (value_numeric is null for most rows).
     piotroski_score: int | None = None

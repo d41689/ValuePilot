@@ -308,8 +308,16 @@ that produces `target.price_18m.mid` etc. apparently does not.
 ## Sign-Off Trail
 
 - [ ] D1 typed `QualityOverlay` schema + VL target as-of date shipped.
-- [ ] D2 `_quality_overlay_by_stock` reads `value_json` for Piotroski;
-      shared `_m3_facts_by_stock` helper extracted.
+- [x] D2 shipped 2026-05-13: `_quality_overlay_by_stock` reads
+      `value_json['partial_score']` for Piotroski via the extended
+      `_fact_value` fallback; shared `_m3_facts_by_stock(session,
+      stock_ids, metric_keys)` helper added to
+      `oracles_lens/dashboard.py`; `_m3_panel_for_stock` in
+      `stocks_13f.py` calls the shared helper (drops direct `MetricFact`
+      import); regression test
+      `test_oracles_lens_reads_piotroski_from_value_json_when_value_numeric_null`
+      asserts Piotroski surfaces with `value_numeric=NULL` +
+      `value_json['partial_score']=6`. pytest 822 passed.
 - [ ] D3 DrawerShell `useRef` stable-callback + explicit focus +
       focus restoration shipped.
 - [ ] D4 VL parser marks prior `is_current=True` rows as False; cleanup

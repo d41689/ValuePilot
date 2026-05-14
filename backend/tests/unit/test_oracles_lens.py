@@ -444,6 +444,50 @@ def test_oracles_lens_adds_value_line_quality_overlay(client, db_session):
     assert response.json()["coverage"]["value_line_coverage_count"] >= 1
 
 
+def test_oracles_lens_reads_piotroski_from_value_json_when_value_numeric_null(
+    client, db_session,
+):
+    """D2 regression: ``score.piotroski.total`` stores the composite score in
+    ``value_json['partial_score']`` with ``value_numeric=NULL`` (269/272 dev
+    rows). The pre-D2 ``_quality_overlay_by_stock`` filtered
+    ``value_numeric.isnot(None)`` and silently dropped these rows. After D2
+    the legacy dashboard must surface Piotroski for stocks whose score lives
+    only in ``value_json``.
+    """
+    target = _seed_oracles_lens_fixture(db_session)
+    document = _pdf_document(db_session, target)
+    # Piotroski fact: value_numeric=None, value_json carries partial_score.
+    db_session.add(
+        MetricFact(
+            user_id=target._test_user_id,
+            stock_id=target.id,
+            metric_key="score.piotroski.total",
+            value_numeric=None,
+            value_json={
+                "partial_score": 6,
+                "max_available_score": 8,
+                "status": "partial",
+                "fact_nature": "actual",
+            },
+            unit=None,
+            period_type="FY",
+            period_end_date=date(2031, 12, 31),
+            source_document_id=document.id,
+            source_type="calculated",
+            is_current=True,
+        )
+    )
+    db_session.commit()
+
+    response = client.get("/api/v1/13f/oracles-lens?use_persisted_scores=false")
+    assert response.status_code == 200
+
+    item = next(row for row in response.json()["items"] if row["stock_id"] == target.id)
+    overlay = item["quality_overlay"]
+    assert overlay["piotroski_total"] == 6.0
+    assert overlay["coverage"]["value_line"] is True
+
+
 def test_oracles_lens_adds_conservative_valuation_reference(client, db_session):
     target = _seed_oracles_lens_fixture(db_session)
     db_session.add_all(
