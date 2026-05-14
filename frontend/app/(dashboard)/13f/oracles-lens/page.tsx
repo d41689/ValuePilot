@@ -134,6 +134,31 @@ function formatCoveragePercent(value: number | null | undefined) {
   return `${Math.round(value * 100)}%`;
 }
 
+// Click-to-reveal inline rule_code disclosure. Replaces a raw HTML
+// details/summary pair so the surface satisfies the uiStandard
+// contract while keeping the MVP5-04 UX intent: investor-facing
+// label by default, operator debug code one click away.
+function RuleCodeDisclosure({ code }: { code: string }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <span className="ml-1 inline">
+      <Button
+        type="button"
+        variant="ghost"
+        size="sm"
+        className="h-auto p-0 text-[10px] text-muted-foreground/70 hover:underline"
+        aria-expanded={open}
+        onClick={() => setOpen((prev) => !prev)}
+      >
+        code
+      </Button>
+      {open ? (
+        <code className="ml-1 font-mono text-[10px]">{code}</code>
+      ) : null}
+    </span>
+  );
+}
+
 export default function OraclesLensPage() {
   // MVP4-07a: persisted-mode is the default; ``?persisted=0`` is the
   // one-release-cycle debug escape hatch for A/B comparing against the
@@ -939,9 +964,10 @@ export default function OraclesLensPage() {
                       writes into score_explanation.confidence_demotion_reasons
                       (PO MVP4-01 P2 #4 contract). MVP5-04: renders the
                       friendly investor-facing label by default; the raw
-                      rule_code stays one click away inside <details> so
-                      operators can still debug without leaking
-                      UPPER_SNAKE jargon into the investor surface. */}
+                      rule_code stays one click away inside a click-to-
+                      reveal disclosure so operators can still debug
+                      without leaking UPPER_SNAKE jargon into the
+                      investor surface. */}
                   <ul className="mt-2 space-y-1 text-xs text-muted-foreground">
                     {selectedRow.confidenceDemotionReasons.map((reason) => (
                       <li key={reason.code}>
@@ -949,14 +975,7 @@ export default function OraclesLensPage() {
                         {reason.demotedToLabel
                           ? ` → score confidence: ${reason.demotedToLabel}`
                           : null}
-                        <details className="ml-1 inline">
-                          <summary className="cursor-pointer text-[10px] text-muted-foreground/70">
-                            code
-                          </summary>
-                          <code className="ml-1 font-mono text-[10px]">
-                            {reason.code}
-                          </code>
-                        </details>
+                        <RuleCodeDisclosure code={reason.code} />
                       </li>
                     ))}
                   </ul>

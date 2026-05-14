@@ -14,6 +14,7 @@
 import { AlertTriangle } from 'lucide-react';
 
 import { Badge } from '@/components/ui/badge';
+import { Button } from '@/components/ui/button';
 import { TableCell } from '@/components/ui/table';
 import oraclesLens from '@/lib/oraclesLens';
 import { cn } from '@/lib/utils';
@@ -170,14 +171,19 @@ export function Watchlist13FColumns({
     <>
       <TableCell className={cn(responsiveClass, firstCellLeadingClass)}>
         {onOpenDetail ? (
-          <button
+          // Shadcn Button wrapper around the Badge so the row-drawer
+          // affordance satisfies the uiStandard contract (no raw
+          // HTML button element) while preserving the Badge's
+          // visual treatment.
+          <Button
             type="button"
+            variant="ghost"
             onClick={() => onOpenDetail(stockId)}
-            className="inline-flex cursor-pointer border-0 bg-transparent p-0"
+            className="h-auto rounded p-0 hover:bg-transparent"
             aria-label={`Open 13F detail for stock ${stockId}`}
           >
             {convictionBadge}
-          </button>
+          </Button>
         ) : (
           convictionBadge
         )}

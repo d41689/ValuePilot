@@ -63,6 +63,7 @@ import { lockKeyForPayload } from '@/lib/admin13f/lockKey';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import { Checkbox } from '@/components/ui/checkbox';
 import { Input } from '@/components/ui/input';
 import {
   Select,
@@ -688,10 +689,9 @@ export default function JobsAdminPage() {
             </div>
             <div className="flex flex-col justify-end gap-2">
               <label className="flex items-center gap-2 text-xs font-semibold uppercase text-muted-foreground">
-                <input
-                  type="checkbox"
+                <Checkbox
                   checked={hbDryRun}
-                  onChange={(e) => setHbDryRun(e.target.checked)}
+                  onCheckedChange={(checked) => setHbDryRun(Boolean(checked))}
                   className="h-3.5 w-3.5"
                 />
                 Dry run (required for pre-2023)

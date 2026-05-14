@@ -143,9 +143,11 @@ function SortableHeader({
       : 'descending';
   return (
     <TableHead aria-sort={ariaSort} className={className}>
-      <button
+      <Button
         type="button"
-        className="inline-flex items-center gap-1 rounded text-left hover:underline focus:outline-none focus:ring-1 focus:ring-ring"
+        variant="ghost"
+        size="sm"
+        className="-ml-2 h-auto gap-1 px-2 py-1 font-medium hover:underline"
         onClick={() => onSort(nextSortState(sortState, sortKey))}
       >
         <span>{label}</span>
@@ -156,7 +158,7 @@ function SortableHeader({
             <ArrowDown className="h-3 w-3" aria-hidden="true" />
           )
         ) : null}
-      </button>
+      </Button>
     </TableHead>
   );
 }
