@@ -22,13 +22,18 @@ from __future__ import annotations
 
 from datetime import date
 
+from datetime import datetime, timezone
+
 from app.api.v1.endpoints.stocks_13f import (
     _caveat_severity_from_flags,
     _distinctiveness_tier,
+    _normalize_score_confidence,
     _period_filing_deadline,
 )
 from app.models.institutions import Filing13F, Holding13F, InstitutionManager
+from app.models.oracles_lens import OraclesLensSignal
 from app.models.stocks import Stock
+from app.services.oracles_lens.constants import SCORE_VERSION
 
 
 def _manager(
@@ -495,3 +500,78 @@ def test_snapshot_route_order_not_swallowed_by_stock_id_int_param(client, db_ses
         "swallowed by /stocks/{stock_id}. Verify stocks_13f.router is "
         "registered BEFORE stocks.router in backend/app/api/v1/api.py."
     )
+
+
+# ----- Persisted-path regression (MVP8-03B post-review) -----------------
+# MVP8-01 flipped use_persisted_scores to True by default. The persisted
+# scoring service writes score_confidence as "high_confidence" /
+# "medium_confidence" / "low_confidence", while the watchlist API surface
+# schema only accepts "high" | "medium" | "low". _normalize_score_confidence
+# must translate at the API boundary.
+
+
+def test_normalize_score_confidence_maps_persisted_labels():
+    """Unit: the boundary normalizer converts persisted labels to API labels."""
+    assert _normalize_score_confidence("high_confidence") == "high"
+    assert _normalize_score_confidence("medium_confidence") == "medium"
+    assert _normalize_score_confidence("low_confidence") == "low"
+    assert _normalize_score_confidence("unavailable") == "low"
+    # Legacy / in-memory path already emits short labels — pass through.
+    assert _normalize_score_confidence("high") == "high"
+    assert _normalize_score_confidence("medium") == "medium"
+    assert _normalize_score_confidence("low") == "low"
+    assert _normalize_score_confidence(None) == "low"
+    assert _normalize_score_confidence("") == "low"
+
+
+def test_snapshot_persisted_default_does_not_crash(client, db_session):
+    """Integration: batch endpoint under persisted default returns 200 and
+    yields normalized score_confidence values.
+
+    Regression guard for the MVP8-03B post-review blocker: the persisted
+    scoring service writes score_confidence as "high_confidence" but the
+    watchlist schema only accepts "high" | "medium" | "low". Without
+    _normalize_score_confidence the endpoint throws a Pydantic
+    ValidationError in the normal production path (use_persisted_scores=True
+    is the server default post-MVP8-01).
+
+    We seed an OraclesLensSignal row directly (score_confidence=
+    "high_confidence") rather than calling compute_signal_weighted_scores
+    because the lean test fixture doesn't use ParseRun13F — the signal
+    scorer's eligibility query requires parse-run data structures that this
+    fixture doesn't build.
+    """
+    fixture = _seed_snapshot_fixture(db_session)
+    # Seed a persisted signal row for target_full with the long-form label
+    # that the scoring service writes.
+    db_session.add(
+        OraclesLensSignal(
+            stock_id=fixture["target_full_id"],
+            report_quarter="2031-Q4",
+            quarter_end_date=date(2031, 12, 31),
+            score_version=SCORE_VERSION,
+            raw_consensus_count=5,
+            signal_weighted_consensus_score=0.75,
+            score_confidence="high_confidence",
+            computed_at=datetime(2031, 12, 31, tzinfo=timezone.utc),
+        )
+    )
+    db_session.flush()
+
+    # Call without ?use_persisted_scores=false → hits the persisted default.
+    response = client.post(
+        "/api/v1/stocks/13f-snapshots",
+        json={
+            "stock_ids": [fixture["target_full_id"]],
+            "period": "2031-Q4",
+        },
+    )
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    snaps = [s for s in payload["snapshots"] if s.get("available") is True]
+    assert snaps, "No available snapshots under persisted default — OraclesLensSignal row missing."
+    for snap in snaps:
+        assert snap["score_confidence"] in {"high", "medium", "low"}, (
+            f"score_confidence {snap['score_confidence']!r} not normalized — "
+            "persisted label leaked into API response"
+        )

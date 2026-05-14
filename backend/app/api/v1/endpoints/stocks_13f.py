@@ -50,6 +50,25 @@ _CROWDED_MIN_CONSENSUS = 20
 # guess from behavior.
 _CROWDED_MIN_ADMIN_UNKNOWN_RATIO = 0.5
 
+# The persisted scoring service writes score_confidence using the
+# OWNERSHIP_SIGNAL_CONFIDENCE_LEVELS vocabulary ("high_confidence" etc.).
+# The watchlist API surface and its Pydantic schemas use the shorter
+# watchlist vocabulary ("high" | "medium" | "low"). Normalize at the
+# API boundary so the endpoint doesn't throw a ValidationError when
+# use_persisted_scores=True is the server default (post-MVP8-01).
+_SCORE_CONFIDENCE_NORMALIZE: dict[str, str] = {
+    "high_confidence": "high",
+    "medium_confidence": "medium",
+    "low_confidence": "low",
+    "unavailable": "low",
+}
+
+
+def _normalize_score_confidence(raw: str | None) -> str:
+    if not raw:
+        return "low"
+    return _SCORE_CONFIDENCE_NORMALIZE.get(raw, raw) or "low"
+
 
 def _distinctiveness_tier(
     consensus_count: int,
@@ -126,7 +145,7 @@ def _snapshot_from_item(item: dict[str, Any], percentile: float) -> AvailableSto
         ),
         caveat_severity=_caveat_severity_from_flags(caveat_flags),
         caveat_codes=caveat_codes,
-        score_confidence=str(item.get("score_confidence") or "low"),
+        score_confidence=_normalize_score_confidence(item.get("score_confidence")),
     )
 
 
@@ -480,7 +499,7 @@ def read_stock_13f_detail(
             consensus_count, coverage, admin_unknown_ratio=admin_unknown_ratio,
         ),
         caveat_severity=_caveat_severity_from_flags(caveat_flags),
-        score_confidence=str(item.get("score_confidence") or "low"),
+        score_confidence=_normalize_score_confidence(item.get("score_confidence")),
         top_holders=top_holders,
         caveat_flags=structured_caveats,
     )

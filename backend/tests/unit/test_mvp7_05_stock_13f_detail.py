@@ -8,10 +8,12 @@ from ``test_mvp7_01_stocks_13f_snapshots.py``.
 
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, datetime, timezone
 
 from app.models.institutions import Filing13F, Holding13F, InstitutionManager
+from app.models.oracles_lens import OraclesLensSignal
 from app.models.stocks import Stock
+from app.services.oracles_lens.constants import SCORE_VERSION
 
 
 def _manager(
@@ -247,3 +249,51 @@ def test_detail_top_holder_action_field_uses_dashboard_vocabulary(client, db_ses
     detail = response.json()["detail"]
     actions = {h["action"] for h in detail["top_holders"]}
     assert actions <= {"new", "add", "reduce", "exit", "flat"}
+
+
+# ----- Persisted-path regression (MVP8-03B post-review) -----------------
+
+
+def test_detail_persisted_default_does_not_crash(client, db_session):
+    """Integration: detail endpoint under persisted default returns 200 and
+    yields a normalized score_confidence value.
+
+    Regression guard for the MVP8-03B post-review blocker: the persisted
+    scoring service writes score_confidence as "high_confidence" but the
+    watchlist schema only accepts "high" | "medium" | "low". Without
+    _normalize_score_confidence the endpoint throws a Pydantic
+    ValidationError on the normal production path (use_persisted_scores=True
+    is the server default post-MVP8-01).
+
+    We seed an OraclesLensSignal row directly (score_confidence=
+    "high_confidence") rather than calling compute_signal_weighted_scores
+    because the lean test fixture doesn't use ParseRun13F — the signal
+    scorer's eligibility query requires parse-run data structures that this
+    fixture doesn't build.
+    """
+    fixture = _seed_detail_fixture(db_session)
+    db_session.add(
+        OraclesLensSignal(
+            stock_id=fixture["target_id"],
+            report_quarter="2031-Q4",
+            quarter_end_date=date(2031, 12, 31),
+            score_version=SCORE_VERSION,
+            raw_consensus_count=5,
+            signal_weighted_consensus_score=0.75,
+            score_confidence="high_confidence",
+            computed_at=datetime(2031, 12, 31, tzinfo=timezone.utc),
+        )
+    )
+    db_session.flush()
+
+    response = client.get(
+        f"/api/v1/stocks/{fixture['target_id']}/13f-detail",
+        params={"period": "2031-Q4"},
+    )
+    assert response.status_code == 200, response.text
+    detail = response.json()["detail"]
+    assert detail["available"] is True
+    assert detail["score_confidence"] in {"high", "medium", "low"}, (
+        f"score_confidence {detail['score_confidence']!r} not normalized — "
+        "persisted label leaked into API response"
+    )
