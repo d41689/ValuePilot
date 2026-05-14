@@ -193,59 +193,59 @@ the same table with opposite assumptions.
 
 ## D4 — `metric_facts` `is_current` ingestion dedup
 
-**Sources**: SME P2 footnote, Backend B1 footnote.
+**Status: DEFERRED 2026-05-13 to design gate
+`docs/tasks/2026-05-13_metric-facts-current-semantics-decision-gate.md`.
+This sweep ticket no longer implements D4.**
 
-**Root cause**: ADBE has two rows in `metric_facts` with
-`is_current=True` for `metric_key='target.price_18m.mid'` from two
-different `source_document_id`s (2654 @ period 2026-05-01,
-2655 @ period 2025-01-31). The newer VL document was ingested but the
-older row was not marked `is_current=False`. The expected invariant —
-**at most one `is_current=True` row per `(stock_id, metric_key)`** —
-is violated. The M3 panel query's
-`period_end_date DESC, created_at DESC` tiebreak masks the symptom but
-not the cause.
+**Why the original framing was wrong:**
 
-Other parsers (`piotroski_f_score.py:144`,
-`value_line_ratios.py:132`, `document_dedupe_service.py:418`) DO mark
-prior rows `is_current=False` when writing new ones. The VL parser
-that produces `target.price_18m.mid` etc. apparently does not.
+The spec's premise — "at most one `is_current=True` row per
+`(stock_id, metric_key)`" — assumed the duplicates were a VL parser
+bug. Pre-implementation investigation against the dev DB showed the
+duplicates are **intentional fiscal-period time series**, not a parser
+defect:
 
-**Fix contract**:
+| Metric | is_current rows | distinct stocks | extra per-stock |
+|---|---|---|---|
+| `per_share.eps` | 194 | 7 | ≈27/stock |
+| `is.net_income` | 86 | 7 | ≈11/stock |
+| `score.piotroski.total` | 74 | 6 | ≈11/stock |
 
-- Identify the parser that writes the VL target / quality /
-  predictability rows (likely under
-  `backend/app/services/calculated_metrics/` or
-  `backend/app/services/value_line*.py` — investigate via
-  `git log -p -- backend/app/services/ | grep -B5 'target.price_18m'`).
-- Add an "update prior `is_current=True` rows for the same
-  `(stock_id, metric_key)` to False" step before inserting new rows,
-  matching the pattern at `piotroski_f_score.py:142–144`:
-  ```python
-  session.query(MetricFact).filter(
-      MetricFact.stock_id == stock_id,
-      MetricFact.metric_key == key,
-      MetricFact.is_current.is_(True),
-  ).update({"is_current": False}, synchronize_session=False)
-  ```
-- One-time cleanup migration (Alembic or a one-off script under
-  `backend/scripts/`) that detects existing duplicates and marks all
-  but the most-recent (by `period_end_date DESC, created_at DESC`) as
-  `is_current=False`. Idempotent — safe to re-run.
-- Regression test: ingest a synthetic VL document twice with
-  different periods, assert exactly one `is_current=True` row remains
-  per metric_key.
+ADBE has 42 `is_current=True` rows for `per_share.eps` — one for
+each fiscal year of Value Line history. The existing
+`_reconcile_parsed_fact_current_slot` in `ingestion_service.py:953`
+enforces uniqueness scoped to
+`(stock_id, metric_key, period_type, period_end_date, source_type)`.
+The two ADBE `target.price_18m.mid` rows that triggered the review
+have **different** `period_end_date`s (2025-01-31 and 2026-05-01) —
+both correctly current under the per-period semantics.
 
-**Scope**:
+The real issue is a schema-semantics conflict between two kinds of
+metrics that share the same `is_current` column:
 
-- `backend/app/services/<vl_parser_file>.py` — `is_current=False`
-  sweep before insert.
-- `backend/scripts/<dedup_script>.py` OR
-  `backend/migrations/versions/<timestamp>-dedup-metric-facts-is-current.py`.
-- `backend/tests/unit/test_<vl_parser>.py` — regression test for the
-  invariant.
-- **Excludes** any change to `_m3_panel_for_stock`'s tiebreak —
-  belt-and-suspenders; the query keeps the tiebreak as defensive
-  ordering even after dedup.
+- **Fiscal time series** (`per_share.eps`, `is.net_income`,
+  `score.piotroski.total`, etc.): per-period currency is correct —
+  each FY/Q row is genuinely "current for that period".
+- **Opinion / as-of** (`target.price_18m.*`, `proj.long_term.*`,
+  `quality.earnings_predictability`, etc.): `period_end_date` is
+  effectively the VL publication date; older targets shouldn't
+  remain "current" once a newer publication supersedes them.
+
+Implementing D4 literally (global uniqueness per `(stock_id,
+metric_key)`) would wipe out 99% of the time series. Narrowing it to
+an opinion-metric allowlist requires a schema-level contract change.
+Both belong in a proper design gate, not a Track-E sweep.
+
+**Display-layer guard retained**: The M3 panel's
+`_m3_facts_by_stock` tiebreak ordering
+(`period_end_date DESC NULLS LAST, created_at DESC`) correctly picks
+the most recent VL target / projection at read time. No drawer
+regression from leaving the duplicates in place.
+
+**MVP8-A2 P2 backlog (VL target as-of date)** ships independently
+via D1 of this sweep — D1 reads the existing `period_end_date`
+column for the winning fact and renders it as
+`(as of YYYY-MM-DD)`. No schema change required.
 
 ## Scope Out (this ticket)
 
@@ -325,8 +325,14 @@ that produces `target.price_18m.mid` etc. apparently does not.
       previously-focused element captured on mount and restored on
       unmount (WCAG 2.4.3 Focus Order). No new prop surface; no test
       changes (manual a11y verification). lint + build clean.
-- [ ] D4 VL parser marks prior `is_current=True` rows as False; cleanup
-      migration applied; invariant SQL check returns zero duplicates.
+- [x] D4 deferred 2026-05-13 — pre-implementation investigation showed
+      the duplicates are intentional fiscal-period time series, not a
+      parser bug. Implementing the spec literally would wipe ~99% of
+      `metric_facts` time-series rows. Schema-semantics conflict
+      between fiscal and opinion metrics escalated to design gate
+      `docs/tasks/2026-05-13_metric-facts-current-semantics-decision-gate.md`.
+      M3 panel tiebreak ordering retained as display-layer guard for
+      VL target staleness.
 - [ ] pytest -q green; lint + build clean.
 - [ ] Four-role review pass (optional — bundled small sweep, may be
       single-reviewer if no domain shift).
