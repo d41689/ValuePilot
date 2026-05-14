@@ -1,7 +1,7 @@
 'use client';
 
 import { X } from 'lucide-react';
-import type { ReactNode } from 'react';
+import { type ReactNode, useEffect } from 'react';
 
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
@@ -45,6 +45,12 @@ export function DrawerShell({
   onClose: () => void;
   children: ReactNode;
 }) {
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
+    document.addEventListener('keydown', handler);
+    return () => document.removeEventListener('keydown', handler);
+  }, [onClose]);
+
   return (
     <div className="fixed inset-0 z-50 bg-background/60 backdrop-blur-sm">
       <div aria-hidden="true" className="absolute inset-0 cursor-default" onClick={onClose} />
@@ -57,7 +63,7 @@ export function DrawerShell({
         <CardHeader className="shrink-0 border-b border-border/70 pb-3">
           <CardTitle className="flex items-center justify-between gap-2 text-base">
             <span id={labelledBy}>{title}</span>
-            <Button type="button" variant="ghost" size="icon" aria-label={closeLabel} onClick={onClose}>
+            <Button type="button" variant="ghost" size="icon" aria-label={closeLabel} onClick={onClose} autoFocus>
               <X className="h-4 w-4" />
             </Button>
           </CardTitle>

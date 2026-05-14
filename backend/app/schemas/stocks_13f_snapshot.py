@@ -106,6 +106,8 @@ class StockDetailTopHolder(BaseModel):
     average_holding_period_quarters: Optional[float] = None
     filing_date: Optional[str] = None
     accession_no: Optional[str] = None
+    # E-03: CIK for EDGAR filing index URL construction in the drawer.
+    cik: Optional[str] = None
 
 
 class StockDetailCaveatFlag(BaseModel):

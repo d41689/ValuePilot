@@ -423,6 +423,11 @@ def _top_holder_from_payload(holder: dict[str, Any]) -> StockDetailTopHolder:
             if holder.get("accession_no") is not None
             else None
         ),
+        cik=(
+            str(holder["cik"])
+            if holder.get("cik") is not None
+            else None
+        ),
     )
 
 

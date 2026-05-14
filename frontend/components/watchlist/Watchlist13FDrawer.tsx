@@ -301,22 +301,21 @@ function TopHolderCard({ holder }: { holder: Watchlist13FTopHolder }) {
         ) : null}
         {holder.filing_date ? <span>{holder.filing_date}</span> : null}
         {holder.accession_no ? (
-          // MVP7-06 review-fix: the original Link pointed at a generic
-          // EDGAR browse page with empty CIK, which is misleading
-          // (looks clickable, lands on an unhelpful search page). The
-          // proper accession-to-filing URL requires CIK
-          // (https://www.sec.gov/Archives/edgar/data/{CIK}/{accession-no-dashes}/),
-          // which is not currently in the top_holders payload. Queued
-          // for MVP8 backlog: thread ``cik`` through
-          // ``_stock_payload.top_holders`` → ``StockDetailTopHolder`` →
-          // this Link. For now, render as plain text with the accession
-          // in a title tooltip so operators can copy-paste into EDGAR.
-          <span
-            className="font-mono"
-            title={`EDGAR accession ${holder.accession_no}`}
-          >
-            {holder.accession_no}
-          </span>
+          holder.cik ? (
+            <Link
+              href={`https://www.sec.gov/Archives/edgar/data/${holder.cik}/${holder.accession_no.replaceAll('-', '')}/${holder.accession_no}-index.htm`}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="font-mono hover:underline"
+              title={`EDGAR filing index for accession ${holder.accession_no}`}
+            >
+              {holder.accession_no}
+            </Link>
+          ) : (
+            <span className="font-mono" title={`EDGAR accession ${holder.accession_no}`}>
+              {holder.accession_no}
+            </span>
+          )
         ) : null}
       </div>
     </div>

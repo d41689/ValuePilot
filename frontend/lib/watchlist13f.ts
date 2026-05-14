@@ -349,6 +349,8 @@ export type Watchlist13FTopHolder = {
   average_holding_period_quarters: number | null;
   filing_date: string | null;
   accession_no: string | null;
+  // E-03: CIK for building the EDGAR filing index URL.
+  cik: string | null;
 };
 
 export type Watchlist13FCaveatFlag = {

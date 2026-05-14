@@ -78,6 +78,8 @@ class ManagerHolding:
     manager_profile_source: str = "unknown"
     turnover_proxy: float | None = None
     high_turnover: bool = False
+    # E-03: CIK threaded for EDGAR accession URL construction in the drawer.
+    cik: str | None = None
 
 
 def build_oracles_lens_dashboard(
@@ -398,6 +400,7 @@ def _holdings_for_period(
                 filing_date=filing.filed_at,
                 accession_no=filing.accession_no,
                 manager_type_admin_classified=manager.manager_type or "unknown",
+                cik=manager.cik,
             )
         grouped[key].shares += int(holding.shares or 0)
         grouped[key].value_thousands += int(holding.value_thousands or 0)
@@ -600,6 +603,7 @@ def _stock_payload(
                 "high_turnover": item.high_turnover,
                 "filing_date": item.filing_date.isoformat() if item.filing_date else None,
                 "accession_no": item.accession_no,
+                "cik": item.cik,
             }
             for item in holdings[:3]
         ],

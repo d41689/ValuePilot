@@ -76,7 +76,10 @@ export function ManagerTypeEditorDialog({
   const [evidenceUrl, setEvidenceUrl] = useState('');
 
   const noteRequired = draft !== 'unknown';
-  const saveDisabled = !editor || isPending || (noteRequired && !note.trim());
+  const evidenceUrlInvalid =
+    evidenceUrl.trim() !== '' && (() => { try { new URL(evidenceUrl.trim()); return false; } catch { return true; } })();
+  const saveDisabled =
+    !editor || isPending || (noteRequired && !note.trim()) || evidenceUrlInvalid;
 
   function handleClose() {
     setEditor(null);
@@ -129,6 +132,7 @@ export function ManagerTypeEditorDialog({
               onChange={(event) => setNote(event.target.value)}
               placeholder="Evidence or rationale for this classification"
               rows={3}
+              aria-required={noteRequired}
             />
           </div>
           <div className="space-y-1">
@@ -141,7 +145,14 @@ export function ManagerTypeEditorDialog({
               value={evidenceUrl}
               onChange={(event) => setEvidenceUrl(event.target.value)}
               placeholder="https://…"
+              aria-invalid={evidenceUrlInvalid}
+              aria-describedby={evidenceUrlInvalid ? 'mvp6-mt-evidence-url-error' : undefined}
             />
+            {evidenceUrlInvalid ? (
+              <p id="mvp6-mt-evidence-url-error" className="text-xs text-destructive">
+                Enter a valid URL (must start with https:// or http://).
+              </p>
+            ) : null}
           </div>
         </div>
         <DialogFooter>

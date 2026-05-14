@@ -203,10 +203,11 @@ export default function ManagersPage() {
                     const legalName = String(manager.legal_name ?? '—');
                     return (
                       <TableRow key={String(id)}>
-                        <TableCell className="font-medium">
+                        <TableCell className="max-w-[240px] font-medium">
                           <Link
                             href={`/admin/13f/managers/${id}`}
-                            className="hover:underline"
+                            className="block truncate hover:underline"
+                            title={legalName}
                           >
                             {legalName}
                           </Link>
