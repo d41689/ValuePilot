@@ -8,9 +8,10 @@ from app.models.institutions import (
     Filing13F,
     Holding13F,
     InstitutionManager,
+    InstitutionManagerCikReviewEvent,
     ParseRun13F,
 )
-from app.models.oracles_lens import OraclesLensSignal
+from app.models.oracles_lens import OraclesLensScoreComponent, OraclesLensSignal
 from app.models.stocks import Stock
 from app.services.oracles_lens.constants import SCORE_VERSION
 from app.services.oracles_lens.signal_weighted_score import (
@@ -19,6 +20,21 @@ from app.services.oracles_lens.signal_weighted_score import (
 from app.services.oracles_lens.unknown_manager_priority import (
     build_unknown_manager_priority,
 )
+
+
+def _clear_13f(db_session) -> None:
+    # Pre-MVP8-01: persisted Oracle's Lens rows FK-reference
+    # InstitutionManager, so they must clear first; also ensures
+    # ``test_no_persisted_scores_returns_empty`` starts from an empty
+    # ``oracles_lens_signals`` baseline regardless of dev-DB state.
+    db_session.query(OraclesLensScoreComponent).delete()
+    db_session.query(OraclesLensSignal).delete()
+    db_session.query(Holding13F).delete()
+    db_session.query(ParseRun13F).delete()
+    db_session.query(Filing13F).delete()
+    db_session.query(InstitutionManagerCikReviewEvent).delete()
+    db_session.query(InstitutionManager).delete()
+    db_session.flush()
 
 
 _CIK_SEQ = count(9997700000)
@@ -149,12 +165,14 @@ def _holding(db_session, filing: Filing13F, stock: Stock, *, value_thousands: in
 def test_no_persisted_scores_returns_empty(db_session):
     """Before any backfill: no signals exist → quarter null, items
     empty, no crash."""
+    _clear_13f(db_session)
     payload = build_unknown_manager_priority(db_session)
     assert payload["quarter"] is None
     assert payload["items"] == []
 
 
 def test_unknown_manager_appears_when_they_hold_a_scored_stock(db_session):
+    _clear_13f(db_session)
     stock = _stock(db_session)
     unknown_mgr = _manager(db_session, manager_type="unknown")
     _holding(db_session, _filing(db_session, unknown_mgr), stock)
@@ -174,6 +192,7 @@ def test_unknown_manager_appears_when_they_hold_a_scored_stock(db_session):
 def test_non_unknown_manager_excluded(db_session):
     """Typed managers must not appear in the priority list — they
     don't drag score_confidence."""
+    _clear_13f(db_session)
     stock = _stock(db_session)
     typed_mgr = _manager(db_session, manager_type="long_term_fundamental")
     _holding(db_session, _filing(db_session, typed_mgr), stock)
@@ -190,6 +209,7 @@ def test_non_unknown_manager_excluded(db_session):
 def test_ordering_by_affected_signal_count_desc(db_session):
     """A manager who appears on 2 scored stocks ranks above one who
     only appears on 1."""
+    _clear_13f(db_session)
     stock_a = _stock(db_session)
     stock_b = _stock(db_session)
 
@@ -226,6 +246,7 @@ def test_ordering_by_affected_signal_count_desc(db_session):
 def test_worst_score_confidence_observed_captures_lowest_tier(db_session):
     """When an unknown manager holds two scored stocks with
     different score_confidence values, the worst tier wins."""
+    _clear_13f(db_session)
     stock_high = _stock(db_session)
     stock_low = _stock(db_session)
 
@@ -283,6 +304,7 @@ def test_endpoint_requires_admin(client, user_factory, auth_headers):
 
 
 def test_endpoint_returns_payload_shape(client, db_session, user_factory, auth_headers):
+    _clear_13f(db_session)
     admin = user_factory(email="07b-admin@example.com", role="admin")
     stock = _stock(db_session)
     unknown_mgr = _manager(db_session, manager_type="unknown")

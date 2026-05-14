@@ -10,6 +10,7 @@ from app.models.institutions import (
     NoIndexExpectedDate,
     RawSourceDocument,
 )
+from app.models.oracles_lens import OraclesLensScoreComponent, OraclesLensSignal
 from app.services.thirteenf_filing_detail import (
     calculate_official_filing_deadline,
     ingest_accession_filing_detail,
@@ -27,6 +28,10 @@ class FakeEdgarClient:
 
 
 def _clear_13f(db_session) -> None:
+    # Pre-MVP8-01: persisted Oracle's Lens rows FK-reference
+    # InstitutionManager, so they must clear first.
+    db_session.query(OraclesLensScoreComponent).delete()
+    db_session.query(OraclesLensSignal).delete()
     db_session.query(Holding13F).delete()
     db_session.query(Filing13F).delete()
     db_session.query(RawSourceDocument).delete()

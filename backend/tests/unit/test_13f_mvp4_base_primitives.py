@@ -28,6 +28,7 @@ from app.models.institutions import (
     QualityFinding13F,
     QualityReport13F,
 )
+from app.models.oracles_lens import OraclesLensScoreComponent, OraclesLensSignal
 from app.models.stocks import Stock
 from app.services.oracles_lens.base_primitives import (
     HISTORICAL_BACKFILL_NEEDS_VALIDATION_CAVEAT,
@@ -51,6 +52,10 @@ _REPORT_SEQ = count(800001)
 
 
 def _clear_13f(db_session) -> None:
+    # Pre-MVP8-01: persisted Oracle's Lens rows FK-reference
+    # InstitutionManager, so they must clear first.
+    db_session.query(OraclesLensScoreComponent).delete()
+    db_session.query(OraclesLensSignal).delete()
     db_session.query(QualityFinding13F).delete()
     db_session.query(QualityReport13F).delete()
     db_session.query(Holding13F).delete()

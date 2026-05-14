@@ -446,17 +446,35 @@ def _derive_manager_profile(
         cache[manager_id] = None
         return None
 
+    # Aggregate multiple InfoTable rows per stock_id (see
+    # ``_contributions_for_stock`` for the 13F semantics — same filing
+    # can legitimately carry several SOLE-discretion rows for the same
+    # CUSIP). Without aggregation, multi-row stocks double-count toward
+    # the manager's derived turnover / weight profile.
+    grouped_by_stock: dict[int, list[Holding13F]] = {}
+    for holding in holdings:
+        if holding.stock_id is None:
+            continue
+        grouped_by_stock.setdefault(holding.stock_id, []).append(holding)
+
     position_weights: list[float] = []
     holding_streak_quarters: list[int] = []
-    for holding in holdings:
-        weight_result = compute_portfolio_weight(holding)
+    for stock_id, group in grouped_by_stock.items():
+        group.sort(key=lambda h: h.value_thousands or 0, reverse=True)
+        representative = group[0]
+        aggregated_value_thousands = sum(
+            (h.value_thousands or 0) for h in group
+        ) or None
+        weight_result = compute_portfolio_weight(
+            representative, value_thousands_override=aggregated_value_thousands,
+        )
         if weight_result.value is None:
             continue
         position_weights.append(float(weight_result.value))
         streak_result = compute_holding_streak(
             session,
             manager_id=manager_id,
-            stock_id=holding.stock_id,
+            stock_id=stock_id,
             current_quarter=quarter,
         )
         holding_streak_quarters.append(streak_result.streak_quarters)
@@ -606,13 +624,35 @@ def _contributions_for_stock(
         .all()
     )
 
+    # Aggregate multiple InfoTable rows per (manager, stock) — a 13F-HR
+    # may legitimately carry several SOLE-discretion rows for the same
+    # CUSIP (e.g. one slice co-attributed via ``otherManagers``, another
+    # solely the filer's). For scoring, the manager's true exposure is
+    # the sum; emitting one ``_HolderContribution`` per row would also
+    # violate ``uq_oracles_lens_score_components_per_score_component_manager``.
+    grouped_by_manager: dict[int, list[tuple[Holding13F, InstitutionManager, Filing13F]]] = {}
+    for holding, manager, filing in holdings:
+        grouped_by_manager.setdefault(manager.id, []).append((holding, manager, filing))
+
     contributions: list[_HolderContribution] = []
     excluded: list[_ExcludedHolder] = []
-    for holding, manager, filing in holdings:
+    for manager_id, group in grouped_by_manager.items():
+        # Within a single Filing13F all rows share the same filing /
+        # manager objects; pick the representative with the largest
+        # value_thousands so per-holder caveats anchor to the dominant
+        # slice. Sum value_thousands for the portfolio_weight numerator.
+        group.sort(key=lambda triple: triple[0].value_thousands or 0, reverse=True)
+        holding, manager, filing = group[0]
+        aggregated_value_thousands = sum(
+            (h.value_thousands or 0) for h, _m, _f in group
+        ) or None
+
         # Per-holder caveats from MVP4-02 primitives + filing flags.
         per_holder_caveats: list[str] = []
 
-        portfolio_weight_result = compute_portfolio_weight(holding)
+        portfolio_weight_result = compute_portfolio_weight(
+            holding, value_thousands_override=aggregated_value_thousands,
+        )
         per_holder_caveats.extend(portfolio_weight_result.caveats)
         portfolio_weight = portfolio_weight_result.value
 

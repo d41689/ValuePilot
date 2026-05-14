@@ -121,27 +121,66 @@ def upsert_cusip_mapping(
 
 def evaluate_openfigi_matches(matches: List[Dict[str, Any]]) -> tuple[str, str, Optional[str], Optional[str]]:
     """Determine confidence and auto-confirm rules for OpenFIGI matches.
-    
+
     Returns: (confidence, reason, ticker, name)
+
+    Pre-MVP8-01 (2026-05-13): the OpenFIGI ``mapCusips`` response
+    returns ALL global listings for a CUSIP — equity exchanges
+    worldwide, options chains, bond instruments, ADRs, etc. A
+    typical equity CUSIP (e.g. Apple 037833100) returns 200+ matches.
+    The original auto-confirm rule (``len(matches) == 1``) was
+    therefore unreachable for real equity CUSIPs. The rule now
+    filters to US Common Stock listings FIRST, then auto-confirms
+    when all US Common Stock entries agree on a single ticker.
     """
     if not matches:
         return ("low", "No match found in OpenFIGI", None, None)
-        
-    # Auto-confirm rule: exactly 1 match, and it's a US Common Stock
+
+    # Filter to US Common Stock equity listings.
+    us_common = [
+        m for m in matches
+        if str(m.get("securityType", "")).upper() == "COMMON STOCK"
+        and str(m.get("exchCode", "")).upper() == "US"
+    ]
+
+    if us_common:
+        tickers = {m.get("ticker") for m in us_common if m.get("ticker")}
+        if len(tickers) == 1:
+            ticker = next(iter(tickers))
+            first = us_common[0]
+            return (
+                "high",
+                f"US Common Stock match ({len(us_common)} listings, all → {ticker})",
+                ticker,
+                first.get("name"),
+            )
+        # Multiple US Common Stock matches with different tickers — needs review.
+        return (
+            "review_needed:low",
+            f"Multiple US Common Stock matches with conflicting tickers: {sorted(t for t in tickers if t)}",
+            None,
+            None,
+        )
+
+    # No US Common Stock match — fall back to existing heuristics for
+    # non-equity / non-US listings so the admin queue still gets the
+    # context needed to triage.
     if len(matches) == 1:
         match = matches[0]
-        sec_type = match.get("securityType", "").upper()
-        exch_code = match.get("exchCode", "").upper()
-        ticker = match.get("ticker")
-        name = match.get("name")
-        
-        if sec_type == "COMMON STOCK" and exch_code == "US":
-            return ("high", "Single exact US Common Stock match", ticker, name)
-        else:
-            return ("review_needed:medium", f"Single match but type '{sec_type}' or exchange '{exch_code}'", ticker, name)
-            
-    # Ambiguous rule: multiple matches
-    return ("review_needed:low", f"Multiple ({len(matches)}) matches found in OpenFIGI", None, None)
+        sec_type = str(match.get("securityType", "")).upper()
+        exch_code = str(match.get("exchCode", "")).upper()
+        return (
+            "review_needed:medium",
+            f"Single match but type '{sec_type}' or exchange '{exch_code}' (not US Common Stock)",
+            match.get("ticker"),
+            match.get("name"),
+        )
+    return (
+        "review_needed:low",
+        f"Multiple ({len(matches)}) matches, no US Common Stock listing",
+        None,
+        None,
+    )
 
 
 def enrich_unmapped_holdings(db: Session, client: Optional[OpenFigiClient] = None, limit: int = 100) -> int:

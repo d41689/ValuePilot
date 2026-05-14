@@ -11,6 +11,7 @@ from app.models.institutions import (
     OwnershipChange13F,
     ParseRun13F,
 )
+from app.models.oracles_lens import OraclesLensScoreComponent, OraclesLensSignal
 from app.models.stocks import Stock
 
 
@@ -18,6 +19,10 @@ _CIK_COUNTER = count(9200000000)
 
 
 def _clear_13f(db_session) -> None:
+    # Pre-MVP8-01: persisted Oracle's Lens rows FK-reference
+    # InstitutionManager, so they must clear first.
+    db_session.query(OraclesLensScoreComponent).delete()
+    db_session.query(OraclesLensSignal).delete()
     db_session.query(OwnershipChange13F).delete()
     db_session.query(Holding13F).delete()
     db_session.query(ParseRun13F).delete()

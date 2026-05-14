@@ -18,6 +18,7 @@ from app.models.institutions import (
     ParseRun13F,
     RawSourceDocument,
 )
+from app.models.oracles_lens import OraclesLensScoreComponent, OraclesLensSignal
 from app.services.thirteenf_holdings_ingest import (
     ingest_holdings_for_filing,
     normalize_investment_discretion,
@@ -33,6 +34,10 @@ FIXTURE_DIR = "tests/fixtures/13f/value_units"
 
 
 def _clear(session) -> None:
+    # Pre-MVP8-01: persisted Oracle's Lens rows FK-reference
+    # InstitutionManager, so they must clear first.
+    session.query(OraclesLensScoreComponent).delete()
+    session.query(OraclesLensSignal).delete()
     session.query(Holding13F).delete()
     session.query(ParseRun13F).delete()
     session.query(Filing13F).delete()

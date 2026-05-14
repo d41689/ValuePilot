@@ -94,20 +94,32 @@ class AddIntensityResult:
 # ---------------------------------------------------------------------------
 
 
-def compute_portfolio_weight(holding: Holding13F) -> PortfolioWeightResult:
+def compute_portfolio_weight(
+    holding: Holding13F,
+    *,
+    value_thousands_override: Optional[int] = None,
+) -> PortfolioWeightResult:
     """Per-holding portfolio weight.
 
     Returns ``None`` with a ``PARTIAL_COVERAGE`` caveat when the parent
     filing is a Combination Report (PRD §7.2 line 588–592 mandates
     portfolio_weight_pct=NULL); returns ``None`` (no caveat) when neither
     computed nor reported total is available.
+
+    ``value_thousands_override`` lets callers pass an aggregate value for
+    the (manager, stock) position when a filing has multiple legitimate
+    InfoTable rows for the same security (e.g. SOLE-discretion slices
+    with vs without ``otherManagers`` references). Aggregation happens
+    in the scoring service rather than at ingest so InfoTable fidelity
+    is preserved for amendment / audit views.
     """
     filing: Filing13F = holding.filing
     if filing.coverage_completeness == "partial":
         return PortfolioWeightResult(value=None, caveats=[PARTIAL_COVERAGE_CAVEAT])
 
+    numerator = value_thousands_override if value_thousands_override is not None else holding.value_thousands
     denominator = filing.computed_total_value_thousands or filing.reported_total_value_thousands
-    if not denominator or not holding.value_thousands:
+    if not denominator or not numerator:
         return PortfolioWeightResult(value=None)
 
     # Ratio-based by design: numerator and denominator come from the same
@@ -117,7 +129,7 @@ def compute_portfolio_weight(holding: Holding13F) -> PortfolioWeightResult:
     # up in raw dollars; the 1000× unit error cancels in the division. A
     # future signal that uses ``value_usd`` directly (not a ratio) would
     # need its own per-filer unit guard.
-    weight = Decimal(holding.value_thousands) / Decimal(denominator)
+    weight = Decimal(numerator) / Decimal(denominator)
     return PortfolioWeightResult(value=weight)
 
 

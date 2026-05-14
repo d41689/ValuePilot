@@ -433,6 +433,103 @@ def test_score_components_persisted(db_session):
     assert "position_signal_weight" in by_kind
 
 
+def test_multiple_holdings_per_manager_stock_are_aggregated(db_session):
+    """13F filers can legitimately emit several SOLE-discretion InfoTable
+    rows for the same security (e.g. one slice co-attributed via
+    ``otherManagers``, another solely the filer's). The scoring service
+    must aggregate them into one (manager, stock) contribution, both to
+    reflect the manager's true exposure AND so the unique constraint
+    ``uq_oracles_lens_score_components_per_score_component_manager`` is
+    respected.
+    """
+    stock = _stock(db_session)
+    quarter = "2026-Q1"
+
+    # Manager A — TWO holdings for the same stock in the same filing.
+    mgr_a = _manager(db_session)
+    filing_a = _filing(db_session, mgr_a, quarter=quarter)
+    pr_a = _current_parse_run(db_session, filing_a)
+    holding_a1 = _holding(
+        db_session, filing_a, stock, parse_run=pr_a, value_thousands=40_000,
+    )
+    # Second slice — different source_row_index keeps fingerprints
+    # distinct (mirrors ingestion behavior).
+    holding_a2 = Holding13F(
+        filing_id=filing_a.id,
+        parse_run_id=pr_a.id,
+        manager_id=filing_a.manager_id,
+        accession_number=filing_a.accession_number,
+        report_quarter=filing_a.report_quarter,
+        quarter_end_date=filing_a.quarter_end_date,
+        row_fingerprint=f"{filing_a.accession_number}-{stock.id}-2",
+        holding_row_fingerprint=f"{filing_a.accession_number}-{stock.id}-2",
+        cusip=holding_a1.cusip,
+        issuer_name=holding_a1.issuer_name,
+        name_of_issuer=holding_a1.name_of_issuer,
+        title_of_class="COM",
+        value_thousands=10_000,
+        value_raw="10000000",
+        value_unit_raw="dollars",
+        value_parse_rule="schema_dollars",
+        value_usd=10_000 * 1000,
+        shares=200,
+        ssh_prnamt=200,
+        share_type="SH",
+        ssh_prnamt_type="SH",
+        investment_discretion="SOLE",
+        holding_attribution_status="direct",
+        voting_sole=200,
+        voting_shared=0,
+        voting_none=0,
+        stock_id=stock.id,
+        cusip_mapping_status="linked",
+        source_row_index=1,
+        other_managers_raw="1",
+    )
+    db_session.add(holding_a2)
+    db_session.flush()
+    pr_a.holdings_count = (pr_a.holdings_count or 0) + 1
+
+    # Two additional holders for the same stock to clear min_holders >= 3.
+    for _ in range(2):
+        mgr = _manager(db_session)
+        filing = _filing(db_session, mgr, quarter=quarter)
+        _holding(db_session, filing, stock, value_thousands=50_000)
+
+    # Must not raise (previously violated the unique constraint).
+    result = compute_signal_weighted_scores(db_session, quarter=quarter)
+    assert result["filings_scored"] >= 1
+
+    signal = (
+        db_session.query(OraclesLensSignal)
+        .filter(OraclesLensSignal.stock_id == stock.id)
+        .filter(OraclesLensSignal.report_quarter == quarter)
+        .one()
+    )
+
+    # Exactly one manager_signal_weight + one position_signal_weight per
+    # manager — duplicates would violate the unique constraint and the
+    # raw row count would balloon to 4 for manager_a alone.
+    mgr_a_rows = (
+        db_session.query(OraclesLensScoreComponent)
+        .filter(OraclesLensScoreComponent.score_id == signal.id)
+        .filter(OraclesLensScoreComponent.manager_id == mgr_a.id)
+        .filter(
+            OraclesLensScoreComponent.component_name.in_(
+                ["manager_signal_weight", "position_signal_weight"]
+            )
+        )
+        .all()
+    )
+    by_kind = {c.component_name: c for c in mgr_a_rows}
+    assert set(by_kind) == {"manager_signal_weight", "position_signal_weight"}, (
+        f"expected one of each component per manager; got {[c.component_name for c in mgr_a_rows]}"
+    )
+
+    # raw_consensus_count counts unique holders (3), not raw rows (4).
+    assert signal.raw_consensus_count == 3
+
+
 # ===========================================================================
 # JobRun orchestration
 # ===========================================================================

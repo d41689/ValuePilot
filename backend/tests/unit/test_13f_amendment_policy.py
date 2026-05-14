@@ -15,6 +15,7 @@ from app.models.institutions import (
     ParseRun13F,
     RawSourceDocument,
 )
+from app.models.oracles_lens import OraclesLensScoreComponent, OraclesLensSignal
 from app.services.thirteenf_filing_detail import ingest_accession_filing_detail
 from app.services.thirteenf_holdings_ingest import ingest_holdings_for_filing
 
@@ -25,6 +26,10 @@ from app.services.thirteenf_holdings_ingest import ingest_holdings_for_filing
 _CIK_SEQ = count(8800000000)
 
 def _clear(session) -> None:
+    # Pre-MVP8-01: persisted Oracle's Lens rows FK-reference
+    # InstitutionManager, so they must clear first.
+    session.query(OraclesLensScoreComponent).delete()
+    session.query(OraclesLensSignal).delete()
     session.query(Holding13F).delete()
     session.query(ParseRun13F).delete()
     session.query(Filing13F).delete()

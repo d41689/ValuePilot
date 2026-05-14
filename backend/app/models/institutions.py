@@ -803,7 +803,7 @@ class CusipTickerMap(Base):
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
     cusip: Mapped[str] = mapped_column(String(9), nullable=False)
-    ticker: Mapped[Optional[str]] = mapped_column(String(10), nullable=True)
+    ticker: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
     issuer_name: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     security_type: Mapped[Optional[str]] = mapped_column(String(30), nullable=True)
     exchange: Mapped[Optional[str]] = mapped_column(String(30), nullable=True)

@@ -12,6 +12,7 @@ from app.models.institutions import (
     NoIndexExpectedDate,
     ParseRun13F,
 )
+from app.models.oracles_lens import OraclesLensScoreComponent, OraclesLensSignal
 from app.services.thirteenf_alerts import InMemoryAlertTransport
 from app.services.thirteenf_health import (
     build_daily_health_summary,
@@ -25,6 +26,10 @@ NOW = datetime(2026, 5, 12, 14, 0, tzinfo=timezone.utc)
 
 
 def _clear(db_session) -> None:
+    # Pre-MVP8-01: persisted Oracle's Lens rows FK-reference
+    # InstitutionManager, so they must clear first.
+    db_session.query(OraclesLensScoreComponent).delete()
+    db_session.query(OraclesLensSignal).delete()
     db_session.query(Holding13F).delete()
     db_session.query(ParseRun13F).delete()
     db_session.query(JobRun).delete()
