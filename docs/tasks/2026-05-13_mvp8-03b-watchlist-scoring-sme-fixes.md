@@ -220,14 +220,20 @@ MOS isn't a strong cross-signal.
 - [x] pytest -q → 810 passed; lint clean; frontend build clean;
       oraclesLens.test.js 18/18.
 - [x] Four-role review pass (Frontend / Backend / Staff
-      Engineer / SME) — completed 2026-05-13. Two should-block
-      fixes in commit `f4ca4bd`: (a) B1 dual-chip condition
-      narrowed to suppress "Admin: Unknown" pairs (SME + Frontend
-      finding); (b) dead `_CROWDED_MAX_COVERAGE = 0.5` constant
-      deleted (Staff Eng + Backend finding). Persisted-path
-      consistency confirmed clear — `_apply_persisted_scores`
-      patches score fields only; B2/B4 aggregates survive.
-      pytest 810 passed post-fix; lint clean.
+      Engineer / SME) — first pass 2026-05-13 (commits
+      `f4ca4bd` + `f386124`). A second external review (PO
+      re-read of the persisted path) produced a REJECT finding:
+      `score_confidence` leaked the persisted label format
+      (`"high_confidence"`) into the `Literal["high","medium","low"]`
+      schema, causing a `ValidationError` on the normal production
+      path post-MVP8-01 flip. Fix + 3 regression tests in commit
+      `bdd132a`. Final state:
+      (a) `_normalize_score_confidence` maps persisted labels at
+          the API boundary in `stocks_13f.py`;
+      (b) B1 dual-chip suppresses "Admin: Unknown" noise;
+      (c) dead `_CROWDED_MAX_COVERAGE` deleted;
+      (d) 3 new persisted-path regression tests added.
+      pytest 813 passed; lint clean.
 - [x] **MVP8-03B closed 2026-05-13. MVP8-03A (admin 4 items)
       authorized to open.**
 
