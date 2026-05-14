@@ -440,6 +440,7 @@ def _derive_manager_profile(
         .filter(Holding13F.report_quarter == quarter)
         .filter(Holding13F.cusip_mapping_status == "linked")
         .filter(Holding13F.holding_attribution_status == "direct")
+        .filter(Holding13F.put_call.is_(None))
         .all()
     )
     if not holdings:
@@ -499,6 +500,7 @@ def _derive_manager_profile(
         .filter(Holding13F.report_quarter == previous_quarter)
         .filter(Holding13F.cusip_mapping_status == "linked")
         .filter(Holding13F.holding_attribution_status == "direct")
+        .filter(Holding13F.put_call.is_(None))
         .distinct()
         .all()
     )
@@ -549,6 +551,7 @@ def _eligible_stock_ids(
         .filter(Holding13F.stock_id.isnot(None))
         .filter(Holding13F.cusip_mapping_status == "linked")
         .filter(Holding13F.holding_attribution_status == "direct")
+        .filter(Holding13F.put_call.is_(None))
         .group_by(Holding13F.stock_id)
         .having(func.count(func.distinct(Holding13F.manager_id)) >= min_holders)
         .all()
@@ -566,6 +569,16 @@ def _top_n_stock_ids_per_manager(
     one pass over the quarter's holdings; expected size is N managers
     × top_n stocks, well within memory bounds for the V1 universe
     (under 100 managers).
+
+    Pre-MVP8-01 review: holdings are pre-aggregated per (manager_id,
+    stock_id) BEFORE ranking — 13F-HR filings can legitimately emit
+    multiple SOLE rows for the same CUSIP (see
+    ``_contributions_for_stock``), and without aggregation a
+    duplicate-row stock would consume two ranked slots and a
+    subsequent stock would be evicted from the top-N set. Options
+    (``put_call IS NOT NULL``) are also excluded — they share the
+    underlying's CUSIP / stock_id but represent a different exposure
+    that must not be folded into the common-stock signal.
     """
     rows = (
         session.query(
@@ -584,14 +597,17 @@ def _top_n_stock_ids_per_manager(
         .filter(Holding13F.report_quarter == quarter)
         .filter(Holding13F.stock_id.isnot(None))
         .filter(Holding13F.cusip_mapping_status == "linked")
+        .filter(Holding13F.put_call.is_(None))
         .filter(Holding13F.value_thousands.isnot(None))
         .all()
     )
-    grouped: dict[int, list[tuple[int, int]]] = {}
+    aggregated: dict[tuple[int, int], int] = {}
     for row in rows:
-        grouped.setdefault(row.manager_id, []).append(
-            (int(row.value_thousands or 0), row.stock_id)
-        )
+        key = (row.manager_id, row.stock_id)
+        aggregated[key] = aggregated.get(key, 0) + int(row.value_thousands or 0)
+    grouped: dict[int, list[tuple[int, int]]] = {}
+    for (manager_id, stock_id), total in aggregated.items():
+        grouped.setdefault(manager_id, []).append((total, stock_id))
     top_by_manager: dict[int, set[int]] = {}
     for manager_id, items in grouped.items():
         items.sort(reverse=True)
@@ -621,6 +637,7 @@ def _contributions_for_stock(
         .filter(Holding13F.stock_id == stock_id)
         .filter(Holding13F.cusip_mapping_status == "linked")
         .filter(Holding13F.holding_attribution_status == "direct")
+        .filter(Holding13F.put_call.is_(None))
         .all()
     )
 

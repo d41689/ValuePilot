@@ -530,6 +530,144 @@ def test_multiple_holdings_per_manager_stock_are_aggregated(db_session):
     assert signal.raw_consensus_count == 3
 
 
+def test_option_holdings_excluded_from_scoring_eligibility(db_session):
+    """13F-HR filers occasionally report options under the underlying's
+    CUSIP with ``put_call`` set (e.g. Third Point KVUE Call). Without an
+    explicit filter these enter ``_contributions_for_stock`` because they
+    pass ``cusip_mapping_status='linked'`` + ``holding_attribution_status
+    ='direct'`` and inflate the common-stock signal with option-notional
+    exposure. The scorer must exclude any row with ``put_call IS NOT
+    NULL`` across all four eligibility paths.
+    """
+    stock = _stock(db_session)
+    quarter = "2026-Q1"
+
+    # Three managers with plain common holdings — clears min_holders >= 3.
+    common_managers = []
+    for _ in range(3):
+        mgr = _manager(db_session)
+        common_managers.append(mgr)
+        _holding(db_session, _filing(db_session, mgr, quarter=quarter), stock,
+                 value_thousands=50_000)
+
+    # A fourth manager holds ONLY a Call option on the same stock — must
+    # not contribute to the signal and must not push raw_consensus_count
+    # above 3.
+    option_mgr = _manager(db_session)
+    option_filing = _filing(db_session, option_mgr, quarter=quarter)
+    pr_opt = _current_parse_run(db_session, option_filing)
+    option_holding = Holding13F(
+        filing_id=option_filing.id,
+        parse_run_id=pr_opt.id,
+        manager_id=option_filing.manager_id,
+        accession_number=option_filing.accession_number,
+        report_quarter=option_filing.report_quarter,
+        quarter_end_date=option_filing.quarter_end_date,
+        row_fingerprint=f"{option_filing.accession_number}-{stock.id}-opt",
+        holding_row_fingerprint=f"{option_filing.accession_number}-{stock.id}-opt",
+        cusip=f"{stock.id:09d}",
+        issuer_name=f"Issuer {stock.id}",
+        name_of_issuer=f"Issuer {stock.id}",
+        title_of_class="COM",
+        put_call="Call",
+        value_thousands=999_999,
+        value_raw=f"{999_999 * 1000}",
+        value_unit_raw="dollars",
+        value_parse_rule="schema_dollars",
+        value_usd=999_999 * 1000,
+        shares=10_000,
+        ssh_prnamt=10_000,
+        share_type="SH",
+        ssh_prnamt_type="SH",
+        investment_discretion="SOLE",
+        holding_attribution_status="direct",
+        voting_sole=10_000,
+        voting_shared=0,
+        voting_none=0,
+        stock_id=stock.id,
+        cusip_mapping_status="linked",
+        source_row_index=0,
+    )
+    db_session.add(option_holding)
+    db_session.flush()
+    pr_opt.holdings_count = (pr_opt.holdings_count or 0) + 1
+
+    compute_signal_weighted_scores(db_session, quarter=quarter)
+
+    signal = (
+        db_session.query(OraclesLensSignal)
+        .filter(OraclesLensSignal.stock_id == stock.id)
+        .filter(OraclesLensSignal.report_quarter == quarter)
+        .one()
+    )
+    # Exactly 3 common-stock holders — option manager must be excluded.
+    assert signal.raw_consensus_count == 3
+
+    # No score component should reference the option-only manager.
+    option_mgr_rows = (
+        db_session.query(OraclesLensScoreComponent)
+        .filter(OraclesLensScoreComponent.score_id == signal.id)
+        .filter(OraclesLensScoreComponent.manager_id == option_mgr.id)
+        .all()
+    )
+    assert option_mgr_rows == [], (
+        f"option-only holder must not contribute components; got {option_mgr_rows!r}"
+    )
+
+
+def test_top_n_aggregates_multi_row_cusips_before_ranking(db_session):
+    """The ``top_n_by_manager`` lookup used for the ``bonus_top_10``
+    flag must aggregate value_thousands per (manager, stock) before
+    ranking. Without aggregation, a duplicate-row CUSIP would consume
+    two ranked slots and evict a stock that should occupy the Nth slot
+    after collapse, silently mis-applying the top-10 bonus.
+    """
+    from app.services.oracles_lens.signal_weighted_score import (
+        _top_n_stock_ids_per_manager,
+    )
+
+    quarter = "2026-Q1"
+    mgr = _manager(db_session)
+    filing = _filing(db_session, mgr, quarter=quarter)
+    pr = _current_parse_run(db_session, filing)
+
+    # Stock A: 2 rows (10_000 + 9_000 = 19_000 aggregated → rank #1)
+    stock_a = _stock(db_session)
+    _holding(db_session, filing, stock_a, parse_run=pr, value_thousands=10_000)
+    holding_a2 = Holding13F(
+        filing_id=filing.id, parse_run_id=pr.id, manager_id=filing.manager_id,
+        accession_number=filing.accession_number,
+        report_quarter=filing.report_quarter,
+        quarter_end_date=filing.quarter_end_date,
+        row_fingerprint=f"{filing.accession_number}-{stock_a.id}-2",
+        holding_row_fingerprint=f"{filing.accession_number}-{stock_a.id}-2",
+        cusip=f"{stock_a.id:09d}", issuer_name="x", name_of_issuer="x",
+        title_of_class="COM", value_thousands=9_000, value_raw="9000000",
+        value_unit_raw="dollars", value_parse_rule="schema_dollars",
+        value_usd=9_000_000, shares=200, ssh_prnamt=200, share_type="SH",
+        ssh_prnamt_type="SH", investment_discretion="SOLE",
+        holding_attribution_status="direct",
+        voting_sole=200, voting_shared=0, voting_none=0,
+        stock_id=stock_a.id, cusip_mapping_status="linked", source_row_index=1,
+    )
+    db_session.add(holding_a2)
+    db_session.flush()
+
+    # Single-row stocks B (8_000), C (7_000), D (6_000).
+    stock_b = _stock(db_session)
+    _holding(db_session, filing, stock_b, parse_run=pr, value_thousands=8_000)
+    stock_c = _stock(db_session)
+    _holding(db_session, filing, stock_c, parse_run=pr, value_thousands=7_000)
+    stock_d = _stock(db_session)
+    _holding(db_session, filing, stock_d, parse_run=pr, value_thousands=6_000)
+
+    # top_n=3 — without aggregation, set-collapse on stock_a's two rows
+    # would yield {stock_a, stock_b} (stock_c never selected); with
+    # aggregation, the result is the true top-3 by aggregated value.
+    top = _top_n_stock_ids_per_manager(db_session, quarter=quarter, top_n=3)
+    assert top[mgr.id] == {stock_a.id, stock_b.id, stock_c.id}
+
+
 # ===========================================================================
 # JobRun orchestration
 # ===========================================================================
