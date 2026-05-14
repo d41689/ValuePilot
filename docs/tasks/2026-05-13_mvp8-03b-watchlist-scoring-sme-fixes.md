@@ -219,10 +219,17 @@ MOS isn't a strong cross-signal.
       weight surfaced in chip tooltip + drawer recap).
 - [x] pytest -q → 810 passed; lint clean; frontend build clean;
       oraclesLens.test.js 18/18.
-- [ ] Four-role review pass (Frontend / Backend / Staff
-      Engineer / SME) — queued for separate review pass.
-- [ ] **MVP8-03B closed. MVP8-03A (admin 4 items) authorized
-      to open.**
+- [x] Four-role review pass (Frontend / Backend / Staff
+      Engineer / SME) — completed 2026-05-13. Two should-block
+      fixes in commit `f4ca4bd`: (a) B1 dual-chip condition
+      narrowed to suppress "Admin: Unknown" pairs (SME + Frontend
+      finding); (b) dead `_CROWDED_MAX_COVERAGE = 0.5` constant
+      deleted (Staff Eng + Backend finding). Persisted-path
+      consistency confirmed clear — `_apply_persisted_scores`
+      patches score fields only; B2/B4 aggregates survive.
+      pytest 810 passed post-fix; lint clean.
+- [x] **MVP8-03B closed 2026-05-13. MVP8-03A (admin 4 items)
+      authorized to open.**
 
 ## Files Expected To Change
 
