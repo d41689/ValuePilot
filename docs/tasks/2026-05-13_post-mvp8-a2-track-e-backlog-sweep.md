@@ -280,26 +280,19 @@ column for the winning fact and renders it as
   (c) parent state churn (e.g., typing in a sibling input) does not
   trigger DrawerShell keydown re-registration (verify with React
   DevTools Profiler or a `console.log` in the effect).
-- D4 SQL check:
-  ```sql
-  SELECT stock_id, metric_key, COUNT(*) AS dups
-  FROM metric_facts
-  WHERE is_current = TRUE
-  GROUP BY stock_id, metric_key
-  HAVING COUNT(*) > 1;
-  ```
-  → returns zero rows after cleanup migration.
+- D4 deferred — no SQL check or migration in this sweep. See
+  `docs/tasks/2026-05-13_metric-facts-current-semantics-decision-gate.md`
+  for the schema-semantics design question that replaced the original
+  dedup framing.
 
 ## Files Expected to Change
 
-- `backend/app/schemas/stocks_13f_snapshot.py`
-- `backend/app/api/v1/endpoints/stocks_13f.py`
-- `backend/app/services/oracles_lens/dashboard.py`
-- `backend/app/services/<vl_parser>.py` (D4)
-- `backend/scripts/` or `backend/migrations/versions/` (D4 cleanup)
+- `backend/app/schemas/stocks_13f_snapshot.py` (D1)
+- `backend/app/api/v1/endpoints/stocks_13f.py` (D1, D2)
+- `backend/app/services/oracles_lens/dashboard.py` (D2)
 - `backend/tests/unit/test_13f_mvp8_a2_m3_panel.py` (D1 tests)
 - `backend/tests/unit/test_oracles_lens.py` (D2 regression)
-- `backend/tests/unit/test_<vl_parser>.py` (D4 regression)
+- `frontend/components/admin13f/Admin13FPrimitives.tsx` (D3)
 - `frontend/lib/watchlist13f.ts`
 - `frontend/components/watchlist/Watchlist13FDrawer.tsx`
 - `frontend/components/admin13f/Admin13FPrimitives.tsx`

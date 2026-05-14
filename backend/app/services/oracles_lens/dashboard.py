@@ -978,6 +978,11 @@ def _fact_value(fact: MetricFact | None) -> float | None:
     ``value_numeric`` populated for Piotroski. Pre-D2 the legacy quality
     overlay silently dropped those rows; this fallback fixes it without
     special-casing the metric_key.
+
+    Returns ``None`` if ``partial_score`` is not coercible to ``float``
+    (e.g., a future parser writes a dict or list). Post-review hardening
+    (Backend B2): a ``float()`` raise would 500 the endpoint; silent
+    fallback is the right behavior for an opportunistic read.
     """
     if fact is None:
         return None
@@ -986,7 +991,10 @@ def _fact_value(fact: MetricFact | None) -> float | None:
     if isinstance(fact.value_json, dict):
         raw = fact.value_json.get("partial_score")
         if raw is not None:
-            return float(raw)
+            try:
+                return float(raw)
+            except (TypeError, ValueError):
+                return None
     return None
 
 

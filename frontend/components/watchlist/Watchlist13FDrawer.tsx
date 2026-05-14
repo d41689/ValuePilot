@@ -388,10 +388,13 @@ function QualityOverlaySection({ overlay }: { overlay: M3Overlay | null }) {
               ) : overlay.vl_target_mid != null ? (
                 <span> {fmtPrice(overlay.vl_target_mid)}</span>
               ) : null}
-              {/* D1: as-of date so users don't read a stale VL target as current. */}
+              {/* D1: VL report date so users don't read a stale target as
+                 current. "VL report dated" is more precise than "as of" —
+                 this date is the VL publication date, not a fiscal period
+                 (SME post-review note). */}
               {overlay.vl_target_period_end ? (
                 <span className="text-muted-foreground/70">
-                  {' '}(as of {overlay.vl_target_period_end})
+                  {' '}(VL report dated {overlay.vl_target_period_end})
                 </span>
               ) : null}
             </div>

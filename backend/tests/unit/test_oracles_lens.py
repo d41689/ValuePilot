@@ -488,6 +488,45 @@ def test_oracles_lens_reads_piotroski_from_value_json_when_value_numeric_null(
     assert overlay["coverage"]["value_line"] is True
 
 
+def test_oracles_lens_value_numeric_takes_precedence_over_partial_score(
+    client, db_session,
+):
+    """D2 post-review (Backend B5): when BOTH ``value_numeric`` and
+    ``value_json['partial_score']`` are set with different values, the
+    column wins. The value_json fallback only fires when value_numeric is
+    null — never as a silent override of the canonical column.
+    """
+    target = _seed_oracles_lens_fixture(db_session)
+    document = _pdf_document(db_session, target)
+    db_session.add(
+        MetricFact(
+            user_id=target._test_user_id,
+            stock_id=target.id,
+            metric_key="score.piotroski.total",
+            value_numeric=8.0,  # canonical column — should win
+            value_json={
+                "partial_score": 3,  # divergent fallback — should NOT win
+                "max_available_score": 8,
+                "status": "partial",
+                "fact_nature": "actual",
+            },
+            unit=None,
+            period_type="FY",
+            period_end_date=date(2031, 12, 31),
+            source_document_id=document.id,
+            source_type="calculated",
+            is_current=True,
+        )
+    )
+    db_session.commit()
+
+    response = client.get("/api/v1/13f/oracles-lens?use_persisted_scores=false")
+    assert response.status_code == 200
+    item = next(row for row in response.json()["items"] if row["stock_id"] == target.id)
+    # value_numeric (8.0) wins over value_json.partial_score (3).
+    assert item["quality_overlay"]["piotroski_total"] == 8.0
+
+
 def test_oracles_lens_adds_conservative_valuation_reference(client, db_session):
     target = _seed_oracles_lens_fixture(db_session)
     db_session.add_all(
