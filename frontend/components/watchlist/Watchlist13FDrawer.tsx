@@ -388,6 +388,12 @@ function QualityOverlaySection({ overlay }: { overlay: M3Overlay | null }) {
               ) : overlay.vl_target_mid != null ? (
                 <span> {fmtPrice(overlay.vl_target_mid)}</span>
               ) : null}
+              {/* D1: as-of date so users don't read a stale VL target as current. */}
+              {overlay.vl_target_period_end ? (
+                <span className="text-muted-foreground/70">
+                  {' '}(as of {overlay.vl_target_period_end})
+                </span>
+              ) : null}
             </div>
           ) : null}
 

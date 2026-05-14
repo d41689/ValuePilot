@@ -24,6 +24,7 @@ from app.api.deps import get_db
 from app.schemas.stocks_13f_snapshot import (
     AvailableStockDetail,
     AvailableStockSnapshot,
+    QualityOverlay,
     StockDetailCaveatFlag,
     StockDetailResponse,
     StockDetailTopHolder,
@@ -51,21 +52,23 @@ _M3_METRIC_KEYS: list[str] = [
 ]
 
 
-def _m3_panel_for_stock(db: Session, stock_id: int) -> dict[str, Any]:
+def _m3_panel_for_stock(db: Session, stock_id: int) -> QualityOverlay:
     """Compact M3 quality/valuation overlay for the Watchlist drawer.
 
-    Returns ``{"has_value_line": False}`` when no Value Line facts exist
-    for the stock. Never raises — missing data is a first-class state.
+    Returns ``QualityOverlay(has_value_line=False)`` when no Value Line
+    facts exist for the stock. Never raises — missing data is a
+    first-class state.
 
     Data fetching delegated to :func:`_m3_facts_by_stock` in the
     ``oracles_lens.dashboard`` service so the legacy Oracle's Lens
     quality overlay and this drawer panel share the same
     most-recent-per-(stock, metric_key) read primitive (D2 of
-    post-MVP8-A2 sweep).
+    post-MVP8-A2 sweep). Return is a typed ``QualityOverlay`` Pydantic
+    model so the API contract is enforced at this boundary (D1).
     """
     by_key = _m3_facts_by_stock(db, [stock_id], _M3_METRIC_KEYS).get(stock_id, {})
     if not by_key:
-        return {"has_value_line": False}
+        return QualityOverlay(has_value_line=False)
 
     # Piotroski is stored in value_json (value_numeric is null for most rows).
     piotroski_score: int | None = None
@@ -86,18 +89,32 @@ def _m3_panel_for_stock(db: Session, stock_id: int) -> dict[str, Any]:
             return float(fact.value_numeric)
         return None
 
-    return {
-        "has_value_line": True,
-        "piotroski_score": piotroski_score,
-        "piotroski_max": piotroski_max,
-        "piotroski_status": piotroski_status,
-        "earnings_predictability": _num("quality.earnings_predictability"),
-        "vl_target_mid": _num("target.price_18m.mid"),
-        "vl_target_low": _num("target.price_18m.low"),
-        "vl_target_high": _num("target.price_18m.high"),
-        "vl_3y_low": _num("proj.long_term.low_price"),
-        "vl_3y_high": _num("proj.long_term.high_price"),
-    }
+    # D1 provenance: source the as-of date + document_id from the
+    # ``target.price_18m.mid`` fact (the one the drawer renders most
+    # prominently). When multiple VL publications exist, the helper's
+    # tiebreak already picked the most recent.
+    target_mid_fact = by_key.get("target.price_18m.mid")
+    vl_target_period_end: str | None = None
+    vl_target_source_document_id: int | None = None
+    if target_mid_fact is not None:
+        if target_mid_fact.period_end_date is not None:
+            vl_target_period_end = target_mid_fact.period_end_date.isoformat()
+        vl_target_source_document_id = target_mid_fact.source_document_id
+
+    return QualityOverlay(
+        has_value_line=True,
+        piotroski_score=piotroski_score,
+        piotroski_max=piotroski_max,
+        piotroski_status=piotroski_status,
+        earnings_predictability=_num("quality.earnings_predictability"),
+        vl_target_mid=_num("target.price_18m.mid"),
+        vl_target_low=_num("target.price_18m.low"),
+        vl_target_high=_num("target.price_18m.high"),
+        vl_3y_low=_num("proj.long_term.low_price"),
+        vl_3y_high=_num("proj.long_term.high_price"),
+        vl_target_period_end=vl_target_period_end,
+        vl_target_source_document_id=vl_target_source_document_id,
+    )
 
 
 # Distinctiveness tier thresholds (Pre-MVP7-01 D1 heuristic, V1).

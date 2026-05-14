@@ -380,6 +380,7 @@ export type Watchlist13FAvailableDetail = {
   top_holders: Watchlist13FTopHolder[];
   caveat_flags: Watchlist13FCaveatFlag[];
   // MVP8-A2: compact M3 quality/valuation overlay from Value Line facts.
+  // D1: + provenance for VL targets so the drawer can render "(as of …)".
   quality_overlay: {
     has_value_line: boolean;
     piotroski_score: number | null;
@@ -391,6 +392,8 @@ export type Watchlist13FAvailableDetail = {
     vl_target_high: number | null;
     vl_3y_low: number | null;
     vl_3y_high: number | null;
+    vl_target_period_end: string | null;
+    vl_target_source_document_id: number | null;
   } | null;
 };
 

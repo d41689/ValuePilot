@@ -307,7 +307,18 @@ column for the winning fact and renders it as
 
 ## Sign-Off Trail
 
-- [ ] D1 typed `QualityOverlay` schema + VL target as-of date shipped.
+- [x] D1 shipped 2026-05-13: new `QualityOverlay` Pydantic model in
+      `stocks_13f_snapshot.py` replaces `Optional[dict]`;
+      `AvailableStockDetail.quality_overlay: Optional[QualityOverlay]`;
+      `_m3_panel_for_stock` returns the typed model and populates
+      `vl_target_period_end` + `vl_target_source_document_id` from the
+      winning `target.price_18m.mid` MetricFact; frontend type extension
+      + drawer renders `(as of YYYY-MM-DD)` under the VL 18-month
+      target line; existing 3 tests migrated to attribute access +
+      provenance assertions. Curl probes confirmed FICO (757) →
+      `vl_target_period_end="2026-02-13"`, doc 576; AAPL (1237, no VL)
+      → all 12 fields incl. provenance null. pytest 822 passed; lint
+      and build clean.
 - [x] D2 shipped 2026-05-13: `_quality_overlay_by_stock` reads
       `value_json['partial_score']` for Piotroski via the extended
       `_fact_value` fallback; shared `_m3_facts_by_stock(session,
@@ -333,7 +344,7 @@ column for the winning fact and renders it as
       `docs/tasks/2026-05-13_metric-facts-current-semantics-decision-gate.md`.
       M3 panel tiebreak ordering retained as display-layer guard for
       VL target staleness.
-- [ ] pytest -q green; lint + build clean.
+- [x] pytest -q green (822 passed); lint + build clean across D1–D4.
 - [ ] Four-role review pass (optional — bundled small sweep, may be
       single-reviewer if no domain shift).
 - [ ] **Post-MVP8-A2 + Track-E Backlog Sweep closed.**

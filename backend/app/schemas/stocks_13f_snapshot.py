@@ -117,6 +117,38 @@ class StockDetailCaveatFlag(BaseModel):
     label: str
 
 
+class QualityOverlay(BaseModel):
+    """MVP8-A2 + D1: typed schema for the Watchlist drawer M3 panel.
+
+    Replaces the prior ``Optional[dict]`` typing so the frontend contract
+    is enforced at the API boundary (Pydantic validation + OpenAPI
+    emission). All ten value fields default to ``None`` so callers can
+    construct ``QualityOverlay(has_value_line=False)`` for the no-data
+    path without populating every field.
+    """
+
+    has_value_line: bool
+    piotroski_score: Optional[int] = None
+    piotroski_max: Optional[int] = None
+    # Known values in dev DB: "partial", "calculated". "complete" is reserved
+    # for full 9-indicator Piotroski runs. Vocabulary stays open (str) until
+    # the producer-side conventions are consolidated — Literal would 500 on
+    # any unexpected value.
+    piotroski_status: Optional[str] = None
+    earnings_predictability: Optional[float] = None
+    vl_target_mid: Optional[float] = None
+    vl_target_low: Optional[float] = None
+    vl_target_high: Optional[float] = None
+    vl_3y_low: Optional[float] = None
+    vl_3y_high: Optional[float] = None
+    # D1 provenance: as-of date + source document for the VL 18-month
+    # target row that won the most-recent tiebreak. Lets the drawer
+    # render "(as of YYYY-MM-DD)" so users don't treat a stale target
+    # as the current opinion (SME P2 reviewer note).
+    vl_target_period_end: Optional[str] = None
+    vl_target_source_document_id: Optional[int] = None
+
+
 class AvailableStockDetail(BaseModel):
     stock_id: int
     ticker: str
@@ -141,9 +173,9 @@ class AvailableStockDetail(BaseModel):
     top_holders: list[StockDetailTopHolder]
     caveat_flags: list[StockDetailCaveatFlag]
     # MVP8-A2: compact M3 quality/valuation overlay from Value Line facts.
-    # None when the endpoint cannot fetch facts (should not happen in normal
-    # flow). {"has_value_line": false} when no VL data exists for the stock.
-    quality_overlay: Optional[dict] = None
+    # ``QualityOverlay(has_value_line=False, ...)`` is the no-data state.
+    # Typed schema (D1 hardening) — was ``Optional[dict]`` pre-D1.
+    quality_overlay: Optional[QualityOverlay] = None
 
 
 class UnavailableStockDetail(BaseModel):
