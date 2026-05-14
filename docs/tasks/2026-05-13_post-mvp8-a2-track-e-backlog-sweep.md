@@ -318,8 +318,13 @@ that produces `target.price_18m.mid` etc. apparently does not.
       `test_oracles_lens_reads_piotroski_from_value_json_when_value_numeric_null`
       asserts Piotroski surfaces with `value_numeric=NULL` +
       `value_json['partial_score']=6`. pytest 822 passed.
-- [ ] D3 DrawerShell `useRef` stable-callback + explicit focus +
-      focus restoration shipped.
+- [x] D3 shipped 2026-05-13: DrawerShell uses `useRef<onClose>` stable
+      callback (keydown listener registers once per mount instead of
+      every parent re-render); `useRef<HTMLButtonElement>` + explicit
+      `useEffect` focus call replaces `autoFocus` (StrictMode-safe);
+      previously-focused element captured on mount and restored on
+      unmount (WCAG 2.4.3 Focus Order). No new prop surface; no test
+      changes (manual a11y verification). lint + build clean.
 - [ ] D4 VL parser marks prior `is_current=True` rows as False; cleanup
       migration applied; invariant SQL check returns zero duplicates.
 - [ ] pytest -q green; lint + build clean.

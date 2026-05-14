@@ -1,7 +1,7 @@
 'use client';
 
 import { X } from 'lucide-react';
-import { type ReactNode, useEffect } from 'react';
+import { type ReactNode, useEffect, useRef } from 'react';
 
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
@@ -45,11 +45,38 @@ export function DrawerShell({
   onClose: () => void;
   children: ReactNode;
 }) {
+  // Stable-callback ref: callers typically pass `onClose` as an inline arrow
+  // (`onClose={() => setX(null)}`) which has a new identity per parent render.
+  // Capturing it in a ref + a no-deps effect means the document keydown
+  // listener registers exactly once per mount, not on every parent re-render.
+  // (F3 reviewer note, D3 of post-MVP8-A2 sweep.)
+  const onCloseRef = useRef(onClose);
   useEffect(() => {
-    const handler = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
+    onCloseRef.current = onClose;
+  }, [onClose]);
+
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') onCloseRef.current();
+    };
     document.addEventListener('keydown', handler);
     return () => document.removeEventListener('keydown', handler);
-  }, [onClose]);
+  }, []);
+
+  // Focus management: move focus into the dialog on mount (close button),
+  // restore focus to the previously-focused element on unmount. `autoFocus`
+  // has known reliability issues under React StrictMode (double-mount can
+  // skip the second focus) and provides no symmetric focus-restoration —
+  // explicit useRef + useEffect is more robust and satisfies WCAG 2.4.3
+  // (Focus Order). (F4 reviewer note, D3 of post-MVP8-A2 sweep.)
+  const closeBtnRef = useRef<HTMLButtonElement>(null);
+  useEffect(() => {
+    const previouslyFocused = document.activeElement as HTMLElement | null;
+    closeBtnRef.current?.focus();
+    return () => {
+      previouslyFocused?.focus();
+    };
+  }, []);
 
   return (
     <div className="fixed inset-0 z-50 bg-background/60 backdrop-blur-sm">
@@ -63,7 +90,14 @@ export function DrawerShell({
         <CardHeader className="shrink-0 border-b border-border/70 pb-3">
           <CardTitle className="flex items-center justify-between gap-2 text-base">
             <span id={labelledBy}>{title}</span>
-            <Button type="button" variant="ghost" size="icon" aria-label={closeLabel} onClick={onClose} autoFocus>
+            <Button
+              ref={closeBtnRef}
+              type="button"
+              variant="ghost"
+              size="icon"
+              aria-label={closeLabel}
+              onClick={onClose}
+            >
               <X className="h-4 w-4" />
             </Button>
           </CardTitle>
