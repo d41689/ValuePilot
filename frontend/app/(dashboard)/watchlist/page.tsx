@@ -4,6 +4,8 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { useMutation, useQuery } from '@tanstack/react-query';
 import Link from 'next/link';
 import {
+  ArrowDown,
+  ArrowUp,
   BarChart3,
   ChevronDown,
   ChevronUp,
@@ -26,8 +28,14 @@ import {
   getRefreshPricesButtonPresentation,
   hasFairValueEditChanges,
   isOverviewWatchlistId,
-  sortWatchlistMembers,
 } from '@/lib/watchlistState';
+import {
+  DEFAULT_SORT_STATE,
+  nextSortState,
+  sortMembers,
+  type WatchlistSortKey,
+  type WatchlistSortState,
+} from '@/lib/watchlistSort';
 import {
   buildSnapshotsByStockId,
   groupHeaderLabel,
@@ -110,6 +118,49 @@ type RefreshPricesPayload = {
   stockIds: number[];
 };
 
+// MVP7-06: a clickable TableHead that toggles the active sort key
+// + direction via `nextSortState`. Renders an arrow indicator when
+// active, plus `aria-sort` on the th for screen-reader announcement
+// (WCAG 1.3.1).
+function SortableHeader({
+  sortKey,
+  label,
+  sortState,
+  onSort,
+  className,
+}: {
+  sortKey: Exclude<WatchlistSortKey, 'default'>;
+  label: React.ReactNode;
+  sortState: WatchlistSortState;
+  onSort: (next: WatchlistSortState) => void;
+  className?: string;
+}) {
+  const active = sortState.key === sortKey;
+  const ariaSort: 'ascending' | 'descending' | 'none' = !active
+    ? 'none'
+    : sortState.direction === 'asc'
+      ? 'ascending'
+      : 'descending';
+  return (
+    <TableHead aria-sort={ariaSort} className={className}>
+      <button
+        type="button"
+        className="inline-flex items-center gap-1 rounded text-left hover:underline focus:outline-none focus:ring-1 focus:ring-ring"
+        onClick={() => onSort(nextSortState(sortState, sortKey))}
+      >
+        <span>{label}</span>
+        {active ? (
+          sortState.direction === 'asc' ? (
+            <ArrowUp className="h-3 w-3" aria-hidden="true" />
+          ) : (
+            <ArrowDown className="h-3 w-3" aria-hidden="true" />
+          )
+        ) : null}
+      </button>
+    </TableHead>
+  );
+}
+
 type RefreshPriceResult = {
   stock_id: number;
   status: string;
@@ -170,22 +221,31 @@ export default function WatchlistPage() {
 
   const members = useMemo(() => membersQuery.data ?? [], [membersQuery.data]);
 
-  const sortedMembers = useMemo(() => {
-    return sortWatchlistMembers(members);
-  }, [members]);
+  // MVP7-06: column click-to-sort state. Defaults to legacy MOS-desc
+  // sort (DEFAULT_SORT_STATE.key === 'default').
+  const [sortState, setSortState] = useState<WatchlistSortState>(DEFAULT_SORT_STATE);
 
   // MVP7-02: per-stock 13F snapshots for the active watchlist.
   // MVP7-03 consumes the Map to render the four 13F columns; MVP7-04
   // will wire the responsive collapse + MOS × 13F glyph; MVP7-05
-  // will wire the per-row drawer.
+  // will wire the per-row drawer. MVP7-06 keeps watchlistStockIds
+  // derived from `members` (not the sorted output) so column-sort
+  // re-renders don't churn the snapshots query: the query key is the
+  // SET of stock IDs (internally sorted in useWatchlist13FSnapshots),
+  // independent of display order.
   const watchlistStockIds = useMemo(
-    () => sortedMembers.map((row) => row.stock_id),
-    [sortedMembers],
+    () => members.map((row) => row.stock_id),
+    [members],
   );
   const snapshotsQuery = useWatchlist13FSnapshots(watchlistStockIds);
   const snapshotsByStockId = useMemo(
     () => buildSnapshotsByStockId(snapshotsQuery.data),
     [snapshotsQuery.data],
+  );
+
+  const sortedMembers = useMemo(
+    () => sortMembers(members, snapshotsByStockId, sortState),
+    [members, snapshotsByStockId, sortState],
   );
   const snapshotsPeriod = snapshotsQuery.data?.period ?? null;
   const snapshotsDeadline = snapshotsQuery.data?.period_filing_deadline ?? null;
@@ -629,20 +689,52 @@ export default function WatchlistPage() {
                   <TableHead />
                 </TableRow>
                 <TableRow id="watchlist-13f-columns">
-                  <TableHead>Ticker</TableHead>
-                  <TableHead>Company</TableHead>
+                  <SortableHeader
+                    sortKey="ticker"
+                    label="Ticker"
+                    sortState={sortState}
+                    onSort={setSortState}
+                  />
+                  <SortableHeader
+                    sortKey="company"
+                    label="Company"
+                    sortState={sortState}
+                    onSort={setSortState}
+                  />
                   <TableHead>F-Score 3Y</TableHead>
                   <TableHead>Price</TableHead>
                   <TableHead>Fair Value</TableHead>
                   <TableHead>MOS</TableHead>
                   <TableHead>Δ Today</TableHead>
                   <TableHead>Last Update</TableHead>
-                  <TableHead className={cn(responsiveCellClass, 'border-l border-border/60')}>
-                    Conviction
-                  </TableHead>
-                  <TableHead className={responsiveCellClass}>Δ Holders</TableHead>
-                  <TableHead className={responsiveCellClass}>Distinctiveness</TableHead>
-                  <TableHead className={responsiveCellClass}>Caveats</TableHead>
+                  <SortableHeader
+                    sortKey="conviction"
+                    label="Conviction"
+                    sortState={sortState}
+                    onSort={setSortState}
+                    className={cn(responsiveCellClass, 'border-l border-border/60')}
+                  />
+                  <SortableHeader
+                    sortKey="delta_holders"
+                    label="Δ Holders"
+                    sortState={sortState}
+                    onSort={setSortState}
+                    className={responsiveCellClass}
+                  />
+                  <SortableHeader
+                    sortKey="distinctiveness"
+                    label="Distinctiveness"
+                    sortState={sortState}
+                    onSort={setSortState}
+                    className={responsiveCellClass}
+                  />
+                  <SortableHeader
+                    sortKey="caveat_severity"
+                    label="Caveats"
+                    sortState={sortState}
+                    onSort={setSortState}
+                    className={responsiveCellClass}
+                  />
                   <TableHead />
                 </TableRow>
               </TableHeader>
