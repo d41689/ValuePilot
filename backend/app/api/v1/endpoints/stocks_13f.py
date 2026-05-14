@@ -71,17 +71,30 @@ def _m3_panel_for_stock(db: Session, stock_id: int) -> QualityOverlay:
         return QualityOverlay(has_value_line=False)
 
     # Piotroski is stored in value_json (value_numeric is null for most rows).
+    # PR #33 Backend B2: defensive coercion. The docstring promises this
+    # function never raises — direct ``int(raw)`` would 500 the endpoint
+    # if a future parser writes a malformed value_json (dict, list,
+    # non-numeric string). Bool also rejected explicitly because
+    # ``bool`` subclasses ``int`` and ``int(True) == 1`` would silently
+    # coerce an "indicator was met" flag into a score of 1.
+    def _coerce_int(raw: Any) -> int | None:
+        if raw is None or isinstance(raw, bool):
+            return None
+        try:
+            return int(raw)
+        except (TypeError, ValueError):
+            return None
+
     piotroski_score: int | None = None
     piotroski_max: int | None = None
     piotroski_status: str | None = None
     piotroski_fact = by_key.get("score.piotroski.total")
     if piotroski_fact and isinstance(piotroski_fact.value_json, dict):
         vj = piotroski_fact.value_json
-        raw_score = vj.get("partial_score")
-        raw_max = vj.get("max_available_score")
-        piotroski_score = int(raw_score) if raw_score is not None else None
-        piotroski_max = int(raw_max) if raw_max is not None else None
-        piotroski_status = vj.get("status")
+        piotroski_score = _coerce_int(vj.get("partial_score"))
+        piotroski_max = _coerce_int(vj.get("max_available_score"))
+        raw_status = vj.get("status")
+        piotroski_status = str(raw_status) if isinstance(raw_status, str) else None
 
     def _num(key: str) -> float | None:
         fact = by_key.get(key)

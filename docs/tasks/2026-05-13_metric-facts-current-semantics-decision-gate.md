@@ -172,8 +172,9 @@ sentinel). Reconciliation for opinion metrics uses `as_of_date` for
 
 ## 5. Recommended Path (Engineering View)
 
-**Option A** as a deliberate decision documented in CLAUDE.md, paired
-with hardening reads. Rationale:
+**Option A** as a deliberate decision documented in `AGENTS.md`
+(canonical for all agents; `CLAUDE.md` remains a thin pointer post-
+consolidation), paired with hardening reads. Rationale:
 
 - The schema overload is real but small (~10 opinion metric_keys vs ~80
   fiscal/calc keys).
@@ -204,7 +205,9 @@ Lens).
   (cleanup migration).
 - `backend/tests/unit/test_<vl_parser>.py` — regression for both
   branches.
-- `CLAUDE.md` — short note recording the chosen semantics.
+- `AGENTS.md` — short note recording the chosen semantics (canonical
+  for all agents). `CLAUDE.md` is a thin pointer that imports
+  `AGENTS.md` via `@AGENTS.md`.
 
 ## 7. Sign-Off
 
@@ -217,8 +220,10 @@ Lens).
       label. Option B opinion-key allowlist is reserved for the case
       where a second opinion-metric consumer arrives that cannot use
       the read-side tiebreak pattern.
-- [x] CLAUDE.md updated with the locked contract + read-side guard
-      expectations.
+- [x] `AGENTS.md` updated with the locked contract + read-side guard
+      expectations (canonical for all agents post the 2026-05-14
+      workbook consolidation). `CLAUDE.md` imports `AGENTS.md` via
+      `@AGENTS.md` and remains a thin Claude-Code-specific pointer.
 - [x] Memory updated (`feedback_metric_facts_is_current_semantics`)
       to reflect the locked decision.
 - [x] No implementation ticket needed (Option A is the existing state).

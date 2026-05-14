@@ -255,13 +255,13 @@ function TopHolderCard({ holder }: { holder: Watchlist13FTopHolder }) {
               <>
                 <Badge
                   variant="outline"
-                  title="Behavior-derived manager type (overrides admin classification)."
+                  title="Manager profile derived from holding behavior. This is the canonical value used for scoring."
                 >
                   Derived: {titleizeCode(holder.manager_type)}
                 </Badge>
                 <Badge
                   variant="outline"
-                  title="Admin-classified manager type from the curated InstitutionManager record."
+                  title="Admin-curated classification (currently overridden by the behavior-derived profile)."
                   className="border-dashed text-muted-foreground"
                 >
                   Admin: {titleizeCode(holder.manager_type_admin_classified)}

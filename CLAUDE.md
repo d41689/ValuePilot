@@ -13,4 +13,4 @@ Claude Code session memory lives at `~/.claude/projects/<repo-hash>/memory/` and
 
 ## Adding Claude-specific rules
 
-Add new rules to this file ONLY when they are mechanically Claude-Code-specific (slash commands, internal tools, memory format). When in doubt, write to `AGENTS.md` instead so all agents benefit.
+Add new rules to this file ONLY when they are mechanically Claude-Code-specific (slash commands, hooks, memory format, internal-tool wrappers). **Everything else — coding rules, data contracts, workflow rules — goes in `AGENTS.md` so all agents see the same contract.** When in doubt, write to `AGENTS.md`.

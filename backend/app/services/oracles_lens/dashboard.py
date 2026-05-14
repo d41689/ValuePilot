@@ -102,6 +102,18 @@ def build_oracles_lens_dashboard(
     for the (period, ``SCORE_VERSION``) are excluded. When
     ``use_persisted_scores=False`` (default), the existing
     in-memory formula in ``_stock_payload`` is used unchanged.
+
+    **Service-default divergence (PR #33 Staff A3):** This function's
+    keyword default remains ``False`` for the legacy in-memory path,
+    but every API endpoint that calls it (``/oracles-lens``,
+    ``/stocks/13f-snapshots``, ``/stocks/{id}/13f-detail``) explicitly
+    passes ``use_persisted_scores=True`` via ``Query(True)`` after the
+    MVP8-01 Phase 3 flip. The service-level legacy default is
+    **intentional** until Phase 4 retirement: it keeps the legacy A/B
+    comparison utility (`formula_comparison.py`) callable without
+    extra kwargs, and the legacy-path tests run cleanly. A new internal
+    caller that omits this kwarg gets the legacy path — by design.
+    Phase 4 will delete the parameter entirely.
     """
     periods = _periods(session, superinvestor_only=superinvestor_only)
     latest_complete = _latest_complete_period(periods, min_manager_coverage=min_holders)
@@ -990,7 +1002,10 @@ def _fact_value(fact: MetricFact | None) -> float | None:
         return float(fact.value_numeric)
     if isinstance(fact.value_json, dict):
         raw = fact.value_json.get("partial_score")
-        if raw is not None:
+        # Reject bool explicitly: bool subclasses int in Python, so
+        # ``float(True) == 1.0`` would silently coerce an "indicator was
+        # met" flag into a score of 1. PR #33 Backend B2 hardening.
+        if raw is not None and not isinstance(raw, bool):
             try:
                 return float(raw)
             except (TypeError, ValueError):
@@ -1013,13 +1028,26 @@ def _valuation_reference_by_stock(
     if not stock_ids:
         return {}
 
+    # PR #33 Staff A1: align the tiebreak with ``_m3_facts_by_stock`` so
+    # opinion metrics (``target.price_18m.mid``) pick the most recent VL
+    # publication when multiple ``is_current=True`` rows coexist across
+    # ``period_end_date`` values. Pre-PR-33 this only ordered by
+    # ``created_at DESC``, which could surface a stale opinion when an
+    # older row was ingested later. Full unification with
+    # ``_m3_facts_by_stock`` is queued in the Option A read-path audit
+    # follow-up ticket; this minimal change closes the immediate
+    # inconsistency.
     facts = (
         session.query(MetricFact)
         .filter(MetricFact.stock_id.in_(stock_ids))
         .filter(MetricFact.metric_key.in_(VALUATION_REFERENCE_KEYS))
         .filter(MetricFact.is_current.is_(True))
         .filter(MetricFact.value_numeric.isnot(None))
-        .order_by(MetricFact.stock_id.asc(), MetricFact.created_at.desc())
+        .order_by(
+            MetricFact.stock_id.asc(),
+            MetricFact.period_end_date.desc().nullslast(),
+            MetricFact.created_at.desc(),
+        )
         .all()
     )
     facts_by_stock: dict[int, dict[str, MetricFact]] = {stock_id: {} for stock_id in stock_ids}

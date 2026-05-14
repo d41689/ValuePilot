@@ -9,6 +9,14 @@
  *
  * Backend contract: ``POST /api/v1/stocks/13f-snapshots`` —
  * see ``docs/tasks/2026-05-13_mvp7-01-stocks-13f-snapshots-endpoint.md``.
+ *
+ * **Source-of-truth direction (PR #33 Frontend F4):** the response
+ * types in this file mirror Pydantic schemas in
+ * ``backend/app/schemas/stocks_13f_snapshot.py``. Pydantic is
+ * canonical; when a backend field is added / renamed / removed,
+ * update this file in the same commit. There is no automated drift
+ * check today — discipline based. OpenAPI-generated types are a
+ * Track-E follow-up triggered by the third schema-drift incident.
  */
 
 import type { ComponentProps } from 'react';

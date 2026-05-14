@@ -24,8 +24,8 @@ fiscal time series and breaks the Piotroski calculator, screener,
 formula engine, and Oracle's Lens quality overlay.
 
 **Where it's recorded**:
-- CLAUDE.md — "`metric_facts.is_current` semantics (locked
-  2026-05-14)" section with the "never" rule.
+- `AGENTS.md` — "`metric_facts.is_current` semantics (locked
+  2026-05-14)" section with the "never" rule. Canonical for all agents.
 - `docs/tasks/2026-05-13_metric-facts-current-semantics-decision-gate.md`
   — design gate, status `CLOSED 2026-05-14 — Option A`.
 - Memory: `feedback_metric_facts_is_current_semantics.md` —
@@ -102,6 +102,54 @@ ticket):
 This is a real product decision, not a small refactor. Don't open
 the implementation ticket until the gate closes.
 
+### N3 — Option A Read-Path Audit (filed post-PR-#33 review)
+
+**Status**: ticket filed at
+`docs/tasks/2026-05-14_option-a-read-path-audit-ticket.md`.
+
+The PR #33 Staff Engineer + 13F SME reviews flagged that the locked
+`is_current` Option A contract is enforced as prose in AGENTS.md,
+not mechanically. A future engineer can ship a screener / formula
+that references an opinion metric_key and surface stale data.
+
+Deliverable: `OPINION_METRIC_KEYS` registry + vocabulary guard on
+screener_service + formula_engine (typed compile-time error) +
+unify `_valuation_reference_by_stock` with `_m3_facts_by_stock` +
+regression test.
+
+PR #33 included the minimal fix (`_valuation_reference_by_stock`
+period_end_date tiebreak). Full audit is this ticket.
+
+### N4 — PR #33 Pre-Deploy Gates (filed post-PR-#33 review)
+
+**Status**: ticket filed at
+`docs/tasks/2026-05-14_pr33-pre-deploy-gates-ticket.md`.
+
+PR #33 is merge-safe but not deploy-safe. Four gates must clear
+before production traffic hits the merged code:
+
+- D1: migration round-trip test against prod-like data dump.
+- D2: Phase 1 formula comparison against production data.
+- D3: operator runbook for Phase 3 rollback + observation monitoring.
+- D4: release note for users + API consumers.
+- D5: production VL coverage audit (informs D4 copy).
+
+1-2 days of work. Hold deploy until gates clear.
+
+### N5 — AGENTS.md Consolidation v2 (filed post-PR-#33 review)
+
+**Status**: ticket filed at
+`docs/tasks/2026-05-14_agents-md-consolidation-v2-ticket.md`.
+
+PR #33 Documentation reviewer identified 5 cross-agent rules
+currently in Claude-Code-only memory + 5 project rules scattered
+across memory / code comments that should be in AGENTS.md.
+
+Deliverable: AGENTS.md grows ~80 lines; memory becomes Claude-Code-
+specific only; filename convention added for new task files.
+
+Not a deploy blocker. Quality-of-life for cross-agent contributors.
+
 ## Gated on Observation Window (2025-Q4 cycle)
 
 | Item | Trigger |
@@ -142,12 +190,24 @@ fire when their trigger lands:
 
 ## Next Action
 
-1. **Push branch + open PR** for today's 16 commits
-   (MVP8-A2 → Track-E sweep → MVP7-06 → design gate closure).
-2. **Open the Mobile stacked 13F view ticket** as the next work
-   item (Section N1).
-3. **Open the Value Line ingestion coverage decision gate** after
-   N1 lands (Section N2).
+PR #33 is open and merge-safe. Order:
+
+1. **Address PR #33 comprehensive review findings** (DONE 2026-05-14).
+   Backend defensive parsing, `_valuation_reference_by_stock` Option A
+   tiebreak, dual-chip tooltip wording, doc drift cleanup, CLAUDE.md
+   tightening. Three follow-up tickets filed: N3 / N4 / N5.
+2. **Clear PR #33 pre-deploy gates (N4)** before promoting merged
+   commit to production traffic.
+3. **Merge PR #33 to `main`** once N4 gates clear.
+4. **Open the Mobile stacked 13F view ticket** as the next product
+   work item (Section N1) — bundle with DrawerShell focus trap +
+   move per Track-E gating.
+5. **Open the Value Line ingestion coverage decision gate (N2)**
+   after N1 lands.
+6. **Ship the Option A read-path audit (N3)** before opening any
+   surface that screens / formulas on opinion metrics.
+7. **Ship AGENTS.md Consolidation v2 (N5)** when convenient — no
+   ordering dependency, quality-of-life cross-agent improvement.
 
 Everything else is either closed, deferred, observation-gated, or
 trigger-gated.
