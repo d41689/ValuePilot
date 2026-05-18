@@ -152,6 +152,13 @@ staging machine's hostname/IP and the host-side API port shown in
 `docker compose ps`.
 
 ```bash
+# Strict failure mode: errexit + pipefail so the no-admin-user guard
+# below actually fails the script. Without `pipefail`, the Python
+# RuntimeError gets swallowed by `tail -1`'s success exit code and
+# TOKEN ends up empty — exactly the silent failure mode the guard
+# claims to prevent.
+set -euo pipefail
+
 # Timestamp for this run's audit-trail JSON.
 TS=$(date +%Y%m%d-%H%M%S)
 OUT=/tmp/d2-prod-comparison-${TS}.json
@@ -172,9 +179,12 @@ print(create_access_token(admin.id, admin.role))
 db.close()
 " | tail -1)
 
-# 2. Run the comparison utility (latest quarter). 120s timeout
-#    prevents a silent hang against unusually slow production-scale data.
-curl -s --max-time 120 \
+# 2. Run the comparison utility (latest quarter). `--fail` surfaces
+#    HTTP 4xx/5xx as a curl exit code (so 401 / 500 don't silently
+#    write an error payload to $OUT); `--show-error` keeps the error
+#    message visible despite `--silent`; `--max-time 120` prevents a
+#    silent hang against unusually slow production-scale data.
+curl --fail --show-error --silent --max-time 120 \
   "http://<staging-host>:<api-port>/api/v1/admin/13f/oracles-lens/formula-comparison" \
   -H "Authorization: Bearer $TOKEN" | python3 -m json.tool > "$OUT"
 
