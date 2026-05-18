@@ -114,32 +114,51 @@ The forward path is unaffected (the upgrade still works identically). The downgr
 
 ### D2 pre-flight (dev re-verification, 2026-05-18)
 
-Re-ran the comparison utility against the populated dev DB to confirm
-the endpoint still produces MVP8-01's expected schema + gate values
-before asking the operator to run against production:
+**Recipe smoke-test passed; endpoint regression-free since MVP8-01.**
+Re-ran the comparison utility against the populated dev DB before
+asking the operator to run against production. The values below
+match MVP8-01's baseline because it is the same dev DB with no
+re-ingestion or re-scoring in between:
 
 ```
 GET /api/v1/admin/13f/oracles-lens/formula-comparison
 → {
     "quarter": "2025-Q3",
     "score_version": "v1.0",
-    "total_stocks_compared": 240,    ← gate ≥200 ✓
+    "total_stocks_compared": 240,    ← matches MVP8-01 baseline (gate threshold ≥200)
     "legacy_only_count": 36,         ← informational (min_holders<3 exclusions, MVP8-01-documented)
-    "persisted_only_count": 0,       ← gate ≤10 ✓
-    "top10_swap_count": 0,           ← gate ==0 ✓
+    "persisted_only_count": 0,       ← matches MVP8-01 baseline (gate threshold ≤10)
+    "top10_swap_count": 0,           ← matches MVP8-01 baseline (gate threshold ==0)
     "magnitude_diff_count": 59,      ← informational (~70% scale shift, MVP8-02 resolves)
     "items": [ ... per-stock breakdown ... ]
   }
 ```
 
-Endpoint works; gate evaluation logic is unchanged from MVP8-01.
+The pre-flight confirms (a) no PR #33 response commit broke the
+comparison utility and (b) the recipe (curl + JSON parse + gate
+evaluation) functions as written.
+
+> **NOTE**: the gate values above are from the dev DB (same data as
+> MVP8-01 — no new information about production outcomes). This
+> pre-flight is a **recipe smoke-test**, NOT evidence that production
+> gates will pass. Production evidence comes from D2 (prod) below.
 
 ### D2 production execution recipe
 
-When the staging clone is ready:
+**Prerequisite**: run these commands from the staging host (or a
+machine whose Docker context targets the staging stack — confirm with
+`docker context ls`). Replace `<staging-host>:<api-port>` with the
+staging machine's hostname/IP and the host-side API port shown in
+`docker compose ps`.
 
 ```bash
-# 1. Get an admin JWT (one-shot)
+# Timestamp for this run's audit-trail JSON.
+TS=$(date +%Y%m%d-%H%M%S)
+OUT=/tmp/d2-prod-comparison-${TS}.json
+
+# 1. Get an admin JWT (one-shot). Guard against a staging DB that
+#    was stripped of admin auth — early failure with a clear message
+#    beats a downstream 401 + KeyError.
 export TOKEN=$(docker compose exec -T api python -c "
 import sys; sys.path.insert(0, '/app')
 from app.core.security import create_access_token
@@ -147,18 +166,22 @@ from app.core.db import SessionLocal
 from app.models.users import User
 db = SessionLocal()
 admin = db.query(User).filter(User.role == 'admin').first()
+if admin is None:
+    raise RuntimeError('No admin user found — staging DB may be stripped of auth data')
 print(create_access_token(admin.id, admin.role))
 db.close()
 " | tail -1)
 
-# 2. Run the comparison utility (latest quarter)
-curl -s "http://<staging-host>:<api-port>/api/v1/admin/13f/oracles-lens/formula-comparison" \
-  -H "Authorization: Bearer $TOKEN" | python3 -m json.tool > /tmp/d2-prod-comparison.json
+# 2. Run the comparison utility (latest quarter). 120s timeout
+#    prevents a silent hang against unusually slow production-scale data.
+curl -s --max-time 120 \
+  "http://<staging-host>:<api-port>/api/v1/admin/13f/oracles-lens/formula-comparison" \
+  -H "Authorization: Bearer $TOKEN" | python3 -m json.tool > "$OUT"
 
-# 3. Evaluate gates
+# 3. Evaluate gates. Label format convention: '<field_name> <op> <threshold>'.
 python3 -c "
-import json
-with open('/tmp/d2-prod-comparison.json') as f:
+import json, sys
+with open('$OUT') as f:
     r = json.load(f)
 gates = {
     'total_stocks_compared >= 200': r['total_stocks_compared'] >= 200,
@@ -167,19 +190,28 @@ gates = {
 }
 for label, ok in gates.items():
     print(('✓' if ok else '✗'), label, '→', r.get(label.split()[0]))
+# magnitude_diff_count is informational (not gated) but surface it so
+# an unexpectedly large/small count is visible without opening the JSON.
+print(f'  magnitude_diff_count (informational, dev baseline 59): '
+      f'{r.get(\"magnitude_diff_count\", \"N/A\")}')
 print()
 print('DEPLOY-SAFE' if all(gates.values()) else 'HOLD DEPLOY — investigate divergence')
+print(f'Audit trail: $OUT')
 "
 ```
 
-Save the JSON output to `/tmp/d2-prod-comparison-<date>.json` for the
-audit trail. Paste the gate-evaluation result into the N4 sign-off
-trail when D2 is checked.
+Paste the gate-evaluation output (the `✓/✗` lines + verdict line +
+the saved JSON path) into the N4 sign-off trail when D2 is checked.
 
-**If gates fail**: do NOT deploy. The divergence pattern (which stocks
-swap, the magnitude class, whether `persisted_only_count` is unexpectedly
-high) determines the remediation path. Document the failure mode in the
-N4 sign-off trail with the JSON output before declaring D2 blocked.
+**If gates fail**: do NOT deploy. The divergence pattern (which
+stocks swap, the magnitude class, whether `persisted_only_count` is
+unexpectedly high) determines the remediation path. If
+`magnitude_diff_count` differs significantly from dev's 59, inspect
+the `items` array in the saved JSON for `MAGNITUDE_DIFF_25_PCT` flags
+on top-10 stocks before deploying — a magnitude jump on highly-ranked
+stocks is a different risk class than the same jump on tail stocks.
+Document the failure mode in the N4 sign-off trail with the saved
+JSON path before declaring D2 blocked.
 
 ## D3 — Operator runbook for Phase 3 rollback + observation-window monitoring
 
@@ -261,10 +293,12 @@ Distribute to: internal users (Slack), API consumers (changelog page), anyone wi
         in AGENTS.md; prod TBD).
 - [ ] D2 Phase 1 comparison green against production data.
   - [x] D2 pre-flight (dev re-verification 2026-05-18): comparison
-        utility endpoint operational; dev gates green
-        (total=240, swap=0, persisted_only=0); response schema
-        unchanged from MVP8-01. Production execution recipe
-        documented in D2 section above.
+        utility endpoint regression-free since MVP8-01; recipe
+        (curl + JSON + gate eval) smoke-tests cleanly. Dev gates
+        match MVP8-01 baseline (total=240, swap=0, persisted_only=0
+        — same dev DB, **no new prod evidence**). Response schema
+        unchanged. Production execution recipe documented in D2
+        section above.
   - [ ] D2 (prod) — operator runs the recipe against a staging
         clone hydrated from production; pastes JSON output + gate
         evaluation into this sign-off trail.
