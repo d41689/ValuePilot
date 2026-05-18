@@ -125,7 +125,7 @@ period_end_date tiebreak). Full audit is this ticket.
 **Status**: ticket filed at
 `docs/tasks/2026-05-14_pr33-pre-deploy-gates-ticket.md`.
 
-PR #33 is merge-safe but not deploy-safe. Four gates must clear
+PR #33 is merge-safe but not deploy-safe. Five gates must clear
 before production traffic hits the merged code:
 
 - D1: migration round-trip test against prod-like data dump.
@@ -199,9 +199,13 @@ just deploy. Order:
    at `548a11b`). Backend defensive parsing, `_valuation_reference_by_stock`
    Option A tiebreak, dual-chip tooltip wording, doc drift cleanup,
    CLAUDE.md tightening. Three follow-up tickets filed: N3 / N4 / N5.
-2. **Clear PR #33 pre-deploy gates (N4)** — migration round-trip,
-   Phase 1 comparison against prod data, operator runbook, release
-   note, VL coverage audit. 1-2 days.
+2. **Clear remaining PR #33 pre-deploy gates (N4)** — D2 (Phase 1
+   comparison vs prod data) → D5 (VL coverage audit) → D4 (release
+   note, uses D2/D5 numbers) → D3 (operator + rollback runbook).
+   D1 substantially cleared 2026-05-18 at commit `397893b`; one
+   nested sub-item remains (prod round-trip to confirm
+   `cusip_ticker_map.source` narrowing safety) — see N4 sign-off
+   trail. ~1-2 days remaining.
 3. **Merge PR #33 to `main`** once N4 gates clear. The merge triggers
    auto-deploy via `deploy.yml`; clearing N4 first is what makes the
    coupled merge+deploy safe.
@@ -220,7 +224,9 @@ temporarily disable the auto-deploy `workflow_run` trigger in
 `deploy.yml` (leave `workflow_dispatch` for manual deploy). PR #33
 then merges to `main` without triggering deploy; deploy fires
 manually after N4 clears. This is a workflow-config change, not a
-process change — discuss before applying.
+process change — discuss before applying. **Decision owner**: PO +
+Tech Lead (option 2 means user-facing changes wait for manual
+deploy, which has PO implications).
 
 Everything else is either closed, deferred, observation-gated, or
 trigger-gated.

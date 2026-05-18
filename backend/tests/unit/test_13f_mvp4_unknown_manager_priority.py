@@ -1,7 +1,7 @@
 """MVP4-07b admin priority surface tests."""
 from __future__ import annotations
 
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from itertools import count
 
 from app.models.institutions import (
@@ -100,7 +100,11 @@ def _filing(
         coverage_type="normal",
         quarter_end_date=_QUARTER_END,
         report_quarter=_QUARTER,
-        official_filing_deadline=date(2026, 5, 15),
+        # Relative-to-today fixture date. The field is dormant in this
+        # test (no deadline-conditional assertions), but the absolute
+        # date(2026, 5, 15) was a time-bomb of the same class that
+        # broke three sibling tests on 2026-05-16. PR #33 N4 D1 sweep.
+        official_filing_deadline=date.today() + timedelta(days=10),
         parse_status="succeeded",
         is_active_for_manager_period=True,
         is_latest_for_period=True,

@@ -99,6 +99,29 @@ def _freeze_today(monkeypatch, *, frozen: date = date(2026, 5, 14)) -> None:
     2026-Q1 filing deadline) → the services start expecting 2026-Q1
     data the test doesn't seed. Surfaced by PR #33 N4 D1 round-trip
     on 2026-05-18.
+
+    **Two time-sensitive patterns exist in this codebase** — pick the
+    right one for new tests:
+
+    1. ``_freeze_today(monkeypatch)`` (this helper) — used when the
+       service computes "current / latest usable quarter" from
+       ``date.today()`` and the test seeds quarter-specific data.
+       Pins the service-side clock so the test's seeded quarter
+       stays the expected target.
+    2. Relative fixture dates (``date.today() + timedelta(days=N)``) —
+       used when the production code compares a stored deadline /
+       date field against ``date.today()`` and the assertion depends
+       on the comparison's outcome. See ``test_13f_user_api.py``
+       ``_filing`` for the canonical example.
+
+    **If you add a fixture for 2026-Q1 or a later quarter** that this
+    helper should also be deterministic against, advance the default
+    ``frozen`` date past that quarter's filing deadline (or accept
+    the default 2026-05-14 and pass ``frozen=date(...)`` explicitly
+    in the test). Today's default keeps ``_latest_closed_quarter``
+    pinned to 2025-Q4 because all earlier quarter deadlines (Q4
+    2025 = 2026-02-14) are ≤ 2026-05-14 and the 2026-Q1 deadline
+    (2026-05-15) is not.
     """
     class _FrozenDate(date):
         @classmethod

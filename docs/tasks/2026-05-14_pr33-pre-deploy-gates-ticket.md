@@ -39,7 +39,7 @@ The 5 gates below are 1-2 days of work — verification + documentation + releas
 
 ## Goal
 
-Clear all four gates before promoting the merged commit to production. If a gate fails, hold deploy until the gate is satisfied (do not let `main` and prod diverge for long — that's its own risk class).
+Clear all five gates before promoting the merged commit to production. If a gate fails, hold deploy until the gate is satisfied (do not let `main` and prod diverge for long — that's its own risk class).
 
 ## D1 — Migration round-trip test against prod-like data
 
@@ -117,7 +117,6 @@ The forward path is unaffected (the upgrade still works identically). The downgr
 **Why**: Today the `?use_persisted_scores=false` escape hatch exists but is documented only in code docstrings + the MVP8-01 task file. There is no operator-facing runbook describing:
 
 - How to detect a Phase 3 regression in production.
-- How to mitigate per-request (`?persisted=0`) vs full-code-revert.
 - Who decides revert vs investigate.
 - How to determine when the observation window has closed and Phase 4 retirement is unblocked.
 - What "regression" means (`TOP10_RANK_SWAP > 0`, user-reported ranking complaint, etc.).
@@ -131,6 +130,7 @@ The forward path is unaffected (the upgrade still works identically). The downgr
   3. Code rollback: one-line `Query(True)` → `Query(False)` revert at three sites; ~1 hour to apply + test + redeploy.
   4. Observation-window monitoring: how to call the formula comparison utility, what counts as a clean quarter.
   5. Decision tree: who owns revert (PO), who owns investigation (backend engineer), how to notify users.
+  6. **Critical clarification: application code revert (`git revert`) is THIS deployment's rollback path. `alembic downgrade` is NOT.** The cusip_ticker_map.ticker widening migration now intentionally fails its `downgrade()` with an actionable `RuntimeError` when offending rows exist (bond / preferred identifiers > 10 chars; dev had 110 such rows). An operator under pressure who attempts `alembic downgrade` as the rollback path will lose time. The widening is a one-way schema change for any populated DB; only the application code (the three `Query(True)` flips) reverts cleanly. Recovery path for a Phase 3 regression is: per-request `?persisted=0` for immediate mitigation → application code revert + redeploy for full restore. (Added per PR #33 Production P3 review.)
 
 **Gate**: runbook exists, reviewed by PO + backend lead.
 
@@ -176,17 +176,18 @@ Distribute to: internal users (Slack), API consumers (changelog page), anyone wi
 
 ## Sign-Off Trail
 
-- [x] D1 migration round-trip executed 2026-05-18 against populated dev DB.
+- [x] D1 (dev) migration round-trip executed 2026-05-18 against populated dev DB.
       Surfaced a structural one-way constraint in the cusip_ticker_map.ticker
       widening migration (downgrade can't narrow back when OpenFIGI bond /
       preferred identifiers > 10 chars are present). Patched the migration
       with a pre-check + actionable error. Full chain (22/23 migrations
       reversible cleanly; 23rd requires operator intervention to clear
       offending rows first, by design). pytest 823 passed post-restore.
-      **Pre-prod-deploy still needs**: run the same round-trip against a
-      production data dump or fresh staging clone to confirm
-      `cusip_ticker_map.source` downgrade doesn't surface the same issue
-      (dev currently has zero source values > 20 chars; prod TBD).
+  - [ ] D1 (prod) — run the same round-trip against a production data dump
+        or fresh staging clone. Specifically confirm `cusip_ticker_map.source`
+        narrowing doesn't surface the same structural issue (dev has zero
+        source values > 20 chars per the closed source-vocabulary contract
+        in AGENTS.md; prod TBD).
 - [ ] D2 Phase 1 comparison green against production data.
 - [ ] D3 operator runbook drafted, reviewed by PO + backend.
 - [ ] D4 release note drafted, reviewed, distributed at deploy.
