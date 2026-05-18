@@ -1,9 +1,20 @@
 'use client';
 
-import { useMemo, useState, type ComponentProps } from 'react';
+import { useEffect, useMemo, useRef, useState, type ComponentProps } from 'react';
 import Link from 'next/link';
 import { useQuery } from '@tanstack/react-query';
-import { AlertTriangle, FileText, Info, PanelRightOpen, Search, SlidersHorizontal, X } from 'lucide-react';
+import {
+  AlertTriangle,
+  FileText,
+  History,
+  Info,
+  PanelRightOpen,
+  Search,
+  ShieldAlert,
+  SlidersHorizontal,
+  Users,
+  X,
+} from 'lucide-react';
 
 import apiClient from '@/lib/api/client';
 import oracleLensHelpers from '@/lib/oraclesLens';
@@ -34,8 +45,10 @@ const {
   cautionTone,
   missingDataReasons,
   normalizeOracleLensRows,
+  normalizeStockHolderAggregation,
   radarBubbles,
   suggestedResearchSteps,
+  uniquePeriodOptions,
 } = oracleLensHelpers;
 
 const {
@@ -93,6 +106,9 @@ type OracleLensPayload = {
     price_coverage_ratio?: number;
     price_backfill_required?: boolean;
     price_backfill_hint?: string | null;
+    // MVP4-03b/MVP4-07a: count of items whose score came from the
+    // canonical oracles_lens_signals table (persisted mode).
+    persisted_score_count?: number;
   };
   periods?: Array<{
     label: string;
@@ -118,22 +134,83 @@ function formatCoveragePercent(value: number | null | undefined) {
   return `${Math.round(value * 100)}%`;
 }
 
-function formatPercentValue(value: number | null | undefined, digits = 1) {
-  if (typeof value !== 'number') {
-    return '—';
-  }
-  return `${(value * 100).toFixed(digits)}%`;
-}
-
-function formatCurrency(value: number | null | undefined) {
-  if (typeof value !== 'number') {
-    return '—';
-  }
-  return `$${value.toLocaleString('en-US', { maximumFractionDigits: 2 })}`;
+// Click-to-reveal inline rule_code disclosure. Replaces a raw HTML
+// details/summary pair so the surface satisfies the uiStandard
+// contract while keeping the MVP5-04 UX intent: investor-facing
+// label by default, operator debug code one click away.
+function RuleCodeDisclosure({ code }: { code: string }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <span className="ml-1 inline">
+      <Button
+        type="button"
+        variant="ghost"
+        size="sm"
+        className="h-auto p-0 text-[10px] text-muted-foreground/70 hover:underline"
+        aria-expanded={open}
+        onClick={() => setOpen((prev) => !prev)}
+      >
+        code
+      </Button>
+      {open ? (
+        <code className="ml-1 font-mono text-[10px]">{code}</code>
+      ) : null}
+    </span>
+  );
 }
 
 export default function OraclesLensPage() {
+  // MVP4-07a: persisted-mode is the default; ``?persisted=0`` is the
+  // one-release-cycle debug escape hatch for A/B comparing against the
+  // legacy in-memory dashboard formula. We read window.location
+  // directly (not useSearchParams) to avoid needing a Suspense
+  // boundary around the whole page just for a debug-only feature.
+  // Initial render sees the default (true); a client-side effect
+  // pulls the URL value once on mount.
+  //
+  // MVP5-04 retirement note: when MVP5-03 Phase 4 retires
+  // ``?persisted=0`` (after one full scoring cycle confirms no
+  // ranking divergence under the new server default), delete the
+  // ``useState`` + ``useEffect`` block below and inline
+  // ``usePersistedScores: true`` in ``buildOracleLensQueryParams``.
+  const [usePersistedScores, setUsePersistedScores] = useState(true);
+  useEffect(() => {
+    if (typeof window !== 'undefined') {
+      const flag = new URLSearchParams(window.location.search).get('persisted');
+      setUsePersistedScores(flag !== '0');
+    }
+  }, []);
   const [selectedStockId, setSelectedStockId] = useState<number | null>(null);
+  // MVP5-04: ARIA dialog focus management on the slide-out drilldown.
+  // ``closeButtonRef`` is the element to focus when the panel opens;
+  // ``previousFocusRef`` remembers the trigger so we can restore focus
+  // when the panel closes (avoids leaving keyboard users stranded at
+  // the document body).
+  const closeButtonRef = useRef<HTMLButtonElement>(null);
+  const previousFocusRef = useRef<HTMLElement | null>(null);
+  const openDrilldown = (stockId: number) => {
+    if (typeof document !== 'undefined') {
+      previousFocusRef.current = document.activeElement as HTMLElement | null;
+    }
+    setSelectedStockId(stockId);
+  };
+  const closeDrilldown = () => {
+    setSelectedStockId(null);
+  };
+  useEffect(() => {
+    if (selectedStockId !== null) {
+      // Wait one microtask so the panel is in the DOM before we focus.
+      const handle = window.setTimeout(() => {
+        closeButtonRef.current?.focus();
+      }, 0);
+      return () => window.clearTimeout(handle);
+    }
+    // Panel just closed — restore focus to the triggering element.
+    if (previousFocusRef.current && typeof previousFocusRef.current.focus === 'function') {
+      previousFocusRef.current.focus();
+      previousFocusRef.current = null;
+    }
+  }, [selectedStockId]);
   const [filters, setFilters] = useState({
     period: '',
     minHolders: '3',
@@ -149,8 +226,9 @@ export default function OraclesLensPage() {
         minSignalScore: filters.minSignalScore ? Number(filters.minSignalScore) : undefined,
         superinvestorOnly: filters.superinvestorOnly,
         sort: filters.sort,
+        usePersistedScores,
       }),
-    [filters]
+    [filters, usePersistedScores]
   );
   const dashboardQuery = useQuery({
     queryKey: ['oracles-lens-dashboard', queryParams],
@@ -179,6 +257,33 @@ export default function OraclesLensPage() {
     () => rows.find((row) => row.stockId === selectedStockId) ?? null,
     [rows, selectedStockId]
   );
+  const selectedHolderQuarter = useMemo(
+    () => filters.period.trim() || payload?.period || payload?.latest_complete_period || '',
+    [filters.period, payload?.latest_complete_period, payload?.period]
+  );
+  const stockHoldersQuery = useQuery({
+    queryKey: ['13f-stock-holders', selectedStockId, selectedHolderQuarter],
+    enabled: selectedStockId !== null,
+    queryFn: async () => {
+      if (selectedStockId === null) {
+        return null;
+      }
+      const params = new URLSearchParams();
+      if (selectedHolderQuarter) {
+        params.set('quarter', selectedHolderQuarter);
+      }
+      params.set('limit', '10');
+      const suffix = params.toString();
+      const res = await apiClient.get(
+        `/13f/stocks/${selectedStockId}/holders${suffix ? `?${suffix}` : ''}`
+      );
+      return res.data;
+    },
+  });
+  const stockHolders = useMemo(
+    () => normalizeStockHolderAggregation(stockHoldersQuery.data),
+    [stockHoldersQuery.data]
+  );
   const researchSteps = useMemo(
     () => (selectedRow ? suggestedResearchSteps(selectedRow) : []),
     [selectedRow]
@@ -188,7 +293,7 @@ export default function OraclesLensPage() {
     [selectedRow]
   );
   const coverage = payload?.coverage;
-  const periodOptions = payload?.periods ?? [];
+  const periodOptions = uniquePeriodOptions(payload?.periods);
 
   return (
     <div className="space-y-5">
@@ -339,6 +444,24 @@ export default function OraclesLensPage() {
               {coverage.price_backfill_hint}
             </div>
           ) : null}
+          {/* MVP4-07a: when the page is reading from the canonical
+              persisted-scores table (MVP4-03b), tell the operator how
+              many items in the current view come from it. The line
+              is hidden in legacy in-memory mode (count is 0 or
+              missing) so it doesn't add visual noise to the default
+              path. */}
+          {typeof coverage?.persisted_score_count === 'number' &&
+          coverage.persisted_score_count > 0 ? (
+            <div className="mt-4 flex items-center gap-2 text-xs text-muted-foreground">
+              <Badge variant="outline" className="rounded-md">
+                {coverage.persisted_score_count} persisted
+              </Badge>
+              <span>
+                items use the canonical Oracle&apos;s Lens score table
+                ({usePersistedScores ? 'persisted mode' : 'in-memory mode'}).
+              </span>
+            </div>
+          ) : null}
         </CardContent>
       </Card>
 
@@ -374,7 +497,7 @@ export default function OraclesLensPage() {
                   <SelectContent>
                     <SelectItem value="__latest">Latest complete</SelectItem>
                     {periodOptions.map((periodOption) => (
-                      <SelectItem key={periodOption.label} value={periodOption.label}>
+                      <SelectItem key={periodOption.key} value={periodOption.label}>
                         {periodOption.label}
                         {periodOption.is_latest_complete ? ' · latest complete' : ''}
                         {periodOption.manager_count ? ` · ${periodOption.manager_count} managers` : ''}
@@ -506,7 +629,7 @@ export default function OraclesLensPage() {
                       RADAR_TONE_CLASSES[bubble.toneClass] ?? RADAR_TONE_CLASSES['border-slate-300 bg-slate-50 text-slate-950']
                     } flex-col rounded-full border text-center shadow-none hover:bg-muted/60`}
                     title={`${bubble.ticker}: ${bubble.holderActionLabel}`}
-                    onClick={() => setSelectedStockId(bubble.stockId)}
+                    onClick={() => openDrilldown(bubble.stockId)}
                   >
                     <span className="text-xs font-semibold">{bubble.ticker}</span>
                     <span className="text-[10px] text-current/70">{bubble.aggregateWeightLabel}</span>
@@ -573,7 +696,7 @@ export default function OraclesLensPage() {
                         variant="outline"
                         size="sm"
                         className="mt-3"
-                        onClick={() => setSelectedStockId(row.stockId)}
+                        onClick={() => openDrilldown(row.stockId)}
                       >
                         <PanelRightOpen className="h-3.5 w-3.5" />
                         Review
@@ -584,6 +707,11 @@ export default function OraclesLensPage() {
                       <Badge variant={safeBadgeVariant(row.confidenceTone)} className="mt-2">
                         {row.confidence} confidence
                       </Badge>
+                      {row.scoreSource === 'persisted' ? (
+                        <Badge variant="outline" className="ml-1 mt-2 rounded-md">
+                          persisted
+                        </Badge>
+                      ) : null}
                     </TableCell>
                     <TableCell>
                       <div className="flex flex-wrap gap-1.5">
@@ -692,18 +820,29 @@ export default function OraclesLensPage() {
           <div
             aria-hidden="true"
             className="absolute inset-0 cursor-default"
-            onClick={() => setSelectedStockId(null)}
+            onClick={closeDrilldown}
           />
-          <Card className="relative h-full w-full max-w-[460px] overflow-hidden rounded-none border-y-0 border-r-0 shadow-xl">
+          {/* MVP5-04: ARIA dialog semantics on the slide-out so
+              screenreaders announce it as a modal and let users tab
+              within the panel. Focus moves to the close button on
+              open and restores to the trigger on close (see
+              useEffect on selectedStockId). */}
+          <Card
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="oracles-lens-drilldown-title"
+            className="relative h-full w-full max-w-[460px] overflow-hidden rounded-none border-y-0 border-r-0 shadow-xl"
+          >
             <CardHeader className="border-b border-border/70 pb-3">
               <CardTitle className="flex items-center justify-between gap-2 text-base">
-                <span>Candidate Review</span>
+                <span id="oracles-lens-drilldown-title">Candidate Review</span>
                 <Button
+                  ref={closeButtonRef}
                   type="button"
                   variant="ghost"
                   size="icon"
                   aria-label="Close candidate review"
-                  onClick={() => setSelectedStockId(null)}
+                  onClick={closeDrilldown}
                 >
                   <X className="h-4 w-4" />
                 </Button>
@@ -714,7 +853,83 @@ export default function OraclesLensPage() {
             </CardHeader>
             <CardContent className="h-[calc(100%-84px)] space-y-5 overflow-y-auto p-5">
               <div className="rounded-md border border-amber-300/70 bg-amber-50 px-3 py-2 text-sm text-amber-950">
-                Review the counter-evidence before treating this 13F signal as a research candidate.
+                13F filings are delayed quarterly snapshots and may be up to 45 days behind
+                quarter end. Review the counter-evidence before treating this signal as a
+                research candidate.
+              </div>
+
+              <div className="space-y-3">
+                <div className="flex items-center justify-between gap-3">
+                  <div>
+                    <div className="text-xs font-semibold uppercase text-muted-foreground">
+                      13F direct consensus
+                    </div>
+                    <div className="mt-1 text-sm text-muted-foreground">
+                      As of {stockHolders.asOfQuarterLabel}
+                    </div>
+                  </div>
+                  <Badge
+                    variant={stockHolders.isUnavailable ? 'warning' : stockHolders.hasCaveats ? 'warning' : 'success'}
+                    className="rounded-md"
+                  >
+                    {stockHolders.status.replaceAll('_', ' ')}
+                  </Badge>
+                </div>
+                {stockHoldersQuery.isLoading ? (
+                  <div className="rounded-md border border-border/70 px-3 py-2 text-sm text-muted-foreground">
+                    Loading direct holder context…
+                  </div>
+                ) : stockHolders.isUnavailable ? (
+                  <div className="rounded-md border border-border/70 bg-muted/40 px-3 py-2 text-sm text-muted-foreground">
+                    {stockHolders.reasonMessage ?? 'Direct 13F holder context is unavailable for this stock.'}
+                  </div>
+                ) : (
+                  <div className="grid grid-cols-2 gap-2">
+                    <div className="rounded-md border border-border/70 px-3 py-2">
+                      <div className="flex items-center gap-2 text-xs uppercase text-muted-foreground">
+                        <Users className="h-3.5 w-3.5" />
+                        Direct holders
+                      </div>
+                      <div className="mt-1 text-lg font-semibold">
+                        {stockHolders.directHolderCountLabel}
+                      </div>
+                    </div>
+                    <div className="rounded-md border border-border/70 px-3 py-2">
+                      <div className="text-xs uppercase text-muted-foreground">Value managers</div>
+                      <div className="mt-1 text-lg font-semibold">
+                        {stockHolders.valueManagerDirectCountLabel}
+                      </div>
+                    </div>
+                    <div className="rounded-md border border-border/70 px-3 py-2">
+                      <div className="text-xs uppercase text-muted-foreground">Featured</div>
+                      <div className="mt-1 text-lg font-semibold">
+                        {stockHolders.featuredHolderCountLabel}
+                      </div>
+                    </div>
+                    <div className="rounded-md border border-border/70 px-3 py-2">
+                      <div className="text-xs uppercase text-muted-foreground">Attribution caveats</div>
+                      <div className="mt-1 text-lg font-semibold">
+                        {stockHolders.attributionCaveatCountLabel}
+                      </div>
+                    </div>
+                  </div>
+                )}
+                {stockHolders.dataCaveats.length ? (
+                  <div className="space-y-2">
+                    {stockHolders.dataCaveats.map((caveat) => (
+                      <div
+                        key={caveat.key}
+                        className="flex gap-2 rounded-md border border-amber-300/70 bg-amber-50 px-3 py-2 text-sm text-amber-950"
+                      >
+                        <ShieldAlert className="mt-0.5 h-4 w-4 shrink-0" />
+                        <div>
+                          <div className="font-medium">{caveat.label}</div>
+                          {caveat.message ? <div className="mt-1">{caveat.message}</div> : null}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                ) : null}
               </div>
 
               <div className="space-y-3">
@@ -739,6 +954,61 @@ export default function OraclesLensPage() {
                   </div>
                 )}
               </div>
+
+              {selectedRow.confidenceDemotionReasons.length ? (
+                <div>
+                  <div className="text-xs font-semibold uppercase text-muted-foreground">
+                    Confidence demoted by
+                  </div>
+                  {/* MVP4-07a: surfaces the structured payload MVP4-03
+                      writes into score_explanation.confidence_demotion_reasons
+                      (PO MVP4-01 P2 #4 contract). MVP5-04: renders the
+                      friendly investor-facing label by default; the raw
+                      rule_code stays one click away inside a click-to-
+                      reveal disclosure so operators can still debug
+                      without leaking UPPER_SNAKE jargon into the
+                      investor surface. */}
+                  <ul className="mt-2 space-y-1 text-xs text-muted-foreground">
+                    {selectedRow.confidenceDemotionReasons.map((reason) => (
+                      <li key={reason.code}>
+                        <span>{reason.label}</span>
+                        {reason.demotedToLabel
+                          ? ` → score confidence: ${reason.demotedToLabel}`
+                          : null}
+                        <RuleCodeDisclosure code={reason.code} />
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              ) : null}
+
+              {selectedRow.excludedHolders.length ? (
+                <div>
+                  <div className="text-xs font-semibold uppercase text-muted-foreground">
+                    Holders excluded from score
+                  </div>
+                  {/* MVP5-04 + MVP5-02: amendment-blocked holders are
+                      dropped from the score aggregate; their existence
+                      stays visible here so the user can tell why a
+                      stock has fewer effective holders than it appears
+                      to have in the raw 13F list. */}
+                  <ul className="mt-2 space-y-1 text-xs text-muted-foreground">
+                    {selectedRow.excludedHolders.map((holder) => (
+                      <li
+                        key={holder.managerId}
+                        className="flex items-center justify-between gap-2"
+                      >
+                        <span className="font-medium text-foreground/80">
+                          {holder.managerCanonicalName || `Manager #${holder.managerId}`}
+                        </span>
+                        <Badge variant="outline" className="text-[10px]">
+                          {holder.exclusionReasonLabel}
+                        </Badge>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              ) : null}
 
               <div>
                 <div className="text-xs font-semibold uppercase text-muted-foreground">
@@ -788,83 +1058,121 @@ export default function OraclesLensPage() {
 
               <div>
                 <div className="text-xs font-semibold uppercase text-muted-foreground">
-                  Top holders
+                  Top direct holders
                 </div>
                 <div className="mt-2 space-y-2">
-                  {selectedRow.topHolders.slice(0, 3).map((holder) => (
-                    <div key={holder.manager_id} className="rounded-md border border-border/70 p-2 text-sm">
-                      <div className="flex items-start justify-between gap-3">
-                        <div>
-                          <div className="font-medium">{holder.manager_name}</div>
-                          <div className="mt-1 text-xs text-muted-foreground">
-                            Rank {holder.position_rank ?? '—'} · {holder.action} ·{' '}
-                            {holder.holding_streak_quarters ?? '—'}Q streak
+                  {stockHolders.topHolders.length ? (
+                    stockHolders.topHolders.slice(0, 5).map((holder) => (
+                      <div key={holder.key} className="rounded-md border border-border/70 p-2 text-sm">
+                        <div className="flex items-start justify-between gap-3">
+                          <div>
+                            <div className="font-medium">{holder.managerName}</div>
+                            <div className="mt-1 text-xs text-muted-foreground">
+                              {holder.managerType.replaceAll('_', ' ')}
+                              {holder.isFeatured ? ' · featured' : ''}
+                            </div>
+                          </div>
+                          <div className="text-right">
+                            <div className="text-[10px] font-semibold uppercase text-muted-foreground">
+                              13F common weight
+                            </div>
+                            <Badge variant="outline" className="mt-1 rounded-md">
+                              {holder.portfolioWeightLabel}
+                            </Badge>
                           </div>
                         </div>
-                        <Badge variant="outline" className="rounded-md">
-                          {formatPercentValue(holder.position_weight)}
-                        </Badge>
-                      </div>
-                      <div className="mt-3 grid grid-cols-2 gap-2 text-xs text-muted-foreground">
-                        <div>
-                          <div className="uppercase">Shares</div>
-                          <div className="mt-1 text-foreground">
-                            {formatInteger(holder.current_shares)}
+                        <div className="mt-3 grid grid-cols-2 gap-2 text-xs text-muted-foreground">
+                          <div>
+                            <div className="uppercase">Reported value</div>
+                            <div className="mt-1 text-foreground">{holder.valueLabel}</div>
+                          </div>
+                          <div>
+                            <div className="uppercase">Shares</div>
+                            <div className="mt-1 text-foreground">{holder.sharesLabel}</div>
+                          </div>
+                          <div>
+                            <div className="uppercase">Attribution</div>
+                            <div className="mt-1 text-foreground">
+                              {holder.attributionStatus.replaceAll('_', ' ')}
+                            </div>
+                          </div>
+                          <div>
+                            <div className="uppercase">CUSIP mapping</div>
+                            <div className="mt-1 text-foreground">
+                              {holder.cusipMappingStatus.replaceAll('_', ' ')}
+                            </div>
                           </div>
                         </div>
-                        <div>
-                          <div className="uppercase">Previous</div>
-                          <div className="mt-1 text-foreground">
-                            {formatInteger(holder.previous_shares)}
-                          </div>
-                        </div>
-                        <div>
-                          <div className="uppercase">Share delta</div>
-                          <div className="mt-1 text-foreground">
-                            {formatPercentValue(holder.share_delta_pct)}
-                          </div>
-                        </div>
-                        <div>
-                          <div className="uppercase">Holder estimate</div>
-                          <div className="mt-1 text-foreground">
-                            {formatCurrency(holder.holder_price_estimate)}
-                          </div>
-                        </div>
-                        <div>
-                          <div className="uppercase">Filed</div>
-                          <div className="mt-1 text-foreground">{holder.filing_date ?? '—'}</div>
-                        </div>
-                        <div>
-                          <div className="uppercase">Signal weight</div>
-                          <div className="mt-1 text-foreground">
-                            {formatPercentValue(holder.manager_signal_weight, 0)}
-                          </div>
-                        </div>
-                        <div>
-                          <div className="uppercase">Manager type</div>
-                          <div className="mt-1 text-foreground">
-                            {holder.manager_type?.replaceAll('_', ' ') ?? 'unknown'}
-                          </div>
-                        </div>
-                        <div>
-                          <div className="uppercase">Portfolio concentration</div>
-                          <div className="mt-1 text-foreground">
-                            {formatPercentValue(holder.portfolio_concentration)}
-                          </div>
-                        </div>
-                        <div>
-                          <div className="uppercase">Avg holding period</div>
-                          <div className="mt-1 text-foreground">
-                            {holder.average_holding_period_quarters ?? '—'}Q
-                          </div>
+                        <div className="mt-2 truncate font-mono text-[11px] text-muted-foreground">
+                          {holder.accessionNumber ?? 'No accession'}
                         </div>
                       </div>
-                      <div className="mt-2 truncate font-mono text-[11px] text-muted-foreground">
-                        {holder.manager_profile_source ?? 'unknown profile'} ·{' '}
-                        {holder.accession_no ?? 'No accession'}
-                      </div>
+                    ))
+                  ) : (
+                    <div className="rounded-md border border-border/70 px-3 py-2 text-sm text-muted-foreground">
+                      No direct holder rows are available for this stock and period.
                     </div>
-                  ))}
+                  )}
+                </div>
+              </div>
+
+              <div>
+                <div className="flex items-center gap-2 text-xs font-semibold uppercase text-muted-foreground">
+                  <History className="h-3.5 w-3.5" />
+                  Recent direct changes
+                </div>
+                <div className="mt-2 space-y-2">
+                  {stockHolders.recentChanges.length ? (
+                    stockHolders.recentChanges.slice(0, 5).map((change) => (
+                      <div key={change.key} className="rounded-md border border-border/70 p-2 text-sm">
+                        <div className="flex items-start justify-between gap-3">
+                          <div>
+                            <div className="font-medium">{change.managerName}</div>
+                            <div className="mt-1 text-xs text-muted-foreground">
+                              {change.managerType.replaceAll('_', ' ')}
+                              {change.isFeatured ? ' · featured' : ''}
+                            </div>
+                          </div>
+                          <Badge variant="outline" className="rounded-md">
+                            {change.changeStatusLabel}
+                          </Badge>
+                        </div>
+                        <div className="mt-3 grid grid-cols-2 gap-2 text-xs text-muted-foreground">
+                          <div>
+                            <div className="uppercase">Current value</div>
+                            <div className="mt-1 text-foreground">{change.currentValueLabel}</div>
+                          </div>
+                          <div>
+                            <div className="uppercase">Previous value</div>
+                            <div className="mt-1 text-foreground">{change.previousValueLabel}</div>
+                          </div>
+                          <div>
+                            <div className="uppercase">Share delta</div>
+                            <div className="mt-1 text-foreground">{change.shareDeltaLabel}</div>
+                          </div>
+                          <div>
+                            <div className="uppercase">Confidence</div>
+                            <div className="mt-1 text-foreground">
+                              {change.confidenceLevel.replaceAll('_', ' ')}
+                            </div>
+                          </div>
+                        </div>
+                        {change.caveatCodes.length ? (
+                          <div className="mt-2 flex flex-wrap gap-1.5">
+                            {change.caveatCodes.map((code) => (
+                              <Badge key={code} variant="warning" className="rounded-md">
+                                {code.replaceAll('_', ' ')}
+                              </Badge>
+                            ))}
+                          </div>
+                        ) : null}
+                      </div>
+                    ))
+                  ) : (
+                    <div className="rounded-md border border-border/70 px-3 py-2 text-sm text-muted-foreground">
+                      No primary direct changes are available for this stock and period.
+                    </div>
+                  )}
                 </div>
               </div>
 

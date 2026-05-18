@@ -12,7 +12,9 @@ from sqlalchemy.orm import Session
 
 from app.models.facts import MetricFact
 from app.models.institutions import Filing13F, Holding13F, InstitutionManager
+from app.models.oracles_lens import OraclesLensSignal
 from app.models.stocks import Stock, StockPrice
+from app.services.oracles_lens.constants import SCORE_VERSION
 from app.services.oracles_lens.manager_signal import derive_manager_signal_profile
 
 
@@ -63,6 +65,12 @@ class ManagerHolding:
     share_delta_pct: float | None = None
     holding_streak_quarters: int = 1
     manager_type: str = "unknown"
+    # MVP8-03B B1: preserve the InstitutionManager.manager_type as the
+    # admin-classified value before _apply_manager_signal_profiles
+    # overwrites ``manager_type`` with the behavior-derived profile. The
+    # drawer renders both so reviewers can spot admin-vs-derived
+    # divergence in context.
+    manager_type_admin_classified: str = "unknown"
     manager_signal_weight: float = 0.6
     portfolio_concentration: float | None = None
     portfolio_holding_count: int | None = None
@@ -70,6 +78,8 @@ class ManagerHolding:
     manager_profile_source: str = "unknown"
     turnover_proxy: float | None = None
     high_turnover: bool = False
+    # E-03: CIK threaded for EDGAR accession URL construction in the drawer.
+    cik: str | None = None
 
 
 def build_oracles_lens_dashboard(
@@ -82,7 +92,29 @@ def build_oracles_lens_dashboard(
     min_signal_score: float | None = None,
     limit: int = 50,
     sort: str = "signal_weighted_consensus",
+    use_persisted_scores: bool = False,
 ) -> dict[str, Any]:
+    """Build the Oracle's Lens dashboard payload.
+
+    MVP4-03b: when ``use_persisted_scores=True``, the per-stock
+    score fields come from ``oracles_lens_signals`` (MVP4-03's
+    plan-§7.2 implementation) and stocks without a persisted row
+    for the (period, ``SCORE_VERSION``) are excluded. When
+    ``use_persisted_scores=False`` (default), the existing
+    in-memory formula in ``_stock_payload`` is used unchanged.
+
+    **Service-default divergence (PR #33 Staff A3):** This function's
+    keyword default remains ``False`` for the legacy in-memory path,
+    but every API endpoint that calls it (``/oracles-lens``,
+    ``/stocks/13f-snapshots``, ``/stocks/{id}/13f-detail``) explicitly
+    passes ``use_persisted_scores=True`` via ``Query(True)`` after the
+    MVP8-01 Phase 3 flip. The service-level legacy default is
+    **intentional** until Phase 4 retirement: it keeps the legacy A/B
+    comparison utility (`formula_comparison.py`) callable without
+    extra kwargs, and the legacy-path tests run cleanly. A new internal
+    caller that omits this kwarg gets the legacy path — by design.
+    Phase 4 will delete the parameter entirely.
+    """
     periods = _periods(session, superinvestor_only=superinvestor_only)
     latest_complete = _latest_complete_period(periods, min_manager_coverage=min_holders)
 
@@ -152,6 +184,12 @@ def build_oracles_lens_dashboard(
         for stock_holdings in rows_by_stock.values()
         if len(stock_holdings) >= min_holders
     ]
+    if use_persisted_scores:
+        items, persisted_score_count = _apply_persisted_scores(
+            session, items, period_label=selected.label,
+        )
+    else:
+        persisted_score_count = 0
     if min_signal_score is not None:
         items = [item for item in items if item["signal_weighted_consensus_score"] >= min_signal_score]
 
@@ -195,6 +233,9 @@ def build_oracles_lens_dashboard(
         price_context=price_context,
         price_target_date=price_as_of_date,
     )
+    # MVP4-03b: surface how many items came from persisted scoring so
+    # observability stays honest when the persisted path is exercised.
+    coverage["persisted_score_count"] = persisted_score_count
     return {
         "period": selected.label,
         "period_end_date": selected.period_end_date.isoformat(),
@@ -204,6 +245,72 @@ def build_oracles_lens_dashboard(
         "periods": _period_timeline(periods, selected, latest_complete),
         "items": items,
     }
+
+
+def _apply_persisted_scores(
+    session: Session,
+    items: list[dict[str, Any]],
+    *,
+    period_label: str,
+    score_version: str = SCORE_VERSION,
+) -> tuple[list[dict[str, Any]], int]:
+    """Override per-item score fields with persisted oracles_lens_signals.
+
+    Stocks without a persisted row for (period_label, score_version)
+    are dropped from the returned list — no in-memory fallback to
+    avoid mixing the dashboard's legacy formula with MVP4-03's
+    plan-§7.2 implementation inside a single response. The two
+    formulas disagree; users should see one or the other, not both
+    side-by-side.
+    """
+    if not items:
+        return [], 0
+    stock_ids = [item["stock_id"] for item in items]
+    rows = (
+        session.query(OraclesLensSignal)
+        .filter(OraclesLensSignal.report_quarter == period_label)
+        .filter(OraclesLensSignal.score_version == score_version)
+        .filter(OraclesLensSignal.stock_id.in_(stock_ids))
+        .all()
+    )
+    persisted_by_stock = {row.stock_id: row for row in rows}
+
+    # Import here so the dashboard module doesn't take a hard
+    # dependency on the caution_flags surface when persisted mode
+    # is disabled.
+    from app.services.oracles_lens.caution_flags import enrich_caveat_codes
+
+    out: list[dict[str, Any]] = []
+    for item in items:
+        row = persisted_by_stock.get(item["stock_id"])
+        if row is None:
+            # No persisted score for this stock under the requested
+            # score_version → exclude from the response.
+            continue
+        item["signal_weighted_consensus_score"] = (
+            float(row.signal_weighted_consensus_score)
+            if row.signal_weighted_consensus_score is not None
+            else None
+        )
+        item["score_confidence"] = row.score_confidence
+        raw_codes = list(row.caution_flag_codes or [])
+        item["caution_flag_codes"] = raw_codes
+        # MVP4-05: also surface the structured caution_flags so a
+        # persisted-mode response is shape-compatible with the
+        # signal-weighted read helper. Existing in-memory
+        # caution_flags (if any) are replaced with the persisted
+        # enrichment because the persisted source is canonical in
+        # persisted mode.
+        item["caution_flags"] = enrich_caveat_codes(raw_codes)
+        # Merge persisted explanation keys (e.g.
+        # confidence_demotion_reasons) into the existing one so the
+        # dashboard's narrative survives the override.
+        existing_explanation = dict(item.get("score_explanation") or {})
+        existing_explanation.update(row.score_explanation or {})
+        item["score_explanation"] = existing_explanation
+        item["score_source"] = "persisted"
+        out.append(item)
+    return out, len(out)
 
 
 def _period_timeline(
@@ -304,6 +411,8 @@ def _holdings_for_period(
                 position_weight=0,
                 filing_date=filing.filed_at,
                 accession_no=filing.accession_no,
+                manager_type_admin_classified=manager.manager_type or "unknown",
+                cik=manager.cik,
             )
         grouped[key].shares += int(holding.shares or 0)
         grouped[key].value_thousands += int(holding.value_thousands or 0)
@@ -445,9 +554,21 @@ def _stock_payload(
         min_holders=min_holders,
     )
     unknown_count = sum(1 for item in holdings if item.manager_type == "unknown")
+    admin_unknown_count = sum(
+        1 for item in holdings if item.manager_type_admin_classified == "unknown"
+    )
     high_turnover_count = sum(1 for item in holdings if item.high_turnover)
     typed_count = consensus_count - unknown_count
     quality_coverage = typed_count / consensus_count if consensus_count else 0
+    # MVP8-03B B4: portfolio-weight context for the Δ Holders chip — sum
+    # of position_weight across adders / reducers so the chip tooltip can
+    # show "+3 holders · adders weighted 8.2% · reducers weighted 1.1%".
+    adders_portfolio_weight_sum = sum(
+        item.position_weight for item in holdings if item.action in {"new", "add"}
+    )
+    reducers_portfolio_weight_sum = sum(
+        item.position_weight for item in holdings if item.action in {"reduce", "exit"}
+    )
 
     return {
         "stock_id": holdings[0].stock_id,
@@ -484,6 +605,7 @@ def _stock_payload(
                 "action": item.action,
                 "holding_streak_quarters": item.holding_streak_quarters,
                 "manager_type": item.manager_type,
+                "manager_type_admin_classified": item.manager_type_admin_classified,
                 "manager_signal_weight": round(item.manager_signal_weight, 4),
                 "portfolio_concentration": item.portfolio_concentration,
                 "portfolio_holding_count": item.portfolio_holding_count,
@@ -493,14 +615,18 @@ def _stock_payload(
                 "high_turnover": item.high_turnover,
                 "filing_date": item.filing_date.isoformat() if item.filing_date else None,
                 "accession_no": item.accession_no,
+                "cik": item.cik,
             }
             for item in holdings[:3]
         ],
         "manager_signal_summary": {
             "high_signal_holder_count": sum(1 for item in holdings if item.manager_signal_weight >= 0.75),
             "unknown_manager_type_count": unknown_count,
+            "admin_unknown_manager_type_count": admin_unknown_count,
             "high_turnover_holder_count": high_turnover_count,
             "manager_signal_quality_coverage": round(quality_coverage, 4),
+            "adders_portfolio_weight_sum": round(adders_portfolio_weight_sum, 6),
+            "reducers_portfolio_weight_sum": round(reducers_portfolio_weight_sum, 6),
         },
         "score_explanation": {
             "primary_reasons": _primary_reasons(holdings, median_streak),
@@ -519,11 +645,20 @@ def _position_signal_weight(holding: ManagerHolding) -> float:
         score += 0.3
     if holding.holding_streak_quarters >= 4:
         score += 0.3
+    # MVP5-03 Phase 2: action magnitudes aligned to the persisted
+    # constants in ``app/services/oracles_lens/constants.py`` so the
+    # legacy in-memory path no longer disagrees with the canonical
+    # scorer on which action is the stronger signal. Rationale
+    # (SME #6 #1): a brand-new position is a more decisive signal
+    # than an incremental add to an existing position, and a full
+    # exit is a more decisive signal than a partial reduce.
     if holding.action == "new":
-        score += 0.1
-    elif holding.action == "add":
         score += 0.2
+    elif holding.action == "add":
+        score += 0.1
     elif holding.action == "reduce":
+        score -= 0.1
+    elif holding.action == "exit":
         score -= 0.2
     return max(score, 0)
 
@@ -664,6 +799,50 @@ def _primary_reasons(holdings: list[ManagerHolding], median_streak: int) -> list
     ]
 
 
+def _m3_facts_by_stock(
+    session: Session,
+    stock_ids: list[int],
+    metric_keys: list[str],
+) -> dict[int, dict[str, MetricFact]]:
+    """Most-recent ``is_current=True`` ``MetricFact`` per (stock_id, metric_key).
+
+    Shared by both the legacy Oracle's Lens quality overlay and the
+    MVP8-A2 drawer M3 panel. Does NOT filter on ``value_numeric.isnot(None)``
+    — composite scores (e.g. ``score.piotroski.total``) store their value in
+    ``value_json['partial_score']`` with ``value_numeric=NULL``. Callers
+    extract the value via :func:`_fact_value`, which falls back to
+    ``value_json['partial_score']`` when ``value_numeric`` is null.
+
+    Tiebreak ordering: ``period_end_date DESC NULLS LAST, created_at DESC``.
+    The duplicate-``is_current`` row case (multiple ``is_current=True`` rows
+    for the same metric_key) is masked by this ordering until the upstream
+    ingestion-side fix lands (D4 of this sweep ticket).
+    """
+    unique_stock_ids = list(dict.fromkeys(stock_ids))
+    if not unique_stock_ids or not metric_keys:
+        return {stock_id: {} for stock_id in unique_stock_ids}
+
+    facts = (
+        session.query(MetricFact)
+        .filter(MetricFact.stock_id.in_(unique_stock_ids))
+        .filter(MetricFact.metric_key.in_(metric_keys))
+        .filter(MetricFact.is_current.is_(True))
+        .order_by(
+            MetricFact.stock_id.asc(),
+            MetricFact.metric_key.asc(),
+            MetricFact.period_end_date.desc().nullslast(),
+            MetricFact.created_at.desc(),
+        )
+        .all()
+    )
+    result: dict[int, dict[str, MetricFact]] = {stock_id: {} for stock_id in unique_stock_ids}
+    for fact in facts:
+        bucket = result[fact.stock_id]
+        if fact.metric_key not in bucket:
+            bucket[fact.metric_key] = fact
+    return result
+
+
 def _quality_overlay_by_stock(
     session: Session,
     stock_ids: list[int],
@@ -675,21 +854,16 @@ def _quality_overlay_by_stock(
     if not unique_stock_ids:
         return {}
 
-    facts = (
-        session.query(MetricFact)
-        .filter(MetricFact.stock_id.in_(unique_stock_ids))
-        .filter(MetricFact.metric_key.in_(QUALITY_METRIC_KEYS.values()))
-        .filter(MetricFact.is_current.is_(True))
-        .filter(MetricFact.value_numeric.isnot(None))
-        .order_by(MetricFact.stock_id.asc(), MetricFact.period_end_date.desc(), MetricFact.created_at.desc())
-        .all()
+    facts_by_metric_key = _m3_facts_by_stock(
+        session, unique_stock_ids, list(QUALITY_METRIC_KEYS.values())
     )
-    facts_by_stock: dict[int, dict[str, MetricFact]] = {stock_id: {} for stock_id in unique_stock_ids}
     reverse_keys = {metric_key: label for label, metric_key in QUALITY_METRIC_KEYS.items()}
-    for fact in facts:
-        label = reverse_keys.get(fact.metric_key)
-        if label and label not in facts_by_stock[fact.stock_id]:
-            facts_by_stock[fact.stock_id][label] = fact
+    facts_by_stock: dict[int, dict[str, MetricFact]] = {stock_id: {} for stock_id in unique_stock_ids}
+    for stock_id, by_key in facts_by_metric_key.items():
+        for metric_key, fact in by_key.items():
+            label = reverse_keys.get(metric_key)
+            if label is not None:
+                facts_by_stock[stock_id][label] = fact
 
     latest_prices = _latest_prices_by_stock(session, unique_stock_ids, as_of_date=price_as_of_date)
     return {
@@ -808,7 +982,35 @@ def _quality_provenance(facts: dict[str, MetricFact]) -> dict[str, Any]:
 
 
 def _fact_value(fact: MetricFact | None) -> float | None:
-    return float(fact.value_numeric) if fact and fact.value_numeric is not None else None
+    """Read the numeric value of a MetricFact.
+
+    Falls back to ``value_json['partial_score']`` when ``value_numeric`` is
+    null. Composite scores (e.g. ``score.piotroski.total``) store their
+    integer score in ``value_json``; only 3/272 dev rows have
+    ``value_numeric`` populated for Piotroski. Pre-D2 the legacy quality
+    overlay silently dropped those rows; this fallback fixes it without
+    special-casing the metric_key.
+
+    Returns ``None`` if ``partial_score`` is not coercible to ``float``
+    (e.g., a future parser writes a dict or list). Post-review hardening
+    (Backend B2): a ``float()`` raise would 500 the endpoint; silent
+    fallback is the right behavior for an opportunistic read.
+    """
+    if fact is None:
+        return None
+    if fact.value_numeric is not None:
+        return float(fact.value_numeric)
+    if isinstance(fact.value_json, dict):
+        raw = fact.value_json.get("partial_score")
+        # Reject bool explicitly: bool subclasses int in Python, so
+        # ``float(True) == 1.0`` would silently coerce an "indicator was
+        # met" flag into a score of 1. PR #33 Backend B2 hardening.
+        if raw is not None and not isinstance(raw, bool):
+            try:
+                return float(raw)
+            except (TypeError, ValueError):
+                return None
+    return None
 
 
 def _empty_quality_overlay() -> dict[str, Any]:
@@ -826,13 +1028,26 @@ def _valuation_reference_by_stock(
     if not stock_ids:
         return {}
 
+    # PR #33 Staff A1: align the tiebreak with ``_m3_facts_by_stock`` so
+    # opinion metrics (``target.price_18m.mid``) pick the most recent VL
+    # publication when multiple ``is_current=True`` rows coexist across
+    # ``period_end_date`` values. Pre-PR-33 this only ordered by
+    # ``created_at DESC``, which could surface a stale opinion when an
+    # older row was ingested later. Full unification with
+    # ``_m3_facts_by_stock`` is queued in the Option A read-path audit
+    # follow-up ticket; this minimal change closes the immediate
+    # inconsistency.
     facts = (
         session.query(MetricFact)
         .filter(MetricFact.stock_id.in_(stock_ids))
         .filter(MetricFact.metric_key.in_(VALUATION_REFERENCE_KEYS))
         .filter(MetricFact.is_current.is_(True))
         .filter(MetricFact.value_numeric.isnot(None))
-        .order_by(MetricFact.stock_id.asc(), MetricFact.created_at.desc())
+        .order_by(
+            MetricFact.stock_id.asc(),
+            MetricFact.period_end_date.desc().nullslast(),
+            MetricFact.created_at.desc(),
+        )
         .all()
     )
     facts_by_stock: dict[int, dict[str, MetricFact]] = {stock_id: {} for stock_id in stock_ids}

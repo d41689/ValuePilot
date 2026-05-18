@@ -11,22 +11,30 @@ from app.models.institutions import (
     InstitutionManagerCikReviewEvent,
     JobRun,
     JobWorkerHeartbeat,
+    QualityFinding13F,
     QualityReport13F,
     RawSourceDocument,
 )
+from app.models.oracles_lens import OraclesLensScoreComponent, OraclesLensSignal
 from app.models.stocks import Stock
 from app.services.edgar_ingestion import match_cik_candidates, seed_pending_cik_review_fixture
-from app.services.edgar_quality import QualityReport, persist_quality_report
+from app.services.edgar_quality import QualityReport, persist_quality_report, run_quality_checks
+from app.services import thirteenf_admin_dashboard as dashboard
 from app.services.thirteenf_admin_dashboard import build_quarters, execute_job_payload
 from app.services.thirteenf_job_worker import execute_queued_job_once, record_worker_heartbeat
 
 
 def _clear_13f(db_session) -> None:
+    # Pre-MVP8-01: persisted Oracle's Lens rows FK-reference
+    # InstitutionManager, so they must clear first.
+    db_session.query(OraclesLensScoreComponent).delete()
+    db_session.query(OraclesLensSignal).delete()
     db_session.query(Holding13F).delete()
     db_session.query(Filing13F).delete()
     db_session.query(RawSourceDocument).delete()
     db_session.query(JobWorkerHeartbeat).delete()
     db_session.query(JobRun).delete()
+    db_session.query(QualityFinding13F).delete()
     db_session.query(QualityReport13F).delete()
     db_session.query(InstitutionManagerCikReviewEvent).delete()
     db_session.query(InstitutionManager).delete()
@@ -82,6 +90,46 @@ def _filing(
     db_session.add(filing)
     db_session.flush()
     return filing
+
+
+def _freeze_today(monkeypatch, *, frozen: date = date(2026, 5, 14)) -> None:
+    """Pin ``date.today()`` in the admin readiness + tasks services so
+    tests that seed 2025-Q4 fixtures remain deterministic regardless of
+    real calendar advance. Real today drifts past 2026-05-15 (the
+    2026-Q1 filing deadline) → the services start expecting 2026-Q1
+    data the test doesn't seed. Surfaced by PR #33 N4 D1 round-trip
+    on 2026-05-18.
+
+    **Two time-sensitive patterns exist in this codebase** — pick the
+    right one for new tests:
+
+    1. ``_freeze_today(monkeypatch)`` (this helper) — used when the
+       service computes "current / latest usable quarter" from
+       ``date.today()`` and the test seeds quarter-specific data.
+       Pins the service-side clock so the test's seeded quarter
+       stays the expected target.
+    2. Relative fixture dates (``date.today() + timedelta(days=N)``) —
+       used when the production code compares a stored deadline /
+       date field against ``date.today()`` and the assertion depends
+       on the comparison's outcome. See ``test_13f_user_api.py``
+       ``_filing`` for the canonical example.
+
+    **If you add a fixture for 2026-Q1 or a later quarter** that this
+    helper should also be deterministic against, advance the default
+    ``frozen`` date past that quarter's filing deadline (or accept
+    the default 2026-05-14 and pass ``frozen=date(...)`` explicitly
+    in the test). Today's default keeps ``_latest_closed_quarter``
+    pinned to 2025-Q4 because all earlier quarter deadlines (Q4
+    2025 = 2026-02-14) are ≤ 2026-05-14 and the 2026-Q1 deadline
+    (2026-05-15) is not.
+    """
+    class _FrozenDate(date):
+        @classmethod
+        def today(cls) -> date:
+            return cls(frozen.year, frozen.month, frozen.day)
+
+    monkeypatch.setattr("app.services.thirteenf_admin_dashboard.date", _FrozenDate)
+    monkeypatch.setattr("app.services.thirteenf_readiness.date", _FrozenDate)
 
 
 def _holding(db_session, filing: Filing13F, stock: Stock) -> Holding13F:
@@ -150,6 +198,7 @@ def test_consumer_readiness_exposes_only_safe_fields(client, db_session):
         "historical_depth_quarters",
         "historical_depth_capabilities",
         "amendment_status",
+        "nt_detection_supported",
     }
     assert "blockers" not in payload
     assert "counts" not in payload
@@ -157,13 +206,45 @@ def test_consumer_readiness_exposes_only_safe_fields(client, db_session):
     assert "setup_checklist" not in payload
 
 
-def test_amendment_pending_creates_p1_task_and_needs_review_health(client, db_session, user_factory, auth_headers):
+def test_consumer_readiness_filters_admin_only_warnings(monkeypatch, db_session):
+    def fake_admin_readiness(session, *, today=None):
+        return {
+            "readiness_level": "usable_with_warning",
+            "frontend_behavior": "enable_snapshot_with_caveats",
+            "latest_usable_quarter": "2026-Q1",
+            "current_quarter": {"label": "2026-Q2"},
+            "warnings": [
+                {"code": "REVOKED_CIK_DOWNSTREAM_REVIEW", "message": "Revoked CIK repair required."},
+                {"code": "LOW_STOCK_LINK_COVERAGE", "message": "25% of holdings are linked to stocks."},
+                {"code": "CURRENT_QUARTER_PARTIAL", "message": "2026-Q2 is still inside the 13F filing window."},
+                {"code": "AMENDMENTS_PENDING", "message": "Amendments are pending."},
+            ],
+            "historical_depth_quarters": 2,
+            "historical_depth_capabilities": {},
+            "amendment_status": "amendments_pending",
+            "nt_detection_supported": False,
+        }
+
+    monkeypatch.setattr(dashboard, "build_admin_readiness", fake_admin_readiness)
+
+    payload = dashboard.build_consumer_readiness(db_session)
+
+    warning_codes = [item["code"] for item in payload["warnings"]]
+    assert warning_codes == ["CURRENT_QUARTER_PARTIAL", "AMENDMENTS_PENDING"]
+    assert payload["nt_detection_supported"] is False
+
+
+def test_amendment_pending_creates_p1_task_and_needs_review_health(client, db_session, user_factory, auth_headers, monkeypatch):
     _clear_13f(db_session)
     admin = _admin(user_factory)
     manager = _manager(db_session)
     _filing(db_session, manager, accession="0001234567-26-000001", is_latest=False)
     _filing(db_session, manager, accession="0001234567-26-000002", form_type="13F-HR/A")
     db_session.commit()
+
+    # 2025-Q4 fixture; freeze today so the tasks endpoint computes
+    # latest usable quarter = 2025-Q4 regardless of calendar advance.
+    _freeze_today(monkeypatch)
 
     response = client.get("/api/v1/admin/13f/tasks", headers=auth_headers(admin))
 
@@ -906,6 +987,7 @@ def test_retry_manager_cik_search_with_edited_name_preserves_candidate_review(
 ):
     _clear_13f(db_session)
     admin = _admin(user_factory)
+    monkeypatch.setattr("app.edgar.client.settings.SEC_CONTACT_EMAIL", "ops@example.com")
     manager = _manager(db_session, name="Ambiguous Manager", cik=None)
     manager.match_status = "seeded"
     db_session.commit()
@@ -1406,7 +1488,7 @@ def test_quarter_detail_endpoint_returns_operational_drilldown(client, db_sessio
     assert {"ingest_holdings", "quality_check", "reprocess_amendment"}.issubset(action_types)
 
 
-def test_persisted_quality_report_surfaces_in_quarter_and_tasks(client, db_session, user_factory, auth_headers):
+def test_persisted_quality_report_surfaces_in_quarter_and_tasks(client, db_session, user_factory, auth_headers, monkeypatch):
     _clear_13f(db_session)
     admin = _admin(user_factory)
     manager = _manager(db_session)
@@ -1417,6 +1499,10 @@ def test_persisted_quality_report_surfaces_in_quarter_and_tasks(client, db_sessi
     report.add("reconciliation", "warning", "reported and computed totals differ", accession_no=filing.accession_no)
     persist_quality_report(db_session, quarter="2025-Q4", report=report)
     db_session.commit()
+
+    # 2025-Q4 fixture; freeze today so the tasks endpoint surfaces the
+    # 2025-Q4 quality warning regardless of calendar advance.
+    _freeze_today(monkeypatch)
 
     quarter_response = client.get("/api/v1/admin/13f/quarters/2025-Q4", headers=auth_headers(admin))
     task_response = client.get("/api/v1/admin/13f/tasks", headers=auth_headers(admin))
@@ -1456,6 +1542,56 @@ def test_quality_check_job_persists_report(client, db_session, user_factory, aut
     assert persisted.error_count == 1
     assert persisted.warning_count == 0
     assert persisted.source_job_id == job.id
+    finding = db_session.query(QualityFinding13F).filter_by(validation_run_id=persisted.id).one()
+    assert finding.rule_code == "parse_failure"
+    assert finding.severity == "error"
+    assert finding.entity_type == "filing"
+    assert finding.accession_number == "0001234567-26-000001"
+    assert finding.quarter == "2025-Q4"
+    assert finding.status == "open"
+    assert finding.first_seen_at == persisted.checked_at
+    assert finding.last_seen_at == persisted.checked_at
+
+    first_seen_at = finding.first_seen_at
+    rerun_report = QualityReport()
+    rerun_report.add("parse_failure", "error", "failed infotable again", accession_no="0001234567-26-000001")
+    rerun_record = persist_quality_report(
+        db_session,
+        quarter="2025-Q4",
+        report=rerun_report,
+        source_job_id=job.id,
+    )
+    rerun_finding = db_session.query(QualityFinding13F).filter_by(rule_code="parse_failure").one()
+    assert rerun_finding.id == finding.id
+    assert rerun_finding.validation_run_id == rerun_record.id
+    assert rerun_finding.first_seen_at == first_seen_at
+    assert rerun_finding.last_seen_at == rerun_record.checked_at
+    assert rerun_finding.detail == "failed infotable again"
+
+    finding_id = finding.id
+    db_session.delete(rerun_record)
+    db_session.commit()
+    assert db_session.query(QualityFinding13F).filter_by(id=finding_id).one_or_none() is None
+
+
+def test_quality_check_flags_suspicious_value_unit_jumps(db_session):
+    _clear_13f(db_session)
+    manager = _manager(db_session)
+    prior = _filing(db_session, manager, accession="0001234567-25-000001", period=date(2025, 9, 30))
+    current = _filing(db_session, manager, accession="0001234567-26-000001", period=date(2025, 12, 31))
+    prior.reported_total_value_thousands = 100
+    current.reported_total_value_thousands = 100_000
+    db_session.add_all([prior, current])
+    db_session.commit()
+
+    report = run_quality_checks(db_session, "2025-Q4")
+
+    issue = next(item for item in report.issues if item.check == "VALUE_UNIT_SANITY")
+    assert issue.severity == "warning"
+    assert issue.accession_no == "0001234567-26-000001"
+    assert issue.value["manager_id"] == manager.id
+    assert issue.value["entity_type"] == "filing"
+    assert issue.value["ratio"] == 1000.0
 
 
 def test_quarterly_pipeline_records_retryable_stage_jobs(db_session, monkeypatch):
@@ -1472,7 +1608,7 @@ def test_quarterly_pipeline_records_retryable_stage_jobs(db_session, monkeypatch
         or {"filings_processed": 2, "filings_failed": 0, "holdings_inserted": 10, "status": "succeeded"},
     )
     monkeypatch.setattr(
-        "app.services.cusip_enrichment.enrich_from_dataroma",
+        "app.services.cusip_enrichment.enrich_cusips_from_openfigi",
         lambda session: calls.append("enrich_cusip") or 3,
     )
     monkeypatch.setattr(
@@ -1550,6 +1686,17 @@ def test_readiness_thresholds_are_configurable(client, db_session, user_factory,
     monkeypatch.setattr("app.services.thirteenf_admin_dashboard.settings.THIRTEENF_READY_HISTORICAL_DEPTH", 1)
     monkeypatch.setattr("app.services.thirteenf_admin_dashboard.settings.THIRTEENF_MIN_HISTORICAL_DEPTH", 1)
 
+    # Pin date.today() in the readiness service so the test deterministically
+    # targets 2025-Q4 as the "latest expected complete quarter" instead of
+    # the floating real-today value. The fixture seeds period=2025-12-31;
+    # the readiness expectation slides forward as calendar quarters pass
+    # in real time. Surfaced by PR #33 N4 D1 round-trip; reproduces post-
+    # 2026-05-15 when 2026-Q1's filing deadline passes and the service
+    # starts expecting 2026-Q1 data the test doesn't seed.
+    # 2025-Q4 fixture; freeze today to pre-2026-Q1-deadline so the
+    # readiness service stays on 2025-Q4. See _freeze_today helper.
+    _freeze_today(monkeypatch)
+
     response = client.get("/api/v1/admin/13f/readiness", headers=auth_headers(admin))
 
     assert response.status_code == 200
@@ -1570,6 +1717,9 @@ def test_edgar_rate_limit_status_endpoint_returns_runtime_budget(client, db_sess
             "max_retries": 3,
             "window_seconds": 60,
             "recent_request_count": 7,
+            "recent_403_count": 1,
+            "recent_429_count": 2,
+            "edgar_block_alert": True,
             "estimated_capacity": 300,
             "remaining_estimated_capacity": 293,
             "global_pause_until": None,
@@ -1580,6 +1730,9 @@ def test_edgar_rate_limit_status_endpoint_returns_runtime_budget(client, db_sess
 
     assert response.status_code == 200
     assert response.json()["recent_request_count"] == 7
+    assert response.json()["recent_403_count"] == 1
+    assert response.json()["recent_429_count"] == 2
+    assert response.json()["edgar_block_alert"] is True
     assert response.json()["remaining_estimated_capacity"] == 293
 
 
@@ -1587,7 +1740,7 @@ def test_edgar_rate_limit_status_counts_recorded_requests(monkeypatch):
     from app.edgar import client as edgar_client
 
     monkeypatch.setattr(edgar_client.settings, "EDGAR_RATE_LIMIT_WINDOW_S", 60)
-    monkeypatch.setattr(edgar_client.settings, "EDGAR_REQUEST_DELAY_S", 0.5)
+    monkeypatch.setattr(edgar_client.settings, "EDGAR_REQUESTS_PER_SECOND", 2.0)
     with edgar_client._REQUEST_EVENTS_LOCK:
         edgar_client._REQUEST_EVENTS.clear()
         edgar_client._GLOBAL_PAUSE_UNTIL = None
@@ -1623,6 +1776,7 @@ def test_edgar_rate_limit_status_records_global_pause_after_429(monkeypatch):
             return None
 
     monkeypatch.setattr(edgar_client.settings, "EDGAR_MAX_RETRIES", 1)
+    monkeypatch.setattr(edgar_client.settings, "SEC_CONTACT_EMAIL", "ops@example.com")
     monkeypatch.setattr(edgar_client.time, "sleep", lambda seconds: None)
     monkeypatch.setattr(edgar_client, "_get_bucket", lambda: DummyBucket())
     with edgar_client._REQUEST_EVENTS_LOCK:
@@ -1658,7 +1812,7 @@ def test_quarterly_pipeline_continues_after_retryable_enrichment_failure(
     def fail_enrichment(session):
         raise RuntimeError("CUSIP enrichment failed")
 
-    monkeypatch.setattr("app.services.cusip_enrichment.enrich_from_dataroma", fail_enrichment)
+    monkeypatch.setattr("app.services.cusip_enrichment.enrich_cusips_from_openfigi", fail_enrichment)
 
     report = QualityReport()
 

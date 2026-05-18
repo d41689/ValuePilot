@@ -384,12 +384,12 @@ def backfill_period_dates() -> None:
 
 @app.command()
 def enrich_cusip() -> None:
-    """Seed cusip_ticker_map from Dataroma holdings pages (name-based matching)."""
-    from app.services.cusip_enrichment import enrich_from_dataroma
+    """Map pending CUSIPs through OpenFIGI; Dataroma is not a CUSIP source."""
+    from app.services.cusip_enrichment import enrich_cusips_from_openfigi
 
     db = SessionLocal()
     try:
-        n = enrich_from_dataroma(db)
+        n = enrich_cusips_from_openfigi(db)
         db.commit()
         typer.echo(f"Inserted {n} CUSIP→ticker mappings.")
     except Exception as exc:

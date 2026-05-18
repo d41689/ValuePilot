@@ -9,10 +9,12 @@ const {
   missingDataReasons,
   normalizeOracleLensRows,
   normalizeQualityOverlay,
+  normalizeStockHolderAggregation,
   normalizeValuationReference,
   primaryCautionFlags,
   radarBubbles,
   suggestedResearchSteps,
+  uniquePeriodOptions,
 } = require('./oraclesLens');
 
 test('normalizeOracleLensRows emphasizes signal score with explanations', () => {
@@ -124,7 +126,10 @@ test('normalizeOracleLensRows emphasizes signal score with explanations', () => 
   ]);
 });
 
-test('buildOracleLensQueryParams serializes V1 dashboard filters', () => {
+test('buildOracleLensQueryParams serializes V1 dashboard filters and defaults to persisted mode', () => {
+  // MVP4-07a: default callers (no usePersistedScores) get
+  // use_persisted_scores=true appended so the page consumes the
+  // canonical MVP4-03+ persisted-scores table.
   assert.equal(
     buildOracleLensQueryParams({
       period: '2031-Q4',
@@ -133,8 +138,51 @@ test('buildOracleLensQueryParams serializes V1 dashboard filters', () => {
       superinvestorOnly: false,
       sort: 'conviction',
     }),
-    'period=2031-Q4&min_holders=5&superinvestor_only=false&min_signal_score=2.5&sort=conviction'
+    'period=2031-Q4&min_holders=5&superinvestor_only=false&min_signal_score=2.5&sort=conviction&use_persisted_scores=true'
   );
+});
+
+test('buildOracleLensQueryParams honors usePersistedScores=false debug opt-out', () => {
+  // MVP4-07a: the one-release-cycle escape hatch (?persisted=0 on
+  // the page) must turn the persisted flag OFF entirely, not pass
+  // use_persisted_scores=false. The backend treats the param's
+  // absence as the legacy in-memory path.
+  const params = buildOracleLensQueryParams({
+    period: '2026-Q1',
+    minHolders: 3,
+    sort: 'signal_weighted_consensus',
+    usePersistedScores: false,
+  });
+  assert.ok(!params.includes('use_persisted_scores'),
+    `expected no use_persisted_scores param, got: ${params}`);
+});
+
+test('uniquePeriodOptions removes duplicate labels for stable select keys', () => {
+  const options = uniquePeriodOptions([
+    {
+      label: '2026-Q2',
+      period_end_date: '2026-06-30',
+      manager_count: 4,
+      is_latest_complete: true,
+    },
+    {
+      label: '2026-Q2',
+      period_end_date: '2026-06-30',
+      manager_count: 2,
+      is_latest_complete: false,
+    },
+    {
+      label: '2026-Q1',
+      period_end_date: '2026-03-31',
+      manager_count: 3,
+      is_latest_complete: false,
+    },
+  ]);
+
+  assert.deepEqual(options.map((option) => option.key), ['2026-Q2', '2026-Q1']);
+  assert.equal(new Set(options.map((option) => option.key)).size, options.length);
+  assert.equal(options[0].manager_count, 4);
+  assert.equal(options[0].is_latest_complete, true);
 });
 
 test('radarBubbles maps candidate rows to compact visual signals', () => {
@@ -261,4 +309,284 @@ test('confidenceTone maps confidence to badge variants', () => {
   assert.equal(confidenceTone('high'), 'success');
   assert.equal(confidenceTone('medium'), 'warning');
   assert.equal(confidenceTone('low'), 'secondary');
+});
+
+test('normalizeStockHolderAggregation exposes direct consensus and caveats', () => {
+  const holders = normalizeStockHolderAggregation({
+    status: 'available_with_caveat',
+    stock_id: 10,
+    ticker: 'LENS',
+    exchange: 'NYSE',
+    company_name: 'Lens Corp',
+    as_of_quarter: '2026-Q1',
+    direct_holder_count: 3,
+    value_manager_direct_count: 2,
+    featured_holder_count: 1,
+    attribution_caveat_count: 1,
+    top_holders: [
+      {
+        holding_id: 501,
+        value_usd: 1250000,
+        ssh_prnamt: 42000,
+        portfolio_weight_pct: 3.25,
+        manager: {
+          id: 7,
+          display_name: 'Patient Capital',
+          manager_type: 'fundamental_long',
+          is_featured: true,
+        },
+        confidence: {
+          attribution_status: 'direct',
+          cusip_mapping_status: 'linked',
+        },
+      },
+    ],
+    recent_changes: [
+      {
+        change_status: 'increased',
+        confidence_level: 'high_confidence',
+        current_value_usd: 1250000,
+        previous_value_usd: 900000,
+        current_shares: 42000,
+        previous_shares: 30000,
+        share_delta: 12000,
+        caveat_codes: ['mapping_warning'],
+        manager: {
+          id: 7,
+          display_name: 'Patient Capital',
+          manager_type: 'fundamental_long',
+          is_featured: true,
+        },
+      },
+    ],
+    data_caveats: [
+      {
+        code: 'FILING_WINDOW_OPEN',
+        message: 'The filing window can still change this quarter.',
+      },
+    ],
+  });
+
+  assert.equal(holders.status, 'available_with_caveat');
+  assert.equal(holders.hasCaveats, true);
+  assert.equal(holders.directHolderCountLabel, '3');
+  assert.equal(holders.valueManagerDirectCountLabel, '2');
+  assert.equal(holders.featuredHolderCountLabel, '1');
+  assert.equal(holders.attributionCaveatCountLabel, '1');
+  assert.equal(holders.asOfQuarterLabel, '2026-Q1');
+  assert.equal(holders.topHolders[0].managerName, 'Patient Capital');
+  assert.equal(holders.topHolders[0].valueLabel, '$1,250,000');
+  assert.equal(holders.topHolders[0].portfolioWeightLabel, '3.3%');
+  assert.equal(holders.topHolders[0].sharesLabel, '42,000');
+  assert.equal(holders.recentChanges[0].changeStatusLabel, 'Increased');
+  assert.equal(holders.recentChanges[0].shareDeltaLabel, '12,000');
+  assert.deepEqual(holders.recentChanges[0].caveatCodes, ['mapping_warning']);
+  assert.equal(holders.dataCaveats[0].label, 'Filing window open');
+});
+
+test('normalizeStockHolderAggregation keeps unavailable stock holders explicit', () => {
+  const holders = normalizeStockHolderAggregation({
+    status: 'unavailable',
+    stock_id: 11,
+    ticker: 'NONE',
+    as_of_quarter: null,
+    direct_holder_count: 0,
+    value_manager_direct_count: 0,
+    featured_holder_count: 0,
+    attribution_caveat_count: 0,
+    top_holders: [],
+    recent_changes: [],
+    data_caveats: [],
+    reason: {
+      code: 'NO_ACTIVE_HOLDERS',
+      message: 'No direct 13F holders are available for this stock.',
+    },
+  });
+
+  assert.equal(holders.isUnavailable, true);
+  assert.equal(holders.hasCaveats, false);
+  assert.equal(holders.directHolderCountLabel, '0');
+  assert.equal(holders.asOfQuarterLabel, '—');
+  assert.equal(holders.reasonCode, 'NO_ACTIVE_HOLDERS');
+  assert.equal(holders.reasonMessage, 'No direct 13F holders are available for this stock.');
+  assert.deepEqual(holders.topHolders, []);
+  assert.deepEqual(holders.recentChanges, []);
+  assert.deepEqual(holders.dataCaveats, []);
+});
+
+test('normalizeStockHolderAggregation flags attribution-only caveats', () => {
+  const holders = normalizeStockHolderAggregation({
+    status: 'available',
+    stock_id: 12,
+    ticker: 'CAVEAT',
+    as_of_quarter: '2026-Q1',
+    direct_holder_count: 1,
+    value_manager_direct_count: 1,
+    featured_holder_count: 0,
+    attribution_caveat_count: 2,
+    top_holders: [
+      {
+        holding_id: 601,
+        portfolio_weight_pct: null,
+        manager: {
+          id: 8,
+          display_name: 'Careful Partners',
+        },
+      },
+    ],
+    recent_changes: [],
+    data_caveats: [],
+  });
+
+  assert.equal(holders.hasCaveats, true);
+  assert.equal(holders.attributionCaveatCountLabel, '2');
+  assert.equal(holders.topHolders[0].portfolioWeightLabel, '—');
+});
+
+test('normalizeOracleLensRows surfaces MVP4-03b score_source and MVP4-05 confidence_demotion_reasons', () => {
+  // Persisted-mode payload: backend marks score_source="persisted"
+  // and includes confidence_demotion_reasons inside
+  // score_explanation. The page renders both — a "persisted" badge
+  // in the ranking row and a list of {code, demotedTo} pairs in
+  // the drilldown.
+  const rows = normalizeOracleLensRows([
+    {
+      stock_id: 42,
+      ticker: 'PERS',
+      company_name: 'Persisted Co',
+      signal_weighted_consensus_score: 3.2,
+      score_confidence: 'medium_confidence',
+      conviction_score: 73,
+      consensus_count: 4,
+      score_source: 'persisted',
+      score_explanation: {
+        primary_reasons: ['4 high-signal managers hold this stock'],
+        confidence_demotion_reasons: [
+          { code: 'PARTIAL_COVERAGE', demoted_to: 'medium_confidence' },
+          { code: 'AMENDMENTS_PENDING', demoted_to: 'medium_confidence' },
+          { malformed: true }, // must be ignored — no `code`
+        ],
+      },
+      caution_flags: [
+        { code: 'PARTIAL_COVERAGE', severity: 'medium', scope: 'row', label: 'Combination Report' },
+        { code: 'AMENDMENTS_PENDING', severity: 'medium', scope: 'row', label: 'Amendment pending' },
+      ],
+    },
+  ]);
+
+  assert.equal(rows.length, 1);
+  const row = rows[0];
+  assert.equal(row.scoreSource, 'persisted');
+  assert.equal(row.confidenceDemotionReasons.length, 2,
+    'malformed entries must be dropped, valid ones preserved');
+  // MVP5-04 extended each entry with friendly label + humanized tier.
+  assert.deepEqual(row.confidenceDemotionReasons[0], {
+    code: 'PARTIAL_COVERAGE',
+    label: 'Partial filing coverage',
+    demotedTo: 'medium_confidence',
+    demotedToLabel: 'medium confidence',
+  });
+  assert.deepEqual(row.confidenceDemotionReasons[1], {
+    code: 'AMENDMENTS_PENDING',
+    label: 'Amendment not yet ingested',
+    demotedTo: 'medium_confidence',
+    demotedToLabel: 'medium confidence',
+  });
+  // In-memory baseline still recognized — score_source is null when
+  // the backend doesn't supply it.
+  const legacyRows = normalizeOracleLensRows([
+    {
+      stock_id: 43,
+      ticker: 'LEGY',
+      company_name: 'Legacy Co',
+      signal_weighted_consensus_score: 2.0,
+      score_confidence: 'high_confidence',
+      consensus_count: 3,
+    },
+  ]);
+  assert.equal(legacyRows[0].scoreSource, null);
+  assert.deepEqual(legacyRows[0].confidenceDemotionReasons, []);
+  assert.deepEqual(legacyRows[0].excludedHolders, []);
+});
+
+
+test('MVP5-04 labelForDemotionReason maps known codes and falls back to raw', () => {
+  // Re-require to access the exported helpers without re-binding
+  // the names at the top of the file.
+  const oracle = require('./oraclesLens.js');
+  // Happy path: every canonical caveat code in the union of LOW +
+  // MEDIUM + CONFIDENTIAL must resolve to a non-empty human string,
+  // and the string must not equal the raw code (i.e. mapping is
+  // really happening, not silent fall-through).
+  const canonicalCodes = [
+    'PARTIAL_COVERAGE',
+    'NT_QUARTER_STREAK_BREAK',
+    'PRE_2023_PRE_HISTORY_UNAVAILABLE',
+    'AMENDMENTS_PENDING',
+    'AMENDMENT_FAILED',
+    'HISTORICAL_BACKFILL_NEEDS_VALIDATION',
+    'CONFIDENTIAL_TREATMENT',
+    'stale_until_recompute',
+  ];
+  for (const code of canonicalCodes) {
+    const label = oracle.labelForDemotionReason(code);
+    assert.equal(typeof label, 'string');
+    assert.notEqual(label, code, `${code} should have a friendly label`);
+    assert.ok(label.length > 0);
+  }
+  // Fallback: an unknown rule_code returns the raw string so the
+  // operator-facing <details> still has something to show.
+  assert.equal(
+    oracle.labelForDemotionReason('SOMETHING_BRAND_NEW'),
+    'SOMETHING_BRAND_NEW',
+  );
+});
+
+
+test('MVP5-04 normalizeOracleLensRows surfaces excludedHolders with friendly labels', () => {
+  const rows = normalizeOracleLensRows([
+    {
+      stock_id: 99,
+      ticker: 'EXCL',
+      company_name: 'Exclusion Co',
+      signal_weighted_consensus_score: 1.5,
+      score_confidence: 'medium_confidence',
+      consensus_count: 3,
+      score_source: 'persisted',
+      score_explanation: {
+        primary_reasons: [],
+        confidence_demotion_reasons: [],
+        excluded_holder_count: 2,
+        excluded_holders: [
+          {
+            manager_id: 11,
+            manager_canonical_name: 'Pending Capital LLC',
+            exclusion_reason: 'AMENDMENT_PENDING_EXCLUDED',
+          },
+          {
+            manager_id: 12,
+            manager_canonical_name: 'Failed Capital LP',
+            exclusion_reason: 'AMENDMENT_FAILED_EXCLUDED',
+          },
+          { malformed: true }, // must be dropped — missing required fields
+        ],
+      },
+    },
+  ]);
+
+  assert.equal(rows.length, 1);
+  const row = rows[0];
+  assert.equal(row.excludedHolders.length, 2, 'malformed entries dropped');
+  assert.deepEqual(row.excludedHolders[0], {
+    managerId: 11,
+    managerCanonicalName: 'Pending Capital LLC',
+    exclusionReason: 'AMENDMENT_PENDING_EXCLUDED',
+    exclusionReasonLabel: 'Amendment not yet ingested',
+  });
+  assert.deepEqual(row.excludedHolders[1], {
+    managerId: 12,
+    managerCanonicalName: 'Failed Capital LP',
+    exclusionReason: 'AMENDMENT_FAILED_EXCLUDED',
+    exclusionReasonLabel: 'Amendment ingestion failed',
+  });
 });

@@ -8,7 +8,7 @@ JobRun system. The job is executed asynchronously by the ThirteenFJobWorker.
 Pipeline steps (run by the worker, not the scheduler directly):
   1. Fetch form.idx + ingest filing metadata
   2. Download + parse infotable.xml for all new filings
-  3. Refresh CUSIP → ticker mappings (Dataroma + EDGAR company_tickers.json)
+  3. Refresh CUSIP → ticker mappings (OpenFIGI + EDGAR company_tickers.json)
   4. Backfill holdings_13f.stock_id
   5. Run data quality checks; log any errors
 """
@@ -20,6 +20,8 @@ from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
 
 from app.core.config import settings
+from app.edgar.client import edgar_rate_limit_status
+from app.services.thirteenf_alerts import emit_alert
 
 logger = logging.getLogger(__name__)
 
@@ -139,6 +141,36 @@ def create_scheduler(db_factory: Callable) -> BackgroundScheduler:
         misfire_grace_time=3600,  # allow up to 1h late firing
     )
 
+    scheduler.add_job(
+        run_daily_sync_poll,
+        trigger=CronTrigger(minute=0, timezone="UTC"),
+        args=[db_factory],
+        id="daily_13f_sync_poll",
+        name="Daily 13F form.idx sync poll",
+        replace_existing=True,
+        misfire_grace_time=900,
+    )
+
+    scheduler.add_job(
+        run_job_watchdog,
+        trigger=CronTrigger(minute=f"*/{settings.THIRTEENF_WATCHDOG_INTERVAL_MINUTES}", timezone="UTC"),
+        args=[db_factory],
+        id="thirteenf_job_watchdog",
+        name="13F job lease watchdog",
+        replace_existing=True,
+        misfire_grace_time=900,
+    )
+
+    scheduler.add_job(
+        run_13f_health_summary,
+        trigger=CronTrigger(hour=8, minute=0, timezone="America/New_York"),
+        args=[db_factory],
+        id="thirteenf_daily_health_summary",
+        name="13F daily health summary",
+        replace_existing=True,
+        misfire_grace_time=3600,
+    )
+
     if settings.THIRTEENF_SMART_RETRY_ENABLED:
         # Run every day at 02:00 UTC.
         # Checks for partially failed jobs and retries safe targets if they are old enough.
@@ -152,6 +184,63 @@ def create_scheduler(db_factory: Callable) -> BackgroundScheduler:
             misfire_grace_time=3600,
         )
     return scheduler
+
+
+def run_daily_sync_poll(db_factory: Callable) -> None:
+    """Hourly poll that queues eligible daily 13F sync jobs."""
+    db = db_factory()
+    try:
+        from app.services.thirteenf_scheduler import (
+            mark_retry_exhausted_daily_syncs_no_data,
+            queue_daily_sync_poll,
+        )
+
+        mark_retry_exhausted_daily_syncs_no_data(db)
+        result = queue_daily_sync_poll(db)
+        logger.info("Daily 13F sync poll: %s", result)
+    except Exception as exc:
+        db.rollback()
+        logger.exception("Daily 13F sync poll failed: %s", exc)
+    finally:
+        db.close()
+
+
+def run_job_watchdog(db_factory: Callable) -> None:
+    """Mark timed-out running jobs only after their lease has expired."""
+    db = db_factory()
+    try:
+        from app.services.thirteenf_job_worker import mark_stale_running_jobs_abandoned
+
+        result = mark_stale_running_jobs_abandoned(db)
+        logger.info("13F job watchdog: %s", result)
+    except Exception as exc:
+        db.rollback()
+        logger.exception("13F job watchdog failed: %s", exc)
+    finally:
+        db.close()
+
+
+def run_13f_health_summary(db_factory: Callable) -> None:
+    """Send the daily 13F health summary through the alert abstraction."""
+    db = db_factory()
+    try:
+        from app.services.thirteenf_health import emit_daily_health_summary, evaluate_13f_alerts
+
+        alerts = evaluate_13f_alerts(db, edgar_rate_limit_status=edgar_rate_limit_status())
+        for alert in alerts:
+            emit_alert(
+                severity=alert["severity"],
+                title=alert["title"],
+                message=alert["message"],
+                context=alert.get("context"),
+            )
+        result = emit_daily_health_summary(db)
+        logger.info("13F daily health summary: alerts=%d summary=%s", len(alerts), result)
+    except Exception as exc:
+        db.rollback()
+        logger.exception("13F daily health summary failed: %s", exc)
+    finally:
+        db.close()
 
 
 def run_smart_retries(db_factory: Callable) -> None:

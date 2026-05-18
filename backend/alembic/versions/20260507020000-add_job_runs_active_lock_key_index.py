@@ -23,12 +23,11 @@ _WHERE = "status IN ('queued', 'running', 'cancel_requested')"
 
 
 def upgrade() -> None:
-    op.create_index(
-        _INDEX,
-        _TABLE,
-        ["lock_key"],
-        unique=True,
-        postgresql_where=sa.text(_WHERE),
+    op.execute(
+        sa.text(
+            f"CREATE UNIQUE INDEX IF NOT EXISTS {_INDEX} "
+            f"ON {_TABLE} (lock_key) WHERE {_WHERE}"
+        )
     )
 
 

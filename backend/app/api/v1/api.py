@@ -1,11 +1,15 @@
 from fastapi import APIRouter
-from app.api.v1.endpoints import admin, auth, users, documents, stocks, extractions, screener, stock_pools, institutions, scheduler, oracles_lens, thirteenf_admin
+from app.api.v1.endpoints import admin, auth, users, documents, stocks, extractions, screener, stock_pools, institutions, scheduler, oracles_lens, stocks_13f, thirteenf_admin
 
 api_router = APIRouter()
 api_router.include_router(auth.router, prefix="/auth", tags=["auth"])
 api_router.include_router(admin.router, prefix="/admin", tags=["admin"])
 api_router.include_router(users.router, prefix="/users", tags=["users"])
 api_router.include_router(documents.router, prefix="/documents", tags=["documents"])
+# stocks_13f registers BEFORE stocks so `/stocks/13f-snapshots` matches
+# the literal route before `/stocks/{stock_id}` (int path param) tries to
+# coerce "13f-snapshots" to int.
+api_router.include_router(stocks_13f.router, prefix="/stocks", tags=["stocks-13f"])
 api_router.include_router(stocks.router, prefix="/stocks", tags=["stocks"])
 api_router.include_router(stock_pools.router, prefix="/stock_pools", tags=["stock_pools"])
 api_router.include_router(extractions.router, prefix="/extractions", tags=["extractions"])

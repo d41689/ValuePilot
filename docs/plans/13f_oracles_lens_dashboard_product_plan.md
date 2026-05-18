@@ -534,17 +534,19 @@ distinctive_consensus_score =
   signal_weighted_consensus_score
   * concentration_factor
   * persistence_factor
-  * anti_crowding_factor
+  * quality_agreement_factor
 ```
 
-V1 anti-crowding proxy:
+> **MVP5-06 naming note:** `quality_agreement_factor` was called `anti_crowding_factor` in pre-MVP5 drafts. SME #6 #3 flagged the original name as misleading — the factor measures the *mean manager_signal_weight across the holder cluster* (i.e. "are the holders high-quality managers who agree?"), not crowding volume or AUM concentration. The implementation and formula are unchanged; only the identifier was renamed. Historical "anti-crowding" prose below is preserved to keep the rename audit trail intact.
+
+V1 anti-crowding proxy (now `quality_agreement_factor`):
 
 - reduce score for stocks where consensus is driven mostly by small position weights
 - reduce score when holders are mostly low-signal or unknown manager types
 - without market cap data, do not emit `crowded_mega_cap`; emit `low_conviction_consensus` or `low_signal_quality` instead
 - flag mega-cap / broadly held names only when market cap or broad institutional ownership data becomes available
 
-In V1, anti-crowding is a weak proxy and should not be used as a hard default ranking determinant. `distinctive_consensus_score` may be an advanced sort option, while the default sort remains `signal_weighted_consensus_score`.
+In V1, the quality-agreement factor is a weak proxy and should not be used as a hard default ranking determinant. `distinctive_consensus_score` may be an advanced sort option, while the default sort remains `signal_weighted_consensus_score`.
 
 ### 7.12 Score Confidence
 
@@ -602,6 +604,23 @@ Flag display rule:
 - Main table: show at most the highest-priority 1-2 flags.
 - Drilldown: show all flags grouped by category with explanations.
 - Avoid showing the generic 13F delay as a row-level flag for every candidate; keep it as the fixed page notice.
+
+#### 7.13.1 Caveat Tier Resolution (MVP5-06 record)
+
+Tier assignment in the scoring code lives in
+`backend/app/services/oracles_lens/signal_weighted_score.py`
+(`_LOW_CAVEATS` / `_MEDIUM_CAVEATS`). One MVP4-review decision that
+must not be re-litigated at GA:
+
+- **`PRE_2023_PRE_HISTORY_UNAVAILABLE` stays in
+  `_MEDIUM_CAVEATS`** (`medium_confidence` demotion).
+  SME #5 argued the code should sit in `_LOW_CAVEATS`. SME #6
+  countered — and prevailed — that pre-2023 history
+  unavailability degrades only the *cross-quarter delta*
+  (streak, add-intensity) while the *current-quarter snapshot*
+  remains valid. Low-tier demotion would overclaim the loss; the
+  position itself is observable, only its history is censored.
+  Canonical position: medium.
 
 ### 7.14 Valuation Reference Strength
 

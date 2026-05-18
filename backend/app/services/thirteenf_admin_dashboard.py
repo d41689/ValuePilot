@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import calendar
+import csv
+import io
 import logging
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
@@ -19,6 +21,8 @@ from app.models.institutions import (
     InstitutionManager,
     JobRun,
     JobWorkerHeartbeat,
+    ParseRun13F,
+    QualityFinding13F,
     QualityReport13F,
     RawSourceDocument,
 )
@@ -101,7 +105,10 @@ def latest_usable_quarter_label(today: date | None = None) -> str:
 
 
 def build_admin_readiness(session: Session, *, today: date | None = None) -> dict[str, Any]:
+    from app.services.thirteenf_readiness import build_readiness_summary
+
     today = today or date.today()
+    prd_readiness = build_readiness_summary(session, today=today)
     current = current_quarter(today)
     latest_usable = latest_usable_quarter_label(today)
     current_summary = _quarter_summary(session, current.label, today=today)
@@ -161,7 +168,7 @@ def build_admin_readiness(session: Session, *, today: date | None = None) -> dic
     frontend_behavior = _frontend_behavior(readiness_level, current_summary)
     tasks = build_admin_tasks(session, today=today)
 
-    return {
+    payload = {
         "feature": "oracles_lens",
         "readiness_level": readiness_level,
         "frontend_behavior": frontend_behavior,
@@ -204,6 +211,22 @@ def build_admin_readiness(session: Session, *, today: date | None = None) -> dic
         "scheduler_enabled": settings.EDGAR_SCHEDULER_ENABLED,
         "smart_retry_enabled": settings.THIRTEENF_SMART_RETRY_ENABLED,
     }
+    if prd_readiness["current_evaluated_quarter"] is not None:
+        payload["readiness_level"] = prd_readiness["readiness_level"]
+        payload["latest_usable_quarter"] = prd_readiness["latest_usable_quarter"] or latest_usable
+    payload["blockers"] = _merge_status_messages(payload["blockers"], prd_readiness["blockers"])
+    payload["warnings"] = _merge_status_messages(payload["warnings"], prd_readiness["warnings"])
+    payload["unavailable_reasons"] = [item["code"] for item in payload["blockers"]]
+    payload["counts"] = payload["counts"] | {
+        "active_managers": prd_readiness["metrics"]["active_manager_count"],
+        "expected_filers": prd_readiness["metrics"]["expected_filer_count"],
+        "nt_filers": prd_readiness["metrics"]["nt_filer_count"],
+        "filed_managers": prd_readiness["metrics"]["filed_manager_count"],
+    }
+    payload["metrics"] = prd_readiness["metrics"]
+    payload["quarter_lists"] = prd_readiness["quarter_lists"]
+    payload["nt_detection_supported"] = prd_readiness["nt_detection_supported"]
+    return payload
 
 
 def build_consumer_readiness(session: Session, *, today: date | None = None) -> dict[str, Any]:
@@ -213,11 +236,38 @@ def build_consumer_readiness(session: Session, *, today: date | None = None) -> 
         "frontend_behavior": readiness["frontend_behavior"],
         "latest_usable_quarter": readiness["latest_usable_quarter"],
         "current_quarter": readiness["current_quarter"],
-        "warnings": readiness["warnings"],
+        "warnings": _consumer_safe_warnings(readiness["warnings"]),
         "historical_depth_quarters": readiness["historical_depth_quarters"],
         "historical_depth_capabilities": readiness["historical_depth_capabilities"],
         "amendment_status": readiness["amendment_status"],
+        "nt_detection_supported": readiness.get("nt_detection_supported", True),
     }
+
+
+_USER_SAFE_READINESS_WARNING_CODES = {
+    "CURRENT_QUARTER_PARTIAL",
+    "NT_DETECTION_UNSUPPORTED",
+    "CONFIDENTIAL_TREATMENT",
+    "PARTIAL_COVERAGE",
+    "AMENDMENTS_PENDING",
+    "AMENDMENT_FAILED",
+}
+
+
+def _consumer_safe_warnings(warnings: list[dict[str, str]]) -> list[dict[str, str]]:
+    return [item for item in warnings if item.get("code") in _USER_SAFE_READINESS_WARNING_CODES]
+
+
+def _merge_status_messages(left: list[dict[str, str]], right: list[dict[str, str]]) -> list[dict[str, str]]:
+    merged: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for item in [*left, *right]:
+        code = item["code"]
+        if code in seen:
+            continue
+        seen.add(code)
+        merged.append(item)
+    return merged
 
 
 def build_status(session: Session, *, today: date | None = None) -> dict[str, Any]:
@@ -331,8 +381,13 @@ def get_quarter_detail_page(
     }
 
 
-def build_quality_reports(session: Session, *, limit: int = 20) -> list[dict[str, Any]]:
-    reports = session.query(QualityReport13F).order_by(QualityReport13F.checked_at.desc()).limit(limit).all()
+def build_quality_reports(
+    session: Session, *, limit: int = 20, include_dry_run: bool = False,
+) -> list[dict[str, Any]]:
+    query = session.query(QualityReport13F)
+    if not include_dry_run:
+        query = query.filter(QualityReport13F.is_dry_run.is_(False))
+    reports = query.order_by(QualityReport13F.checked_at.desc()).limit(limit).all()
     return [_quality_report_payload(report) for report in reports]
 
 
@@ -358,6 +413,53 @@ def get_amendment(session: Session, accession_no: str) -> dict[str, Any]:
     )
     if filing is None:
         raise ValueError("Amendment not found")
+    return _amendment_payload(session, filing)
+
+
+def resolve_amendment(session: Session, accession_no: str, action: str, note: str | None = None) -> dict[str, Any]:
+    filing = (
+        session.query(Filing13F)
+        .filter(Filing13F.accession_no == accession_no)
+        .with_for_update()
+        .one_or_none()
+    )
+    if filing is None:
+        raise ValueError("Amendment not found")
+
+    valid_actions = {"apply", "activate_as_original", "reject", "defer", "mark_informational"}
+    if action not in valid_actions:
+        raise ValueError(f"Invalid resolution action: {action}")
+
+    if action in {"apply", "activate_as_original"}:
+        # Demote current active
+        active_original = (
+            session.query(Filing13F)
+            .filter(Filing13F.manager_id == filing.manager_id)
+            .filter(Filing13F.quarter_end_date == filing.quarter_end_date)
+            .filter(Filing13F.is_active_for_manager_period.is_(True))
+            .filter(Filing13F.id != filing.id)
+            .first()
+        )
+        if active_original:
+            active_original.is_active_for_manager_period = False
+            session.add(active_original)
+        
+        filing.is_active_for_manager_period = True
+        filing.amendment_status = "applied"
+        filing.amendment_sort_warning = False
+    elif action == "reject":
+        filing.amendment_status = "rejected"
+    elif action == "defer":
+        filing.amendment_status = "amendments_pending"
+    elif action == "mark_informational":
+        filing.amendment_status = "informational"
+
+    if note:
+        filing.parse_warning = (filing.parse_warning or "") + f" [Admin Note: {note}]"
+
+    session.add(filing)
+    session.commit()
+    session.refresh(filing)
     return _amendment_payload(session, filing)
 
 
@@ -406,8 +508,233 @@ def build_admin_tasks(session: Session, *, today: date | None = None) -> list[di
 
 
 def build_managers(session: Session) -> list[dict[str, Any]]:
-    managers = session.query(InstitutionManager).order_by(InstitutionManager.legal_name.asc()).all()
+    managers = session.query(InstitutionManager).order_by(InstitutionManager.canonical_name.asc()).all()
     return [_manager_payload(item) for item in managers]
+
+
+def create_manager(session: Session, payload: dict[str, Any]) -> dict[str, Any]:
+    canonical_name = (payload.get("canonical_name") or "").strip()
+    if not canonical_name:
+        raise ValueError("canonical_name is required")
+    status = payload.get("status") or "candidate"
+    if status == "active":
+        raise ValueError("status=active can only be set via the confirm-cik endpoint")
+    manager = InstitutionManager(
+        canonical_name=canonical_name,
+        legal_name=(payload.get("legal_name") or canonical_name).strip(),
+        display_name=(payload.get("display_name") or canonical_name).strip(),
+        edgar_legal_name=payload.get("edgar_legal_name"),
+        status=status,
+        match_status=_legacy_match_status_from_prd_status(status),
+        manager_type=payload.get("manager_type") or "unknown",
+        is_featured=bool(payload.get("is_featured", False)),
+        source=payload.get("source"),
+        source_url=payload.get("source_url"),
+        confidence_score=payload.get("confidence_score"),
+        value_unit_override=payload.get("value_unit_override") or "infer",
+        review_note=payload.get("review_note"),
+    )
+    session.add(manager)
+    session.commit()
+    session.refresh(manager)
+    return _manager_payload(manager)
+
+
+def update_manager(session: Session, manager_id: int, payload: dict[str, Any]) -> dict[str, Any]:
+    manager = session.get(InstitutionManager, manager_id)
+    if manager is None:
+        raise ValueError("Manager not found")
+    for field in [
+        "canonical_name",
+        "display_name",
+        "edgar_legal_name",
+        "manager_type",
+        "is_featured",
+        "source",
+        "source_url",
+        "confidence_score",
+        "value_unit_override",
+        "review_note",
+    ]:
+        if field in payload:
+            setattr(manager, field, payload[field])
+    if "canonical_name" in payload:
+        manager.legal_name = payload["canonical_name"]
+    if "status" in payload and payload["status"] is not None:
+        if payload["status"] == "active":
+            raise ValueError("status=active can only be set via the confirm-cik endpoint")
+        manager.status = payload["status"]
+        manager.match_status = _legacy_match_status_from_prd_status(payload["status"])
+    session.add(manager)
+    session.commit()
+    session.refresh(manager)
+    return _manager_payload(manager)
+
+
+def deactivate_manager(
+    session: Session,
+    manager_id: int,
+    *,
+    note: str | None = None,
+    reviewed_by_user_id: int | None = None,
+) -> dict[str, Any]:
+    manager = session.get(InstitutionManager, manager_id)
+    if manager is None:
+        raise ValueError("Manager not found")
+    manager.status = "inactive"
+    manager.match_status = "inactive"
+    manager.review_note = note
+    manager.reviewed_by_user_id = reviewed_by_user_id
+    manager.reviewed_at = datetime.now(timezone.utc)
+    session.add(manager)
+    session.commit()
+    session.refresh(manager)
+    return _manager_payload(manager)
+
+
+def bulk_import_managers(session: Session, csv_text: str) -> dict[str, Any]:
+    if not csv_text.strip():
+        raise ValueError("csv_text is required")
+    reader = csv.DictReader(io.StringIO(csv_text))
+    if "canonical_name" not in (reader.fieldnames or []):
+        raise ValueError("CSV must include canonical_name")
+
+    created: list[dict[str, Any]] = []
+    skipped: list[dict[str, Any]] = []
+    for row_number, row in enumerate(reader, start=2):
+        canonical_name = (row.get("canonical_name") or "").strip()
+        if not canonical_name:
+            skipped.append({"row": row_number, "reason": "missing_canonical_name"})
+            continue
+        existing = (
+            session.query(InstitutionManager)
+            .filter(InstitutionManager.canonical_name == canonical_name)
+            .one_or_none()
+        )
+        if existing:
+            skipped.append({"row": row_number, "canonical_name": canonical_name, "reason": "duplicate"})
+            continue
+        manager = InstitutionManager(
+            canonical_name=canonical_name,
+            legal_name=canonical_name,
+            display_name=canonical_name,
+            status="candidate",
+            match_status="candidate",
+            manager_type=(row.get("manager_type") or "unknown").strip() or "unknown",
+            is_featured=_csv_bool(row.get("is_featured")),
+            source_url=(row.get("source_url") or "").strip() or None,
+            source=(row.get("source") or "csv_import").strip() or "csv_import",
+            value_unit_override="infer",
+        )
+        # CIKs in import files are hints only; confirmation is a separate audited action.
+        session.add(manager)
+        session.flush()
+        created.append(_manager_payload(manager))
+
+    session.commit()
+    return {
+        "created_count": len(created),
+        "skipped_count": len(skipped),
+        "items": created,
+        "skipped": skipped,
+    }
+
+
+def build_manager_backfill_preview(
+    session: Session, 
+    manager_id: int, 
+    start_quarter: str | None = None,
+    end_quarter: str | None = None
+) -> dict[str, Any]:
+    from app.edgar.client import EdgarClient
+    from app.edgar.parsers.submissions import parse_submissions, submissions_url
+    
+    manager, start_q, start_window, end_window = _validate_manager_backfill_request(
+        session,
+        manager_id,
+        start_quarter=start_quarter,
+        end_quarter=end_quarter,
+    )
+
+    with EdgarClient() as client:
+        try:
+            content = client.get(submissions_url(manager.cik))
+            _, filings = parse_submissions(content)
+        except Exception as exc:
+            logger.warning("Failed to fetch submissions for CIK %s: %s", manager.cik, exc)
+            raise ValueError("Unable to fetch SEC submissions for backfill preview") from exc
+
+    matching_filings = []
+    value_unit_risk_warning = _backfill_range_crosses_value_unit_transition(start_window, end_window)
+    
+    for f in filings:
+        # Only care about 13F-HR and 13F-HR/A
+        if f.form_type not in ("13F-HR", "13F-HR/A"):
+            continue
+            
+        r_date = f.report_date or f.filed_at
+        
+        # Check start boundary
+        if r_date < start_window.start:
+            continue
+            
+        # Check end boundary
+        if end_window and r_date > end_window.end:
+            continue
+            
+        matching_filings.append(f)
+        
+        if r_date < date(2023, 1, 1):
+            value_unit_risk_warning = True
+
+    estimated_filing_count = len(matching_filings)
+    # 1 for submissions + 2 per filing (detail page + raw doc)
+    estimated_request_count = 1 + (estimated_filing_count * 2)
+    estimated_rate_limit_wait_seconds = estimated_request_count / 10.0
+
+    return {
+        "manager_id": manager.id,
+        "cik": manager.cik,
+        "status": "preview",
+        "will_enqueue": False,
+        "start_quarter": start_q,
+        "end_quarter": end_quarter,
+        "estimated_filing_count": estimated_filing_count,
+        "estimated_request_count": estimated_request_count,
+        "estimated_rate_limit_wait_seconds": round(estimated_rate_limit_wait_seconds, 1),
+        "value_unit_risk_warning": value_unit_risk_warning,
+        "message": "Preview only; no backfill job was created.",
+    }
+
+
+def _validate_manager_backfill_request(
+    session: Session,
+    manager_id: int,
+    *,
+    start_quarter: str | None,
+    end_quarter: str | None,
+) -> tuple[InstitutionManager, str, QuarterWindow, QuarterWindow | None]:
+    manager = session.get(InstitutionManager, manager_id)
+    if manager is None:
+        raise ValueError("Manager not found")
+    if manager.status != "active" or not manager.cik:
+        raise ValueError("Only active managers with confirmed CIK can be backfilled")
+
+    start_q = start_quarter or getattr(settings, "DEFAULT_BACKFILL_START_QUARTER", "2023-Q1")
+    start_window = quarter_window(start_q)
+    end_window = quarter_window(end_quarter) if end_quarter else None
+    if end_window and end_window.end < start_window.start:
+        raise ValueError("end_quarter must be greater than or equal to start_quarter")
+    return manager, start_q, start_window, end_window
+
+
+def _backfill_range_crosses_value_unit_transition(
+    start_window: QuarterWindow,
+    end_window: QuarterWindow | None,
+) -> bool:
+    transition_quarter_start = date(2023, 1, 1)
+    range_end = end_window.end if end_window else date.max
+    return start_window.start < transition_quarter_start and range_end >= start_window.start
 
 
 def list_manager_cik_review_events(session: Session, manager_id: int, *, limit: int = 50) -> list[dict[str, Any]]:
@@ -444,7 +771,11 @@ def confirm_manager_cik(
         raise ValueError("CIK is required to confirm a manager")
     if manager.candidate_legal_name:
         manager.legal_name = manager.candidate_legal_name
+        manager.edgar_legal_name = manager.candidate_legal_name
     manager.match_status = "confirmed"
+    manager.status = "active"
+    manager.confirmed_by = reviewed_by_user_id
+    manager.confirmed_at = datetime.now(timezone.utc)
     manager.reviewed_by_user_id = reviewed_by_user_id
     manager.reviewed_at = datetime.now(timezone.utc)
     manager.review_note = note
@@ -641,9 +972,216 @@ def retry_manager_cik_search(
     return _manager_payload(manager)
 
 
-def list_jobs(session: Session, *, limit: int = 100) -> list[dict[str, Any]]:
-    jobs = session.query(JobRun).order_by(JobRun.created_at.desc()).limit(limit).all()
-    return [_job_payload(job) for job in jobs]
+def list_admin_filings(
+    session: Session,
+    *,
+    page: int = 1,
+    page_size: int = 50,
+    report_quarter: str | None = None,
+    parse_status: str | None = None,
+    form_type: str | None = None,
+    manager_id: int | None = None,
+) -> dict[str, Any]:
+    query = session.query(Filing13F).join(InstitutionManager, InstitutionManager.id == Filing13F.manager_id)
+    if report_quarter:
+        query = query.filter(Filing13F.report_quarter == report_quarter)
+    if parse_status:
+        query = query.filter(Filing13F.parse_status == parse_status)
+    if form_type:
+        query = query.filter(Filing13F.form_type == form_type)
+    if manager_id:
+        query = query.filter(Filing13F.manager_id == manager_id)
+    total = query.count()
+    filings = (
+        query.order_by(Filing13F.accepted_at.desc().nullslast(), Filing13F.id.desc())
+        .offset((page - 1) * page_size)
+        .limit(page_size)
+        .all()
+    )
+    return {
+        "items": [_admin_filing_payload(session, filing) for filing in filings],
+        "total": total,
+        "page": page,
+        "page_size": page_size,
+    }
+
+
+def get_admin_filing(session: Session, accession_number: str) -> dict[str, Any]:
+    filing = _filing_by_accession(session, accession_number)
+    if filing is None:
+        raise ValueError("Filing not found")
+    return _admin_filing_payload(session, filing, include_raw=True)
+
+
+def list_parse_runs_for_accession(
+    session: Session,
+    accession_number: str,
+    *,
+    page: int = 1,
+    page_size: int = 50,
+) -> dict[str, Any]:
+    filing = _filing_by_accession(session, accession_number)
+    if filing is None:
+        raise ValueError("Filing not found")
+    query = session.query(ParseRun13F).filter(ParseRun13F.accession_number == filing.accession_number)
+    total = query.count()
+    runs = (
+        query.order_by(ParseRun13F.is_current.desc(), ParseRun13F.started_at.desc().nullslast(), ParseRun13F.id.desc())
+        .offset((page - 1) * page_size)
+        .limit(page_size)
+        .all()
+    )
+    return {
+        "accession_number": filing.accession_number,
+        "items": [_parse_run_payload(run) for run in runs],
+        "total": total,
+        "page": page,
+        "page_size": page_size,
+    }
+
+
+def build_pending_amendments_read_model(
+    session: Session,
+    *,
+    page: int = 1,
+    page_size: int = 50,
+) -> dict[str, Any]:
+    query = (
+        session.query(Filing13F)
+        .join(InstitutionManager, InstitutionManager.id == Filing13F.manager_id)
+        .filter(Filing13F.amendment_status == "amendments_pending")
+    )
+    total = query.count()
+    group_rows = (
+        query.with_entities(
+            func.coalesce(Filing13F.amendment_type, "unknown"),
+            Filing13F.amendment_status,
+            func.count(Filing13F.id),
+        )
+        .group_by(func.coalesce(Filing13F.amendment_type, "unknown"), Filing13F.amendment_status)
+        .all()
+    )
+    groups: dict[str, dict[str, int]] = {}
+    for amendment_type, status, count in group_rows:
+        groups.setdefault(amendment_type, {})[status] = int(count)
+    filings = (
+        query.order_by(Filing13F.accepted_at.desc().nullslast(), Filing13F.id.desc())
+        .offset((page - 1) * page_size)
+        .limit(page_size)
+        .all()
+    )
+    return {
+        "items": [_admin_filing_payload(session, filing) for filing in filings],
+        "groups": groups,
+        "total": total,
+        "page": page,
+        "page_size": page_size,
+    }
+
+
+def build_holdings_coverage_summary(session: Session, *, report_quarter: str | None = None) -> dict[str, Any]:
+    query = session.query(Holding13F).join(ParseRun13F, ParseRun13F.id == Holding13F.parse_run_id).filter(ParseRun13F.is_current.is_(True))
+    filing_query = session.query(Filing13F)
+    if report_quarter:
+        query = query.filter(Holding13F.report_quarter == report_quarter)
+        filing_query = filing_query.filter(Filing13F.report_quarter == report_quarter)
+    common_query = query.filter(Holding13F.put_call.is_(None))
+    total_holdings = query.count()
+    common_holdings = common_query.count()
+    linked_common = common_query.filter(Holding13F.cusip_mapping_status == "linked").count()
+    unresolved_common = common_query.filter(Holding13F.cusip_mapping_status.in_(["unresolved", "pending_mapping", "needs_review", "invalid_cusip"])).count()
+    options_count = query.filter(Holding13F.put_call.isnot(None)).count()
+    return {
+        "report_quarter": report_quarter,
+        "total_holdings_count": total_holdings,
+        "common_holdings_count": common_holdings,
+        "linked_common_holdings_count": linked_common,
+        "unresolved_common_holdings_count": unresolved_common,
+        "options_count": options_count,
+        "linked_common_holding_ratio": linked_common / common_holdings if common_holdings else None,
+        "combination_report_count": filing_query.filter(Filing13F.report_type == "combination_report").count(),
+        "confidential_treatment_count": filing_query.filter(Filing13F.has_confidential_treatment.is_(True)).count(),
+    }
+
+
+def list_unresolved_cusip_mappings(
+    session: Session,
+    *,
+    page: int = 1,
+    page_size: int = 50,
+) -> dict[str, Any]:
+    statuses = ["unresolved", "pending_mapping", "needs_review", "invalid_cusip"]
+    base = (
+        session.query(
+            Holding13F.cusip,
+            Holding13F.cusip_mapping_status,
+            func.min(Holding13F.issuer_name),
+            func.count(Holding13F.id),
+        )
+        .join(ParseRun13F, ParseRun13F.id == Holding13F.parse_run_id)
+        .filter(ParseRun13F.is_current.is_(True))
+        .filter(Holding13F.cusip_mapping_status.in_(statuses))
+        .group_by(Holding13F.cusip, Holding13F.cusip_mapping_status)
+    )
+    total = base.count()
+    rows = (
+        base.order_by(func.count(Holding13F.id).desc(), Holding13F.cusip.asc())
+        .offset((page - 1) * page_size)
+        .limit(page_size)
+        .all()
+    )
+    return {
+        "items": [
+            {
+                "cusip": cusip,
+                "cusip_mapping_status": status,
+                "issuer_name": issuer_name,
+                "holding_count": int(count),
+            }
+            for cusip, status, issuer_name, count in rows
+        ],
+        "total": total,
+        "page": page,
+        "page_size": page_size,
+    }
+
+
+def list_jobs(
+    session: Session,
+    *,
+    page: int = 1,
+    page_size: int = 50,
+    limit: int | None = None,
+    status: str | None = None,
+    job_type: str | None = None,
+    started_from: datetime | None = None,
+    started_to: datetime | None = None,
+    sync_date: date | None = None,
+    quarter: str | None = None,
+) -> dict[str, Any]:
+    if limit is not None:
+        page_size = limit
+    query = session.query(JobRun)
+    if status:
+        query = query.filter(JobRun.status == status)
+    if job_type:
+        query = query.filter(JobRun.job_type == job_type)
+    if started_from:
+        query = query.filter(JobRun.started_at >= started_from)
+    if started_to:
+        query = query.filter(JobRun.started_at < started_to)
+    if sync_date:
+        query = query.filter(JobRun.sync_date == sync_date)
+    if quarter:
+        query = query.filter(JobRun.quarter == quarter)
+    total = query.count()
+    jobs = (
+        query.order_by(JobRun.created_at.desc(), JobRun.id.desc())
+        .offset((page - 1) * page_size)
+        .limit(page_size)
+        .all()
+    )
+    return {"items": [_job_payload(job) for job in jobs], "total": total, "page": page, "page_size": page_size}
 
 
 def get_job(session: Session, job_id: int) -> dict[str, Any]:
@@ -687,6 +1225,7 @@ def trigger_job(session: Session, *, requested_by_user_id: int | None, payload: 
         trigger_source=payload.get("trigger_source") or "manual",
         dedupe_key=lock_key,
         lock_key=lock_key,
+        sync_date=date.fromisoformat(payload["sync_date"]) if payload.get("sync_date") else None,
         quarter=payload.get("quarter"),
         input_json=payload,
     )
@@ -912,6 +1451,15 @@ def _quarter_summary(session: Session, quarter: str, *, today: date) -> dict[str
     amendment_status = _amendment_status(session, filings)
     quality_report = _latest_quality_report(session, quarter)
     quality_status = quality_report.status if quality_report else "not_checked"
+    # MVP3-09 / SME C2: query open findings by rule_code directly so a later
+    # passing MVP3-02 quality_check run cannot mask open MVP3-06 / MVP3-07
+    # work by overwriting the latest QualityReport13F.status for the quarter.
+    open_recompute_finding_count = _open_finding_count(
+        session, quarter, _MVP3_RECOMPUTE_FINDING_RULE_CODE
+    )
+    open_backfill_validation_finding_count = _open_finding_count(
+        session, quarter, _MVP3_BACKFILL_FINDING_RULE_CODE
+    )
     phase = _quarter_phase(window, today)
     active_job = _active_quarter_job(session, quarter)
     has_prior_data = _has_prior_quarter_holdings(session, quarter)
@@ -929,6 +1477,9 @@ def _quarter_summary(session: Session, quarter: str, *, today: date) -> dict[str
         active_job=active_job is not None,
         has_prior_data=has_prior_data,
         revoked_cik_review_required=revoked_cik_review_required,
+        open_cross_task_finding_count=(
+            open_recompute_finding_count + open_backfill_validation_finding_count
+        ),
     )
     linked_holding_unavailable_reason = "NO_HOLDINGS_PARSED" if linked_ratio is None else None
     return {
@@ -954,6 +1505,11 @@ def _quarter_summary(session: Session, quarter: str, *, today: date) -> dict[str
         "quality_warnings": quality_report.warning_count if quality_report else None,
         "quality_checked_at": quality_report.checked_at.isoformat() if quality_report else None,
         "quality_report_id": quality_report.id if quality_report else None,
+        # MVP3-09: surface open MVP3-06 / MVP3-07 findings independently of
+        # the latest QualityReport13F.status so the dashboard reflects them
+        # even when a later quality_check overwrites the latest report.
+        "open_recompute_finding_count": open_recompute_finding_count,
+        "open_backfill_validation_finding_count": open_backfill_validation_finding_count,
         "revoked_cik_review_required": revoked_cik_review_required,
         "last_successful_job_at": _last_successful_job_at(session),
         "active_job_id": active_job.id if active_job else None,
@@ -969,7 +1525,22 @@ def _quarter_phase(window: QuarterWindow, today: date) -> str:
     return "post_deadline"
 
 
-def _quarter_health(*, confirmed_managers: int, form_idx_fetched: bool, filings_count: int, holdings_count: int, failed_filings: int, linked_ratio: float | None, amendment_status: str, quality_status: str, phase: str, active_job: bool, has_prior_data: bool, revoked_cik_review_required: bool) -> str:
+def _quarter_health(
+    *,
+    confirmed_managers: int,
+    form_idx_fetched: bool,
+    filings_count: int,
+    holdings_count: int,
+    failed_filings: int,
+    linked_ratio: float | None,
+    amendment_status: str,
+    quality_status: str,
+    phase: str,
+    active_job: bool,
+    has_prior_data: bool,
+    revoked_cik_review_required: bool,
+    open_cross_task_finding_count: int = 0,
+) -> str:
     if confirmed_managers == 0:
         return "setup_required"
     if revoked_cik_review_required:
@@ -977,6 +1548,10 @@ def _quarter_health(*, confirmed_managers: int, form_idx_fetched: bool, filings_
     if failed_filings:
         return "failed"
     if amendment_status in {"amendments_pending", "amendment_failed"}:
+        return "needs_review"
+    # MVP3-09: a passing latest QualityReport13F must not mask open
+    # MVP3-06 / MVP3-07 findings on the same quarter.
+    if open_cross_task_finding_count > 0:
         return "needs_review"
     if quality_status in {"failed", "warning"}:
         return "needs_review"
@@ -1034,7 +1609,7 @@ def _global_counts(session: Session, latest_quarter: str) -> dict[str, Any]:
 def _confirmed_manager_count(session: Session) -> int:
     return (
         session.query(InstitutionManager)
-        .filter(InstitutionManager.match_status == "confirmed")
+        .filter(InstitutionManager.status == "active")
         .filter(InstitutionManager.cik.isnot(None))
         .count()
     )
@@ -1530,7 +2105,10 @@ def _job_payload(job: JobRun) -> dict[str, Any]:
         "dedupe_key": job.dedupe_key,
         "lock_key": job.lock_key,
         "quarter": job.quarter,
+        "sync_date": job.sync_date.isoformat() if job.sync_date else None,
         "worker_id": job.worker_id,
+        "lease_token": job.lease_token,
+        "lease_expires_at": job.lease_expires_at.isoformat() if job.lease_expires_at else None,
         "started_at": job.started_at.isoformat() if job.started_at else None,
         "heartbeat_at": job.heartbeat_at.isoformat() if job.heartbeat_at else None,
         "finished_at": job.finished_at.isoformat() if job.finished_at else None,
@@ -1693,11 +2271,24 @@ def _manager_payload(manager: InstitutionManager) -> dict[str, Any]:
     return {
         "id": manager.id,
         "cik": manager.cik,
+        "canonical_name": manager.canonical_name,
         "legal_name": manager.legal_name,
+        "edgar_legal_name": manager.edgar_legal_name,
         "display_name": manager.display_name,
+        "status": manager.status,
         "match_status": manager.match_status,
+        "manager_type": manager.manager_type,
+        "is_featured": manager.is_featured,
+        "source": manager.source,
+        "source_url": manager.source_url,
+        "confidence_score": manager.confidence_score,
+        "value_unit_override": manager.value_unit_override,
+        "confirmed_by": manager.confirmed_by,
+        "confirmed_at": manager.confirmed_at.isoformat() if manager.confirmed_at else None,
         "is_superinvestor": manager.is_superinvestor,
         "dataroma_code": manager.dataroma_code,
+        "created_at": manager.created_at.isoformat() if manager.created_at else None,
+        "updated_at": manager.updated_at.isoformat() if manager.updated_at else None,
         "last_seen_at": manager.last_seen_at.isoformat() if manager.last_seen_at else None,
         "candidate_cik": manager.candidate_cik,
         "candidate_legal_name": manager.candidate_legal_name,
@@ -1711,6 +2302,18 @@ def _manager_payload(manager: InstitutionManager) -> dict[str, Any]:
         "prior_rejected_candidates": manager.prior_rejected_candidates or [],
         "latest_cik_review_event": _cik_review_event_payload(latest_event) if latest_event else None,
     }
+
+
+def _legacy_match_status_from_prd_status(status: str) -> str:
+    if status == "active":
+        return "confirmed"
+    if status in {"inactive", "ignored", "needs_review"}:
+        return status
+    return "candidate"
+
+
+def _csv_bool(value: str | None) -> bool:
+    return (value or "").strip().lower() in {"1", "true", "yes", "y"}
 
 
 def _holding_counts_by_filing(session: Session, filings: list[Filing13F]) -> dict[int, int]:
@@ -1743,6 +2346,87 @@ def _filing_status_counts(filings: list[Filing13F], filing_status_by_id: dict[in
         status = filing_status_by_id[filing.id]
         counts[status] = counts.get(status, 0) + 1
     return counts
+
+
+def _filing_by_accession(session: Session, accession_number: str) -> Filing13F | None:
+    return (
+        session.query(Filing13F)
+        .filter(or_(Filing13F.accession_number == accession_number, Filing13F.accession_no == accession_number))
+        .one_or_none()
+    )
+
+
+def _admin_filing_payload(session: Session, filing: Filing13F, *, include_raw: bool = False) -> dict[str, Any]:
+    holdings_count = session.query(Holding13F).filter(Holding13F.filing_id == filing.id).count()
+    payload: dict[str, Any] = {
+        "id": filing.id,
+        "accession_no": filing.accession_no,
+        "accession_number": filing.accession_number,
+        "form_type": filing.form_type,
+        "report_type": filing.report_type,
+        "coverage_completeness": filing.coverage_completeness,
+        "coverage_type": filing.coverage_type,
+        "other_managers_reporting": filing.other_managers_reporting,
+        "parse_status": filing.parse_status,
+        "parse_warning": filing.parse_warning,
+        "parse_error": filing.parse_error,
+        "parser_version": filing.parser_version,
+        "form_spec_version": filing.form_spec_version,
+        "xml_schema_version": filing.xml_schema_version,
+        "amendment_status": filing.amendment_status,
+        "amendment_type": filing.amendment_type,
+        "amendment_sort_warning": filing.amendment_sort_warning,
+        "has_confidential_treatment": filing.has_confidential_treatment,
+        "confidential_treatment_status": filing.confidential_treatment_status,
+        "manager": {
+            "id": filing.manager.id,
+            "canonical_name": filing.manager.canonical_name,
+            "legal_name": filing.manager.legal_name,
+            "display_name": filing.manager.display_name,
+            "cik": filing.manager.cik,
+        },
+        "report_quarter": filing.report_quarter,
+        "quarter": filing.report_quarter or quarter_label_for_date(filing.period_of_report),
+        "quarter_end_date": filing.quarter_end_date.isoformat() if filing.quarter_end_date else None,
+        "period_of_report": filing.period_of_report.isoformat() if filing.period_of_report else None,
+        "filing_date": filing.filing_date.isoformat() if filing.filing_date else None,
+        "filed_at": filing.filed_at.isoformat() if filing.filed_at else None,
+        "accepted_at": filing.accepted_at.isoformat() if filing.accepted_at else None,
+        "official_filing_deadline": filing.official_filing_deadline.isoformat() if filing.official_filing_deadline else None,
+        "is_active_for_manager_period": filing.is_active_for_manager_period,
+        "is_latest_for_period": filing.is_latest_for_period,
+        "version_rank": filing.version_rank,
+        "amends_accession_no": filing.amends_accession_no,
+        "amends_accession_number": filing.amends_accession_number,
+        "holdings_count": holdings_count,
+        "total_13f_reported_value_usd": float(filing.total_13f_reported_value_usd) if filing.total_13f_reported_value_usd is not None else None,
+        "total_13f_common_value_usd": float(filing.total_13f_common_value_usd) if filing.total_13f_common_value_usd is not None else None,
+        "raw_primary_doc_id": filing.raw_primary_doc_id,
+        "raw_infotable_doc_id": filing.raw_infotable_doc_id,
+        "raw_filing_url": filing.raw_filing_url,
+        "raw_infotable_url": filing.raw_infotable_url,
+    }
+    if include_raw:
+        payload["raw_primary"] = _raw_document_payload(filing.raw_primary_doc)
+        payload["raw_infotable"] = _raw_document_payload(filing.raw_infotable_doc)
+    return payload
+
+
+def _parse_run_payload(run: ParseRun13F) -> dict[str, Any]:
+    return {
+        "id": run.id,
+        "accession_number": run.accession_number,
+        "job_run_id": run.job_run_id,
+        "parser_version": run.parser_version,
+        "fingerprint_version": run.fingerprint_version,
+        "started_at": run.started_at.isoformat() if run.started_at else None,
+        "finished_at": run.finished_at.isoformat() if run.finished_at else None,
+        "status": run.status,
+        "holdings_count": run.holdings_count,
+        "error": run.error,
+        "is_current": run.is_current,
+        "created_at": run.created_at.isoformat() if run.created_at else None,
+    }
 
 
 def _filing_detail_payload(
@@ -2021,11 +2705,33 @@ def _previous_accession_for_amendment(session: Session, filing: Filing13F) -> st
 
 
 def _latest_quality_report(session: Session, quarter: str) -> QualityReport13F | None:
+    # Dry-run reports never count as the latest "real" view of a
+    # quarter's health — a passing dry-run must not mask a missing or
+    # failed production parse.
     return (
         session.query(QualityReport13F)
         .filter(QualityReport13F.quarter == quarter)
+        .filter(QualityReport13F.is_dry_run.is_(False))
         .order_by(QualityReport13F.checked_at.desc(), QualityReport13F.id.desc())
         .first()
+    )
+
+
+# MVP3-09 / SME C2: cross-task finding rule_codes consumed by the admin
+# dashboard. Consolidated into ``thirteenf_quality_codes`` by MVP4-09.
+from app.services.thirteenf_quality_codes import (
+    HISTORICAL_BACKFILL_NEEDS_VALIDATION as _MVP3_BACKFILL_FINDING_RULE_CODE,
+    OWNERSHIP_CHANGE_NEEDS_RECOMPUTE_CUSIP_CORPORATE_ACTION as _MVP3_RECOMPUTE_FINDING_RULE_CODE,
+)
+
+
+def _open_finding_count(session: Session, quarter: str, rule_code: str) -> int:
+    return (
+        session.query(QualityFinding13F)
+        .filter(QualityFinding13F.quarter == quarter)
+        .filter(QualityFinding13F.rule_code == rule_code)
+        .filter(QualityFinding13F.status == "open")
+        .count()
     )
 
 
@@ -2038,6 +2744,7 @@ def _required(payload: dict[str, Any], key: str) -> str:
 
 _JOB_LOCK_BUILDERS = {
     "quarterly_pipeline": lambda payload: f"quarterly_pipeline:{_required(payload, 'quarter')}",
+    "fetch_daily_index": lambda payload: f"fetch_daily_index:{_required(payload, 'sync_date')}",
     "fetch_quarter_index": lambda payload: f"fetch_quarter_index:{_required(payload, 'quarter')}",
     "ingest_holdings": lambda payload: f"ingest_holdings:{_required(payload, 'quarter')}",
     "ingest_accession": lambda payload: f"ingest_accession:{_required(payload, 'accession_no')}",
@@ -2050,6 +2757,8 @@ _JOB_LOCK_BUILDERS = {
     "match_cik": lambda payload: "match_cik",
     "quality_check": lambda payload: f"quality_check:{_required(payload, 'quarter')}",
     "reprocess_amendment": lambda payload: f"reprocess_amendment:{_required(payload, 'accession_no')}",
+    "reparse_accession": lambda payload: f"reparse_accession:{_required(payload, 'accession_no')}",
+    "sync_manager_backfill": lambda payload: f"sync_manager_backfill:{_required(payload, 'manager_id')}",
 }
 
 
@@ -2152,6 +2861,73 @@ def _execute_job(session: Session, job_type: str, payload: dict[str, Any]) -> di
 
         quarter = _required(payload, "quarter")
         return {"quarter": quarter, "filings_inserted": ingest_quarter_index(session, quarter), "status": "succeeded"}
+    if job_type == "fetch_daily_index":
+        from app.services.thirteenf_daily_sync import run_daily_index_sync
+
+        sync_date = date.fromisoformat(_required(payload, "sync_date"))
+        result = run_daily_index_sync(session, sync_date)
+        job_status = {
+            "success": "succeeded",
+            "no_data": "succeeded",
+            "partial_success": "partial_success",
+            "failed": "failed",
+        }.get(result.get("status"), "failed")
+        return {"daily_sync": result, "status": job_status}
+        
+    if job_type == "sync_manager_backfill":
+        manager_id = int(_required(payload, "manager_id"))
+        manager, _start_q, start_window, end_window = _validate_manager_backfill_request(
+            session,
+            manager_id,
+            start_quarter=payload.get("start_quarter"),
+            end_quarter=payload.get("end_quarter"),
+        )
+        
+        from app.edgar.client import EdgarClient
+        from app.edgar.parsers.submissions import parse_submissions, submissions_url
+        
+        with EdgarClient() as client:
+            content = client.get(submissions_url(manager.cik))
+            _, filings = parse_submissions(content)
+            
+        matching_filings = []
+        for f in filings:
+            if f.form_type not in ("13F-HR", "13F-HR/A"):
+                continue
+            r_date = f.report_date or f.filed_at
+            if r_date < start_window.start:
+                continue
+            if end_window and r_date > end_window.end:
+                continue
+            matching_filings.append(f)
+            
+        results = {"stages": [], "filings_inserted": 0, "filings_failed": 0}
+        for filing in matching_filings:
+            stage_result = _execute_pipeline_stage_job(
+                session,
+                parent_payload=payload,
+                job_type="ingest_accession",
+                payload={
+                    "accession_no": filing.accession_no,
+                    "manager_id": manager.id,
+                    "cik": manager.cik,
+                    "form_type": filing.form_type,
+                    "sync_date": filing.filed_at.isoformat(),
+                },
+            )
+            results["stages"].append(stage_result["stage"])
+            if stage_result["stage"]["status"] in {"succeeded", "partial_success"}:
+                results["filings_inserted"] += 1
+            else:
+                results["filings_failed"] += 1
+                
+        if results["filings_failed"] > 0:
+            results["status"] = "partial_success" if results["filings_inserted"] > 0 else "failed"
+        else:
+            results["status"] = "succeeded"
+            
+        return results
+
     if job_type == "backfill_quarters":
         from app.services.edgar_ingestion import backfill_quarters
 
@@ -2161,12 +2937,12 @@ def _execute_job(session: Session, job_type: str, payload: dict[str, Any]) -> di
             "filings_inserted": sum(value for value in results.values() if value > 0),
             "status": "partial_success" if any(value < 0 for value in results.values()) else "succeeded",
         }
-    if job_type in {"ingest_holdings", "ingest_accession", "reprocess_amendment"}:
+    if job_type in {"ingest_holdings", "ingest_accession", "reprocess_amendment", "reparse_accession"}:
         return _execute_ingest_job(session, job_type, payload)
     if job_type == "enrich_cusip":
-        from app.services.cusip_enrichment import enrich_from_dataroma
+        from app.services.cusip_enrichment import enrich_cusips_from_openfigi
 
-        return {"mappings_created": enrich_from_dataroma(session), "status": "succeeded"}
+        return {"mappings_created": enrich_cusips_from_openfigi(session), "status": "succeeded"}
     if job_type == "bootstrap_stocks":
         from app.services.cusip_enrichment import bootstrap_stocks_from_cusip_map, backfill_stock_ids
 
@@ -2297,44 +3073,66 @@ def _stage_summary_with_schema(job_type: str, summary: dict[str, Any]) -> dict[s
 
 
 def _execute_ingest_job(session: Session, job_type: str, payload: dict[str, Any]) -> dict[str, Any]:
-    from app.services.edgar_ingestion import ingest_filing_holdings
+    from app.services.thirteenf_holdings_ingest import ingest_if_needed, reparse_accession
 
-    if job_type in {"ingest_accession", "reprocess_amendment"}:
+    if job_type == "ingest_accession":
+        from app.services.thirteenf_filing_detail import ingest_accession_filing_detail
+
+        result = ingest_accession_filing_detail(session, payload)
+        return {
+            "filings_processed": 1,
+            "filing_id": result["filing_id"],
+            "accession_number": result["accession_number"],
+            "report_quarter": result["report_quarter"],
+            "status": "succeeded" if result["status"] in {"succeeded", "needs_review"} else "failed",
+            "detail_status": result["status"],
+        }
+
+    if job_type in {"reprocess_amendment", "reparse_accession"}:
         accession_no = _required(payload, "accession_no")
-        filing = session.query(Filing13F).filter(Filing13F.accession_no == accession_no).one_or_none()
-        if filing is None:
-            raise ValueError(f"Filing {accession_no} not found")
-        count = ingest_filing_holdings(
-            session,
-            filing,
-            force_refresh=job_type == "reprocess_amendment",
-            replace_holdings=True,
-        )
-        return {"filings_processed": 1, "holdings_inserted": count, "status": "succeeded"}
+        result = reparse_accession(session, accession_no)
+        return {
+            "filings_processed": 1,
+            "parse_run_id": result["parse_run_id"],
+            "holdings_count": result["holdings_count"],
+            "status": "succeeded",
+        }
 
+    # job_type == "ingest_holdings": bulk quarterly ingest via ingest_if_needed.
     quarter = _required(payload, "quarter")
     window = quarter_window(quarter)
     filings = (
         session.query(Filing13F)
         .filter(Filing13F.period_of_report.between(window.start, window.end))
-        .filter(Filing13F.raw_infotable_doc_id.is_(None))
+        .filter(Filing13F.raw_infotable_doc_id.isnot(None))
         .order_by(Filing13F.filed_at.asc(), Filing13F.accession_no.asc())
         .all()
     )
-    holdings_inserted = 0
+    total_holdings = 0
+    skipped = 0
     failures: list[dict[str, str]] = []
     for filing in filings:
         try:
-            holdings_inserted += ingest_filing_holdings(session, filing)
-            session.commit()
+            from app.edgar.fetcher import load_body
+
+            infotable_doc = filing.raw_infotable_doc
+            if infotable_doc is None:
+                continue
+            infotable_bytes = load_body(infotable_doc)
+            result = ingest_if_needed(session, filing, infotable_bytes)
+            if result.get("skipped"):
+                skipped += 1
+            else:
+                total_holdings += result.get("holdings_count", 0)
         except Exception as exc:
             session.rollback()
             failures.append({"accession_no": filing.accession_no, "error": str(exc)})
     return {
         "filings_processed": len(filings),
+        "filings_skipped": skipped,
         "filings_failed": len(failures),
         "failed_accessions": failures,
-        "holdings_inserted": holdings_inserted,
+        "holdings_inserted": total_holdings,
         "status": "partial_success" if failures else "succeeded",
     }
 
@@ -2343,34 +3141,101 @@ def _execute_enrichment_metadata(session: Session, payload: dict[str, Any]) -> d
     from app.services.cusip_enrichment import (
         backfill_stock_ids,
         bootstrap_stocks_from_cusip_map,
-        enrich_from_dataroma,
+        enrich_cusips_from_openfigi,
         enrich_stocks_from_edgar_tickers,
     )
 
-    results: dict[str, Any] = {}
-    try:
-        # Step 3: refresh CUSIP -> ticker mappings from Dataroma portfolios
-        results["cusip_mappings"] = enrich_from_dataroma(session)
-        session.commit()
+    mappings_created = enrich_cusips_from_openfigi(session)
+    new_stocks = bootstrap_stocks_from_cusip_map(session)
+    holdings_linked = backfill_stock_ids(session)
+    edgar_stock_enrichment = enrich_stocks_from_edgar_tickers(session)
+    return {
+        "cusip_mappings": mappings_created,
+        "mappings_created": mappings_created,
+        "new_stocks": new_stocks,
+        "holdings_linked": holdings_linked,
+        "edgar_stock_enrichment": edgar_stock_enrichment,
+        "status": "succeeded",
+    }
+def build_cusip_mappings(session: Session, limit: int, needs_review: bool, unresolved: bool) -> list[dict[str, Any]]:
+    from app.models.institutions import CusipTickerMap, Holding13F
+    
+    if unresolved:
+        # Get unique CUSIPs from holdings that are unresolved
+        unresolved_cusips = session.query(Holding13F.cusip).filter(
+            Holding13F.cusip_mapping_status == "unresolved"
+        ).distinct().limit(limit).all()
+        return [{"cusip": r[0], "status": "unresolved"} for r in unresolved_cusips]
 
-        # Step 4: bootstrap stocks from CUSIP map + backfill stock_id
-        results["new_stocks"] = bootstrap_stocks_from_cusip_map(session)
-        results["holdings_linked"] = backfill_stock_ids(session)
-        session.commit()
+    q = session.query(CusipTickerMap).order_by(CusipTickerMap.id.desc())
+    if needs_review:
+        q = q.filter(CusipTickerMap.confidence.like("review_needed:%"))
+        
+    mappings = q.limit(limit).all()
+    return [
+        {
+            "id": m.id,
+            "cusip": m.cusip,
+            "ticker": m.ticker,
+            "issuer_name": m.issuer_name,
+            "source": m.source,
+            "mapping_reason": m.mapping_reason,
+            "confidence": m.confidence,
+            "valid_from": m.valid_from,
+            "valid_to": m.valid_to,
+            "is_active": m.is_active,
+        }
+        for m in mappings
+    ]
 
-        # Step 5: EDGAR company_tickers.json for remaining unmatched
-        try:
-            edgar_results = enrich_stocks_from_edgar_tickers(session)
-            results["edgar_enrichment"] = edgar_results
-            session.commit()
-        except Exception as exc:
-            session.rollback()
-            results["edgar_enrichment_error"] = str(exc)
-            logger.warning("EDGAR enrichment step failed: %s", exc)
 
-        status = "partial_success" if "edgar_enrichment_error" in results else "succeeded"
-        return {**results, "status": status}
-    except Exception:
-        session.rollback()
-        logger.exception("Enrichment metadata job failed")
-        raise
+def create_manual_cusip_mapping(session: Session, payload: Any) -> Any:
+    from app.services.cusip_enrichment import upsert_cusip_mapping
+    
+    mapping = upsert_cusip_mapping(
+        session,
+        cusip=payload.cusip,
+        ticker=payload.ticker,
+        issuer_name=payload.issuer_name,
+        source="manual",
+        mapping_reason=payload.mapping_reason,
+        confidence=payload.confidence,
+        valid_from=payload.valid_from,
+        valid_to=payload.valid_to,
+    )
+    session.commit()
+    session.refresh(mapping)
+    return mapping
+
+
+def update_manual_cusip_mapping(session: Session, cusip: str, payload: Any) -> Any:
+    from app.models.institutions import CusipTickerMap
+    
+    mapping = session.query(CusipTickerMap).filter_by(
+        cusip=cusip,
+        is_active=True
+    ).order_by(CusipTickerMap.id.desc()).first()
+    
+    if not mapping:
+        raise ValueError(f"No active mapping found for CUSIP {cusip}")
+        
+    if payload.ticker is not None:
+        mapping.ticker = payload.ticker
+    if payload.issuer_name is not None:
+        mapping.issuer_name = payload.issuer_name
+    if payload.mapping_reason is not None:
+        mapping.mapping_reason = payload.mapping_reason
+    if payload.confidence is not None:
+        mapping.confidence = payload.confidence
+    if payload.valid_from is not None:
+        mapping.valid_from = payload.valid_from
+    if payload.valid_to is not None:
+        mapping.valid_to = payload.valid_to
+    if payload.is_active is not None:
+        mapping.is_active = payload.is_active
+        
+    mapping.source = "manual"
+    
+    session.commit()
+    session.refresh(mapping)
+    return mapping

@@ -24,6 +24,39 @@ function formatPercent(value, digits = 1) {
   return `${(value * 100).toFixed(digits)}%`;
 }
 
+function formatStoredPercent(value, digits = 1) {
+  if (typeof value !== 'number' || Number.isNaN(value)) {
+    return '—';
+  }
+  return `${value.toFixed(digits)}%`;
+}
+
+function formatCurrency(value, digits = 0) {
+  if (typeof value !== 'number' || Number.isNaN(value)) {
+    return '—';
+  }
+  return `$${formatNumber(value, digits)}`;
+}
+
+function titleizeCode(value) {
+  const label = String(value ?? 'unknown').toLowerCase().replaceAll('_', ' ');
+  return `${label.slice(0, 1).toUpperCase()}${label.slice(1)}`;
+}
+
+function changeStatusLabel(value) {
+  const labels = {
+    new_position: 'New position',
+    increased: 'Increased',
+    reduced: 'Reduced',
+    exited_position: 'Exited',
+    unchanged: 'Unchanged',
+    cusip_changed: 'Identifier changed',
+    no_prior_data: 'No prior data',
+    unavailable: 'Unavailable',
+  };
+  return labels[value] ?? titleizeCode(value);
+}
+
 function buildOracleLensQueryParams(filters = {}) {
   const params = new URLSearchParams();
   if (filters.period) {
@@ -41,7 +74,38 @@ function buildOracleLensQueryParams(filters = {}) {
   if (filters.sort) {
     params.set('sort', filters.sort);
   }
+  // MVP4-07a: default to the persisted MVP4-03/04/05/06 score path
+  // unless the caller explicitly opts out with usePersistedScores=false
+  // (kept available for one release as a debug escape hatch in case
+  // the canonical scores diverge from the legacy in-memory formula).
+  if (filters.usePersistedScores !== false) {
+    params.set('use_persisted_scores', 'true');
+  }
   return params.toString();
+}
+
+function uniquePeriodOptions(periods) {
+  if (!Array.isArray(periods)) {
+    return [];
+  }
+  const seenLabels = new Set();
+  const options = [];
+  for (const period of periods) {
+    if (!period || typeof period !== 'object') {
+      continue;
+    }
+    const label = typeof period.label === 'string' ? period.label : '';
+    if (!label || seenLabels.has(label)) {
+      continue;
+    }
+    seenLabels.add(label);
+    options.push({
+      ...period,
+      key: label,
+      label,
+    });
+  }
+  return options;
 }
 
 function confidenceTone(confidence) {
@@ -265,6 +329,47 @@ function radarBubbles(rows, limit = 12) {
   });
 }
 
+// MVP5-04: friendly labels for caveat / exclusion rule_codes so the
+// drilldown surfaces human-readable strings instead of UPPER_SNAKE
+// rule_code identifiers. The raw code stays accessible via a
+// <details> element for operator debugging — the goal is investor
+// comprehension, not hiding the codes outright. Unmapped codes fall
+// back to the raw string so an unknown caveat doesn't blank-render.
+const DEMOTION_REASON_LABELS = {
+  PARTIAL_COVERAGE: 'Partial filing coverage',
+  NT_QUARTER_STREAK_BREAK: 'NT filing broke holding streak',
+  PRE_2023_PRE_HISTORY_UNAVAILABLE: 'Pre-2023 history not available',
+  AMENDMENTS_PENDING: 'Amendment not yet ingested',
+  AMENDMENT_FAILED: 'Amendment ingestion failed',
+  HISTORICAL_BACKFILL_NEEDS_VALIDATION: 'Historical data needs validation',
+  CONFIDENTIAL_TREATMENT: 'Confidential treatment requested',
+  stale_until_recompute: 'Score is stale — recompute needed',
+};
+
+// MVP5-04: friendly labels for the MVP5-02 amendment-exclusion
+// reason codes so the drilldown can render
+// "Holders excluded: amendment not yet ingested" instead of
+// "AMENDMENT_PENDING_EXCLUDED".
+const EXCLUSION_REASON_LABELS = {
+  AMENDMENT_PENDING_EXCLUDED: 'Amendment not yet ingested',
+  AMENDMENT_FAILED_EXCLUDED: 'Amendment ingestion failed',
+};
+
+function labelForDemotionReason(code) {
+  return DEMOTION_REASON_LABELS[code] ?? code;
+}
+
+function labelForExclusionReason(code) {
+  return EXCLUSION_REASON_LABELS[code] ?? code;
+}
+
+function humanizeTier(tier) {
+  if (typeof tier !== 'string' || !tier) {
+    return null;
+  }
+  return tier.replaceAll('_', ' ');
+}
+
 function normalizeOracleLensRows(items) {
   if (!Array.isArray(items)) {
     return [];
@@ -279,6 +384,51 @@ function normalizeOracleLensRows(items) {
         : {};
     const quality = normalizeQualityOverlay(item?.quality_overlay);
     const valuation = normalizeValuationReference(item);
+    // MVP4-07a: surface MVP4-03b's per-item score_source and
+    // MVP4-05 / MVP4-01 P2#4's confidence_demotion_reasons so the
+    // ranking table can render a "persisted" badge and the drilldown
+    // can render "score_confidence is medium because PARTIAL_COVERAGE".
+    const rawDemotionReasons = Array.isArray(explanation.confidence_demotion_reasons)
+      ? explanation.confidence_demotion_reasons
+      : [];
+    const confidenceDemotionReasons = rawDemotionReasons
+      .filter((entry) => entry && typeof entry === 'object' && typeof entry.code === 'string')
+      .map((entry) => ({
+        code: entry.code,
+        // MVP5-04: friendly investor-facing label resolved via the
+        // canonical map. Unmapped codes fall back to the raw code.
+        label: labelForDemotionReason(entry.code),
+        demotedTo: typeof entry.demoted_to === 'string' ? entry.demoted_to : null,
+        // MVP5-04: humanized "medium_confidence" → "medium confidence"
+        // so the drilldown copy doesn't leak SQL-shaped vocabulary.
+        demotedToLabel: humanizeTier(
+          typeof entry.demoted_to === 'string' ? entry.demoted_to : null,
+        ),
+      }));
+    // MVP5-04: surface MVP5-02 ``excluded_holders`` so the drilldown
+    // can render "Holders excluded from score" with friendly reason
+    // tags. Defensive normalize: drop entries missing the required
+    // string fields.
+    const rawExcludedHolders = Array.isArray(explanation.excluded_holders)
+      ? explanation.excluded_holders
+      : [];
+    const excludedHolders = rawExcludedHolders
+      .filter(
+        (entry) =>
+          entry
+          && typeof entry === 'object'
+          && typeof entry.manager_id === 'number'
+          && typeof entry.exclusion_reason === 'string',
+      )
+      .map((entry) => ({
+        managerId: entry.manager_id,
+        managerCanonicalName:
+          typeof entry.manager_canonical_name === 'string'
+            ? entry.manager_canonical_name
+            : '',
+        exclusionReason: entry.exclusion_reason,
+        exclusionReasonLabel: labelForExclusionReason(entry.exclusion_reason),
+      }));
     return {
       stockId: item.stock_id,
       ticker: item.ticker ?? '—',
@@ -309,23 +459,104 @@ function normalizeOracleLensRows(items) {
       topHolders: Array.isArray(item.top_holders) ? item.top_holders : [],
       cautionFlags: primaryCautionFlags(item.caution_flags),
       cautionGroups: groupCautionFlags(item.caution_flags),
+      scoreSource: typeof item.score_source === 'string' ? item.score_source : null,
+      confidenceDemotionReasons,
+      excludedHolders,
     };
   });
+}
+
+function normalizeStockHolderAggregation(payload) {
+  const data = payload && typeof payload === 'object' ? payload : {};
+  const topHolders = Array.isArray(data.top_holders) ? data.top_holders : [];
+  const recentChanges = Array.isArray(data.recent_changes) ? data.recent_changes : [];
+  const dataCaveats = Array.isArray(data.data_caveats) ? data.data_caveats : [];
+  const reason = data.reason && typeof data.reason === 'object' ? data.reason : {};
+
+  return {
+    status: data.status ?? 'unavailable',
+    isUnavailable: data.status === 'unavailable',
+    hasCaveats:
+      data.status === 'available_with_caveat' ||
+      (typeof data.attribution_caveat_count === 'number' && data.attribution_caveat_count > 0) ||
+      dataCaveats.length > 0,
+    stockId: typeof data.stock_id === 'number' ? data.stock_id : null,
+    ticker: data.ticker ?? '—',
+    exchange: data.exchange ?? '—',
+    companyName: data.company_name ?? '—',
+    asOfQuarter: data.as_of_quarter ?? null,
+    asOfQuarterLabel: data.as_of_quarter ?? '—',
+    directHolderCountLabel: formatNumber(data.direct_holder_count, 0),
+    valueManagerDirectCountLabel: formatNumber(data.value_manager_direct_count, 0),
+    featuredHolderCountLabel: formatNumber(data.featured_holder_count, 0),
+    attributionCaveatCountLabel: formatNumber(data.attribution_caveat_count, 0),
+    reasonCode: reason.code ?? null,
+    reasonMessage: reason.message ?? null,
+    topHolders: topHolders.map((item, index) => {
+      const manager = item?.manager && typeof item.manager === 'object' ? item.manager : {};
+      return {
+        key: `${item?.holding_id ?? manager.id ?? 'holder'}:${index}`,
+        holdingId: typeof item?.holding_id === 'number' ? item.holding_id : null,
+        managerId: typeof manager.id === 'number' ? manager.id : null,
+        managerName: manager.display_name ?? manager.canonical_name ?? 'Unknown manager',
+        managerType: manager.manager_type ?? 'unknown',
+        isFeatured: Boolean(manager.is_featured),
+        valueLabel: formatCurrency(item?.value_usd, 0),
+        sharesLabel: formatNumber(item?.ssh_prnamt, 0),
+        portfolioWeightLabel: formatStoredPercent(item?.portfolio_weight_pct, 1),
+        attributionStatus: item?.confidence?.attribution_status ?? 'unknown',
+        cusipMappingStatus: item?.confidence?.cusip_mapping_status ?? 'unknown',
+        accessionNumber: item?.accession_number ?? null,
+      };
+    }),
+    recentChanges: recentChanges.map((item, index) => {
+      const manager = item?.manager && typeof item.manager === 'object' ? item.manager : {};
+      return {
+        key: `${manager.id ?? 'manager'}:${item?.change_status ?? 'change'}:${index}`,
+        managerId: typeof manager.id === 'number' ? manager.id : null,
+        managerName: manager.display_name ?? manager.canonical_name ?? 'Unknown manager',
+        managerType: manager.manager_type ?? 'unknown',
+        isFeatured: Boolean(manager.is_featured),
+        changeStatus: item?.change_status ?? 'unavailable',
+        changeStatusLabel: changeStatusLabel(item?.change_status),
+        confidenceLevel: item?.confidence_level ?? 'unavailable',
+        currentValueLabel: formatCurrency(item?.current_value_usd, 0),
+        previousValueLabel: formatCurrency(item?.previous_value_usd, 0),
+        currentSharesLabel: formatNumber(item?.current_shares, 0),
+        previousSharesLabel: formatNumber(item?.previous_shares, 0),
+        shareDeltaLabel: formatNumber(item?.share_delta, 0),
+        caveatCodes: Array.isArray(item?.caveat_codes) ? item.caveat_codes : [],
+      };
+    }),
+    dataCaveats: dataCaveats.map((item, index) => ({
+      key: `${item?.code ?? 'caveat'}:${index}`,
+      code: item?.code ?? 'UNKNOWN',
+      label: titleizeCode(item?.code),
+      message: item?.message ?? '',
+    })),
+  };
 }
 
 module.exports = {
   buildOracleLensQueryParams,
   cautionTone,
   confidenceTone,
+  DEMOTION_REASON_LABELS,
+  EXCLUSION_REASON_LABELS,
   formatNumber,
   formatPercent,
   formatScore,
   groupCautionFlags,
+  humanizeTier,
+  labelForDemotionReason,
+  labelForExclusionReason,
   missingDataReasons,
   normalizeOracleLensRows,
   normalizeQualityOverlay,
+  normalizeStockHolderAggregation,
   normalizeValuationReference,
   primaryCautionFlags,
   radarBubbles,
   suggestedResearchSteps,
+  uniquePeriodOptions,
 };

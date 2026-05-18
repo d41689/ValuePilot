@@ -1,71 +1,50 @@
 'use client';
 
-import { useEffect, useMemo, useRef, useState } from 'react';
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import Link from 'next/link';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useMutation, useQueryClient } from '@tanstack/react-query';
 import {
-  Activity,
   AlertTriangle,
-  CheckCircle2,
-  Database,
-  FolderClock,
-  History,
-  Loader2,
   Play,
   RefreshCw,
-  ShieldAlert,
   Settings,
 } from 'lucide-react';
 import type { ComponentProps } from 'react';
 
 import apiClient from '@/lib/api/client';
 import thirteenfAdmin from '@/lib/thirteenfAdmin';
-import { DrawerShell, MetricTile } from '@/components/admin13f/Admin13FPrimitives';
+import { AdminPageLayout } from '@/components/admin13f/AdminPageLayout';
+// AdminEmptyState + AdminErrorState ship as new shared components
+// in MVP6-01 but the existing page's inline empty-state divs are
+// preserved byte-for-byte (per the MVP6-01 SR2 scope refinement);
+// MVP6-02..07 route-owner tickets adopt them in each section as
+// they migrate.
+import { JobPendingDialog, type PendingJob } from '@/components/admin13f/JobPendingDialog';
+import { ReleaseStaleLockDialog } from '@/components/admin13f/ReleaseStaleLockDialog';
 import { ManagerCikDialogs } from '@/components/admin13f/ManagerCikDialogs';
+import { lockKeyForPayload } from '@/lib/admin13f/lockKey';
+import {
+  useEdgarRateLimitQuery,
+  useHoldingsCoverageQuery,
+  useJobsQuery,
+  useManagersQuery,
+  usePendingAmendmentsQuery,
+  useReadinessQuery,
+  useTasksQuery,
+  useUnknownManagerPriorityQuery,
+} from '@/lib/admin13f/queries';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from '@/components/ui/dialog';
 import { Input } from '@/components/ui/input';
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from '@/components/ui/select';
 import { useToast } from '@/components/ui/use-toast';
-import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from '@/components/ui/table';
 
 const {
-  formatPercent,
-  freshnessLine,
-  jobPreviewRows,
-  managerCikReviewDefaults,
-  normalizeAmendments,
   normalizeEdgarRateLimit,
-  normalizeQualityReports,
-  normalizeQuarters,
+  normalizeHoldingsCoverage,
   normalizeReadiness,
   normalizeTasks,
-  normalizeWorkers,
-  operationsHealth,
-  prioritizeManagersForReview,
   taskPrimaryAction,
-  visibleWorkerRows,
 } = thirteenfAdmin;
 
 type BadgeVariant = ComponentProps<typeof Badge>['variant'];
@@ -89,93 +68,71 @@ function formatInteger(value: unknown) {
   return value.toLocaleString('en-US');
 }
 
-function formatJson(value: unknown) {
-  if (!value || typeof value !== 'object') return '—';
-  return JSON.stringify(value, null, 2);
-}
+// MVP6-07: ``formatJson`` removed along with the Quarter Detail Drawer
+// that consumed it.
+// MVP6-02: ``MANAGER_TYPE_OPTIONS`` moved to
+// ``frontend/components/admin13f/ManagerTypeEditorDialog.tsx``
+// (the lifted component owns the vocabulary now that its only
+// caller on this page is gone).
 
 export default function Admin13FPage() {
   const queryClient = useQueryClient();
   const { toast } = useToast();
-  const [selectedJobId, setSelectedJobId] = useState<number | null>(null);
-  const [selectedAmendmentAccession, setSelectedAmendmentAccession] = useState<string | null>(null);
-  const [selectedQuarter, setSelectedQuarter] = useState<string | null>(null);
-  const [quarterFilingStatus, setQuarterFilingStatus] = useState('all');
-  const [quarterFilingOffset, setQuarterFilingOffset] = useState(0);
-  const readinessQuery = useQuery({
-    queryKey: ['admin-13f-readiness'],
-    queryFn: async () => (await apiClient.get('/admin/13f/readiness')).data,
+  // MVP6-07: selectedQuarter + quarterFilingStatus + quarterFilingOffset
+  // moved to /admin/13f/readiness along with the Quarter Detail drawer.
+  // MVP6-06: selectedJobId + Job Runs filter state moved to /admin/13f/jobs.
+  // MVP6-04: selectedFiling/AmendmentAccession + filingParseStatus
+  // moved to /admin/13f/filings. The two detail drawers are gone too.
+  // MVP6-01 Tier 3: the 20 admin/13f useQuery hooks moved to
+  // ``frontend/lib/admin13f/queries.ts``. Same queryKey + queryFn
+  // shapes as before so the inline mutation ``invalidateQueries``
+  // calls further down still hit the right caches.
+  const readinessQuery = useReadinessQuery();
+  // MVP6-07: quartersQuery moved to /admin/13f/readiness.
+  const tasksQuery = useTasksQuery();
+  const managersQuery = useManagersQuery();
+  // MVP6-06: jobsQuery stays on the index page because the Overview
+  // hub Jobs card KPI reads ``jobsQuery.data?.items?.length``. Filter
+  // state moved to /admin/13f/jobs so this call uses default ``all``
+  // filters.
+  const jobsQuery = useJobsQuery({
+    status: 'all',
+    jobType: 'all',
+    startedFrom: '',
+    startedTo: '',
+    syncDate: '',
+    quarter: '',
   });
-  const quartersQuery = useQuery({
-    queryKey: ['admin-13f-quarters'],
-    queryFn: async () => (await apiClient.get('/admin/13f/quarters')).data,
-  });
-  const tasksQuery = useQuery({
-    queryKey: ['admin-13f-tasks'],
-    queryFn: async () => (await apiClient.get('/admin/13f/tasks')).data,
-  });
-  const managersQuery = useQuery({
-    queryKey: ['admin-13f-managers'],
-    queryFn: async () => (await apiClient.get('/admin/13f/managers')).data,
-  });
-  const jobsQuery = useQuery({
-    queryKey: ['admin-13f-jobs'],
-    queryFn: async () => (await apiClient.get('/admin/13f/jobs')).data,
-    refetchInterval: 5000,
-  });
-  const qualityQuery = useQuery({
-    queryKey: ['admin-13f-quality'],
-    queryFn: async () => (await apiClient.get('/admin/13f/quality')).data,
-  });
-  const amendmentsQuery = useQuery({
-    queryKey: ['admin-13f-amendments'],
-    queryFn: async () => (await apiClient.get('/admin/13f/amendments')).data,
-  });
-  const workersQuery = useQuery({
-    queryKey: ['admin-13f-workers'],
-    queryFn: async () => (await apiClient.get('/admin/13f/workers')).data,
-    refetchInterval: 5000,
-  });
-  const edgarRateLimitQuery = useQuery({
-    queryKey: ['admin-13f-edgar-rate-limit'],
-    queryFn: async () => (await apiClient.get('/admin/13f/edgar-rate-limit')).data,
-    refetchInterval: 30000,
-  });
-  const jobDetailQuery = useQuery({
-    queryKey: ['admin-13f-job-detail', selectedJobId],
-    queryFn: async () => (await apiClient.get(`/admin/13f/jobs/${selectedJobId}`)).data,
-    enabled: selectedJobId !== null,
-    refetchInterval: selectedJobId === null ? false : 5000,
-  });
-  const amendmentDetailQuery = useQuery({
-    queryKey: ['admin-13f-amendment-detail', selectedAmendmentAccession],
-    queryFn: async () => (await apiClient.get(`/admin/13f/amendments/${selectedAmendmentAccession}`)).data,
-    enabled: selectedAmendmentAccession !== null,
-  });
-  const quarterDetailQuery = useQuery({
-    queryKey: ['admin-13f-quarter-detail', selectedQuarter, quarterFilingStatus, quarterFilingOffset],
-    queryFn: async () => {
-      const params = new URLSearchParams({
-        filing_limit: '25',
-        filing_offset: String(quarterFilingOffset),
-      });
-      if (quarterFilingStatus !== 'all') params.set('filing_status', quarterFilingStatus);
-      return (await apiClient.get(`/admin/13f/quarters/${selectedQuarter}/detail?${params.toString()}`)).data;
-    },
-    enabled: selectedQuarter !== null,
-  });
+  // MVP6-07: qualityQuery moved to /admin/13f/readiness.
+  // MVP6-04: amendmentsQuery + filingsQuery removed — fully consumed by
+  // ``/admin/13f/filings``. pendingAmendmentsQuery stays because the
+  // Overview hub Filings card KPI reads its count.
+  const pendingAmendmentsQuery = usePendingAmendmentsQuery();
+  const coverageQuarter =
+    typeof readinessQuery.data?.latest_usable_quarter === 'string'
+      ? readinessQuery.data.latest_usable_quarter
+      : null;
+  const holdingsCoverageQuery = useHoldingsCoverageQuery(coverageQuarter);
+  // MVP6-05: useUnresolvedCusipsQuery moved to /admin/13f/holdings.
+  // MVP6-07: workersQuery + needsValidationQuery + quarterDetailQuery
+  // moved to /admin/13f/readiness.
+  const edgarRateLimitQuery = useEdgarRateLimitQuery();
+  // MVP6-06: jobDetailQuery moved to /admin/13f/jobs along with the
+  // Job Detail Drawer.
+  // MVP6-04: amendmentDetailQuery + parseRunsQuery now live on
+  // /admin/13f/filings; the queries module hook still exists.
+  const unknownManagerPriorityQuery = useUnknownManagerPriorityQuery();
+  // MVP6-02: manager_type editor state + mutation moved to the new
+  // ``/admin/13f/managers`` and ``/admin/13f/managers/[id]`` routes
+  // along with the Managers section that hosted it.
   const [manualQuarter, setManualQuarter] = useState('');
   const [backfillQuarters, setBackfillQuarters] = useState('4');
   const [backfillStartQuarter, setBackfillStartQuarter] = useState('');
   const [accessionNo, setAccessionNo] = useState('');
-  const [pendingJob, setPendingJob] = useState<{
-    label: string;
-    payload: Record<string, unknown>;
-    preview: Record<string, unknown>;
-    previewFailed?: boolean;
-  } | null>(null);
+  const [pendingJob, setPendingJob] = useState<PendingJob | null>(null);
   const [pendingStaleReleaseJobId, setPendingStaleReleaseJobId] = useState<number | null>(null);
-  const [showWorkerHistory, setShowWorkerHistory] = useState(false);
+  // MVP6-06: showWorkerHistory moved to /admin/13f/jobs along with
+  // the Worker Heartbeat Card.
   const [pendingConfirmManager, setPendingConfirmManager] = useState<Record<string, unknown> | null>(null);
   const [confirmCik, setConfirmCik] = useState('');
   const [confirmNote, setConfirmNote] = useState('');
@@ -186,7 +143,11 @@ export default function Admin13FPage() {
   const [pendingRetryManager, setPendingRetryManager] = useState<Record<string, unknown> | null>(null);
   const [retrySearchName, setRetrySearchName] = useState('');
   const [retryNote, setRetryNote] = useState('');
-  async function refreshAdminData() {
+  // MVP6-06: Historical Backfill + Batch Reparse state moved to
+  // /admin/13f/jobs along with their Cards + mutations.
+  // MVP6-05: Corporate Action Confirm state moved to
+  // /admin/13f/holdings along with the form/drawer that consumed it.
+  const refreshAdminData = useCallback(async () => {
     await Promise.all([
       queryClient.invalidateQueries({ queryKey: ['admin-13f-readiness'] }),
       queryClient.invalidateQueries({ queryKey: ['admin-13f-quarters'] }),
@@ -195,12 +156,17 @@ export default function Admin13FPage() {
       queryClient.invalidateQueries({ queryKey: ['admin-13f-managers'] }),
       queryClient.invalidateQueries({ queryKey: ['admin-13f-quality'] }),
       queryClient.invalidateQueries({ queryKey: ['admin-13f-amendments'] }),
+      queryClient.invalidateQueries({ queryKey: ['admin-13f-amendments-pending'] }),
+      queryClient.invalidateQueries({ queryKey: ['admin-13f-filings'] }),
+      queryClient.invalidateQueries({ queryKey: ['admin-13f-holdings-coverage'] }),
+      queryClient.invalidateQueries({ queryKey: ['admin-13f-unresolved-cusips'] }),
+      queryClient.invalidateQueries({ queryKey: ['admin-13f-parse-runs'] }),
       queryClient.invalidateQueries({ queryKey: ['admin-13f-quarter-detail'] }),
       queryClient.invalidateQueries({ queryKey: ['admin-13f-workers'] }),
       queryClient.invalidateQueries({ queryKey: ['admin-13f-job-detail'] }),
       queryClient.invalidateQueries({ queryKey: ['admin-13f-edgar-rate-limit'] }),
     ]);
-  }
+  }, [queryClient]);
   const triggerJob = useMutation({
     mutationFn: async (payload: Record<string, unknown>) =>
       (await apiClient.post('/admin/13f/jobs', payload)).data,
@@ -274,42 +240,43 @@ export default function Admin13FPage() {
       ]);
     },
   });
+  // MVP6-06: hbPreviewMutation / hbEnqueueMutation / brPreviewMutation /
+  // brEnqueueMutation moved to /admin/13f/jobs along with the Historical
+  // Backfill + Batch Reparse Cards.
+  // MVP6-05: caPreviewMutation + caConfirmMutation moved to
+  // /admin/13f/holdings.
 
   const readiness = useMemo(
     () => normalizeReadiness(readinessQuery.data ?? {}),
     [readinessQuery.data]
   );
-  const readinessThresholds = readiness.thresholds as Record<string, unknown>;
-  const quarters = useMemo(
-    () => normalizeQuarters(quartersQuery.data?.items ?? []),
-    [quartersQuery.data]
-  );
+  // MVP6-07: readinessThresholds + quarters + qualityReports +
+  // workers + hasAvailableWorker + operationalHealth memos moved
+  // to /admin/13f/readiness along with the surfaces that consumed
+  // them.
   const tasks = useMemo(() => normalizeTasks(tasksQuery.data?.items ?? []), [tasksQuery.data]);
-  const qualityReports = useMemo(
-    () => normalizeQualityReports(qualityQuery.data?.items ?? []),
-    [qualityQuery.data]
+  // MVP6-04: ``amendments`` / ``pendingAmendments`` /
+  // ``pendingAmendmentGroups`` / ``adminFilings`` memos moved to
+  // ``/admin/13f/filings`` along with the sections that consumed
+  // them. The underlying queries are still fired here so the
+  // Overview hub Filings card KPI (``pendingAmendmentsQuery.data
+  // ?.items?.length``) keeps working.
+  const holdingsCoverage = useMemo(
+    () => normalizeHoldingsCoverage(holdingsCoverageQuery.data ?? {}),
+    [holdingsCoverageQuery.data]
   );
-  const amendments = useMemo(
-    () => normalizeAmendments(amendmentsQuery.data?.items ?? []),
-    [amendmentsQuery.data]
-  );
-  const workers = useMemo(
-    () => normalizeWorkers(workersQuery.data?.items ?? []),
-    [workersQuery.data]
-  );
+  // MVP6-05: unresolvedCusips memo moved to /admin/13f/holdings.
+  // MVP6-04: parseRuns memo moved to /admin/13f/filings.
   const edgarRateLimit = useMemo(
     () => normalizeEdgarRateLimit(edgarRateLimitQuery.data ?? {}),
     [edgarRateLimitQuery.data]
   );
-  const hasAvailableWorker = workers.some((worker) => worker.status === 'idle' || worker.status === 'running');
-  const workerRows = useMemo(
-    () => visibleWorkerRows(workers, showWorkerHistory),
-    [workers, showWorkerHistory]
-  );
-  const managers = useMemo(
-    () => prioritizeManagersForReview(Array.isArray(managersQuery.data?.items) ? managersQuery.data.items : []),
-    [managersQuery.data]
-  );
+  // MVP6-06: workerRows memo (table-row paging logic for the Worker
+  // Heartbeat Card) moved to /admin/13f/jobs.
+  // MVP6-02: ``managers`` memoized list removed — its only consumer
+  // was the Managers section on this page, now moved to
+  // ``/admin/13f/managers``. The Overview hub Managers card reads
+  // ``managersQuery.data?.items?.length`` directly.
   const jobs = useMemo(
     () => (Array.isArray(jobsQuery.data?.items) ? jobsQuery.data.items : []),
     [jobsQuery.data]
@@ -338,50 +305,19 @@ export default function Admin13FPage() {
     }
 
     prevActiveKeys.current = currentKeys;
-  }, [activeLockKeys]);
+  }, [activeLockKeys, refreshAdminData]);
 
-  const selectedJob = jobDetailQuery.data ?? null;
-  const selectedAmendment = amendmentDetailQuery.data ?? null;
-  const selectedQuarterDetail = quarterDetailQuery.data ?? null;
-  const isLoading =
-    readinessQuery.isLoading ||
-    quartersQuery.isLoading ||
-    tasksQuery.isLoading ||
-    managersQuery.isLoading ||
-    jobsQuery.isLoading ||
-    qualityQuery.isLoading ||
-    amendmentsQuery.isLoading ||
-    workersQuery.isLoading;
+  // MVP6-07: selectedQuarterDetail + isLoading aggregate + operationalHealth
+  // memo moved to /admin/13f/readiness.
+  // MVP6-06: selectedJob (job detail drawer data) moved to /admin/13f/jobs.
+  // MVP6-04: selectedAmendment moved to /admin/13f/filings.
 
   const latestQuarter = readiness.latestUsableQuarter === '—' ? undefined : readiness.latestUsableQuarter;
   const targetQuarter = manualQuarter.trim() || latestQuarter;
   const targetAccession = accessionNo.trim();
-  const operationalHealth = useMemo(
-    () =>
-      operationsHealth(readiness, tasks, hasAvailableWorker, {
-        workersIndeterminate: workersQuery.isError,
-      }),
-    [readiness, tasks, hasAvailableWorker, workersQuery.isError]
-  );
 
-  function lockKeyForPayload(payload: Record<string, unknown>) {
-    const jobType = String(payload.job_type ?? '');
-    if (jobType === 'fetch_quarter_index') return `fetch_quarter_index:${String(payload.quarter ?? '')}`;
-    if (jobType === 'ingest_holdings') return `ingest_holdings:${String(payload.quarter ?? '')}`;
-    if (jobType === 'quality_check') return `quality_check:${String(payload.quarter ?? '')}`;
-    if (jobType === 'enrich_cusip') return `enrich_cusip:${String(payload.quarter ?? 'global')}`;
-    if (jobType === 'enrich_metadata') return `enrich_metadata:${String(payload.quarter ?? 'global')}`;
-    if (jobType === 'ingest_accession') return `ingest_accession:${String(payload.accession_no ?? '')}`;
-    if (jobType === 'reprocess_amendment') return `reprocess_amendment:${String(payload.accession_no ?? '')}`;
-    if (jobType === 'backfill_quarters') {
-      return `backfill_quarters:${String(payload.start_quarter ?? 'latest')}:${String(payload.quarters ?? '')}`;
-    }
-    if (jobType === 'bootstrap_whitelist') return 'bootstrap_whitelist';
-    if (jobType === 'match_cik') return 'match_cik';
-    if (jobType === 'bootstrap_stocks') return 'bootstrap_stocks';
-    if (jobType === 'enrich_stocks_edgar') return 'enrich_stocks_edgar';
-    return null;
-  }
+  // MVP6-08 follow-up: lockKeyForPayload moved to lib/admin13f/lockKey.ts
+  // so the three route copies (index, jobs, readiness) cannot drift.
 
   function isJobActive(payload: Record<string, unknown>) {
     const lockKey = lockKeyForPayload(payload);
@@ -432,36 +368,12 @@ export default function Admin13FPage() {
     setPendingStaleReleaseJobId(parsedJobId);
   }
 
-  function handleConfirmManager(manager: Record<string, unknown>) {
-    const managerId = Number(manager.id);
-    if (!Number.isFinite(managerId)) return;
-    const defaults = managerCikReviewDefaults(manager);
-    setConfirmCik(String(defaults.defaultCik ?? ''));
-    setConfirmNote('');
-    setPendingConfirmManager(manager);
-  }
-
-  function handleRejectManager(manager: Record<string, unknown>) {
-    const managerId = Number(manager.id);
-    if (!Number.isFinite(managerId)) return;
-    setRejectNote('');
-    setPendingRejectManager(manager);
-  }
-
-  function handleRevokeManager(manager: Record<string, unknown>) {
-    const managerId = Number(manager.id);
-    if (!Number.isFinite(managerId)) return;
-    setRevokeNote('');
-    setPendingRevokeManager(manager);
-  }
-
-  function handleRetryManager(manager: Record<string, unknown>) {
-    const managerId = Number(manager.id);
-    if (!Number.isFinite(managerId)) return;
-    setRetrySearchName(String(manager.legal_name ?? manager.display_name ?? ''));
-    setRetryNote('');
-    setPendingRetryManager(manager);
-  }
+  // MVP6-02: ``handleConfirm/Reject/Revoke/RetryManager`` removed
+  // along with the Managers section that called them. The CIK review
+  // dialogs (``<ManagerCikDialogs>``) remain rendered on the index
+  // page with their state + submit/close helpers intact, so the
+  // CIK review flow can be re-triggered from the new Managers
+  // page in a future ticket without re-plumbing here.
 
   function closeConfirmManagerDialog() {
     setPendingConfirmManager(null);
@@ -525,24 +437,11 @@ export default function Admin13FPage() {
     closeRetryManagerDialog();
   }
 
-  function openQuarterDetail(quarter: string) {
-    setSelectedQuarter(quarter);
-    setQuarterFilingStatus('all');
-    setQuarterFilingOffset(0);
-  }
-
   return (
-    <div className="space-y-5">
-      <div className="flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
-        <div>
-          <div className="text-xs font-semibold uppercase text-muted-foreground">
-            Admin Data Operations
-          </div>
-          <h1 className="mt-1 text-2xl font-semibold tracking-tight">13F Operations</h1>
-          <p className="mt-2 max-w-3xl text-sm text-muted-foreground">
-            Readiness, quarter health, admin tasks, manager review, and safe ingestion jobs.
-          </p>
-        </div>
+    <AdminPageLayout
+      title="13F Operations"
+      description="Readiness, quarter health, admin tasks, manager review, and safe ingestion jobs."
+      actions={
         <Button
           type="button"
           variant="outline"
@@ -554,6 +453,11 @@ export default function Admin13FPage() {
             queryClient.invalidateQueries({ queryKey: ['admin-13f-jobs'] });
             queryClient.invalidateQueries({ queryKey: ['admin-13f-quality'] });
             queryClient.invalidateQueries({ queryKey: ['admin-13f-amendments'] });
+            queryClient.invalidateQueries({ queryKey: ['admin-13f-amendments-pending'] });
+            queryClient.invalidateQueries({ queryKey: ['admin-13f-filings'] });
+            queryClient.invalidateQueries({ queryKey: ['admin-13f-holdings-coverage'] });
+            queryClient.invalidateQueries({ queryKey: ['admin-13f-unresolved-cusips'] });
+            queryClient.invalidateQueries({ queryKey: ['admin-13f-parse-runs'] });
             queryClient.invalidateQueries({ queryKey: ['admin-13f-quarter-detail'] });
             queryClient.invalidateQueries({ queryKey: ['admin-13f-workers'] });
           }}
@@ -561,505 +465,119 @@ export default function Admin13FPage() {
           <RefreshCw className="mr-2 h-4 w-4" />
           Refresh
         </Button>
-      </div>
+      }
+    >
+      {/* MVP6-01 Overview hub — navigation cards linking to each
+          functional surface. While MVP6-02..07 are pending, each card
+          is an anchor link to the relevant section below; once a
+          route ships, that ticket flips the href to a real route. */}
+      <section aria-label="13F admin surfaces">
+        <div className="mb-2 text-xs font-semibold uppercase text-muted-foreground">
+          Surfaces
+        </div>
+        <div className="grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-4">
+          <Link
+            href="/admin/13f/managers"
+            className="block rounded-md border border-border/70 p-3 transition-colors hover:bg-muted/40"
+          >
+            <div className="text-xs uppercase text-muted-foreground">Managers</div>
+            <div className="mt-1 text-base font-semibold">
+              {managersQuery.isPending ? '—' : `${managersQuery.data?.items?.length ?? 0} managers`}
+            </div>
+            <div className="text-xs text-muted-foreground">CIK review · classification · backfill</div>
+          </Link>
+          <Link
+            href="/admin/13f/sync"
+            className="block rounded-md border border-border/70 p-3 transition-colors hover:bg-muted/40"
+          >
+            <div className="text-xs uppercase text-muted-foreground">Daily Sync</div>
+            <div className="mt-1 text-base font-semibold">
+              {edgarRateLimitQuery.isPending ? '—' : edgarRateLimit.mode}
+            </div>
+            <div className="text-xs text-muted-foreground">EDGAR rate limit · no-index calendar</div>
+          </Link>
+          <Link
+            href="/admin/13f/filings"
+            className="block rounded-md border border-border/70 p-3 transition-colors hover:bg-muted/40"
+          >
+            <div className="text-xs uppercase text-muted-foreground">Filings</div>
+            <div className="mt-1 text-base font-semibold">
+              {pendingAmendmentsQuery.isPending
+                ? '—'
+                : `${pendingAmendmentsQuery.data?.items?.length ?? 0} pending`}
+            </div>
+            <div className="text-xs text-muted-foreground">Parse status · amendments · reparse</div>
+          </Link>
+          <Link
+            href="/admin/13f/holdings"
+            className="block rounded-md border border-border/70 p-3 transition-colors hover:bg-muted/40"
+          >
+            <div className="text-xs uppercase text-muted-foreground">Holdings</div>
+            <div className="mt-1 text-base font-semibold">
+              {holdingsCoverageQuery.isPending
+                ? '—'
+                : holdingsCoverage.linkedRatioLabel || '—'}
+            </div>
+            <div className="text-xs text-muted-foreground">Coverage · CUSIP workflow</div>
+          </Link>
+          <Link
+            href="/admin/13f/jobs"
+            className="block rounded-md border border-border/70 p-3 transition-colors hover:bg-muted/40"
+          >
+            <div className="text-xs uppercase text-muted-foreground">Jobs</div>
+            <div className="mt-1 text-base font-semibold">
+              {jobsQuery.isPending ? '—' : `${jobsQuery.data?.items?.length ?? 0} runs`}
+            </div>
+            <div className="text-xs text-muted-foreground">Queue · retry · stale-lock</div>
+          </Link>
+          <Link
+            href="/admin/13f/readiness"
+            className="block rounded-md border border-border/70 p-3 transition-colors hover:bg-muted/40"
+          >
+            <div className="text-xs uppercase text-muted-foreground">Readiness</div>
+            <div className="mt-1 text-base font-semibold">
+              {readinessQuery.isPending
+                ? '—'
+                : readiness.readinessLevel.replaceAll('_', ' ')}
+            </div>
+            <div className="text-xs text-muted-foreground">Blockers · quality findings</div>
+          </Link>
+          <Link
+            href="/admin/13f/readiness"
+            className="block rounded-md border border-border/70 p-3 transition-colors hover:bg-muted/40"
+          >
+            <div className="text-xs uppercase text-muted-foreground">Oracle&apos;s Lens</div>
+            <div className="mt-1 text-base font-semibold">
+              {unknownManagerPriorityQuery.isPending
+                ? '—'
+                : `${(unknownManagerPriorityQuery.data?.items as unknown[] | undefined)?.length ?? 0} unknown`}
+            </div>
+            <div className="text-xs text-muted-foreground">Unknown-manager priority queue</div>
+          </Link>
+        </div>
+      </section>
 
-      <Card className="rounded-md">
-        <CardHeader className="pb-3">
-          <CardTitle className="flex flex-col gap-2 text-base sm:flex-row sm:items-center sm:justify-between">
-            <span>Data Readiness & Operations Health</span>
-            <span className="flex flex-wrap gap-2">
-              <Badge variant={badgeVariant(readiness.readinessTone)}>
-                Data {readiness.readinessLevel.replaceAll('_', ' ')}
-              </Badge>
-              <Badge variant={badgeVariant(isLoading ? 'secondary' : operationalHealth.tone)}>
-                {isLoading ? 'operations loading' : operationalHealth.label}
-              </Badge>
-            </span>
-          </CardTitle>
-        </CardHeader>
-        <CardContent className="space-y-4">
-          {isLoading ? (
-            <div className="flex items-center gap-2 text-sm text-muted-foreground">
-              <Loader2 className="h-4 w-4 animate-spin" />
-              Loading 13F operations state...
-            </div>
-          ) : null}
-          <div className="grid gap-3 md:grid-cols-4">
-            <MetricTile label="Latest usable" value={readiness.latestUsableQuarter} />
-            <MetricTile
-              label="Current quarter"
-              value={readiness.currentQuarter}
-              detail={readiness.currentPhase}
-            />
-            <MetricTile label="Historical depth" value={`${readiness.historicalDepth} quarters`} />
-            <MetricTile
-              label="Managers"
-              value={`${formatInteger(readiness.counts.confirmed_managers)} confirmed`}
-            />
-          </div>
-          <div className="rounded-md border border-amber-300/70 bg-amber-50 px-3 py-2 text-sm text-amber-950">
-            {freshnessLine(readiness)}
-          </div>
-          {!isLoading ? (
-            <div
-              className={`rounded-md border px-3 py-2 text-sm ${
-                operationalHealth.level === 'healthy'
-                  ? 'border-emerald-300/70 bg-emerald-50 text-emerald-950'
-                  : operationalHealth.level === 'blocked'
-                    ? 'border-rose-300/70 bg-rose-50 text-rose-950'
-                    : operationalHealth.level === 'unknown'
-                      ? 'border-border/70 bg-muted/30 text-foreground'
-                      : 'border-amber-300/70 bg-amber-50 text-amber-950'
-              }`}
-            >
-              <div className="font-medium">
-                {operationalHealth.level === 'healthy'
-                  ? 'Operations are clear'
-                  : operationalHealth.level === 'blocked'
-                    ? 'Operations need intervention'
-                    : operationalHealth.level === 'unknown'
-                      ? 'Operations health unknown'
-                      : 'Operations need attention'}
-              </div>
-              <div className="mt-1">{operationalHealth.summary}</div>
-            </div>
-          ) : null}
-          <div className="flex flex-wrap gap-2 text-sm">
-            <Badge variant={readiness.schedulerEnabled ? 'success' : 'danger'}>
-              Scheduler {readiness.schedulerEnabled ? 'enabled' : 'disabled'}
-            </Badge>
-            <Badge variant={readiness.smartRetryEnabled ? 'success' : 'warning'}>
-              Smart retry {readiness.smartRetryEnabled ? 'enabled' : 'disabled'}
-            </Badge>
-            <Badge variant={hasAvailableWorker ? 'success' : 'warning'}>
-              Workers {hasAvailableWorker ? 'available' : 'not active'}
-            </Badge>
-            <Badge variant="outline">
-              Ready link {formatPercent(Number(readinessThresholds.ready_link_ratio ?? 0.8))}
-            </Badge>
-            <Badge variant="outline">
-              Warning link {formatPercent(Number(readinessThresholds.warning_link_ratio ?? 0.5))}
-            </Badge>
-            <Badge variant="outline">
-              History target {formatInteger(readinessThresholds.ready_historical_depth ?? 4)}Q
-            </Badge>
-          </div>
-          <div className="grid gap-3 lg:grid-cols-[280px_minmax(0,1fr)]">
-            <div className="rounded-md border border-border/70 p-3">
-              <div className="text-xs font-semibold uppercase text-muted-foreground">
-                Current Quarter
-              </div>
-              <div className="mt-2 flex items-center justify-between gap-2">
-                <div className="text-lg font-semibold">{readiness.currentQuarter}</div>
-                <Badge variant={badgeVariant(
-                  readiness.currentHealth === 'complete'
-                    ? 'success'
-                    : readiness.currentHealth === 'setup_required' || readiness.currentHealth === 'needs_review'
-                      ? 'danger'
-                      : 'warning'
-                )}>
-                  {readiness.currentHealth.replaceAll('_', ' ')}
-                </Badge>
-              </div>
-              <div className="mt-2 text-sm text-muted-foreground">
-                Phase: {readiness.currentPhase.replaceAll('_', ' ')}
-              </div>
-              <div className="mt-1 text-sm text-muted-foreground">
-                Filing deadline: {readiness.filingDeadline ?? '—'}
-              </div>
-            </div>
-            <div className="rounded-md border border-border/70 p-3">
-              <div className="mb-3 text-xs font-semibold uppercase text-muted-foreground">
-                Setup Checklist
-              </div>
-              <div className="grid gap-2 md:grid-cols-2">
-                {readiness.setupChecklist.map((item: Record<string, string>) => (
-                  <div key={item.code} className="rounded-md border border-border/70 bg-muted/20 p-2">
-                    <div className="flex items-center justify-between gap-2">
-                      <div className="text-sm font-medium">{item.label}</div>
-                      <Badge variant={badgeVariant(item.statusTone)}>
-                        {item.status.replaceAll('_', ' ')}
-                      </Badge>
-                    </div>
-                    <div className="mt-1 text-xs text-muted-foreground">{item.completeWhen}</div>
-                    {item.status !== 'complete' ? (
-                      <div className="mt-1 text-xs text-foreground">{item.adminAction}</div>
-                    ) : null}
-                  </div>
-                ))}
-                {readiness.setupChecklist.length === 0 ? (
-                  <div className="text-sm text-muted-foreground">No setup checklist returned.</div>
-                ) : null}
-              </div>
-            </div>
-          </div>
-          {readiness.topTask ? (
-            <div className="flex items-start gap-2 rounded-md border border-rose-300/70 bg-rose-50 px-3 py-2 text-sm text-rose-950">
-              <ShieldAlert className="mt-0.5 h-4 w-4 shrink-0" />
-              <div>
-                <div className="font-medium">{readiness.topTask.title}</div>
-                <div>{readiness.topTask.recommended_action}</div>
-              </div>
-            </div>
-          ) : !isLoading && operationalHealth.level === 'healthy' ? (
-            <div className="flex items-center gap-2 rounded-md border border-emerald-300/70 bg-emerald-50 px-3 py-2 text-sm text-emerald-950">
-              <CheckCircle2 className="h-4 w-4" />
-              No blocking admin task detected.
-            </div>
-          ) : null}
-        </CardContent>
-      </Card>
+      {/* MVP6-07: Data Readiness & Operations Health Card moved to
+          /admin/13f/readiness. Overview hub is now a thin nav hub
+          (KPI strip + Tasks Card + Manual Controls + dialog mounts). */}
 
-      <Card className="rounded-md">
-        <CardHeader className="pb-3">
-          <CardTitle className="flex flex-col gap-2 text-base sm:flex-row sm:items-center sm:justify-between">
-            <span className="flex items-center gap-2">
-              <Activity className="h-4 w-4" />
-              EDGAR Rate Limit
-            </span>
-            <Badge variant={badgeVariant(edgarRateLimitQuery.isError ? 'warning' : edgarRateLimit.tone)}>
-              {edgarRateLimitQuery.isError ? 'unavailable' : String(edgarRateLimit.mode)}
-            </Badge>
-          </CardTitle>
-        </CardHeader>
-        <CardContent className="space-y-3">
-          {edgarRateLimitQuery.isLoading ? (
-            <div className="flex items-center gap-2 text-sm text-muted-foreground">
-              <Loader2 className="h-4 w-4 animate-spin" />
-              Loading EDGAR request budget...
-            </div>
-          ) : edgarRateLimitQuery.isError ? (
-            <div className="rounded-md border border-amber-300/70 bg-amber-50 px-3 py-2 text-sm text-amber-950">
-              EDGAR budget is unavailable. Job previews still enforce lock and rate-limit safeguards.
-            </div>
-          ) : (
-            <>
-              <div className="grid gap-3 md:grid-cols-4">
-                <MetricTile
-                  label="Recent requests"
-                  value={formatInteger(edgarRateLimit.recentRequestCount)}
-                  detail={`${formatInteger(edgarRateLimit.windowSeconds)}s window`}
-                />
-                <MetricTile
-                  label="Remaining capacity"
-                  value={formatInteger(edgarRateLimit.remainingEstimatedCapacity)}
-                  detail={`of ${formatInteger(edgarRateLimit.estimatedCapacity)}`}
-                />
-                <MetricTile
-                  label="Request delay"
-                  value={`${edgarRateLimit.requestDelayS}s`}
-                  detail={`${formatInteger(edgarRateLimit.maxRetries)} retries`}
-                />
-                <MetricTile
-                  label="Usage"
-                  value={edgarRateLimit.usageRatio === null ? '—' : formatPercent(edgarRateLimit.usageRatio)}
-                />
-              </div>
-              {edgarRateLimit.globalPauseUntil ? (
-                <div className="rounded-md border border-amber-300/70 bg-amber-50 px-3 py-2 text-sm text-amber-950">
-                  EDGAR requests are paused until {String(edgarRateLimit.globalPauseUntil)}.
-                </div>
-              ) : null}
-            </>
-          )}
-        </CardContent>
-      </Card>
+      {/* MVP6-06: EDGAR Rate Limit Card moved to /admin/13f/jobs.
+          Overview hub still surfaces the mode chip in the header
+          strip via ``edgarRateLimit.mode``. */}
 
-      <Card className="rounded-md">
-        <CardHeader className="pb-3">
-          <CardTitle className="flex items-center gap-2 text-base">
-            <ShieldAlert className="h-4 w-4" />
-            Quality Reports
-          </CardTitle>
-        </CardHeader>
-        <CardContent>
-          <Table>
-            <TableHeader>
-              <TableRow>
-                <TableHead>Quarter</TableHead>
-                <TableHead>Status</TableHead>
-                <TableHead>Issues</TableHead>
-                <TableHead>Checked</TableHead>
-                <TableHead>Summary</TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {qualityReports.map((report) => (
-                <TableRow key={String(report.id)}>
-                  <TableCell className="font-medium">{report.quarter}</TableCell>
-                  <TableCell>
-                    <Badge variant={badgeVariant(report.statusTone)}>
-                      {report.status.replaceAll('_', ' ')}
-                    </Badge>
-                  </TableCell>
-                  <TableCell>
-                    {formatInteger(report.errorCount)} errors · {formatInteger(report.warningCount)} warnings
-                  </TableCell>
-                  <TableCell className="text-xs text-muted-foreground">
-                    {report.checkedAt ?? '—'}
-                  </TableCell>
-                  <TableCell className="max-w-[360px] truncate text-sm text-muted-foreground">
-                    {report.summary || '—'}
-                  </TableCell>
-                </TableRow>
-              ))}
-              {qualityReports.length === 0 ? (
-                <TableRow>
-                  <TableCell colSpan={5} className="py-8 text-center text-muted-foreground">
-                    No persisted quality report yet. Run a quality check to populate this section.
-                  </TableCell>
-                </TableRow>
-              ) : null}
-            </TableBody>
-          </Table>
-        </CardContent>
-      </Card>
+      {/* MVP6-07: Quality Reports Card moved to /admin/13f/readiness. */}
 
-      <Card className="rounded-md">
-        <CardHeader className="pb-3">
-          <CardTitle className="flex items-center gap-2 text-base">
-            <AlertTriangle className="h-4 w-4" />
-            Amendment Accessions
-          </CardTitle>
-        </CardHeader>
-        <CardContent>
-          <Table>
-            <TableHeader>
-              <TableRow>
-                <TableHead>Accession</TableHead>
-                <TableHead>Status</TableHead>
-                <TableHead>Manager</TableHead>
-                <TableHead>Supersedes</TableHead>
-                <TableHead>Raw InfoTable</TableHead>
-                <TableHead>Holdings</TableHead>
-                <TableHead>Action</TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {amendments.slice(0, 12).map((amendment) => (
-                <TableRow key={amendment.accessionNo}>
-                  <TableCell>
-                    <div className="font-mono text-xs">{amendment.accessionNo}</div>
-                    <div className="mt-1 text-xs text-muted-foreground">
-                      {amendment.quarter} · filed {amendment.filedAt ?? '—'}
-                    </div>
-                  </TableCell>
-                  <TableCell>
-                    <Badge variant={badgeVariant(amendment.statusTone)}>
-                      {amendment.status.replaceAll('_', ' ')}
-                    </Badge>
-                  </TableCell>
-                  <TableCell>
-                    <div className="font-medium">{amendment.managerName}</div>
-                    <div className="mt-1 font-mono text-xs text-muted-foreground">
-                      {amendment.managerCik}
-                    </div>
-                  </TableCell>
-                  <TableCell className="font-mono text-xs">
-                    {amendment.supersedesAccessionNo ?? '—'}
-                  </TableCell>
-                  <TableCell>
-                    <div className="text-sm">
-                      {String(amendment.rawInfotable.parse_status ?? 'missing')}
-                    </div>
-                    {amendment.rawInfotable.error_message ? (
-                      <div className="mt-1 max-w-[260px] truncate text-xs text-rose-700">
-                        {String(amendment.rawInfotable.error_message)}
-                      </div>
-                    ) : null}
-                  </TableCell>
-                  <TableCell>{formatInteger(amendment.holdingsCount)}</TableCell>
-                  <TableCell>
-                    <div className="flex flex-wrap gap-2">
-                      <Button
-                        type="button"
-                        variant="outline"
-                        size="sm"
-                        onClick={() => setSelectedAmendmentAccession(amendment.accessionNo)}
-                      >
-                        Review
-                      </Button>
-                      {amendment.recommendedJob ? (
-                        <Button
-                          type="button"
-                          variant="ghost"
-                          size="sm"
-                          disabled={isJobActive(amendment.recommendedJob)}
-                          onClick={() =>
-                            runJob(amendment.recommendedJob, `Reprocess ${amendment.accessionNo}`)
-                          }
-                        >
-                          Reprocess
-                        </Button>
-                      ) : null}
-                    </div>
-                  </TableCell>
-                </TableRow>
-              ))}
-              {amendments.length === 0 ? (
-                <TableRow>
-                  <TableCell colSpan={7} className="py-8 text-center text-muted-foreground">
-                    No 13F/A amendments recorded yet.
-                  </TableCell>
-                </TableRow>
-              ) : null}
-            </TableBody>
-          </Table>
-        </CardContent>
-      </Card>
+      {/* MVP6-05: Holdings Coverage + Unresolved CUSIPs moved to
+          /admin/13f/holdings. */}
 
-      <Card className="rounded-md">
-        <CardHeader className="pb-3">
-          <CardTitle className="flex flex-col gap-2 text-base sm:flex-row sm:items-center sm:justify-between">
-            <span className="flex items-center gap-2">
-              <Activity className="h-4 w-4" />
-              Worker Heartbeat
-            </span>
-            {workers.length > 0 && (showWorkerHistory || workerRows.hiddenCount > 0) ? (
-              <Button
-                type="button"
-                variant="ghost"
-                size="sm"
-                onClick={() => setShowWorkerHistory((value) => !value)}
-              >
-                <FolderClock className="mr-2 h-4 w-4" />
-                {showWorkerHistory
-                  ? 'Hide history'
-                  : workerRows.stoppedHiddenCount > 0 && workerRows.overflowHiddenCount > 0
-                    ? `Show all (${workerRows.hiddenCount})`
-                    : workerRows.stoppedHiddenCount > 0
-                      ? `Show history (${workerRows.stoppedHiddenCount})`
-                      : `Show more (${workerRows.overflowHiddenCount})`}
-              </Button>
-            ) : null}
-          </CardTitle>
-        </CardHeader>
-        <CardContent>
-          {workerRows.hiddenCount > 0 && !showWorkerHistory ? (
-            <div className="mb-3 rounded-md border border-border/70 bg-muted/30 px-3 py-2 text-sm text-muted-foreground">
-              Showing active and stale worker heartbeats.
-              {workerRows.stoppedHiddenCount > 0
-                ? ` ${workerRows.stoppedHiddenCount} stopped historical worker${
-                    workerRows.stoppedHiddenCount === 1 ? '' : 's'
-                  } hidden.`
-                : ''}
-              {workerRows.overflowHiddenCount > 0
-                ? ` ${workerRows.overflowHiddenCount} additional non-stopped worker${
-                    workerRows.overflowHiddenCount === 1 ? '' : 's'
-                  } hidden by the display limit.`
-                : ''}
-            </div>
-          ) : null}
-          <Table>
-            <TableHeader>
-              <TableRow>
-                <TableHead>Worker</TableHead>
-                <TableHead>Status</TableHead>
-                <TableHead>Current Job</TableHead>
-                <TableHead>Last Heartbeat</TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {workerRows.rows.map((worker) => (
-                <TableRow key={worker.workerId}>
-                  <TableCell>
-                    <div className="font-medium">{worker.workerId}</div>
-                    <div className="mt-1 text-xs text-muted-foreground">
-                      {worker.hostname} · pid {worker.processId ?? '—'}
-                    </div>
-                  </TableCell>
-                  <TableCell>
-                    <Badge variant={badgeVariant(worker.statusTone)}>
-                      {worker.status.replaceAll('_', ' ')}
-                    </Badge>
-                  </TableCell>
-                  <TableCell>{worker.currentJobId ?? '—'}</TableCell>
-                  <TableCell className="text-xs text-muted-foreground">
-                    {worker.lastHeartbeatAt ?? '—'}
-                  </TableCell>
-                </TableRow>
-              ))}
-              {workerRows.rows.length === 0 ? (
-                <TableRow>
-                  <TableCell colSpan={4} className="py-8 text-center text-muted-foreground">
-                    No worker heartbeat recorded yet. The API worker records one after it starts.
-                  </TableCell>
-                </TableRow>
-              ) : null}
-            </TableBody>
-          </Table>
-        </CardContent>
-      </Card>
+      {/* MVP6-06: Worker Heartbeat Card moved to /admin/13f/jobs.
+          ``hasAvailableWorker`` derivation stays on this page so
+          the Tasks Card readiness gating still works. */}
 
-      <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_360px]">
-        <Card className="rounded-md">
-          <CardHeader className="pb-3">
-            <CardTitle className="flex items-center gap-2 text-base">
-              <Database className="h-4 w-4" />
-              Quarters
-            </CardTitle>
-          </CardHeader>
-          <CardContent>
-            <Table>
-              <TableHeader>
-                <TableRow>
-                  <TableHead>Quarter</TableHead>
-                  <TableHead>Phase</TableHead>
-                  <TableHead>Health</TableHead>
-                  <TableHead>Filed</TableHead>
-                  <TableHead>Holdings</TableHead>
-                  <TableHead>Linked</TableHead>
-                  <TableHead>Amendments</TableHead>
-                  <TableHead>Detail</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {quarters.map((quarter) => (
-                  <TableRow key={quarter.quarter}>
-                    <TableCell className="font-medium">{quarter.quarter}</TableCell>
-                    <TableCell>{quarter.phase}</TableCell>
-                    <TableCell>
-                      <Badge variant={badgeVariant(quarter.healthTone)}>
-                        {quarter.health?.replaceAll('_', ' ')}
-                      </Badge>
-                    </TableCell>
-                    <TableCell>
-                      {formatInteger(quarter.filedManagers)} / {formatInteger(quarter.trackedManagers)}
-                    </TableCell>
-                    <TableCell>{formatInteger(quarter.holdingsCount)}</TableCell>
-                    <TableCell>
-                      <div>{formatPercent(quarter.linkedRatio)}</div>
-                      {quarter.linkedUnavailableReason ? (
-                        <div className="mt-1 text-xs text-muted-foreground">
-                          {quarter.linkedUnavailableReason}
-                        </div>
-                      ) : null}
-                    </TableCell>
-                    <TableCell>{quarter.amendmentStatus?.replaceAll('_', ' ')}</TableCell>
-                    <TableCell>
-                      <Button
-                        type="button"
-                        variant="outline"
-                        size="sm"
-                        onClick={() => openQuarterDetail(quarter.quarter)}
-                      >
-                        Review
-                      </Button>
-                    </TableCell>
-                  </TableRow>
-                ))}
-                {quarters.length === 0 ? (
-                  <TableRow>
-                    <TableCell colSpan={8} className="py-8 text-center text-muted-foreground">
-                      No quarter data available.
-                    </TableCell>
-                  </TableRow>
-                ) : null}
-              </TableBody>
-            </Table>
-          </CardContent>
-        </Card>
+      {/* MVP6-07: Quarters Card moved to /admin/13f/readiness along
+          with the Quarter Detail Drawer. */}
 
+      <div className="grid grid-cols-1 gap-4">
         <Card className="rounded-md">
           <CardHeader className="pb-3">
             <CardTitle className="flex items-center gap-2 text-base">
@@ -1071,7 +589,7 @@ export default function Admin13FPage() {
             {tasks.map((task) => {
               const primaryAction = taskPrimaryAction(task, latestQuarter);
               return (
-                <div key={task.code} className="rounded-md border border-border/70 p-3">
+                <div key={task.renderKey ?? task.code} className="rounded-md border border-border/70 p-3">
                   <div className="flex items-start justify-between gap-2">
                     <div>
                       <div className="font-medium">{task.title}</div>
@@ -1495,308 +1013,64 @@ export default function Admin13FPage() {
         </CardContent>
       </Card>
 
+      {/* MVP6-06: Historical Backfill Card moved to /admin/13f/jobs. */}
+
+      {/* MVP6-07: Needs Validation + Unknown Manager Type Priority
+          Cards moved to /admin/13f/readiness. */}
+
+      {/* MVP6-06: Batch Reparse Card moved to /admin/13f/jobs. */}
+
+      {/* MVP6-05: Corporate Action Mapping Card + DrawerShell moved
+          to /admin/13f/holdings along with the MVP3-08 confirm flow. */}
+
       <div id="managers" className="grid grid-cols-1 scroll-mt-6 gap-4">
         <Card className="rounded-md">
           <CardHeader className="pb-3">
-            <CardTitle className="text-base">Managers ({managers.length})</CardTitle>
+            <CardTitle className="text-base">Managers</CardTitle>
           </CardHeader>
-          <CardContent>
-            <Table>
-              <TableHeader>
-                <TableRow>
-                  <TableHead>Name</TableHead>
-                  <TableHead>CIK</TableHead>
-                  <TableHead>Candidate Evidence</TableHead>
-                  <TableHead>Latest Audit</TableHead>
-                  <TableHead>Status</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {managers.slice(0, 100).map((manager: Record<string, unknown>) => {
-                  const latestEvent =
-                    manager.latest_cik_review_event &&
-                    typeof manager.latest_cik_review_event === 'object'
-                      ? (manager.latest_cik_review_event as Record<string, unknown>)
-                      : null;
-                  const affectedQuarters = Array.isArray(latestEvent?.affected_quarters)
-                    ? latestEvent.affected_quarters
-                    : [];
-                  return (
-                    <TableRow key={String(manager.id)}>
-                      <TableCell className="font-medium">{String(manager.legal_name ?? '—')}</TableCell>
-                      <TableCell>{String(manager.cik ?? '—')}</TableCell>
-                      <TableCell>
-                        <div className="space-y-1 text-sm">
-                          <div>{String(manager.candidate_legal_name ?? '—')}</div>
-                          <div className="text-xs text-muted-foreground">
-                            CIK {String(manager.candidate_cik ?? '—')} · score{' '}
-                            {typeof manager.candidate_similarity_score === 'number'
-                              ? manager.candidate_similarity_score.toFixed(2)
-                              : '—'}
-                          </div>
-                          <div className="text-xs text-muted-foreground">
-                            {String(manager.candidate_source ?? 'No candidate source')}
-                          </div>
-                          {typeof manager.candidate_evidence_url === 'string' ? (
-                            <Button asChild variant="link" size="sm" className="h-auto p-0 text-xs">
-                              <a href={manager.candidate_evidence_url} target="_blank" rel="noreferrer">
-                                Open evidence
-                              </a>
-                            </Button>
-                          ) : null}
-                          {typeof manager.review_note === 'string' && manager.review_note ? (
-                            <div className="text-xs text-muted-foreground">
-                              Review note: {manager.review_note}
-                            </div>
-                          ) : null}
-                        </div>
-                      </TableCell>
-                      <TableCell>
-                        {latestEvent ? (
-                          <div className="space-y-1 text-xs">
-                            <div className="font-medium">
-                              {String(latestEvent.event_type ?? '—').replaceAll('_', ' ')}
-                            </div>
-                            <div className="text-muted-foreground">
-                              {String(latestEvent.old_cik ?? '—')} → {String(latestEvent.new_cik ?? '—')}
-                            </div>
-                            {latestEvent.requires_downstream_review ? (
-                              <div className="text-rose-700">
-                                Downstream review · {String(latestEvent.affected_filings_count ?? 0)} filings
-                              </div>
-                            ) : null}
-                            {affectedQuarters.length > 0 ? (
-                              <div className="text-muted-foreground">
-                                {affectedQuarters.slice(0, 3).join(', ')}
-                              </div>
-                            ) : null}
-                          </div>
-                        ) : (
-                          <span className="text-xs text-muted-foreground">No CIK review event</span>
-                        )}
-                      </TableCell>
-                      <TableCell>
-                        <div className="flex flex-wrap items-center gap-2">
-                          <span>{String(manager.match_status ?? '—')}</span>
-                          {manager.match_status === 'candidate' || manager.match_status === 'seeded' ? (
-                            <>
-                              <Button
-                                type="button"
-                                variant="outline"
-                                size="sm"
-                                onClick={() => handleConfirmManager(manager)}
-                              >
-                                Confirm
-                              </Button>
-                              <Button
-                                type="button"
-                                variant="ghost"
-                                size="sm"
-                                onClick={() => handleRejectManager(manager)}
-                              >
-                                Reject
-                              </Button>
-                              <Button
-                                type="button"
-                                variant="ghost"
-                                size="sm"
-                                onClick={() => handleRetryManager(manager)}
-                              >
-                                Retry Search
-                              </Button>
-                            </>
-                          ) : null}
-                          {manager.match_status === 'revoked' || manager.match_status === 'rejected' ? (
-                            <Button
-                              type="button"
-                              variant="outline"
-                              size="sm"
-                              onClick={() => handleRetryManager(manager)}
-                            >
-                              Retry Search
-                            </Button>
-                          ) : null}
-                          {manager.match_status === 'confirmed' && manager.cik ? (
-                            <Button
-                              type="button"
-                              variant="ghost"
-                              size="sm"
-                              onClick={() => handleRevokeManager(manager)}
-                            >
-                              Revoke CIK
-                            </Button>
-                          ) : null}
-                        </div>
-                      </TableCell>
-                    </TableRow>
-                  );
-                })}
-                {managers.length === 0 ? (
-                  <TableRow>
-                    <TableCell colSpan={5} className="py-8 text-center text-muted-foreground">
-                      No managers seeded.
-                    </TableCell>
-                  </TableRow>
-                ) : null}
-              </TableBody>
-            </Table>
+          <CardContent className="space-y-2 text-sm text-muted-foreground">
+            <p>
+              Manager management lives on the dedicated{' '}
+              <Link href="/admin/13f/managers" className="font-medium text-foreground hover:underline">
+                Managers page
+              </Link>
+              {' '}— list with filters, CIK review, manager_type classification,
+              and per-manager audit history (CIK + manager_type events).
+            </p>
+            <Button asChild size="sm" variant="outline">
+              <Link href="/admin/13f/managers">Open Managers page →</Link>
+            </Button>
           </CardContent>
         </Card>
 
-        <Card className="rounded-md">
-          <CardHeader className="pb-3">
-            <CardTitle className="flex items-center gap-2 text-base">
-              <History className="h-4 w-4" />
-              Job Runs
-            </CardTitle>
-          </CardHeader>
-          <CardContent>
-            <Table>
-              <TableHeader>
-                <TableRow>
-                  <TableHead>Job</TableHead>
-                  <TableHead>Status</TableHead>
-                  <TableHead>Lock</TableHead>
-                  <TableHead>Worker</TableHead>
-                  <TableHead>Detail</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {jobs.slice(0, 12).map((job: Record<string, unknown>) => (
-                  <TableRow key={String(job.id)}>
-                    <TableCell className="font-medium">{String(job.job_type ?? '—')}</TableCell>
-                    <TableCell>{String(job.status ?? '—')}</TableCell>
-                    <TableCell className="max-w-[240px] truncate text-xs text-muted-foreground">
-                      {String(job.lock_key ?? '—')}
-                    </TableCell>
-                    <TableCell className="text-xs text-muted-foreground">
-                      {String(job.worker_id ?? '—')}
-                    </TableCell>
-                    <TableCell>
-                      <Button
-                        type="button"
-                        variant="outline"
-                        size="sm"
-                        onClick={() => setSelectedJobId(Number(job.id))}
-                      >
-                        Review
-                      </Button>
-                    </TableCell>
-                  </TableRow>
-                ))}
-                {jobs.length === 0 ? (
-                  <TableRow>
-                    <TableCell colSpan={5} className="py-8 text-center text-muted-foreground">
-                      No job history available.
-                    </TableCell>
-                  </TableRow>
-                ) : null}
-              </TableBody>
-            </Table>
-          </CardContent>
-        </Card>
+        {/* MVP6-06: Job Runs Card moved to /admin/13f/jobs. */}
       </div>
 
-      <Dialog open={pendingJob !== null} onOpenChange={(open) => !open && setPendingJob(null)}>
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>Confirm Job</DialogTitle>
-            <DialogDescription>
-              Review the dry-run preview before queueing this operation.
-            </DialogDescription>
-          </DialogHeader>
-          {pendingJob ? (
-            <div className="space-y-4">
-              <div className="rounded-md border border-border/70 p-3">
-                <div className="text-xs uppercase text-muted-foreground">Action</div>
-                <div className="mt-1 font-medium">{pendingJob.label}</div>
-                <div className="mt-1 font-mono text-xs text-muted-foreground">
-                  {String(pendingJob.payload.job_type ?? '—')}
-                </div>
-              </div>
-              {pendingJob.previewFailed ? (
-                <div className="rounded-md border border-amber-300/70 bg-amber-50 px-3 py-2 text-sm text-amber-950">
-                  Preview failed. The backend will still enforce locks before queueing.
-                </div>
-              ) : null}
-              <div>
-                <div className="mb-2 text-xs font-semibold uppercase text-muted-foreground">
-                  Impact Summary
-                </div>
-                <div className="grid gap-2 text-sm">
-                {jobPreviewRows(pendingJob.preview).map(({ label, value }: { label: string; value: unknown }) => (
-                  <div
-                    key={String(label)}
-                    className="flex justify-between gap-4 rounded-md border border-border/70 px-3 py-2"
-                  >
-                    <span className="text-muted-foreground">{String(label)}</span>
-                    <span className="break-all text-right font-medium">{String(value)}</span>
-                  </div>
-                ))}
-                </div>
-              </div>
-              {pendingJob.preview.rate_limit_warning ? (
-                <div className="rounded-md border border-amber-300/70 bg-amber-50 px-3 py-2 text-sm text-amber-950">
-                  {String(pendingJob.preview.rate_limit_warning)}
-                </div>
-              ) : null}
-            </div>
-          ) : null}
-          <DialogFooter>
-            <Button type="button" variant="outline" onClick={() => setPendingJob(null)}>
-              Cancel
-            </Button>
-            <Button
-              type="button"
-              disabled={!pendingJob || triggerJob.isPending}
-              onClick={() => {
-                if (!pendingJob) return;
-                triggerJob.mutate({ ...pendingJob.payload, dry_run: false });
-                setPendingJob(null);
-              }}
-            >
-              Queue job
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+      {/* MVP6-06: inline Dialogs lifted to shared components in
+          frontend/components/admin13f/. The state + mutations stay
+          on the index page because the Tasks Card + Manual
+          Triggers still call ``runJob`` / ``requestStaleJobLockRelease``. */}
+      <JobPendingDialog
+        pendingJob={pendingJob}
+        triggerJobPending={triggerJob.isPending}
+        onCancel={() => setPendingJob(null)}
+        onConfirm={() => {
+          if (!pendingJob) return;
+          triggerJob.mutate({ ...pendingJob.payload, dry_run: false });
+          setPendingJob(null);
+        }}
+      />
 
-      <Dialog open={pendingStaleReleaseJobId !== null} onOpenChange={(open) => !open && setPendingStaleReleaseJobId(null)}>
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>Release Stale Lock</DialogTitle>
-            <DialogDescription>
-              This marks a stale running job as failed and releases its active lock.
-            </DialogDescription>
-          </DialogHeader>
-          <div className="space-y-3">
-            <div className="rounded-md border border-amber-300/70 bg-amber-50 px-3 py-2 text-sm text-amber-950">
-              Only continue after confirming the worker is no longer running this job.
-            </div>
-            <div className="rounded-md border border-border/70 p-3 text-sm">
-              <div className="text-xs uppercase text-muted-foreground">Job ID</div>
-              <div className="mt-1 font-medium">#{pendingStaleReleaseJobId ?? '—'}</div>
-            </div>
-          </div>
-          <DialogFooter>
-            <Button type="button" variant="outline" onClick={() => setPendingStaleReleaseJobId(null)}>
-              Cancel
-            </Button>
-            <Button
-              type="button"
-              variant="destructive"
-              disabled={pendingStaleReleaseJobId === null || releaseStaleLock.isPending}
-              onClick={() => {
-                if (pendingStaleReleaseJobId === null) return;
-                releaseStaleLock.mutate(pendingStaleReleaseJobId);
-                setPendingStaleReleaseJobId(null);
-              }}
-            >
-              Release lock
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+      <ReleaseStaleLockDialog
+        pendingJobId={pendingStaleReleaseJobId}
+        releasePending={releaseStaleLock.isPending}
+        onCancel={() => setPendingStaleReleaseJobId(null)}
+        onConfirm={() => {
+          if (pendingStaleReleaseJobId === null) return;
+          releaseStaleLock.mutate(pendingStaleReleaseJobId);
+          setPendingStaleReleaseJobId(null);
+        }}
+      />
 
       <ManagerCikDialogs
         pendingConfirmManager={pendingConfirmManager}
@@ -1829,583 +1103,8 @@ export default function Admin13FPage() {
         onSubmitRetry={submitRetryManagerDialog}
       />
 
-      {selectedQuarter !== null ? (
-        <DrawerShell
-          title="Quarter Detail"
-          description={
-            selectedQuarterDetail?.summary
-              ? `${selectedQuarterDetail.summary.quarter_phase} · ${selectedQuarterDetail.summary.quarter_health}`
-              : selectedQuarter
-          }
-          closeLabel="Close quarter detail"
-          labelledBy="quarter-detail-title"
-          maxWidthClassName="max-w-[640px]"
-          onClose={() => setSelectedQuarter(null)}
-        >
-              {selectedQuarterDetail ? (
-                <>
-                  <div className="grid gap-3 md:grid-cols-3">
-                    <MetricTile
-                      label="Filings"
-                      value={formatInteger(selectedQuarterDetail.summary?.filings_count)}
-                    />
-                    <MetricTile
-                      label="Holdings"
-                      value={formatInteger(selectedQuarterDetail.summary?.holdings_count)}
-                    />
-                    <MetricTile
-                      label="Linked"
-                      value={formatPercent(selectedQuarterDetail.summary?.linked_holding_ratio)}
-                      detail={
-                        selectedQuarterDetail.summary?.linked_holding_unavailable_reason
-                          ? String(selectedQuarterDetail.summary.linked_holding_unavailable_reason)
-                          : undefined
-                      }
-                    />
-                  </div>
-                  {selectedQuarterDetail.summary?.active_job_id ? (
-                    <div className="rounded-md border border-amber-300/70 bg-amber-50 px-3 py-2 text-sm text-amber-950">
-                      Active job #{String(selectedQuarterDetail.summary.active_job_id)} ·{' '}
-                      {String(selectedQuarterDetail.summary.active_job_type ?? 'job')}
-                    </div>
-                  ) : null}
-                  {selectedQuarterDetail.summary?.revoked_cik_review_required ? (
-                    <div className="rounded-md border border-rose-300/70 bg-rose-50 px-3 py-2 text-sm text-rose-950">
-                      This quarter includes filings from a manager whose CIK was revoked. Reconfirm the manager CIK before relying on downstream analytics.
-                    </div>
-                  ) : null}
-
-                  <div>
-                    <div className="mb-2 text-xs font-semibold uppercase text-muted-foreground">
-                      Suggested Actions
-                    </div>
-                    <div className="flex flex-wrap gap-2">
-                      {(selectedQuarterDetail.suggested_actions ?? []).map(
-                        (action: Record<string, unknown>, index: number) => (
-                          <Button
-                            key={`${String(action.job_type ?? 'action')}-${index}`}
-                            type="button"
-                            variant="outline"
-                            size="sm"
-                            disabled={isJobActive(action)}
-                            onClick={() => runJob(action, String(action.label ?? action.job_type ?? 'Run action'))}
-                          >
-                            {String(action.label ?? action.job_type ?? 'Run action')}
-                          </Button>
-                        )
-                      )}
-                      {(selectedQuarterDetail.suggested_actions ?? []).length === 0 ? (
-                        <div className="text-sm text-muted-foreground">
-                          No suggested action for this quarter.
-                        </div>
-                      ) : null}
-                    </div>
-                  </div>
-
-                  <div>
-                    <div className="mb-2 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-                      <div className="text-xs font-semibold uppercase text-muted-foreground">
-                        Filing Rows
-                      </div>
-                      <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
-                        <Select
-                          value={quarterFilingStatus}
-                          onValueChange={(value) => {
-                            setQuarterFilingStatus(value);
-                            setQuarterFilingOffset(0);
-                          }}
-                        >
-                          <SelectTrigger className="w-full sm:w-[190px]">
-                            <SelectValue placeholder="All filing statuses" />
-                          </SelectTrigger>
-                          <SelectContent>
-                            <SelectItem value="all">All statuses</SelectItem>
-                            <SelectItem value="pending">Pending</SelectItem>
-                            <SelectItem value="failed">Failed</SelectItem>
-                            <SelectItem value="parsed_no_holdings">Parsed, no holdings</SelectItem>
-                            <SelectItem value="parsed">Parsed</SelectItem>
-                          </SelectContent>
-                        </Select>
-                        <div className="flex gap-2">
-                          <Button
-                            type="button"
-                            variant="outline"
-                            size="sm"
-                            disabled={quarterFilingOffset === 0}
-                            onClick={() => setQuarterFilingOffset((value) => Math.max(value - 25, 0))}
-                          >
-                            Prev
-                          </Button>
-                          <Button
-                            type="button"
-                            variant="outline"
-                            size="sm"
-                            disabled={
-                              !selectedQuarterDetail.filings_page ||
-                              Number(selectedQuarterDetail.filings_page.offset ?? 0) +
-                                Number(selectedQuarterDetail.filings_page.limit ?? 25) >=
-                                Number(selectedQuarterDetail.filings_page.total ?? 0)
-                            }
-                            onClick={() => setQuarterFilingOffset((value) => value + 25)}
-                          >
-                            Next
-                          </Button>
-                        </div>
-                      </div>
-                    </div>
-                    <div className="rounded-md border border-border/70">
-                      <Table>
-                        <TableHeader>
-                          <TableRow>
-                            <TableHead>Accession</TableHead>
-                            <TableHead>Status</TableHead>
-                            <TableHead>Manager</TableHead>
-                            <TableHead>Holdings</TableHead>
-                          </TableRow>
-                        </TableHeader>
-                        <TableBody>
-                          {(selectedQuarterDetail.filings_page?.items ?? []).map((filing: Record<string, unknown>) => (
-                            <TableRow key={String(filing.accession_no)}>
-                              <TableCell className="font-mono text-xs">{String(filing.accession_no ?? '—')}</TableCell>
-                              <TableCell>
-                                <Badge variant={badgeVariant(
-                                  filing.status === 'failed'
-                                    ? 'danger'
-                                    : filing.status === 'pending' || filing.status === 'parsed_no_holdings'
-                                      ? 'warning'
-                                      : 'success'
-                                )}>
-                                  {String(filing.status ?? 'unknown').replaceAll('_', ' ')}
-                                </Badge>
-                              </TableCell>
-                              <TableCell>{String((filing.manager as Record<string, unknown> | undefined)?.legal_name ?? '—')}</TableCell>
-                              <TableCell>{formatInteger(filing.holdings_count)}</TableCell>
-                            </TableRow>
-                          ))}
-                          {(selectedQuarterDetail.filings_page?.items ?? []).length === 0 ? (
-                            <TableRow>
-                              <TableCell colSpan={4} className="py-6 text-center text-muted-foreground">
-                                No filings match this filter.
-                              </TableCell>
-                            </TableRow>
-                          ) : null}
-                        </TableBody>
-                      </Table>
-                    </div>
-                    <div className="mt-2 text-xs text-muted-foreground">
-                      Showing {formatInteger((selectedQuarterDetail.filings_page?.items ?? []).length)} of{' '}
-                      {formatInteger(selectedQuarterDetail.filings_page?.total)} matching filings.
-                      Counts: pending {formatInteger(selectedQuarterDetail.filing_counts_by_status?.pending)}, failed{' '}
-                      {formatInteger(selectedQuarterDetail.filing_counts_by_status?.failed)}, parsed{' '}
-                      {formatInteger(selectedQuarterDetail.filing_counts_by_status?.parsed)}.
-                    </div>
-                  </div>
-
-                  <div>
-                    <div className="mb-2 text-xs font-semibold uppercase text-muted-foreground">
-                      Pending Filings
-                    </div>
-                    <div className="space-y-2">
-                      {(selectedQuarterDetail.pending_filings ?? []).map((filing: Record<string, unknown>) => (
-                        <div key={String(filing.accession_no)} className="rounded-md border border-border/70 p-3">
-                          <div className="font-mono text-xs">{String(filing.accession_no ?? '—')}</div>
-                          <div className="mt-1 text-xs text-muted-foreground">
-                            {String((filing.manager as Record<string, unknown> | undefined)?.legal_name ?? '—')} ·{' '}
-                            {String(filing.form_type ?? '—')}
-                          </div>
-                        </div>
-                      ))}
-                      {(selectedQuarterDetail.pending_filings ?? []).length === 0 ? (
-                        <div className="text-sm text-muted-foreground">No pending filings.</div>
-                      ) : null}
-                    </div>
-                  </div>
-
-                  <div>
-                    <div className="mb-2 text-xs font-semibold uppercase text-muted-foreground">
-                      Failed Filings
-                    </div>
-                    <div className="space-y-2">
-                      {(selectedQuarterDetail.failed_filings ?? []).map((filing: Record<string, unknown>) => {
-                        const infotable =
-                          filing.raw_infotable && typeof filing.raw_infotable === 'object'
-                            ? (filing.raw_infotable as Record<string, unknown>)
-                            : {};
-                        return (
-                          <div key={String(filing.accession_no)} className="rounded-md border border-rose-300/70 bg-rose-50 p-3 text-rose-950">
-                            <div className="font-mono text-xs">{String(filing.accession_no ?? '—')}</div>
-                            <div className="mt-1 text-xs">
-                              {String(infotable.error_message ?? 'Parse failed')}
-                            </div>
-                          </div>
-                        );
-                      })}
-                      {(selectedQuarterDetail.failed_filings ?? []).length === 0 ? (
-                        <div className="text-sm text-muted-foreground">No failed filings.</div>
-                      ) : null}
-                    </div>
-                  </div>
-
-                  <div>
-                    <div className="mb-2 text-xs font-semibold uppercase text-muted-foreground">
-                      Amendments
-                    </div>
-                    <div className="space-y-2">
-                      {(selectedQuarterDetail.amendments ?? []).map((amendment: Record<string, unknown>) => (
-                        <div key={String(amendment.accession_no)} className="rounded-md border border-border/70 p-3">
-                          <div className="flex items-center justify-between gap-2">
-                            <div className="font-mono text-xs">{String(amendment.accession_no ?? '—')}</div>
-                            <Badge variant={badgeVariant(
-                              amendment.status === 'failed'
-                                ? 'danger'
-                                : amendment.status === 'pending'
-                                  ? 'warning'
-                                  : amendment.status === 'applied'
-                                    ? 'success'
-                                    : 'secondary'
-                            )}>
-                              {String(amendment.status ?? 'unknown').replaceAll('_', ' ')}
-                            </Badge>
-                          </div>
-                          <div className="mt-1 text-xs text-muted-foreground">
-                            Supersedes {String(amendment.supersedes_accession_no ?? '—')}
-                          </div>
-                        </div>
-                      ))}
-                      {(selectedQuarterDetail.amendments ?? []).length === 0 ? (
-                        <div className="text-sm text-muted-foreground">No amendments for this quarter.</div>
-                      ) : null}
-                    </div>
-                  </div>
-
-                  <div>
-                    <div className="mb-2 text-xs font-semibold uppercase text-muted-foreground">
-                      Quality Report
-                    </div>
-                    {selectedQuarterDetail.quality_report ? (
-                      <div className="rounded-md border border-border/70 bg-muted/40 p-3">
-                        <div className="flex items-center justify-between gap-2">
-                          <div className="font-medium">
-                            {String(selectedQuarterDetail.quality_report.status ?? 'unknown').replaceAll('_', ' ')}
-                          </div>
-                          <div className="text-xs text-muted-foreground">
-                            {String(selectedQuarterDetail.quality_report.checked_at ?? '—')}
-                          </div>
-                        </div>
-                        <div className="mt-2 max-h-44 overflow-auto rounded-md border border-border/70 bg-background p-3 font-mono text-xs">
-                          {formatJson(selectedQuarterDetail.quality_report.issues)}
-                        </div>
-                      </div>
-                    ) : (
-                      <div className="text-sm text-muted-foreground">No quality report for this quarter.</div>
-                    )}
-                  </div>
-                </>
-              ) : (
-                <div className="flex items-center gap-2 text-sm text-muted-foreground">
-                  <Loader2 className="h-4 w-4 animate-spin" />
-                  Loading quarter detail...
-                </div>
-              )}
-        </DrawerShell>
-      ) : null}
-      {selectedAmendmentAccession !== null ? (
-        <DrawerShell
-          title="Amendment Detail"
-          description={<span className="font-mono text-xs">{selectedAmendmentAccession}</span>}
-          closeLabel="Close amendment detail"
-          labelledBy="amendment-detail-title"
-          maxWidthClassName="max-w-[560px]"
-          onClose={() => setSelectedAmendmentAccession(null)}
-        >
-              {selectedAmendment ? (
-                <>
-                  <div className="flex flex-wrap items-center gap-2">
-                    <Badge variant={badgeVariant(
-                      selectedAmendment.status === 'failed'
-                        ? 'danger'
-                        : selectedAmendment.status === 'pending'
-                          ? 'warning'
-                          : selectedAmendment.status === 'applied'
-                            ? 'success'
-                            : 'secondary'
-                    )}>
-                      {String(selectedAmendment.status ?? 'unknown').replaceAll('_', ' ')}
-                    </Badge>
-                    <span className="text-sm text-muted-foreground">
-                      {selectedAmendment.form_type} · {selectedAmendment.quarter}
-                    </span>
-                  </div>
-                  <div className="grid gap-3 md:grid-cols-2">
-                    <div className="rounded-md border border-border/70 p-3">
-                      <div className="text-xs uppercase text-muted-foreground">Manager</div>
-                      <div className="mt-1 text-sm font-medium">
-                        {selectedAmendment.manager?.display_name ??
-                          selectedAmendment.manager?.legal_name ??
-                          '—'}
-                      </div>
-                      <div className="mt-1 font-mono text-xs text-muted-foreground">
-                        {selectedAmendment.manager?.cik ?? '—'}
-                      </div>
-                    </div>
-                    <div className="rounded-md border border-border/70 p-3">
-                      <div className="text-xs uppercase text-muted-foreground">Holdings</div>
-                      <div className="mt-1 text-sm">
-                        {formatInteger(selectedAmendment.holdings_count)}
-                      </div>
-                    </div>
-                    <div className="rounded-md border border-border/70 p-3">
-                      <div className="text-xs uppercase text-muted-foreground">Supersedes</div>
-                      <div className="mt-1 break-all font-mono text-xs">
-                        {selectedAmendment.supersedes_accession_no ?? '—'}
-                      </div>
-                    </div>
-                    <div className="rounded-md border border-border/70 p-3">
-                      <div className="text-xs uppercase text-muted-foreground">Latest Effective</div>
-                      <div className="mt-1 break-all font-mono text-xs">
-                        {selectedAmendment.latest_effective_accession_no ?? '—'}
-                      </div>
-                    </div>
-                  </div>
-                  {selectedAmendment.recommended_job ? (
-                    <Button
-                      type="button"
-                      variant="outline"
-                      disabled={isJobActive(selectedAmendment.recommended_job)}
-                      onClick={() =>
-                        runJob(
-                          selectedAmendment.recommended_job,
-                          `Reprocess ${selectedAmendment.accession_no}`
-                        )
-                      }
-                    >
-                      Reprocess amendment
-                    </Button>
-                  ) : null}
-                  <div>
-                    <div className="text-xs font-semibold uppercase text-muted-foreground">
-                      Raw primary document
-                    </div>
-                    <div className="mt-2 max-h-56 overflow-auto rounded-md border border-border/70 bg-muted/40 p-3 font-mono text-xs">
-                      {formatJson(selectedAmendment.raw_primary)}
-                    </div>
-                  </div>
-                  <div>
-                    <div className="text-xs font-semibold uppercase text-muted-foreground">
-                      Raw InfoTable document
-                    </div>
-                    <div className="mt-2 max-h-56 overflow-auto rounded-md border border-border/70 bg-muted/40 p-3 font-mono text-xs">
-                      {formatJson(selectedAmendment.raw_infotable)}
-                    </div>
-                  </div>
-                </>
-              ) : (
-                <div className="flex items-center gap-2 text-sm text-muted-foreground">
-                  <Loader2 className="h-4 w-4 animate-spin" />
-                  Loading amendment detail...
-                </div>
-              )}
-        </DrawerShell>
-      ) : null}
-      {selectedJobId !== null ? (
-        <DrawerShell
-          title="Job Detail"
-          description={selectedJob ? `${selectedJob.job_type} · ${selectedJob.status}` : 'Loading job detail...'}
-          closeLabel="Close job detail"
-          labelledBy="job-detail-title"
-          maxWidthClassName="max-w-[520px]"
-          onClose={() => setSelectedJobId(null)}
-        >
-              {selectedJob ? (
-                <>
-                  <div className="grid gap-3 md:grid-cols-2">
-                    <div className="rounded-md border border-border/70 p-3">
-                      <div className="text-xs uppercase text-muted-foreground">Lock key</div>
-                      <div className="mt-1 break-all font-mono text-xs">{selectedJob.lock_key ?? '—'}</div>
-                    </div>
-                    <div className="rounded-md border border-border/70 p-3">
-                      <div className="text-xs uppercase text-muted-foreground">Worker</div>
-                      <div className="mt-1 break-all font-mono text-xs">{selectedJob.worker_id ?? '—'}</div>
-                    </div>
-                    <div className="rounded-md border border-border/70 p-3">
-                      <div className="text-xs uppercase text-muted-foreground">Started</div>
-                      <div className="mt-1 text-sm">{selectedJob.started_at ?? '—'}</div>
-                    </div>
-                    <div className="rounded-md border border-border/70 p-3">
-                      <div className="text-xs uppercase text-muted-foreground">Finished</div>
-                      <div className="mt-1 text-sm">{selectedJob.finished_at ?? '—'}</div>
-                    </div>
-                  </div>
-                  {(selectedJob.error_message ||
-                    (typeof selectedJob.summary_json === 'object' &&
-                      selectedJob.summary_json !== null &&
-                      (selectedJob.summary_json as Record<string, unknown>).pipeline_error)) ? (
-                    <div className="rounded-md border border-rose-300/70 bg-rose-50 px-3 py-2 text-sm text-rose-950">
-                      {selectedJob.error_message ??
-                        String((selectedJob.summary_json as Record<string, unknown>).pipeline_error ?? '')}
-                    </div>
-                  ) : null}
-                  {selectedJob.can_release_stale_lock ? (
-                    <div className="rounded-md border border-amber-300/70 bg-amber-50 px-3 py-3 text-sm text-amber-950">
-                      <div className="font-medium">This running job lock appears stale.</div>
-                      <div className="mt-1">
-                        Last heartbeat age: {formatInteger(Number(selectedJob.stale_seconds ?? 0))}s.
-                      </div>
-                      <Button
-                        type="button"
-                        variant="outline"
-                        size="sm"
-                        className="mt-3 bg-background"
-                        disabled={releaseStaleLock.isPending}
-                        onClick={() => requestStaleJobLockRelease(selectedJob.id)}
-                      >
-                        Release stale lock
-                      </Button>
-                    </div>
-                  ) : null}
-                  <div>
-                    <div className="text-xs font-semibold uppercase text-muted-foreground">
-                      Retry Targets
-                    </div>
-                    <div className="mt-2 flex flex-wrap gap-2">
-                      {(selectedJob.retry_targets ?? []).map((target: Record<string, unknown>, index: number) => (
-                        <Button
-                          key={`${String(target.job_type ?? '')}-${String(target.quarter ?? target.accession_no ?? 'target')}-${index}`}
-                          type="button"
-                          variant="outline"
-                          size="sm"
-                          onClick={() =>
-                            runJob(
-                              {
-                                job_type: target.job_type,
-                                accession_no: target.accession_no,
-                                quarter: target.quarter,
-                              },
-                              String(target.label ?? target.accession_no ?? 'Retry target')
-                            )
-                          }
-                        >
-                          {String(target.label ?? target.accession_no ?? 'Retry target')}
-                        </Button>
-                      ))}
-                      {(selectedJob.retry_targets ?? []).length === 0 ? (
-                        <div className="text-sm text-muted-foreground">No retry target detected.</div>
-                      ) : null}
-                    </div>
-                  </div>
-                  {Array.isArray((selectedJob.summary_json as Record<string, unknown> | null)?.stages) &&
-                  ((selectedJob.summary_json as Record<string, unknown>).stages as unknown[]).length > 0 ? (
-                    <div>
-                      <div className="text-xs font-semibold uppercase text-muted-foreground">
-                        Pipeline Stages
-                      </div>
-                      <div className="mt-2 space-y-2">
-                        {((selectedJob.summary_json as Record<string, unknown>).stages as Record<string, unknown>[]).map(
-                          (stage, index) => (
-                            <div
-                              key={`${String(stage.job_type ?? 'stage')}-${index}`}
-                              className="flex items-center justify-between rounded-md border border-border/70 px-3 py-2"
-                            >
-                              <div className="flex items-center gap-2">
-                                <Badge
-                                  variant={badgeVariant(
-                                    stage.status === 'succeeded'
-                                      ? 'success'
-                                      : stage.status === 'partial_success'
-                                        ? 'warning'
-                                        : stage.status === 'failed' || stage.status === 'conflict'
-                                          ? 'danger'
-                                          : 'secondary'
-                                  )}
-                                >
-                                  {String(stage.status ?? 'unknown').replaceAll('_', ' ')}
-                                </Badge>
-                                <span className="text-sm">
-                                  {String(stage.job_type ?? '—').replaceAll('_', ' ')}
-                                </span>
-                              </div>
-                              {stage.job_id != null ? (
-                                <Button
-                                  type="button"
-                                  variant="ghost"
-                                  size="sm"
-                                  onClick={() => setSelectedJobId(Number(stage.job_id))}
-                                >
-                                  Open
-                                </Button>
-                              ) : null}
-                            </div>
-                          )
-                        )}
-                      </div>
-                    </div>
-                  ) : null}
-                  <div>
-                    <div className="text-xs font-semibold uppercase text-muted-foreground">
-                      Timeline
-                    </div>
-                    <div className="mt-2 space-y-2">
-                      {(selectedJob.events ?? []).map((event: Record<string, unknown>, index: number) => (
-                        <div
-                          key={`${String(event.event_type ?? 'event')}-${index}`}
-                          className="rounded-md border border-border/70 p-3"
-                        >
-                          <div className="flex items-center justify-between gap-2">
-                            <div className="font-medium">
-                              {String(event.event_type ?? 'event').replaceAll('_', ' ')}
-                            </div>
-                            <Badge
-                              variant={badgeVariant(
-                                event.severity === 'error'
-                                  ? 'danger'
-                                  : event.severity === 'warning'
-                                    ? 'warning'
-                                    : 'secondary'
-                              )}
-                            >
-                              {String(event.severity ?? 'info')}
-                            </Badge>
-                          </div>
-                          <div className="mt-1 text-sm text-muted-foreground">
-                            {String(event.message ?? '—')}
-                          </div>
-                          <div className="mt-2 flex flex-wrap gap-2 font-mono text-xs text-muted-foreground">
-                            <span>{String(event.at ?? '—')}</span>
-                            {event.accession_no ? <span>{String(event.accession_no)}</span> : null}
-                            {event.worker_id ? <span>{String(event.worker_id)}</span> : null}
-                          </div>
-                        </div>
-                      ))}
-                      {(selectedJob.events ?? []).length === 0 ? (
-                        <div className="text-sm text-muted-foreground">No timeline events recorded.</div>
-                      ) : null}
-                    </div>
-                  </div>
-                  <div>
-                    <div className="text-xs font-semibold uppercase text-muted-foreground">
-                      Input
-                    </div>
-                    <div className="mt-2 max-h-64 overflow-auto rounded-md border border-border/70 bg-muted/40 p-3 font-mono text-xs">
-                      {formatJson(selectedJob.input_json)}
-                    </div>
-                  </div>
-                  <div>
-                    <div className="text-xs font-semibold uppercase text-muted-foreground">
-                      Summary
-                    </div>
-                    <div className="mt-2 max-h-64 overflow-auto rounded-md border border-border/70 bg-muted/40 p-3 font-mono text-xs">
-                      {formatJson(selectedJob.summary_json)}
-                    </div>
-                  </div>
-                </>
-              ) : (
-                <div className="flex items-center gap-2 text-sm text-muted-foreground">
-                  <Loader2 className="h-4 w-4 animate-spin" />
-                  Loading job detail...
-                </div>
-              )}
-        </DrawerShell>
-      ) : null}
-    </div>
+      {/* MVP6-07: Quarter Detail Drawer moved to /admin/13f/readiness. */}
+      {/* MVP6-06: Job Detail Drawer moved to /admin/13f/jobs. */}
+    </AdminPageLayout>
   );
 }
