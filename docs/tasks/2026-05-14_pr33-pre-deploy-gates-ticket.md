@@ -466,6 +466,22 @@ Dev sits at 1.25% (3/240). If production matches, use the first row.
         downgrade is structurally one-way).
   - [ ] D3 review pass — PO + backend lead review the draft, sign off.
 - [ ] D4 release note drafted, reviewed, distributed at deploy.
+  - [x] D4 template drafted 2026-05-18 at
+        `docs/runbooks/pr33-release-note-template.md`. Three audience-
+        specific sections (internal team channel / API consumer
+        changelog / watchlist user notice) with locked structure,
+        risk language, channels, and explicit placeholder slots for
+        D2 + D5 production values. Decision branches calibrated for
+        deploy verdict (DEPLOY-SAFE vs HOLD DEPLOY) and coverage tier
+        (small curated subset / meaningful minority / broad coverage).
+        Rollback note references `?use_persisted_scores=false` +
+        application revert; explicitly excludes alembic downgrade
+        from the routine rollback path.
+  - [ ] D4 final — operator fills placeholders with D2 + D5 prod
+        values, resolves decision branches, PO approves, operator
+        publishes to each channel, pastes the published user-facing
+        text into this sign-off trail for audit. Blocked on D2 +
+        D5 prod execution.
 - [ ] D5 production VL coverage audited, number recorded in D4.
   - [x] D5 dev baseline 2026-05-18: 7 stocks with any M3 fact;
         6 stocks with full M3 panel; 13F-holdings overlap 5/1183;
