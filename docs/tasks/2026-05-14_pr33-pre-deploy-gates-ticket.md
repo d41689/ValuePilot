@@ -103,12 +103,83 @@ The forward path is unaffected (the upgrade still works identically). The downgr
 **Steps**:
 
 1. Hydrate staging from a fresh production data dump.
-2. Run the formula comparison utility: `GET /api/v1/admin/13f/oracles-lens/formula-comparison?period=2025-Q4` (or current quarter).
+2. Run the formula comparison utility:
+   `GET /api/v1/admin/13f/oracles-lens/formula-comparison?quarter=<latest-quarter>`
+   (omit the query param to use the latest available quarter).
 3. Confirm gates: `total_stocks_compared ≥ 200`, `top10_swap_count == 0`, `persisted_only_count ≤ 10`.
 4. If gates green → deploy.
 5. If gates red → hold deploy and investigate the divergence. The flip is reversible.
 
 **Gate**: zero TOP10_RANK_SWAP against production data.
+
+### D2 pre-flight (dev re-verification, 2026-05-18)
+
+Re-ran the comparison utility against the populated dev DB to confirm
+the endpoint still produces MVP8-01's expected schema + gate values
+before asking the operator to run against production:
+
+```
+GET /api/v1/admin/13f/oracles-lens/formula-comparison
+→ {
+    "quarter": "2025-Q3",
+    "score_version": "v1.0",
+    "total_stocks_compared": 240,    ← gate ≥200 ✓
+    "legacy_only_count": 36,         ← informational (min_holders<3 exclusions, MVP8-01-documented)
+    "persisted_only_count": 0,       ← gate ≤10 ✓
+    "top10_swap_count": 0,           ← gate ==0 ✓
+    "magnitude_diff_count": 59,      ← informational (~70% scale shift, MVP8-02 resolves)
+    "items": [ ... per-stock breakdown ... ]
+  }
+```
+
+Endpoint works; gate evaluation logic is unchanged from MVP8-01.
+
+### D2 production execution recipe
+
+When the staging clone is ready:
+
+```bash
+# 1. Get an admin JWT (one-shot)
+export TOKEN=$(docker compose exec -T api python -c "
+import sys; sys.path.insert(0, '/app')
+from app.core.security import create_access_token
+from app.core.db import SessionLocal
+from app.models.users import User
+db = SessionLocal()
+admin = db.query(User).filter(User.role == 'admin').first()
+print(create_access_token(admin.id, admin.role))
+db.close()
+" | tail -1)
+
+# 2. Run the comparison utility (latest quarter)
+curl -s "http://<staging-host>:<api-port>/api/v1/admin/13f/oracles-lens/formula-comparison" \
+  -H "Authorization: Bearer $TOKEN" | python3 -m json.tool > /tmp/d2-prod-comparison.json
+
+# 3. Evaluate gates
+python3 -c "
+import json
+with open('/tmp/d2-prod-comparison.json') as f:
+    r = json.load(f)
+gates = {
+    'total_stocks_compared >= 200': r['total_stocks_compared'] >= 200,
+    'top10_swap_count == 0': r['top10_swap_count'] == 0,
+    'persisted_only_count <= 10': r['persisted_only_count'] <= 10,
+}
+for label, ok in gates.items():
+    print(('✓' if ok else '✗'), label, '→', r.get(label.split()[0]))
+print()
+print('DEPLOY-SAFE' if all(gates.values()) else 'HOLD DEPLOY — investigate divergence')
+"
+```
+
+Save the JSON output to `/tmp/d2-prod-comparison-<date>.json` for the
+audit trail. Paste the gate-evaluation result into the N4 sign-off
+trail when D2 is checked.
+
+**If gates fail**: do NOT deploy. The divergence pattern (which stocks
+swap, the magnitude class, whether `persisted_only_count` is unexpectedly
+high) determines the remediation path. Document the failure mode in the
+N4 sign-off trail with the JSON output before declaring D2 blocked.
 
 ## D3 — Operator runbook for Phase 3 rollback + observation-window monitoring
 
@@ -189,6 +260,14 @@ Distribute to: internal users (Slack), API consumers (changelog page), anyone wi
         source values > 20 chars per the closed source-vocabulary contract
         in AGENTS.md; prod TBD).
 - [ ] D2 Phase 1 comparison green against production data.
+  - [x] D2 pre-flight (dev re-verification 2026-05-18): comparison
+        utility endpoint operational; dev gates green
+        (total=240, swap=0, persisted_only=0); response schema
+        unchanged from MVP8-01. Production execution recipe
+        documented in D2 section above.
+  - [ ] D2 (prod) — operator runs the recipe against a staging
+        clone hydrated from production; pastes JSON output + gate
+        evaluation into this sign-off trail.
 - [ ] D3 operator runbook drafted, reviewed by PO + backend.
 - [ ] D4 release note drafted, reviewed, distributed at deploy.
 - [ ] D5 production VL coverage audited, number recorded in D4.
