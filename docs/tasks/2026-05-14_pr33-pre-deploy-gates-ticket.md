@@ -437,11 +437,15 @@ Dev sits at 1.25% (3/240). If production matches, use the first row.
       with a pre-check + actionable error. Full chain (22/23 migrations
       reversible cleanly; 23rd requires operator intervention to clear
       offending rows first, by design). pytest 823 passed post-restore.
-  - [ ] D1 (prod) — run the same round-trip against a production data dump
-        or fresh staging clone. Specifically confirm `cusip_ticker_map.source`
-        narrowing doesn't surface the same structural issue (dev has zero
-        source values > 20 chars per the closed source-vocabulary contract
-        in AGENTS.md; prod TBD).
+  - [x] D1 (prod) — accepted by PO direction 2026-05-18: "我们的生产
+        数据库和 dev 数据库没有明显的区别" (dev and prod DB are not
+        materially different). The full reverse chain ran end-to-end
+        against the populated dev DB during D1 round 2, which
+        exercised the `widen_cusip_ticker_map_source` downgrade
+        (VARCHAR(50)→(20)) cleanly — zero source values exceed 20
+        chars per the closed source-vocabulary contract in AGENTS.md
+        ("openfigi" / "sec_co_tickers" / "manual"). Production
+        evidence is the dev evidence per PO direction.
 - [ ] D2 Phase 1 comparison green against production data.
   - [x] D2 pre-flight (dev re-verification 2026-05-18): comparison
         utility endpoint regression-free since MVP8-01; recipe
@@ -450,9 +454,12 @@ Dev sits at 1.25% (3/240). If production matches, use the first row.
         — same dev DB, **no new prod evidence**). Response schema
         unchanged. Production execution recipe documented in D2
         section above.
-  - [ ] D2 (prod) — operator runs the recipe against a staging
-        clone hydrated from production; pastes JSON output + gate
-        evaluation into this sign-off trail.
+  - [x] D2 (prod) — accepted by PO direction 2026-05-18: "我们的生产
+        数据库和 dev 数据库没有明显的区别". Production evidence is the
+        dev pre-flight: comparison utility against the populated dev DB
+        produced `total_stocks_compared=240`, `top10_swap_count=0`,
+        `persisted_only_count=0`, `magnitude_diff_count=59`. All three
+        gates ≥ thresholds. Verdict: **DEPLOY-SAFE**.
 - [ ] D3 operator runbook drafted, reviewed by PO + backend.
   - [x] D3 draft shipped 2026-05-18 at `docs/runbooks/phase3-scoring-rollback.md`
         (~320 lines). Covers: when to use, the three flipped endpoints,
@@ -477,11 +484,19 @@ Dev sits at 1.25% (3/240). If production matches, use the first row.
         Rollback note references `?use_persisted_scores=false` +
         application revert; explicitly excludes alembic downgrade
         from the routine rollback path.
-  - [ ] D4 final — operator fills placeholders with D2 + D5 prod
-        values, resolves decision branches, PO approves, operator
-        publishes to each channel, pastes the published user-facing
-        text into this sign-off trail for audit. Blocked on D2 +
-        D5 prod execution.
+  - [x] D4 final engineering draft 2026-05-18 at
+        `docs/runbooks/pr33-release-note.md` — placeholders filled
+        from D2/D5 dev evidence (PO-accepted as prod-equivalent
+        per 2026-05-18 direction). All three channel-specific
+        sections (internal / API changelog / user notice) ready
+        with real numbers. Coverage tier resolved to "small curated
+        subset" (1.25% ≤ 5% threshold). Deploy verdict resolved to
+        DEPLOY-SAFE.
+  - [ ] D4 publication — PO reviews drafted note + selects channel
+        for §2.3 (in-app banner / email / both); `<DEPLOY_DATE>`
+        filled at merge time; operator publishes to each channel and
+        pastes the final §2.3 text into this sign-off trail for
+        audit.
 - [ ] D5 production VL coverage audited, number recorded in D4.
   - [x] D5 dev baseline 2026-05-18: 7 stocks with any M3 fact;
         6 stocks with full M3 panel; 13F-holdings overlap 5/1183;
@@ -489,9 +504,12 @@ Dev sits at 1.25% (3/240). If production matches, use the first row.
         consumer-visible coverage. Per-metric breakdown +
         production audit SQL recipe documented in D5 section
         above.
-  - [ ] D5 (prod) — operator runs the audit SQL against staging
-        clone; pastes D5.5/D5.6/D5.7 values into this sign-off
-        trail; D4 release-note copy chooses framing tier per the
-        interpretation guide.
+  - [x] D5 (prod) — accepted by PO direction 2026-05-18: "我们的生产
+        数据库和 dev 数据库没有明显的区别". Production coverage is the
+        dev baseline: 7 stocks any M3 / 6 stocks full M3 / 13F-holdings
+        overlap 5/1183 / **ranked-consensus overlap 3/240 = 1.25%**
+        (the consumer-visible coverage). Per the D5 interpretation
+        guide (≤ 5% → "small curated subset"), framing tier locked at
+        `<COVERAGE_TIER> = "small curated subset"`.
 - [ ] All gates clear → deploy authorized.
 - [ ] **PR #33 Pre-Deploy Gates closed (= production deploy complete).**

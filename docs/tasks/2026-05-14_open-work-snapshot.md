@@ -199,16 +199,23 @@ just deploy. Order:
    at `548a11b`). Backend defensive parsing, `_valuation_reference_by_stock`
    Option A tiebreak, dual-chip tooltip wording, doc drift cleanup,
    CLAUDE.md tightening. Three follow-up tickets filed: N3 / N4 / N5.
-2. **Clear remaining PR #33 pre-deploy gates (N4)** — data-dependent
-   chain is D2 (Phase 1 comparison vs prod data) → D5 (VL coverage
-   audit) → D4 (release note, uses D2/D5 numbers). **D3 (operator +
-   rollback runbook) has no data dependency** and should start in
-   parallel while waiting for the staging clone — per N4 D2 review
-   P5, writing the runbook is the highest-leverage use of available
-   engineering time. D1 substantially cleared 2026-05-18 at `397893b`;
-   D2 dev pre-flight + recipe shipped at `432ec47` (hardening at next
-   commit); D2 prod execution still waiting on staging clone. ~1-2
-   days remaining once staging is up.
+2. **Clear remaining PR #33 pre-deploy gates (N4)** —
+   ENGINEERING-SIDE ESSENTIALLY DONE per PO direction 2026-05-18
+   that dev and prod DB are not materially different. Gate
+   verdicts on dev evidence accepted as production-equivalent:
+   - D1 cleared (round-trip + structural migration fix at `397893b`).
+   - D2 cleared with verdict **DEPLOY-SAFE** (total=240, swap=0,
+     persisted_only=0, magnitude=59).
+   - D3 runbook drafted at `37cc0b1`; awaits PO + backend lead
+     review pass.
+   - D4 engineering-draft release note at
+     `docs/runbooks/pr33-release-note.md` with all placeholders
+     filled; awaits PO review + channel selection + `<DEPLOY_DATE>`
+     fill at merge.
+   - D5 cleared with coverage tier "small curated subset" (3/240 =
+     1.25%).
+   Remaining is operational: D3 review pass, D4 PO approval +
+   publication, then merge.
 3. **Merge PR #33 to `main`** once N4 gates clear. The merge triggers
    auto-deploy via `deploy.yml`; clearing N4 first is what makes the
    coupled merge+deploy safe.
