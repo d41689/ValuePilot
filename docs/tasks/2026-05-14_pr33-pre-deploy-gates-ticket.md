@@ -274,11 +274,152 @@ Distribute to: internal users (Slack), API consumers (changelog page), anyone wi
 
 **Steps**:
 
-1. Against production: `SELECT stock_id, COUNT(DISTINCT metric_key) FROM metric_facts WHERE metric_key IN (...) GROUP BY stock_id` for the M3 metric set.
-2. Compute: how many of the ~240 ranked 13F stocks have any VL fact / the full M3 panel.
+1. Against production: run the audit SQL below.
+2. Compute: how many of the ranked 13F superinvestor consensus stocks have ANY M3 fact / the full M3 panel.
 3. Record the number in the release note (D4) so users know the coverage scope.
 
 **Gate**: number recorded; D4 release note copy reflects it accurately.
+
+### D5 dev baseline (2026-05-18)
+
+Coverage audit against the populated dev DB. **The number that matters for the user-facing release note is "Ranked × ANY M3 overlap"** — that's the surface a consumer actually sees in the watchlist drawer.
+
+| Metric | Dev count | Interpretation |
+|---|---|---|
+| Stocks with ANY M3 fact | **7** | Total VL ingestion universe |
+| Stocks with FULL M3 panel (all 7 keys) | **6** | Drawer-renderable with no missing fields |
+| 13F holdings universe (all stocks any superinvestor ever held) | **1,183** | Wide universe; not what's shown |
+| Ranked consensus stocks (2025-Q3 superinvestor-eligible) | **240** | Drawer-displayed universe |
+| 13F holdings × ANY M3 overlap | **5** | Stocks where drawer shows partial M3 |
+| **Ranked-13F × ANY M3 overlap** | **3 of 240** (**1.25%**) | **User-visible coverage** |
+
+Per-metric coverage breakdown (dev):
+
+```
+proj.long_term.high_price       7 stocks
+proj.long_term.low_price        7 stocks
+quality.earnings_predictability 7 stocks
+score.piotroski.total           6 stocks    ← partial Piotroski parser dependency
+target.price_18m.high           7 stocks
+target.price_18m.low            7 stocks
+target.price_18m.mid            7 stocks
+```
+
+If production coverage matches dev (≈1-2% of ranked stocks), the release note must explicitly say "VL quality & valuation data is available for a small curated subset of stocks; the drawer will display 'not available in the current dataset' for the rest." Do NOT release with implicit framing that suggests broad coverage.
+
+### D5 production execution recipe
+
+Prerequisite: same as D2 — run from the staging host (or a machine whose Docker context targets staging). Confirm with `docker context ls`.
+
+```bash
+set -euo pipefail
+
+TS=$(date +%Y%m%d-%H%M%S)
+OUT=/tmp/d5-prod-vl-coverage-${TS}.txt
+
+docker compose exec -T db psql -U valuepilot -d valuepilot << 'SQL' | tee "$OUT"
+\echo '=== D5.1: Stocks with ANY M3 fact ==='
+SELECT COUNT(DISTINCT stock_id) AS stocks_with_any_m3_fact
+FROM metric_facts
+WHERE is_current = TRUE AND stock_id IS NOT NULL
+  AND metric_key IN (
+    'score.piotroski.total',
+    'target.price_18m.mid', 'target.price_18m.low', 'target.price_18m.high',
+    'proj.long_term.low_price', 'proj.long_term.high_price',
+    'quality.earnings_predictability'
+  );
+
+\echo '=== D5.2: Stocks with FULL M3 panel (all 7 keys) ==='
+SELECT COUNT(*) AS stocks_with_full_m3_panel FROM (
+  SELECT stock_id
+  FROM metric_facts
+  WHERE is_current = TRUE AND stock_id IS NOT NULL
+    AND metric_key IN (
+      'score.piotroski.total',
+      'target.price_18m.mid', 'target.price_18m.low', 'target.price_18m.high',
+      'proj.long_term.low_price', 'proj.long_term.high_price',
+      'quality.earnings_predictability'
+    )
+  GROUP BY stock_id
+  HAVING COUNT(DISTINCT metric_key) = 7
+) AS s;
+
+\echo '=== D5.3: Per-metric coverage breakdown ==='
+SELECT metric_key, COUNT(DISTINCT stock_id) AS stocks
+FROM metric_facts
+WHERE is_current = TRUE AND stock_id IS NOT NULL
+  AND metric_key IN (
+    'score.piotroski.total',
+    'target.price_18m.mid', 'target.price_18m.low', 'target.price_18m.high',
+    'proj.long_term.low_price', 'proj.long_term.high_price',
+    'quality.earnings_predictability'
+  )
+GROUP BY metric_key ORDER BY metric_key;
+
+\echo '=== D5.4: 13F universe size (all-stock denominator) ==='
+SELECT COUNT(DISTINCT stock_id) AS thirteenf_universe_size
+FROM holdings_13f WHERE stock_id IS NOT NULL;
+
+\echo '=== D5.5: Ranked-13F universe (consumer-surface denominator) ==='
+SELECT report_quarter, COUNT(*) AS ranked_count
+FROM oracles_lens_signals
+GROUP BY report_quarter ORDER BY report_quarter DESC LIMIT 1;
+
+\echo '=== D5.6: KEY NUMBER — Ranked-13F × ANY M3 overlap ==='
+SELECT COUNT(DISTINCT signal.stock_id) AS ranked_13f_with_any_m3
+FROM oracles_lens_signals signal
+WHERE signal.report_quarter = (
+    SELECT report_quarter FROM oracles_lens_signals
+    GROUP BY report_quarter ORDER BY report_quarter DESC LIMIT 1
+  )
+  AND signal.stock_id IN (
+    SELECT DISTINCT stock_id FROM metric_facts
+    WHERE is_current = TRUE AND stock_id IS NOT NULL
+      AND metric_key IN (
+        'score.piotroski.total',
+        'target.price_18m.mid', 'target.price_18m.low', 'target.price_18m.high',
+        'proj.long_term.low_price', 'proj.long_term.high_price',
+        'quality.earnings_predictability'
+      )
+  );
+
+\echo '=== D5.7: Ranked-13F × FULL M3 panel overlap ==='
+SELECT COUNT(DISTINCT signal.stock_id) AS ranked_13f_with_full_m3
+FROM oracles_lens_signals signal
+WHERE signal.report_quarter = (
+    SELECT report_quarter FROM oracles_lens_signals
+    GROUP BY report_quarter ORDER BY report_quarter DESC LIMIT 1
+  )
+  AND signal.stock_id IN (
+    SELECT stock_id FROM metric_facts
+    WHERE is_current = TRUE AND stock_id IS NOT NULL
+      AND metric_key IN (
+        'score.piotroski.total',
+        'target.price_18m.mid', 'target.price_18m.low', 'target.price_18m.high',
+        'proj.long_term.low_price', 'proj.long_term.high_price',
+        'quality.earnings_predictability'
+      )
+    GROUP BY stock_id
+    HAVING COUNT(DISTINCT metric_key) = 7
+  );
+SQL
+
+echo ""
+echo "Audit trail saved to: $OUT"
+echo "Key number for D4 release note: see D5.6 (Ranked-13F × ANY M3 overlap)."
+```
+
+Paste the audit output (or just D5.5 + D5.6 + D5.7 values) into the N4 sign-off trail when D5 is checked.
+
+**Interpretation guide**:
+
+| D5.6 / D5.5 ratio | Release-note framing |
+|---|---|
+| ≤ 5% | "VL data is shown for a small curated subset of stocks; expansion is on the roadmap." |
+| 5-25% | "VL data is shown for a partial subset of stocks; coverage is expanding." |
+| > 25% | "VL data is shown for most ranked stocks; some stocks lack coverage." |
+
+Dev sits at 1.25% (3/240). If production matches, use the first row.
 
 ## Scope Out
 
@@ -326,5 +467,15 @@ Distribute to: internal users (Slack), API consumers (changelog page), anyone wi
   - [ ] D3 review pass — PO + backend lead review the draft, sign off.
 - [ ] D4 release note drafted, reviewed, distributed at deploy.
 - [ ] D5 production VL coverage audited, number recorded in D4.
+  - [x] D5 dev baseline 2026-05-18: 7 stocks with any M3 fact;
+        6 stocks with full M3 panel; 13F-holdings overlap 5/1183;
+        **ranked-consensus overlap 3/240 (1.25%)** — the
+        consumer-visible coverage. Per-metric breakdown +
+        production audit SQL recipe documented in D5 section
+        above.
+  - [ ] D5 (prod) — operator runs the audit SQL against staging
+        clone; pastes D5.5/D5.6/D5.7 values into this sign-off
+        trail; D4 release-note copy chooses framing tier per the
+        interpretation guide.
 - [ ] All gates clear → deploy authorized.
 - [ ] **PR #33 Pre-Deploy Gates closed (= production deploy complete).**
