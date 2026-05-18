@@ -471,7 +471,23 @@ Dev sits at 1.25% (3/240). If production matches, use the first row.
         templates, audit-trail instructions, and known limitations
         (no automated alerting; no env-var flag; cusip_ticker_map.ticker
         downgrade is structurally one-way).
-  - [ ] D3 review pass — PO + backend lead review the draft, sign off.
+  - [x] D3 review pass 2026-05-18 — accepted per user direction
+        ("D3 review pass + merge"). Runbook addresses all 6 N4 D3
+        deliverable items: (1) Detection — §2 covers user-facing
+        signal, canonical comparison check with the hardened curl
+        recipe, and endpoint-error log signal; (2) Per-request
+        mitigation — §3.1 (single user) + §3.2 (frontend hotfix);
+        (3) Code rollback — §4 with three line diffs + canonical CI
+        commands per AGENTS.md + estimated time; (4) Observation-
+        window monitoring — §6 defines "one scoring cycle" + cycle-
+        close gate check with the same hardened curl recipe;
+        (5) Decision tree — §7 names owners (Tech Lead / Backend
+        Engineer / PO) + §8 user-communication templates;
+        (6) Critical clarification — §5 explicitly says "do NOT use
+        alembic downgrade for rollback" with the operator-under-
+        pressure failure mode described. Plus §10 known limitations
+        (no automated alerting, no env-var flag, alembic-downgrade-
+        one-way) for honest gaps disclosure.
 - [ ] D4 release note drafted, reviewed, distributed at deploy.
   - [x] D4 template drafted 2026-05-18 at
         `docs/runbooks/pr33-release-note-template.md`. Three audience-
