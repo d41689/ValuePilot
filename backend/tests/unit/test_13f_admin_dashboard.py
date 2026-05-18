@@ -92,6 +92,23 @@ def _filing(
     return filing
 
 
+def _freeze_today(monkeypatch, *, frozen: date = date(2026, 5, 14)) -> None:
+    """Pin ``date.today()`` in the admin readiness + tasks services so
+    tests that seed 2025-Q4 fixtures remain deterministic regardless of
+    real calendar advance. Real today drifts past 2026-05-15 (the
+    2026-Q1 filing deadline) → the services start expecting 2026-Q1
+    data the test doesn't seed. Surfaced by PR #33 N4 D1 round-trip
+    on 2026-05-18.
+    """
+    class _FrozenDate(date):
+        @classmethod
+        def today(cls) -> date:
+            return cls(frozen.year, frozen.month, frozen.day)
+
+    monkeypatch.setattr("app.services.thirteenf_admin_dashboard.date", _FrozenDate)
+    monkeypatch.setattr("app.services.thirteenf_readiness.date", _FrozenDate)
+
+
 def _holding(db_session, filing: Filing13F, stock: Stock) -> Holding13F:
     holding = Holding13F(
         filing_id=filing.id,
@@ -194,13 +211,17 @@ def test_consumer_readiness_filters_admin_only_warnings(monkeypatch, db_session)
     assert payload["nt_detection_supported"] is False
 
 
-def test_amendment_pending_creates_p1_task_and_needs_review_health(client, db_session, user_factory, auth_headers):
+def test_amendment_pending_creates_p1_task_and_needs_review_health(client, db_session, user_factory, auth_headers, monkeypatch):
     _clear_13f(db_session)
     admin = _admin(user_factory)
     manager = _manager(db_session)
     _filing(db_session, manager, accession="0001234567-26-000001", is_latest=False)
     _filing(db_session, manager, accession="0001234567-26-000002", form_type="13F-HR/A")
     db_session.commit()
+
+    # 2025-Q4 fixture; freeze today so the tasks endpoint computes
+    # latest usable quarter = 2025-Q4 regardless of calendar advance.
+    _freeze_today(monkeypatch)
 
     response = client.get("/api/v1/admin/13f/tasks", headers=auth_headers(admin))
 
@@ -1444,7 +1465,7 @@ def test_quarter_detail_endpoint_returns_operational_drilldown(client, db_sessio
     assert {"ingest_holdings", "quality_check", "reprocess_amendment"}.issubset(action_types)
 
 
-def test_persisted_quality_report_surfaces_in_quarter_and_tasks(client, db_session, user_factory, auth_headers):
+def test_persisted_quality_report_surfaces_in_quarter_and_tasks(client, db_session, user_factory, auth_headers, monkeypatch):
     _clear_13f(db_session)
     admin = _admin(user_factory)
     manager = _manager(db_session)
@@ -1455,6 +1476,10 @@ def test_persisted_quality_report_surfaces_in_quarter_and_tasks(client, db_sessi
     report.add("reconciliation", "warning", "reported and computed totals differ", accession_no=filing.accession_no)
     persist_quality_report(db_session, quarter="2025-Q4", report=report)
     db_session.commit()
+
+    # 2025-Q4 fixture; freeze today so the tasks endpoint surfaces the
+    # 2025-Q4 quality warning regardless of calendar advance.
+    _freeze_today(monkeypatch)
 
     quarter_response = client.get("/api/v1/admin/13f/quarters/2025-Q4", headers=auth_headers(admin))
     task_response = client.get("/api/v1/admin/13f/tasks", headers=auth_headers(admin))
@@ -1637,6 +1662,17 @@ def test_readiness_thresholds_are_configurable(client, db_session, user_factory,
     monkeypatch.setattr("app.services.thirteenf_admin_dashboard.settings.THIRTEENF_WARNING_LINK_RATIO", 0.25)
     monkeypatch.setattr("app.services.thirteenf_admin_dashboard.settings.THIRTEENF_READY_HISTORICAL_DEPTH", 1)
     monkeypatch.setattr("app.services.thirteenf_admin_dashboard.settings.THIRTEENF_MIN_HISTORICAL_DEPTH", 1)
+
+    # Pin date.today() in the readiness service so the test deterministically
+    # targets 2025-Q4 as the "latest expected complete quarter" instead of
+    # the floating real-today value. The fixture seeds period=2025-12-31;
+    # the readiness expectation slides forward as calendar quarters pass
+    # in real time. Surfaced by PR #33 N4 D1 round-trip; reproduces post-
+    # 2026-05-15 when 2026-Q1's filing deadline passes and the service
+    # starts expecting 2026-Q1 data the test doesn't seed.
+    # 2025-Q4 fixture; freeze today to pre-2026-Q1-deadline so the
+    # readiness service stays on 2025-Q4. See _freeze_today helper.
+    _freeze_today(monkeypatch)
 
     response = client.get("/api/v1/admin/13f/readiness", headers=auth_headers(admin))
 

@@ -58,6 +58,42 @@ Clear all four gates before promoting the merged commit to production. If a gate
 
 **Gate**: zero failures across the round-trip.
 
+### D1 results (2026-05-18, dev DB)
+
+Round-trip executed against the populated dev DB (1686 cusip_ticker_map rows + 4022 holdings_13f rows; the same shape MVP8-01 used for the Phase 1 comparison).
+
+**Round 1**:
+- `alembic upgrade head` (already at head — no-op). ✓
+- `alembic downgrade base` → **FAILED** at the very first reverse step (`20260513140000-pre_mvp8_01_widen_cusip_ticker_map_ticker`) with `psycopg2.errors.StringDataRightTruncation: value too long for type character varying(10)`. The transactional DDL rolled back; DB state intact.
+
+**Root cause**: 110 rows in `cusip_ticker_map.ticker` exceed VARCHAR(10) — OpenFIGI's `mapCusips` response legitimately returns bond / preferred / warrant identifiers > 10 chars for some CUSIPs (e.g. `"UBER 0.875 12/01/28 2028"` = 24 chars). The migration's upgrade was driven by exactly this data; the naive `alter_column` downgrade always fails against any populated DB that triggered the upgrade in the first place.
+
+**Fix applied**: patched `20260513140000-pre_mvp8_01_widen_cusip_ticker_map_ticker.py:downgrade()` to pre-check for offending rows and raise an actionable `RuntimeError` instead of letting the cryptic SQL truncation surface:
+
+```
+cusip_ticker_map has {N} rows with ticker length > 10 (OpenFIGI bond /
+preferred / warrant identifiers). Narrowing to VARCHAR(10) would
+truncate them and corrupt the mapping. Resolve the offending rows
+BEFORE downgrading — delete them or archive to a separate table —
+then re-run `alembic downgrade -1`.
+```
+
+The forward path is unaffected (the upgrade still works identically). The downgrade is now honest about being structurally one-way for any DB that hit the original constraint.
+
+**Round 2 (after the fix)**:
+- Confirmed actionable error fires on populated dev DB (110 rows reported). ✓
+- Manually deleted the offending bond / preferred rows from `cusip_ticker_map` (simulating the operator-side prerequisite the error message describes).
+- `alembic downgrade base` → **succeeded** end-to-end, all 23 migrations reversed cleanly. ✓
+- `alembic upgrade head` → **succeeded**, all 23 migrations re-applied. ✓
+- Dev DB restored from `/tmp/valuepilot-n4-d1/dev-before-roundtrip.sql` (1686 + 4022 row counts restored). ✓
+- Post-restore canonical CI: `pytest -q` 823 passed; `node --test lib/*.test.js` 143 passed; lint+build clean.
+
+**Sister migration verified safe**: `20260423120000-widen_cusip_ticker_map_source.py` narrows VARCHAR(50)→(20). Dev DB has zero `source` values > 20 chars (only `"openfigi"` / `"sec_co_tickers"` / `"manual"` are valid per AGENTS.md). Downgrade would succeed against any compliant DB.
+
+**Net for production deploy**: the forward chain is fully tested and clean. The reverse chain works for 22/23 migrations cleanly; the 23rd (cusip_ticker_map.ticker widening) now fails with a clear actionable message when offending data is present. Rollback for THIS specific schema change requires operator intervention (decide what to do with the bond / preferred rows) and cannot be fully automated — that's the structural reality, not a regression.
+
+**Production caveat NOT covered by dev round-trip**: the `widen_cusip_ticker_map_source` downgrade could still fail in production if any prod row has `source` > 20 chars. Confirm during D2 against the staging clone.
+
 ## D2 — Phase 1 comparison against production data
 
 **Source**: Production P1, Production P3.
@@ -140,7 +176,17 @@ Distribute to: internal users (Slack), API consumers (changelog page), anyone wi
 
 ## Sign-Off Trail
 
-- [ ] D1 migration round-trip green against prod-like data.
+- [x] D1 migration round-trip executed 2026-05-18 against populated dev DB.
+      Surfaced a structural one-way constraint in the cusip_ticker_map.ticker
+      widening migration (downgrade can't narrow back when OpenFIGI bond /
+      preferred identifiers > 10 chars are present). Patched the migration
+      with a pre-check + actionable error. Full chain (22/23 migrations
+      reversible cleanly; 23rd requires operator intervention to clear
+      offending rows first, by design). pytest 823 passed post-restore.
+      **Pre-prod-deploy still needs**: run the same round-trip against a
+      production data dump or fresh staging clone to confirm
+      `cusip_ticker_map.source` downgrade doesn't surface the same issue
+      (dev currently has zero source values > 20 chars; prod TBD).
 - [ ] D2 Phase 1 comparison green against production data.
 - [ ] D3 operator runbook drafted, reviewed by PO + backend.
 - [ ] D4 release note drafted, reviewed, distributed at deploy.

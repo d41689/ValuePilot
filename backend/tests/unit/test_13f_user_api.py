@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from itertools import count
 
 from app.models.institutions import (
@@ -93,7 +93,11 @@ def _filing(
         other_managers_reporting=[{"name": "Reporting Manager", "file_number": "028-00001"}] if form_type == "13F-NT" else None,
         quarter_end_date=quarter_end_date,
         report_quarter=report_quarter,
-        official_filing_deadline=date(2026, 5, 15),
+        # Relative to today so the filing window stays open regardless of
+        # when the test runs — the absolute date(2026, 5, 15) silently
+        # expired on 2026-05-16 and FILING_WINDOW_OPEN caveat stopped
+        # firing. Surfaced by PR #33 N4 D1 round-trip.
+        official_filing_deadline=date.today() + timedelta(days=10),
         parse_status="succeeded",
         is_active_for_manager_period=active,
         is_latest_for_period=active,
