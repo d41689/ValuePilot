@@ -102,4 +102,6 @@ Covers:
 
 ## Net
 
-Reviewers found no merge blockers. The PR was net-strengthened by the review — 9 small fixes shipped in the response commit, 3 follow-up tickets opened, 22 items explicitly deferred with rationale. The most important deferred concern (production deploy readiness) is captured in the N4 ticket and gates production traffic, not merge.
+Reviewers found no merge blockers in the code itself. The PR was net-strengthened by the review — 9 small fixes shipped in the response commit, 3 follow-up tickets opened, 22 items explicitly deferred with rationale.
+
+**Update 2026-05-18 (post-response audit):** the reviewer caught a documentation inconsistency between the N4 ticket ("blocks deploy, not merge") and the open-work snapshot ("clear N4 before merge"). Resolution: in THIS repo, `.github/workflows/deploy.yml` auto-fires on successful CI on `main`, so **merge to main IS production deploy**. The N4 ticket framing was updated to reflect this coupling; the snapshot's order (clear N4, then merge) stays correctly. If the team wants to decouple merge from deploy for this PR specifically, the workflow option is to temporarily disable the `workflow_run` trigger in `deploy.yml` (leaving `workflow_dispatch` for manual deploy). Default recommendation: keep the coupling, clear N4 first.

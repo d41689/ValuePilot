@@ -2,17 +2,40 @@
 
 ## Status
 
-**Open 2026-05-14.** Filed as a follow-up to PR #33 comprehensive review (Production Readiness P1-P6 + Backend B4 + Staff A7).
+**Open 2026-05-14.** Filed as a follow-up to PR #33 comprehensive review (Production Readiness P1-P6 + Backend B4 + Staff A7). Status framing updated 2026-05-18 per post-review-response audit.
 
-PR #33 is mergeable to `main` — the codebase is correct and the canonical CI commands are green. But there are four pre-deploy gates that **must clear before the merged code reaches production traffic**. This ticket tracks them.
+PR #33's codebase is correct and the canonical CI commands are green. But there are five pre-deploy gates that **must clear before the merged code reaches production traffic**. This ticket tracks them.
 
-## Why a separate ticket
+## Repo-specific note: merge ≡ deploy
 
-The Production Readiness reviewer explicitly distinguished:
-- **Merge-safe**: the code is internally consistent + CI green. ✓
-- **Deploy-safe**: requires verification against production data shape + an operator runbook + a release note.
+The Production Readiness reviewer framed N4 as "blocks deploy, not merge." That framing is correct in repos where `main` is a staging branch with a manual promote-to-production step. **This repo is not configured that way.**
 
-The 4 gates below are 1-2 days of work and should NOT block PR #33 merge but DO block deploy.
+`.github/workflows/deploy.yml` auto-fires on every successful CI run on `main`:
+
+```yaml
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+# ...
+if: >
+  github.event.workflow_run.conclusion == 'success' &&
+  github.event.workflow_run.head_branch == 'main'
+```
+
+In practical terms: **merge to `main` IS production deploy.** So N4 gates **merge** for this repo, not "deploy after merge."
+
+Three options to handle this:
+
+1. **(Recommended) Clear N4 before merging PR #33.** Treat the auto-deploy coupling as a feature, not a bug — it forces the deploy-readiness check before the change goes live.
+2. **Disable auto-deploy temporarily** (comment out the `workflow_run` trigger in `deploy.yml`, leave only `workflow_dispatch` for manual deploy). PR #33 merges to `main`; deploy runs only when manually triggered after N4 clears.
+3. **Use a separate staging branch.** Bigger workflow change; not recommended for a one-off PR.
+
+Option 1 is the cleanest unless the team has a reason to merge-but-not-deploy (e.g., wanting `main` to receive other PRs before deploy). Default to option 1.
+
+## Why a separate ticket from the implementation work
+
+The 5 gates below are 1-2 days of work — verification + documentation + release-note drafting, not code changes. They could have been inline in PR #33 but were kept separate to let the code review close cleanly. Now that the code review is complete, this ticket is the deploy-readiness checklist.
 
 ## Goal
 

@@ -190,15 +190,21 @@ fire when their trigger lands:
 
 ## Next Action
 
-PR #33 is open and merge-safe. Order:
+PR #33 is open and code-review-clean. Note: `.github/workflows/deploy.yml`
+auto-deploys on every successful CI run on `main`, so **merge to main
+IS production deploy** in this repo. N4 therefore gates merge, not
+just deploy. Order:
 
-1. **Address PR #33 comprehensive review findings** (DONE 2026-05-14).
-   Backend defensive parsing, `_valuation_reference_by_stock` Option A
-   tiebreak, dual-chip tooltip wording, doc drift cleanup, CLAUDE.md
-   tightening. Three follow-up tickets filed: N3 / N4 / N5.
-2. **Clear PR #33 pre-deploy gates (N4)** before promoting merged
-   commit to production traffic.
-3. **Merge PR #33 to `main`** once N4 gates clear.
+1. **Address PR #33 comprehensive review findings** (DONE 2026-05-14
+   at `548a11b`). Backend defensive parsing, `_valuation_reference_by_stock`
+   Option A tiebreak, dual-chip tooltip wording, doc drift cleanup,
+   CLAUDE.md tightening. Three follow-up tickets filed: N3 / N4 / N5.
+2. **Clear PR #33 pre-deploy gates (N4)** — migration round-trip,
+   Phase 1 comparison against prod data, operator runbook, release
+   note, VL coverage audit. 1-2 days.
+3. **Merge PR #33 to `main`** once N4 gates clear. The merge triggers
+   auto-deploy via `deploy.yml`; clearing N4 first is what makes the
+   coupled merge+deploy safe.
 4. **Open the Mobile stacked 13F view ticket** as the next product
    work item (Section N1) — bundle with DrawerShell focus trap +
    move per Track-E gating.
@@ -208,6 +214,13 @@ PR #33 is open and merge-safe. Order:
    surface that screens / formulas on opinion metrics.
 7. **Ship AGENTS.md Consolidation v2 (N5)** when convenient — no
    ordering dependency, quality-of-life cross-agent improvement.
+
+**Alternative if N4 cannot land soon and merge is needed first**:
+temporarily disable the auto-deploy `workflow_run` trigger in
+`deploy.yml` (leave `workflow_dispatch` for manual deploy). PR #33
+then merges to `main` without triggering deploy; deploy fires
+manually after N4 clears. This is a workflow-config change, not a
+process change — discuss before applying.
 
 Everything else is either closed, deferred, observation-gated, or
 trigger-gated.
