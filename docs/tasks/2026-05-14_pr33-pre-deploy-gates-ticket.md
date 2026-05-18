@@ -313,6 +313,17 @@ Distribute to: internal users (Slack), API consumers (changelog page), anyone wi
         clone hydrated from production; pastes JSON output + gate
         evaluation into this sign-off trail.
 - [ ] D3 operator runbook drafted, reviewed by PO + backend.
+  - [x] D3 draft shipped 2026-05-18 at `docs/runbooks/phase3-scoring-rollback.md`
+        (~320 lines). Covers: when to use, the three flipped endpoints,
+        detection (user-facing signal + canonical comparison check +
+        endpoint-error signal), immediate per-request mitigation,
+        full code-revert rollback, **explicit "do NOT use `alembic
+        downgrade`" section** (per Production P3), observation-window
+        gate for Phase 4 retirement, decision tree, user communication
+        templates, audit-trail instructions, and known limitations
+        (no automated alerting; no env-var flag; cusip_ticker_map.ticker
+        downgrade is structurally one-way).
+  - [ ] D3 review pass — PO + backend lead review the draft, sign off.
 - [ ] D4 release note drafted, reviewed, distributed at deploy.
 - [ ] D5 production VL coverage audited, number recorded in D4.
 - [ ] All gates clear → deploy authorized.
