@@ -3123,19 +3123,30 @@ def _execute_ingest_job(session: Session, job_type: str, payload: dict[str, Any]
     )
     from sqlalchemy import update
 
-    # Phase 1: ensure every filing has its primary_doc + infotable XML on disk.
-    # raw_primary_doc_id is what Phase 2's routing pass needs.
+    # Phase 1: ensure every filing has its primary_doc + infotable XML on
+    # disk. Always call ensure_filing_infotable_doc — even if
+    # raw_infotable_doc_id is already set — so its internal self-heal
+    # (#50: re-fetch when DB row is linked but body_path file is missing)
+    # actually runs. The previous guard `if filing.raw_infotable_doc_id is
+    # None` skipped the helper after a storage wipe, leaving body_path
+    # pointing at a ghost and ENOENTing every downstream load_body.
+    # ensure_filing_infotable_doc is idempotent; the happy-path cost is
+    # one DB lookup + two stat() calls per filing.
     routing_candidates: list[Filing13F] = []
+    previously_set_ids: set[int] = set()
     for filing in filings:
+        had_doc_before = filing.raw_infotable_doc_id is not None
         try:
-            if filing.raw_infotable_doc_id is None:
-                fetched_doc = ensure_filing_infotable_doc(session, filing)
-                if fetched_doc is None:
-                    no_cik += 1
-                    continue
+            fetched_doc = ensure_filing_infotable_doc(session, filing)
+            if fetched_doc is None:
+                # Manager has no confirmed CIK — cannot resolve EDGAR URLs.
+                no_cik += 1
+                continue
+            if not had_doc_before:
                 xml_fetched += 1
-            if filing.raw_infotable_doc_id is not None:
-                routing_candidates.append(filing)
+            else:
+                previously_set_ids.add(filing.id)
+            routing_candidates.append(filing)
         except Exception as exc:
             session.rollback()
             failures.append({"accession_no": filing.accession_no, "error": f"fetch_xml: {exc}"})
