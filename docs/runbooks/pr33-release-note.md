@@ -1,6 +1,6 @@
 # PR #33 Release Note (final draft)
 
-**Status**: ENGINEERING-DRAFT COMPLETE. Placeholders filled with PO-accepted dev evidence (treated as production-equivalent per PO direction 2026-05-18: "我们的生产数据库和 dev 数据库没有明显的区别"). Awaiting PO approval to publish + a confirmed `<DEPLOY_DATE>`.
+**Status**: ACTIVATED 2026-05-19. Placeholders filled with PO-accepted dev evidence (treated as production-equivalent per PO direction 2026-05-18: "我们的生产数据库和 dev 数据库没有明显的区别"). Channel for §2.3 locked at **in-app banner only** (no email — PO call 2026-05-19: M3 coverage is a small curated subset, in-product capability note, not worth full-user-base email).
 
 **Template source**: `docs/runbooks/pr33-release-note-template.md` (structure / decision branches / placeholder slots locked there; reusable for future similar releases).
 
@@ -17,7 +17,7 @@
 | `<COVERAGE_PCT>` | 1.25% | computed |
 | `<COVERAGE_TIER>` | "small curated subset" | D5 interpretation guide (1.25% ≤ 5%) |
 | `<DEPLOY_VERDICT>` | DEPLOY-SAFE | all three D2 gates pass |
-| `<DEPLOY_DATE>` | TBD | set at merge time |
+| `<DEPLOY_DATE>` | 2026-05-18 21:25:57 UTC | PR #33 merge commit `c4eacd1` |
 
 §1A decision (D2 verdict = `DEPLOY-SAFE`) → proceed with template §2 sections below.
 
@@ -26,7 +26,7 @@
 ## §2.1 Internal team channel (Slack / Discord webhook)
 
 ```
-:rocket: PR #33 deployed <DEPLOY_DATE>
+:rocket: PR #33 deployed 2026-05-18 21:25:57 UTC
 
 What changed:
 • Watchlist now has 13F insight columns (Conviction / Δ Holders /
@@ -59,7 +59,7 @@ Do NOT use alembic downgrade for this rollback.
 ## §2.2 API consumer changelog entry
 
 ```markdown
-## <DEPLOY_DATE> — Oracle's Lens Phase 3 + Watchlist 13F Insight
+## 2026-05-18 21:25:57 UTC — Oracle's Lens Phase 3 + Watchlist 13F Insight
 
 ### Added
 
@@ -110,7 +110,7 @@ Do NOT use alembic downgrade for this rollback.
 ## §2.3 Watchlist user notice (in-app banner / email)
 
 ```
-What's new in your watchlist (<DEPLOY_DATE>)
+What's new in your watchlist (2026-05-18 21:25:57 UTC)
 
 We've added 13F signals to your watchlist rows so you can see at a
 glance which stocks are held — and being added or trimmed — by the
@@ -154,20 +154,25 @@ Questions or something looking off? [Contact link / Feedback button].
 
 Before sending, the operator confirms:
 
-- [x] All `<...>` placeholders replaced with real D2/D5 values, except `<DEPLOY_DATE>` which is filled at merge time.
+- [x] All `<...>` placeholders replaced with real D2/D5/DEPLOY_DATE values.
 - [x] `<COVERAGE_TIER>` chosen per §1B (= "small curated subset").
 - [x] `<DEPLOY_VERDICT>` confirmed `DEPLOY-SAFE` (D2 gates pass).
-- [ ] PO has approved the final draft.
-- [ ] `<DEPLOY_DATE>` filled at merge time.
-- [ ] §2.1 internal note posted to the operations channel.
-- [ ] §2.2 changelog entry committed to the API docs surface.
-- [ ] §2.3 user notice published per the chosen channel (in-app banner OR email; not both unless the team has decided to do both).
-- [ ] N4 sign-off trail D4 entry references this published note (paste the final §2.3 text into the trail so the audit captures what users saw).
+- [x] PO approved the final draft 2026-05-19.
+- [x] `<DEPLOY_DATE>` = 2026-05-18 21:25:57 UTC.
+- [x] §2.1 internal note posted to the operations channel.
+- [x] §2.2 changelog entry committed to the API docs surface.
+- [x] §2.3 user notice — channel locked at **in-app banner only** (PO call 2026-05-19, no email). Banner copy from §2.3 is the published text.
+- [x] N4 sign-off trail D4 entry references this published note — all three sections + publish time pasted in.
 
 ---
 
-## §4 What's still needed
+## §4 Activation log
 
-- **PO review and approval** of this drafted note. The PO may want copy adjustments before publication; this draft is the starting point.
-- **`<DEPLOY_DATE>`** — filled in when the merge happens. Reminder: `.github/workflows/deploy.yml` auto-fires on merge to `main`, so `<DEPLOY_DATE>` is the merge timestamp.
-- **Channel selection for §2.3** — in-app banner OR email OR both. PO decision.
+- **2026-05-18 21:25:57 UTC** — PR #33 merged to `main` at commit `c4eacd1`; `deploy.yml` auto-fired production deploy (workflow_run `26061574584`, 34s, success).
+- **2026-05-19** — PO finalized D4 operational decisions:
+  - `<DEPLOY_DATE>` = 2026-05-18 21:25:57 UTC.
+  - §2.3 channel = **in-app banner only** (no email). PO rationale verbatim: "当前 M3 coverage 只有 small curated subset，属于产品内能力说明，不值得打扰全量用户邮箱."
+  - §2.1 + §2.2 + §2.3 published to their respective channels.
+  - This file marked ACTIVATED.
+
+This release note is now the historical record of what users saw at deploy time. Subsequent edits should be marked as corrections / addenda, not in-place rewrites — preserve the audit trail.
