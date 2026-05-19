@@ -10,6 +10,7 @@ without ``raw_infotable_doc_id`` set — see the prod incident on 2026-05-19
 from __future__ import annotations
 
 from datetime import date, datetime, timezone
+from pathlib import Path
 
 import pytest
 
@@ -72,15 +73,32 @@ def _make_filing(db, manager: InstitutionManager, *, accession="0001234567-26-00
     return filing
 
 
-def test_returns_existing_doc_when_already_linked(db_session, tmp_path, monkeypatch):
-    """Idempotent: if raw_infotable_doc_id is already set and the row is loadable,
-    no network call is issued."""
+def test_returns_existing_doc_when_already_linked_and_files_on_disk(db_session, tmp_path, monkeypatch):
+    """Cache hit: both raw_infotable_doc_id AND raw_primary_doc_id are linked,
+    AND both body files exist on disk. No network call is issued."""
     monkeypatch.setattr(edgar_ingestion.settings, "EDGAR_RAW_STORAGE_DIR", str(tmp_path))
 
     mgr = _make_manager(db_session)
     filing = _make_filing(db_session, mgr)
 
-    existing_doc = RawSourceDocument(
+    infotable_file = tmp_path / "infotable.xml"
+    infotable_file.write_bytes(b"<infotable/>")
+    primary_file = tmp_path / "primary.xml"
+    primary_file.write_bytes(b"<primary/>")
+
+    primary_doc = RawSourceDocument(
+        source_system="edgar",
+        document_type="primary_doc_xml",
+        cik=mgr.cik,
+        accession_no=filing.accession_no,
+        source_url="https://www.sec.gov/Archives/edgar/data/1234567/000123456726000001/primary_doc.xml",
+        http_status=200,
+        fetched_at=datetime.now(timezone.utc),
+        raw_sha256="cached-primary",
+        body_path=str(primary_file),
+        parse_status="parsed",
+    )
+    infotable_doc = RawSourceDocument(
         source_system="edgar",
         document_type="infotable_xml",
         cik=mgr.cik,
@@ -88,23 +106,71 @@ def test_returns_existing_doc_when_already_linked(db_session, tmp_path, monkeypa
         source_url="https://www.sec.gov/Archives/edgar/data/1234567/000123456726000001/infotable.xml",
         http_status=200,
         fetched_at=datetime.now(timezone.utc),
-        raw_sha256="cached",
-        body_path=str(tmp_path / "cached.xml"),
+        raw_sha256="cached-info",
+        body_path=str(infotable_file),
         parse_status="parsed",
     )
-    db_session.add(existing_doc)
+    db_session.add_all([primary_doc, infotable_doc])
     db_session.flush()
-    filing.raw_infotable_doc_id = existing_doc.id
+    filing.raw_primary_doc_id = primary_doc.id
+    filing.raw_infotable_doc_id = infotable_doc.id
     db_session.flush()
 
-    # If the helper attempts to construct an EdgarClient at all, the test fails.
     def _fail_client(*args, **kwargs):
         raise AssertionError("EdgarClient should not be instantiated on the cache hit path")
 
     monkeypatch.setattr(edgar_ingestion, "EdgarClient", _fail_client)
 
     result = edgar_ingestion.ensure_filing_infotable_doc(db_session, filing)
-    assert result is existing_doc
+    assert result is infotable_doc
+
+
+def test_self_heals_when_linked_but_file_missing_on_disk(db_session, tmp_path, monkeypatch):
+    """When raw_infotable_doc_id is linked but the body file is gone (e.g. the
+    storage volume was wiped by a misbehaving deploy), fall through to refetch
+    rather than returning the stale row. Without this, repeated reconcile
+    runs after a wipe leave the disk empty forever."""
+    monkeypatch.setattr(edgar_ingestion.settings, "EDGAR_RAW_STORAGE_DIR", str(tmp_path))
+    monkeypatch.setattr(edgar_ingestion.settings, "EDGAR_FETCH_MODE", "live")
+
+    mgr = _make_manager(db_session)
+    filing = _make_filing(db_session, mgr)
+
+    # DB row exists, body_path points to a missing file.
+    stale_doc = RawSourceDocument(
+        source_system="edgar",
+        document_type="infotable_xml",
+        cik=mgr.cik,
+        accession_no=filing.accession_no,
+        source_url="https://www.sec.gov/Archives/edgar/data/1234567/000123456726000001/infotable.xml",
+        http_status=200,
+        fetched_at=datetime.now(timezone.utc),
+        raw_sha256="stale-sha",
+        body_path="/nonexistent/wiped.xml",
+        parse_status="parsed",
+    )
+    db_session.add(stale_doc)
+    db_session.flush()
+    filing.raw_infotable_doc_id = stale_doc.id
+    db_session.flush()
+
+    primary_url = "https://www.sec.gov/Archives/edgar/data/1234567/000123456726000001/primary_doc.xml"
+    infotable_url = "https://www.sec.gov/Archives/edgar/data/1234567/000123456726000001/infotable.xml"
+    fresh_primary = b"<?xml version='1.0'?><primary/>"
+    fresh_infotable = b"<?xml version='1.0'?><infotable/>"
+
+    monkeypatch.setattr(edgar_ingestion, "_resolve_infotable_url", lambda *a, **k: infotable_url)
+    monkeypatch.setattr(edgar_ingestion, "_resolve_primary_doc_url", lambda *a, **k: primary_url)
+
+    client = _RecordingClient({primary_url: fresh_primary, infotable_url: fresh_infotable})
+    monkeypatch.setattr(edgar_ingestion, "EdgarClient", lambda: client)
+
+    result = edgar_ingestion.ensure_filing_infotable_doc(db_session, filing)
+
+    assert result is not None
+    assert sorted(client.requested_urls) == sorted([primary_url, infotable_url])
+    # Body now exists on disk under the EDGAR_RAW_STORAGE_DIR.
+    assert Path(result.body_path).exists()
 
 
 def test_fetches_and_links_when_missing(db_session, tmp_path, monkeypatch):
