@@ -31,6 +31,14 @@ jobs:
     steps:
       - name: Check out repository
         uses: actions/checkout@v5
+        # Preserve untracked files in the workspace across deploys. Without
+        # this, the default `git clean -ffdx` step wipes persistent
+        # bind-mount sources (e.g. storage/edgar_raw, storage/uploads) on
+        # every deploy — defeating PR #35 and forcing a full re-fetch
+        # cycle on every merge. Tracked files are still reset to HEAD,
+        # so this only affects user-data dirs that are .gitignore'd.
+        with:
+          clean: false
 
       - name: Install deploy env files
         run: |
