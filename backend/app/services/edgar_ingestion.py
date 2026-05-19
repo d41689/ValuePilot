@@ -582,11 +582,19 @@ def ensure_filing_infotable_doc(
 ) -> Optional["RawSourceDocument"]:
     """Idempotently ensure a filing's infotable XML is downloaded and linked.
 
-    If ``filing.raw_infotable_doc_id`` is set and the row is loadable, returns
-    the existing RawSourceDocument without touching the network. Otherwise
-    resolves primary/infotable URLs on EDGAR, fetches both via fetch_and_store
-    (which dedupes by source_url + writes to the persistent edgar_raw volume),
-    and sets ``raw_primary_doc_id`` + ``raw_infotable_doc_id`` on the filing.
+    If ``filing.raw_infotable_doc_id`` is set, the row is loadable, AND the
+    backing file on disk exists, returns the existing RawSourceDocument without
+    touching the network. Otherwise resolves primary/infotable URLs on EDGAR,
+    fetches both via fetch_and_store (which dedupes by source_url + writes to
+    the persistent edgar_raw volume), and sets ``raw_primary_doc_id`` +
+    ``raw_infotable_doc_id`` on the filing.
+
+    The on-disk existence check is what makes this self-healing across
+    storage-volume wipes: if the DB row exists but the file is gone (e.g.
+    actions/checkout cleaned the workspace pre-#48), we promote to a
+    force-refresh so fetch_and_store re-fetches and updates body_path.
+    Without this, repeated reconcile runs after a wipe just return the
+    stale row and leave the disk empty.
 
     Returns the infotable RawSourceDocument, or None if the filing's manager
     has no confirmed CIK (cannot resolve URLs).
@@ -594,12 +602,23 @@ def ensure_filing_infotable_doc(
     Use as a prerequisite to ``ingest_if_needed`` from
     ``app.services.thirteenf_holdings_ingest``: ensure XML, then parse.
     """
+    from pathlib import Path
+
     from app.models.institutions import RawSourceDocument
 
     if not force_refresh and filing.raw_infotable_doc_id:
         existing = db.query(RawSourceDocument).get(filing.raw_infotable_doc_id)
-        if existing is not None:
-            return existing
+        if existing is not None and Path(existing.body_path).exists():
+            primary_doc = (
+                db.get(RawSourceDocument, filing.raw_primary_doc_id)
+                if filing.raw_primary_doc_id
+                else None
+            )
+            if primary_doc is not None and Path(primary_doc.body_path).exists():
+                return existing
+        # The DB row exists but body file is missing on disk (or the
+        # primary_doc counterpart is). Fall through to refetch.
+        force_refresh = True
 
     manager: InstitutionManager = filing.manager
     if manager is None:
