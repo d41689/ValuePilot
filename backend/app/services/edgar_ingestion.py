@@ -574,6 +574,73 @@ def _filing_doc_list_url(cik: str, accession_no: str) -> str:
     )
 
 
+def ensure_filing_infotable_doc(
+    db: Session,
+    filing: Filing13F,
+    *,
+    force_refresh: bool = False,
+) -> Optional["RawSourceDocument"]:
+    """Idempotently ensure a filing's infotable XML is downloaded and linked.
+
+    If ``filing.raw_infotable_doc_id`` is set and the row is loadable, returns
+    the existing RawSourceDocument without touching the network. Otherwise
+    resolves primary/infotable URLs on EDGAR, fetches both via fetch_and_store
+    (which dedupes by source_url + writes to the persistent edgar_raw volume),
+    and sets ``raw_primary_doc_id`` + ``raw_infotable_doc_id`` on the filing.
+
+    Returns the infotable RawSourceDocument, or None if the filing's manager
+    has no confirmed CIK (cannot resolve URLs).
+
+    Use as a prerequisite to ``ingest_if_needed`` from
+    ``app.services.thirteenf_holdings_ingest``: ensure XML, then parse.
+    """
+    from app.models.institutions import RawSourceDocument
+
+    if not force_refresh and filing.raw_infotable_doc_id:
+        existing = db.query(RawSourceDocument).get(filing.raw_infotable_doc_id)
+        if existing is not None:
+            return existing
+
+    manager: InstitutionManager = filing.manager
+    if manager is None:
+        manager = db.query(InstitutionManager).get(filing.manager_id)
+    if manager is None or not (manager.cik or "").strip():
+        return None
+
+    cik = (manager.cik or "").lstrip("0")
+    accession_raw = filing.accession_no.replace("-", "")
+
+    with EdgarClient() as client:
+        infotable_url = _resolve_infotable_url(client, cik, accession_raw, filing.accession_no)
+        primary_url = _resolve_primary_doc_url(client, cik, accession_raw, filing.accession_no)
+
+        primary_doc = fetch_and_store(
+            db,
+            source_system="edgar",
+            document_type="primary_doc_xml",
+            source_url=primary_url,
+            cik=manager.cik,
+            accession_no=filing.accession_no,
+            client=client,
+            force_refresh=force_refresh,
+        )
+        infotable_doc = fetch_and_store(
+            db,
+            source_system="edgar",
+            document_type="infotable_xml",
+            source_url=infotable_url,
+            cik=manager.cik,
+            accession_no=filing.accession_no,
+            client=client,
+            force_refresh=force_refresh,
+        )
+
+    filing.raw_primary_doc_id = primary_doc.id
+    filing.raw_infotable_doc_id = infotable_doc.id
+    db.flush()
+    return infotable_doc
+
+
 def ingest_filing_holdings(
     db: Session,
     filing: Filing13F,
