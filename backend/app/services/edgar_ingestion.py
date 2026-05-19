@@ -901,68 +901,147 @@ def backfill_quarters(db: Session, num_quarters: int = 4) -> dict[str, int]:
 
 
 def backfill_period_of_report(db: Session) -> int:
-    """Fix period_of_report for all filings by re-parsing stored primary docs.
+    """Thin compatibility wrapper around ``backfill_period_routing``.
 
-    On first ingestion, period_of_report is set to filed_at as a proxy.
-    The real quarter-end date lives inside the primary document (periodOfReport).
-    This function corrects all existing rows.  Safe to run multiple times.
+    Pre-existing callers passed nothing extra; the routing version is a
+    strict superset (it also populates quarter_end_date / report_quarter /
+    official_filing_deadline). Returns the count of period_of_report
+    changes for backwards compatibility with existing call sites.
+    """
+    summary = backfill_period_routing(db)
+    return summary["period_changed"]
 
-    Returns count of filings updated.
+
+def backfill_period_routing(db: Session, *, filings=None) -> dict[str, int]:
+    """Populate Filing13F.period_of_report / quarter_end_date / report_quarter
+    / official_filing_deadline from stored primary_doc XML.
+
+    Called as the prerequisite to bulk holdings parsing and Oracle's Lens
+    scoring. The fetch_quarter_index path inserts each Filing13F with
+    period_of_report=filed_at (a proxy) and quarter_end_date / report_quarter
+    NULL — the real quarter-end lives in the primary_doc XML's
+    periodOfReport element, which is only available after
+    ensure_filing_infotable_doc fetches it. Without correct quarter_end_date,
+    Oracle's Lens computes universe_size=0 for every period.
+
+    Idempotent: filings already routed correctly are skipped. Safe to run
+    multiple times.
+
+    Args:
+        db: SQLAlchemy session.
+        filings: optional iterable of Filing13F to process. If None, walks
+            every Filing13F with raw_primary_doc_id set.
+
+    Returns:
+        ``{"period_changed": N, "quarter_end_added": M, "report_quarter_added": K}``
     """
     from app.edgar.fetcher import load_body
     from app.models.institutions import Filing13F, RawSourceDocument
-
-    filings = (
-        db.query(Filing13F)
-        .filter(Filing13F.raw_primary_doc_id.isnot(None))
-        .all()
+    from app.services.thirteenf_filing_detail import (
+        _route_period,
+        calculate_official_filing_deadline,
     )
 
-    # Pass 1: collect corrections (manager_id, old_period, new_period) per filing
-    corrections: list[tuple[Filing13F, object, object]] = []
+    if filings is None:
+        filings = (
+            db.query(Filing13F)
+            .filter(Filing13F.raw_primary_doc_id.isnot(None))
+            .all()
+        )
+
+    # Pass 1: collect per-filing corrections from the primary_doc.
+    # period_changes: list of (filing, old_period, new_period) — drives the
+    # is_latest_for_period dance.
+    # other_changes: list of (filing, new_quarter_end, new_report_quarter)
+    # — applied independently; no FK/unique-constraint coupling.
+    period_changes: list[tuple] = []
+    other_changes: list[tuple] = []
     for filing in filings:
+        if filing.raw_primary_doc_id is None:
+            continue
         doc = db.get(RawSourceDocument, filing.raw_primary_doc_id)
         if doc is None:
             continue
         try:
             body = load_body(doc)
             summary = parse_primary_doc(body)
-            if summary.period_of_report:
-                parsed = _parse_period_date(summary.period_of_report)
-                if parsed and parsed != filing.period_of_report:
-                    corrections.append((filing, filing.period_of_report, parsed))
         except Exception as exc:
-            logger.warning("backfill_period_of_report: %s: %s", filing.accession_no, exc)
+            logger.warning("backfill_period_routing: %s: %s", filing.accession_no, exc)
+            continue
+        if not summary.period_of_report:
+            continue
 
-    if not corrections:
-        logger.info("backfill_period_of_report: nothing to fix")
-        return 0
+        routing = _route_period(
+            summary.period_of_report,
+            form_type=filing.form_type,
+            accepted_at=filing.accepted_at,
+            fallback_period=filing.period_of_report,
+        )
 
-    # Pass 2: gather every period group that will be touched
-    affected: set[tuple] = set()
-    for filing, old, new in corrections:
-        affected.add((filing.manager_id, old))
-        affected.add((filing.manager_id, new))
+        if routing.period_of_report != filing.period_of_report:
+            period_changes.append((filing, filing.period_of_report, routing.period_of_report))
 
-    # Pass 3: clear is_latest for all affected groups before any period changes
-    for manager_id, period in affected:
-        db.query(Filing13F).filter_by(
-            manager_id=manager_id, period_of_report=period
-        ).update({"is_latest_for_period": False})
+        new_qend = routing.quarter_end_date
+        new_rq = routing.report_quarter
+        if (new_qend != filing.quarter_end_date) or (new_rq != filing.report_quarter):
+            other_changes.append((filing, new_qend, new_rq))
+
+    period_count = len(period_changes)
+    qend_count = sum(1 for f, q, _ in other_changes if q is not None and f.quarter_end_date is None)
+    rq_count = sum(1 for f, _, rq in other_changes if rq is not None and f.report_quarter is None)
+
+    if not period_changes and not other_changes:
+        logger.info("backfill_period_routing: nothing to fix")
+        return {
+            "period_changed": 0,
+            "quarter_end_added": 0,
+            "report_quarter_added": 0,
+        }
+
+    # Pass 2: apply period_of_report changes with the is_latest_for_period
+    # dance. Skip when no period changes are needed — preserves the cheap
+    # path for filings that just need quarter_end_date filled in.
+    if period_changes:
+        affected: set[tuple] = set()
+        for filing, old, new in period_changes:
+            affected.add((filing.manager_id, old))
+            affected.add((filing.manager_id, new))
+
+        for manager_id, period in affected:
+            db.query(Filing13F).filter_by(
+                manager_id=manager_id, period_of_report=period
+            ).update({"is_latest_for_period": False})
+        db.flush()
+
+        for filing, _old, new in period_changes:
+            filing.period_of_report = new
+        db.flush()
+
+        for manager_id, period in affected:
+            _recalculate_version_ranks(db, manager_id, period)
+        db.flush()
+
+    # Pass 3: apply quarter_end_date / report_quarter / official_filing_deadline
+    # for filings whose period_of_report routing produced them. No unique
+    # constraints touched; straight column writes.
+    for filing, new_qend, new_rq in other_changes:
+        if new_qend is not None and filing.quarter_end_date != new_qend:
+            filing.quarter_end_date = new_qend
+            if filing.official_filing_deadline is None:
+                filing.official_filing_deadline = calculate_official_filing_deadline(db, new_qend)
+        if new_rq is not None and filing.report_quarter != new_rq:
+            filing.report_quarter = new_rq
     db.flush()
 
-    # Pass 4: apply period corrections
-    for filing, _old, new in corrections:
-        filing.period_of_report = new
-    db.flush()
-
-    # Pass 5: recalculate version_rank and is_latest for every touched group
-    for manager_id, period in affected:
-        _recalculate_version_ranks(db, manager_id, period)
-    db.flush()
-
-    logger.info("backfill_period_of_report: corrected %d filings", len(corrections))
-    return len(corrections)
+    logger.info(
+        "backfill_period_routing: period_changed=%d quarter_end_added=%d report_quarter_added=%d",
+        period_count, qend_count, rq_count,
+    )
+    return {
+        "period_changed": period_count,
+        "quarter_end_added": qend_count,
+        "report_quarter_added": rq_count,
+    }
 
 
 def _recent_quarters(year: int, month: int, n: int) -> list[str]:

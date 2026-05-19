@@ -3115,19 +3115,49 @@ def _execute_ingest_job(session: Session, job_type: str, payload: dict[str, Any]
     xml_fetched = 0
     no_cik = 0
     failures: list[dict[str, str]] = []
+
+    from app.edgar.fetcher import load_body
+    from app.services.edgar_ingestion import (
+        backfill_period_routing,
+        ensure_filing_infotable_doc,
+    )
+    from sqlalchemy import update
+
+    # Phase 1: ensure every filing has its primary_doc + infotable XML on disk.
+    # raw_primary_doc_id is what Phase 2's routing pass needs.
+    routing_candidates: list[Filing13F] = []
     for filing in filings:
         try:
-            from app.edgar.fetcher import load_body
-            from app.services.edgar_ingestion import ensure_filing_infotable_doc
-
             if filing.raw_infotable_doc_id is None:
                 fetched_doc = ensure_filing_infotable_doc(session, filing)
                 if fetched_doc is None:
-                    # Manager has no confirmed CIK — cannot resolve EDGAR URLs.
                     no_cik += 1
                     continue
                 xml_fetched += 1
+            if filing.raw_infotable_doc_id is not None:
+                routing_candidates.append(filing)
+        except Exception as exc:
+            session.rollback()
+            failures.append({"accession_no": filing.accession_no, "error": f"fetch_xml: {exc}"})
+    session.flush()
 
+    # Phase 2: route each filing's period from primary_doc XML — fills in
+    # period_of_report (currently a filed_at proxy), quarter_end_date, and
+    # report_quarter. Required for Oracle's Lens scoring to recognize this
+    # quarter. Idempotent; cheap when fields are already correct.
+    routing_summary = {"period_changed": 0, "quarter_end_added": 0, "report_quarter_added": 0}
+    if routing_candidates:
+        try:
+            routing_summary = backfill_period_routing(session, filings=routing_candidates)
+        except Exception as exc:
+            logger.warning("ingest_holdings: routing pass failed (%s); proceeding without it", exc)
+            session.rollback()
+    session.flush()
+
+    # Phase 3: parse holdings. Filing.quarter_end_date is now populated, so
+    # newly-inserted Holding13F rows pick it up via thirteenf_holdings_ingest.
+    for filing in filings:
+        try:
             infotable_doc = filing.raw_infotable_doc
             if infotable_doc is None:
                 continue
@@ -3140,6 +3170,26 @@ def _execute_ingest_job(session: Session, job_type: str, payload: dict[str, Any]
         except Exception as exc:
             session.rollback()
             failures.append({"accession_no": filing.accession_no, "error": str(exc)})
+
+    # Phase 4: sync Holding13F.quarter_end_date from Filing13F for rows that
+    # landed in earlier pipeline runs (before routing was wired in). The
+    # CUSIP temporal-validity filter and Oracle's Lens aggregation both
+    # rely on this column being populated.
+    filing_ids = [f.id for f in filings if f.quarter_end_date is not None]
+    holdings_synced = 0
+    if filing_ids:
+        sync_stmt = (
+            update(Holding13F)
+            .where(Holding13F.filing_id.in_(filing_ids))
+            .where(Holding13F.quarter_end_date.is_(None))
+            .where(Filing13F.id == Holding13F.filing_id)
+            .values(quarter_end_date=Filing13F.quarter_end_date)
+            .execution_options(synchronize_session=False)
+        )
+        result = session.execute(sync_stmt)
+        holdings_synced = result.rowcount or 0
+    session.flush()
+
     return {
         "filings_processed": len(filings),
         "filings_skipped": skipped,
@@ -3148,6 +3198,10 @@ def _execute_ingest_job(session: Session, job_type: str, payload: dict[str, Any]
         "filings_failed": len(failures),
         "failed_accessions": failures,
         "holdings_inserted": total_holdings,
+        "holdings_quarter_end_synced": holdings_synced,
+        "filings_period_changed": routing_summary.get("period_changed", 0),
+        "filings_quarter_end_added": routing_summary.get("quarter_end_added", 0),
+        "filings_report_quarter_added": routing_summary.get("report_quarter_added", 0),
         "status": "partial_success" if failures else "succeeded",
     }
 
