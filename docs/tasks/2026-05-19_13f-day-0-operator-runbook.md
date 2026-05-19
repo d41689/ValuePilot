@@ -89,6 +89,15 @@ Each watched stock should now render 13F columns: conviction score, conviction p
 
 Columns will show `unavailable_reason='no_holders'` or `'below_min_holders'` if no tracked manager holds that stock or coverage is too thin — that's the system telling you to either seed more managers or accept the gap.
 
+## Admin Tasks panel vs retry controls
+
+The Admin Tasks panel on `/admin/13f` is **diagnostic, not a control panel** — cards summarize what failed and why, but have no inline retry button. Where retries actually live:
+
+- **To retry `fetch_quarter_index` / `ingest_holdings` / similar** — use the **Manual Controls** section of `/admin/13f`. Enter the target quarter in the textbox, then click the matching pipeline button (e.g. **Fetch quarter index**, **Ingest holdings**). This creates a fresh `JobRun` for that quarter.
+- **For per-job details and review** — `/admin/13f/jobs` → **Review** button on the row. Use this to inspect what a particular job did or failed on.
+- **Stale failure cards** — a later succeeded `JobRun` for the same lock key (e.g. `fetch_quarter_index:2025-Q4`) supersedes earlier failures operationally; the quarter is healthy even if old failure cards linger in the Admin Tasks panel. The panel currently doesn't fold them automatically — see [#41](https://github.com/d41689/ValuePilot/issues/41).
+- **Rule of thumb** — check the Jobs page top row for the same lock key before treating an Admin Tasks card as an active incident.
+
 ## Troubleshooting
 
 | Symptom | Probable cause | Where to look |
