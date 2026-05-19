@@ -27,6 +27,27 @@ async def lifespan(app: FastAPI):
         job_worker = ThirteenFJobWorker(SessionLocal)
         job_worker.start()
         logger.info("13F admin job worker started")
+
+        # Issue #40: if a system-level start quarter is configured, enqueue
+        # quarterly_pipeline jobs for every missing quarter in the range.
+        # Idempotent — succeeded quarters are skipped. Wrapped in try/except
+        # so a reconcile failure never blocks API startup.
+        if settings.THIRTEENF_START_QUARTER:
+            try:
+                from app.services.thirteenf_start_quarter import (
+                    reconcile_start_quarter_coverage,
+                )
+
+                with SessionLocal() as boot_db:
+                    result = reconcile_start_quarter_coverage(boot_db)
+                logger.info(
+                    "Start-quarter reconcile: enqueued=%d skipped_existing=%d skipped_conflict=%d",
+                    len(result.get("enqueued", [])),
+                    len(result.get("skipped_existing", [])),
+                    len(result.get("skipped_conflict", [])),
+                )
+            except Exception:
+                logger.exception("Start-quarter reconcile failed; continuing startup")
     yield
     if job_worker is not None:
         job_worker.stop()

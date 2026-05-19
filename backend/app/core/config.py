@@ -36,6 +36,12 @@ class Settings(BaseSettings):
     # EDGAR rate / retry
     SEC_CONTACT_EMAIL: Optional[str] = None
     EDGAR_REQUESTS_PER_SECOND: float = 10.0
+    # System-level "set start date and walk away" config (#40).
+    # Format: "YYYY-QN" (e.g. "2024-Q1"). When set, on API boot the system
+    # enqueues a quarterly_pipeline job for every quarter from this start
+    # through the current calendar quarter that has no prior succeeded run.
+    # Idempotent across restarts.
+    THIRTEENF_START_QUARTER: Optional[str] = None
     EDGAR_REQUEST_DELAY_S: float = 0.1        # legacy fallback; 10 req/s default
     EDGAR_MAX_CONCURRENCY: int = 2
     EDGAR_MAX_RETRIES: int = 5
