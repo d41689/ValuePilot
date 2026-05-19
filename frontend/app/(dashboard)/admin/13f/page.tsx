@@ -467,6 +467,32 @@ export default function Admin13FPage() {
         </Button>
       }
     >
+      {!managersQuery.isPending && (managersQuery.data?.items?.length ?? 0) === 0 ? (
+        <Card
+          className="mb-4 rounded-md border-amber-500/40 bg-amber-50/40 dark:bg-amber-950/20"
+          role="status"
+          aria-live="polite"
+        >
+          <CardHeader className="pb-2">
+            <CardTitle className="flex items-center gap-2 text-base text-amber-700 dark:text-amber-200">
+              <AlertTriangle className="h-4 w-4" />
+              No managers tracked yet
+            </CardTitle>
+          </CardHeader>
+          <CardContent className="text-sm text-muted-foreground">
+            Daily sync is live but has nothing to scan. Seed the manager universe before
+            filings, holdings, or watchlist 13F signals will appear.{' '}
+            <Link
+              href="/admin/13f/managers"
+              className="font-medium text-foreground underline underline-offset-2"
+            >
+              Open the Managers page
+            </Link>{' '}
+            to bulk-import a CSV or add managers one at a time.
+          </CardContent>
+        </Card>
+      ) : null}
+
       {/* MVP6-01 Overview hub — navigation cards linking to each
           functional surface. While MVP6-02..07 are pending, each card
           is an anchor link to the relevant section below; once a
