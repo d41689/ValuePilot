@@ -3099,21 +3099,34 @@ def _execute_ingest_job(session: Session, job_type: str, payload: dict[str, Any]
         }
 
     # job_type == "ingest_holdings": bulk quarterly ingest via ingest_if_needed.
+    # We deliberately do NOT filter on raw_infotable_doc_id here — per #43, the
+    # job is responsible for fetching missing infotable XML inline. Filings
+    # whose XML is already on disk are fast-pathed by ensure_filing_infotable_doc.
     quarter = _required(payload, "quarter")
     window = quarter_window(quarter)
     filings = (
         session.query(Filing13F)
         .filter(Filing13F.period_of_report.between(window.start, window.end))
-        .filter(Filing13F.raw_infotable_doc_id.isnot(None))
         .order_by(Filing13F.filed_at.asc(), Filing13F.accession_no.asc())
         .all()
     )
     total_holdings = 0
     skipped = 0
+    xml_fetched = 0
+    no_cik = 0
     failures: list[dict[str, str]] = []
     for filing in filings:
         try:
             from app.edgar.fetcher import load_body
+            from app.services.edgar_ingestion import ensure_filing_infotable_doc
+
+            if filing.raw_infotable_doc_id is None:
+                fetched_doc = ensure_filing_infotable_doc(session, filing)
+                if fetched_doc is None:
+                    # Manager has no confirmed CIK — cannot resolve EDGAR URLs.
+                    no_cik += 1
+                    continue
+                xml_fetched += 1
 
             infotable_doc = filing.raw_infotable_doc
             if infotable_doc is None:
@@ -3130,6 +3143,8 @@ def _execute_ingest_job(session: Session, job_type: str, payload: dict[str, Any]
     return {
         "filings_processed": len(filings),
         "filings_skipped": skipped,
+        "filings_xml_fetched": xml_fetched,
+        "filings_skipped_no_cik": no_cik,
         "filings_failed": len(failures),
         "failed_accessions": failures,
         "holdings_inserted": total_holdings,
