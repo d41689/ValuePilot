@@ -65,16 +65,56 @@ def quarters_in_range(start: str, end: str) -> Iterator[str]:
             y += 1
 
 
-def _has_prior_success(db: Session, quarter: str) -> bool:
-    """True if a quarterly_pipeline JobRun for this quarter has previously
-    succeeded. Drives the "don't re-enqueue completed quarters" optimization."""
+def _has_meaningful_coverage(db: Session, quarter: str) -> bool:
+    """Return True iff this quarter has both an ingestion entry point (raw
+    master.idx record) AND post-routing state (at least one Filing13F with
+    quarter_end_date populated). Used by the reconcile to decide "skip — done"
+    versus "re-enqueue — work missing".
+
+    Why not just check JobRun.status == 'succeeded'?
+
+    The pipeline's stage-level status reflects whether stages threw, not
+    whether they did anything useful. Before #52, ingest_holdings stage 2
+    silently caught an ImportError, ran with 0 routing changes, and returned
+    'succeeded'. The reconcile then refused to re-enqueue, even though
+    Filing13F.quarter_end_date was still NULL for the entire quarter and
+    Oracle's Lens couldn't aggregate. Anchoring on observable DB state
+    instead of self-reported job status makes the reconcile self-correcting
+    after pipeline bug fixes ship.
+
+    The Filing13F.quarter_end_date check is the right data-state proxy
+    because it's set by route_period only after primary_doc XML has been
+    fetched and parsed — i.e. it confirms the full Phase 1 + Phase 2
+    sequence ran successfully for at least one filing in the quarter.
+    """
+    from app.models.institutions import Filing13F
+    from app.services.thirteenf_filing_detail import _parse_period_date  # type: ignore[attr-defined]
+
+    # Look at any Filing13F whose period_of_report lands in this calendar
+    # quarter and has quarter_end_date populated. period_of_report is a
+    # date; quarter window is [Y-Q*3-2, Y-Q*3+(0|1|2 last day)].
+    year, q = _parse_quarter(quarter)
+    from datetime import date
+
+    start_month = (q - 1) * 3 + 1
+    end_month = start_month + 2
+    end_day = 31 if end_month in {1, 3, 5, 7, 8, 10, 12} else 30
+    if end_month == 2:
+        end_day = 29 if (year % 4 == 0 and (year % 100 != 0 or year % 400 == 0)) else 28
+    window_start = date(year, start_month, 1)
+    window_end = date(year, end_month, end_day)
+
     return (
-        db.query(JobRun.id)
-        .filter(JobRun.lock_key == f"quarterly_pipeline:{quarter}")
-        .filter(JobRun.status == "succeeded")
+        db.query(Filing13F.id)
+        .filter(Filing13F.period_of_report.between(window_start, window_end))
+        .filter(Filing13F.quarter_end_date.isnot(None))
         .first()
         is not None
     )
+
+
+# Back-compat alias — older code paths might import this name.
+_has_prior_success = _has_meaningful_coverage
 
 
 def reconcile_start_quarter_coverage(

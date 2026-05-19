@@ -84,19 +84,36 @@ def test_reconcile_enqueues_each_missing_quarter(db_session, monkeypatch):
     assert result["skipped_conflict"] == []
 
 
-def test_reconcile_skips_quarters_with_prior_success(db_session, monkeypatch):
-    """If a quarterly_pipeline JobRun already succeeded for a quarter, skip it.
-    Re-attempts are reserved for failed/missing runs only."""
-    succeeded = JobRun(
-        job_type="quarterly_pipeline",
-        status="succeeded",
-        lock_key="quarterly_pipeline:2025-Q4",
-        dedupe_key="quarterly_pipeline:2025-Q4",
-        quarter="2025-Q4",
-        trigger_source="manual",
-        created_at=datetime.now(timezone.utc),
+def test_reconcile_skips_quarters_with_meaningful_coverage(db_session, monkeypatch):
+    """Skip quarters that already have observable post-routing coverage:
+    at least one Filing13F whose period_of_report lands in the quarter
+    AND has quarter_end_date populated. Quarters where filings exist but
+    routing hasn't run yet (quarter_end_date NULL) ARE re-enqueued —
+    that's the post-pipeline-bug-fix self-healing path."""
+    from datetime import date
+    from app.models.institutions import Filing13F, InstitutionManager
+
+    # Manager + routed filing for 2025-Q4 — should mark it as covered.
+    mgr = InstitutionManager(
+        cik="0001234567",
+        legal_name="Test Mgr",
+        display_name="Test",
+        name_normalized="test",
+        match_status="confirmed",
+        is_superinvestor=False,
     )
-    db_session.add(succeeded)
+    db_session.add(mgr)
+    db_session.flush()
+    routed = Filing13F(
+        manager_id=mgr.id,
+        accession_no="0001234567-26-000001",
+        form_type="13F-HR",
+        filed_at=date(2026, 1, 15),
+        period_of_report=date(2025, 12, 31),
+        quarter_end_date=date(2025, 12, 31),  # ← the signal
+        is_latest_for_period=True,
+    )
+    db_session.add(routed)
     db_session.flush()
 
     calls: list[dict] = []
