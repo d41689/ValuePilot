@@ -44,12 +44,14 @@ class _RecordingClient:
         return None
 
 
-def _make_manager(db, *, name="Test Manager", cik="0001234567") -> InstitutionManager:
+def _make_manager(db, *, name="Test Manager", cik: str | None = "0001234567") -> InstitutionManager:
     mgr = InstitutionManager(
-        canonical_name=name,
         cik=cik,
-        match_status="confirmed",
-        status="active",
+        legal_name=name,
+        display_name=name,
+        name_normalized=name.lower(),
+        match_status="confirmed" if cik else "seeded",
+        is_superinvestor=False,
     )
     db.add(mgr)
     db.flush()
@@ -61,10 +63,9 @@ def _make_filing(db, manager: InstitutionManager, *, accession="0001234567-26-00
         manager_id=manager.id,
         accession_no=accession,
         form_type="13F-HR",
-        filed_at=datetime(2026, 1, 15, tzinfo=timezone.utc),
+        filed_at=date(2026, 1, 15),
         period_of_report=date(2025, 12, 31),
         is_latest_for_period=True,
-        is_active_for_manager_period=True,
     )
     db.add(filing)
     db.flush()
@@ -154,14 +155,7 @@ def test_returns_none_when_manager_has_no_cik(db_session, tmp_path, monkeypatch)
     decides whether to skip or report."""
     monkeypatch.setattr(edgar_ingestion.settings, "EDGAR_RAW_STORAGE_DIR", str(tmp_path))
 
-    mgr = InstitutionManager(
-        canonical_name="Candidate Without CIK",
-        cik=None,
-        match_status="needs_review",
-        status="candidate",
-    )
-    db_session.add(mgr)
-    db_session.flush()
+    mgr = _make_manager(db_session, name="Candidate Without CIK", cik=None)
     filing = _make_filing(db_session, mgr, accession="0009999999-26-000001")
 
     def _fail_client(*args, **kwargs):
