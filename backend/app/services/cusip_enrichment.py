@@ -319,17 +319,23 @@ def _apply_mappings_to_holdings(db: Session, cusips: List[str]) -> None:
     )
     
     for h in holdings:
-        # Determine the effective mapping for this holding based on its quarter_end_date
-        mapping = (
+        # Determine the effective mapping for this holding based on its
+        # quarter_end_date. When quarter_end_date is NULL on the row (a
+        # known gap — Filing13F.quarter_end_date isn't populated by the
+        # ingest path yet), the temporal-validity filter is meaningless,
+        # so we skip it and accept any active mapping for the CUSIP.
+        # Without this guard the bind operator <= None raises ArgumentError
+        # and the enrich_metadata stage of quarterly_pipeline fails.
+        mapping_q = (
             db.query(CusipTickerMap)
             .filter_by(cusip=h.cusip, is_active=True)
-            .filter(
+        )
+        if h.quarter_end_date is not None:
+            mapping_q = mapping_q.filter(
                 (CusipTickerMap.valid_from.is_(None) | (CusipTickerMap.valid_from <= h.quarter_end_date)) &
                 (CusipTickerMap.valid_to.is_(None) | (CusipTickerMap.valid_to >= h.quarter_end_date))
             )
-            .order_by(CusipTickerMap.id.desc())
-            .first()
-        )
+        mapping = mapping_q.order_by(CusipTickerMap.id.desc()).first()
         
         if not mapping:
             h.cusip_mapping_status = "unresolved"
