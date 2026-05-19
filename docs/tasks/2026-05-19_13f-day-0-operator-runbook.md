@@ -63,15 +63,18 @@ The worker walks SEC quarterly `form.idx` files for each quarter in range, downl
 
 For multi-year backfill, fire several jobs — there is no single "fill from Q1-2020 to today" button today.
 
-## Step 4 — Wait for daily sync (or trigger current quarter manually)
+## Step 4 — Wait for daily sync (or trigger a quarter manually)
 
-The scheduler runs `run_daily_sync_poll` hourly. It scans SEC's daily `form.idx`, finds 13F filings from active managers, and queues fetch + parse jobs.
+The scheduler runs `run_daily_sync_poll` hourly. It scans SEC's daily `form.idx`, finds 13F filings from active managers, and queues fetch + parse jobs. Daily sync handles **today's** filings — it does not retroactively fill in earlier days of the current quarter.
 
-To force-run the current quarter immediately, on `/admin/13f`:
+To force-run a specific quarter (current or recent) immediately, on `/admin/13f` use the **BACKFILL** section, **not** the QUARTER PIPELINE buttons:
 
-1. Enter the target quarter (e.g., `2025-Q4`) in the "Quarter pipeline" section.
-2. Click **Fetch quarter index** → wait for the job to complete (visible on `/admin/13f/jobs`).
-3. Click **Ingest holdings** → parses 13F XML into the holdings table.
+- **Optional start quarter:** e.g. `2025-Q4`.
+- Click **Backfill**.
+
+This runs the all-in-one orchestrator end-to-end: master.idx → per-filing infotable XML → holdings parse → CUSIP enrichment → quality check.
+
+> ⚠️ **Do not** use the **QUARTER PIPELINE** buttons (Fetch quarter index → Ingest holdings) for this. They look like a complete pipeline but skip the per-filing infotable XML download in the middle, so `ingest_holdings` reports success with `filings_processed: 0` and no holdings land in the DB. Tracked as [#43](https://github.com/d41689/ValuePilot/issues/43). Until that's fixed, treat those buttons as parse-only debug tools (useful after an external re-fetch), not as an operator pipeline.
 
 ## Step 5 — CUSIP enrichment (automatic)
 
@@ -97,6 +100,7 @@ Columns will show `unavailable_reason='no_holders'` or `'below_min_holders'` if 
 | Filings tile stays at `0 pending` after Step 4 | All active managers had no recent filings, OR daily sync hasn't run since you activated them. | `/admin/13f/sync`, `/admin/13f/jobs`. |
 | `fetch_quarter_index` fails ENOENT on a specific SHA | Stale `raw_source_documents` row from before the persistent `edgar_raw` volume was mounted (PR #35). | Fixed in PR #37: fetcher self-heals by re-fetching the URL. Re-trigger the same job; the row updates in place. |
 | Holdings ingest fails with `SEC_CONTACT_EMAIL is required` | Missing env var. | Add `SEC_CONTACT_EMAIL=<inbox>` to `~/.config/valuepilot/.env.prod` and redeploy. |
+| `filings_13f > 0` but `holdings_13f = 0` AND every row has `raw_infotable_doc_id IS NULL` | You clicked **Fetch quarter index** + **Ingest holdings** as a sequence. They do NOT auto-fetch each filing's infotable XML — `ingest_holdings` then skips every filing it sees. Tracked as [#43](https://github.com/d41689/ValuePilot/issues/43). | Use the **BACKFILL** section with `start_quarter=<the affected quarter>` to run the full orchestrator (Step 4). |
 | Watchlist 13F columns blank but data exists | No Oracle's Lens scoring yet for that period, OR `min_holders` threshold not met. | `/admin/13f/readiness`. |
 
 ## Known gaps (tracked separately)
