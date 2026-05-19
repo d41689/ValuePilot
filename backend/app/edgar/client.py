@@ -81,9 +81,6 @@ def build_sec_user_agent() -> str:
     contact_email = (settings.SEC_CONTACT_EMAIL or "").strip()
     if not contact_email:
         raise RuntimeError("SEC_CONTACT_EMAIL is required for EDGAR requests")
-    configured = (settings.EDGAR_USER_AGENT or "").strip()
-    if configured:
-        return configured if contact_email in configured else f"{configured} {contact_email}"
     return f"{settings.PROJECT_NAME} {contact_email}"
 
 
