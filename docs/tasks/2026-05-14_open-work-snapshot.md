@@ -199,29 +199,18 @@ just deploy. Order:
    at `548a11b`). Backend defensive parsing, `_valuation_reference_by_stock`
    Option A tiebreak, dual-chip tooltip wording, doc drift cleanup,
    CLAUDE.md tightening. Three follow-up tickets filed: N3 / N4 / N5.
-2. **Clear remaining PR #33 pre-deploy gates (N4)** —
-   ENGINEERING-SIDE ESSENTIALLY DONE per PO direction 2026-05-18
-   that dev and prod DB are not materially different. Gate
-   verdicts on dev evidence accepted as production-equivalent:
-   - D1 cleared (round-trip + structural migration fix at `397893b`).
-   - D2 cleared with verdict **DEPLOY-SAFE** (total=240, swap=0,
-     persisted_only=0, magnitude=59).
-   - D3 runbook drafted at `37cc0b1`; awaits PO + backend lead
-     review pass.
-   - D4 engineering-draft release note at
-     `docs/runbooks/pr33-release-note.md` with all placeholders
-     filled; awaits PO review + channel selection + `<DEPLOY_DATE>`
-     fill at merge.
-   - D5 cleared with coverage tier "small curated subset" (3/240 =
-     1.25%).
-   Remaining is operational: D3 review pass, D4 PO approval +
-   publication, then merge.
-3. **Merge PR #33 to `main`** once N4 gates clear. The merge triggers
-   auto-deploy via `deploy.yml`; clearing N4 first is what makes the
-   coupled merge+deploy safe.
+2. **PR #33 fully closed 2026-05-19.** Merge `c4eacd1` at
+   2026-05-18 21:25:57 UTC; `deploy.yml` auto-fired production
+   deploy (workflow_run `26061574584`, 34s, success). All N4
+   gates closed: D1/D2/D5 cleared on dev-as-prod evidence per PO
+   direction; D3 runbook drafted + review pass accepted; D4
+   release note activated and §2.3 in-app banner published. N4
+   ticket closed; release note historical record at
+   `docs/runbooks/pr33-release-note.md`.
+3. **(done 2026-05-18) Merge PR #33 to `main`** — completed; auto-deploy fired and succeeded.
 4. **Open the Mobile stacked 13F view ticket** as the next product
    work item (Section N1) — bundle with DrawerShell focus trap +
-   move per Track-E gating.
+   move per Track-E gating. **NOW THE NEXT ACTIVE ITEM.**
 5. **Open the Value Line ingestion coverage decision gate (N2)**
    after N1 lands.
 6. **Ship the Option A read-path audit (N3)** before opening any
