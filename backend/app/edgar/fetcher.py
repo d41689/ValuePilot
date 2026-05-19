@@ -60,12 +60,26 @@ def fetch_and_store(
         .one_or_none()
     )
 
+    # Self-heal: if the cached row's body file is missing on disk, treat as
+    # a cache miss. Stale rows can outlive their files when the storage
+    # location is reset (volume re-mount, manual cleanup, etc.) — without
+    # this check, every downstream load_body() ENOENTs forever.
+    body_missing = existing is not None and not Path(existing.body_path).exists()
+
     if settings.EDGAR_FETCH_MODE == "replay":
         if existing is None:
             raise RuntimeError(
                 f"Replay mode: no raw record for {source_url}"
             )
+        if body_missing:
+            raise RuntimeError(
+                f"Replay mode: raw record exists but body file missing: "
+                f"{existing.body_path}"
+            )
         return existing
+
+    if body_missing:
+        force_refresh = True
 
     if existing is not None and not force_refresh:
         return existing
