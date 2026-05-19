@@ -957,7 +957,7 @@ def backfill_period_routing(db: Session, *, filings=None) -> dict[str, int]:
     from app.edgar.fetcher import load_body
     from app.models.institutions import Filing13F, RawSourceDocument
     from app.services.thirteenf_filing_detail import (
-        _route_period,
+        route_period,
         calculate_official_filing_deadline,
     )
 
@@ -990,7 +990,7 @@ def backfill_period_routing(db: Session, *, filings=None) -> dict[str, int]:
         if not summary.period_of_report:
             continue
 
-        routing = _route_period(
+        routing = route_period(
             summary.period_of_report,
             form_type=filing.form_type,
             accepted_at=filing.accepted_at,
