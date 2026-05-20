@@ -27,6 +27,23 @@ long — escalate to the user. **medium / low** = ordinary follow-up.
 - **Context:** `docs/tasks/2026-05-20_auth-hardening-followups.md` (item 2)
 - **Issue:** —
 
+### 13F holdings CUSIP link rate stuck at ~12%
+- **Found:** 2026-05-20, /admin/13f operational audit (item #7)
+- **Severity:** medium
+- **Problem:** Only ~12% of common-stock 13F holdings are linked to a `Stock`
+  (2026-Q1: 504/4278; similar for other quarters). ~2,084 distinct CUSIPs are
+  unresolved, including mega-caps (Alphabet, Visa, Amazon, BofA). The admin
+  "Run CUSIP enrichment" job (`enrich_metadata`) only applies *existing*
+  `CusipTickerMap` rows — it creates no new mappings — so re-running it cannot
+  raise the rate. Resolving the gap needs the OpenFIGI-backed enrichment
+  (`enrich_cusips_from_openfigi` / `enrich_unmapped_holdings`) run at scale to
+  populate `CusipTickerMap`, then `bootstrap_stocks_from_cusip_map` +
+  `backfill_stock_ids`. That is a data-completeness effort (OpenFIGI API key,
+  rate limits, batching — `enrich_unmapped_holdings` does 100/run) with no
+  single admin-UI trigger today.
+- **Context:** `docs/tasks/2026-05-20_admin-13f-ops-audit.md` (item #7)
+- **Issue:** —
+
 ### Content-Security-Policy response header
 - **Found:** 2026-05-20, admin/13f security-header review
 - **Severity:** medium

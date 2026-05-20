@@ -926,14 +926,6 @@ export default function Admin13FPage() {
                 >
                   Bootstrap stocks
                 </Button>
-                <Button
-                  type="button"
-                  variant="outline"
-                  disabled={isJobActive({ job_type: 'enrich_stocks_edgar' })}
-                  onClick={() => runJob({ job_type: 'enrich_stocks_edgar' }, 'Enrich stocks from EDGAR')}
-                >
-                  Enrich stocks from EDGAR
-                </Button>
               </div>
             </div>
             <div className="rounded-md border border-border/70 p-3">
