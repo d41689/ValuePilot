@@ -41,14 +41,29 @@ findings we agree with; record reasoning for the ones we defer.
 
 `docker compose exec api pytest -q` (full suite).
 
+## PR #56 re-review (2026-05-20)
+
+Re-review doc: `docs/tasks/2026-05-20_13f-pipeline-hardening-pr56-rereview-results.md`.
+
+| Re-review item | Disposition |
+|---|---|
+| **P1** — `_has_meaningful_coverage` treats a succeeded `oracles_lens_score_backfill` job as terminal; a zero-signal scoring success on an incomplete quarter freezes it forever | **Fixed in this PR** — reverted to signal-rows-only. A succeeded scoring job is no longer accepted as coverage; only actual `oracles_lens_signals` rows count. Incomplete quarters now self-heal; a genuinely-empty completed quarter re-enqueues per boot as a cheap idempotent no-op. |
+| **P2** — Phase 3 full `session.rollback()` on a per-filing parse error can roll back the failed-parse `ParseRun13F` audit row | **Follow-up** (per operator direction) |
+| **P2** — Phase 4 solo activation still bypasses the shared active-filing policy | **Follow-up** (per operator direction) |
+| **P3** — `backfill_period_routing` doesn't clear stale `parse_warning`/`parse_error` on a later clean reroute | **Follow-up** — needs warning/error namespacing first so a clean reroute doesn't wipe a non-routing warning |
+
 ## Deferred follow-ups (suggest GitHub issues)
 
 1. Shared active-filing-selection policy spanning accession ingest, quarterly
-   ingest, and reparse (replaces the Phase 4c heuristic for multi-filing groups).
+   ingest, and reparse (replaces the Phase 4c heuristic for multi-filing groups,
+   and the solo-filing direct activation).
 2. `compute_signal_weighted_scores` — add `commit=False` so the dispatcher owns
    the transaction (closes the split-brain window).
 3. Move `storage/edgar_raw` + `storage/uploads` out of the CI runner workspace.
 4. Row-lock (`FOR UPDATE`) the period-routing `is_latest` recompute for
    concurrency safety with manual accession ingests.
 5. Full transaction-integration + amendment-regression test coverage for
-   `_execute_ingest_job`.
+   `_execute_ingest_job`, including: a bad infotable leaves a failed
+   `ParseRun13F` audit row after `ingest_holdings` returns `partial_success`.
+6. `backfill_period_routing` — clear stale routing `parse_warning`/`parse_error`
+   on a clean reroute (requires namespacing the warning fields first).

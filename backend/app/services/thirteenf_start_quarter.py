@@ -2,14 +2,15 @@
 
 When ``THIRTEENF_START_QUARTER`` is configured, the API boot lifespan calls
 ``reconcile_start_quarter_coverage`` which walks each quarter from the
-configured start through the current calendar quarter and enqueues a
-``quarterly_pipeline`` job for any quarter that has no prior succeeded run.
+configured start through ``latest_scoreable_quarter()`` and enqueues a
+``quarterly_pipeline`` job for any quarter that has no Oracle's Lens signal
+rows yet (see ``_has_meaningful_coverage``).
 
 This implements the "set a start date and walk away" PRD vision: operators
 configure one env var; the system fills the backfill end-to-end without
-further button clicks. Re-runs across restarts are safe — already-succeeded
-quarters are skipped via a JobRun status check, and the underlying pipeline
-stages are individually idempotent.
+further button clicks. Re-runs across restarts are safe — quarters whose
+pipeline produced terminal output (signal rows) are skipped, and every
+pipeline stage is individually idempotent.
 """
 from __future__ import annotations
 
@@ -20,7 +21,6 @@ from typing import Iterable, Iterator
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
-from app.models.institutions import JobRun
 
 logger = logging.getLogger(__name__)
 
@@ -103,52 +103,50 @@ def quarters_in_range(start: str, end: str) -> Iterator[str]:
 
 
 def _has_meaningful_coverage(db: Session, quarter: str) -> bool:
-    """Return True iff this quarter has Oracle's Lens signals — i.e. the
-    quarterly_pipeline ran all the way through its final stage. Used by the
-    reconcile to decide "skip — done" versus "re-enqueue — work missing".
+    """Return True iff this quarter has Oracle's Lens signal rows — i.e. the
+    quarterly_pipeline ran all the way through and its final stage produced
+    output. Used by the reconcile to decide "skip — done" versus "re-enqueue
+    — work missing".
 
-    Why anchor on oracles_lens_signals specifically?
+    Why anchor strictly on oracles_lens_signals row existence?
 
-    This criterion has been moved twice. First it was JobRun.status ==
-    'succeeded' — but stage status reflects whether stages threw, not
-    whether they did useful work (a swallowed ImportError still returned
-    'succeeded'). Then it was Filing13F.quarter_end_date populated — but
-    that's an *intermediate* signal: once routing shipped and backfilled
-    that column, the reconcile started skipping quarters whose later
-    stages (CUSIP linking, is_active flags, Oracle's Lens scoring) had
-    never run.
+    This criterion has now been moved several times, each time hitting the
+    same trap — using a *job status* or an *intermediate* column as proof of
+    completeness:
 
-    The lesson: anchor on the pipeline's *terminal* output. oracles_lens_signals
-    is written by the last stage (oracles_lens_score_backfill); nothing
-    runs after it. If signal rows exist for the quarter, the whole pipeline
-    completed. If they don't, something upstream is missing and a re-run is
-    warranted — and because every stage is idempotent, re-running a
-    near-complete quarter is cheap (cache hits, fingerprint-skip, upserts).
+      - JobRun.status == 'succeeded' — stage status reflects whether stages
+        threw, not whether they did useful work (a swallowed ImportError
+        still returned 'succeeded').
+      - Filing13F.quarter_end_date populated — an intermediate column; once
+        routing backfilled it, the reconcile skipped quarters whose later
+        stages had never run.
+      - A succeeded oracles_lens_score_backfill job (PR #56's first cut) —
+        rejected on re-review: scoring can succeed with ZERO signals when
+        the upstream is incomplete (managers not yet seeded, routing
+        partial, holdings not yet CUSIP-linked). Treating that as terminal
+        freezes an incomplete quarter forever — the exact bug we keep
+        trying to escape.
 
-    Edge case: a quarter where no stock clears the min-holders floor will
-    legitimately have 0 signals and be re-enqueued on each boot. That's an
-    acceptable cost — the re-run is a fast no-op — and far better than the
-    failure mode this method has hit twice (skipping incomplete quarters).
+    The only signal that genuinely means "the pipeline completed and
+    produced results" is the terminal output itself: oracles_lens_signals
+    rows. A quarter with 0 signal rows is either incomplete (re-run will
+    self-heal once upstream is fixed) or — for a real ~70-manager universe —
+    a near-impossible "no stock held by >= min_holders managers" case. In
+    that rare case the quarter re-enqueues once per boot; the re-run is an
+    idempotent no-op (cache hits, fingerprint-skip, score upserts) and boots
+    are infrequent. The in-progress calendar quarter, which structurally has
+    no signals, is already excluded by latest_scoreable_quarter() bounding
+    end_quarter — so this method never sees it.
+
+    Net: never treat job success as data completeness. Re-running a
+    genuinely-empty quarter occasionally is a negligible cost; freezing an
+    incomplete quarter is not.
     """
     from app.models.oracles_lens import OraclesLensSignal
 
-    if (
+    return (
         db.query(OraclesLensSignal.id)
         .filter(OraclesLensSignal.report_quarter == quarter)
-        .first()
-        is not None
-    ):
-        return True
-
-    # A succeeded oracles_lens_score_backfill means the terminal stage ran
-    # to completion. This covers the legitimate "quarter with no stock above
-    # min_holders → 0 signals" case (external review R2-P2): without it, such
-    # a quarter would have 0 signal rows and be re-enqueued on every boot
-    # forever. lock_key shape: "oracles_lens_score:<quarter>:<score_version>".
-    return (
-        db.query(JobRun.id)
-        .filter(JobRun.lock_key.like(f"oracles_lens_score:{quarter}:%"))
-        .filter(JobRun.status == "succeeded")
         .first()
         is not None
     )

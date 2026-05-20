@@ -67,12 +67,14 @@ def test_latest_scoreable_quarter_after_window_opens():
     assert ssq.latest_scoreable_quarter(date(2026, 8, 20)) == "2026-Q2"
 
 
-# ---------- _has_meaningful_coverage zero-signal terminal case ---------------
+# ---------- _has_meaningful_coverage: signal rows are the ONLY proof --------
 
-def test_has_meaningful_coverage_accepts_succeeded_scoring_job(db_session):
-    """A quarter with a succeeded oracles_lens_score_backfill job but ZERO
-    oracles_lens_signals (legitimate: no stock cleared min_holders) counts as
-    covered — otherwise the reconcile re-enqueues it every boot forever."""
+def test_has_meaningful_coverage_is_false_for_succeeded_job_with_zero_signals(db_session):
+    """A succeeded oracles_lens_score_backfill job is NOT sufficient on its
+    own (PR #56 re-review P1). Scoring can succeed with zero signals because
+    upstream was incomplete (managers not seeded, routing partial, holdings
+    not yet linked) — treating that as terminal would freeze the quarter
+    forever. Only actual signal rows count as coverage."""
     job = JobRun(
         job_type="oracles_lens_score_backfill",
         status="succeeded",
@@ -85,10 +87,32 @@ def test_has_meaningful_coverage_accepts_succeeded_scoring_job(db_session):
     db_session.add(job)
     db_session.flush()
 
-    # No OraclesLensSignal rows exist for 2025-Q4, but the scoring job
-    # succeeded → covered.
+    # Succeeded scoring job but ZERO signal rows → NOT covered → reconcile
+    # will re-enqueue and self-heal once the upstream gap is fixed.
+    assert ssq._has_meaningful_coverage(db_session, "2025-Q4") is False
+
+
+def test_has_meaningful_coverage_is_true_when_signal_rows_exist(db_session):
+    """A quarter with at least one OraclesLensSignal row — the pipeline's
+    terminal output — is covered."""
+    from datetime import date
+    from app.models.oracles_lens import OraclesLensSignal
+    from app.models.stocks import Stock
+
+    stock = Stock(ticker="COV", exchange="NYSE", company_name="Covered Co", is_active=True)
+    db_session.add(stock)
+    db_session.flush()
+    db_session.add(OraclesLensSignal(
+        stock_id=stock.id,
+        report_quarter="2025-Q4",
+        quarter_end_date=date(2025, 12, 31),
+        score_version="v1.0",
+        score_confidence="high_confidence",
+        computed_at=datetime.now(timezone.utc),
+    ))
+    db_session.flush()
+
     assert ssq._has_meaningful_coverage(db_session, "2025-Q4") is True
-    # A quarter with neither signals nor a succeeded scoring job → not covered.
     assert ssq._has_meaningful_coverage(db_session, "2025-Q3") is False
 
 
