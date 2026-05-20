@@ -24,12 +24,32 @@ def test_register_login_me_refresh_flow(client):
 
     refresh_resp = client.post(
         "/api/v1/auth/refresh",
-        params={"refresh_token": payload["refresh_token"]},
+        json={"refresh_token": payload["refresh_token"]},
     )
     assert refresh_resp.status_code == 200, refresh_resp.text
     refreshed = refresh_resp.json()
     assert refreshed["token_type"] == "bearer"
     assert refreshed["access_token"]
+
+
+def test_refresh_rejects_a_non_refresh_token(client):
+    client.post(
+        "/api/v1/auth/register",
+        json={"email": "auth_reject@example.com", "password": "StrongPass123!"},
+    )
+    login_resp = client.post(
+        "/api/v1/auth/login",
+        json={"email": "auth_reject@example.com", "password": "StrongPass123!"},
+    )
+    access_token = login_resp.json()["access_token"]
+
+    # An access token must not be accepted where a refresh token is required.
+    resp = client.post(
+        "/api/v1/auth/refresh",
+        json={"refresh_token": access_token},
+    )
+    assert resp.status_code == 401
+    assert resp.json()["detail"] == "Token is not a refresh token"
 
 
 def test_login_rejects_invalid_credentials(client):
