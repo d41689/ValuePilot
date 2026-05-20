@@ -82,6 +82,41 @@ def list_worker_heartbeats(
     return [_worker_payload(worker, cutoff=cutoff) for worker in workers]
 
 
+def reap_stale_worker_heartbeats(
+    session: Session,
+    *,
+    current_worker_id: str,
+    now: datetime | None = None,
+    stale_after_seconds: int | None = None,
+) -> dict[str, int]:
+    """Mark provably-dead worker heartbeat rows as 'stopped'.
+
+    Each prod deploy recreates the API container. If the old container is
+    SIGKILL'd before FastAPI's lifespan shutdown runs (see the prod compose
+    `exec` note), its worker never records 'stopped' and the row lingers as
+    'stale' forever, cluttering the dashboard. A freshly started worker reaps
+    every *other* row whose heartbeat predates the stale cutoff — a worker that
+    has not beaten within the stale window is dead. Rows still beating (e.g. a
+    briefly-overlapping outgoing worker mid-deploy) are left untouched.
+    """
+    now = now or datetime.now(timezone.utc)
+    stale_after_seconds = stale_after_seconds or settings.THIRTEENF_JOB_WORKER_HEARTBEAT_STALE_S
+    cutoff = now - timedelta(seconds=stale_after_seconds)
+    rows = (
+        session.query(JobWorkerHeartbeat)
+        .filter(JobWorkerHeartbeat.worker_id != current_worker_id)
+        .filter(JobWorkerHeartbeat.status != "stopped")
+        .filter(JobWorkerHeartbeat.last_heartbeat_at < cutoff)
+        .all()
+    )
+    for row in rows:
+        row.status = "stopped"
+        session.add(row)
+    if rows:
+        session.commit()
+    return {"reaped": len(rows)}
+
+
 def claim_next_job(
     session: Session,
     *,
@@ -390,6 +425,16 @@ class ThirteenFJobWorker:
 
     def _run(self) -> None:
         logger.info("13F job worker started: %s", self.worker_id)
+        session = self.db_factory()
+        try:
+            reaped = reap_stale_worker_heartbeats(session, current_worker_id=self.worker_id)
+            if reaped["reaped"]:
+                logger.info("Reaped %d stale worker heartbeat row(s)", reaped["reaped"])
+        except Exception:
+            session.rollback()
+            logger.warning("Failed to reap stale worker heartbeats", exc_info=True)
+        finally:
+            session.close()
         while not self._stop_event.is_set():
             session = self.db_factory()
             try:
