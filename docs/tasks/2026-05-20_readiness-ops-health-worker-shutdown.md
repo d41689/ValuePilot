@@ -97,6 +97,24 @@ suites, no narrowing:
   build'` → success; the build's `tsc` pass now enforces the corrected
   `operationsHealth` signature.
 
+## Review remediation (2026-05-20)
+
+External review (`2026-05-20_readiness-ops-health-worker-shutdown-review-result.md`)
+verdict: **approved, no blocking findings**. The reviewer independently
+confirmed the prod-style `exec uvicorn` boots, that `docker stop` yields a clean
+uvicorn shutdown, and that with the worker enabled the shutdown records
+`status='stopped'`. Two advisory notes, both handled here:
+
+- **`stop_grace_period`** — added `stop_grace_period: 15s` to the `api` service
+  in `docker-compose.prod.yml`, making the shutdown budget explicit (margin
+  over Docker's 10s default). No code path changes.
+- **`.env.prod` worker-enabled confusion** — *no code change; intentional.* The
+  repo-root `.env.prod` is git-ignored; the deploy installs the runner's
+  `~/.config/valuepilot/.env.prod` (which enables the worker) before bringing
+  the prod stack up, so the local file never reaches prod. The local copy can
+  mislead a reviewer about the worker's prod state — noted here so the next
+  reader does not re-derive it. Not fixable in-repo (the file is ignored).
+
 ## Sign-off trail
 
 - 2026-05-20: diagnosis complete; branch `claude/fix-readiness-ops-health-worker-shutdown`.
@@ -104,3 +122,5 @@ suites, no narrowing:
   effect on the next prod deploy — the reaper clears the ~25 existing zombie
   rows when the new worker starts; the `exec` change makes every subsequent
   deploy shut the worker down cleanly.
+- 2026-05-20: external review approved (no blockers); `stop_grace_period: 15s`
+  added per advisory; canonical CI re-run green.

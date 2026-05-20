@@ -47,6 +47,10 @@ services:
       - ./docs:/code/docs:ro
       - ./storage/uploads:/code/storage/uploads
       - ./storage/edgar_raw:/code/storage/edgar_raw
+    # Explicit shutdown budget for the graceful path below: uvicorn drains
+    # connections, then FastAPI lifespan runs scheduler.shutdown() +
+    # job_worker.stop(timeout=5s). 15s leaves margin over Docker's 10s default.
+    stop_grace_period: 15s
     # `exec` so uvicorn replaces the shell as PID 1 and receives SIGTERM
     # directly on `docker stop` / deploy recreation. Without it the shell is
     # PID 1 and never forwards the signal, so uvicorn is SIGKILL'd after the
