@@ -398,7 +398,6 @@ export default function JobsAdminPage() {
                   <SelectItem value="bootstrap_whitelist">Bootstrap whitelist</SelectItem>
                   <SelectItem value="enrich_cusip">Enrich CUSIP</SelectItem>
                   <SelectItem value="enrich_metadata">Enrich metadata</SelectItem>
-                  <SelectItem value="enrich_stocks_edgar">Enrich stocks EDGAR</SelectItem>
                   <SelectItem value="fetch_quarter_index">Fetch quarter index</SelectItem>
                   <SelectItem value="fetch_daily_index">Fetch daily index</SelectItem>
                   <SelectItem value="ingest_accession">Ingest accession</SelectItem>

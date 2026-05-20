@@ -47,6 +47,5 @@ export function lockKeyForPayload(
   if (jobType === 'bootstrap_whitelist') return 'bootstrap_whitelist';
   if (jobType === 'match_cik') return 'match_cik';
   if (jobType === 'bootstrap_stocks') return 'bootstrap_stocks';
-  if (jobType === 'enrich_stocks_edgar') return 'enrich_stocks_edgar';
   return null;
 }
