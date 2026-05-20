@@ -64,7 +64,7 @@ function badgeVariant(value: string): BadgeVariant {
 }
 
 function formatInteger(value: unknown) {
-  if (typeof value !== 'number') return '—';
+  if (typeof value !== 'number' || !Number.isFinite(value)) return '—';
   return value.toLocaleString('en-US');
 }
 
@@ -165,17 +165,43 @@ export default function Admin13FPage() {
       queryClient.invalidateQueries({ queryKey: ['admin-13f-workers'] }),
       queryClient.invalidateQueries({ queryKey: ['admin-13f-job-detail'] }),
       queryClient.invalidateQueries({ queryKey: ['admin-13f-edgar-rate-limit'] }),
+      queryClient.invalidateQueries({
+        queryKey: ['admin-13f-oracles-lens-unknown-manager-priority'],
+      }),
     ]);
   }, [queryClient]);
+  // Surface mutation failures: admin actions (job triggers, CIK review) post
+  // to the API, and a failed POST would otherwise close its dialog with no
+  // feedback at all. The QueryClient has no global error handler, so each
+  // mutation wires this in via onError.
+  const notifyMutationError = useCallback(
+    (action: string) =>
+      (error: unknown) => {
+        const detail = (
+          error as { response?: { data?: { detail?: unknown } } }
+        )?.response?.data?.detail;
+        toast({
+          appType: 'error',
+          title: `${action} failed`,
+          description:
+            typeof detail === 'string' && detail
+              ? detail
+              : 'The request did not complete. Please retry.',
+        });
+      },
+    [toast]
+  );
   const triggerJob = useMutation({
     mutationFn: async (payload: Record<string, unknown>) =>
       (await apiClient.post('/admin/13f/jobs', payload)).data,
     onSuccess: refreshAdminData,
+    onError: notifyMutationError('Job trigger'),
   });
   const releaseStaleLock = useMutation({
     mutationFn: async (jobId: number) =>
       (await apiClient.post(`/admin/13f/jobs/${jobId}/release-stale-lock`)).data,
     onSuccess: refreshAdminData,
+    onError: notifyMutationError('Release stale lock'),
   });
   const confirmManager = useMutation({
     mutationFn: async ({
@@ -194,6 +220,7 @@ export default function Admin13FPage() {
         queryClient.invalidateQueries({ queryKey: ['admin-13f-managers'] }),
       ]);
     },
+    onError: notifyMutationError('Confirm CIK'),
   });
   const rejectManager = useMutation({
     mutationFn: async ({ managerId, note }: { managerId: number; note: string | null }) =>
@@ -205,6 +232,7 @@ export default function Admin13FPage() {
         queryClient.invalidateQueries({ queryKey: ['admin-13f-managers'] }),
       ]);
     },
+    onError: notifyMutationError('Reject CIK'),
   });
   const revokeManager = useMutation({
     mutationFn: async ({ managerId, note }: { managerId: number; note: string }) =>
@@ -217,6 +245,7 @@ export default function Admin13FPage() {
         queryClient.invalidateQueries({ queryKey: ['admin-13f-quarters'] }),
       ]);
     },
+    onError: notifyMutationError('Revoke CIK'),
   });
   const retryCikSearch = useMutation({
     mutationFn: async ({
@@ -239,6 +268,7 @@ export default function Admin13FPage() {
         queryClient.invalidateQueries({ queryKey: ['admin-13f-managers'] }),
       ]);
     },
+    onError: notifyMutationError('Retry CIK search'),
   });
   // MVP6-06: hbPreviewMutation / hbEnqueueMutation / brPreviewMutation /
   // brEnqueueMutation moved to /admin/13f/jobs along with the Historical
@@ -446,20 +476,7 @@ export default function Admin13FPage() {
           type="button"
           variant="outline"
           onClick={() => {
-            queryClient.invalidateQueries({ queryKey: ['admin-13f-readiness'] });
-            queryClient.invalidateQueries({ queryKey: ['admin-13f-quarters'] });
-            queryClient.invalidateQueries({ queryKey: ['admin-13f-tasks'] });
-            queryClient.invalidateQueries({ queryKey: ['admin-13f-managers'] });
-            queryClient.invalidateQueries({ queryKey: ['admin-13f-jobs'] });
-            queryClient.invalidateQueries({ queryKey: ['admin-13f-quality'] });
-            queryClient.invalidateQueries({ queryKey: ['admin-13f-amendments'] });
-            queryClient.invalidateQueries({ queryKey: ['admin-13f-amendments-pending'] });
-            queryClient.invalidateQueries({ queryKey: ['admin-13f-filings'] });
-            queryClient.invalidateQueries({ queryKey: ['admin-13f-holdings-coverage'] });
-            queryClient.invalidateQueries({ queryKey: ['admin-13f-unresolved-cusips'] });
-            queryClient.invalidateQueries({ queryKey: ['admin-13f-parse-runs'] });
-            queryClient.invalidateQueries({ queryKey: ['admin-13f-quarter-detail'] });
-            queryClient.invalidateQueries({ queryKey: ['admin-13f-workers'] });
+            refreshAdminData();
           }}
         >
           <RefreshCw className="mr-2 h-4 w-4" />
