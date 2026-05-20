@@ -1628,6 +1628,11 @@ def test_quarterly_pipeline_records_retryable_stage_jobs(db_session, monkeypatch
         "app.services.thirteenf_admin_dashboard.run_quality_checks",
         lambda session, quarter: calls.append(f"quality:{quarter}") or report,
     )
+    monkeypatch.setattr(
+        "app.services.oracles_lens.signal_weighted_score.compute_signal_weighted_scores",
+        lambda session, **kw: calls.append(f"oracles_lens_score:{kw['quarter']}")
+        or {"quarter": kw["quarter"], "filings_scored": 2, "components_written": 8},
+    )
 
     result = execute_job_payload(db_session, "quarterly_pipeline", {"quarter": "2025-Q4", "_job_id": 99})
     stage_jobs = db_session.query(JobRun).order_by(JobRun.id.asc()).all()
@@ -1638,6 +1643,7 @@ def test_quarterly_pipeline_records_retryable_stage_jobs(db_session, monkeypatch
         {"job_type": "ingest_holdings", "job_id": stage_jobs[1].id, "status": "succeeded"},
         {"job_type": "enrich_metadata", "job_id": stage_jobs[2].id, "status": "succeeded"},
         {"job_type": "quality_check", "job_id": stage_jobs[3].id, "status": "succeeded"},
+        {"job_type": "oracles_lens_score_backfill", "job_id": stage_jobs[4].id, "status": "succeeded"},
     ]
     assert calls == [
         "index:2025-Q4",
@@ -1647,12 +1653,14 @@ def test_quarterly_pipeline_records_retryable_stage_jobs(db_session, monkeypatch
         "backfill_stock_ids",
         "enrich_stocks_edgar",
         "quality:2025-Q4",
+        "oracles_lens_score:2025-Q4",
     ]
     assert [job.job_type for job in stage_jobs] == [
         "fetch_quarter_index",
         "ingest_holdings",
         "enrich_metadata",
         "quality_check",
+        "oracles_lens_score_backfill",
     ]
     assert all(job.trigger_source == "pipeline" for job in stage_jobs)
     assert stage_jobs[2].summary_json["cusip_mappings"] == 3
@@ -1817,6 +1825,10 @@ def test_quarterly_pipeline_continues_after_retryable_enrichment_failure(
     report = QualityReport()
 
     monkeypatch.setattr("app.services.thirteenf_admin_dashboard.run_quality_checks", lambda session, quarter: report)
+    monkeypatch.setattr(
+        "app.services.oracles_lens.signal_weighted_score.compute_signal_weighted_scores",
+        lambda session, **kw: {"quarter": kw["quarter"], "filings_scored": 1, "components_written": 4},
+    )
 
     result = execute_job_payload(db_session, "quarterly_pipeline", {"quarter": "2025-Q4", "_job_id": 99})
 
@@ -1827,14 +1839,18 @@ def test_quarterly_pipeline_continues_after_retryable_enrichment_failure(
         {"job_type": "ingest_holdings", "job_id": stage_jobs[1].id, "status": "succeeded"},
         {"job_type": "enrich_metadata", "job_id": stage_jobs[2].id, "status": "failed"},
         {"job_type": "quality_check", "job_id": stage_jobs[3].id, "status": "succeeded"},
+        {"job_type": "oracles_lens_score_backfill", "job_id": stage_jobs[4].id, "status": "succeeded"},
     ]
     assert [job.job_type for job in stage_jobs] == [
         "fetch_quarter_index",
         "ingest_holdings",
         "enrich_metadata",
         "quality_check",
+        "oracles_lens_score_backfill",
     ]
-    assert [job.status for job in stage_jobs] == ["succeeded", "succeeded", "failed", "succeeded"]
+    assert [job.status for job in stage_jobs] == [
+        "succeeded", "succeeded", "failed", "succeeded", "succeeded",
+    ]
     assert stage_jobs[2].error_message == "CUSIP enrichment failed"
     assert stage_jobs[2].input_json["parent_job_id"] == 99
 
