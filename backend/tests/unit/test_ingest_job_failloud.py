@@ -1,0 +1,144 @@
+"""Tests for the external-review remediation of `_execute_ingest_job`
+(review R1-P1 / R4): programming errors must fail the stage loudly instead
+of being demoted to a per-filing "failure" or swallowed by Phase 2's broad
+except (the failure mode that let the route_period import bug reach prod).
+"""
+from __future__ import annotations
+
+from datetime import date
+
+import pytest
+
+from app.services.thirteenf_admin_dashboard import (
+    _is_programming_error,
+    execute_job_payload,
+)
+from app.models.institutions import Filing13F, InstitutionManager
+
+# A routing summary shaped like backfill_period_routing's real return.
+_CLEAN_ROUTING = {
+    "period_changed": 0, "quarter_end_added": 0, "report_quarter_added": 0,
+    "needs_review": 0, "failed": 0,
+}
+
+
+def _make_manager(db, *, name="Test Manager", cik="0001234567") -> InstitutionManager:
+    mgr = InstitutionManager(
+        cik=cik,
+        legal_name=name,
+        display_name=name,
+        name_normalized=name.lower(),
+        match_status="confirmed",
+        is_superinvestor=False,
+    )
+    db.add(mgr)
+    db.flush()
+    return mgr
+
+
+def _make_filing(db, manager, *, accession="0001234567-26-000001") -> Filing13F:
+    # period_of_report inside the 2025-Q4 window so the ingest_holdings job
+    # query picks it up.
+    filing = Filing13F(
+        manager_id=manager.id,
+        accession_no=accession,
+        form_type="13F-HR",
+        filed_at=date(2026, 2, 14),
+        period_of_report=date(2025, 11, 15),
+        is_latest_for_period=True,
+    )
+    db.add(filing)
+    db.flush()
+    return filing
+
+
+# ---------- _is_programming_error -------------------------------------------
+
+def test_is_programming_error_classification():
+    assert _is_programming_error(ImportError("x")) is True
+    assert _is_programming_error(ModuleNotFoundError("x")) is True  # ImportError subclass
+    assert _is_programming_error(NameError("x")) is True
+    assert _is_programming_error(AttributeError("x")) is True
+    # Recoverable per-document / network failures are NOT programming errors.
+    assert _is_programming_error(RuntimeError("EDGAR 404")) is False
+    assert _is_programming_error(OSError("connection reset")) is False
+    assert _is_programming_error(ValueError("bad period")) is False
+
+
+# ---------- ingest_holdings fail-loud behavior ------------------------------
+
+def test_ingest_holdings_phase2_failloud_on_import_error(db_session, monkeypatch):
+    """A programming error escaping backfill_period_routing must propagate
+    and fail the stage — NOT be swallowed into a zero-work 'success'."""
+    mgr = _make_manager(db_session)
+    _make_filing(db_session, mgr)
+
+    # Phase 1: pretend the XML is on disk (return a truthy doc).
+    monkeypatch.setattr(
+        "app.services.edgar_ingestion.ensure_filing_infotable_doc",
+        lambda session, filing: object(),
+    )
+
+    def _boom(session, *, filings):
+        raise ImportError("cannot import name 'route_period'")
+
+    monkeypatch.setattr("app.services.edgar_ingestion.backfill_period_routing", _boom)
+
+    with pytest.raises(ImportError):
+        execute_job_payload(db_session, "ingest_holdings", {"quarter": "2025-Q4"})
+
+
+def test_ingest_holdings_phase1_failloud_on_programming_error(db_session, monkeypatch):
+    """An AttributeError inside the Phase 1 per-filing loop is a real bug —
+    it must propagate, not be recorded as a tolerated per-filing failure."""
+    mgr = _make_manager(db_session)
+    _make_filing(db_session, mgr)
+
+    def _boom(session, filing):
+        raise AttributeError("'NoneType' object has no attribute 'cik'")
+
+    monkeypatch.setattr("app.services.edgar_ingestion.ensure_filing_infotable_doc", _boom)
+
+    with pytest.raises(AttributeError):
+        execute_job_payload(db_session, "ingest_holdings", {"quarter": "2025-Q4"})
+
+
+def test_ingest_holdings_tolerates_per_filing_data_error(db_session, monkeypatch):
+    """A non-programming error (e.g. an EDGAR 404) for one filing is recorded
+    as a per-filing failure and the stage finishes partial_success — one bad
+    filing does not abort the batch."""
+    mgr = _make_manager(db_session)
+    _make_filing(db_session, mgr)
+
+    def _data_error(session, filing):
+        raise RuntimeError("EDGAR 404 for filing")
+
+    monkeypatch.setattr("app.services.edgar_ingestion.ensure_filing_infotable_doc", _data_error)
+    monkeypatch.setattr(
+        "app.services.edgar_ingestion.backfill_period_routing",
+        lambda session, *, filings: dict(_CLEAN_ROUTING),
+    )
+
+    result = execute_job_payload(db_session, "ingest_holdings", {"quarter": "2025-Q4"})
+    assert result["filings_failed"] == 1
+    assert result["status"] == "partial_success"
+
+
+def test_ingest_holdings_routing_needs_review_marks_partial_success(db_session, monkeypatch):
+    """Degraded period routing (needs_review / failed outcomes) is surfaced
+    as partial_success rather than a silent clean success."""
+    mgr = _make_manager(db_session)
+    _make_filing(db_session, mgr)
+
+    monkeypatch.setattr(
+        "app.services.edgar_ingestion.ensure_filing_infotable_doc",
+        lambda session, filing: object(),
+    )
+    monkeypatch.setattr(
+        "app.services.edgar_ingestion.backfill_period_routing",
+        lambda session, *, filings: {**_CLEAN_ROUTING, "needs_review": 1},
+    )
+
+    result = execute_job_payload(db_session, "ingest_holdings", {"quarter": "2025-Q4"})
+    assert result["filings_routing_needs_review"] == 1
+    assert result["status"] == "partial_success"

@@ -3113,6 +3113,19 @@ def _stage_summary_with_schema(job_type: str, summary: dict[str, Any]) -> dict[s
     return summary
 
 
+def _is_programming_error(exc: BaseException) -> bool:
+    """True if the exception is a code defect (import/name/attribute error)
+    rather than a recoverable per-document data/network failure.
+
+    Per-filing loops below catch broadly so one bad filing can't abort a
+    batch — but a programming error (e.g. the route_period vs _route_period
+    import bug that reached prod behind a swallowed except) must NOT be
+    demoted to a per-filing 'failure'. Re-raise those so the stage fails
+    loudly and CI / the operator sees a real bug.
+    """
+    return isinstance(exc, (ImportError, NameError, AttributeError))
+
+
 def _execute_ingest_job(session: Session, job_type: str, payload: dict[str, Any]) -> dict[str, Any]:
     from app.services.thirteenf_holdings_ingest import ingest_if_needed, reparse_accession
 
@@ -3157,6 +3170,8 @@ def _execute_ingest_job(session: Session, job_type: str, payload: dict[str, Any]
     no_cik = 0
     failures: list[dict[str, str]] = []
 
+    from collections import Counter
+
     from app.edgar.fetcher import load_body
     from app.services.edgar_ingestion import (
         backfill_period_routing,
@@ -3164,50 +3179,56 @@ def _execute_ingest_job(session: Session, job_type: str, payload: dict[str, Any]
     )
     from sqlalchemy import update
 
+    # --- Transaction-boundary contract (external review R1-P1) ----------
+    # The four phases below ran in one implicit transaction; a per-filing
+    # session.rollback() in a later loop could discard earlier phases'
+    # flushed-but-uncommitted work, and the boundary depended on whether
+    # any filing happened to parse. Now each phase ends with an explicit
+    # commit barrier, and per-filing work runs inside a SAVEPOINT so one
+    # filing's failure can never roll back a sibling's (or a prior phase's).
+    # -------------------------------------------------------------------
+
     # Phase 1: ensure every filing has its primary_doc + infotable XML on
-    # disk. Always call ensure_filing_infotable_doc — even if
-    # raw_infotable_doc_id is already set — so its internal self-heal
-    # (#50: re-fetch when DB row is linked but body_path file is missing)
-    # actually runs. The previous guard `if filing.raw_infotable_doc_id is
-    # None` skipped the helper after a storage wipe, leaving body_path
-    # pointing at a ghost and ENOENTing every downstream load_body.
-    # ensure_filing_infotable_doc is idempotent; the happy-path cost is
-    # one DB lookup + two stat() calls per filing.
+    # disk. ensure_filing_infotable_doc is always called (its #50 self-heal
+    # re-fetches when a linked body file is missing) and is idempotent.
     routing_candidates: list[Filing13F] = []
-    previously_set_ids: set[int] = set()
     for filing in filings:
         had_doc_before = filing.raw_infotable_doc_id is not None
         try:
-            fetched_doc = ensure_filing_infotable_doc(session, filing)
-            if fetched_doc is None:
-                # Manager has no confirmed CIK — cannot resolve EDGAR URLs.
-                no_cik += 1
-                continue
-            if not had_doc_before:
-                xml_fetched += 1
-            else:
-                previously_set_ids.add(filing.id)
-            routing_candidates.append(filing)
+            with session.begin_nested():  # per-filing SAVEPOINT
+                fetched_doc = ensure_filing_infotable_doc(session, filing)
         except Exception as exc:
-            session.rollback()
+            if _is_programming_error(exc):
+                raise  # a real bug — fail the stage loudly, do not demote
             failures.append({"accession_no": filing.accession_no, "error": f"fetch_xml: {exc}"})
-    session.flush()
+            continue
+        if fetched_doc is None:
+            # Manager has no confirmed CIK — cannot resolve EDGAR URLs.
+            no_cik += 1
+            continue
+        if not had_doc_before:
+            xml_fetched += 1
+        routing_candidates.append(filing)
+    session.commit()  # commit barrier — Phase 1 XML links are now durable.
 
     # Phase 2: route each filing's period from primary_doc XML — fills in
-    # period_of_report (currently a filed_at proxy), quarter_end_date, and
-    # report_quarter. Required for Oracle's Lens scoring to recognize this
-    # quarter. Idempotent; cheap when fields are already correct.
-    routing_summary = {"period_changed": 0, "quarter_end_added": 0, "report_quarter_added": 0}
+    # period_of_report, quarter_end_date, report_quarter. A failure here is
+    # a HARD stage failure, deliberately NOT swallowed: backfill_period_routing
+    # already tolerates per-document bad data internally, so anything that
+    # escapes (ImportError, API breakage) is a real bug and must fail the
+    # stage rather than silently producing a zero-work "success" (the exact
+    # failure mode of the route_period import bug, review R1-P1).
+    routing_summary: dict[str, int] = {
+        "period_changed": 0, "quarter_end_added": 0, "report_quarter_added": 0,
+        "needs_review": 0, "failed": 0,
+    }
     if routing_candidates:
-        try:
-            routing_summary = backfill_period_routing(session, filings=routing_candidates)
-        except Exception as exc:
-            logger.warning("ingest_holdings: routing pass failed (%s); proceeding without it", exc)
-            session.rollback()
-    session.flush()
+        routing_summary = backfill_period_routing(session, filings=routing_candidates)
+    session.commit()  # commit barrier — routing is now durable.
 
-    # Phase 3: parse holdings. Filing.quarter_end_date is now populated, so
-    # newly-inserted Holding13F rows pick it up via thirteenf_holdings_ingest.
+    # Phase 3: parse holdings. ingest_if_needed → _do_ingest_holdings commits
+    # per filing internally; Phases 1-2 are already committed, so a per-filing
+    # failure here only affects that filing.
     for filing in filings:
         try:
             infotable_doc = filing.raw_infotable_doc
@@ -3220,6 +3241,8 @@ def _execute_ingest_job(session: Session, job_type: str, payload: dict[str, Any]
             else:
                 total_holdings += result.get("holdings_count", 0)
         except Exception as exc:
+            if _is_programming_error(exc):
+                raise  # a real bug — fail the stage loudly
             session.rollback()
             failures.append({"accession_no": filing.accession_no, "error": str(exc)})
 
@@ -3260,20 +3283,43 @@ def _execute_ingest_job(session: Session, job_type: str, payload: dict[str, Any]
         # _do_ingest_holdings path only sets this for RESTATEMENT
         # amendments, never for plain 13F-HR filings, so Oracle's Lens
         # scoring (which filters is_active_for_manager_period=True) sees
-        # nothing. For the V1 universe with no real amendments, the
-        # latest filing per (manager, period) IS the active one — mirror
-        # is_latest_for_period onto is_active_for_manager_period for the
-        # HR/HR-A filings in this quarter.
-        activate_stmt = (
-            update(Filing13F)
-            .where(Filing13F.id.in_(filing_ids))
-            .where(Filing13F.form_type.in_(["13F-HR", "13F-HR/A"]))
-            .where(Filing13F.is_active_for_manager_period != Filing13F.is_latest_for_period)
-            .values(is_active_for_manager_period=Filing13F.is_latest_for_period)
-            .execution_options(synchronize_session=False)
+        # nothing.
+        #
+        # SAFETY (external review R2-P1): only heal the *unambiguous* case
+        # — a (manager_id, quarter_end_date) group with exactly ONE filing.
+        # A previous version mirrored is_latest_for_period onto is_active
+        # for every HR/HR-A filing, which can activate the WRONG filing
+        # when an HR and an HR/A coexist for one period (a later HR/A that
+        # is not a RESTATEMENT must stay inactive — see the amendment
+        # policy in thirteenf_filing_detail). Multi-filing groups are left
+        # untouched here; correct active-filing selection across amendments
+        # belongs in a single shared policy (tracked separately).
+        group_counts = Counter(
+            (f.manager_id, f.quarter_end_date)
+            for f in filings if f.quarter_end_date is not None
         )
-        filings_activated = session.execute(activate_stmt).rowcount or 0
-    session.flush()
+        solo_filing_ids = [
+            f.id for f in filings
+            if f.quarter_end_date is not None
+            and group_counts[(f.manager_id, f.quarter_end_date)] == 1
+        ]
+        if solo_filing_ids:
+            activate_stmt = (
+                update(Filing13F)
+                .where(Filing13F.id.in_(solo_filing_ids))
+                .where(Filing13F.is_active_for_manager_period.is_(False))
+                .values(is_active_for_manager_period=True)
+                .execution_options(synchronize_session=False)
+            )
+            filings_activated = session.execute(activate_stmt).rowcount or 0
+    session.commit()  # final commit barrier — Phase 4 healing is durable.
+
+    # Degraded period routing (needs_review / failed outcomes from
+    # route_period) is surfaced as partial_success so the operator sees it
+    # — previously these were silent (external review R2-P1).
+    routing_needs_review = routing_summary.get("needs_review", 0)
+    routing_failed = routing_summary.get("failed", 0)
+    degraded = bool(failures) or routing_needs_review > 0 or routing_failed > 0
 
     return {
         "filings_processed": len(filings),
@@ -3289,7 +3335,9 @@ def _execute_ingest_job(session: Session, job_type: str, payload: dict[str, Any]
         "filings_period_changed": routing_summary.get("period_changed", 0),
         "filings_quarter_end_added": routing_summary.get("quarter_end_added", 0),
         "filings_report_quarter_added": routing_summary.get("report_quarter_added", 0),
-        "status": "partial_success" if failures else "succeeded",
+        "filings_routing_needs_review": routing_needs_review,
+        "filings_routing_failed": routing_failed,
+        "status": "partial_success" if degraded else "succeeded",
     }
 
 

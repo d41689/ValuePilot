@@ -14,7 +14,7 @@ stages are individually idempotent.
 from __future__ import annotations
 
 import logging
-from datetime import date
+from datetime import date, timedelta
 from typing import Iterable, Iterator
 
 from sqlalchemy.orm import Session
@@ -48,6 +48,43 @@ def current_quarter(today: date | None = None) -> str:
     today = today or date.today()
     q = (today.month - 1) // 3 + 1
     return _quarter_str(today.year, q)
+
+
+# A 13F-HR for quarter Q is due ~45 days after Q ends. Until that window has
+# substantially opened a quarter structurally cannot produce holdings (let
+# alone Oracle's Lens signals), so the reconcile must not chase it — see
+# latest_scoreable_quarter.
+_FILING_LAG_DAYS = 45
+
+
+def _quarter_end_date(quarter: str) -> date:
+    """Calendar quarter-end date for a 'YYYY-QN' string."""
+    year, q = _parse_quarter(quarter)
+    return {1: date(year, 3, 31), 2: date(year, 6, 30),
+            3: date(year, 9, 30), 4: date(year, 12, 31)}[q]
+
+
+def latest_scoreable_quarter(today: date | None = None) -> str:
+    """Most recent quarter whose 13F filing window has substantially opened
+    (quarter end + ~45 days <= today).
+
+    The reconcile uses this as its default ``end_quarter`` instead of the
+    current calendar quarter (external review R2-P2). Chasing the in-progress
+    quarter means enqueuing a `quarterly_pipeline` for a quarter that
+    structurally has zero filings and therefore zero terminal signals — so
+    `_has_meaningful_coverage` never returns True and the reconcile re-enqueues
+    it on every boot, forever.
+    """
+    today = today or date.today()
+    quarter = current_quarter(today)
+    while _quarter_end_date(quarter) + timedelta(days=_FILING_LAG_DAYS) > today:
+        year, q = _parse_quarter(quarter)
+        q -= 1
+        if q == 0:
+            q = 4
+            year -= 1
+        quarter = _quarter_str(year, q)
+    return quarter
 
 
 def quarters_in_range(start: str, end: str) -> Iterator[str]:
@@ -95,9 +132,23 @@ def _has_meaningful_coverage(db: Session, quarter: str) -> bool:
     """
     from app.models.oracles_lens import OraclesLensSignal
 
-    return (
+    if (
         db.query(OraclesLensSignal.id)
         .filter(OraclesLensSignal.report_quarter == quarter)
+        .first()
+        is not None
+    ):
+        return True
+
+    # A succeeded oracles_lens_score_backfill means the terminal stage ran
+    # to completion. This covers the legitimate "quarter with no stock above
+    # min_holders → 0 signals" case (external review R2-P2): without it, such
+    # a quarter would have 0 signal rows and be re-enqueued on every boot
+    # forever. lock_key shape: "oracles_lens_score:<quarter>:<score_version>".
+    return (
+        db.query(JobRun.id)
+        .filter(JobRun.lock_key.like(f"oracles_lens_score:{quarter}:%"))
+        .filter(JobRun.status == "succeeded")
         .first()
         is not None
     )
@@ -119,7 +170,9 @@ def reconcile_start_quarter_coverage(
 
     Defaults:
         - ``start_quarter`` from ``settings.THIRTEENF_START_QUARTER``.
-        - ``end_quarter`` from ``current_quarter()`` (today's calendar quarter).
+        - ``end_quarter`` from ``latest_scoreable_quarter()`` (the most
+          recent quarter whose 13F filing window has opened — never the
+          in-progress calendar quarter).
 
     Returns a summary dict with three lists (``enqueued``, ``skipped_existing``,
     ``skipped_conflict``) plus an optional ``reason`` string when the function
@@ -140,7 +193,9 @@ def reconcile_start_quarter_coverage(
         summary["reason"] = "no start_quarter configured"
         return summary
 
-    end_quarter = end_quarter or current_quarter()
+    # Default end at the latest quarter whose filing window has opened —
+    # NOT the current calendar quarter, which would spin forever (R2-P2).
+    end_quarter = end_quarter or latest_scoreable_quarter()
     try:
         _parse_quarter(start_quarter)
         _parse_quarter(end_quarter)
