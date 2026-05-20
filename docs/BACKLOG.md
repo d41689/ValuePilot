@@ -44,6 +44,46 @@ long — escalate to the user. **medium / low** = ordinary follow-up.
 - **Context:** `docs/tasks/2026-05-20_admin-13f-ops-audit.md` (item #7)
 - **Issue:** —
 
+### `period_alignment` quality check false-positives on every 13F
+- **Found:** 2026-05-20, /admin/13f operational audit (item #8)
+- **Severity:** medium
+- **Problem:** `_check_period_alignment` (`backend/app/services/edgar_quality.py`)
+  flags filings whose `period_of_report` is not within the *filing* quarter.
+  That is wrong for 13F: a 13F always reports a prior quarter-end and is filed
+  the following quarter, so it never aligns. The check raises a `warning` for
+  essentially every 13F (2026-Q1: 63/63; similar each quarter), all
+  false-positive — verified that every flagged filing is correctly bucketed
+  (`report_quarter` matches `period_of_report`). Because the quality report is
+  then `warning`, the readiness "Quality checked" item is permanently
+  `blocked`. Fix needs a product decision on the check's intended semantics
+  (compare to `report_quarter`; or expected period = filing quarter − 1; or
+  drop to info-level) — and possibly whether readiness should block on
+  warnings vs only errors.
+- **Context:** `docs/tasks/2026-05-20_admin-13f-ops-audit.md` (item #8)
+- **Issue:** —
+
+### Manager `manager_type` classification (all `unknown`)
+- **Found:** 2026-05-20, /admin/13f operational audit (item #9)
+- **Severity:** medium
+- **Problem:** All managers have `manager_type = unknown`. It is not cosmetic —
+  it feeds Oracle's Lens scoring (`manager_taxonomy` / signal weighting). Each
+  classification needs an authoritative type plus a mandatory justification
+  note (audited in `institution_manager_type_review_events`); the system has an
+  "unknown-manager priority queue" workflow for it. This is ongoing human
+  curation for the team, not a bulk edit.
+- **Context:** `docs/tasks/2026-05-20_admin-13f-ops-audit.md` (item #9)
+- **Issue:** —
+
+### Extended historical backfill
+- **Found:** 2026-05-20, /admin/13f operational audit (item #11)
+- **Severity:** low
+- **Problem:** The Overview surfaces an "Extended backfill recommended" P3
+  task — run a historical backfill to deepen quarter coverage. Optional
+  maintenance; skipped during the audit. Run via Manual Controls → Backfill
+  when the EDGAR rate-limit budget allows.
+- **Context:** `docs/tasks/2026-05-20_admin-13f-ops-audit.md` (item #11)
+- **Issue:** —
+
 ### Content-Security-Policy response header
 - **Found:** 2026-05-20, admin/13f security-header review
 - **Severity:** medium
