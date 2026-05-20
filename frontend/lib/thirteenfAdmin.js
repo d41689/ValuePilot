@@ -310,6 +310,19 @@ function parseStatusTone(status) {
   return 'secondary';
 }
 
+// Badge variant for a job-run status (the /admin/13f/jobs STATUS column).
+// Distinct tones per status: green ok, red failed, amber partial/cancelling,
+// blue running, grey queued, muted for terminal cancelled/skipped.
+function jobStatusTone(status) {
+  if (status === 'succeeded') return 'success';
+  if (status === 'failed') return 'danger';
+  if (status === 'partial_success' || status === 'cancel_requested') return 'warning';
+  if (status === 'running') return 'info';
+  if (status === 'queued') return 'secondary';
+  if (status === 'cancelled' || status === 'skipped') return 'outline';
+  return 'secondary';
+}
+
 function normalizePagination(payload) {
   const data = payload && typeof payload === 'object' ? payload : {};
   return {
@@ -598,6 +611,7 @@ module.exports = {
   jobPreviewRows,
   managerCikReviewDefaults,
   jobPreviewLine,
+  jobStatusTone,
   normalizeAmendments,
   normalizeAdminFilings,
   normalizeCikReviewEvents,
