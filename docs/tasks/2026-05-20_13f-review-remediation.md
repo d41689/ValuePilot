@@ -52,6 +52,26 @@ Re-review doc: `docs/tasks/2026-05-20_13f-pipeline-hardening-pr56-rereview-resul
 | **P2** — Phase 4 solo activation still bypasses the shared active-filing policy | **Follow-up** (per operator direction) |
 | **P3** — `backfill_period_routing` doesn't clear stale `parse_warning`/`parse_error` on a later clean reroute | **Follow-up** — needs warning/error namespacing first so a clean reroute doesn't wipe a non-routing warning |
 
+## Third review (independent 4-agent re-run of the #45–#55 prompts)
+
+This review re-ran the original PR #45–#55 prompts against pre-#56 code, so
+most findings were already fixed by #56. Cross-check:
+
+| Finding | Status vs current code |
+|---|---|
+| R1-1 BLOCKER — Phase 1/3 `session.rollback()` discards cross-phase work | **Already fixed by #56** — commit barriers + per-filing SAVEPOINTs (the review's recommended Option A is exactly what #56 implemented) |
+| R4-A HIGH — Phase 2 `except` swallows `ImportError` | **Already fixed by #56** — the broad except was removed (fail-loud) |
+| R2 MEDIUM — `needs_review` filings have no visible metric | **Already fixed by #56** — counts in the job summary + `partial_success` |
+| R1-4 — `route_period` import | Confirmed fixed (#52) |
+| **R2-1 CRITICAL — Phase 4c can activate a real 13F-HR/A amendment** | **Newly fixed here** — #56's solo-group guard alone still let a *solo* amendment through; added `form_type == "13F-HR"` so amendments / 13F-NT are never auto-activated. `form_type` is used rather than the review's suggested `is_amendment` flag because `is_amendment` is unreliably populated; the `/A` suffix is authoritative. |
+| R2-2 HIGH — Phase 4a/4b should be an Alembic migration, not per-job | **Deferred** — partial disagreement: the writes are idempotent and self-deactivating (`WHERE … IS NULL` matches 0 rows once healed; prod is already healed) and phase ordering makes new rows born-correct. Migration-vs-idempotent-job-step is a style call, not a correctness bug. Follow-up. |
+| R1-2 — `ensure_filing_infotable_doc` short-circuit refetches when `raw_primary_doc_id` is None | **Deferred** — minor rate-limit inefficiency; the first review judged it "acceptable". Follow-up. |
+| R1-3 — `compute_signal_weighted_scores` internal commit | **Deferred** — the review's one-line `commit→flush` would break the standalone CLI caller that relies on the commit; proper fix is a `commit=False` param. Follow-up #2. |
+| R3 — `clean: false` accumulation / move storage out of workspace | **Deferred** — infra change needing runner-side coordination. Follow-up #3. |
+| R2-3 — `backfill_period_routing` concurrency | **Deferred** — follow-up #4. |
+| R4-B — missing `backfill_period_routing` full-chain tests | **Deferred** — follow-up #5. |
+| Reconcile criterion stability | Review confirms `oracles_lens_signals` row existence is genuinely terminal — matches the #56 re-review P1 fix. |
+
 ## Deferred follow-ups (suggest GitHub issues)
 
 1. Shared active-filing-selection policy spanning accession ingest, quarterly

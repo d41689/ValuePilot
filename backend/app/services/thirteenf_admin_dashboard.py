@@ -3285,15 +3285,22 @@ def _execute_ingest_job(session: Session, job_type: str, payload: dict[str, Any]
         # scoring (which filters is_active_for_manager_period=True) sees
         # nothing.
         #
-        # SAFETY (external review R2-P1): only heal the *unambiguous* case
-        # — a (manager_id, quarter_end_date) group with exactly ONE filing.
-        # A previous version mirrored is_latest_for_period onto is_active
-        # for every HR/HR-A filing, which can activate the WRONG filing
-        # when an HR and an HR/A coexist for one period (a later HR/A that
-        # is not a RESTATEMENT must stay inactive — see the amendment
-        # policy in thirteenf_filing_detail). Multi-filing groups are left
-        # untouched here; correct active-filing selection across amendments
-        # belongs in a single shared policy (tracked separately).
+        # SAFETY — this heuristic only activates a filing when BOTH hold:
+        #   (1) it is the sole filing in its (manager, quarter_end_date)
+        #       group — multi-filing groups carry amendment complexity and
+        #       are left to the amendment policy in thirteenf_filing_detail;
+        #   (2) its form_type is exactly "13F-HR" — a plain original
+        #       holdings report. 13F-HR/A (amendment) and 13F-NT (notice,
+        #       no holdings) are never auto-activated here.
+        #
+        # Condition (2) was added after a third review (PR #56 re-review):
+        # condition (1) alone still let a *solo* 13F-HR/A be activated, and
+        # an amendment must not become active without going through the
+        # amendment policy. form_type is used rather than is_amendment
+        # because is_amendment is unreliably populated by the modern ingest
+        # path, whereas the "/A" form_type suffix is authoritative.
+        # Correct active-filing selection across amendments belongs in a
+        # single shared policy (tracked separately).
         group_counts = Counter(
             (f.manager_id, f.quarter_end_date)
             for f in filings if f.quarter_end_date is not None
@@ -3301,6 +3308,7 @@ def _execute_ingest_job(session: Session, job_type: str, payload: dict[str, Any]
         solo_filing_ids = [
             f.id for f in filings
             if f.quarter_end_date is not None
+            and f.form_type == "13F-HR"
             and group_counts[(f.manager_id, f.quarter_end_date)] == 1
         ]
         if solo_filing_ids:

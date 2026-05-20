@@ -36,15 +36,21 @@ def _make_manager(db, *, name="Test Manager", cik="0001234567") -> InstitutionMa
     return mgr
 
 
-def _make_filing(db, manager, *, accession="0001234567-26-000001") -> Filing13F:
+def _make_filing(
+    db, manager, *,
+    accession="0001234567-26-000001",
+    form_type="13F-HR",
+    quarter_end_date=None,
+) -> Filing13F:
     # period_of_report inside the 2025-Q4 window so the ingest_holdings job
     # query picks it up.
     filing = Filing13F(
         manager_id=manager.id,
         accession_no=accession,
-        form_type="13F-HR",
+        form_type=form_type,
         filed_at=date(2026, 2, 14),
         period_of_report=date(2025, 11, 15),
+        quarter_end_date=quarter_end_date,
         is_latest_for_period=True,
     )
     db.add(filing)
@@ -142,3 +148,40 @@ def test_ingest_holdings_routing_needs_review_marks_partial_success(db_session, 
     result = execute_job_payload(db_session, "ingest_holdings", {"quarter": "2025-Q4"})
     assert result["filings_routing_needs_review"] == 1
     assert result["status"] == "partial_success"
+
+
+# ---------- Phase 4c amendment-safety guard (PR #56 third-review CRITICAL) ---
+
+def test_phase4c_activates_solo_original_but_not_solo_amendment(db_session, monkeypatch):
+    """Phase 4c heals is_active_for_manager_period for a solo plain 13F-HR,
+    but must NOT auto-activate a solo 13F-HR/A — an amendment must go through
+    the amendment policy, not this repair heuristic. The solo-group guard
+    alone did not cover a *solo* amendment; the form_type=='13F-HR' guard
+    closes it."""
+    qend = date(2025, 12, 31)
+    mgr_a = _make_manager(db_session, name="Original Mgr", cik="0001111111")
+    hr = _make_filing(
+        db_session, mgr_a, accession="0001111111-26-000001",
+        form_type="13F-HR", quarter_end_date=qend,
+    )
+    mgr_b = _make_manager(db_session, name="Amendment Mgr", cik="0002222222")
+    hra = _make_filing(
+        db_session, mgr_b, accession="0002222222-26-000001",
+        form_type="13F-HR/A", quarter_end_date=qend,
+    )
+
+    monkeypatch.setattr(
+        "app.services.edgar_ingestion.ensure_filing_infotable_doc",
+        lambda session, filing: object(),
+    )
+    monkeypatch.setattr(
+        "app.services.edgar_ingestion.backfill_period_routing",
+        lambda session, *, filings: dict(_CLEAN_ROUTING),
+    )
+
+    execute_job_payload(db_session, "ingest_holdings", {"quarter": "2025-Q4"})
+    db_session.refresh(hr)
+    db_session.refresh(hra)
+
+    assert hr.is_active_for_manager_period is True, "solo 13F-HR should be activated"
+    assert hra.is_active_for_manager_period is False, "solo 13F-HR/A must NOT be auto-activated"
