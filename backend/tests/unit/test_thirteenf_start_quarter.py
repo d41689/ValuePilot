@@ -47,6 +47,75 @@ def test_quarters_in_range_inverted_returns_empty():
     assert list(ssq.quarters_in_range("2025-Q4", "2024-Q1")) == []
 
 
+# ---------- latest_scoreable_quarter (external review R2-P2) -----------------
+
+def test_latest_scoreable_quarter_excludes_in_progress_quarter():
+    """On 2026-05-19 the current calendar quarter is 2026-Q2, but Q2 filings
+    aren't due until ~Aug. The latest quarter worth scoring is 2026-Q1
+    (ended 2026-03-31, filing window opened ~2026-05-15)."""
+    assert ssq.latest_scoreable_quarter(date(2026, 5, 19)) == "2026-Q1"
+
+
+def test_latest_scoreable_quarter_before_filing_window_opens():
+    """2026-05-14 is before 2026-Q1's filing window (Q1 end + 45d = 05-15),
+    so the latest scoreable quarter is still 2025-Q4."""
+    assert ssq.latest_scoreable_quarter(date(2026, 5, 14)) == "2025-Q4"
+
+
+def test_latest_scoreable_quarter_after_window_opens():
+    """Once 2026-Q2's window has opened (Q2 end + 45d = 2026-08-14)."""
+    assert ssq.latest_scoreable_quarter(date(2026, 8, 20)) == "2026-Q2"
+
+
+# ---------- _has_meaningful_coverage: signal rows are the ONLY proof --------
+
+def test_has_meaningful_coverage_is_false_for_succeeded_job_with_zero_signals(db_session):
+    """A succeeded oracles_lens_score_backfill job is NOT sufficient on its
+    own (PR #56 re-review P1). Scoring can succeed with zero signals because
+    upstream was incomplete (managers not seeded, routing partial, holdings
+    not yet linked) — treating that as terminal would freeze the quarter
+    forever. Only actual signal rows count as coverage."""
+    job = JobRun(
+        job_type="oracles_lens_score_backfill",
+        status="succeeded",
+        lock_key="oracles_lens_score:2025-Q4:v1.0",
+        dedupe_key="oracles_lens_score:2025-Q4:v1.0",
+        quarter="2025-Q4",
+        trigger_source="pipeline",
+        created_at=datetime.now(timezone.utc),
+    )
+    db_session.add(job)
+    db_session.flush()
+
+    # Succeeded scoring job but ZERO signal rows → NOT covered → reconcile
+    # will re-enqueue and self-heal once the upstream gap is fixed.
+    assert ssq._has_meaningful_coverage(db_session, "2025-Q4") is False
+
+
+def test_has_meaningful_coverage_is_true_when_signal_rows_exist(db_session):
+    """A quarter with at least one OraclesLensSignal row — the pipeline's
+    terminal output — is covered."""
+    from datetime import date
+    from app.models.oracles_lens import OraclesLensSignal
+    from app.models.stocks import Stock
+
+    stock = Stock(ticker="COV", exchange="NYSE", company_name="Covered Co", is_active=True)
+    db_session.add(stock)
+    db_session.flush()
+    db_session.add(OraclesLensSignal(
+        stock_id=stock.id,
+        report_quarter="2025-Q4",
+        quarter_end_date=date(2025, 12, 31),
+        score_version="v1.0",
+        score_confidence="high_confidence",
+        computed_at=datetime.now(timezone.utc),
+    ))
+    db_session.flush()
+
+    assert ssq._has_meaningful_coverage(db_session, "2025-Q4") is True
+    assert ssq._has_meaningful_coverage(db_session, "2025-Q3") is False
+
+
 # ---------- reconcile_start_quarter_coverage --------------------------------
 
 def test_reconcile_short_circuits_without_config(db_session, monkeypatch):

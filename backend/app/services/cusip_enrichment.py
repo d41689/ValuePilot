@@ -319,23 +319,30 @@ def _apply_mappings_to_holdings(db: Session, cusips: List[str]) -> None:
     )
     
     for h in holdings:
-        # Determine the effective mapping for this holding based on its
-        # quarter_end_date. When quarter_end_date is NULL on the row (a
-        # known gap — Filing13F.quarter_end_date isn't populated by the
-        # ingest path yet), the temporal-validity filter is meaningless,
-        # so we skip it and accept any active mapping for the CUSIP.
-        # Without this guard the bind operator <= None raises ArgumentError
-        # and the enrich_metadata stage of quarterly_pipeline fails.
-        mapping_q = (
+        # Temporal-validity contract (external review R2-P2): a holding can
+        # only be safely linked to a CUSIP mapping if we can check the
+        # mapping's valid_from/valid_to window against the holding's
+        # quarter_end_date. When quarter_end_date is NULL we CANNOT — linking
+        # anyway risks attaching a mapping from the wrong side of a
+        # corporate-action boundary. So leave the holding pending and let a
+        # later run (after period routing populates quarter_end_date) link
+        # it. In the normal pipeline, routing runs before enrichment, so
+        # this branch should not be hit; it only guards stragglers.
+        if h.quarter_end_date is None:
+            h.cusip_mapping_status = "pending_mapping"
+            h.stock_id = None
+            continue
+
+        mapping = (
             db.query(CusipTickerMap)
             .filter_by(cusip=h.cusip, is_active=True)
-        )
-        if h.quarter_end_date is not None:
-            mapping_q = mapping_q.filter(
+            .filter(
                 (CusipTickerMap.valid_from.is_(None) | (CusipTickerMap.valid_from <= h.quarter_end_date)) &
                 (CusipTickerMap.valid_to.is_(None) | (CusipTickerMap.valid_to >= h.quarter_end_date))
             )
-        mapping = mapping_q.order_by(CusipTickerMap.id.desc()).first()
+            .order_by(CusipTickerMap.id.desc())
+            .first()
+        )
         
         if not mapping:
             h.cusip_mapping_status = "unresolved"

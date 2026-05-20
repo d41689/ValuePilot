@@ -975,6 +975,14 @@ def backfill_period_routing(db: Session, *, filings=None) -> dict[str, int]:
     # — applied independently; no FK/unique-constraint coupling.
     period_changes: list[tuple] = []
     other_changes: list[tuple] = []
+    # Degraded-routing visibility (external review R2-P1): route_period can
+    # return parse_status needs_review / failed for periods that are missing,
+    # invalid, or too far from a quarter end. Count them, log them, and stamp
+    # the detail onto Filing13F.parse_warning / parse_error so the outcome is
+    # not silent. The counts are returned so the caller can mark the stage
+    # partial_success.
+    needs_review_count = 0
+    failed_count = 0
     for filing in filings:
         if filing.raw_primary_doc_id is None:
             continue
@@ -997,6 +1005,21 @@ def backfill_period_routing(db: Session, *, filings=None) -> dict[str, int]:
             fallback_period=filing.period_of_report,
         )
 
+        if routing.parse_status == "needs_review":
+            needs_review_count += 1
+            filing.parse_warning = routing.parse_warning
+            logger.warning(
+                "backfill_period_routing: %s routing needs_review (%s)",
+                filing.accession_no, routing.parse_warning,
+            )
+        elif routing.parse_status == "failed":
+            failed_count += 1
+            filing.parse_error = routing.parse_error
+            logger.warning(
+                "backfill_period_routing: %s routing failed (%s)",
+                filing.accession_no, routing.parse_error,
+            )
+
         if routing.period_of_report != filing.period_of_report:
             period_changes.append((filing, filing.period_of_report, routing.period_of_report))
 
@@ -1010,11 +1033,16 @@ def backfill_period_routing(db: Session, *, filings=None) -> dict[str, int]:
     rq_count = sum(1 for f, _, rq in other_changes if rq is not None and f.report_quarter is None)
 
     if not period_changes and not other_changes:
-        logger.info("backfill_period_routing: nothing to fix")
+        if needs_review_count or failed_count:
+            db.flush()  # persist the parse_warning / parse_error stamps
+        else:
+            logger.info("backfill_period_routing: nothing to fix")
         return {
             "period_changed": 0,
             "quarter_end_added": 0,
             "report_quarter_added": 0,
+            "needs_review": needs_review_count,
+            "failed": failed_count,
         }
 
     # Pass 2: apply period_of_report changes with the is_latest_for_period
@@ -1053,13 +1081,16 @@ def backfill_period_routing(db: Session, *, filings=None) -> dict[str, int]:
     db.flush()
 
     logger.info(
-        "backfill_period_routing: period_changed=%d quarter_end_added=%d report_quarter_added=%d",
-        period_count, qend_count, rq_count,
+        "backfill_period_routing: period_changed=%d quarter_end_added=%d "
+        "report_quarter_added=%d needs_review=%d failed=%d",
+        period_count, qend_count, rq_count, needs_review_count, failed_count,
     )
     return {
         "period_changed": period_count,
         "quarter_end_added": qend_count,
         "report_quarter_added": rq_count,
+        "needs_review": needs_review_count,
+        "failed": failed_count,
     }
 
 
