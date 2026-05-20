@@ -4,7 +4,17 @@ Date: 2026-05-20
 Branch reviewed: `claude/admin-13f-page-fixes`
 Prompt: `docs/tasks/2026-05-20_admin-13f-page-fixes-review-prompts.md`
 
-## Verdict
+## Second-review verdict
+
+批准。
+
+2026-05-20 remediation verified: `/api/*` responses now receive the same five
+security headers from the FastAPI middleware, and a production standalone probe
+confirmed those headers survive the Next.js rewrite path.
+
+The original blocking finding below is resolved.
+
+## Original verdict
 
 暂不批准。
 
@@ -71,3 +81,27 @@ Backend tests were not rerun because this branch's reviewed code diff does not m
 1. Decide whether security headers are intended to cover all browser-visible responses, including API responses through Next.
 2. If yes, add equivalent headers at the FastAPI/backend layer or another layer that actually owns rewritten API responses.
 3. Re-run the production standalone probe against both page routes and `/api/*`; approve only once both surfaces emit the expected headers or the documented contract is narrowed.
+
+## Second-review remediation check
+
+### P1 status: resolved
+
+The remediation adds `SECURITY_HEADERS` and `add_security_headers` middleware in
+`backend/app/main.py`, while `frontend/next.config.js` now accurately documents
+that Next.js handles page routes and the backend handles rewritten `/api/*`
+responses.
+
+Runtime standalone probe results:
+
+- `/login` returned 200 with all five expected headers and no `X-Powered-By`.
+- `/admin/13f` returned 307 with all five expected headers and no `X-Powered-By`.
+- `/api/v1/auth/login` returned 405 through the Next rewrite path with all five
+  expected headers and no `X-Powered-By`.
+
+Targeted backend test:
+
+- `docker compose run --rm --no-deps api pytest -q tests/unit/test_security_headers.py`
+  — passed, 2 tests.
+
+The earlier `/api/*` rewrite coverage blocker is fixed. The remaining notes
+from A2, A4, and B6 are advisory and do not block approval.
