@@ -2742,6 +2742,14 @@ def _required(payload: dict[str, Any], key: str) -> str:
     return str(value)
 
 
+def _oracles_lens_score_version() -> str:
+    """Current Oracle's Lens SCORE_VERSION. Lazy-imported to avoid a
+    module-load-time dependency on the oracles_lens package."""
+    from app.services.oracles_lens.signal_weighted_score import SCORE_VERSION
+
+    return SCORE_VERSION
+
+
 _JOB_LOCK_BUILDERS = {
     "quarterly_pipeline": lambda payload: f"quarterly_pipeline:{_required(payload, 'quarter')}",
     "fetch_daily_index": lambda payload: f"fetch_daily_index:{_required(payload, 'sync_date')}",
@@ -2756,6 +2764,10 @@ _JOB_LOCK_BUILDERS = {
     "bootstrap_whitelist": lambda payload: "bootstrap_whitelist",
     "match_cik": lambda payload: "match_cik",
     "quality_check": lambda payload: f"quality_check:{_required(payload, 'quarter')}",
+    "oracles_lens_score_backfill": lambda payload: (
+        f"oracles_lens_score:{_required(payload, 'quarter')}:"
+        f"{payload.get('score_version') or _oracles_lens_score_version()}"
+    ),
     "reprocess_amendment": lambda payload: f"reprocess_amendment:{_required(payload, 'accession_no')}",
     "reparse_accession": lambda payload: f"reparse_accession:{_required(payload, 'accession_no')}",
     "sync_manager_backfill": lambda payload: f"sync_manager_backfill:{_required(payload, 'manager_id')}",
@@ -2814,6 +2826,20 @@ def _execute_job(session: Session, job_type: str, payload: dict[str, Any]) -> di
         )
         results["stages"].append(quality_stage["stage"])
         results["quality_status"] = quality_stage["summary"].get("quality_status")
+
+        # Stage 5: Oracle's Lens scoring — compute signal-weighted scores so
+        # the persisted oracles_lens_signals table backs the /watchlist
+        # snapshot endpoint (which reads persisted scores by default).
+        # Non-fatal: a scoring failure leaves the quarter at
+        # partial_success but doesn't undo stages 1-4.
+        scoring_stage = _execute_pipeline_stage_job(
+            session,
+            parent_payload=payload,
+            job_type="oracles_lens_score_backfill",
+            payload={"quarter": quarter},
+        )
+        results["stages"].append(scoring_stage["stage"])
+        results["oracles_lens_scoring"] = scoring_stage["summary"]
 
         # Any non-succeeded stage (after the critical stage 1+2 gates) → partial_success.
         stage_statuses = {s["status"] for s in results["stages"]}
@@ -2939,6 +2965,21 @@ def _execute_job(session: Session, job_type: str, payload: dict[str, Any]) -> di
         }
     if job_type in {"ingest_holdings", "ingest_accession", "reprocess_amendment", "reparse_accession"}:
         return _execute_ingest_job(session, job_type, payload)
+    if job_type == "oracles_lens_score_backfill":
+        from app.services.oracles_lens.signal_weighted_score import (
+            SCORE_VERSION,
+            compute_signal_weighted_scores,
+        )
+
+        quarter = _required(payload, "quarter")
+        impact = compute_signal_weighted_scores(
+            session,
+            quarter=quarter,
+            score_version=payload.get("score_version") or SCORE_VERSION,
+            min_holders=int(payload.get("min_holders", 3)),
+            source_job_id=payload.get("_job_id"),
+        )
+        return {**impact, "status": "succeeded"}
     if job_type == "enrich_cusip":
         from app.services.cusip_enrichment import enrich_cusips_from_openfigi
 
@@ -3182,14 +3223,16 @@ def _execute_ingest_job(session: Session, job_type: str, payload: dict[str, Any]
             session.rollback()
             failures.append({"accession_no": filing.accession_no, "error": str(exc)})
 
-    # Phase 4: sync Holding13F.quarter_end_date from Filing13F for rows that
-    # landed in earlier pipeline runs (before routing was wired in). The
-    # CUSIP temporal-validity filter and Oracle's Lens aggregation both
-    # rely on this column being populated.
+    # Phase 4: heal Filing13F / Holding13F columns that the modern
+    # ingest_if_needed path leaves unset but Oracle's Lens scoring needs.
+    # All idempotent bulk UPDATEs scoped to this quarter's filings.
     filing_ids = [f.id for f in filings if f.quarter_end_date is not None]
-    holdings_synced = 0
+    holdings_qend_synced = 0
+    holdings_rq_synced = 0
+    filings_activated = 0
     if filing_ids:
-        sync_stmt = (
+        # 4a: Holding13F.quarter_end_date — drives the CUSIP temporal filter.
+        qend_stmt = (
             update(Holding13F)
             .where(Holding13F.filing_id.in_(filing_ids))
             .where(Holding13F.quarter_end_date.is_(None))
@@ -3197,8 +3240,39 @@ def _execute_ingest_job(session: Session, job_type: str, payload: dict[str, Any]
             .values(quarter_end_date=Filing13F.quarter_end_date)
             .execution_options(synchronize_session=False)
         )
-        result = session.execute(sync_stmt)
-        holdings_synced = result.rowcount or 0
+        holdings_qend_synced = session.execute(qend_stmt).rowcount or 0
+
+        # 4b: Holding13F.report_quarter — the Oracle's Lens eligibility
+        # query (_eligible_stock_ids) filters Holding13F.report_quarter ==
+        # quarter. Holdings ingested before routing have it NULL.
+        rq_stmt = (
+            update(Holding13F)
+            .where(Holding13F.filing_id.in_(filing_ids))
+            .where(Holding13F.report_quarter.is_(None))
+            .where(Filing13F.id == Holding13F.filing_id)
+            .where(Filing13F.report_quarter.isnot(None))
+            .values(report_quarter=Filing13F.report_quarter)
+            .execution_options(synchronize_session=False)
+        )
+        holdings_rq_synced = session.execute(rq_stmt).rowcount or 0
+
+        # 4c: Filing13F.is_active_for_manager_period — the modern
+        # _do_ingest_holdings path only sets this for RESTATEMENT
+        # amendments, never for plain 13F-HR filings, so Oracle's Lens
+        # scoring (which filters is_active_for_manager_period=True) sees
+        # nothing. For the V1 universe with no real amendments, the
+        # latest filing per (manager, period) IS the active one — mirror
+        # is_latest_for_period onto is_active_for_manager_period for the
+        # HR/HR-A filings in this quarter.
+        activate_stmt = (
+            update(Filing13F)
+            .where(Filing13F.id.in_(filing_ids))
+            .where(Filing13F.form_type.in_(["13F-HR", "13F-HR/A"]))
+            .where(Filing13F.is_active_for_manager_period != Filing13F.is_latest_for_period)
+            .values(is_active_for_manager_period=Filing13F.is_latest_for_period)
+            .execution_options(synchronize_session=False)
+        )
+        filings_activated = session.execute(activate_stmt).rowcount or 0
     session.flush()
 
     return {
@@ -3209,7 +3283,9 @@ def _execute_ingest_job(session: Session, job_type: str, payload: dict[str, Any]
         "filings_failed": len(failures),
         "failed_accessions": failures,
         "holdings_inserted": total_holdings,
-        "holdings_quarter_end_synced": holdings_synced,
+        "holdings_quarter_end_synced": holdings_qend_synced,
+        "holdings_report_quarter_synced": holdings_rq_synced,
+        "filings_activated": filings_activated,
         "filings_period_changed": routing_summary.get("period_changed", 0),
         "filings_quarter_end_added": routing_summary.get("quarter_end_added", 0),
         "filings_report_quarter_added": routing_summary.get("report_quarter_added", 0),
