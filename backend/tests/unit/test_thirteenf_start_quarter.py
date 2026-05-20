@@ -89,7 +89,7 @@ def test_reconcile_skips_quarters_with_oracles_lens_signals(db_session, monkeypa
     of quarterly_pipeline. Quarters with no signals (pipeline never finished,
     or never ran) ARE re-enqueued. This anchors the reconcile on the
     pipeline's last stage so a future pipeline bug fix self-heals."""
-    from datetime import date
+    from datetime import date, datetime, timezone
     from app.models.oracles_lens import OraclesLensSignal
     from app.models.stocks import Stock
 
@@ -102,6 +102,8 @@ def test_reconcile_skips_quarters_with_oracles_lens_signals(db_session, monkeypa
         report_quarter="2025-Q4",
         quarter_end_date=date(2025, 12, 31),
         score_version="v1.0",
+        score_confidence="high",
+        computed_at=datetime.now(timezone.utc),
     )
     db_session.add(signal)
     db_session.flush()
