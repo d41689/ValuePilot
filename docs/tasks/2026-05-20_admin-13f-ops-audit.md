@@ -110,36 +110,62 @@ Status legend: `open` / `in-progress` / `done` / `deferred`.
      #3/#4/#5, then succeeded from job #6 (2026-05-19 18:47) onward and every
      run since (#17/#37/#57/#77/#97…). No action needed.
 
-7. **[P2] Holdings link rate only 12%.** `status: open`
-   - Holdings page (2026-Q1): 4,296 holdings, 504 linked (12%), 3,774
-     unresolved common. Readiness checklist "CUSIP enriched" = warning. Top
-     unresolved CUSIPs are large issuers (Alphabet, Visa, Amazon, TSMC ADR,
-     BofA, …).
-   - Action: Overview Manual Controls → Run CUSIP enrichment + Bootstrap
-     stocks; re-check link rate reaches the ready threshold (~80%).
+7. **[P2] Holdings link rate only 12%.**
+   `status: deferred → docs/BACKLOG.md`
+   - Real, current gap (verified via the prod coverage API): 2026-Q1 has 4,278
+     common holdings, 504 linked (11.8%); ~2,084 distinct unresolved CUSIPs,
+     mega-caps included.
+   - The admin "Run CUSIP enrichment" (`enrich_metadata`) only applies
+     *existing* `CusipTickerMap` rows — it creates none — so re-running it
+     cannot raise the rate. "Enrich stocks from EDGAR" was a no-op placeholder.
+     Closing the gap needs OpenFIGI enrichment run at scale — a data-completeness
+     effort with no single admin-UI trigger.
+   - Deferred to `docs/BACKLOG.md`. The no-op "Enrich stocks from EDGAR"
+     trigger surface was removed in PR #70.
 
-8. **[P2] Quality check blocked.** `status: open`
-   - Readiness checklist "Quality checked" = blocked ("Run quality check and
-     reprocess pending or failed amendments"). Quality Reports: 2026-Q2 = 58
-     warnings, 2026-Q1 = 63, 2025-Q4 = 61, 2025-Q3 = 65 (all 0 errors).
-   - Action: Manual Controls → Quality check; review warnings, accept or fix;
-     reprocess the affected amendments.
+8. **[P2] Quality check blocked.**
+   `status: deferred → docs/BACKLOG.md`
+   - "Quality checked" is blocked because the latest quality report is status
+     `warning` (0 errors). All 63 (2026-Q1) warnings are the single
+     `period_alignment` check — `_check_period_alignment` compares
+     `period_of_report` against the *filing* quarter, which is wrong for 13F (a
+     13F always reports a prior quarter-end, so it never aligns with the filing
+     quarter). Verified: all 63 flagged filings are correctly bucketed
+     (`report_quarter` matches `period_of_report`). The check false-positives
+     on essentially every 13F.
+   - Re-running quality check is futile. Fixing the check needs a product
+     decision on its intended semantics. Deferred to `docs/BACKLOG.md`.
 
 ### P3 — maintenance
 
-9. **[P3] All 80 managers have `manager_type = unknown`.** `status: open`
-   - Managers page: every row shows the orange `unknown` type.
-   - Action: classify each via Edit (hedge_fund / mutual_fund / etc.).
+9. **[P3] All 80 managers have `manager_type = unknown`.**
+   `status: deferred → docs/BACKLOG.md`
+   - Confirmed via the prod API. `manager_type` is not cosmetic — it feeds
+     Oracle's Lens scoring (taxonomy / signal weighting). But classifying a
+     manager needs an authoritative type plus a mandatory justification note
+     (audited via `institution_manager_type_review_events`), and the system
+     already has an "unknown-manager priority queue" workflow for it.
+   - Ongoing human curation, not a bulk edit. Deferred to `docs/BACKLOG.md`
+     for team curation.
 
-10. **[P3] Candidate managers without a CIK.** `status: open`
-    - Managers page: ≥3 rows with status `candidate`, match_status `seeded`,
-      empty CIK — Bill Nygren · Oakmark Funds, Christopher Davis · Davis
-      Advisors, Dodge & Cox Funds.
-    - Action: look up each CIK on EDGAR, fill via Edit, promote to `confirmed`.
+10. **[P3] Candidate managers without a CIK.**
+    `status: done — PR #71 merged + deployed; seed CLI run on prod`
+    - 10 candidate managers (the early "≥3" was the first screen only), all
+      `seeded` / no CIK. CIKs researched on SEC EDGAR — each a current active
+      13F-HR filer — and added to `confirmed_managers.json` (PR #71). Ruane
+      Cunniff uses the active L.P. CIK, not the dormant Inc; RV Capital files
+      as the AG entity.
+    - Applied on prod after deploy: `seed-confirmed-managers` CLI →
+      `Seeded 20 confirmed managers`. Verified: all 10 now `confirmed` with
+      their CIKs, `managers_without_cik: 0`, all 86 managers confirmed (the
+      run also created 6 curated confirmed managers previously absent from the
+      DB). See `docs/tasks/2026-05-20_seed-confirmed-managers-10-ciks.md`.
 
-11. **[P3] Extended backfill recommended.** `status: open`
-    - Overview Admin Tasks P3 entry. EDGAR rate limit currently 600/600 free.
-    - Action: Manual Controls → Backfill, set a start quarter, run.
+11. **[P3] Extended backfill recommended.**
+    `status: deferred → docs/BACKLOG.md`
+    - Overview Admin Tasks P3 entry; optional maintenance. EDGAR rate-limit
+      budget was free (600/600). Per the user's decision, skipped this round
+      and recorded in `docs/BACKLOG.md` for when it is wanted.
 
 ## Notes
 
@@ -177,3 +203,20 @@ Status legend: `open` / `in-progress` / `done` / `deferred`.
   later run. The Overview Admin Tasks panel surfaces them as stale diagnostic
   history. Consider a recency window on that panel — logged as a watch-item,
   not actioned here.
+- 2026-05-20 · #7 · CUSIP link rate (~12%) is a real data-completeness gap;
+  the admin enrichment buttons cannot close it. Deferred to `docs/BACKLOG.md`.
+  The no-op `enrich_stocks_edgar` trigger surface was removed (PR #70, merged).
+- 2026-05-20 · #8 · `_check_period_alignment` mis-compares `period_of_report`
+  to the filing quarter → false-positive warning on essentially every 13F →
+  "Quality checked" permanently blocked. Deferred to `docs/BACKLOG.md`.
+- 2026-05-20 · #9 · `manager_type` all `unknown`; real (feeds Oracle's Lens)
+  but a human-curation effort. Deferred to `docs/BACKLOG.md` for the team.
+- 2026-05-20 · #10 · 10 candidate managers' CIKs researched on SEC EDGAR,
+  added to `confirmed_managers.json` (PR #71, merged + deployed), applied on
+  prod via `seed-confirmed-managers`. All managers now confirmed with a CIK.
+  DONE.
+- 2026-05-20 · #11 · Extended backfill — optional maintenance; skipped this
+  round per the user, recorded in `docs/BACKLOG.md`.
+- 2026-05-20 · Audit complete · All 11 items triaged. Shipped: #1 (PR #68),
+  #7-no-op-button (PR #70), #10 (PR #71). Self-resolved: #2-#6. Deferred to
+  `docs/BACKLOG.md`: #7, #8, #9, #11.
