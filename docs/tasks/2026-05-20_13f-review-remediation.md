@@ -19,7 +19,7 @@ findings we agree with; record reasoning for the ones we defer.
 | R2-P1 routing warnings/errors not persisted | **Fixed** — `backfill_period_routing` counts needs_review/failed, stamps `parse_warning`/`parse_error`, surfaces counts → stage `partial_success` |
 | R2-P2 routing recompute not concurrency-safe | **Deferred** — narrow race; quarterly pipeline serialized by quarter; tracked as follow-up |
 | R2-P2 CUSIP null-quarter guard can mis-link | **Fixed** — `_apply_mappings_to_holdings` now leaves a NULL-`quarter_end_date` holding pending instead of linking without a temporal filter |
-| R2-P2 reconcile zero-signal / incomplete-quarter spin | **Fixed** — `end_quarter` defaults to `latest_scoreable_quarter()` (excludes in-progress quarter); `_has_meaningful_coverage` also accepts a succeeded scoring job |
+| R2-P2 reconcile zero-signal / incomplete-quarter spin | **Fixed** — `end_quarter` defaults to `latest_scoreable_quarter()` (excludes in-progress quarter). NOTE: an initial cut also accepted a succeeded scoring job as coverage; that was rejected by PR #56 re-review (see the re-review section below) and `_has_meaningful_coverage` now anchors strictly on `oracles_lens_signals` row existence |
 | R3-P1 move persistent storage out of CI workspace | **Deferred** — correct end state but a prod-infra migration (compose mount paths + runner filesystem move); needs operator coordination; tracked as follow-up |
 | R4 broad excepts | **Fixed** — programming errors (`ImportError`/`NameError`/`AttributeError`) re-raised in both per-filing loops |
 | R4 missing tests | **Partially** — added fail-loud + reconcile + `_is_programming_error` tests; full transaction-integration & amendment-regression tests recommended as follow-up |
@@ -34,7 +34,7 @@ findings we agree with; record reasoning for the ones we defer.
 - `backend/app/services/cusip_enrichment.py` — `_apply_mappings_to_holdings`
   refuses to link on NULL `quarter_end_date`.
 - `backend/app/services/thirteenf_start_quarter.py` — `latest_scoreable_quarter`,
-  reconcile `end_quarter` default, `_has_meaningful_coverage` scoring-job branch.
+  reconcile `end_quarter` default, `_has_meaningful_coverage` (signal-rows-only).
 - Tests: `test_ingest_job_failloud.py` (new), `test_thirteenf_start_quarter.py`.
 
 ## Test plan
