@@ -68,3 +68,28 @@ Next config. Verification:
 - 2026-05-20: review requested by the user. The page could not be browser-QA'd,
   so scope is the `/admin/13f` index page plus its infrastructure (Next config,
   React Query provider). The 7 sub-routes under `/admin/13f/*` were not reviewed.
+
+## Review remediation (2026-05-20)
+
+External review (`2026-05-20_admin-13f-page-fixes-review-result.md`) verdict was
+**not approved yet** — one blocker:
+
+**[P1] Security headers did not cover `/api/*` rewrite responses.** Next.js
+`headers()` decorates Next-rendered routes, but the `/api/*` paths are rewritten
+to the backend (uvicorn) and that proxied response bypasses Next's header layer.
+The reviewer's runtime probe confirmed `/`, `/login`, and `/admin/13f` carried
+all five headers while `/api/v1/health` carried none.
+
+Fix: the API now sets the same five headers itself via an `add_security_headers`
+middleware in `backend/app/main.py`, so coverage is uniform site-wide regardless
+of how a response is routed. `backend/tests/unit/test_security_headers.py`
+asserts the headers on both `/health` and an `/api/v1/*` response. The
+`next.config.js` comment (which claimed "every route") was corrected.
+
+Non-blocking review notes — B6 (a 401 may both redirect and toast), A2
+(`includeSubDomains` scope), A4 (Cloudflare header merging is a deploy-time
+check) — were accepted as-is; see the review result.
+
+Additional files changed in remediation:
+- `backend/app/main.py` — security-headers middleware.
+- `backend/tests/unit/test_security_headers.py` — new test.

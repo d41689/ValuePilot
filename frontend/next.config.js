@@ -1,8 +1,10 @@
 /** @type {import('next').NextConfig} */
 
-// Security response headers applied to every route. Content-Security-Policy is
-// intentionally omitted here — a correct policy for the Next.js runtime must be
-// built and tested against the running app; tracked in docs/BACKLOG.md.
+// Security response headers for Next-rendered routes. The `/api/*` paths are
+// rewritten to the backend (see rewrites() below), which sets the same headers
+// itself (backend/app/main.py) so coverage is uniform site-wide.
+// Content-Security-Policy is omitted — a correct policy for the Next.js runtime
+// must be built and tested against the running app; tracked in docs/BACKLOG.md.
 const securityHeaders = [
   { key: 'Strict-Transport-Security', value: 'max-age=31536000; includeSubDomains' },
   { key: 'X-Frame-Options', value: 'SAMEORIGIN' },
