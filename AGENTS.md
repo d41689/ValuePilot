@@ -101,6 +101,29 @@ the agent's own responsibility, not something CI will catch.
 Write or update tests first (red) → minimal production code to pass (green) →
 refactor while keeping tests green.
 
+### Deferred work
+
+A change often surfaces more problems than it should fix at once. Never let a
+discovered problem vanish silently.
+
+- **Fix what is in scope; capture the rest.** Before calling the work done,
+  record every out-of-scope problem you found.
+- **Severity decides the channel.** A finding that risks data loss, a security
+  hole, or production breakage is *not* yours to defer — stop and tell the user
+  so they can decide. Everything else goes to the backlog.
+- **The backlog is `docs/BACKLOG.md`** — one entry per item: date found, where
+  (PR / task / file), the problem, severity, and a link to fuller context. It
+  is in-repo on purpose: the entry shows up in the PR diff so the reviewer signs
+  off on the deferral, and the next agent finds it by reading the repo. A GitHub
+  issue is invisible to an agent's default context, so it cannot be the primary
+  record.
+- **The PR names what it defers.** A PR that knowingly leaves problems behind
+  lists them and links `docs/BACKLOG.md`.
+- **Promote long-lived items to GitHub Issues** for human triage and
+  assignment; record the issue number on the backlog entry. Issues complement
+  the register — they do not replace it.
+- **Clear an entry in the same PR that resolves it.**
+
 ### Verification (closing gates)
 
 When declaring work "ready", "shipped", or green, run the **exact** canonical CI
