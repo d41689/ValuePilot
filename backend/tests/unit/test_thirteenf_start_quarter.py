@@ -102,7 +102,7 @@ def test_reconcile_skips_quarters_with_oracles_lens_signals(db_session, monkeypa
         report_quarter="2025-Q4",
         quarter_end_date=date(2025, 12, 31),
         score_version="v1.0",
-        score_confidence="high",
+        score_confidence="high_confidence",
         computed_at=datetime.now(timezone.utc),
     )
     db_session.add(signal)
