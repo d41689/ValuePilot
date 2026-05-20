@@ -84,36 +84,28 @@ def test_reconcile_enqueues_each_missing_quarter(db_session, monkeypatch):
     assert result["skipped_conflict"] == []
 
 
-def test_reconcile_skips_quarters_with_meaningful_coverage(db_session, monkeypatch):
-    """Skip quarters that already have observable post-routing coverage:
-    at least one Filing13F whose period_of_report lands in the quarter
-    AND has quarter_end_date populated. Quarters where filings exist but
-    routing hasn't run yet (quarter_end_date NULL) ARE re-enqueued —
-    that's the post-pipeline-bug-fix self-healing path."""
-    from datetime import date
-    from app.models.institutions import Filing13F, InstitutionManager
+def test_reconcile_skips_quarters_with_oracles_lens_signals(db_session, monkeypatch):
+    """Skip quarters that have Oracle's Lens signals — the terminal output
+    of quarterly_pipeline. Quarters with no signals (pipeline never finished,
+    or never ran) ARE re-enqueued. This anchors the reconcile on the
+    pipeline's last stage so a future pipeline bug fix self-heals."""
+    from datetime import date, datetime, timezone
+    from app.models.oracles_lens import OraclesLensSignal
+    from app.models.stocks import Stock
 
-    # Manager + routed filing for 2025-Q4 — should mark it as covered.
-    mgr = InstitutionManager(
-        cik="0001234567",
-        legal_name="Test Mgr",
-        display_name="Test",
-        name_normalized="test",
-        match_status="confirmed",
-        is_superinvestor=False,
-    )
-    db_session.add(mgr)
+    stock = Stock(ticker="TST", exchange="NYSE", company_name="Test Corp", is_active=True)
+    db_session.add(stock)
     db_session.flush()
-    routed = Filing13F(
-        manager_id=mgr.id,
-        accession_no="0001234567-26-000001",
-        form_type="13F-HR",
-        filed_at=date(2026, 1, 15),
-        period_of_report=date(2025, 12, 31),
-        quarter_end_date=date(2025, 12, 31),  # ← the signal
-        is_latest_for_period=True,
+    # A signal row for 2025-Q4 marks that quarter as fully covered.
+    signal = OraclesLensSignal(
+        stock_id=stock.id,
+        report_quarter="2025-Q4",
+        quarter_end_date=date(2025, 12, 31),
+        score_version="v1.0",
+        score_confidence="high_confidence",
+        computed_at=datetime.now(timezone.utc),
     )
-    db_session.add(routed)
+    db_session.add(signal)
     db_session.flush()
 
     calls: list[dict] = []
