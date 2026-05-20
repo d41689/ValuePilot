@@ -7,6 +7,7 @@ import { useRouter } from 'next/navigation';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import apiClient from '@/lib/api/client';
+import * as authSession from '@/lib/authSession';
 
 type LoginResponse = {
   access_token: string;
@@ -21,18 +22,6 @@ type ApiError = {
     };
   };
 };
-
-function decodeJwtPayload(token: string): Record<string, unknown> | null {
-  try {
-    const base64 = token.split('.')[1];
-    if (!base64) return null;
-    const normalized = base64.replace(/-/g, '+').replace(/_/g, '/');
-    const padded = normalized + '='.repeat((4 - (normalized.length % 4)) % 4);
-    return JSON.parse(atob(padded)) as Record<string, unknown>;
-  } catch {
-    return null;
-  }
-}
 
 export default function LoginPage() {
   const router = useRouter();
@@ -60,13 +49,12 @@ export default function LoginPage() {
         password,
       });
       const { access_token, refresh_token } = response.data;
-      const payload = decodeJwtPayload(access_token);
-      const role = typeof payload?.role === 'string' ? payload.role : 'user';
-
-      window.localStorage.setItem('vp_access_token', access_token);
-      window.localStorage.setItem('vp_refresh_token', refresh_token);
-      document.cookie = `vp_access_token=${access_token}; path=/; max-age=${7 * 24 * 60 * 60}; SameSite=Lax`;
-      document.cookie = `vp_role=${role}; path=/; max-age=${7 * 24 * 60 * 60}; SameSite=Lax`;
+      authSession.persistAuthSession(
+        { accessToken: access_token, refreshToken: refresh_token },
+        window.localStorage,
+        document,
+        window.location.protocol === 'https:',
+      );
 
       router.replace('/home');
     } catch (err: unknown) {

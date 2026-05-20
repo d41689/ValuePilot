@@ -14,6 +14,7 @@ from app.core.security import (
 )
 from app.models.users import User
 from app.schemas.users import (
+    RefreshRequest,
     TokenResponse,
     UserCreate,
     UserLogin,
@@ -55,9 +56,9 @@ def login(body: UserLogin, db: SessionDep):
 
 
 @router.post("/refresh", response_model=TokenResponse)
-def refresh(refresh_token: str, db: SessionDep):
+def refresh(body: RefreshRequest, db: SessionDep):
     try:
-        payload = decode_token(refresh_token)
+        payload = decode_token(body.refresh_token)
     except JWTError:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid refresh token")
 

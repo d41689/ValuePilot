@@ -22,6 +22,12 @@ class UserLogin(BaseModel):
     password: str
 
 
+class RefreshRequest(BaseModel):
+    # Carried in the JSON body, never the query string: tokens in URLs leak
+    # into server access logs, browser history, and referrer headers.
+    refresh_token: str
+
+
 class UserUpdate(BaseModel):
     """Fields an admin can patch on any user."""
     role: Optional[str] = Field(None, pattern=f"^({'|'.join(ROLE_VALUES)})$")
