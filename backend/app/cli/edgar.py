@@ -420,26 +420,5 @@ def bootstrap_stocks() -> None:
         db.close()
 
 
-@app.command()
-def enrich_stocks_edgar() -> None:
-    """Step 2: match remaining unlinked CUSIPs against SEC company_tickers.json."""
-    from app.services.cusip_enrichment import enrich_stocks_from_edgar_tickers
-
-    db = SessionLocal()
-    try:
-        result = enrich_stocks_from_edgar_tickers(db)
-        db.commit()
-        typer.echo(f"EDGAR tickers fetched: {result['tickers_fetched']:,}")
-        typer.echo(f"New CUSIP mappings:    {result['new_mappings']}")
-        typer.echo(f"New stock rows:        {result['new_stocks']}")
-        typer.echo(f"Holdings linked:       {result['holdings_linked']}")
-    except Exception as exc:
-        db.rollback()
-        typer.echo(f"Error: {exc}", err=True)
-        raise typer.Exit(1)
-    finally:
-        db.close()
-
-
 if __name__ == "__main__":
     app()

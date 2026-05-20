@@ -2760,7 +2760,6 @@ _JOB_LOCK_BUILDERS = {
     "enrich_cusip": lambda payload: f"enrich_cusip:{_required(payload, 'quarter') if payload.get('quarter') else 'global'}",
     "enrich_metadata": lambda payload: f"enrich_metadata:{_required(payload, 'quarter') if payload.get('quarter') else 'global'}",
     "bootstrap_stocks": lambda payload: "bootstrap_stocks",
-    "enrich_stocks_edgar": lambda payload: "enrich_stocks_edgar",
     "bootstrap_whitelist": lambda payload: "bootstrap_whitelist",
     "match_cik": lambda payload: "match_cik",
     "quality_check": lambda payload: f"quality_check:{_required(payload, 'quarter')}",
@@ -2990,11 +2989,6 @@ def _execute_job(session: Session, job_type: str, payload: dict[str, Any]) -> di
         created = bootstrap_stocks_from_cusip_map(session)
         linked = backfill_stock_ids(session)
         return {"new_stocks": created, "holdings_linked": linked, "status": "succeeded"}
-    if job_type == "enrich_stocks_edgar":
-        from app.services.cusip_enrichment import enrich_stocks_from_edgar_tickers
-
-        result = enrich_stocks_from_edgar_tickers(session)
-        return {**result, "status": "succeeded"}
     raise ValueError(f"Unsupported job_type: {job_type}")
 
 
