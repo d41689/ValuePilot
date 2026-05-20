@@ -58,5 +58,65 @@
     "display_name": "Bridgewater Associates",
     "legal_name": "BRIDGEWATER ASSOCIATES, LP",
     "cik": "0001350685"
+  },
+  {
+    "dataroma_code": "HA",
+    "display_name": "Bill Nygren - Oakmark Funds",
+    "legal_name": "HARRIS ASSOCIATES L P",
+    "cik": "0000813917"
+  },
+  {
+    "dataroma_code": "DAV",
+    "display_name": "Christopher Davis - Davis Advisors",
+    "legal_name": "DAVIS SELECTED ADVISERS",
+    "cik": "0001036325"
+  },
+  {
+    "dataroma_code": "DAC",
+    "display_name": "Dodge & Cox Funds",
+    "legal_name": "DODGE & COX",
+    "cik": "0000200217"
+  },
+  {
+    "dataroma_code": "HCMAX",
+    "display_name": "Hillman Value Fund",
+    "legal_name": "Hillman Capital Management, Inc.",
+    "cik": "0001314620"
+  },
+  {
+    "dataroma_code": "OA",
+    "display_name": "Leon Cooperman",
+    "legal_name": "COOPERMAN LEON G",
+    "cik": "0000898382"
+  },
+  {
+    "dataroma_code": "MPF",
+    "display_name": "Mairs & Power Funds",
+    "legal_name": "MAIRS & POWER INC",
+    "cik": "0001070134"
+  },
+  {
+    "dataroma_code": "PI",
+    "display_name": "Mohnish Pabrai - Pabrai Investments",
+    "legal_name": "Dalal Street, LLC",
+    "cik": "0001549575"
+  },
+  {
+    "dataroma_code": "RVC",
+    "display_name": "Robert Vinall - RV Capital GmbH",
+    "legal_name": "RV Capital AG",
+    "cik": "0001766596"
+  },
+  {
+    "dataroma_code": "RC",
+    "display_name": "Ruane Cunniff LP",
+    "legal_name": "Ruane, Cunniff & Goldfarb L.P.",
+    "cik": "0001720792"
+  },
+  {
+    "dataroma_code": "T",
+    "display_name": "Torray Funds",
+    "legal_name": "TORRAY INVESTMENT PARTNERS LLC",
+    "cik": "0000098758"
   }
 ]
