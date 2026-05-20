@@ -26,3 +26,14 @@ long — escalate to the user. **medium / low** = ordinary follow-up.
   covered.
 - **Context:** `docs/tasks/2026-05-20_auth-hardening-followups.md` (item 2)
 - **Issue:** —
+
+### Content-Security-Policy response header
+- **Found:** 2026-05-20, admin/13f security-header review
+- **Severity:** medium
+- **Problem:** `next.config.js` now sets HSTS, X-Frame-Options, nosniff,
+  Referrer-Policy, and Permissions-Policy, but no `Content-Security-Policy`. A
+  correct CSP for the Next.js runtime (inline scripts / nonces / allowed
+  origins) must be built and tested against the running app — a wrong policy
+  breaks the site, so it cannot be added blind.
+- **Context:** `docs/tasks/2026-05-20_admin-13f-page-fixes.md`
+- **Issue:** —
