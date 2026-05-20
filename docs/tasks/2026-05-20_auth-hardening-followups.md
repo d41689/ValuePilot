@@ -1,5 +1,8 @@
 # 2026-05-20 — Auth hardening follow-ups
 
+> These items are now tracked in `docs/BACKLOG.md` (the live register). This
+> file keeps the full detail and remediation options for each one.
+
 Backlog opened from the review of the session refresh-token flow
 (`docs/tasks/2026-05-20_session-refresh-token-flow.md`,
 review result `..._session-refresh-token-flow-review-result.md`). These items
