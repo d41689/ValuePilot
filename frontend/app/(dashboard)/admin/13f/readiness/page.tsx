@@ -131,13 +131,13 @@ const {
     thresholds: Record<string, unknown>;
   };
   normalizeWorkers: (items: unknown[]) => Array<{ status: string }>;
-  operationsHealth: (args: {
-    readiness: ReturnType<typeof normalizeReadiness>;
-    tasks: unknown[];
-    hasAvailableWorker: boolean;
-    workersIndeterminate?: boolean;
-  }) => {
-    level: 'healthy' | 'blocked' | 'warning' | 'unknown';
+  operationsHealth: (
+    readiness: ReturnType<typeof normalizeReadiness>,
+    tasks: unknown[],
+    hasAvailableWorker: boolean,
+    options?: { workersIndeterminate?: boolean },
+  ) => {
+    level: 'healthy' | 'blocked' | 'attention' | 'unknown';
     label: string;
     summary: string;
     tone: string;
@@ -240,10 +240,7 @@ export default function ReadinessAdminPage() {
 
   const operationalHealth = useMemo(
     () =>
-      operationsHealth({
-        readiness,
-        tasks: [],
-        hasAvailableWorker,
+      operationsHealth(readiness, [], hasAvailableWorker, {
         workersIndeterminate: workersQuery.isError,
       }),
     [readiness, hasAvailableWorker, workersQuery.isError],
