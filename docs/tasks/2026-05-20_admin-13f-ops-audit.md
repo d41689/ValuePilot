@@ -124,17 +124,19 @@ Status legend: `open` / `in-progress` / `done` / `deferred`.
      trigger surface was removed in PR #70.
 
 8. **[P2] Quality check blocked.**
-   `status: deferred → docs/BACKLOG.md`
-   - "Quality checked" is blocked because the latest quality report is status
-     `warning` (0 errors). All 63 (2026-Q1) warnings are the single
-     `period_alignment` check — `_check_period_alignment` compares
+   `status: done — _check_period_alignment fixed`
+   - "Quality checked" was blocked because the latest quality report was
+     status `warning` (0 errors). All 63 (2026-Q1) warnings were the single
+     `period_alignment` check — `_check_period_alignment` compared
      `period_of_report` against the *filing* quarter, which is wrong for 13F (a
      13F always reports a prior quarter-end, so it never aligns with the filing
-     quarter). Verified: all 63 flagged filings are correctly bucketed
-     (`report_quarter` matches `period_of_report`). The check false-positives
-     on essentially every 13F.
-   - Re-running quality check is futile. Fixing the check needs a product
-     decision on its intended semantics. Deferred to `docs/BACKLOG.md`.
+     quarter). Verified: all 63 flagged filings were correctly bucketed.
+   - Fixed: the check now expects `period_of_report` in the quarter *before*
+     the filing quarter (the real 13F cadence), and a filing older than that
+     (a late filing / amendment) is `info`, not `warning` — so the check no
+     longer produces false-positive warnings. The readiness "Quality checked"
+     item clears once a fresh `quality_check` runs post-deploy. (Backend-only;
+     dev-tested with `pytest`.)
 
 ### P3 — maintenance
 
