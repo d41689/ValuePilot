@@ -66,48 +66,38 @@ def quarters_in_range(start: str, end: str) -> Iterator[str]:
 
 
 def _has_meaningful_coverage(db: Session, quarter: str) -> bool:
-    """Return True iff this quarter has both an ingestion entry point (raw
-    master.idx record) AND post-routing state (at least one Filing13F with
-    quarter_end_date populated). Used by the reconcile to decide "skip — done"
-    versus "re-enqueue — work missing".
+    """Return True iff this quarter has Oracle's Lens signals — i.e. the
+    quarterly_pipeline ran all the way through its final stage. Used by the
+    reconcile to decide "skip — done" versus "re-enqueue — work missing".
 
-    Why not just check JobRun.status == 'succeeded'?
+    Why anchor on oracles_lens_signals specifically?
 
-    The pipeline's stage-level status reflects whether stages threw, not
-    whether they did anything useful. Before #52, ingest_holdings stage 2
-    silently caught an ImportError, ran with 0 routing changes, and returned
-    'succeeded'. The reconcile then refused to re-enqueue, even though
-    Filing13F.quarter_end_date was still NULL for the entire quarter and
-    Oracle's Lens couldn't aggregate. Anchoring on observable DB state
-    instead of self-reported job status makes the reconcile self-correcting
-    after pipeline bug fixes ship.
+    This criterion has been moved twice. First it was JobRun.status ==
+    'succeeded' — but stage status reflects whether stages threw, not
+    whether they did useful work (a swallowed ImportError still returned
+    'succeeded'). Then it was Filing13F.quarter_end_date populated — but
+    that's an *intermediate* signal: once routing shipped and backfilled
+    that column, the reconcile started skipping quarters whose later
+    stages (CUSIP linking, is_active flags, Oracle's Lens scoring) had
+    never run.
 
-    The Filing13F.quarter_end_date check is the right data-state proxy
-    because it's set by route_period only after primary_doc XML has been
-    fetched and parsed — i.e. it confirms the full Phase 1 + Phase 2
-    sequence ran successfully for at least one filing in the quarter.
+    The lesson: anchor on the pipeline's *terminal* output. oracles_lens_signals
+    is written by the last stage (oracles_lens_score_backfill); nothing
+    runs after it. If signal rows exist for the quarter, the whole pipeline
+    completed. If they don't, something upstream is missing and a re-run is
+    warranted — and because every stage is idempotent, re-running a
+    near-complete quarter is cheap (cache hits, fingerprint-skip, upserts).
+
+    Edge case: a quarter where no stock clears the min-holders floor will
+    legitimately have 0 signals and be re-enqueued on each boot. That's an
+    acceptable cost — the re-run is a fast no-op — and far better than the
+    failure mode this method has hit twice (skipping incomplete quarters).
     """
-    from app.models.institutions import Filing13F
-    from app.services.thirteenf_filing_detail import _parse_period_date  # type: ignore[attr-defined]
-
-    # Look at any Filing13F whose period_of_report lands in this calendar
-    # quarter and has quarter_end_date populated. period_of_report is a
-    # date; quarter window is [Y-Q*3-2, Y-Q*3+(0|1|2 last day)].
-    year, q = _parse_quarter(quarter)
-    from datetime import date
-
-    start_month = (q - 1) * 3 + 1
-    end_month = start_month + 2
-    end_day = 31 if end_month in {1, 3, 5, 7, 8, 10, 12} else 30
-    if end_month == 2:
-        end_day = 29 if (year % 4 == 0 and (year % 100 != 0 or year % 400 == 0)) else 28
-    window_start = date(year, start_month, 1)
-    window_end = date(year, end_month, end_day)
+    from app.models.oracles_lens import OraclesLensSignal
 
     return (
-        db.query(Filing13F.id)
-        .filter(Filing13F.period_of_report.between(window_start, window_end))
-        .filter(Filing13F.quarter_end_date.isnot(None))
+        db.query(OraclesLensSignal.id)
+        .filter(OraclesLensSignal.report_quarter == quarter)
         .first()
         is not None
     )
