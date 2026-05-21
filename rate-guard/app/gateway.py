@@ -19,7 +19,6 @@ from .metrics import UpstreamMetrics
 
 logger = logging.getLogger("rate_guard.gateway")
 
-_GLOBAL_PAUSE_SECONDS = 60.0
 _MAX_PAUSE_WAIT = 120.0
 
 
@@ -59,7 +58,13 @@ class Gateway:
         u = self._upstreams[upstream]
         method = method.upper()
 
-        host = (urlparse(url).hostname or "").lower()
+        parsed = urlparse(url)
+        if parsed.scheme.lower() != "https":
+            raise UpstreamError(
+                None,
+                f"scheme {parsed.scheme!r} is not allowed — only https is permitted",
+            )
+        host = (parsed.hostname or "").lower()
         if host not in u.allowed_hosts:
             raise UpstreamError(
                 None, f"host {host!r} is not allowed for upstream {upstream!r}"
@@ -80,7 +85,6 @@ class Gateway:
                 }
             self._metrics[upstream].cache_miss()
 
-        self._respect_pause(upstream)
         resp = self._request_with_retry(u, method, url, body)
         body_b64 = base64.b64encode(resp.content).decode("ascii")
         if cacheable and resp.status_code == 200:
@@ -98,6 +102,10 @@ class Gateway:
         attempt = 0
         last_status: int | None = None
         while True:
+            # A 429/503 on any concurrent request globally pauses the
+            # upstream; every retry must wait that pause out before its
+            # next attempt, not just sleep its own backoff.
+            self._respect_pause(u.name)
             self._buckets[u.name].acquire()
             try:
                 resp = self._client.request(
@@ -115,10 +123,10 @@ class Gateway:
                         403, f"{u.name} returned 403 (IP block or bad User-Agent)"
                     )
                 if resp.status_code in (429, 503):
-                    self._metrics[u.name].pause(_GLOBAL_PAUSE_SECONDS)
+                    self._metrics[u.name].pause(u.pause_s)
                     logger.warning(
                         "%s %s — global pause %.0fs",
-                        u.name, resp.status_code, _GLOBAL_PAUSE_SECONDS,
+                        u.name, resp.status_code, u.pause_s,
                     )
                 elif resp.status_code < 500:
                     # 2xx/3xx/404/other-4xx are definitive — return as-is.

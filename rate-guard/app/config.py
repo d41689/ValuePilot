@@ -18,6 +18,9 @@ class Upstream:
     burst: int
     max_retries: int
     backoff_s: tuple[float, ...]
+    # On a 429/503 the upstream is globally paused for this long; every
+    # in-flight retry waits the pause out before its next attempt.
+    pause_s: float = 60.0
     user_agent: str | None = None
     extra_headers: dict[str, str] = field(default_factory=dict)
     # GET/POST responses are cached for `cache_ttl_s` (0 disables the cache).
@@ -37,10 +40,20 @@ def _env_float(name: str, default: float) -> float:
 
 
 def _sec_user_agent() -> str:
-    """SEC mandates a descriptive User-Agent that carries contact info."""
+    """SEC mandates a descriptive User-Agent that carries contact info.
+
+    A missing contact address is a configuration error: SEC blocks requests
+    with an unidentifiable User-Agent, so fail loud at startup rather than
+    silently shipping a placeholder that earns an IP ban.
+    """
     contact = os.environ.get("SEC_CONTACT_EMAIL", "").strip()
+    if not contact:
+        raise RuntimeError(
+            "SEC_CONTACT_EMAIL is required for the 'edgar' upstream — "
+            "SEC rejects requests without a contactable User-Agent."
+        )
     project = os.environ.get("PROJECT_NAME", "ValuePilot").strip() or "ValuePilot"
-    return f"{project} {contact}" if contact else f"{project} contact-not-configured"
+    return f"{project} {contact}"
 
 
 def build_upstreams() -> dict[str, Upstream]:

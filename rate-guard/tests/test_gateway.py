@@ -1,4 +1,5 @@
 import base64
+import time
 
 import httpx
 import pytest
@@ -16,6 +17,7 @@ def _upstream(**overrides) -> Upstream:
         burst=10,
         max_retries=2,
         backoff_s=(0.0,),
+        pause_s=0.0,
         cache_ttl_s=0.0,
     )
     base.update(overrides)
@@ -100,6 +102,34 @@ def test_retries_exhausted_raises(tmp_path):
     )
     with pytest.raises(UpstreamError):
         gw.fetch("test", "GET", "https://example.com/x")
+
+
+def test_429_global_pause_is_respected_before_retry(tmp_path):
+    """A 429 arms a global pause; the retry must wait it out, not just its
+    own backoff."""
+    statuses = [429, 200]
+
+    def handler(request):
+        return httpx.Response(statuses.pop(0), content=b"ok")
+
+    gw = _gateway(
+        tmp_path,
+        handler,
+        {"test": _upstream(max_retries=2, backoff_s=(0.0,), pause_s=0.3)},
+    )
+    start = time.monotonic()
+    out = gw.fetch("test", "GET", "https://example.com/x")
+    elapsed = time.monotonic() - start
+
+    assert out["status"] == 200
+    # Backoff is 0s — the only delay is the 0.3s global pause being respected.
+    assert elapsed >= 0.25
+
+
+def test_rejects_non_https_url(tmp_path):
+    gw = _gateway(tmp_path, lambda r: httpx.Response(200))
+    with pytest.raises(UpstreamError):
+        gw.fetch("test", "GET", "http://example.com/x")
 
 
 def test_metrics_count_requests_and_cache(tmp_path):

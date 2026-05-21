@@ -195,10 +195,24 @@ Each PR is independently CI-green and deployable.
 
 - **PR 1 — the Rate Guard service.** `rate-guard/` (FastAPI app: `config`,
   `bucket`, `cache`, `metrics`, `gateway`, `main`), `Dockerfile`,
-  `docker-compose.rateguard.yml`, 14 unit tests, a CI step. Standalone —
-  nothing else points at it yet. Verified: 14 tests pass; the container
-  builds, starts, and serves `/healthz` + `/v1/metrics` for all three
-  upstreams.
+  `docker-compose.rateguard.yml`, unit tests, a CI step. Standalone —
+  nothing else points at it yet.
+  - **Review (PR #76) — remediated.** External review flagged one blocker
+    and two advisories:
+    - *Blocker* — `_request_with_retry` armed a global pause on 429/503 but
+      the retry loop only slept its own backoff, so retries fired through
+      the pause. Fixed: `_respect_pause` now runs as the first step of every
+      retry iteration; the one-shot pre-flight call in `fetch()` was removed.
+    - *Advisory* — only `https` URLs are accepted; `fetch()` rejects any
+      other scheme alongside the existing host allowlist check.
+    - *Advisory* — `_sec_user_agent()` raises `RuntimeError` when
+      `SEC_CONTACT_EMAIL` is unset instead of shipping a placeholder UA, so
+      a misconfigured `edgar` upstream fails loud at startup.
+    - The global-pause duration moved from a module constant to a
+      per-upstream `Upstream.pause_s` field (default 60s).
+  - Verified: 16 tests pass (added `test_429_global_pause_is_respected_before_retry`
+    and `test_rejects_non_https_url`); the container builds, starts, and
+    serves `/healthz` + `/v1/metrics` for all three upstreams.
 - PR 2 — repoint `EdgarClient`; slim it; live-mode startup guard. *(next)*
 - PR 3 — repoint `OpenFigiClient` + `DataromaClient`.
 - PR 4 — admin `edgar-rate-limit` panel reads Rate Guard `/v1/metrics`.
