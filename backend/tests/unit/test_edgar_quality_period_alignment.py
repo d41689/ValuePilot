@@ -75,3 +75,29 @@ def test_period_alignment_flags_late_filing_as_info_not_warning(db_session):
     ]
     assert len(flagged) == 1
     assert flagged[0].severity == "info"
+
+
+def test_period_alignment_flags_period_not_before_filing_quarter_as_warning(db_session):
+    """A 13F whose period_of_report is in the filing quarter itself (a period
+    that has not ended) — or in the future — is a genuine data anomaly and
+    stays a warning, not a downgraded info."""
+    db_session.query(Filing13F).delete()
+    db_session.flush()
+    mgr = _manager(db_session)
+    # Filed Feb 2026 but reporting the 2026-Q1 quarter-end (2026-03-31) — a
+    # period that has not ended at filing time.
+    _filing(
+        db_session, mgr, "0000000000-26-000003",
+        period=date(2026, 3, 31), filed=date(2026, 2, 10),
+    )
+
+    report = QualityReport()
+    _check_period_alignment(db_session, report, "2026-Q1")
+
+    flagged = [
+        i for i in report.issues
+        if i.check == "period_alignment" and i.accession_no == "0000000000-26-000003"
+    ]
+    assert len(flagged) == 1
+    assert flagged[0].severity == "warning"
+    assert len(report.warnings) == 1

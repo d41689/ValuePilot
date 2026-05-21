@@ -132,11 +132,14 @@ Status legend: `open` / `in-progress` / `done` / `deferred`.
      13F always reports a prior quarter-end, so it never aligns with the filing
      quarter). Verified: all 63 flagged filings were correctly bucketed.
    - Fixed: the check now expects `period_of_report` in the quarter *before*
-     the filing quarter (the real 13F cadence), and a filing older than that
-     (a late filing / amendment) is `info`, not `warning` — so the check no
-     longer produces false-positive warnings. The readiness "Quality checked"
-     item clears once a fresh `quality_check` runs post-deploy. (Backend-only;
-     dev-tested with `pytest`.)
+     the filing quarter (the real 13F cadence). Deviations split by direction
+     (per the PR #75 review): a period *earlier* than X-1 — a late filing /
+     old-period amendment — is `info`; a period *later* than X-1 (in the
+     filing quarter itself or the future) stays a `warning`, since a 13F
+     cannot report a quarter that has not ended. Real 2026-Q1 data has only
+     the earlier kind, so the false-positive warnings clear and readiness
+     "Quality checked" unblocks once a fresh `quality_check` runs post-deploy.
+     (Backend-only; dev-tested with `pytest`.)
 
 ### P3 — maintenance
 
