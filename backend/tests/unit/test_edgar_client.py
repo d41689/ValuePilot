@@ -135,6 +135,41 @@ def test_rate_guard_unreachable_raises(monkeypatch):
     assert exc.value.status_code is None  # not an upstream HTTP failure
 
 
+def test_rate_guard_non_502_error_raises(monkeypatch):
+    """A non-200/non-502 from Rate Guard itself (e.g. Rate Guard 503) raises
+    EdgarFetchError with no upstream status."""
+    monkeypatch.setattr(edgar_client.settings, "RATE_GUARD_URL", RATE_GUARD)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(503)  # Rate Guard itself unavailable
+
+    with EdgarClient(http_client=_rg_client(handler)) as client:
+        with pytest.raises(EdgarFetchError, match="503") as exc:
+            client.get("https://www.sec.gov/x")
+
+    assert exc.value.status_code is None  # a Rate Guard fault, not an upstream status
+
+
+def test_malformed_success_envelope_raises(monkeypatch):
+    """A 200 from Rate Guard with a non-numeric status or an undecodable body
+    raises EdgarFetchError, not a stray ValueError — a uniform error contract."""
+    monkeypatch.setattr(edgar_client.settings, "RATE_GUARD_URL", RATE_GUARD)
+
+    def bad_status(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"status": "?", "body_b64": "", "cache": "miss"})
+
+    with EdgarClient(http_client=_rg_client(bad_status)) as client:
+        with pytest.raises(EdgarFetchError, match="malformed"):
+            client.get("https://www.sec.gov/x")
+
+    def bad_body(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"status": 200, "body_b64": "abc", "cache": "miss"})
+
+    with EdgarClient(http_client=_rg_client(bad_body)) as client:
+        with pytest.raises(EdgarFetchError, match="undecodable"):
+            client.get("https://www.sec.gov/x")
+
+
 def test_fetches_are_recorded_for_the_rate_limit_status(monkeypatch):
     monkeypatch.setattr(edgar_client.settings, "RATE_GUARD_URL", RATE_GUARD)
     monkeypatch.setattr(edgar_client.settings, "EDGAR_RATE_LIMIT_WINDOW_S", 60)

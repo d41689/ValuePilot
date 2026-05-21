@@ -157,14 +157,25 @@ class EdgarClient:
         if not isinstance(payload, dict):
             _record_request(None, url)
             raise EdgarFetchError(f"Rate Guard returned a malformed response for {url}")
-        upstream_status = int(payload.get("status", 0))
+        try:
+            upstream_status = int(payload.get("status", 0))
+        except (ValueError, TypeError) as exc:
+            _record_request(None, url)
+            raise EdgarFetchError(
+                f"Rate Guard returned a malformed response for {url}: {exc}"
+            ) from exc
         _record_request(upstream_status, url)
         if upstream_status != 200:
             raise EdgarFetchError(
                 f"EDGAR returned HTTP {upstream_status} for {url}",
                 status_code=upstream_status,
             )
-        return base64.b64decode(payload.get("body_b64") or "")
+        try:
+            return base64.b64decode(payload.get("body_b64") or "")
+        except (ValueError, TypeError) as exc:
+            raise EdgarFetchError(
+                f"Rate Guard returned an undecodable body for {url}: {exc}"
+            ) from exc
 
     def get(self, url: str) -> bytes:
         """Fetch URL body via Rate Guard. Raises on any non-200."""

@@ -6,186 +6,121 @@ Prompt: `docs/tasks/2026-05-21_rate-guard-pr2-edgar-client-review-prompts.md`
 
 ## Verdict
 
-**暂不批准 / Not approved.**
+**批准 / approved**, with non-blocking follow-ups.
 
-One **P1 blocker** (B3): the rewrite flattens every EDGAR failure to a bare
-`RuntimeError`, discarding the upstream status code. `run_daily_index_sync`
-catches `httpx.HTTPStatusError` to classify a 404 — the rewritten client no
-longer raises that type, so the daily index sync's entire 404 path (the
-"expected no-index date" calendar) is dead in production. The test suite is
-green (≈870) **because** the test `FakeEdgarClient`s still raise the old
-exception type — the green is itself proof of the gap.
+The previous B3 blocker is fixed in the current branch: EDGAR failures now
+raise `EdgarFetchError(RuntimeError)` with a recoverable `.status_code`, and
+`run_daily_index_sync` catches that typed exception for expected 404/no-index
+dates. The load-bearing pass-through is otherwise complete: no in-process EDGAR
+rate limiter/retry/global-pause logic remains, live mode hard-requires
+`RATE_GUARD_URL`, the CI/test seam keeps `EDGAR_FETCH_MODE=live`, and the full
+backend suite is green.
 
-Everything else passes or is a recordable advisory. The fix is small and
-contained.
-
-## [P1 BLOCKER] B3 — daily index sync 404 handling is broken
-
-### The defect
-
-`run_daily_index_sync` (`backend/app/services/thirteenf_daily_sync.py:37-73`)
-has two error paths:
-
-```python
-except httpx.HTTPStatusError as exc:        # line 65
-    return _handle_http_error(session, sync, exc)
-except Exception as exc:                    # line 67
-    sync.status = "failed"
-    ...
-```
-
-`_handle_http_error` (`thirteenf_daily_sync.py:210-225`) reads
-`exc.response.status_code`, and on a **404 for an expected no-index date**
-(weekend / federal holiday) sets `sync.status = "no_data"` — a benign, expected
-outcome. Any other exception → `sync.status = "failed"`.
-
-The **old** `EdgarClient` raised `httpx.HTTPStatusError` on a non-200 (via
-`resp.raise_for_status()`), so a 404 reached the `HTTPStatusError` branch.
-
-The **new** `EdgarClient._fetch` (`backend/app/edgar/client.py:135-141`) raises
-a bare `RuntimeError` on an upstream non-200:
-
-```python
-if upstream_status != 200:
-    raise RuntimeError(f"EDGAR returned HTTP {upstream_status} for {url}")
-```
-
-`RuntimeError` is **not** an `httpx.HTTPStatusError`, so it falls through to the
-`except Exception` branch — `sync.status = "failed"`, **always**, even on an
-expected no-index date.
-
-### Production impact
-
-EDGAR has no `form.idx` on weekends and federal holidays → a 404. The
-`NoIndexExpectedDate` "expected no-index calendar" exists precisely so those
-days resolve to `"no_data"` rather than `"failed"`. After this PR, **every
-weekend and holiday daily sync is marked `"failed"`** — spurious failures,
-retry churn, and 13F alert noise, on a job that runs every day. This silently
-guts a working feature.
-
-### Why 870 green tests did not catch it
-
-`test_13f_daily_index_sync.py`'s `FakeEdgarClient.get()`
-(`backend/tests/unit/test_13f_daily_index_sync.py:33-40`) raises
-`httpx.HTTPStatusError` on a 404 — it still mimics the **old** real client:
-
-```python
-raise httpx.HTTPStatusError("fetch failed", request=request, response=response)
-```
-
-So `test_expected_no_index_404_marks_sync_no_data` and
-`test_unexpected_404_marks_sync_failed_for_retry` exercise the
-`HTTPStatusError` branch and pass — against a **stale test double** that no
-longer matches the real client's exception contract. The 13F `FakeEdgarClient`
-classes are now unfaithful fakes; that is the structural reason the regression
-slipped through.
-
-Production impact of B3 is localised to `run_daily_index_sync` — it is the only
-EDGAR caller that catches `httpx.HTTPStatusError` (grep-confirmed). All other
-call sites (`edgar_ingestion.py`) use a broad `except Exception`, which still
-catches `RuntimeError`.
-
-### Required fix
-
-Restore a way for callers to recover the upstream status. Recommended:
-
-1. Add a typed exception in `edgar/client.py`, e.g.
-   `class EdgarFetchError(RuntimeError)` carrying `.status_code`. Subclassing
-   `RuntimeError` keeps every existing `except Exception` / `except RuntimeError`
-   caller working.
-2. `_fetch` raises `EdgarFetchError(msg, status_code=upstream_status)` for an
-   upstream non-200, and for the 502 case with the `upstream_status` from the
-   error detail.
-3. Update `run_daily_index_sync` to catch `EdgarFetchError` and branch on
-   `.status_code == 404` (replacing or alongside the `httpx.HTTPStatusError`
-   catch).
-4. Update the 13F `FakeEdgarClient`s to raise the new typed exception so they
-   stay faithful, **and add a regression test** that drives `run_daily_index_sync`
-   with a fake raising the new 404 exception and asserts `"no_data"` on an
-   expected no-index date — i.e. a test that would fail today.
+No blocking findings.
 
 ## Per-question findings
 
 ### A. Design conformance / slim
-- **A1 — PASS.** `client.py` deletes `_TokenBucket`, `_make_bucket` /
-  `_get_bucket`, the retry loop, `_GLOBAL_PAUSE_UNTIL`, `_parse_backoff`, and
-  `build_sec_user_agent`. No rate-limiting or retry logic remains; `_fetch`
-  (`client.py:107-141`) is a single POST to `/v1/fetch`.
-- **A2 — PASS (API surface).** `get` / `head` / `close` / `__enter__` /
-  `__exit__` / `BASE` / `EFTS_BASE` / `DATA_BASE` are all retained
-  (`client.py:88-159`); the 8 `EdgarClient()` call sites compile unchanged. The
-  *behavioural* break is B3, not an API-surface break.
 
-### B. Exception-behaviour parity (MANDATORY)
-- **B3 — FAIL.** See the blocker above.
-- **B4 — PASS.** `head()` → `_fetch("HEAD", …)`: a Rate Guard `200` with empty
-  `body_b64` decodes to `b""` and returns; a 404 raises. Its two callers
-  (`edgar_ingestion.py:834,853`) wrap it in `except Exception`, so the
-  `RuntimeError` is handled — `head()` itself is fine.
+- **A1 — PASS.** `backend/app/edgar/client.py:1-8` documents the Rate Guard
+  pass-through, `client.py:119-167` sends every fetch as `POST /v1/fetch`, and
+  the old token bucket / `_GLOBAL_PAUSE_UNTIL` / retry loop / SEC User-Agent
+  construction are gone.
+- **A2 — PASS.** Public API surface remains: `BASE`, `EFTS_BASE`, `DATA_BASE`
+  at `client.py:103-105`; constructor, `get`, `head`, `close`, context manager
+  at `client.py:107-184`. The eight direct `EdgarClient()` call sites in
+  `edgar_ingestion.py` and `thirteenf_admin_dashboard.py` still compile without
+  edits.
 
-### C. Live-mode startup guard (MANDATORY)
-- **C5 — PASS.** `app/main.py` `lifespan` raises `RuntimeError` before `yield`
-  when `EDGAR_FETCH_MODE == "live"` and `RATE_GUARD_URL` is empty — an ASGI
-  lifespan-startup failure that aborts uvicorn (a real hard startup error).
-  `EdgarClient._fetch_endpoint` (`client.py:99-105`) raising is the second line
-  of defence; confirmed there is no live-fetch path that skips it.
-- **C6 — PASS.** `(settings.RATE_GUARD_URL or "").strip()` handles `None`,
-  empty, and whitespace-only.
+### B. Exception-behaviour parity
 
-### D. Test & CI seam (MANDATORY)
-- **D7 — PASS.** `conftest.py` sets a placeholder `RATE_GUARD_URL` before any
-  app import and leaves `EDGAR_FETCH_MODE` at `live` — correct: forcing
-  `replay` would route `fetch_and_store` to the DB and break the 13F tests'
-  injected fakes.
-- **D8 — PASS.** `ci.yml` `.env` carries `RATE_GUARD_URL=http://rate-guard.invalid`;
-  the api container starts (guard satisfied) and nothing in an idle CI api
-  dials it (scheduler / worker off by default).
-- **D9 — PASS, with a caveat that is the heart of B3.** No test calls a real
-  Rate Guard. But "tests inject `FakeEdgarClient`" is exactly why B3 went
-  unnoticed — those fakes no longer mirror the real client's exception type.
-  See B3's required-fix item 4.
+- **B3 — PASS.** The old `httpx.HTTPStatusError`-aware daily sync path is now
+  explicitly migrated: `thirteenf_daily_sync.py:65-66` catches
+  `EdgarFetchError`, and `_handle_http_error` reads `.status_code` at
+  `thirteenf_daily_sync.py:210-220`. The test fake now mirrors the real client
+  by raising `EdgarFetchError(status_code=...)` at
+  `test_13f_daily_index_sync.py:26-40`, preserving the expected 404/no-data
+  behavior. Grep found no remaining application `except httpx.HTTPStatusError`
+  paths.
+- **B4 — PASS.** `head()` delegates to `_fetch("HEAD", url)` at
+  `client.py:173-175`. A Rate Guard 200 with empty `body_b64` returns cleanly
+  through `base64.b64decode(payload.get("body_b64") or "")`; upstream 404s
+  raise `EdgarFetchError(status_code=404)`.
+
+### C. Live-mode startup guard
+
+- **C5 — PASS.** `app/main.py:19-24` raises before `yield` when
+  `EDGAR_FETCH_MODE == "live"` and `RATE_GUARD_URL` is empty, which aborts ASGI
+  lifespan startup. `EdgarClient._fetch_endpoint` is a second guard at
+  `client.py:110-117`, so live EDGAR fetches cannot silently bypass Rate Guard.
+- **C6 — PASS.** Both guard sites use `(settings.RATE_GUARD_URL or "").strip()`
+  (`main.py:19`, `client.py:111`), covering unset, empty, and whitespace-only
+  values.
+
+### D. Test & CI seam
+
+- **D7 — PASS.** `backend/tests/conftest.py:1-9` sets
+  `RATE_GUARD_URL=http://rate-guard.invalid` before importing the app and leaves
+  `EDGAR_FETCH_MODE` at its default `live`, so `fetch_and_store` continues to
+  use injected fake clients instead of replay mode.
+- **D8 — PASS.** `.github/workflows/ci.yml:36-42` writes the same placeholder
+  `RATE_GUARD_URL` into CI `.env`. The dev compose defaults keep scheduler and
+  job worker off in an idle CI api container, so startup satisfies the guard
+  without dialing the placeholder URL.
+- **D9 — PASS.** `test_edgar_client.py` uses `httpx.MockTransport`
+  (`test_edgar_client.py:20-22`), and the other affected backend tests inject
+  fake clients. No test requires a real Rate Guard process.
 
 ### E. `_fetch` robustness
-- **E10 — advisory.** `_rate_guard_error_detail` and the `b64decode(... or "")`
-  / `int(payload.get("status", 0))` guards degrade safely. Minor: a Rate Guard
-  `200` whose body is not JSON makes `resp.json()` raise `ValueError`, not
-  `RuntimeError` — `_fetch`'s error contract is not 100% uniform. Rate Guard
-  always returns JSON on 200, so this is theoretical; worth a one-line guard.
-- **E11 — PASS.** `_RATE_GUARD_TIMEOUT_S = 1800s`. Rate Guard's `edgar` worst
-  case ≈ 6 attempts × (≤60s pause, since `pause_s=60`) + backoff
-  `5+30+120+300+300` + 6×30s requests ≈ ~22 min — comfortably under 30 min.
-- **E12 — PASS.** `edgar_rate_limit_status()` is kept; `_fetch` calls
-  `_record_request` with the upstream status, so the admin panel and the 13F
-  403/429 alerting still get data. `global_pause_until: None` is acknowledged
-  for PR 4/4.
+
+- **E10 — advisory.** The structured 502 error unwrap is safe for malformed
+  JSON/body shapes (`client.py:90-97`), and non-JSON 200 responses are wrapped
+  as `EdgarFetchError` (`client.py:150-156`). Two malformed-success edges still
+  leak lower-level exceptions: `int(payload.get("status", 0))` at
+  `client.py:160` can raise `ValueError`/`TypeError`, and invalid base64 at
+  `client.py:167` can raise a decode error. This is not a blocker because Rate
+  Guard owns that envelope, but wrapping both in `EdgarFetchError` would make
+  the client contract cleaner.
+- **E11 — PASS.** `_RATE_GUARD_TIMEOUT_S = 1800.0` (`client.py:29-31`) is sane
+  for Rate Guard's retry/backoff + global pause worst case and avoids cutting
+  off long EDGAR retries prematurely.
+- **E12 — PASS.** `edgar_rate_limit_status()` remains at `client.py:55-87`;
+  `_fetch` records upstream statuses at `client.py:139`, `client.py:145`, and
+  `client.py:160-161`. The admin panel / scheduler alerting still get recent
+  403/429 counts, while `global_pause_until` is intentionally `None` until PR 4.
 
 ### F. Intentional deferrals
-- **F13 — PASS.** `OpenFigiClient` / `DataromaClient` untouched (PR 3); admin
-  panel still on `edgar_rate_limit_status()` (PR 4); unused `EDGAR_*` settings
-  left in `config.py` — all stated in the task doc.
+
+- **F13 — PASS.** `OpenFigiClient` / `DataromaClient` are untouched, the admin
+  panel still reads `edgar_rate_limit_status()`, and legacy EDGAR retry/rate
+  settings remain in `config.py` for compatibility until later cleanup.
 
 ### G. Tests
-- **G14 — advisory.** The rewritten `test_edgar_client.py` covers the new
-  client's happy and error paths well, but every error assertion is just
-  `pytest.raises(RuntimeError, …)` — it locks in the flat `RuntimeError`
-  contract that *is* the B3 root cause. No test verifies that a caller can
-  recover the upstream status (404 vs 403) from the raised exception.
-- **G15 — PASS.** The two `test_13f_admin_dashboard.py` removals targeted
-  behaviour now owned by Rate Guard (the 429 global pause — covered by
-  rate-guard's own `test_429_global_pause_is_respected_before_retry`) and dead
-  `_GLOBAL_PAUSE_UNTIL` code.
+
+- **G14 — PASS.** `backend/tests/unit/test_edgar_client.py` covers routing
+  payload, HEAD method, unset `RATE_GUARD_URL`, upstream non-200 with status,
+  Rate Guard 502 with upstream status, unreachable Rate Guard, request-status
+  recording, and the `RuntimeError` subclass contract. Material remaining gap:
+  malformed success envelopes from Rate Guard are only partially covered; see
+  E10.
+- **G15 — PASS.** The removed admin-dashboard tests targeted deleted local
+  global-pause behavior (`_GLOBAL_PAUSE_UNTIL`) now owned by Rate Guard. The
+  remaining request-count/status behavior is still covered in
+  `test_13f_admin_dashboard.py` and `test_edgar_client.py`.
 
 ## Verification
 
-- `docker compose run --rm --no-deps api pytest -q` — green (~870) per the PR's
-  own run. As shown under B3, green does not imply correct here: the 404 tests
-  pass against a stale fake.
-- `git diff main...HEAD` — scope matches the prompt; no DB migration.
+- `docker compose run --rm --no-deps api pytest -q` — **passed**:
+  `871 passed, 3 warnings in 51.35s`.
+- `git diff origin/main...HEAD` — scope matches the prompt; no DB migration.
+- Frontend application code is untouched.
 
-## Pass bar
+## Non-blocking follow-ups
 
-The bar — "a behaviour-preserving repoint of a load-bearing client" — is **not
-met**: B3 is a behaviour regression in the daily index sync. Approvable once B3
-is fixed (typed `EdgarFetchError` with `.status_code`, `run_daily_index_sync`
-updated, the 13F fakes made faithful, and a regression test that fails today).
-E10 and G14 are advisories to fold into the same change.
+- **Task doc drift:** `docs/tasks/2026-05-21_rate-guard-pr2-edgar-client.md:34-38`
+  still says `conftest.py` / CI force `EDGAR_FETCH_MODE=replay`; current code
+  correctly uses placeholder `RATE_GUARD_URL` and leaves live mode on. Update
+  those lines so the task doc matches the final test/CI seam.
+- **Malformed Rate Guard success envelope:** wrap invalid `status` and invalid
+  `body_b64` failures in `EdgarFetchError` for a fully uniform client error
+  contract.

@@ -31,11 +31,13 @@ In:
   delete the token bucket / retry / global-pause machinery and
   `build_sec_user_agent` (Rate Guard sets the SEC User-Agent now).
 - `backend/app/main.py` — live-mode startup guard in `lifespan`.
-- `backend/tests/conftest.py` — force `EDGAR_FETCH_MODE=replay` before app
-  import (tests never fetch live; conftest's `client` fixture runs `lifespan`
-  via `with TestClient(app)`, which would otherwise hit the guard).
-- `.github/workflows/ci.yml` — CI `.env` gets `EDGAR_FETCH_MODE=replay` so the
-  api container starts (its `lifespan` runs the guard).
+- `backend/tests/conftest.py` — set a placeholder `RATE_GUARD_URL` before app
+  import so the live-mode guard is satisfied (the `client` fixture runs
+  `lifespan` via `with TestClient(app)`). `EDGAR_FETCH_MODE` is left at its
+  default `live` so `fetch_and_store` keeps using the injected fake clients
+  rather than the replay-from-DB path.
+- `.github/workflows/ci.yml` — CI `.env` gets the same placeholder
+  `RATE_GUARD_URL` so the api container starts (its `lifespan` runs the guard).
 - `backend/tests/unit/test_edgar_client.py` — rewrite for Rate Guard routing.
 
 Out:
