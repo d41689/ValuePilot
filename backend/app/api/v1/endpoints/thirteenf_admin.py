@@ -13,6 +13,7 @@ from app.schemas.thirteenf_corporate_action import (
 )
 
 from app.api.deps import AdminUser, SessionDep
+from app.rate_guard.client import RateGuardFetchError
 from app.services.thirteenf_admin_dashboard import (
     build_amendments,
     build_admin_readiness,
@@ -253,7 +254,12 @@ def read_quarter_detail(
 
 @admin_router.get("/edgar-rate-limit", response_model=dict)
 def read_edgar_rate_limit_status(session: SessionDep, current_user: AdminUser) -> Any:
-    return build_edgar_rate_limit_status()
+    try:
+        return build_edgar_rate_limit_status()
+    except RateGuardFetchError as exc:
+        raise HTTPException(
+            status_code=503, detail=f"Rate Guard metrics unavailable: {exc}"
+        ) from exc
 
 
 @admin_router.get("/no-index-dates", response_model=dict)

@@ -55,14 +55,14 @@ class RateGuardClient:
     def __init__(self, http_client: httpx.Client | None = None) -> None:
         self._client = http_client or httpx.Client(timeout=_RATE_GUARD_TIMEOUT_S)
 
-    def _endpoint(self) -> str:
+    def _base_url(self) -> str:
         base = (settings.RATE_GUARD_URL or "").strip()
         if not base:
             raise RateGuardFetchError(
                 "RATE_GUARD_URL is not configured — external fetches must route "
                 "through Rate Guard. Set RATE_GUARD_URL (see rate-guard/README.md)."
             )
-        return f"{base.rstrip('/')}/v1/fetch"
+        return base.rstrip("/")
 
     def fetch(
         self, *, upstream: str, method: str, url: str, body: bytes = b""
@@ -72,7 +72,7 @@ class RateGuardClient:
         Raises ``RateGuardFetchError`` on any failure — the upstream HTTP
         status, when Rate Guard reports one, is on ``.status_code``.
         """
-        endpoint = self._endpoint()
+        endpoint = f"{self._base_url()}/v1/fetch"
         payload: dict = {"upstream": upstream, "method": method, "url": url}
         if body:
             payload["body_b64"] = base64.b64encode(body).decode("ascii")
@@ -127,6 +127,37 @@ class RateGuardClient:
             raise RateGuardFetchError(
                 f"Rate Guard returned an undecodable body for {url}: {exc}"
             ) from exc
+
+    def metrics(self, upstream: str | None = None) -> dict:
+        """GET Rate Guard's per-upstream metrics snapshot.
+
+        With ``upstream``, returns just that upstream's snapshot dict; without,
+        the full ``{name: snapshot}`` map. Raises ``RateGuardFetchError`` on any
+        failure.
+        """
+        url = f"{self._base_url()}/v1/metrics"
+        params = {"upstream": upstream} if upstream else None
+        try:
+            resp = self._client.request("GET", url, params=params)
+        except httpx.HTTPError as exc:
+            logger.warning("Rate Guard unreachable for /v1/metrics: %s", exc)
+            raise RateGuardFetchError(
+                f"Rate Guard unreachable for /v1/metrics: {exc}"
+            ) from exc
+        if resp.status_code != 200:
+            raise RateGuardFetchError(
+                f"Rate Guard returned HTTP {resp.status_code} for /v1/metrics"
+            )
+        try:
+            body = resp.json()
+        except ValueError as exc:
+            raise RateGuardFetchError(
+                f"Rate Guard returned a malformed /v1/metrics response: {exc}"
+            ) from exc
+        upstreams = body.get("upstreams", {}) if isinstance(body, dict) else {}
+        if upstream is not None:
+            return upstreams.get(upstream, {})
+        return upstreams
 
     def close(self) -> None:
         self._client.close()

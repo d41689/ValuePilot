@@ -132,7 +132,7 @@ def test_run_13f_health_summary_emits_alerts_before_summary(monkeypatch):
         lambda **kwargs: calls.append(("alert", kwargs)) or {"sent": True},
     )
     monkeypatch.setattr(
-        "app.services.scheduler.edgar_rate_limit_status",
+        "app.services.thirteenf_admin_dashboard.build_edgar_rate_limit_status",
         lambda: {"edgar_block_alert": True, "recent_403_count": 0, "recent_429_count": 1},
     )
 

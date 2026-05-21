@@ -6,25 +6,18 @@ Rate limiting, retry, and the 429/503 global pause are owned by Rate Guard
 GET/HEAD to Rate Guard's ``POST /v1/fetch`` and unwraps the response. The
 public API (``get`` / ``head`` / ``close`` / context manager / the ``BASE``
 constants) is unchanged, so existing call sites need no edits.
+
+Per-fetch metrics live in Rate Guard (``GET /v1/metrics``); the admin
+rate-limit panel and the 13F 403/429 alerting read them there.
 """
 import base64
 import logging
-import threading
-import time
-from collections import deque
 
 import httpx
 
 from app.core.config import settings
 
 logger = logging.getLogger(__name__)
-
-# Per-process record of EDGAR fetches — feeds the admin rate-limit panel and
-# the 13F 403/429 block alerting. Rate Guard holds the authoritative
-# cross-process view at ``GET /v1/metrics``; the admin panel moves onto that in
-# Rate Guard PR 4/4.
-_REQUEST_EVENTS: deque[dict[str, object]] = deque(maxlen=5000)
-_REQUEST_EVENTS_LOCK = threading.Lock()
 
 # A single /v1/fetch can block while Rate Guard works through its own retry +
 # 429/503 global pause; the client timeout must comfortably exceed that.
@@ -43,48 +36,6 @@ class EdgarFetchError(RuntimeError):
     def __init__(self, message: str, *, status_code: int | None = None) -> None:
         super().__init__(message)
         self.status_code = status_code
-
-
-def _record_request(status_code: int | None, url: str) -> None:
-    with _REQUEST_EVENTS_LOCK:
-        _REQUEST_EVENTS.append(
-            {"at": time.time(), "status_code": status_code, "url": url}
-        )
-
-
-def edgar_rate_limit_status() -> dict[str, object]:
-    """Per-process EDGAR fetch summary for the admin panel and 13F alerting.
-
-    Rate Guard owns the real rate limiter and the 429/503 global pause now, so
-    ``global_pause_until`` is always ``None`` here — the admin panel moves onto
-    Rate Guard's ``/v1/metrics`` in Rate Guard PR 4/4.
-    """
-    window_seconds = settings.EDGAR_RATE_LIMIT_WINDOW_S
-    cutoff = time.time() - window_seconds
-    with _REQUEST_EVENTS_LOCK:
-        recent = [e for e in _REQUEST_EVENTS if float(e["at"]) >= cutoff]
-    request_rate = settings.EDGAR_REQUESTS_PER_SECOND
-    if request_rate <= 0 and settings.EDGAR_REQUEST_DELAY_S > 0:
-        request_rate = 1.0 / settings.EDGAR_REQUEST_DELAY_S
-    if request_rate <= 0:
-        request_rate = 10.0
-    estimated_capacity = int(window_seconds * request_rate)
-    recent_403 = sum(1 for e in recent if e["status_code"] == 403)
-    recent_429 = sum(1 for e in recent if e["status_code"] == 429)
-    return {
-        "mode": settings.EDGAR_FETCH_MODE,
-        "request_delay_s": 1.0 / request_rate,
-        "requests_per_second": request_rate,
-        "max_retries": settings.EDGAR_MAX_RETRIES,
-        "window_seconds": window_seconds,
-        "recent_request_count": len(recent),
-        "recent_403_count": recent_403,
-        "recent_429_count": recent_429,
-        "edgar_block_alert": recent_403 > 0 or recent_429 > 0,
-        "estimated_capacity": estimated_capacity,
-        "remaining_estimated_capacity": max(estimated_capacity - len(recent), 0),
-        "global_pause_until": None,
-    }
 
 
 def _rate_guard_error_detail(resp: httpx.Response) -> dict:
@@ -125,7 +76,6 @@ class EdgarClient:
                 json={"upstream": "edgar", "method": method, "url": url},
             )
         except httpx.HTTPError as exc:
-            _record_request(None, url)
             logger.warning("Rate Guard unreachable for %s: %s", url, exc)
             raise EdgarFetchError(f"Rate Guard unreachable for {url}: {exc}") from exc
 
@@ -136,13 +86,11 @@ class EdgarClient:
                 detail = _rate_guard_error_detail(resp)
                 raw_status = detail.get("upstream_status")
                 upstream_status = raw_status if isinstance(raw_status, int) else None
-                _record_request(upstream_status, url)
                 raise EdgarFetchError(
                     f"EDGAR fetch failed via Rate Guard for {url}: "
                     f"{detail.get('detail', detail)}",
                     status_code=upstream_status,
                 )
-            _record_request(None, url)
             raise EdgarFetchError(
                 f"Rate Guard returned HTTP {resp.status_code} for {url}"
             )
@@ -150,21 +98,17 @@ class EdgarClient:
         try:
             payload = resp.json()
         except ValueError as exc:
-            _record_request(None, url)
             raise EdgarFetchError(
                 f"Rate Guard returned a malformed response for {url}: {exc}"
             ) from exc
         if not isinstance(payload, dict):
-            _record_request(None, url)
             raise EdgarFetchError(f"Rate Guard returned a malformed response for {url}")
         try:
             upstream_status = int(payload.get("status", 0))
         except (ValueError, TypeError) as exc:
-            _record_request(None, url)
             raise EdgarFetchError(
                 f"Rate Guard returned a malformed response for {url}: {exc}"
             ) from exc
-        _record_request(upstream_status, url)
         if upstream_status != 200:
             raise EdgarFetchError(
                 f"EDGAR returned HTTP {upstream_status} for {url}",
