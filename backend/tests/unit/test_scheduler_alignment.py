@@ -132,7 +132,7 @@ def test_run_13f_health_summary_emits_alerts_before_summary(monkeypatch):
         lambda **kwargs: calls.append(("alert", kwargs)) or {"sent": True},
     )
     monkeypatch.setattr(
-        "app.services.scheduler.edgar_rate_limit_status",
+        "app.services.thirteenf_admin_dashboard.build_edgar_rate_limit_status",
         lambda: {"edgar_block_alert": True, "recent_403_count": 0, "recent_429_count": 1},
     )
 
@@ -141,6 +141,38 @@ def test_run_13f_health_summary_emits_alerts_before_summary(monkeypatch):
     assert calls[0][0] == "alert"
     assert calls[0][1]["context"]["edgar_rate_limit_status"]["recent_429_count"] == 1
     assert calls[1] == ("summary", None)
+
+
+def test_run_13f_health_summary_survives_rate_guard_outage(monkeypatch):
+    """A Rate Guard outage must not crash the alert run or fire a false alarm —
+    evaluate_13f_alerts is called with edgar_rate_limit_status=None."""
+    from app.rate_guard.client import RateGuardFetchError
+
+    db_factory = MagicMock()
+    seen: dict = {}
+
+    def _capture_alerts(db, edgar_rate_limit_status=None):
+        seen["rate_limit_status"] = edgar_rate_limit_status
+        return []
+
+    monkeypatch.setattr("app.services.thirteenf_health.evaluate_13f_alerts", _capture_alerts)
+    monkeypatch.setattr(
+        "app.services.thirteenf_health.emit_daily_health_summary",
+        lambda db: seen.update(summary=True) or {"sent": True},
+    )
+    monkeypatch.setattr("app.services.scheduler.emit_alert", lambda **kwargs: {"sent": True})
+
+    def _outage() -> dict:
+        raise RateGuardFetchError("Rate Guard unreachable for /v1/metrics")
+
+    monkeypatch.setattr(
+        "app.services.thirteenf_admin_dashboard.build_edgar_rate_limit_status", _outage
+    )
+
+    run_13f_health_summary(db_factory)  # must not raise
+
+    assert seen["rate_limit_status"] is None
+    assert seen["summary"] is True
 
 
 def test_run_smart_retries_noops_when_disabled(monkeypatch):

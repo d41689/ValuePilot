@@ -41,6 +41,19 @@ long — escalate to the user. **medium / low** = ordinary follow-up.
 - **Context:** `docs/tasks/2026-05-21_rate-guard-pr3-openfigi-dataroma.md`
 - **Issue:** —
 
+### Admin metrics panel is EDGAR-only — no OpenFIGI / Dataroma view
+- **Found:** 2026-05-21, Rate Guard PR 4/4 (admin panel reads `/v1/metrics`)
+- **Severity:** low
+- **Problem:** Rate Guard now tracks per-upstream metrics for all three
+  upstreams (EDGAR, OpenFIGI, Dataroma) at `GET /v1/metrics`, but the admin
+  panel still shows only EDGAR (`build_edgar_rate_limit_status()` calls
+  `metrics("edgar")`). OpenFIGI / Dataroma rate-limit budget, 403/429 counts,
+  cache hit rate, and global-pause state are collected but not surfaced. A
+  multi-upstream admin view (or three panels) would make the whole egress layer
+  observable. Out of PR 4's scope, which the design scoped to the EDGAR panel.
+- **Context:** `docs/tasks/2026-05-21_rate-guard-pr4-admin-metrics.md`
+- **Issue:** —
+
 ### Refresh tokens have no revocation / reuse detection
 - **Found:** 2026-05-20, PR #64 (refresh-token flow)
 - **Severity:** medium

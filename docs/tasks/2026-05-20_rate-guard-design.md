@@ -269,4 +269,18 @@ Each PR is independently CI-green and deployable.
   is left on its own PR-2 copy of the logic — migrating it onto `RateGuardClient`
   is a `docs/BACKLOG.md` follow-up. Task doc:
   `docs/tasks/2026-05-21_rate-guard-pr3-openfigi-dataroma.md`.
-- PR 4 — admin `edgar-rate-limit` panel reads Rate Guard `/v1/metrics`. *(next)*
+- **PR 4 — admin panel reads Rate Guard `/v1/metrics`.** `RateGuardClient`
+  gains a `metrics()` method; `build_edgar_rate_limit_status()` sources the
+  EDGAR rate-limit panel from Rate Guard's `GET /v1/metrics?upstream=edgar` and
+  adapts the snapshot to the panel shape — `global_pause_until` is now the
+  *real* Rate-Guard pause (it was always `None` since PR 2). The 13F 403/429
+  block alerting reads the same source; a Rate-Guard outage is HTTP 503 on the
+  endpoint and a skipped alert in the scheduler. The per-process recording in
+  `edgar/client.py` (`_REQUEST_EVENTS`, `_record_request`,
+  `edgar_rate_limit_status`) is deleted — now dead. The Rate Guard `metrics()`
+  snapshot gains `max_retries`. Frontend unchanged (the response field names are
+  preserved). Task doc:
+  `docs/tasks/2026-05-21_rate-guard-pr4-admin-metrics.md`.
+
+The 4-PR Rate Guard rollout is complete: all three upstreams (EDGAR, OpenFIGI,
+Dataroma) egress through Rate Guard, and the admin panel reads its metrics.

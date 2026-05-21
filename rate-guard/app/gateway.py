@@ -152,6 +152,7 @@ class Gateway:
         snap = self._metrics[upstream].snapshot()
         snap["upstream"] = upstream
         snap["rate_per_sec"] = u.rate_per_sec
+        snap["max_retries"] = u.max_retries
         snap["estimated_capacity"] = int(u.rate_per_sec * snap["window_seconds"])
         snap["remaining_estimated_capacity"] = max(
             snap["estimated_capacity"] - snap["recent_request_count"], 0

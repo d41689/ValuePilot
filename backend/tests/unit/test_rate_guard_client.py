@@ -162,3 +162,90 @@ def test_malformed_envelope_raises(monkeypatch):
 def test_rate_guard_fetch_error_is_a_runtime_error():
     # Subclasses RuntimeError so existing broad `except` call sites keep working.
     assert issubclass(RateGuardFetchError, RuntimeError)
+
+
+def _metrics_envelope(upstream_snaps: dict) -> httpx.Response:
+    """A Rate Guard /v1/metrics response."""
+    return httpx.Response(200, json={"upstreams": upstream_snaps})
+
+
+def test_metrics_returns_a_single_upstream_snapshot(monkeypatch):
+    monkeypatch.setattr(rg.settings, "RATE_GUARD_URL", RATE_GUARD)
+    seen: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["url"] = str(request.url)
+        return _metrics_envelope(
+            {"edgar": {"recent_request_count": 9, "recent_403_count": 1}}
+        )
+
+    with RateGuardClient(http_client=_rg_http(handler)) as client:
+        snap = client.metrics("edgar")
+
+    assert seen["url"] == "http://rate-guard:9000/v1/metrics?upstream=edgar"
+    assert snap == {"recent_request_count": 9, "recent_403_count": 1}
+
+
+def test_metrics_without_upstream_returns_all(monkeypatch):
+    monkeypatch.setattr(rg.settings, "RATE_GUARD_URL", RATE_GUARD)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return _metrics_envelope({"edgar": {"x": 1}, "openfigi": {"y": 2}})
+
+    with RateGuardClient(http_client=_rg_http(handler)) as client:
+        snaps = client.metrics()
+
+    assert set(snaps) == {"edgar", "openfigi"}
+
+
+def test_metrics_raises_when_rate_guard_unreachable(monkeypatch):
+    monkeypatch.setattr(rg.settings, "RATE_GUARD_URL", RATE_GUARD)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("connection refused")
+
+    with RateGuardClient(http_client=_rg_http(handler)) as client:
+        with pytest.raises(RateGuardFetchError, match="unreachable"):
+            client.metrics("edgar")
+
+
+def test_metrics_raises_on_non_200(monkeypatch):
+    monkeypatch.setattr(rg.settings, "RATE_GUARD_URL", RATE_GUARD)
+
+    with RateGuardClient(http_client=_rg_http(lambda r: httpx.Response(500))) as client:
+        with pytest.raises(RateGuardFetchError, match="500"):
+            client.metrics("edgar")
+
+
+def test_metrics_raises_on_malformed_json(monkeypatch):
+    monkeypatch.setattr(rg.settings, "RATE_GUARD_URL", RATE_GUARD)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, content=b"not json")
+
+    with RateGuardClient(http_client=_rg_http(handler)) as client:
+        with pytest.raises(RateGuardFetchError, match="malformed"):
+            client.metrics("edgar")
+
+
+def test_metrics_raises_when_upstreams_map_missing(monkeypatch):
+    monkeypatch.setattr(rg.settings, "RATE_GUARD_URL", RATE_GUARD)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"unexpected": "shape"})
+
+    with RateGuardClient(http_client=_rg_http(handler)) as client:
+        with pytest.raises(RateGuardFetchError, match="upstreams"):
+            client.metrics("edgar")
+
+
+def test_metrics_raises_when_requested_upstream_absent(monkeypatch):
+    """A valid response missing the requested upstream is a fault, not {}."""
+    monkeypatch.setattr(rg.settings, "RATE_GUARD_URL", RATE_GUARD)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return _metrics_envelope({"openfigi": {"x": 1}})  # no "edgar"
+
+    with RateGuardClient(http_client=_rg_http(handler)) as client:
+        with pytest.raises(RateGuardFetchError, match="edgar"):
+            client.metrics("edgar")

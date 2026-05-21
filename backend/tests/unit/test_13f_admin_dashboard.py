@@ -1712,52 +1712,70 @@ def test_readiness_thresholds_are_configurable(client, db_session, user_factory,
     assert payload["thresholds"]["warning_link_ratio"] == 0.25
 
 
+_FAKE_EDGAR_SNAPSHOT = {
+    "window_seconds": 60,
+    "recent_request_count": 7,
+    "recent_403_count": 1,
+    "recent_429_count": 2,
+    "rate_per_sec": 5.0,
+    "max_retries": 5,
+    "estimated_capacity": 300,
+    "remaining_estimated_capacity": 293,
+    "cache_hits": 4,
+    "cache_misses": 3,
+    "global_pause_until": None,
+}
+
+
 def test_edgar_rate_limit_status_endpoint_returns_runtime_budget(client, db_session, user_factory, auth_headers, monkeypatch):
     _clear_13f(db_session)
     admin = _admin(user_factory)
     monkeypatch.setattr(
-        "app.services.thirteenf_admin_dashboard.edgar_rate_limit_status",
-        lambda: {
-            "mode": "live",
-            "request_delay_s": 0.2,
-            "max_retries": 3,
-            "window_seconds": 60,
-            "recent_request_count": 7,
-            "recent_403_count": 1,
-            "recent_429_count": 2,
-            "edgar_block_alert": True,
-            "estimated_capacity": 300,
-            "remaining_estimated_capacity": 293,
-            "global_pause_until": None,
-        },
+        "app.rate_guard.client.RateGuardClient.metrics",
+        lambda self, upstream=None: dict(_FAKE_EDGAR_SNAPSHOT),
     )
 
     response = client.get("/api/v1/admin/13f/edgar-rate-limit", headers=auth_headers(admin))
 
     assert response.status_code == 200
-    assert response.json()["recent_request_count"] == 7
-    assert response.json()["recent_403_count"] == 1
-    assert response.json()["recent_429_count"] == 2
-    assert response.json()["edgar_block_alert"] is True
-    assert response.json()["remaining_estimated_capacity"] == 293
+    body = response.json()
+    assert body["recent_request_count"] == 7
+    assert body["recent_403_count"] == 1
+    assert body["recent_429_count"] == 2
+    assert body["edgar_block_alert"] is True
+    assert body["remaining_estimated_capacity"] == 293
 
 
-def test_edgar_rate_limit_status_counts_recorded_requests(monkeypatch):
-    from app.edgar import client as edgar_client
+def test_edgar_rate_limit_status_endpoint_503_when_rate_guard_unavailable(client, db_session, user_factory, auth_headers, monkeypatch):
+    _clear_13f(db_session)
+    admin = _admin(user_factory)
+    from app.rate_guard.client import RateGuardFetchError
 
-    monkeypatch.setattr(edgar_client.settings, "EDGAR_RATE_LIMIT_WINDOW_S", 60)
-    monkeypatch.setattr(edgar_client.settings, "EDGAR_REQUESTS_PER_SECOND", 2.0)
-    with edgar_client._REQUEST_EVENTS_LOCK:
-        edgar_client._REQUEST_EVENTS.clear()
+    def _boom(self, upstream=None):
+        raise RateGuardFetchError("Rate Guard unreachable for /v1/metrics")
 
-    edgar_client._record_request(200, "https://www.sec.gov/test-a")
-    edgar_client._record_request(503, "https://www.sec.gov/test-b")
+    monkeypatch.setattr("app.rate_guard.client.RateGuardClient.metrics", _boom)
 
-    status = edgar_client.edgar_rate_limit_status()
+    response = client.get("/api/v1/admin/13f/edgar-rate-limit", headers=auth_headers(admin))
 
-    assert status["recent_request_count"] == 2
-    assert status["estimated_capacity"] == 120
-    assert status["remaining_estimated_capacity"] == 118
+    assert response.status_code == 503
+
+
+def test_build_edgar_rate_limit_status_adapts_the_rate_guard_snapshot(monkeypatch):
+    from app.services.thirteenf_admin_dashboard import build_edgar_rate_limit_status
+
+    monkeypatch.setattr(
+        "app.rate_guard.client.RateGuardClient.metrics",
+        lambda self, upstream=None: {**_FAKE_EDGAR_SNAPSHOT, "rate_per_sec": 4.0,
+                                     "recent_403_count": 0, "recent_429_count": 0},
+    )
+
+    status = build_edgar_rate_limit_status()
+
+    assert status["edgar_block_alert"] is False  # derived from 403/429 counts
+    assert status["request_delay_s"] == 0.25  # 1 / rate_per_sec
+    assert status["max_retries"] == 5
+    assert status["global_pause_until"] is None
 
 
 def test_quarterly_pipeline_continues_after_retryable_enrichment_failure(

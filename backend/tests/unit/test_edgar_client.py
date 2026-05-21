@@ -35,11 +35,6 @@ def _fetch_ok(body: bytes = b"ok", upstream_status: int = 200) -> httpx.Response
     )
 
 
-def _reset_events() -> None:
-    with edgar_client._REQUEST_EVENTS_LOCK:
-        edgar_client._REQUEST_EVENTS.clear()
-
-
 def test_get_routes_through_rate_guard(monkeypatch):
     monkeypatch.setattr(edgar_client.settings, "RATE_GUARD_URL", RATE_GUARD)
     seen: dict = {}
@@ -168,30 +163,6 @@ def test_malformed_success_envelope_raises(monkeypatch):
     with EdgarClient(http_client=_rg_client(bad_body)) as client:
         with pytest.raises(EdgarFetchError, match="undecodable"):
             client.get("https://www.sec.gov/x")
-
-
-def test_fetches_are_recorded_for_the_rate_limit_status(monkeypatch):
-    monkeypatch.setattr(edgar_client.settings, "RATE_GUARD_URL", RATE_GUARD)
-    monkeypatch.setattr(edgar_client.settings, "EDGAR_RATE_LIMIT_WINDOW_S", 60)
-    _reset_events()
-
-    with EdgarClient(http_client=_rg_client(lambda r: _fetch_ok(b"ok"))) as client:
-        client.get("https://www.sec.gov/ok")
-
-    def forbidden(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(
-            502, json={"detail": {"upstream_status": 403, "detail": "403"}}
-        )
-
-    with EdgarClient(http_client=_rg_client(forbidden)) as client:
-        with pytest.raises(EdgarFetchError):
-            client.get("https://www.sec.gov/blocked")
-
-    status = edgar_client.edgar_rate_limit_status()
-    assert status["recent_request_count"] == 2
-    assert status["recent_403_count"] == 1
-    assert status["edgar_block_alert"] is True
-    assert status["global_pause_until"] is None
 
 
 def test_edgar_fetch_error_is_a_runtime_error():

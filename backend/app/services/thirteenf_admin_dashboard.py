@@ -13,7 +13,8 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
-from app.edgar.client import EdgarClient, edgar_rate_limit_status
+from app.edgar.client import EdgarClient
+from app.rate_guard.client import RateGuardClient
 from app.models.institutions import (
     Filing13F,
     Holding13F,
@@ -284,7 +285,32 @@ def build_status(session: Session, *, today: date | None = None) -> dict[str, An
 
 
 def build_edgar_rate_limit_status() -> dict[str, Any]:
-    return edgar_rate_limit_status()
+    """EDGAR rate-limit panel data, sourced from Rate Guard's /v1/metrics.
+
+    Raises ``RateGuardFetchError`` if Rate Guard is unreachable — the admin
+    endpoint maps that to HTTP 503, the 13F alert run skips the block alert.
+    """
+    with RateGuardClient() as rate_guard:
+        snap = rate_guard.metrics("edgar")
+    recent_403 = int(snap.get("recent_403_count", 0) or 0)
+    recent_429 = int(snap.get("recent_429_count", 0) or 0)
+    rate_per_sec = float(snap.get("rate_per_sec", 0) or 0)
+    return {
+        "mode": settings.EDGAR_FETCH_MODE,
+        "requests_per_second": rate_per_sec,
+        "request_delay_s": (1.0 / rate_per_sec) if rate_per_sec > 0 else None,
+        "max_retries": snap.get("max_retries"),
+        "window_seconds": snap.get("window_seconds"),
+        "recent_request_count": snap.get("recent_request_count", 0),
+        "recent_403_count": recent_403,
+        "recent_429_count": recent_429,
+        "edgar_block_alert": recent_403 > 0 or recent_429 > 0,
+        "estimated_capacity": snap.get("estimated_capacity"),
+        "remaining_estimated_capacity": snap.get("remaining_estimated_capacity"),
+        "cache_hits": snap.get("cache_hits"),
+        "cache_misses": snap.get("cache_misses"),
+        "global_pause_until": snap.get("global_pause_until"),
+    }
 
 
 def build_quarters(session: Session, *, today: date | None = None, limit: int = 8) -> list[dict[str, Any]]:
