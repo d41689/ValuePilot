@@ -301,41 +301,82 @@ def _check_duplicate_fingerprints(db: Session, report: QualityReport, quarter: s
 
 
 def _check_period_alignment(db: Session, report: QualityReport, quarter: str | None) -> None:
-    """period_of_report should fall within the quarter the filing was indexed from."""
+    """A 13F filed in quarter X reports the period ending in quarter X-1.
+
+    13F-HR is filed within ~45 days of a quarter-end — i.e. in the *following*
+    calendar quarter — so ``period_of_report`` should fall in the quarter
+    *before* the filing quarter. (The old check compared against the filing
+    quarter, which mis-fired on essentially every 13F.) Deviations split by
+    direction:
+
+    - *Earlier than X-1* — a late filing, or an amendment of an old period.
+      The ingested data is correct and the lag is the filer's, so this is
+      ``info``, not a ``warning`` that would block readiness.
+    - *Later than X-1* — the period is in the filing quarter itself or in the
+      future. A 13F cannot report a quarter that has not ended, so this is a
+      genuine data anomaly and stays a ``warning``.
+    """
     if not quarter:
         report.add("period_alignment", "info", "Skipped (no quarter specified)")
         return
 
     import calendar as _cal
+    from datetime import date as _date
+
     parts = quarter.upper().split("-Q")
     year, qtr = int(parts[0]), int(parts[1])
     start_month = (qtr - 1) * 3 + 1
     end_month = qtr * 3
     last_day = _cal.monthrange(year, end_month)[1]
 
+    # The quarter immediately before the filing quarter — the expected
+    # period_of_report window for a 13F filed in this quarter.
+    prev_year, prev_qtr = (year - 1, 4) if qtr == 1 else (year, qtr - 1)
+    prev_start_month = (prev_qtr - 1) * 3 + 1
+    prev_end_month = prev_qtr * 3
+    prev_last_day = _cal.monthrange(prev_year, prev_end_month)[1]
+    prev_end_date = _date(prev_year, prev_end_month, prev_last_day)
+
     rows = db.execute(text("""
         SELECT accession_no, period_of_report, filed_at
         FROM filings_13f
-        WHERE period_of_report NOT BETWEEN :q_start AND :q_end
+        WHERE period_of_report NOT BETWEEN :prev_start AND :prev_end
           AND filed_at BETWEEN :f_start AND :f_end
     """), {
-        "q_start": f"{year}-{start_month:02d}-01",
-        "q_end": f"{year}-{end_month:02d}-{last_day:02d}",
+        "prev_start": f"{prev_year}-{prev_start_month:02d}-01",
+        "prev_end": f"{prev_year}-{prev_end_month:02d}-{prev_last_day:02d}",
         "f_start": f"{year}-{start_month:02d}-01",
         "f_end": f"{year}-{end_month:02d}-{last_day:02d}",
     }).fetchall()
 
     for row in rows:
-        report.add(
-            "period_alignment",
-            "warning",
-            f"Filed in {quarter} but period_of_report={row.period_of_report}",
-            accession_no=row.accession_no,
-        )
+        period = row.period_of_report
+        if isinstance(period, str):
+            period = _date.fromisoformat(period)
+        if period > prev_end_date:
+            # Period is in the filing quarter or the future — anomalous.
+            report.add(
+                "period_alignment",
+                "warning",
+                f"Filed in {quarter} but period_of_report={row.period_of_report} "
+                f"is not before the filing quarter "
+                f"(expected the {prev_year}-Q{prev_qtr} quarter-end)",
+                accession_no=row.accession_no,
+            )
+        else:
+            # Period older than X-1 — a late filing or an old-period amendment.
+            report.add(
+                "period_alignment",
+                "info",
+                f"Filed in {quarter} but period_of_report={row.period_of_report} "
+                f"predates the expected {prev_year}-Q{prev_qtr} quarter-end "
+                f"(late filing)",
+                accession_no=row.accession_no,
+            )
 
     if not rows:
         report.add("period_alignment", "info",
-                   f"All filings in {quarter} have aligned period_of_report")
+                   f"All filings in {quarter} report the expected {prev_year}-Q{prev_qtr} period")
 
 
 def _check_parse_failures(db: Session, report: QualityReport, quarter: str | None) -> None:
