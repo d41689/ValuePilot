@@ -12,7 +12,7 @@ import httpx
 import pytest
 
 from app.edgar import client as edgar_client
-from app.edgar.client import EdgarClient
+from app.edgar.client import EdgarClient, EdgarFetchError
 
 RATE_GUARD = "http://rate-guard:9000"
 
@@ -86,9 +86,10 @@ def test_get_without_rate_guard_url_raises_and_does_not_fetch(monkeypatch):
         return _fetch_ok()
 
     with EdgarClient(http_client=_rg_client(handler)) as client:
-        with pytest.raises(RuntimeError, match="RATE_GUARD_URL"):
+        with pytest.raises(EdgarFetchError, match="RATE_GUARD_URL") as exc:
             client.get("https://www.sec.gov/x")
 
+    assert exc.value.status_code is None
     assert calls == []  # the guard fires before any fetch is attempted
 
 
@@ -99,8 +100,10 @@ def test_upstream_non_200_raises(monkeypatch):
         return _fetch_ok(b"", upstream_status=404)
 
     with EdgarClient(http_client=_rg_client(handler)) as client:
-        with pytest.raises(RuntimeError, match="404"):
+        with pytest.raises(EdgarFetchError, match="404") as exc:
             client.get("https://www.sec.gov/missing")
+
+    assert exc.value.status_code == 404  # the upstream 404 is recoverable
 
 
 def test_rate_guard_502_raises(monkeypatch):
@@ -113,8 +116,10 @@ def test_rate_guard_502_raises(monkeypatch):
         )
 
     with EdgarClient(http_client=_rg_client(handler)) as client:
-        with pytest.raises(RuntimeError, match="Rate Guard"):
+        with pytest.raises(EdgarFetchError, match="Rate Guard") as exc:
             client.get("https://www.sec.gov/blocked")
+
+    assert exc.value.status_code == 403  # the upstream 403 from the 502 detail
 
 
 def test_rate_guard_unreachable_raises(monkeypatch):
@@ -124,8 +129,10 @@ def test_rate_guard_unreachable_raises(monkeypatch):
         raise httpx.ConnectError("connection refused")
 
     with EdgarClient(http_client=_rg_client(handler)) as client:
-        with pytest.raises(RuntimeError, match="unreachable"):
+        with pytest.raises(EdgarFetchError, match="unreachable") as exc:
             client.get("https://www.sec.gov/x")
+
+    assert exc.value.status_code is None  # not an upstream HTTP failure
 
 
 def test_fetches_are_recorded_for_the_rate_limit_status(monkeypatch):
@@ -142,7 +149,7 @@ def test_fetches_are_recorded_for_the_rate_limit_status(monkeypatch):
         )
 
     with EdgarClient(http_client=_rg_client(forbidden)) as client:
-        with pytest.raises(RuntimeError):
+        with pytest.raises(EdgarFetchError):
             client.get("https://www.sec.gov/blocked")
 
     status = edgar_client.edgar_rate_limit_status()
@@ -150,3 +157,9 @@ def test_fetches_are_recorded_for_the_rate_limit_status(monkeypatch):
     assert status["recent_403_count"] == 1
     assert status["edgar_block_alert"] is True
     assert status["global_pause_until"] is None
+
+
+def test_edgar_fetch_error_is_a_runtime_error():
+    # EdgarFetchError subclasses RuntimeError so existing broad `except`
+    # call sites (e.g. edgar_ingestion.py) keep catching it unchanged.
+    assert issubclass(EdgarFetchError, RuntimeError)

@@ -3,9 +3,9 @@ from __future__ import annotations
 from datetime import date, datetime, timezone
 from typing import Any
 
-import httpx
 from sqlalchemy.orm import Session
 
+from app.edgar.client import EdgarFetchError
 from app.edgar.fetcher import fetch_and_store, load_body
 from app.edgar.parsers.form_idx import FormIdxRecord, daily_form_idx_url, parse_daily_13f_form_idx
 from app.models.institutions import (
@@ -62,7 +62,7 @@ def run_daily_index_sync(session: Session, sync_date: date, *, client: Any | Non
             matched_accessions=_matched_payload(matched, enqueued_accessions=enqueued_accessions),
             jobs_created=len(enqueued_accessions),
         )
-    except httpx.HTTPStatusError as exc:
+    except EdgarFetchError as exc:
         return _handle_http_error(session, sync, exc)
     except Exception as exc:
         sync.status = "failed"
@@ -207,14 +207,17 @@ def _enqueue_ingest_placeholders(
     return enqueued_accessions
 
 
-def _handle_http_error(session: Session, sync: EdgarSyncStatus, exc: httpx.HTTPStatusError) -> dict[str, Any]:
-    status_code = exc.response.status_code
+def _handle_http_error(session: Session, sync: EdgarSyncStatus, exc: EdgarFetchError) -> dict[str, Any]:
+    status_code = exc.status_code
     if status_code == 404 and NoIndexExpectedDate.active_for_date(session, sync.sync_date):
         sync.status = "no_data"
         sync.last_error = None
     else:
         sync.status = "failed"
-        sync.last_error = f"HTTP {status_code} fetching {sync.form_idx_url}"
+        if status_code is not None:
+            sync.last_error = f"HTTP {status_code} fetching {sync.form_idx_url}"
+        else:
+            sync.last_error = str(exc)
     sync.finished_at = datetime.now(timezone.utc)
     sync.raw_document_id = None
     sync.filings_seen_count = 0

@@ -68,3 +68,30 @@ Out:
   Guard 502 → raise, Rate Guard unreachable → raise, 403 recorded for the
   health summary.
 - Frontend untouched.
+
+## Review remediation (2026-05-21)
+
+Independent review (`2026-05-21_rate-guard-pr2-edgar-client-review-result.md`)
+verdict was **not approved** — one P1 blocker plus two advisories. All three are
+fixed in this PR (none deferred — they share the same files and root cause):
+
+- **B3 (P1) — daily index sync 404 handling.** The rewrite flattened every EDGAR
+  failure to a bare `RuntimeError`, discarding the upstream status, while
+  `run_daily_index_sync` catches `httpx.HTTPStatusError` to classify a 404 — so
+  expected no-index (weekend / holiday) 404s would have been marked `"failed"`
+  instead of `"no_data"`. Fix: `EdgarClient` raises a typed
+  `EdgarFetchError(RuntimeError)` carrying `.status_code`; `_fetch` raises it on
+  every failure path; `thirteenf_daily_sync.py` catches `EdgarFetchError` and
+  reads `.status_code`. `EdgarFetchError` subclasses `RuntimeError`, so the
+  broad-`except` call sites are unaffected.
+- **E10 (advisory) — uniform error contract.** `_fetch` now wraps `resp.json()`
+  and checks the payload shape, so a malformed Rate Guard 200 raises
+  `EdgarFetchError`, not a stray `ValueError`.
+- **G14 (advisory) — tests lock the contract.** `test_edgar_client.py` asserts
+  `EdgarFetchError` and the recovered `.status_code` (404 / 403 / None).
+
+The `test_13f_daily_index_sync.py` `FakeEdgarClient` now raises `EdgarFetchError`
+(it previously raised `httpx.HTTPStatusError`, which masked B3) — so the
+existing `test_expected_no_index_404_marks_sync_no_data` /
+`test_unexpected_404_marks_sync_failed_for_retry` are now genuine regression
+guards.

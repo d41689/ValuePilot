@@ -31,6 +31,20 @@ _REQUEST_EVENTS_LOCK = threading.Lock()
 _RATE_GUARD_TIMEOUT_S = 1800.0
 
 
+class EdgarFetchError(RuntimeError):
+    """An EDGAR fetch via Rate Guard failed.
+
+    ``status_code`` is the upstream EDGAR HTTP status when Rate Guard reported
+    one (e.g. 404, 403); ``None`` when the failure was Rate Guard itself
+    (unreachable, malformed response, or not configured). Subclasses
+    ``RuntimeError`` so existing broad ``except`` call sites are unaffected.
+    """
+
+    def __init__(self, message: str, *, status_code: int | None = None) -> None:
+        super().__init__(message)
+        self.status_code = status_code
+
+
 def _record_request(status_code: int | None, url: str) -> None:
     with _REQUEST_EVENTS_LOCK:
         _REQUEST_EVENTS.append(
@@ -96,7 +110,7 @@ class EdgarClient:
     def _fetch_endpoint(self) -> str:
         base = (settings.RATE_GUARD_URL or "").strip()
         if not base:
-            raise RuntimeError(
+            raise EdgarFetchError(
                 "RATE_GUARD_URL is not configured — EDGAR fetches must route "
                 "through Rate Guard. Set RATE_GUARD_URL (see rate-guard/README.md)."
             )
@@ -113,30 +127,43 @@ class EdgarClient:
         except httpx.HTTPError as exc:
             _record_request(None, url)
             logger.warning("Rate Guard unreachable for %s: %s", url, exc)
-            raise RuntimeError(f"Rate Guard unreachable for {url}: {exc}") from exc
+            raise EdgarFetchError(f"Rate Guard unreachable for {url}: {exc}") from exc
 
         if resp.status_code != 200:
             if resp.status_code == 502:
                 # Rate Guard reached (or refused to reach) EDGAR and could not
                 # return a usable response — a 403, or retries exhausted.
                 detail = _rate_guard_error_detail(resp)
-                upstream_status = detail.get("upstream_status")
-                _record_request(
-                    upstream_status if isinstance(upstream_status, int) else None,
-                    url,
-                )
-                raise RuntimeError(
+                raw_status = detail.get("upstream_status")
+                upstream_status = raw_status if isinstance(raw_status, int) else None
+                _record_request(upstream_status, url)
+                raise EdgarFetchError(
                     f"EDGAR fetch failed via Rate Guard for {url}: "
-                    f"{detail.get('detail', detail)}"
+                    f"{detail.get('detail', detail)}",
+                    status_code=upstream_status,
                 )
             _record_request(None, url)
-            raise RuntimeError(f"Rate Guard returned HTTP {resp.status_code} for {url}")
+            raise EdgarFetchError(
+                f"Rate Guard returned HTTP {resp.status_code} for {url}"
+            )
 
-        payload = resp.json()
+        try:
+            payload = resp.json()
+        except ValueError as exc:
+            _record_request(None, url)
+            raise EdgarFetchError(
+                f"Rate Guard returned a malformed response for {url}: {exc}"
+            ) from exc
+        if not isinstance(payload, dict):
+            _record_request(None, url)
+            raise EdgarFetchError(f"Rate Guard returned a malformed response for {url}")
         upstream_status = int(payload.get("status", 0))
         _record_request(upstream_status, url)
         if upstream_status != 200:
-            raise RuntimeError(f"EDGAR returned HTTP {upstream_status} for {url}")
+            raise EdgarFetchError(
+                f"EDGAR returned HTTP {upstream_status} for {url}",
+                status_code=upstream_status,
+            )
         return base64.b64decode(payload.get("body_b64") or "")
 
     def get(self, url: str) -> bytes:
