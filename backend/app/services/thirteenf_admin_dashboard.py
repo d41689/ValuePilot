@@ -3006,9 +3006,9 @@ def _execute_job(session: Session, job_type: str, payload: dict[str, Any]) -> di
         )
         return {**impact, "status": "succeeded"}
     if job_type == "enrich_cusip":
-        from app.services.cusip_enrichment import enrich_cusips_from_openfigi
+        from app.services.cusip_enrichment import enrich_all_unmapped_holdings
 
-        return {"mappings_created": enrich_cusips_from_openfigi(session), "status": "succeeded"}
+        return {**enrich_all_unmapped_holdings(session), "status": "succeeded"}
     if job_type == "bootstrap_stocks":
         from app.services.cusip_enrichment import bootstrap_stocks_from_cusip_map, backfill_stock_ids
 
