@@ -284,3 +284,10 @@ Each PR is independently CI-green and deployable.
 
 The 4-PR Rate Guard rollout is complete: all three upstreams (EDGAR, OpenFIGI,
 Dataroma) egress through Rate Guard, and the admin panel reads its metrics.
+
+- **Post-rollout cleanup — `EdgarClient` onto the shared `RateGuardClient`.**
+  The `docs/BACKLOG.md` follow-up: `EdgarClient` is now a thin wrapper over
+  `RateGuardClient` (like `OpenFigiClient` / `DataromaClient`), so all three
+  clients share one `POST /v1/fetch` implementation. `EdgarFetchError` is
+  removed — `RateGuardFetchError` is the single egress error type. Task doc:
+  `docs/tasks/2026-05-21_migrate-edgar-client-rate-guard.md`.
