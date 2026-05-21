@@ -154,10 +154,23 @@ class RateGuardClient:
             raise RateGuardFetchError(
                 f"Rate Guard returned a malformed /v1/metrics response: {exc}"
             ) from exc
-        upstreams = body.get("upstreams", {}) if isinstance(body, dict) else {}
-        if upstream is not None:
-            return upstreams.get(upstream, {})
-        return upstreams
+        if not isinstance(body, dict) or not isinstance(body.get("upstreams"), dict):
+            raise RateGuardFetchError(
+                "Rate Guard returned a malformed /v1/metrics response "
+                "(no 'upstreams' map)"
+            )
+        upstreams = body["upstreams"]
+        if upstream is None:
+            return upstreams
+        snap = upstreams.get(upstream)
+        if not isinstance(snap, dict):
+            # A structurally-valid response that is missing the requested
+            # upstream is a fault — surface it rather than degrade to an
+            # all-zeros panel.
+            raise RateGuardFetchError(
+                f"Rate Guard /v1/metrics has no snapshot for upstream '{upstream}'"
+            )
+        return snap
 
     def close(self) -> None:
         self._client.close()

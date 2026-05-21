@@ -68,3 +68,21 @@ Out:
 - New / updated tests cover `RateGuardClient.metrics`, the adapter on Rate
   Guard success and on a Rate-Guard outage (→ 503), and the removal of the
   per-process recording.
+
+## Review remediation (2026-05-21)
+
+Two independent reviews — both **approve / PASS**, no blockers. They converged
+on one advisory, fixed here (with the related test-coverage gaps):
+
+- **`RateGuardClient.metrics()` was too lenient.** A structurally-valid but
+  incomplete `/v1/metrics` response (non-dict body, no `upstreams` map, or the
+  requested upstream absent) silently returned `{}`, which would render a
+  misleading all-zeros panel. `metrics()` now raises `RateGuardFetchError` in
+  those cases — the failure surfaces as a 503 / skipped alert, like any other
+  Rate Guard outage.
+- **Test coverage** — `test_rate_guard_client.py` gains malformed-JSON,
+  missing-`upstreams`-map, and absent-upstream cases; `test_scheduler_alignment.py`
+  gains `test_run_13f_health_summary_survives_rate_guard_outage` (the
+  scheduler's circuit-break path).
+
+Re-verified: backend `pytest -q` green.
