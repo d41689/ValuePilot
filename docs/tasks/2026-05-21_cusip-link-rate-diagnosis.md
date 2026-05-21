@@ -152,3 +152,29 @@ addressed:
   to `max_batches`).
 
 Re-verified: backend `pytest -q` green.
+
+## Operational run (2026-05-21)
+
+PR #84 merged and auto-deployed to prod; `enrich_all_unmapped_holdings` was then
+run against the prod database (authorised by the PO). 24 batches, ~23s.
+
+| Metric | Before | After |
+|---|---|---|
+| holdings linked | 1,996 / 15,995 (**12.5%**) | 12,443 / 15,995 (**77.8%**) |
+| `cusip_ticker_map` rows | 98 | 2,167 |
+| `stocks` | 177 | 1,502 |
+| distinct unlinked CUSIPs | 2,084 | 694 |
+
+Per-quarter common-stock link rate: 2026-Q1 11.8% → 79.1%, 2025-Q4 → 77.8%,
+2025-Q3 → 78.0%.
+
+Residual after the run (all expected, by design — not a defect):
+- `needs_review` 2,160 — OpenFIGI returned an ambiguous result → the human
+  triage queue (recorded in `docs/BACKLOG.md`).
+- `unresolved` 1,390 — OpenFIGI has no usable match (non-US / bonds / delisted).
+- `invalid_cusip` 2 — bad CUSIP data.
+
+The original "link rate stuck at ~12%" backlog item is **resolved**: the
+enrichment now works, is re-runnable for future quarters, and the rate is
+verified up. The `docs/BACKLOG.md` entry was replaced with the `needs_review`
+triage-queue follow-up.

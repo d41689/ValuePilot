@@ -56,22 +56,22 @@ long — escalate to the user. **medium / low** = ordinary follow-up.
 - **Context:** `docs/tasks/2026-05-20_auth-hardening-followups.md` (item 2)
 - **Issue:** —
 
-### 13F holdings CUSIP link rate stuck at ~12% — operational run pending
-- **Found:** 2026-05-20, /admin/13f operational audit (item #7)
-- **Severity:** medium
-- **Problem:** ~12% of common-stock 13F holdings are linked to a `Stock`
-  (~13,981 holdings, ~2,084 distinct CUSIPs unresolved). The 2026-05-21
-  diagnosis found the root cause was a **bug**, not just data completeness:
-  `enrich_unmapped_holdings` queried `cusip_mapping_status == 'pending_mapping'`
-  only, but every unresolved prod holding is in status `unresolved` — so the
-  OpenFIGI enrichment was a permanent no-op. The bug fix + a run-to-completion
-  `enrich_cusip` job ship in the 2026-05-21 enrichment-fix PR (this change).
-  **Remaining:** run the `enrich_cusip` job against prod (a real OpenFIGI-backed
-  data operation) to populate `cusip_ticker_map` and lift the rate — a separate,
-  explicitly authorised step. Clear this entry once that run is done and the
-  rate is verified up.
-- **Context:** `docs/tasks/2026-05-21_cusip-link-rate-diagnosis.md`; original
-  `docs/tasks/2026-05-20_admin-13f-ops-audit.md` (item #7)
+### 13F CUSIP mappings flagged `needs_review` — human triage queue
+- **Found:** 2026-05-21, after the OpenFIGI enrichment run (the original
+  "link rate stuck at ~12%" item, PR #84, is resolved — see below)
+- **Severity:** low
+- **Problem:** The 2026-05-21 `enrich_cusip` run lifted the holdings link rate
+  from 12.5% to 77.8% (12,443 / 15,995 linked). Of the residual: **2,160
+  holdings are `needs_review`** — OpenFIGI returned an ambiguous result
+  (multiple US-common-stock listings with conflicting tickers, or no
+  US-common-stock listing), so `evaluate_openfigi_matches` flagged the mapping
+  `review_needed:*` instead of auto-confirming. They need human triage via the
+  existing admin CUSIP-mappings review surface
+  (`GET /admin/13f/cusip-mappings/unresolved`). A further ~1,390 holdings are
+  `unresolved` — OpenFIGI has no usable match (non-US, bonds, delisted, …), a
+  genuinely hard tail. This is ongoing curation, not a code defect; the
+  enrichment pipeline itself works and is re-runnable for future quarters.
+- **Context:** `docs/tasks/2026-05-21_cusip-link-rate-diagnosis.md`
 - **Issue:** —
 
 ### Manager `manager_type` classification (all `unknown`)
