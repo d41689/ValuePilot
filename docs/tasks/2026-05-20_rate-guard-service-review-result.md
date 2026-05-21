@@ -4,7 +4,16 @@ Date: 2026-05-20
 Branch reviewed: `claude/rate-guard-service`
 Prompt: `docs/tasks/2026-05-20_rate-guard-service-review-prompts.md`
 
-## Verdict
+## Second-review verdict
+
+批准。
+
+2026-05-20 remediation verified: the 429/503 global pause is now respected by
+the current retry loop, non-HTTPS schemes are rejected, and missing
+`SEC_CONTACT_EMAIL` now fails loudly at startup. The original blocking finding
+below is resolved.
+
+## Original verdict
 
 暂不批准。
 
@@ -37,6 +46,16 @@ requests. Recommended fix: before each retry attempt, respect the pause for the
 same upstream, or make the 429/503 branch sleep the pause duration before
 continuing. Add a test that 429 sets `global_pause_until` and delays the next
 attempt, with a small monkeypatched pause duration for test speed.
+
+### Remediation status: resolved
+
+`Gateway._request_with_retry()` now calls `_respect_pause(u.name)` before every
+attempt. A 429/503 sets `pause(u.pause_s)`, and the same in-flight retry waits
+that pause before trying again. The new test uses `pause_s=0.3` with zero
+backoff and verifies the retry is delayed.
+
+The implementation also tightened the allowlist boundary by requiring
+`https` URLs before any host comparison or upstream call.
 
 ## A. Does it solve the stated problem
 
@@ -162,3 +181,31 @@ attempt, with a small monkeypatched pause duration for test speed.
   - `/healthz` — 200, returned upstreams `edgar`, `openfigi`, `dataroma`.
   - `/v1/metrics` — 200, returned per-upstream budgets/cache counters.
 - `docker compose -f docker-compose.rateguard.yml down` — cleanup completed.
+
+## Second-review verification
+
+- `docker run --rm -v "$PWD/rate-guard:/code" -w /code python:3.11-slim sh -lc
+  'pip install -q -r requirements-dev.txt && pytest -q'` — passed, 16 tests.
+- 429 pause probe with `pause_s=0.3` and zero backoff — passed; second attempt
+  occurred about 0.304s after the first.
+- Host/scheme allowlist probe — passed. Userinfo host injection, fake suffix
+  host, no-scheme URL, empty/garbage URL, `ftp`, and `http` were rejected.
+  Uppercase legitimate HTTPS SEC URL normalized and was allowed.
+- `docker compose -f docker-compose.rateguard.yml up -d --build` with current
+  local `.env` — failed loudly as expected because `SEC_CONTACT_EMAIL` is
+  missing.
+- `docker compose -f docker-compose.rateguard.yml run --rm --service-ports -e
+  SEC_CONTACT_EMAIL=review@example.com rate-guard` — started successfully.
+  Container-internal `/healthz` and `/v1/metrics` returned 200. Temporary
+  container stopped cleanly.
+
+## Remaining advisory notes
+
+- `docker-compose.rateguard.yml` now requires the deploy/local env to provide
+  `SEC_CONTACT_EMAIL`. That is the right fail-loud behavior, but the runbook or
+  environment setup should make the prerequisite explicit before integration.
+- `method` remains unrestricted. It is acceptable for PR 1 because hosts are
+  allowlisted and the service is internal, but future integration can reduce
+  blast radius by allowing only `GET` and `POST`.
+- FastAPI route tests and an automated concurrent-bucket test would still be
+  useful follow-ups; the main safety boundary is now covered.

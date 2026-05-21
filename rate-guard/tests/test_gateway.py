@@ -132,6 +132,28 @@ def test_rejects_non_https_url(tmp_path):
         gw.fetch("test", "GET", "http://example.com/x")
 
 
+def test_redirect_to_off_allowlist_host_is_not_followed(tmp_path):
+    """An allowlisted host that 3xx-redirects to a non-allowlisted host must
+    not make the gateway fetch the off-allowlist content. The 3xx is returned
+    to the caller as-is."""
+    seen_hosts = []
+
+    def handler(request):
+        seen_hosts.append(request.url.host)
+        if request.url.host == "example.com":
+            return httpx.Response(
+                302, headers={"Location": "https://evil.com/pwned"}
+            )
+        return httpx.Response(200, content=b"CONTENT-FROM-EVIL-COM")
+
+    gw = _gateway(tmp_path, handler)
+    out = gw.fetch("test", "GET", "https://example.com/x")
+
+    assert out["status"] == 302
+    assert base64.b64decode(out["body_b64"]) != b"CONTENT-FROM-EVIL-COM"
+    assert "evil.com" not in seen_hosts  # the redirect was never followed
+
+
 def test_metrics_count_requests_and_cache(tmp_path):
     gw = _gateway(
         tmp_path,
