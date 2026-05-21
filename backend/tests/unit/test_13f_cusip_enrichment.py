@@ -139,3 +139,50 @@ def test_enrich_unmapped_holdings_mocked(MockClient, db_session):
     # In a real integration test we'd create the Filing, ParseRun, Manager etc.
     # But for now we just verify the validation logic directly.
     pass
+
+
+def _pending_holding(cusip: str) -> MagicMock:
+    h = MagicMock()
+    h.cusip = cusip
+    h.cusip_mapping_status = "pending_mapping"
+    return h
+
+
+def _db_with_pending(holdings: list) -> MagicMock:
+    """A MagicMock db whose pending-holdings query returns ``holdings``."""
+    db = MagicMock()
+    db.query.return_value.filter.return_value.limit.return_value.all.return_value = holdings
+    return db
+
+
+@patch("app.services.cusip_enrichment._apply_mappings_to_holdings")
+@patch("app.services.cusip_enrichment.upsert_cusip_mapping")
+def test_enrich_closes_a_self_constructed_client(_mock_upsert, _mock_apply):
+    """enrich_unmapped_holdings closes the OpenFigiClient it creates itself."""
+    db = _db_with_pending([_pending_holding("037833100")])  # a valid CUSIP
+
+    with patch("app.services.cusip_enrichment.OpenFigiClient") as MockClient:
+        mock_client = MockClient.return_value
+        mock_client.map_cusips.return_value = [
+            [{"ticker": "AAPL", "name": "Apple Inc", "securityType": "Common Stock", "exchCode": "US"}]
+        ]
+        enrich_unmapped_holdings(db)
+
+    mock_client.map_cusips.assert_called_once()
+    mock_client.close.assert_called_once()
+
+
+@patch("app.services.cusip_enrichment._apply_mappings_to_holdings")
+@patch("app.services.cusip_enrichment.upsert_cusip_mapping")
+def test_enrich_does_not_close_an_injected_client(_mock_upsert, _mock_apply):
+    """An injected client is the caller's to manage — enrich must not close it."""
+    db = _db_with_pending([_pending_holding("037833100")])
+    injected = MagicMock()
+    injected.map_cusips.return_value = [
+        [{"ticker": "AAPL", "name": "Apple Inc", "securityType": "Common Stock", "exchCode": "US"}]
+    ]
+
+    enrich_unmapped_holdings(db, client=injected)
+
+    injected.map_cusips.assert_called_once()
+    injected.close.assert_not_called()

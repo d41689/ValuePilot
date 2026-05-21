@@ -259,5 +259,14 @@ Each PR is independently CI-green and deployable.
   placeholder `RATE_GUARD_URL` (they inject fake clients; `EDGAR_FETCH_MODE`
   stays `live` so `fetch_and_store` uses them). Task doc:
   `docs/tasks/2026-05-21_rate-guard-pr2-edgar-client.md`.
-- PR 3 — repoint `OpenFigiClient` + `DataromaClient`. *(next)*
-- PR 4 — admin `edgar-rate-limit` panel reads Rate Guard `/v1/metrics`.
+- **PR 3 — repoint `OpenFigiClient` + `DataromaClient`.** A shared
+  `backend/app/rate_guard/client.py` (`RateGuardClient` + `RateGuardFetchError`)
+  generalises the `EdgarClient._fetch` plumbing (an `upstream` parameter,
+  optional request `body`). `OpenFigiClient` and `DataromaClient` are now thin
+  wrappers over it; their in-process throttle / retry / API-key / User-Agent are
+  deleted (Rate Guard owns them). The Rate Guard `openfigi` upstream gains a
+  `Content-Type: application/json` header (OpenFIGI requires it). `EdgarClient`
+  is left on its own PR-2 copy of the logic — migrating it onto `RateGuardClient`
+  is a `docs/BACKLOG.md` follow-up. Task doc:
+  `docs/tasks/2026-05-21_rate-guard-pr3-openfigi-dataroma.md`.
+- PR 4 — admin `edgar-rate-limit` panel reads Rate Guard `/v1/metrics`. *(next)*
