@@ -238,6 +238,16 @@ Each PR is independently CI-green and deployable.
     which builds a `Gateway` with `client=None` and asserts
     `_client.follow_redirects is False`. Verified it goes red when the fix is
     reverted. 19 tests pass.
+  - PR #78 merged after the final re-review approved it.
+- **PR 1.5 — prod deploy integration.** PR 2/4 will make a live-mode prod api
+  hard-depend on Rate Guard, and the runner auto-deploys every `main` push, so
+  Rate Guard must be running *before* that dependency lands.
+  `scripts/deploy_prod_from_main.sh` now brings up
+  `docker-compose.rateguard.yml` and waits for `/healthz` before the prod
+  stack; `deploy.yml` dumps rateguard logs on failure; `rate-guard/README.md`
+  is the operator runbook (required `.env` keys, the `RATE_GUARD_URL`
+  pre-merge step for PR 2/4). Task doc:
+  `docs/tasks/2026-05-20_rate-guard-deploy-integration.md`.
 - PR 2 — repoint `EdgarClient`; slim it; live-mode startup guard. *(next)*
 - PR 3 — repoint `OpenFigiClient` + `DataromaClient`.
 - PR 4 — admin `edgar-rate-limit` panel reads Rate Guard `/v1/metrics`.

@@ -26,12 +26,6 @@ set -a
 . "$REPO_ROOT/.env.prod"
 set +a
 
-docker compose -f docker-compose.prod.yml up -d --build
-docker compose -f docker-compose.prod.yml ps
-
-api_port=${HOST_API_PORT:-8101}
-web_port=${HOST_WEB_PORT:-3101}
-
 wait_for_url() {
   url=$1
   max_attempts=${2:-30}
@@ -49,6 +43,22 @@ wait_for_url() {
   echo "Timed out waiting for $url" >&2
   return 1
 }
+
+# Rate Guard is the shared egress limiter for dev + prod. Bring it up first
+# and confirm it is healthy before the prod stack: once the api depends on it
+# (Rate Guard PR 2/4), a prod deploy must not proceed past a broken limiter.
+# `up -d --build` is idempotent — compose only recreates the container when
+# rate-guard/ actually changed, so an unrelated deploy leaves it untouched.
+rate_guard_port=${RATE_GUARD_HOST_PORT:-9099}
+docker compose -f docker-compose.rateguard.yml up -d --build
+wait_for_url "http://127.0.0.1:${rate_guard_port}/healthz"
+echo "Rate Guard healthy on port ${rate_guard_port}"
+
+docker compose -f docker-compose.prod.yml up -d --build
+docker compose -f docker-compose.prod.yml ps
+
+api_port=${HOST_API_PORT:-8101}
+web_port=${HOST_WEB_PORT:-3101}
 
 wait_for_url "http://127.0.0.1:${api_port}/health"
 wait_for_url "http://127.0.0.1:${web_port}/login"

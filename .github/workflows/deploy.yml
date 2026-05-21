@@ -52,4 +52,6 @@ jobs:
 
       - name: Print prod logs on failure
         if: failure()
-        run: docker compose -f docker-compose.prod.yml logs --no-color --tail=200
+        run: |
+          docker compose -f docker-compose.rateguard.yml logs --no-color --tail=200 || true
+          docker compose -f docker-compose.prod.yml logs --no-color --tail=200
