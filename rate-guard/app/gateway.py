@@ -45,7 +45,11 @@ class Gateway:
             n: TokenBucket(u.rate_per_sec, u.burst) for n, u in upstreams.items()
         }
         self._metrics = {n: UpstreamMetrics() for n in upstreams}
-        self._client = client or httpx.Client(timeout=30, follow_redirects=True)
+        # follow_redirects MUST stay False: redirects are not re-checked
+        # against the host allowlist, so following a 3xx would let an
+        # allowlisted host bounce the fetch to an arbitrary host. A 3xx is
+        # returned to the caller as-is (see _request_with_retry).
+        self._client = client or httpx.Client(timeout=30, follow_redirects=False)
 
     def upstream_names(self) -> list[str]:
         return list(self._upstreams)

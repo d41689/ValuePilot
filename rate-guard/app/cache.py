@@ -8,6 +8,8 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
+import tempfile
 import time
 from pathlib import Path
 
@@ -52,6 +54,20 @@ class ResponseCache:
                 "stored_at": time.time(),
             }
         )
-        tmp = path.with_suffix(".tmp")
-        tmp.write_text(payload)
-        tmp.replace(path)  # atomic publish
+        # Each write gets its own temp file: two threads writing the same key
+        # must not share one `.tmp` name, or the second os.replace races on a
+        # file the first already renamed away (FileNotFoundError → HTTP 500).
+        fd, tmp_name = tempfile.mkstemp(
+            dir=path.parent, prefix=f"{key}.", suffix=".tmp"
+        )
+        try:
+            with os.fdopen(fd, "w") as fh:
+                fh.write(payload)
+            os.replace(tmp_name, path)  # atomic publish
+        except BaseException:
+            # Never leak the temp file if the write or replace fails.
+            try:
+                os.unlink(tmp_name)
+            except FileNotFoundError:
+                pass
+            raise
