@@ -9,6 +9,22 @@ long — escalate to the user. **medium / low** = ordinary follow-up.
 
 ## Open
 
+### Rate Guard rollout is in-place, with no staged probe or rollback
+- **Found:** 2026-05-20, PR #79 (Rate Guard deploy integration) review
+- **Severity:** low
+- **Problem:** `scripts/deploy_prod_from_main.sh` brings Rate Guard up with
+  `docker compose up -d --build` — an in-place stop→start with no blue-green
+  swap and no automatic rollback. If a deploy ships a broken `rate-guard/`
+  change, the previously-healthy shared instance is already replaced before
+  `/healthz` fails. PR #79 itself is safe (nothing depends on Rate Guard yet,
+  and a failed healthcheck aborts before the prod stack), and in-place rebuild
+  is the existing model for all services. But once PR 2/4 routes live EDGAR
+  traffic through Rate Guard, a safer rollout (staged probe of the new image
+  before swap, or keep-old-on-failure) is worth doing.
+- **Context:** `docs/tasks/2026-05-20_rate-guard-deploy-integration-review-result2.md`
+  (follow-up 2); address as part of Rate Guard PR 2/4.
+- **Issue:** —
+
 ### Refresh tokens have no revocation / reuse detection
 - **Found:** 2026-05-20, PR #64 (refresh-token flow)
 - **Severity:** medium

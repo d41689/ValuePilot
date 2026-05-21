@@ -47,8 +47,9 @@ wait_for_url() {
 # Rate Guard is the shared egress limiter for dev + prod. Bring it up first
 # and confirm it is healthy before the prod stack: once the api depends on it
 # (Rate Guard PR 2/4), a prod deploy must not proceed past a broken limiter.
-# `up -d --build` is idempotent — compose only recreates the container when
-# rate-guard/ actually changed, so an unrelated deploy leaves it untouched.
+# `up -d --build` recreates the container only when something changed — the
+# rate-guard/ sources, docker-compose.rateguard.yml, or an interpolated env
+# value; an otherwise-unchanged deploy leaves the running container as-is.
 rate_guard_port=${RATE_GUARD_HOST_PORT:-9099}
 docker compose -f docker-compose.rateguard.yml up -d --build
 wait_for_url "http://127.0.0.1:${rate_guard_port}/healthz"

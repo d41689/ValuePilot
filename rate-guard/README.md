@@ -22,8 +22,17 @@ The host port (`/healthz`, `/v1/metrics` inspection only) defaults to `9099`.
 
 The prod deploy script (`scripts/deploy_prod_from_main.sh`) brings Rate Guard
 up and waits for `/healthz` **before** the prod stack, on every `main` deploy.
-`docker compose -f docker-compose.rateguard.yml up -d --build` is idempotent —
-the container is only recreated when `rate-guard/` actually changed.
+`docker compose -f docker-compose.rateguard.yml up -d --build` recreates the
+container only when something changed — the `rate-guard/` sources, the compose
+file, or an interpolated env value — so an unrelated deploy leaves the running
+container untouched.
+
+Because dev and prod share this one instance, a deploy that *does* rebuild
+Rate Guard restarts it in place — there is no blue-green swap or automatic
+rollback (the same deploy model as the prod `api` / `web`). Any upstream
+request in flight at that moment is dropped and the caller retries. Brief and
+rare, but worth knowing — a safer staged rollout is a tracked follow-up for
+Rate Guard PR 2/4 (`docs/BACKLOG.md`).
 
 ## Required environment
 
