@@ -47,6 +47,9 @@ class Settings(BaseSettings):
     EDGAR_MAX_RETRIES: int = 5
     EDGAR_RETRY_BACKOFF_S: str = "5,30,120,300,300"    # comma-separated seconds; parsed by _parse_backoff()
     EDGAR_FETCH_MODE: str = "live"            # live | replay
+    # Rate Guard egress service. Required when EDGAR_FETCH_MODE=live (enforced
+    # at startup) — EdgarClient routes every EDGAR fetch through it.
+    RATE_GUARD_URL: Optional[str] = None
     EDGAR_SCHEDULER_ENABLED: bool = False     # prod: true
     THIRTEENF_SMART_RETRY_ENABLED: bool = False
     THIRTEENF_JOB_WORKER_ENABLED: bool = False

@@ -38,6 +38,7 @@ jobs:
           cat > .env <<'EOF'
           NEXT_PUBLIC_API_URL=/api/v1
           SECRET_KEY=valuepilot-ci-secret-key
+          RATE_GUARD_URL=http://rate-guard.invalid
           EOF
 
       - name: Build and start services

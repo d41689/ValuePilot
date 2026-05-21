@@ -12,6 +12,17 @@ logger = logging.getLogger(__name__)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # Live EDGAR access must route through Rate Guard (the shared egress
+    # limiter). Refuse to start a live-mode api without it — a per-process
+    # limiter cannot bound the combined dev+prod egress rate and risks an
+    # EDGAR IP ban. Use EDGAR_FETCH_MODE=replay for tests / offline runs.
+    if settings.EDGAR_FETCH_MODE == "live" and not (settings.RATE_GUARD_URL or "").strip():
+        raise RuntimeError(
+            "EDGAR_FETCH_MODE=live requires RATE_GUARD_URL — live EDGAR access "
+            "must go through Rate Guard. Set RATE_GUARD_URL, or use "
+            "EDGAR_FETCH_MODE=replay. See rate-guard/README.md."
+        )
+
     scheduler = None
     job_worker = None
     if settings.EDGAR_SCHEDULER_ENABLED:

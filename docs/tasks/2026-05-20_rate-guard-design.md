@@ -248,6 +248,16 @@ Each PR is independently CI-green and deployable.
   is the operator runbook (required `.env` keys, the `RATE_GUARD_URL`
   pre-merge step for PR 2/4). Task doc:
   `docs/tasks/2026-05-20_rate-guard-deploy-integration.md`.
-- PR 2 — repoint `EdgarClient`; slim it; live-mode startup guard. *(next)*
-- PR 3 — repoint `OpenFigiClient` + `DataromaClient`.
+- **PR 2 — repoint `EdgarClient`.** `EdgarClient` now fetches every EDGAR URL
+  through Rate Guard `POST /v1/fetch`; the in-process token bucket, retry loop,
+  and 429/503 global pause are deleted (Rate Guard owns them). `RATE_GUARD_URL`
+  added to config; `EDGAR_FETCH_MODE=live` without it is a hard startup error
+  (`app/main.py` lifespan). Public API (`get`/`head`/`close`) unchanged — the 8
+  call sites are untouched. `edgar_rate_limit_status()` is kept (admin panel +
+  13F alerting); its `global_pause_until` is now always `None` until PR 4 moves
+  the panel onto Rate Guard's `/v1/metrics`. Tests / CI satisfy the guard with a
+  placeholder `RATE_GUARD_URL` (they inject fake clients; `EDGAR_FETCH_MODE`
+  stays `live` so `fetch_and_store` uses them). Task doc:
+  `docs/tasks/2026-05-21_rate-guard-pr2-edgar-client.md`.
+- PR 3 — repoint `OpenFigiClient` + `DataromaClient`. *(next)*
 - PR 4 — admin `edgar-rate-limit` panel reads Rate Guard `/v1/metrics`.

@@ -3,8 +3,7 @@ from __future__ import annotations
 from datetime import date
 from pathlib import Path
 
-import httpx
-
+from app.edgar.client import EdgarFetchError
 from app.models.institutions import (
     EdgarSyncStatus,
     Filing13F,
@@ -33,9 +32,12 @@ class FakeEdgarClient:
     def get(self, url: str) -> bytes:
         self.urls.append(url)
         if self.status_code is not None:
-            request = httpx.Request("GET", url)
-            response = httpx.Response(self.status_code, request=request)
-            raise httpx.HTTPStatusError("fetch failed", request=request, response=response)
+            # Mirror the real EdgarClient: an upstream non-200 surfaces as an
+            # EdgarFetchError carrying the status code.
+            raise EdgarFetchError(
+                f"EDGAR returned HTTP {self.status_code}",
+                status_code=self.status_code,
+            )
         assert self.body is not None
         return self.body
 
