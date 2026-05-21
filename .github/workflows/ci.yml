@@ -18,8 +18,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     env:
-      HOST_WEB_PORT: 13001
-      HOST_API_PORT: 18001
+      DEV_HOST_WEB_PORT: 13001
+      DEV_HOST_API_PORT: 18001
 
     steps:
       - name: Check out repository

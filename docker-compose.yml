@@ -25,8 +25,12 @@ services:
     restart: unless-stopped
     env_file:
       - .env
+    # Dev-only host ports — distinct var names from prod's HOST_WEB_PORT /
+    # HOST_API_PORT (docker-compose.prod.yml). A shared .env sets those to the
+    # prod values 3101/8101; using DEV_* here keeps that from bleeding into the
+    # dev stack, so dev (3001/8001) and prod (3101/8101) run side by side.
     ports:
-      - "${HOST_WEB_PORT:-3001}:3000"
+      - "${DEV_HOST_WEB_PORT:-3001}:3000"
     environment:
       NODE_ENV: development
       NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-/api/v1}
@@ -47,7 +51,7 @@ services:
     env_file:
       - .env
     ports:
-      - "${HOST_API_PORT:-8001}:8000"
+      - "${DEV_HOST_API_PORT:-8001}:8000"
     environment:
       DATABASE_URL: postgresql://valuepilot:valuepilot@db:5432/valuepilot
       THIRTEENF_SMART_RETRY_ENABLED: "${THIRTEENF_SMART_RETRY_ENABLED:-false}"
