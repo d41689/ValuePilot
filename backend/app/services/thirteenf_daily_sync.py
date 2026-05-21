@@ -5,9 +5,9 @@ from typing import Any
 
 from sqlalchemy.orm import Session
 
-from app.edgar.client import EdgarFetchError
 from app.edgar.fetcher import fetch_and_store, load_body
 from app.edgar.parsers.form_idx import FormIdxRecord, daily_form_idx_url, parse_daily_13f_form_idx
+from app.rate_guard.client import RateGuardFetchError
 from app.models.institutions import (
     EdgarSyncStatus,
     InstitutionManager,
@@ -62,7 +62,7 @@ def run_daily_index_sync(session: Session, sync_date: date, *, client: Any | Non
             matched_accessions=_matched_payload(matched, enqueued_accessions=enqueued_accessions),
             jobs_created=len(enqueued_accessions),
         )
-    except EdgarFetchError as exc:
+    except RateGuardFetchError as exc:
         return _handle_http_error(session, sync, exc)
     except Exception as exc:
         sync.status = "failed"
@@ -207,7 +207,7 @@ def _enqueue_ingest_placeholders(
     return enqueued_accessions
 
 
-def _handle_http_error(session: Session, sync: EdgarSyncStatus, exc: EdgarFetchError) -> dict[str, Any]:
+def _handle_http_error(session: Session, sync: EdgarSyncStatus, exc: RateGuardFetchError) -> dict[str, Any]:
     status_code = exc.status_code
     if status_code == 404 and NoIndexExpectedDate.active_for_date(session, sync.sync_date):
         sync.status = "no_data"

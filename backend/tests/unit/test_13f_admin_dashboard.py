@@ -985,7 +985,6 @@ def test_retry_manager_cik_search_with_edited_name_preserves_candidate_review(
 ):
     _clear_13f(db_session)
     admin = _admin(user_factory)
-    monkeypatch.setattr("app.edgar.client.settings.SEC_CONTACT_EMAIL", "ops@example.com")
     manager = _manager(db_session, name="Ambiguous Manager", cik=None)
     manager.match_status = "seeded"
     db_session.commit()

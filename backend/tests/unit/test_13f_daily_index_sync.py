@@ -3,7 +3,6 @@ from __future__ import annotations
 from datetime import date
 from pathlib import Path
 
-from app.edgar.client import EdgarFetchError
 from app.models.institutions import (
     EdgarSyncStatus,
     Filing13F,
@@ -17,6 +16,7 @@ from app.models.institutions import (
     RawSourceDocument,
 )
 from app.models.oracles_lens import OraclesLensScoreComponent, OraclesLensSignal
+from app.rate_guard.client import RateGuardFetchError
 from app.services.thirteenf_daily_sync import run_daily_index_sync
 
 
@@ -32,9 +32,9 @@ class FakeEdgarClient:
     def get(self, url: str) -> bytes:
         self.urls.append(url)
         if self.status_code is not None:
-            # Mirror the real EdgarClient: an upstream non-200 surfaces as an
-            # EdgarFetchError carrying the status code.
-            raise EdgarFetchError(
+            # Mirror the real EdgarClient: an upstream non-200 surfaces as a
+            # RateGuardFetchError carrying the status code.
+            raise RateGuardFetchError(
                 f"EDGAR returned HTTP {self.status_code}",
                 status_code=self.status_code,
             )
