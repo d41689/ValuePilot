@@ -67,3 +67,20 @@ Out:
 - New tests cover `RateGuardClient` (routing payload, body passthrough,
   success, upstream non-200, 502, unreachable, malformed envelope), and the two
   thin clients (routing + OpenFIGI payload/stub/result parsing).
+
+## Review remediation (2026-05-21)
+
+Two independent reviews. Both converged on the **C6 lifecycle** finding (one
+rated it advisory + approved, one rated it P1 + request-changes); A / B / D / E
+/ F / G otherwise PASS. Fixed:
+
+- **C6 — close the self-constructed `OpenFigiClient`.** The new client holds a
+  persistent `httpx.Client`; `enrich_unmapped_holdings` self-constructed an
+  `OpenFigiClient` and never closed it. `cusip_enrichment.py` now tracks
+  `owns_client = client is None` and closes it in a `finally` — an injected
+  client is left for the caller to manage.
+- **G11 — the missing test.** `test_13f_cusip_enrichment.py` gains
+  `test_enrich_closes_a_self_constructed_client` and
+  `test_enrich_does_not_close_an_injected_client`, locking both paths.
+
+Re-verified: backend `pytest -q` green; Rate Guard `pytest -q` green.

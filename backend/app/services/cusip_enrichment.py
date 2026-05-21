@@ -214,34 +214,41 @@ def enrich_unmapped_holdings(db: Session, client: Optional[OpenFigiClient] = Non
     if not cusips_to_map:
         return 0
     
-    if client is None:
+    owns_client = client is None
+    if owns_client:
         client = OpenFigiClient()
-        
-    results = client.map_cusips(cusips_to_map)
-    
-    # Process results
-    mapped_count = 0
-    for cusip, matches in zip(cusips_to_map, results):
-        confidence, reason, ticker, name = evaluate_openfigi_matches(matches)
-        
-        try:
-            mapping = upsert_cusip_mapping(
-                db,
-                cusip=cusip,
-                ticker=ticker,
-                issuer_name=name,
-                source="openfigi",
-                mapping_reason=reason,
-                confidence=confidence,
-            )
-            mapped_count += 1
-        except Exception as exc:
-            logger.warning("Failed to persist mapping for CUSIP %s: %s", cusip, exc)
-            
-    # After generating mappings, apply them to holdings
-    _apply_mappings_to_holdings(db, cusips_to_map)
-    
-    return mapped_count
+
+    try:
+        results = client.map_cusips(cusips_to_map)
+
+        # Process results
+        mapped_count = 0
+        for cusip, matches in zip(cusips_to_map, results):
+            confidence, reason, ticker, name = evaluate_openfigi_matches(matches)
+
+            try:
+                mapping = upsert_cusip_mapping(
+                    db,
+                    cusip=cusip,
+                    ticker=ticker,
+                    issuer_name=name,
+                    source="openfigi",
+                    mapping_reason=reason,
+                    confidence=confidence,
+                )
+                mapped_count += 1
+            except Exception as exc:
+                logger.warning("Failed to persist mapping for CUSIP %s: %s", cusip, exc)
+
+        # After generating mappings, apply them to holdings
+        _apply_mappings_to_holdings(db, cusips_to_map)
+
+        return mapped_count
+    finally:
+        # Close the client only if we created it — an injected client is the
+        # caller's to manage.
+        if owns_client:
+            client.close()
 
 
 def enrich_cusips_from_openfigi(db: Session, limit: int = 100) -> int:
