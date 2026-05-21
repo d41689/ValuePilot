@@ -133,3 +133,22 @@ Out of scope: the operational run against prod (a separate, explicitly
 authorised step); surfacing the `enrich_cusip` job as an admin-UI button.
 
 Verification: `docker compose run --rm --no-deps api pytest -q` — green.
+
+## Review remediation (2026-05-21)
+
+Two independent reviews — both **APPROVE / PASS**, no blockers. Advisories
+addressed:
+
+- **`unresolved` comment accuracy** (both reviews) — the comment claimed
+  `unresolved` always means "OpenFIGI never consulted"; a no-match CUSIP also
+  stays `unresolved` after OpenFIGI. The comment now states both cases and that
+  the `cusip NOT IN cusip_ticker_map` clause is what prevents a re-query.
+- **`bootstrap` / `backfill` placement** (review 2) — a comment now documents
+  that they run after a completed loop and that a mid-loop failure is recovered
+  by the retriable, resumable `enrich_cusip` job; DB-mutating work is
+  deliberately kept off the exception path.
+- **Test gap** — added `test_enrich_all_terminates_on_unresolvable_cusip`: a
+  CUSIP OpenFIGI cannot resolve terminates the loop in one batch (does not spin
+  to `max_batches`).
+
+Re-verified: backend `pytest -q` green.

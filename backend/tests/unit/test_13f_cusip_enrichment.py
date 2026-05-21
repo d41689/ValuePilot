@@ -262,3 +262,19 @@ def test_enrich_all_runs_to_completion(db_session):
     assert summary["batches_run"] >= 2          # 4 CUSIPs at batch_size 2
     assert summary["mappings_created"] >= 4
     assert summary["holdings_linked"] >= 4
+
+
+def test_enrich_all_terminates_on_unresolvable_cusip(db_session):
+    """A CUSIP OpenFIGI cannot resolve gets a low/no-ticker map row once, leaves
+    the unmapped pool, and the loop terminates — it does not spin to max_batches."""
+    _seed_holdings(db_session, [("037833100", "unresolved")])
+    no_match_client = MagicMock()
+    no_match_client.map_cusips.return_value = [[]]  # OpenFIGI: no match
+
+    summary = enrich_all_unmapped_holdings(
+        db_session, client=no_match_client, batch_size=2, max_batches=5
+    )
+
+    assert summary["batches_run"] == 1            # terminated, did not spin
+    assert summary["holdings_still_unmapped"] == 0
+    assert db_session.query(CusipTickerMap).filter_by(cusip="037833100").count() == 1

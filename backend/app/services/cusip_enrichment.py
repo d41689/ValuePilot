@@ -186,13 +186,15 @@ def evaluate_openfigi_matches(matches: List[Dict[str, Any]]) -> tuple[str, str, 
 def enrich_unmapped_holdings(db: Session, client: Optional[OpenFigiClient] = None, limit: int = 100) -> int:
     """Find holdings that are pending mapping, fetch OpenFIGI, and update them."""
     
-    # 1. Fetch holdings that still need a CUSIP->ticker mapping and whose CUSIP
+    # 1. Fetch holdings that still need a CUSIP->ticker mapping AND whose CUSIP
     #    has no cusip_ticker_map row yet. `pending_mapping` (freshly ingested)
-    #    and `unresolved` (an apply-mappings pass found no row — OpenFIGI was
-    #    never consulted) are both enrichable; `needs_review` is the ambiguous-
-    #    result human queue and is excluded. Skipping already-mapped CUSIPs is
-    #    what lets a run-to-completion loop terminate — see
-    #    enrich_all_unmapped_holdings.
+    #    and `unresolved` are both enrichable; `needs_review` is the ambiguous-
+    #    result human queue and is excluded. A holding can be `unresolved`
+    #    either because OpenFIGI was never consulted for its CUSIP or because it
+    #    was and returned no usable match — the `cusip NOT IN cusip_ticker_map`
+    #    clause excludes the latter (its CUSIP already has a row), so OpenFIGI
+    #    is never re-queried and a run-to-completion loop terminates (see
+    #    enrich_all_unmapped_holdings).
     mapped_cusips = db.query(CusipTickerMap.cusip).filter(CusipTickerMap.cusip.isnot(None))
     pending_holdings = (
         db.query(Holding13F)
@@ -310,6 +312,12 @@ def enrich_all_unmapped_holdings(
     finally:
         if owns_client:
             client.close()
+    # bootstrap + backfill run after a completed loop. A mid-loop failure
+    # propagates here without bootstrapping (the enrich_cusip job fails) — but
+    # each batch's mappings are already committed and the loop is resumable
+    # (already-mapped CUSIPs are skipped), so the retriable job recovers on the
+    # next run. DB-mutating bootstrap/backfill are deliberately kept off the
+    # exception path.
     new_stocks = bootstrap_stocks_from_cusip_map(db)
     holdings_linked = backfill_stock_ids(db)
     return {
