@@ -229,6 +229,15 @@ Each PR is independently CI-green and deployable.
     temp file, then `os.replace`; the temp file is cleaned up on failure.
   - Verified: 18 tests pass (added `test_redirect_to_off_allowlist_host_is_not_followed`
     and `test_concurrent_put_same_key_does_not_crash`).
+  - **Review (PR #78) — remediated.** An independent review confirmed both
+    fixes are correct in production but flagged the P1 regression test as
+    decorative: it always injects its own `httpx` client (default
+    `follow_redirects=False`), so `Gateway.__init__`'s production-default
+    client — the actual fix line — is never exercised; reverting it would
+    not turn the test red. Added `test_default_client_does_not_follow_redirects`,
+    which builds a `Gateway` with `client=None` and asserts
+    `_client.follow_redirects is False`. Verified it goes red when the fix is
+    reverted. 19 tests pass.
 - PR 2 — repoint `EdgarClient`; slim it; live-mode startup guard. *(next)*
 - PR 3 — repoint `OpenFigiClient` + `DataromaClient`.
 - PR 4 — admin `edgar-rate-limit` panel reads Rate Guard `/v1/metrics`.

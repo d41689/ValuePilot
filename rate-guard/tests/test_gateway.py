@@ -154,6 +154,15 @@ def test_redirect_to_off_allowlist_host_is_not_followed(tmp_path):
     assert "evil.com" not in seen_hosts  # the redirect was never followed
 
 
+def test_default_client_does_not_follow_redirects(tmp_path):
+    """The production-default httpx client (built when client=None) must not
+    follow redirects — that single setting *is* the P1 allowlist-bypass fix,
+    so it needs a test that goes red the moment it is reverted. The other
+    redirect test always injects its own client and never exercises it."""
+    gw = Gateway({"test": _upstream()}, ResponseCache(str(tmp_path)))
+    assert gw._client.follow_redirects is False
+
+
 def test_metrics_count_requests_and_cache(tmp_path):
     gw = _gateway(
         tmp_path,
