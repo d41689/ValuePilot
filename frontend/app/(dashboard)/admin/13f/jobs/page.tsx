@@ -84,11 +84,13 @@ import {
 
 const {
   formatPercent,
+  jobStatusTone,
   normalizeEdgarRateLimit,
   normalizeWorkers,
   visibleWorkerRows,
 } = thirteenfAdmin as {
   formatPercent: (value: number) => string;
+  jobStatusTone: (status: string) => string;
   normalizeEdgarRateLimit: (data: unknown) => {
     mode: string;
     tone: string;
@@ -130,7 +132,8 @@ function badgeVariant(value: string): BadgeVariant {
     value === 'outline' ||
     value === 'success' ||
     value === 'warning' ||
-    value === 'danger'
+    value === 'danger' ||
+    value === 'info'
   ) {
     return value;
   }
@@ -459,7 +462,11 @@ export default function JobsAdminPage() {
                     <TableCell className="font-medium">
                       {String(job.job_type ?? '—')}
                     </TableCell>
-                    <TableCell>{String(job.status ?? '—')}</TableCell>
+                    <TableCell>
+                      <Badge variant={badgeVariant(jobStatusTone(String(job.status ?? '')))}>
+                        {String(job.status ?? '—').replaceAll('_', ' ')}
+                      </Badge>
+                    </TableCell>
                     <TableCell className="max-w-[240px] truncate text-xs text-muted-foreground">
                       {String(job.lock_key ?? '—')}
                     </TableCell>

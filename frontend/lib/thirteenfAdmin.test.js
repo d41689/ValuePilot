@@ -8,6 +8,7 @@ const {
   jobPreviewRows,
   managerCikReviewDefaults,
   jobPreviewLine,
+  jobStatusTone,
   normalizeAmendments,
   normalizeCikReviewEvents,
   normalizeEdgarRateLimit,
@@ -26,6 +27,18 @@ const {
   visibleWorkerRows,
   readinessTone,
 } = require('./thirteenfAdmin');
+
+test('jobStatusTone maps each job status to a distinct badge variant', () => {
+  assert.equal(jobStatusTone('succeeded'), 'success');
+  assert.equal(jobStatusTone('failed'), 'danger');
+  assert.equal(jobStatusTone('partial_success'), 'warning');
+  assert.equal(jobStatusTone('cancel_requested'), 'warning');
+  assert.equal(jobStatusTone('running'), 'info');
+  assert.equal(jobStatusTone('queued'), 'secondary');
+  assert.equal(jobStatusTone('cancelled'), 'outline');
+  assert.equal(jobStatusTone('skipped'), 'outline');
+  assert.equal(jobStatusTone('unknown_status'), 'secondary');
+});
 
 test('buildAdminJobsQueryPath encodes filters and includes the full started_to day', () => {
   const path = buildAdminJobsQueryPath({
