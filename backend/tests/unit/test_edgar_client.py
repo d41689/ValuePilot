@@ -1,126 +1,152 @@
+"""EdgarClient routes every EDGAR fetch through the Rate Guard egress service.
+
+Rate Guard is simulated with an ``httpx.MockTransport`` returning the
+``/v1/fetch`` envelope shape; no real network or Rate Guard process is needed.
+"""
 from __future__ import annotations
+
+import base64
+import json
 
 import httpx
 import pytest
 
 from app.edgar import client as edgar_client
+from app.edgar.client import EdgarClient
+
+RATE_GUARD = "http://rate-guard:9000"
 
 
-class DummyBucket:
-    def __init__(self) -> None:
-        self.calls = 0
-
-    def acquire(self) -> None:
-        self.calls += 1
+def _rg_client(handler) -> httpx.Client:
+    """An httpx client whose POSTs to Rate Guard are served by ``handler``."""
+    return httpx.Client(transport=httpx.MockTransport(handler))
 
 
-class DummyHttpClient:
-    def __init__(self, responses: list[int | Exception]) -> None:
-        self.responses = responses
-        self.calls: list[tuple[str, str]] = []
-
-    def request(self, method: str, url: str) -> httpx.Response:
-        self.calls.append((method, url))
-        response = self.responses.pop(0)
-        if isinstance(response, Exception):
-            raise response
-        request = httpx.Request(method, url)
-        return httpx.Response(response, content=b"ok", request=request)
-
-    def close(self) -> None:
-        return None
+def _fetch_ok(body: bytes = b"ok", upstream_status: int = 200) -> httpx.Response:
+    """A Rate Guard ``/v1/fetch`` success envelope."""
+    return httpx.Response(
+        200,
+        json={
+            "status": upstream_status,
+            "headers": {},
+            "body_b64": base64.b64encode(body).decode("ascii"),
+            "cache": "miss",
+        },
+    )
 
 
 def _reset_events() -> None:
     with edgar_client._REQUEST_EVENTS_LOCK:
         edgar_client._REQUEST_EVENTS.clear()
-        edgar_client._GLOBAL_PAUSE_UNTIL = None
 
 
-def test_missing_sec_contact_email_fails_before_request(monkeypatch):
-    monkeypatch.setattr(edgar_client.settings, "SEC_CONTACT_EMAIL", "")
-    http_client = DummyHttpClient([200])
-    test_client = edgar_client.EdgarClient(http_client=http_client)
+def test_get_routes_through_rate_guard(monkeypatch):
+    monkeypatch.setattr(edgar_client.settings, "RATE_GUARD_URL", RATE_GUARD)
+    seen: dict = {}
 
-    with pytest.raises(RuntimeError, match="SEC_CONTACT_EMAIL"):
-        test_client.get("https://www.sec.gov/test")
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["url"] = str(request.url)
+        seen["method"] = request.method
+        seen["payload"] = json.loads(request.content)
+        return _fetch_ok(b"FILING-BYTES")
 
-    assert http_client.calls == []
+    with EdgarClient(http_client=_rg_client(handler)) as client:
+        body = client.get("https://www.sec.gov/Archives/edgar/x.idx")
 
-
-def test_sec_client_sets_user_agent_from_contact_email(monkeypatch):
-    monkeypatch.setattr(edgar_client.settings, "SEC_CONTACT_EMAIL", "ops@example.com")
-    monkeypatch.setattr(edgar_client.settings, "PROJECT_NAME", "ValuePilot")
-
-    user_agent = edgar_client.build_sec_user_agent()
-
-    assert "ValuePilot" in user_agent
-    assert "ops@example.com" in user_agent
-
-
-def test_default_edgar_rate_limit_is_ten_requests_per_second(monkeypatch):
-    monkeypatch.setattr(edgar_client.settings, "EDGAR_REQUESTS_PER_SECOND", 10.0)
-
-    bucket = edgar_client._make_bucket()
-
-    assert bucket._rate == 10.0
+    assert body == b"FILING-BYTES"
+    assert seen["url"] == "http://rate-guard:9000/v1/fetch"
+    assert seen["method"] == "POST"
+    assert seen["payload"] == {
+        "upstream": "edgar",
+        "method": "GET",
+        "url": "https://www.sec.gov/Archives/edgar/x.idx",
+    }
 
 
-def test_rate_limiter_invoked_for_get_and_head(monkeypatch):
-    monkeypatch.setattr(edgar_client.settings, "SEC_CONTACT_EMAIL", "ops@example.com")
-    monkeypatch.setattr(edgar_client.settings, "EDGAR_MAX_RETRIES", 0)
-    bucket = DummyBucket()
-    http_client = DummyHttpClient([200, 200])
-    monkeypatch.setattr(edgar_client, "_get_bucket", lambda: bucket)
-    test_client = edgar_client.EdgarClient(http_client=http_client)
+def test_head_routes_method_head(monkeypatch):
+    monkeypatch.setattr(edgar_client.settings, "RATE_GUARD_URL", RATE_GUARD)
+    seen: dict = {}
 
-    test_client.get("https://www.sec.gov/test-get")
-    test_client.head("https://www.sec.gov/test-head")
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["payload"] = json.loads(request.content)
+        return _fetch_ok(b"")
 
-    assert bucket.calls == 2
-    assert http_client.calls == [
-        ("GET", "https://www.sec.gov/test-get"),
-        ("HEAD", "https://www.sec.gov/test-head"),
-    ]
+    with EdgarClient(http_client=_rg_client(handler)) as client:
+        client.head("https://www.sec.gov/probe")
+
+    assert seen["payload"]["method"] == "HEAD"
 
 
-def test_retry_policy_stops_after_configured_max_retries(monkeypatch):
-    monkeypatch.setattr(edgar_client.settings, "SEC_CONTACT_EMAIL", "ops@example.com")
-    monkeypatch.setattr(edgar_client.settings, "EDGAR_MAX_RETRIES", 2)
-    monkeypatch.setattr(edgar_client.settings, "EDGAR_RETRY_BACKOFF_S", "0,0")
-    monkeypatch.setattr(edgar_client.time, "sleep", lambda seconds: None)
-    monkeypatch.setattr(edgar_client, "_get_bucket", lambda: DummyBucket())
-    http_client = DummyHttpClient([httpx.TransportError("network down")] * 3)
-    test_client = edgar_client.EdgarClient(http_client=http_client)
+def test_get_without_rate_guard_url_raises_and_does_not_fetch(monkeypatch):
+    monkeypatch.setattr(edgar_client.settings, "RATE_GUARD_URL", None)
+    calls: list = []
 
-    with pytest.raises(RuntimeError, match="failed after 2 retries"):
-        test_client.get("https://www.sec.gov/test-retry")
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(1)
+        return _fetch_ok()
 
-    assert len(http_client.calls) == 3
+    with EdgarClient(http_client=_rg_client(handler)) as client:
+        with pytest.raises(RuntimeError, match="RATE_GUARD_URL"):
+            client.get("https://www.sec.gov/x")
 
-
-def test_retry_backoff_is_capped_at_five_minutes():
-    assert edgar_client._parse_backoff("5,30,120,600") == [5.0, 30.0, 120.0, 300.0]
+    assert calls == []  # the guard fires before any fetch is attempted
 
 
-def test_403_and_429_are_recorded_for_health_summary(monkeypatch):
-    monkeypatch.setattr(edgar_client.settings, "SEC_CONTACT_EMAIL", "ops@example.com")
-    monkeypatch.setattr(edgar_client.settings, "EDGAR_MAX_RETRIES", 0)
+def test_upstream_non_200_raises(monkeypatch):
+    monkeypatch.setattr(edgar_client.settings, "RATE_GUARD_URL", RATE_GUARD)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return _fetch_ok(b"", upstream_status=404)
+
+    with EdgarClient(http_client=_rg_client(handler)) as client:
+        with pytest.raises(RuntimeError, match="404"):
+            client.get("https://www.sec.gov/missing")
+
+
+def test_rate_guard_502_raises(monkeypatch):
+    monkeypatch.setattr(edgar_client.settings, "RATE_GUARD_URL", RATE_GUARD)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            502,
+            json={"detail": {"upstream_status": 403, "detail": "edgar returned 403"}},
+        )
+
+    with EdgarClient(http_client=_rg_client(handler)) as client:
+        with pytest.raises(RuntimeError, match="Rate Guard"):
+            client.get("https://www.sec.gov/blocked")
+
+
+def test_rate_guard_unreachable_raises(monkeypatch):
+    monkeypatch.setattr(edgar_client.settings, "RATE_GUARD_URL", RATE_GUARD)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("connection refused")
+
+    with EdgarClient(http_client=_rg_client(handler)) as client:
+        with pytest.raises(RuntimeError, match="unreachable"):
+            client.get("https://www.sec.gov/x")
+
+
+def test_fetches_are_recorded_for_the_rate_limit_status(monkeypatch):
+    monkeypatch.setattr(edgar_client.settings, "RATE_GUARD_URL", RATE_GUARD)
     monkeypatch.setattr(edgar_client.settings, "EDGAR_RATE_LIMIT_WINDOW_S", 60)
-    monkeypatch.setattr(edgar_client, "_get_bucket", lambda: DummyBucket())
-    monkeypatch.setattr(edgar_client.time, "sleep", lambda seconds: None)
     _reset_events()
 
-    forbidden = edgar_client.EdgarClient(http_client=DummyHttpClient([403]))
-    with pytest.raises(RuntimeError, match="EDGAR 403"):
-        forbidden.get("https://www.sec.gov/test-403")
+    with EdgarClient(http_client=_rg_client(lambda r: _fetch_ok(b"ok"))) as client:
+        client.get("https://www.sec.gov/ok")
 
-    throttled = edgar_client.EdgarClient(http_client=DummyHttpClient([429]))
-    with pytest.raises(RuntimeError, match="failed after 0 retries"):
-        throttled.get("https://www.sec.gov/test-429")
+    def forbidden(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            502, json={"detail": {"upstream_status": 403, "detail": "403"}}
+        )
+
+    with EdgarClient(http_client=_rg_client(forbidden)) as client:
+        with pytest.raises(RuntimeError):
+            client.get("https://www.sec.gov/blocked")
 
     status = edgar_client.edgar_rate_limit_status()
-
+    assert status["recent_request_count"] == 2
     assert status["recent_403_count"] == 1
-    assert status["recent_429_count"] == 1
     assert status["edgar_block_alert"] is True
+    assert status["global_pause_until"] is None

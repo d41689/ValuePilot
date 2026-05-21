@@ -1,3 +1,13 @@
+import os
+
+# The app's live-mode startup guard (app/main.py) requires RATE_GUARD_URL, and
+# the `client` fixture below runs that guard via `with TestClient(app)`. Tests
+# never actually call Rate Guard — they inject fake EDGAR clients — so set a
+# placeholder URL before any app import to satisfy the guard. EDGAR_FETCH_MODE
+# is left at its default ("live") so fetch_and_store still uses the injected
+# fake clients rather than the replay-from-DB path.
+os.environ.setdefault("RATE_GUARD_URL", "http://rate-guard.invalid")
+
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
