@@ -186,14 +186,23 @@ def evaluate_openfigi_matches(matches: List[Dict[str, Any]]) -> tuple[str, str, 
 def enrich_unmapped_holdings(db: Session, client: Optional[OpenFigiClient] = None, limit: int = 100) -> int:
     """Find holdings that are pending mapping, fetch OpenFIGI, and update them."""
     
-    # 1. Fetch pending CUSIPs
+    # 1. Fetch holdings that still need a CUSIP->ticker mapping and whose CUSIP
+    #    has no cusip_ticker_map row yet. `pending_mapping` (freshly ingested)
+    #    and `unresolved` (an apply-mappings pass found no row — OpenFIGI was
+    #    never consulted) are both enrichable; `needs_review` is the ambiguous-
+    #    result human queue and is excluded. Skipping already-mapped CUSIPs is
+    #    what lets a run-to-completion loop terminate — see
+    #    enrich_all_unmapped_holdings.
+    mapped_cusips = db.query(CusipTickerMap.cusip).filter(CusipTickerMap.cusip.isnot(None))
     pending_holdings = (
         db.query(Holding13F)
-        .filter(Holding13F.cusip_mapping_status == "pending_mapping")
+        .filter(Holding13F.cusip_mapping_status.in_(["pending_mapping", "unresolved"]))
+        .filter(Holding13F.cusip.isnot(None))
+        .filter(~Holding13F.cusip.in_(mapped_cusips))
         .limit(limit)
         .all()
     )
-    
+
     if not pending_holdings:
         return 0
         
@@ -249,6 +258,67 @@ def enrich_unmapped_holdings(db: Session, client: Optional[OpenFigiClient] = Non
         # caller's to manage.
         if owns_client:
             client.close()
+
+
+def _count_enrichable_holdings(db: Session) -> int:
+    """Holdings still needing a CUSIP->ticker mapping whose CUSIP has no
+    cusip_ticker_map row yet — the OpenFIGI enrichment work remaining."""
+    mapped_cusips = db.query(CusipTickerMap.cusip).filter(CusipTickerMap.cusip.isnot(None))
+    return (
+        db.query(Holding13F)
+        .filter(Holding13F.cusip_mapping_status.in_(["pending_mapping", "unresolved"]))
+        .filter(Holding13F.cusip.isnot(None))
+        .filter(~Holding13F.cusip.in_(mapped_cusips))
+        .count()
+    )
+
+
+def enrich_all_unmapped_holdings(
+    db: Session,
+    *,
+    client: Optional[OpenFigiClient] = None,
+    batch_size: int = 100,
+    max_batches: int = 300,
+) -> dict[str, int]:
+    """Run OpenFIGI CUSIP enrichment to completion, then bootstrap + backfill.
+
+    Loops `enrich_unmapped_holdings` batch by batch until no holding with an
+    unmapped CUSIP remains — each batch maps (and so removes from the pool)
+    every CUSIP it touches, so the loop terminates — then creates Stock rows
+    and links holdings. `max_batches` is a hard safety cap; OpenFIGI rate
+    limiting is owned by Rate Guard, so the loop itself does not throttle.
+    """
+    owns_client = client is None
+    if owns_client:
+        client = OpenFigiClient()
+    total_mapped = 0
+    batches = 0
+    try:
+        while batches < max_batches:
+            before = _count_enrichable_holdings(db)
+            if before == 0:
+                break
+            total_mapped += enrich_unmapped_holdings(db, client=client, limit=batch_size)
+            batches += 1
+            if _count_enrichable_holdings(db) >= before:
+                # No progress — guard against an unexpected stall.
+                logger.warning(
+                    "enrich_all_unmapped_holdings: batch %d made no progress, stopping",
+                    batches,
+                )
+                break
+    finally:
+        if owns_client:
+            client.close()
+    new_stocks = bootstrap_stocks_from_cusip_map(db)
+    holdings_linked = backfill_stock_ids(db)
+    return {
+        "mappings_created": total_mapped,
+        "batches_run": batches,
+        "new_stocks": new_stocks,
+        "holdings_linked": holdings_linked,
+        "holdings_still_unmapped": _count_enrichable_holdings(db),
+    }
 
 
 def enrich_cusips_from_openfigi(db: Session, limit: int = 100) -> int:

@@ -56,21 +56,22 @@ long — escalate to the user. **medium / low** = ordinary follow-up.
 - **Context:** `docs/tasks/2026-05-20_auth-hardening-followups.md` (item 2)
 - **Issue:** —
 
-### 13F holdings CUSIP link rate stuck at ~12%
+### 13F holdings CUSIP link rate stuck at ~12% — operational run pending
 - **Found:** 2026-05-20, /admin/13f operational audit (item #7)
 - **Severity:** medium
-- **Problem:** Only ~12% of common-stock 13F holdings are linked to a `Stock`
-  (2026-Q1: 504/4278; similar for other quarters). ~2,084 distinct CUSIPs are
-  unresolved, including mega-caps (Alphabet, Visa, Amazon, BofA). The admin
-  "Run CUSIP enrichment" job (`enrich_metadata`) only applies *existing*
-  `CusipTickerMap` rows — it creates no new mappings — so re-running it cannot
-  raise the rate. Resolving the gap needs the OpenFIGI-backed enrichment
-  (`enrich_cusips_from_openfigi` / `enrich_unmapped_holdings`) run at scale to
-  populate `CusipTickerMap`, then `bootstrap_stocks_from_cusip_map` +
-  `backfill_stock_ids`. That is a data-completeness effort (OpenFIGI API key,
-  rate limits, batching — `enrich_unmapped_holdings` does 100/run) with no
-  single admin-UI trigger today.
-- **Context:** `docs/tasks/2026-05-20_admin-13f-ops-audit.md` (item #7)
+- **Problem:** ~12% of common-stock 13F holdings are linked to a `Stock`
+  (~13,981 holdings, ~2,084 distinct CUSIPs unresolved). The 2026-05-21
+  diagnosis found the root cause was a **bug**, not just data completeness:
+  `enrich_unmapped_holdings` queried `cusip_mapping_status == 'pending_mapping'`
+  only, but every unresolved prod holding is in status `unresolved` — so the
+  OpenFIGI enrichment was a permanent no-op. The bug fix + a run-to-completion
+  `enrich_cusip` job ship in the 2026-05-21 enrichment-fix PR (this change).
+  **Remaining:** run the `enrich_cusip` job against prod (a real OpenFIGI-backed
+  data operation) to populate `cusip_ticker_map` and lift the rate — a separate,
+  explicitly authorised step. Clear this entry once that run is done and the
+  rate is verified up.
+- **Context:** `docs/tasks/2026-05-21_cusip-link-rate-diagnosis.md`; original
+  `docs/tasks/2026-05-20_admin-13f-ops-audit.md` (item #7)
 - **Issue:** —
 
 ### Manager `manager_type` classification (all `unknown`)

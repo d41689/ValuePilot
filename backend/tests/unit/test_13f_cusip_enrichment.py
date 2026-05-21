@@ -2,12 +2,13 @@ import pytest
 from datetime import date
 from unittest.mock import patch, MagicMock
 
-from app.models.institutions import CusipTickerMap, Holding13F
+from app.models.institutions import CusipTickerMap, Filing13F, Holding13F, InstitutionManager
 from app.services.cusip_enrichment import (
     _has_overlap,
     upsert_cusip_mapping,
     evaluate_openfigi_matches,
     enrich_unmapped_holdings,
+    enrich_all_unmapped_holdings,
     enrich_cusips_from_openfigi,
     enrich_from_dataroma,
 )
@@ -141,48 +142,123 @@ def test_enrich_unmapped_holdings_mocked(MockClient, db_session):
     pass
 
 
-def _pending_holding(cusip: str) -> MagicMock:
-    h = MagicMock()
-    h.cusip = cusip
-    h.cusip_mapping_status = "pending_mapping"
-    return h
+_AAPL_OPENFIGI = [
+    [{"ticker": "AAPL", "name": "Apple Inc", "securityType": "Common Stock", "exchCode": "US"}]
+]
 
 
-def _db_with_pending(holdings: list) -> MagicMock:
-    """A MagicMock db whose pending-holdings query returns ``holdings``."""
-    db = MagicMock()
-    db.query.return_value.filter.return_value.limit.return_value.all.return_value = holdings
-    return db
-
-
-@patch("app.services.cusip_enrichment._apply_mappings_to_holdings")
-@patch("app.services.cusip_enrichment.upsert_cusip_mapping")
-def test_enrich_closes_a_self_constructed_client(_mock_upsert, _mock_apply):
+def test_enrich_closes_a_self_constructed_client(db_session, monkeypatch):
     """enrich_unmapped_holdings closes the OpenFigiClient it creates itself."""
-    db = _db_with_pending([_pending_holding("037833100")])  # a valid CUSIP
+    _seed_holdings(db_session, [("037833100", "unresolved")])
+    mock_client = MagicMock()
+    mock_client.map_cusips.return_value = _AAPL_OPENFIGI
+    monkeypatch.setattr(
+        "app.services.cusip_enrichment.OpenFigiClient", lambda: mock_client
+    )
 
-    with patch("app.services.cusip_enrichment.OpenFigiClient") as MockClient:
-        mock_client = MockClient.return_value
-        mock_client.map_cusips.return_value = [
-            [{"ticker": "AAPL", "name": "Apple Inc", "securityType": "Common Stock", "exchCode": "US"}]
-        ]
-        enrich_unmapped_holdings(db)
+    enrich_unmapped_holdings(db_session)  # no client passed -> self-constructs
 
     mock_client.map_cusips.assert_called_once()
     mock_client.close.assert_called_once()
 
 
-@patch("app.services.cusip_enrichment._apply_mappings_to_holdings")
-@patch("app.services.cusip_enrichment.upsert_cusip_mapping")
-def test_enrich_does_not_close_an_injected_client(_mock_upsert, _mock_apply):
+def test_enrich_does_not_close_an_injected_client(db_session):
     """An injected client is the caller's to manage — enrich must not close it."""
-    db = _db_with_pending([_pending_holding("037833100")])
+    _seed_holdings(db_session, [("037833100", "unresolved")])
     injected = MagicMock()
-    injected.map_cusips.return_value = [
-        [{"ticker": "AAPL", "name": "Apple Inc", "securityType": "Common Stock", "exchCode": "US"}]
-    ]
+    injected.map_cusips.return_value = _AAPL_OPENFIGI
 
-    enrich_unmapped_holdings(db, client=injected)
+    enrich_unmapped_holdings(db_session, client=injected)
 
     injected.map_cusips.assert_called_once()
     injected.close.assert_not_called()
+
+
+# --- run-to-completion enrichment (CUSIP link-rate fix) -----------------------
+
+_SEED_SEQ = iter(range(1, 10_000))
+
+
+def _seed_holdings(db_session, specs):
+    """specs: list of (cusip, cusip_mapping_status). Creates one manager + one
+    filing + the holdings, against the real db_session."""
+    n = next(_SEED_SEQ)
+    mgr = InstitutionManager(
+        cik=None, legal_name=f"Seed Mgr {n}", display_name=f"Seed Mgr {n}",
+        name_normalized=f"seed mgr {n}", match_status="seeded", is_superinvestor=False,
+    )
+    db_session.add(mgr)
+    db_session.flush()
+    accession = f"SEED{n:016d}"
+    filing = Filing13F(
+        manager_id=mgr.id, accession_no=accession, accession_number=accession,
+        form_type="13F-HR", period_of_report=date(2024, 3, 31),
+        filed_at=date(2024, 5, 15), report_quarter="2024-Q1",
+        quarter_end_date=date(2024, 3, 31),
+    )
+    db_session.add(filing)
+    db_session.flush()
+    holdings = []
+    for i, (cusip, status) in enumerate(specs):
+        h = Holding13F(
+            filing_id=filing.id, manager_id=mgr.id, accession_number=accession,
+            report_quarter="2024-Q1", quarter_end_date=date(2024, 3, 31),
+            row_fingerprint=f"seed-{n}-{i}", cusip=cusip,
+            issuer_name=f"Issuer {cusip}", value_thousands=100,
+            cusip_mapping_status=status,
+        )
+        db_session.add(h)
+        holdings.append(h)
+    db_session.flush()
+    return holdings
+
+
+def test_enrich_picks_up_unresolved_holdings(db_session):
+    """Regression: a holding in status 'unresolved' (not just 'pending_mapping')
+    must be enriched. The old filter only matched 'pending_mapping', so the
+    13,981 unresolved prod holdings were a permanent no-op."""
+    (h,) = _seed_holdings(db_session, [("037833100", "unresolved")])
+
+    n = enrich_unmapped_holdings(db_session, client=OpenFigiClient(use_stub=True))
+
+    assert n == 1
+    db_session.refresh(h)
+    assert h.cusip_mapping_status == "linked"
+    assert h.stock_id is not None
+
+
+def test_enrich_skips_cusips_already_mapped(db_session):
+    """A CUSIP already in cusip_ticker_map is not re-sent to OpenFIGI — this is
+    what lets the run-to-completion loop terminate."""
+    _seed_holdings(db_session, [("023135106", "unresolved"), ("594918104", "unresolved")])
+    upsert_cusip_mapping(
+        db_session, cusip="023135106", ticker="AMZN", issuer_name="Amazon",
+        source="manual", confidence="high",
+    )
+    db_session.flush()
+    before = db_session.query(CusipTickerMap).count()
+
+    enrich_unmapped_holdings(db_session, client=OpenFigiClient(use_stub=True))
+
+    after = db_session.query(CusipTickerMap).count()
+    assert after == before + 1  # only the un-mapped CUSIP (594918104) is enriched
+
+
+def test_enrich_all_runs_to_completion(db_session):
+    """enrich_all_unmapped_holdings loops over batches until no unmapped CUSIP
+    remains, then bootstraps stocks and links holdings."""
+    _seed_holdings(db_session, [
+        ("037833100", "unresolved"),       # Apple
+        ("594918104", "unresolved"),       # Microsoft
+        ("023135106", "pending_mapping"),  # Amazon
+        ("92826C839", "unresolved"),       # Visa
+    ])
+
+    summary = enrich_all_unmapped_holdings(
+        db_session, client=OpenFigiClient(use_stub=True), batch_size=2,
+    )
+
+    assert summary["holdings_still_unmapped"] == 0
+    assert summary["batches_run"] >= 2          # 4 CUSIPs at batch_size 2
+    assert summary["mappings_created"] >= 4
+    assert summary["holdings_linked"] >= 4
