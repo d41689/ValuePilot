@@ -84,8 +84,13 @@ def build_upstreams() -> dict[str, Upstream]:
             burst=1,
             max_retries=3,
             backoff_s=(2.0, 10.0, 30.0),
+            # OpenFIGI's /v3/mapping requires Content-Type: application/json;
+            # Rate Guard forwards the raw body with httpx `content=`, which
+            # sets no content type, so it must be injected here.
             extra_headers=(
-                {"X-OPENFIGI-APIKEY": openfigi_key} if openfigi_key else {}
+                {"Content-Type": "application/json", "X-OPENFIGI-APIKEY": openfigi_key}
+                if openfigi_key
+                else {"Content-Type": "application/json"}
             ),
             cache_ttl_s=7 * 24 * 3600.0,
         ),

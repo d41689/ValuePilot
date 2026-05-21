@@ -25,6 +25,22 @@ long — escalate to the user. **medium / low** = ordinary follow-up.
   (follow-up 2); address as part of Rate Guard PR 2/4.
 - **Issue:** —
 
+### EdgarClient not yet migrated onto the shared RateGuardClient
+- **Found:** 2026-05-21, Rate Guard PR 3/4 (OpenFigi / Dataroma repoint)
+- **Severity:** low
+- **Problem:** PR 3/4 introduced `backend/app/rate_guard/client.py`
+  (`RateGuardClient` + `RateGuardFetchError`) as the shared `POST /v1/fetch`
+  plumbing and routed `OpenFigiClient` / `DataromaClient` through it.
+  `EdgarClient` still carries its own copy of that logic (`_fetch`,
+  `EdgarFetchError`, `_rate_guard_error_detail`) from PR 2/4 — it was left
+  untouched to keep PR 3/4 scoped and avoid reopening merged code. Migrate
+  `EdgarClient` onto `RateGuardClient` so all three clients share one
+  implementation (`EdgarClient` keeps its EDGAR-specific `_record_request` /
+  `edgar_rate_limit_status` wrapper); then unify `EdgarFetchError` with
+  `RateGuardFetchError` (alias or subclass).
+- **Context:** `docs/tasks/2026-05-21_rate-guard-pr3-openfigi-dataroma.md`
+- **Issue:** —
+
 ### Refresh tokens have no revocation / reuse detection
 - **Found:** 2026-05-20, PR #64 (refresh-token flow)
 - **Severity:** medium
