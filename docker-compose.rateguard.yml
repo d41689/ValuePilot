@@ -1,0 +1,33 @@
+# Rate Guard — ONE shared instance for dev + prod.
+#
+# Both the dev and the prod stacks point RATE_GUARD_URL at this single
+# instance (over the `projects-shared` network), so the *combined* egress
+# rate to SEC / OpenFIGI / Dataroma is bounded by one limiter. Do not define
+# a second rate-guard service in the dev or prod compose files — that would
+# be two limiters and defeat the purpose.
+name: rate-guard
+
+services:
+  rate-guard:
+    build:
+      context: ./rate-guard
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    # .env supplies SEC_CONTACT_EMAIL (SEC User-Agent) and OPENFIGI_API_KEY.
+    env_file:
+      - .env
+    environment:
+      RATE_GUARD_CACHE_DIR: /data/cache
+    ports:
+      # Host port for healthz / metrics inspection only; internal callers use
+      # http://rate-guard:9000 on the shared network.
+      - "${RATE_GUARD_HOST_PORT:-9099}:9000"
+    volumes:
+      - ./storage/rate_guard_cache:/data/cache
+    networks:
+      - shared-infra
+
+networks:
+  shared-infra:
+    external: true
+    name: projects-shared
