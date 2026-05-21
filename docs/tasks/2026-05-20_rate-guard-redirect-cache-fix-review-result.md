@@ -127,3 +127,41 @@ on the old code: 557 / 1280 crashed.)
 
 Once that lands, this is approvable — both vulnerabilities are fixed and the
 boundary is then guarded.
+
+## Final re-review (2026-05-20) — 批准 / APPROVED
+
+The one blocking item above is resolved by commit `cc87e82`. **PR #78 is
+approved.**
+
+`rate-guard/tests/test_gateway.py` adds `test_default_client_does_not_follow_redirects`:
+it builds a `Gateway` with `client=None` — the production path through
+`gateway.py:48` — and asserts `gw._client.follow_redirects is False`. Unlike
+`test_redirect_to_off_allowlist_host_is_not_followed` (which injects its own
+client and never reaches line 48), this test genuinely exercises the fix.
+
+Verified (throwaway container copy, repo untouched):
+
+- Full suite — **19 passed** (18 → 19).
+- **Guard-flip check** — with `gateway.py:48` reverted to `follow_redirects=True`,
+  `test_default_client_does_not_follow_redirects` **fails** (`assert True is
+  False`). The test does what a regression guard must: it goes red the moment
+  the fix is undone.
+
+Both blockers from review #2 are now fixed **and** each is protected by a test
+that fails if its fix regresses:
+
+- **P1** — `follow_redirects=False` (`gateway.py:48`), guarded by
+  `test_default_client_does_not_follow_redirects`.
+- **P2** — per-write `tempfile.mkstemp` (`cache.py`), guarded by
+  `test_concurrent_put_same_key_does_not_crash`.
+
+`gateway.py` / `cache.py` are unchanged since the versions verified above —
+commit `cc87e82` touched only the test and docs — so the earlier P1/P2 fix
+verification still stands.
+
+The non-blocking follow-ups recorded in review #2 (method allowlist,
+per-upstream opt-in for `POST` caching, the CI step running on the runner host
+with an unpinned Python, `main.py` route tests) remain open for later Rate Guard
+PRs and do not block PR #78.
+
+**Verdict: 批准 / Approved.**
