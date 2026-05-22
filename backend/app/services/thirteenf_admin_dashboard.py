@@ -1730,13 +1730,17 @@ def _setup_checklist(
 
 
 def _form_idx_fetched(session: Session, window: QuarterWindow) -> bool:
-    year = window.start.year
-    qtr = int(window.label.split("-Q", 1)[1])
+    # `window` is a report quarter; its 13Fs are filed in — and so indexed
+    # under — the *following* calendar quarter's EDGAR full-index. Check that
+    # quarter's QTR path, not the report quarter's own. See ingest_quarter_index.
+    from app.edgar.parsers.form_idx import next_quarter_label, quarter_to_year_qtr
+
+    filing_year, filing_qtr = quarter_to_year_qtr(next_quarter_label(window.label))
     return (
         session.query(RawSourceDocument)
         .filter(RawSourceDocument.source_system == "edgar")
         .filter(RawSourceDocument.document_type == "form_idx")
-        .filter(RawSourceDocument.source_url.contains(f"/{year}/QTR{qtr}/"))
+        .filter(RawSourceDocument.source_url.contains(f"/{filing_year}/QTR{filing_qtr}/"))
         .first()
         is not None
     )
@@ -3015,7 +3019,86 @@ def _execute_job(session: Session, job_type: str, payload: dict[str, Any]) -> di
         created = bootstrap_stocks_from_cusip_map(session)
         linked = backfill_stock_ids(session)
         return {"new_stocks": created, "holdings_linked": linked, "status": "succeeded"}
+    if job_type == "historical_backfill":
+        from app.services.thirteenf_historical_backfill import execute_historical_backfill
+
+        return execute_historical_backfill(
+            session,
+            job_run_id=payload["_job_id"],
+            validation_gate=_historical_backfill_validation_gate,
+            filing_discovery_fn=_historical_backfill_filing_discovery,
+            ingest_fn=_historical_backfill_ingest,
+        )
     raise ValueError(f"Unsupported job_type: {job_type}")
+
+
+def _historical_backfill_filing_discovery(
+    manager: InstitutionManager, quarter: str
+) -> list[dict[str, Any]]:
+    """Production FilingDiscoveryFn: the manager's 13F-HR filings reporting on `quarter`.
+
+    `quarter` is a report quarter; a filing belongs to it when its
+    period-of-report falls inside that quarter's window.
+    """
+    from app.edgar.client import EdgarClient
+    from app.edgar.parsers.submissions import parse_submissions, submissions_url
+
+    window = quarter_window(quarter)
+    with EdgarClient() as client:
+        _, filings = parse_submissions(client.get(submissions_url(manager.cik)))
+
+    metas: list[dict[str, Any]] = []
+    for filing in filings:
+        if filing.form_type not in ("13F-HR", "13F-HR/A"):
+            continue
+        report_date = filing.report_date or filing.filed_at
+        if report_date is None or not (window.start <= report_date <= window.end):
+            continue
+        metas.append(
+            {
+                "accession_number": filing.accession_no,
+                "manager_id": manager.id,
+                "cik": manager.cik,
+                "form_type": filing.form_type,
+                "report_quarter": quarter,
+                "filed_at": filing.filed_at.isoformat() if filing.filed_at else None,
+            }
+        )
+    return metas
+
+
+def _historical_backfill_ingest(
+    session: Session, manager: InstitutionManager, meta: dict[str, Any]
+) -> dict[str, Any]:
+    """Production IngestFn: ingest one discovered accession via the standard stage job."""
+    stage_result = _execute_pipeline_stage_job(
+        session,
+        parent_payload={},
+        job_type="ingest_accession",
+        payload={
+            "accession_no": meta["accession_number"],
+            "manager_id": manager.id,
+            "cik": manager.cik,
+            "form_type": meta.get("form_type", "13F-HR"),
+            "sync_date": meta.get("filed_at"),
+        },
+    )
+    stage = stage_result["stage"]
+    ok = stage["status"] in {"succeeded", "partial_success"}
+    return {
+        "status": "succeeded" if ok else "failed",
+        "accession_number": meta["accession_number"],
+        "error": None if ok else stage_result.get("error") or stage["status"],
+    }
+
+
+def _historical_backfill_validation_gate(
+    session: Session, quarter: str, _entries: list[dict[str, Any]]
+) -> tuple[bool, list[str]]:
+    """Production ValidationGate: the quarter passes when quality_check finds no errors."""
+    report = run_quality_checks(session, quarter)
+    errors = [getattr(issue, "detail", None) or str(issue) for issue in report.errors]
+    return (not errors, errors)
 
 
 def _execute_pipeline_stage_job(

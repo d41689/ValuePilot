@@ -114,6 +114,14 @@ def quarter_to_year_qtr(quarter: str) -> tuple[int, int]:
     return int(parts[0]), int(parts[1])
 
 
+def next_quarter_label(quarter: str) -> str:
+    """'2025-Q4' → '2026-Q1'. The calendar quarter immediately after `quarter`."""
+    year, qtr = quarter_to_year_qtr(quarter)
+    if qtr >= 4:
+        return f"{year + 1}-Q1"
+    return f"{year}-Q{qtr + 1}"
+
+
 def form_idx_url(year: int, qtr: int) -> str:
     return f"https://www.sec.gov/Archives/edgar/full-index/{year}/QTR{qtr}/form.idx"
 

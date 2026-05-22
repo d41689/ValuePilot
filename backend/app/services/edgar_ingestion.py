@@ -22,6 +22,7 @@ from app.edgar.fetcher import fetch_and_store, load_body
 from app.edgar.parsers.form_idx import (
     FormIdxRecord,
     form_idx_url,
+    next_quarter_label,
     parse_form_idx,
     quarter_to_year_qtr,
 )
@@ -443,12 +444,19 @@ def ingest_quarter_index(
     *,
     cik_whitelist: Optional[set[str]] = None,
 ) -> int:
-    """Fetch form.idx for the given quarter and write new filings_13f rows.
+    """Fetch form.idx for the given report quarter and write new filings_13f rows.
+
+    `quarter` is a **report quarter** (the period 13F holdings are "as of").
+    13Fs are filed within 45 days *after* the quarter ends, so they appear in
+    the EDGAR full-index of the *following* calendar quarter — fetch that one.
+    Without this translation, requesting report quarter Q would fetch Q's filing
+    index, which carries Q-1's holdings (see docs/architecture/parsing.md).
 
     If cik_whitelist is None, all confirmed managers in institution_managers are used.
     Returns count of new filings inserted.
     """
-    year, qtr = quarter_to_year_qtr(quarter)
+    filing_quarter = next_quarter_label(quarter)
+    year, qtr = quarter_to_year_qtr(filing_quarter)
     url = form_idx_url(year, qtr)
 
     with EdgarClient() as client:

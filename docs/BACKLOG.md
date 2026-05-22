@@ -9,6 +9,23 @@ long — escalate to the user. **medium / low** = ordinary follow-up.
 
 ## Open
 
+### 13F test suite is not isolated from dev-database data
+- **Found:** 2026-05-22, 13F web-validation run
+- **Severity:** low
+- **Problem:** The pytest suite runs against the dev `valuepilot` database and
+  assumes it starts empty (`conftest.py`: "assuming fresh DB from
+  docker-compose"). `test_13f_admin_dashboard.py` bulk-deletes `job_runs` in a
+  fixture; when a normal app/web run has left `job_runs` rows that
+  `quality_reports_13f.source_job_id` (and other tables) reference, that delete
+  raises `ForeignKeyViolation` and ~50 tests fail — even though the code is
+  correct (verified: 907 pass on a fresh `valuepilot_test` DB). Real CI runs on
+  a fresh DB so CI is unaffected, but local `pytest` is fragile after any web
+  use of the dev stack. Fix: point the suite at a dedicated, migrated test
+  database, or make the fixtures delete dependents first / rely solely on the
+  transactional rollback.
+- **Context:** `docs/tasks/2026-05-21_13f-web-validation.md` (F5)
+- **Issue:** —
+
 ### Rate Guard rollout is in-place, with no staged probe or rollback
 - **Found:** 2026-05-20, PR #79 (Rate Guard deploy integration) review
 - **Severity:** low

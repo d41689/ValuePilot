@@ -926,6 +926,14 @@ export default function Admin13FPage() {
                 >
                   Bootstrap stocks
                 </Button>
+                <Button
+                  type="button"
+                  variant="outline"
+                  disabled={isJobActive({ job_type: 'enrich_cusip' })}
+                  onClick={() => runJob({ job_type: 'enrich_cusip' }, 'Enrich all CUSIPs')}
+                >
+                  Enrich all CUSIPs
+                </Button>
               </div>
             </div>
             <div className="rounded-md border border-border/70 p-3">
@@ -973,6 +981,22 @@ export default function Admin13FPage() {
                   }
                 >
                   Quality check
+                </Button>
+                <Button
+                  type="button"
+                  variant="outline"
+                  disabled={
+                    !targetQuarter ||
+                    isJobActive({ job_type: 'oracles_lens_score_backfill', quarter: targetQuarter })
+                  }
+                  onClick={() =>
+                    runJob(
+                      { job_type: 'oracles_lens_score_backfill', quarter: targetQuarter },
+                      "Oracle's Lens score",
+                    )
+                  }
+                >
+                  Oracle&apos;s Lens score
                 </Button>
               </div>
             </div>
