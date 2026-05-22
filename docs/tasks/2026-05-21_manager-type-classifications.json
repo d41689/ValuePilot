@@ -1,0 +1,963 @@
+[
+ {
+  "manager_id": 1,
+  "canonical_name": "AKO CAPITAL LLP",
+  "manager_type": "long_term_fundamental",
+  "confidence": "high",
+  "note": "[auto-classified by Claude, first pass — pending human review] long_term_fundamental: diversified fundamental value portfolio — 27 holdings, top-10 weight 66.2% (prod 13F, 2026-03-31). Confidence: high.",
+  "evidence_json": {
+   "classified_by": "claude_first_pass",
+   "method": "prod_13f_behavior"
+  }
+ },
+ {
+  "manager_id": 2,
+  "canonical_name": "ATLANTIC INVESTMENT MANAGEMENT, INC.",
+  "manager_type": "value_concentrated",
+  "confidence": "high",
+  "note": "[auto-classified by Claude, first pass — pending human review] value_concentrated: concentrated value portfolio — 12 holdings, top-10 weight 97.0% (prod 13F, 2026-03-31). Confidence: high.",
+  "evidence_json": {
+   "classified_by": "claude_first_pass",
+   "method": "prod_13f_behavior"
+  }
+ },
+ {
+  "manager_id": 3,
+  "canonical_name": "ALTAROCK PARTNERS LP",
+  "manager_type": "value_concentrated",
+  "confidence": "high",
+  "note": "[auto-classified by Claude, first pass — pending human review] value_concentrated: concentrated value portfolio — 8 holdings, top-10 weight 100.0% (prod 13F, 2026-03-31). Confidence: high.",
+  "evidence_json": {
+   "classified_by": "claude_first_pass",
+   "method": "prod_13f_behavior"
+  }
+ },
+ {
+  "manager_id": 4,
+  "canonical_name": "GATES FOUNDATION TRUST",
+  "manager_type": "value_concentrated",
+  "confidence": "high",
+  "note": "[auto-classified by Claude, first pass — pending human review] value_concentrated: concentrated value portfolio — 22 holdings, top-10 weight 96.5% (prod 13F, 2026-03-31). Confidence: high.",
+  "evidence_json": {
+   "classified_by": "claude_first_pass",
+   "method": "prod_13f_behavior"
+  }
+ },
+ {
+  "manager_id": 5,
+  "canonical_name": "Pershing Square Capital Management, L.P.",
+  "manager_type": "activist",
+  "confidence": "high",
+  "note": "[auto-classified by Claude, first pass — pending human review] activist: documented activist hedge fund — Bill Ackman runs concentrated activist campaigns (McDonald's, Herbalife, etc.) [prod 13F: 11 holdings, top-10 99.9%]. Confidence: high.",
+  "evidence_json": {
+   "classified_by": "claude_first_pass",
+   "method": "web_research",
+   "url": "https://en.wikipedia.org/wiki/Pershing_Square_Capital_Management"
+  }
+ },
+ {
+  "manager_id": 6,
+  "canonical_name": "MILLER VALUE PARTNERS, LLC",
+  "manager_type": "long_term_fundamental",
+  "confidence": "high",
+  "note": "[auto-classified by Claude, first pass — pending human review] long_term_fundamental: diversified fundamental value portfolio — 55 holdings, top-10 weight 51.9% (prod 13F, 2026-03-31). Confidence: high.",
+  "evidence_json": {
+   "classified_by": "claude_first_pass",
+   "method": "prod_13f_behavior"
+  }
+ },
+ {
+  "manager_id": 7,
+  "canonical_name": "Bill Nygren - Oakmark Funds",
+  "manager_type": "long_term_fundamental",
+  "confidence": "high",
+  "note": "[auto-classified by Claude, first pass — pending human review] long_term_fundamental: diversified long-term value mutual fund (Oakmark / Harris Associates, Bill Nygren); no 13F holdings ingested. Confidence: high.",
+  "evidence_json": {
+   "classified_by": "claude_first_pass",
+   "method": "documented_strategy"
+  }
+ },
+ {
+  "manager_id": 8,
+  "canonical_name": "FAIRHOLME CAPITAL MANAGEMENT LLC",
+  "manager_type": "value_concentrated",
+  "confidence": "high",
+  "note": "[auto-classified by Claude, first pass — pending human review] value_concentrated: concentrated value portfolio — 10 holdings, top-10 weight 100.0% (prod 13F, 2026-03-31). Confidence: high.",
+  "evidence_json": {
+   "classified_by": "claude_first_pass",
+   "method": "prod_13f_behavior"
+  }
+ },
+ {
+  "manager_id": 9,
+  "canonical_name": "Oakcliff Capital Partners, LP",
+  "manager_type": "value_concentrated",
+  "confidence": "high",
+  "note": "[auto-classified by Claude, first pass — pending human review] value_concentrated: concentrated value portfolio — 8 holdings, top-10 weight 100.0% (prod 13F, 2026-03-31). Confidence: high.",
+  "evidence_json": {
+   "classified_by": "claude_first_pass",
+   "method": "prod_13f_behavior"
+  }
+ },
+ {
+  "manager_id": 10,
+  "canonical_name": "ICAHN CAPITAL MANAGEMENT LP",
+  "manager_type": "activist",
+  "confidence": "high",
+  "note": "[auto-classified by Claude, first pass — pending human review] activist: the archetypal activist investor — Carl Icahn takes large stakes and forces board/capital-allocation change. Confidence: high.",
+  "evidence_json": {
+   "classified_by": "claude_first_pass",
+   "method": "web_research",
+   "url": "https://en.wikipedia.org/wiki/Carl_Icahn"
+  }
+ },
+ {
+  "manager_id": 11,
+  "canonical_name": "TIGER GLOBAL MANAGEMENT LLC",
+  "manager_type": "long_term_fundamental",
+  "confidence": "medium",
+  "note": "[auto-classified by Claude, first pass — pending human review] long_term_fundamental: fundamental, research-driven long/short equity (Tiger Cub) — long-term approach to category-leading companies [prod 13F: 54 holdings, top-10 69.5%]. Confidence: medium.",
+  "evidence_json": {
+   "classified_by": "claude_first_pass",
+   "method": "web_research",
+   "url": "https://en.wikipedia.org/wiki/Tiger_Global_Management"
+  }
+ },
+ {
+  "manager_id": 12,
+  "canonical_name": "TCI Fund Management Ltd",
+  "manager_type": "value_concentrated",
+  "confidence": "medium",
+  "note": "[auto-classified by Claude, first pass — pending human review] value_concentrated: highly concentrated quality-growth portfolio (~10 names, low turnover); activist heritage but Chris Hohn describes activism as now 'opportunistic' rather than core [prod 13F: 10 holdings, top-10 100.0%]. Confidence: medium.",
+  "evidence_json": {
+   "classified_by": "claude_first_pass",
+   "method": "web_research",
+   "url": "https://en.wikipedia.org/wiki/Chris_Hohn"
+  }
+ },
+ {
+  "manager_id": 13,
+  "canonical_name": "SEMPER AUGUSTUS INVESTMENTS GROUP LLC",
+  "manager_type": "long_term_fundamental",
+  "confidence": "high",
+  "note": "[auto-classified by Claude, first pass — pending human review] long_term_fundamental: diversified fundamental value portfolio — 44 holdings, top-10 weight 79.8% (prod 13F, 2026-03-31). Confidence: high.",
+  "evidence_json": {
+   "classified_by": "claude_first_pass",
+   "method": "prod_13f_behavior"
+  }
+ },
+ {
+  "manager_id": 14,
+  "canonical_name": "Christopher Davis - Davis Advisors",
+  "manager_type": "long_term_fundamental",
+  "confidence": "high",
+  "note": "[auto-classified by Claude, first pass — pending human review] long_term_fundamental: long-term value, diversified (Christopher Davis / Davis Advisors); no 13F holdings ingested. Confidence: high.",
+  "evidence_json": {
+   "classified_by": "claude_first_pass",
+   "method": "documented_strategy"
+  }
+ },
+ {
+  "manager_id": 15,
+  "canonical_name": "AKRE CAPITAL MANAGEMENT LLC",
+  "manager_type": "value_concentrated",
+  "confidence": "high",
+  "note": "[auto-classified by Claude, first pass — pending human review] value_concentrated: concentrated value portfolio — 20 holdings, top-10 weight 87.4% (prod 13F, 2026-03-31). Confidence: high.",
+  "evidence_json": {
+   "classified_by": "claude_first_pass",
+   "method": "prod_13f_behavior"
+  }
+ },
+ {
+  "manager_id": 16,
+  "canonical_name": "CAS Investment Partners, LLC",
+  "manager_type": "value_concentrated",
+  "confidence": "high",
+  "note": "[auto-classified by Claude, first pass — pending human review] value_concentrated: concentrated value portfolio — 5 holdings, top-10 weight 100.0% (prod 13F, 2026-03-31). Confidence: high.",
+  "evidence_json": {
+   "classified_by": "claude_first_pass",
+   "method": "prod_13f_behavior"
+  }
+ },
+ {
+  "manager_id": 17,
+  "canonical_name": "Third Point LLC",
+  "manager_type": "activist",
+  "confidence": "high",
+  "note": "[auto-classified by Claude, first pass — pending human review] activist: event-driven activist hedge fund — Daniel Loeb is known for activist campaigns and board pressure [prod 13F: 33 holdings, top-10 77.8%]. Confidence: high.",
+  "evidence_json": {
+   "classified_by": "claude_first_pass",
+   "method": "web_research",
+   "url": "https://en.wikipedia.org/wiki/Third_Point"
+  }
+ },
+ {
+  "manager_id": 18,
+  "canonical_name": "ABRAMS CAPITAL MANAGEMENT, L.P.",
+  "manager_type": "value_concentrated",
+  "confidence": "high",
+  "note": "[auto-classified by Claude, first pass — pending human review] value_concentrated: concentrated value portfolio — 11 holdings, top-10 weight 100.0% (prod 13F, 2026-03-31). Confidence: high.",
+  "evidence_json": {
+   "classified_by": "claude_first_pass",
+   "method": "prod_13f_behavior"
+  }
+ },
+ {
+  "manager_id": 19,
+  "canonical_name": "GREENLIGHT CAPITAL INC",
+  "manager_type": "value_concentrated",
+  "confidence": "high",
+  "note": "[auto-classified by Claude, first pass — pending human review] value_concentrated: concentrated value-oriented long/short (David Einhorn / Greenlight); no 13F holdings ingested. Confidence: high.",
+  "evidence_json": {
+   "classified_by": "claude_first_pass",
+   "method": "documented_strategy"
+  }
+ },
+ {
+  "manager_id": 20,
+  "canonical_name": "MATRIX ASSET ADVISORS INC/NY",
+  "manager_type": "long_term_fundamental",
+  "confidence": "high",
+  "note": "[auto-classified by Claude, first pass — pending human review] long_term_fundamental: diversified fundamental value portfolio — 105 holdings, top-10 weight 38.7% (prod 13F, 2026-03-31). Confidence: high.",
+  "evidence_json": {
+   "classified_by": "claude_first_pass",
+   "method": "prod_13f_behavior"
+  }
+ },
+ {
+  "manager_id": 21,
+  "canonical_name": "WEDGEWOOD PARTNERS INC",
+  "manager_type": "value_concentrated",
+  "confidence": "high",
+  "note": "[auto-classified by Claude, first pass — pending human review] value_concentrated: concentrated value portfolio — 22 holdings, top-10 weight 63.7% (prod 13F, 2026-03-31). Confidence: high.",
+  "evidence_json": {
+   "classified_by": "claude_first_pass",
+   "method": "prod_13f_behavior"
+  }
+ },
+ {
+  "manager_id": 22,
+  "canonical_name": "APPALOOSA MANAGEMENT LP",
+  "manager_type": "multi_strategy",
+  "confidence": "high",
+  "note": "[auto-classified by Claude, first pass — pending human review] multi_strategy: event-driven / distressed-debt / credit / macro hedge fund (David Tepper) — a multi-strategy book, not a long-only equity manager. Confidence: high.",
+  "evidence_json": {
+   "classified_by": "claude_first_pass",
+   "method": "web_research",
+   "url": "https://en.wikipedia.org/wiki/Appaloosa_Management"
+  }
+ },
+ {
+  "manager_id": 23,
+  "canonical_name": "ShawSpring Partners LLC",
+  "manager_type": "value_concentrated",
+  "confidence": "high",
+  "note": "[auto-classified by Claude, first pass — pending human review] value_concentrated: concentrated value portfolio — 12 holdings, top-10 weight 94.2% (prod 13F, 2026-03-31). Confidence: high.",
+  "evidence_json": {
+   "classified_by": "claude_first_pass",
+   "method": "prod_13f_behavior"
+  }
+ },
+ {
+  "manager_id": 24,
+  "canonical_name": "Dodge & Cox Funds",
+  "manager_type": "long_term_fundamental",
+  "confidence": "high",
+  "note": "[auto-classified by Claude, first pass — pending human review] long_term_fundamental: diversified long-term value, low turnover (Dodge & Cox); no 13F holdings ingested. Confidence: high.",
+  "evidence_json": {
+   "classified_by": "claude_first_pass",
+   "method": "documented_strategy"
+  }
+ },
+ {
+  "manager_id": 25,
+  "canonical_name": "H&H International Investment, LLC",
+  "manager_type": "value_concentrated",
+  "confidence": "high",
+  "note": "[auto-classified by Claude, first pass — pending human review] value_concentrated: concentrated value portfolio — 14 holdings, top-10 weight 99.7% (prod 13F, 2025-12-31). Confidence: high.",
+  "evidence_json": {
+   "classified_by": "claude_first_pass",
+   "method": "prod_13f_behavior"
+  }
+ },
+ {
+  "manager_id": 26,
+  "canonical_name": "First Eagle Investment Management, LLC",
+  "manager_type": "long_term_fundamental",
+  "confidence": "high",
+  "note": "[auto-classified by Claude, first pass — pending human review] long_term_fundamental: diversified fundamental value portfolio — 602 holdings, top-10 weight 27.2% (prod 13F, 2026-03-31). Confidence: high.",
+  "evidence_json": {
+   "classified_by": "claude_first_pass",
+   "method": "prod_13f_behavior"
+  }
+ },
+ {
+  "manager_id": 27,
+  "canonical_name": "FIRST PACIFIC ADVISORS INC",
+  "manager_type": "long_term_fundamental",
+  "confidence": "high",
+  "note": "[auto-classified by Claude, first pass — pending human review] long_term_fundamental: value-oriented, diversified (First Pacific Advisors / FPA); no 13F holdings ingested. Confidence: high.",
+  "evidence_json": {
+   "classified_by": "claude_first_pass",
+   "method": "documented_strategy"
+  }
+ },
+ {
+  "manager_id": 28,
+  "canonical_name": "Chou Associates Fund",
+  "manager_type": "value_concentrated",
+  "confidence": "high",
+  "note": "[auto-classified by Claude, first pass — pending human review] value_concentrated: concentrated deep-value (Francis Chou); no 13F holdings ingested. Confidence: high.",
+  "evidence_json": {
+   "classified_by": "claude_first_pass",
+   "method": "documented_strategy"
+  }
+ },
+ {
+  "manager_id": 29,
+  "canonical_name": "Giverny Capital Inc.",
+  "manager_type": "long_term_fundamental",
+  "confidence": "high",
+  "note": "[auto-classified by Claude, first pass — pending human review] long_term_fundamental: diversified fundamental value portfolio — 51 holdings, top-10 weight 53.4% (prod 13F, 2026-03-31). Confidence: high.",
+  "evidence_json": {
+   "classified_by": "claude_first_pass",
+   "method": "prod_13f_behavior"
+  }
+ },
+ {
+  "manager_id": 30,
+  "canonical_name": "Brave Warrior Advisors, LLC",
+  "manager_type": "long_term_fundamental",
+  "confidence": "high",
+  "note": "[auto-classified by Claude, first pass — pending human review] long_term_fundamental: diversified fundamental value portfolio — 36 holdings, top-10 weight 75.3% (prod 13F, 2026-03-31). Confidence: high.",
+  "evidence_json": {
+   "classified_by": "claude_first_pass",
+   "method": "prod_13f_behavior"
+  }
+ },
+ {
+  "manager_id": 31,
+  "canonical_name": "Engaged Capital LLC",
+  "manager_type": "activist",
+  "confidence": "high",
+  "note": "[auto-classified by Claude, first pass — pending human review] activist: constructive activist fund — Glenn Welling runs small/mid-cap activist campaigns (37+ to date) [prod 13F: 8 holdings, top-10 100.0%]. Confidence: high.",
+  "evidence_json": {
+   "classified_by": "claude_first_pass",
+   "method": "web_research",
+   "url": "https://engagedcapital.com/"
+  }
+ },
+ {
+  "manager_id": 32,
+  "canonical_name": "GREENHAVEN ASSOCIATES INC",
+  "manager_type": "long_term_fundamental",
+  "confidence": "high",
+  "note": "[auto-classified by Claude, first pass — pending human review] long_term_fundamental: diversified fundamental value portfolio — 27 holdings, top-10 weight 84.2% (prod 13F, 2026-03-31). Confidence: high.",
+  "evidence_json": {
+   "classified_by": "claude_first_pass",
+   "method": "prod_13f_behavior"
+  }
+ },
+ {
+  "manager_id": 33,
+  "canonical_name": "Conifer Management, L.L.C.",
+  "manager_type": "value_concentrated",
+  "confidence": "high",
+  "note": "[auto-classified by Claude, first pass — pending human review] value_concentrated: concentrated value portfolio — 6 holdings, top-10 weight 100.0% (prod 13F, 2026-03-31). Confidence: high.",
+  "evidence_json": {
+   "classified_by": "claude_first_pass",
+   "method": "prod_13f_behavior"
+  }
+ },
+ {
+  "manager_id": 34,
+  "canonical_name": "Aquamarine Capital Management, LLC",
+  "manager_type": "value_concentrated",
+  "confidence": "high",
+  "note": "[auto-classified by Claude, first pass — pending human review] value_concentrated: concentrated long-term value (Guy Spier, ~8-12 names); no 13F holdings ingested. Confidence: high.",
+  "evidence_json": {
+   "classified_by": "claude_first_pass",
+   "method": "documented_strategy"
+  }
+ },
+ {
+  "manager_id": 35,
+  "canonical_name": "SOUND SHORE MANAGEMENT INC /CT/",
+  "manager_type": "long_term_fundamental",
+  "confidence": "high",
+  "note": "[auto-classified by Claude, first pass — pending human review] long_term_fundamental: diversified fundamental value portfolio — 40 holdings, top-10 weight 33.1% (prod 13F, 2026-03-31). Confidence: high.",
+  "evidence_json": {
+   "classified_by": "claude_first_pass",
+   "method": "prod_13f_behavior"
+  }
+ },
+ {
+  "manager_id": 36,
+  "canonical_name": "Durable Capital Partners LP",
+  "manager_type": "long_term_fundamental",
+  "confidence": "high",
+  "note": "[auto-classified by Claude, first pass — pending human review] long_term_fundamental: diversified fundamental value portfolio — 37 holdings, top-10 weight 58.6% (prod 13F, 2026-03-31). Confidence: high.",
+  "evidence_json": {
+   "classified_by": "claude_first_pass",
+   "method": "prod_13f_behavior"
+  }
+ },
+ {
+  "manager_id": 37,
+  "canonical_name": "Hillman Value Fund",
+  "manager_type": "long_term_fundamental",
+  "confidence": "medium",
+  "note": "[auto-classified by Claude, first pass — pending human review] long_term_fundamental: value fund (Hillman Capital); no 13F holdings ingested — obscure, lower confidence. Confidence: medium.",
+  "evidence_json": {
+   "classified_by": "claude_first_pass",
+   "method": "documented_strategy"
+  }
+ },
+ {
+  "manager_id": 38,
+  "canonical_name": "OAKTREE CAPITAL MANAGEMENT LP",
+  "manager_type": "multi_strategy",
+  "confidence": "high",
+  "note": "[auto-classified by Claude, first pass — pending human review] multi_strategy: credit / distressed-debt / private-equity alternative manager (Howard Marks) — the 13F equity book is one sleeve of a multi-strategy firm [prod 13F: 142 holdings, top-10 47.3%]. Confidence: high.",
+  "evidence_json": {
+   "classified_by": "claude_first_pass",
+   "method": "web_research",
+   "url": "https://en.wikipedia.org/wiki/Oaktree_Capital_Management"
+  }
+ },
+ {
+  "manager_id": 39,
+  "canonical_name": "JENSEN INVESTMENT MANAGEMENT INC",
+  "manager_type": "long_term_fundamental",
+  "confidence": "high",
+  "note": "[auto-classified by Claude, first pass — pending human review] long_term_fundamental: diversified fundamental value portfolio — 84 holdings, top-10 weight 57.6% (prod 13F, 2026-03-31). Confidence: high.",
+  "evidence_json": {
+   "classified_by": "claude_first_pass",
+   "method": "prod_13f_behavior"
+  }
+ },
+ {
+  "manager_id": 40,
+  "canonical_name": "Egerton Capital (UK) LLP",
+  "manager_type": "value_concentrated",
+  "confidence": "high",
+  "note": "[auto-classified by Claude, first pass — pending human review] value_concentrated: concentrated value portfolio — 24 holdings, top-10 weight 68.7% (prod 13F, 2026-03-31). Confidence: high.",
+  "evidence_json": {
+   "classified_by": "claude_first_pass",
+   "method": "prod_13f_behavior"
+  }
+ },
+ {
+  "manager_id": 41,
+  "canonical_name": "ARIEL INVESTMENTS, LLC",
+  "manager_type": "long_term_fundamental",
+  "confidence": "high",
+  "note": "[auto-classified by Claude, first pass — pending human review] long_term_fundamental: diversified fundamental value portfolio — 200 holdings, top-10 weight 31.1% (prod 13F, 2026-03-31). Confidence: high.",
+  "evidence_json": {
+   "classified_by": "claude_first_pass",
+   "method": "prod_13f_behavior"
+  }
+ },
+ {
+  "manager_id": 42,
+  "canonical_name": "GREENLEA LANE CAPITAL MANAGEMENT, LLC",
+  "manager_type": "value_concentrated",
+  "confidence": "high",
+  "note": "[auto-classified by Claude, first pass — pending human review] value_concentrated: concentrated value portfolio — 9 holdings, top-10 weight 100.0% (prod 13F, 2026-03-31). Confidence: high.",
+  "evidence_json": {
+   "classified_by": "claude_first_pass",
+   "method": "prod_13f_behavior"
+  }
+ },
+ {
+  "manager_id": 43,
+  "canonical_name": "KAHN BROTHERS GROUP INC",
+  "manager_type": "long_term_fundamental",
+  "confidence": "high",
+  "note": "[auto-classified by Claude, first pass — pending human review] long_term_fundamental: diversified fundamental value portfolio — 48 holdings, top-10 weight 78.2% (prod 13F, 2026-03-31). Confidence: high.",
+  "evidence_json": {
+   "classified_by": "claude_first_pass",
+   "method": "prod_13f_behavior"
+  }
+ },
+ {
+  "manager_id": 44,
+  "canonical_name": "MAVERICK CAPITAL LTD",
+  "manager_type": "long_term_fundamental",
+  "confidence": "medium",
+  "note": "[auto-classified by Claude, first pass — pending human review] long_term_fundamental: fundamental long/short equity (Tiger Cub, Lee Ainslie) — bottom-up high-quality longs [prod 13F: 241 holdings, top-10 40.0%]. Confidence: medium.",
+  "evidence_json": {
+   "classified_by": "claude_first_pass",
+   "method": "web_research",
+   "url": "https://en.wikipedia.org/wiki/Maverick_Capital"
+  }
+ },
+ {
+  "manager_id": 45,
+  "canonical_name": "Leon Cooperman",
+  "manager_type": "long_term_fundamental",
+  "confidence": "high",
+  "note": "[auto-classified by Claude, first pass — pending human review] long_term_fundamental: long-biased value, diversified (Leon Cooperman, ex-Omega family office); no 13F holdings ingested. Confidence: high.",
+  "evidence_json": {
+   "classified_by": "claude_first_pass",
+   "method": "documented_strategy"
+  }
+ },
+ {
+  "manager_id": 46,
+  "canonical_name": "Himalaya Capital Management LLC",
+  "manager_type": "value_concentrated",
+  "confidence": "high",
+  "note": "[auto-classified by Claude, first pass — pending human review] value_concentrated: concentrated value portfolio — 14 holdings, top-10 weight 95.6% (prod 13F, 2026-03-31). Confidence: high.",
+  "evidence_json": {
+   "classified_by": "claude_first_pass",
+   "method": "prod_13f_behavior"
+  }
+ },
+ {
+  "manager_id": 47,
+  "canonical_name": "Lindsell Train Ltd",
+  "manager_type": "long_term_fundamental",
+  "confidence": "high",
+  "note": "[auto-classified by Claude, first pass — pending human review] long_term_fundamental: diversified fundamental value portfolio — 27 holdings, top-10 weight 94.0% (prod 13F, 2026-03-31). Confidence: high.",
+  "evidence_json": {
+   "classified_by": "claude_first_pass",
+   "method": "prod_13f_behavior"
+  }
+ },
+ {
+  "manager_id": 48,
+  "canonical_name": "Mairs & Power Funds",
+  "manager_type": "long_term_fundamental",
+  "confidence": "high",
+  "note": "[auto-classified by Claude, first pass — pending human review] long_term_fundamental: long-term quality, very low turnover (Mairs & Power); no 13F holdings ingested. Confidence: high.",
+  "evidence_json": {
+   "classified_by": "claude_first_pass",
+   "method": "documented_strategy"
+  }
+ },
+ {
+  "manager_id": 49,
+  "canonical_name": "SOUTHEASTERN ASSET MANAGEMENT INC/TN/",
+  "manager_type": "long_term_fundamental",
+  "confidence": "high",
+  "note": "[auto-classified by Claude, first pass — pending human review] long_term_fundamental: diversified fundamental value portfolio — 84 holdings, top-10 weight 53.5% (prod 13F, 2026-03-31). Confidence: high.",
+  "evidence_json": {
+   "classified_by": "claude_first_pass",
+   "method": "prod_13f_behavior"
+  }
+ },
+ {
+  "manager_id": 50,
+  "canonical_name": "Scion Asset Management, LLC",
+  "manager_type": "high_turnover",
+  "confidence": "high",
+  "note": "[auto-classified by Claude, first pass — pending human review] high_turnover: Michael Burry / Scion rebuilds the portfolio almost completely each quarter (~250% churn), options-heavy contrarian trading [prod 13F: 8 holdings, top-10 100.0%]. Confidence: high.",
+  "evidence_json": {
+   "classified_by": "claude_first_pass",
+   "method": "web_research",
+   "url": "https://en.wikipedia.org/wiki/Michael_Burry"
+  }
+ },
+ {
+  "manager_id": 51,
+  "canonical_name": "Mohnish Pabrai - Pabrai Investments",
+  "manager_type": "value_concentrated",
+  "confidence": "high",
+  "note": "[auto-classified by Claude, first pass — pending human review] value_concentrated: ultra-concentrated value (Mohnish Pabrai, ~5-10 names); no 13F holdings ingested. Confidence: high.",
+  "evidence_json": {
+   "classified_by": "claude_first_pass",
+   "method": "documented_strategy"
+  }
+ },
+ {
+  "manager_id": 52,
+  "canonical_name": "Trian Fund Management GP, LLC",
+  "manager_type": "activist",
+  "confidence": "high",
+  "note": "[auto-classified by Claude, first pass — pending human review] activist: activist fund — Nelson Peltz takes concentrated stakes and runs proxy/board campaigns. Confidence: high.",
+  "evidence_json": {
+   "classified_by": "claude_first_pass",
+   "method": "web_research",
+   "url": "https://en.wikipedia.org/wiki/Nelson_Peltz"
+  }
+ },
+ {
+  "manager_id": 53,
+  "canonical_name": "Punch Card Management L.P.",
+  "manager_type": "value_concentrated",
+  "confidence": "high",
+  "note": "[auto-classified by Claude, first pass — pending human review] value_concentrated: concentrated value portfolio — 5 holdings, top-10 weight 100.0% (prod 13F, 2026-03-31). Confidence: high.",
+  "evidence_json": {
+   "classified_by": "claude_first_pass",
+   "method": "prod_13f_behavior"
+  }
+ },
+ {
+  "manager_id": 54,
+  "canonical_name": "Dorsey Asset Management, LLC",
+  "manager_type": "value_concentrated",
+  "confidence": "high",
+  "note": "[auto-classified by Claude, first pass — pending human review] value_concentrated: concentrated value portfolio — 11 holdings, top-10 weight 94.5% (prod 13F, 2026-03-31). Confidence: high.",
+  "evidence_json": {
+   "classified_by": "claude_first_pass",
+   "method": "prod_13f_behavior"
+  }
+ },
+ {
+  "manager_id": 55,
+  "canonical_name": "POLEN CAPITAL MANAGEMENT LLC",
+  "manager_type": "long_term_fundamental",
+  "confidence": "high",
+  "note": "[auto-classified by Claude, first pass — pending human review] long_term_fundamental: diversified fundamental value portfolio — 221 holdings, top-10 weight 56.3% (prod 13F, 2026-03-31). Confidence: high.",
+  "evidence_json": {
+   "classified_by": "claude_first_pass",
+   "method": "prod_13f_behavior"
+  }
+ },
+ {
+  "manager_id": 56,
+  "canonical_name": "FAIRFAX FINANCIAL HOLDINGS LTD/ CAN",
+  "manager_type": "long_term_fundamental",
+  "confidence": "high",
+  "note": "[auto-classified by Claude, first pass — pending human review] long_term_fundamental: diversified fundamental value portfolio — 29 holdings, top-10 weight 88.0% (prod 13F, 2026-03-31). Confidence: high.",
+  "evidence_json": {
+   "classified_by": "claude_first_pass",
+   "method": "prod_13f_behavior"
+  }
+ },
+ {
+  "manager_id": 57,
+  "canonical_name": "PZENA INVESTMENT MANAGEMENT LLC",
+  "manager_type": "long_term_fundamental",
+  "confidence": "high",
+  "note": "[auto-classified by Claude, first pass — pending human review] long_term_fundamental: diversified fundamental value portfolio — 192 holdings, top-10 weight 35.2% (prod 13F, 2026-03-31). Confidence: high.",
+  "evidence_json": {
+   "classified_by": "claude_first_pass",
+   "method": "prod_13f_behavior"
+  }
+ },
+ {
+  "manager_id": 58,
+  "canonical_name": "Olstein Capital Management, L.P.",
+  "manager_type": "long_term_fundamental",
+  "confidence": "high",
+  "note": "[auto-classified by Claude, first pass — pending human review] long_term_fundamental: diversified fundamental value portfolio — 99 holdings, top-10 weight 19.4% (prod 13F, 2026-03-31). Confidence: high.",
+  "evidence_json": {
+   "classified_by": "claude_first_pass",
+   "method": "prod_13f_behavior"
+  }
+ },
+ {
+  "manager_id": 59,
+  "canonical_name": "Robert Vinall - RV Capital GmbH",
+  "manager_type": "value_concentrated",
+  "confidence": "high",
+  "note": "[auto-classified by Claude, first pass — pending human review] value_concentrated: concentrated long-term value (Robert Vinall / RV Capital); no 13F holdings ingested. Confidence: high.",
+  "evidence_json": {
+   "classified_by": "claude_first_pass",
+   "method": "documented_strategy"
+  }
+ },
+ {
+  "manager_id": 60,
+  "canonical_name": "Ruane Cunniff LP",
+  "manager_type": "value_concentrated",
+  "confidence": "high",
+  "note": "[auto-classified by Claude, first pass — pending human review] value_concentrated: concentrated quality value (Ruane Cunniff / Sequoia Fund); no 13F holdings ingested. Confidence: high.",
+  "evidence_json": {
+   "classified_by": "claude_first_pass",
+   "method": "documented_strategy"
+  }
+ },
+ {
+  "manager_id": 61,
+  "canonical_name": "Patient Capital Management, LLC",
+  "manager_type": "long_term_fundamental",
+  "confidence": "high",
+  "note": "[auto-classified by Claude, first pass — pending human review] long_term_fundamental: diversified fundamental value portfolio — 40 holdings, top-10 weight 48.7% (prod 13F, 2026-03-31). Confidence: high.",
+  "evidence_json": {
+   "classified_by": "claude_first_pass",
+   "method": "prod_13f_behavior"
+  }
+ },
+ {
+  "manager_id": 62,
+  "canonical_name": "CAUSEWAY CAPITAL MANAGEMENT LLC",
+  "manager_type": "long_term_fundamental",
+  "confidence": "high",
+  "note": "[auto-classified by Claude, first pass — pending human review] long_term_fundamental: diversified fundamental value portfolio — 107 holdings, top-10 weight 62.1% (prod 13F, 2026-03-31). Confidence: high.",
+  "evidence_json": {
+   "classified_by": "claude_first_pass",
+   "method": "prod_13f_behavior"
+  }
+ },
+ {
+  "manager_id": 63,
+  "canonical_name": "BAUPOST GROUP LLC /ADV",
+  "manager_type": "value_concentrated",
+  "confidence": "high",
+  "note": "[auto-classified by Claude, first pass — pending human review] value_concentrated: concentrated deep-value / special-situations (Seth Klarman, Baupost); no 13F holdings ingested. Confidence: high.",
+  "evidence_json": {
+   "classified_by": "claude_first_pass",
+   "method": "documented_strategy"
+  }
+ },
+ {
+  "manager_id": 64,
+  "canonical_name": "LONE PINE CAPITAL LLC",
+  "manager_type": "long_term_fundamental",
+  "confidence": "medium",
+  "note": "[auto-classified by Claude, first pass — pending human review] long_term_fundamental: fundamental bottom-up long/short equity (Tiger Cub, Stephen Mandel) — patient multi-year holdings [prod 13F: 36 holdings, top-10 51.6%]. Confidence: medium.",
+  "evidence_json": {
+   "classified_by": "claude_first_pass",
+   "method": "web_research",
+   "url": "https://en.wikipedia.org/wiki/Lone_Pine_Capital"
+  }
+ },
+ {
+  "manager_id": 65,
+  "canonical_name": "Fundsmith Equity Fund, L.P.",
+  "manager_type": "long_term_fundamental",
+  "confidence": "high",
+  "note": "[auto-classified by Claude, first pass — pending human review] long_term_fundamental: quality, very-low-turnover long-term investing (Terry Smith / Fundsmith); no 13F holdings ingested. Confidence: high.",
+  "evidence_json": {
+   "classified_by": "claude_first_pass",
+   "method": "documented_strategy"
+  }
+ },
+ {
+  "manager_id": 66,
+  "canonical_name": "THIRD AVENUE MANAGEMENT LLC",
+  "manager_type": "long_term_fundamental",
+  "confidence": "high",
+  "note": "[auto-classified by Claude, first pass — pending human review] long_term_fundamental: deep-value / distressed-value, diversified (Third Avenue, Marty Whitman legacy); no 13F holdings ingested. Confidence: high.",
+  "evidence_json": {
+   "classified_by": "claude_first_pass",
+   "method": "documented_strategy"
+  }
+ },
+ {
+  "manager_id": 67,
+  "canonical_name": "MARKEL GROUP INC.",
+  "manager_type": "long_term_fundamental",
+  "confidence": "high",
+  "note": "[auto-classified by Claude, first pass — pending human review] long_term_fundamental: diversified fundamental value portfolio — 205 holdings, top-10 weight 34.9% (prod 13F, 2026-03-31). Confidence: high.",
+  "evidence_json": {
+   "classified_by": "claude_first_pass",
+   "method": "prod_13f_behavior"
+  }
+ },
+ {
+  "manager_id": 68,
+  "canonical_name": "GARDNER RUSSO & QUINN LLC",
+  "manager_type": "long_term_fundamental",
+  "confidence": "high",
+  "note": "[auto-classified by Claude, first pass — pending human review] long_term_fundamental: diversified fundamental value portfolio — 86 holdings, top-10 weight 80.3% (prod 13F, 2026-03-31). Confidence: high.",
+  "evidence_json": {
+   "classified_by": "claude_first_pass",
+   "method": "prod_13f_behavior"
+  }
+ },
+ {
+  "manager_id": 69,
+  "canonical_name": "Makaira Partners LLC",
+  "manager_type": "value_concentrated",
+  "confidence": "medium",
+  "note": "[auto-classified by Claude, first pass — pending human review] value_concentrated: concentrated value fund (Tom Bancroft / Makaira Partners); prod 13F behaviour data is incomplete (1 holding ingested) — classified on documented strategy. Confidence: medium.",
+  "evidence_json": {
+   "classified_by": "claude_first_pass",
+   "method": "documented_strategy"
+  }
+ },
+ {
+  "manager_id": 70,
+  "canonical_name": "Torray Funds",
+  "manager_type": "long_term_fundamental",
+  "confidence": "medium",
+  "note": "[auto-classified by Claude, first pass — pending human review] long_term_fundamental: long-term value, low turnover (Torray Funds); no 13F holdings ingested. Confidence: medium.",
+  "evidence_json": {
+   "classified_by": "claude_first_pass",
+   "method": "documented_strategy"
+  }
+ },
+ {
+  "manager_id": 71,
+  "canonical_name": "Triple Frond Partners LLC",
+  "manager_type": "value_concentrated",
+  "confidence": "high",
+  "note": "[auto-classified by Claude, first pass — pending human review] value_concentrated: concentrated value portfolio — 12 holdings, top-10 weight 93.2% (prod 13F, 2026-03-31). Confidence: high.",
+  "evidence_json": {
+   "classified_by": "claude_first_pass",
+   "method": "prod_13f_behavior"
+  }
+ },
+ {
+  "manager_id": 72,
+  "canonical_name": "Tweedy, Browne Co LLC",
+  "manager_type": "long_term_fundamental",
+  "confidence": "high",
+  "note": "[auto-classified by Claude, first pass — pending human review] long_term_fundamental: diversified fundamental value portfolio — 93 holdings, top-10 weight 70.3% (prod 13F, 2026-03-31). Confidence: high.",
+  "evidence_json": {
+   "classified_by": "claude_first_pass",
+   "method": "prod_13f_behavior"
+  }
+ },
+ {
+  "manager_id": 73,
+  "canonical_name": "Valley Forge Capital Management, LP",
+  "manager_type": "value_concentrated",
+  "confidence": "high",
+  "note": "[auto-classified by Claude, first pass — pending human review] value_concentrated: concentrated value portfolio — 7 holdings, top-10 weight 100.0% (prod 13F, 2026-03-31). Confidence: high.",
+  "evidence_json": {
+   "classified_by": "claude_first_pass",
+   "method": "prod_13f_behavior"
+  }
+ },
+ {
+  "manager_id": 74,
+  "canonical_name": "ValueAct Capital Management, L.P.",
+  "manager_type": "activist",
+  "confidence": "high",
+  "note": "[auto-classified by Claude, first pass — pending human review] activist: constructive activist fund — ValueAct takes board seats and drives turnarounds from the inside. Confidence: high.",
+  "evidence_json": {
+   "classified_by": "claude_first_pass",
+   "method": "web_research",
+   "url": "https://en.wikipedia.org/wiki/Jeffrey_W._Ubben"
+  }
+ },
+ {
+  "manager_id": 75,
+  "canonical_name": "VIKING GLOBAL INVESTORS LP",
+  "manager_type": "long_term_fundamental",
+  "confidence": "medium",
+  "note": "[auto-classified by Claude, first pass — pending human review] long_term_fundamental: fundamental bottom-up long/short equity (Tiger Cub, Andreas Halvorsen) — long-term focused [prod 13F: 77 holdings, top-10 34.9%]. Confidence: medium.",
+  "evidence_json": {
+   "classified_by": "claude_first_pass",
+   "method": "web_research",
+   "url": "https://en.wikipedia.org/wiki/Viking_Global_Investors"
+  }
+ },
+ {
+  "manager_id": 76,
+  "canonical_name": "Vulcan Value Partners, LLC",
+  "manager_type": "long_term_fundamental",
+  "confidence": "high",
+  "note": "[auto-classified by Claude, first pass — pending human review] long_term_fundamental: diversified fundamental value portfolio — 33 holdings, top-10 weight 70.8% (prod 13F, 2026-03-31). Confidence: high.",
+  "evidence_json": {
+   "classified_by": "claude_first_pass",
+   "method": "prod_13f_behavior"
+  }
+ },
+ {
+  "manager_id": 77,
+  "canonical_name": "WEITZ INVESTMENT MANAGEMENT, INC.",
+  "manager_type": "long_term_fundamental",
+  "confidence": "high",
+  "note": "[auto-classified by Claude, first pass — pending human review] long_term_fundamental: diversified fundamental value portfolio — 49 holdings, top-10 weight 54.6% (prod 13F, 2026-03-31). Confidence: high.",
+  "evidence_json": {
+   "classified_by": "claude_first_pass",
+   "method": "prod_13f_behavior"
+  }
+ },
+ {
+  "manager_id": 78,
+  "canonical_name": "BERKSHIRE HATHAWAY INC",
+  "manager_type": "long_term_fundamental",
+  "confidence": "high",
+  "note": "[auto-classified by Claude, first pass — pending human review] long_term_fundamental: diversified fundamental value portfolio — 90 holdings, top-10 weight 68.0% (prod 13F, 2026-03-31). Confidence: high.",
+  "evidence_json": {
+   "classified_by": "claude_first_pass",
+   "method": "prod_13f_behavior"
+  }
+ },
+ {
+  "manager_id": 79,
+  "canonical_name": "CANTILLON CAPITAL MANAGEMENT LLC",
+  "manager_type": "long_term_fundamental",
+  "confidence": "high",
+  "note": "[auto-classified by Claude, first pass — pending human review] long_term_fundamental: diversified fundamental value portfolio — 76 holdings, top-10 weight 31.5% (prod 13F, 2026-03-31). Confidence: high.",
+  "evidence_json": {
+   "classified_by": "claude_first_pass",
+   "method": "prod_13f_behavior"
+  }
+ },
+ {
+  "manager_id": 80,
+  "canonical_name": "YACKTMAN ASSET MANAGEMENT LP",
+  "manager_type": "long_term_fundamental",
+  "confidence": "high",
+  "note": "[auto-classified by Claude, first pass — pending human review] long_term_fundamental: diversified fundamental value portfolio — 76 holdings, top-10 weight 47.2% (prod 13F, 2026-03-31). Confidence: high.",
+  "evidence_json": {
+   "classified_by": "claude_first_pass",
+   "method": "prod_13f_behavior"
+  }
+ },
+ {
+  "manager_id": 81,
+  "canonical_name": "Akre Capital Management LLC",
+  "manager_type": "value_concentrated",
+  "confidence": "high",
+  "note": "[auto-classified by Claude, first pass — pending human review] value_concentrated: concentrated quality-compounder investing (Chuck Akre); no 13F holdings ingested for this CIK — duplicate of manager 15. Confidence: high.",
+  "evidence_json": {
+   "classified_by": "claude_first_pass",
+   "method": "documented_strategy"
+  }
+ },
+ {
+  "manager_id": 82,
+  "canonical_name": "DAILY JOURNAL CORP",
+  "manager_type": "long_term_fundamental",
+  "confidence": "high",
+  "note": "[auto-classified by Claude, first pass — pending human review] long_term_fundamental: permanent buy-and-hold equity portfolio (Charlie Munger's Daily Journal Corp); no 13F holdings ingested. Confidence: high.",
+  "evidence_json": {
+   "classified_by": "claude_first_pass",
+   "method": "documented_strategy"
+  }
+ },
+ {
+  "manager_id": 83,
+  "canonical_name": "HIMALAYA CAPITAL MANAGEMENT LLC",
+  "manager_type": "value_concentrated",
+  "confidence": "high",
+  "note": "[auto-classified by Claude, first pass — pending human review] value_concentrated: ultra-concentrated long-term value (Li Lu / Himalaya Capital); no 13F holdings ingested — duplicate CIK of manager 46. Confidence: high.",
+  "evidence_json": {
+   "classified_by": "claude_first_pass",
+   "method": "documented_strategy"
+  }
+ },
+ {
+  "manager_id": 84,
+  "canonical_name": "ABRAMS CAPITAL MANAGEMENT, L.P.",
+  "manager_type": "value_concentrated",
+  "confidence": "high",
+  "note": "[auto-classified by Claude, first pass — pending human review] value_concentrated: concentrated value fund (David Abrams); no 13F holdings ingested for this CIK — duplicate of manager 18. Confidence: high.",
+  "evidence_json": {
+   "classified_by": "claude_first_pass",
+   "method": "documented_strategy"
+  }
+ },
+ {
+  "manager_id": 85,
+  "canonical_name": "BAUPOST GROUP LLC /MA",
+  "manager_type": "value_concentrated",
+  "confidence": "high",
+  "note": "[auto-classified by Claude, first pass — pending human review] value_concentrated: concentrated deep-value (Seth Klarman, Baupost); no 13F holdings ingested — duplicate CIK of manager 63. Confidence: high.",
+  "evidence_json": {
+   "classified_by": "claude_first_pass",
+   "method": "documented_strategy"
+  }
+ },
+ {
+  "manager_id": 86,
+  "canonical_name": "BRIDGEWATER ASSOCIATES, LP",
+  "manager_type": "quant",
+  "confidence": "high",
+  "note": "[auto-classified by Claude, first pass — pending human review] quant: systematic global-macro firm — Bridgewater codifies its views into back-tested algorithms / computerised decision systems. Confidence: high.",
+  "evidence_json": {
+   "classified_by": "claude_first_pass",
+   "method": "web_research",
+   "url": "https://en.wikipedia.org/wiki/Bridgewater_Associates"
+  }
+ }
+]

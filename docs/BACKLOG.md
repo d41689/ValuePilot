@@ -92,16 +92,39 @@ long — escalate to the user. **medium / low** = ordinary follow-up.
 - **Context:** `docs/tasks/2026-05-21_cusip-link-rate-diagnosis.md`
 - **Issue:** —
 
-### Manager `manager_type` classification (all `unknown`)
-- **Found:** 2026-05-20, /admin/13f operational audit (item #9)
-- **Severity:** medium
-- **Problem:** All managers have `manager_type = unknown`. It is not cosmetic —
-  it feeds Oracle's Lens scoring (`manager_taxonomy` / signal weighting). Each
-  classification needs an authoritative type plus a mandatory justification
-  note (audited in `institution_manager_type_review_events`); the system has an
-  "unknown-manager priority queue" workflow for it. This is ongoing human
-  curation for the team, not a bulk edit.
-- **Context:** `docs/tasks/2026-05-20_admin-13f-ops-audit.md` (item #9)
+### Manager `manager_type` first-pass classification needs human review
+- **Found:** 2026-05-21 — supersedes the 2026-05-20 audit #9 "all `unknown`"
+  item, which is now resolved (all 86 managers are classified).
+- **Severity:** low
+- **Problem:** A Claude first-pass `manager_type` classification has been
+  applied to all 86 managers in prod (audited; `reviewed_by_user_id` NULL;
+  every note prefixed `[auto-classified by Claude, first pass — pending human
+  review]`; every `evidence_json` carries `classified_by: claude_first_pass`).
+  The team should review and correct via the admin manager-type editor. Check
+  the 10 scoring-relevant (off-1.00-weight) rows first — 6 `activist`,
+  2 `multi_strategy`, 1 `quant`, 1 `high_turnover` — plus the ~8
+  medium-confidence judgement calls. The most debatable single call is **TCI
+  Fund Management (id 12)** — classified `value_concentrated` on its current
+  stable concentrated book, but it has an activist heritage; if it runs a
+  significant campaign it should move to `activist` (0.80 vs 1.00 — a real
+  scoring difference). Find all first-pass rows:
+  `institution_manager_type_review_events` rows with
+  `reviewed_by_user_id IS NULL`.
+- **Context:** `docs/tasks/2026-05-21_manager-type-classification.md`
+- **Issue:** —
+
+### Duplicate institution managers (same firm, two CIKs)
+- **Found:** 2026-05-21, manager_type classification run
+- **Severity:** low
+- **Problem:** Four firms exist as two `institution_managers` rows under
+  different CIKs: Abrams Capital (ids 18 + 84), Akre Capital (15 + 81),
+  Himalaya Capital (46 + 83), Baupost Group (63 + 85). One row of each pair has
+  13F filings ingested, the other does not — splitting a manager's history and
+  double-counting it in per-manager rollups. A dedup / merge is needed
+  (`parent_manager_id` models hierarchies, but these are true duplicates).
+  Out of scope for the classification run — both rows of each pair were
+  classified identically.
+- **Context:** `docs/tasks/2026-05-21_manager-type-classification.md`
 - **Issue:** —
 
 ### Extended historical backfill
