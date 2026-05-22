@@ -94,10 +94,11 @@ long — escalate to the user. **medium / low** = ordinary follow-up.
 
 ### Manager `manager_type` first-pass classification needs human review
 - **Found:** 2026-05-21 — supersedes the 2026-05-20 audit #9 "all `unknown`"
-  item, which is now resolved (all 86 managers are classified).
+  item, which is now resolved (every manager is classified).
 - **Severity:** low
 - **Problem:** A Claude first-pass `manager_type` classification has been
-  applied to all 86 managers in prod (audited; `reviewed_by_user_id` NULL;
+  applied to all managers in prod — 86 at the time, now 82 after the
+  duplicate-manager dedup (audited; `reviewed_by_user_id` NULL;
   every note prefixed `[auto-classified by Claude, first pass — pending human
   review]`; every `evidence_json` carries `classified_by: claude_first_pass`).
   The team should review and correct via the admin manager-type editor. Check
@@ -110,20 +111,6 @@ long — escalate to the user. **medium / low** = ordinary follow-up.
   scoring difference). Find all first-pass rows:
   `institution_manager_type_review_events` rows with
   `reviewed_by_user_id IS NULL`.
-- **Context:** `docs/tasks/2026-05-21_manager-type-classification.md`
-- **Issue:** —
-
-### Duplicate institution managers (same firm, two CIKs)
-- **Found:** 2026-05-21, manager_type classification run
-- **Severity:** low
-- **Problem:** Four firms exist as two `institution_managers` rows under
-  different CIKs: Abrams Capital (ids 18 + 84), Akre Capital (15 + 81),
-  Himalaya Capital (46 + 83), Baupost Group (63 + 85). One row of each pair has
-  13F filings ingested, the other does not — splitting a manager's history and
-  double-counting it in per-manager rollups. A dedup / merge is needed
-  (`parent_manager_id` models hierarchies, but these are true duplicates).
-  Out of scope for the classification run — both rows of each pair were
-  classified identically.
 - **Context:** `docs/tasks/2026-05-21_manager-type-classification.md`
 - **Issue:** —
 
