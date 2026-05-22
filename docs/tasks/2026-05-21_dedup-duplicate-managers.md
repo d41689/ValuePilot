@@ -76,3 +76,8 @@ broader fuzzy-dedup of the manager table (the scan found only these 4 pairs).
   intact. Re-seed simulation of the fixed `confirmed_managers.json`: **20
   update / 0 create** — the root cause is closed. `pytest -q` green; the new
   `dedup_managers.py` is standalone (not imported by the app or tests).
+- 2026-05-21 — two independent reviews returned APPROVE / PASS, **no advisories,
+  no blocking findings** (`..._review-result.md`, `..._review-results.md`). One
+  reviewer re-ran the prod verification (82 managers, ids 63/81/83/84 absent,
+  no remaining exact-name duplicate groups) and `pytest -q` (902 passed).
+  Nothing to act on.
