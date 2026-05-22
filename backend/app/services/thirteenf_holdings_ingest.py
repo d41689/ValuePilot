@@ -202,6 +202,13 @@ def _do_ingest_holdings(
         parse_run.holdings_count = len(holdings)
         parse_run.finished_at = datetime.now(timezone.utc)
         session.add(parse_run)
+
+        # Mirror the run outcome onto the filing — Filing13F.parse_status is the
+        # field surfaced as the /admin/13f/filings STATUS column and consumed by
+        # readiness/health. Without this it stays "pending" forever even though
+        # holdings parsed fine.
+        filing.parse_status = "succeeded"
+        session.add(filing)
         
         if filing.is_amendment and filing.amendment_type == "RESTATEMENT":
             # Atomically activate this amendment and demote the older active filing
@@ -253,6 +260,18 @@ def _do_ingest_holdings(
                     finished_at=datetime.now(timezone.utc),
                 )
                 session.add(failed_run)
+                # Mirror the failed outcome onto the filing. A reparse that
+                # fails but restores a prior good run flips this back to
+                # "succeeded" in reparse_accession's except handler.
+                filing.parse_status = "failed"
+                session.add(filing)
+            # Commit the failure audit (failed_run + filing.parse_status) now.
+            # The bulk ingest caller (thirteenf_admin_dashboard._execute_ingest_job)
+            # does session.rollback() on a per-filing exception; without this
+            # commit the whole outer transaction — including these
+            # savepoint-merged rows — is rolled back and the failure is lost.
+            # This mirrors the success path, which also commits per filing.
+            session.commit()
             failed_run_saved = True
         except Exception:
             logger.warning(
@@ -344,6 +363,12 @@ def reparse_accession(
                 if restored is not None and not restored.is_current:
                     restored.is_current = True
                     session.add(restored)
+                    # The filing keeps the prior good holdings, so undo the
+                    # "failed" parse_status _do_ingest_holdings set on the
+                    # failed reparse attempt.
+                    if restored.status == "succeeded" and filing.parse_status != "succeeded":
+                        filing.parse_status = "succeeded"
+                        session.add(filing)
                     session.commit()
             except Exception:
                 logger.warning(
@@ -382,7 +407,14 @@ def ingest_if_needed(
         return ingest_holdings_for_filing(session, filing, infotable_bytes)
 
     if current_run.fingerprint_version == FINGERPRINT_VERSION:
-        # Already parsed with current version — skip.
+        # Already parsed with the current version — skip the re-parse, but
+        # reconcile the filing's stored parse_status with the run outcome. This
+        # self-heals filings ingested before parse_status was mirrored: a plain
+        # re-run of "Ingest holdings" flips them from "pending" to "succeeded".
+        if filing.parse_status != "succeeded":
+            filing.parse_status = "succeeded"
+            session.add(filing)
+            session.flush()
         return {
             "parse_run_id": current_run.id,
             "holdings_count": current_run.holdings_count,
