@@ -134,3 +134,89 @@ I did not run Docker tests for this review. The prompt reports:
 Given the P1 transaction finding, I would not approve this PR until the failed
 ingest path is made durable under the actual admin bulk caller and covered by a
 test that exercises the caller rollback behavior.
+
+---
+
+## Re-review — 2026-05-22
+
+Fixing commit: cc88228 ("fix(13f): commit the failure audit so a failed ingest is durable")
+
+### B3 re-verdict: PASS
+
+The fix is mechanically correct and mirrors the success path exactly.
+
+**What changed in `_do_ingest_holdings` (lines 268–274):**
+
+After the `with session.begin_nested():` block that writes the failed
+`ParseRun13F` and sets `filing.parse_status = "failed"`, the fix adds:
+
+```python
+session.commit()
+failed_run_saved = True
+```
+
+This commit is placed *outside and after* the inner `begin_nested()` context
+manager, so the savepoint has already been released (merged into the outer
+transaction) by the time `session.commit()` fires. The commit then flushes the
+outer transaction to disk before `raise exc_to_raise` at line 283. The bulk
+ingest loop's subsequent `session.rollback()` (admin_dashboard.py:3349) then
+finds an empty transaction to roll back — a no-op — and the failed audit row
+and `parse_status = "failed"` are durable.
+
+The success path at lines 231–232 commits identically (`sp.commit()` then
+`session.commit()`), so the two paths are now symmetric.
+
+**Order of operations in the failure block is correct:**
+
+1. Inner `begin_nested()` releases → `failed_run` + `filing.parse_status="failed"` merged into outer transaction.
+2. `session.commit()` → outer transaction flushed to DB.
+3. `failed_run_saved = True`.
+4. `raise exc_to_raise` → exception propagates to caller.
+
+No risk of committing a partial state: the only objects in the outer transaction
+at that point are the failed `ParseRun13F` and the `filing` status update. The
+initial parse SAVEPOINT (SP1) was rolled back at line 247 before this block, so
+no in-progress holdings, no running `ParseRun13F`, and no half-written phase-2
+data exist in the outer transaction when the commit fires.
+
+### D7 re-verdict: PASS
+
+`test_failed_ingest_marks_filing_parse_status_failed` now:
+
+1. Captures `filing_id = filing.id` before calling the service (so the id
+   survives a later rollback of the session's identity map).
+2. After catching the exception, calls `db_session.rollback()` — exactly
+   mimicking the admin bulk loop.
+3. Reloads with `db_session.get(Filing13F, filing_id)` and asserts
+   `reloaded.parse_status == "failed"`.
+
+This test fails against the pre-fix code (the savepoint-only write is discarded
+by the rollback) and passes against the fixed code (the committed write
+survives). The product-path caller behavior is now directly exercised.
+
+### No new issues introduced
+
+**Interaction with `reparse_accession` (lines 355–380):** When a reparse fails,
+`_do_ingest_holdings` now commits `parse_status="failed"` before raising.
+`reparse_accession`'s except handler then runs and, if a prior good run exists,
+commits again with `parse_status="succeeded"` (line 372). This is two commits,
+but both are intentional and the final state — `"succeeded"` because the
+old good run is restored — is correct. The original B4 verdict (PASS) is
+unchanged.
+
+**Does `session.commit()` inside the failure path conflict with any other
+caller?** `_do_ingest_holdings` is called from three sites: `ingest_holdings_for_filing`,
+`ingest_if_needed`, and `reparse_accession`. All three already tolerate an
+internal commit on the success path. The failure-path commit adds the same
+contract to the failure side, which is consistent. No caller wraps
+`_do_ingest_holdings` in a `with session.begin():` block that would conflict
+with an internal commit.
+
+**A2 (competing writers) still PASS.** No new writer for `parse_status` was
+introduced in cc88228; the fix is purely a transaction management change.
+
+### Updated overall recommendation: APPROVE
+
+The single blocker (B3) is resolved. The fix is minimal, well-commented, and
+symmetric with the success path. The test now exercises the real caller rollback
+behavior and would catch a regression. No new issues were found.
