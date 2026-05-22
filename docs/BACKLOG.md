@@ -103,7 +103,11 @@ long — escalate to the user. **medium / low** = ordinary follow-up.
   The team should review and correct via the admin manager-type editor. Check
   the 10 scoring-relevant (off-1.00-weight) rows first — 6 `activist`,
   2 `multi_strategy`, 1 `quant`, 1 `high_turnover` — plus the ~8
-  medium-confidence judgement calls. Find them all:
+  medium-confidence judgement calls. The most debatable single call is **TCI
+  Fund Management (id 12)** — classified `value_concentrated` on its current
+  stable concentrated book, but it has an activist heritage; if it runs a
+  significant campaign it should move to `activist` (0.80 vs 1.00 — a real
+  scoring difference). Find all first-pass rows:
   `institution_manager_type_review_events` rows with
   `reviewed_by_user_id IS NULL`.
 - **Context:** `docs/tasks/2026-05-21_manager-type-classification.md`

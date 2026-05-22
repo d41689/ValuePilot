@@ -22,7 +22,12 @@ from app.models.institutions import Filing13F, Holding13F, InstitutionManager
 
 
 def _val(h: Holding13F) -> int:
-    return int(h.value_usd or h.value_thousands or 0)
+    # value_thousands is NOT NULL on Holding13F and is a single consistent unit
+    # (thousands of USD). Concentration is a ratio, so the unit does not matter
+    # as long as it is consistent across a filing — hence value_thousands only,
+    # never a value_usd-or-value_thousands fallback that could mix units (USD vs
+    # thousands) within one filing and distort the weights 1000x.
+    return int(h.value_thousands or 0)
 
 
 def main() -> None:

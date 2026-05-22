@@ -113,3 +113,13 @@ with a real `reviewed_by_user_id`, superseding the machine pass.
 
 - 2026-05-21 — extract → research (15 web searches) → decide → apply.
   86/86 written to prod and verified. First pass; team refines via the editor.
+- 2026-05-21 — two independent reviews returned PASS / APPROVE, no blockers
+  (`..._review-result.md`, `..._review-results.md`). Acted on the shared
+  advisory: `_val()` in the extract script fell back `value_usd or
+  value_thousands`, which could mix units across one filing — fixed to use
+  `value_thousands` only. Re-ran extract → decide with the fix and diffed
+  against the committed decisions: **identical** — the original run was
+  unaffected (no prod re-write needed). The TCI judgement call (the reviewers'
+  top human-review priority) is now named explicitly in the BACKLOG entry. The
+  B6 advisory (mechanical rule has no turnover-proxy pre-check) is harmless for
+  this long-only universe — no action.
