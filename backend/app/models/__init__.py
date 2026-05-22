@@ -6,6 +6,7 @@ or services that don't otherwise import the full model set.
 """
 
 from app.models import users  # noqa: F401
+from app.models import auth_tokens  # noqa: F401
 from app.models import stocks  # noqa: F401
 from app.models import artifacts  # noqa: F401
 from app.models import extractions  # noqa: F401

@@ -32,9 +32,18 @@ def create_access_token(user_id: int, role: str) -> str:
     return jwt.encode(payload, settings.SECRET_KEY, algorithm=settings.JWT_ALGORITHM)
 
 
-def create_refresh_token(user_id: int, role: str) -> str:
+def create_refresh_token(user_id: int, role: str, jti: str) -> str:
+    """Encode a refresh token. ``jti`` is the token's unique id; it ties the
+    JWT to its row in the ``refresh_tokens`` store for revocation / reuse
+    detection (see app.core.refresh_tokens)."""
     expire = datetime.now(timezone.utc) + timedelta(days=settings.REFRESH_TOKEN_EXPIRE_DAYS)
-    payload = {"sub": str(user_id), "role": role, "exp": expire, "type": "refresh"}
+    payload = {
+        "sub": str(user_id),
+        "role": role,
+        "exp": expire,
+        "type": "refresh",
+        "jti": jti,
+    }
     return jwt.encode(payload, settings.SECRET_KEY, algorithm=settings.JWT_ALGORITHM)
 
 

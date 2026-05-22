@@ -38,13 +38,16 @@ long — escalate to the user. **medium / low** = ordinary follow-up.
 - **Context:** `docs/tasks/2026-05-21_rate-guard-pr4-admin-metrics.md`
 - **Issue:** —
 
-### Refresh tokens have no revocation / reuse detection
-- **Found:** 2026-05-20, PR #64 (refresh-token flow)
-- **Severity:** medium
-- **Problem:** Access and refresh tokens are stateless JWTs. A stolen refresh
-  token is usable for up to 7 days unless the account is disabled — there is no
-  reuse detection, no rotation blacklist, and no revocation list.
-- **Context:** `docs/tasks/2026-05-20_auth-hardening-followups.md` (item 1)
+### Expired `refresh_tokens` rows are never purged
+- **Found:** 2026-05-21, refresh-token revocation work
+- **Severity:** low
+- **Problem:** The `refresh_tokens` store gains one row per `/auth/refresh`
+  (plus one per login). Nothing deletes rows whose `expires_at` has passed, so
+  the table grows unbounded. Safe to defer — a row past `expires_at` is already
+  rejected by the JWT `exp` check regardless, and the v0.1 user base is small —
+  but a periodic purge (`DELETE FROM refresh_tokens WHERE expires_at < now()`,
+  with a supporting index on `expires_at`) should land before broader rollout.
+- **Context:** `docs/tasks/2026-05-21_refresh-token-revocation.md` (Scope → Out)
 - **Issue:** —
 
 ### Interceptor-level tests for `frontend/lib/api/client.ts`
