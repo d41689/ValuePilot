@@ -358,18 +358,28 @@ def test_ingest_advances_filing_parse_status_to_succeeded(db_session):
 
 
 def test_failed_ingest_marks_filing_parse_status_failed(db_session):
-    """A failed first ingest flips Filing13F.parse_status to failed."""
+    """A failed first ingest flips Filing13F.parse_status to failed — durably.
+
+    The bulk ingest loop (thirteenf_admin_dashboard._execute_ingest_job) does
+    session.rollback() on a per-filing exception. The "failed" status must
+    survive that rollback, so _do_ingest_holdings commits the failure audit
+    before re-raising — this test mimics the caller's rollback to prove it.
+    """
     from app.services.thirteenf_holdings_ingest import ingest_holdings_for_filing
 
     _clear(db_session)
     manager = _manager(db_session)
     filing = _hr_filing(db_session, manager, "0001893830-24-005011")
+    filing_id = filing.id
 
     with pytest.raises(Exception):
         ingest_holdings_for_filing(db_session, filing, b"not valid xml")
 
-    db_session.refresh(filing)
-    assert filing.parse_status == "failed"
+    # Mimic the bulk caller's per-filing rollback after the exception.
+    db_session.rollback()
+
+    reloaded = db_session.get(Filing13F, filing_id)
+    assert reloaded.parse_status == "failed"
 
 
 def test_ingest_if_needed_skip_heals_stale_pending_parse_status(db_session):

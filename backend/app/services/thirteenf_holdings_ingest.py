@@ -265,6 +265,13 @@ def _do_ingest_holdings(
                 # "succeeded" in reparse_accession's except handler.
                 filing.parse_status = "failed"
                 session.add(filing)
+            # Commit the failure audit (failed_run + filing.parse_status) now.
+            # The bulk ingest caller (thirteenf_admin_dashboard._execute_ingest_job)
+            # does session.rollback() on a per-filing exception; without this
+            # commit the whole outer transaction — including these
+            # savepoint-merged rows — is rolled back and the failure is lost.
+            # This mirrors the success path, which also commits per filing.
+            session.commit()
             failed_run_saved = True
         except Exception:
             logger.warning(
