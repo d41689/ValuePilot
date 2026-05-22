@@ -266,25 +266,16 @@ def execute_historical_backfill(
         per_quarter.append(quarter_summary)
 
     overall = _overall_status(aggregate)
-    summary_payload = {
-        "scope": {
-            "start_quarter": start_q,
-            "end_quarter": end_q,
-            "manager_ids": manager_ids,
-        },
-        "impact_summary": aggregate,
-        "per_quarter": per_quarter,
-    }
-    # Re-fetch in case any per-quarter rollback detached the original job
-    # reference. (MVP3-05 added the same defensive re-fetch.)
-    job = session.get(JobRun, job_run_id)
-    job.status = overall
-    job.summary_json = summary_payload
-    session.add(job)
+    # The JobRun's terminal status, finished_at and lease are finalized by the
+    # caller — the worker's `complete_leased_job`, or a direct caller. Writing a
+    # terminal status here would make `complete_leased_job`'s `status ==
+    # "running"` lease check no-op, leaving `finished_at` and `lease_expires_at`
+    # unset. Commit so the per-quarter QualityReports / findings are durable;
+    # the job row stays mid-run for the caller to finalize from `status` below.
     session.commit()
 
     return {
-        "job_run_id": job.id,
+        "job_run_id": job_run_id,
         "status": overall,
         "impact_summary": aggregate,
         "per_quarter": per_quarter,

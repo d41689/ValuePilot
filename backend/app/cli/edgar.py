@@ -203,7 +203,7 @@ def backfill(
     index_only: bool = typer.Option(False, help="Only seed form.idx (skip holdings download)"),
 ) -> None:
     """Backfill form.idx + holdings for recent N quarters."""
-    from app.services.edgar_ingestion import backfill_quarters, ingest_filing_holdings, _recent_quarters
+    from app.services.edgar_ingestion import backfill_quarters, ingest_filing_holdings
     from app.models.institutions import Filing13F
     from datetime import date
     import calendar
@@ -221,10 +221,12 @@ def backfill(
         if index_only:
             return
 
-        # Step 2: fetch holdings for each quarter
-        today = date.today()
-        quarter_list = _recent_quarters(today.year, today.month, quarters)
-        for quarter in quarter_list:
+        # Step 2: fetch holdings for the SAME report quarters Step 1 indexed.
+        # Iterate `results` (Step 1's output) rather than re-deriving a list —
+        # a re-derived current-calendar-quarter list drifts from Step 1's
+        # latest-usable report quarters, leaving one stage's quarters unindexed
+        # and the other's holdings un-ingested.
+        for quarter in results:
             year, qtr = quarter_to_year_qtr(quarter)
             q_start = date(year, (qtr - 1) * 3 + 1, 1)
             end_month = qtr * 3

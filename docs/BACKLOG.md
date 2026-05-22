@@ -9,6 +9,41 @@ long — escalate to the user. **medium / low** = ordinary follow-up.
 
 ## Open
 
+### 13F `_check_period_alignment` quality subcheck still uses filing-quarter
+- **Found:** 2026-05-22, PR #90 review round 1 (P2)
+- **Severity:** low
+- **Problem:** Every other check in `run_quality_checks()` scopes by
+  `period_of_report` (report quarter) via `_quarter_filter()`, but
+  `_check_period_alignment()` (`backend/app/services/edgar_quality.py`) still
+  interprets its `quarter` arg as a *filing* quarter — it filters
+  `filed_at BETWEEN :f_start AND :f_end` and expects `period_of_report` in
+  `quarter-1`. After the F1/F2 report-quarter fix, `quality_check` receives a
+  report quarter, so this subcheck inspects the wrong filing set (the filings
+  *filed in* that quarter, which report on the prior quarter) and can miss
+  period anomalies for the requested report quarter. Non-blocking — it only
+  emits info/warning lines. Fix needs a rethink of what the check should assert
+  under the report-quarter model (likely: verify each filing's `report_quarter`
+  matches its actual `period_of_report`).
+- **Context:** `docs/tasks/2026-05-21_13f-web-validation.md` (Review round 1, R-P2)
+- **Issue:** —
+
+### 13F test suite is not isolated from dev-database data
+- **Found:** 2026-05-22, 13F web-validation run
+- **Severity:** low
+- **Problem:** The pytest suite runs against the dev `valuepilot` database and
+  assumes it starts empty (`conftest.py`: "assuming fresh DB from
+  docker-compose"). `test_13f_admin_dashboard.py` bulk-deletes `job_runs` in a
+  fixture; when a normal app/web run has left `job_runs` rows that
+  `quality_reports_13f.source_job_id` (and other tables) reference, that delete
+  raises `ForeignKeyViolation` and ~50 tests fail — even though the code is
+  correct (verified: 907 pass on a fresh `valuepilot_test` DB). Real CI runs on
+  a fresh DB so CI is unaffected, but local `pytest` is fragile after any web
+  use of the dev stack. Fix: point the suite at a dedicated, migrated test
+  database, or make the fixtures delete dependents first / rely solely on the
+  transactional rollback.
+- **Context:** `docs/tasks/2026-05-21_13f-web-validation.md` (F5)
+- **Issue:** —
+
 ### Rate Guard rollout is in-place, with no staged probe or rollback
 - **Found:** 2026-05-20, PR #79 (Rate Guard deploy integration) review
 - **Severity:** low

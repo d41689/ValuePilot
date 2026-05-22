@@ -22,6 +22,7 @@ from app.edgar.fetcher import fetch_and_store, load_body
 from app.edgar.parsers.form_idx import (
     FormIdxRecord,
     form_idx_url,
+    next_quarter_label,
     parse_form_idx,
     quarter_to_year_qtr,
 )
@@ -443,12 +444,19 @@ def ingest_quarter_index(
     *,
     cik_whitelist: Optional[set[str]] = None,
 ) -> int:
-    """Fetch form.idx for the given quarter and write new filings_13f rows.
+    """Fetch form.idx for the given report quarter and write new filings_13f rows.
+
+    `quarter` is a **report quarter** (the period 13F holdings are "as of").
+    13Fs are filed within 45 days *after* the quarter ends, so they appear in
+    the EDGAR full-index of the *following* calendar quarter — fetch that one.
+    Without this translation, requesting report quarter Q would fetch Q's filing
+    index, which carries Q-1's holdings (see docs/architecture/parsing.md).
 
     If cik_whitelist is None, all confirmed managers in institution_managers are used.
     Returns count of new filings inserted.
     """
-    year, qtr = quarter_to_year_qtr(quarter)
+    filing_quarter = next_quarter_label(quarter)
+    year, qtr = quarter_to_year_qtr(filing_quarter)
     url = form_idx_url(year, qtr)
 
     with EdgarClient() as client:
@@ -902,11 +910,25 @@ def _scan_index_for_file(
 # ---------------------------------------------------------------------------
 
 def backfill_quarters(db: Session, num_quarters: int = 4) -> dict[str, int]:
-    """Backfill recent N quarters. Returns dict of quarter → filings inserted."""
-    from datetime import date
+    """Backfill the most recent N usable report quarters.
 
-    today = date.today()
-    quarters = _recent_quarters(today.year, today.month, num_quarters)
+    Enumerates *report* quarters from the latest one whose 13F filing deadline
+    has passed, walking backwards — `ingest_quarter_index` then translates each
+    to its (already-started) filing quarter. Starting from the current calendar
+    quarter instead would ask EDGAR for a full-index quarter that has not begun.
+
+    Returns dict of report quarter → filings inserted.
+    """
+    from app.services.thirteenf_admin_dashboard import (
+        latest_usable_quarter_label,
+        previous_quarter_label,
+    )
+
+    quarters: list[str] = []
+    q = latest_usable_quarter_label()
+    for _ in range(num_quarters):
+        quarters.append(q)
+        q = previous_quarter_label(q)
     results = {}
     for q in quarters:
         logger.info("Backfilling %s", q)
@@ -1092,16 +1114,3 @@ def backfill_period_routing(db: Session, *, filings=None) -> dict[str, int]:
         "needs_review": needs_review_count,
         "failed": failed_count,
     }
-
-
-def _recent_quarters(year: int, month: int, n: int) -> list[str]:
-    """Return last N quarters in YYYY-Qn format, most recent first."""
-    qtr = (month - 1) // 3 + 1
-    result = []
-    for _ in range(n):
-        result.append(f"{year}-Q{qtr}")
-        qtr -= 1
-        if qtr == 0:
-            qtr = 4
-            year -= 1
-    return result
