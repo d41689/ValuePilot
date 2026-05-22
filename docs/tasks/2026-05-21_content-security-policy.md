@@ -113,3 +113,12 @@ running app"):
   — `pytest` 902, `node --test` 159, lint clean, production build OK and **still
   emitting `○ (Static)` pages** (the static policy did not force dynamic
   rendering, confirming the chosen-approach trade-off held).
+- 2026-05-21 — two independent reviews returned PASS / APPROVE, no blockers
+  (`..._review-result.md`, `..._review-results.md`). One advisory: the
+  `next.config.js` comment said "Next-rendered routes only" while the `/:path*`
+  matcher pattern also covers `/api/*`. Resolved as comment accuracy — `headers()`
+  does not in fact decorate the `/api/*` rewrite-to-backend responses (proven by
+  the admin-13f runtime probe), so the comment now states that mechanism
+  precisely. No behavior change. The A4 advisory (cross-origin
+  `NEXT_PUBLIC_API_URL` would need `connect-src` widened) was already documented
+  and needs no action for the current same-origin deployment.
