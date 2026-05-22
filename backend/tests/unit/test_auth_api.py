@@ -64,3 +64,132 @@ def test_login_rejects_invalid_credentials(client):
     )
     assert resp.status_code == 401
     assert resp.json()["detail"] == "Invalid credentials"
+
+
+def _login(client, email):
+    """Register + login, returning the issued token pair."""
+    client.post(
+        "/api/v1/auth/register",
+        json={"email": email, "password": "StrongPass123!"},
+    )
+    resp = client.post(
+        "/api/v1/auth/login",
+        json={"email": email, "password": "StrongPass123!"},
+    )
+    assert resp.status_code == 200, resp.text
+    return resp.json()
+
+
+def test_logout_revokes_the_refresh_token(client):
+    tokens = _login(client, "auth_logout@example.com")
+
+    logout = client.post(
+        "/api/v1/auth/logout",
+        json={"refresh_token": tokens["refresh_token"]},
+    )
+    assert logout.status_code == 204, logout.text
+
+    # The revoked token can no longer be exchanged.
+    resp = client.post(
+        "/api/v1/auth/refresh",
+        json={"refresh_token": tokens["refresh_token"]},
+    )
+    assert resp.status_code == 401
+
+
+def test_logout_is_idempotent(client):
+    tokens = _login(client, "auth_logout_twice@example.com")
+
+    first = client.post(
+        "/api/v1/auth/logout", json={"refresh_token": tokens["refresh_token"]}
+    )
+    second = client.post(
+        "/api/v1/auth/logout", json={"refresh_token": tokens["refresh_token"]}
+    )
+    assert first.status_code == 204, first.text
+    assert second.status_code == 204, second.text
+
+
+def test_refresh_rotation_invalidates_the_old_token(client):
+    tokens = _login(client, "auth_rotate@example.com")
+
+    # Exchanging the refresh token rotates it: the response carries a new one.
+    rotated = client.post(
+        "/api/v1/auth/refresh", json={"refresh_token": tokens["refresh_token"]}
+    )
+    assert rotated.status_code == 200, rotated.text
+    new_refresh = rotated.json()["refresh_token"]
+    assert new_refresh != tokens["refresh_token"]
+
+    # The freshly minted token carries the session forward...
+    again = client.post(
+        "/api/v1/auth/refresh", json={"refresh_token": new_refresh}
+    )
+    assert again.status_code == 200, again.text
+
+    # ...but the original, now-spent token is dead. (Replaying it also burns the
+    # family — see test_reuse_detection_burns_the_whole_family — so this replay
+    # is asserted last.)
+    replay = client.post(
+        "/api/v1/auth/refresh", json={"refresh_token": tokens["refresh_token"]}
+    )
+    assert replay.status_code == 401
+    assert replay.json()["detail"] == "Refresh token reuse detected"
+
+
+def test_reuse_detection_burns_the_whole_family(client):
+    tokens = _login(client, "auth_reuse@example.com")
+
+    # A legitimate rotation chain: A -> B -> C.
+    b = client.post(
+        "/api/v1/auth/refresh", json={"refresh_token": tokens["refresh_token"]}
+    ).json()["refresh_token"]
+    c = client.post(
+        "/api/v1/auth/refresh", json={"refresh_token": b}
+    ).json()["refresh_token"]
+
+    # Replaying the long-spent token A is a reuse: the family is burned.
+    replay = client.post(
+        "/api/v1/auth/refresh", json={"refresh_token": tokens["refresh_token"]}
+    )
+    assert replay.status_code == 401
+    assert replay.json()["detail"] == "Refresh token reuse detected"
+
+    # The currently-live token C is revoked too — reuse anywhere in the family
+    # invalidates the whole lineage.
+    live = client.post("/api/v1/auth/refresh", json={"refresh_token": c})
+    assert live.status_code == 401
+
+
+def test_refresh_rejects_an_unknown_jti(client):
+    """A validly-signed refresh token whose jti is not in the store — e.g. a
+    token minted before this feature shipped — is rejected, not honoured."""
+    from app.core.security import create_refresh_token
+
+    forged = create_refresh_token(999999, "user", jti="jti-not-in-store")
+    resp = client.post(
+        "/api/v1/auth/refresh", json={"refresh_token": forged}
+    )
+    assert resp.status_code == 401
+
+
+def test_refresh_rejects_a_disabled_account(client, db_session):
+    """A live refresh token stops working the moment its account is disabled —
+    a disabled user must not be able to keep rotating a session."""
+    from sqlalchemy import select
+
+    from app.models.users import User
+
+    tokens = _login(client, "auth_disabled@example.com")
+
+    user = db_session.execute(
+        select(User).where(User.email == "auth_disabled@example.com")
+    ).scalar_one()
+    user.is_active = False
+    db_session.commit()
+
+    resp = client.post(
+        "/api/v1/auth/refresh", json={"refresh_token": tokens["refresh_token"]}
+    )
+    assert resp.status_code == 401
+    assert resp.json()["detail"] == "User not found or disabled"

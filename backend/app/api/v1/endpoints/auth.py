@@ -1,14 +1,17 @@
-"""Authentication endpoints: register, login, refresh, me."""
+"""Authentication endpoints: register, login, refresh, logout, me."""
 
 from fastapi import APIRouter, HTTPException, status
-from jose import JWTError
 from sqlalchemy import select
 
 from app.api.deps import SessionDep, CurrentUser
+from app.core.refresh_tokens import (
+    RefreshTokenError,
+    issue_refresh_token,
+    revoke_refresh_token,
+    rotate_refresh_token,
+)
 from app.core.security import (
     create_access_token,
-    create_refresh_token,
-    decode_token,
     hash_password,
     verify_password,
 )
@@ -49,31 +52,41 @@ def login(body: UserLogin, db: SessionDep):
     if not user.is_active:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Account disabled")
 
+    # Start a fresh rotation family for this session.
+    refresh_token = issue_refresh_token(db, user)
+    db.commit()
     return TokenResponse(
         access_token=create_access_token(user.id, user.role),
-        refresh_token=create_refresh_token(user.id, user.role),
+        refresh_token=refresh_token,
     )
 
 
 @router.post("/refresh", response_model=TokenResponse)
 def refresh(body: RefreshRequest, db: SessionDep):
     try:
-        payload = decode_token(body.refresh_token)
-    except JWTError:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid refresh token")
-
-    if payload.get("type") != "refresh":
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Token is not a refresh token")
-
-    user_id = int(payload["sub"])
-    user = db.get(User, user_id)
-    if not user or not user.is_active:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="User not found or disabled")
-
+        user, refresh_token = rotate_refresh_token(db, body.refresh_token)
+    except RefreshTokenError as exc:
+        # A reuse replay revokes the token family inside rotate_refresh_token;
+        # commit so that revocation persists. A no-op for an ordinary bad token.
+        db.commit()
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=exc.message)
+    db.commit()
     return TokenResponse(
         access_token=create_access_token(user.id, user.role),
-        refresh_token=create_refresh_token(user.id, user.role),
+        refresh_token=refresh_token,
     )
+
+
+@router.post("/logout", status_code=status.HTTP_204_NO_CONTENT)
+def logout(body: RefreshRequest, db: SessionDep):
+    """Revoke the presented refresh token's whole rotation family.
+
+    Idempotent, and deliberately requires no access token: the refresh token is
+    itself the proof of session ownership, and an expired access token must not
+    be able to block a sign-out.
+    """
+    revoke_refresh_token(db, body.refresh_token)
+    db.commit()
 
 
 @router.get("/me", response_model=UserMe)

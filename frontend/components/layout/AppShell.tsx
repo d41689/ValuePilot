@@ -6,6 +6,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { Activity, Database, FileText, Landmark, LayoutDashboard, LogOut, Search, Upload, Star } from 'lucide-react';
 
 import * as authSession from '@/lib/authSession';
+import apiClient from '@/lib/api/client';
 import { cn } from '@/lib/utils';
 import { Button } from '@/components/ui/button';
 
@@ -37,7 +38,21 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
     return navigation.filter((item) => item.href !== '/upload' && item.href !== '/admin/13f');
   }, [role]);
 
-  function handleSignOut() {
+  async function handleSignOut() {
+    const refreshToken =
+      typeof window !== 'undefined'
+        ? window.localStorage.getItem('vp_refresh_token')
+        : null;
+    // Best-effort server-side revocation of the refresh-token family. Sign-out
+    // must never hang on the network, so any failure is swallowed — the local
+    // session is cleared below regardless.
+    if (refreshToken) {
+      try {
+        await apiClient.post('/auth/logout', { refresh_token: refreshToken });
+      } catch {
+        /* ignore — clearing the local session below still ends it */
+      }
+    }
     if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       authSession.clearAuthSession(window.localStorage, document);
     }
