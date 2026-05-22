@@ -171,3 +171,25 @@ def test_refresh_rejects_an_unknown_jti(client):
         "/api/v1/auth/refresh", json={"refresh_token": forged}
     )
     assert resp.status_code == 401
+
+
+def test_refresh_rejects_a_disabled_account(client, db_session):
+    """A live refresh token stops working the moment its account is disabled —
+    a disabled user must not be able to keep rotating a session."""
+    from sqlalchemy import select
+
+    from app.models.users import User
+
+    tokens = _login(client, "auth_disabled@example.com")
+
+    user = db_session.execute(
+        select(User).where(User.email == "auth_disabled@example.com")
+    ).scalar_one()
+    user.is_active = False
+    db_session.commit()
+
+    resp = client.post(
+        "/api/v1/auth/refresh", json={"refresh_token": tokens["refresh_token"]}
+    )
+    assert resp.status_code == 401
+    assert resp.json()["detail"] == "User not found or disabled"

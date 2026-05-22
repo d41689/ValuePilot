@@ -50,6 +50,21 @@ long — escalate to the user. **medium / low** = ordinary follow-up.
 - **Context:** `docs/tasks/2026-05-21_refresh-token-revocation.md` (Scope → Out)
 - **Issue:** —
 
+### `refresh_tokens` FOR UPDATE concurrency path has no test
+- **Found:** 2026-05-21, PR #86 review (both reviewers, advisory E14)
+- **Severity:** low
+- **Problem:** `rotate_refresh_token` (`backend/app/core/refresh_tokens.py`)
+  serializes two concurrent refreshes of the same token with
+  `SELECT ... FOR UPDATE`, so a self-race is caught as reuse instead of
+  double-minting a successor. The branch is correct by inspection but has no
+  automated test — a reliable one needs two real DB connections racing the same
+  `jti` on separate threads, which the shared-session unit harness
+  (`backend/tests/conftest.py`) cannot express. Add a multi-connection
+  integration test before broader / multi-user rollout.
+- **Context:** `docs/tasks/2026-05-21_refresh-token-revocation-review-result.md`
+  and `..._review-results.md`, both item E14.
+- **Issue:** —
+
 ### Interceptor-level tests for `frontend/lib/api/client.ts`
 - **Found:** 2026-05-20, PR #64 (refresh-token flow)
 - **Severity:** low

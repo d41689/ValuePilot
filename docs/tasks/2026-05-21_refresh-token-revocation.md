@@ -108,3 +108,9 @@ an unknown `jti` is rejected.
   concurrent refreshes of the same token both read `revoked_at IS NULL` and both
   mint a successor, defeating single-use; the row lock serializes them so the
   second is caught as reuse. Re-ran the full suite — still green.
+- 2026-05-21 — two independent reviews returned PASS / APPROVE, no blockers
+  (`..._review-result.md`, `..._review-results.md`). Acted on the one cheap
+  advisory: added `test_refresh_rejects_a_disabled_account` for the
+  inactive-user-on-refresh branch. The FOR UPDATE concurrency-test gap needs
+  integration infra — deferred to `docs/BACKLOG.md` (low). Residuals A3/A5
+  accepted in writing in both reviews.
