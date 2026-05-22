@@ -1114,16 +1114,3 @@ def backfill_period_routing(db: Session, *, filings=None) -> dict[str, int]:
         "needs_review": needs_review_count,
         "failed": failed_count,
     }
-
-
-def _recent_quarters(year: int, month: int, n: int) -> list[str]:
-    """Return last N quarters in YYYY-Qn format, most recent first."""
-    qtr = (month - 1) // 3 + 1
-    result = []
-    for _ in range(n):
-        result.append(f"{year}-Q{qtr}")
-        qtr -= 1
-        if qtr == 0:
-            qtr = 4
-            year -= 1
-    return result

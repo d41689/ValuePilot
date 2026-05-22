@@ -174,6 +174,25 @@ Regression tests added to `test_13f_quarter_model_and_backfill_wiring.py`:
 `backfill_quarters` never emits a future filing quarter; the executor leaves
 the `JobRun` non-terminal for the worker.
 
+## Review round 2 — addressed
+
+Re-review (`docs/tasks/2026-05-22_13f-web-validation-fixes-rereview.md`)
+confirmed both round-1 P1 fixes were directionally correct but found one new
+blocker:
+
+- **R2-P1 — CLI `edgar backfill` stages were inconsistent.** After the R-P1a
+  fix, Step 1 (`backfill_quarters`) indexes the latest usable *report*
+  quarters, but Step 2 still re-derived a *current-calendar-quarter* list via
+  `_recent_quarters()` — so one stage indexed quarters the other never ingested
+  holdings for, and vice versa. Fixed: Step 2 now iterates `results` (Step 1's
+  returned dict), making both stages share one quarter set by construction.
+  `_recent_quarters()` had no remaining caller and was removed.
+
+No dedicated test: the fix eliminates the second quarter list entirely, so
+there is nothing left to drift; `test_backfill_quarters_does_not_request_a_future_filing_quarter`
+already covers the quarters Step 1 (and now Step 2) use. The CLI has no test
+harness.
+
 ## Verification
 
 - Backend `pytest -q` — **909 passed** on a fresh `valuepilot_test` DB
