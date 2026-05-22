@@ -910,11 +910,25 @@ def _scan_index_for_file(
 # ---------------------------------------------------------------------------
 
 def backfill_quarters(db: Session, num_quarters: int = 4) -> dict[str, int]:
-    """Backfill recent N quarters. Returns dict of quarter → filings inserted."""
-    from datetime import date
+    """Backfill the most recent N usable report quarters.
 
-    today = date.today()
-    quarters = _recent_quarters(today.year, today.month, num_quarters)
+    Enumerates *report* quarters from the latest one whose 13F filing deadline
+    has passed, walking backwards — `ingest_quarter_index` then translates each
+    to its (already-started) filing quarter. Starting from the current calendar
+    quarter instead would ask EDGAR for a full-index quarter that has not begun.
+
+    Returns dict of report quarter → filings inserted.
+    """
+    from app.services.thirteenf_admin_dashboard import (
+        latest_usable_quarter_label,
+        previous_quarter_label,
+    )
+
+    quarters: list[str] = []
+    q = latest_usable_quarter_label()
+    for _ in range(num_quarters):
+        quarters.append(q)
+        q = previous_quarter_label(q)
     results = {}
     for q in quarters:
         logger.info("Backfilling %s", q)

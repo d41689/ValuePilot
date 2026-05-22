@@ -146,11 +146,41 @@ flagged for the user's decision.
 dev DB by a web run, that FK-violates against `quality_reports_13f`. Pre-existing
 test-infra gap, out of this task's scope — see `docs/BACKLOG.md`.
 
+## Review round 1 — addressed
+
+Two external reviews of PR #90:
+`docs/tasks/2026-05-22_13f-web-validation-review.md` (FAIL, 2× P1 + 1× P2) and
+`docs/tasks/2026-05-21_13f-web-validation-review-results.md` (APPROVE). The FAIL
+governs. Both P1s confirmed against the code and fixed:
+
+- **R-P1a — `backfill_quarters()` could request a not-yet-started filing
+  quarter.** It enumerated from the *current calendar quarter* via
+  `_recent_quarters()`; after F2, `ingest_quarter_index` translates report →
+  filing quarter, so the current quarter mapped to a future EDGAR full-index.
+  Fixed: `backfill_quarters` now walks back from `latest_usable_quarter_label()`
+  (report quarters whose filing deadline has passed).
+- **R-P1b — `historical_backfill` status double-write broke worker
+  finalization.** `execute_historical_backfill` committed a terminal `JobRun`
+  status itself; the worker's `complete_leased_job` then no-ops (its lease
+  check requires `status == "running"`), so `finished_at` / `lease_expires_at`
+  were never set. Fixed: the executor no longer writes the terminal status —
+  it commits the per-quarter work and returns `status` for the worker to
+  finalize.
+- **R-P2 — `_check_period_alignment()` still filing-quarter** — backlogged
+  (non-blocking; needs a rethink under the report-quarter model). See
+  `docs/BACKLOG.md`.
+
+Regression tests added to `test_13f_quarter_model_and_backfill_wiring.py`:
+`backfill_quarters` never emits a future filing quarter; the executor leaves
+the `JobRun` non-terminal for the worker.
+
 ## Verification
 
-- Backend `pytest -q` — **907 passed** on a fresh `valuepilot_test` DB
-  (migrations applied). Against the populated dev DB it fails on F5 only; real
-  CI runs on a fresh DB, so CI is green.
+- Backend `pytest -q` — **909 passed** on a fresh `valuepilot_test` DB
+  (migrations applied; +2 vs. the pre-review 907 from the new regression
+  tests). Against the populated dev DB it fails on F5 only; real CI runs on a
+  fresh DB, so CI is green.
 - Frontend `node --test lib/*.test.js` — 159 passed. `npm run lint` — clean.
-  `NODE_ENV=production npm run build` — succeeded.
+  `NODE_ENV=production npm run build` — succeeded. (No frontend change in the
+  review round.)
 - No new migrations (no schema change).

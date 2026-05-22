@@ -9,6 +9,24 @@ long — escalate to the user. **medium / low** = ordinary follow-up.
 
 ## Open
 
+### 13F `_check_period_alignment` quality subcheck still uses filing-quarter
+- **Found:** 2026-05-22, PR #90 review round 1 (P2)
+- **Severity:** low
+- **Problem:** Every other check in `run_quality_checks()` scopes by
+  `period_of_report` (report quarter) via `_quarter_filter()`, but
+  `_check_period_alignment()` (`backend/app/services/edgar_quality.py`) still
+  interprets its `quarter` arg as a *filing* quarter — it filters
+  `filed_at BETWEEN :f_start AND :f_end` and expects `period_of_report` in
+  `quarter-1`. After the F1/F2 report-quarter fix, `quality_check` receives a
+  report quarter, so this subcheck inspects the wrong filing set (the filings
+  *filed in* that quarter, which report on the prior quarter) and can miss
+  period anomalies for the requested report quarter. Non-blocking — it only
+  emits info/warning lines. Fix needs a rethink of what the check should assert
+  under the report-quarter model (likely: verify each filing's `report_quarter`
+  matches its actual `period_of_report`).
+- **Context:** `docs/tasks/2026-05-21_13f-web-validation.md` (Review round 1, R-P2)
+- **Issue:** —
+
 ### 13F test suite is not isolated from dev-database data
 - **Found:** 2026-05-22, 13F web-validation run
 - **Severity:** low
