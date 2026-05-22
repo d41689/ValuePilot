@@ -114,13 +114,18 @@ long — escalate to the user. **medium / low** = ordinary follow-up.
 - **Context:** `docs/tasks/2026-05-20_admin-13f-ops-audit.md` (item #11)
 - **Issue:** —
 
-### Content-Security-Policy response header
-- **Found:** 2026-05-20, admin/13f security-header review
-- **Severity:** medium
-- **Problem:** `next.config.js` now sets HSTS, X-Frame-Options, nosniff,
-  Referrer-Policy, and Permissions-Policy, but no `Content-Security-Policy`. A
-  correct CSP for the Next.js runtime (inline scripts / nonces / allowed
-  origins) must be built and tested against the running app — a wrong policy
-  breaks the site, so it cannot be added blind.
-- **Context:** `docs/tasks/2026-05-20_admin-13f-page-fixes.md`
+### CSP `script-src` still allows `'unsafe-inline'`
+- **Found:** 2026-05-21, CSP work (the original "no `Content-Security-Policy`
+  header" item is resolved — a static CSP now ships, see below)
+- **Severity:** low
+- **Problem:** The CSP added in `frontend/lib/csp.js` is a *static* policy, so
+  `script-src` keeps `'unsafe-inline'` — it does not block an injected inline
+  script. Every other directive is locked down (`object-src 'none'`, `base-uri`,
+  `form-action`, `frame-ancestors`, source-restricted
+  `default`/`connect`/`img`/`font`/`style`), so this is the one remaining CSP
+  gap. A genuinely strict `script-src` needs either a per-request nonce (Next.js
+  then forces every page into dynamic rendering — see the task doc trade-off) or
+  the experimental `experimental.sri` hash-based CSP once it is stable. Revisit
+  before broader / multi-user rollout.
+- **Context:** `docs/tasks/2026-05-21_content-security-policy.md`
 - **Issue:** —
