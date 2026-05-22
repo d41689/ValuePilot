@@ -2653,18 +2653,26 @@ def _amendment_payload(session: Session, filing: Filing13F) -> dict[str, Any]:
     infotable = filing.raw_infotable_doc
     raw_docs = [doc for doc in [primary, infotable] if doc is not None]
     has_failed_raw = any(doc.parse_status == "failed" for doc in raw_docs)
+    needs_parse = has_failed_raw or filing.raw_infotable_doc_id is None or holdings_count == 0
     if has_failed_raw:
         status = "failed"
     elif filing.raw_infotable_doc_id is None or holdings_count == 0:
+        status = "pending"
+    elif filing.amendment_status in ("amendments_pending", "pending_parse"):
+        # An amendment still awaiting resolution — keep the row consistent with
+        # the "X pending" warning above the table (which counts amendment_status)
+        # rather than mislabelling it "applied" off is_latest_for_period.
         status = "pending"
     elif filing.is_latest_for_period:
         status = "applied"
     else:
         status = "superseded"
     latest_effective = _latest_effective_filing(session, filing)
+    # Recommend a reparse only for a genuine parse problem, not for an amendment
+    # that parsed fine and is merely awaiting an apply/reject decision.
     recommended_job = (
         {"job_type": "reprocess_amendment", "accession_no": filing.accession_no}
-        if status in {"failed", "pending"}
+        if needs_parse
         else None
     )
     return {
@@ -3230,7 +3238,11 @@ def _is_programming_error(exc: BaseException) -> bool:
 
 
 def _execute_ingest_job(session: Session, job_type: str, payload: dict[str, Any]) -> dict[str, Any]:
-    from app.services.thirteenf_holdings_ingest import ingest_if_needed, reparse_accession
+    from app.services.thirteenf_holdings_ingest import (
+        ingest_if_needed,
+        reconcile_restatement_activation,
+        reparse_accession,
+    )
 
     if job_type == "ingest_accession":
         from app.services.thirteenf_filing_detail import ingest_accession_filing_detail
@@ -3329,6 +3341,40 @@ def _execute_ingest_job(session: Session, job_type: str, payload: dict[str, Any]
         routing_summary = backfill_period_routing(session, filings=routing_candidates)
     session.commit()  # commit barrier — routing is now durable.
 
+    # Phase 2.5: filing-level metadata from the primary document. The holdings
+    # phase below parses only the infotable; without this, is_amendment /
+    # amendment_type / report_type / coverage stay unset for every bulk-ingested
+    # filing. Runs before Phase 3 so _do_ingest_holdings sees the amendment
+    # flags. Pass 1 sets the fields for every filing; pass 2 runs the amendment
+    # policy — which reads sibling is_amendment, so every flag must be set first.
+    from app.edgar.parsers.primary_doc import parse_primary_doc
+    from app.services.thirteenf_filing_detail import (
+        apply_amendment_policy,
+        apply_primary_doc_metadata,
+    )
+
+    metadata_applied = 0
+    metadata_filings: list[Filing13F] = []
+    for filing in filings:
+        if filing.raw_primary_doc_id is None:
+            continue
+        try:
+            with session.begin_nested():  # per-filing SAVEPOINT
+                primary_doc = session.get(RawSourceDocument, filing.raw_primary_doc_id)
+                if primary_doc is None:
+                    continue
+                summary = parse_primary_doc(load_body(primary_doc))
+                apply_primary_doc_metadata(session, filing, summary)
+            metadata_filings.append(filing)
+            metadata_applied += 1
+        except Exception as exc:
+            if _is_programming_error(exc):
+                raise
+            failures.append({"accession_no": filing.accession_no, "error": f"primary_doc: {exc}"})
+    for filing in metadata_filings:
+        apply_amendment_policy(session, filing)
+    session.commit()  # commit barrier — primary-doc metadata is durable.
+
     # Phase 3: parse holdings. ingest_if_needed → _do_ingest_holdings commits
     # per filing internally; Phases 1-2 are already committed, so a per-filing
     # failure here only affects that filing.
@@ -3425,6 +3471,16 @@ def _execute_ingest_job(session: Session, job_type: str, payload: dict[str, Any]
             filings_activated = session.execute(activate_stmt).rowcount or 0
     session.commit()  # final commit barrier — Phase 4 healing is durable.
 
+    # Phase 5: amendment activation. A parsed RESTATEMENT amendment supersedes
+    # its original. reconcile_restatement_activation is idempotent, so this also
+    # heals restatements ingested before is_amendment/amendment_type were set
+    # (e.g. before Phase 2.5 existed) — a plain re-run activates them.
+    restatements_applied = 0
+    for filing in filings:
+        if reconcile_restatement_activation(session, filing):
+            restatements_applied += 1
+    session.commit()  # commit barrier — amendment activation is durable.
+
     # Degraded period routing (needs_review / failed outcomes from
     # route_period) is surfaced as partial_success so the operator sees it
     # — previously these were silent (external review R2-P1).
@@ -3443,6 +3499,8 @@ def _execute_ingest_job(session: Session, job_type: str, payload: dict[str, Any]
         "holdings_quarter_end_synced": holdings_qend_synced,
         "holdings_report_quarter_synced": holdings_rq_synced,
         "filings_activated": filings_activated,
+        "filings_metadata_applied": metadata_applied,
+        "restatements_applied": restatements_applied,
         "filings_period_changed": routing_summary.get("period_changed", 0),
         "filings_quarter_end_added": routing_summary.get("quarter_end_added", 0),
         "filings_report_quarter_added": routing_summary.get("report_quarter_added", 0),

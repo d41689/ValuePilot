@@ -270,3 +270,139 @@ def test_resolve_amendment_activates_as_original(db_session):
     assert f_amend.is_active_for_manager_period is True
     assert f_amend.amendment_status == "applied"
     assert "Looks good" in f_amend.parse_warning
+
+
+# --- 2026-05-22: bulk-ingest primary-doc fix (P1 / P2 / P3) ------------------
+
+def test_reconcile_restatement_activation_heals_already_ingested(db_session):
+    """A RESTATEMENT amendment parsed before is_amendment/amendment_type were
+    set is stuck pending_parse / inactive — reconcile must activate it on a
+    re-run and demote the superseded original. Idempotent. (P1.)
+    """
+    from app.services.thirteenf_holdings_ingest import reconcile_restatement_activation
+
+    _clear(db_session)
+    manager = _manager(db_session)
+    f_orig = Filing13F(
+        manager_id=manager.id, accession_no="O1", accession_number="O1",
+        form_type="13F-HR", period_of_report=date(2024, 3, 31),
+        filed_at=date(2024, 5, 15), quarter_end_date=date(2024, 3, 31),
+        is_active_for_manager_period=True, is_latest_for_period=False,
+    )
+    f_amend = Filing13F(
+        manager_id=manager.id, accession_no="A1", accession_number="A1",
+        form_type="13F-HR/A", period_of_report=date(2024, 3, 31),
+        filed_at=date(2024, 5, 16), quarter_end_date=date(2024, 3, 31),
+        is_latest_for_period=True,
+        is_active_for_manager_period=False, is_amendment=True,
+        amendment_type="RESTATEMENT", amendment_status="pending_parse",
+        parse_status="succeeded",
+    )
+    db_session.add_all([f_orig, f_amend])
+    db_session.flush()
+
+    assert reconcile_restatement_activation(db_session, f_amend) is True
+    db_session.flush()
+    assert f_amend.is_active_for_manager_period is True
+    assert f_amend.amendment_status == "applied"
+    assert f_orig.is_active_for_manager_period is False
+    # Idempotent — a second call changes nothing.
+    assert reconcile_restatement_activation(db_session, f_amend) is False
+
+
+def test_reconcile_restatement_activation_skips_non_restatement(db_session):
+    """A NEW_HOLDINGS amendment is not auto-activated — it stays pending for an
+    admin to resolve."""
+    from app.services.thirteenf_holdings_ingest import reconcile_restatement_activation
+
+    _clear(db_session)
+    manager = _manager(db_session)
+    f = Filing13F(
+        manager_id=manager.id, accession_no="A2", accession_number="A2",
+        form_type="13F-HR/A", period_of_report=date(2024, 3, 31),
+        filed_at=date(2024, 5, 16), quarter_end_date=date(2024, 3, 31),
+        is_active_for_manager_period=False, is_amendment=True,
+        amendment_type="NEW_HOLDINGS", amendment_status="amendments_pending",
+        parse_status="succeeded",
+    )
+    db_session.add(f)
+    db_session.flush()
+
+    assert reconcile_restatement_activation(db_session, f) is False
+    db_session.refresh(f)
+    assert f.is_active_for_manager_period is False
+    assert f.amendment_status == "amendments_pending"
+
+
+def test_apply_primary_doc_metadata_flags_amendment_from_form_type(db_session):
+    """A 13F-HR/A is treated as an amendment even when the primary-doc parser
+    does not flag is_amendment — the "/A" form type is authoritative. (P2.)
+    """
+    from types import SimpleNamespace
+    from app.services.thirteenf_filing_detail import apply_primary_doc_metadata
+
+    _clear(db_session)
+    manager = _manager(db_session)
+    f = Filing13F(
+        manager_id=manager.id, accession_no="A3", accession_number="A3",
+        form_type="13F-HR/A", period_of_report=date(2024, 3, 31),
+        filed_at=date(2024, 5, 16), quarter_end_date=date(2024, 3, 31),
+    )
+    db_session.add(f)
+    db_session.flush()
+
+    summary = SimpleNamespace(
+        is_amendment=False, amendment_type=None, report_type=None,
+        form_spec_version=None, xml_schema_version=None,
+        has_confidential_treatment=False,
+        other_managers_reporting=None, other_managers_included=None,
+    )
+    apply_primary_doc_metadata(db_session, f, summary)
+    assert f.is_amendment is True
+
+
+def test_amendment_payload_status_reflects_amendment_status(db_session):
+    """The Amendment Accessions list status must agree with amendment_status,
+    not be computed "applied" off is_latest_for_period. (P3.)
+    """
+    from app.services.thirteenf_admin_dashboard import _amendment_payload
+
+    _clear(db_session)
+    manager = _manager(db_session)
+    f = Filing13F(
+        manager_id=manager.id, accession_no="A4", accession_number="A4",
+        form_type="13F-HR/A", period_of_report=date(2024, 3, 31),
+        filed_at=date(2024, 5, 16), quarter_end_date=date(2024, 3, 31),
+        is_latest_for_period=True, is_amendment=True,
+        amendment_type="NEW_HOLDINGS", amendment_status="amendments_pending",
+    )
+    db_session.add(f)
+    db_session.flush()
+
+    infotable_xml = (
+        b"<informationTable xmlns='http://www.sec.gov/edgar/document/thirteenf/informationtable'>"
+        b"<infoTable><nameOfIssuer>APPLE INC</nameOfIssuer><titleOfClass>COM</titleOfClass>"
+        b"<cusip>037833100</cusip><value>8000000</value><shrsOrPrnAmt><sshPrnamt>50000</sshPrnamt>"
+        b"<sshPrnamtType>SH</sshPrnamtType></shrsOrPrnAmt><investmentDiscretion>SOLE</investmentDiscretion>"
+        b"<votingAuthority><Sole>50000</Sole><Shared>0</Shared><None>0</None></votingAuthority>"
+        b"</infoTable></informationTable>"
+    )
+    ingest_holdings_for_filing(db_session, f, infotable_xml)
+
+    infotable = RawSourceDocument(
+        source_system="edgar", document_type="infotable_xml",
+        cik=manager.cik, accession_no=f.accession_no,
+        source_url="https://example.test/infotable.xml",
+        http_status=200, fetched_at=datetime.now(timezone.utc),
+        body_path="test/infotable.xml", parse_status="parsed",
+    )
+    db_session.add(infotable)
+    db_session.flush()
+    f.raw_infotable_doc_id = infotable.id
+    db_session.add(f)
+    db_session.flush()
+
+    payload = _amendment_payload(db_session, f)
+    # amendment_status is amendments_pending -> the row reads "pending",
+    # consistent with the card's "X pending" warning (pre-fix it was "applied").
+    assert payload["status"] == "pending"
