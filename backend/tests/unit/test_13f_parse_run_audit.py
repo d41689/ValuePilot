@@ -334,3 +334,87 @@ def test_ingest_reparsed_when_fingerprint_version_differs(db_session):
     run2 = db_session.get(ParseRun13F, r2["parse_run_id"])
     assert run2.is_current is True
     assert run1_refreshed.is_current is False
+
+
+# ---------------------------------------------------------------------------
+# Test: Filing13F.parse_status mirrors the parse-run outcome.
+# Regression — it used to stay "pending" forever, so /admin/13f/filings showed
+# every successfully-parsed filing as pending.
+# ---------------------------------------------------------------------------
+
+def test_ingest_advances_filing_parse_status_to_succeeded(db_session):
+    """A successful holdings ingest flips Filing13F.parse_status to succeeded."""
+    from app.services.thirteenf_holdings_ingest import ingest_holdings_for_filing
+
+    _clear(db_session)
+    manager = _manager(db_session)
+    filing = _hr_filing(db_session, manager, "0001893830-24-005010")
+    assert filing.parse_status == "pending"
+
+    ingest_holdings_for_filing(db_session, filing, _minimal_infotable())
+
+    db_session.refresh(filing)
+    assert filing.parse_status == "succeeded"
+
+
+def test_failed_ingest_marks_filing_parse_status_failed(db_session):
+    """A failed first ingest flips Filing13F.parse_status to failed."""
+    from app.services.thirteenf_holdings_ingest import ingest_holdings_for_filing
+
+    _clear(db_session)
+    manager = _manager(db_session)
+    filing = _hr_filing(db_session, manager, "0001893830-24-005011")
+
+    with pytest.raises(Exception):
+        ingest_holdings_for_filing(db_session, filing, b"not valid xml")
+
+    db_session.refresh(filing)
+    assert filing.parse_status == "failed"
+
+
+def test_ingest_if_needed_skip_heals_stale_pending_parse_status(db_session):
+    """ingest_if_needed's skip path reconciles a stale "pending" parse_status.
+
+    Filings ingested before parse_status was mirrored are stuck at "pending";
+    a plain re-run of "Ingest holdings" must self-heal them.
+    """
+    from app.services.thirteenf_holdings_ingest import (
+        ingest_holdings_for_filing,
+        ingest_if_needed,
+    )
+
+    _clear(db_session)
+    manager = _manager(db_session)
+    filing = _hr_filing(db_session, manager, "0001893830-24-005012")
+    ingest_holdings_for_filing(db_session, filing, _minimal_infotable())
+
+    # Simulate a pre-fix row: a current succeeded parse_run, stale "pending".
+    filing.parse_status = "pending"
+    db_session.flush()
+
+    result = ingest_if_needed(db_session, filing, _minimal_infotable())
+
+    assert result.get("skipped") is True
+    db_session.refresh(filing)
+    assert filing.parse_status == "succeeded"
+
+
+def test_failed_reparse_keeps_filing_parse_status_succeeded(db_session):
+    """A reparse that fails restores the prior good run — parse_status stays succeeded."""
+    from app.services.thirteenf_holdings_ingest import (
+        ingest_holdings_for_filing,
+        reparse_accession,
+    )
+
+    _clear(db_session)
+    manager = _manager(db_session)
+    filing = _hr_filing(db_session, manager, "0001893830-24-005013")
+    ingest_holdings_for_filing(db_session, filing, _minimal_infotable())
+    db_session.refresh(filing)
+    assert filing.parse_status == "succeeded"
+
+    with pytest.raises(Exception):
+        reparse_accession(db_session, filing.accession_number, infotable_bytes=b"BAD XML")
+
+    db_session.refresh(filing)
+    assert filing.parse_status == "succeeded"
