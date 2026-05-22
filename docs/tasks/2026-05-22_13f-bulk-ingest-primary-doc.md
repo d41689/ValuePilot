@@ -83,3 +83,21 @@ Re-ran "Ingest holdings" for 2025-Q1…Q4 through `/admin/13f`:
   are gone.
 - Amendment Accessions card: the "NEW_HOLDINGS: 1 pending" warning now agrees
   with the list (Vulcan's row reads `pending`, not `applied`) (P3).
+
+## Review round 1 — addressed
+
+Both PR #92 reviews (FAIL / REQUEST CHANGES) flagged one blocker: Phase 2.5's
+pass 2 called `apply_amendment_policy` unconditionally, which reset
+`is_active_for_manager_period=False` and `amendment_status` for *every*
+amendment on *every* re-run — reverting an admin-resolved amendment (e.g. a
+NEW_HOLDINGS `activate_as_original`) and flipping the active filing back to the
+superseded original.
+
+Fixed in `apply_amendment_policy`: a resolved amendment (`amendment_status` in
+`applied` / `rejected` / `informational`) is terminal — the policy returns
+without touching it; and the original-filing branch leaves every original
+inactive when an `applied` amendment exists for the period, so a re-run cannot
+resurrect a superseded original. Regression test added
+(`test_apply_amendment_policy_preserves_admin_resolved_amendment`). `pytest -q`
+918 passed; verified live — a 2025-Q4 re-ingest left Himalaya's applied
+RESTATEMENT active.

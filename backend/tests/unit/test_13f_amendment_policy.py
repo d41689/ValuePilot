@@ -406,3 +406,43 @@ def test_amendment_payload_status_reflects_amendment_status(db_session):
     # amendment_status is amendments_pending -> the row reads "pending",
     # consistent with the card's "X pending" warning (pre-fix it was "applied").
     assert payload["status"] == "pending"
+
+
+def test_apply_amendment_policy_preserves_admin_resolved_amendment(db_session):
+    """A re-run of the amendment policy (bulk Phase 2.5) must not revert an
+    admin-resolved amendment. Regression for the PR #92 review blocker — an
+    `applied` amendment and the original it superseded must survive a re-run.
+    """
+    from app.services.thirteenf_filing_detail import apply_amendment_policy
+
+    _clear(db_session)
+    manager = _manager(db_session)
+    # Original, demoted by a prior admin "activate_as_original" on the amendment.
+    f_orig = Filing13F(
+        manager_id=manager.id, accession_no="O5", accession_number="O5",
+        form_type="13F-HR", period_of_report=date(2024, 3, 31),
+        filed_at=date(2024, 5, 15), quarter_end_date=date(2024, 3, 31),
+        is_active_for_manager_period=False, is_latest_for_period=False,
+    )
+    # NEW_HOLDINGS amendment an admin resolved as the active filing.
+    f_amend = Filing13F(
+        manager_id=manager.id, accession_no="A5", accession_number="A5",
+        form_type="13F-HR/A", period_of_report=date(2024, 3, 31),
+        filed_at=date(2024, 5, 16), quarter_end_date=date(2024, 3, 31),
+        is_latest_for_period=True, is_amendment=True,
+        amendment_type="NEW_HOLDINGS", amendment_status="applied",
+        is_active_for_manager_period=True,
+    )
+    db_session.add_all([f_orig, f_amend])
+    db_session.flush()
+
+    # Simulate the bulk re-ingest's Phase 2.5 pass 2 (policy for every filing).
+    apply_amendment_policy(db_session, f_orig)
+    apply_amendment_policy(db_session, f_amend)
+    db_session.flush()
+
+    # The admin's resolution survives — the amendment stays active/applied and
+    # the superseded original stays inactive.
+    assert f_amend.is_active_for_manager_period is True
+    assert f_amend.amendment_status == "applied"
+    assert f_orig.is_active_for_manager_period is False

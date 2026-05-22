@@ -356,9 +356,18 @@ def apply_primary_doc_metadata(session: Session, filing: Filing13F, summary: Any
     session.add(filing)
 
 
+_TERMINAL_AMENDMENT_STATUSES = frozenset({"applied", "rejected", "informational"})
+
+
 def apply_amendment_policy(session: Session, filing: Filing13F) -> None:
     if filing.is_amendment:
         filing.amendment_type = _normalize_amendment_type(filing.amendment_type_raw)
+        # A resolved amendment is terminal — an auto-applied restatement, or an
+        # admin apply / reject / mark-informational. Re-running the policy on a
+        # bulk re-ingest must not revert is_active / amendment_status and undo
+        # the resolution.
+        if filing.amendment_status in _TERMINAL_AMENDMENT_STATUSES:
+            return
         filing.is_active_for_manager_period = False
         if filing.amendment_type == "RESTATEMENT":
             filing.amendment_status = "pending_parse"
@@ -369,8 +378,23 @@ def apply_amendment_policy(session: Session, filing: Filing13F) -> None:
     # Original filing logic
     filing.is_amendment = False
     filing.amendment_type = None
-    
+
     if not filing.quarter_end_date:
+        filing.is_active_for_manager_period = False
+        return
+
+    # If an amendment for this period has been applied (a restatement, or an
+    # admin activate_as_original), it owns is_active — leave every original off
+    # so a re-run cannot resurrect a superseded original.
+    applied_amendment = (
+        session.query(Filing13F)
+        .filter(Filing13F.manager_id == filing.manager_id)
+        .filter(Filing13F.quarter_end_date == filing.quarter_end_date)
+        .filter(Filing13F.is_amendment.is_(True))
+        .filter(Filing13F.amendment_status == "applied")
+        .first()
+    )
+    if applied_amendment is not None:
         filing.is_active_for_manager_period = False
         return
 
