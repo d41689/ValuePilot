@@ -23,6 +23,17 @@ def test_is_valid_cusip():
     assert not is_valid_cusip("12345678!") # invalid format
     assert is_valid_cusip("037833100")   # Apple CUSIP
 
+    # 2026-05-22: pin the invariant that letter-prefixed CINS identifiers
+    # (e.g. ``G0403H108`` Aon plc, ``L8681T102`` Spotify, ``N07059210`` ASML)
+    # PASS the validator. ``enrich_unmapped_holdings`` only routes through
+    # ``OpenFigiClient.map_cusips`` for identifiers that pass this check; if
+    # the validator started rejecting letters, the new CINS → ``ID_CINS``
+    # routing logic in ``openfigi/client.py`` would be silently bypassed and
+    # every foreign-issuer holding would land in ``invalid_cusip``.
+    assert is_valid_cusip("G0403H108")   # Aon plc CINS
+    assert is_valid_cusip("L8681T102")   # Spotify CINS
+    assert is_valid_cusip("N07059210")   # ASML CINS
+
 
 def test_evaluate_openfigi_matches():
     # Single exact US Common Stock match.
@@ -74,6 +85,18 @@ def test_evaluate_openfigi_matches_us_adr_auto_confirms():
     conf, reason, ticker, name = evaluate_openfigi_matches(matches)
     assert conf == "high"
     assert ticker == "TSM"
+
+
+def test_evaluate_openfigi_matches_us_gdr_auto_confirms():
+    """Global Depositary Receipts (a few of these trade on US OTC as well)
+    report securityType ``GDR``. When a single US-exchange listing exists,
+    auto-confirm — same shape as ADRs."""
+    matches = [
+        {"ticker": "OZONY", "name": "OZON HOLDINGS PLC-GDR", "securityType": "GDR", "exchCode": "US"},
+    ]
+    conf, reason, ticker, name = evaluate_openfigi_matches(matches)
+    assert conf == "high"
+    assert ticker == "OZONY"
 
 
 def test_evaluate_openfigi_matches_us_etp_auto_confirms():
