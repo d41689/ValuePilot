@@ -9,6 +9,24 @@ long — escalate to the user. **medium / low** = ordinary follow-up.
 
 ## Open
 
+### 13F CUSIP enrichment — monitor MUTUAL FUND / OPEN-END FUND / UNIT auto-confirms in production
+- **Found:** 2026-05-22, PR #93 review (advisory #1)
+- **Severity:** low
+- **Problem:** The new `_EQUITY_LIKE_SECURITY_TYPES` allowlist in
+  `backend/app/services/cusip_enrichment.py` includes `MUTUAL FUND`,
+  `OPEN-END FUND`, `CLOSED-END FUND`, and `UNIT`. These are the most permissive
+  entries on the list — a 13F filer's common-holding row (`put_call IS NULL`)
+  legitimately resolves to a mutual-fund / closed-end-fund ticker in some
+  cases, but a `UNIT` could also be a SPAC pre-business-combination unit
+  bundling common + warrants. Once production accumulates a few quarters of
+  data, scan `cusip_ticker_map.confidence='high'` rows where the matched
+  securityType is one of these four, eyeball the auto-confirmed tickers
+  against the issuer name, and tighten or split the allowlist if any tier
+  shows mis-routes.
+- **Context:** [docs/tasks/2026-05-22_13f-cusip-enrichment-adr-cins.md](docs/tasks/2026-05-22_13f-cusip-enrichment-adr-cins.md);
+  [docs/tasks/2026-05-22_13f-cusip-enrichment-adr-cins-review-results.md](docs/tasks/2026-05-22_13f-cusip-enrichment-adr-cins-review-results.md)
+- **Issue:** —
+
 ### 13F `_check_period_alignment` quality subcheck still uses filing-quarter
 - **Found:** 2026-05-22, PR #90 review round 1 (P2)
 - **Severity:** low

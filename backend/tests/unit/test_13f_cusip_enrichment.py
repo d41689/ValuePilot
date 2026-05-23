@@ -23,21 +23,37 @@ def test_is_valid_cusip():
     assert not is_valid_cusip("12345678!") # invalid format
     assert is_valid_cusip("037833100")   # Apple CUSIP
 
+    # 2026-05-22: pin the invariant that letter-prefixed CINS identifiers
+    # (e.g. ``G0403H108`` Aon plc, ``L8681T102`` Spotify, ``N07059210`` ASML)
+    # PASS the validator. ``enrich_unmapped_holdings`` only routes through
+    # ``OpenFigiClient.map_cusips`` for identifiers that pass this check; if
+    # the validator started rejecting letters, the new CINS → ``ID_CINS``
+    # routing logic in ``openfigi/client.py`` would be silently bypassed and
+    # every foreign-issuer holding would land in ``invalid_cusip``.
+    assert is_valid_cusip("G0403H108")   # Aon plc CINS
+    assert is_valid_cusip("L8681T102")   # Spotify CINS
+    assert is_valid_cusip("N07059210")   # ASML CINS
+
 
 def test_evaluate_openfigi_matches():
-    # Single exact match
+    # Single exact US Common Stock match.
     matches = [{"ticker": "AAPL", "name": "Apple Inc", "securityType": "Common Stock", "exchCode": "US"}]
     conf, reason, ticker, name = evaluate_openfigi_matches(matches)
     assert conf == "high"
     assert ticker == "AAPL"
 
-    # Single match but wrong type
+    # 2026-05-22: an Option-only US match must NOT auto-link to the
+    # underlying — Options share the CUSIP only by coincidence. The new
+    # auto-confirm rule allowlists equity instruments only (Common Stock /
+    # Depositary Receipt / REIT / ETP / Mutual Fund / Open-End Fund /
+    # Preferred Stock); Option-only / Warrant-only / Future-only land in
+    # review_needed:medium just as before.
     matches = [{"ticker": "AAPL", "name": "Apple Inc", "securityType": "Option", "exchCode": "US"}]
     conf, reason, ticker, name = evaluate_openfigi_matches(matches)
     assert conf == "review_needed:medium"
     assert ticker == "AAPL"
 
-    # Multiple matches
+    # Multiple US-exchange matches on different tickers — still review_needed.
     matches = [
         {"ticker": "A", "name": "A", "securityType": "Common Stock", "exchCode": "US"},
         {"ticker": "B", "name": "B", "securityType": "Common Stock", "exchCode": "US"}
@@ -46,9 +62,125 @@ def test_evaluate_openfigi_matches():
     assert conf == "review_needed:low"
     assert ticker is None
 
-    # No matches
+    # No matches.
     conf, reason, ticker, name = evaluate_openfigi_matches([])
     assert conf == "low"
+    assert ticker is None
+
+
+def test_evaluate_openfigi_matches_us_adr_auto_confirms():
+    """ADRs (single US ticker across all US listings) should auto-confirm.
+
+    Pre-fix: ``securityType='ADR'`` + many non-US cross-listings landed in
+    review_needed:low ("Multiple matches, no US Common Stock listing"). The
+    13F filer reports it as US-traded under the ADR ticker, so auto-confirm
+    is correct. The literal string is ``ADR`` as OpenFIGI returns it (not
+    ``Depositary Receipt``).
+    """
+    matches = [
+        {"ticker": "TSM", "name": "TAIWAN SEMICONDUCTOR-SP ADR", "securityType": "ADR", "exchCode": "US"},
+        {"ticker": "TSM", "name": "TAIWAN SEMICONDUCTOR-SP ADR", "securityType": "ADR", "exchCode": "UN"},
+        {"ticker": "2330", "name": "TAIWAN SEMICONDUCTOR", "securityType": "Common Stock", "exchCode": "TT"},
+    ]
+    conf, reason, ticker, name = evaluate_openfigi_matches(matches)
+    assert conf == "high"
+    assert ticker == "TSM"
+
+
+def test_evaluate_openfigi_matches_us_gdr_auto_confirms():
+    """Global Depositary Receipts (a few of these trade on US OTC as well)
+    report securityType ``GDR``. When a single US-exchange listing exists,
+    auto-confirm — same shape as ADRs."""
+    matches = [
+        {"ticker": "OZONY", "name": "OZON HOLDINGS PLC-GDR", "securityType": "GDR", "exchCode": "US"},
+    ]
+    conf, reason, ticker, name = evaluate_openfigi_matches(matches)
+    assert conf == "high"
+    assert ticker == "OZONY"
+
+
+def test_evaluate_openfigi_matches_us_etp_auto_confirms():
+    """An ETP (SPY) with a single US ticker should auto-confirm."""
+    matches = [
+        {"ticker": "SPY", "name": "SPDR S&P 500 ETF TRUST", "securityType": "ETP", "exchCode": "US"},
+        {"ticker": "SPY", "name": "SPDR S&P 500 ETF TRUST", "securityType": "ETP", "exchCode": "UN"},
+    ]
+    conf, reason, ticker, name = evaluate_openfigi_matches(matches)
+    assert conf == "high"
+    assert ticker == "SPY"
+
+
+def test_evaluate_openfigi_matches_us_reit_auto_confirms():
+    """A US REIT (AMT) with a single US ticker should auto-confirm."""
+    matches = [
+        {"ticker": "AMT", "name": "AMERICAN TOWER CORP", "securityType": "REIT", "exchCode": "US"},
+    ]
+    conf, reason, ticker, name = evaluate_openfigi_matches(matches)
+    assert conf == "high"
+    assert ticker == "AMT"
+
+
+def test_evaluate_openfigi_matches_tracking_stock_auto_confirms():
+    """Liberty Media tracking stocks (FWONK / LSXMK) report securityType
+    ``Tracking Stk`` in OpenFIGI but are tradable US common equity from the
+    13F filer's perspective."""
+    matches = [
+        {"ticker": "FWONK", "name": "LIBERTY MEDIA FRMULA1 C", "securityType": "Tracking Stk", "exchCode": "US"},
+        {"ticker": "FWONK", "name": "LIBERTY MEDIA FRMULA1 C", "securityType": "Tracking Stk", "exchCode": "UN"},
+    ]
+    conf, reason, ticker, name = evaluate_openfigi_matches(matches)
+    assert conf == "high"
+    assert ticker == "FWONK"
+
+
+def test_evaluate_openfigi_matches_mlp_auto_confirms():
+    """Master Limited Partnerships (ARLP, EPD, …) report securityType
+    ``MLP`` and are tradable US common-equity instruments from a 13F
+    filer's perspective."""
+    matches = [
+        {"ticker": "ARLP", "name": "ALLIANCE RESOURCE PARTNERS", "securityType": "MLP", "exchCode": "US"},
+        {"ticker": "ARLP", "name": "ALLIANCE RESOURCE PARTNERS", "securityType": "MLP", "exchCode": "UQ"},
+    ]
+    conf, reason, ticker, name = evaluate_openfigi_matches(matches)
+    assert conf == "high"
+    assert ticker == "ARLP"
+
+
+def test_evaluate_openfigi_matches_bond_stays_in_review():
+    """Bond / convertible CUSIPs (single match on TRACE exchange) must NOT
+    auto-link. Pre-fix and post-fix this stays in review_needed:medium so
+    the admin can decide whether to map it to the issuer or leave it."""
+    matches = [
+        {"ticker": "AFRM 0 11/15/26", "name": "AFFIRM HLDGS INC", "securityType": "US DOMESTIC", "exchCode": "TRACE"},
+    ]
+    conf, reason, ticker, name = evaluate_openfigi_matches(matches)
+    assert conf == "review_needed:medium"
+
+
+def test_evaluate_openfigi_matches_ny_reg_shrs_auto_confirms():
+    """ASML and similar Dutch / European dual-listed equities report
+    securityType ``NY Reg Shrs`` (New York Registry Shares) on US exchanges.
+    """
+    matches = [
+        {"ticker": "ASML", "name": "ASML HOLDING NV-NY REG SHS", "securityType": "NY Reg Shrs", "exchCode": "US"},
+    ]
+    conf, reason, ticker, name = evaluate_openfigi_matches(matches)
+    assert conf == "high"
+    assert ticker == "ASML"
+
+
+def test_evaluate_openfigi_matches_us_ticker_conflict_still_review():
+    """Cross-listed US tickers on the SAME CUSIP must still go to review.
+
+    Safety regression: the relaxed rule must not auto-link when two different
+    US tickers share the CUSIP (rare but possible across share classes).
+    """
+    matches = [
+        {"ticker": "GOOG", "name": "Alphabet Inc Class C", "securityType": "Common Stock", "exchCode": "US"},
+        {"ticker": "GOOGL", "name": "Alphabet Inc Class A", "securityType": "Common Stock", "exchCode": "US"},
+    ]
+    conf, reason, ticker, name = evaluate_openfigi_matches(matches)
+    assert conf == "review_needed:low"
     assert ticker is None
 
 

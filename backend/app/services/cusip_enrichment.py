@@ -119,6 +119,34 @@ def upsert_cusip_mapping(
     return mapping
 
 
+# securityType values that 13F common holdings legitimately resolve to. A
+# 13F common-stock row (``put_call IS NULL``) is the issuer's primary US
+# equity instrument; OpenFIGI labels these with one of the strings below
+# (verified against live responses for AAPL / BABA / TSM / SPY / AMT /
+# FWONK (Liberty Media Tracking Stk) / ASML (NY Reg Shrs) / etc., where
+# securityType is ``ADR`` not ``Depositary Receipt``). Derivatives (Option /
+# Warrant / Future) share the underlying's CUSIP only by coincidence and
+# must NOT auto-link.
+_EQUITY_LIKE_SECURITY_TYPES = frozenset({
+    "COMMON STOCK",
+    "ADR",
+    "GDR",
+    "NY REG SHRS",       # NY Registry Shares — ASML, etc.
+    "TRACKING STK",      # Liberty Media tracker series (FWONK, LSXMK, …).
+    "MLP",               # Master Limited Partnership (ARLP, EPD, …).
+    "REIT",
+    "ETP",
+    "MUTUAL FUND",
+    "OPEN-END FUND",
+    "CLOSED-END FUND",
+    "UNIT",
+    "PREFERRED",
+    "PREFERRED STOCK",
+    "RECEIPT",           # Generic depositary receipts.
+    "TRUST",             # Royalty / income trusts traded as common.
+})
+
+
 def evaluate_openfigi_matches(matches: List[Dict[str, Any]]) -> tuple[str, str, Optional[str], Optional[str]]:
     """Determine confidence and auto-confirm rules for OpenFIGI matches.
 
@@ -129,55 +157,77 @@ def evaluate_openfigi_matches(matches: List[Dict[str, Any]]) -> tuple[str, str, 
     worldwide, options chains, bond instruments, ADRs, etc. A
     typical equity CUSIP (e.g. Apple 037833100) returns 200+ matches.
     The original auto-confirm rule (``len(matches) == 1``) was
-    therefore unreachable for real equity CUSIPs. The rule now
-    filters to US Common Stock listings FIRST, then auto-confirms
-    when all US Common Stock entries agree on a single ticker.
+    therefore unreachable for real equity CUSIPs.
+
+    2026-05-22 (this revision): the previous rule required
+    ``securityType=COMMON STOCK`` AND ``exchCode=US`` for auto-confirm,
+    which excluded every ADR (TSM, BABA, DEO, …), REIT (AMT, BXP, …),
+    and ETP (SPY, GLD, EFA, …). OpenFIGI returns those under their own
+    securityType (``Depositary Receipt`` / ``REIT`` / ``ETP``), so they
+    fell through to the catch-all review_needed:low even though their
+    US ticker is unambiguous. The rule now auto-confirms when **all
+    equity-like listings (see _EQUITY_LIKE_SECURITY_TYPES) on US
+    exchanges agree on a single ticker**. Cross-listing safety is
+    preserved: if two US-exchange equity-like listings disagree on a
+    ticker, we still send the CUSIP to the review queue.
     """
     if not matches:
         return ("low", "No match found in OpenFIGI", None, None)
 
-    # Filter to US Common Stock equity listings.
-    us_common = [
+    # Filter to US-exchange listings whose securityType is an actual equity
+    # instrument that a 13F common-holding row could legitimately resolve to.
+    # ``exchCode=US`` covers NYSE / Nasdaq / AMEX / OTC. Cross-listings on
+    # LN, JT, etc. are intentionally ignored — they share the CUSIP but are
+    # not what the 13F filing references.
+    us_equity = [
         m for m in matches
-        if str(m.get("securityType", "")).upper() == "COMMON STOCK"
-        and str(m.get("exchCode", "")).upper() == "US"
+        if str(m.get("exchCode", "")).upper() == "US"
+        and str(m.get("securityType", "")).upper() in _EQUITY_LIKE_SECURITY_TYPES
     ]
 
-    if us_common:
-        tickers = {m.get("ticker") for m in us_common if m.get("ticker")}
+    if us_equity:
+        tickers = {m.get("ticker") for m in us_equity if m.get("ticker")}
         if len(tickers) == 1:
             ticker = next(iter(tickers))
-            first = us_common[0]
+            # Prefer a COMMON STOCK listing as the canonical representative
+            # for the issuer name; fall back to the first equity listing
+            # otherwise (e.g. an ADR-only / ETP-only / REIT-only set).
+            common = next(
+                (m for m in us_equity if str(m.get("securityType", "")).upper() == "COMMON STOCK"),
+                None,
+            )
+            representative = common or us_equity[0]
+            sec_types = sorted({str(m.get("securityType", "")) for m in us_equity if m.get("securityType")})
             return (
                 "high",
-                f"US Common Stock match ({len(us_common)} listings, all → {ticker})",
+                f"US-exchange match ({len(us_equity)} listings, all → {ticker}; types: {sec_types})",
                 ticker,
-                first.get("name"),
+                representative.get("name"),
             )
-        # Multiple US Common Stock matches with different tickers — needs review.
+        # Multiple US equity-exchange listings on different tickers — review.
         return (
             "review_needed:low",
-            f"Multiple US Common Stock matches with conflicting tickers: {sorted(t for t in tickers if t)}",
+            f"Multiple US-exchange matches with conflicting tickers: {sorted(t for t in tickers if t)}",
             None,
             None,
         )
 
-    # No US Common Stock match — fall back to existing heuristics for
-    # non-equity / non-US listings so the admin queue still gets the
-    # context needed to triage.
+    # No US-exchange equity listing — fall back to existing heuristics for
+    # non-US-only or derivative-only matches so the admin queue still gets
+    # the context needed to triage.
     if len(matches) == 1:
         match = matches[0]
         sec_type = str(match.get("securityType", "")).upper()
         exch_code = str(match.get("exchCode", "")).upper()
         return (
             "review_needed:medium",
-            f"Single match but type '{sec_type}' or exchange '{exch_code}' (not US Common Stock)",
+            f"Single match but exchange '{exch_code}' / type '{sec_type}' (no US equity listing)",
             match.get("ticker"),
             match.get("name"),
         )
     return (
         "review_needed:low",
-        f"Multiple ({len(matches)}) matches, no US Common Stock listing",
+        f"Multiple ({len(matches)}) matches, no US-exchange equity listing",
         None,
         None,
     )
