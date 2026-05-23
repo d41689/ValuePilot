@@ -60,14 +60,15 @@ def test_evaluate_openfigi_matches():
 def test_evaluate_openfigi_matches_us_adr_auto_confirms():
     """ADRs (single US ticker across all US listings) should auto-confirm.
 
-    Pre-fix: securityType=Depositary Receipt + multiple non-US cross-listings
-    landed in review_needed:low ("Multiple matches, no US Common Stock
-    listing"). The 13F filer reports it as US-traded under the ADR ticker, so
-    auto-confirm is correct.
+    Pre-fix: ``securityType='ADR'`` + many non-US cross-listings landed in
+    review_needed:low ("Multiple matches, no US Common Stock listing"). The
+    13F filer reports it as US-traded under the ADR ticker, so auto-confirm
+    is correct. The literal string is ``ADR`` as OpenFIGI returns it (not
+    ``Depositary Receipt``).
     """
     matches = [
-        {"ticker": "TSM", "name": "TAIWAN SEMICONDUCTOR-SP ADR", "securityType": "Depositary Receipt", "exchCode": "US"},
-        {"ticker": "TSM", "name": "TAIWAN SEMICONDUCTOR-SP ADR", "securityType": "Depositary Receipt", "exchCode": "UV"},
+        {"ticker": "TSM", "name": "TAIWAN SEMICONDUCTOR-SP ADR", "securityType": "ADR", "exchCode": "US"},
+        {"ticker": "TSM", "name": "TAIWAN SEMICONDUCTOR-SP ADR", "securityType": "ADR", "exchCode": "UN"},
         {"ticker": "2330", "name": "TAIWAN SEMICONDUCTOR", "securityType": "Common Stock", "exchCode": "TT"},
     ]
     conf, reason, ticker, name = evaluate_openfigi_matches(matches)
@@ -94,6 +95,55 @@ def test_evaluate_openfigi_matches_us_reit_auto_confirms():
     conf, reason, ticker, name = evaluate_openfigi_matches(matches)
     assert conf == "high"
     assert ticker == "AMT"
+
+
+def test_evaluate_openfigi_matches_tracking_stock_auto_confirms():
+    """Liberty Media tracking stocks (FWONK / LSXMK) report securityType
+    ``Tracking Stk`` in OpenFIGI but are tradable US common equity from the
+    13F filer's perspective."""
+    matches = [
+        {"ticker": "FWONK", "name": "LIBERTY MEDIA FRMULA1 C", "securityType": "Tracking Stk", "exchCode": "US"},
+        {"ticker": "FWONK", "name": "LIBERTY MEDIA FRMULA1 C", "securityType": "Tracking Stk", "exchCode": "UN"},
+    ]
+    conf, reason, ticker, name = evaluate_openfigi_matches(matches)
+    assert conf == "high"
+    assert ticker == "FWONK"
+
+
+def test_evaluate_openfigi_matches_mlp_auto_confirms():
+    """Master Limited Partnerships (ARLP, EPD, …) report securityType
+    ``MLP`` and are tradable US common-equity instruments from a 13F
+    filer's perspective."""
+    matches = [
+        {"ticker": "ARLP", "name": "ALLIANCE RESOURCE PARTNERS", "securityType": "MLP", "exchCode": "US"},
+        {"ticker": "ARLP", "name": "ALLIANCE RESOURCE PARTNERS", "securityType": "MLP", "exchCode": "UQ"},
+    ]
+    conf, reason, ticker, name = evaluate_openfigi_matches(matches)
+    assert conf == "high"
+    assert ticker == "ARLP"
+
+
+def test_evaluate_openfigi_matches_bond_stays_in_review():
+    """Bond / convertible CUSIPs (single match on TRACE exchange) must NOT
+    auto-link. Pre-fix and post-fix this stays in review_needed:medium so
+    the admin can decide whether to map it to the issuer or leave it."""
+    matches = [
+        {"ticker": "AFRM 0 11/15/26", "name": "AFFIRM HLDGS INC", "securityType": "US DOMESTIC", "exchCode": "TRACE"},
+    ]
+    conf, reason, ticker, name = evaluate_openfigi_matches(matches)
+    assert conf == "review_needed:medium"
+
+
+def test_evaluate_openfigi_matches_ny_reg_shrs_auto_confirms():
+    """ASML and similar Dutch / European dual-listed equities report
+    securityType ``NY Reg Shrs`` (New York Registry Shares) on US exchanges.
+    """
+    matches = [
+        {"ticker": "ASML", "name": "ASML HOLDING NV-NY REG SHS", "securityType": "NY Reg Shrs", "exchCode": "US"},
+    ]
+    conf, reason, ticker, name = evaluate_openfigi_matches(matches)
+    assert conf == "high"
+    assert ticker == "ASML"
 
 
 def test_evaluate_openfigi_matches_us_ticker_conflict_still_review():

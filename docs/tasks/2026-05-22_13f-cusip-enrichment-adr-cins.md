@@ -74,3 +74,42 @@ The pattern is unambiguous in `cusip_ticker_map`:
   (`cusip_ticker_map` partitioned by first character — 0 % CINS success;
   500+ ADR/REIT/ETF entries dumped to needs_review with identical
   "Multiple matches, no US Common Stock listing" reason).
+- 2026-05-22: implemented and live-verified. Final allowlist of US
+  equity-instrument securityType strings (verified by probing OpenFIGI):
+  ``Common Stock``, ``ADR``, ``GDR``, ``NY Reg Shrs``, ``Tracking Stk``,
+  ``MLP``, ``REIT``, ``ETP``, ``Mutual Fund``, ``Open-End Fund``,
+  ``Closed-End Fund``, ``Unit``, ``Preferred``, ``Preferred Stock``,
+  ``Receipt``, ``Trust``. CINS routing splits the batch by first
+  character. 9 new unit tests covering ADR / REIT / ETP / Tracking-Stk /
+  NY-Reg-Shrs / MLP auto-confirm; bond (TRACE) and US-ticker conflict
+  regression; CINS request routing.
+
+## Verification (dev stack)
+
+Cleared stale `cusip_ticker_map` rows (B1 candidates and every CINS row)
+and re-ran "Enrich CUSIPs" on `/admin/13f` three times as the allowlist
+was extended. `/admin/13f/holdings` 2025-Q4 progression:
+
+| Step | LINKED COMMON | needs_review | unresolved |
+|---|---:|---:|---:|
+| Baseline (pre-fix) | 78.0 % (2,927) | 502 rows | 328 rows |
+| After B1 (Common-only allowlist) + B2 | 90.1 % (3,389) | 368 rows | 4 rows |
+| After ADR / ETP / REIT added | 95.3 % (3,585) | 172 rows | 4 rows |
+| **After Tracking-Stk / NY Reg Shrs / MLP / Receipt / Trust added** | **96.1 % (3,616)** | **141 rows** | **4 rows** |
+
+The 141 remaining `needs_review` are genuine admin items: TRACE-listed
+bonds / convertibles (`AFRM 0 11/15/26`, `ABNB 0 03/15/26`, …) which
+should NOT auto-link to common-stock tickers, plus a handful of
+recently-restructured names (CARNIVAL, FUBOTV, HOLOGIC, SEALED AIR).
+The 4 `unresolved` / `invalid_cusip` rows are pre-existing edge cases
+outside this fix's scope.
+
+Canonical CI on a fresh DB (`valuepilot_test`):
+- `docker compose exec -T api pytest -q` — **927 passed** (918 + 9
+  new).
+- `docker compose exec -T web sh -lc 'node --test lib/*.test.js'` —
+  159 passed.
+- `docker compose exec -T web npm run lint` — clean.
+- `docker compose exec -T web sh -lc 'NODE_ENV=production npm run build'`
+  — clean. (Dev `web` container restarted afterward per the known
+  dev-build-clobbers-server caveat.)

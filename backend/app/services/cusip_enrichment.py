@@ -121,18 +121,29 @@ def upsert_cusip_mapping(
 
 # securityType values that 13F common holdings legitimately resolve to. A
 # 13F common-stock row (``put_call IS NULL``) is the issuer's primary US
-# equity instrument; OpenFIGI labels these as ``Common Stock`` /
-# ``Depositary Receipt`` / ``REIT`` / ``ETP`` / ``Mutual Fund`` /
-# ``Preferred Stock``. Derivatives (Option / Warrant / Future) share the
-# underlying's CUSIP only by coincidence and must NOT auto-link.
+# equity instrument; OpenFIGI labels these with one of the strings below
+# (verified against live responses for AAPL / BABA / TSM / SPY / AMT /
+# FWONK (Liberty Media Tracking Stk) / ASML (NY Reg Shrs) / etc., where
+# securityType is ``ADR`` not ``Depositary Receipt``). Derivatives (Option /
+# Warrant / Future) share the underlying's CUSIP only by coincidence and
+# must NOT auto-link.
 _EQUITY_LIKE_SECURITY_TYPES = frozenset({
     "COMMON STOCK",
-    "DEPOSITARY RECEIPT",
+    "ADR",
+    "GDR",
+    "NY REG SHRS",       # NY Registry Shares — ASML, etc.
+    "TRACKING STK",      # Liberty Media tracker series (FWONK, LSXMK, …).
+    "MLP",               # Master Limited Partnership (ARLP, EPD, …).
     "REIT",
     "ETP",
     "MUTUAL FUND",
     "OPEN-END FUND",
+    "CLOSED-END FUND",
+    "UNIT",
+    "PREFERRED",
     "PREFERRED STOCK",
+    "RECEIPT",           # Generic depositary receipts.
+    "TRUST",             # Royalty / income trusts traded as common.
 })
 
 
