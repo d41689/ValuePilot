@@ -16,6 +16,24 @@ from app.rate_guard.client import RateGuardClient
 logger = logging.getLogger(__name__)
 
 
+def _id_type_for(identifier: str) -> str:
+    """Pick the OpenFIGI ``idType`` for a 9-character CUSIP-format identifier.
+
+    OpenFIGI exposes two related ID spaces:
+      - ``ID_CUSIP`` — domestic CUSIP (US / Canada). All digit-prefixed.
+      - ``ID_CINS`` — CUSIP International Numbering System (foreign issuers).
+        Always letter-prefixed (e.g. ``G0403H108`` Aon plc).
+
+    Querying a CINS via ``ID_CUSIP`` yields no matches, so route by the first
+    character. Anything else (``None`` / wrong length / non-alphanumeric)
+    falls back to ``ID_CUSIP`` and the existing validator catches it
+    downstream.
+    """
+    if identifier and identifier[:1].isalpha():
+        return "ID_CINS"
+    return "ID_CUSIP"
+
+
 class OpenFigiClient:
     """Maps CUSIPs to FIGI / ticker objects via the OpenFIGI API."""
 
@@ -28,15 +46,25 @@ class OpenFigiClient:
         self._rate_guard = RateGuardClient(http_client)
 
     def map_cusips(self, cusips: List[str]) -> List[List[Dict[str, Any]]]:
-        """Map a batch of CUSIPs to FIGI objects — one result list per CUSIP.
+        """Map a batch of CUSIP / CINS identifiers to FIGI objects.
 
         A CUSIP with no matches yields an empty list at its position.
+
+        2026-05-22: split identifiers by first character — letter-prefixed
+        CINS (foreign-issuer CUSIP-format identifier, e.g. ``G0403H108`` Aon
+        plc, ``L8681T102`` Spotify) must be looked up via ``idType=ID_CINS``,
+        not ``ID_CUSIP``. The single-idType path returned "No match found"
+        for 100 % of letter-prefixed identifiers in dev, leaving every
+        foreign-issuer holding unlinked.
         """
         if self.use_stub or settings.EDGAR_FETCH_MODE == "replay":
             logger.debug("OpenFIGI: using stub fallback for %d CUSIPs", len(cusips))
             return self._stub_mapping(cusips)
 
-        payload = [{"idType": "ID_CUSIP", "idValue": c} for c in cusips]
+        payload = [
+            {"idType": _id_type_for(c), "idValue": c}
+            for c in cusips
+        ]
         body = json.dumps(payload).encode("utf-8")
         raw = self._rate_guard.fetch(
             upstream="openfigi", method="POST", url=self.BASE_URL, body=body

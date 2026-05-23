@@ -25,19 +25,24 @@ def test_is_valid_cusip():
 
 
 def test_evaluate_openfigi_matches():
-    # Single exact match
+    # Single exact US Common Stock match.
     matches = [{"ticker": "AAPL", "name": "Apple Inc", "securityType": "Common Stock", "exchCode": "US"}]
     conf, reason, ticker, name = evaluate_openfigi_matches(matches)
     assert conf == "high"
     assert ticker == "AAPL"
 
-    # Single match but wrong type
+    # 2026-05-22: an Option-only US match must NOT auto-link to the
+    # underlying — Options share the CUSIP only by coincidence. The new
+    # auto-confirm rule allowlists equity instruments only (Common Stock /
+    # Depositary Receipt / REIT / ETP / Mutual Fund / Open-End Fund /
+    # Preferred Stock); Option-only / Warrant-only / Future-only land in
+    # review_needed:medium just as before.
     matches = [{"ticker": "AAPL", "name": "Apple Inc", "securityType": "Option", "exchCode": "US"}]
     conf, reason, ticker, name = evaluate_openfigi_matches(matches)
     assert conf == "review_needed:medium"
     assert ticker == "AAPL"
 
-    # Multiple matches
+    # Multiple US-exchange matches on different tickers — still review_needed.
     matches = [
         {"ticker": "A", "name": "A", "securityType": "Common Stock", "exchCode": "US"},
         {"ticker": "B", "name": "B", "securityType": "Common Stock", "exchCode": "US"}
@@ -46,9 +51,63 @@ def test_evaluate_openfigi_matches():
     assert conf == "review_needed:low"
     assert ticker is None
 
-    # No matches
+    # No matches.
     conf, reason, ticker, name = evaluate_openfigi_matches([])
     assert conf == "low"
+    assert ticker is None
+
+
+def test_evaluate_openfigi_matches_us_adr_auto_confirms():
+    """ADRs (single US ticker across all US listings) should auto-confirm.
+
+    Pre-fix: securityType=Depositary Receipt + multiple non-US cross-listings
+    landed in review_needed:low ("Multiple matches, no US Common Stock
+    listing"). The 13F filer reports it as US-traded under the ADR ticker, so
+    auto-confirm is correct.
+    """
+    matches = [
+        {"ticker": "TSM", "name": "TAIWAN SEMICONDUCTOR-SP ADR", "securityType": "Depositary Receipt", "exchCode": "US"},
+        {"ticker": "TSM", "name": "TAIWAN SEMICONDUCTOR-SP ADR", "securityType": "Depositary Receipt", "exchCode": "UV"},
+        {"ticker": "2330", "name": "TAIWAN SEMICONDUCTOR", "securityType": "Common Stock", "exchCode": "TT"},
+    ]
+    conf, reason, ticker, name = evaluate_openfigi_matches(matches)
+    assert conf == "high"
+    assert ticker == "TSM"
+
+
+def test_evaluate_openfigi_matches_us_etp_auto_confirms():
+    """An ETP (SPY) with a single US ticker should auto-confirm."""
+    matches = [
+        {"ticker": "SPY", "name": "SPDR S&P 500 ETF TRUST", "securityType": "ETP", "exchCode": "US"},
+        {"ticker": "SPY", "name": "SPDR S&P 500 ETF TRUST", "securityType": "ETP", "exchCode": "UN"},
+    ]
+    conf, reason, ticker, name = evaluate_openfigi_matches(matches)
+    assert conf == "high"
+    assert ticker == "SPY"
+
+
+def test_evaluate_openfigi_matches_us_reit_auto_confirms():
+    """A US REIT (AMT) with a single US ticker should auto-confirm."""
+    matches = [
+        {"ticker": "AMT", "name": "AMERICAN TOWER CORP", "securityType": "REIT", "exchCode": "US"},
+    ]
+    conf, reason, ticker, name = evaluate_openfigi_matches(matches)
+    assert conf == "high"
+    assert ticker == "AMT"
+
+
+def test_evaluate_openfigi_matches_us_ticker_conflict_still_review():
+    """Cross-listed US tickers on the SAME CUSIP must still go to review.
+
+    Safety regression: the relaxed rule must not auto-link when two different
+    US tickers share the CUSIP (rare but possible across share classes).
+    """
+    matches = [
+        {"ticker": "GOOG", "name": "Alphabet Inc Class C", "securityType": "Common Stock", "exchCode": "US"},
+        {"ticker": "GOOGL", "name": "Alphabet Inc Class A", "securityType": "Common Stock", "exchCode": "US"},
+    ]
+    conf, reason, ticker, name = evaluate_openfigi_matches(matches)
+    assert conf == "review_needed:low"
     assert ticker is None
 
 

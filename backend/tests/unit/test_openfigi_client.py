@@ -87,3 +87,38 @@ def test_replay_mode_uses_stub(monkeypatch):
     assert calls == []
     assert results[0] == []         # 0000... -> no match
     assert len(results[1]) == 2     # 9999... -> ambiguous
+
+
+def test_map_cusips_routes_cins_via_id_cins(monkeypatch):
+    """Letter-prefixed identifiers (CINS, e.g. Aon plc G0403H108) must be
+    queried with ``idType=ID_CINS``; digit-prefixed stay on ``ID_CUSIP``.
+    Pre-fix the single-idType request returned 0 matches for every CINS.
+    The order of the request must mirror the input order — the response is
+    positional.
+    """
+    monkeypatch.setattr(rg.settings, "RATE_GUARD_URL", RATE_GUARD)
+    monkeypatch.setattr(openfigi_module.settings, "EDGAR_FETCH_MODE", "live")
+    seen: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["payload"] = json.loads(request.content)
+        return _envelope(json.dumps([
+            {"data": [{"ticker": "AAPL"}]},
+            {"data": [{"ticker": "AON"}]},
+            {"data": [{"ticker": "TSM"}]},
+            {"data": [{"ticker": "SPOT"}]},
+        ]).encode())
+
+    # Mixed order: CUSIP, CINS, CUSIP, CINS. The request body must preserve
+    # this exact order so the positional response lines up.
+    with OpenFigiClient(http_client=_rg_http(handler)) as client:
+        results = client.map_cusips(["037833100", "G0403H108", "874039100", "L8681T102"])
+
+    sent_body = json.loads(base64.b64decode(seen["payload"]["body_b64"]))
+    assert sent_body == [
+        {"idType": "ID_CUSIP", "idValue": "037833100"},
+        {"idType": "ID_CINS", "idValue": "G0403H108"},
+        {"idType": "ID_CUSIP", "idValue": "874039100"},
+        {"idType": "ID_CINS", "idValue": "L8681T102"},
+    ]
+    assert [r[0]["ticker"] for r in results] == ["AAPL", "AON", "TSM", "SPOT"]
