@@ -3362,6 +3362,15 @@ def _execute_ingest_job(session: Session, job_type: str, payload: dict[str, Any]
             with session.begin_nested():  # per-filing SAVEPOINT
                 primary_doc = session.get(RawSourceDocument, filing.raw_primary_doc_id)
                 if primary_doc is None:
+                    # raw_primary_doc_id set but the row is gone — a broken FK
+                    # invariant, not a normal skip. Log so it shows up in the
+                    # next sweep rather than silently leaving the filing
+                    # without primary-doc metadata.
+                    logger.warning(
+                        "Phase 2.5 pass 1: filing %s references raw_primary_doc_id=%s but RawSourceDocument is missing",
+                        filing.accession_no,
+                        filing.raw_primary_doc_id,
+                    )
                     continue
                 summary = parse_primary_doc(load_body(primary_doc))
                 apply_primary_doc_metadata(session, filing, summary)
