@@ -90,6 +90,43 @@ def _holding_row_fingerprint(row: HoldingRow, value_unit_raw: str) -> str:
     return hashlib.sha256(parts.encode()).hexdigest()
 
 
+def reconcile_restatement_activation(session: Session, filing: Filing13F) -> bool:
+    """Make a parsed RESTATEMENT amendment the active filing for its period.
+
+    A 13F-HR/A of type RESTATEMENT fully restates the period's holdings, so once
+    its holdings are parsed it supersedes the original. Demotes any other active
+    filing for the same (manager, quarter_end_date) and marks this one
+    ``applied``. Idempotent — safe to call from the holdings-ingest path and
+    from a re-run reconciliation phase. Returns True if it changed anything.
+    """
+    if not (filing.is_amendment and filing.amendment_type == "RESTATEMENT"):
+        return False
+    if filing.parse_status != "succeeded" or filing.quarter_end_date is None:
+        return False
+    changed = False
+    superseded = (
+        session.query(Filing13F)
+        .filter(Filing13F.manager_id == filing.manager_id)
+        .filter(Filing13F.quarter_end_date == filing.quarter_end_date)
+        .filter(Filing13F.id != filing.id)
+        .filter(Filing13F.is_active_for_manager_period.is_(True))
+        .all()
+    )
+    for other in superseded:
+        other.is_active_for_manager_period = False
+        session.add(other)
+        changed = True
+    if not filing.is_active_for_manager_period:
+        filing.is_active_for_manager_period = True
+        changed = True
+    if filing.amendment_status != "applied":
+        filing.amendment_status = "applied"
+        changed = True
+    if changed:
+        session.add(filing)
+    return changed
+
+
 def _do_ingest_holdings(
     session: Session,
     filing: Filing13F,
@@ -210,24 +247,12 @@ def _do_ingest_holdings(
         filing.parse_status = "succeeded"
         session.add(filing)
         
-        if filing.is_amendment and filing.amendment_type == "RESTATEMENT":
-            # Atomically activate this amendment and demote the older active filing
-            from app.models.institutions import Filing13F
-            active_original = (
-                session.query(Filing13F)
-                .filter(Filing13F.manager_id == filing.manager_id)
-                .filter(Filing13F.quarter_end_date == filing.quarter_end_date)
-                .filter(Filing13F.is_active_for_manager_period.is_(True))
-                .filter(Filing13F.id != filing.id)
-                .first()
-            )
-            if active_original:
-                active_original.is_active_for_manager_period = False
-                session.add(active_original)
-            filing.is_active_for_manager_period = True
-            filing.amendment_status = "applied"
-            session.add(filing)
-            
+        # A parsed RESTATEMENT amendment supersedes the original — activate it
+        # and demote the superseded filing. Idempotent; the bulk pipeline's
+        # reconciliation phase re-runs it for already-ingested restatements.
+        reconcile_restatement_activation(session, filing)
+
+
         sp.commit()  # Release the savepoint, merging into outer transaction.
         session.commit()
         session.refresh(parse_run)

@@ -95,33 +95,19 @@ def ingest_accession_filing_detail(
     )
     filing.raw_filing_url = filing_url
     filing.raw_primary_doc_id = raw_doc.id
-    filing.form_spec_version = summary.form_spec_version
-    filing.xml_schema_version = summary.xml_schema_version
-    filing.report_type = _normalize_report_type(summary.report_type, form_type)
-    filing.coverage_completeness = _coverage_completeness(filing.report_type)
-    filing.coverage_type = _coverage_type(filing.report_type, form_type)
-    filing.has_confidential_treatment = bool(summary.has_confidential_treatment)
-    filing.confidential_treatment_status = "applied" if filing.has_confidential_treatment else "none"
     filing.reported_total_value_thousands = summary.table_value_total
     filing.holdings_count = summary.table_entry_total or 0
     filing.parse_status = routing.parse_status
     filing.parse_warning = routing.parse_warning
     filing.parse_error = routing.parse_error
-    filing.other_managers_reporting = summary.other_managers_reporting or None
-    filing.other_managers_included = summary.other_managers_included or None
 
-    filing.is_amendment = bool(summary.is_amendment)
-    filing.amendment_type_raw = summary.amendment_type
-    
-    # Optional amends_accession_no extraction logic could go here later.
-    # For now, rely on edgar_ingestion or later enrichment.
-
-    session.add(filing)
+    # Primary-doc metadata (report type, coverage, confidential treatment,
+    # amendment flags) then the amendment policy — both shared with the bulk
+    # ingest pipeline.
+    apply_primary_doc_metadata(session, filing, summary)
     session.flush()
+    apply_amendment_policy(session, filing)
 
-    _apply_amendment_policy(session, filing)
-
-    session.add(filing)
     session.commit()
     session.refresh(filing)
     return {
@@ -341,9 +327,47 @@ def _normalize_amendment_type(raw: str | None) -> str:
     return "unknown"
 
 
-def _apply_amendment_policy(session: Session, filing: Filing13F) -> None:
+def apply_primary_doc_metadata(session: Session, filing: Filing13F, summary: Any) -> None:
+    """Apply primary-document-derived filing metadata (no amendment policy).
+
+    Sets the Filing13F fields that come from the 13F *primary document* — report
+    type, coverage, confidential treatment, amendment flags. The caller runs
+    `apply_amendment_policy` afterwards — the bulk pipeline does so in a second
+    pass, once every sibling's `is_amendment` is set, because the policy's
+    active-original selection reads sibling rows. Period routing, parse_status
+    and holdings stay the caller's responsibility.
+    """
+    form_type = str(filing.form_type or "")
+    filing.form_spec_version = summary.form_spec_version
+    filing.xml_schema_version = summary.xml_schema_version
+    filing.report_type = _normalize_report_type(summary.report_type, form_type)
+    filing.coverage_completeness = _coverage_completeness(filing.report_type)
+    filing.coverage_type = _coverage_type(filing.report_type, form_type)
+    filing.has_confidential_treatment = bool(summary.has_confidential_treatment)
+    filing.confidential_treatment_status = (
+        "applied" if filing.has_confidential_treatment else "none"
+    )
+    filing.other_managers_reporting = summary.other_managers_reporting or None
+    filing.other_managers_included = summary.other_managers_included or None
+    # A "/A" form type is, by definition, an amendment — trust it even when the
+    # primary-doc parser does not flag is_amendment.
+    filing.is_amendment = bool(summary.is_amendment) or form_type.endswith("/A")
+    filing.amendment_type_raw = summary.amendment_type
+    session.add(filing)
+
+
+_TERMINAL_AMENDMENT_STATUSES = frozenset({"applied", "rejected", "informational"})
+
+
+def apply_amendment_policy(session: Session, filing: Filing13F) -> None:
     if filing.is_amendment:
         filing.amendment_type = _normalize_amendment_type(filing.amendment_type_raw)
+        # A resolved amendment is terminal — an auto-applied restatement, or an
+        # admin apply / reject / mark-informational. Re-running the policy on a
+        # bulk re-ingest must not revert is_active / amendment_status and undo
+        # the resolution.
+        if filing.amendment_status in _TERMINAL_AMENDMENT_STATUSES:
+            return
         filing.is_active_for_manager_period = False
         if filing.amendment_type == "RESTATEMENT":
             filing.amendment_status = "pending_parse"
@@ -354,8 +378,23 @@ def _apply_amendment_policy(session: Session, filing: Filing13F) -> None:
     # Original filing logic
     filing.is_amendment = False
     filing.amendment_type = None
-    
+
     if not filing.quarter_end_date:
+        filing.is_active_for_manager_period = False
+        return
+
+    # If an amendment for this period has been applied (a restatement, or an
+    # admin activate_as_original), it owns is_active — leave every original off
+    # so a re-run cannot resurrect a superseded original.
+    applied_amendment = (
+        session.query(Filing13F)
+        .filter(Filing13F.manager_id == filing.manager_id)
+        .filter(Filing13F.quarter_end_date == filing.quarter_end_date)
+        .filter(Filing13F.is_amendment.is_(True))
+        .filter(Filing13F.amendment_status == "applied")
+        .first()
+    )
+    if applied_amendment is not None:
         filing.is_active_for_manager_period = False
         return
 
