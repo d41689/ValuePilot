@@ -584,6 +584,19 @@ def update_manager(session: Session, manager_id: int, payload: dict[str, Any]) -
     ]:
         if field in payload:
             setattr(manager, field, payload[field])
+    # V2 taxonomy invariant (docs/tasks/2026-05-24_manager-taxonomy-v2.md):
+    # ``manager_type`` (legacy, drives Oracle's Lens weight) is derived
+    # from ``style_primary`` (V2 truth) by ``derive_legacy_manager_type``
+    # at seed time. This endpoint deliberately does NOT accept
+    # ``style_primary`` yet — V2 admin editing is out of scope for the
+    # taxonomy-v2 PR and waits for a dedicated dialog. The risk to watch
+    # for: a future change that adds ``style_primary`` to the accepted
+    # field list above MUST also re-derive ``manager_type`` here (or in
+    # the model layer), otherwise the two columns drift silently and
+    # every signal weight read by Oracle's Lens becomes wrong for that
+    # manager. Pair any such change with a new test asserting the
+    # post-PATCH invariant
+    # ``manager.manager_type == derive_legacy_manager_type(manager.style_primary)``.
     if "canonical_name" in payload:
         manager.legal_name = payload["canonical_name"]
     if "status" in payload and payload["status"] is not None:

@@ -304,3 +304,129 @@ def test_bootstrap_whitelist_handler_actually_seeds_v2_managers(db_session, monk
     assert tiger is not None
     assert tiger.style_primary == "growth_long_short"
     assert tiger.manager_type == "high_turnover"
+
+
+# ---------------------------------------------------------------------------
+# Review fixes
+# ---------------------------------------------------------------------------
+
+
+def test_to_summary_dict_default_caps_samples_at_25():
+    """JobRun.summary_json storage path: keep the row small even on a
+    huge diff."""
+    fetched_at = datetime.now(timezone.utc)
+    diff = DataromaSyncDiff(
+        new=[
+            DataromaSyncEntry(dataroma_code=f"NEW-{i:03d}", name=f"New {i}")
+            for i in range(50)
+        ],
+        known=[],
+        dropped=[],
+        fetched_at=fetched_at,
+    )
+    summary = diff.to_summary_dict()
+    assert summary["new_count"] == 50  # count is exact
+    assert len(summary["new_sample"]) == 25  # samples are capped
+
+
+def test_to_summary_dict_none_returns_full_lists():
+    """Synchronous endpoint path: FE must see EVERY new entry so the
+    admin can select-all when there are more than 25."""
+    fetched_at = datetime.now(timezone.utc)
+    diff = DataromaSyncDiff(
+        new=[
+            DataromaSyncEntry(dataroma_code=f"NEW-{i:03d}", name=f"New {i}")
+            for i in range(50)
+        ],
+        known=[],
+        dropped=[],
+        fetched_at=fetched_at,
+    )
+    summary = diff.to_summary_dict(sample_size=None)
+    assert summary["new_count"] == 50
+    assert len(summary["new_sample"]) == 50  # full list, no truncation
+
+
+def test_add_dataroma_candidates_commits_so_data_is_durable(monkeypatch):
+    """The /add endpoint relies on add_dataroma_candidates to commit.
+    Without the commit (only flush), the FE click looked successful but
+    the rows would be rolled back when the request session closed —
+    review blocker #1.
+
+    Uses a fresh SessionLocal (not the test fixture's auto-rollback
+    session) so we can verify that the writes actually persist across
+    sessions, then cleans up after itself.
+    """
+    from app.core.db import SessionLocal
+
+    test_code = "COMMITTEST-ABC123"
+
+    s1 = SessionLocal()
+    try:
+        # Pre-clean in case a prior failed run left the row behind.
+        s1.query(InstitutionManager).filter_by(dataroma_code=test_code).delete()
+        s1.commit()
+
+        result = add_dataroma_candidates(
+            s1, [DataromaSyncEntry(dataroma_code=test_code, name="Commit Test")]
+        )
+        assert result["added"] == 1
+    finally:
+        s1.close()
+
+    # Open a fresh session — if add_dataroma_candidates only flushed,
+    # the row will not be visible here. The committed row IS visible.
+    s2 = SessionLocal()
+    try:
+        persisted = (
+            s2.query(InstitutionManager).filter_by(dataroma_code=test_code).one_or_none()
+        )
+        assert persisted is not None, (
+            "add_dataroma_candidates did not commit; row was rolled back when "
+            "session closed (review blocker #1)."
+        )
+        assert persisted.match_status == "candidate"
+        # Cleanup so re-runs are clean.
+        s2.delete(persisted)
+        s2.commit()
+    finally:
+        s2.close()
+
+
+def test_add_dataroma_candidates_integrity_error_treated_as_skipped(
+    db_session, monkeypatch
+):
+    """If dataroma_code one day gets a UNIQUE constraint (tracked in
+    BACKLOG), or if any other IntegrityError surfaces at INSERT time,
+    the SAVEPOINT defense must keep one bad entry from poisoning the
+    whole batch — the row is counted as skipped and processing
+    continues."""
+    from sqlalchemy.exc import IntegrityError
+
+    # Patch the flush method on this session to raise IntegrityError
+    # for the second of three add_dataroma_candidates inserts.
+    real_flush = db_session.flush
+    raised = {"count": 0}
+
+    def _flaky_flush(*args, **kwargs):
+        raised["count"] += 1
+        if raised["count"] == 2:
+            raise IntegrityError("simulated", {}, Exception("dup"))
+        return real_flush(*args, **kwargs)
+
+    monkeypatch.setattr(db_session, "flush", _flaky_flush)
+
+    items = [
+        DataromaSyncEntry(dataroma_code="INTEGRITY-A", name="A"),
+        DataromaSyncEntry(dataroma_code="INTEGRITY-B", name="B"),
+        DataromaSyncEntry(dataroma_code="INTEGRITY-C", name="C"),
+    ]
+    # Don't commit at the end — the fixture session can't commit cleanly
+    # while we're patching flush. We want to assert that B is counted
+    # as skipped without the whole call exploding.
+    monkeypatch.setattr(db_session, "commit", lambda: None)
+
+    result = add_dataroma_candidates(db_session, items)
+    # A and C inserted; B raised IntegrityError → skipped.
+    assert result["added"] == 2
+    assert result["skipped"] == 1

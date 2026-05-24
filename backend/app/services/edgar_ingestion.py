@@ -38,6 +38,7 @@ from app.models.institutions import (
     InstitutionManager,
     RawSourceDocument,
 )
+from app.services.oracles_lens.manager_style import derive_legacy_manager_type
 
 logger = logging.getLogger(__name__)
 
@@ -96,12 +97,6 @@ def seed_confirmed_managers(db: Session) -> int:
     import json
     import os
     from pathlib import Path
-
-    # Imported lazily to avoid an import cycle at module load:
-    # manager_style imports from app.models.institutions, which is
-    # already imported above for InstitutionManager. Keeping it lazy
-    # also keeps this function's import surface honest.
-    from app.services.oracles_lens.manager_style import derive_legacy_manager_type
 
     seed_path = Path(__file__).parent / "seed_data" / "confirmed_managers.json"
     if not os.path.exists(seed_path):
@@ -293,19 +288,29 @@ class DataromaSyncDiff:
     dropped: list[DataromaSyncEntry]
     fetched_at: datetime
 
-    def to_summary_dict(self, sample_size: int = 25) -> dict:
-        """Compact JSON shape suitable for ``JobRun.summary_json`` and
-        the admin endpoint response. Counts are always exact; sample
-        lists are truncated so a 1000-row diff doesn't bloat the
-        ``job_runs`` table."""
+    def to_summary_dict(self, sample_size: int | None = 25) -> dict:
+        """JSON shape used for both ``JobRun.summary_json`` storage and the
+        synchronous admin endpoint response.
+
+        ``sample_size`` semantics:
+        - integer (default 25): cap each ``*_sample`` list at this many
+          entries. Used by the job-system path where ``JobRun.summary_json``
+          must stay small.
+        - ``None``: no cap — return the full diff. Used by the synchronous
+          ``/managers/dataroma-sync`` endpoint so the admin UI can render
+          (and let the user select) every new Dataroma entry, not just the
+          first 25. The full Dataroma universe is currently ~80–100 rows
+          so the unbounded response stays well-bounded in practice.
+        """
         def _sample(entries: list[DataromaSyncEntry]) -> list[dict]:
+            sliced = entries if sample_size is None else entries[:sample_size]
             return [
                 {
                     "dataroma_code": e.dataroma_code,
                     "name": e.name,
                     "institution_manager_id": e.institution_manager_id,
                 }
-                for e in entries[:sample_size]
+                for e in sliced
             ]
 
         return {
@@ -414,7 +419,23 @@ def add_dataroma_candidates(
     anywhere in ``institution_managers`` (regardless of status). Returns
     ``{"added": n, "skipped": n}`` so the calling endpoint can report
     both halves to the admin.
+
+    Concurrency: per-entry inserts run inside a SAVEPOINT so that if a
+    concurrent admin add for the same ``dataroma_code`` slipped past
+    the TOCTOU check and a unique-constraint violation surfaces at
+    INSERT, we recover gracefully and count that entry as skipped
+    rather than poisoning the whole batch. ``dataroma_code`` does not
+    currently carry a DB-level UNIQUE constraint (tracked in
+    docs/BACKLOG.md) so today's race produces a duplicate row instead
+    of an IntegrityError; the savepoint-and-catch shape is in place
+    so the unique-constraint follow-up is a one-migration change.
+
+    Commits on success. The endpoint layer does not commit (per the
+    services-own-transactions convention in this repo); add a single
+    commit here so the call is durable end-to-end from the FE click.
     """
+    from sqlalchemy.exc import IntegrityError
+
     now = datetime.now(timezone.utc)
     added = 0
     skipped = 0
@@ -447,10 +468,23 @@ def add_dataroma_candidates(
                 f"awaiting Match CIK + V2 classification."
             ),
         )
-        db.add(record)
-        added += 1
 
-    db.flush()
+        sp = db.begin_nested()
+        try:
+            db.add(record)
+            db.flush()
+            sp.commit()
+            added += 1
+        except IntegrityError:
+            sp.rollback()
+            logger.warning(
+                "add_dataroma_candidates: IntegrityError on dataroma_code=%s; "
+                "treating as skipped (likely concurrent add).",
+                code,
+            )
+            skipped += 1
+
+    db.commit()
     logger.info(
         "add_dataroma_candidates: added=%d skipped=%d (total submitted=%d)",
         added, skipped, len(items),

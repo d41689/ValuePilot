@@ -480,6 +480,12 @@ def run_dataroma_sync(session: SessionDep, current_user: AdminUser) -> Any:
 
     Read-only: no rows are written. Use ``/managers/dataroma-sync/add``
     to apply selected entries as candidates.
+
+    ``sample_size=None`` is intentional: the FE needs to render *every*
+    new Dataroma entry so the admin can select-all and add them in one
+    shot. The default 25-row cap is a ``JobRun.summary_json`` size
+    guard, not a UI contract. Dataroma's full universe is ~80–100
+    entries so the response stays small in practice.
     """
     from app.services.edgar_ingestion import sync_dataroma_managers
 
@@ -495,7 +501,7 @@ def run_dataroma_sync(session: SessionDep, current_user: AdminUser) -> Any:
             detail=f"Dataroma fetch failed: {exc}",
         ) from exc
 
-    return diff.to_summary_dict()
+    return diff.to_summary_dict(sample_size=None)
 
 
 @admin_router.post("/managers/dataroma-sync/add", response_model=dict)

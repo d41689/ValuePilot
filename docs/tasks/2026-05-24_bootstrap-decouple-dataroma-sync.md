@@ -158,9 +158,20 @@ docker compose exec -T api pytest -q tests/unit/test_13f_dataroma_sync.py
 - **Sync is synchronous.** Dataroma fetch via Rate Guard usually returns
   in 1–3s. Synchronous endpoint keeps the FE shape trivial (no polling),
   and a slow Dataroma just looks like a slow button to admin, which is
-  the correct UX. The locking is still respected via the job system if
-  admin spams the button — second click within the lock window returns
-  409 / "another sync in progress" rather than racing.
+  the correct UX.
+- **Concurrency is currently un-locked.** The synchronous endpoints
+  (``/managers/dataroma-sync`` and ``/managers/dataroma-sync/add``) do
+  NOT go through the job system, so admin double-clicks will issue two
+  concurrent Dataroma fetches / two concurrent insert batches. The
+  ``dataroma_sync`` lock_key in ``_JOB_LOCK_BUILDERS`` exists for the
+  parallel job-system path (currently only the CLI / scheduled-run
+  shape) — it does not gate the endpoint. Rate Guard's own rate-limit
+  handling still applies upstream. For ``/add`` specifically the
+  per-entry SAVEPOINT + IntegrityError catch in
+  ``add_dataroma_candidates`` keeps a concurrent double-click from
+  500-ing the request, though it can still create duplicate rows
+  because ``dataroma_code`` has no DB-level UNIQUE constraint (tracked
+  in docs/BACKLOG.md).
 - **The diff `dropped` list is information only.** We don't auto-remove
   managers that disappear from Dataroma — they often disappear because
   Dataroma rotates its tracked-investor list, not because the manager

@@ -41,13 +41,13 @@
     "display_name": "Mark Massey - AltaRock Partners",
     "legal_name": "ALTAROCK PARTNERS LP",
     "cik": "0001631014",
-    "style_primary": "value_concentrated",
+    "style_primary": "quality_compounder",
     "capital_structure": "locked_lp",
     "market_cap_focus": "large",
     "geo_focus": "us",
     "historical_turnover": "low",
-    "ideology_tags": ["concentrated_value"],
-    "classification_rationale": "Concentrated long-only value, ~10 positions."
+    "ideology_tags": ["concentrated_quality", "compounder"],
+    "classification_rationale": "Concentrated long-only quality compounder (Constellation Software / Topicus / Roper-type names); PO review reclassified from value_concentrated."
   },
   {
     "display_name": "David Tepper - Appaloosa Management",
@@ -79,11 +79,11 @@
     "cik": "0000936753",
     "style_primary": "value_deep",
     "capital_structure": "mutual_fund_etf",
-    "market_cap_focus": "small",
+    "market_cap_focus": "mid",
     "geo_focus": "us",
     "historical_turnover": "low",
-    "ideology_tags": ["small_cap_value", "patient_capital"],
-    "classification_rationale": "Small/mid-cap classic value; 'slow & steady' brand."
+    "ideology_tags": ["small_mid_cap_value", "patient_capital"],
+    "classification_rationale": "Classic value; flagship Ariel Fund has drifted to mid-cap (PO review reclassified from small)."
   },
   {
     "display_name": "Alex Roepers - Atlantic Investment",
