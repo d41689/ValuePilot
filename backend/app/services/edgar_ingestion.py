@@ -14,11 +14,12 @@ from datetime import datetime, timezone
 from typing import Optional
 
 from sqlalchemy import text
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
 from app.dataroma.client import DataromaClient
-from app.dataroma.parsers.managers import parse_managers
+from app.dataroma.parsers.managers import DataromaManager, parse_managers
 from app.edgar.client import EdgarClient
 from app.edgar.fetcher import fetch_and_store, load_body
 from app.edgar.parsers.form_idx import (
@@ -324,12 +325,11 @@ class DataromaSyncDiff:
         }
 
 
-def _fetch_dataroma_managers() -> list:
+def _fetch_dataroma_managers() -> list[DataromaManager]:
     """Hit Dataroma through Rate Guard and parse the manager table.
 
     Extracted into a single seam so tests can monkeypatch this one symbol
-    instead of mocking the whole HTTP + Rate Guard chain. Returns a list
-    of ``DataromaManager`` (see ``app.dataroma.parsers.managers``).
+    instead of mocking the whole HTTP + Rate Guard chain.
     """
     with DataromaClient() as dc:
         html = dc.get_managers()
@@ -422,20 +422,20 @@ def add_dataroma_candidates(
 
     Concurrency: per-entry inserts run inside a SAVEPOINT so that if a
     concurrent admin add for the same ``dataroma_code`` slipped past
-    the TOCTOU check and a unique-constraint violation surfaces at
-    INSERT, we recover gracefully and count that entry as skipped
-    rather than poisoning the whole batch. ``dataroma_code`` does not
-    currently carry a DB-level UNIQUE constraint (tracked in
-    docs/BACKLOG.md) so today's race produces a duplicate row instead
-    of an IntegrityError; the savepoint-and-catch shape is in place
-    so the unique-constraint follow-up is a one-migration change.
+    the TOCTOU check, the resulting ``IntegrityError`` is caught and
+    that one entry is counted as skipped instead of poisoning the
+    whole batch. The partial UNIQUE index
+    ``uq_institution_managers_dataroma_code``
+    (WHERE dataroma_code IS NOT NULL, defined in the 13F-ingestion-
+    tables migration ``20260423000000``) is what turns a TOCTOU race
+    into an IntegrityError rather than a silent duplicate — the
+    SAVEPOINT-and-catch defense here is load-bearing on top of that
+    DB-level guarantee, not a placeholder.
 
     Commits on success. The endpoint layer does not commit (per the
     services-own-transactions convention in this repo); add a single
     commit here so the call is durable end-to-end from the FE click.
     """
-    from sqlalchemy.exc import IntegrityError
-
     now = datetime.now(timezone.utc)
     added = 0
     skipped = 0

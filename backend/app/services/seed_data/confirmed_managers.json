@@ -774,7 +774,7 @@
     "geo_focus": "global",
     "historical_turnover": "high",
     "ideology_tags": ["burry", "contrarian", "macro_short_capable"],
-    "classification_rationale": "Macro-driven contrarian; high turnover but quality of insight is high — special_situations bucket captures it better than 'high_turnover'."
+    "classification_rationale": "Macro-contrarian with occasional high-conviction equity longs; special_situations captures Burry's setup-driven style better than the V1 'high_turnover' label, which understated the signal quality."
   },
   {
     "display_name": "Christopher Bloomstran - Semper Augustus",

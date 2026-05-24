@@ -9,23 +9,6 @@ long — escalate to the user. **medium / low** = ordinary follow-up.
 
 ## Open
 
-### `institution_managers.dataroma_code` lacks DB-level UNIQUE constraint
-- **Found:** 2026-05-24, manager-taxonomy-v2 PR review (Backend B5b)
-- **Severity:** medium (race-driven duplicates; not data loss)
-- **Problem:** `add_dataroma_candidates` does a TOCTOU check (query then
-  insert). Without a UNIQUE constraint on `dataroma_code`, concurrent
-  admin double-clicks on "Add selected as candidates" can produce two
-  rows with the same `dataroma_code`. The current SAVEPOINT +
-  `IntegrityError` catch in the service prevents a 500 but cannot stop
-  the duplicate because no IntegrityError is raised in the first place.
-- **Fix sketch:** Alembic migration adding `UniqueConstraint("dataroma_code")`
-  to `institution_managers` (partial — `WHERE dataroma_code IS NOT NULL`
-  to allow the V2-seeded rows that have no code). Then the existing
-  SAVEPOINT handler in `add_dataroma_candidates` becomes the load-bearing
-  defense. Before the migration, audit existing data for any pre-existing
-  duplicates and merge them.
-- **Context:** docs/tasks/2026-05-24_bootstrap-decouple-dataroma-sync.md
-
 ### `_clear_13f` test helper raises FK violation when dev DB has committed quality_findings_13f / oracles_lens_signals rows
 - **Found:** 2026-05-24, while running canonical CI for the manager-taxonomy-v2 change
   (`docs/tasks/2026-05-24_manager-taxonomy-v2.md`)

@@ -530,3 +530,80 @@ def _fetch_dataroma_managers() -> list[DataromaManager]:
 7. **B3**: Pass `sample_size=500` (or equivalent) to `diff.to_summary_dict()` at the sync API endpoint to prevent silent truncation when Dataroma adds >25 new entries.
 8. **B5b**: Add `IntegrityError` handling with 409 response to the `/dataroma-sync/add` endpoint.
 9. **B7b**: Change `_fetch_dataroma_managers` return type from `list` to `list[DataromaManager]`.
+
+---
+
+## Re-review after `a271f90`
+
+Review date: 2026-05-24
+
+Reviewed commit: `a271f90` — `Address review findings (2 blockers + 4 must-fix + 2 nits)`
+
+Targeted verification run:
+
+```bash
+docker compose exec -T api pytest -q tests/unit/test_13f_dataroma_sync.py tests/unit/test_13f_manager_taxonomy_v2.py
+```
+
+Result: `37 passed in 0.34s`.
+
+### Previous blockers
+
+**B3 / full Dataroma diff returned to FE: resolved.**
+
+`backend/app/api/v1/endpoints/thirteenf_admin.py:504` now calls `diff.to_summary_dict(sample_size=None)`, and `DataromaSyncDiff.to_summary_dict()` documents the `None` behavior as "no cap." The added tests cover both the capped job-summary path and the full endpoint path:
+
+- `test_to_summary_dict_default_caps_samples_at_25`
+- `test_to_summary_dict_none_returns_full_lists`
+
+The frontend can continue reading `new_sample`, because the endpoint now intentionally fills that field with the full list for the synchronous UI call.
+
+**B5 / add endpoint durability: resolved.**
+
+`add_dataroma_candidates()` now commits on success (`backend/app/services/edgar_ingestion.py:487`). The new durability test opens a fresh `SessionLocal` after the call and verifies the row persisted:
+
+- `test_add_dataroma_candidates_commits_so_data_is_durable`
+
+The service also wraps per-entry inserts in a nested transaction and catches `IntegrityError`, which addresses the concurrent double-add concern when the partial unique index fires.
+
+### Required actions from the first review
+
+**C2 / V2 derivation invariant comment: resolved.**
+
+`backend/app/services/thirteenf_admin_dashboard.py:587` now explicitly documents that any future `style_primary` edit path must also re-derive `manager_type`.
+
+**C3 / task-doc concurrency claim: resolved.**
+
+`docs/tasks/2026-05-24_bootstrap-decouple-dataroma-sync.md:162` now correctly says the synchronous endpoints are not job-locked and that Rate Guard handles upstream rate limiting.
+
+### New finding
+
+**R1 — Documentation incorrectly says `dataroma_code` lacks a DB-level unique constraint.**
+
+Severity: low / documentation correctness.
+
+Files:
+
+- `docs/BACKLOG.md:12`
+- `backend/app/services/edgar_ingestion.py:423`
+- `docs/tasks/2026-05-24_bootstrap-decouple-dataroma-sync.md:169`
+
+These comments say `institution_managers.dataroma_code` has no DB-level unique constraint, but `backend/alembic/versions/20260423000000-add_13f_ingestion_tables.py:59` already creates a partial unique index:
+
+```python
+op.create_index(
+    "uq_institution_managers_dataroma_code",
+    "institution_managers",
+    ["dataroma_code"],
+    unique=True,
+    postgresql_where=sa.text("dataroma_code IS NOT NULL"),
+)
+```
+
+Impact: not a code blocker. The current SAVEPOINT + `IntegrityError` handling is actually useful because the DB should raise on duplicate non-null `dataroma_code`. But the backlog entry and comments should be corrected or removed so a future agent does not add a duplicate migration for a constraint that already exists.
+
+Suggested fix: replace the backlog item with a narrower follow-up if desired: "Mirror the partial unique index in SQLAlchemy model metadata / add regression test for duplicate `dataroma_code`." Update the service/task-doc comments to say the DB unique index is the load-bearing protection.
+
+### Re-review verdict
+
+**Approved with one low-severity documentation cleanup.** The two prior blockers are resolved, targeted tests pass, and no new blocking code issues were found.

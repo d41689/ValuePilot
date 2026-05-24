@@ -167,11 +167,13 @@ docker compose exec -T api pytest -q tests/unit/test_13f_dataroma_sync.py
   parallel job-system path (currently only the CLI / scheduled-run
   shape) — it does not gate the endpoint. Rate Guard's own rate-limit
   handling still applies upstream. For ``/add`` specifically the
-  per-entry SAVEPOINT + IntegrityError catch in
-  ``add_dataroma_candidates`` keeps a concurrent double-click from
-  500-ing the request, though it can still create duplicate rows
-  because ``dataroma_code`` has no DB-level UNIQUE constraint (tracked
-  in docs/BACKLOG.md).
+  per-entry SAVEPOINT + ``IntegrityError`` catch in
+  ``add_dataroma_candidates`` keeps a concurrent double-click on the
+  same ``dataroma_code`` from 500-ing the request *and* from creating
+  a duplicate row: the partial UNIQUE index
+  ``uq_institution_managers_dataroma_code`` (in migration
+  ``20260423000000``) makes the second insert raise ``IntegrityError``,
+  which the SAVEPOINT handler converts into a skipped-count.
 - **The diff `dropped` list is information only.** We don't auto-remove
   managers that disappear from Dataroma — they often disappear because
   Dataroma rotates its tracked-investor list, not because the manager
