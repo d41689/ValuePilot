@@ -133,7 +133,7 @@ def build_oracles_lens_dashboard(
         selected = None
 
     if selected is None:
-        return {
+        empty_payload: dict[str, Any] = {
             "period": None,
             "period_end_date": None,
             "latest_complete_period": None,
@@ -142,6 +142,13 @@ def build_oracles_lens_dashboard(
             "periods": [],
             "items": [],
         }
+        # Even when there are no periods to render, attach the
+        # ``universe`` block so the FE never has to special-case
+        # "filter applied but no results" — it always reads the same
+        # response shape (oracles-lens-universe-selector task doc).
+        if universe_metadata is not None:
+            empty_payload["universe"] = universe_metadata
+        return empty_payload
 
     previous_period = _previous_period(periods, selected.period_end_date)
     current_holdings = _holdings_for_period(
