@@ -62,18 +62,60 @@ def seed_pending_cik_review_fixture() -> None:
 
 @app.command()
 def bootstrap_whitelist() -> None:
-    """Seed institution_managers from Dataroma superinvestor list (Step 0)."""
-    from app.services.edgar_ingestion import bootstrap_whitelist as _bs
+    """DEPRECATED: alias for ``seed-confirmed-managers``. Bootstrap is now
+    offline (driven by ``confirmed_managers.json``) — Dataroma is consulted
+    on demand via ``sync-dataroma``. See
+    ``docs/tasks/2026-05-24_bootstrap-decouple-dataroma-sync.md``.
+    """
+    typer.echo(
+        "WARNING: 'bootstrap-whitelist' is deprecated and now runs "
+        "'seed-confirmed-managers' (offline JSON). Use 'sync-dataroma' "
+        "to diff Dataroma's current list against ours.",
+        err=True,
+    )
+    from app.services.edgar_ingestion import seed_confirmed_managers as _seed
 
     db = SessionLocal()
     try:
-        n = _bs(db)
+        n = _seed(db)
         db.commit()
-        typer.echo(f"Inserted {n} new managers.")
+        typer.echo(f"Seeded {n} confirmed managers.")
     except Exception as exc:
         db.rollback()
         typer.echo(f"Error: {exc}", err=True)
         raise typer.Exit(1)
+    finally:
+        db.close()
+
+
+@app.command()
+def sync_dataroma() -> None:
+    """Diff Dataroma's current manager list against our DB.
+
+    Read-only: does NOT insert new managers. Prints the three buckets
+    (new / known / dropped). Use the admin Managers page (or a follow-up
+    command) to add specific Dataroma codes as candidates.
+    """
+    from app.services.edgar_ingestion import sync_dataroma_managers
+
+    db = SessionLocal()
+    try:
+        diff = sync_dataroma_managers(db)
+        # Read-only — no commit needed, but be explicit.
+        db.rollback()
+        typer.echo(
+            f"Fetched at {diff.fetched_at.isoformat()}: "
+            f"new={len(diff.new)} known={len(diff.known)} "
+            f"dropped={len(diff.dropped)}"
+        )
+        for label, entries in (
+            ("NEW", diff.new),
+            ("DROPPED", diff.dropped),
+        ):
+            if entries:
+                typer.echo(f"\n{label}:")
+                for e in entries:
+                    typer.echo(f"  {e.dataroma_code:12s}  {e.name}")
     finally:
         db.close()
 

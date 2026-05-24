@@ -2799,6 +2799,10 @@ _JOB_LOCK_BUILDERS = {
     "enrich_metadata": lambda payload: f"enrich_metadata:{_required(payload, 'quarter') if payload.get('quarter') else 'global'}",
     "bootstrap_stocks": lambda payload: "bootstrap_stocks",
     "bootstrap_whitelist": lambda payload: "bootstrap_whitelist",
+    # On-demand Dataroma sync (read-only diff vs our universe).
+    # Single concurrent run via the shared lock_key so admin double-clicks
+    # don't double-fetch from Dataroma's rate-limited endpoint.
+    "dataroma_sync": lambda payload: "dataroma_sync",
     "match_cik": lambda payload: "match_cik",
     "quality_check": lambda payload: f"quality_check:{_required(payload, 'quarter')}",
     "oracles_lens_score_backfill": lambda payload: (
@@ -2912,9 +2916,23 @@ def _execute_job(session: Session, job_type: str, payload: dict[str, Any]) -> di
             ],
         }
     if job_type == "bootstrap_whitelist":
-        from app.services.edgar_ingestion import bootstrap_whitelist
+        # Backward-compatible job_type kept for the deployed FE button.
+        # As of docs/tasks/2026-05-24_bootstrap-decouple-dataroma-sync.md
+        # "bootstrap" means "load the canonical V2-classified universe
+        # from confirmed_managers.json" — offline, deterministic, never
+        # touches Dataroma. The Dataroma diff path moved to its own
+        # job_type ``dataroma_sync`` below.
+        from app.services.edgar_ingestion import seed_confirmed_managers
 
-        return {"managers_seen": bootstrap_whitelist(session), "status": "succeeded"}
+        return {
+            "managers_seeded": seed_confirmed_managers(session),
+            "status": "succeeded",
+        }
+    if job_type == "dataroma_sync":
+        from app.services.edgar_ingestion import sync_dataroma_managers
+
+        diff = sync_dataroma_managers(session)
+        return {"diff": diff.to_summary_dict(), "status": "succeeded"}
     if job_type == "match_cik":
         from app.services.edgar_ingestion import match_cik_candidates
 
