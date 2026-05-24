@@ -93,6 +93,8 @@ def build_oracles_lens_dashboard(
     limit: int = 50,
     sort: str = "signal_weighted_consensus",
     use_persisted_scores: bool = False,
+    manager_id_allowlist: set[int] | None = None,
+    universe_metadata: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Build the Oracle's Lens dashboard payload.
 
@@ -146,9 +148,15 @@ def build_oracles_lens_dashboard(
         session,
         selected.period_end_date,
         superinvestor_only=superinvestor_only,
+        manager_id_allowlist=manager_id_allowlist,
     )
     previous_holdings = (
-        _holdings_for_period(session, previous_period.period_end_date, superinvestor_only=superinvestor_only)
+        _holdings_for_period(
+            session,
+            previous_period.period_end_date,
+            superinvestor_only=superinvestor_only,
+            manager_id_allowlist=manager_id_allowlist,
+        )
         if previous_period
         else {}
     )
@@ -184,7 +192,17 @@ def build_oracles_lens_dashboard(
         for stock_holdings in rows_by_stock.values()
         if len(stock_holdings) >= min_holders
     ]
-    if use_persisted_scores:
+    # Universe-filter mode (docs/tasks/2026-05-24_oracles-lens-universe-selector.md):
+    # when a manager_id_allowlist is set, the persisted
+    # ``oracles_lens_signals`` rows reflect the all-managers universe
+    # and would lie about the filtered universe's Signal /
+    # Conviction / Distinctive numbers. The in-memory path above
+    # ALREADY ran against the filtered holdings (via
+    # ``_holdings_for_period(..., manager_id_allowlist=...)``), so we
+    # just skip the persisted overlay here. The persisted table stays
+    # authoritative for the "All" universe.
+    apply_persisted = use_persisted_scores and manager_id_allowlist is None
+    if apply_persisted:
         items, persisted_score_count = _apply_persisted_scores(
             session, items, period_label=selected.label,
         )
@@ -236,7 +254,7 @@ def build_oracles_lens_dashboard(
     # MVP4-03b: surface how many items came from persisted scoring so
     # observability stays honest when the persisted path is exercised.
     coverage["persisted_score_count"] = persisted_score_count
-    return {
+    payload: dict[str, Any] = {
         "period": selected.label,
         "period_end_date": selected.period_end_date.isoformat(),
         "latest_complete_period": latest_complete.label if latest_complete else None,
@@ -245,6 +263,12 @@ def build_oracles_lens_dashboard(
         "periods": _period_timeline(periods, selected, latest_complete),
         "items": items,
     }
+    if universe_metadata is not None:
+        # Universe metadata is computed in the endpoint layer (where
+        # the raw filter strings are parsed and the resolver runs) and
+        # passed through verbatim. We just attach it to the response.
+        payload["universe"] = universe_metadata
+    return payload
 
 
 def _apply_persisted_scores(
@@ -377,7 +401,18 @@ def _holdings_for_period(
     period_end: date,
     *,
     superinvestor_only: bool,
+    manager_id_allowlist: set[int] | None = None,
 ) -> dict[tuple[int, int], ManagerHolding]:
+    """Load (manager, stock) holdings for one report-period.
+
+    ``manager_id_allowlist`` (Oracle's Lens universe-filter mode,
+    docs/tasks/2026-05-24_oracles-lens-universe-selector.md) restricts
+    the join to the picked manager subset. When ``None`` (default), no
+    restriction — preserves all existing call sites' behavior.
+    """
+    if manager_id_allowlist is not None and not manager_id_allowlist:
+        # Empty allowlist = no managers qualify; nothing to load.
+        return {}
     query = (
         session.query(Holding13F, Filing13F, InstitutionManager, Stock)
         .join(Filing13F, Filing13F.id == Holding13F.filing_id)
@@ -393,6 +428,8 @@ def _holdings_for_period(
     )
     if superinvestor_only:
         query = query.filter(InstitutionManager.is_superinvestor.is_(True))
+    if manager_id_allowlist is not None:
+        query = query.filter(InstitutionManager.id.in_(manager_id_allowlist))
 
     grouped: dict[tuple[int, int], ManagerHolding] = {}
     for holding, filing, manager, stock in query.all():

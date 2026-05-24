@@ -529,12 +529,20 @@ def _derive_manager_profile(
 
 def _eligible_stock_ids(
     session: Session, *, quarter: str, min_holders: int,
+    manager_id_allowlist: Optional[set[int]] = None,
 ) -> list[int]:
     """Stocks with >= ``min_holders`` linked direct holdings in active
-    HR/HR-A current parse runs for the quarter."""
+    HR/HR-A current parse runs for the quarter.
+
+    When ``manager_id_allowlist`` is set, the holder-count is computed
+    over that subset only — a stock with 5 global holders but only 1
+    in the subset must NOT pass ``min_holders=3`` for that subset.
+    This is the per-universe gate for the Oracle's Lens filter mode
+    (docs/tasks/2026-05-24_oracles-lens-universe-selector.md).
+    """
     from sqlalchemy import func
 
-    rows = (
+    query = (
         session.query(
             Holding13F.stock_id,
             func.count(func.distinct(Holding13F.manager_id)).label("c"),
@@ -552,6 +560,14 @@ def _eligible_stock_ids(
         .filter(Holding13F.cusip_mapping_status == "linked")
         .filter(Holding13F.holding_attribution_status == "direct")
         .filter(Holding13F.put_call.is_(None))
+    )
+    if manager_id_allowlist is not None:
+        # Empty allowlist means "no managers qualify" — return no stocks.
+        if not manager_id_allowlist:
+            return []
+        query = query.filter(Holding13F.manager_id.in_(manager_id_allowlist))
+    rows = (
+        query
         .group_by(Holding13F.stock_id)
         .having(func.count(func.distinct(Holding13F.manager_id)) >= min_holders)
         .all()
@@ -622,10 +638,26 @@ def _contributions_for_stock(
     stock_id: int,
     top_n_by_manager: dict[int, set[int]],
     derived_profile_cache: _DerivedProfileCache,
+    manager_id_allowlist: Optional[set[int]] = None,
 ) -> tuple[list[_HolderContribution], list[_ExcludedHolder]]:
     """For one (stock, quarter), iterate active linked direct holders
-    and produce a contribution per holder."""
-    holdings = (
+    and produce a contribution per holder.
+
+    When ``manager_id_allowlist`` is set, the query is pre-filtered to
+    just those managers — the Oracle's Lens universe-filter mode
+    (docs/tasks/2026-05-24_oracles-lens-universe-selector.md) uses this
+    to recompute the per-stock signal over a chosen subset (e.g.
+    Deep Value Consensus). Downstream
+    ``compute_conviction_components(contributions)`` and
+    ``compute_distinctive_consensus(..., contributions)`` are pure
+    functions of this list, so the conviction and distinctive scores
+    automatically reflect the filtered universe without their own
+    allowlist parameter.
+    """
+    if manager_id_allowlist is not None and not manager_id_allowlist:
+        # Empty allowlist means "no managers qualify" — nothing to do.
+        return [], []
+    query = (
         session.query(Holding13F, InstitutionManager, Filing13F)
         .join(ParseRun13F, Holding13F.parse_run_id == ParseRun13F.id)
         .join(Filing13F, Filing13F.accession_number == ParseRun13F.accession_number)
@@ -638,8 +670,10 @@ def _contributions_for_stock(
         .filter(Holding13F.cusip_mapping_status == "linked")
         .filter(Holding13F.holding_attribution_status == "direct")
         .filter(Holding13F.put_call.is_(None))
-        .all()
     )
+    if manager_id_allowlist is not None:
+        query = query.filter(InstitutionManager.id.in_(manager_id_allowlist))
+    holdings = query.all()
 
     # Aggregate multiple InfoTable rows per (manager, stock) — a 13F-HR
     # may legitimately carry several SOLE-discretion rows for the same
