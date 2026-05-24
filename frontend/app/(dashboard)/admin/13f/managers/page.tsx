@@ -13,6 +13,7 @@
 import Link from 'next/link';
 import { useMemo, useState, type ComponentProps } from 'react';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
+import { RefreshCw } from 'lucide-react';
 
 import apiClient from '@/lib/api/client';
 import { AdminPageLayout } from '@/components/admin13f/AdminPageLayout';
@@ -23,6 +24,10 @@ import {
   ManagerTypeEditorDialog,
   type ManagerTypeEditorState,
 } from '@/components/admin13f/ManagerTypeEditorDialog';
+import {
+  DataromaSyncDialog,
+  type DataromaSyncDiff,
+} from '@/components/admin13f/DataromaSyncDialog';
 import { Badge } from '@/components/ui/badge';
 
 type BadgeVariant = ComponentProps<typeof Badge>['variant'];
@@ -76,6 +81,60 @@ export default function ManagersPage() {
   const [managerTypeEditor, setManagerTypeEditor] = useState<ManagerTypeEditorState | null>(null);
   const [managerTypeDraft, setManagerTypeDraft] = useState<string>('unknown');
   const [managerTypeNote, setManagerTypeNote] = useState<string>('');
+  const [dataromaSyncOpen, setDataromaSyncOpen] = useState(false);
+  const [dataromaDiff, setDataromaDiff] = useState<DataromaSyncDiff | null>(null);
+  const [dataromaFetchError, setDataromaFetchError] = useState<string | null>(null);
+
+  const dataromaSyncMutation = useMutation({
+    mutationFn: async () =>
+      (await apiClient.post<DataromaSyncDiff>('/admin/13f/managers/dataroma-sync', {})).data,
+    onSuccess: (data) => {
+      setDataromaDiff(data);
+      setDataromaFetchError(null);
+    },
+    onError: (error: unknown) => {
+      const message =
+        error && typeof error === 'object' && 'message' in error
+          ? String((error as { message?: unknown }).message)
+          : 'Sync with Dataroma failed';
+      setDataromaFetchError(message);
+      setDataromaDiff(null);
+    },
+  });
+
+  const dataromaAddMutation = useMutation({
+    mutationFn: async (items: { dataroma_code: string; name: string }[]) =>
+      (
+        await apiClient.post<{ added: number; skipped: number }>(
+          '/admin/13f/managers/dataroma-sync/add',
+          { items },
+        )
+      ).data,
+    onSuccess: (result) => {
+      toast({
+        title: `Added ${result.added} candidate${result.added === 1 ? '' : 's'}${
+          result.skipped > 0 ? ` (${result.skipped} skipped)` : ''
+        }`,
+      });
+      queryClient.invalidateQueries({ queryKey: ['admin-13f-managers'] });
+      setDataromaSyncOpen(false);
+      setDataromaDiff(null);
+    },
+    onError: (error: unknown) => {
+      const message =
+        error && typeof error === 'object' && 'message' in error
+          ? String((error as { message?: unknown }).message)
+          : 'Failed to add Dataroma candidates';
+      toast({ title: message, variant: 'destructive' });
+    },
+  });
+
+  const openDataromaSync = () => {
+    setDataromaDiff(null);
+    setDataromaFetchError(null);
+    setDataromaSyncOpen(true);
+    dataromaSyncMutation.mutate();
+  };
 
   const managerTypeMutation = useMutation({
     mutationFn: async (payload: {
@@ -157,6 +216,22 @@ export default function ManagersPage() {
           <CardTitle className="flex flex-col gap-2 text-base sm:flex-row sm:items-center sm:justify-between">
             <span>Manager list</span>
             <div className="flex flex-wrap items-center gap-2">
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={openDataromaSync}
+                disabled={dataromaSyncMutation.isPending}
+              >
+                <RefreshCw
+                  className={
+                    dataromaSyncMutation.isPending
+                      ? 'mr-2 h-3.5 w-3.5 animate-spin'
+                      : 'mr-2 h-3.5 w-3.5'
+                  }
+                />
+                Sync with Dataroma
+              </Button>
               <Select value={matchStatusFilter} onValueChange={setMatchStatusFilter}>
                 <SelectTrigger className="w-[180px]" aria-label="Filter by match status">
                   <SelectValue />
@@ -275,6 +350,22 @@ export default function ManagersPage() {
         setNote={setManagerTypeNote}
         onSave={(payload) => managerTypeMutation.mutate(payload)}
         isPending={managerTypeMutation.isPending}
+      />
+
+      <DataromaSyncDialog
+        open={dataromaSyncOpen}
+        onOpenChange={(open) => {
+          setDataromaSyncOpen(open);
+          if (!open) {
+            setDataromaDiff(null);
+            setDataromaFetchError(null);
+          }
+        }}
+        diff={dataromaDiff}
+        isFetching={dataromaSyncMutation.isPending}
+        fetchError={dataromaFetchError}
+        isAdding={dataromaAddMutation.isPending}
+        onAdd={(items) => dataromaAddMutation.mutate(items)}
       />
     </AdminPageLayout>
   );

@@ -1,22 +1,25 @@
 """EDGAR 13F ingestion orchestration.
 
 Implements the three-step pipeline from the plan:
-  Step 0 – bootstrap whitelist from Dataroma
+  Step 0 – seed confirmed managers (offline, from confirmed_managers.json)
+           + on-demand sync_dataroma_managers (read-only diff)
   Step 1 – fetch quarter form.idx and upsert filing metadata
   Step 2 – fetch + parse infotable.xml and write holdings
 """
 import logging
 import re
 import unicodedata
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Optional
 
 from sqlalchemy import text
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
 from app.dataroma.client import DataromaClient
-from app.dataroma.parsers.managers import parse_managers
+from app.dataroma.parsers.managers import DataromaManager, parse_managers
 from app.edgar.client import EdgarClient
 from app.edgar.fetcher import fetch_and_store, load_body
 from app.edgar.parsers.form_idx import (
@@ -36,6 +39,7 @@ from app.models.institutions import (
     InstitutionManager,
     RawSourceDocument,
 )
+from app.services.oracles_lens.manager_style import derive_legacy_manager_type
 
 logger = logging.getLogger(__name__)
 
@@ -79,7 +83,17 @@ def _name_score(a: str, b: str) -> float:
 def seed_confirmed_managers(db: Session) -> int:
     """Seed institution_managers from a predefined list of confirmed CIKs.
 
-    This bypasses the match-cik step for high-priority managers.
+    This bypasses the match-cik step for high-priority managers. As of
+    the manager-taxonomy-v2 change
+    (``docs/tasks/2026-05-24_manager-taxonomy-v2.md``), each seed entry
+    also carries the two-layer ``style_primary`` / ``capital_structure``
+    classification plus optional metadata, and the legacy
+    ``manager_type`` column is derived from ``style_primary`` via
+    ``derive_legacy_manager_type``.
+
+    Idempotency contract: re-running this function on a DB that already
+    has these managers updates fields in place without duplicating rows
+    and without writing to fields the entry doesn't specify.
     """
     import json
     import os
@@ -100,6 +114,15 @@ def seed_confirmed_managers(db: Session) -> int:
         if not cik:
             continue
 
+        # Derive legacy manager_type once per entry; missing
+        # style_primary defaults to 'unknown', which derive maps to
+        # legacy 'unknown'. Garbage style_primary raises ValueError so
+        # a typo in the JSON fails the seed loudly rather than silently
+        # defaulting to a wrong weight.
+        style_primary = entry.get("style_primary", "unknown")
+        legacy_manager_type = derive_legacy_manager_type(style_primary)
+        capital_structure = entry.get("capital_structure", "unknown")
+
         # Match by CIK first (authoritative SEC identifier), then fall back to dataroma_code.
         # Avoids MultipleResultsFound when separate DB records each satisfy one side of an OR.
         existing = db.query(InstitutionManager).filter_by(cik=cik).one_or_none()
@@ -111,7 +134,7 @@ def seed_confirmed_managers(db: Session) -> int:
             )
 
         if existing:
-            # Update existing record to confirmed
+            # Update existing record to confirmed + V2 classification
             existing.cik = cik
             existing.match_status = "confirmed"
             if entry.get("display_name"):
@@ -119,9 +142,27 @@ def seed_confirmed_managers(db: Session) -> int:
             if entry.get("legal_name"):
                 existing.legal_name = entry["legal_name"]
                 existing.name_normalized = _normalize_name(entry["legal_name"])
+            existing.style_primary = style_primary
+            existing.capital_structure = capital_structure
+            existing.manager_type = legacy_manager_type
+            # Optional metadata: only overwrite when the seed entry
+            # actually specifies a value, so a sparse re-seed doesn't
+            # wipe richer downstream data on existing rows.
+            if entry.get("market_cap_focus") is not None:
+                existing.market_cap_focus = entry["market_cap_focus"]
+            if entry.get("geo_focus") is not None:
+                existing.geo_focus = entry["geo_focus"]
+            if entry.get("historical_turnover") is not None:
+                existing.historical_turnover = entry["historical_turnover"]
+            if entry.get("position_concentration_top10_pct") is not None:
+                existing.position_concentration_top10_pct = entry[
+                    "position_concentration_top10_pct"
+                ]
+            if entry.get("ideology_tags") is not None:
+                existing.ideology_tags = entry["ideology_tags"]
             updated += 1
         else:
-            # Create new confirmed record
+            # Create new confirmed record with V2 classification
             record = InstitutionManager(
                 cik=cik,
                 legal_name=entry.get("legal_name") or entry.get("display_name"),
@@ -131,6 +172,16 @@ def seed_confirmed_managers(db: Session) -> int:
                 match_status="confirmed",
                 is_superinvestor=True,
                 dataroma_synced_at=datetime.now(timezone.utc),
+                style_primary=style_primary,
+                capital_structure=capital_structure,
+                manager_type=legacy_manager_type,
+                market_cap_focus=entry.get("market_cap_focus"),
+                geo_focus=entry.get("geo_focus"),
+                historical_turnover=entry.get("historical_turnover"),
+                position_concentration_top10_pct=entry.get(
+                    "position_concentration_top10_pct"
+                ),
+                ideology_tags=entry.get("ideology_tags"),
             )
             db.add(record)
             updated += 1
@@ -204,43 +255,241 @@ def seed_pending_cik_review_fixture(db: Session) -> int:
     return updated
 
 
-def bootstrap_whitelist(db: Session) -> int:
-    """Seed institution_managers from Dataroma superinvestor list.
+# ---------------------------------------------------------------------------
+# Dataroma sync (decoupled from bootstrap as of
+# docs/tasks/2026-05-24_bootstrap-decouple-dataroma-sync.md)
+#
+# Bootstrap now means "load the canonical V2-classified universe from
+# confirmed_managers.json" (see ``seed_confirmed_managers`` above) and
+# never touches the network. Dataroma is only consulted on demand when
+# an admin presses "Sync with Dataroma" on the Managers page to look
+# for *new* names Dataroma started tracking. The diff is returned for
+# admin review; no rows are written by ``sync_dataroma_managers``
+# itself — that's ``add_dataroma_candidates`` below, called only when
+# the admin clicks Add.
+# ---------------------------------------------------------------------------
 
-    Returns number of new records inserted.
+
+@dataclass(frozen=True)
+class DataromaSyncEntry:
+    """Single entry in a Dataroma sync diff. Used uniformly across
+    new / known / dropped buckets; ``institution_manager_id`` is set
+    only for known/dropped entries (which already exist in our DB).
+    """
+
+    dataroma_code: str
+    name: str
+    institution_manager_id: Optional[int] = None
+
+
+@dataclass(frozen=True)
+class DataromaSyncDiff:
+    new: list[DataromaSyncEntry]
+    known: list[DataromaSyncEntry]
+    dropped: list[DataromaSyncEntry]
+    fetched_at: datetime
+
+    def to_summary_dict(self, sample_size: int | None = 25) -> dict:
+        """JSON shape used for both ``JobRun.summary_json`` storage and the
+        synchronous admin endpoint response.
+
+        ``sample_size`` semantics:
+        - integer (default 25): cap each ``*_sample`` list at this many
+          entries. Used by the job-system path where ``JobRun.summary_json``
+          must stay small.
+        - ``None``: no cap — return the full diff. Used by the synchronous
+          ``/managers/dataroma-sync`` endpoint so the admin UI can render
+          (and let the user select) every new Dataroma entry, not just the
+          first 25. The full Dataroma universe is currently ~80–100 rows
+          so the unbounded response stays well-bounded in practice.
+        """
+        def _sample(entries: list[DataromaSyncEntry]) -> list[dict]:
+            sliced = entries if sample_size is None else entries[:sample_size]
+            return [
+                {
+                    "dataroma_code": e.dataroma_code,
+                    "name": e.name,
+                    "institution_manager_id": e.institution_manager_id,
+                }
+                for e in sliced
+            ]
+
+        return {
+            "fetched_at": self.fetched_at.isoformat(),
+            "new_count": len(self.new),
+            "known_count": len(self.known),
+            "dropped_count": len(self.dropped),
+            "new_sample": _sample(self.new),
+            "known_sample": _sample(self.known),
+            "dropped_sample": _sample(self.dropped),
+        }
+
+
+def _fetch_dataroma_managers() -> list[DataromaManager]:
+    """Hit Dataroma through Rate Guard and parse the manager table.
+
+    Extracted into a single seam so tests can monkeypatch this one symbol
+    instead of mocking the whole HTTP + Rate Guard chain.
     """
     with DataromaClient() as dc:
         html = dc.get_managers()
+    return parse_managers(html)
 
-    managers = parse_managers(html)
-    logger.info("Dataroma returned %d manager entries", len(managers))
 
-    inserted = 0
-    for mgr in managers:
+def sync_dataroma_managers(db: Session) -> DataromaSyncDiff:
+    """Diff Dataroma's current manager list against ours; **read-only**.
+
+    Classification rules:
+    - ``new``: Dataroma code we have no row for.
+    - ``known``: Dataroma code matches an existing manager row by
+      ``dataroma_code`` (the authoritative key Dataroma owns).
+    - ``dropped``: We hold a manager with a ``dataroma_code`` that
+      Dataroma's current payload no longer includes. Managers without
+      a ``dataroma_code`` (most V2-seeded ones) are intentionally
+      excluded — Dataroma never knew about them, so it can't have
+      "dropped" them.
+
+    This function is the read-only twin of ``add_dataroma_candidates``;
+    only the latter writes to ``institution_managers``.
+    """
+    fetched_at = datetime.now(timezone.utc)
+    dataroma_entries = _fetch_dataroma_managers()
+    logger.info("Dataroma returned %d manager entries", len(dataroma_entries))
+
+    # Index our universe by dataroma_code so the diff is O(N + M)
+    # rather than O(N*M). We only care about rows that have a
+    # dataroma_code at all.
+    by_code: dict[str, InstitutionManager] = {}
+    for m in (
+        db.query(InstitutionManager)
+        .filter(InstitutionManager.dataroma_code.isnot(None))
+        .all()
+    ):
+        by_code[m.dataroma_code] = m
+
+    new_entries: list[DataromaSyncEntry] = []
+    known_entries: list[DataromaSyncEntry] = []
+    seen_codes: set[str] = set()
+
+    for mgr in dataroma_entries:
+        seen_codes.add(mgr.dataroma_code)
+        existing = by_code.get(mgr.dataroma_code)
+        if existing is None:
+            new_entries.append(
+                DataromaSyncEntry(dataroma_code=mgr.dataroma_code, name=mgr.name)
+            )
+        else:
+            known_entries.append(
+                DataromaSyncEntry(
+                    dataroma_code=mgr.dataroma_code,
+                    name=mgr.name,
+                    institution_manager_id=existing.id,
+                )
+            )
+
+    dropped_entries: list[DataromaSyncEntry] = [
+        DataromaSyncEntry(
+            dataroma_code=code,
+            name=m.legal_name or m.canonical_name or "",
+            institution_manager_id=m.id,
+        )
+        for code, m in by_code.items()
+        if code not in seen_codes
+    ]
+
+    return DataromaSyncDiff(
+        new=new_entries,
+        known=known_entries,
+        dropped=dropped_entries,
+        fetched_at=fetched_at,
+    )
+
+
+def add_dataroma_candidates(
+    db: Session, items: list[DataromaSyncEntry]
+) -> dict:
+    """Insert a batch of Dataroma-discovered managers as candidates.
+
+    Rows go in with ``match_status='candidate'`` — they still need
+    Match CIK + admin classification before they can affect Oracle's
+    Lens scoring. V2 fields default to ``unknown`` so the admin's
+    next step in the Managers page is "edit manager type".
+
+    Idempotent: skips entries whose ``dataroma_code`` already exists
+    anywhere in ``institution_managers`` (regardless of status). Returns
+    ``{"added": n, "skipped": n}`` so the calling endpoint can report
+    both halves to the admin.
+
+    Concurrency: per-entry inserts run inside a SAVEPOINT so that if a
+    concurrent admin add for the same ``dataroma_code`` slipped past
+    the TOCTOU check, the resulting ``IntegrityError`` is caught and
+    that one entry is counted as skipped instead of poisoning the
+    whole batch. The partial UNIQUE index
+    ``uq_institution_managers_dataroma_code``
+    (WHERE dataroma_code IS NOT NULL, defined in the 13F-ingestion-
+    tables migration ``20260423000000``) is what turns a TOCTOU race
+    into an IntegrityError rather than a silent duplicate — the
+    SAVEPOINT-and-catch defense here is load-bearing on top of that
+    DB-level guarantee, not a placeholder.
+
+    Commits on success. The endpoint layer does not commit (per the
+    services-own-transactions convention in this repo); add a single
+    commit here so the call is durable end-to-end from the FE click.
+    """
+    now = datetime.now(timezone.utc)
+    added = 0
+    skipped = 0
+
+    for entry in items:
+        code = entry.dataroma_code
+        if not code:
+            skipped += 1
+            continue
+
         existing = (
-            db.query(InstitutionManager)
-            .filter_by(dataroma_code=mgr.dataroma_code)
-            .one_or_none()
+            db.query(InstitutionManager).filter_by(dataroma_code=code).one_or_none()
         )
         if existing is not None:
-            existing.last_seen_at = datetime.now(timezone.utc)
-            existing.dataroma_synced_at = datetime.now(timezone.utc)
+            existing.dataroma_synced_at = now
+            existing.last_seen_at = now
+            skipped += 1
             continue
 
         record = InstitutionManager(
-            legal_name=mgr.name,
-            name_normalized=_normalize_name(mgr.name),
-            dataroma_code=mgr.dataroma_code,
-            match_status="seeded",
+            legal_name=entry.name,
+            display_name=entry.name,
+            name_normalized=_normalize_name(entry.name),
+            dataroma_code=code,
+            match_status="candidate",
             is_superinvestor=True,
-            dataroma_synced_at=datetime.now(timezone.utc),
+            dataroma_synced_at=now,
+            review_note=(
+                f"Added from Dataroma sync on {now.date().isoformat()}; "
+                f"awaiting Match CIK + V2 classification."
+            ),
         )
-        db.add(record)
-        inserted += 1
 
-    db.flush()
-    logger.info("bootstrap_whitelist: inserted %d new managers", inserted)
-    return inserted
+        sp = db.begin_nested()
+        try:
+            db.add(record)
+            db.flush()
+            sp.commit()
+            added += 1
+        except IntegrityError:
+            sp.rollback()
+            logger.warning(
+                "add_dataroma_candidates: IntegrityError on dataroma_code=%s; "
+                "treating as skipped (likely concurrent add).",
+                code,
+            )
+            skipped += 1
+
+    db.commit()
+    logger.info(
+        "add_dataroma_candidates: added=%d skipped=%d (total submitted=%d)",
+        added, skipped, len(items),
+    )
+    return {"added": added, "skipped": skipped}
 
 
 # ---------------------------------------------------------------------------

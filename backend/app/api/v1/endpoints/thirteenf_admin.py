@@ -453,6 +453,83 @@ def bulk_import_13f_managers(
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
 
 
+# ---------------------------------------------------------------------------
+# Dataroma sync (decoupled from bootstrap — see
+# docs/tasks/2026-05-24_bootstrap-decouple-dataroma-sync.md).
+#
+# Synchronous endpoints (not the job system) because the UX is "admin
+# clicks button, sees diff, decides which to add" — polling a job_run
+# adds latency without value. Rate Guard's own rate-limit handling
+# still applies; concurrent admins double-clicking just hit Rate Guard
+# twice (acceptable for a button this rare).
+# ---------------------------------------------------------------------------
+
+
+class DataromaSyncAddItem(BaseModel):
+    dataroma_code: str = Field(min_length=1, max_length=20)
+    name: str = Field(min_length=1)
+
+
+class DataromaSyncAddRequest(BaseModel):
+    items: list[DataromaSyncAddItem] = Field(min_length=1)
+
+
+@admin_router.post("/managers/dataroma-sync", response_model=dict)
+def run_dataroma_sync(session: SessionDep, current_user: AdminUser) -> Any:
+    """Fetch Dataroma's current manager list and return the diff vs our DB.
+
+    Read-only: no rows are written. Use ``/managers/dataroma-sync/add``
+    to apply selected entries as candidates.
+
+    ``sample_size=None`` is intentional: the FE needs to render *every*
+    new Dataroma entry so the admin can select-all and add them in one
+    shot. The default 25-row cap is a ``JobRun.summary_json`` size
+    guard, not a UI contract. Dataroma's full universe is ~80–100
+    entries so the response stays small in practice.
+    """
+    from app.services.edgar_ingestion import sync_dataroma_managers
+
+    try:
+        diff = sync_dataroma_managers(session)
+    except RateGuardFetchError as exc:
+        # Rate Guard failures (timeouts, upstream 5xx, rate-limit
+        # blocks) are infrastructure problems, not bad input. 503 lets
+        # the FE surface a "try again later" message without retrying
+        # automatically inside the same request.
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=f"Dataroma fetch failed: {exc}",
+        ) from exc
+
+    return diff.to_summary_dict(sample_size=None)
+
+
+@admin_router.post("/managers/dataroma-sync/add", response_model=dict)
+def add_dataroma_sync_candidates(
+    session: SessionDep,
+    current_user: AdminUser,
+    payload: DataromaSyncAddRequest,
+) -> Any:
+    """Insert the selected Dataroma entries as ``match_status='candidate'``.
+
+    Caller passes the (dataroma_code, name) pairs they chose from the
+    diff returned by ``/managers/dataroma-sync``. No CIK is assigned —
+    each new row goes through the existing Match CIK + classification
+    flow before it can affect Oracle's Lens scoring.
+    """
+    from app.services.edgar_ingestion import (
+        DataromaSyncEntry,
+        add_dataroma_candidates,
+    )
+
+    entries = [
+        DataromaSyncEntry(dataroma_code=item.dataroma_code, name=item.name)
+        for item in payload.items
+    ]
+    result = add_dataroma_candidates(session, entries)
+    return result
+
+
 @admin_router.patch("/managers/{manager_id}", response_model=dict)
 def patch_13f_manager(
     session: SessionDep,

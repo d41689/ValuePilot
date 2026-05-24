@@ -584,6 +584,19 @@ def update_manager(session: Session, manager_id: int, payload: dict[str, Any]) -
     ]:
         if field in payload:
             setattr(manager, field, payload[field])
+    # V2 taxonomy invariant (docs/tasks/2026-05-24_manager-taxonomy-v2.md):
+    # ``manager_type`` (legacy, drives Oracle's Lens weight) is derived
+    # from ``style_primary`` (V2 truth) by ``derive_legacy_manager_type``
+    # at seed time. This endpoint deliberately does NOT accept
+    # ``style_primary`` yet — V2 admin editing is out of scope for the
+    # taxonomy-v2 PR and waits for a dedicated dialog. The risk to watch
+    # for: a future change that adds ``style_primary`` to the accepted
+    # field list above MUST also re-derive ``manager_type`` here (or in
+    # the model layer), otherwise the two columns drift silently and
+    # every signal weight read by Oracle's Lens becomes wrong for that
+    # manager. Pair any such change with a new test asserting the
+    # post-PATCH invariant
+    # ``manager.manager_type == derive_legacy_manager_type(manager.style_primary)``.
     if "canonical_name" in payload:
         manager.legal_name = payload["canonical_name"]
     if "status" in payload and payload["status"] is not None:
@@ -2799,6 +2812,10 @@ _JOB_LOCK_BUILDERS = {
     "enrich_metadata": lambda payload: f"enrich_metadata:{_required(payload, 'quarter') if payload.get('quarter') else 'global'}",
     "bootstrap_stocks": lambda payload: "bootstrap_stocks",
     "bootstrap_whitelist": lambda payload: "bootstrap_whitelist",
+    # On-demand Dataroma sync (read-only diff vs our universe).
+    # Single concurrent run via the shared lock_key so admin double-clicks
+    # don't double-fetch from Dataroma's rate-limited endpoint.
+    "dataroma_sync": lambda payload: "dataroma_sync",
     "match_cik": lambda payload: "match_cik",
     "quality_check": lambda payload: f"quality_check:{_required(payload, 'quarter')}",
     "oracles_lens_score_backfill": lambda payload: (
@@ -2912,9 +2929,23 @@ def _execute_job(session: Session, job_type: str, payload: dict[str, Any]) -> di
             ],
         }
     if job_type == "bootstrap_whitelist":
-        from app.services.edgar_ingestion import bootstrap_whitelist
+        # Backward-compatible job_type kept for the deployed FE button.
+        # As of docs/tasks/2026-05-24_bootstrap-decouple-dataroma-sync.md
+        # "bootstrap" means "load the canonical V2-classified universe
+        # from confirmed_managers.json" — offline, deterministic, never
+        # touches Dataroma. The Dataroma diff path moved to its own
+        # job_type ``dataroma_sync`` below.
+        from app.services.edgar_ingestion import seed_confirmed_managers
 
-        return {"managers_seen": bootstrap_whitelist(session), "status": "succeeded"}
+        return {
+            "managers_seeded": seed_confirmed_managers(session),
+            "status": "succeeded",
+        }
+    if job_type == "dataroma_sync":
+        from app.services.edgar_ingestion import sync_dataroma_managers
+
+        diff = sync_dataroma_managers(session)
+        return {"diff": diff.to_summary_dict(), "status": "succeeded"}
     if job_type == "match_cik":
         from app.services.edgar_ingestion import match_cik_candidates
 
