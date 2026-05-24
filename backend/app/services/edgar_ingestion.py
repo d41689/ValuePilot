@@ -79,11 +79,27 @@ def _name_score(a: str, b: str) -> float:
 def seed_confirmed_managers(db: Session) -> int:
     """Seed institution_managers from a predefined list of confirmed CIKs.
 
-    This bypasses the match-cik step for high-priority managers.
+    This bypasses the match-cik step for high-priority managers. As of
+    the manager-taxonomy-v2 change
+    (``docs/tasks/2026-05-24_manager-taxonomy-v2.md``), each seed entry
+    also carries the two-layer ``style_primary`` / ``capital_structure``
+    classification plus optional metadata, and the legacy
+    ``manager_type`` column is derived from ``style_primary`` via
+    ``derive_legacy_manager_type``.
+
+    Idempotency contract: re-running this function on a DB that already
+    has these managers updates fields in place without duplicating rows
+    and without writing to fields the entry doesn't specify.
     """
     import json
     import os
     from pathlib import Path
+
+    # Imported lazily to avoid an import cycle at module load:
+    # manager_style imports from app.models.institutions, which is
+    # already imported above for InstitutionManager. Keeping it lazy
+    # also keeps this function's import surface honest.
+    from app.services.oracles_lens.manager_style import derive_legacy_manager_type
 
     seed_path = Path(__file__).parent / "seed_data" / "confirmed_managers.json"
     if not os.path.exists(seed_path):
@@ -100,6 +116,15 @@ def seed_confirmed_managers(db: Session) -> int:
         if not cik:
             continue
 
+        # Derive legacy manager_type once per entry; missing
+        # style_primary defaults to 'unknown', which derive maps to
+        # legacy 'unknown'. Garbage style_primary raises ValueError so
+        # a typo in the JSON fails the seed loudly rather than silently
+        # defaulting to a wrong weight.
+        style_primary = entry.get("style_primary", "unknown")
+        legacy_manager_type = derive_legacy_manager_type(style_primary)
+        capital_structure = entry.get("capital_structure", "unknown")
+
         # Match by CIK first (authoritative SEC identifier), then fall back to dataroma_code.
         # Avoids MultipleResultsFound when separate DB records each satisfy one side of an OR.
         existing = db.query(InstitutionManager).filter_by(cik=cik).one_or_none()
@@ -111,7 +136,7 @@ def seed_confirmed_managers(db: Session) -> int:
             )
 
         if existing:
-            # Update existing record to confirmed
+            # Update existing record to confirmed + V2 classification
             existing.cik = cik
             existing.match_status = "confirmed"
             if entry.get("display_name"):
@@ -119,9 +144,27 @@ def seed_confirmed_managers(db: Session) -> int:
             if entry.get("legal_name"):
                 existing.legal_name = entry["legal_name"]
                 existing.name_normalized = _normalize_name(entry["legal_name"])
+            existing.style_primary = style_primary
+            existing.capital_structure = capital_structure
+            existing.manager_type = legacy_manager_type
+            # Optional metadata: only overwrite when the seed entry
+            # actually specifies a value, so a sparse re-seed doesn't
+            # wipe richer downstream data on existing rows.
+            if entry.get("market_cap_focus") is not None:
+                existing.market_cap_focus = entry["market_cap_focus"]
+            if entry.get("geo_focus") is not None:
+                existing.geo_focus = entry["geo_focus"]
+            if entry.get("historical_turnover") is not None:
+                existing.historical_turnover = entry["historical_turnover"]
+            if entry.get("position_concentration_top10_pct") is not None:
+                existing.position_concentration_top10_pct = entry[
+                    "position_concentration_top10_pct"
+                ]
+            if entry.get("ideology_tags") is not None:
+                existing.ideology_tags = entry["ideology_tags"]
             updated += 1
         else:
-            # Create new confirmed record
+            # Create new confirmed record with V2 classification
             record = InstitutionManager(
                 cik=cik,
                 legal_name=entry.get("legal_name") or entry.get("display_name"),
@@ -131,6 +174,16 @@ def seed_confirmed_managers(db: Session) -> int:
                 match_status="confirmed",
                 is_superinvestor=True,
                 dataroma_synced_at=datetime.now(timezone.utc),
+                style_primary=style_primary,
+                capital_structure=capital_structure,
+                manager_type=legacy_manager_type,
+                market_cap_focus=entry.get("market_cap_focus"),
+                geo_focus=entry.get("geo_focus"),
+                historical_turnover=entry.get("historical_turnover"),
+                position_concentration_top10_pct=entry.get(
+                    "position_concentration_top10_pct"
+                ),
+                ideology_tags=entry.get("ideology_tags"),
             )
             db.add(record)
             updated += 1

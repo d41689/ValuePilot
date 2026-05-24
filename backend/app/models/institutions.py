@@ -27,6 +27,34 @@ MANAGER_TYPES = {
     "multi_strategy",
     "unknown",
 }
+# Manager taxonomy V2 (docs/tasks/2026-05-24_manager-taxonomy-v2.md).
+# Two-layer label + multi-dimensional metadata that lets Oracle's Lens
+# filter by *value-investor DNA* rather than the V1 catch-all
+# ``long_term_fundamental`` bucket that mixes Berkshire with Tiger Global.
+# Legacy ``manager_type`` is kept and auto-derived from ``style_primary``
+# via ``app.services.oracles_lens.manager_style.derive_legacy_manager_type``.
+STYLE_PRIMARY = {
+    "value_deep",
+    "value_concentrated",
+    "quality_compounder",
+    "activist",
+    "growth_long_short",
+    "special_situations",
+    "multi_strategy_macro",
+    "endowment_passive",
+    "unknown",
+}
+CAPITAL_STRUCTURE = {
+    "permanent_capital",
+    "locked_lp",
+    "standard_lp",
+    "mutual_fund_etf",
+    "endowment_foundation",
+    "unknown",
+}
+MARKET_CAP_FOCUS = {"micro", "small", "mid", "large", "mega", "all"}
+GEO_FOCUS = {"us", "global", "em", "europe", "asia"}
+TURNOVER_BUCKETS = {"low", "med", "high"}
 VALUE_UNIT_OVERRIDES = {"infer", "thousands", "dollars"}
 VALUE_UNIT_OVERRIDE_EXPLICIT = {"thousands", "dollars"}
 EDGAR_SYNC_STATUSES = {"pending", "running", "success", "failed", "no_data", "partial_success"}
@@ -102,6 +130,23 @@ class InstitutionManager(Base):
     match_status: Mapped[str] = mapped_column(String(20), nullable=False, default="seeded")
     status: Mapped[str] = mapped_column(String(20), nullable=False, default="candidate", server_default="candidate")
     manager_type: Mapped[str] = mapped_column(String(40), nullable=False, default="unknown", server_default="unknown")
+    # Manager taxonomy V2 — see ``STYLE_PRIMARY`` / ``CAPITAL_STRUCTURE``
+    # above and ``docs/tasks/2026-05-24_manager-taxonomy-v2.md``. Legacy
+    # ``manager_type`` continues to be the Oracle's Lens weight key and is
+    # auto-derived from ``style_primary`` by the seeding code.
+    style_primary: Mapped[str] = mapped_column(
+        String(40), nullable=False, default="unknown", server_default="unknown",
+    )
+    capital_structure: Mapped[str] = mapped_column(
+        String(40), nullable=False, default="unknown", server_default="unknown",
+    )
+    market_cap_focus: Mapped[Optional[str]] = mapped_column(String(20), nullable=True)
+    geo_focus: Mapped[Optional[str]] = mapped_column(String(20), nullable=True)
+    historical_turnover: Mapped[Optional[str]] = mapped_column(String(10), nullable=True)
+    position_concentration_top10_pct: Mapped[Optional[float]] = mapped_column(
+        Numeric(6, 2), nullable=True,
+    )
+    ideology_tags: Mapped[Optional[list]] = mapped_column(JSONB, nullable=True)
     is_featured: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default=text("false"))
     source: Mapped[Optional[str]] = mapped_column(String(80), nullable=True)
     source_url: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
@@ -154,6 +199,32 @@ class InstitutionManager(Base):
     @validates("manager_type")
     def _validate_manager_type(self, _: str, value: str) -> str:
         return _validate_choice("manager_type", value, MANAGER_TYPES)
+
+    @validates("style_primary")
+    def _validate_style_primary(self, _: str, value: str) -> str:
+        return _validate_choice("style_primary", value, STYLE_PRIMARY)
+
+    @validates("capital_structure")
+    def _validate_capital_structure(self, _: str, value: str) -> str:
+        return _validate_choice("capital_structure", value, CAPITAL_STRUCTURE)
+
+    @validates("market_cap_focus")
+    def _validate_market_cap_focus(self, _: str, value: Optional[str]) -> Optional[str]:
+        if value is None:
+            return None
+        return _validate_choice("market_cap_focus", value, MARKET_CAP_FOCUS)
+
+    @validates("geo_focus")
+    def _validate_geo_focus(self, _: str, value: Optional[str]) -> Optional[str]:
+        if value is None:
+            return None
+        return _validate_choice("geo_focus", value, GEO_FOCUS)
+
+    @validates("historical_turnover")
+    def _validate_historical_turnover(self, _: str, value: Optional[str]) -> Optional[str]:
+        if value is None:
+            return None
+        return _validate_choice("historical_turnover", value, TURNOVER_BUCKETS)
 
     @validates("value_unit_override")
     def _validate_value_unit_override(self, _: str, value: str) -> str:

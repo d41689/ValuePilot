@@ -9,6 +9,33 @@ long — escalate to the user. **medium / low** = ordinary follow-up.
 
 ## Open
 
+### `_clear_13f` test helper raises FK violation when dev DB has committed quality_findings_13f / oracles_lens_signals rows
+- **Found:** 2026-05-24, while running canonical CI for the manager-taxonomy-v2 change
+  (`docs/tasks/2026-05-24_manager-taxonomy-v2.md`)
+- **Severity:** medium (dev-only — CI passes because CI starts from an empty volume)
+- **Problem:** `backend/tests/unit/test_13f_user_api.py::_clear_13f` deletes
+  `OraclesLensScoreComponent` / `OraclesLensSignal` / `OwnershipChange13F` /
+  `Holding13F` / `ParseRun13F` / `Filing13F` / `InstitutionManagerCikReviewEvent`
+  / `InstitutionManager` in that order, but the dev DB also accumulates
+  `quality_findings_13f` (FK → `institution_managers.id`) and several other
+  tables with FK references to managers. When the dev DB has those committed
+  rows from prior bootstrap / ingestion runs, every test that calls
+  `_clear_13f` and a few sibling helpers fails with
+  `psycopg2.errors.ForeignKeyViolation`. Confirmed pre-existing: reproduces
+  on `main` with all taxonomy-v2 changes stashed. Verified non-regressing
+  by my own work — fresh-DB CI passes, and isolating the new
+  `test_13f_manager_taxonomy_v2.py` (23 cases) and existing
+  `test_13f_mvp4_manager_taxonomy.py` / `test_13f_mvp5_05_manager_type_editor.py`
+  / `test_13f_mvp5_01_wire_behavior_manager_type.py` (28 cases) all pass.
+- **Fix sketch:** Either (a) expand `_clear_13f` to also delete `quality_findings_13f`
+  and `quality_reports_13f` (and any other FK-bearing tables) before
+  `institution_managers`; or better (b) switch the conftest to a real
+  test-DB fixture (e.g. a transient `valuepilot_test` schema) so dev data
+  never bleeds into test runs. Option (b) is the AGENTS.md-aligned long-term
+  fix — it's the same class of "long-lived branches mask failures" issue
+  the workflow already warns about.
+- **Context:** PR for manager-taxonomy-v2 change
+
 ### 13F CUSIP enrichment — monitor MUTUAL FUND / OPEN-END FUND / UNIT auto-confirms in production
 - **Found:** 2026-05-22, PR #93 review (advisory #1)
 - **Severity:** low
