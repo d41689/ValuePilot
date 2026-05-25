@@ -202,14 +202,26 @@ def build_oracles_lens_dashboard(
     # Universe-filter mode (docs/tasks/2026-05-24_oracles-lens-universe-selector.md):
     # when a manager_id_allowlist is set, the persisted
     # ``oracles_lens_signals`` rows reflect the all-managers universe
-    # and would lie about the filtered universe's Signal /
-    # Conviction / Distinctive numbers. The in-memory path above
-    # ALREADY ran against the filtered holdings (via
-    # ``_holdings_for_period(..., manager_id_allowlist=...)``), so we
-    # just skip the persisted overlay here. The persisted table stays
-    # authoritative for the "All" universe.
-    apply_persisted = use_persisted_scores and manager_id_allowlist is None
-    if apply_persisted:
+    # and lie about the filtered universe's Signal / Conviction /
+    # Distinctive numbers.
+    #
+    # Review-2 P0 fix: silently skipping the persisted overlay was NOT
+    # enough — items would then keep the legacy ``_stock_payload``
+    # formula numbers, which are incomparable to the persisted
+    # canonical numbers. So switching from "All" to a preset would
+    # have changed both the universe AND the formula. Instead, when a
+    # filter is set we overlay with the SAME canonical formula via
+    # ``_apply_live_filtered_scores`` — only the manager universe
+    # differs between paths now.
+    if manager_id_allowlist is not None:
+        items, persisted_score_count = _apply_live_filtered_scores(
+            session,
+            items,
+            period_label=selected.label,
+            manager_id_allowlist=manager_id_allowlist,
+            min_holders=min_holders,
+        )
+    elif use_persisted_scores:
         items, persisted_score_count = _apply_persisted_scores(
             session, items, period_label=selected.label,
         )
@@ -276,6 +288,113 @@ def build_oracles_lens_dashboard(
         # passed through verbatim. We just attach it to the response.
         payload["universe"] = universe_metadata
     return payload
+
+
+def _apply_live_filtered_scores(
+    session: Session,
+    items: list[dict[str, Any]],
+    *,
+    period_label: str,
+    manager_id_allowlist: set[int],
+    min_holders: int,
+) -> tuple[list[dict[str, Any]], int]:
+    """Overlay items with canonical Signal / Conviction / Distinctive
+    scores recomputed live over the filtered manager universe.
+
+    Review-2 P0 fix: without this, the universe-filter path silently
+    falls back to the legacy ``_stock_payload`` in-memory formula,
+    which produces incomparable numbers vs. the persisted-mode
+    canonical scores. Switching from "All" to "Deep Value" would
+    then change BOTH the universe AND the formula, and the user
+    couldn't isolate which effect they're seeing.
+
+    Wires the same primitives the canonical
+    ``compute_signal_weighted_scores`` uses — ``_contributions_for_stock``
+    plus the pure ``compute_conviction_components`` and
+    ``compute_distinctive_consensus`` — but never writes to
+    ``oracles_lens_signals``. The persisted table stays canonical for
+    the all-managers universe; this is the live read-side twin for
+    arbitrary filtered universes.
+
+    Items whose filtered contributor count falls below ``min_holders``
+    are dropped, matching the persisted reader's filtering.
+    """
+    if not items or not manager_id_allowlist:
+        return [], 0
+
+    # Lazy imports — keep dashboard.py's module-load surface unchanged
+    # for the unfiltered code path that doesn't need any of these.
+    from decimal import Decimal as _D
+    from app.services.oracles_lens.signal_weighted_score import (
+        _aggregate_caveats,
+        _build_score_explanation,
+        _contributions_for_stock,
+        _top_n_stock_ids_per_manager,
+        POSITION_TOP_N_THRESHOLD,
+        _DerivedProfileCache,
+        determine_score_confidence,
+    )
+    from app.services.oracles_lens.conviction_score import (
+        compute_conviction_components,
+    )
+    from app.services.oracles_lens.distinctive_consensus import (
+        compute_distinctive_consensus,
+    )
+    from app.services.oracles_lens.caution_flags import enrich_caveat_codes
+
+    # ``_top_n_stock_ids_per_manager`` is intentionally NOT filtered by
+    # allowlist — "which stocks are in manager M's top-10" is a
+    # property of the manager's own portfolio, not of the universe.
+    top_n_by_manager = _top_n_stock_ids_per_manager(
+        session, quarter=period_label, top_n=POSITION_TOP_N_THRESHOLD,
+    )
+    derived_profile_cache: _DerivedProfileCache = {}
+
+    out: list[dict[str, Any]] = []
+    for item in items:
+        stock_id = item["stock_id"]
+        contributions, excluded = _contributions_for_stock(
+            session,
+            quarter=period_label,
+            stock_id=stock_id,
+            top_n_by_manager=top_n_by_manager,
+            derived_profile_cache=derived_profile_cache,
+            manager_id_allowlist=manager_id_allowlist,
+        )
+        if len(contributions) < min_holders:
+            # Filtered contributor count is below the floor — drop the
+            # item entirely (matching persisted-reader semantics).
+            continue
+
+        total = sum((c.contribution for c in contributions), _D("0"))
+        caveats = _aggregate_caveats(contributions, excluded)
+        confidence = determine_score_confidence(caveats)
+        explanation = _build_score_explanation(
+            contributions, caveats, confidence, excluded=excluded,
+        )
+        conviction = compute_conviction_components(contributions)
+        distinctive = compute_distinctive_consensus(
+            signal_weighted_score=total, contributions=contributions,
+        )
+
+        item["signal_weighted_consensus_score"] = float(total)
+        item["raw_consensus_count"] = len(contributions)
+        item["score_confidence"] = confidence
+        item["caution_flag_codes"] = list(caveats)
+        item["caution_flags"] = enrich_caveat_codes(list(caveats))
+        # Merge new explanation into any in-memory one, mirroring
+        # ``_apply_persisted_scores`` so downstream readers see the same
+        # narrative key set in both paths.
+        existing_explanation = dict(item.get("score_explanation") or {})
+        existing_explanation.update(explanation or {})
+        item["score_explanation"] = existing_explanation
+        item["conviction_score"] = int(conviction.total)
+        item["distinctive_consensus_score"] = float(
+            distinctive.distinctive_consensus_score
+        ) if distinctive.distinctive_consensus_score is not None else None
+        item["score_source"] = "live_filtered"
+        out.append(item)
+    return out, len(out)
 
 
 def _apply_persisted_scores(

@@ -101,6 +101,7 @@ def read_oracles_lens_dashboard(
             style_primary=style_list,
             capital_structure=capital_list,
             market_cap_focus=market_cap_list,
+            superinvestor_only=superinvestor_only,
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc

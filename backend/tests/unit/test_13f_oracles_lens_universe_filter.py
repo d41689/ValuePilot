@@ -42,6 +42,7 @@ from app.models.stocks import Stock
 
 
 _CIK_SEQ = count(8810000000)
+_UNSET = object()  # sentinel to distinguish "cik=None explicitly" from "cik not passed"
 
 
 # ---------------------------------------------------------------------------
@@ -57,18 +58,23 @@ def _manager(
     market_cap_focus: str | None = None,
     legal_name: str | None = None,
     superinvestor: bool = True,
+    match_status: str = "confirmed",
+    cik=_UNSET,  # explicit None means "no CIK"; absence means "auto-generate"
 ) -> InstitutionManager:
-    cik = str(next(_CIK_SEQ))
-    name = legal_name or f"Mgr-{style_primary}-{cik}"
+    if cik is _UNSET:
+        cik_val: str | None = str(next(_CIK_SEQ))
+    else:
+        cik_val = cik
+    name = legal_name or f"Mgr-{style_primary}-{cik_val or 'nocik'}"
     manager = InstitutionManager(
-        cik=cik,
+        cik=cik_val,
         canonical_name=name,
         legal_name=name,
         edgar_legal_name=name,
         display_name=name,
         name_normalized=name.lower(),
-        match_status="confirmed",
-        status="active",
+        match_status=match_status,
+        status="active" if match_status == "confirmed" else "candidate",
         is_superinvestor=superinvestor,
         style_primary=style_primary,
         capital_structure=capital_structure,
@@ -310,6 +316,95 @@ def test_resolver_rejects_unknown_capital_structure(db_session):
             capital_structure=["bogus"],
             market_cap_focus=[],
         )
+
+
+# Review-2 P1: resolver must mirror the eligibility gates that
+# _holdings_for_period applies (match_status='confirmed', CIK NOT NULL,
+# is_superinvestor when superinvestor_only is True). Without these,
+# the "X of N managers" badge overcounts and includes managers whose
+# holdings never reach the score.
+
+
+def test_resolver_excludes_unconfirmed_managers(db_session):
+    from app.services.oracles_lens.manager_universe import (
+        resolve_manager_id_allowlist,
+    )
+
+    confirmed = _manager(db_session, style_primary="value_deep")
+    candidate = _manager(
+        db_session, style_primary="value_deep", match_status="candidate",
+    )
+
+    allowlist = resolve_manager_id_allowlist(
+        db_session,
+        style_primary=["value_deep"],
+        capital_structure=[],
+        market_cap_focus=[],
+    )
+    assert allowlist is not None
+    assert confirmed.id in allowlist
+    assert candidate.id not in allowlist, (
+        "candidate (non-confirmed) managers must not count toward "
+        "filtered_manager_count — their holdings never reach the score"
+    )
+
+
+def test_resolver_excludes_managers_without_cik(db_session):
+    from app.services.oracles_lens.manager_universe import (
+        resolve_manager_id_allowlist,
+    )
+
+    with_cik = _manager(db_session, style_primary="value_deep")
+    without_cik = _manager(
+        db_session, style_primary="value_deep", cik=None,
+    )
+
+    allowlist = resolve_manager_id_allowlist(
+        db_session,
+        style_primary=["value_deep"],
+        capital_structure=[],
+        market_cap_focus=[],
+    )
+    assert allowlist is not None
+    assert with_cik.id in allowlist
+    assert without_cik.id not in allowlist, (
+        "managers with NULL CIK are filtered by _holdings_for_period — "
+        "resolver must apply the same gate so the count matches"
+    )
+
+
+def test_resolver_honors_superinvestor_only(db_session):
+    from app.services.oracles_lens.manager_universe import (
+        resolve_manager_id_allowlist,
+    )
+
+    superinv = _manager(db_session, style_primary="value_deep", superinvestor=True)
+    not_super = _manager(db_session, style_primary="value_deep", superinvestor=False)
+
+    # superinvestor_only=True is the endpoint default; non-superinvestor
+    # managers should be excluded.
+    allowlist = resolve_manager_id_allowlist(
+        db_session,
+        style_primary=["value_deep"],
+        capital_structure=[],
+        market_cap_focus=[],
+        superinvestor_only=True,
+    )
+    assert allowlist is not None
+    assert superinv.id in allowlist
+    assert not_super.id not in allowlist
+
+    # superinvestor_only=False (admin / debug flow) → include both.
+    allowlist_open = resolve_manager_id_allowlist(
+        db_session,
+        style_primary=["value_deep"],
+        capital_structure=[],
+        market_cap_focus=[],
+        superinvestor_only=False,
+    )
+    assert allowlist_open is not None
+    assert superinv.id in allowlist_open
+    assert not_super.id in allowlist_open
 
 
 # ---------------------------------------------------------------------------
@@ -608,4 +703,108 @@ def test_endpoint_empty_filters_omit_universe_to_signal_persisted_path(
         assert (
             universe["filtered_manager_count"]
             == universe["total_manager_count"]
+        )
+
+
+# ---------------------------------------------------------------------------
+# Review-2 P0: the filter path MUST use the canonical signal-weighted formula
+# (signal_weighted_score._contributions_for_stock + downstream pure functions),
+# not the legacy ``_stock_payload`` in-memory formula. Otherwise switching
+# from "All" to any preset changes both the manager universe AND the math,
+# and the user can't separate the two effects.
+# ---------------------------------------------------------------------------
+
+
+def test_filtered_path_matches_canonical_persisted_when_universe_contains_all_holders(
+    db_session,
+):
+    """If the filter happens to include every contributor for a stock,
+    the live-recomputed Signal Score must equal the canonical
+    ``compute_signal_weighted_scores`` output for that same stock — i.e.
+    the filter path uses the same math, just over a (possibly) smaller
+    universe.
+
+    Strategy: build a tiny universe of 3 confirmed value managers all
+    holding one stock. Run canonical scoring → persists to
+    ``oracles_lens_signals``. Then run the dashboard filter path with
+    a style filter that includes all 3 managers. The
+    ``signal_weighted_consensus_score`` from both paths must match
+    bit-for-bit.
+    """
+    from decimal import Decimal as D
+
+    from app.models.oracles_lens import OraclesLensSignal
+    from app.services.oracles_lens.signal_weighted_score import (
+        compute_signal_weighted_scores,
+        SCORE_VERSION,
+    )
+    from app.services.oracles_lens.dashboard import build_oracles_lens_dashboard
+
+    # 3 managers — all confirmed value, no Tiger Cubs to muddy the picture.
+    mgrs = [
+        _manager(db_session, style_primary="value_deep"),
+        _manager(db_session, style_primary="value_concentrated"),
+        _manager(db_session, style_primary="quality_compounder"),
+    ]
+    stock = _stock(db_session, "EQUI")
+    quarter = "2025-Q4"
+    for idx, mgr in enumerate(mgrs):
+        f, r = _filing_with_parse_run(db_session, mgr, accession=f"ACC-EQUI-{idx}")
+        _holding(db_session, f, r, stock, value_thousands=20_000)
+
+    # Canonical persisted scoring — writes oracles_lens_signals row for
+    # the all-managers universe (which here equals our 3-manager test
+    # universe; the dev DB's other managers don't hold EQUI).
+    compute_signal_weighted_scores(db_session, quarter=quarter, min_holders=2)
+    db_session.commit()
+
+    canonical_row = (
+        db_session.query(OraclesLensSignal)
+        .filter_by(stock_id=stock.id, report_quarter=quarter, score_version=SCORE_VERSION)
+        .one()
+    )
+    canonical_score = D(canonical_row.signal_weighted_consensus_score)
+    canonical_conviction = canonical_row.conviction_score
+    canonical_distinctive = (
+        D(canonical_row.distinctive_consensus_score)
+        if canonical_row.distinctive_consensus_score is not None
+        else None
+    )
+
+    # Filter path — Deep Value preset universe includes all 3 managers.
+    payload = build_oracles_lens_dashboard(
+        db_session,
+        period=quarter,
+        min_holders=2,
+        use_persisted_scores=False,  # force the filter path's live recompute
+        manager_id_allowlist={m.id for m in mgrs},
+        universe_metadata={
+            "applied_filters": {
+                "style_primary": ["value_deep", "value_concentrated", "quality_compounder"],
+                "capital_structure": [],
+                "market_cap_focus": [],
+            },
+            "filtered_manager_count": 3,
+            "total_manager_count": 3,
+        },
+    )
+
+    by_stock = {item["stock_id"]: item for item in payload["items"]}
+    assert stock.id in by_stock, "filtered path dropped our stock"
+    filtered_item = by_stock[stock.id]
+
+    filtered_score = D(str(filtered_item["signal_weighted_consensus_score"]))
+    assert filtered_score == canonical_score, (
+        f"Filter path uses different formula than canonical: "
+        f"filtered={filtered_score} vs canonical={canonical_score}. "
+        f"Review-2 P0: filter path must wire through signal_weighted_score "
+        f"canonical math, not the legacy _stock_payload formula."
+    )
+    assert filtered_item["conviction_score"] == canonical_conviction, (
+        "conviction_score from filter path must match canonical math"
+    )
+    if canonical_distinctive is not None:
+        filtered_distinctive = D(str(filtered_item["distinctive_consensus_score"]))
+        assert filtered_distinctive == canonical_distinctive, (
+            "distinctive_consensus_score from filter path must match canonical math"
         )
