@@ -808,3 +808,52 @@ def test_filtered_path_matches_canonical_persisted_when_universe_contains_all_ho
         assert filtered_distinctive == canonical_distinctive, (
             "distinctive_consensus_score from filter path must match canonical math"
         )
+
+
+def test_filter_path_does_not_lie_about_persisted_score_count(db_session):
+    """Re-review P1 regression: ``_apply_live_filtered_scores`` returns
+    items overlaid via live recompute — they are NOT sourced from the
+    persisted ``oracles_lens_signals`` table. So
+    ``coverage.persisted_score_count`` for the filter path MUST be 0,
+    not ``len(items)``. The FE renders that count as "X items use the
+    canonical Oracle's Lens score table", which would lie if we set it
+    to the live-recomputed count.
+    """
+    from app.services.oracles_lens.dashboard import build_oracles_lens_dashboard
+
+    mgrs = [
+        _manager(db_session, style_primary="value_deep"),
+        _manager(db_session, style_primary="value_concentrated"),
+    ]
+    stock = _stock(db_session, "PSC")  # persisted-score-count regression
+    quarter = "2025-Q4"
+    for idx, mgr in enumerate(mgrs):
+        f, r = _filing_with_parse_run(db_session, mgr, accession=f"ACC-PSC-{idx}")
+        _holding(db_session, f, r, stock, value_thousands=10_000)
+
+    payload = build_oracles_lens_dashboard(
+        db_session,
+        period=quarter,
+        min_holders=2,
+        use_persisted_scores=False,
+        manager_id_allowlist={m.id for m in mgrs},
+        universe_metadata={
+            "applied_filters": {
+                "style_primary": ["value_deep", "value_concentrated"],
+                "capital_structure": [],
+                "market_cap_focus": [],
+            },
+            "filtered_manager_count": 2,
+            "total_manager_count": 2,
+        },
+    )
+    assert any(item["stock_id"] == stock.id for item in payload["items"]), (
+        "filter path dropped our stock; the persisted-count attribution "
+        "test needs at least one filtered item present"
+    )
+    assert payload["coverage"]["persisted_score_count"] == 0, (
+        f"Filter path is live-recomputed, NOT from oracles_lens_signals; "
+        f"persisted_score_count must be 0, got "
+        f"{payload['coverage']['persisted_score_count']}. The FE would "
+        f"otherwise mislabel live-filtered items as 'persisted'."
+    )

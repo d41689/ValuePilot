@@ -394,7 +394,16 @@ def _apply_live_filtered_scores(
         ) if distinctive.distinctive_consensus_score is not None else None
         item["score_source"] = "live_filtered"
         out.append(item)
-    return out, len(out)
+    # Return value contract: the second tuple element is the
+    # ``persisted_score_count`` that the dashboard attaches to
+    # ``coverage.persisted_score_count``, which the FE renders as
+    # "X items use the canonical Oracle's Lens score table". Live-
+    # filtered items are NOT sourced from ``oracles_lens_signals``,
+    # so we honestly report 0 here even though we DID overlay
+    # ``len(out)`` items via the same canonical formula. The
+    # downstream FE attribution is about provenance (which table the
+    # number was read from), not about which formula was used.
+    return out, 0
 
 
 def _apply_persisted_scores(

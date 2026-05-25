@@ -4,6 +4,63 @@
 **Review date**: 2026-05-24
 **Reviewers**: Claude (three-role sweep — Value Investor PO, Backend, Frontend)
 
+## Re-review update - 2026-05-24 after `86d4acd`
+
+**Current status: changes requested.**
+
+The two original findings are addressed:
+
+- **Resolved P0**: filtered universe mode now overlays dashboard rows with a
+  live canonical recompute via `_apply_live_filtered_scores()` instead of
+  leaving the legacy `_stock_payload` formula in place.
+- **Resolved P1**: `resolve_manager_id_allowlist()` now filters to confirmed,
+  CIK-backed managers and honors `superinvestor_only`, so the "X of N managers"
+  numerator is aligned with score-eligible managers.
+
+Verification run:
+
+```bash
+docker compose exec -T api pytest -q \
+  tests/unit/test_13f_oracles_lens_universe_filter.py \
+  tests/unit/test_oracles_lens.py \
+  tests/unit/test_oracles_lens_score_job.py
+docker compose exec -T web sh -lc 'node --test lib/oraclesLensUniverse.test.js'
+```
+
+- Backend: **32 passed in 10.46s**
+- Frontend: **16 passed**
+
+### New P1 - filtered live recompute is reported as persisted coverage
+
+**Severity:** medium
+
+**Files:**
+- `backend/app/services/oracles_lens/dashboard.py:216–275`
+- `backend/app/services/oracles_lens/dashboard.py:293–397`
+- `frontend/app/(dashboard)/13f/oracles-lens/page.tsx:531–540`
+
+Filtered mode now correctly sets each item to `score_source = "live_filtered"`,
+but `_apply_live_filtered_scores()` returns `len(out)` as the second tuple
+value. `build_oracles_lens_dashboard()` stores that value in
+`coverage["persisted_score_count"]`. The frontend treats any positive
+`persisted_score_count` as persisted-table coverage and renders:
+
+> `{count} persisted` / `items use the canonical Oracle's Lens score table`
+
+For a Deep Value / Activists / Custom request, those rows are not persisted
+`oracles_lens_signals` rows; they are live canonical recomputes over a filtered
+manager universe. The math is now correct, but the operator-facing provenance is
+wrong, and it reintroduces ambiguity around live-vs-persisted mode.
+
+**Suggested fix:** keep `persisted_score_count` strictly for rows read from
+`oracles_lens_signals` (return `0` from the live-filtered tuple or split the
+variable before writing coverage). If the UI needs observability for filtered
+mode, add a separate field such as `live_filtered_score_count` or
+`score_source_summary` and render copy that says "live filtered canonical
+recompute" rather than "persisted".
+
+---
+
 Reviewed commits:
 - `3820fe2` — Oracle's Lens universe selector — filter by V2 manager taxonomy
 - `b6a41d5` — Add three-role review prompts for oracles-lens-universe-selector PR
