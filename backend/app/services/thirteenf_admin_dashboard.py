@@ -1978,15 +1978,68 @@ def _revoked_cik_review_required_for_quarter(session: Session, quarter: str) -> 
 
 
 def _recent_job_alert_tasks(session: Session, *, limit: int = 5) -> list[dict[str, Any]]:
+    """Surface recently failed / partial_success jobs as P1/P2 admin
+    tasks.
+
+    Per-lock_key dedup (docs/tasks/2026-05-25_historical-backfill-ops-and-dedup.md):
+    a failed/partial_success job whose ``lock_key`` already has a
+    LATER-created JobRun with status in ``{succeeded, partial_success}``
+    is hidden — the retry resolved (or at least progressed past) the
+    earlier failure, so surfacing the older row is pure noise. Failed
+    jobs without a ``lock_key`` are always surfaced (defense — we
+    don't silently swallow them).
+
+    Implementation: widen the initial DB fetch to ``limit * 4`` so
+    post-dedup we still have enough rows to fill the cap. ``limit=5``
+    is the public default; admin surfaces typically show the top few.
+    """
+    fetch_limit = limit * 4
     jobs = (
         session.query(JobRun)
         .filter(JobRun.status.in_(["failed", "partial_success"]))
         .order_by(JobRun.finished_at.desc().nullslast(), JobRun.created_at.desc())
-        .limit(limit)
+        .limit(fetch_limit)
         .all()
     )
+    # Build the set of lock_keys that have a later successful (or
+    # partial-success) run. One query covers all candidates rather
+    # than N per-job round-trips.
+    candidate_lock_keys = {job.lock_key for job in jobs if job.lock_key}
+    successors_by_lock_key: dict[str, list[datetime]] = {}
+    if candidate_lock_keys:
+        # For each candidate lock_key, find ANY succeeded/partial_success
+        # job whose created_at is later than the worst-case earliest
+        # candidate. We resolve per-pair "later than this failure"
+        # inside the Python loop below — the SQL just pre-loads the
+        # candidate (lock_key, created_at) pairs to make the check
+        # local.
+        successor_rows = (
+            session.query(JobRun.lock_key, JobRun.created_at)
+            .filter(JobRun.lock_key.in_(candidate_lock_keys))
+            .filter(JobRun.status.in_(["succeeded", "partial_success"]))
+            .all()
+        )
+        for lk, created in successor_rows:
+            successors_by_lock_key.setdefault(lk, []).append(created)
+
     tasks: list[dict[str, Any]] = []
     for job in jobs:
+        # Dedup check: if a later success exists for this lock_key,
+        # skip this failure. Empty lock_key (or None) bypasses dedup.
+        if job.lock_key:
+            successor_times = successors_by_lock_key.get(job.lock_key, [])
+            if any(t > job.created_at for t in successor_times):
+                # Log dedup decisions so a reviewer can audit
+                # "what failures got hidden in the last 7 days?"
+                # without an explicit ?include_dedup_hidden flag.
+                # Review-2 O7 quick win.
+                logger.info(
+                    "admin_tasks: dedup-suppressed failed job id=%s "
+                    "job_type=%s lock_key=%s (superseded by later "
+                    "succeeded/partial_success run on same lock_key)",
+                    job.id, job.job_type, job.lock_key,
+                )
+                continue
         retry_targets = _job_retry_targets(job)
         has_accession_retry_targets = any(target.get("accession_no") for target in retry_targets)
         failed_accessions_count = sum(1 for target in retry_targets if target.get("accession_no"))
@@ -2020,6 +2073,8 @@ def _recent_job_alert_tasks(session: Session, *, limit: int = 5) -> list[dict[st
                 },
             )
         )
+        if len(tasks) >= limit:
+            break
     return tasks
 
 
