@@ -18,6 +18,10 @@ import {
 
 import apiClient from '@/lib/api/client';
 import oracleLensHelpers from '@/lib/oraclesLens';
+import {
+  UniverseSelector,
+  type UniverseFilters,
+} from '@/components/oraclesLens/UniverseSelector';
 import thirteenfAdminHelpers from '@/lib/thirteenfAdmin';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -43,12 +47,16 @@ import {
 const {
   buildOracleLensQueryParams,
   cautionTone,
+  DEFAULT_PRESET_KEY,
   missingDataReasons,
   normalizeOracleLensRows,
   normalizeStockHolderAggregation,
+  parseUniverseFromSearchParams,
+  presetByKey,
   radarBubbles,
   suggestedResearchSteps,
   uniquePeriodOptions,
+  urlHasUniverseFilter,
 } = oracleLensHelpers;
 
 const {
@@ -118,6 +126,15 @@ type OracleLensPayload = {
     is_latest_complete: boolean;
   }>;
   items: unknown[];
+  universe?: {
+    filtered_manager_count: number;
+    total_manager_count: number;
+    applied_filters: {
+      style_primary: string[];
+      capital_structure: string[];
+      market_cap_focus: string[];
+    };
+  };
 };
 
 function formatInteger(value: number | null | undefined) {
@@ -180,6 +197,64 @@ export default function OraclesLensPage() {
       setUsePersistedScores(flag !== '0');
     }
   }, []);
+
+  // Universe selector state (docs/tasks/2026-05-24_oracles-lens-universe-selector.md).
+  // Mirrors the three filter params in the URL. Server-side render
+  // starts with the Deep Value default so the first paint and the URL
+  // state line up; the mount-time effect below replaces the URL with
+  // explicit Deep Value params if the visitor landed on a bare URL,
+  // making "share this link" land the recipient on the same view.
+  const defaultUniverse: UniverseFilters = useMemo(() => {
+    const preset = presetByKey(DEFAULT_PRESET_KEY);
+    return {
+      stylePrimary: preset?.filters?.stylePrimary ?? [],
+      capitalStructure: preset?.filters?.capitalStructure ?? [],
+      marketCapFocus: preset?.filters?.marketCapFocus ?? [],
+    };
+  }, []);
+  const [universeFilters, setUniverseFilters] = useState<UniverseFilters>(defaultUniverse);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const params = new URLSearchParams(window.location.search);
+    if (urlHasUniverseFilter(params)) {
+      // Honor the URL when present (bookmarks, "share this view" links).
+      setUniverseFilters(parseUniverseFromSearchParams(params));
+    } else {
+      // Bare URL → write the default preset to the URL so refreshing
+      // or sharing lands the same view. ``replace`` (not ``push``)
+      // keeps the back button useful.
+      params.set('style_primary', defaultUniverse.stylePrimary.join(','));
+      const newUrl = `${window.location.pathname}?${params.toString()}`;
+      window.history.replaceState(null, '', newUrl);
+    }
+    // We intentionally read the URL only once on mount; subsequent
+    // updates go through ``handleSelectUniverse`` which writes the URL
+    // itself.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const handleSelectUniverse = (next: UniverseFilters) => {
+    setUniverseFilters(next);
+    if (typeof window !== 'undefined') {
+      const params = new URLSearchParams(window.location.search);
+      const writeOrDelete = (key: string, value: string[]) => {
+        if (value.length > 0) {
+          params.set(key, value.join(','));
+        } else {
+          params.delete(key);
+        }
+      };
+      writeOrDelete('style_primary', next.stylePrimary);
+      writeOrDelete('capital_structure', next.capitalStructure);
+      writeOrDelete('market_cap_focus', next.marketCapFocus);
+      const qs = params.toString();
+      const newUrl = qs
+        ? `${window.location.pathname}?${qs}`
+        : window.location.pathname;
+      window.history.replaceState(null, '', newUrl);
+    }
+  };
   const [selectedStockId, setSelectedStockId] = useState<number | null>(null);
   // MVP5-04: ARIA dialog focus management on the slide-out drilldown.
   // ``closeButtonRef`` is the element to focus when the panel opens;
@@ -227,8 +302,11 @@ export default function OraclesLensPage() {
         superinvestorOnly: filters.superinvestorOnly,
         sort: filters.sort,
         usePersistedScores,
+        stylePrimary: universeFilters.stylePrimary,
+        capitalStructure: universeFilters.capitalStructure,
+        marketCapFocus: universeFilters.marketCapFocus,
       }),
-    [filters, usePersistedScores]
+    [filters, usePersistedScores, universeFilters]
   );
   const dashboardQuery = useQuery({
     queryKey: ['oracles-lens-dashboard', queryParams],
@@ -462,6 +540,18 @@ export default function OraclesLensPage() {
               </span>
             </div>
           ) : null}
+        </CardContent>
+      </Card>
+
+      <Card className="rounded-md">
+        <CardContent className="p-4">
+          <UniverseSelector
+            current={universeFilters}
+            filteredManagerCount={payload?.universe?.filtered_manager_count ?? null}
+            totalManagerCount={payload?.universe?.total_manager_count ?? null}
+            onSelect={handleSelectUniverse}
+            isLoading={dashboardQuery.isFetching}
+          />
         </CardContent>
       </Card>
 
@@ -795,8 +885,12 @@ export default function OraclesLensPage() {
                       <div className="flex flex-wrap gap-1.5">
                         {row.cautionFlags.length ? (
                           row.cautionFlags.map((flag) => (
-                            <Badge key={flag.key} variant={cautionTone(flag)} className="rounded-md">
-                              {flag.label ?? flag.key}
+                            <Badge
+                              key={flag.code ?? flag.key}
+                              variant={cautionTone(flag)}
+                              className="rounded-md"
+                            >
+                              {flag.label ?? flag.code ?? flag.key}
                             </Badge>
                           ))
                         ) : (
@@ -941,8 +1035,12 @@ export default function OraclesLensPage() {
                       </div>
                       <div className="mt-2 flex flex-wrap gap-1.5">
                         {group.flags.map((flag) => (
-                          <Badge key={flag.key} variant={cautionTone(flag)} className="rounded-md">
-                            {flag.label ?? flag.key}
+                          <Badge
+                            key={flag.code ?? flag.key}
+                            variant={cautionTone(flag)}
+                            className="rounded-md"
+                          >
+                            {flag.label ?? flag.code ?? flag.key}
                           </Badge>
                         ))}
                       </div>

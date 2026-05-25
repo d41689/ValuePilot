@@ -74,6 +74,18 @@ function buildOracleLensQueryParams(filters = {}) {
   if (filters.sort) {
     params.set('sort', filters.sort);
   }
+  // Manager-universe filter (docs/tasks/2026-05-24_oracles-lens-universe-selector.md).
+  // Each is a list of vocabulary values; serialized as a comma-joined string,
+  // matching the backend's _parse_csv shape on the same endpoint.
+  if (Array.isArray(filters.stylePrimary) && filters.stylePrimary.length > 0) {
+    params.set('style_primary', filters.stylePrimary.join(','));
+  }
+  if (Array.isArray(filters.capitalStructure) && filters.capitalStructure.length > 0) {
+    params.set('capital_structure', filters.capitalStructure.join(','));
+  }
+  if (Array.isArray(filters.marketCapFocus) && filters.marketCapFocus.length > 0) {
+    params.set('market_cap_focus', filters.marketCapFocus.join(','));
+  }
   // MVP4-07a: default to the persisted MVP4-03/04/05/06 score path
   // unless the caller explicitly opts out with usePersistedScores=false
   // (kept available for one release as a debug escape hatch in case
@@ -82,6 +94,112 @@ function buildOracleLensQueryParams(filters = {}) {
     params.set('use_persisted_scores', 'true');
   }
   return params.toString();
+}
+
+
+// Preset chip → manager-universe filter mapping. Single source of truth
+// for what each chip selects; consumed by UniverseSelector and by the
+// page-level "redirect bare URL to Deep Value" effect.
+const DEEP_VALUE_STYLES = ['value_deep', 'value_concentrated', 'quality_compounder'];
+
+const UNIVERSE_PRESETS = [
+  {
+    key: 'deep_value',
+    label: 'Deep Value',
+    description: 'Value + quality compounder consensus (PR #94 default)',
+    filters: { stylePrimary: DEEP_VALUE_STYLES },
+  },
+  {
+    key: 'activists',
+    label: 'Activists',
+    description: 'Pershing / Trian / ValueAct / TCI / Engaged / Icahn / Third Point',
+    filters: { stylePrimary: ['activist'] },
+  },
+  {
+    key: 'small_cap_sleuths',
+    label: 'Small-cap Sleuths',
+    description: 'Managers focused on small/micro-cap names — the highest-alpha-density signal',
+    filters: { marketCapFocus: ['small', 'micro'] },
+  },
+  {
+    key: 'permanent_capital',
+    label: 'Permanent Capital',
+    description: 'Berkshire / Markel / Fairfax / Daily Journal / Gates Foundation — no LP redemption pressure',
+    filters: { capitalStructure: ['permanent_capital'] },
+  },
+  {
+    key: 'all',
+    label: 'All',
+    description: 'V1 behavior — every confirmed superinvestor contributes',
+    filters: {},
+  },
+];
+
+const DEFAULT_PRESET_KEY = 'deep_value';
+
+function presetByKey(key) {
+  return UNIVERSE_PRESETS.find((preset) => preset.key === key) ?? null;
+}
+
+/**
+ * Parse manager-universe filter selections from URL query params.
+ * Returns ``{stylePrimary, capitalStructure, marketCapFocus}`` arrays.
+ */
+function parseUniverseFromSearchParams(searchParams) {
+  const get = (key) => {
+    const value = searchParams.get(key);
+    if (!value) return [];
+    return value
+      .split(',')
+      .map((token) => token.trim())
+      .filter(Boolean);
+  };
+  return {
+    stylePrimary: get('style_primary'),
+    capitalStructure: get('capital_structure'),
+    marketCapFocus: get('market_cap_focus'),
+  };
+}
+
+/**
+ * Match a universe selection to a preset key. Returns ``null`` when no
+ * preset matches (the user assembled a Custom universe).
+ */
+function matchPreset({ stylePrimary, capitalStructure, marketCapFocus }) {
+  const norm = (arr) => [...(arr || [])].sort();
+  const target = {
+    stylePrimary: norm(stylePrimary),
+    capitalStructure: norm(capitalStructure),
+    marketCapFocus: norm(marketCapFocus),
+  };
+  for (const preset of UNIVERSE_PRESETS) {
+    const presetNorm = {
+      stylePrimary: norm(preset.filters.stylePrimary),
+      capitalStructure: norm(preset.filters.capitalStructure),
+      marketCapFocus: norm(preset.filters.marketCapFocus),
+    };
+    if (
+      JSON.stringify(presetNorm.stylePrimary) === JSON.stringify(target.stylePrimary) &&
+      JSON.stringify(presetNorm.capitalStructure) === JSON.stringify(target.capitalStructure) &&
+      JSON.stringify(presetNorm.marketCapFocus) === JSON.stringify(target.marketCapFocus)
+    ) {
+      return preset.key;
+    }
+  }
+  return null;
+}
+
+/**
+ * Check whether the URL carries ANY universe filter param at all.
+ * Used by the page to decide whether to redirect to the default
+ * Deep Value preset on first load.
+ */
+function urlHasUniverseFilter(searchParams) {
+  return Boolean(
+    searchParams.get('style_primary') ||
+      searchParams.get('capital_structure') ||
+      searchParams.get('market_cap_focus'),
+  );
 }
 
 function uniquePeriodOptions(periods) {
@@ -541,6 +659,8 @@ module.exports = {
   buildOracleLensQueryParams,
   cautionTone,
   confidenceTone,
+  DEEP_VALUE_STYLES,
+  DEFAULT_PRESET_KEY,
   DEMOTION_REASON_LABELS,
   EXCLUSION_REASON_LABELS,
   formatNumber,
@@ -550,13 +670,18 @@ module.exports = {
   humanizeTier,
   labelForDemotionReason,
   labelForExclusionReason,
+  matchPreset,
   missingDataReasons,
   normalizeOracleLensRows,
   normalizeQualityOverlay,
   normalizeStockHolderAggregation,
   normalizeValuationReference,
+  parseUniverseFromSearchParams,
+  presetByKey,
   primaryCautionFlags,
   radarBubbles,
   suggestedResearchSteps,
   uniquePeriodOptions,
+  UNIVERSE_PRESETS,
+  urlHasUniverseFilter,
 };
