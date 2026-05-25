@@ -4,6 +4,36 @@
 **Review date**: 2026-05-24
 **Reviewers**: Claude (three-role sweep — Value Investor PO, Backend, Frontend)
 
+## Re-review update - 2026-05-24 after `e2b7db0`
+
+**Current status: approved.**
+
+The previous provenance finding is resolved. Filtered universe mode still uses
+the canonical live recompute and marks per-item `score_source` as
+`live_filtered`, but `_apply_live_filtered_scores()` now returns `0` for the
+second tuple value so `coverage.persisted_score_count` remains reserved for
+rows actually read from `oracles_lens_signals`. That keeps the frontend's
+"persisted" attribution honest.
+
+No new blocking or medium-severity findings found in this pass.
+
+Verification run:
+
+```bash
+docker compose exec -T api pytest -q \
+  tests/unit/test_13f_oracles_lens_universe_filter.py \
+  tests/unit/test_oracles_lens.py \
+  tests/unit/test_oracles_lens_score_job.py
+docker compose exec -T api pytest -q tests/unit/test_13f_mvp4_dashboard_persisted_scores.py
+docker compose exec -T web sh -lc 'node --test lib/oraclesLensUniverse.test.js'
+```
+
+- Backend Oracle's Lens universe / score tests: **33 passed in 10.81s**
+- Backend persisted dashboard attribution tests: **6 passed in 1.92s**
+- Frontend universe tests: **16 passed**
+
+---
+
 ## Re-review update - 2026-05-24 after `86d4acd`
 
 **Current status: changes requested.**

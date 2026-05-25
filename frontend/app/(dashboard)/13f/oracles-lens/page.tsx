@@ -885,8 +885,12 @@ export default function OraclesLensPage() {
                       <div className="flex flex-wrap gap-1.5">
                         {row.cautionFlags.length ? (
                           row.cautionFlags.map((flag) => (
-                            <Badge key={flag.key} variant={cautionTone(flag)} className="rounded-md">
-                              {flag.label ?? flag.key}
+                            <Badge
+                              key={flag.code ?? flag.key}
+                              variant={cautionTone(flag)}
+                              className="rounded-md"
+                            >
+                              {flag.label ?? flag.code ?? flag.key}
                             </Badge>
                           ))
                         ) : (
@@ -1031,8 +1035,12 @@ export default function OraclesLensPage() {
                       </div>
                       <div className="mt-2 flex flex-wrap gap-1.5">
                         {group.flags.map((flag) => (
-                          <Badge key={flag.key} variant={cautionTone(flag)} className="rounded-md">
-                            {flag.label ?? flag.key}
+                          <Badge
+                            key={flag.code ?? flag.key}
+                            variant={cautionTone(flag)}
+                            className="rounded-md"
+                          >
+                            {flag.label ?? flag.code ?? flag.key}
                           </Badge>
                         ))}
                       </div>
