@@ -451,11 +451,21 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
 
-    # Stage outcomes that contribute to the final exit code. Any non-
-    # success status across any stage flips ``exit_code`` to 1 so CI /
-    # cron consumers can detect partial degradation without parsing
-    # stdout. ``conflict`` and ``enqueue_failed`` count as failures —
-    # the harness was asked to do work it didn't do.
+    # Stage outcomes that contribute to the final exit code. Any
+    # status outside {``succeeded``, ``partial_success``} flips
+    # ``exit_code`` to 1 so CI / cron consumers can detect failure
+    # without parsing stdout. ``conflict`` and ``enqueue_failed``
+    # count as failures — the harness was asked to do work it
+    # didn't do.
+    #
+    # ``partial_success`` IS exit 0 by design: the stage made
+    # meaningful progress (e.g. Stage 2 ingested 70 of 75 holdings,
+    # 5 individual filings failed). Re-running the harness will pick
+    # up the missed filings on the next pass; treating partial as
+    # exit 1 would force a CI/cron retry that mostly does no-op work.
+    # The per-filing failures show up in the JobRun's
+    # ``summary_json.failed_accessions`` for follow-up triage; review
+    # B7 explicitly chose this trade-off.
     exit_code = 0
 
     def _mark_failure(stage: str, q: str | None, status: str) -> None:
@@ -467,6 +477,8 @@ def main(argv: list[str] | None = None) -> int:
         )
 
     def _stage_ok(status: str | None) -> bool:
+        """Stage-level success check. ``partial_success`` counts as ok
+        per the exit-code contract above."""
         return status in {"succeeded", "partial_success"}
 
     with SessionLocal() as s:

@@ -715,3 +715,56 @@ backfill harness, I recommend non-zero for `partial_success` unless an
 Do not merge as ready until R1 and R2 are fixed. The current code is much closer,
 but the harness can still mark executor-level failures as successful and can still
 exit `0` after failed stages.
+
+---
+
+## Re-review after latest fix
+
+Reviewed: 2026-05-25
+
+Verification run:
+
+```bash
+docker compose exec -T api pytest -q \
+  tests/unit/test_13f_admin_tasks_dedup.py \
+  tests/unit/test_run_historical_backfill_harness.py \
+  tests/unit/test_oracles_lens_score_job.py
+# 23 passed in 0.16s
+```
+
+### Result
+
+No remaining blockers found in the previously flagged harness paths.
+
+### Previously Blocked Items
+
+- R1 resolved: `_complete_from_summary()` now propagates executor-returned
+  `status="failed"` instead of rewriting it to `succeeded`.
+  - Code: `backend/scripts/run_historical_backfill.py:79-94`
+  - Test: `backend/tests/unit/test_run_historical_backfill_harness.py:129-159`
+- R2 resolved: `main()` now tracks non-success stage outcomes and returns
+  non-zero on failed/conflict paths.
+  - Code: `backend/scripts/run_historical_backfill.py:454-470`,
+    `503-527`, `551-569`, `593-609`
+  - Tests: `backend/tests/unit/test_run_historical_backfill_harness.py:193-280`
+
+### Residual Notes
+
+- `partial_success` is intentionally treated as an acceptable stage status for
+  exit-code purposes (`_stage_ok()` returns true for it). That is consistent with
+  the current implementation, but the comment at
+  `backend/scripts/run_historical_backfill.py:454-458` says CI/cron can detect
+  "partial degradation" without parsing stdout. As written, partial degradation
+  remains a green exit and only appears in stdout / JobRun summary. This is
+  acceptable if product wants partial-success runs to continue and exit 0; update
+  the comment if so.
+- Unknown future statuses still fall back to `succeeded`
+  (`backend/scripts/run_historical_backfill.py:93-94`). This is now explicitly
+  tested, so it is a conscious compatibility choice rather than an accidental
+  failure masking path.
+
+### Recommendation
+
+The reviewed fixes clear the prior merge blockers. Remaining items are
+non-blocking documentation / semantics nits unless the team wants
+`partial_success` to produce a non-zero exit code.
