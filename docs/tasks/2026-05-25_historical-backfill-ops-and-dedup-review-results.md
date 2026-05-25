@@ -616,3 +616,102 @@ Lens reflects the new history, or explicitly document the gap in Acceptance Crit
 3. Remove the unused `tuple_` import (B2).
 4. Add `logger.info` for dedup decisions (O7 quick win).
 5. Document the 28 failed accessions from Stage 2 in a BACKLOG entry (Q2).
+
+---
+
+## Re-review after commit `f3aca58`
+
+Reviewed: 2026-05-25
+
+Verification run:
+
+```bash
+docker compose exec -T api pytest -q \
+  tests/unit/test_13f_admin_tasks_dedup.py \
+  tests/unit/test_run_historical_backfill_harness.py \
+  tests/unit/test_oracles_lens_score_job.py
+# 18 passed in 0.11s
+```
+
+### Findings
+
+#### R1 — Executor-returned `failed` status is still converted to `succeeded`
+
+**Severity: blocker**
+
+`backend/scripts/run_historical_backfill.py:79-83`
+
+The new `_complete_from_summary()` correctly preserves `partial_success`, but it
+only accepts `{"succeeded", "partial_success"}` as terminal statuses. Any other
+executor status falls through to `"succeeded"`:
+
+```python
+exec_status = (summary or {}).get("status", "succeeded")
+status = exec_status if exec_status in {"succeeded", "partial_success"} else "succeeded"
+```
+
+Several `_execute_job` paths return `{"status": "failed"}` without raising, so a
+normal executor-level failure can still be recorded as a successful JobRun. This is
+the same class of issue as the original B6 status-propagation finding, just on the
+`failed` branch instead of `partial_success`.
+
+**Suggested fix:**
+
+Accept the full terminal set and default only missing/unknown statuses deliberately:
+
+```python
+exec_status = (summary or {}).get("status")
+if exec_status in {"succeeded", "partial_success", "failed"}:
+    status = exec_status
+elif exec_status is None:
+    status = "succeeded"
+else:
+    status = "failed"
+    error_message = error_message or f"unexpected executor status: {exec_status}"
+```
+
+Add a unit test: `summary={"status": "failed", "error": "stage failed"}` must call
+`complete_leased_job(..., status="failed", ...)`.
+
+#### R2 — Harness still exits `0` after failed/conflict stages
+
+**Severity: blocker for ops correctness**
+
+`backend/scripts/run_historical_backfill.py:453-568`
+
+The script prints stage statuses but never accumulates them. `main()` always returns
+`0`, even when:
+
+- Stage 1 returns `enqueue_failed`, `failed`, or `partial_success`
+- Stage 2 returns `conflict` or `failed`
+- Stage 3 returns `failed`
+- Stage 4 returns `conflict` or `failed`
+
+This means CI/manual automation can still treat a failed backfill run as green. The
+new Stage 4 helps Q6, but if scoring conflicts or fails the harness only prints a
+line and exits successfully.
+
+**Suggested fix:**
+
+Track `overall_statuses` through all stages and return non-zero on `failed`,
+`enqueue_failed`, or `conflict`. Decide explicitly whether `partial_success` should
+return `0` with a warning or a distinct non-zero exit code. Given this is an ops
+backfill harness, I recommend non-zero for `partial_success` unless an
+`--allow-partial` flag is passed.
+
+### Resolved / Improved
+
+- B2 resolved: unused `tuple_` import removed from `_recent_job_alert_tasks`.
+- B5/O1 improved: harness-created JobRuns now set `lease_expires_at` in Stage 1,
+  Stage 2, Stage 3, and Stage 4.
+- B6 partially resolved: `partial_success` is now preserved and printed for Stage 2.
+- Q6 improved: Stage 4 now runs `oracles_lens_score_backfill` by default unless
+  `--skip-score-backfill` is passed.
+- O7 improved: dedup-suppressed jobs are logged at `logger.info`.
+- Focused tests added for `_complete_from_summary()` and the harness lease constant.
+
+### Remaining Recommendation
+
+Do not merge as ready until R1 and R2 are fixed. The current code is much closer,
+but the harness can still mark executor-level failures as successful and can still
+exit `0` after failed stages.

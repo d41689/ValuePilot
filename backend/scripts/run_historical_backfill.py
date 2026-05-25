@@ -80,7 +80,18 @@ def _complete_from_summary(
         status = "failed"
     else:
         exec_status = (summary or {}).get("status", "succeeded")
-        status = exec_status if exec_status in {"succeeded", "partial_success"} else "succeeded"
+        # ``failed`` from the executor (no exception, but explicit
+        # status='failed' in the returned summary) must propagate as
+        # failed — otherwise the harness's stage-failure tracking and
+        # exit code lie about what happened. ``succeeded`` and
+        # ``partial_success`` propagate as themselves. Anything else
+        # (forward-compat for future statuses like 'skipped' /
+        # 'cancelled') conservatively falls back to ``succeeded`` so a
+        # new state doesn't crash the bookkeeping coordinator.
+        if exec_status in {"succeeded", "partial_success", "failed"}:
+            status = exec_status
+        else:
+            status = "succeeded"
 
     complete_leased_job(
         session,
@@ -440,6 +451,24 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
 
+    # Stage outcomes that contribute to the final exit code. Any non-
+    # success status across any stage flips ``exit_code`` to 1 so CI /
+    # cron consumers can detect partial degradation without parsing
+    # stdout. ``conflict`` and ``enqueue_failed`` count as failures —
+    # the harness was asked to do work it didn't do.
+    exit_code = 0
+
+    def _mark_failure(stage: str, q: str | None, status: str) -> None:
+        nonlocal exit_code
+        exit_code = 1
+        sys.stderr.write(
+            f"[harness] FAILURE in stage={stage} "
+            f"quarter={q or '-'} status={status}\n"
+        )
+
+    def _stage_ok(status: str | None) -> bool:
+        return status in {"succeeded", "partial_success"}
+
     with SessionLocal() as s:
         depth_before = _historical_depth_quarters(s)
         holdings_before = _holdings_depth_quarters(s)
@@ -471,6 +500,8 @@ def main(argv: list[str] | None = None) -> int:
                 print(f"  {_render_quarter_row(q, per_quarter[0])}")
             else:
                 print(f"  {q:>20} | (no per_quarter data: status={result.get('status')})")
+            if not _stage_ok(result.get("status")):
+                _mark_failure("stage1_historical_backfill", q, result.get("status") or "unknown")
     else:
         # Single batch — executor walks internally.
         print(f"Running single batch for {args.start_quarter} → {args.end_quarter}:")
@@ -492,6 +523,8 @@ def main(argv: list[str] | None = None) -> int:
                 f"skipped={impact.get('filings_skipped')} "
                 f"quarters_validated={impact.get('quarters_validated')}"
             )
+        if not _stage_ok(result.get("status")):
+            _mark_failure("stage1_historical_backfill", None, result.get("status") or "unknown")
 
     # Stage 2: ingest_holdings per quarter.
     if not args.skip_holdings and not args.dry_run:
@@ -517,6 +550,7 @@ def main(argv: list[str] | None = None) -> int:
                 )
             else:
                 print(f"  {q}: STATUS={res.get('status')} error={summary.get('error')}")
+                _mark_failure("stage2_ingest_holdings", q, res.get("status") or "unknown")
 
     # Stage 3: enrich_cusip global pass.
     if not args.skip_enrich_cusip and not args.dry_run:
@@ -532,6 +566,7 @@ def main(argv: list[str] | None = None) -> int:
             )
         else:
             print(f"  STATUS={res.get('status')} error={summary.get('error')}")
+            _mark_failure("stage3_enrich_cusip", None, res.get("status") or "unknown")
 
     # Stage 4: oracles_lens_score_backfill per quarter (review-2 Q6).
     if not args.skip_score_backfill and not args.dry_run:
@@ -557,6 +592,7 @@ def main(argv: list[str] | None = None) -> int:
                 )
             else:
                 print(f"  {q}: STATUS={res.get('status')} error={summary.get('error')}")
+                _mark_failure("stage4_score_backfill", q, res.get("status") or "unknown")
 
     with SessionLocal() as s:
         depth_after = _historical_depth_quarters(s)
@@ -565,7 +601,12 @@ def main(argv: list[str] | None = None) -> int:
         f"\nAfter:  filings_depth={depth_after}q (was {depth_before}q), "
         f"holdings_depth={holdings_after}q (was {holdings_before}q)"
     )
-    return 0
+    if exit_code != 0:
+        sys.stderr.write(
+            f"[harness] one or more stages reported failure/conflict; "
+            f"exit_code={exit_code}\n"
+        )
+    return exit_code
 
 
 if __name__ == "__main__":
