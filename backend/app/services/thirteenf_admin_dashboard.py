@@ -2005,7 +2005,7 @@ def _recent_job_alert_tasks(session: Session, *, limit: int = 5) -> list[dict[st
     # partial-success) run. One query covers all candidates rather
     # than N per-job round-trips.
     candidate_lock_keys = {job.lock_key for job in jobs if job.lock_key}
-    superseding_keys: set[str] = set()
+    successors_by_lock_key: dict[str, list[datetime]] = {}
     if candidate_lock_keys:
         # For each candidate lock_key, find ANY succeeded/partial_success
         # job whose created_at is later than the worst-case earliest
@@ -2013,14 +2013,12 @@ def _recent_job_alert_tasks(session: Session, *, limit: int = 5) -> list[dict[st
         # inside the Python loop below — the SQL just pre-loads the
         # candidate (lock_key, created_at) pairs to make the check
         # local.
-        from sqlalchemy import tuple_
         successor_rows = (
             session.query(JobRun.lock_key, JobRun.created_at)
             .filter(JobRun.lock_key.in_(candidate_lock_keys))
             .filter(JobRun.status.in_(["succeeded", "partial_success"]))
             .all()
         )
-        successors_by_lock_key: dict[str, list[datetime]] = {}
         for lk, created in successor_rows:
             successors_by_lock_key.setdefault(lk, []).append(created)
 
@@ -2029,9 +2027,18 @@ def _recent_job_alert_tasks(session: Session, *, limit: int = 5) -> list[dict[st
         # Dedup check: if a later success exists for this lock_key,
         # skip this failure. Empty lock_key (or None) bypasses dedup.
         if job.lock_key:
-            successor_times = successors_by_lock_key.get(job.lock_key, []) if candidate_lock_keys else []
+            successor_times = successors_by_lock_key.get(job.lock_key, [])
             if any(t > job.created_at for t in successor_times):
-                superseding_keys.add(job.lock_key)
+                # Log dedup decisions so a reviewer can audit
+                # "what failures got hidden in the last 7 days?"
+                # without an explicit ?include_dedup_hidden flag.
+                # Review-2 O7 quick win.
+                logger.info(
+                    "admin_tasks: dedup-suppressed failed job id=%s "
+                    "job_type=%s lock_key=%s (superseded by later "
+                    "succeeded/partial_success run on same lock_key)",
+                    job.id, job.job_type, job.lock_key,
+                )
                 continue
         retry_targets = _job_retry_targets(job)
         has_accession_retry_targets = any(target.get("accession_no") for target in retry_targets)

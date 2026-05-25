@@ -37,7 +37,8 @@ from __future__ import annotations
 import argparse
 import sys
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
+from typing import Any
 
 from app.core.db import SessionLocal
 from app.models.institutions import Filing13F, InstitutionManager, JobRun
@@ -45,6 +46,52 @@ from app.services.thirteenf_historical_backfill import (
     HistoricalBackfillError,
     enqueue_historical_backfill,
 )
+
+
+# Per review-1 B5 / review-2 O1: the harness sets ``lease_expires_at``
+# on every manually-claimed JobRun so that ``mark_stale_running_jobs_abandoned``
+# can recover a crashed run. 4 hours matches the longest production
+# stage-job timeout (backfill_*); the harness itself shouldn't take
+# anywhere near that long, but this gives the reaper a clear cutoff.
+_HARNESS_LEASE_SECONDS = 4 * 60 * 60
+
+
+def _complete_from_summary(
+    session,
+    *,
+    job_id: int,
+    worker_id: str,
+    lease_token: str,
+    summary: dict[str, Any] | None,
+    error_message: str | None,
+) -> str:
+    """Complete a leased JobRun, deriving the final status from the
+    executor's summary.
+
+    Per review-1 B6 / review-2 B6: many ``_execute_job`` handlers
+    return ``status='partial_success'`` when a job did real work but
+    had per-item failures — that's success-with-caveat, not failure.
+    The harness must accept it; otherwise downstream stages don't run
+    and the per-quarter trace lies about progress.
+    """
+    from app.services.thirteenf_job_worker import complete_leased_job
+
+    if error_message is not None:
+        status = "failed"
+    else:
+        exec_status = (summary or {}).get("status", "succeeded")
+        status = exec_status if exec_status in {"succeeded", "partial_success"} else "succeeded"
+
+    complete_leased_job(
+        session,
+        job_id=job_id,
+        worker_id=worker_id,
+        lease_token=lease_token,
+        status=status,
+        summary_json=summary,
+        error_message=error_message,
+    )
+    return status
 
 
 def _historical_depth_quarters(session) -> int:
@@ -106,7 +153,6 @@ def _run_one_range(
     # Lazy imports — the heavy ingestion deps shouldn't load just for
     # someone running --help.
     from app.services.thirteenf_admin_dashboard import _execute_job
-    from app.services.thirteenf_job_worker import complete_leased_job
 
     worker_id = f"backfill-harness-{uuid.uuid4().hex[:8]}"
 
@@ -125,10 +171,12 @@ def _run_one_range(
 
         job_id = job.id
         # Claim the job manually (no live worker assumed).
+        now = datetime.now(timezone.utc)
         job.status = "running"
         job.worker_id = worker_id
         job.lease_token = uuid.uuid4().hex
-        job.started_at = datetime.now(timezone.utc)
+        job.started_at = now
+        job.lease_expires_at = now + timedelta(seconds=_HARNESS_LEASE_SECONDS)
         session.add(job)
         session.commit()
         lease_token = job.lease_token
@@ -138,20 +186,17 @@ def _run_one_range(
 
         try:
             summary = _execute_job(session, "historical_backfill", payload)
-            status = "succeeded"
             error_message = None
         except Exception as exc:  # noqa: BLE001 — surface every failure mode
             summary = {"error": str(exc)}
-            status = "failed"
             error_message = str(exc)
 
-        complete_leased_job(
+        status = _complete_from_summary(
             session,
             job_id=job_id,
             worker_id=worker_id,
             lease_token=lease_token,
-            status=status,
-            summary_json=summary,
+            summary=summary,
             error_message=error_message,
         )
         return {"job_id": job_id, "status": status, "summary": summary}
@@ -165,7 +210,6 @@ def _run_ingest_holdings(quarter: str) -> dict:
     fetch each ``infotable.xml``, parse, and write ``Holding13F`` rows.
     """
     from app.services.thirteenf_admin_dashboard import _execute_job
-    from app.services.thirteenf_job_worker import complete_leased_job
 
     worker_id = f"holdings-harness-{uuid.uuid4().hex[:8]}"
     lock_key = f"ingest_holdings:{quarter}"
@@ -185,6 +229,7 @@ def _run_ingest_holdings(quarter: str) -> dict:
         if active is not None:
             return {"status": "conflict", "active_job_id": active.id}
 
+        now = datetime.now(timezone.utc)
         job = JobRun(
             job_type="ingest_holdings",
             status="running",
@@ -192,9 +237,10 @@ def _run_ingest_holdings(quarter: str) -> dict:
             lock_key=lock_key,
             dedupe_key=lock_key,
             quarter=quarter,
-            started_at=datetime.now(timezone.utc),
+            started_at=now,
             worker_id=worker_id,
             lease_token=uuid.uuid4().hex,
+            lease_expires_at=now + timedelta(seconds=_HARNESS_LEASE_SECONDS),
             input_json={"quarter": quarter},
         )
         session.add(job)
@@ -205,20 +251,83 @@ def _run_ingest_holdings(quarter: str) -> dict:
         payload = {"quarter": quarter, "_job_id": job_id}
         try:
             summary = _execute_job(session, "ingest_holdings", payload)
-            status = "succeeded"
             error_message = None
         except Exception as exc:  # noqa: BLE001
             summary = {"error": str(exc)}
-            status = "failed"
             error_message = str(exc)
 
-        complete_leased_job(
+        status = _complete_from_summary(
             session,
             job_id=job_id,
             worker_id=worker_id,
             lease_token=lease_token,
-            status=status,
-            summary_json=summary,
+            summary=summary,
+            error_message=error_message,
+        )
+        return {"job_id": job_id, "status": status, "summary": summary}
+
+
+def _run_score_backfill(quarter: str) -> dict:
+    """Synchronously run ``oracles_lens_score_backfill`` for one quarter.
+
+    Stage 4 (review-2 Q6): without this, the persisted
+    ``oracles_lens_signals`` table has no rows for the backfilled
+    quarters. The Oracle's Lens "All" universe path reads persisted
+    scores, so without re-running this job the new historical data
+    is invisible there. (The universe-filter "live recompute" path
+    still works fine — it queries holdings directly.)
+    """
+    from app.services.thirteenf_admin_dashboard import _execute_job
+
+    worker_id = f"score-harness-{uuid.uuid4().hex[:8]}"
+    # Lock-key shape mirrors the production builder in _JOB_LOCK_BUILDERS.
+    from app.services.oracles_lens.signal_weighted_score import SCORE_VERSION
+    lock_key = f"oracles_lens_score:{quarter}:{SCORE_VERSION}"
+
+    with SessionLocal() as session:
+        from app.services.thirteenf_admin_dashboard import ACTIVE_JOB_STATUSES
+        active = (
+            session.query(JobRun)
+            .filter(JobRun.lock_key == lock_key)
+            .filter(JobRun.status.in_(ACTIVE_JOB_STATUSES))
+            .first()
+        )
+        if active is not None:
+            return {"status": "conflict", "active_job_id": active.id}
+
+        now = datetime.now(timezone.utc)
+        job = JobRun(
+            job_type="oracles_lens_score_backfill",
+            status="running",
+            trigger_source="ops_harness",
+            lock_key=lock_key,
+            dedupe_key=lock_key,
+            quarter=quarter,
+            started_at=now,
+            worker_id=worker_id,
+            lease_token=uuid.uuid4().hex,
+            lease_expires_at=now + timedelta(seconds=_HARNESS_LEASE_SECONDS),
+            input_json={"quarter": quarter},
+        )
+        session.add(job)
+        session.commit()
+        session.refresh(job)
+        job_id, lease_token = job.id, job.lease_token
+
+        payload = {"quarter": quarter, "_job_id": job_id}
+        try:
+            summary = _execute_job(session, "oracles_lens_score_backfill", payload)
+            error_message = None
+        except Exception as exc:  # noqa: BLE001
+            summary = {"error": str(exc)}
+            error_message = str(exc)
+
+        status = _complete_from_summary(
+            session,
+            job_id=job_id,
+            worker_id=worker_id,
+            lease_token=lease_token,
+            summary=summary,
             error_message=error_message,
         )
         return {"job_id": job_id, "status": status, "summary": summary}
@@ -227,21 +336,22 @@ def _run_ingest_holdings(quarter: str) -> dict:
 def _run_enrich_cusip() -> dict:
     """Run the global CUSIP enrichment job once at the end."""
     from app.services.thirteenf_admin_dashboard import _execute_job
-    from app.services.thirteenf_job_worker import complete_leased_job
 
     worker_id = f"cusip-harness-{uuid.uuid4().hex[:8]}"
     lock_key = "enrich_cusip:global"
 
     with SessionLocal() as session:
+        now = datetime.now(timezone.utc)
         job = JobRun(
             job_type="enrich_cusip",
             status="running",
             trigger_source="ops_harness",
             lock_key=lock_key,
             dedupe_key=lock_key,
-            started_at=datetime.now(timezone.utc),
+            started_at=now,
             worker_id=worker_id,
             lease_token=uuid.uuid4().hex,
+            lease_expires_at=now + timedelta(seconds=_HARNESS_LEASE_SECONDS),
             input_json={},
         )
         session.add(job)
@@ -251,20 +361,17 @@ def _run_enrich_cusip() -> dict:
 
         try:
             summary = _execute_job(session, "enrich_cusip", {})
-            status = "succeeded"
             error_message = None
         except Exception as exc:  # noqa: BLE001
             summary = {"error": str(exc)}
-            status = "failed"
             error_message = str(exc)
 
-        complete_leased_job(
+        status = _complete_from_summary(
             session,
             job_id=job_id,
             worker_id=worker_id,
             lease_token=lease_token,
-            status=status,
-            summary_json=summary,
+            summary=summary,
             error_message=error_message,
         )
         return {"job_id": job_id, "status": status, "summary": summary}
@@ -320,6 +427,16 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--skip-enrich-cusip", action="store_true",
         help="Skip the final enrich_cusip pass.",
+    )
+    parser.add_argument(
+        "--skip-score-backfill", action="store_true",
+        help=(
+            "Skip stage 4 (oracles_lens_score_backfill per quarter). The "
+            "universe-filter live-recompute path on Oracle's Lens works "
+            "without it; the 'All' universe persisted-score path does NOT, "
+            "so skipping leaves the All view incomplete for the backfilled "
+            "quarters."
+        ),
     )
     args = parser.parse_args(argv)
 
@@ -390,12 +507,13 @@ def main(argv: list[str] | None = None) -> int:
         for q in quarters_for_holdings:
             res = _run_ingest_holdings(q)
             summary = res.get("summary") or {}
-            if res.get("status") == "succeeded":
+            if res.get("status") in {"succeeded", "partial_success"}:
+                tail = f" [partial_success]" if res.get("status") == "partial_success" else ""
                 print(
                     f"  {q}: filings_processed={summary.get('filings_processed')} "
                     f"xml_fetched={summary.get('filings_xml_fetched')} "
                     f"holdings_inserted={summary.get('holdings_inserted')} "
-                    f"failed={summary.get('filings_failed')}"
+                    f"failed={summary.get('filings_failed')}{tail}"
                 )
             else:
                 print(f"  {q}: STATUS={res.get('status')} error={summary.get('error')}")
@@ -405,7 +523,7 @@ def main(argv: list[str] | None = None) -> int:
         print("\nStage 3: enrich_cusip (global)")
         res = _run_enrich_cusip()
         summary = res.get("summary") or {}
-        if res.get("status") == "succeeded":
+        if res.get("status") in {"succeeded", "partial_success"}:
             print(
                 f"  mappings_created={summary.get('mappings_created')} "
                 f"new_stocks={summary.get('new_stocks')} "
@@ -414,6 +532,31 @@ def main(argv: list[str] | None = None) -> int:
             )
         else:
             print(f"  STATUS={res.get('status')} error={summary.get('error')}")
+
+    # Stage 4: oracles_lens_score_backfill per quarter (review-2 Q6).
+    if not args.skip_score_backfill and not args.dry_run:
+        from app.services.thirteenf_historical_backfill import (
+            _enumerate_quarters,
+            _normalize_end_quarter,
+            _normalize_start_quarter,
+        )
+        start_q = _normalize_start_quarter(args.start_quarter)
+        end_q = _normalize_end_quarter(args.end_quarter, start_q)
+        quarters_for_score = list(reversed(_enumerate_quarters(start_q, end_q)))
+        print(
+            f"\nStage 4: oracles_lens_score_backfill per quarter "
+            f"({len(quarters_for_score)} quarters):"
+        )
+        for q in quarters_for_score:
+            res = _run_score_backfill(q)
+            summary = res.get("summary") or {}
+            if res.get("status") in {"succeeded", "partial_success"}:
+                print(
+                    f"  {q}: filings_scored={summary.get('filings_scored')} "
+                    f"components_written={summary.get('components_written')}"
+                )
+            else:
+                print(f"  {q}: STATUS={res.get('status')} error={summary.get('error')}")
 
     with SessionLocal() as s:
         depth_after = _historical_depth_quarters(s)

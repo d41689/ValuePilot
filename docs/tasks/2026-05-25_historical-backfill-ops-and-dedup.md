@@ -13,7 +13,22 @@ succeeded. The failure should be hidden — it's not actionable.
 0 quarters" is that nobody ever ran a true cross-quarter historical
 backfill. The dispatcher works (PR #95 era handler at
 `_execute_job:3061`); the data is just empty. This PR runs the backfill
-end-to-end for 2025-Q3 → 2023-Q1 (10 quarters) and records the trace.
+end-to-end for 2025-Q3 → 2023-Q1 (11 quarters) and records the trace.
+
+The harness chains FOUR stages per run:
+
+1. `historical_backfill` — fetch SEC submissions + primary_doc, create
+   Filing13F rows in `parse_status='pending'`.
+2. `ingest_holdings` per quarter — fetch each filing's infotable.xml,
+   parse, write Holding13F rows with `cusip_mapping_status='pending_mapping'`.
+3. `enrich_cusip` — global OpenFIGI pass that maps pending CUSIPs to
+   tickers and links holdings to stocks.
+4. `oracles_lens_score_backfill` per quarter — populate
+   `oracles_lens_signals` for the new quarters so Oracle's Lens's
+   "All" universe (which reads persisted scores) shows the
+   newly-ingested data. The universe-filter "live recompute" path
+   (PR #95) works regardless of stage 4, but skipping it leaves the
+   "All" view incomplete for the backfilled quarters.
 
 Both halves ship together because (a) we want to demonstrate the
 "before vs after" Readiness number flip in one PR, and (b) running the
@@ -177,6 +192,44 @@ docker compose exec -T api python -m scripts.run_historical_backfill \
 | Holdings linked | 51,317 |
 | Holdings still unmapped | **0** |
 
+### Stage 4 — oracles_lens_score_backfill per quarter (review-2 Q6)
+
+| Quarter | Filings scored | Score components written |
+|---|---|---|
+| 2023-Q1 | 367 | 7,592 |
+| 2023-Q2 | 344 | 7,120 |
+| 2023-Q3 | 351 | 7,348 |
+| 2023-Q4 | 372 | 7,724 |
+| 2024-Q1 | 375 | 7,732 |
+| 2024-Q2 | 351 | 7,340 |
+| 2024-Q3 | 358 | 7,418 |
+| 2024-Q4 | 371 | 7,710 |
+| 2025-Q1 | 375 | 7,748 |
+| 2025-Q2 | 398 | 8,214 |
+| 2025-Q3 | 398 | 8,278 |
+
+**Stage 4 totals:** 4,060 filings scored, 83,224 score components written across 11 quarters.
+
+Final `oracles_lens_signals` rows per quarter:
+
+| Quarter | Persisted signals |
+|---|---|
+| 2025-Q4 | 207 |
+| 2025-Q3 | 398 |
+| 2025-Q2 | 398 |
+| 2025-Q1 | 375 |
+| 2024-Q4 | 371 |
+| 2024-Q3 | 358 |
+| 2024-Q2 | 351 |
+| 2024-Q1 | 375 |
+| 2023-Q4 | 372 |
+| 2023-Q3 | 351 |
+| 2023-Q2 | 344 |
+| 2023-Q1 | 367 |
+| **TOTAL** | **4,267** |
+
+Oracle's Lens "All" universe now reads valid persisted scores for every quarter the user can scroll back to.
+
 ### Final coverage by quarter
 
 | Quarter | Confirmed managers | Holdings | Linked | Linked ratio |
@@ -204,4 +257,6 @@ docker compose exec -T api python -m scripts.run_historical_backfill \
 | `holdings_depth_quarters` (signal-eligible) | 4 | **12** |
 | Total Holding13F rows | ~3,900 | ~56,200 |
 | Unmapped CUSIPs | (145, blocking) | **0** |
+| `oracles_lens_signals` rows | 207 (2025-Q4 only) | **4,267** (12 quarters) |
+| `oracles_lens_score_components` rows | ~4,300 (2025-Q4) | ~88,000 (12 quarters) |
 
