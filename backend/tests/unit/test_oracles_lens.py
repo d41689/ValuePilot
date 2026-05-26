@@ -250,7 +250,12 @@ def test_oracles_lens_defaults_to_latest_complete_period_and_signal_rows(client,
     assert top_holder["previous_shares"] == 8400
     assert top_holder["share_delta_pct"] == 0.047619
     assert top_holder["current_value_thousands"] == 88000
-    assert top_holder["holder_price_estimate"] == 10000.0
+    # PR #97 (holder $ estimate unit fix): the fixture's period_of_report is
+    # 2031-12-31 (post-TRANSITION_ACCEPTED_DATE), so value_thousands stores
+    # raw DOLLARS per the post-2023 SEC rule. Per-share = 88000 / 8800 = $10.
+    # Pre-fix this returned $10,000 (the 1000× bug from the legacy
+    # value_thousands * 1000 / shares formula).
+    assert top_holder["holder_price_estimate"] == 10.0
     assert top_holder["filing_date"] == "2031-12-31"
     assert top_holder["accession_no"] == "new-74"
     assert top_holder["manager_type"] == "value_concentrated"
@@ -560,8 +565,12 @@ def test_oracles_lens_adds_conservative_valuation_reference(client, db_session):
     assert response.status_code == 200
 
     item = next(row for row in response.json()["items"] if row["stock_id"] == target.id)
-    assert item["holder_price_estimate_low"] == 10000.0
-    assert item["holder_price_estimate_high"] == 10000.0
+    # PR #97: fixture period 2031-12-31 → post-transition dollars rule, so
+    # value_thousands / shares directly. The fixture's value/share ratio is
+    # constant across holders (each +$1,000 of value comes with +100 shares),
+    # so low == high == 10.0.
+    assert item["holder_price_estimate_low"] == 10.0
+    assert item["holder_price_estimate_high"] == 10.0
     assert item["current_price"] == 100.0
     assert item["current_price_date"] == "2032-01-02"
     assert item["price_context"] == "latest"
@@ -570,8 +579,12 @@ def test_oracles_lens_adds_conservative_valuation_reference(client, db_session):
     assert item["valuation_reference_type"] == "manual_intrinsic_value"
     assert item["valuation_reference_confidence"] == "user_supplied"
     assert item["discount_to_reference"] == 0.428571
+    # PR #97: with the holder estimate corrected to $10/share (was $10,000/share
+    # under the buggy formula), the current price of $100 is ABOVE the holder
+    # estimate, not below. ``below_selected_valuation_reference`` is unaffected
+    # — that's price ($100) vs manual valuation reference ($175).
     assert item["valuation_state"] == {
-        "below_holder_estimate": True,
+        "below_holder_estimate": False,
         "below_selected_valuation_reference": True,
     }
     assert item["valuation_unavailable_reasons"] == []
