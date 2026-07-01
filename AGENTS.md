@@ -25,6 +25,19 @@ Canonical commands:
 
 Do NOT run Python tooling directly on the host when a containerized alternative exists.
 
+## Database — shared infra (not the `db` service)
+
+Dev connects to the **shared Postgres instance** used by all local projects, defined
+in `~/projects/infra` (its own repo — `~/projects/infra/README.md` is the source of
+truth). The compose `db` service is a sleep-infinity **placeholder**; do not start a
+project-local Postgres.
+
+- Start it once: `cd ~/projects/infra && cp -n .env.example .env && docker compose up -d`
+- The api connects over the external `projects-shared` network to host `postgres:5432`,
+  database `valuepilot` (prod `valuepilot_prod`), role `valuepilot`. Isolation is per
+  database + role, not per instance.
+- No auto-migrate on boot — after first start, run `docker compose exec api alembic upgrade head`.
+
 # Data Layer
 
 ## Three-layer storage pattern

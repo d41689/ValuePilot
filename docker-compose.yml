@@ -1,20 +1,19 @@
 name: valuepilot-dev
 
 services:
+  # Placeholder only. The real Postgres is the shared instance on the
+  # projects-shared network (~/projects/infra); dev connects to it as
+  # `postgres:5432/valuepilot`. Kept as a no-op so tooling referencing the
+  # `db` service still resolves. (Old local data survives in ./storage/postgres.)
   db:
-    image: postgres:18.3
+    image: postgres:18
     restart: unless-stopped
+    command: ["sleep", "infinity"]
     environment:
-      POSTGRES_USER: valuepilot
-      POSTGRES_PASSWORD: valuepilot
-      POSTGRES_DB: valuepilot
-    volumes:
-      - ./storage/postgres:/var/lib/postgresql
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U valuepilot -d valuepilot"]
-      interval: 5s
-      timeout: 5s
-      retries: 20
+      PGHOST: postgres
+      PGUSER: valuepilot
+      PGPASSWORD: valuepilot
+      PGDATABASE: valuepilot
     networks:
       - shared-infra
 
@@ -49,16 +48,13 @@ services:
     ports:
       - "${HOST_API_PORT:-8001}:8000"
     environment:
-      DATABASE_URL: postgresql://valuepilot:valuepilot@db:5432/valuepilot
+      DATABASE_URL: postgresql://valuepilot:valuepilot@postgres:5432/valuepilot
       THIRTEENF_SMART_RETRY_ENABLED: "${THIRTEENF_SMART_RETRY_ENABLED:-false}"
       THIRTEENF_JOB_WORKER_ENABLED: "${THIRTEENF_JOB_WORKER_ENABLED:-true}"
     volumes:
       - ./backend:/code
       - ./docs:/code/docs
     command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]
-    depends_on:
-      db:
-        condition: service_healthy
     networks:
       - default
       - shared-infra
