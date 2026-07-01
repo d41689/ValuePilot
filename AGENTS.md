@@ -47,6 +47,20 @@ substitute for the full command at a closing gate.
 
 Logs: `docker compose logs -f`.
 
+### Local database — shared infra (not the `db` service)
+
+Dev connects to the **shared Postgres** used by all local projects, defined in
+`~/projects/infra` (its own repo; `~/projects/infra/README.md` is the source of
+truth). The compose `db` service is a sleep-infinity **placeholder** — do not
+start a project-local Postgres.
+
+- Start it once: `cd ~/projects/infra && cp -n .env.example .env && docker compose up -d`
+- The api reaches it over the external `projects-shared` network at host
+  `postgres:5432`, database `valuepilot` (prod `valuepilot_prod`), role
+  `valuepilot`. Isolation is per database + role, not per instance.
+- No auto-migrate on boot — after first start run the Migrations step above
+  (`docker compose exec -T api alembic upgrade head`).
+
 ## Critical invariants — never violate
 
 Violating any of these causes real data loss or production breakage.

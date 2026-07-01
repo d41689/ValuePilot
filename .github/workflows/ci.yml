@@ -33,6 +33,24 @@ jobs:
       - name: Create shared Docker network
         run: docker network create projects-shared || true
 
+      # Dev connects to the shared Postgres (~/projects/infra) at host
+      # `postgres:5432`. CI has no such instance, so stand one up on the shared
+      # network with the same db/role the app expects.
+      - name: Start shared Postgres (CI stand-in for ~/projects/infra)
+        run: |
+          docker run -d --name shared-postgres \
+            --network projects-shared --network-alias postgres \
+            -e POSTGRES_USER=valuepilot -e POSTGRES_PASSWORD=valuepilot -e POSTGRES_DB=valuepilot \
+            --health-cmd "pg_isready -U valuepilot -d valuepilot" \
+            --health-interval 5s --health-timeout 5s --health-retries 20 \
+            postgres:18
+          echo "Waiting for shared-postgres to be healthy..."
+          for i in $(seq 1 30); do
+            status=$(docker inspect -f '{{.State.Health.Status}}' shared-postgres 2>/dev/null || echo starting)
+            [ "$status" = "healthy" ] && { echo "healthy"; break; }
+            sleep 2
+          done
+
       - name: Create CI env file
         run: |
           cat > .env <<'EOF'
@@ -71,4 +89,6 @@ jobs:
 
       - name: Tear down services
         if: always()
-        run: docker compose down -v
+        run: |
+          docker compose down -v
+          docker rm -f shared-postgres || true
