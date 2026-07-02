@@ -6,6 +6,8 @@ from app.ingestion.parsers.v1_value_line.semantics import (
     detect_quarter_month_order,
     extract_month_order,
     fiscal_year_end_month_from_order,
+    full_year,
+    has_value_line_markers,
     parse_report_date_iso,
     split_actual_and_estimate_years,
 )
@@ -432,6 +434,25 @@ class ValueLineV1Parser(BaseParser):
                 parsed_value_json={"iso_date": iso_date, "display": f"{m.group(2)}{m.group(3)},{m.group(4)}"},
                 confidence_score=0.8,
             ))
+
+        # Fallback: historical layouts don't always carry the analyst signature
+        # line. When the page is structurally a Value Line report, accept a
+        # masthead-style "Month DD, YYYY" date (header lines first, then the
+        # full page) at degraded confidence. Pages without VL markers get no
+        # fallback — a bare date on a non-VL PDF must not enable ingestion.
+        if not any(res.field_key == "report_date" for res in results):
+            fallback_iso = None
+            if has_value_line_markers(self.text):
+                head = "\n".join(self.text.split("\n")[:30])
+                fallback_iso = parse_report_date_iso(head) or parse_report_date_iso(self.text)
+            if fallback_iso:
+                results.append(ExtractionResult(
+                    field_key="report_date",
+                    raw_value_text=fallback_iso,
+                    original_text_snippet="masthead date (fallback)",
+                    parsed_value_json={"iso_date": fallback_iso, "source": "masthead_fallback"},
+                    confidence_score=0.6,
+                ))
 
         # --- 2. Target Price Ranges ---
         
@@ -1723,6 +1744,17 @@ class ValueLineV1Parser(BaseParser):
         if not years:
             return []
 
+        # Fiscal context: same inference the main time-series table uses, so
+        # both paths agree on period_end_date and on which columns are
+        # published actuals vs analyst estimates (45-day SEC reporting lag).
+        report_date_iso = parse_report_date_iso(self.text)
+        month_order = detect_quarter_month_order(self.text)
+        fiscal_year_end_month = fiscal_year_end_month_from_order(month_order)
+        _, estimate_years = split_actual_and_estimate_years(
+            years, report_date_iso, fiscal_year_end_month
+        )
+        estimate_year_set = set(estimate_years)
+
         value_pat = r'[-+]?\d*\.?\d+%?'
         value_re = re.compile(rf'^{value_pat}$')
         tokens = flat_text.split()
@@ -1755,44 +1787,38 @@ class ValueLineV1Parser(BaseParser):
             token_by_year = {year: token for year, token in zip(aligned_years, values_raw)}
             value_by_year = {year: self._coerce_value(token) for year, token in token_by_year.items()}
 
-            estimate_year = years[-1]
-            estimate_value = value_by_year.get(estimate_year)
-            if estimate_value is not None and len(years) > 1:
-                actual_year = years[-2]
-            else:
-                actual_year = aligned_years[-1] if aligned_years else None
-
             snippet = " ".join(tokens[max(0, label_idx - 20): label_idx + 5])
 
-            if actual_year is not None:
-                actual_token = token_by_year.get(actual_year)
-                if actual_token is not None and value_by_year.get(actual_year) is not None:
-                    results.append(
-                        self._annual_metric_result(
-                            field_key=field_key,
-                            raw_token=actual_token,
-                            year=actual_year,
-                            is_estimate=False,
-                            snippet=snippet,
-                            scale_token=scale_token,
-                            percent=percent,
-                        )
-                    )
+            # Emit the latest published actual plus every estimate column
+            # present. Estimate membership comes from the report-date split —
+            # never from column position, which wrongly ingested the second
+            # estimate column as an actual (look-ahead for backtests).
+            emit: list[tuple[int, bool]] = []
+            actual_candidates = [
+                year for year in aligned_years
+                if year not in estimate_year_set and value_by_year.get(year) is not None
+            ]
+            if actual_candidates:
+                emit.append((max(actual_candidates), False))
+            emit.extend(
+                (year, True)
+                for year in aligned_years
+                if year in estimate_year_set and value_by_year.get(year) is not None
+            )
 
-            if estimate_value is not None:
-                estimate_token = token_by_year.get(estimate_year)
-                if estimate_token is not None:
-                    results.append(
-                        self._annual_metric_result(
-                            field_key=field_key,
-                            raw_token=estimate_token,
-                            year=estimate_year,
-                            is_estimate=True,
-                            snippet=snippet,
-                            scale_token=scale_token,
-                            percent=percent,
-                        )
+            for year, is_estimate in emit:
+                results.append(
+                    self._annual_metric_result(
+                        field_key=field_key,
+                        raw_token=token_by_year[year],
+                        year=year,
+                        is_estimate=is_estimate,
+                        snippet=snippet,
+                        scale_token=scale_token,
+                        percent=percent,
+                        fiscal_year_end_month=fiscal_year_end_month,
                     )
+                )
 
         parse_row(r"Cap[’']?lSpendingpersh", "capital_spending_per_share_usd")
         parse_row(r"AvgAnn[’']?lDiv[’']?dYield", "avg_annual_dividend_yield_pct", percent=True)
@@ -1811,6 +1837,7 @@ class ValueLineV1Parser(BaseParser):
         snippet: str,
         scale_token: Optional[str],
         percent: bool,
+        fiscal_year_end_month: Optional[int] = None,
     ) -> ExtractionResult:
         raw_value_text = raw_token.strip()
         if percent and not raw_value_text.endswith("%"):
@@ -1818,10 +1845,15 @@ class ValueLineV1Parser(BaseParser):
         if scale_token:
             raw_value_text = f"{raw_value_text} {scale_token}"
 
+        # Fiscal-aware period end (December fallback matches the mapping-spec
+        # behavior in _fiscal_year_end_from_root).
+        month = fiscal_year_end_month if fiscal_year_end_month in range(1, 13) else 12
+        last_day = calendar.monthrange(year, month)[1]
+
         parsed_value_json = {
             "year": year,
             "period_type": "FY",
-            "period_end_date": f"{year}-12-31",
+            "period_end_date": f"{year:04d}-{month:02d}-{last_day:02d}",
             "is_estimate": is_estimate,
         }
 
@@ -1836,8 +1868,14 @@ class ValueLineV1Parser(BaseParser):
     @staticmethod
     def _find_year_sequence(text: str) -> list[int]:
         # Value Line PDFs sometimes glue year tokens together (e.g. "20192020B"),
-        # so we can't rely on whitespace-separated year runs.
-        matches = [(int(m.group(0)), m.start()) for m in re.finditer(r"20\d{2}", text)]
+        # so we can't rely on whitespace-separated year runs. Historical archives
+        # reach back into the 1900s, so both centuries are accepted, bounded to
+        # the plausible Value Line publication range.
+        matches = [
+            (year, m.start())
+            for m in re.finditer(r"(?:19|20)\d{2}", text)
+            if 1950 <= (year := int(m.group(0))) <= 2099
+        ]
         if not matches:
             return []
 
@@ -1910,7 +1948,7 @@ class ValueLineV1Parser(BaseParser):
         match = re.match(r'(\d{1,2})/(\d{1,2})/(\d{2})', value)
         if not match:
             return None
-        year = 2000 + int(match.group(3))
+        year = full_year(int(match.group(3)))
         return f"{year:04d}-{int(match.group(1)):02d}-{int(match.group(2)):02d}"
 
     @staticmethod
@@ -1918,7 +1956,7 @@ class ValueLineV1Parser(BaseParser):
         match = re.match(r'(\d{1,2})/(\d{2})', value)
         if not match:
             return None
-        year = 2000 + int(match.group(2))
+        year = full_year(int(match.group(2)))
         month = int(match.group(1))
         try:
             last_day = calendar.monthrange(year, month)[1]
@@ -2084,8 +2122,10 @@ class ValueLineV1Parser(BaseParser):
             if value is None:
                 return None
             if percent_ratio:
-                if token.endswith("%") or abs(value) > 1:
-                    return value / 100.0
+                # The row is known to be a percent row, so every value is a
+                # percentage — including sub-1% tokens without a "%" sign
+                # (e.g. an underwriting margin of ".9" means 0.9%).
+                return value / 100.0
             return value
 
         def parse_series(
@@ -2130,7 +2170,7 @@ class ValueLineV1Parser(BaseParser):
                     return False
                 if re.search(r"VALUELINE", token, re.IGNORECASE):
                     return False
-                if re.search(r"20\\d{2}", token):
+                if re.search(r"(?:19|20)\d{2}", token):
                     return False
                 return True
 

@@ -40,6 +40,24 @@ def test_scaler_normalization():
     assert val is None
 
 
+def test_scaler_parenthesized_negatives():
+    # Pure-numeric parentheses are the accounting convention for negatives.
+    val, unit = Scaler.normalize("(1.2)", "number")
+    assert val == -1.2
+    assert unit == "number"
+
+    val, unit = Scaler.normalize("$(3.4) mill", "number")
+    assert val == -3_400_000.0
+    assert unit == "USD"
+
+    # Lettered parentheticals are still notes, not negatives.
+    val, unit = Scaler.normalize("1.5 (est.)", "number")
+    assert val == 1.5
+
+    val, unit = Scaler.normalize("BETA .90 (1.00=Market)", "ratio")
+    assert val == pytest.approx(0.90)
+
+
 def test_parser_identity_extraction():
     # Mock text similar to Value Line header
     text = """

@@ -6,6 +6,39 @@ from typing import Optional
 # SEC 10-Q filing deadline for large accelerated filers is 40 days; use 45 as a safe threshold.
 _QUARTERLY_REPORTING_LAG = timedelta(days=45)
 
+# Two-digit years: >= pivot → 19xx, < pivot → 20xx. Fixed (not clock-relative)
+# so historical parses stay reproducible. Value Line data realistically spans
+# 1950–2049.
+_CENTURY_PIVOT = 50
+
+# Structural markers that only appear together on genuine Value Line pages.
+# Used to guard against parsing arbitrary financial PDFs (e.g. a 10-K that
+# happens to contain a ticker) as Value Line reports.
+_VALUE_LINE_MARKERS = (
+    re.compile(r"\bTIMELINESS\b", re.IGNORECASE),
+    re.compile(r"\bSAFETY\b", re.IGNORECASE),
+    re.compile(r"\bTECHNICAL\b", re.IGNORECASE),
+    re.compile(r"VALUE\s*LINE", re.IGNORECASE),
+    # RECENT price header, incl. glued text-layer variants ("RECENT109.10",
+    # "RECEN1T062.19").
+    re.compile(r"\bRECEN(?:\dT|T)\s*(?:PRICE\s*)?\d", re.IGNORECASE),
+    # A >=6-year table-header run (annual financials table).
+    re.compile(r"(?:(?:19|20)\d{2}\D{0,3}){6,}"),
+)
+
+
+def full_year(two_digit_year: int) -> int:
+    """Expand a two-digit year using the fixed century pivot."""
+    return (1900 if two_digit_year >= _CENTURY_PIVOT else 2000) + two_digit_year
+
+
+def has_value_line_markers(text: Optional[str], *, minimum: int = 2) -> bool:
+    """True when ``text`` shows at least ``minimum`` structural VL markers."""
+    if not text:
+        return False
+    hits = sum(1 for pattern in _VALUE_LINE_MARKERS if pattern.search(text))
+    return hits >= minimum
+
 
 MONTH_LOOKUP = {
     "Jan": 1,

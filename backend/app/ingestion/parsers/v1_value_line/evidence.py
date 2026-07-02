@@ -1,6 +1,8 @@
 import re
 from typing import Any, Optional
 
+from app.ingestion.parsers.v1_value_line.semantics import full_year
+
 
 def parse_rating_event_notes(notes: Optional[str]) -> Optional[dict[str, Any]]:
     if not notes:
@@ -22,5 +24,5 @@ def _iso_from_mdy(value: str) -> Optional[str]:
         return None
     month = int(match.group(1))
     day = int(match.group(2))
-    year = 2000 + int(match.group(3))
+    year = full_year(int(match.group(3)))
     return f"{year:04d}-{month:02d}-{day:02d}"
