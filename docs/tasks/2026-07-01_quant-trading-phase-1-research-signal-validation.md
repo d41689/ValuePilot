@@ -72,6 +72,7 @@ Implement Phase 1 (Research & Signal Validation) to verify that the parsed Value
 ---
 
 ## 3. Precedence & Authority References
+0. **PO acceptance standard (sign-off basis)**: [quant_product_definition_acceptance.md](../plans/quant_product_definition_acceptance.md) — Phase 1 closes only when checklist items **P1-A…P1-H** are executed by the PO personally (esp. P1-F pre-registration timestamp check).
 1. **PIT Read Contract**: [quant-trading-pit-read-contract.md](../architecture/quant-trading-pit-read-contract.md)
 2. **Data Model Extensions**: [quant-trading-data-model.md](../architecture/quant-trading-data-model.md)
 3. **Locked `is_current` semantics**: [metric-facts-is-current.md](../architecture/metric-facts-is-current.md) — the PIT reader must never violate it.

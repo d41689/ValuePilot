@@ -338,6 +338,7 @@ Mandatory for the technical archetype:
 
 ### Phase 2 — Stateful Position & Execution Rails (built only for strategies that cleared Phase 1)
 *Goal: Build the stateful engine and IBKR execution adapter on shared rails.*
+*Product form + PO acceptance: `quant_product_definition_acceptance.md` — Phase 2 tickets must reference checklist P2-A…P2-E (paper mode → kill-switch drill → reconciliation → small-capital go-live); Phase 1 sign-off uses P1-A…P1-H.*
 - **2-M0 Schema split** — `StrategySpecBase` + `TimeSeriesSpec`/`CrossSectionalSpec` siblings enforced ([§5](#5-strategyspec-shared-base--archetype-siblings-should-block-3)).
 - **2-M1 Data** — OHLCV + corp actions for the selected strategy universe; split/div adjustments.
 - **2-M2 Stateful Runner** — Implement the stateful position management model (§8 indexes + constraints, event ordering, optimistic concurrency). **Test ACs (reviewer note):** same-bar stop-then-re-entry, simultaneous cross-instrument fills, and portfolio-cap ordering must each have explicit test coverage.
