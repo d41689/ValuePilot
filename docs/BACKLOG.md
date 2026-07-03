@@ -219,3 +219,81 @@ long — escalate to the user. **medium / low** = ordinary follow-up.
   before broader / multi-user rollout.
 - **Context:** `docs/tasks/2026-05-21_content-security-policy.md`
 - **Issue:** —
+
+### Value Line parser: full OCR integration for scanned archives
+- **Found:** 2026-07-02, Value Line parser historical-readiness review (for
+  quant Phase 1 / 1-R0 archive ingestion)
+- **Severity:** high — historical Value Line archives are largely scans; until
+  OCR lands they cannot be ingested at all. Pages are now honestly reported as
+  `requires_ocr` (F7) instead of silently skipped, but nothing OCRs them.
+- **Problem:** `PdfExtractor` is native-text-only. The `requires_ocr` /
+  `text_extraction_method="ocr"` enums existed unused; F7 wired the detection
+  but real OCR (tesseract in the api image + an OCR extraction path) is not
+  implemented.
+- **Fix sketch:** add tesseract to the api Docker image; OCR pages flagged
+  `requires_ocr`; set `text_extraction_method="ocr"`; validate against real
+  scanned samples per decade acquired in 1-R0. Do not build before samples
+  exist.
+- **Context:** `docs/tasks/2026-07-02_value-line-parser-historical-readiness.md`
+- **Issue:** —
+
+### Value Line parser: x0-coordinate column alignment for annual tables
+- **Found:** 2026-07-02, parser historical-readiness review (P1-5)
+- **Severity:** high — count-based year↔value alignment (`_align_years` +
+  drop-leading-outlier heuristics) can silently assign values to wrong years;
+  for backtests this is the most toxic error class (no error, plausible value,
+  wrong year).
+- **Problem:** `_parse_time_series_tables` aligns rows to the year header by
+  token count, not by word x0 coordinates, although `page_words` layout data
+  is already extracted. The ADS/insurance "drop leading outlier" patches are
+  symptoms of this design.
+- **Fix sketch:** rewrite table row extraction to bucket value tokens by the
+  year-header column x-ranges. Requires per-era historical fixtures (1-R0) as
+  the safety net before refactoring — current heuristics pass all 55 modern
+  fixtures.
+- **Context:** `docs/tasks/2026-07-02_value-line-parser-historical-readiness.md`
+- **Issue:** —
+
+### Value Line parser: verify fiscal column-year labeling convention
+- **Found:** 2026-07-02, parser historical-readiness review (P1-8)
+- **Severity:** medium
+- **Problem:** the parser assumes the annual-table column year equals the
+  calendar year the fiscal year ends in (`date(year, fye_month, last_day)`).
+  For companies whose FY ends early in the calendar year (e.g. January FYE),
+  Value Line's column-labeling convention may be off by one vs this
+  assumption. Also `fiscal_year_end_month` is inferred solely from the
+  quarterly table month order and silently falls back to December.
+- **Fix sketch:** verify against real non-calendar-FYE samples (ADBE Nov,
+  AAPL Sep, Jan-FYE retailers) across eras; add fixtures pinning the
+  convention.
+- **Context:** `docs/tasks/2026-07-02_value-line-parser-historical-readiness.md`
+- **Issue:** —
+
+### Value Line page JSON: era-hardcoded key names
+- **Found:** 2026-07-02, parser historical-readiness review (P2-13)
+- **Severity:** low
+- **Problem:** page JSON keys are hardcoded to the 2026-era layout
+  (`annual_financials_and_ratios_2015_2026_with_projection_2028_2030`,
+  `projection_2028_2030`) and will be semantically wrong (though functional)
+  for historical reports. `docs/metric_facts_mapping_spec.yml` depends on the
+  literals.
+- **Fix sketch:** era-neutral key names behind a schema-version bump; blast
+  radius = mapping spec + all 55 fixture expected JSONs, so do it as its own
+  ticket.
+- **Context:** `docs/tasks/2026-07-02_value-line-parser-historical-readiness.md`
+- **Issue:** —
+
+### Value Line parser: industrial-layout percent rows are not divided by 100
+- **Found:** 2026-07-02, parser historical-readiness review (found while
+  fixing F4)
+- **Severity:** medium
+- **Problem:** in `_parse_time_series_tables`, rows like `IncomeTaxRate`,
+  `ReturnonShrEquity`, `RetainedtoComEq`, `AllDivToNetProf` pass
+  `percent_ratio=insurance_layout` — so on industrial layouts the same
+  economic quantity is stored as `21.0` where an insurance layout stores
+  `0.21`. Downstream unit conventions may rely on this (fixtures lock it), but
+  it is an inconsistency waiting to bite a cross-layout consumer.
+- **Fix sketch:** decide one convention, migrate the mapping spec + fixtures
+  in a dedicated pass; confirm whether the asymmetry is intentional first.
+- **Context:** `docs/tasks/2026-07-02_value-line-parser-historical-readiness.md`
+- **Issue:** —

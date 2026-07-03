@@ -18,6 +18,7 @@ from app.services.identity_service import IdentityService
 from app.ingestion.pdf_extractor import PdfExtractor
 from app.ingestion.parsers.v1_value_line.parser import ValueLineV1Parser
 from app.ingestion.parsers.v1_value_line.page_json import build_value_line_page_json
+from app.ingestion.parsers.v1_value_line.semantics import has_value_line_markers
 from app.ingestion.normalization.scaler import Scaler
 from app.services.mapping_spec import MappingSpec
 from app.services.owners_earnings import build_owners_earnings_facts
@@ -26,6 +27,27 @@ from app.services.calculated_metrics.piotroski_f_score import PiotroskiFScoreCal
 
 
 LOGGER = logging.getLogger(__name__)
+
+# Image-only (scanned) pages yield an empty or near-empty native text layer,
+# while genuine Value Line company pages carry thousands of characters. The
+# threshold is deliberately minimal — it flags "effectively empty" pages (a
+# text layer that cannot even hold one header line) as needing OCR, which is
+# not yet implemented (see docs/BACKLOG.md).
+MIN_PARSEABLE_PAGE_TEXT_CHARS = 20
+
+
+def _is_company_page(text: str) -> bool:
+    upper = (text or "").upper()
+    # Includes glued text-layer variants ("RECENT109.10", "RECEN1T062.19").
+    return re.search(r"\bRECEN(?:\dT|T)\s*(?:PRICE\s+)?\d", upper) is not None
+
+
+def _is_company_candidate(text: str, identity_ticker: Optional[str]) -> bool:
+    """A page is only a company-page candidate when it is structurally a
+    Value Line report — a bare ticker in a non-VL PDF must not parse."""
+    if not has_value_line_markers(text):
+        return False
+    return bool(identity_ticker) or _is_company_page(text)
 
 class IngestionService:
     NON_NUMERIC_KEYS = {
@@ -139,19 +161,31 @@ class IngestionService:
             if is_multi_company_container:
                 doc.stock_id = None
 
-            def is_company_page(text: str) -> bool:
-                upper = (text or "").upper()
-                return re.search(r"\bRECENT\s+(?:PRICE\s+)?\d", upper) is not None
-
             company_pages = 0
             parsed_company_pages = 0
+            requires_ocr_pages = 0
 
             for page_num, text, words in pages_data:
                 try:
+                    if len((text or "").strip()) < MIN_PARSEABLE_PAGE_TEXT_CHARS:
+                        requires_ocr_pages += 1
+                        page_reports.append(
+                            {
+                                "page_number": page_num,
+                                "status": "requires_ocr",
+                                "parser_version": "v1",
+                                "error_code": "requires_ocr",
+                                "error_message": (
+                                    "Text layer too sparse for native parsing; "
+                                    "page likely needs OCR (not yet implemented)."
+                                ),
+                            }
+                        )
+                        continue
+
                     parser = ValueLineV1Parser(text, page_words={1: words})
                     identity_info = parser.extract_identity()
-                    is_company_candidate = bool(identity_info.ticker) or is_company_page(text)
-                    if not is_company_candidate:
+                    if not _is_company_candidate(text, identity_info.ticker):
                         page_reports.append(
                             {
                                 "page_number": page_num,
@@ -190,7 +224,17 @@ class IngestionService:
                     report_date = self._report_date_from_extractions(extractions)
                     if report_date is None:
                         raise ValueError("missing_commentary_date")
-                    doc.report_date = report_date
+                    if doc.report_date is None:
+                        doc.report_date = report_date
+                    elif doc.report_date != report_date:
+                        LOGGER.warning(
+                            "Page %s report_date %s differs from document report_date %s "
+                            "(document_id=%s); keeping the first-parsed date.",
+                            page_num,
+                            report_date,
+                            doc.report_date,
+                            doc.id,
+                        )
                     page_json = build_value_line_page_json(
                         parser,
                         page_number=page_num,
@@ -268,7 +312,12 @@ class IngestionService:
                     continue
 
             if parsed_company_pages == 0:
-                doc.parse_status = "failed"
+                # No parseable company page at all AND at least one page was
+                # too sparse to read natively → the honest status is OCR-needed.
+                if company_pages == 0 and requires_ocr_pages > 0:
+                    doc.parse_status = "requires_ocr"
+                else:
+                    doc.parse_status = "failed"
             elif parsed_company_pages < company_pages:
                 doc.parse_status = "parsed_partial"
             else:
@@ -401,18 +450,15 @@ class IngestionService:
             doc.stock_id = None
         doc.report_date = None
 
-        def is_company_page(text: str) -> bool:
-            upper = (text or "").upper()
-            return re.search(r"\bRECENT\s+(?:PRICE\s+)?\d", upper) is not None
-
         company_pages = 0
         parsed_company_pages = 0
 
         for page_num, text, words in pages_data:
+            if len((text or "").strip()) < MIN_PARSEABLE_PAGE_TEXT_CHARS:
+                continue
             parser = ValueLineV1Parser(text, page_words={1: words} if words else {})
             identity_info = parser.extract_identity()
-            is_company_candidate = bool(identity_info.ticker) or is_company_page(text)
-            if not is_company_candidate:
+            if not _is_company_candidate(text, identity_info.ticker):
                 continue
             company_pages += 1
             try:
@@ -431,7 +477,17 @@ class IngestionService:
             report_date = self._report_date_from_extractions(extractions)
             if report_date is None:
                 continue
-            doc.report_date = report_date
+            if doc.report_date is None:
+                doc.report_date = report_date
+            elif doc.report_date != report_date:
+                LOGGER.warning(
+                    "Page %s report_date %s differs from document report_date %s "
+                    "(document_id=%s); keeping the first-parsed date.",
+                    page_num,
+                    report_date,
+                    doc.report_date,
+                    doc.id,
+                )
             page_json = build_value_line_page_json(
                 parser,
                 page_number=page_num,
