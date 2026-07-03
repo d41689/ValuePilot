@@ -297,3 +297,42 @@ long — escalate to the user. **medium / low** = ordinary follow-up.
   in a dedicated pass; confirm whether the asymmetry is intentional first.
 - **Context:** `docs/tasks/2026-07-02_value-line-parser-historical-readiness.md`
 - **Issue:** —
+
+### 13F: follow-manager affordance
+- **Found:** 2026-07-03, PO value-investor review of the 13F surface
+  (`docs/tasks/2026-07-03_13f-po-review-value-investor.md` §3)
+- **Severity:** medium
+- **Problem:** There is no way for a user to follow specific managers; the
+  filing-season digest (investor-workflow ticket 03) is featured-managers-only
+  in V1, and the manager pages (ticket 01) have no personalization. The 13F
+  habit loop ("my managers reported") needs per-user follows eventually.
+- **Fix sketch:** small `manager_follows(user_id, manager_id)` table + star
+  toggle on the manager list/detail pages; digest targeting switches from
+  is_featured to followed-or-featured.
+- **Context:** `docs/tasks/2026-07-03_13f-investor-workflow-03-filing-season-digest.md`
+- **Issue:** —
+
+### 13F: holding-streak saturation recalibration after historical backfill
+- **Found:** 2026-07-03, PO value-investor review (§3)
+- **Severity:** low (becomes medium once backfill lands)
+- **Problem:** Conviction/persistence saturate at a 4-quarter streak — an
+  artifact of the 2023+ data window, not an investment judgment. A value
+  investor cares about 5+ year holders; once historical backfill extends the
+  window, 4-quarter saturation materially understates long-tenure conviction.
+- **Fix sketch:** revisit `_PERSISTENCE_STREAK_FULL` (conviction_score.py) and
+  the streak bonus threshold together with a `SCORE_VERSION` bump, gated on
+  backfilled data depth (readiness `historical depth` metric).
+- **Context:** `docs/tasks/2026-07-03_13f-po-review-value-investor.md`
+- **Issue:** —
+
+### 13F: watchlist quarter-over-quarter trend + export
+- **Found:** 2026-07-03, PO value-investor review (§4/§5)
+- **Severity:** low
+- **Problem:** Watchlist 13F columns show only the latest period (no QoQ
+  conviction/Δ-holders trend sparkline), and no surface offers CSV export of
+  candidates/holdings for offline research.
+- **Fix sketch:** trend mini-viz on the watchlist 13F drawer once ≥3 quarters
+  of persisted score history exist; simple CSV export endpoints for the
+  Oracle's Lens candidates table and manager holdings.
+- **Context:** `docs/tasks/2026-07-03_13f-po-review-value-investor.md`
+- **Issue:** —
