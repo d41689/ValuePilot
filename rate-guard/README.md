@@ -45,7 +45,7 @@ prod — *not* in the repo). The deploy workflow copies it to `./.env`.
 | `OPENFIGI_API_KEY` | no | Raises the OpenFIGI rate (~250/min with a key vs ~25/min without). |
 | `RATE_GUARD_HOST_PORT` | no | Host port for `/healthz` + `/v1/metrics` (bound to `127.0.0.1`). Default `9099`. |
 | `RATE_GUARD_API_KEY` | no | Shared Bearer key. **Set only when Rate Guard is exposed publicly** (see below). Unset = auth disabled (internal-only default). |
-| `RATE_GUARD_API_KEY_PREVIOUS` | no | A second accepted Bearer key — the rotation window, or a distinct client key. |
+| `RATE_GUARD_API_KEY_<LABEL>` | no | Any additional accepted Bearer key — e.g. `RATE_GUARD_API_KEY_DEVELOPMENT` for a remote dev box, `RATE_GUARD_API_KEY_PREVIOUS` for a rotation window. A request is authorized if its Bearer matches `RATE_GUARD_API_KEY` **or** any labelled key. (Don't put non-key config under this prefix.) |
 | `RATE_GUARD_REQUIRE_AUTH` | no | Set to `1` on any **publicly-exposed** instance: a missing/blank key becomes a hard startup failure (fail-closed) instead of a silently-open proxy. |
 | `RATE_GUARD_EDGAR_RPS` / `RATE_GUARD_OPENFIGI_RPS` / `RATE_GUARD_DATAROMA_RPS` | no | Per-upstream rate overrides. |
 
@@ -94,8 +94,8 @@ https://rate-guard.richmom.vip/v1/fetch  →  cloudflared  →  localhost:9099  
 - The remote caller sets `RATE_GUARD_URL=https://rate-guard.richmom.vip` (must be
   **https** — the client warns if a key is set on a non-https off-box URL) and the
   same `RATE_GUARD_API_KEY`; `RateGuardClient` sends the header automatically.
-- Rotate keys with the two-slot mechanism (`RATE_GUARD_API_KEY` +
-  `RATE_GUARD_API_KEY_PREVIOUS`). Full runbook, the live ingress/DNS manifest, and
+- Give each caller its own labelled key (`RATE_GUARD_API_KEY_<LABEL>`) and rotate
+  with a `RATE_GUARD_API_KEY_PREVIOUS` window. Full runbook, the live ingress/DNS manifest, and
   the **rollback order (tear down the tunnel before reverting code)** are in
   [`docs/architecture/rate-guard-public-exposure.md`](../docs/architecture/rate-guard-public-exposure.md).
 

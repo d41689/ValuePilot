@@ -28,8 +28,10 @@ from app.main import app
 
 @pytest.fixture(autouse=True)
 def _clear_key_env(monkeypatch):
-    # Each test controls the key env explicitly; never inherit the ambient value.
-    for name in ("RATE_GUARD_API_KEY", "RATE_GUARD_API_KEY_PREVIOUS", "RATE_GUARD_REQUIRE_AUTH"):
+    # Each test controls the key env explicitly; never inherit an ambient value.
+    # Clear every RATE_GUARD_API_KEY* (labelled slots) + the require flag.
+    ambient = [n for n in os.environ if n.startswith("RATE_GUARD_API_KEY")]
+    for name in ambient + ["RATE_GUARD_REQUIRE_AUTH"]:
         monkeypatch.delenv(name, raising=False)
 
 
@@ -75,14 +77,37 @@ def test_non_ascii_header_is_rejected_not_crashed(monkeypatch):
     assert is_authorized("Bearer \x80" + "s3cret") is False
 
 
-def test_previous_key_slot_also_accepted(monkeypatch):
-    """Two accepted-key slots enable a rotation window / a distinct client key."""
-    monkeypatch.setenv("RATE_GUARD_API_KEY", "new-key")
+def test_labelled_key_slots_all_accepted(monkeypatch):
+    """RATE_GUARD_API_KEY plus any RATE_GUARD_API_KEY_<LABEL> are all accepted —
+    a distinct client key and/or a rotation window."""
+    monkeypatch.setenv("RATE_GUARD_API_KEY", "primary")
+    monkeypatch.setenv("RATE_GUARD_API_KEY_DEVELOPMENT", "dev-box")
     monkeypatch.setenv("RATE_GUARD_API_KEY_PREVIOUS", "old-key")
-    assert set(configured_api_keys()) == {"new-key", "old-key"}
-    assert is_authorized("Bearer new-key") is True
+    assert set(configured_api_keys()) == {"primary", "dev-box", "old-key"}
+    assert is_authorized("Bearer primary") is True
+    assert is_authorized("Bearer dev-box") is True
     assert is_authorized("Bearer old-key") is True
     assert is_authorized("Bearer neither") is False
+
+
+def test_non_key_prefixed_var_is_not_a_key(monkeypatch):
+    """Only RATE_GUARD_API_KEY* are keys; the require flag is not one."""
+    monkeypatch.setenv("RATE_GUARD_REQUIRE_AUTH", "1")
+    assert configured_api_keys() == ()
+
+
+def test_near_miss_var_names_are_not_keys(monkeypatch):
+    """The bare prefix (empty label) and a plural near-miss must NOT be keys —
+    guards against a template `RATE_GUARD_API_KEY_${LABEL}` with LABEL unset, or
+    a typo pluralising the primary var, silently becoming a credential. A real
+    key is set so auth is ENABLED (else no keys → auth disabled → all allowed)."""
+    monkeypatch.setenv("RATE_GUARD_API_KEY", "real")          # auth enabled
+    monkeypatch.setenv("RATE_GUARD_API_KEY_", "empty-label")  # bare prefix — not a key
+    monkeypatch.setenv("RATE_GUARD_API_KEYS", "plural")       # no underscore — not a key
+    assert configured_api_keys() == ("real",)
+    assert is_authorized("Bearer real") is True
+    assert is_authorized("Bearer empty-label") is False
+    assert is_authorized("Bearer plural") is False
 
 
 # --- startup config enforcement ---------------------------------------------
