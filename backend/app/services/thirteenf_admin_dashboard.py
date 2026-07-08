@@ -3135,6 +3135,15 @@ def _execute_job(session: Session, job_type: str, payload: dict[str, Any]) -> di
                 status_breakdown[key] = status_breakdown.get(key, 0) + 1
             except Exception as exc:  # noqa: BLE001 - isolate per-manager failure
                 failures.append({"manager_id": manager_id, "error": str(exc)})
+        # Failure visibility: any per-manager failure degrades the stage so the
+        # pipeline reports partial_success and operator alerting / smart retry can
+        # see it. All-fail → failed; some succeed + some fail → partial_success.
+        if not failures:
+            status = "succeeded"
+        elif status_breakdown:
+            status = "partial_success"
+        else:
+            status = "failed"
         return {
             "quarter": quarter,
             "managers_processed": len(manager_ids),
@@ -3142,7 +3151,7 @@ def _execute_job(session: Session, job_type: str, payload: dict[str, Any]) -> di
             "status_breakdown": status_breakdown,
             "failures": failures[:50],
             "failure_count": len(failures),
-            "status": "failed" if failures and not status_breakdown else "succeeded",
+            "status": status,
         }
 
     if job_type == "oracles_lens_score_backfill":

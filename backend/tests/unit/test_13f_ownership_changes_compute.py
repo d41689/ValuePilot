@@ -1,4 +1,5 @@
 from datetime import date
+from decimal import Decimal
 
 from app.models.institutions import (
     Filing13F,
@@ -609,34 +610,32 @@ def test_compute_aggregates_two_cusips_one_stock_no_prior(db_session):
     assert rows[0].security_key == f"stock:{stock.id}"
     assert rows[0].current_shares == 250
     assert rows[0].current_value_usd == 2800
+    # Position weight is the SUM of the lots' weights (0.1 + 0.1), not one lot's.
+    assert rows[0].current_portfolio_weight_pct == Decimal("0.2")
 
 
-def test_compute_aggregates_two_cusips_one_stock_new_position(db_session):
-    """F3: same aggregation in the normal (with-prior) path — a new position held
-    under two CUSIPs mapping to one stock yields ONE aggregated new_position row."""
+def test_compute_mapping_transition_multiple_cusips_no_false_exit(db_session):
+    """Review follow-up: holdings that GAIN stock mapping between quarters, held
+    under two CUSIPs, must use the PRD §7.4 per-CUSIP fallback — the normal path
+    must NOT pre-aggregate, or one CUSIP looks exited and the other inflated."""
     manager = _manager(db_session)
-    stock = _stock(db_session, "DUP")
-    other = _stock(db_session, "OTH")
-    previous = _filing(db_session, manager, quarter="2025-Q4", accession="0000000009-25-000001")
-    current = _filing(db_session, manager, quarter="2026-Q1", accession="0000000009-26-000002")
+    stock = _stock(db_session, "TRN")
+    previous = _filing(db_session, manager, quarter="2025-Q4", accession="0000000010-25-000001")
+    current = _filing(db_session, manager, quarter="2026-Q1", accession="0000000010-26-000001")
     prev_run = _parse_run(db_session, previous)
     cur_run = _parse_run(db_session, current)
-    # Unrelated carried-forward stock keeps a prior filing present + mapping ratio healthy.
-    _holding(db_session, previous, prev_run, other, cusip="999999999", shares=10, value_usd=500, row="oth")
-    _holding(db_session, current, cur_run, other, cusip="999999999", shares=10, value_usd=500, row="oth")
-    # DUP stock held under two CUSIPs -> one aggregated new_position.
-    _holding(db_session, current, cur_run, stock, cusip="111111111", shares=100, value_usd=1000, row="a")
-    _holding(db_session, current, cur_run, stock, cusip="222222222", shares=150, value_usd=1800, row="b")
+    # Previous: two UNLINKED holdings (stock_id NULL) under CUSIP A and B.
+    _holding(db_session, previous, prev_run, None, cusip="111111111", shares=100, value_usd=1000, row="a")
+    _holding(db_session, previous, prev_run, None, cusip="222222222", shares=150, value_usd=1500, row="b")
+    # Current: the same two CUSIPs, now both LINKED to one stock.
+    _holding(db_session, current, cur_run, stock, cusip="111111111", shares=110, value_usd=1100, row="a")
+    _holding(db_session, current, cur_run, stock, cusip="222222222", shares=160, value_usd=1600, row="b")
 
     result = compute_ownership_changes_for_manager_quarter(
         db_session, manager_id=manager.id, report_quarter="2026-Q1"
     )
     db_session.flush()
-    # New positions are keyed by CUSIP (existing convention), so identify the
-    # aggregated position by its stock_id rather than the security_key.
-    dup_rows = [r for r in _rows(db_session) if r.stock_id == stock.id]
+    statuses = sorted(r.change_status for r in _rows(db_session))
     assert result["status"] == "succeeded"
-    assert len(dup_rows) == 1
-    assert dup_rows[0].change_status == "new_position"
-    assert dup_rows[0].current_shares == 250
-    assert dup_rows[0].current_value_usd == 2800
+    assert "exited_position" not in statuses  # no false exit from premature merge
+    assert statuses == ["increased", "increased"]  # per-CUSIP fallback matches

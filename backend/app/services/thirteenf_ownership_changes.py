@@ -101,15 +101,17 @@ def compute_ownership_changes_for_manager_quarter(
     prior_quarter = previous_report_quarter(report_quarter)
     previous_filing = _active_filing(session, manager_id=manager_id, report_quarter=prior_quarter)
 
-    # The mapping-ratio gate is computed on RAW (per-lot) holdings to preserve
-    # its threshold behavior; row construction below then works on positions
-    # AGGREGATED by effective key, so two CUSIPs / repeated lots resolving to one
-    # security become a single additive position instead of a duplicate-key
-    # crash on uq_ownership_changes_manager_quarter_security_position (F3).
     mapping_ratio = _linked_common_mapping_ratio(current_holdings)
     unavailable_reason = _unavailable_reason(current_filing, previous_filing, mapping_ratio=mapping_ratio)
-    current_holdings = _aggregate_holdings(current_holdings)
     if unavailable_reason:
+        # F3: this branch builds one row per holding keyed by _holding_key, so two
+        # CUSIPs / repeated lots resolving to one security would collide on
+        # uq_ownership_changes_manager_quarter_security_position. Aggregate (sum)
+        # them into one additive position here. The normal _compute_rows path
+        # below deliberately does NOT aggregate: its two-pass matching keys
+        # unmatched holdings by distinct CUSIP (never colliding), and
+        # pre-collapsing would break the PRD §7.4 CUSIP-fallback for holdings that
+        # gain/lose stock mapping between quarters — so it feeds on RAW holdings.
         change_status = "unresolvable" if unavailable_reason == MAPPING_BLOCK_REASON else "no_prior_data"
         rows = [
             _build_change_row(
@@ -128,18 +130,16 @@ def compute_ownership_changes_for_manager_quarter(
                 caveat_codes=[unavailable_reason],
                 unavailable_reason=unavailable_reason,
             )
-            for holding in current_holdings
+            for holding in _aggregate_holdings(current_holdings)
         ]
         session.add_all(rows)
         session.flush()
         return {"created": len(rows), "deleted": deleted, "status": "succeeded"}
 
-    previous_holdings = _aggregate_holdings(
-        _direct_active_hr_holdings(
-            session,
-            manager_id=manager_id,
-            report_quarter=prior_quarter,
-        )
+    previous_holdings = _direct_active_hr_holdings(
+        session,
+        manager_id=manager_id,
+        report_quarter=prior_quarter,
     )
     rows = _compute_rows(
         manager_id=manager_id,
@@ -252,7 +252,8 @@ def _compute_rows(
     return rows
 
 
-def _sum_optional(values: Iterable[int | None]) -> int | None:
+def _sum_optional(values: Iterable):
+    """Sum the non-None values (ints or Decimals); None if all are None."""
     present = [v for v in values if v is not None]
     return sum(present) if present else None
 
@@ -288,7 +289,8 @@ def _merge_holdings(group: Sequence[Holding13F]) -> _AggregatedHolding:
         ssh_prnamt_type=representative.ssh_prnamt_type,
         put_call=representative.put_call,
         parse_run_id=representative.parse_run_id,
-        portfolio_weight_pct=representative.portfolio_weight_pct,
+        # Position weight is the sum of its lots' weights, not one lot's.
+        portfolio_weight_pct=_sum_optional(h.portfolio_weight_pct for h in group),
         holding_attribution_status=representative.holding_attribution_status,
     )
 

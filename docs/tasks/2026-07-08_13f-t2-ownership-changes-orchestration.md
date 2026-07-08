@@ -82,3 +82,12 @@ docker compose exec -T -e DATABASE_URL="$TEST_URL" api pytest -q      # closing 
 - 2026-07-08: 编排——quarterly_pipeline 在 quality 后插 `compute_ownership_changes`
   阶段(每 manager 一个 SAVEPOINT 隔离失败);另注册独立 job_type + lock builder 供
   单独重算。真实数据端到端:新 job 6 季 0 失败,4002 healed。
+- 2026-07-08: **外部三角度评审 → 独立复现 → 采纳**(见 `...-review-results.md` 的
+  PO/author disposition)。评审逮到我引入的两个回归:对 **normal 路径**做聚合会破坏
+  PRD §7.4 的跨季 CUSIP-fallback(#1 假清仓)并让 representative CUSIP 冒充仓位身份
+  误判 cusip_changed(#2)。**根因修复:把聚合收窄到唯一会撞 unique key 的
+  unavailable 分支**;`_compute_rows` 恢复吃 RAW holdings,#1/#2 随之消失。另修
+  #3(portfolio_weight 改求和)、#4(部分失败→partial_success,不再被成功掩盖)。
+  新增回归测试:mapping-transition 无假清仓、weight 求和、per-manager 失败隔离;
+  删除测本已回退行为的 normal-path 聚合测试。全量 1075 passed;真实数据重算 6 季
+  0 失败,4002 仍 2055 行。positions 读模型泛化 → backlog(low)。

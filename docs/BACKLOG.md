@@ -30,6 +30,26 @@ long — escalate to the user. **medium / low** = ordinary follow-up.
 - **Context:** T1 (`2026-07-08_13f-t1-restatement-activation-fix.md`) aligned only
   the restatement ranking key with `apply_amendment_policy`; the rest is T1-FU.
 
+### ownership_changes has no first-class "position" layer — per-lot rows fragment a stock held under multiple CUSIPs
+- **Found:** 2026-07-08, T2 external review (design verdict)
+- **Severity:** low (cleanliness / consumer ergonomics; no crash, no data loss —
+  shares are all accounted for, just split across rows)
+- **Problem:** the normal `_compute_rows` path keys change rows per-CUSIP (via
+  the PRD §7.4 fallback). A stock held under two CUSIPs that both persist across
+  quarters yields two change rows for one stock_id (one keyed `stock:<id>`, one
+  keyed `cusip:<other>`), and merged provenance fields (current_holding_id,
+  current_cusip) reference one lot. T2 aggregates only the unavailable branch
+  (where rows collide on the unique key); it deliberately does NOT aggregate the
+  matched path (pre-aggregating breaks cross-quarter CUSIP-fallback — see the
+  T2 review's [P1] #1). Fine for now, but consumers that treat one change row as
+  "the position" see fragments.
+- **Fix sketch:** a first-class positions read-model derived from raw holdings
+  (sum shares/value per (stock, ssh_prnamt_type, position_type), honest lot
+  provenance), consumed by the changes/holders APIs — instead of duck-typing
+  `Holding13F` at compute time. Also covers put/call aggregation separation and
+  representative-CUSIP semantics. Raw infotable rows stay the audit trail.
+- **Context:** `docs/tasks/2026-07-08_13f-t2-ownership-changes-orchestration-review-results.md` (Design Verdict)
+
 ### Combination-report filers (incl. Buffett/Berkshire) have ZERO direct holdings → invisible to the whole product
 - **Found:** 2026-07-08, first real-data ingestion into dev (verification pass)
 - **Severity:** high (product-correctness: the flagship use case is empty; no

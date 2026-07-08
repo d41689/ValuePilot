@@ -118,6 +118,40 @@ def test_compute_ownership_changes_only_touches_target_quarter(db_session):
     assert q4 == 0  # prior quarter is a data source, not recomputed here
 
 
+def test_compute_ownership_changes_isolates_per_manager_failure(db_session, monkeypatch):
+    """Review follow-up: one manager raising must not lose a sibling's rows, and
+    a partial failure must surface as partial_success (not succeeded)."""
+    from app.services import thirteenf_ownership_changes as oc
+
+    held = _mk_stock(db_session, "AAA")
+    m1 = _mk_manager(db_session)
+    m2 = _mk_manager(db_session)
+    for m, acc in [(m1, "A"), (m2, "B")]:
+        prev = _mk_filing(db_session, m, "2025-Q4", f"{acc}-25-000001")
+        cur = _mk_filing(db_session, m, "2026-Q1", f"{acc}-26-000001")
+        pr = _mk_run(db_session, prev)
+        cr = _mk_run(db_session, cur)
+        _mk_holding(db_session, prev, pr, held, "111111111", 100, 1000)
+        _mk_holding(db_session, cur, cr, held, "111111111", 150, 1500)
+
+    real = oc.compute_ownership_changes_for_manager_quarter
+
+    def flaky(session, *, manager_id, report_quarter):
+        if manager_id == m2.id:
+            raise RuntimeError("boom")
+        return real(session, manager_id=manager_id, report_quarter=report_quarter)
+
+    monkeypatch.setattr(oc, "compute_ownership_changes_for_manager_quarter", flaky)
+
+    summary = execute_job_payload(db_session, "compute_ownership_changes", {"quarter": "2026-Q1"})
+
+    assert summary["status"] == "partial_success"
+    assert summary["failure_count"] == 1
+    # m1's rows survived m2's rollback; m2 produced nothing.
+    assert db_session.query(OwnershipChange13F).filter_by(manager_id=m1.id).count() >= 1
+    assert db_session.query(OwnershipChange13F).filter_by(manager_id=m2.id).count() == 0
+
+
 def test_compute_ownership_changes_lock_key_is_quarter_scoped():
     assert (
         _JOB_LOCK_BUILDERS["compute_ownership_changes"]({"quarter": "2026-Q1"})
