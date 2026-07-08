@@ -93,6 +93,51 @@ def test_unset_rate_guard_url_raises_and_does_not_fetch(monkeypatch):
     assert calls == []
 
 
+def test_fetch_sends_bearer_when_api_key_set(monkeypatch):
+    monkeypatch.setattr(rg.settings, "RATE_GUARD_URL", RATE_GUARD)
+    monkeypatch.setattr(rg.settings, "RATE_GUARD_API_KEY", "s3cret")
+    seen: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["auth"] = request.headers.get("Authorization")
+        return _envelope(b"ok")
+
+    with RateGuardClient(http_client=_rg_http(handler)) as client:
+        client.fetch(upstream="edgar", method="GET", url="https://www.sec.gov/x")
+
+    assert seen["auth"] == "Bearer s3cret"
+
+
+def test_fetch_omits_auth_header_when_no_api_key(monkeypatch):
+    monkeypatch.setattr(rg.settings, "RATE_GUARD_URL", RATE_GUARD)
+    monkeypatch.setattr(rg.settings, "RATE_GUARD_API_KEY", None)
+    seen: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["auth"] = request.headers.get("Authorization")
+        return _envelope(b"ok")
+
+    with RateGuardClient(http_client=_rg_http(handler)) as client:
+        client.fetch(upstream="edgar", method="GET", url="https://www.sec.gov/x")
+
+    assert seen["auth"] is None
+
+
+def test_metrics_sends_bearer_when_api_key_set(monkeypatch):
+    monkeypatch.setattr(rg.settings, "RATE_GUARD_URL", RATE_GUARD)
+    monkeypatch.setattr(rg.settings, "RATE_GUARD_API_KEY", "s3cret")
+    seen: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["auth"] = request.headers.get("Authorization")
+        return _metrics_envelope({"edgar": {"x": 1}})
+
+    with RateGuardClient(http_client=_rg_http(handler)) as client:
+        client.metrics("edgar")
+
+    assert seen["auth"] == "Bearer s3cret"
+
+
 def test_upstream_non_200_carries_status(monkeypatch):
     monkeypatch.setattr(rg.settings, "RATE_GUARD_URL", RATE_GUARD)
 

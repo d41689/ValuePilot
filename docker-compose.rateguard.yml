@@ -19,9 +19,12 @@ services:
     environment:
       RATE_GUARD_CACHE_DIR: /data/cache
     ports:
-      # Host port for healthz / metrics inspection only; internal callers use
-      # http://rate-guard:9000 on the shared network.
-      - "${RATE_GUARD_HOST_PORT:-9099}:9000"
+      # Host port for healthz / metrics inspection and the cloudflared tunnel;
+      # internal callers use http://rate-guard:9000 on the shared network.
+      # Bound to loopback so the public surface is reachable only through the
+      # authenticated tunnel (cloudflared runs on the host and reaches
+      # localhost:9099), never by hitting the host's public IP on this port.
+      - "127.0.0.1:${RATE_GUARD_HOST_PORT:-9099}:9000"
     volumes:
       - ./storage/rate_guard_cache:/data/cache
     networks:

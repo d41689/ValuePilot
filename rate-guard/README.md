@@ -43,7 +43,8 @@ prod — *not* in the repo). The deploy workflow copies it to `./.env`.
 |---|---|---|
 | `SEC_CONTACT_EMAIL` | **yes** | SEC mandates a contactable User-Agent. Rate Guard **fails loud at startup** without it. |
 | `OPENFIGI_API_KEY` | no | Raises the OpenFIGI rate (~250/min with a key vs ~25/min without). |
-| `RATE_GUARD_HOST_PORT` | no | Host port for `/healthz` + `/v1/metrics`. Default `9099`. |
+| `RATE_GUARD_HOST_PORT` | no | Host port for `/healthz` + `/v1/metrics` (bound to `127.0.0.1`). Default `9099`. |
+| `RATE_GUARD_API_KEY` | no | Shared Bearer key. **Set only when Rate Guard is exposed publicly** (see below). Unset = auth disabled (internal-only default). |
 | `RATE_GUARD_EDGAR_RPS` / `RATE_GUARD_OPENFIGI_RPS` / `RATE_GUARD_DATAROMA_RPS` | no | Per-upstream rate overrides. |
 
 ### `RATE_GUARD_URL` — for the ValuePilot app, not Rate Guard itself
@@ -64,6 +65,29 @@ startup error — live external access without the guard is not allowed.
 - `POST /v1/fetch` — `{upstream, method, url, body?}` → the upstream response.
 - `GET /v1/metrics?upstream=<name>` — per-upstream rate/budget snapshot.
 - `GET /healthz` — liveness.
+
+## Public exposure (authenticated)
+
+Rate Guard is internal-only by default. If a machine outside the
+`projects-shared` network needs it (e.g. a remote dev box), expose it through
+the existing Cloudflare Tunnel on a **dedicated subdomain** and require the
+shared key:
+
+```
+https://rate-guard.richmom.vip/v1/fetch  →  cloudflared  →  localhost:9099  →  rate-guard:9000
+```
+
+- Use a **subdomain**, not a path under an existing host — cloudflared does not
+  strip a path prefix, so `.../rate-guard/v1/fetch` would arrive as
+  `/rate-guard/v1/fetch` and 404. A subdomain maps `/v1/fetch` straight through.
+- Set `RATE_GUARD_API_KEY` (see `openssl rand -hex 32`). With it set, every
+  path except `/healthz` requires `Authorization: Bearer <key>`; `/v1/fetch`
+  and `/v1/metrics` return `401` without it, **before** any upstream call.
+- The host port (`9099`) binds to `127.0.0.1` only, so the key can't be
+  bypassed by hitting `http://<host-public-ip>:9099/v1/fetch` directly — the
+  authenticated tunnel is the sole public path.
+- The remote caller sets `RATE_GUARD_URL=https://rate-guard.richmom.vip` and the
+  same `RATE_GUARD_API_KEY`; `RateGuardClient` sends the header automatically.
 
 ## Tests
 

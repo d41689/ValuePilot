@@ -14,6 +14,7 @@ from app.models.facts import MetricFact
 from app.models.institutions import Filing13F, Holding13F, InstitutionManager
 from app.models.oracles_lens import OraclesLensSignal
 from app.models.stocks import Stock, StockPrice
+from app.edgar.parsers.value_units import TRANSITION_ACCEPTED_DATE
 from app.services.oracles_lens.constants import SCORE_VERSION
 from app.services.oracles_lens.manager_signal import derive_manager_signal_profile
 
@@ -80,6 +81,15 @@ class ManagerHolding:
     high_turnover: bool = False
     # E-03: CIK threaded for EDGAR accession URL construction in the drawer.
     cik: str | None = None
+    # PR #97 (holder $ estimate unit fix): threaded so _holder_price_estimate
+    # can decide whether the SEC <value> field is in dollars (post-2023-01-03
+    # amendment) or thousands. ``value_usd`` is the canonical normalized
+    # column when populated; ``accepted_at`` is the SEC unit-transition
+    # signal; ``period_of_report`` is the period-based fallback for filings
+    # missing ``accepted_at`` (most of our PR #96 backfilled filings).
+    value_usd: int | None = None
+    accepted_at: date | None = None
+    period_of_report: date | None = None
 
 
 def build_oracles_lens_dashboard(
@@ -585,9 +595,22 @@ def _holdings_for_period(
                 accession_no=filing.accession_no,
                 manager_type_admin_classified=manager.manager_type or "unknown",
                 cik=manager.cik,
+                # PR #97: thread filing-level unit signals so the per-share
+                # estimate helper can pick the right unit rule.
+                accepted_at=(
+                    filing.accepted_at.date()
+                    if hasattr(filing.accepted_at, "date") and filing.accepted_at is not None
+                    else filing.accepted_at
+                ),
+                period_of_report=filing.period_of_report,
             )
         grouped[key].shares += int(holding.shares or 0)
         grouped[key].value_thousands += int(holding.value_thousands or 0)
+        # PR #97: accumulate value_usd ONLY when every contributing row has
+        # it populated. If any row is missing, leave value_usd as None so the
+        # helper falls back to the period-aware path on raw value_thousands.
+        if holding.value_usd is not None:
+            grouped[key].value_usd = (grouped[key].value_usd or 0) + int(holding.value_usd)
 
     for manager_holding in grouped.values():
         total_value = manager_holding.filing_total_value_thousands or 0
@@ -693,6 +716,127 @@ def _apply_manager_signal_profiles(holdings: dict[tuple[int, int], ManagerHoldin
             holding.manager_profile_source = profile.source
 
 
+def _holder_price_estimate(
+    *,
+    value_thousands: int | None,
+    value_usd: int | None,
+    shares: int | None,
+    accepted_at: date | None,
+    period_of_report: date | None,
+    peer_anchor: float | None = None,
+) -> float | None:
+    """Per-share dollar estimate for one holder's reported 13F position.
+
+    Why this exists (task: ``docs/tasks/2026-05-25_eod-prices-and-holder-estimate-fix.md``):
+    the SEC amended Form 13F-HR to report the ``<value>`` field in
+    DOLLARS rather than THOUSANDS for filings accepted on or after
+    ``TRANSITION_ACCEPTED_DATE`` (2023-01-03). The same column name
+    (``value_thousands``) covers both unit regimes. Worse, in practice
+    not every filer migrated — within a single (stock, period) we see
+    both regimes mixed (e.g., MSFT 2025-Q4: 29 of 32 holders post-2023
+    "dollars" rule, 3 of 32 still in "thousands" rule). A pure
+    period-based heuristic puts the 3 stragglers off by 1000× and the
+    aggregate range shown on the UI looks broken.
+
+    Resolution order:
+
+    1. **Prefer ``value_usd``** when populated — the parser already made
+       the unit decision using schema/version evidence + ``accepted_at``.
+    2. **Use ``peer_anchor``** (the median per-share for this same stock
+       across all holders) to pick between dollars-rule and thousands-rule
+       on a PER-ROW basis. Exactly one of the two candidates will be
+       within ~1× of the anchor; the other will be ~1000× off.
+    3. **Use ``accepted_at``** when there's no peer anchor.
+       ``accepted_at >= TRANSITION_ACCEPTED_DATE`` → raw value is dollars.
+    4. **Fall back to ``period_of_report``** when ``accepted_at`` is
+       absent. Periods on or after 2022-12-31 are almost always
+       post-rule.
+    5. **Return ``None``** if no unit evidence at all — a guess could be
+       1000× wrong, which is worse than no estimate.
+    """
+    if not shares or shares <= 0:
+        return None
+    # Truthy check on value_usd intentionally treats 0 as "not populated"
+    # because the legacy parse_run wrote 0 for the "unknown" fallback path.
+    if value_usd:
+        return value_usd / shares
+    if not value_thousands or value_thousands <= 0:
+        return None
+    p_dollars = value_thousands / shares
+    p_thousands = value_thousands * 1000 / shares
+    if peer_anchor and peer_anchor > 0:
+        # Log-space distance: the WRONG rule lands ~3 log-units off
+        # (factor of 1000); the RIGHT rule lands ~0 log-units off.
+        d_dollars = abs(math.log(p_dollars / peer_anchor)) if p_dollars > 0 else math.inf
+        d_thousands = abs(math.log(p_thousands / peer_anchor)) if p_thousands > 0 else math.inf
+        return p_dollars if d_dollars <= d_thousands else p_thousands
+    if accepted_at is not None:
+        return p_dollars if accepted_at >= TRANSITION_ACCEPTED_DATE else p_thousands
+    if period_of_report is not None:
+        # The transition-period cliff in period_of_report space: any
+        # period whose end is on or after 2022-12-31 was almost always
+        # reported (or amended) under the new dollars rule.
+        return p_dollars if period_of_report >= date(2022, 12, 31) else p_thousands
+    return None
+
+
+def _resolve_peer_anchor(holdings: list[ManagerHolding]) -> float | None:
+    """Pick a per-share-price anchor for a single (stock, period) cluster.
+
+    Used to disambiguate the SEC <value> unit on a per-row basis when
+    ``value_usd`` is not populated. Strategy:
+
+    * If any rows have ``value_usd`` populated, use median of their
+      per-share values — that's the canonical, parser-normalized signal.
+
+    * Otherwise: every row contributes TWO candidates (dollars-rule and
+      thousands-rule). Across all 2×N candidates, find the DENSEST
+      cluster — the per-share price value with the most other candidates
+      within ±10%. The "true" per-share price wins because for each
+      row, exactly one of its two candidates lands on the true price
+      (regardless of which rule is correct for that row). The wrong-rule
+      candidates land at the true-price-divided-or-multiplied-by-1000,
+      forming a much sparser cluster (mixed across two distant
+      locations).
+
+    Returns the median of the densest cluster, or ``None`` if no row
+    has enough data.
+    """
+    usd_per_share: list[float] = []
+    all_candidates: list[float] = []
+    for item in holdings:
+        if not item.shares or item.shares <= 0:
+            continue
+        if item.value_usd:
+            usd_value = item.value_usd / item.shares
+            usd_per_share.append(usd_value)
+            all_candidates.append(usd_value)
+            continue
+        if not item.value_thousands or item.value_thousands <= 0:
+            continue
+        all_candidates.append(item.value_thousands / item.shares)
+        all_candidates.append(item.value_thousands * 1000 / item.shares)
+    if usd_per_share:
+        return median(usd_per_share)
+    if not all_candidates:
+        return None
+    best_count = 0
+    best_value: float | None = None
+    for v in all_candidates:
+        if v <= 0:
+            continue
+        lo, hi = v * 0.9, v * 1.1
+        count = sum(1 for u in all_candidates if lo <= u <= hi)
+        if count > best_count:
+            best_count = count
+            best_value = v
+    if best_value is None:
+        return None
+    lo, hi = best_value * 0.9, best_value * 1.1
+    cluster = [u for u in all_candidates if lo <= u <= hi]
+    return median(cluster)
+
+
 def _stock_payload(
     holdings: list[ManagerHolding],
     *,
@@ -706,10 +850,21 @@ def _stock_payload(
     adders_count = sum(1 for item in holdings if item.action in {"new", "add"})
     reducers_count = sum(1 for item in holdings if item.action in {"reduce", "exit"})
     streak_values = [item.holding_streak_quarters for item in holdings]
+    peer_anchor = _resolve_peer_anchor(holdings)
     holder_price_estimates = [
-        item.value_thousands * 1000 / item.shares
-        for item in holdings
-        if item.shares and item.shares > 0 and item.value_thousands and item.value_thousands > 0
+        est
+        for est in (
+            _holder_price_estimate(
+                value_thousands=item.value_thousands,
+                value_usd=item.value_usd,
+                shares=item.shares,
+                accepted_at=item.accepted_at,
+                period_of_report=item.period_of_report,
+                peer_anchor=peer_anchor,
+            )
+            for item in holdings
+        )
+        if est is not None
     ]
     median_streak = int(median(streak_values)) if streak_values else 0
     max_streak = max(streak_values) if streak_values else 0
@@ -768,8 +923,15 @@ def _stock_payload(
                 "share_delta_pct": round(item.share_delta_pct, 6) if item.share_delta_pct is not None else None,
                 "current_value_thousands": item.value_thousands,
                 "holder_price_estimate": (
-                    round(item.value_thousands * 1000 / item.shares, 6)
-                    if item.shares and item.shares > 0 and item.value_thousands and item.value_thousands > 0
+                    round(est_top, 6)
+                    if (est_top := _holder_price_estimate(
+                        value_thousands=item.value_thousands,
+                        value_usd=item.value_usd,
+                        shares=item.shares,
+                        accepted_at=item.accepted_at,
+                        period_of_report=item.period_of_report,
+                        peer_anchor=peer_anchor,
+                    )) is not None
                     else None
                 ),
                 "position_weight": round(item.position_weight, 6),
