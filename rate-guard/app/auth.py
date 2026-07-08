@@ -45,7 +45,14 @@ def configured_api_keys() -> tuple[str, ...]:
     """
     keys = []
     for name, value in os.environ.items():
-        if name == _PRIMARY_KEY_ENV or name.startswith(_KEY_ENV_PREFIX):
+        # RATE_GUARD_API_KEY (exact) or RATE_GUARD_API_KEY_<LABEL> with a
+        # NON-EMPTY label. The bare prefix `RATE_GUARD_API_KEY_` is not a key —
+        # e.g. an env template `RATE_GUARD_API_KEY_${LABEL}` with LABEL unset
+        # must never become a credential.
+        is_key = name == _PRIMARY_KEY_ENV or (
+            name.startswith(_KEY_ENV_PREFIX) and name != _KEY_ENV_PREFIX
+        )
+        if is_key:
             stripped = value.strip()
             if stripped:
                 keys.append(stripped)

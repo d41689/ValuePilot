@@ -26,21 +26,22 @@ remote dev box's active key — now `RATE_GUARD_API_KEY_DEVELOPMENT`.
 
 ## Rollout (gap-proof)
 
-Ship the code first, then rename the host var — at no point is the remote key
-rejected:
+Deploys recreate rate-guard on **every** main merge (observed in-session), so an
+unrelated merge landing between the env rename and this PR could deploy **old
+code + the new env name** and reject key B (self-review finding #2). To be
+gap-proof regardless of merge ordering, keep **both** key names = B during the
+transition:
 
-1. Merge → auto-deploy (new code accepts the prefix; the running container's
-   baked-in `_PREVIOUS=B` still matches during the CI+deploy window; the
-   redeploy also copies the renamed canonical env — see step 2).
-2. Before merge, rename host `~/.config/valuepilot/.env`:
-   `RATE_GUARD_API_KEY_PREVIOUS` → `RATE_GUARD_API_KEY_DEVELOPMENT` (value B
-   unchanged). The old running container keeps `_PREVIOUS=B` in its baked env
-   until the deploy recreates it with the new code + `_DEVELOPMENT=B`.
-3. Verify: internal key A → 200, remote key B (now `_DEVELOPMENT`) → 200,
-   random → 401.
+1. On host `~/.config/valuepilot/.env`, **add** `RATE_GUARD_API_KEY_DEVELOPMENT`
+   = B while **keeping** `RATE_GUARD_API_KEY_PREVIOUS` = B. Old code accepts B via
+   `_PREVIOUS`, new code via either — no ordering can reject it.
+2. Merge → auto-deploy (new code live; both names accepted).
+3. Once the new code is confirmed live, **remove** `RATE_GUARD_API_KEY_PREVIOUS`
+   from the host env and recreate rate-guard only (no prod blip).
+4. Verify at each step: internal key A → 200, remote key B → 200, random → 401.
 
-Note: this is a code change, so it goes through the full auto-deploy — a brief
-prod `web`/`api` restart, not just rate-guard.
+Note: the merge (step 2) is a code change → full auto-deploy — a brief prod
+`web`/`api` restart, not just rate-guard.
 
 ## Test plan
 
@@ -53,4 +54,11 @@ Full canonical gate via CI on the PR.
 ## Sign-off
 
 - 2026-07-08: implemented; user chose the generic-prefix design. rate-guard suite
-  35 passed. PR + deploy + host-var rename pending.
+  35 passed. PR #106 opened.
+- 2026-07-08: self-review (P2s, no P0/P1). Fixed on-branch: (#1) the bare prefix
+  `RATE_GUARD_API_KEY_` (empty label) was accepted as a key — now requires a
+  non-empty label, with a `test_near_miss_var_names_are_not_keys` regression
+  (covers the empty-label + plural `RATE_GUARD_API_KEYS` near-misses). (#2)
+  rollout rewritten to keep both key names during the transition (above). No
+  prefix collision exists in the repo today (every other `RATE_GUARD_*` env var
+  uses a distinct prefix). PR + deploy + host-var rename pending.

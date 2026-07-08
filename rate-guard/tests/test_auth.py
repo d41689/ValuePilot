@@ -96,6 +96,20 @@ def test_non_key_prefixed_var_is_not_a_key(monkeypatch):
     assert configured_api_keys() == ()
 
 
+def test_near_miss_var_names_are_not_keys(monkeypatch):
+    """The bare prefix (empty label) and a plural near-miss must NOT be keys —
+    guards against a template `RATE_GUARD_API_KEY_${LABEL}` with LABEL unset, or
+    a typo pluralising the primary var, silently becoming a credential. A real
+    key is set so auth is ENABLED (else no keys → auth disabled → all allowed)."""
+    monkeypatch.setenv("RATE_GUARD_API_KEY", "real")          # auth enabled
+    monkeypatch.setenv("RATE_GUARD_API_KEY_", "empty-label")  # bare prefix — not a key
+    monkeypatch.setenv("RATE_GUARD_API_KEYS", "plural")       # no underscore — not a key
+    assert configured_api_keys() == ("real",)
+    assert is_authorized("Bearer real") is True
+    assert is_authorized("Bearer empty-label") is False
+    assert is_authorized("Bearer plural") is False
+
+
 # --- startup config enforcement ---------------------------------------------
 
 def test_enforce_raises_when_required_but_no_key(monkeypatch):
