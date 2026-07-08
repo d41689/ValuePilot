@@ -9,6 +9,124 @@ long — escalate to the user. **medium / low** = ordinary follow-up.
 
 ## Open
 
+### Active-filing selection is scattered; accepted_at unpopulated; restatement ties + concurrency unhandled
+- **Found:** 2026-07-08, T1 external review (`2026-07-08_13f-t1-restatement-activation-fix-review-results.md`)
+- **Severity:** medium (correctness/robustness; no active data loss — T1 made the
+  winner deterministic and crash-free)
+- **Problem:** "which filing is active for a (manager, quarter_end_date)" is
+  decided in 4 places with different rules (`_do_ingest_holdings`, ingest-job
+  Phase 4 + Phase 5, `apply_amendment_policy`). `accepted_at` is NULL on all 373
+  real filings (bulk-ingest path never populates it), so accepted_at ordering is
+  inert and degrades to accession_no everywhere. The equal-accepted_at "do not
+  auto-switch, flag `amendment_sort_warning`" rule that `apply_amendment_policy`
+  applies to originals is NOT applied to restatements. Concurrent per-accession
+  `reparse_accession` jobs for two restatements of one period can race the
+  guard's SELECT-then-mutate (no (manager, period) lock) → silent wrong-winner or
+  `uq_active_filing_per_manager_period` abort.
+- **Fix sketch:** full plan in `docs/tasks/2026-07-08_13f-t1fu-active-filing-authority.md`
+  — one `select_active_filing()` authority; populate accepted_at; tie→warning
+  (gated on accepted_at populated); advisory/`FOR UPDATE` lock keyed on
+  (manager_id, quarter_end_date).
+- **Context:** T1 (`2026-07-08_13f-t1-restatement-activation-fix.md`) aligned only
+  the restatement ranking key with `apply_amendment_policy`; the rest is T1-FU.
+
+### `ownership_changes` precompute has no production caller (orchestration never wired)
+- **Found:** 2026-07-08, during first real-data ingestion into dev (post Rate Guard setup)
+- **Severity:** medium
+- **Problem:** `compute_ownership_changes_for_manager_quarter`
+  (`backend/app/services/thirteenf_ownership_changes.py`, MVP2-02) is only
+  called from tests. The `quarterly_pipeline` job's five stages (index →
+  ingest → enrich → quality → lens scoring) never materialize
+  `ownership_changes_13f`, so `GET /13f/managers/{id}/holdings/changes`
+  returns `NO_COMPUTED_CHANGES` after a full pipeline run. The MVP2-02 task
+  doc (2026-05-10) explicitly deferred "a later orchestration task" that was
+  never created. Blocks investor-workflow tickets 01/02 data-wise.
+- **Fix sketch:** add a `compute_ownership_changes` stage to
+  `quarterly_pipeline` (after quality_check) looping the idempotent
+  per-manager/quarter service function; plus a standalone job_type for
+  targeted recompute. Dev workaround used 2026-07-08: one-off loop script.
+- **Context:** `docs/tasks/2026-05-10_13f-mvp2-change-analysis.md` (deferred note)
+
+### Combination-report filers (incl. Buffett/Berkshire) have ZERO direct holdings → invisible to the whole product
+- **Found:** 2026-07-08, first real-data ingestion into dev (verification pass)
+- **Severity:** high (product-correctness: the flagship use case is empty; no
+  data loss)
+- **Problem:** per PRD §12 attribution rules, `DFND` discretion + parseable
+  `other_managers_raw` → `holding_attribution_status='reported_for_other'`.
+  Filers whose 13F lists their *own included sub-managers* in OTHERMANAGER
+  (classic combination reports) get **every holding** excluded from `direct`.
+  On real data, 7 of 82 managers have zero direct holdings: **Warren
+  Buffett/Berkshire (543), Howard Marks/Oaktree (1116), Michael Burry/Scion
+  (30), Prem Watsa/Fairfax (144), Cantillon (375), Egerton (123), Engaged
+  (42)**. Consequences: `GET /13f/managers/{id}/holdings/changes` →
+  NO_COMPUTED_CHANGES; Oracle's Lens score components for Berkshire = 0 of
+  8k+/quarter — "Oracle's Lens" cannot see the Oracle. The PRD's planned MVP3
+  re-attribution ("归因到该 manager") assumes the other manager is a distinct
+  known filer; for combination reports the sub-managers are not universe
+  members, so holdings never come back.
+- **Fix sketch (needs PO decision):** when the OTHERMANAGER numbers resolve to
+  *included managers of the same filing* (cover-page other-included-managers
+  table), attribute holdings to the **filer** (`direct`, or a new
+  `direct_combined` status included in product queries with the existing
+  combination caveat). Keep true cross-filer attributions excluded.
+- **Context:** PRD `docs/prd/13f_automation_and_resilience_prd.md` §638/§646;
+  verified live on dev 2026-07-08.
+
+### `compute_ownership_changes_for_manager_quarter` crashes when two CUSIPs map to one stock
+- **Found:** 2026-07-08, during first real-data ingestion into dev
+- **Severity:** medium
+- **Problem:** when a filing holds two CUSIPs that both map to the same
+  `stock_id` (share-class pairs, CUSIP changes), two rows share the unique key
+  `(manager_id, report_quarter, security_key, ssh_prnamt_type, position_type)`
+  (`security_key='stock:<id>'`) and the insert violates
+  `uq_ownership_changes_manager_quarter_security_position`. Hit live in the
+  unavailable branch (combination report → `no_prior_data` rows built 1:1 per
+  holding with no dedup by security key). The normal `_compute_rows` path
+  dedups fine — live run confirmed only the unavailable branch fails: 5 of
+  355 real manager/quarter pairs skipped, all manager 4002 (combination-report
+  filer holding share-class CUSIP pairs).
+- **Fix sketch:** aggregate holdings by `(security_key, ssh_prnamt_type,
+  position_type)` before building rows (sum shares/value, union caveats), or
+  key on CUSIP when two CUSIPs share a stock. Regression test: one filing,
+  two CUSIPs → one stock, both branches (normal + unavailable).
+- **Context:** dev orchestration 2026-07-08 skips affected pairs
+  (UI shows honest `NO_COMPUTED_CHANGES`); fix unblocks them.
+
+### CLI ingest commands write product-invisible legacy holdings (no ParseRun)
+- **Found:** 2026-07-08, during first real-data ingestion into dev
+- **Severity:** medium
+- **Problem:** `backfill` / `ingest-holdings` in `backend/app/cli/edgar.py` call
+  the legacy `ingest_filing_holdings`, which inserts `holdings_13f` rows with
+  `parse_run_id = NULL`. The product query contract (PRD §7.3,
+  `active_hr_holdings_query`) inner-joins `parse_runs.is_current = true`, so
+  every CLI-ingested holding is invisible to Oracle's Lens, the managers API,
+  and ownership-change compute — recreating exactly the "inconsistent
+  pre-MVP1B-parser state" Pre-MVP6-01 diagnosed. The modern path
+  (`ingest_if_needed` via the `ingest_holdings` job) also does the Phase 4
+  column heal + solo-HR activation the CLI path lacks.
+- **Fix sketch:** point the CLI commands at `ingest_if_needed` /
+  `_execute_ingest_job` semantics (or deprecate them in favor of the job),
+  and have `backfill` delegate per-quarter to the job path.
+- **Context:** dev remediation 2026-07-08 — legacy rows deleted, all six
+  quarters re-ingested via `execute_job_payload('ingest_holdings', ...)`
+
+### CLI `backfill` skips the newest report quarter's holdings (period-proxy window miss)
+- **Found:** 2026-07-08, during first real-data ingestion into dev
+- **Severity:** medium
+- **Problem:** `backfill` (`backend/app/cli/edgar.py`) Step 2 selects pending
+  filings by `period_of_report BETWEEN <report-quarter bounds>`, but a
+  freshly indexed filing's `period_of_report` is a proxy (= `filed_at`) until
+  its primary doc is parsed. Filings for the newest report quarter (filed in
+  the *following* calendar quarter, e.g. 2026-Q1 reports filed Apr–May 2026)
+  fall outside every queried window and are silently skipped — `backfill
+  --quarters 5` on 2026-07-08 left all 73 of the freshest-quarter filings
+  un-ingested while reporting 0 failures. Remediation that worked:
+  `ingest-holdings --quarter <filing-quarter>` (window matches the proxy).
+- **Fix sketch:** in Step 2, select pending filings by form.idx filing
+  quarter (or `filed_at` window) instead of the not-yet-corrected
+  `period_of_report`; add a regression test with proxy-period filings.
+- **Context:** this file's entry + session log 2026-07-08 (real-data dev bootstrap)
+
 ### Rate Guard public path has no auth-failure / abuse observability
 - **Found:** 2026-07-08, PR #103 staff review
 - **Severity:** medium

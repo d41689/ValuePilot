@@ -334,6 +334,235 @@ def test_reconcile_restatement_activation_skips_non_restatement(db_session):
     assert f.amendment_status == "amendments_pending"
 
 
+def _restatement_chain(db_session):
+    """HR -> HR/A#1 -> HR/A#2 in one (manager, quarter_end_date), mirroring the
+    live crash case (manager 4007 / 2025-Q3). ids ascend with filing order so
+    the reproduction matches production's UOW PK-ordered UPDATE emission."""
+    _clear(db_session)
+    manager = _manager(db_session)
+    qend = date(2024, 3, 31)
+    f_orig = Filing13F(
+        manager_id=manager.id, accession_no="O1", accession_number="O1",
+        form_type="13F-HR", period_of_report=qend, filed_at=date(2024, 5, 14),
+        quarter_end_date=qend, is_active_for_manager_period=False,
+        is_latest_for_period=False, parse_status="succeeded",
+    )
+    f_r1 = Filing13F(
+        manager_id=manager.id, accession_no="A1", accession_number="A1",
+        form_type="13F-HR/A", period_of_report=qend, filed_at=date(2024, 5, 15),
+        quarter_end_date=qend, is_active_for_manager_period=False,
+        is_latest_for_period=False, is_amendment=True,
+        amendment_type="RESTATEMENT", amendment_status="pending_parse",
+        parse_status="succeeded",
+    )
+    f_r2 = Filing13F(
+        manager_id=manager.id, accession_no="A2", accession_number="A2",
+        form_type="13F-HR/A", period_of_report=qend, filed_at=date(2024, 5, 16),
+        quarter_end_date=qend, is_active_for_manager_period=False,
+        is_latest_for_period=True, is_amendment=True,
+        amendment_type="RESTATEMENT", amendment_status="pending_parse",
+        parse_status="succeeded",
+    )
+    db_session.add_all([f_orig, f_r1, f_r2])
+    db_session.flush()
+    return f_orig, f_r1, f_r2
+
+
+def test_reconcile_restatement_latest_wins_regardless_of_call_order(db_session):
+    """T1: with two RESTATEMENTs in one period, the LATEST-filed one is the
+    active filing no matter which one reconcile is called on, and reconciling
+    an earlier restatement must never demote the later winner."""
+    from app.services.thirteenf_holdings_ingest import reconcile_restatement_activation
+
+    f_orig, f_r1, f_r2 = _restatement_chain(db_session)
+
+    # Mirror Phase 3: the latest restatement is already active.
+    f_r2.is_active_for_manager_period = True
+    f_r2.amendment_status = "applied"
+    f_orig.is_active_for_manager_period = False
+    db_session.flush()
+
+    # Phase 5 then re-reconciles the EARLIER restatement first (filed_at asc).
+    # This must NOT crash and must NOT steal activation from the later winner.
+    assert reconcile_restatement_activation(db_session, f_r1) is False
+    db_session.flush()
+    assert f_r1.is_active_for_manager_period is False
+    assert f_r2.is_active_for_manager_period is True
+
+
+def test_reconcile_restatement_demote_then_activate_is_constraint_safe(db_session):
+    """T1: activating a restatement must flush the demotion of a HIGHER-id active
+    filing before setting itself active, or SQLAlchemy's PK-ordered UPDATE
+    emission activates the lower-id restatement first and trips
+    uq_active_filing_per_manager_period. This hazard is independent of the
+    latest-wins short-circuit, so the demoted row here is a plain original."""
+    from sqlalchemy.exc import IntegrityError
+    from app.services.thirteenf_holdings_ingest import reconcile_restatement_activation
+
+    _clear(db_session)
+    manager = _manager(db_session)
+    qend = date(2024, 3, 31)
+    # Insert the restatement FIRST so it gets the LOWER id.
+    f_restate = Filing13F(
+        manager_id=manager.id, accession_no="R1", accession_number="R1",
+        form_type="13F-HR/A", period_of_report=qend, filed_at=date(2024, 5, 16),
+        quarter_end_date=qend, is_active_for_manager_period=False,
+        is_latest_for_period=True, is_amendment=True, amendment_type="RESTATEMENT",
+        amendment_status="pending_parse", parse_status="succeeded",
+    )
+    db_session.add(f_restate)
+    db_session.flush()
+    # A currently-active plain original with a HIGHER id (e.g. re-ingested after
+    # the amendment). Not a RESTATEMENT, so the latest-wins guard does not
+    # short-circuit — reconcile must demote it, and that demote must be flushed
+    # before the lower-id activation.
+    f_active = Filing13F(
+        manager_id=manager.id, accession_no="H1", accession_number="H1",
+        form_type="13F-HR", period_of_report=qend, filed_at=date(2024, 5, 14),
+        quarter_end_date=qend, is_active_for_manager_period=True,
+        is_latest_for_period=False, parse_status="succeeded",
+    )
+    db_session.add(f_active)
+    db_session.flush()
+    assert f_restate.id < f_active.id  # the hazardous id ordering
+
+    try:
+        assert reconcile_restatement_activation(db_session, f_restate) is True
+        db_session.flush()
+    except IntegrityError:  # pragma: no cover - the bug the flush fixes
+        pytest.fail("reconcile must flush demotion before activation")
+
+    assert f_restate.is_active_for_manager_period is True
+    assert f_active.is_active_for_manager_period is False
+    # Idempotent.
+    assert reconcile_restatement_activation(db_session, f_restate) is False
+
+
+def _restatement(db_session, manager, *, acc, filed, accepted=None, parse="succeeded",
+                 latest=False, active=False):
+    from datetime import datetime, timezone
+    qend = date(2024, 3, 31)
+    f = Filing13F(
+        manager_id=manager.id, accession_no=acc, accession_number=acc,
+        form_type="13F-HR/A", period_of_report=qend, filed_at=filed,
+        quarter_end_date=qend, is_active_for_manager_period=active,
+        is_latest_for_period=latest, is_amendment=True, amendment_type="RESTATEMENT",
+        amendment_status="pending_parse", parse_status=parse,
+        accepted_at=(datetime(*accepted, tzinfo=timezone.utc) if accepted else None),
+    )
+    db_session.add(f)
+    db_session.flush()
+    return f
+
+
+def test_reconcile_restatement_ranks_by_accepted_at_over_accession(db_session):
+    """T1 (review follow-up): accepted_at outranks accession_no — a later-accepted
+    restatement wins even when its accession sorts LOWER, matching
+    apply_amendment_policy's (accepted_at, accession_no) key. Guards against the
+    original filed_at/id key that ignored accepted_at."""
+    from app.services.thirteenf_holdings_ingest import reconcile_restatement_activation
+
+    _clear(db_session)
+    manager = _manager(db_session)
+    # LOWER accession but LATER accepted_at -> should win.
+    r_win = _restatement(db_session, manager, acc="AAA1", filed=date(2024, 5, 15),
+                         accepted=(2024, 5, 16, 11), latest=True)
+    # HIGHER accession but EARLIER accepted_at -> should lose.
+    r_lose = _restatement(db_session, manager, acc="AAA2", filed=date(2024, 5, 15),
+                          accepted=(2024, 5, 16, 9))
+
+    # The higher-accession-but-earlier-accepted one must NOT claim activation.
+    assert reconcile_restatement_activation(db_session, r_lose) is False
+    db_session.flush()
+    assert r_lose.is_active_for_manager_period is False
+    # The later-accepted one wins despite its lower accession.
+    assert reconcile_restatement_activation(db_session, r_win) is True
+    db_session.flush()
+    assert r_win.is_active_for_manager_period is True
+    assert r_lose.is_active_for_manager_period is False
+
+
+def test_reconcile_three_restatements_only_latest_active_any_call_order(db_session):
+    """T1 (review follow-up): with 3 parsed restatements, only the latest
+    (by accession, accepted_at all NULL) ends active no matter the call order."""
+    from app.services.thirteenf_holdings_ingest import reconcile_restatement_activation
+
+    _clear(db_session)
+    manager = _manager(db_session)
+    r1 = _restatement(db_session, manager, acc="A1", filed=date(2024, 5, 15))
+    r2 = _restatement(db_session, manager, acc="A2", filed=date(2024, 5, 16), latest=True)
+    r3 = _restatement(db_session, manager, acc="A3", filed=date(2024, 5, 17))
+
+    # Deliberately non-sorted call order.
+    for f in (r2, r1, r3):
+        reconcile_restatement_activation(db_session, f)
+        db_session.flush()
+
+    db_session.refresh(r1); db_session.refresh(r2); db_session.refresh(r3)
+    assert [r1.is_active_for_manager_period, r2.is_active_for_manager_period,
+            r3.is_active_for_manager_period] == [False, False, True]
+
+
+def test_reconcile_ignores_failed_later_restatement(db_session):
+    """T1 (review follow-up): a later restatement that FAILED to parse must not
+    block the latest SUCCEEDED restatement from being active."""
+    from app.services.thirteenf_holdings_ingest import reconcile_restatement_activation
+
+    _clear(db_session)
+    manager = _manager(db_session)
+    r_ok = _restatement(db_session, manager, acc="A1", filed=date(2024, 5, 15), latest=True)
+    _restatement(db_session, manager, acc="A2", filed=date(2024, 5, 16), parse="failed")
+
+    assert reconcile_restatement_activation(db_session, r_ok) is True
+    db_session.flush()
+    assert r_ok.is_active_for_manager_period is True
+
+
+def test_ingest_path_multi_restatement_latest_wins_out_of_order(db_session):
+    """T1 (review follow-up): exercise the REAL ingest caller
+    (ingest_holdings_for_filing -> reconcile inside the savepoint), not a direct
+    reconcile call. Ingesting an earlier restatement AFTER a later one must not
+    steal activation from the later winner."""
+    from app.services.thirteenf_holdings_ingest import ingest_holdings_for_filing
+
+    _clear(db_session)
+    manager = _manager(db_session)
+    qend = date(2024, 3, 31)
+    f_orig = Filing13F(
+        manager_id=manager.id, accession_no="ORIG", accession_number="ORIG",
+        form_type="13F-HR", period_of_report=qend, filed_at=date(2024, 5, 14),
+        quarter_end_date=qend, is_active_for_manager_period=True,
+        is_latest_for_period=False,
+    )
+    f_r1 = Filing13F(
+        manager_id=manager.id, accession_no="AMEND1", accession_number="AMEND1",
+        form_type="13F-HR/A", period_of_report=qend, filed_at=date(2024, 5, 15),
+        quarter_end_date=qend, is_active_for_manager_period=False,
+        is_latest_for_period=False, is_amendment=True, amendment_type="RESTATEMENT",
+        amendment_status="pending_parse",
+    )
+    f_r2 = Filing13F(
+        manager_id=manager.id, accession_no="AMEND2", accession_number="AMEND2",
+        form_type="13F-HR/A", period_of_report=qend, filed_at=date(2024, 5, 16),
+        quarter_end_date=qend, is_active_for_manager_period=False,
+        is_latest_for_period=True, is_amendment=True, amendment_type="RESTATEMENT",
+        amendment_status="pending_parse",
+    )
+    db_session.add_all([f_orig, f_r1, f_r2])
+    db_session.flush()
+
+    infotable = b"<informationTable xmlns='http://www.sec.gov/edgar/document/thirteenf/informationtable'><infoTable><nameOfIssuer>APPLE INC</nameOfIssuer><titleOfClass>COM</titleOfClass><cusip>037833100</cusip><value>8000000</value><shrsOrPrnAmt><sshPrnamt>50000</sshPrnamt><sshPrnamtType>SH</sshPrnamtType></shrsOrPrnAmt><investmentDiscretion>SOLE</investmentDiscretion><votingAuthority><Sole>50000</Sole><Shared>0</Shared><None>0</None></votingAuthority></infoTable></informationTable>"
+
+    # Ingest the LATER restatement first, then the EARLIER one (out of order).
+    ingest_holdings_for_filing(db_session, f_r2, infotable)
+    ingest_holdings_for_filing(db_session, f_r1, infotable)
+
+    db_session.refresh(f_orig); db_session.refresh(f_r1); db_session.refresh(f_r2)
+    assert f_r2.is_active_for_manager_period is True
+    assert f_r1.is_active_for_manager_period is False
+    assert f_orig.is_active_for_manager_period is False
+
+
 def test_apply_primary_doc_metadata_flags_amendment_from_form_type(db_session):
     """A 13F-HR/A is treated as an amendment even when the primary-doc parser
     does not flag is_amendment — the "/A" form type is authoritative. (P2.)
