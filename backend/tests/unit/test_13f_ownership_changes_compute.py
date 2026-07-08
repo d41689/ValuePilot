@@ -586,3 +586,57 @@ def test_compute_changes_is_idempotent_for_manager_quarter(db_session):
     assert first == {"created": 1, "deleted": 0, "status": "succeeded"}
     assert second == {"created": 1, "deleted": 1, "status": "succeeded"}
     assert db_session.query(OwnershipChange13F).count() == 1
+
+
+def test_compute_aggregates_two_cusips_one_stock_no_prior(db_session):
+    """F3: two holdings mapping to one stock (two CUSIPs) in the unavailable
+    (no-prior) branch must aggregate into ONE row summing shares/value — not
+    crash on uq_ownership_changes_manager_quarter_security_position."""
+    manager = _manager(db_session)
+    stock = _stock(db_session, "DUP")
+    current = _filing(db_session, manager, quarter="2026-Q1", accession="0000000009-26-000001")
+    run = _parse_run(db_session, current)
+    _holding(db_session, current, run, stock, cusip="111111111", shares=100, value_usd=1000, row="a")
+    _holding(db_session, current, run, stock, cusip="222222222", shares=150, value_usd=1800, row="b")
+
+    result = compute_ownership_changes_for_manager_quarter(
+        db_session, manager_id=manager.id, report_quarter="2026-Q1"
+    )
+    db_session.flush()
+    rows = _rows(db_session)
+    assert result["status"] == "succeeded"
+    assert len(rows) == 1
+    assert rows[0].security_key == f"stock:{stock.id}"
+    assert rows[0].current_shares == 250
+    assert rows[0].current_value_usd == 2800
+
+
+def test_compute_aggregates_two_cusips_one_stock_new_position(db_session):
+    """F3: same aggregation in the normal (with-prior) path — a new position held
+    under two CUSIPs mapping to one stock yields ONE aggregated new_position row."""
+    manager = _manager(db_session)
+    stock = _stock(db_session, "DUP")
+    other = _stock(db_session, "OTH")
+    previous = _filing(db_session, manager, quarter="2025-Q4", accession="0000000009-25-000001")
+    current = _filing(db_session, manager, quarter="2026-Q1", accession="0000000009-26-000002")
+    prev_run = _parse_run(db_session, previous)
+    cur_run = _parse_run(db_session, current)
+    # Unrelated carried-forward stock keeps a prior filing present + mapping ratio healthy.
+    _holding(db_session, previous, prev_run, other, cusip="999999999", shares=10, value_usd=500, row="oth")
+    _holding(db_session, current, cur_run, other, cusip="999999999", shares=10, value_usd=500, row="oth")
+    # DUP stock held under two CUSIPs -> one aggregated new_position.
+    _holding(db_session, current, cur_run, stock, cusip="111111111", shares=100, value_usd=1000, row="a")
+    _holding(db_session, current, cur_run, stock, cusip="222222222", shares=150, value_usd=1800, row="b")
+
+    result = compute_ownership_changes_for_manager_quarter(
+        db_session, manager_id=manager.id, report_quarter="2026-Q1"
+    )
+    db_session.flush()
+    # New positions are keyed by CUSIP (existing convention), so identify the
+    # aggregated position by its stock_id rather than the security_key.
+    dup_rows = [r for r in _rows(db_session) if r.stock_id == stock.id]
+    assert result["status"] == "succeeded"
+    assert len(dup_rows) == 1
+    assert dup_rows[0].change_status == "new_position"
+    assert dup_rows[0].current_shares == 250
+    assert dup_rows[0].current_value_usd == 2800

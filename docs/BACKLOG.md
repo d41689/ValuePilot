@@ -30,23 +30,6 @@ long — escalate to the user. **medium / low** = ordinary follow-up.
 - **Context:** T1 (`2026-07-08_13f-t1-restatement-activation-fix.md`) aligned only
   the restatement ranking key with `apply_amendment_policy`; the rest is T1-FU.
 
-### `ownership_changes` precompute has no production caller (orchestration never wired)
-- **Found:** 2026-07-08, during first real-data ingestion into dev (post Rate Guard setup)
-- **Severity:** medium
-- **Problem:** `compute_ownership_changes_for_manager_quarter`
-  (`backend/app/services/thirteenf_ownership_changes.py`, MVP2-02) is only
-  called from tests. The `quarterly_pipeline` job's five stages (index →
-  ingest → enrich → quality → lens scoring) never materialize
-  `ownership_changes_13f`, so `GET /13f/managers/{id}/holdings/changes`
-  returns `NO_COMPUTED_CHANGES` after a full pipeline run. The MVP2-02 task
-  doc (2026-05-10) explicitly deferred "a later orchestration task" that was
-  never created. Blocks investor-workflow tickets 01/02 data-wise.
-- **Fix sketch:** add a `compute_ownership_changes` stage to
-  `quarterly_pipeline` (after quality_check) looping the idempotent
-  per-manager/quarter service function; plus a standalone job_type for
-  targeted recompute. Dev workaround used 2026-07-08: one-off loop script.
-- **Context:** `docs/tasks/2026-05-10_13f-mvp2-change-analysis.md` (deferred note)
-
 ### Combination-report filers (incl. Buffett/Berkshire) have ZERO direct holdings → invisible to the whole product
 - **Found:** 2026-07-08, first real-data ingestion into dev (verification pass)
 - **Severity:** high (product-correctness: the flagship use case is empty; no
@@ -71,26 +54,6 @@ long — escalate to the user. **medium / low** = ordinary follow-up.
   combination caveat). Keep true cross-filer attributions excluded.
 - **Context:** PRD `docs/prd/13f_automation_and_resilience_prd.md` §638/§646;
   verified live on dev 2026-07-08.
-
-### `compute_ownership_changes_for_manager_quarter` crashes when two CUSIPs map to one stock
-- **Found:** 2026-07-08, during first real-data ingestion into dev
-- **Severity:** medium
-- **Problem:** when a filing holds two CUSIPs that both map to the same
-  `stock_id` (share-class pairs, CUSIP changes), two rows share the unique key
-  `(manager_id, report_quarter, security_key, ssh_prnamt_type, position_type)`
-  (`security_key='stock:<id>'`) and the insert violates
-  `uq_ownership_changes_manager_quarter_security_position`. Hit live in the
-  unavailable branch (combination report → `no_prior_data` rows built 1:1 per
-  holding with no dedup by security key). The normal `_compute_rows` path
-  dedups fine — live run confirmed only the unavailable branch fails: 5 of
-  355 real manager/quarter pairs skipped, all manager 4002 (combination-report
-  filer holding share-class CUSIP pairs).
-- **Fix sketch:** aggregate holdings by `(security_key, ssh_prnamt_type,
-  position_type)` before building rows (sum shares/value, union caveats), or
-  key on CUSIP when two CUSIPs share a stock. Regression test: one filing,
-  two CUSIPs → one stock, both branches (normal + unavailable).
-- **Context:** dev orchestration 2026-07-08 skips affected pairs
-  (UI shows honest `NO_COMPUTED_CHANGES`); fix unblocks them.
 
 ### CLI ingest commands write product-invisible legacy holdings (no ParseRun)
 - **Found:** 2026-07-08, during first real-data ingestion into dev

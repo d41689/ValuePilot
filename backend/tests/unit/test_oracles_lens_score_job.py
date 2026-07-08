@@ -87,9 +87,9 @@ def test_execute_job_oracles_lens_scoring_honors_min_holders_override(db_session
 
 
 def test_quarterly_pipeline_includes_oracles_lens_scoring_stage(db_session):
-    """The 5-stage quarterly_pipeline runs oracles_lens_score_backfill after
-    quality_check. Each stage is stubbed so the test asserts orchestration,
-    not the individual stage logic."""
+    """The 6-stage quarterly_pipeline runs compute_ownership_changes after
+    quality_check and oracles_lens_score_backfill after that. Each stage is
+    stubbed so the test asserts orchestration, not the individual stage logic."""
     seen_stage_job_types: list[str] = []
 
     def fake_stage(session, *, parent_payload, job_type, payload):
@@ -114,7 +114,9 @@ def test_quarterly_pipeline_includes_oracles_lens_scoring_stage(db_session):
         "ingest_holdings",
         "enrich_metadata",
         "quality_check",
+        "compute_ownership_changes",
         "oracles_lens_score_backfill",
     ]
     assert summary["status"] == "succeeded"
+    assert "ownership_changes" in summary
     assert "oracles_lens_scoring" in summary

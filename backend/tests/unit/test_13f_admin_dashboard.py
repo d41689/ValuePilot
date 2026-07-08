@@ -1640,7 +1640,8 @@ def test_quarterly_pipeline_records_retryable_stage_jobs(db_session, monkeypatch
         {"job_type": "ingest_holdings", "job_id": stage_jobs[1].id, "status": "succeeded"},
         {"job_type": "enrich_metadata", "job_id": stage_jobs[2].id, "status": "succeeded"},
         {"job_type": "quality_check", "job_id": stage_jobs[3].id, "status": "succeeded"},
-        {"job_type": "oracles_lens_score_backfill", "job_id": stage_jobs[4].id, "status": "succeeded"},
+        {"job_type": "compute_ownership_changes", "job_id": stage_jobs[4].id, "status": "succeeded"},
+        {"job_type": "oracles_lens_score_backfill", "job_id": stage_jobs[5].id, "status": "succeeded"},
     ]
     assert calls == [
         "index:2025-Q4",
@@ -1657,6 +1658,7 @@ def test_quarterly_pipeline_records_retryable_stage_jobs(db_session, monkeypatch
         "ingest_holdings",
         "enrich_metadata",
         "quality_check",
+        "compute_ownership_changes",
         "oracles_lens_score_backfill",
     ]
     assert all(job.trigger_source == "pipeline" for job in stage_jobs)
@@ -1815,17 +1817,19 @@ def test_quarterly_pipeline_continues_after_retryable_enrichment_failure(
         {"job_type": "ingest_holdings", "job_id": stage_jobs[1].id, "status": "succeeded"},
         {"job_type": "enrich_metadata", "job_id": stage_jobs[2].id, "status": "failed"},
         {"job_type": "quality_check", "job_id": stage_jobs[3].id, "status": "succeeded"},
-        {"job_type": "oracles_lens_score_backfill", "job_id": stage_jobs[4].id, "status": "succeeded"},
+        {"job_type": "compute_ownership_changes", "job_id": stage_jobs[4].id, "status": "succeeded"},
+        {"job_type": "oracles_lens_score_backfill", "job_id": stage_jobs[5].id, "status": "succeeded"},
     ]
     assert [job.job_type for job in stage_jobs] == [
         "fetch_quarter_index",
         "ingest_holdings",
         "enrich_metadata",
         "quality_check",
+        "compute_ownership_changes",
         "oracles_lens_score_backfill",
     ]
     assert [job.status for job in stage_jobs] == [
-        "succeeded", "succeeded", "failed", "succeeded", "succeeded",
+        "succeeded", "succeeded", "failed", "succeeded", "succeeded", "succeeded",
     ]
     assert stage_jobs[2].error_message == "CUSIP enrichment failed"
     assert stage_jobs[2].input_json["parent_job_id"] == 99

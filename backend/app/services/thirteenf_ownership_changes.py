@@ -9,7 +9,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal
-from typing import Sequence
+from typing import Iterable, Sequence
 
 from sqlalchemy.orm import Session
 
@@ -40,6 +40,26 @@ class _Pair:
     key: _HoldingKey
     current: Holding13F | None
     previous: Holding13F | None
+
+
+@dataclass(frozen=True)
+class _AggregatedHolding:
+    """Read-only stand-in for a merged position — two CUSIPs (or repeated lots)
+    that resolve to one effective (security_key, ssh_prnamt_type, position_type).
+    Duck-types the Holding13F attributes the change-compute helpers read: shares
+    and value are group sums; identity/provenance fields come from the
+    largest-value member. Never persisted — only fed through row construction."""
+    id: int
+    stock_id: int | None
+    cusip: str | None
+    ssh_prnamt: int | None
+    shares: int | None
+    value_usd: int | None
+    ssh_prnamt_type: str | None
+    put_call: str | None
+    parse_run_id: int | None
+    portfolio_weight_pct: Decimal | None
+    holding_attribution_status: str | None
 
 
 def previous_report_quarter(report_quarter: str) -> str:
@@ -81,8 +101,14 @@ def compute_ownership_changes_for_manager_quarter(
     prior_quarter = previous_report_quarter(report_quarter)
     previous_filing = _active_filing(session, manager_id=manager_id, report_quarter=prior_quarter)
 
+    # The mapping-ratio gate is computed on RAW (per-lot) holdings to preserve
+    # its threshold behavior; row construction below then works on positions
+    # AGGREGATED by effective key, so two CUSIPs / repeated lots resolving to one
+    # security become a single additive position instead of a duplicate-key
+    # crash on uq_ownership_changes_manager_quarter_security_position (F3).
     mapping_ratio = _linked_common_mapping_ratio(current_holdings)
     unavailable_reason = _unavailable_reason(current_filing, previous_filing, mapping_ratio=mapping_ratio)
+    current_holdings = _aggregate_holdings(current_holdings)
     if unavailable_reason:
         change_status = "unresolvable" if unavailable_reason == MAPPING_BLOCK_REASON else "no_prior_data"
         rows = [
@@ -108,10 +134,12 @@ def compute_ownership_changes_for_manager_quarter(
         session.flush()
         return {"created": len(rows), "deleted": deleted, "status": "succeeded"}
 
-    previous_holdings = _direct_active_hr_holdings(
-        session,
-        manager_id=manager_id,
-        report_quarter=prior_quarter,
+    previous_holdings = _aggregate_holdings(
+        _direct_active_hr_holdings(
+            session,
+            manager_id=manager_id,
+            report_quarter=prior_quarter,
+        )
     )
     rows = _compute_rows(
         manager_id=manager_id,
@@ -222,6 +250,47 @@ def _compute_rows(
             )
         )
     return rows
+
+
+def _sum_optional(values: Iterable[int | None]) -> int | None:
+    present = [v for v in values if v is not None]
+    return sum(present) if present else None
+
+
+def _aggregate_holdings(holdings: Sequence[Holding13F]) -> list:
+    """Collapse holdings sharing an effective key into one additive position.
+
+    A manager's stake in a security is the sum of its 13F infotable rows for that
+    security (multiple CUSIPs mapping to one stock, or repeated lots). Grouping by
+    `_holding_key` — (security_key, ssh_prnamt_type, position_type) — guarantees at
+    most one row per unique-constraint key downstream. Singletons pass through
+    unchanged; multi-member groups become an `_AggregatedHolding`."""
+    groups: dict[_HoldingKey, list[Holding13F]] = {}
+    for holding in holdings:
+        groups.setdefault(_holding_key(holding), []).append(holding)
+    aggregated: list = []
+    for group in groups.values():
+        aggregated.append(group[0] if len(group) == 1 else _merge_holdings(group))
+    return aggregated
+
+
+def _merge_holdings(group: Sequence[Holding13F]) -> _AggregatedHolding:
+    representative = max(group, key=lambda h: (_value_usd(h) or 0, h.id))
+    total_shares = _sum_optional(_shares(h) for h in group)
+    total_value = _sum_optional(_value_usd(h) for h in group)
+    return _AggregatedHolding(
+        id=representative.id,
+        stock_id=representative.stock_id,
+        cusip=representative.cusip,
+        ssh_prnamt=total_shares,
+        shares=total_shares,
+        value_usd=total_value,
+        ssh_prnamt_type=representative.ssh_prnamt_type,
+        put_call=representative.put_call,
+        parse_run_id=representative.parse_run_id,
+        portfolio_weight_pct=representative.portfolio_weight_pct,
+        holding_attribution_status=representative.holding_attribution_status,
+    )
 
 
 def _matched_pairs(current_holdings: Sequence[Holding13F], previous_holdings: Sequence[Holding13F]) -> list[_Pair]:
