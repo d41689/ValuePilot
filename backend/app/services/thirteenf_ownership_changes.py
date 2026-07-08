@@ -60,6 +60,7 @@ class _AggregatedHolding:
     parse_run_id: int | None
     portfolio_weight_pct: Decimal | None
     holding_attribution_status: str | None
+    investment_discretion: str | None
 
 
 def previous_report_quarter(report_quarter: str) -> str:
@@ -230,6 +231,12 @@ def _compute_rows(
             current_filing=current_filing,
             previous_filing=previous_filing,
         )
+        # T3: shared/defined-discretion provenance (combination / included-manager
+        # reporting). Transparency only — the position is the filer's genuine
+        # reportable exposure, so it is NOT demoted; the caveat just prevents an
+        # aggregated vote reading as an independent sole-manager conviction.
+        if _is_shared_discretion(pair.current, current_filing) or _is_shared_discretion(pair.previous, previous_filing):
+            caveats = _dedupe_codes([*caveats, "shared_discretion"])
         rows.append(
             _build_change_row(
                 manager_id=manager_id,
@@ -258,17 +265,22 @@ def _sum_optional(values: Iterable):
     return sum(present) if present else None
 
 
-def _aggregate_holdings(holdings: Sequence[Holding13F]) -> list:
-    """Collapse holdings sharing an effective key into one additive position.
+def _aggregate_holdings(holdings: Sequence[Holding13F], key_fn=None) -> list:
+    """Collapse holdings sharing a key into one additive position (sum shares +
+    value). A security is often listed multiple times in one infotable — a
+    combination report splits a position across included managers — so those lots
+    must sum into one row, deterministically.
 
-    A manager's stake in a security is the sum of its 13F infotable rows for that
-    security (multiple CUSIPs mapping to one stock, or repeated lots). Grouping by
-    `_holding_key` — (security_key, ssh_prnamt_type, position_type) — guarantees at
-    most one row per unique-constraint key downstream. Singletons pass through
-    unchanged; multi-member groups become an `_AggregatedHolding`."""
+    `key_fn` selects the grouping key: `_holding_key` (security_key, ssh_type,
+    position_type) for the unavailable branch, which keys its rows that way; and
+    `_cusip_key` for `_matched_pairs`, which keys and matches per CUSIP (so it
+    must not pre-merge two distinct CUSIPs that happen to share a stock).
+    Singletons pass through unchanged; multi-member groups become an
+    `_AggregatedHolding`."""
+    key_fn = key_fn or _holding_key
     groups: dict[_HoldingKey, list[Holding13F]] = {}
     for holding in holdings:
-        groups.setdefault(_holding_key(holding), []).append(holding)
+        groups.setdefault(key_fn(holding), []).append(holding)
     aggregated: list = []
     for group in groups.values():
         aggregated.append(group[0] if len(group) == 1 else _merge_holdings(group))
@@ -292,38 +304,71 @@ def _merge_holdings(group: Sequence[Holding13F]) -> _AggregatedHolding:
         # Position weight is the sum of its lots' weights, not one lot's.
         portfolio_weight_pct=_sum_optional(h.portfolio_weight_pct for h in group),
         holding_attribution_status=representative.holding_attribution_status,
+        # Shared if ANY merged lot is shared-discretion (T3 caveat derivation).
+        investment_discretion=next(
+            (h.investment_discretion for h in group if h.investment_discretion in ("DFND", "OTR")),
+            representative.investment_discretion,
+        ),
     )
 
 
 def _matched_pairs(current_holdings: Sequence[Holding13F], previous_holdings: Sequence[Holding13F]) -> list[_Pair]:
-    """Match by stock identity first, then CUSIP for stragglers.
+    """Match positions across quarters deterministically (PRD §7.4).
 
-    PRD §7.4 requires CUSIP fallback when either side lacks `stock_id`.
-    This prevents a holding that gained a stock mapping between quarters from
-    becoming a false exited_position + new_position pair.
+    Order-independent and duplicate-safe:
+    1. Same-CUSIP lots within a quarter are aggregated into one position (a
+       security listed multiple times in one infotable — combination reports
+       split a position across included managers).
+    2. Pass 1 matches exact CUSIP identity — the same lot across quarters. This
+       is the only place two lots of one stock are paired, so a security held
+       under multiple CUSIPs matches each CUSIP to itself (never cross-lot), and
+       a holding that merely gained/lost a stock mapping still matches by CUSIP.
+    3. Pass 2 matches any remainder at the stock level to catch a genuine CUSIP
+       change / corporate action (a position whose CUSIP itself changed), pairing
+       sorted lots 1:1 so it is deterministic.
+    4. Pass 3 emits the leftovers as new_position (current only) / exited_position
+       (previous only).
+
+    Every row is keyed by CUSIP; stock-level identity is preserved on the row's
+    stock_id. Summing multiple CUSIP lots of one stock into a single position is
+    the deferred positions read-model (see BACKLOG).
     """
-    current_by_stock = {_stock_key(holding): holding for holding in current_holdings if holding.stock_id}
-    previous_by_stock = {_stock_key(holding): holding for holding in previous_holdings if holding.stock_id}
+    current_by_cusip = {_cusip_key(h): h for h in _aggregate_holdings(current_holdings, key_fn=_cusip_key)}
+    previous_by_cusip = {_cusip_key(h): h for h in _aggregate_holdings(previous_holdings, key_fn=_cusip_key)}
+
     pairs: list[_Pair] = []
-    matched_current_ids: set[int] = set()
-    matched_previous_ids: set[int] = set()
+    matched_current: set[_HoldingKey] = set()
+    matched_previous: set[_HoldingKey] = set()
 
-    for key in sorted(current_by_stock.keys() & previous_by_stock.keys(), key=lambda item: item.security_key):
-        current = current_by_stock[key]
-        previous = previous_by_stock[key]
-        pairs.append(_Pair(key=key, current=current, previous=previous))
-        matched_current_ids.add(current.id)
-        matched_previous_ids.add(previous.id)
+    # Pass 1 — exact CUSIP identity (same lot across quarters).
+    for key in sorted(current_by_cusip.keys() & previous_by_cusip.keys(), key=lambda item: item.security_key):
+        pairs.append(_Pair(key=key, current=current_by_cusip[key], previous=previous_by_cusip[key]))
+        matched_current.add(key)
+        matched_previous.add(key)
 
-    current_remaining = [holding for holding in current_holdings if holding.id not in matched_current_ids]
-    previous_remaining = [holding for holding in previous_holdings if holding.id not in matched_previous_ids]
-    current_by_cusip = {_cusip_key(holding): holding for holding in current_remaining}
-    previous_by_cusip = {_cusip_key(holding): holding for holding in previous_remaining}
+    # Pass 2 — stock-level match for the remainder (a CUSIP change / corporate
+    # action). Group remaining stock-linked lots by stock and pair sorted 1:1.
+    current_by_stock: dict[_HoldingKey, list[_HoldingKey]] = {}
+    previous_by_stock: dict[_HoldingKey, list[_HoldingKey]] = {}
+    for key, holding in current_by_cusip.items():
+        if key not in matched_current and holding.stock_id:
+            current_by_stock.setdefault(_stock_key(holding), []).append(key)
+    for key, holding in previous_by_cusip.items():
+        if key not in matched_previous and holding.stock_id:
+            previous_by_stock.setdefault(_stock_key(holding), []).append(key)
+    for stock_key in sorted(current_by_stock.keys() & previous_by_stock.keys(), key=lambda item: item.security_key):
+        current_keys = sorted(current_by_stock[stock_key], key=lambda item: item.security_key)
+        previous_keys = sorted(previous_by_stock[stock_key], key=lambda item: item.security_key)
+        for current_key, previous_key in zip(current_keys, previous_keys):
+            pairs.append(_Pair(key=current_key, current=current_by_cusip[current_key], previous=previous_by_cusip[previous_key]))
+            matched_current.add(current_key)
+            matched_previous.add(previous_key)
 
-    for key in sorted(current_by_cusip.keys() | previous_by_cusip.keys(), key=lambda item: item.security_key):
-        current = current_by_cusip.get(key)
-        previous = previous_by_cusip.get(key)
-        pairs.append(_Pair(key=_pair_key(current, previous), current=current, previous=previous))
+    # Pass 3 — leftovers: new_position (current only) / exited_position (previous only).
+    for key in sorted(current_by_cusip.keys() - matched_current, key=lambda item: item.security_key):
+        pairs.append(_Pair(key=key, current=current_by_cusip[key], previous=None))
+    for key in sorted(previous_by_cusip.keys() - matched_previous, key=lambda item: item.security_key):
+        pairs.append(_Pair(key=key, current=None, previous=previous_by_cusip[key]))
     return pairs
 
 
@@ -437,18 +482,6 @@ def _cusip_key(holding: Holding13F) -> _HoldingKey:
     )
 
 
-def _pair_key(current: Holding13F | None, previous: Holding13F | None) -> _HoldingKey:
-    # CUSIP-fallback pairs are always keyed by CUSIP. A both-stock_id pair only
-    # reaches the fallback when the stock-match pass already consumed one lot of
-    # that stock (a security held under multiple CUSIPs in a quarter) — keying
-    # this straggler by stock would collide with that stock-match row and violate
-    # uq_ownership_changes_manager_quarter_security_position (T3 exposed this once
-    # combination filers like Berkshire gained direct holdings). Per-CUSIP keying
-    # keeps both lots as distinct, correct rows. Summing multi-CUSIP lots into one
-    # position is the deferred positions read-model (see BACKLOG).
-    return _cusip_key(current or previous)
-
-
 def _linked_common_mapping_ratio(holdings: Sequence[Holding13F]) -> float | None:
     common_holdings = [
         holding
@@ -521,6 +554,15 @@ def _has_pending_amendment_caveat(filing: Filing13F | None) -> bool:
     if not filing:
         return False
     return filing.amendment_status in {"amendments_pending", "amendment_failed"}
+
+
+def _is_shared_discretion(holding, filing: Filing13F | None) -> bool:
+    """A position is shared-discretion (combination / included-manager reporting)
+    if its own discretion is DFND/OTR — catching sub-threshold shared positions
+    with no cover-page entry — or its filing lists cover-page included managers."""
+    if holding is not None and getattr(holding, "investment_discretion", None) in ("DFND", "OTR"):
+        return True
+    return bool(filing is not None and filing.other_managers_included)
 
 
 def _adjust_for_filing_caveats(

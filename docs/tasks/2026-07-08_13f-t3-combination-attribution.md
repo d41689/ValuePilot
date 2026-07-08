@@ -87,16 +87,51 @@ docker compose exec -T -e DATABASE_URL="$TEST_URL" api pytest -q      # closing 
       **巴菲特 changes API=available/62 行**(16 清仓/7 减/6 增/4 新建);7 家全部进
       Oracle's Lens;无双计(每股一 holder)。Oaktree changes 仍 unavailable = mapping-ratio
       门(55/147 已链,0.35),属 CUSIP 富化覆盖问题,非归因/非本 crash。
+- [x] **评审整改(4 项 merge blocker)** — 见 `...-review-results.md` 与下方 Log:
+      #2 确定性 CUSIP-优先匹配、#1 DFND/OTR 无 Column 7 也 direct、#3 持仓级共享
+      caveat、#4 可执行生产 runbook。全量后端复跑绿;真实数据经 runbook 脚本自验通过。
 - [ ] PO 签收
-- [x] 清 `docs/BACKLOG.md` F4 条目;新增双计护栏 backlog(deferred)
+- [x] 清 `docs/BACKLOG.md` F4 条目;新增双计护栏 + sub-threshold-caveat + positions backlog
+
+## 生产滚动 (runbook)
+
+T3 含数据回填 + 两个物化产物重算。部署自动化只做 build+健康检查(迁移/回填按
+AGENTS.md 约定手动),故部署后**运行一次**幂等自验脚本(顺序:回填 → 重算变动 →
+重算 Lens → 校验,任一校验失败即非零退出):
+
+```bash
+# 代码上线后,在 prod api 容器内:
+docker compose -f docker-compose.prod.yml exec -T api python -m scripts.t3_attribution_rollout
+```
+
+脚本校验:无残留 `reported_for_other`/`shared`、零零-direct、每-manager 变动重算
+零失败、旗舰 Berkshire 有 direct 持仓且有真实变动。dev 上已跑通(exit 0)。
 
 ## Log
 
-- 2026-07-08: 规则改为「凡在本人 HR/HR-A infotable 中的持仓即该管理人可申报仓位
-  → direct」;DFND/OTR + 序号引用 → direct,无引用 → unresolved。复用 `direct`,
-  消费端零改动。数据核实:OTR 全 839 有引用;Engaged(零-direct 之一)的 42 行是
-  OTR,故 OTR 必须纳入。backfill 复用 `_compute_attribution_status`(存储的
-  discretion 已规范化)。
+- 2026-07-08: 规则(初版)DFND/OTR + 序号引用 → direct,无引用 → unresolved。复用
+  `direct`,消费端零改动。backfill 复用 `_compute_attribution_status`。
+- 2026-07-08: **外部评审 4 项 merge blocker 全部整改(独立复现后采纳)。**
+  **#2 匹配:** 真实数据无多-distinct-CUSIP、却有 2,174 组同-CUSIP 重复 lot(组合
+  申报把一笔仓位拆到多个纳入管理人);且评审复现的"倒序插入 + `_direct_active_hr_holdings`
+  无 ORDER BY"会让 dict 折叠跨-lot 错配 → 假清仓/假新建/假 cusip_changed。重写
+  `_matched_pairs`:先按 CUSIP 聚合同-CUSIP lot,再 **精确 CUSIP 优先匹配**(确定性、
+  与顺序无关),余量再做 stock 级(真 cusip 变更),最后 new/exited。删除死代码
+  `_pair_key`。**#1 归因:** 依 SEC FAQ 37/46/48,与低于 $100M 门槛的管理人共享裁量
+  时聚合进本人申报且**不列 Column 7**——空 Column 7 不是排除信号。真实数据 Cantillon
+  的 Adobe 被拆成"有引用 direct / 无引用 unresolved"两半(更大的 628,547 股被误排除)。
+  改为 **SOLE/DFND/OTR 一律 direct,与 Column 7 无关**;仅无法识别裁量 → unresolved。
+  同步修 PO 计划 §2 与误导性注释。**#3 caveat:** 从持仓级(DFND/OTR)+ 封面
+  `other_managers_included` 派生 `SHARED_DISCRETION` caveat,不再仅看
+  `report_type==combination_report`——Berkshire 的 complete holdings_report 现在带
+  caveat。透明标注、**不降级**(是申报人真实敞口,降级会重新压制旗舰)。接到三处:
+  `_filing_caveats`(管理人页/持有人)、ownership_changes 行、Oracle's Lens
+  per-holder caveats。**#4 runbook:** 新增 `backend/scripts/t3_attribution_rollout.py`
+  幂等自验脚本(回填→重算变动→重算 Lens→校验)+ 任务doc runbook 段。
+  **验证:** 全量后端复跑绿;rollout 脚本 dev 自验 exit 0(零-direct=0、变动重算 0 失败、
+  Berkshire direct=543 / real_changes=174)。残留(backlog):7 家 sub-threshold-无封面
+  列名的共享持仓,其 changes/Lens 已由持仓级 discretion 打上 caveat,但管理人页
+  `_filing_caveats`(仅看 filing)未覆盖 → 记 backlog。
 - 2026-07-08: **端到端验收暴露连带 crash**:归因把 5 家(Berkshire/Nygren/Gayner/
   Rogers/Hawkins,各持 18–76 只「同季一股多 CUSIP」)首次送入 changes normal 路径
   → dup-key 崩溃(T2 的 per-manager savepoint 已优雅隔离为 partial_success,无数据

@@ -460,11 +460,15 @@ def test_post_2023_infotable_value_usd_equals_raw_value(db_session):
 # ---------------------------------------------------------------------------
 
 # T3 (combination attribution): a holding in a manager's OWN infotable is that
-# manager's reportable position. DFND/OTR with cover-page included-manager refs
-# is the multi-manager/combination pattern -> `direct`; without refs it is
-# genuinely `unresolved`. (Was: DFND+refs -> reported_for_other, OTR -> shared.)
+# manager's reportable position, so SOLE/DFND/OTR all attribute to the filer as
+# `direct` REGARDLESS of a Column-7 (other_managers_raw) reference. Per SEC Form
+# 13F FAQ 37/46/48, a manager sharing discretion with a sub-threshold manager
+# aggregates those securities into its own filing WITHOUT naming the other manager
+# in Column 7 — so an empty Column 7 must not exclude the position. Only a
+# holding with no recognized discretion at all is `unresolved`. (Was: DFND+refs
+# -> reported_for_other, OTR -> shared; and no-refs wrongly -> unresolved.)
 
-def test_otr_without_managers_is_unresolved_shared_alias(db_session):
+def test_otr_without_managers_is_direct(db_session):
     _clear(db_session)
     manager = _manager(db_session)
     filing = _hr_filing(db_session, manager, "0001067983-24-000220")
@@ -474,10 +478,10 @@ def test_otr_without_managers_is_unresolved_shared_alias(db_session):
 
     h = db_session.query(Holding13F).filter_by(filing_id=filing.id).one()
     assert h.investment_discretion == "OTR"
-    assert h.holding_attribution_status == "unresolved"
+    assert h.holding_attribution_status == "direct"
 
 
-def test_other_normalizes_to_otr_no_refs_is_unresolved(db_session):
+def test_other_normalizes_to_otr_no_refs_is_direct(db_session):
     _clear(db_session)
     manager = _manager(db_session)
     filing = _hr_filing(db_session, manager, "0001067983-24-000221")
@@ -487,7 +491,7 @@ def test_other_normalizes_to_otr_no_refs_is_unresolved(db_session):
 
     h = db_session.query(Holding13F).filter_by(filing_id=filing.id).one()
     assert h.investment_discretion == "OTR"
-    assert h.holding_attribution_status == "unresolved"
+    assert h.holding_attribution_status == "direct"
 
 
 def test_otr_with_parseable_managers_is_direct(db_session):
@@ -542,7 +546,7 @@ def test_dfnd_with_parseable_managers_is_direct(db_session):
     assert h.holding_attribution_status == "direct"
 
 
-def test_dfnd_without_managers_is_unresolved(db_session):
+def test_dfnd_without_managers_is_direct(db_session):
     _clear(db_session)
     manager = _manager(db_session)
     filing = _hr_filing(db_session, manager, "0001067983-24-000225")
@@ -552,6 +556,21 @@ def test_dfnd_without_managers_is_unresolved(db_session):
 
     h = db_session.query(Holding13F).filter_by(filing_id=filing.id).one()
     assert h.investment_discretion == "DFND"
+    # No Column-7 reference is not an exclusion signal (SEC FAQ 37/46/48).
+    assert h.holding_attribution_status == "direct"
+
+
+def test_unrecognized_discretion_is_unresolved(db_session):
+    """Only a holding with no recognized discretion is unresolved — the one case
+    we genuinely cannot attribute to the filer."""
+    _clear(db_session)
+    manager = _manager(db_session)
+    filing = _hr_filing(db_session, manager, "0001067983-24-000227")
+
+    xml = _sole_holding_xml(discretion="XYZ").encode()
+    ingest_holdings_for_filing(db_session, filing, xml)
+
+    h = db_session.query(Holding13F).filter_by(filing_id=filing.id).one()
     assert h.holding_attribution_status == "unresolved"
 
 
@@ -776,17 +795,19 @@ def test_backfill_holding_attribution_migrates_legacy_statuses(db_session):
 
     dfnd_ref = _h("111111111", "DFND", "4,5", "reported_for_other")   # -> direct
     otr_ref = _h("222222222", "OTR", "1,2", "shared")                 # -> direct
-    dfnd_noref = _h("333333333", "DFND", None, "unresolved")          # unchanged
+    dfnd_noref = _h("333333333", "DFND", None, "unresolved")          # -> direct (no Column 7 is not exclusion)
+    otr_noref = _h("555555555", "OTR", None, "shared")                # -> direct
     sole = _h("444444444", "SOLE", None, "direct")                    # unchanged
 
     changed = backfill_holding_attribution(db_session)
-    for h in (dfnd_ref, otr_ref, dfnd_noref, sole):
+    for h in (dfnd_ref, otr_ref, dfnd_noref, otr_noref, sole):
         db_session.refresh(h)
 
-    assert changed == 2
+    assert changed == 4  # all four DFND/OTR legacy rows migrate to direct
     assert dfnd_ref.holding_attribution_status == "direct"
     assert otr_ref.holding_attribution_status == "direct"
-    assert dfnd_noref.holding_attribution_status == "unresolved"
+    assert dfnd_noref.holding_attribution_status == "direct"
+    assert otr_noref.holding_attribution_status == "direct"
     assert sole.holding_attribution_status == "direct"
     # Idempotent second run changes nothing.
     assert backfill_holding_attribution(db_session) == 0

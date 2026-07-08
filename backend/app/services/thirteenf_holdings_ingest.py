@@ -56,19 +56,21 @@ def _compute_attribution_status(
 
     A holding that appears in a manager's HR/HR-A infotable IS that manager's
     reportable 13(f) position. SOLE is sole discretion; DFND/OTR is shared
-    discretion where the co-managers are the filing's own cover-page included
-    managers (their sequence numbers land in `other_managers_raw`) — the classic
-    multi-manager / combination-report pattern. All are the filer's reportable
-    holdings → `direct`. Without any co-manager reference we cannot confirm the
-    intra-filing sharing, so DFND/OTR stays `unresolved`. Exclusion of holdings
-    "reported by other managers" lives at the FILING level (13F-NT, which has no
-    infotable), not here. The sole-vs-shared nuance is preserved in the stored
-    `investment_discretion` column.
+    discretion — the co-managers may be the filing's own included managers or a
+    sub-threshold manager whose securities are aggregated into this filing. Per
+    SEC Form 13F FAQ 37/46/48, that sub-threshold case is reported WITHOUT naming
+    the other manager in Column 7 (`other_managers_raw`), so an empty Column 7 is
+    NOT an exclusion signal — the position still belongs to the filer. Therefore
+    SOLE/DFND/OTR all attribute to the filer as `direct` regardless of Column 7.
+    Only a holding with no recognized discretion is `unresolved`. Exclusion of
+    holdings "reported by other managers" lives at the FILING level (13F-NT, which
+    has no infotable), not here. The sole-vs-shared nuance is preserved in the
+    stored `investment_discretion` column; whether discretion is shared (and with
+    whom) drives a caveat, not exclusion. `other_managers_raw` is accepted for
+    signature compatibility but no longer gates attribution.
     """
     if normalized_discretion in ("SOLE", "DFND", "OTR"):
-        if normalized_discretion == "SOLE":
-            return "direct"
-        return "direct" if (other_managers_raw and other_managers_raw.strip()) else "unresolved"
+        return "direct"
     return "unresolved"
 
 

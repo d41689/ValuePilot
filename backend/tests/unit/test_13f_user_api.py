@@ -586,3 +586,30 @@ def test_stock_holders_rejects_invalid_quarter(client, db_session):
     response = client.get(f"/api/v1/13f/stocks/{stock.id}/holders?quarter=2026-Q5")
 
     assert response.status_code == 422
+
+
+def test_filing_caveats_surfaces_shared_discretion_on_complete_holdings_report(db_session):
+    """Review #3: a COMPLETE holdings_report that lists cover-page included
+    managers (Berkshire-style) surfaces a SHARED_DISCRETION caveat even though
+    report_type != combination_report — so its holdings are not shown as
+    uncaveated independent sole-manager positions."""
+    from app.services.thirteenf_user_api import _filing_caveats
+
+    manager = _manager(db_session)
+    filing = _filing(db_session, manager, "0001193125-26-990001")
+    filing.other_managers_included = [{"cik": "0000000004", "name": "GEICO CORP"}]
+    db_session.flush()
+
+    codes = {c["code"] for c in _filing_caveats(filing)}
+    assert "SHARED_DISCRETION" in codes
+    assert "COMBINATION_REPORT" not in codes  # not gated on report_type/coverage
+
+
+def test_filing_caveats_no_shared_discretion_without_included_managers(db_session):
+    from app.services.thirteenf_user_api import _filing_caveats
+
+    manager = _manager(db_session)
+    filing = _filing(db_session, manager, "0001193125-26-990002")
+    db_session.flush()
+    codes = {c["code"] for c in _filing_caveats(filing)}
+    assert "SHARED_DISCRETION" not in codes
