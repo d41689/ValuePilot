@@ -9,20 +9,6 @@ long — escalate to the user. **medium / low** = ordinary follow-up.
 
 ## Open
 
-### Rate Guard key not yet in dev api container — EDGAR calls 401
-- **Found:** 2026-07-08, PR #103 rollout
-- **Severity:** medium (dev-only — prod verified working with the key)
-- **Problem:** Enabling `RATE_GUARD_API_KEY` turned on auth for the shared Rate
-  Guard, but `valuepilot-dev-api-1`'s running container predates the key and does
-  not carry it, so its EDGAR/OpenFIGI/Dataroma fetches 401. Fixing it needs a
-  container recreate, which is coupled to the already-merged #99 (dev → shared
-  Postgres) compose change, so it was deliberately not triggered as a side effect.
-- **Fix sketch:** recreate `valuepilot-dev-api-1` (`docker compose up -d api`,
-  after confirming the shared Postgres is ready) so it picks up
-  `RATE_GUARD_API_KEY` from the shared `.env`; verify dev EDGAR → 200.
-- **Context:** `docs/tasks/2026-07-08_rate-guard-auth-hardening.md`;
-  review `docs/tasks/2026-07-07_rate-guard-public-auth-review-results.md` (#10)
-
 ### Rate Guard public path has no auth-failure / abuse observability
 - **Found:** 2026-07-08, PR #103 staff review
 - **Severity:** medium

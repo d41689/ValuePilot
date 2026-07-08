@@ -477,3 +477,38 @@ Run in `python:3.11-slim` against the real ASGI app (`RATE_GUARD_API_KEY=s3cret`
 Diff check: pre-change `docker-compose.rateguard.yml` bound
 `"${RATE_GUARD_HOST_PORT:-9099}:9000"` (`0.0.0.0`), confirming the #3 rollback
 hazard; `auth.py`'s `compare_digest` call has no `try/except`, confirming #2.
+
+---
+
+## Resolution verified — 2026-07-08 (live)
+
+All findings addressed by PR #104 (`Harden Rate Guard public auth`, merged
+`0bbad71`), auto-deployed to prod, then **verified on the running service** — see
+[`2026-07-08_rate-guard-auth-hardening.md`](./2026-07-08_rate-guard-auth-hardening.md).
+
+| # | Fix | Live check on the deployed rate-guard |
+|---|---|---|
+| P0 #1 | Fail-closed `enforce_auth_config()` + `RATE_GUARD_REQUIRE_AUTH=1` | Container runs with `REQUIRE_AUTH=1` + key present → boots (guard passes); keyless-boot refusal covered by unit test |
+| P1 #2 | Bytes-based `compare_digest` | non-ASCII `Authorization` (`\xe9\x80`) → **401**, no 500 |
+| P1 #3 | Rollback runbook + keep loopback bind | `docs/architecture/rate-guard-public-exposure.md`; port is `127.0.0.1:9099` |
+| P1 #4 | Dual-key `RATE_GUARD_API_KEY_PREVIOUS` + rotation runbook | primary/previous both accepted (unit); WAF/split-values → backlog |
+| P2 #5 | Client warns on key-over-insecure-URL | 2 tests |
+| P2 #6 | with-key `/v1/fetch` + `EdgarClient` e2e tests | pass |
+| P2 #7 | `/healthz` = `{"status":"ok"}` only | internal + public both `{"status":"ok"}` (no upstream list) |
+| P2 #8 | Exposure manifest | `docs/architecture/rate-guard-public-exposure.md` |
+| #10 | Backlog entries | added; the dev-api 401 entry is now **resolved** (below) |
+
+Auth still enforced post-deploy: no-key → 401, wrong-key → 401, correct-key →
+200, on both `127.0.0.1:9099` and `https://rate-guard.richmom.vip`. Prod api
+carries the key.
+
+**Dev-api 401 (review #10 side effect) — resolved 2026-07-08.**
+`valuepilot-dev-api-1` was recreated onto the shared Postgres (adopting the
+already-merged #99), which loaded `RATE_GUARD_API_KEY`; the shared `valuepilot`
+db was migrated to head (36 tables). Verified: dev `/health` → 200, and dev api →
+rate-guard `/v1/metrics` → **200** (was 401). Old local dev data remains in
+`valuepilot-dev-db-1` / `./storage/postgres`, unused per #99. Backlog entry
+cleared in this PR.
+
+Still deferred (backlog): #9 observability (CF WAF + 401 alerting), #4 residual
+(distinct dev/prod key values; Cloudflare Access as a future option).

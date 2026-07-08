@@ -75,5 +75,14 @@ docker compose exec -T web sh -lc 'NODE_ENV=production npm run build'
 
 - 2026-07-08: opened after the PR #103 review; user chose Option B. Code + tests
   + docs implemented. rate-guard suite 34 passed; backend
-  `test_rate_guard_client.py` + `test_edgar_client.py` 28 passed. Full-gate run
-  pending before opening the PR.
+  `test_rate_guard_client.py` + `test_edgar_client.py` 28 passed.
+- 2026-07-08: merged as PR #104 (`0bbad71`), CI green, auto-deployed to prod.
+  `RATE_GUARD_REQUIRE_AUTH=1` set in the host `.env` before merge. **Verified
+  live:** `/healthz` → `{"status":"ok"}` (internal + public); non-ASCII header →
+  401 (not 500); no-key → 401, correct-key → 200 on `127.0.0.1:9099` and
+  `https://rate-guard.richmom.vip`; container booted with `REQUIRE_AUTH=1` + key.
+- 2026-07-08: dev-api 401 side effect resolved — `valuepilot-dev-api-1` recreated
+  onto the shared Postgres (adopting #99), key loaded, shared `valuepilot` db
+  migrated to head; dev `/health` → 200 and dev → rate-guard `/v1/metrics` → 200.
+  Backlog entry cleared. Live-verification record appended to the review-results
+  doc.
