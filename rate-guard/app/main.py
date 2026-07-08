@@ -10,9 +10,11 @@ import base64
 import logging
 import os
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
+from .auth import is_authorized
 from .cache import ResponseCache
 from .config import build_upstreams
 from .gateway import Gateway, UpstreamError
@@ -23,6 +25,26 @@ _cache = ResponseCache(os.environ.get("RATE_GUARD_CACHE_DIR", "/data/cache"))
 _gateway = Gateway(build_upstreams(), _cache)
 
 app = FastAPI(title="Rate Guard", version="0.1.0")
+
+# Paths reachable without the shared key. /healthz must stay open — the deploy
+# script and Docker healthcheck poll it, and it exposes no upstream capability.
+_AUTH_EXEMPT_PATHS = frozenset({"/healthz"})
+
+
+@app.middleware("http")
+async def _require_api_key(request: Request, call_next):
+    """Gate every non-exempt path behind RATE_GUARD_API_KEY (when configured).
+
+    Runs before route handling, so an unauthenticated /v1/fetch is rejected
+    before the gateway makes any upstream request.
+    """
+    if request.url.path not in _AUTH_EXEMPT_PATHS and not is_authorized(
+        request.headers.get("Authorization")
+    ):
+        return JSONResponse(
+            status_code=401, content={"detail": "missing or invalid API key"}
+        )
+    return await call_next(request)
 
 
 class FetchRequest(BaseModel):

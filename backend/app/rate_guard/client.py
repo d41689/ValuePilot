@@ -64,6 +64,13 @@ class RateGuardClient:
             )
         return base.rstrip("/")
 
+    def _auth_headers(self) -> dict:
+        """Bearer header for Rate Guard when a shared key is configured; empty
+        otherwise. One env var (RATE_GUARD_API_KEY) gates the public surface
+        without touching any per-upstream client."""
+        key = (settings.RATE_GUARD_API_KEY or "").strip()
+        return {"Authorization": f"Bearer {key}"} if key else {}
+
     def fetch(
         self, *, upstream: str, method: str, url: str, body: bytes = b""
     ) -> bytes:
@@ -77,7 +84,9 @@ class RateGuardClient:
         if body:
             payload["body_b64"] = base64.b64encode(body).decode("ascii")
         try:
-            resp = self._client.request("POST", endpoint, json=payload)
+            resp = self._client.request(
+                "POST", endpoint, json=payload, headers=self._auth_headers()
+            )
         except httpx.HTTPError as exc:
             logger.warning("Rate Guard unreachable for %s %s: %s", upstream, url, exc)
             raise RateGuardFetchError(
@@ -138,7 +147,9 @@ class RateGuardClient:
         url = f"{self._base_url()}/v1/metrics"
         params = {"upstream": upstream} if upstream else None
         try:
-            resp = self._client.request("GET", url, params=params)
+            resp = self._client.request(
+                "GET", url, params=params, headers=self._auth_headers()
+            )
         except httpx.HTTPError as exc:
             logger.warning("Rate Guard unreachable for /v1/metrics: %s", exc)
             raise RateGuardFetchError(
