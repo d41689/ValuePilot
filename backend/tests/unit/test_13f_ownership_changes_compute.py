@@ -639,3 +639,31 @@ def test_compute_mapping_transition_multiple_cusips_no_false_exit(db_session):
     assert result["status"] == "succeeded"
     assert "exited_position" not in statuses  # no false exit from premature merge
     assert statuses == ["increased", "increased"]  # per-CUSIP fallback matches
+
+
+def test_compute_multi_cusip_one_stock_both_quarters_no_crash(db_session):
+    """T3 follow-up: a stock held under two CUSIPs in BOTH quarters must not
+    dup-crash on uq_ownership_changes_...security_position — the matched-path
+    straggler previously re-keyed to the stock key, colliding with the stock-match
+    row (exposed once combination filers like Berkshire gained direct holdings).
+    Both lots are represented as distinct rows; no shares are lost."""
+    manager = _manager(db_session)
+    stock = _stock(db_session, "MULTI")
+    previous = _filing(db_session, manager, quarter="2025-Q4", accession="0000000011-25-000001")
+    current = _filing(db_session, manager, quarter="2026-Q1", accession="0000000011-26-000001")
+    prev_run = _parse_run(db_session, previous)
+    cur_run = _parse_run(db_session, current)
+    _holding(db_session, previous, prev_run, stock, cusip="111111111", shares=100, value_usd=1000, row="a")
+    _holding(db_session, previous, prev_run, stock, cusip="222222222", shares=200, value_usd=2000, row="b")
+    _holding(db_session, current, cur_run, stock, cusip="111111111", shares=120, value_usd=1200, row="a")
+    _holding(db_session, current, cur_run, stock, cusip="222222222", shares=220, value_usd=2200, row="b")
+
+    result = compute_ownership_changes_for_manager_quarter(
+        db_session, manager_id=manager.id, report_quarter="2026-Q1"
+    )
+    db_session.flush()
+    rows = [r for r in _rows(db_session) if r.stock_id == stock.id]
+    assert result["status"] == "succeeded"
+    assert len(rows) == 2  # both lots represented (one stock-keyed, one cusip-keyed)
+    assert all(r.change_status == "increased" for r in rows)
+    assert sum(r.current_shares for r in rows) == 340  # no lot dropped

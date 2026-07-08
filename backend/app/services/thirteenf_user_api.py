@@ -20,8 +20,8 @@ from app.services.thirteenf_holdings_query import HR_FORM_TYPES, active_hr_holdi
 
 NT_CAVEAT = "This manager filed a 13F Notice; its 13(f) holdings are reported by other manager(s)."
 COMBINATION_CAVEAT = (
-    "This is a 13F Combination Report. Some holdings are reported by other manager(s) "
-    "and are not included here."
+    "This is a 13F Combination Report: holdings include positions the filer "
+    "reports jointly with its included managers (e.g. subsidiaries)."
 )
 CONFIDENTIAL_CAVEAT = (
     "Some holdings may be omitted from this filing due to confidential treatment. "

@@ -464,5 +464,25 @@ def bootstrap_stocks() -> None:
         db.close()
 
 
+@app.command()
+def backfill_attribution() -> None:
+    """Recompute holding_attribution_status for DFND/OTR holdings (T3 combination
+    fix). Run post-deploy; then recompute ownership_changes + Oracle's Lens for
+    affected managers."""
+    from app.services.thirteenf_holdings_ingest import backfill_holding_attribution
+
+    db = SessionLocal()
+    try:
+        n = backfill_holding_attribution(db)
+        db.commit()
+        typer.echo(f"Re-attributed {n} holdings.")
+    except Exception as exc:
+        db.rollback()
+        typer.echo(f"Error: {exc}", err=True)
+        raise typer.Exit(1)
+    finally:
+        db.close()
+
+
 if __name__ == "__main__":
     app()

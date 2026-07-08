@@ -438,10 +438,15 @@ def _cusip_key(holding: Holding13F) -> _HoldingKey:
 
 
 def _pair_key(current: Holding13F | None, previous: Holding13F | None) -> _HoldingKey:
-    representative = current or previous
-    if current and previous and current.stock_id and previous.stock_id:
-        return _stock_key(current)
-    return _cusip_key(representative)
+    # CUSIP-fallback pairs are always keyed by CUSIP. A both-stock_id pair only
+    # reaches the fallback when the stock-match pass already consumed one lot of
+    # that stock (a security held under multiple CUSIPs in a quarter) — keying
+    # this straggler by stock would collide with that stock-match row and violate
+    # uq_ownership_changes_manager_quarter_security_position (T3 exposed this once
+    # combination filers like Berkshire gained direct holdings). Per-CUSIP keying
+    # keeps both lots as distinct, correct rows. Summing multi-CUSIP lots into one
+    # position is the deferred positions read-model (see BACKLOG).
+    return _cusip_key(current or previous)
 
 
 def _linked_common_mapping_ratio(holdings: Sequence[Holding13F]) -> float | None:

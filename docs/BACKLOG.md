@@ -50,30 +50,18 @@ long — escalate to the user. **medium / low** = ordinary follow-up.
   representative-CUSIP semantics. Raw infotable rows stay the audit trail.
 - **Context:** `docs/tasks/2026-07-08_13f-t2-ownership-changes-orchestration-review-results.md` (Design Verdict)
 
-### Combination-report filers (incl. Buffett/Berkshire) have ZERO direct holdings → invisible to the whole product
-- **Found:** 2026-07-08, first real-data ingestion into dev (verification pass)
-- **Severity:** high (product-correctness: the flagship use case is empty; no
-  data loss)
-- **Problem:** per PRD §12 attribution rules, `DFND` discretion + parseable
-  `other_managers_raw` → `holding_attribution_status='reported_for_other'`.
-  Filers whose 13F lists their *own included sub-managers* in OTHERMANAGER
-  (classic combination reports) get **every holding** excluded from `direct`.
-  On real data, 7 of 82 managers have zero direct holdings: **Warren
-  Buffett/Berkshire (543), Howard Marks/Oaktree (1116), Michael Burry/Scion
-  (30), Prem Watsa/Fairfax (144), Cantillon (375), Egerton (123), Engaged
-  (42)**. Consequences: `GET /13f/managers/{id}/holdings/changes` →
-  NO_COMPUTED_CHANGES; Oracle's Lens score components for Berkshire = 0 of
-  8k+/quarter — "Oracle's Lens" cannot see the Oracle. The PRD's planned MVP3
-  re-attribution ("归因到该 manager") assumes the other manager is a distinct
-  known filer; for combination reports the sub-managers are not universe
-  members, so holdings never come back.
-- **Fix sketch (needs PO decision):** when the OTHERMANAGER numbers resolve to
-  *included managers of the same filing* (cover-page other-included-managers
-  table), attribute holdings to the **filer** (`direct`, or a new
-  `direct_combined` status included in product queries with the existing
-  combination caveat). Keep true cross-filer attributions excluded.
-- **Context:** PRD `docs/prd/13f_automation_and_resilience_prd.md` §638/§646;
-  verified live on dev 2026-07-08.
+### Cross-filer double-count review guard for combination attribution (deferred)
+- **Found:** 2026-07-08, T3 (combination attribution) — deferred from the PO ruling
+- **Severity:** low (not currently triggerable)
+- **Problem:** T3 attributes DFND/OTR holdings to the filer (`direct`). If a
+  combination filer AND one of its included sub-managers were BOTH tracked as
+  separate universe managers that each report the same position, consensus/
+  holder counts could double-count. Not possible in the current 82-manager
+  universe (sub-managers are not tracked separately), so no guard was built.
+- **Fix sketch:** when adding managers, or in a periodic quality check, flag any
+  two universe managers reporting the same (stock, quarter) via a combination
+  linkage for human review rather than silently double-counting.
+- **Context:** `docs/tasks/2026-07-08_13f-t3-combination-attribution.md` (Scope: Out)
 
 ### CLI ingest commands write product-invisible legacy holdings (no ParseRun)
 - **Found:** 2026-07-08, during first real-data ingestion into dev

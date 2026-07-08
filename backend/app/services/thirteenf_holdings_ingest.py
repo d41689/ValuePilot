@@ -52,13 +52,48 @@ def _compute_attribution_status(
     normalized_discretion: str | None,
     other_managers_raw: str | None,
 ) -> str:
-    if normalized_discretion == "SOLE":
-        return "direct"
-    if normalized_discretion == "OTR":
-        return "shared"
-    if normalized_discretion == "DFND":
-        return "reported_for_other" if (other_managers_raw and other_managers_raw.strip()) else "unresolved"
+    """Attribution for a holding in a manager's OWN infotable (T3, PO ruling §2).
+
+    A holding that appears in a manager's HR/HR-A infotable IS that manager's
+    reportable 13(f) position. SOLE is sole discretion; DFND/OTR is shared
+    discretion where the co-managers are the filing's own cover-page included
+    managers (their sequence numbers land in `other_managers_raw`) — the classic
+    multi-manager / combination-report pattern. All are the filer's reportable
+    holdings → `direct`. Without any co-manager reference we cannot confirm the
+    intra-filing sharing, so DFND/OTR stays `unresolved`. Exclusion of holdings
+    "reported by other managers" lives at the FILING level (13F-NT, which has no
+    infotable), not here. The sole-vs-shared nuance is preserved in the stored
+    `investment_discretion` column.
+    """
+    if normalized_discretion in ("SOLE", "DFND", "OTR"):
+        if normalized_discretion == "SOLE":
+            return "direct"
+        return "direct" if (other_managers_raw and other_managers_raw.strip()) else "unresolved"
     return "unresolved"
+
+
+def backfill_holding_attribution(session: Session) -> int:
+    """Recompute holding_attribution_status for existing DFND/OTR holdings under
+    the current rule (T3). `investment_discretion` is stored already-normalized,
+    so it feeds `_compute_attribution_status` directly. Idempotent; returns the
+    number of rows changed. Run post-deploy to migrate historical data; SOLE rows
+    are untouched (already `direct`). Ownership-change and Oracle's Lens recompute
+    for affected managers must follow."""
+    holdings = (
+        session.query(Holding13F)
+        .filter(Holding13F.investment_discretion.in_(["DFND", "OTR"]))
+        .all()
+    )
+    changed = 0
+    for holding in holdings:
+        new_status = _compute_attribution_status(
+            holding.investment_discretion, holding.other_managers_raw
+        )
+        if holding.holding_attribution_status != new_status:
+            holding.holding_attribution_status = new_status
+            changed += 1
+    session.flush()
+    return changed
 
 
 def _norm(val: str | int | None) -> str:
