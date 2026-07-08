@@ -109,6 +109,16 @@ docker compose -f docker-compose.prod.yml exec -T api python -m scripts.t3_attri
 
 ## Log
 
+- 2026-07-08: **第二轮评审整改(re-review 2 项)。** #4 rollout:逻辑抽到
+  `app/services/thirteenf_attribution_rollout.py`(可测),重算走**加锁 JobRun**
+  (`_execute_pipeline_stage_job`,冲突则 `RolloutConflictError` exit 2);校验改为
+  在 `SOLE/DFND/OTR AND status<>'direct'`(原 bug 的精确不变量)与 `zero_direct>0`
+  与 per-manager 失败上**失败**,不再只查 legacy;加故障注入 + 锁冲突测试。
+  #3 残留:管理人页/持有人 caveat 改从**展示持仓的 discretion**派生(Giverny 4007
+  的 35 只 DFND 现在带 caveat);ownership_changes **unavailable 分支**补 caveat;
+  Oracle's Lens 改为组内 **any() lot** 判定(非仅 representative)。全量 **1091 passed**;
+  rollout 真实数据自验 exit 0。管理人页残留 backlog 条目已消(此处修复)。
+
 - 2026-07-08: 规则(初版)DFND/OTR + 序号引用 → direct,无引用 → unresolved。复用
   `direct`,消费端零改动。backfill 复用 `_compute_attribution_status`。
 - 2026-07-08: **外部评审 4 项 merge blocker 全部整改(独立复现后采纳)。**

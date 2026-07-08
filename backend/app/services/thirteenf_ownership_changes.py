@@ -128,7 +128,14 @@ def compute_ownership_changes_for_manager_quarter(
                 change_status=change_status,
                 confidence_level="unavailable",
                 is_primary_signal_eligible=False,
-                caveat_codes=[unavailable_reason],
+                # Shared-discretion provenance also applies to unavailable rows
+                # (T3 review): a shared-discretion position stays flagged even when
+                # its delta can't be computed this quarter.
+                caveat_codes=(
+                    [unavailable_reason, "shared_discretion"]
+                    if _is_shared_discretion(holding, current_filing)
+                    else [unavailable_reason]
+                ),
                 unavailable_reason=unavailable_reason,
             )
             for holding in _aggregate_holdings(current_holdings)

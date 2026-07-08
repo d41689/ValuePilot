@@ -50,21 +50,6 @@ long — escalate to the user. **medium / low** = ordinary follow-up.
   representative-CUSIP semantics. Raw infotable rows stay the audit trail.
 - **Context:** `docs/tasks/2026-07-08_13f-t2-ownership-changes-orchestration-review-results.md` (Design Verdict)
 
-### Manager-holdings page misses shared caveat for sub-threshold-only shared filers
-- **Found:** 2026-07-08, T3 rework (#3 review follow-up)
-- **Severity:** low (transparency gap on one display surface; correct on signal surfaces)
-- **Problem:** the `SHARED_DISCRETION` caveat on the manager-holdings / stock-holders
-  display is derived in `_filing_caveats(filing)` from `filing.other_managers_included`
-  only (the filing object is all it has). 7 active filings hold DFND/OTR positions
-  but have no cover-page included-managers list (sub-threshold shared discretion,
-  no Column 7). Their ownership-changes and Oracle's Lens surfaces DO carry the
-  caveat (derived from holding `investment_discretion`), but the manager-holdings
-  page does not, so those holdings show without the shared-reporting caveat there.
-- **Fix sketch:** in `build_user_manager_holdings` / stock-holders, derive the
-  caveat from the displayed holdings' `investment_discretion` (DFND/OTR) in
-  addition to `other_managers_included`; or fold into the positions read-model.
-- **Context:** `docs/tasks/2026-07-08_13f-t3-combination-attribution.md` (rework Log)
-
 ### Cross-filer double-count review guard for combination attribution (deferred)
 - **Found:** 2026-07-08, T3 (combination attribution) — deferred from the PO ruling
 - **Severity:** low (not currently triggerable)

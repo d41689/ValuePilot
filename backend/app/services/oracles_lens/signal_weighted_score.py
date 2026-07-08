@@ -728,11 +728,14 @@ def _contributions_for_stock(
 
         # T3: surface shared/defined-discretion (combination / included-manager)
         # provenance so an aggregated filing's vote is not read as an independent
-        # sole-manager conviction. Derived from holding discretion (catches
-        # sub-threshold shared positions with no cover-page entry) OR the filing's
-        # cover-page included-managers list. Transparency only — no demotion.
+        # sole-manager conviction. Derived from ANY lot in the aggregated group
+        # (a SOLE representative can hide a smaller DFND/OTR lot — mirror the
+        # ownership-changes _merge_holdings contract) OR the filing's cover-page
+        # included-managers list. Transparency only — no demotion.
         from app.services.oracles_lens.caution_flags import CAVEAT_SHARED_DISCRETION
-        if holding.investment_discretion in ("DFND", "OTR") or filing.other_managers_included:
+        if filing.other_managers_included or any(
+            h.investment_discretion in ("DFND", "OTR") for h, _manager, _filing in group
+        ):
             per_holder_caveats.append(CAVEAT_SHARED_DISCRETION)
 
         # MVP4-05: surface filing-level amendment caveats on every

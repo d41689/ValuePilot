@@ -748,3 +748,25 @@ def test_compute_shared_discretion_caveat_transparency_not_demotion(db_session):
     assert "shared_discretion" in (row.caveat_codes or [])
     assert row.change_status == "increased"
     assert row.confidence_level == "high_confidence"  # transparency caveat, not demoted
+
+
+def test_unavailable_branch_carries_shared_discretion_caveat(db_session):
+    """Review re-check #3.2: unavailable (no-prior) rows for a DFND holding also
+    carry the shared_discretion caveat — the unavailable branch previously
+    bypassed the _compute_rows caveat block."""
+    manager = _manager(db_session)
+    stock = _stock(db_session, "UNV")
+    current = _filing(db_session, manager, quarter="2026-Q1", accession="0000000015-26-000001")
+    run = _parse_run(db_session, current)
+    holding = _holding(db_session, current, run, stock, cusip="111111111", shares=100, value_usd=1000, row="a")
+    holding.investment_discretion = "DFND"
+    db_session.flush()
+
+    result = compute_ownership_changes_for_manager_quarter(
+        db_session, manager_id=manager.id, report_quarter="2026-Q1"
+    )
+    db_session.flush()
+    row = next(r for r in _rows(db_session) if r.stock_id == stock.id)
+    assert result["status"] == "succeeded"
+    assert row.confidence_level == "unavailable"  # no prior quarter -> unavailable branch
+    assert "shared_discretion" in (row.caveat_codes or [])

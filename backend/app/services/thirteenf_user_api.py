@@ -108,6 +108,15 @@ def build_user_manager_holdings(session: Session, manager_id: int, quarter: str 
             filing=active_filing,
         )
 
+    # T3 review follow-up: a complete holdings_report may still hold shared/defined
+    # discretion positions with no cover-page included-managers list (sub-threshold
+    # shared discretion, no Column 7). `_filing_caveats` can't see that from the
+    # filing alone, so derive it here from the displayed holdings' discretion.
+    if any(h.investment_discretion in ("DFND", "OTR") for h in holdings) and not any(
+        c["code"] == "SHARED_DISCRETION" for c in caveats
+    ):
+        caveats = [*caveats, {"code": "SHARED_DISCRETION", "message": SHARED_DISCRETION_CAVEAT}]
+
     common = [_holding_payload(item, active_filing) for item in holdings if not item.put_call]
     options = [_holding_payload(item, active_filing) for item in holdings if item.put_call]
     material_caveats = {item["code"] for item in caveats} & {"COMBINATION_REPORT", "CONFIDENTIAL_TREATMENT", "SHARED_DISCRETION"}
@@ -424,6 +433,10 @@ def _stock_holder_data_caveats(holdings: list[Holding13F]) -> list[dict[str, str
         for caveat in _filing_caveats(holding.filing):
             if caveat["code"] in {"COMBINATION_REPORT", "CONFIDENTIAL_TREATMENT", "FILING_WINDOW_OPEN", "SHARED_DISCRETION"}:
                 by_code[caveat["code"]] = caveat
+        # Holdings-derived shared discretion (sub-threshold, no cover-page list):
+        # `_filing_caveats` can't see it from the filing alone.
+        if holding.investment_discretion in ("DFND", "OTR"):
+            by_code["SHARED_DISCRETION"] = {"code": "SHARED_DISCRETION", "message": SHARED_DISCRETION_CAVEAT}
     return list(by_code.values())
 
 

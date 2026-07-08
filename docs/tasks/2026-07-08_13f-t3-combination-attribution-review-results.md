@@ -268,3 +268,151 @@ green on real dev data (exit 0).
   the review + SEC; double-count guard remains deferred (verified not currently
   triggerable); `shared` status is now legacy (no producer) but retained until the
   positions read-model lands.
+
+---
+
+## Independent re-review (2026-07-08, commit `bc5e71d`)
+
+**Verdict:** **Changes still requested.** Original findings #1 (no-Column-7
+attribution) and #2 (order-dependent multi-CUSIP matching) are fully fixed.
+Finding #3 is only partially fixed, and the new rollout implementation does not
+yet satisfy finding #4's guarded, self-verifying production requirement.
+
+### [P1] Rollout bypasses job locks and can report success without enforcing its stated invariants
+
+**Locations:**
+
+- `backend/scripts/t3_attribution_rollout.py:43-88`
+- `backend/app/services/thirteenf_admin_dashboard.py:1237-1283`
+- `backend/app/services/thirteenf_admin_dashboard.py:3106-3171`
+
+The rollout calls `execute_job_payload()` directly. That function is the job
+body, not the guarded enqueue path. It does not create an active `JobRun` or
+claim the per-quarter `compute_ownership_changes:*` /
+`oracles_lens_score:*` lock keys. A scheduled quarterly pipeline, an admin job,
+or a second rollout invocation can therefore execute the same delete/insert or
+upsert/component-replacement work concurrently. The runbook contains no
+quiesce check and the script does not reject active conflicting jobs.
+
+The self-verification also has two false-pass paths:
+
+1. It checks only legacy `reported_for_other` / `shared` values. It does not
+   assert that every recognized `SOLE`/`DFND`/`OTR` row is now `direct`. The
+   exact original bug -- DFND/no-Column-7 rows left `unresolved` -- would pass
+   this query.
+2. It calculates and prints `zero_direct`, but never adds a failure when the
+   count is non-zero. The script can print "managers with zero direct holdings:
+   N" and still finish with `ROLLOUT VERIFICATION PASSED`.
+
+There is no automated test for the rollout. The real dev run passed because the
+current data is healthy (`recognized discretion non-direct = 0`,
+`zero_direct = 0`), not because the script reliably detects those failures.
+
+**Required correction:** run through the canonical locked JobRun mechanism or
+explicitly acquire/check the same lock keys; reject concurrent pipeline/rollout
+work. Fail on both:
+
+```sql
+investment_discretion IN ('SOLE','DFND','OTR')
+AND holding_attribution_status IS DISTINCT FROM 'direct'
+```
+
+and `zero_direct > 0`. Add failure-injection tests proving each invariant and
+lock conflict produces a non-zero exit.
+
+### [P2] `SHARED_DISCRETION` still does not reach every promised product surface
+
+**Locations:**
+
+- `backend/app/services/thirteenf_user_api.py:73-120`
+- `backend/app/services/thirteenf_user_api.py:421-427`
+- `backend/app/services/thirteenf_user_api.py:490-500`
+- `backend/app/services/thirteenf_ownership_changes.py:107-138`
+- `backend/app/services/thirteenf_ownership_changes.py:234-239`
+- `backend/app/services/oracles_lens/signal_weighted_score.py:690-727`
+
+Manager holdings and stock-holder caveats still derive
+`SHARED_DISCRETION` only from `filing.other_managers_included`. They do not
+inspect the displayed holdings' `investment_discretion`. This is the
+sub-threshold/no-Column-7 case fixed by finding #1:
+
+- Giverny manager `4007`, 2026-Q1 currently returns `status=available`,
+  `caveats=[]`, while the response contains 35 DFND common holdings.
+- This residual was placed in BACKLOG, but it is part of the original finding
+  #3 acceptance surface, so #3 cannot be marked fully fixed.
+
+Ownership changes add `shared_discretion` only in `_compute_rows()`. Rows built
+by the unavailable branch bypass that block. The recomputed dev data contains
+16 affected manager-quarter groups; Oaktree 2026-Q1 alone has 147 unavailable
+DFND rows without the caveat.
+
+Oracle's Lens handles the common current data shape, but its grouped
+manager/stock contribution checks only the largest-value representative
+holding. For a no-cover-page group containing a large SOLE lot plus a smaller
+DFND/OTR lot, the shared caveat is lost. The scorer should test `any()` holding
+in the group, mirroring `_merge_holdings()` in ownership changes. No such mixed
+group exists in the current active dev data, but the aggregation contract
+allows it.
+
+**Required correction:** derive the caveat from both filing metadata and all
+relevant holdings on every surface; add tests for:
+
+- manager holdings and stock holders with DFND/no included-manager metadata;
+- unavailable ownership-change rows;
+- a Lens manager/stock group whose representative is SOLE but another lot is
+  DFND.
+
+## Original finding disposition
+
+| Original finding | Re-review result |
+|---|---|
+| #1 DFND/OTR without Column 7 excluded | **Fixed.** SOLE/DFND/OTR now always map to direct; backfill and parser tests cover no-ref cases. Dev has zero recognized-discretion non-direct rows. |
+| #2 multi-CUSIP order-dependent matching | **Fixed.** Same-CUSIP aggregation plus exact-CUSIP-first matching is deterministic. Reverse-order and duplicate-lot tests pass. |
+| #3 caveat propagation | **Partially fixed.** Complete Berkshire-style filings, normal ownership changes, and ordinary Lens contributions are covered; cases above remain. |
+| #4 production rollout | **Not fully fixed.** The executable sequence works on healthy dev data, but it bypasses locks and its verification can false-pass. |
+
+## Re-review verification
+
+All tests ran in Docker against
+`postgresql://valuepilot:valuepilot@postgres:5432/valuepilot_test`.
+
+- `alembic upgrade head`: passed.
+- Targeted attribution, ownership-change, user API, Lens, and orchestration
+  suites: **94 passed**.
+- Full backend suite: **1084 passed, 3 warnings**.
+- Dev rollout executed idempotently: all six quarters recomputed, zero reported
+  per-manager failures, and the script exited 0.
+- No source or test files were modified by this re-review.
+
+---
+
+## Second disposition (2026-07-08, re-review fixes — commit forthcoming)
+
+Both re-review findings reproduced against code + real data, confirmed, and
+**fully fixed**. Full backend suite **1091 passed**; rollout self-verifies green
+on real dev data (exit 0); Giverny 4007 now returns `available_with_caveat`.
+
+- **Re-review #4 (rollout locks + false-pass verify) — FIXED.** Logic moved to a
+  testable `app/services/thirteenf_attribution_rollout.py`; recomputes now run
+  through the canonical LOCKED `_execute_pipeline_stage_job` (per-quarter
+  `compute_ownership_changes:*` / `oracles_lens_score:*` lock), aborting with a
+  `RolloutConflictError` (exit 2) if a conflicting job is active. Verification now
+  fails on **`investment_discretion IN ('SOLE','DFND','OTR') AND status IS
+  DISTINCT FROM 'direct'`** (the exact original bug) AND on **zero_direct > 0**
+  AND on per-manager recompute failures — not just legacy statuses. Tests inject
+  each failure (DFND-left-unresolved, zero-direct, legacy) and a lock conflict;
+  all produce the expected non-pass. The thin `scripts/t3_attribution_rollout.py`
+  wrapper maps outcomes to exit 0/1/2.
+- **Re-review #3 residual (caveat not on every surface) — FIXED.**
+  - Manager holdings (`build_user_manager_holdings`) and stock holders
+    (`_stock_holder_data_caveats`) now derive `SHARED_DISCRETION` from the
+    displayed holdings' `investment_discretion` (DFND/OTR), not only
+    `other_managers_included` — Giverny 4007's 35 DFND holdings now caveat.
+  - Ownership-changes **unavailable branch** now adds `shared_discretion` (it
+    previously bypassed `_compute_rows`).
+  - Oracle's Lens now flags the caveat when **any** lot in the aggregated
+    manager/stock group is DFND/OTR (was representative-only), mirroring
+    `_merge_holdings`.
+- **Notes accepted:** attribution direction + double-count (deferred, not
+  triggerable) + `shared` legacy-until-positions-model — all agreed; the
+  manager-holdings residual is no longer deferred (it is fixed here).
