@@ -6,11 +6,12 @@ an unauthenticated ``/v1/fetch`` is an open proxy to SEC / OpenFIGI / Dataroma
 under our own egress IP and User-Agent — abuse of it gets *our* IP banned. A
 shared Bearer key gates the surface, in the same spirit as an API key.
 
-Two accepted-key slots (``RATE_GUARD_API_KEY`` primary + optional
-``RATE_GUARD_API_KEY_PREVIOUS``) let you (a) rotate without a hard cutover — set
-the new key as primary, keep the old as previous until every caller is updated,
-then drop it — and (b) hand a distinct key to a distinct client (e.g. the remote
-dev box vs internal), revocable on its own.
+Multiple accepted keys — ``RATE_GUARD_API_KEY`` plus any
+``RATE_GUARD_API_KEY_<LABEL>`` (e.g. ``RATE_GUARD_API_KEY_DEVELOPMENT`` for a
+remote dev box, ``RATE_GUARD_API_KEY_PREVIOUS`` for a rotation window) — let you
+(a) rotate without a hard cutover and (b) hand each client its own labelled key,
+revocable on its own. A request is authorized if its Bearer matches any of them.
+Do not put non-key config under the ``RATE_GUARD_API_KEY_`` prefix.
 
 Safety posture:
 - Opt-in default: with **no** key configured, auth is disabled and every request
@@ -28,23 +29,27 @@ import os
 
 logger = logging.getLogger("rate_guard.auth")
 
-_KEY_ENV_VARS = ("RATE_GUARD_API_KEY", "RATE_GUARD_API_KEY_PREVIOUS")
+_PRIMARY_KEY_ENV = "RATE_GUARD_API_KEY"
+_KEY_ENV_PREFIX = "RATE_GUARD_API_KEY_"  # e.g. RATE_GUARD_API_KEY_DEVELOPMENT
 _TRUTHY = {"1", "true", "yes", "on"}
 
 
 def configured_api_keys() -> tuple[str, ...]:
-    """The non-empty accepted keys, read live from the environment.
+    """Every non-empty accepted key from the environment.
 
-    Live (not cached at import) so tests can toggle them and an operator can
+    Reads ``RATE_GUARD_API_KEY`` plus any ``RATE_GUARD_API_KEY_<LABEL>`` var, so
+    each caller/purpose gets its own labelled, independently-revocable key. Read
+    live (not cached at import) so tests can toggle them and an operator can
     rotate with a restart rather than a rebuild. Blank / whitespace-only values
-    are treated as absent.
+    are treated as absent. Sorted for deterministic order.
     """
     keys = []
-    for name in _KEY_ENV_VARS:
-        value = os.environ.get(name, "").strip()
-        if value:
-            keys.append(value)
-    return tuple(keys)
+    for name, value in os.environ.items():
+        if name == _PRIMARY_KEY_ENV or name.startswith(_KEY_ENV_PREFIX):
+            stripped = value.strip()
+            if stripped:
+                keys.append(stripped)
+    return tuple(sorted(keys))
 
 
 def public_auth_required() -> bool:

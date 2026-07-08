@@ -57,9 +57,13 @@ App-level shared Bearer key (Option B — not Cloudflare Access). Enforced in
 
 | Env var | Where | Purpose |
 |---|---|---|
-| `RATE_GUARD_API_KEY` | host `~/.config/valuepilot/.env` (copied to the runner workspace `.env` on deploy) | The active key. Value is **never** committed. |
-| `RATE_GUARD_API_KEY_PREVIOUS` | same | Optional second accepted key — the rotation window / a distinct client key. |
-| `RATE_GUARD_REQUIRE_AUTH` | same | **Set to `1` on the exposed instance.** Makes a missing/blank key a hard startup failure — the container refuses to boot rather than silently serve an open proxy. |
+| `RATE_GUARD_API_KEY` | host `~/.config/valuepilot/.env` (copied to the runner workspace `.env` on deploy) | The primary key (internal callers). Value is **never** committed. |
+| `RATE_GUARD_API_KEY_<LABEL>` | same | Any additional accepted key, labelled by purpose — e.g. `RATE_GUARD_API_KEY_DEVELOPMENT` (remote dev box), `RATE_GUARD_API_KEY_PREVIOUS` (rotation window). A Bearer matching any is authorized. Don't put non-key config under this prefix. |
+| `RATE_GUARD_REQUIRE_AUTH` | same | **Set to `1` on the exposed instance.** Makes an empty accepted-key set a hard startup failure — the container refuses to boot rather than silently serve an open proxy. |
+
+**Current key assignment (2026-07-08):** `RATE_GUARD_API_KEY` = internal (host
+prod + dev api); `RATE_GUARD_API_KEY_DEVELOPMENT` = the remote dev machine
+(revocable on its own by dropping that var).
 
 Fail-safe posture: with no key configured, auth is *disabled* (opt-in default,
 for CI / internal). `RATE_GUARD_REQUIRE_AUTH=1` flips that to fail-closed for the
@@ -86,28 +90,30 @@ the tunnel is live. Correct order:
 Keep the `127.0.0.1:9099` bind even under rollback, so removing auth alone never
 exposes the host IP.
 
-## Rotation runbook (zero-downtime, two-slot)
+## Rotation runbook (zero-downtime)
 
-`is_authorized` accepts **either** `RATE_GUARD_API_KEY` or
-`RATE_GUARD_API_KEY_PREVIOUS`, so rotate without a hard cutover:
+`is_authorized` accepts `RATE_GUARD_API_KEY` **and** any
+`RATE_GUARD_API_KEY_<LABEL>`, so rotate without a hard cutover:
 
 1. Set `RATE_GUARD_API_KEY_PREVIOUS` = the current key; set `RATE_GUARD_API_KEY`
    = a fresh `openssl rand -hex 32`. Redeploy Rate Guard (both keys now valid).
 2. Update every caller to the new key: the host `.env` for internal api
    containers (**recreate** them — the api reads the key once at import, so a
-   restart is not enough), and the remote dev box.
+   restart is not enough), and each remote client's labelled key.
 3. Once all callers use the new key, remove `RATE_GUARD_API_KEY_PREVIOUS` and
    redeploy. The old key is now rejected.
 
-The same two slots let internal and the remote box hold **distinct** keys, so a
-leak of the remote key is revoked (drop that slot) without disrupting internal.
+Distinct labelled keys let internal and each remote client hold **different**
+keys, so a leak of one is revoked (drop that var + recreate rate-guard) without
+disrupting the others.
 
 ## Deferred hardening (see `docs/BACKLOG.md`)
 
 - **Observability** — no 401/abuse metric or alert on the public path; add a
   Cloudflare WAF rate-limit rule on the subdomain + a 401-spike alert.
-- **Separate dev/prod key values** — currently one shared value; split them using
-  the two-slot mechanism above.
+- **Separate dev/prod key values** — the remote dev box now has its own labelled
+  key, but host prod and dev api still share `RATE_GUARD_API_KEY`; give them
+  distinct labelled keys too.
 - **Edge auth (future)** — Cloudflare Access service tokens / mTLS would give
   per-client identity + revocation; the app bearer would remain as
   defense-in-depth. Deferred by choice (Option B).
