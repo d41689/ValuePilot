@@ -86,3 +86,22 @@ def test_base_constants_name_the_sec_hosts():
     assert EdgarClient.BASE == "https://www.sec.gov"
     assert EdgarClient.EFTS_BASE == "https://efts.sec.gov"
     assert EdgarClient.DATA_BASE == "https://data.sec.gov"
+
+
+def test_edgar_fetch_carries_the_bearer_key_end_to_end(monkeypatch):
+    """A per-upstream client (EdgarClient) must propagate the auth header to Rate
+    Guard when RATE_GUARD_API_KEY is set — the header plumbing is shared, but this
+    proves it end-to-end through a real per-upstream wrapper, not just the base
+    RateGuardClient."""
+    monkeypatch.setattr(rg.settings, "RATE_GUARD_URL", RATE_GUARD)
+    monkeypatch.setattr(rg.settings, "RATE_GUARD_API_KEY", "s3cret")
+    seen: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["auth"] = request.headers.get("Authorization")
+        return _envelope(b"PAGE")
+
+    with EdgarClient(http_client=_rg_http(handler)) as client:
+        assert client.get("https://www.sec.gov/x") == b"PAGE"
+
+    assert seen["auth"] == "Bearer s3cret"
