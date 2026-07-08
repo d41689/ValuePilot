@@ -2877,6 +2877,7 @@ _JOB_LOCK_BUILDERS = {
         f"oracles_lens_score:{_required(payload, 'quarter')}:"
         f"{payload.get('score_version') or _oracles_lens_score_version()}"
     ),
+    "compute_ownership_changes": lambda payload: f"compute_ownership_changes:{_required(payload, 'quarter')}",
     "reprocess_amendment": lambda payload: f"reprocess_amendment:{_required(payload, 'accession_no')}",
     "reparse_accession": lambda payload: f"reparse_accession:{_required(payload, 'accession_no')}",
     "sync_manager_backfill": lambda payload: f"sync_manager_backfill:{_required(payload, 'manager_id')}",
@@ -2936,7 +2937,21 @@ def _execute_job(session: Session, job_type: str, payload: dict[str, Any]) -> di
         results["stages"].append(quality_stage["stage"])
         results["quality_status"] = quality_stage["summary"].get("quality_status")
 
-        # Stage 5: Oracle's Lens scoring — compute signal-weighted scores so
+        # Stage 5: Ownership-change precompute — materialize the ownership_changes
+        # read model for the quarter's active filers so
+        # /13f/managers/{id}/holdings/changes and the new-buys aggregation have
+        # data. Runs after quality, before scoring. Non-fatal: a failure leaves
+        # the quarter at partial_success but doesn't undo stages 1-4.
+        changes_stage = _execute_pipeline_stage_job(
+            session,
+            parent_payload=payload,
+            job_type="compute_ownership_changes",
+            payload={"quarter": quarter},
+        )
+        results["stages"].append(changes_stage["stage"])
+        results["ownership_changes"] = changes_stage["summary"]
+
+        # Stage 6: Oracle's Lens scoring — compute signal-weighted scores so
         # the persisted oracles_lens_signals table backs the /watchlist
         # snapshot endpoint (which reads persisted scores by default).
         # Non-fatal: a scoring failure leaves the quarter at
@@ -3088,6 +3103,57 @@ def _execute_job(session: Session, job_type: str, payload: dict[str, Any]) -> di
         }
     if job_type in {"ingest_holdings", "ingest_accession", "reprocess_amendment", "reparse_accession"}:
         return _execute_ingest_job(session, job_type, payload)
+    if job_type == "compute_ownership_changes":
+        from app.services.thirteenf_holdings_query import HR_FORM_TYPES
+        from app.services.thirteenf_ownership_changes import (
+            compute_ownership_changes_for_manager_quarter,
+        )
+
+        quarter = _required(payload, "quarter")
+        manager_ids = [
+            row[0]
+            for row in session.query(Filing13F.manager_id)
+            .filter(Filing13F.report_quarter == quarter)
+            .filter(Filing13F.form_type.in_(HR_FORM_TYPES))
+            .filter(Filing13F.is_active_for_manager_period.is_(True))
+            .distinct()
+            .all()
+        ]
+        rows_created = 0
+        status_breakdown: dict[str, int] = {}
+        failures: list[dict[str, Any]] = []
+        for manager_id in manager_ids:
+            # Per-manager SAVEPOINT so one manager's bad data can't abort the
+            # whole stage; the pipeline stage commits the survivors as a unit.
+            try:
+                with session.begin_nested():
+                    result = compute_ownership_changes_for_manager_quarter(
+                        session, manager_id=manager_id, report_quarter=quarter
+                    )
+                rows_created += int(result["created"])
+                key = str(result["status"])
+                status_breakdown[key] = status_breakdown.get(key, 0) + 1
+            except Exception as exc:  # noqa: BLE001 - isolate per-manager failure
+                failures.append({"manager_id": manager_id, "error": str(exc)})
+        # Failure visibility: any per-manager failure degrades the stage so the
+        # pipeline reports partial_success and operator alerting / smart retry can
+        # see it. All-fail → failed; some succeed + some fail → partial_success.
+        if not failures:
+            status = "succeeded"
+        elif status_breakdown:
+            status = "partial_success"
+        else:
+            status = "failed"
+        return {
+            "quarter": quarter,
+            "managers_processed": len(manager_ids),
+            "rows_created": rows_created,
+            "status_breakdown": status_breakdown,
+            "failures": failures[:50],
+            "failure_count": len(failures),
+            "status": status,
+        }
+
     if job_type == "oracles_lens_score_backfill":
         from app.services.oracles_lens.signal_weighted_score import (
             SCORE_VERSION,
