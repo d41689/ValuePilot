@@ -47,6 +47,20 @@ substitute for the full command at a closing gate.
 
 Logs: `docker compose logs -f`.
 
+### Local database — shared infra (not the `db` service)
+
+Dev connects to the **shared Postgres** used by all local projects, defined in
+`~/projects/infra` (its own repo; `~/projects/infra/README.md` is the source of
+truth). The compose `db` service is a sleep-infinity **placeholder** — do not
+start a project-local Postgres.
+
+- Start it once: `cd ~/projects/infra && cp -n .env.example .env && docker compose up -d`
+- The api reaches it over the external `projects-shared` network at host
+  `postgres:5432`, database `valuepilot` (prod `valuepilot_prod`), role
+  `valuepilot`. Isolation is per database + role, not per instance.
+- No auto-migrate on boot — after first start run the Migrations step above
+  (`docker compose exec -T api alembic upgrade head`).
+
 ## Critical invariants — never violate
 
 Violating any of these causes real data loss or production breakage.
@@ -193,11 +207,13 @@ Alembic conventions, and upsert-vs-IntegrityError write-conflict handling:
 
 - **Scope** — Value Line templates only for v0.1; mark others
   `unsupported_template`.
-- **Strategy** — try the native PDF text layer; fall back to OCR when text
-  density is low.
+- **Strategy** — native PDF text layer only. Pages whose text layer is too
+  sparse to parse are reported as `requires_ocr`; actual OCR is **not yet
+  implemented** (see `docs/BACKLOG.md`).
 - **Mapping** — map template-specific field names (e.g. `18_month_target_low`)
-  to canonical metric keys (e.g. `target_18m_low`). Authoritative mappings live
-  in `value_line_v1_field_map.json`.
+  to canonical metric keys (e.g. `target_18m_low`). The authoritative mapping
+  is `docs/metric_facts_mapping_spec.yml` (the earlier
+  `value_line_v1_field_map.json` approach is deprecated and removed).
 
 The required parser fixture-alignment workflow and the EDGAR / 13F parsing
 gotchas are in `docs/architecture/parsing.md`.

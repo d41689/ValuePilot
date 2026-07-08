@@ -36,6 +36,20 @@ class Scaler:
 
         clean_text = raw_value.lower().strip()
         clean_text = clean_text.replace(',', '')  # Remove commas
+
+        # Accounting negatives: purely numeric parentheses like "(1.2)" mean
+        # -1.2. Unwrap them BEFORE stripping note parentheticals, which would
+        # silently delete the value.
+        negative = False
+        paren_negative = re.search(r'\(\s*(\d*\.?\d+%?)\s*\)', clean_text)
+        if paren_negative:
+            negative = True
+            clean_text = (
+                clean_text[: paren_negative.start()]
+                + paren_negative.group(1)
+                + clean_text[paren_negative.end() :]
+            )
+
         clean_text = re.sub(r'\([^)]*\)', '', clean_text)  # Remove parenthetical notes
 
         # Handle Percentages
@@ -45,6 +59,8 @@ class Scaler:
                 return None, None
             try:
                 val = float(match.group(0))
+                if negative:
+                    val = -val
                 return val / 100.0, "ratio"
             except ValueError:
                 return None, None
@@ -76,7 +92,9 @@ class Scaler:
                 return None, None
             val = float(number_match.group(0))
             normalized = val * scale_multiplier
-            
+            if negative:
+                normalized = -normalized
+
             unit = "USD" if currency else "number"
             if value_type == "ratio":
                 unit = "ratio"
