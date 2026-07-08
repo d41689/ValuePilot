@@ -95,3 +95,49 @@ def test_rollout_aborts_on_active_lock_conflict(db_session):
 
     with pytest.raises(RolloutConflictError):
         run_attribution_rollout(db_session, quarters=["2026-Q1"], log=lambda *_a: None)
+
+
+def test_rollout_fails_on_hard_failed_ownership_stage(db_session, monkeypatch):
+    """Re-review #1: a hard-`failed` ownership_changes stage means the read model
+    was NOT refreshed — the rollout must report failure, not exit 0."""
+    from app.services import thirteenf_attribution_rollout as roll
+
+    def fake_stage(session, *, parent_payload, job_type, payload):
+        status = "failed" if job_type == "compute_ownership_changes" else "succeeded"
+        return {"stage": {"job_type": job_type, "job_id": 999, "status": status},
+                "summary": {"status": status}}
+
+    monkeypatch.setattr(roll, "_execute_pipeline_stage_job", fake_stage)
+    report = roll.run_attribution_rollout(db_session, quarters=["2099-Q1"], log=lambda *_a: None)
+    assert any("ownership_changes 2099-Q1 stage status=failed" in f for f in report["failures"])
+
+
+def test_rollout_fails_on_hard_failed_lens_stage(db_session, monkeypatch):
+    """Re-review #1: a hard-`failed` Oracle's Lens stage must also fail the rollout
+    (the previous loop ignored Lens status entirely)."""
+    from app.services import thirteenf_attribution_rollout as roll
+
+    def fake_stage(session, *, parent_payload, job_type, payload):
+        status = "failed" if job_type == "oracles_lens_score_backfill" else "succeeded"
+        return {"stage": {"job_type": job_type, "job_id": 999, "status": status},
+                "summary": {"status": status}}
+
+    monkeypatch.setattr(roll, "_execute_pipeline_stage_job", fake_stage)
+    report = roll.run_attribution_rollout(db_session, quarters=["2099-Q1"], log=lambda *_a: None)
+    assert any("oracles_lens 2099-Q1 stage status=failed" in f for f in report["failures"])
+
+
+def test_rollout_fails_on_partial_success_ownership_stage(db_session, monkeypatch):
+    """Re-review #1: partial_success (some managers failed) must not silently pass."""
+    from app.services import thirteenf_attribution_rollout as roll
+
+    def fake_stage(session, *, parent_payload, job_type, payload):
+        if job_type == "compute_ownership_changes":
+            return {"stage": {"job_type": job_type, "job_id": 999, "status": "partial_success"},
+                    "summary": {"status": "partial_success", "failure_count": 3}}
+        return {"stage": {"job_type": job_type, "job_id": 999, "status": "succeeded"},
+                "summary": {"status": "succeeded"}}
+
+    monkeypatch.setattr(roll, "_execute_pipeline_stage_job", fake_stage)
+    report = roll.run_attribution_rollout(db_session, quarters=["2099-Q1"], log=lambda *_a: None)
+    assert any("partial_success" in f and "failures=3" in f for f in report["failures"])

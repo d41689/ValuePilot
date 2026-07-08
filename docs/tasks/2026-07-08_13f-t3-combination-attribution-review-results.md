@@ -416,3 +416,127 @@ on real dev data (exit 0); Giverny 4007 now returns `available_with_caveat`.
 - **Notes accepted:** attribution direction + double-count (deferred, not
   triggerable) + `shared` legacy-until-positions-model — all agreed; the
   manager-holdings residual is no longer deferred (it is fixed here).
+
+---
+
+## Third independent re-review (2026-07-08, commit `4ca7630`)
+
+**Verdict:** **Changes still requested.** The prior caveat-propagation finding
+is now fixed across the inspected paths, and lock conflicts plus attribution
+invariants are correctly enforced. One merge-blocking rollout false-pass
+remains, plus one user-facing copy accuracy issue.
+
+### [P1] A hard recompute-stage failure still produces a successful rollout report
+
+**Location:** `backend/app/services/thirteenf_attribution_rollout.py:73-130`
+
+`_run_locked_stage()` raises only for `conflict`. It returns ordinary
+`failed`/`partial_success` stage results to `run_attribution_rollout()`.
+The ownership loop records only `summary.failure_count`; a hard failed stage
+returns no such count. The Oracle's Lens loop does not inspect status at all.
+Consequently both materialization stages can fail while the final attribution
+queries remain healthy and the wrapper exits 0.
+
+Failure injection against `valuepilot_test`:
+
+```text
+_run_locked_stage -> {
+  "stage": {"status": "failed", "job_id": 999},
+  "summary": {"status": "failed"},
+  "error": "injected hard failure"
+}
+
+run_attribution_rollout(...) ->
+{"reattributed": 0, "quarters": ["2099-Q1"], "failures": []}
+```
+
+This is not covered by `test_13f_attribution_rollout.py`; its only stage-path
+test is an active-lock conflict. It also matters because the latest revision
+removed the previous Berkshire direct-holdings / real-changes verification and
+does not verify any Lens output. Stage success is therefore the only evidence
+that the two materialized products were refreshed, and that evidence is
+currently ignored.
+
+**Required correction:** treat every stage status outside the explicitly
+accepted set as a rollout failure. For this production backfill, prefer
+`status == "succeeded"`; if ownership `partial_success` is intentionally
+accepted, require and report its non-zero failures and still exit non-zero.
+Add injected hard-failure tests for both job types and restore representative
+postconditions for ownership changes and Oracle's Lens (or equivalent
+per-quarter freshness/output assertions).
+
+### [P2] The shared-discretion message is inaccurate for the no-Column-7 case
+
+**Locations:**
+
+- `backend/app/services/thirteenf_user_api.py:34-37`
+- `backend/app/services/oracles_lens/caution_flags.py:128-136`
+
+The code now correctly applies `SHARED_DISCRETION` to DFND/OTR holdings whose
+filing has no `other_managers_included` list. The displayed text nevertheless
+says the positions are shared "with included managers (e.g. subsidiaries)".
+For the sub-threshold case that motivated finding #1, the other manager is
+specifically not an Other Included Manager and need not be a subsidiary.
+
+Concrete result after this fix: Giverny `4007` 2026-Q1 correctly returns
+`available_with_caveat` for 35 DFND holdings, but the caveat claims included
+managers even though the filing's included-manager list is empty.
+
+**Required correction:** use neutral wording such as "shared/defined
+discretion with other managers, which may include affiliates or subsidiaries."
+Keep the more specific combination/included-manager copy only where filing
+metadata supports it.
+
+## Third-review disposition
+
+| Area | Result |
+|---|---|
+| SOLE/DFND/OTR attribution and backfill | **Fixed** |
+| Deterministic duplicate/multi-CUSIP matching | **Fixed** |
+| Manager holdings / stock holders caveat | **Fixed in code** |
+| Normal and unavailable ownership-change caveat | **Fixed** |
+| Oracle's Lens grouped-lot caveat | **Fixed** |
+| Job lock conflict handling | **Fixed** |
+| Positive attribution / zero-direct verification | **Fixed** |
+| Hard stage failure handling and materialization verification | **Not fixed** |
+| Shared-discretion copy accuracy | **Not fixed** |
+
+## Third-review verification
+
+All tests ran in Docker against
+`postgresql://valuepilot:valuepilot@postgres:5432/valuepilot_test`.
+
+- `alembic upgrade head`: passed.
+- Targeted rollout, attribution, ownership-change, user API, Lens, and
+  orchestration suites: **101 passed**.
+- Full backend suite: **1091 passed, 3 warnings**.
+- Live dev checks: Giverny 2026-Q1 is `available_with_caveat` with
+  `SHARED_DISCRETION`; unavailable DFND/OTR ownership rows missing the caveat:
+  **0**.
+- Injected hard stage failure reproduced the false-success report above.
+- No source or test files were modified by this review.
+
+---
+
+## Third disposition (2026-07-08, third-review fixes)
+
+Both third-review findings reproduced against the code, confirmed, and **fully
+fixed**. Full backend suite **1095 passed**.
+
+- **Re-review #1 (hard stage failure → false success) — FIXED.**
+  `run_attribution_rollout` now treats ANY stage status other than `succeeded`
+  (hard `failed` OR `partial_success`) as a rollout failure and reports it — the
+  Lens loop previously ignored status entirely and the ownership loop read only
+  `failure_count` (a hard-failed stage has none). Restored a representative
+  materialization postcondition: `_representative_freshness_failures` asserts the
+  flagship (Berkshire) has direct holdings AND real ownership changes after the
+  run (guarded — skipped when the flagship is absent, e.g. an isolated test DB).
+  Tests inject a hard-failed ownership stage, a hard-failed Lens stage, and a
+  partial_success ownership stage; each now yields a non-empty `failures`.
+- **Re-review #2 (caveat copy inaccurate) — FIXED.** Both the user-API
+  `SHARED_DISCRETION_CAVEAT` and the Lens caveat label now use neutral wording —
+  "shared/defined discretion with other managers (which may include affiliates,
+  subsidiaries, or a manager whose holdings are aggregated into this filing)" —
+  so the sub-threshold (empty `other_managers_included`) case is no longer
+  described as "included managers (e.g. subsidiaries)". A copy-accuracy test
+  guards it.

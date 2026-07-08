@@ -32,8 +32,9 @@ FILING_WINDOW_CAVEAT = (
     "the official filing deadline passes."
 )
 SHARED_DISCRETION_CAVEAT = (
-    "This report includes positions held under shared/defined discretion with included "
-    "managers (e.g. subsidiaries) — an aggregated combination-style filing."
+    "This report includes positions held under shared/defined discretion with other "
+    "managers (which may include affiliates, subsidiaries, or a manager whose holdings "
+    "are aggregated into this filing) — not necessarily independent sole-manager positions."
 )
 # MVP4-11 D1: canonical name is ``long_term_fundamental`` (Oracle's
 # Lens scoring vocabulary). Set membership is semantically unchanged —

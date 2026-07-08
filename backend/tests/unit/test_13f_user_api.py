@@ -633,3 +633,13 @@ def test_manager_holdings_shared_discretion_from_dfnd_without_included_managers(
     codes = {c["code"] for c in result.get("caveats", [])}
     assert "SHARED_DISCRETION" in codes
     assert result["status"] == "available_with_caveat"
+
+
+def test_shared_discretion_caveat_copy_is_neutral():
+    """Re-review #2: the caveat must not claim 'included managers (e.g.
+    subsidiaries)' — the sub-threshold (no Column 7) case need not involve an
+    included manager or a subsidiary."""
+    from app.services.thirteenf_user_api import SHARED_DISCRETION_CAVEAT
+
+    assert "other managers" in SHARED_DISCRETION_CAVEAT
+    assert "included managers (e.g. subsidiaries)" not in SHARED_DISCRETION_CAVEAT

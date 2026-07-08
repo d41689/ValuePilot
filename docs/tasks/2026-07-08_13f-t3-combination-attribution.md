@@ -109,6 +109,8 @@ docker compose -f docker-compose.prod.yml exec -T api python -m scripts.t3_attri
 
 ## Log
 
+- 2026-07-08: **第三轮评审整改(2 项)。** #1 rollout:任何 stage 状态非 `succeeded`(hard `failed` 或 `partial_success`)都记为失败并上报(此前 Lens 循环完全不看状态、ownership 只看 failure_count,hard-failed 无此字段 → 假通过);恢复代表性物化后置校验(旗舰 Berkshire direct>0 且 real_changes>0,无旗舰则跳过)。加注入 hard-failed(ownership/lens)+ partial_success 测试。#2 caveat 文案改中性(“与其他管理人共享/defined 裁量,可能含关联方/子公司/被聚合申报的管理人”),不再把 sub-threshold(空 other_managers_included)误述为 included managers。加文案测试。全量 **1095 passed**。
+
 - 2026-07-08: **第二轮评审整改(re-review 2 项)。** #4 rollout:逻辑抽到
   `app/services/thirteenf_attribution_rollout.py`(可测),重算走**加锁 JobRun**
   (`_execute_pipeline_stage_job`,冲突则 `RolloutConflictError` exit 2);校验改为

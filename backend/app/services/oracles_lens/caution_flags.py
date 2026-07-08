@@ -130,9 +130,10 @@ CAUTION_FLAG_REGISTRY: dict[str, CaveatMetadata] = {
         severity="low",
         scope="row",
         label=(
-            "This holder reports positions under shared/defined discretion with "
-            "included managers (e.g. subsidiaries); it is an aggregated filing, "
-            "not necessarily an independent sole-manager position."
+            "This holder reports positions under shared/defined discretion with other "
+            "managers (which may include affiliates, subsidiaries, or a manager whose "
+            "holdings are aggregated into this filing); not necessarily an independent "
+            "sole-manager position."
         ),
     ),
     CAVEAT_OWNERSHIP_CHANGES_NEEDS_RECOMPUTE: _RECOMPUTE_METADATA,
