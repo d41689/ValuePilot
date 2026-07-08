@@ -294,3 +294,35 @@ def test_metrics_raises_when_requested_upstream_absent(monkeypatch):
     with RateGuardClient(http_client=_rg_http(handler)) as client:
         with pytest.raises(RateGuardFetchError, match="edgar"):
             client.metrics("edgar")
+
+
+def test_warns_when_key_would_go_over_plain_http_external(monkeypatch, caplog):
+    """A key sent to a non-https off-box URL leaks in cleartext — warn once."""
+    monkeypatch.setattr(rg.settings, "RATE_GUARD_URL", "http://rate-guard.example.com")
+    monkeypatch.setattr(rg.settings, "RATE_GUARD_API_KEY", "s3cret")
+    rg._insecure_key_url_warned.clear()
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return _envelope(b"ok")
+
+    with caplog.at_level("WARNING"):
+        with RateGuardClient(http_client=_rg_http(handler)) as client:
+            client.fetch(upstream="edgar", method="GET", url="https://www.sec.gov/x")
+
+    assert any("cleartext" in r.message for r in caplog.records)
+
+
+@pytest.mark.parametrize(
+    "url",
+    ["https://rate-guard.richmom.vip", "http://rate-guard:9000", "http://localhost:9099"],
+)
+def test_no_warning_for_https_or_internal_urls(monkeypatch, caplog, url):
+    monkeypatch.setattr(rg.settings, "RATE_GUARD_URL", url)
+    monkeypatch.setattr(rg.settings, "RATE_GUARD_API_KEY", "s3cret")
+    rg._insecure_key_url_warned.clear()
+
+    with caplog.at_level("WARNING"):
+        with RateGuardClient(http_client=_rg_http(lambda r: _envelope(b"ok"))) as client:
+            client.fetch(upstream="edgar", method="GET", url="https://www.sec.gov/x")
+
+    assert not any("cleartext" in r.message for r in caplog.records)

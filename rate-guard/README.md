@@ -45,6 +45,8 @@ prod — *not* in the repo). The deploy workflow copies it to `./.env`.
 | `OPENFIGI_API_KEY` | no | Raises the OpenFIGI rate (~250/min with a key vs ~25/min without). |
 | `RATE_GUARD_HOST_PORT` | no | Host port for `/healthz` + `/v1/metrics` (bound to `127.0.0.1`). Default `9099`. |
 | `RATE_GUARD_API_KEY` | no | Shared Bearer key. **Set only when Rate Guard is exposed publicly** (see below). Unset = auth disabled (internal-only default). |
+| `RATE_GUARD_API_KEY_PREVIOUS` | no | A second accepted Bearer key — the rotation window, or a distinct client key. |
+| `RATE_GUARD_REQUIRE_AUTH` | no | Set to `1` on any **publicly-exposed** instance: a missing/blank key becomes a hard startup failure (fail-closed) instead of a silently-open proxy. |
 | `RATE_GUARD_EDGAR_RPS` / `RATE_GUARD_OPENFIGI_RPS` / `RATE_GUARD_DATAROMA_RPS` | no | Per-upstream rate overrides. |
 
 ### `RATE_GUARD_URL` — for the ValuePilot app, not Rate Guard itself
@@ -80,14 +82,22 @@ https://rate-guard.richmom.vip/v1/fetch  →  cloudflared  →  localhost:9099  
 - Use a **subdomain**, not a path under an existing host — cloudflared does not
   strip a path prefix, so `.../rate-guard/v1/fetch` would arrive as
   `/rate-guard/v1/fetch` and 404. A subdomain maps `/v1/fetch` straight through.
-- Set `RATE_GUARD_API_KEY` (see `openssl rand -hex 32`). With it set, every
-  path except `/healthz` requires `Authorization: Bearer <key>`; `/v1/fetch`
-  and `/v1/metrics` return `401` without it, **before** any upstream call.
+- Set `RATE_GUARD_API_KEY` (see `openssl rand -hex 32`) **and**
+  `RATE_GUARD_REQUIRE_AUTH=1`. With a key set, every path except `/healthz`
+  requires `Authorization: Bearer <key>`; `/v1/fetch` and `/v1/metrics` return
+  `401` without it, **before** any upstream call. With `RATE_GUARD_REQUIRE_AUTH=1`
+  the container refuses to boot if the key is ever dropped — so an env slip fails
+  closed, never silently open.
 - The host port (`9099`) binds to `127.0.0.1` only, so the key can't be
   bypassed by hitting `http://<host-public-ip>:9099/v1/fetch` directly — the
   authenticated tunnel is the sole public path.
-- The remote caller sets `RATE_GUARD_URL=https://rate-guard.richmom.vip` and the
+- The remote caller sets `RATE_GUARD_URL=https://rate-guard.richmom.vip` (must be
+  **https** — the client warns if a key is set on a non-https off-box URL) and the
   same `RATE_GUARD_API_KEY`; `RateGuardClient` sends the header automatically.
+- Rotate keys with the two-slot mechanism (`RATE_GUARD_API_KEY` +
+  `RATE_GUARD_API_KEY_PREVIOUS`). Full runbook, the live ingress/DNS manifest, and
+  the **rollback order (tear down the tunnel before reverting code)** are in
+  [`docs/architecture/rate-guard-public-exposure.md`](../docs/architecture/rate-guard-public-exposure.md).
 
 ## Tests
 

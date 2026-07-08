@@ -14,12 +14,16 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
-from .auth import is_authorized
+from .auth import enforce_auth_config, is_authorized
 from .cache import ResponseCache
 from .config import build_upstreams
 from .gateway import Gateway, UpstreamError
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
+
+# Fail closed (or warn) on the auth configuration before serving a request —
+# never silently boot an unauthenticated public proxy.
+enforce_auth_config()
 
 _cache = ResponseCache(os.environ.get("RATE_GUARD_CACHE_DIR", "/data/cache"))
 _gateway = Gateway(build_upstreams(), _cache)
@@ -56,7 +60,9 @@ class FetchRequest(BaseModel):
 
 @app.get("/healthz")
 def healthz() -> dict:
-    return {"status": "ok", "upstreams": _gateway.upstream_names()}
+    # Unauthenticated liveness probe — deliberately minimal. The upstream list
+    # is capability-revealing, so it lives on the authenticated /v1/metrics.
+    return {"status": "ok"}
 
 
 @app.post("/v1/fetch")

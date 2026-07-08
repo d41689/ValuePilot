@@ -9,6 +9,48 @@ long — escalate to the user. **medium / low** = ordinary follow-up.
 
 ## Open
 
+### Rate Guard key not yet in dev api container — EDGAR calls 401
+- **Found:** 2026-07-08, PR #103 rollout
+- **Severity:** medium (dev-only — prod verified working with the key)
+- **Problem:** Enabling `RATE_GUARD_API_KEY` turned on auth for the shared Rate
+  Guard, but `valuepilot-dev-api-1`'s running container predates the key and does
+  not carry it, so its EDGAR/OpenFIGI/Dataroma fetches 401. Fixing it needs a
+  container recreate, which is coupled to the already-merged #99 (dev → shared
+  Postgres) compose change, so it was deliberately not triggered as a side effect.
+- **Fix sketch:** recreate `valuepilot-dev-api-1` (`docker compose up -d api`,
+  after confirming the shared Postgres is ready) so it picks up
+  `RATE_GUARD_API_KEY` from the shared `.env`; verify dev EDGAR → 200.
+- **Context:** `docs/tasks/2026-07-08_rate-guard-auth-hardening.md`;
+  review `docs/tasks/2026-07-07_rate-guard-public-auth-review-results.md` (#10)
+
+### Rate Guard public path has no auth-failure / abuse observability
+- **Found:** 2026-07-08, PR #103 staff review
+- **Severity:** medium
+- **Problem:** No metric or alert exists for 401s or for public traffic hitting
+  `rate-guard.richmom.vip`. A leaked key or brute-force spray would first surface
+  as our egress IP getting banned by SEC/OpenFIGI. `/v1/metrics` tracks upstream
+  volume only; the auth middleware emits no 401 signal and no source-IP visibility.
+- **Fix sketch:** (1) a counter on 401s in the auth middleware + alert on 401-rate
+  spikes; (2) a Cloudflare WAF rate-limit rule on `rate-guard.richmom.vip` +
+  source-IP via CF logs (CF sees the real client IP before the tunnel); (3) alert
+  on anomalous `/v1/fetch` volume.
+- **Context:** `docs/tasks/2026-07-07_rate-guard-public-auth-review-results.md` (#9);
+  see also `docs/architecture/rate-guard-public-exposure.md` → Deferred hardening
+
+### Rate Guard shared key — split dev/prod values; consider edge auth
+- **Found:** 2026-07-08, PR #103 staff review
+- **Severity:** low
+- **Problem:** One static `RATE_GUARD_API_KEY` value is shared across dev, prod,
+  and the remote dev box. The two-slot mechanism (`RATE_GUARD_API_KEY` +
+  `RATE_GUARD_API_KEY_PREVIOUS`) now supports distinct/rotating keys, but distinct
+  values are not yet provisioned. A leak grants full egress-proxy access under our
+  IP/User-Agent, and the same key also gates dev.
+- **Fix sketch:** (1) give the remote box its own key (second slot), revocable on
+  its own; (2) as a future option, move auth to Cloudflare Access service tokens /
+  mTLS for per-client identity + revocation, keeping the app bearer as
+  defense-in-depth (Option B keeps the app bearer for now).
+- **Context:** `docs/tasks/2026-07-07_rate-guard-public-auth-review-results.md` (#4)
+
 ### `_clear_13f` test helper raises FK violation when dev DB has committed quality_findings_13f / oracles_lens_signals rows
 - **Found:** 2026-05-24, while running canonical CI for the manager-taxonomy-v2 change
   (`docs/tasks/2026-05-24_manager-taxonomy-v2.md`)

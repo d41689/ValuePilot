@@ -9,6 +9,7 @@ and surface every failure as a typed ``RateGuardFetchError``.
 """
 import base64
 import logging
+from urllib.parse import urlparse
 
 import httpx
 
@@ -19,6 +20,12 @@ logger = logging.getLogger(__name__)
 # A single /v1/fetch can block while Rate Guard works through its own retry +
 # 429/503 global pause; the client timeout must comfortably exceed that.
 _RATE_GUARD_TIMEOUT_S = 1800.0
+
+# Hosts where a plain-http Rate Guard URL is fine (traffic never leaves the box /
+# the Docker network). Anything else must be https when a key is configured.
+_INTERNAL_RATE_GUARD_HOSTS = {"rate-guard", "localhost", "127.0.0.1", "::1"}
+# Warn at most once per misconfigured base URL, not per request.
+_insecure_key_url_warned: set[str] = set()
 
 
 class RateGuardFetchError(RuntimeError):
@@ -62,7 +69,32 @@ class RateGuardClient:
                 "RATE_GUARD_URL is not configured — external fetches must route "
                 "through Rate Guard. Set RATE_GUARD_URL (see rate-guard/README.md)."
             )
-        return base.rstrip("/")
+        base = base.rstrip("/")
+        self._warn_if_key_over_insecure_url(base)
+        return base
+
+    @staticmethod
+    def _warn_if_key_over_insecure_url(base: str) -> None:
+        """The Bearer key is a secret; sending it over plain http to an off-box
+        host leaks it in cleartext. Warn (once per URL) on that misconfiguration.
+        Plain http to an internal host (rate-guard/localhost) is expected and OK.
+        """
+        key = (settings.RATE_GUARD_API_KEY or "").strip()
+        if not key:
+            return
+        parsed = urlparse(base)
+        if parsed.scheme == "https":
+            return
+        if (parsed.hostname or "").lower() in _INTERNAL_RATE_GUARD_HOSTS:
+            return
+        if base not in _insecure_key_url_warned:
+            _insecure_key_url_warned.add(base)
+            logger.warning(
+                "RATE_GUARD_API_KEY is set but RATE_GUARD_URL=%s is not https to "
+                "an internal host — the Bearer key would transit in cleartext. "
+                "Use https:// for any external Rate Guard URL.",
+                base,
+            )
 
     def _auth_headers(self) -> dict:
         """Bearer header for Rate Guard when a shared key is configured; empty
