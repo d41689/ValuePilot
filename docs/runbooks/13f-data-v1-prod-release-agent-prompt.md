@@ -121,8 +121,13 @@ Both live in the repo at `backend/scripts/` and are only present at commit
   in the repo root; the deploy copies them from `~/.config/valuepilot/`. If they
   are missing, restore them the same way (`cp`), do not invent values.
 - Prod runs a background 13F worker and (per README) a scheduler that fires the
-  quarterly pipeline Mondays 06:00 UTC. Concurrency is handled by JobRun locks —
-  a conflict surfaces as an exit code, never as a race. Prefer a quiet window.
+  quarterly pipeline Mondays 06:00 UTC. You do NOT need to disable either.
+  The quarterly pipeline is self-safe: its ingest job fills `accepted_at`
+  (Phase 2) before its own authority sweep (Phase 5), so it cannot trip the
+  missing-acceptance rule. It will merely contend for locks: a collision makes
+  `t3_attribution_rollout` exit 2, which you wait out and re-run. The gate
+  script takes no JobRun lock and is safe at any time. Never force past an
+  exit 2, and never stop the scheduler to make room for yourself.
 
 Run backend commands as:
 

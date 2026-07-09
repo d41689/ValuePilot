@@ -236,3 +236,45 @@ def test_filing_without_quarter_end_date_fails_gate_but_is_not_at_risk(db_sessio
 
     assert report["failures"]
     assert report["at_risk_groups"] == []  # belongs to no competition pool
+
+
+# ---------------------------------------------------------------------------
+# Drift guard: the whole point of extracting `competition_pool` was that a
+# SECOND, hand-written definition of "which filings compete" silently diverged
+# from the authority's (an 8x over-report on real data). Nothing structural
+# stopped it then; this stops it now.
+# ---------------------------------------------------------------------------
+
+def test_pool_selection_is_defined_once_and_shared():
+    """`apply_active_filing_policy` and the deploy gate must BOTH obtain their
+    pool from `competition_pool`; neither may re-inline the predicates."""
+    import inspect
+
+    from app.services import thirteenf_accepted_at_rollout as gate_mod
+    from app.services import thirteenf_filing_detail as authority_mod
+
+    authority = inspect.getsource(authority_mod.apply_active_filing_policy)
+    pool = inspect.getsource(authority_mod.competition_pool)
+    at_risk = inspect.getsource(gate_mod._at_risk_groups)
+
+    # Both consumers delegate.
+    assert "competition_pool(" in authority, "the authority must ask competition_pool"
+    assert "competition_pool(" in at_risk, "the gate diagnostic must ask competition_pool"
+
+    # Pool-selection predicates live ONLY in competition_pool. (Markers chosen
+    # so the authority's legitimate *writes* — e.g. setting a winner's status to
+    # "applied", or restoring a RESTATEMENT's pre-flag status — do not trip it.)
+    for marker in ('hr_originals', 'amendment_status == "applied"'):
+        assert marker in pool, f"{marker!r} should define the pool"
+        assert marker not in authority, (
+            f"{marker!r} re-inlined in apply_active_filing_policy — pool selection "
+            "has forked from competition_pool again"
+        )
+        assert marker not in at_risk, (
+            f"{marker!r} re-inlined in the gate diagnostic — this is exactly the "
+            "drift that made it over-report 16 groups when only 2 could freeze"
+        )
+
+    # The four kinds the consumers branch on are all produced here.
+    for kind in ("restatement", "amendment_owned", "originals", "none"):
+        assert f'"{kind}"' in pool

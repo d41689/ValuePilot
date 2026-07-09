@@ -144,9 +144,53 @@ carrying reparse history — which is the *designed* non-destructive behaviour.
 ## 6. Rollback
 
 No migrations, so rollback is a code revert (`git revert` the merge commits, let
-`deploy.yml` redeploy) plus, if the attribution rollout has already run, an
-awareness that `holding_attribution_status` and the recomputed
-`ownership_changes` / Lens rows reflect the new rules. Those are derived data:
-re-running the previous code's `backfill-attribution` + recomputes restores them.
-`accepted_at` is authoritative SEC metadata parsed from stored primary docs and
-should never be rolled back.
+`deploy.yml` redeploy). Three things a revert does **not** cleanly undo:
+
+**a. `amendment_status = 'deferred'` becomes un-interpretable — and a deferred
+restatement resurrects itself.** `deferred` is a status T1-FU introduced. The
+pre-T1-FU `_TERMINAL_AMENDMENT_STATUSES` is
+`{applied, rejected, informational}` — it does **not** contain `deferred`. So
+after a revert, `apply_amendment_policy` treats a deferred RESTATEMENT as
+non-terminal, resets it to `pending_parse`, and the old authority then
+auto-applies it. **An amendment an operator explicitly parked would go live
+because of a code rollback.**
+
+> Before reverting, run:
+> ```sql
+> SELECT accession_no, manager_id, quarter_end_date FROM filings_13f WHERE amendment_status = 'deferred';
+> ```
+> If any rows come back, convert them to `rejected` first — a status the old
+> code honours — or accept that they will become active. As of 2026-07-09 there
+> are **0** such rows on dev; prod's count is unknown until the read-only probe
+> runs.
+
+**b. Derived data reflects the new rules.** If `t3_attribution_rollout` has
+already run, `holding_attribution_status` and the recomputed `ownership_changes`
+/ Oracle's Lens rows follow the post-T3 attribution ruling. They are derived:
+re-running the previous code's `backfill-attribution` plus the recomputes
+restores them.
+
+**c. `accepted_at` must not be rolled back.** It is authoritative SEC metadata
+parsed from the stored primary docs (Eastern wall time → UTC). Nothing in the
+old code writes it, so a revert simply leaves it populated — which is harmless
+and, on a re-deploy, saves running the gate again.
+
+## 7. Concurrency with the production scheduler
+
+Prod runs a weekly scheduler (Mondays 06:00 UTC) that fires the quarterly
+pipeline, plus a background 13F job worker. Both interact with the runbook:
+
+- **The quarterly pipeline is self-safe.** Its `ingest_holdings` job fills
+  `accepted_at` in Phase 2 (`backfill_period_routing`) *before* its Phase 5
+  authority sweep, so it cannot trip the missing-acceptance rule on the quarter
+  it is processing — with or without this runbook having run.
+- **It will, however, contend for locks.** Both the pipeline and
+  `t3_attribution_rollout` take JobRun `lock_key`s and the
+  `(manager, quarter_end_date)` advisory lock. A collision surfaces as the
+  rollout script **exiting 2** — a conflict to wait out and re-run, never a
+  failure to force past. The gate script takes no JobRun lock and is safe to run
+  at any time.
+
+So "prefer a quiet window" is an efficiency preference, not a safety
+requirement. Do not disable the scheduler to run the runbook; just re-run the
+rollout if it exits 2.
