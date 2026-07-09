@@ -9,6 +9,39 @@ long — escalate to the user. **medium / low** = ordinary follow-up.
 
 ## Open
 
+### Authority rule 2 ranks admin-`applied` amendments by the accession_no fallback that rules 1 and 3 removed
+- **Found:** 2026-07-09, PR #113 self-review (the external review skipped this
+  prompt question)
+- **Severity:** low (latent — **0 reachable groups on the 355-group real dataset**;
+  see reachability below)
+- **Problem:** `apply_active_filing_policy` rule 2 picks the owner with
+  `max(pool, key=_active_filing_rank)`, and `_active_filing_rank` falls back to
+  `(datetime.min, accession_no)` when `accepted_at` is NULL. Rules 1 and 3 guard
+  that exact situation (`missing_acceptance`: ≥2 candidates + any NULL → do not
+  auto-switch, flag for a human) precisely because the series established that an
+  accession prefix identifies the SUBMITTING agent, not the manager, and is not a
+  time proxy (231/373 real filings differ from their manager's CIK; 3 real
+  lexical-vs-acceptance inversions). Rule 2 has neither a missing-evidence guard
+  nor a tie guard, and the accepted_at deploy gate deliberately skips
+  `amendment_owned` groups — so on a pre-gate database an operator who applied two
+  amendments to one (manager, period) gets an owner chosen by accession string,
+  with no warning.
+- **Reachability (measured, not assumed):** rule 2 fires only when NO parsed
+  non-rejected/-deferred HR-family RESTATEMENT exists (those go to rule 1, which
+  IS guarded). Over the 355 real (manager, quarter_end_date) groups the pool kinds
+  are `originals 343 / restatement 11 / none 1`, and groups reaching rule 2 with
+  ≥2 `applied` amendments: **0**. The two real groups holding ≥2 `applied`
+  amendments hold RESTATEMENTs, so they route to rule 1.
+- **Fix sketch:** give rule 2 the same guard as rules 1/3 — if ≥2 applied
+  amendments and (any NULL `accepted_at` OR a top-two tie), do not auto-switch:
+  keep the current active filing if it is in the pool, demote any active row that
+  is NOT (a rejected amendment or stale original must never serve), flag the pool,
+  and return `missing_acceptance`. Then stop skipping `amendment_owned` in
+  `_at_risk_groups`. Consider whether admin intent should be ordered by an
+  explicit `resolved_at` rather than by SEC acceptance time at all.
+- **Context:** `docs/tasks/2026-07-09_13f-release-readiness-review-results.md`
+  (Prompt 2, question 3 — unanswered by the review)
+
 ### No end-to-end quarterly-pipeline test with real stage bodies
 - **Found:** 2026-07-09, T1–T4 series review (test-gap recommendation #1)
 - **Severity:** low (every stage body is unit/composition tested individually;

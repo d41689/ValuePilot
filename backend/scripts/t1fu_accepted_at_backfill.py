@@ -74,15 +74,17 @@ def main() -> int:
 
         groups = report["at_risk_groups"]
         if groups:
-            print(f"\n  WILL FREEZE — {len(groups)} multi-filing group(s) whose "
-                  "ordering is now unknowable:")
+            print(f"\n  WILL FREEZE — {len(groups)} group(s) whose competition "
+                  "pool has >=2 members and cannot be ordered:")
             for group in groups:
                 print(f"    - manager={group['manager_id']} "
                       f"period={group['quarter_end_date']} "
-                      f"filings={group['group_size']}")
+                      f"pool={group['pool_kind']}({group['pool_size']}) "
+                      f"missing_accepted_at={group['pool_missing_accepted_at']}")
         else:
-            print("\n  No multi-filing group is affected: every remaining NULL is "
-                  "a solo filing the authority resolves without ordering evidence.")
+            print("\n  No competition pool is affected: every remaining NULL sits "
+                  "in a pool the authority resolves without ordering evidence "
+                  "(a solo filing, or a slot an admin already decided).")
         return 1
     finally:
         session.close()
