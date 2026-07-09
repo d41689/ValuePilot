@@ -1190,6 +1190,96 @@ def backfill_quarters(db: Session, num_quarters: int = 4) -> dict[str, int]:
     return results
 
 
+def _date_to_quarter(d) -> str:
+    """Calendar quarter label ("YYYY-Qn") of a date."""
+    return f"{d.year}-Q{(d.month - 1) // 3 + 1}"
+
+
+def next_quarter_label(label: str) -> str:
+    """Calendar quarter after ``label`` ("2025-Q4" → "2026-Q1")."""
+    year_text, qtr_text = label.upper().split("-Q", 1)
+    year, qtr = int(year_text), int(qtr_text)
+    return f"{year + 1}-Q1" if qtr == 4 else f"{year}-Q{qtr + 1}"
+
+
+def pending_ingest_quarters(db: Session) -> list[str]:
+    """Distinct calendar quarters that still have un-ingested 13F filings.
+
+    A filing is un-ingested while ``raw_infotable_doc_id IS NULL`` (its
+    infotable has not been fetched/parsed). We key on the filing's *current*
+    ``period_of_report`` — which for an un-ingested filing is a proxy equal to
+    ``filed_at`` (the *filing* quarter), corrected to the true report quarter
+    only after its primary doc is parsed (see ``backfill_period_routing``).
+
+    Grouping by this proxy is exactly what makes the newest report quarter
+    reachable: its filings are filed the following calendar quarter, so a
+    report-quarter window would miss them (F5). Delegating the ingest to the
+    quarter matching the proxy period lands them in the right job window, after
+    which the parse corrects the period. Idempotent: once ingested a filing has
+    ``raw_infotable_doc_id`` set and drops out.
+    """
+    rows = (
+        db.query(Filing13F.period_of_report)
+        .filter(Filing13F.raw_infotable_doc_id.is_(None))
+        .filter(Filing13F.period_of_report.isnot(None))
+        .distinct()
+        .all()
+    )
+    return sorted({_date_to_quarter(row[0]) for row in rows})
+
+
+def ingest_pending_holdings(db: Session, *, quarters=None, ingest_fn=None, log=None) -> dict:
+    """Ingest un-ingested filings via the modern ``ingest_holdings`` job.
+
+    Groups pending filings by :func:`pending_ingest_quarters` and delegates each
+    quarter to the job path (``ingest_if_needed`` → ParseRun-backed, product
+    visible, with Phase-4 heal + solo-HR activation), replacing the legacy
+    ``ingest_filing_holdings`` calls the CLI used to make (which wrote
+    product-invisible ``parse_run_id = NULL`` holdings — F6).
+
+    ``quarters`` — optional iterable of calendar-quarter labels to restrict to.
+    ``None`` processes every pending quarter; ``backfill`` passes the quarters it
+    is responsible for so ``--quarters N`` stays bounded and a permanently-stuck
+    filing (e.g. a manager with no confirmed CIK, whose ``raw_infotable_doc_id``
+    never gets set) can't drag every historical quarter into each run.
+
+    Per-quarter failures are isolated: a raising ``ingest_fn`` is caught, the
+    session rolled back, the error recorded as ``{"error": ...}`` in that
+    quarter's summary, and the loop continues — one bad quarter can never
+    abandon the healthy ones. The default ``ingest_fn`` runs through the locked
+    job runner, which never raises and returns a ``conflict`` / ``failed``
+    status with an ``error`` key instead; those surface the same way. ``ingest_fn``
+    is injectable for tests.
+
+    Returns ``{quarter: result}`` where each result is the locked-job stage dict
+    (``stage`` / ``summary`` / optional ``error``) or the injected fn's return.
+    """
+    if ingest_fn is None:
+        from app.services.thirteenf_admin_dashboard import run_locked_job
+
+        def ingest_fn(quarter: str) -> dict:
+            # Locked runner: honors ingest_holdings:{quarter}, so a CLI backfill
+            # won't run an untracked second copy against a scheduled ingest.
+            return run_locked_job(db, "ingest_holdings", {"quarter": quarter}, trigger_source="cli")
+
+    targets = pending_ingest_quarters(db)
+    if quarters is not None:
+        allowed = {str(q).upper() for q in quarters}
+        targets = [q for q in targets if q.upper() in allowed]
+
+    summaries: dict = {}
+    for quarter in targets:
+        try:
+            summaries[quarter] = ingest_fn(quarter)
+        except Exception as exc:  # noqa: BLE001 — isolate one quarter's failure
+            db.rollback()
+            logger.error("ingest_holdings %s failed: %s", quarter, exc)
+            summaries[quarter] = {"error": str(exc)}
+        if log is not None:
+            log(f"{quarter}: {summaries[quarter]}")
+    return summaries
+
+
 def backfill_period_of_report(db: Session) -> int:
     """Thin compatibility wrapper around ``backfill_period_routing``.
 

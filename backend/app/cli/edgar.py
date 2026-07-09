@@ -163,46 +163,29 @@ def fetch_holdings(
 @app.command()
 def ingest_holdings(
     quarter: str = typer.Option(..., help="Quarter in YYYY-Qn format, e.g. 2025-Q1"),
-    limit: int = typer.Option(0, help="Max filings to process (0 = all)"),
 ) -> None:
-    """Download and parse infotable.xml for filings in a quarter (Step 2)."""
-    from app.models.institutions import Filing13F
-    from app.services.edgar_ingestion import ingest_filing_holdings
+    """Download and parse infotable.xml for a quarter (Step 2).
+
+    Delegates to the modern ``ingest_holdings`` job so holdings are
+    ParseRun-backed and product-visible (fixes F6 — the legacy path wrote
+    ``parse_run_id = NULL`` holdings invisible to the product query contract).
+    Runs under the shared ``ingest_holdings:{quarter}`` lock, so a concurrent
+    scheduled/dashboard ingest for the same quarter is reported as a conflict
+    rather than run as an untracked second copy. ``quarter`` is the calendar
+    quarter the filings' period_of_report falls in (a proxy = filed_at until
+    parsed), matching the job's window.
+    """
+    from app.services.thirteenf_admin_dashboard import run_locked_job
 
     db = SessionLocal()
     try:
-        from datetime import date
-        from app.edgar.parsers.form_idx import quarter_to_year_qtr
-
-        year, qtr = quarter_to_year_qtr(quarter)
-        # period_of_report falls within the quarter
-        q_start = date(year, (qtr - 1) * 3 + 1, 1)
-        import calendar
-        end_month = qtr * 3
-        q_end = date(year, end_month, calendar.monthrange(year, end_month)[1])
-
-        filings = (
-            db.query(Filing13F)
-            .filter(Filing13F.period_of_report.between(q_start, q_end))
-            .filter(Filing13F.raw_infotable_doc_id.is_(None))
-            .order_by(Filing13F.filed_at)
-            .all()
-        )
-        if limit:
-            filings = filings[:limit]
-
-        total_inserted = 0
-        for filing in filings:
-            try:
-                n = ingest_filing_holdings(db, filing)
-                db.commit()
-                total_inserted += n
-                logger.info("  %s → %d holdings", filing.accession_no, n)
-            except Exception as exc:
-                db.rollback()
-                logger.error("  %s failed: %s", filing.accession_no, exc)
-
-        typer.echo(f"Processed {len(filings)} filings, {total_inserted} holdings inserted.")
+        result = run_locked_job(db, "ingest_holdings", {"quarter": quarter}, trigger_source="cli")
+        typer.echo(f"{quarter}: {result['summary']}")
+        if result.get("error"):
+            typer.echo(f"Error: {result['error']}", err=True)
+            raise typer.Exit(1)
+    except typer.Exit:
+        raise
     except Exception as exc:
         db.rollback()
         typer.echo(f"Error: {exc}", err=True)
@@ -215,20 +198,30 @@ def ingest_holdings(
 def reparse_filing(
     accession: str = typer.Option(..., help="Accession number (dashed format)"),
 ) -> None:
-    """Re-parse a single filing from stored raw document (replay)."""
-    from app.models.institutions import Filing13F
-    from app.services.edgar_ingestion import ingest_filing_holdings
+    """Re-parse a single filing from its stored raw document (replay).
+
+    Delegates to the ParseRun-backed ``reparse_accession`` job: the new run
+    becomes ``is_current`` and the prior holdings are RETAINED (no destructive
+    delete), so a reparse can never blank a filing out of the product surface
+    (fixes F7 — the legacy path deleted the visible holdings and re-inserted
+    ``parse_run_id = NULL`` invisible ones). Runs under the
+    ``reparse_accession:{accession}`` lock.
+    """
+    from app.services.thirteenf_admin_dashboard import run_locked_job
 
     db = SessionLocal()
     try:
-        filing = db.query(Filing13F).filter_by(accession_no=accession).one_or_none()
-        if filing is None:
-            typer.echo(f"Filing {accession} not found.", err=True)
+        result = run_locked_job(
+            db, "reparse_accession", {"accession_no": accession}, trigger_source="cli"
+        )
+        if result.get("error"):
+            typer.echo(f"Error: {result['error']}", err=True)
             raise typer.Exit(1)
-
-        n = ingest_filing_holdings(db, filing, force_refresh=False, replace_holdings=True)
-        db.commit()
-        typer.echo(f"Reparsed {accession}: {n} holdings.")
+        summary = result["summary"]
+        typer.echo(
+            f"Reparsed {accession}: {summary.get('holdings_count')} holdings "
+            f"(parse_run {summary.get('parse_run_id')})."
+        )
     except typer.Exit:
         raise
     except Exception as exc:
@@ -245,11 +238,11 @@ def backfill(
     index_only: bool = typer.Option(False, help="Only seed form.idx (skip holdings download)"),
 ) -> None:
     """Backfill form.idx + holdings for recent N quarters."""
-    from app.services.edgar_ingestion import backfill_quarters, ingest_filing_holdings
-    from app.models.institutions import Filing13F
-    from datetime import date
-    import calendar
-    from app.edgar.parsers.form_idx import quarter_to_year_qtr
+    from app.services.edgar_ingestion import (
+        backfill_quarters,
+        ingest_pending_holdings,
+        next_quarter_label,
+    )
 
     db = SessionLocal()
     try:
@@ -263,41 +256,33 @@ def backfill(
         if index_only:
             return
 
-        # Step 2: fetch holdings for the SAME report quarters Step 1 indexed.
-        # Iterate `results` (Step 1's output) rather than re-deriving a list —
-        # a re-derived current-calendar-quarter list drifts from Step 1's
-        # latest-usable report quarters, leaving one stage's quarters unindexed
-        # and the other's holdings un-ingested.
-        for quarter in results:
-            year, qtr = quarter_to_year_qtr(quarter)
-            q_start = date(year, (qtr - 1) * 3 + 1, 1)
-            end_month = qtr * 3
-            q_end = date(year, end_month, calendar.monthrange(year, end_month)[1])
-
-            pending = (
-                db.query(Filing13F)
-                .filter(Filing13F.period_of_report.between(q_start, q_end))
-                .filter(Filing13F.raw_infotable_doc_id.is_(None))
-                .order_by(Filing13F.filed_at)
-                .all()
+        # Step 2: ingest the freshly-indexed (un-ingested) filings via the modern
+        # job path. `ingest_pending_holdings` groups pending filings by the
+        # calendar quarter their (proxy) period_of_report falls in and delegates
+        # each to the ingest job so holdings are ParseRun-backed and
+        # product-visible (fixes F6). We bound it to the report quarters Step 1
+        # indexed PLUS each one's following (filing) calendar quarter — where a
+        # freshly-indexed filing's proxy period (= filed_at) lands until parsed.
+        # That reaches the newest report quarter's filings, filed the following
+        # quarter and therefore outside any report-quarter window (fixes F5),
+        # while keeping `--quarters N` honest: without the bound a single
+        # permanently-stuck filing (e.g. a CIK-less manager) would drag every
+        # historical quarter into every run.
+        scoped = {q for q in results} | {next_quarter_label(q) for q in results}
+        summaries = ingest_pending_holdings(
+            db, quarters=scoped, log=lambda m: typer.echo(f"  {m}")
+        )
+        if not summaries:
+            typer.echo("  no pending holdings in the requested quarters")
+        failed = [q for q, s in summaries.items() if isinstance(s, dict) and s.get("error")]
+        if failed:
+            typer.echo(
+                f"Error: {len(failed)} quarter(s) failed: {', '.join(sorted(failed))}",
+                err=True,
             )
-            if not pending:
-                typer.echo(f"  {quarter}: holdings already ingested")
-                continue
-
-            typer.echo(f"  {quarter}: ingesting {len(pending)} filings...")
-            total = 0
-            failed = 0
-            for filing in pending:
-                try:
-                    n = ingest_filing_holdings(db, filing)
-                    db.commit()
-                    total += n
-                except Exception as exc:
-                    db.rollback()
-                    logger.error("  %s failed: %s", filing.accession_no, exc)
-                    failed += 1
-            typer.echo(f"  {quarter}: {total} holdings inserted ({failed} failed)")
+            raise typer.Exit(1)
+    except typer.Exit:
+        raise
     except Exception as exc:
         db.rollback()
         typer.echo(f"Error: {exc}", err=True)
@@ -310,16 +295,22 @@ def backfill(
 def reparse_all(
     quarter: str = typer.Option("", help="Limit to a quarter, e.g. 2025-Q1 (empty = all)"),
 ) -> None:
-    """Reparse all filings from stored raw docs (no network calls). Replaces existing holdings."""
+    """Reparse all stored filings from their raw docs (no network calls).
+
+    Each accession goes through the ParseRun-backed ``reparse_accession`` job,
+    which swaps ``is_current`` and RETAINS the prior holdings — non-destructive
+    and product-visible (fixes F7). The legacy path deleted every filing's
+    visible holdings and re-inserted invisible ``parse_run_id = NULL`` rows.
+    """
     from app.models.institutions import Filing13F
-    from app.services.edgar_ingestion import ingest_filing_holdings
+    from app.services.thirteenf_admin_dashboard import run_locked_job
     import calendar
     from app.edgar.parsers.form_idx import quarter_to_year_qtr
     from datetime import date
 
     db = SessionLocal()
     try:
-        query = db.query(Filing13F).filter(Filing13F.raw_infotable_doc_id.isnot(None))
+        query = db.query(Filing13F.accession_no).filter(Filing13F.raw_infotable_doc_id.isnot(None))
         if quarter:
             year, qtr = quarter_to_year_qtr(quarter)
             q_start = date(year, (qtr - 1) * 3 + 1, 1)
@@ -327,22 +318,28 @@ def reparse_all(
             q_end = date(year, end_month, calendar.monthrange(year, end_month)[1])
             query = query.filter(Filing13F.period_of_report.between(q_start, q_end))
 
-        filings = query.order_by(Filing13F.period_of_report).all()
-        typer.echo(f"Reparsing {len(filings)} filings...")
+        # Collect accession strings up front: each reparse_accession job commits,
+        # which would expire ORM Filing rows mid-loop.
+        accessions = [row[0] for row in query.order_by(Filing13F.period_of_report).all()]
+        typer.echo(f"Reparsing {len(accessions)} filings...")
 
         total = 0
         failed = 0
-        for filing in filings:
-            try:
-                n = ingest_filing_holdings(db, filing, force_refresh=False, replace_holdings=True)
-                db.commit()
-                total += n
-            except Exception as exc:
-                db.rollback()
-                logger.error("  %s failed: %s", filing.accession_no, exc)
+        for accession in accessions:
+            result = run_locked_job(
+                db, "reparse_accession", {"accession_no": accession}, trigger_source="cli"
+            )
+            if result.get("error"):
+                logger.error("  %s failed: %s", accession, result["error"])
                 failed += 1
+            else:
+                total += result["summary"].get("holdings_count", 0) or 0
 
         typer.echo(f"Done: {total:,} holdings, {failed} failed")
+        if failed:
+            raise typer.Exit(1)
+    except typer.Exit:
+        raise
     except Exception as exc:
         db.rollback()
         typer.echo(f"Error: {exc}", err=True)
