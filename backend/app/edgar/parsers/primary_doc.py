@@ -13,9 +13,30 @@ import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Optional
+from zoneinfo import ZoneInfo
 
 _NS_RE = re.compile(r"\{[^}]+\}")
 _SGML_XML_RE = re.compile(r"<XML>(.*?)</XML>", re.DOTALL | re.IGNORECASE)
+
+# EDGAR <ACCEPTANCE-DATETIME> values are US Eastern WALL TIME (SEC Webmaster
+# FAQ), not UTC. Interpret in America/New_York (DST-aware), store as UTC.
+# The pre-T1-FU parser stamped the raw value tzinfo=UTC, storing an instant
+# 4-5 hours wrong; consumers that need the SEC filing DATE must convert back
+# to Eastern before calling .date() (see edgar_accepted_date_eastern).
+_EDGAR_TZ = ZoneInfo("America/New_York")
+
+
+def edgar_accepted_date_eastern(accepted_at: datetime | None):
+    """The SEC filing-calendar date of an acceptance instant stored in UTC.
+
+    EDGAR's business rules (deadlines, schema cutovers) are defined on the
+    EASTERN calendar date; a filing accepted after 19:00/20:00 ET has a UTC
+    date one day later. Naive datetimes are assumed UTC (defensive)."""
+    if accepted_at is None:
+        return None
+    if accepted_at.tzinfo is None:
+        accepted_at = accepted_at.replace(tzinfo=timezone.utc)
+    return accepted_at.astimezone(_EDGAR_TZ).date()
 
 
 @dataclass
@@ -79,7 +100,12 @@ def parse_primary_doc(content: bytes) -> PrimaryDocSummary:
     acceptance_match = re.search(r"<ACCEPTANCE-DATETIME>\s*(\d{14})", text, re.IGNORECASE)
     accepted_at = None
     if acceptance_match:
-        accepted_at = datetime.strptime(acceptance_match.group(1), "%Y%m%d%H%M%S").replace(tzinfo=timezone.utc)
+        # Eastern wall time → real UTC instant (DST-aware). See _EDGAR_TZ note.
+        accepted_at = (
+            datetime.strptime(acceptance_match.group(1), "%Y%m%d%H%M%S")
+            .replace(tzinfo=_EDGAR_TZ)
+            .astimezone(timezone.utc)
+        )
 
     form_type = _extract("submissionType")
     if not form_type:

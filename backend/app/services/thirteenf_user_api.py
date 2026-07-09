@@ -15,7 +15,7 @@ from sqlalchemy.orm import Session
 
 from app.models.institutions import Filing13F, Holding13F, InstitutionManager, OwnershipChange13F
 from app.models.stocks import Stock
-from app.services.thirteenf_holdings_query import HR_FORM_TYPES, active_hr_holdings_query
+from app.services.thirteenf_holdings_query import HR_FORM_TYPES, NT_FORM_TYPES, active_hr_holdings_query
 
 
 NT_CAVEAT = "This manager filed a 13F Notice; its 13(f) holdings are reported by other manager(s)."
@@ -83,7 +83,7 @@ def build_user_manager_holdings(session: Session, manager_id: int, quarter: str 
         )
 
     caveats = _filing_caveats(active_filing)
-    if active_filing.form_type == "13F-NT":
+    if active_filing.form_type in NT_FORM_TYPES:
         return _unavailable_holdings(
             manager,
             active_filing.report_quarter or quarter,
@@ -442,7 +442,7 @@ def _stock_holder_data_caveats(holdings: list[Holding13F]) -> list[dict[str, str
 
 
 def _quarter_payload(filing: Filing13F) -> dict[str, Any]:
-    if filing.form_type == "13F-NT":
+    if filing.form_type in NT_FORM_TYPES:
         status = "reported_elsewhere"
     elif filing.form_type in HR_FORM_TYPES and filing.parse_status == "succeeded":
         status = "available"
@@ -503,7 +503,7 @@ def _portfolio_weight_payload(holding: Holding13F, filing: Filing13F, *, is_opti
 
 def _filing_caveats(filing: Filing13F) -> list[dict[str, str]]:
     caveats: list[dict[str, str]] = []
-    if filing.form_type == "13F-NT" or filing.coverage_type == "notice_reported_elsewhere":
+    if filing.form_type in NT_FORM_TYPES or filing.coverage_type == "notice_reported_elsewhere":
         caveats.append({"code": "NOTICE_REPORTED_ELSEWHERE", "message": NT_CAVEAT})
     if filing.coverage_completeness == "partial" or filing.coverage_type == "combination_partial":
         caveats.append({"code": "COMBINATION_REPORT", "message": COMBINATION_CAVEAT})

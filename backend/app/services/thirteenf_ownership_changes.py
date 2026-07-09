@@ -14,7 +14,7 @@ from typing import Iterable, Sequence
 from sqlalchemy.orm import Session
 
 from app.models.institutions import Filing13F, Holding13F, OwnershipChange13F
-from app.services.thirteenf_holdings_query import HR_FORM_TYPES, active_hr_holdings_query
+from app.services.thirteenf_holdings_query import HR_FORM_TYPES, NT_FORM_TYPES, active_hr_holdings_query
 
 
 DIRECT_ATTRIBUTION_STATUS = "direct"
@@ -206,7 +206,7 @@ def _unavailable_reason(
         return MAPPING_BLOCK_REASON
     if not previous_filing:
         return MISSING_PRIOR_REASON
-    if previous_filing.form_type == "13F-NT":
+    if previous_filing.form_type in NT_FORM_TYPES:
         return PRIOR_NT_REASON
     if previous_filing.form_type not in HR_FORM_TYPES or previous_filing.coverage_completeness != "complete":
         return PRIOR_INCOMPLETE_REASON

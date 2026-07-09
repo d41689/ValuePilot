@@ -12,6 +12,12 @@ from sqlalchemy.orm import Query, Session
 from app.models.institutions import Filing13F, Holding13F, ParseRun13F
 
 HR_FORM_TYPES = ("13F-HR", "13F-HR/A")
+# NT family: the notice and its amendment form. An active 13F-NT/A must be
+# treated as a notice everywhere exact "13F-NT" was (SEC defines 13F-NT/A as
+# the amendment form for a 13F Notice). T1-FU re-review P2: an admin-applied
+# NT/A could be active yet invisible to nt_only_manager_ids, wrongly counting
+# the manager in the expected-HR denominator.
+NT_FORM_TYPES = ("13F-NT", "13F-NT/A")
 
 
 def active_hr_holdings_query(session: Session) -> Query:
@@ -41,12 +47,13 @@ def active_hr_holdings_query(session: Session) -> Query:
 
 
 def nt_only_manager_ids(session: Session, quarter: str | None = None) -> set[int]:
-    """Manager IDs that have an active NT filing but no active HR/HR-A filing.
+    """Manager IDs that have an active NT-family filing but no active HR/HR-A.
 
     Used to exclude NT-only managers from the expected-filers denominator in
     readiness calculations (PRD §10.1). A manager that files NT has no direct
     holdings — their positions are reported by other managers — so they should
-    not count against coverage metrics.
+    not count against coverage metrics. NT-FAMILY match (13F-NT and 13F-NT/A):
+    an admin-applied active NT/A is still a notice, not a holdings report.
     """
     hr_q = session.query(Filing13F.manager_id).filter(
         Filing13F.form_type.in_(HR_FORM_TYPES),
@@ -56,7 +63,7 @@ def nt_only_manager_ids(session: Session, quarter: str | None = None) -> set[int
         hr_q = hr_q.filter(Filing13F.report_quarter == quarter)
 
     nt_q = session.query(Filing13F.manager_id).filter(
-        Filing13F.form_type == "13F-NT",
+        Filing13F.form_type.in_(NT_FORM_TYPES),
         Filing13F.is_active_for_manager_period.is_(True),
         not_(Filing13F.manager_id.in_(hr_q)),
     )

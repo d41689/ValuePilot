@@ -121,15 +121,16 @@ def test_ingest_accession_original_filing_resolves_conflicts(db_session):
     
     res2 = ingest_accession_filing_detail(db_session, payload2, client=MockClient2())
     f2 = db_session.get(Filing13F, res2["filing_id"])
-    
-    db_session.refresh(f1)
-    
-    # f2 should steal the active status
-    assert f2.is_active_for_manager_period is True
-    assert f1.is_active_for_manager_period is False
-    assert f1.amendment_status == "superseded" or f1.amendment_status == "no_amendments_seen"
 
-    # 3. Third original filing with SAME accepted_at as f2
+    db_session.refresh(f1)
+
+    # T1-FU: an NT never beats an HR for the active slot, regardless of
+    # accepted_at ordering (pre-T1-FU this test pinned the opposite — the
+    # later-accepted NT stole active status from the holdings report).
+    assert f1.is_active_for_manager_period is True
+    assert f2.is_active_for_manager_period is False
+
+    # 3. Third original filing (13F-HR), accepted later than f1 → wins.
     payload3 = {
         "accession_no": "0000000000-24-000003",
         "manager_id": manager.id,
@@ -138,18 +139,39 @@ def test_ingest_accession_original_filing_resolves_conflicts(db_session):
     }
     class MockClient3:
         def get(self, url, **kwargs): return b"<edgarSubmission><submissionType>13F-HR</submissionType><periodOfReport>03-31-2024</periodOfReport><ACCEPTANCE-DATETIME>20240502120000</ACCEPTANCE-DATETIME></edgarSubmission>"
-    
+
     res3 = ingest_accession_filing_detail(db_session, payload3, client=MockClient3())
     f3 = db_session.get(Filing13F, res3["filing_id"])
-    
+
+    db_session.refresh(f1)
     db_session.refresh(f2)
-    
-    # Due to tie, NEITHER is active, both get warnings
-    assert f2.is_active_for_manager_period is False
+
+    assert f3.is_active_for_manager_period is True
+    assert f1.is_active_for_manager_period is False
+    assert f2.is_active_for_manager_period is False  # NT still excluded
+
+    # 4. Fourth HR with the SAME (non-NULL) accepted_at as f3 → genuine tie:
+    # neither HR is active, both flagged for a human. (NULL-vs-NULL is NOT a
+    # tie — accession_no decides; see apply_active_filing_policy.)
+    payload4 = {
+        "accession_no": "0000000000-24-000004",
+        "manager_id": manager.id,
+        "form_type": "13F-HR",
+        "filename": "some/path4.txt",
+    }
+    class MockClient4:
+        def get(self, url, **kwargs): return b"<edgarSubmission><submissionType>13F-HR</submissionType><periodOfReport>03-31-2024</periodOfReport><ACCEPTANCE-DATETIME>20240502120000</ACCEPTANCE-DATETIME></edgarSubmission>"
+
+    res4 = ingest_accession_filing_detail(db_session, payload4, client=MockClient4())
+    f4 = db_session.get(Filing13F, res4["filing_id"])
+
+    db_session.refresh(f3)
+
     assert f3.is_active_for_manager_period is False
-    assert f2.amendment_sort_warning is True
+    assert f4.is_active_for_manager_period is False
     assert f3.amendment_sort_warning is True
-    assert f3.amendment_status == "amendments_pending"
+    assert f4.amendment_sort_warning is True
+    assert f4.amendment_status == "amendments_pending"
 
 
 def test_ingest_accession_marks_amendments_correctly(db_session):
@@ -369,9 +391,14 @@ def _restatement_chain(db_session):
 
 
 def test_reconcile_restatement_latest_wins_regardless_of_call_order(db_session):
-    """T1: with two RESTATEMENTs in one period, the LATEST-filed one is the
-    active filing no matter which one reconcile is called on, and reconciling
-    an earlier restatement must never demote the later winner."""
+    """T1 core guarantee, revised by T1-FU: with two all-NULL-accepted_at
+    RESTATEMENTs, reconciling the earlier one must NOT crash and must NOT
+    steal activation from the current winner. T1-FU revision: all-NULL
+    acceptance is MISSING EVIDENCE — no auto-switch (the current active stays)
+    and the unrankable candidates are flagged for a human, instead of trusting
+    the accession_no fallback (accession prefixes identify the SUBMITTING
+    agent, not the manager — real dev data has 3 groups where lexical order
+    inverts acceptance order)."""
     from app.services.thirteenf_holdings_ingest import reconcile_restatement_activation
 
     f_orig, f_r1, f_r2 = _restatement_chain(db_session)
@@ -383,11 +410,15 @@ def test_reconcile_restatement_latest_wins_regardless_of_call_order(db_session):
     db_session.flush()
 
     # Phase 5 then re-reconciles the EARLIER restatement first (filed_at asc).
-    # This must NOT crash and must NOT steal activation from the later winner.
-    assert reconcile_restatement_activation(db_session, f_r1) is False
+    # No crash; no steal. Returns True because the unrankable candidate (r1)
+    # gets flagged for human review (missing-acceptance state change).
+    assert reconcile_restatement_activation(db_session, f_r1) is True
     db_session.flush()
     assert f_r1.is_active_for_manager_period is False
-    assert f_r2.is_active_for_manager_period is True
+    assert f_r2.is_active_for_manager_period is True  # kept — no auto-switch
+    assert f_r1.amendment_sort_warning is True
+    assert f_r1.amendment_status == "amendments_pending"
+    assert f_r2.amendment_status == "applied"  # terminal, untouched
 
 
 def test_reconcile_restatement_demote_then_activate_is_constraint_safe(db_session):
@@ -471,12 +502,16 @@ def test_reconcile_restatement_ranks_by_accepted_at_over_accession(db_session):
     r_lose = _restatement(db_session, manager, acc="AAA2", filed=date(2024, 5, 15),
                           accepted=(2024, 5, 16, 9))
 
-    # The higher-accession-but-earlier-accepted one must NOT claim activation.
-    assert reconcile_restatement_activation(db_session, r_lose) is False
+    # T1-FU: calling reconcile on the LOSER converges the group immediately —
+    # the ranked winner is activated (returns True because state changed), and
+    # the loser must never claim activation. (Pre-T1-FU this was a strict
+    # no-op returning False; terminal state is identical.)
+    assert reconcile_restatement_activation(db_session, r_lose) is True
     db_session.flush()
     assert r_lose.is_active_for_manager_period is False
-    # The later-accepted one wins despite its lower accession.
-    assert reconcile_restatement_activation(db_session, r_win) is True
+    assert r_win.is_active_for_manager_period is True
+    # Re-running on the winner is now a no-op — already converged.
+    assert reconcile_restatement_activation(db_session, r_win) is False
     db_session.flush()
     assert r_win.is_active_for_manager_period is True
     assert r_lose.is_active_for_manager_period is False
@@ -484,7 +519,11 @@ def test_reconcile_restatement_ranks_by_accepted_at_over_accession(db_session):
 
 def test_reconcile_three_restatements_only_latest_active_any_call_order(db_session):
     """T1 (review follow-up): with 3 parsed restatements, only the latest
-    (by accession, accepted_at all NULL) ends active no matter the call order."""
+    (accepted_at all NULL) yields ONE deterministic, crash-free terminal state
+    no matter the call order. T1-FU revision: all-NULL acceptance is missing
+    evidence — nothing is auto-activated (the old accession_no fallback is not
+    a time proxy: prefixes identify the SUBMITTING agent), all three are
+    flagged for human resolution, and repeated calls are idempotent."""
     from app.services.thirteenf_holdings_ingest import reconcile_restatement_activation
 
     _clear(db_session)
@@ -493,14 +532,18 @@ def test_reconcile_three_restatements_only_latest_active_any_call_order(db_sessi
     r2 = _restatement(db_session, manager, acc="A2", filed=date(2024, 5, 16), latest=True)
     r3 = _restatement(db_session, manager, acc="A3", filed=date(2024, 5, 17))
 
-    # Deliberately non-sorted call order.
-    for f in (r2, r1, r3):
+    # Deliberately non-sorted call order; second pass proves idempotence.
+    for f in (r2, r1, r3, r2, r1, r3):
         reconcile_restatement_activation(db_session, f)
         db_session.flush()
 
     db_session.refresh(r1); db_session.refresh(r2); db_session.refresh(r3)
+    # No auto-switch on missing evidence: nothing active, all flagged.
     assert [r1.is_active_for_manager_period, r2.is_active_for_manager_period,
-            r3.is_active_for_manager_period] == [False, False, True]
+            r3.is_active_for_manager_period] == [False, False, False]
+    for r in (r1, r2, r3):
+        assert r.amendment_sort_warning is True
+        assert r.amendment_status == "amendments_pending"
 
 
 def test_reconcile_ignores_failed_later_restatement(db_session):

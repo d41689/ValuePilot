@@ -9,6 +9,25 @@ long — escalate to the user. **medium / low** = ordinary follow-up.
 
 ## Open
 
+### `13F-NT/A` is not ingested and NT-family consumers only recognize exact `13F-NT`
+- **Found:** 2026-07-09, T1-FU external review (P2, latent)
+- **Severity:** low (latent — `INGESTION_FORMS` excludes `13F-NT/A`, so none exist
+  in the data layer today; SEC defines it as the amendment form for a 13F Notice
+  and raw form indexes contain many)
+- **Problem:** if `13F-NT/A` were ever ingested, (a) `nt_only_manager_ids`
+  (`thirteenf_holdings_query.py`) recognizes only exact `13F-NT`, so a manager
+  whose active filing is an NT/A would be wrongly counted in the expected-HR
+  denominator; (b) NT-family activation semantics (an NT/A superseding an NT)
+  are undefined. T1-FU added the authority-side guard — a parsed NT/A
+  RESTATEMENT can never compete for the HR holdings slot
+  (`apply_active_filing_policy` rule 1 requires HR-family form_type; regression
+  `test_nt_a_restatement_never_competes_for_holdings_slot`) — but full NT-family
+  support remains unimplemented.
+- **Fix sketch:** either add `13F-NT/A` to `INGESTION_FORMS` + widen NT-family
+  matching in `nt_only_manager_ids` + define NT-slot activation in the
+  authority, or formally document NT/A as out of scope in the PRD.
+- **Context:** `docs/tasks/2026-07-08_13f-t1fu-active-filing-authority.md` 评审处置 P2-9
+
 ### ~~CLI `reparse-filing` / `reparse-all` write product-invisible legacy holdings~~ (F7 — RESOLVED T4 rework)
 - **Found:** 2026-07-08, T4 external review (correctness finder)
 - **Severity:** medium (product-visibility / footgun — no audit-trail loss)
@@ -48,26 +67,25 @@ long — escalate to the user. **medium / low** = ordinary follow-up.
   missing-infotable alone; bound to the same `--quarters` scope T4 already applies.
 - **Context:** `docs/tasks/2026-07-08_13f-t4-cli-ingest-hygiene.md`
 
-### Active-filing selection is scattered; accepted_at unpopulated; restatement ties + concurrency unhandled
+### ~~Active-filing selection is scattered; accepted_at unpopulated; restatement ties + concurrency unhandled~~ (RESOLVED T1-FU)
 - **Found:** 2026-07-08, T1 external review (`2026-07-08_13f-t1-restatement-activation-fix-review-results.md`)
 - **Severity:** medium (correctness/robustness; no active data loss — T1 made the
   winner deterministic and crash-free)
-- **Problem:** "which filing is active for a (manager, quarter_end_date)" is
-  decided in 4 places with different rules (`_do_ingest_holdings`, ingest-job
-  Phase 4 + Phase 5, `apply_amendment_policy`). `accepted_at` is NULL on all 373
-  real filings (bulk-ingest path never populates it), so accepted_at ordering is
-  inert and degrades to accession_no everywhere. The equal-accepted_at "do not
-  auto-switch, flag `amendment_sort_warning`" rule that `apply_amendment_policy`
-  applies to originals is NOT applied to restatements. Concurrent per-accession
-  `reparse_accession` jobs for two restatements of one period can race the
-  guard's SELECT-then-mutate (no (manager, period) lock) → silent wrong-winner or
-  `uq_active_filing_per_manager_period` abort.
-- **Fix sketch:** full plan in `docs/tasks/2026-07-08_13f-t1fu-active-filing-authority.md`
-  — one `select_active_filing()` authority; populate accepted_at; tie→warning
-  (gated on accepted_at populated); advisory/`FOR UPDATE` lock keyed on
-  (manager_id, quarter_end_date).
-- **Context:** T1 (`2026-07-08_13f-t1-restatement-activation-fix.md`) aligned only
-  the restatement ranking key with `apply_amendment_policy`; the rest is T1-FU.
+- **Resolved:** 2026-07-08, T1-FU (`docs/tasks/2026-07-08_13f-t1fu-active-filing-authority.md`).
+  One authority `apply_active_filing_policy` (thirteenf_filing_detail) now makes
+  every activation decision — `apply_amendment_policy`,
+  `reconcile_restatement_activation` (thin delegate), and the ingest job's
+  per-group sweep (replacing the Phase-4c solo-HR heuristic + Phase-5 loop) all
+  call it under a `pg_advisory_xact_lock` keyed on (manager_id,
+  quarter_end_date). `accepted_at` is populated on the bulk path
+  (`apply_primary_doc_metadata` + `backfill_period_routing`; 373/373 real
+  filings backfilled, 0 NULL). Ties = equal AND non-NULL accepted_at
+  (NULL→accession_no fallback preserves T1); restatement ties don't auto-switch
+  (warning + amendments_pending). Also fixed in passing: rejected restatements
+  can no longer be re-activated by a pipeline re-run; an NT can no longer beat
+  an HR for the active slot; the tie-recovery dead code. Real-data sweep over
+  355 groups: 0 flips, 0 dup-active. Tests: `test_13f_active_filing_authority.py`
+  (15, incl. a two-session lock-serialization test).
 
 ### ownership_changes has no first-class "position" layer — per-lot rows fragment a stock held under multiple CUSIPs
 - **Found:** 2026-07-08, T2 external review (design verdict)
