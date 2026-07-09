@@ -109,6 +109,8 @@ docker compose -f docker-compose.prod.yml exec -T api python -m scripts.t3_attri
 
 ## Log
 
+- 2026-07-08: **第五轮评审整改(1 项 P2)。** Lens 新鲜度校验改为**按季度 + 资格门(eligibility)**:仅当某季度有 ≥1 只被 ≥3 个 distinct direct/common/active holder(排除amendment-pending/failed,对齐打分器)持有的股票时才要求该季度写出信号 → 有申报人但无合格股票的季度(如 dev 2024-Q4)正确跳过,不再误报;且用**该季度自己的 stage source_job_id** 逐季验证(不再汇总 job id 列表),一个季度的信号不会掩盖另一季度的 no-op。加测试:不合格季(2 holder)不报 Lens;合格季(3 holder)Lens no-op → 失败。真实数据 2024-Q4 合法跳过、其余季验证通过、exit 0。全量 **1099 passed**。
+
 - 2026-07-08: **第四轮评审整改(1 项 P2)。** rollout 后置校验由「Berkshire 全历史计数」改为**运行范围**校验:①每个请求季度若有 active direct 申报人但本次 stage 写 0 行 → no-op 失败(空季度 0 申报人则跳过,区分空季 vs 意外 no-op);②Lens 至少要在**本次 Lens stage 的 job id**(`oracles_lens_signals.source_job_id`)下写出信号,否则 no-op/谎报 stage 被逮。不再读陈旧历史数据。加测试:真实活跃季 no-op-success→ 失败;空季 no-op → 不误报;既有 hard-failed/partial/lock 仍逮。全量 **1097 passed**。
 
 - 2026-07-08: **第三轮评审整改(2 项)。** #1 rollout:任何 stage 状态非 `succeeded`(hard `failed` 或 `partial_success`)都记为失败并上报(此前 Lens 循环完全不看状态、ownership 只看 failure_count,hard-failed 无此字段 → 假通过);恢复代表性物化后置校验(旗舰 Berkshire direct>0 且 real_changes>0,无旗舰则跳过)。加注入 hard-failed(ownership/lens)+ partial_success 测试。#2 caveat 文案改中性(“与其他管理人共享/defined 裁量,可能含关联方/子公司/被聚合申报的管理人”),不再把 sub-threshold(空 other_managers_included)误述为 included managers。加文案测试。全量 **1095 passed**。

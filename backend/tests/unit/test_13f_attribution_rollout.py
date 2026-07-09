@@ -39,7 +39,14 @@ def _filing(db, manager):
     return f
 
 
-def _holding(db, filing, *, discretion, status, cusip="111111111"):
+def _stock(db, ticker):
+    from app.models.stocks import Stock
+    s = Stock(ticker=ticker, exchange="NASDAQ", company_name=ticker)
+    db.add(s); db.flush()
+    return s
+
+
+def _holding(db, filing, *, discretion, status, cusip="111111111", stock=None):
     run = ParseRun13F(accession_number=filing.accession_number, parser_version="t",
                       status="succeeded", is_current=True)
     db.add(run); db.flush()
@@ -50,7 +57,8 @@ def _holding(db, filing, *, discretion, status, cusip="111111111"):
         holding_row_fingerprint=filing.accession_number + cusip + "v1", cusip=cusip,
         issuer_name="X", value_thousands=1, value_usd=1000, shares=10, ssh_prnamt=10,
         ssh_prnamt_type="SH", investment_discretion=discretion, holding_attribution_status=status,
-        cusip_mapping_status="unresolved",
+        stock_id=stock.id if stock else None,
+        cusip_mapping_status="linked" if stock else "unresolved",
     )
     db.add(h); db.flush()
     return h
@@ -176,3 +184,35 @@ def test_rollout_empty_quarter_noop_is_not_a_failure(db_session, monkeypatch):
     monkeypatch.setattr(roll, "_execute_pipeline_stage_job", noop_stage)
     report = roll.run_attribution_rollout(db_session, quarters=["2099-Q1"], log=lambda *_a: None)
     assert report["failures"] == []
+
+
+def test_lens_freshness_skips_ineligible_quarter(db_session):
+    """Re-review #5 (P2) — false-fail guard: a quarter with active filers but no
+    stock reaching the >=3-holder threshold legitimately scores 0; the per-quarter
+    freshness check must NOT flag its Lens (mirrors real dev 2024-Q4)."""
+    from app.services.thirteenf_attribution_rollout import _run_freshness_failures
+    # Two managers hold one stock -> below the 3-holder Lens threshold.
+    stock = _stock(db_session, "SMALL")
+    for i in range(2):
+        _holding(db_session, _filing(db_session, _manager(db_session)),
+                 discretion="SOLE", status="direct", cusip=f"{i:09d}", stock=stock)
+    # ownership wrote rows, lens legitimately wrote none -> no failure.
+    failures = _run_freshness_failures(
+        db_session, ["2026-Q1"], ownership_rows_by_quarter={"2026-Q1": 2}, lens_job_id_by_quarter={"2026-Q1": 5}
+    )
+    assert failures == []
+
+
+def test_lens_freshness_fails_noop_on_eligible_quarter(db_session):
+    """Re-review #5 (P2): a quarter WITH >=3 holders of a stock (Lens-eligible) whose
+    Lens stage wrote no signal under its own job id is a no-op -> failure."""
+    from app.services.thirteenf_attribution_rollout import _run_freshness_failures
+    stock = _stock(db_session, "ELIG")
+    for i in range(3):  # 3 distinct managers of one stock -> eligible
+        _holding(db_session, _filing(db_session, _manager(db_session)),
+                 discretion="SOLE", status="direct", cusip=f"{i:09d}", stock=stock)
+    # Lens job 777 wrote no oracles_lens_signals rows.
+    failures = _run_freshness_failures(
+        db_session, ["2026-Q1"], ownership_rows_by_quarter={"2026-Q1": 3}, lens_job_id_by_quarter={"2026-Q1": 777}
+    )
+    assert any("0 signals for 2026-Q1" in f and "eligible" in f for f in failures)

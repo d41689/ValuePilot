@@ -648,3 +648,104 @@ backend suite **1097 passed**.
 - The reviewer's note that continuing Lens after an ownership failure is
   best-effort (not scoring corruption, since add-intensity reads holdings, not
   ownership_changes) — accepted; the rollout still exits non-zero on any failure.
+
+---
+
+## Fifth independent re-review (2026-07-08, commit `efaaf44`)
+
+**Verdict:** **One P2 remains.** The stale all-history pass is fixed and the
+freshness checks are now tied to this run's stage summaries/job IDs. No
+attribution, ownership matching, caveat, stage-status, or locking regression
+was found. The Lens expectation, however, does not model its eligibility floor
+and therefore both false-fails legitimate quarters and remains too coarse
+across multiple quarters.
+
+### [P2] Lens freshness confuses active filers with eligible stocks and aggregates all quarters
+
+**Location:** `backend/app/services/thirteenf_attribution_rollout.py:163-198`
+
+Oracle's Lens only writes a signal for a stock with at least three eligible
+direct holders (`min_holders=3`). `_run_freshness_failures()` instead uses
+`total_active > 0` as proof that at least one signal must exist. One or two
+active direct filers can legitimately produce zero signals.
+
+This is reproducible with real dev data, not only a synthetic edge:
+
+```text
+run_attribution_rollout(quarters=["2024-Q4"])
+
+ownership_changes: succeeded, rows=62
+oracles_lens: succeeded, scored=0
+verification: FAILED
+"Oracle's Lens recompute wrote 0 signals ... despite 1 active direct filers"
+```
+
+That Lens result is valid: one holder cannot clear the three-holder consensus
+threshold. The new unit test
+`test_rollout_fails_on_noop_success_with_active_filers` seeds exactly one
+manager and incorrectly encodes this legitimate zero-output case as a failure.
+
+The Lens check is also aggregate across all requested quarters:
+`lens_stage_job_ids` is a flat list and the query counts any matching signal.
+If one quarter writes signals, a second populated/eligible quarter whose stage
+silently writes none is hidden by the first quarter's output. Thus the check is
+simultaneously too strict for below-threshold quarters and too weak for
+multi-quarter partial no-ops.
+
+**Required correction:** preserve `quarter -> Lens stage job ID` and evaluate
+each quarter independently. Before requiring output, determine whether that
+quarter has at least one stock meeting the scorer's actual eligibility contract
+(same active/current/direct/linked/common filters, manager allowlist behavior,
+and `min_holders`). Then:
+
+- no eligible stocks + zero signals is a valid successful result;
+- eligible stocks + zero signals for that quarter/job ID is a no-op failure;
+- signals for another quarter must not satisfy this quarter's postcondition.
+
+Add tests for all three cases. The ownership freshness check remains sound:
+every active direct filer produces at least an unavailable/no-prior change row,
+and genuinely empty quarters are already skipped.
+
+## Fifth-review disposition
+
+| Area | Result |
+|---|---|
+| Run-scoped ownership freshness | **Fixed** |
+| Lens source_job_id run scoping | **Partially fixed** |
+| Legitimate below-threshold Lens zero output | **Not handled** |
+| Per-quarter Lens no-op isolation | **Not handled** |
+| All earlier T3 findings | **Fixed** |
+
+## Fifth-review verification
+
+All tests ran in Docker against
+`postgresql://valuepilot:valuepilot@postgres:5432/valuepilot_test`.
+
+- `alembic upgrade head`: passed.
+- Targeted rollout, attribution, ownership-change, user API, Lens, and
+  orchestration suites: **107 passed**.
+- Full backend suite: **1097 passed, 3 warnings**.
+- Real dev 2024-Q4 run reproduced the legitimate-zero false failure above.
+- No source or test files were modified by this review.
+
+---
+
+## Fifth disposition (2026-07-08, fifth-review fix)
+
+The remaining Lens-freshness P2 reproduced against the code, confirmed, and
+**fixed**. Full backend suite **1099 passed**.
+
+- **Lens freshness ignored eligibility + aggregated across quarters — FIXED.**
+  The check now runs PER QUARTER and gates on Oracle's Lens scoring eligibility:
+  - A quarter is expected to score only if it has ≥1 stock held by
+    `_LENS_MIN_HOLDERS` (3) distinct direct/common/active holders (amendment-
+    pending/failed filers excluded, mirroring the scorer) — so a quarter with
+    active filers but no eligible stock (e.g. dev 2024-Q4) is correctly skipped
+    and no longer false-fails.
+  - Lens freshness is verified with THAT quarter's own stage `source_job_id`
+    (`lens_job_id_by_quarter`), not an aggregate list — so one quarter's signals
+    can no longer mask another quarter's no-op.
+  Tests: an ineligible quarter (2 holders) does NOT flag Lens; an eligible quarter
+  (3 holders) whose Lens wrote no signal under its job id DOES fail. Real dev
+  rollout: 2024-Q4 (below threshold) legitimately skipped, all populated quarters
+  verified, exit 0.

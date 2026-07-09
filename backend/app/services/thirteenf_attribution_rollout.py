@@ -116,7 +116,7 @@ def run_attribution_rollout(
     # both must surface, not be swallowed.
     stage_failures: list[str] = []
     ownership_rows_by_quarter: dict[str, int] = {}
-    lens_stage_job_ids: list[int] = []
+    lens_job_id_by_quarter: dict[str, int] = {}
 
     for quarter in quarters:
         result = _run_locked_stage(session, job_type="compute_ownership_changes", quarter=quarter)
@@ -132,13 +132,13 @@ def run_attribution_rollout(
         status = result["stage"]["status"]
         job_id = result["stage"].get("job_id")
         if job_id is not None:
-            lens_stage_job_ids.append(job_id)
+            lens_job_id_by_quarter[quarter] = job_id
         log(f"[3/4] oracles_lens {quarter}: {status} scored={result['summary'].get('filings_scored')}")
         if status != "succeeded":
             stage_failures.append(f"oracles_lens {quarter} stage status={status}")
 
     failures = stage_failures + verify_attribution_rollout(session)
-    failures += _run_freshness_failures(session, quarters, ownership_rows_by_quarter, lens_stage_job_ids)
+    failures += _run_freshness_failures(session, quarters, ownership_rows_by_quarter, lens_job_id_by_quarter)
     log(f"[4/4] verification: {'PASSED' if not failures else 'FAILED'}")
     return {"reattributed": reattributed, "quarters": quarters, "failures": failures}
 
@@ -156,46 +156,76 @@ def _active_direct_manager_count(session: Session, quarter: str) -> int:
     ).scalar() or 0
 
 
+# Oracle's Lens consensus scoring requires at least this many distinct holders of
+# a stock (the compute_signal_weighted_scores / oracles_lens_score_backfill
+# default). A quarter with active filers but no stock reaching it legitimately
+# scores 0.
+_LENS_MIN_HOLDERS = 3
+
+
+def _lens_eligible_stock_count(session: Session, quarter: str) -> int:
+    """Stocks a quarter is EXPECTED to score: a distinct-holder count at or above
+    the Lens threshold, counting the same direct/common/active holders the scorer
+    aggregates (amendment-pending/failed filers are excluded score-side)."""
+    return session.execute(
+        text(
+            "SELECT COUNT(*) FROM ("
+            "  SELECT h.stock_id FROM holdings_13f h "
+            "  JOIN parse_runs pr ON h.parse_run_id = pr.id AND pr.is_current "
+            "  JOIN filings_13f f ON f.accession_number = pr.accession_number "
+            "  AND f.is_active_for_manager_period AND f.form_type IN ('13F-HR', '13F-HR/A') "
+            "  AND (f.amendment_status IS NULL OR f.amendment_status NOT IN ('amendments_pending', 'amendment_failed')) "
+            "  WHERE h.report_quarter = :q AND h.holding_attribution_status = 'direct' "
+            "  AND h.stock_id IS NOT NULL AND h.put_call IS NULL "
+            "  GROUP BY h.stock_id HAVING COUNT(DISTINCT h.manager_id) >= :min_holders"
+            ") x"
+        ),
+        {"q": quarter, "min_holders": _LENS_MIN_HOLDERS},
+    ).scalar() or 0
+
+
 def _run_freshness_failures(
     session: Session,
     quarters: list[str],
     ownership_rows_by_quarter: dict[str, int],
-    lens_stage_job_ids: list[int],
+    lens_job_id_by_quarter: dict[str, int],
 ) -> list[str]:
-    """RUN-SCOPED postconditions — proof THIS run actually refreshed both
-    materialized products, not that stale historical data happens to exist. A
-    stage can report `succeeded` while doing zero work (the compute contracts
-    treat a no-op as success), so stage status alone is insufficient.
+    """RUN-SCOPED, PER-QUARTER postconditions — proof THIS run actually refreshed
+    both materialized products, not that stale historical data happens to exist. A
+    stage can report `succeeded` while doing zero work (the compute contracts treat
+    a no-op as success), so stage status alone is insufficient. Checked per quarter
+    so one quarter's output cannot mask another quarter's no-op.
 
     - Ownership: every active *direct* filer in a quarter yields ≥1 change row, so
       0 rows written for a quarter that has active direct filers is a no-op
-      recompute (a genuinely empty quarter has 0 active filers and is skipped).
-    - Lens: at least one signal must be written under THIS run's Lens stage job
-      ids (`source_job_id`) when the universe has active direct filers — a no-op
-      or a lying summary writes none. (Individual quarters may legitimately score
-      0 below the holder threshold; the aggregate over a populated universe cannot.)
+      recompute. A genuinely empty quarter (0 active filers) is skipped.
+    - Lens: consensus scoring needs ≥3 holders, so a quarter with active filers but
+      no eligible stock legitimately scores 0 (e.g. an early quarter). Only when a
+      quarter HAS eligible stocks must its OWN Lens stage job have written a signal
+      (`source_job_id` = that quarter's job) — a no-op or a lying summary writes
+      none for that quarter.
     """
     failures: list[str] = []
-    total_active = 0
     for quarter in quarters:
         active = _active_direct_manager_count(session, quarter)
-        total_active += active
         if active > 0 and ownership_rows_by_quarter.get(quarter, 0) == 0:
             failures.append(
                 f"ownership recompute wrote 0 rows for {quarter} despite {active} "
                 f"active direct filers (no-op recompute?)"
             )
 
-    if total_active > 0:
-        lens_written = 0
-        if lens_stage_job_ids:
-            lens_written = session.execute(
-                text("SELECT COUNT(*) FROM oracles_lens_signals WHERE source_job_id = ANY(:ids)"),
-                {"ids": lens_stage_job_ids},
-            ).scalar() or 0
-        if lens_written == 0:
-            failures.append(
-                f"Oracle's Lens recompute wrote 0 signals this run (source_job_id) "
-                f"despite {total_active} active direct filers (no-op recompute?)"
-            )
+        eligible = _lens_eligible_stock_count(session, quarter)
+        if eligible > 0:
+            job_id = lens_job_id_by_quarter.get(quarter)
+            written = 0
+            if job_id is not None:
+                written = session.execute(
+                    text("SELECT COUNT(*) FROM oracles_lens_signals WHERE source_job_id = :jid"),
+                    {"jid": job_id},
+                ).scalar() or 0
+            if written == 0:
+                failures.append(
+                    f"Oracle's Lens recompute wrote 0 signals for {quarter} despite "
+                    f"{eligible} eligible stock(s) (>= {_LENS_MIN_HOLDERS} holders) — no-op recompute?"
+                )
     return failures
