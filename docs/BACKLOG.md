@@ -9,6 +9,45 @@ long — escalate to the user. **medium / low** = ordinary follow-up.
 
 ## Open
 
+### CLI `reparse-filing` / `reparse-all` still write product-invisible legacy holdings (F7)
+- **Found:** 2026-07-08, T4 external review (correctness finder)
+- **Severity:** medium (product-visibility / footgun — no audit-trail loss)
+- **Problem:** T4 fixed `ingest-holdings` / `backfill` to go through the
+  ParseRun-backed job path, but the sibling replay commands `reparse_filing`
+  (`backend/app/cli/edgar.py`) and `reparse_all` still call the legacy
+  `ingest_filing_holdings`, which inserts `holdings_13f` rows with
+  `parse_run_id = NULL`. Those rows are invisible to the product query contract
+  (`active_hr_holdings_query` inner-joins `parse_runs.is_current`). Worse,
+  `reparse_all` passes `replace_holdings=True` — it DELETES the existing
+  (product-visible) holdings first, then re-inserts NULL-parse_run ones, so a
+  reparse can silently blank out a filing's product-visible holdings. This is
+  the same class as F6; T4 scoped it out (F5/F6 = ingest path only).
+- **Fix sketch:** delegate `reparse_filing` → `execute_job_payload(db,
+  "reparse_accession", {"accession_no": acc})` (the job type already exists and
+  is ParseRun-backed via `reparse_accession`); make `reparse_all` loop that job
+  per accession. Add a regression test asserting the replayed holdings carry a
+  current `parse_run_id`. Small, on-theme follow-up ("CLI ingest hygiene, part 2").
+- **Context:** `docs/tasks/2026-07-08_13f-t4-cli-ingest-hygiene.md` (Scope: Out)
+
+### `backfill` retries by missing-infotable, not by failed-parse (recoverability edge)
+- **Found:** 2026-07-08, T4 external review (correctness finder)
+- **Severity:** low (narrow; job/admin-retry path is the intended recovery)
+- **Problem:** T4's `backfill` decides which quarters to (re)ingest via
+  `pending_ingest_quarters`, whose "pending" test is `raw_infotable_doc_id IS
+  NULL`. In the ingest job, Phase 1 fetches + commits the infotable doc BEFORE
+  Phase 3 parses holdings; a filing whose infotable is fetched but whose holdings
+  then fail to parse ends up with `raw_infotable_doc_id` set and no current
+  ParseRun — so it drops out of `pending_ingest_quarters`. If it is the LAST
+  pending filing in its quarter, `backfill` won't re-invoke the job for that
+  quarter and the failed-parse filing is not retried by backfill. (The job
+  reprocesses ALL filings in an invoked quarter, so the gap only bites when no
+  other pending filing keeps the quarter in scope; the admin retry surface /
+  `reparse_accession` is the intended recovery either way.)
+- **Fix sketch:** define "needs ingest" as "no current, product-visible ParseRun"
+  (or `raw_infotable_doc_id IS NULL OR parse_status = 'failed'`) rather than
+  missing-infotable alone; bound to the same `--quarters` scope T4 already applies.
+- **Context:** `docs/tasks/2026-07-08_13f-t4-cli-ingest-hygiene.md`
+
 ### Active-filing selection is scattered; accepted_at unpopulated; restatement ties + concurrency unhandled
 - **Found:** 2026-07-08, T1 external review (`2026-07-08_13f-t1-restatement-activation-fix-review-results.md`)
 - **Severity:** medium (correctness/robustness; no active data loss — T1 made the
@@ -63,40 +102,27 @@ long — escalate to the user. **medium / low** = ordinary follow-up.
   linkage for human review rather than silently double-counting.
 - **Context:** `docs/tasks/2026-07-08_13f-t3-combination-attribution.md` (Scope: Out)
 
-### CLI ingest commands write product-invisible legacy holdings (no ParseRun)
+### ~~CLI ingest commands write product-invisible legacy holdings (no ParseRun)~~ (F6 — RESOLVED T4)
 - **Found:** 2026-07-08, during first real-data ingestion into dev
 - **Severity:** medium
-- **Problem:** `backfill` / `ingest-holdings` in `backend/app/cli/edgar.py` call
-  the legacy `ingest_filing_holdings`, which inserts `holdings_13f` rows with
-  `parse_run_id = NULL`. The product query contract (PRD §7.3,
-  `active_hr_holdings_query`) inner-joins `parse_runs.is_current = true`, so
-  every CLI-ingested holding is invisible to Oracle's Lens, the managers API,
-  and ownership-change compute — recreating exactly the "inconsistent
-  pre-MVP1B-parser state" Pre-MVP6-01 diagnosed. The modern path
-  (`ingest_if_needed` via the `ingest_holdings` job) also does the Phase 4
-  column heal + solo-HR activation the CLI path lacks.
-- **Fix sketch:** point the CLI commands at `ingest_if_needed` /
-  `_execute_ingest_job` semantics (or deprecate them in favor of the job),
-  and have `backfill` delegate per-quarter to the job path.
-- **Context:** dev remediation 2026-07-08 — legacy rows deleted, all six
-  quarters re-ingested via `execute_job_payload('ingest_holdings', ...)`
+- **Resolved:** 2026-07-08, T4 (`docs/tasks/2026-07-08_13f-t4-cli-ingest-hygiene.md`).
+  `backfill` / `ingest-holdings` in `backend/app/cli/edgar.py` no longer call the
+  legacy `ingest_filing_holdings`; they delegate to the modern `ingest_holdings`
+  job (`execute_job_payload` → `_execute_ingest_job` → `ingest_if_needed`), so CLI
+  ingest is ParseRun-backed and product-visible, with the Phase-4 heal + solo-HR
+  activation the legacy path lacked. Regression: `test_13f_cli_ingest.py`
+  (`test_ingest_pending_holdings_delegates_to_job_per_quarter`).
 
-### CLI `backfill` skips the newest report quarter's holdings (period-proxy window miss)
+### ~~CLI `backfill` skips the newest report quarter's holdings (period-proxy window miss)~~ (F5 — RESOLVED T4)
 - **Found:** 2026-07-08, during first real-data ingestion into dev
 - **Severity:** medium
-- **Problem:** `backfill` (`backend/app/cli/edgar.py`) Step 2 selects pending
-  filings by `period_of_report BETWEEN <report-quarter bounds>`, but a
-  freshly indexed filing's `period_of_report` is a proxy (= `filed_at`) until
-  its primary doc is parsed. Filings for the newest report quarter (filed in
-  the *following* calendar quarter, e.g. 2026-Q1 reports filed Apr–May 2026)
-  fall outside every queried window and are silently skipped — `backfill
-  --quarters 5` on 2026-07-08 left all 73 of the freshest-quarter filings
-  un-ingested while reporting 0 failures. Remediation that worked:
-  `ingest-holdings --quarter <filing-quarter>` (window matches the proxy).
-- **Fix sketch:** in Step 2, select pending filings by form.idx filing
-  quarter (or `filed_at` window) instead of the not-yet-corrected
-  `period_of_report`; add a regression test with proxy-period filings.
-- **Context:** this file's entry + session log 2026-07-08 (real-data dev bootstrap)
+- **Resolved:** 2026-07-08, T4. `backfill` Step 2 now selects pending filings via
+  `pending_ingest_quarters` (grouping by each un-ingested filing's *proxy*
+  `period_of_report` = `filed_at`, i.e. the filing quarter) and delegates each
+  quarter to the ingest job — so the newest report quarter's filings, filed the
+  following calendar quarter, land in the right job window instead of being
+  silently skipped. Regression: `test_13f_cli_ingest.py`
+  (`test_pending_ingest_quarters_covers_newest_report_quarter`).
 
 ### Rate Guard public path has no auth-failure / abuse observability
 - **Found:** 2026-07-08, PR #103 staff review
