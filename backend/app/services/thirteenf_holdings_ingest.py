@@ -312,14 +312,30 @@ def _do_ingest_holdings(
                     finished_at=datetime.now(timezone.utc),
                 )
                 session.add(failed_run)
-                # Mirror the failed outcome onto the filing. A reparse that
-                # fails but restores a prior good run flips this back to
-                # "succeeded" in reparse_accession's except handler.
+                # Mirror the failed outcome onto the filing.
                 filing.parse_status = "failed"
                 session.add(filing)
-            # Commit the failure audit (failed_run + filing.parse_status) now.
-            # The bulk ingest caller (thirteenf_admin_dashboard._execute_ingest_job)
-            # does session.rollback() on a per-filing exception; without this
+                # Series-review P1: on a REPARSE failure, restore the demoted
+                # old current run IN THE SAME TRANSACTION as the failure
+                # audit. The commit below used to persist the caller's demote
+                # alongside the audit while the restore happened in a LATER
+                # commit (reparse_accession's except handler) — a committed
+                # window, permanent after a crash, in which an active filing
+                # had NO current ParseRun and product holdings vanished.
+                if old_current_run_id is not None:
+                    old_run = session.get(ParseRun13F, old_current_run_id)
+                    if old_run is not None and not old_run.is_current:
+                        old_run.is_current = True
+                        session.add(old_run)
+                        # The prior good holdings keep serving — the filing is
+                        # not "failed" from the product's point of view.
+                        if old_run.status == "succeeded":
+                            filing.parse_status = "succeeded"
+                            session.add(filing)
+            # Commit the failure audit (failed_run + filing.parse_status +
+            # old-current restore) atomically. The bulk ingest caller
+            # (thirteenf_admin_dashboard._execute_ingest_job) does
+            # session.rollback() on a per-filing exception; without this
             # commit the whole outer transaction — including these
             # savepoint-merged rows — is rolled back and the failure is lost.
             # This mirrors the success path, which also commits per filing.
@@ -408,7 +424,12 @@ def reparse_accession(
         result = _do_ingest_holdings(session, filing, infotable_bytes, old_current_run_id=old_current_run_id)
         return result
     except Exception:
-        # Restore old current run to is_current=True so product queries still work.
+        # Backstop restore. The PRIMARY restore now happens inside
+        # _do_ingest_holdings' failure path, in the same transaction as the
+        # failure audit (series-review P1: no committed no-current window).
+        # This handler only fires for exceptions raised BEFORE that path
+        # (e.g. parse bootstrap errors) — the not-is_current guard makes it
+        # a no-op when the inner restore already ran.
         if old_current_run_id is not None:
             try:
                 restored = session.get(ParseRun13F, old_current_run_id)

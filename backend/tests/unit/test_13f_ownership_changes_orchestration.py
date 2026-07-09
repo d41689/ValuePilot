@@ -157,3 +157,74 @@ def test_compute_ownership_changes_lock_key_is_quarter_scoped():
         _JOB_LOCK_BUILDERS["compute_ownership_changes"]({"quarter": "2026-Q1"})
         == "compute_ownership_changes:2026-Q1"
     )
+
+
+def test_compute_stage_clears_stale_rows_after_authority_freeze(db_session):
+    """Series-review P1: a manager whose active filing was later deactivated
+    by an authority freeze must STILL be enumerated by the quarter stage so
+    its stale materialized rows are cleared — enumerating only currently
+    active managers left old buy/sell activity serving as current data
+    ("unknown is not zero")."""
+    m = _mk_manager(db_session)
+    s = _mk_stock(db_session, "FRZ")
+    f = _mk_filing(db_session, m, "2024-Q1", "FRZ-ACC-1")
+    r = _mk_run(db_session, f)
+    _mk_holding(db_session, f, r, s, "037833100", 100, 1_000_000)
+
+    result1 = execute_job_payload(
+        db_session, "compute_ownership_changes", {"quarter": "2024-Q1"}
+    )
+    assert result1["rows_created"] >= 1
+    before = (
+        db_session.query(OwnershipChange13F)
+        .filter_by(manager_id=m.id, report_quarter="2024-Q1")
+        .count()
+    )
+    assert before >= 1
+
+    # Authority freeze: the filing loses its active flag (tie / none_eligible /
+    # missing acceptance). Simulated directly — the freeze semantics themselves
+    # are pinned in test_13f_active_filing_authority.py.
+    f.is_active_for_manager_period = False
+    db_session.flush()
+
+    result2 = execute_job_payload(
+        db_session, "compute_ownership_changes", {"quarter": "2024-Q1"}
+    )
+
+    after = (
+        db_session.query(OwnershipChange13F)
+        .filter_by(manager_id=m.id, report_quarter="2024-Q1")
+        .count()
+    )
+    assert after == 0, "stale rows must be cleared once the filing is frozen"
+    # The cleanup is visible to operators, not silent.
+    assert result2["status_breakdown"].get("unavailable", 0) >= 1
+
+
+def test_changes_api_withholds_rows_without_active_filing(db_session):
+    """Series-review P1 (defense in depth): between a freeze and the next
+    compute run, materialized rows still exist — the changes API must withhold
+    them with an explicit NO_ACTIVE_FILING reason instead of rendering
+    disputed data as available."""
+    from app.services.thirteenf_user_api import build_user_manager_holding_changes
+
+    m = _mk_manager(db_session)
+    s = _mk_stock(db_session, "FRZ2")
+    f = _mk_filing(db_session, m, "2024-Q1", "FRZ-ACC-2")
+    r = _mk_run(db_session, f)
+    _mk_holding(db_session, f, r, s, "594918104", 100, 1_000_000)
+
+    execute_job_payload(db_session, "compute_ownership_changes", {"quarter": "2024-Q1"})
+
+    # Rows render while the filing is active...
+    available = build_user_manager_holding_changes(db_session, m.id, "2024-Q1")
+    assert available["status"] in ("available", "available_with_caveat")
+
+    # ...freeze happens; compute has NOT re-run yet.
+    f.is_active_for_manager_period = False
+    db_session.flush()
+
+    withheld = build_user_manager_holding_changes(db_session, m.id, "2024-Q1")
+    assert withheld["status"] == "unavailable"
+    assert withheld["reason"]["code"] == "NO_ACTIVE_FILING"

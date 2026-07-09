@@ -174,6 +174,38 @@ def _holding(
     return holding
 
 
+def _ensure_active_hr_filing(db_session, manager, report_quarter, quarter_end_date):
+    """Series-review P1: the changes API now withholds rows for a quarter with
+    no active HR filing, so materialized-row fixtures must carry the filing
+    that makes them current (production rows always do)."""
+    existing = (
+        db_session.query(Filing13F)
+        .filter_by(manager_id=manager.id, report_quarter=report_quarter)
+        .filter(Filing13F.is_active_for_manager_period.is_(True))
+        .first()
+    )
+    if existing:
+        return existing
+    filing = Filing13F(
+        manager_id=manager.id,
+        accession_no=f"CHG-{manager.id}-{report_quarter}",
+        accession_number=f"CHG-{manager.id}-{report_quarter}",
+        cik=manager.cik,
+        form_type="13F-HR",
+        period_of_report=quarter_end_date,
+        filed_at=quarter_end_date,
+        filing_date=quarter_end_date,
+        report_quarter=report_quarter,
+        quarter_end_date=quarter_end_date,
+        is_active_for_manager_period=True,
+        parse_status="succeeded",
+        is_latest_for_period=False,
+    )
+    db_session.add(filing)
+    db_session.flush()
+    return filing
+
+
 def _ownership_change(
     db_session,
     manager: InstitutionManager,
@@ -187,6 +219,7 @@ def _ownership_change(
     caveat_codes: list[str] | None = None,
     unavailable_reason: str | None = None,
 ) -> OwnershipChange13F:
+    _ensure_active_hr_filing(db_session, manager, report_quarter, quarter_end_date)
     change = OwnershipChange13F(
         manager_id=manager.id,
         stock_id=stock.id if stock else None,

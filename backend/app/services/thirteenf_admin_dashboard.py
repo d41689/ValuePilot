@@ -3133,7 +3133,7 @@ def _execute_job(session: Session, job_type: str, payload: dict[str, Any]) -> di
         )
 
         quarter = _required(payload, "quarter")
-        manager_ids = [
+        active_manager_ids = {
             row[0]
             for row in session.query(Filing13F.manager_id)
             .filter(Filing13F.report_quarter == quarter)
@@ -3141,7 +3141,25 @@ def _execute_job(session: Session, job_type: str, payload: dict[str, Any]) -> di
             .filter(Filing13F.is_active_for_manager_period.is_(True))
             .distinct()
             .all()
-        ]
+        }
+        # Series-review P1: ALSO enumerate managers that already have
+        # materialized change rows for this quarter but no longer have an
+        # active filing (an authority freeze — original tie / none_eligible /
+        # missing acceptance — deactivated it, or an amendment demoted the
+        # HR). Enumerating only currently-active managers left their stale
+        # rows serving as current data forever; the per-manager compute's
+        # delete-at-start + "unavailable" return is exactly the cleanup — it
+        # just never ran for them.
+        from app.models.institutions import OwnershipChange13F
+
+        stale_manager_ids = {
+            row[0]
+            for row in session.query(OwnershipChange13F.manager_id)
+            .filter(OwnershipChange13F.report_quarter == quarter)
+            .distinct()
+            .all()
+        }
+        manager_ids = sorted(active_manager_ids | stale_manager_ids)
         rows_created = 0
         status_breakdown: dict[str, int] = {}
         failures: list[dict[str, Any]] = []

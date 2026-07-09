@@ -171,6 +171,25 @@ def build_user_manager_holding_changes(
             message="No precomputed 13F holding changes are available for this manager and quarter.",
         )
 
+    # Series-review P1 (defense in depth): materialized rows are only current
+    # while the quarter still has an active HR-family filing. An authority
+    # freeze (tie / missing acceptance / none eligible) deactivates the filing
+    # immediately, but the compute stage that clears the rows runs later —
+    # between the two, rendering the rows would present disputed data as
+    # available ("unknown is not zero"). The next compute run deletes them.
+    active = _active_filing(session, manager_id, as_of_quarter)
+    if active is None or active.form_type not in HR_FORM_TYPES:
+        return _unavailable_holding_changes(
+            manager,
+            as_of_quarter,
+            code="NO_ACTIVE_FILING",
+            message=(
+                "This quarter's 13F filing is currently unavailable or under "
+                "review; previously computed holding changes are withheld "
+                "until an active filing is restored."
+            ),
+        )
+
     items = [_manager_change_payload(change, stock) for change, stock in changes]
     has_caveats = any(
         item["caveat_codes"] or item["unavailable_reason"] or item["confidence_level"] in {"low_confidence", "unavailable"}
