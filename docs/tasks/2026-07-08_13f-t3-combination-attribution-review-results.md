@@ -749,3 +749,59 @@ The remaining Lens-freshness P2 reproduced against the code, confirmed, and
   (3 holders) whose Lens wrote no signal under its job id DOES fail. Real dev
   rollout: 2024-Q4 (below threshold) legitimately skipped, all populated quarters
   verified, exit 0.
+
+---
+
+## Sixth independent re-review (2026-07-08, commit `cf7d932`)
+
+**Verdict:** **Approved; no remaining findings.** The final Lens freshness P2
+is fixed without regressing the previously reviewed attribution, matching,
+caveat, locking, failure-status, or ownership-freshness behavior.
+
+### Closure evidence
+
+- Lens expectation is now evaluated per quarter.
+- Each quarter is tied to its own Lens stage `source_job_id`; output from one
+  quarter cannot mask another quarter's no-op.
+- A signal is required only when that quarter has a stock meeting the scorer's
+  three-distinct-holder eligibility floor.
+- The eligibility query matches the active/current/direct/common/stock-linked
+  scoring population and excludes amendment-pending/failed contributors before
+  applying the holder floor.
+- Legitimately ineligible quarters are accepted with zero signals.
+- Eligible quarters with no signal written by their own stage job fail.
+- Ownership freshness remains independently checked per quarter.
+
+The active dev dataset also satisfies the project identity invariant used by
+the eligibility query: all 22,569 active/current direct common holdings with a
+non-null `stock_id` have `cusip_mapping_status='linked'`.
+
+### Real-data verification
+
+A real run scoped to dev 2024-Q4 now behaves correctly:
+
+```text
+ownership_changes 2024-Q4: succeeded, rows=62, failures=0
+oracles_lens 2024-Q4: succeeded, scored=0
+verification: PASSED
+```
+
+The zero Lens output is legitimate because the quarter has only one active
+direct holder and cannot meet the three-holder consensus threshold.
+
+### Final verification
+
+All tests ran in Docker against
+`postgresql://valuepilot:valuepilot@postgres:5432/valuepilot_test`.
+
+- `alembic upgrade head`: passed.
+- Targeted rollout, attribution, ownership-change, user API, Lens, and
+  orchestration suites: **109 passed**.
+- Full backend suite: **1099 passed, 3 warnings**.
+- `git diff --check`: clean.
+- No source or test files were modified by this review.
+
+All findings raised across the original review and five re-review passes are
+now closed. Remaining items already documented in BACKLOG (cross-filer review
+guard and the positions read model) are pre-agreed deferred architecture work,
+not regressions or merge blockers for T3.
