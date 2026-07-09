@@ -9,25 +9,25 @@ long — escalate to the user. **medium / low** = ordinary follow-up.
 
 ## Open
 
-### CLI `reparse-filing` / `reparse-all` still write product-invisible legacy holdings (F7)
+### ~~CLI `reparse-filing` / `reparse-all` write product-invisible legacy holdings~~ (F7 — RESOLVED T4 rework)
 - **Found:** 2026-07-08, T4 external review (correctness finder)
 - **Severity:** medium (product-visibility / footgun — no audit-trail loss)
-- **Problem:** T4 fixed `ingest-holdings` / `backfill` to go through the
-  ParseRun-backed job path, but the sibling replay commands `reparse_filing`
-  (`backend/app/cli/edgar.py`) and `reparse_all` still call the legacy
-  `ingest_filing_holdings`, which inserts `holdings_13f` rows with
-  `parse_run_id = NULL`. Those rows are invisible to the product query contract
-  (`active_hr_holdings_query` inner-joins `parse_runs.is_current`). Worse,
-  `reparse_all` passes `replace_holdings=True` — it DELETES the existing
-  (product-visible) holdings first, then re-inserts NULL-parse_run ones, so a
-  reparse can silently blank out a filing's product-visible holdings. This is
-  the same class as F6; T4 scoped it out (F5/F6 = ingest path only).
-- **Fix sketch:** delegate `reparse_filing` → `execute_job_payload(db,
-  "reparse_accession", {"accession_no": acc})` (the job type already exists and
-  is ParseRun-backed via `reparse_accession`); make `reparse_all` loop that job
-  per accession. Add a regression test asserting the replayed holdings carry a
-  current `parse_run_id`. Small, on-theme follow-up ("CLI ingest hygiene, part 2").
-- **Context:** `docs/tasks/2026-07-08_13f-t4-cli-ingest-hygiene.md` (Scope: Out)
+- **Resolved:** 2026-07-08, T4 rework (second review escalated F7 to a merge
+  blocker: the commands are advertised in `README.md` and destructive). Both
+  `reparse_filing` and `reparse_all` (`backend/app/cli/edgar.py`) now delegate to
+  the ParseRun-backed `reparse_accession` job via the locked runner
+  (`run_locked_job`). `reparse_accession` swaps `is_current` and RETAINS the
+  prior run's holdings — non-destructive. Verified on real dev data: reparsing
+  `0001325447-26-000009` created a new current parse_run (602 rows) and retained
+  the old run's 602, with 0 NULL-parse_run rows globally. (That accession is the
+  *inactive* original — superseded by restatement `0001325447-26-000018` — so
+  `active_hr_holdings_query` correctly returns 0 for it and 602 for the active
+  restatement; ParseRun currency alone is not product visibility.) Regression:
+  `test_13f_cli_ingest.py` — source guard + CliRunner wiring + a real
+  `run_locked_job('reparse_accession')` integration test asserting
+  `active_hr_holdings_query` visibility on an active filing (and 0 on an inactive
+  one), plus a runtime `reparse-all` partial-failure non-zero-exit test. README
+  copy updated.
 
 ### `backfill` retries by missing-infotable, not by failed-parse (recoverability edge)
 - **Found:** 2026-07-08, T4 external review (correctness finder)

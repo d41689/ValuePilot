@@ -169,16 +169,23 @@ def ingest_holdings(
     Delegates to the modern ``ingest_holdings`` job so holdings are
     ParseRun-backed and product-visible (fixes F6 — the legacy path wrote
     ``parse_run_id = NULL`` holdings invisible to the product query contract).
-    ``quarter`` is the calendar quarter the filings' period_of_report falls in
-    (a proxy = filed_at until parsed), matching the job's window.
+    Runs under the shared ``ingest_holdings:{quarter}`` lock, so a concurrent
+    scheduled/dashboard ingest for the same quarter is reported as a conflict
+    rather than run as an untracked second copy. ``quarter`` is the calendar
+    quarter the filings' period_of_report falls in (a proxy = filed_at until
+    parsed), matching the job's window.
     """
-    from app.services.thirteenf_admin_dashboard import execute_job_payload
+    from app.services.thirteenf_admin_dashboard import run_locked_job
 
     db = SessionLocal()
     try:
-        summary = execute_job_payload(db, "ingest_holdings", {"quarter": quarter})
-        db.commit()
-        typer.echo(f"{quarter}: {summary}")
+        result = run_locked_job(db, "ingest_holdings", {"quarter": quarter}, trigger_source="cli")
+        typer.echo(f"{quarter}: {result['summary']}")
+        if result.get("error"):
+            typer.echo(f"Error: {result['error']}", err=True)
+            raise typer.Exit(1)
+    except typer.Exit:
+        raise
     except Exception as exc:
         db.rollback()
         typer.echo(f"Error: {exc}", err=True)
@@ -191,20 +198,30 @@ def ingest_holdings(
 def reparse_filing(
     accession: str = typer.Option(..., help="Accession number (dashed format)"),
 ) -> None:
-    """Re-parse a single filing from stored raw document (replay)."""
-    from app.models.institutions import Filing13F
-    from app.services.edgar_ingestion import ingest_filing_holdings
+    """Re-parse a single filing from its stored raw document (replay).
+
+    Delegates to the ParseRun-backed ``reparse_accession`` job: the new run
+    becomes ``is_current`` and the prior holdings are RETAINED (no destructive
+    delete), so a reparse can never blank a filing out of the product surface
+    (fixes F7 — the legacy path deleted the visible holdings and re-inserted
+    ``parse_run_id = NULL`` invisible ones). Runs under the
+    ``reparse_accession:{accession}`` lock.
+    """
+    from app.services.thirteenf_admin_dashboard import run_locked_job
 
     db = SessionLocal()
     try:
-        filing = db.query(Filing13F).filter_by(accession_no=accession).one_or_none()
-        if filing is None:
-            typer.echo(f"Filing {accession} not found.", err=True)
+        result = run_locked_job(
+            db, "reparse_accession", {"accession_no": accession}, trigger_source="cli"
+        )
+        if result.get("error"):
+            typer.echo(f"Error: {result['error']}", err=True)
             raise typer.Exit(1)
-
-        n = ingest_filing_holdings(db, filing, force_refresh=False, replace_holdings=True)
-        db.commit()
-        typer.echo(f"Reparsed {accession}: {n} holdings.")
+        summary = result["summary"]
+        typer.echo(
+            f"Reparsed {accession}: {summary.get('holdings_count')} holdings "
+            f"(parse_run {summary.get('parse_run_id')})."
+        )
     except typer.Exit:
         raise
     except Exception as exc:
@@ -278,16 +295,22 @@ def backfill(
 def reparse_all(
     quarter: str = typer.Option("", help="Limit to a quarter, e.g. 2025-Q1 (empty = all)"),
 ) -> None:
-    """Reparse all filings from stored raw docs (no network calls). Replaces existing holdings."""
+    """Reparse all stored filings from their raw docs (no network calls).
+
+    Each accession goes through the ParseRun-backed ``reparse_accession`` job,
+    which swaps ``is_current`` and RETAINS the prior holdings — non-destructive
+    and product-visible (fixes F7). The legacy path deleted every filing's
+    visible holdings and re-inserted invisible ``parse_run_id = NULL`` rows.
+    """
     from app.models.institutions import Filing13F
-    from app.services.edgar_ingestion import ingest_filing_holdings
+    from app.services.thirteenf_admin_dashboard import run_locked_job
     import calendar
     from app.edgar.parsers.form_idx import quarter_to_year_qtr
     from datetime import date
 
     db = SessionLocal()
     try:
-        query = db.query(Filing13F).filter(Filing13F.raw_infotable_doc_id.isnot(None))
+        query = db.query(Filing13F.accession_no).filter(Filing13F.raw_infotable_doc_id.isnot(None))
         if quarter:
             year, qtr = quarter_to_year_qtr(quarter)
             q_start = date(year, (qtr - 1) * 3 + 1, 1)
@@ -295,22 +318,28 @@ def reparse_all(
             q_end = date(year, end_month, calendar.monthrange(year, end_month)[1])
             query = query.filter(Filing13F.period_of_report.between(q_start, q_end))
 
-        filings = query.order_by(Filing13F.period_of_report).all()
-        typer.echo(f"Reparsing {len(filings)} filings...")
+        # Collect accession strings up front: each reparse_accession job commits,
+        # which would expire ORM Filing rows mid-loop.
+        accessions = [row[0] for row in query.order_by(Filing13F.period_of_report).all()]
+        typer.echo(f"Reparsing {len(accessions)} filings...")
 
         total = 0
         failed = 0
-        for filing in filings:
-            try:
-                n = ingest_filing_holdings(db, filing, force_refresh=False, replace_holdings=True)
-                db.commit()
-                total += n
-            except Exception as exc:
-                db.rollback()
-                logger.error("  %s failed: %s", filing.accession_no, exc)
+        for accession in accessions:
+            result = run_locked_job(
+                db, "reparse_accession", {"accession_no": accession}, trigger_source="cli"
+            )
+            if result.get("error"):
+                logger.error("  %s failed: %s", accession, result["error"])
                 failed += 1
+            else:
+                total += result["summary"].get("holdings_count", 0) or 0
 
         typer.echo(f"Done: {total:,} holdings, {failed} failed")
+        if failed:
+            raise typer.Exit(1)
+    except typer.Exit:
+        raise
     except Exception as exc:
         db.rollback()
         typer.echo(f"Error: {exc}", err=True)

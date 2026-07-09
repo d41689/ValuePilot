@@ -1246,20 +1246,21 @@ def ingest_pending_holdings(db: Session, *, quarters=None, ingest_fn=None, log=N
     Per-quarter failures are isolated: a raising ``ingest_fn`` is caught, the
     session rolled back, the error recorded as ``{"error": ...}`` in that
     quarter's summary, and the loop continues — one bad quarter can never
-    abandon the healthy ones (the legacy per-filing loop had this resilience;
-    the job path re-raises hard/programming errors, which would otherwise abort
-    the whole backfill). ``ingest_fn`` is injectable for tests; it defaults to
-    the real job payload executor.
+    abandon the healthy ones. The default ``ingest_fn`` runs through the locked
+    job runner, which never raises and returns a ``conflict`` / ``failed``
+    status with an ``error`` key instead; those surface the same way. ``ingest_fn``
+    is injectable for tests.
 
-    Returns ``{quarter: job_summary_or_error}``.
+    Returns ``{quarter: result}`` where each result is the locked-job stage dict
+    (``stage`` / ``summary`` / optional ``error``) or the injected fn's return.
     """
     if ingest_fn is None:
-        from app.services.thirteenf_admin_dashboard import execute_job_payload
+        from app.services.thirteenf_admin_dashboard import run_locked_job
 
         def ingest_fn(quarter: str) -> dict:
-            summary = execute_job_payload(db, "ingest_holdings", {"quarter": quarter})
-            db.commit()
-            return summary
+            # Locked runner: honors ingest_holdings:{quarter}, so a CLI backfill
+            # won't run an untracked second copy against a scheduled ingest.
+            return run_locked_job(db, "ingest_holdings", {"quarter": quarter}, trigger_source="cli")
 
     targets = pending_ingest_quarters(db)
     if quarters is not None:

@@ -120,3 +120,61 @@ docker compose exec -T -e DATABASE_URL="$TEST_URL" api pytest -q      # closing 
 评审确认为非问题:`_date_to_quarter` 各月/年界正确且与 `quarter_window` 一致;
 once-computed pending 列表对中途 period 修正安全(修正只后移、升序迭代、各 filing
 仅在自身季度被选中);删除 `--limit` 无任何 script/CI/cron 调用方。
+
+## 二次评审处置(third-party,`...-review-prompts.md` → `...-review-results.md`)
+
+二次评审确认 F5 选择与事务语义正确,提出 3 条:
+
+- **[P1] `reparse-filing`/`reparse-all` 可抹掉产品可见持仓(已修,F7 收口)。** 评审据
+  **README.md:135/138/139 明确宣传**这两条命令 + `replace_holdings=True` **先删可见
+  持仓再插 `parse_run_id=NULL` 不可见行**,升级为 merge blocker。裁定:虽初版按范围
+  纪律外置为 F7,但"已宣传的破坏性命令"属数据可见性风险,不能带病发布 →
+  **本轮修复**:两命令改委托 ParseRun-backed `reparse_accession` job(经
+  `run_locked_job`),该 job **换 is_current 且保留旧 run 持仓**(无删除)。真实数据
+  验证:reparse `0001325447-26-000009` → 新 current run 602 rows、旧 run 602 保留、
+  全局 0 条 NULL-parse_run。**注:** 该措辞初版把 ParseRun currency 误作产品可见性——
+  该 accession 是 inactive 原件,`active_hr_holdings_query` 对它返回 **0**(见下方
+  三次评审处置的更正);此处保留仅记录当时改动,准确口径以三次评审为准。
+  README 文案更新。清 backlog F7。
+- **[P2] CLI 绕过 `ingest_holdings:{quarter}` JobRun 锁(已修)。** `execute_job_payload`
+  是无锁包装;CLI 与调度管线并发同季会重复摄取/冲突激活写。**修复**:新增公共
+  `run_locked_job(session, job_type, payload, *, trigger_source)`(参数化
+  `_execute_pipeline_stage_job` 的 trigger_source,复用其锁 + 可见 JobRun 机制);
+  CLI `ingest-holdings` / `backfill` / `reparse-*` 全部经它,冲突返回 `conflict` +
+  非零退出。回归:`test_run_locked_job_reports_conflict_when_lock_held`。
+- **[P2] 测试未钉 CLI→产品可见性契约(已补)。** 原 9 测均注入 `ingest_fn`,回退到
+  legacy 也不会红。**补**:源码护栏
+  `test_cli_commands_never_call_legacy_ingest_filing_holdings`(4 命令不得引用
+  `ingest_filing_holdings`)+ `CliRunner` 接线测试(`ingest-holdings` /
+  `reparse-filing` 确实调 `run_locked_job` + 错误非零退出)。job→可见 ParseRun 由既有
+  `test_13f_parse_run_audit.py` 钉;组合链闭合。
+
+二次评审确认无问题项(不复报):F5 边界/最新季可达、日期跨界、once-computed 收敛、
+错误隔离 + `except typer.Exit: raise`、`--help` 语义、无 `--limit` 遗留调用方。
+
+## 三次评审处置(P1/P2-lock 确认 resolved;1 条 P2 复开)
+
+三次评审确认 F7 replay-safety 与 CLI 锁均已正确修复,复开 1 条 P2:
+
+- **[P2] CLI→产品可见性契约仍未被真实路径钉,且我的真实数据核验措辞错误(已修+已纠正)。**
+  评审正确指出:我之前"reparse `0001325447-26-000009` → 602 visible"**混淆了
+  ParseRun currency 与产品可见性契约**。该 accession 是 First Eagle 2026-Q1 的
+  **inactive 原件**(被 restatement `0001325447-26-000018` 取代,
+  `is_active_for_manager_period=false`),`active_hr_holdings_query` 对它返回 **0**,
+  对 active restatement 返回 **602**。reparse 实现本身正确(非破坏、保留旧 run),
+  但我核验的是错的量。**修复:**
+  1. 新增真实路径集成测试 `test_cli_reparse_path_is_product_visible_end_to_end`:
+     走真实 `run_locked_job('reparse_accession')`(仅 stub `load_body` 原始字节读),
+     断言 (a) stage/JobRun succeeded 且 `trigger_source='cli'`;(b) 新 ParseRun
+     current、旧 run 保留;(c) `active_hr_holdings_query` 对该(active)filing 返回
+     行;(d) 无 `parse_run_id IS NULL` 行。
+  2. 反例测试 `..._inactive_filing_is_not_product_visible`:currency≠visibility——
+     inactive filing 有 current ParseRun 但 `active_hr_holdings_query` 返回 0。
+  3. `reparse-all` runtime 测试 `test_reparse_all_cli_nonzero_exit_on_partial_failure`:
+     一成功一失败 → 计成功、记失败、非零退出。
+  4. **纠正**真实数据核验措辞(本 doc + BACKLOG F7):inactive 原件 0 可见、active
+     restatement 602 可见、全局 0 条 NULL-parse_run(read-only 独立复现,与评审一致)。
+
+三次评审确认 resolved:F7 replay 安全(两命令走 `reparse_accession`、保留旧 run、
+失败/冲突非零退出);CLI 锁(`run_locked_job` 复用锁键/JobRun + 唯一索引竞态回退);
+选择/事务/错误/锁无新缺陷。

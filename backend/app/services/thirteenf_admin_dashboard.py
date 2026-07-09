@@ -3261,19 +3261,46 @@ def _historical_backfill_validation_gate(
     return (not errors, errors)
 
 
+def run_locked_job(
+    session: Session,
+    job_type: str,
+    payload: dict[str, Any],
+    *,
+    trigger_source: str = "manual",
+) -> dict[str, Any]:
+    """Public synchronous locked-job runner for one-off callers (CLI / ops).
+
+    Runs a job through the SAME lock + visible-JobRun mechanism the pipeline and
+    dashboard use, so a CLI `backfill` / `reparse` cannot silently run a second,
+    untracked copy of a job that a scheduled pipeline is already executing.
+    Honors the per-job `lock_key` (e.g. `ingest_holdings:{quarter}`,
+    `reparse_accession:{accession_no}`): a concurrent active run comes back as
+    ``status == "conflict"`` with an ``error`` key rather than double-writing.
+    Never raises — inspect ``result["stage"]["status"]``.
+    """
+    return _execute_pipeline_stage_job(
+        session,
+        parent_payload={},
+        job_type=job_type,
+        payload=payload,
+        trigger_source=trigger_source,
+    )
+
+
 def _execute_pipeline_stage_job(
     session: Session,
     *,
     parent_payload: dict[str, Any],
     job_type: str,
     payload: dict[str, Any],
+    trigger_source: str = "pipeline",
 ) -> dict[str, Any]:
-    """Run a pipeline stage as a visible JobRun record.
+    """Run a pipeline stage (or a one-off locked job) as a visible JobRun record.
 
     Returns a result dict with keys "stage", "summary", and optionally "error".
     Never raises — callers inspect the returned status to decide whether to abort.
     """
-    stage_payload = {"job_type": job_type, **payload, "trigger_source": "pipeline"}
+    stage_payload = {"job_type": job_type, **payload, "trigger_source": trigger_source}
     parent_job_id = parent_payload.get("_job_id")
     if parent_job_id is not None:
         stage_payload["parent_job_id"] = parent_job_id
@@ -3300,7 +3327,7 @@ def _execute_pipeline_stage_job(
         job_type=job_type,
         status="running",
         requested_by_user_id=parent_job.requested_by_user_id if parent_job else None,
-        trigger_source="pipeline",
+        trigger_source=trigger_source,
         dedupe_key=lock_key,
         lock_key=lock_key,
         quarter=stage_payload.get("quarter"),

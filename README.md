@@ -131,10 +131,12 @@ docker compose exec api python -m app.cli.edgar quality-check --quarter <YYYY-Qn
 ### Other Useful Commands
 
 ```bash
-# Re-parse a single filing from stored raw doc (no network call)
+# Re-parse a single filing from stored raw doc (ParseRun-backed; new run becomes
+# current, prior holdings retained — non-destructive)
 docker compose exec api python -m app.cli.edgar reparse-filing --accession 0001234567-25-000001
 
-# Re-parse all filings from stored raw docs (after parser fixes)
+# Re-parse all filings from stored raw docs (after parser fixes; each accession
+# swaps is_current without deleting the prior run's holdings)
 docker compose exec api python -m app.cli.edgar reparse-all
 docker compose exec api python -m app.cli.edgar reparse-all --quarter 2025-Q1
 
