@@ -23,9 +23,6 @@ from app.services.thirteenf_admin_dashboard import _execute_pipeline_stage_job
 from app.services.thirteenf_holdings_ingest import backfill_holding_attribution
 
 
-_BERKSHIRE_CIK = "0001067983"  # representative flagship for freshness postcondition
-
-
 class RolloutConflictError(RuntimeError):
     """A conflicting compute_ownership_changes / oracles_lens job is already
     active for a quarter — the rollout refuses to race it. Quiesce jobs and retry."""
@@ -116,13 +113,16 @@ def run_attribution_rollout(
     # Any stage status other than "succeeded" is a rollout failure: a hard
     # `failed` stage means a materialized product (ownership_changes / Oracle's
     # Lens) was NOT refreshed, and `partial_success` means some managers failed —
-    # both must surface, not be swallowed. Stage success is the primary evidence
-    # the two products actually recomputed, so it cannot be ignored.
+    # both must surface, not be swallowed.
     stage_failures: list[str] = []
+    ownership_rows_by_quarter: dict[str, int] = {}
+    lens_stage_job_ids: list[int] = []
+
     for quarter in quarters:
         result = _run_locked_stage(session, job_type="compute_ownership_changes", quarter=quarter)
         status = result["stage"]["status"]
         failure_count = result["summary"].get("failure_count")
+        ownership_rows_by_quarter[quarter] = int(result["summary"].get("rows_created") or 0)
         log(f"[2/4] ownership_changes {quarter}: {status} rows={result['summary'].get('rows_created')} failures={failure_count}")
         if status != "succeeded":
             stage_failures.append(f"ownership_changes {quarter} stage status={status} (per-manager failures={failure_count})")
@@ -130,37 +130,72 @@ def run_attribution_rollout(
     for quarter in quarters:
         result = _run_locked_stage(session, job_type="oracles_lens_score_backfill", quarter=quarter)
         status = result["stage"]["status"]
+        job_id = result["stage"].get("job_id")
+        if job_id is not None:
+            lens_stage_job_ids.append(job_id)
         log(f"[3/4] oracles_lens {quarter}: {status} scored={result['summary'].get('filings_scored')}")
         if status != "succeeded":
             stage_failures.append(f"oracles_lens {quarter} stage status={status}")
 
     failures = stage_failures + verify_attribution_rollout(session)
-    failures += _representative_freshness_failures(session)
+    failures += _run_freshness_failures(session, quarters, ownership_rows_by_quarter, lens_stage_job_ids)
     log(f"[4/4] verification: {'PASSED' if not failures else 'FAILED'}")
     return {"reattributed": reattributed, "quarters": quarters, "failures": failures}
 
 
-def _representative_freshness_failures(session: Session) -> list[str]:
-    """Confirm the materialized products actually refreshed for a representative
-    flagship (Berkshire) — guards against a silently-stale recompute. Skipped if
-    the flagship is absent (e.g. an isolated unit-test DB)."""
-    row = session.execute(
+def _active_direct_manager_count(session: Session, quarter: str) -> int:
+    return session.execute(
         text(
-            "SELECT "
-            "(SELECT COUNT(*) FROM holdings_13f hh JOIN institution_managers im ON im.id=hh.manager_id "
-            " WHERE im.cik=:cik) AS present, "
-            "(SELECT COUNT(*) FROM holdings_13f hh JOIN institution_managers im ON im.id=hh.manager_id "
-            " WHERE im.cik=:cik AND hh.holding_attribution_status='direct') AS direct, "
-            "(SELECT COUNT(*) FROM ownership_changes oc JOIN institution_managers im ON im.id=oc.manager_id "
-            " WHERE im.cik=:cik AND oc.confidence_level<>'unavailable') AS real_changes"
+            "SELECT COUNT(DISTINCT h.manager_id) FROM holdings_13f h "
+            "JOIN parse_runs pr ON h.parse_run_id = pr.id AND pr.is_current "
+            "JOIN filings_13f f ON f.accession_number = pr.accession_number "
+            "AND f.is_active_for_manager_period AND f.form_type IN ('13F-HR', '13F-HR/A') "
+            "WHERE h.report_quarter = :q AND h.holding_attribution_status = 'direct'"
         ),
-        {"cik": _BERKSHIRE_CIK},
-    ).fetchone()
-    if not row or not row[0]:
-        return []  # flagship not in this DB — nothing to assert
-    failures = []
-    if not row[1]:
-        failures.append("flagship (Berkshire) has zero direct holdings after rollout")
-    if not row[2]:
-        failures.append("flagship (Berkshire) has zero real ownership changes after rollout (stale recompute?)")
+        {"q": quarter},
+    ).scalar() or 0
+
+
+def _run_freshness_failures(
+    session: Session,
+    quarters: list[str],
+    ownership_rows_by_quarter: dict[str, int],
+    lens_stage_job_ids: list[int],
+) -> list[str]:
+    """RUN-SCOPED postconditions — proof THIS run actually refreshed both
+    materialized products, not that stale historical data happens to exist. A
+    stage can report `succeeded` while doing zero work (the compute contracts
+    treat a no-op as success), so stage status alone is insufficient.
+
+    - Ownership: every active *direct* filer in a quarter yields ≥1 change row, so
+      0 rows written for a quarter that has active direct filers is a no-op
+      recompute (a genuinely empty quarter has 0 active filers and is skipped).
+    - Lens: at least one signal must be written under THIS run's Lens stage job
+      ids (`source_job_id`) when the universe has active direct filers — a no-op
+      or a lying summary writes none. (Individual quarters may legitimately score
+      0 below the holder threshold; the aggregate over a populated universe cannot.)
+    """
+    failures: list[str] = []
+    total_active = 0
+    for quarter in quarters:
+        active = _active_direct_manager_count(session, quarter)
+        total_active += active
+        if active > 0 and ownership_rows_by_quarter.get(quarter, 0) == 0:
+            failures.append(
+                f"ownership recompute wrote 0 rows for {quarter} despite {active} "
+                f"active direct filers (no-op recompute?)"
+            )
+
+    if total_active > 0:
+        lens_written = 0
+        if lens_stage_job_ids:
+            lens_written = session.execute(
+                text("SELECT COUNT(*) FROM oracles_lens_signals WHERE source_job_id = ANY(:ids)"),
+                {"ids": lens_stage_job_ids},
+            ).scalar() or 0
+        if lens_written == 0:
+            failures.append(
+                f"Oracle's Lens recompute wrote 0 signals this run (source_job_id) "
+                f"despite {total_active} active direct filers (no-op recompute?)"
+            )
     return failures

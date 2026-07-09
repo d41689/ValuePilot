@@ -141,3 +141,38 @@ def test_rollout_fails_on_partial_success_ownership_stage(db_session, monkeypatc
     monkeypatch.setattr(roll, "_execute_pipeline_stage_job", fake_stage)
     report = roll.run_attribution_rollout(db_session, quarters=["2099-Q1"], log=lambda *_a: None)
     assert any("partial_success" in f and "failures=3" in f for f in report["failures"])
+
+
+def test_rollout_fails_on_noop_success_with_active_filers(db_session, monkeypatch):
+    """Re-review #4 (P2): stages that report `succeeded` but write nothing, while
+    active direct filers exist for the quarter, must fail — run-scoped freshness,
+    not stale all-history data, decides. (Reproduces the no-op-success bug.)"""
+    from app.services import thirteenf_attribution_rollout as roll
+
+    # A real quarter with an active DIRECT filer (so work is expected).
+    _holding(db_session, _filing(db_session, _manager(db_session)), discretion="SOLE", status="direct")
+
+    def noop_stage(session, *, parent_payload, job_type, payload):
+        summary = {"status": "succeeded"}
+        summary["rows_created" if job_type == "compute_ownership_changes" else "filings_scored"] = 0
+        return {"stage": {"job_type": job_type, "job_id": 111, "status": "succeeded"}, "summary": summary}
+
+    monkeypatch.setattr(roll, "_execute_pipeline_stage_job", noop_stage)
+    report = roll.run_attribution_rollout(db_session, quarters=["2026-Q1"], log=lambda *_a: None)
+    assert report["failures"], "a no-op recompute with active filers must fail"
+    assert any("wrote 0 rows" in f or "0 signals" in f for f in report["failures"])
+
+
+def test_rollout_empty_quarter_noop_is_not_a_failure(db_session, monkeypatch):
+    """Freshness must NOT false-fail a genuinely empty quarter (no active filers):
+    0 rows is legitimate there, distinguishing a no-op from an empty quarter."""
+    from app.services import thirteenf_attribution_rollout as roll
+
+    def noop_stage(session, *, parent_payload, job_type, payload):
+        summary = {"status": "succeeded"}
+        summary["rows_created" if job_type == "compute_ownership_changes" else "filings_scored"] = 0
+        return {"stage": {"job_type": job_type, "job_id": 222, "status": "succeeded"}, "summary": summary}
+
+    monkeypatch.setattr(roll, "_execute_pipeline_stage_job", noop_stage)
+    report = roll.run_attribution_rollout(db_session, quarters=["2099-Q1"], log=lambda *_a: None)
+    assert report["failures"] == []

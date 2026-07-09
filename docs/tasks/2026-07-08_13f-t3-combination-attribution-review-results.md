@@ -540,3 +540,111 @@ fixed**. Full backend suite **1095 passed**.
   so the sub-threshold (empty `other_managers_included`) case is no longer
   described as "included managers (e.g. subsidiaries)". A copy-accuracy test
   guards it.
+
+---
+
+## Fourth independent re-review (2026-07-08, commit `7a4661f`)
+
+**Verdict:** **One P2 remains.** The two direct third-review findings are fixed:
+hard/partial stage statuses now fail the rollout, and the shared-discretion copy
+is accurate for both included-manager and sub-threshold cases. No new
+attribution, matching, caveat-propagation, or lock regression was found.
+
+### [P2] The representative "freshness" check can pass using unrelated historical data and does not verify Lens
+
+**Location:** `backend/app/services/thirteenf_attribution_rollout.py:143-165`
+
+`_representative_freshness_failures()` counts all Berkshire direct holdings and
+all non-unavailable ownership changes across every quarter. It is not scoped to
+the quarters requested by this rollout, to the latest quarter, or to rows
+written by the stage jobs. It also does not query `oracles_lens_signals` or
+`oracles_lens_score_components` at all, despite Lens being one of the two
+materialized products this rollout is required to refresh.
+
+Fault injection against the populated dev database returned success when both
+stage functions claimed `succeeded` but wrote nothing:
+
+```text
+quarters = ["2099-Q1"]
+ownership summary = succeeded, rows_created=0
+Lens summary = succeeded, filings_scored=0
+
+report = {
+  "reattributed": 0,
+  "quarters": ["2099-Q1"],
+  "failures": []
+}
+```
+
+Old Berkshire holdings/changes from real historical quarters satisfied the
+postcondition. This matters because the compute job contracts treat a zero-work
+run as `succeeded`; stage-status checks alone cannot distinguish a legitimate
+empty quarter from an accidentally empty/no-op recompute.
+
+The earlier hard-failure false-pass is fixed -- injected `failed` and
+`partial_success` statuses are now recorded correctly. Continuing to run Lens
+after an ownership failure is best-effort rather than a scoring-corruption bug:
+the current Lens add-intensity primitive reads holdings directly, not the
+`ownership_changes` table, and the final rollout still exits non-zero.
+
+**Required correction:** make postconditions run-scoped. For example:
+
+- retain stage job IDs and verify Lens signals/components with
+  `source_job_id=<this Lens stage job>` for expected populated quarters;
+- verify ownership rows for the target manager/quarter were updated during this
+  run (or validate expected manager/row counts from the stage summary);
+- explicitly allow known legitimately empty quarters instead of using
+  all-history counts;
+- add a test where both stages return `succeeded` with zero output while old
+  Berkshire data exists, and require a failure.
+
+## Fourth-review disposition
+
+| Area | Result |
+|---|---|
+| Hard/partial stage status handling | **Fixed** |
+| Neutral shared-discretion copy | **Fixed** |
+| Attribution, matching, caveat propagation, and locking | **Fixed** |
+| Representative ownership/Lens run freshness | **Not fully fixed** |
+
+## Fourth-review verification
+
+All tests ran in Docker against
+`postgresql://valuepilot:valuepilot@postgres:5432/valuepilot_test`.
+
+- `alembic upgrade head`: passed.
+- Targeted rollout, attribution, ownership-change, user API, Lens, and
+  orchestration suites: **105 passed**.
+- Full backend suite: **1095 passed, 3 warnings**.
+- Failure injection confirmed hard ownership/Lens failures and partial success
+  now produce non-empty rollout failures.
+- No-op-success injection against populated dev reproduced the stale
+  all-history postcondition pass described above.
+- No source or test files were modified by this review.
+
+---
+
+## Fourth disposition (2026-07-08, fourth-review fix)
+
+The remaining P2 reproduced against the code, confirmed, and **fixed**. Full
+backend suite **1097 passed**.
+
+- **Re-review #4-b (postcondition used stale all-history data; ignored Lens) —
+  FIXED.** Replaced the Berkshire all-history `_representative_freshness_failures`
+  with a RUN-SCOPED `_run_freshness_failures(session, quarters,
+  ownership_rows_by_quarter, lens_stage_job_ids)`:
+  - Ownership: for each requested quarter, if it has active *direct* filers but
+    this run's stage wrote 0 rows, that's a no-op recompute → failure. A
+    genuinely empty quarter (0 active filers) is skipped, so an empty quarter is
+    distinguished from an accidental no-op.
+  - Lens: at least one signal must be written under THIS run's Lens stage job ids
+    (`oracles_lens_signals.source_job_id`) when the universe has active direct
+    filers — a no-op or a lying summary writes none. Per-quarter below-threshold
+    zeros are fine; the aggregate over a populated universe cannot be zero.
+  Neither check consults stale historical data. Tests: a no-op-success with a
+  real active-filer quarter now fails; a genuinely empty quarter's no-op does
+  NOT false-fail; the earlier hard-failed / partial-success / lock-conflict cases
+  still fail. Full suite 1097 passed.
+- The reviewer's note that continuing Lens after an ownership failure is
+  best-effort (not scoring corruption, since add-intensity reads holdings, not
+  ownership_changes) — accepted; the rollout still exits non-zero on any failure.
