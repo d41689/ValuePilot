@@ -9,24 +9,52 @@ long — escalate to the user. **medium / low** = ordinary follow-up.
 
 ## Open
 
-### `13F-NT/A` is not ingested and NT-family consumers only recognize exact `13F-NT`
-- **Found:** 2026-07-09, T1-FU external review (P2, latent)
-- **Severity:** low (latent — `INGESTION_FORMS` excludes `13F-NT/A`, so none exist
-  in the data layer today; SEC defines it as the amendment form for a 13F Notice
-  and raw form indexes contain many)
-- **Problem:** if `13F-NT/A` were ever ingested, (a) `nt_only_manager_ids`
-  (`thirteenf_holdings_query.py`) recognizes only exact `13F-NT`, so a manager
-  whose active filing is an NT/A would be wrongly counted in the expected-HR
-  denominator; (b) NT-family activation semantics (an NT/A superseding an NT)
-  are undefined. T1-FU added the authority-side guard — a parsed NT/A
-  RESTATEMENT can never compete for the HR holdings slot
-  (`apply_active_filing_policy` rule 1 requires HR-family form_type; regression
-  `test_nt_a_restatement_never_competes_for_holdings_slot`) — but full NT-family
-  support remains unimplemented.
-- **Fix sketch:** either add `13F-NT/A` to `INGESTION_FORMS` + widen NT-family
-  matching in `nt_only_manager_ids` + define NT-slot activation in the
-  authority, or formally document NT/A as out of scope in the PRD.
-- **Context:** `docs/tasks/2026-07-08_13f-t1fu-active-filing-authority.md` 评审处置 P2-9
+### No end-to-end quarterly-pipeline test with real stage bodies
+- **Found:** 2026-07-09, T1–T4 series review (test-gap recommendation #1)
+- **Severity:** low (every stage body is unit/composition tested individually;
+  the untested surface is the full stage CHAIN — ingest/routing → authority
+  sweep → quality_check → compute_ownership_changes → Lens scoring — on a
+  multi-manager/multi-quarter fixture; existing pipeline tests stub stage bodies)
+- **Fix sketch:** one integration test driving `quarterly_pipeline` with real
+  stage bodies over stored primary/infotable docs for ≥2 managers × 2 quarters
+  (reuse the T1-FU composition-test harness), asserting changes rows + Lens
+  signals + quality report exist and agree.
+- **Context:** `2026-07-09_13f-t1-t4-series-review-results.md` missing test #1
+  (#2 and #3 landed with the series-review fixes)
+
+### No source guard for direct `Holding13F` product queries
+- **Found:** 2026-07-09, T1–T4 series review (guard recommendation)
+- **Severity:** low (review found no current violation; the guard prevents a
+  future user/API surface from bypassing `active_hr_holdings_query` — the PRD
+  §7.3 contract T4/F6 was about)
+- **Fix sketch:** T4-style source guard scanning user/API-facing services for
+  `query(Holding13F` with a whitelist for sanctioned low-level modules
+  (`thirteenf_holdings_query`, ownership-changes/scoring internals, admin
+  diagnostics).
+- **Context:** `2026-07-09_13f-t1-t4-series-review-results.md` "Useful third guard"
+
+### `13F-NT/A` has no first-class automated ingestion
+- **Found:** 2026-07-09, T1-FU external review (P2, latent); narrowed
+  2026-07-09 by the series review (the original entry's "consumers only
+  recognize exact 13F-NT" half is RESOLVED — `NT_FORM_TYPES` is now used by
+  `nt_only_manager_ids`, `thirteenf_user_api` (holdings/quarter/caveats),
+  `oracles_lens/base_primitives._is_nt_quarter`, `thirteenf_ownership_changes`,
+  and `thirteenf_filing_detail` report-type/coverage normalization; the
+  authority guards a parsed NT/A RESTATEMENT from ever competing for the HR
+  holdings slot).
+- **Severity:** low (latent — `INGESTION_FORMS` and the form.idx whitelist
+  exclude `13F-NT/A`, so none enter the data layer automatically; SEC defines
+  it as the amendment form for a 13F Notice and raw form indexes contain many)
+- **Remaining problem:** ONLY the ingestion scope — `13F-NT/A` filings are not
+  ingested automatically (`INGESTION_FORMS`, `_DAILY_13F_FORM_TYPES`), and
+  NT-slot activation semantics (an NT/A superseding an NT for the notice slot)
+  are undefined in the authority. Rows that arrive via `ingest_accession` /
+  admin apply are already handled consistently by every consumer.
+- **Fix sketch:** add `13F-NT/A` to the ingestion whitelists + define NT-slot
+  succession in `apply_active_filing_policy`, or formally document NT/A
+  ingestion as out of scope in the PRD.
+- **Context:** `docs/tasks/2026-07-08_13f-t1fu-active-filing-authority.md` 评审处置
+  P2-9 / 三审处置;series review `2026-07-09_13f-t1-t4-series-review-results.md`
 
 ### ~~CLI `reparse-filing` / `reparse-all` write product-invisible legacy holdings~~ (F7 — RESOLVED T4 rework)
 - **Found:** 2026-07-08, T4 external review (correctness finder)

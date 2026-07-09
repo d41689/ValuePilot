@@ -428,3 +428,56 @@ def test_failed_reparse_keeps_filing_parse_status_succeeded(db_session):
 
     db_session.refresh(filing)
     assert filing.parse_status == "succeeded"
+
+
+# ---------------------------------------------------------------------------
+# Series-review P1: no committed no-current-ParseRun window on reparse failure
+# ---------------------------------------------------------------------------
+
+def test_failed_reparse_restores_old_current_in_same_commit(db_session):
+    """The failure-audit commit inside _do_ingest_holdings used to persist the
+    caller's demote of the old current run while the RESTORE happened in a
+    later commit — a committed window (permanent after a crash) in which an
+    active filing had no current ParseRun and product holdings vanished.
+
+    This test simulates the crash: it performs reparse_accession's first half
+    (demote old current) and calls _do_ingest_holdings with bad bytes, doing
+    NO outer recovery at all. The failure-audit commit itself must have
+    restored the old current run."""
+    from app.services.thirteenf_holdings_ingest import (
+        _do_ingest_holdings,
+        ingest_holdings_for_filing,
+    )
+
+    _clear(db_session)
+    manager = _manager(db_session)
+    filing = _hr_filing(db_session, manager, "0001893830-24-009001")
+    r1 = ingest_holdings_for_filing(db_session, filing, _minimal_infotable())
+    run1 = db_session.get(ParseRun13F, r1["parse_run_id"])
+    assert run1.is_current is True
+
+    # reparse_accession's first half: demote the old current run (flushed,
+    # not committed) — then the parse fails and the process "crashes" before
+    # any outer recovery runs.
+    run1.is_current = False
+    db_session.add(run1)
+    db_session.flush()
+
+    with pytest.raises(Exception):
+        _do_ingest_holdings(
+            db_session, filing, b"<not-xml>", old_current_run_id=run1.id
+        )
+
+    # No outer recovery — the committed state must already be healthy.
+    db_session.expire_all()
+    run1 = db_session.get(ParseRun13F, run1.id)
+    assert run1.is_current is True, (
+        "failure-audit commit left the accession without a current ParseRun"
+    )
+    assert filing.parse_status == "succeeded"  # prior good holdings still serve
+    failed_runs = (
+        db_session.query(ParseRun13F)
+        .filter_by(accession_number=filing.accession_number, status="failed")
+        .count()
+    )
+    assert failed_runs == 1  # the audit record itself is persisted
