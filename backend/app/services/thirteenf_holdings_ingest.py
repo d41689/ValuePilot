@@ -52,13 +52,50 @@ def _compute_attribution_status(
     normalized_discretion: str | None,
     other_managers_raw: str | None,
 ) -> str:
-    if normalized_discretion == "SOLE":
+    """Attribution for a holding in a manager's OWN infotable (T3, PO ruling §2).
+
+    A holding that appears in a manager's HR/HR-A infotable IS that manager's
+    reportable 13(f) position. SOLE is sole discretion; DFND/OTR is shared
+    discretion — the co-managers may be the filing's own included managers or a
+    sub-threshold manager whose securities are aggregated into this filing. Per
+    SEC Form 13F FAQ 37/46/48, that sub-threshold case is reported WITHOUT naming
+    the other manager in Column 7 (`other_managers_raw`), so an empty Column 7 is
+    NOT an exclusion signal — the position still belongs to the filer. Therefore
+    SOLE/DFND/OTR all attribute to the filer as `direct` regardless of Column 7.
+    Only a holding with no recognized discretion is `unresolved`. Exclusion of
+    holdings "reported by other managers" lives at the FILING level (13F-NT, which
+    has no infotable), not here. The sole-vs-shared nuance is preserved in the
+    stored `investment_discretion` column; whether discretion is shared (and with
+    whom) drives a caveat, not exclusion. `other_managers_raw` is accepted for
+    signature compatibility but no longer gates attribution.
+    """
+    if normalized_discretion in ("SOLE", "DFND", "OTR"):
         return "direct"
-    if normalized_discretion == "OTR":
-        return "shared"
-    if normalized_discretion == "DFND":
-        return "reported_for_other" if (other_managers_raw and other_managers_raw.strip()) else "unresolved"
     return "unresolved"
+
+
+def backfill_holding_attribution(session: Session) -> int:
+    """Recompute holding_attribution_status for existing DFND/OTR holdings under
+    the current rule (T3). `investment_discretion` is stored already-normalized,
+    so it feeds `_compute_attribution_status` directly. Idempotent; returns the
+    number of rows changed. Run post-deploy to migrate historical data; SOLE rows
+    are untouched (already `direct`). Ownership-change and Oracle's Lens recompute
+    for affected managers must follow."""
+    holdings = (
+        session.query(Holding13F)
+        .filter(Holding13F.investment_discretion.in_(["DFND", "OTR"]))
+        .all()
+    )
+    changed = 0
+    for holding in holdings:
+        new_status = _compute_attribution_status(
+            holding.investment_discretion, holding.other_managers_raw
+        )
+        if holding.holding_attribution_status != new_status:
+            holding.holding_attribution_status = new_status
+            changed += 1
+    session.flush()
+    return changed
 
 
 def _norm(val: str | int | None) -> str:

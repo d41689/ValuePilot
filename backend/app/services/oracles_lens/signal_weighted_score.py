@@ -726,6 +726,18 @@ def _contributions_for_stock(
         if filing.has_confidential_treatment:
             per_holder_caveats.append(CONFIDENTIAL_TREATMENT_CAVEAT)
 
+        # T3: surface shared/defined-discretion (combination / included-manager)
+        # provenance so an aggregated filing's vote is not read as an independent
+        # sole-manager conviction. Derived from ANY lot in the aggregated group
+        # (a SOLE representative can hide a smaller DFND/OTR lot — mirror the
+        # ownership-changes _merge_holdings contract) OR the filing's cover-page
+        # included-managers list. Transparency only — no demotion.
+        from app.services.oracles_lens.caution_flags import CAVEAT_SHARED_DISCRETION
+        if filing.other_managers_included or any(
+            h.investment_discretion in ("DFND", "OTR") for h, _manager, _filing in group
+        ):
+            per_holder_caveats.append(CAVEAT_SHARED_DISCRETION)
+
         # MVP4-05: surface filing-level amendment caveats on every
         # contribution from that filing so the user-facing caution
         # panel sees "this holder's filing has a pending amendment"

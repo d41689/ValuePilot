@@ -20,8 +20,8 @@ from app.services.thirteenf_holdings_query import HR_FORM_TYPES, active_hr_holdi
 
 NT_CAVEAT = "This manager filed a 13F Notice; its 13(f) holdings are reported by other manager(s)."
 COMBINATION_CAVEAT = (
-    "This is a 13F Combination Report. Some holdings are reported by other manager(s) "
-    "and are not included here."
+    "This is a 13F Combination Report: holdings include positions the filer "
+    "reports jointly with its included managers (e.g. subsidiaries)."
 )
 CONFIDENTIAL_CAVEAT = (
     "Some holdings may be omitted from this filing due to confidential treatment. "
@@ -30,6 +30,11 @@ CONFIDENTIAL_CAVEAT = (
 FILING_WINDOW_CAVEAT = (
     "The filing window for this quarter may still be open. The snapshot can change until "
     "the official filing deadline passes."
+)
+SHARED_DISCRETION_CAVEAT = (
+    "This report includes positions held under shared/defined discretion with other "
+    "managers (which may include affiliates, subsidiaries, or a manager whose holdings "
+    "are aggregated into this filing) — not necessarily independent sole-manager positions."
 )
 # MVP4-11 D1: canonical name is ``long_term_fundamental`` (Oracle's
 # Lens scoring vocabulary). Set membership is semantically unchanged —
@@ -104,9 +109,18 @@ def build_user_manager_holdings(session: Session, manager_id: int, quarter: str 
             filing=active_filing,
         )
 
+    # T3 review follow-up: a complete holdings_report may still hold shared/defined
+    # discretion positions with no cover-page included-managers list (sub-threshold
+    # shared discretion, no Column 7). `_filing_caveats` can't see that from the
+    # filing alone, so derive it here from the displayed holdings' discretion.
+    if any(h.investment_discretion in ("DFND", "OTR") for h in holdings) and not any(
+        c["code"] == "SHARED_DISCRETION" for c in caveats
+    ):
+        caveats = [*caveats, {"code": "SHARED_DISCRETION", "message": SHARED_DISCRETION_CAVEAT}]
+
     common = [_holding_payload(item, active_filing) for item in holdings if not item.put_call]
     options = [_holding_payload(item, active_filing) for item in holdings if item.put_call]
-    material_caveats = {item["code"] for item in caveats} & {"COMBINATION_REPORT", "CONFIDENTIAL_TREATMENT"}
+    material_caveats = {item["code"] for item in caveats} & {"COMBINATION_REPORT", "CONFIDENTIAL_TREATMENT", "SHARED_DISCRETION"}
     return {
         "status": "available_with_caveat" if material_caveats else "available",
         "manager": _manager_payload(manager),
@@ -418,8 +432,12 @@ def _stock_holder_data_caveats(holdings: list[Holding13F]) -> list[dict[str, str
     by_code: dict[str, dict[str, str]] = {}
     for holding in holdings:
         for caveat in _filing_caveats(holding.filing):
-            if caveat["code"] in {"COMBINATION_REPORT", "CONFIDENTIAL_TREATMENT", "FILING_WINDOW_OPEN"}:
+            if caveat["code"] in {"COMBINATION_REPORT", "CONFIDENTIAL_TREATMENT", "FILING_WINDOW_OPEN", "SHARED_DISCRETION"}:
                 by_code[caveat["code"]] = caveat
+        # Holdings-derived shared discretion (sub-threshold, no cover-page list):
+        # `_filing_caveats` can't see it from the filing alone.
+        if holding.investment_discretion in ("DFND", "OTR"):
+            by_code["SHARED_DISCRETION"] = {"code": "SHARED_DISCRETION", "message": SHARED_DISCRETION_CAVEAT}
     return list(by_code.values())
 
 
@@ -489,6 +507,11 @@ def _filing_caveats(filing: Filing13F) -> list[dict[str, str]]:
         caveats.append({"code": "NOTICE_REPORTED_ELSEWHERE", "message": NT_CAVEAT})
     if filing.coverage_completeness == "partial" or filing.coverage_type == "combination_partial":
         caveats.append({"code": "COMBINATION_REPORT", "message": COMBINATION_CAVEAT})
+    # T3: a complete holdings_report can still aggregate positions across cover-page
+    # included managers (e.g. Berkshire); surface that regardless of report_type so
+    # its holdings are not shown as uncaveated independent sole-manager positions.
+    if filing.other_managers_included:
+        caveats.append({"code": "SHARED_DISCRETION", "message": SHARED_DISCRETION_CAVEAT})
     if filing.has_confidential_treatment or filing.confidential_treatment_status not in {None, "none"}:
         caveats.append({"code": "CONFIDENTIAL_TREATMENT", "message": CONFIDENTIAL_CAVEAT})
     if filing.official_filing_deadline and date.today() <= filing.official_filing_deadline:

@@ -54,13 +54,22 @@ EDGAR 13F 数据灌入 dev(经公网 Rate Guard),暴露 6 个合成 seeder 永�
 `direct`。** `reported_for_other` 的排除语义只保留给**申报级 13F-NT 通知**
 (管理人根本不报持仓表、由他人代报)。据此:
 
-| 裁量码 | 有 `other_managers_raw` 序号引用 | 新归因 | 说明 |
+| 裁量码 | Column 7 (`other_managers_raw`) | 归因 | 说明 |
 |---|---|---|---|
 | SOLE | — | `direct` | 不变 |
-| **DFND** | 是 | **`direct`** | 组合/共享裁量,在本人表内申报 → 计入 |
-| **OTR** | 是 | **`direct`** | 同上(shared-other 裁量,仍在本人表内) |
-| DFND / OTR | 否(NULL) | `unresolved` | 无引用,诚实保留待核 |
+| **DFND** | 有或无 | **`direct`** | 组合/共享裁量,在本人表内申报 → 计入 |
+| **OTR** | 有或无 | **`direct`** | 同上(shared-other 裁量,仍在本人表内) |
+| 无法识别 / 空裁量 | — | `unresolved` | 唯一真正无法归因的情形 |
 | (任意) | 申报级为 13F-NT | 排除 | 通知件无持仓表,本就不摄取为其持仓 |
+
+> **T3 评审修订(2026-07-08):** 初版裁定曾要求 `DFND/OTR` **有 Column 7 引用**才
+> 归 `direct`、无引用 → `unresolved`。评审据 SEC Form 13F FAQ 37/46/48 指出:与
+> **低于 $100M 申报门槛**的管理人共享裁量时,持仓聚合进本人申报且**不在 Column 7
+> 列出对方**——故空 Column 7 是合法的、不能作为排除信号。真实数据佐证:Cantillon
+> 的 Adobe 同一只票被拆成"有引用 direct / 无引用 unresolved"两半(628,547 股的更大
+> 一笔被误排除),明显错误。**修订:`SOLE/DFND/OTR` 一律 `direct`,与 Column 7
+> 无关;仅无法识别的裁量码 → `unresolved`。** 这也与本节"凡在本人 infotable 中即
+> 可申报仓位"的原则一致(初版表格自相矛盾)。
 
 - **不新增枚举值**:`holding_attribution_status` 是 varchar,复用现有 `direct`,
   一次性让所有下游消费者(managers API、ownership_changes、Oracle's Lens 5 处
@@ -80,8 +89,8 @@ EDGAR 13F 数据灌入 dev(经公网 Rate Guard),暴露 6 个合成 seeder 永�
 
 - **7 家旗舰管理人 0 → 全量可见**:Oaktree(1116)、Berkshire(543)、Cantillon
   (187)、Fairfax(144)、Egerton(123)、Engaged(42)、Scion(30)。
-- 约 **4,050 行**(DFND 3,211 + OTR 839 中有引用者)重归因为 `direct`;
-  SOLE 20,538 行不动;DFND-无引用 482 行保持 `unresolved`。
+- 重归因为 `direct`:DFND 3,693 + OTR 839(**含无 Column 7 引用者**,评审修订后
+  纳入,如 DFND-无引用 410+ 行)。SOLE 20,538 行不动;仅无法识别裁量 → `unresolved`。
 - 重算受影响管理人的 `ownership_changes` 与 Lens 打分组件(伯克希尔当前为 0)。
 
 ### 2.4 验收(F4)

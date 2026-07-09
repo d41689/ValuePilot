@@ -586,3 +586,60 @@ def test_stock_holders_rejects_invalid_quarter(client, db_session):
     response = client.get(f"/api/v1/13f/stocks/{stock.id}/holders?quarter=2026-Q5")
 
     assert response.status_code == 422
+
+
+def test_filing_caveats_surfaces_shared_discretion_on_complete_holdings_report(db_session):
+    """Review #3: a COMPLETE holdings_report that lists cover-page included
+    managers (Berkshire-style) surfaces a SHARED_DISCRETION caveat even though
+    report_type != combination_report — so its holdings are not shown as
+    uncaveated independent sole-manager positions."""
+    from app.services.thirteenf_user_api import _filing_caveats
+
+    manager = _manager(db_session)
+    filing = _filing(db_session, manager, "0001193125-26-990001")
+    filing.other_managers_included = [{"cik": "0000000004", "name": "GEICO CORP"}]
+    db_session.flush()
+
+    codes = {c["code"] for c in _filing_caveats(filing)}
+    assert "SHARED_DISCRETION" in codes
+    assert "COMBINATION_REPORT" not in codes  # not gated on report_type/coverage
+
+
+def test_filing_caveats_no_shared_discretion_without_included_managers(db_session):
+    from app.services.thirteenf_user_api import _filing_caveats
+
+    manager = _manager(db_session)
+    filing = _filing(db_session, manager, "0001193125-26-990002")
+    db_session.flush()
+    codes = {c["code"] for c in _filing_caveats(filing)}
+    assert "SHARED_DISCRETION" not in codes
+
+
+def test_manager_holdings_shared_discretion_from_dfnd_without_included_managers(db_session):
+    """Review re-check #3.1: a COMPLETE holdings_report with DFND holdings but no
+    cover-page included-managers list (sub-threshold shared discretion, no
+    Column 7) still surfaces the SHARED_DISCRETION caveat on the manager-holdings
+    display — derived from the holdings' discretion, not just filing metadata."""
+    from app.services.thirteenf_user_api import build_user_manager_holdings
+
+    manager = _manager(db_session)
+    filing = _filing(db_session, manager, "0001279936-26-000004")  # complete/normal, no other_managers_included
+    run = _parse_run(db_session, filing)
+    holding = _holding(db_session, filing, run, index=1)
+    holding.investment_discretion = "DFND"
+    db_session.flush()
+
+    result = build_user_manager_holdings(db_session, manager.id, quarter="2026-Q1")
+    codes = {c["code"] for c in result.get("caveats", [])}
+    assert "SHARED_DISCRETION" in codes
+    assert result["status"] == "available_with_caveat"
+
+
+def test_shared_discretion_caveat_copy_is_neutral():
+    """Re-review #2: the caveat must not claim 'included managers (e.g.
+    subsidiaries)' — the sub-threshold (no Column 7) case need not involve an
+    included manager or a subsidiary."""
+    from app.services.thirteenf_user_api import SHARED_DISCRETION_CAVEAT
+
+    assert "other managers" in SHARED_DISCRETION_CAVEAT
+    assert "included managers (e.g. subsidiaries)" not in SHARED_DISCRETION_CAVEAT

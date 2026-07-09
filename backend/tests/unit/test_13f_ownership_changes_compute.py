@@ -639,3 +639,134 @@ def test_compute_mapping_transition_multiple_cusips_no_false_exit(db_session):
     assert result["status"] == "succeeded"
     assert "exited_position" not in statuses  # no false exit from premature merge
     assert statuses == ["increased", "increased"]  # per-CUSIP fallback matches
+
+
+def test_compute_multi_cusip_one_stock_both_quarters_no_crash(db_session):
+    """T3 follow-up: a stock held under two CUSIPs in BOTH quarters must not
+    dup-crash on uq_ownership_changes_...security_position — the matched-path
+    straggler previously re-keyed to the stock key, colliding with the stock-match
+    row (exposed once combination filers like Berkshire gained direct holdings).
+    Both lots are represented as distinct rows; no shares are lost."""
+    manager = _manager(db_session)
+    stock = _stock(db_session, "MULTI")
+    previous = _filing(db_session, manager, quarter="2025-Q4", accession="0000000011-25-000001")
+    current = _filing(db_session, manager, quarter="2026-Q1", accession="0000000011-26-000001")
+    prev_run = _parse_run(db_session, previous)
+    cur_run = _parse_run(db_session, current)
+    _holding(db_session, previous, prev_run, stock, cusip="111111111", shares=100, value_usd=1000, row="a")
+    _holding(db_session, previous, prev_run, stock, cusip="222222222", shares=200, value_usd=2000, row="b")
+    _holding(db_session, current, cur_run, stock, cusip="111111111", shares=120, value_usd=1200, row="a")
+    _holding(db_session, current, cur_run, stock, cusip="222222222", shares=220, value_usd=2200, row="b")
+
+    result = compute_ownership_changes_for_manager_quarter(
+        db_session, manager_id=manager.id, report_quarter="2026-Q1"
+    )
+    db_session.flush()
+    rows = [r for r in _rows(db_session) if r.stock_id == stock.id]
+    assert result["status"] == "succeeded"
+    assert len(rows) == 2  # both lots represented (one stock-keyed, one cusip-keyed)
+    assert all(r.change_status == "increased" for r in rows)
+    assert sum(r.current_shares for r in rows) == 340  # no lot dropped
+
+
+def test_compute_multi_cusip_reverse_order_deterministic(db_session):
+    """Review #2: two lots of one stock, inserted in REVERSE order across
+    quarters, must both classify as `increased` (exact-CUSIP match), never a
+    false exited/new/cusip_changed. Guards the order-dependent dict-collapse bug
+    (`_direct_active_hr_holdings` has no ORDER BY)."""
+    manager = _manager(db_session)
+    stock = _stock(db_session, "REV")
+    previous = _filing(db_session, manager, quarter="2025-Q4", accession="0000000012-25-000001")
+    current = _filing(db_session, manager, quarter="2026-Q1", accession="0000000012-26-000001")
+    prev_run = _parse_run(db_session, previous)
+    cur_run = _parse_run(db_session, current)
+    # previous inserted A,B ; current inserted B,A  (reverse) — same stock, two CUSIPs
+    _holding(db_session, previous, prev_run, stock, cusip="111111111", shares=100, value_usd=1000, row="a")
+    _holding(db_session, previous, prev_run, stock, cusip="222222222", shares=200, value_usd=2000, row="b")
+    _holding(db_session, current, cur_run, stock, cusip="222222222", shares=220, value_usd=2200, row="b")
+    _holding(db_session, current, cur_run, stock, cusip="111111111", shares=120, value_usd=1200, row="a")
+
+    result = compute_ownership_changes_for_manager_quarter(
+        db_session, manager_id=manager.id, report_quarter="2026-Q1"
+    )
+    db_session.flush()
+    rows = [r for r in _rows(db_session) if r.stock_id == stock.id]
+    assert result["status"] == "succeeded"
+    assert sorted(r.change_status for r in rows) == ["increased", "increased"]
+    by_cusip = {r.security_key: r for r in rows}
+    assert by_cusip["cusip:111111111"].current_shares == 120
+    assert by_cusip["cusip:111111111"].previous_shares == 100
+    assert by_cusip["cusip:222222222"].current_shares == 220
+    assert by_cusip["cusip:222222222"].previous_shares == 200
+
+
+def test_compute_same_cusip_duplicate_lots_summed(db_session):
+    """Review #2 (real-data shape): one security listed twice in a filing (same
+    CUSIP, combination-report sub-manager split) aggregates into one position,
+    summing shares/value — no dup-key crash, no fragmentation."""
+    manager = _manager(db_session)
+    stock = _stock(db_session, "SAME")
+    previous = _filing(db_session, manager, quarter="2025-Q4", accession="0000000013-25-000001")
+    current = _filing(db_session, manager, quarter="2026-Q1", accession="0000000013-26-000001")
+    prev_run = _parse_run(db_session, previous)
+    cur_run = _parse_run(db_session, current)
+    _holding(db_session, previous, prev_run, stock, cusip="111111111", shares=100, value_usd=1000, row="p1")
+    _holding(db_session, current, cur_run, stock, cusip="111111111", shares=60, value_usd=600, row="c1")
+    _holding(db_session, current, cur_run, stock, cusip="111111111", shares=90, value_usd=900, row="c2")
+
+    result = compute_ownership_changes_for_manager_quarter(
+        db_session, manager_id=manager.id, report_quarter="2026-Q1"
+    )
+    db_session.flush()
+    rows = [r for r in _rows(db_session) if r.stock_id == stock.id]
+    assert result["status"] == "succeeded"
+    assert len(rows) == 1
+    assert rows[0].current_shares == 150  # 60 + 90 summed
+    assert rows[0].previous_shares == 100
+    assert rows[0].change_status == "increased"
+
+
+def test_compute_shared_discretion_caveat_transparency_not_demotion(db_session):
+    """Review #3: a DFND (shared-discretion) holding's change row carries the
+    `shared_discretion` caveat for transparency but is NOT demoted — the position
+    is the filer's genuine reportable exposure (e.g. Berkshire's subsidiaries)."""
+    manager = _manager(db_session)
+    stock = _stock(db_session, "SHR")
+    previous = _filing(db_session, manager, quarter="2025-Q4", accession="0000000014-25-000001")
+    current = _filing(db_session, manager, quarter="2026-Q1", accession="0000000014-26-000001")
+    prev_run = _parse_run(db_session, previous)
+    cur_run = _parse_run(db_session, current)
+    ph = _holding(db_session, previous, prev_run, stock, cusip="111111111", shares=100, value_usd=1000, row="p")
+    ch = _holding(db_session, current, cur_run, stock, cusip="111111111", shares=150, value_usd=1500, row="c")
+    ph.investment_discretion = "DFND"
+    ch.investment_discretion = "DFND"
+    db_session.flush()
+
+    compute_ownership_changes_for_manager_quarter(db_session, manager_id=manager.id, report_quarter="2026-Q1")
+    db_session.flush()
+    row = next(r for r in _rows(db_session) if r.stock_id == stock.id)
+    assert "shared_discretion" in (row.caveat_codes or [])
+    assert row.change_status == "increased"
+    assert row.confidence_level == "high_confidence"  # transparency caveat, not demoted
+
+
+def test_unavailable_branch_carries_shared_discretion_caveat(db_session):
+    """Review re-check #3.2: unavailable (no-prior) rows for a DFND holding also
+    carry the shared_discretion caveat — the unavailable branch previously
+    bypassed the _compute_rows caveat block."""
+    manager = _manager(db_session)
+    stock = _stock(db_session, "UNV")
+    current = _filing(db_session, manager, quarter="2026-Q1", accession="0000000015-26-000001")
+    run = _parse_run(db_session, current)
+    holding = _holding(db_session, current, run, stock, cusip="111111111", shares=100, value_usd=1000, row="a")
+    holding.investment_discretion = "DFND"
+    db_session.flush()
+
+    result = compute_ownership_changes_for_manager_quarter(
+        db_session, manager_id=manager.id, report_quarter="2026-Q1"
+    )
+    db_session.flush()
+    row = next(r for r in _rows(db_session) if r.stock_id == stock.id)
+    assert result["status"] == "succeeded"
+    assert row.confidence_level == "unavailable"  # no prior quarter -> unavailable branch
+    assert "shared_discretion" in (row.caveat_codes or [])

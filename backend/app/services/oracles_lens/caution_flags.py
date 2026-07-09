@@ -63,6 +63,13 @@ CAVEAT_OWNERSHIP_CHANGES_NEEDS_RECOMPUTE = "OWNERSHIP_CHANGES_NEEDS_RECOMPUTE"
 CAVEAT_AMENDMENTS_PENDING = "AMENDMENTS_PENDING"
 CAVEAT_AMENDMENT_FAILED = "AMENDMENT_FAILED"
 
+# T3 — a holder reporting positions under shared/defined discretion (DFND/OTR)
+# or listing cover-page included managers. Transparency only: the position is
+# genuinely the filer's reportable exposure (often its own subsidiaries), so it
+# is NOT demoted, but the shared-reporting nature is surfaced so an aggregated
+# combination-report vote is not read as an independent sole-manager conviction.
+CAVEAT_SHARED_DISCRETION = "SHARED_DISCRETION"
+
 
 # ---------------------------------------------------------------------------
 # Registry
@@ -117,6 +124,17 @@ CAUTION_FLAG_REGISTRY: dict[str, CaveatMetadata] = {
         severity="medium",
         scope="row",
         label="An amendment to this holder's filing failed parsing and is awaiting admin review.",
+    ),
+    CAVEAT_SHARED_DISCRETION: CaveatMetadata(
+        code=CAVEAT_SHARED_DISCRETION,
+        severity="low",
+        scope="row",
+        label=(
+            "This holder reports positions under shared/defined discretion with other "
+            "managers (which may include affiliates, subsidiaries, or a manager whose "
+            "holdings are aggregated into this filing); not necessarily an independent "
+            "sole-manager position."
+        ),
     ),
     CAVEAT_OWNERSHIP_CHANGES_NEEDS_RECOMPUTE: _RECOMPUTE_METADATA,
     CAVEAT_STALE_UNTIL_RECOMPUTE: _RECOMPUTE_METADATA,  # alias
