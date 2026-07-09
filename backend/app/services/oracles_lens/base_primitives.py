@@ -32,7 +32,7 @@ from app.models.institutions import (
     ParseRun13F,
     QualityFinding13F,
 )
-from app.services.thirteenf_holdings_query import HR_FORM_TYPES
+from app.services.thirteenf_holdings_query import HR_FORM_TYPES, NT_FORM_TYPES
 from app.services.thirteenf_quality_codes import (
     HISTORICAL_BACKFILL_NEEDS_VALIDATION as _BACKFILL_FINDING_RULE_CODE,
     OWNERSHIP_CHANGE_NEEDS_RECOMPUTE_CUSIP_CORPORATE_ACTION as _RECOMPUTE_FINDING_RULE_CODE,
@@ -161,7 +161,7 @@ def _is_nt_quarter(session: Session, *, manager_id: int, quarter: str) -> bool:
         session.query(Filing13F.id)
         .filter(Filing13F.manager_id == manager_id)
         .filter(Filing13F.report_quarter == quarter)
-        .filter(Filing13F.form_type == "13F-NT")
+        .filter(Filing13F.form_type.in_(NT_FORM_TYPES))
         .filter(Filing13F.is_active_for_manager_period.is_(True))
         .first()
         is not None

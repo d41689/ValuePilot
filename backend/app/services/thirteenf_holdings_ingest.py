@@ -29,11 +29,6 @@ logger = logging.getLogger(__name__)
 PARSER_VERSION = "v1"
 FINGERPRINT_VERSION = "v1"
 
-# Sentinel for NULL accepted_at when ranking filings — mirrors the key used by
-# apply_amendment_policy (thirteenf_filing_detail.py) so the whole amendment
-# subsystem orders filings the same way.
-_MIN_ACCEPTED_AT = datetime.min.replace(tzinfo=timezone.utc)
-
 
 def normalize_investment_discretion(raw: str | None) -> str | None:
     if raw is None:
@@ -133,86 +128,30 @@ def _holding_row_fingerprint(row: HoldingRow, value_unit_raw: str) -> str:
 
 
 def reconcile_restatement_activation(session: Session, filing: Filing13F) -> bool:
-    """Make a parsed RESTATEMENT amendment the active filing for its period.
+    """Converge a period's active filing after a RESTATEMENT parse.
 
-    A 13F-HR/A of type RESTATEMENT fully restates the period's holdings, so once
-    its holdings are parsed it supersedes the original. Demotes any other active
-    filing for the same (manager, quarter_end_date) and marks this one
-    ``applied``. Idempotent — safe to call from the holdings-ingest path and
-    from a re-run reconciliation phase. Returns True if it changed anything.
+    T1-FU: thin delegate to :func:`apply_active_filing_policy` — the single
+    authority for ``is_active_for_manager_period`` (ranking, ties, terminal
+    admin statuses, and the (manager, period) advisory lock all live there).
+    The guards keep this callable cheap on non-restatement / unparsed filings.
 
-    Multi-restatement periods (T1): when a manager files two or more RESTATEMENT
-    amendments for the same period, only the latest parsed restatement (ranked
-    like apply_amendment_policy: accepted_at, then accession_no) may be active.
-    Calling this on an earlier restatement is a no-op — it must never steal
-    activation from (or demote) the later winner. This keeps the caller's
-    per-filing reconciliation loop (Phase 5) both correct and crash-safe
-    regardless of iteration order.
+    Note a deliberate behavior strengthening vs T1: calling this on a
+    NON-winner restatement now converges the group immediately (the ranked
+    winner gets activated), where T1's version was a strict no-op. Terminal
+    state is identical; convergence is just no longer call-order dependent.
+    Returns True if the group's state changed in this call.
     """
     if not (filing.is_amendment and filing.amendment_type == "RESTATEMENT"):
         return False
     if filing.parse_status != "succeeded" or filing.quarter_end_date is None:
         return False
 
-    # Only the latest parsed RESTATEMENT in the period may be active. Rank by the
-    # SAME key apply_amendment_policy (thirteenf_filing_detail.py) uses for
-    # originals — accepted_at desc, then accession_no desc — so the whole
-    # amendment subsystem shares one ordering. accession_no is unique, so this is
-    # a total order yielding a single deterministic winner (never leaves the
-    # period without an active filing). Calling this on a non-winner is a no-op,
-    # which keeps Phase 5's per-filing loop order-independent and crash-safe.
-    #
-    # Scoped for T1: accepted_at is NOT yet populated by the bulk-ingest path, so
-    # today this degrades to accession_no ordering. Populating accepted_at,
-    # honoring the equal-accepted_at "do not auto-switch" tie rule, unifying this
-    # with apply_amendment_policy into one authority, and adding a
-    # (manager, period) lock for concurrent per-accession reparse jobs are all
-    # tracked in T1-FU (see docs/BACKLOG.md).
-    def _rank(f: Filing13F) -> tuple:
-        return (f.accepted_at or _MIN_ACCEPTED_AT, f.accession_no or "")
+    from app.services.thirteenf_filing_detail import apply_active_filing_policy
 
-    other_restatements = (
-        session.query(Filing13F)
-        .filter(Filing13F.manager_id == filing.manager_id)
-        .filter(Filing13F.quarter_end_date == filing.quarter_end_date)
-        .filter(Filing13F.id != filing.id)
-        .filter(Filing13F.is_amendment.is_(True))
-        .filter(Filing13F.amendment_type == "RESTATEMENT")
-        .filter(Filing13F.parse_status == "succeeded")
-        .all()
+    outcome = apply_active_filing_policy(
+        session, filing.manager_id, filing.quarter_end_date
     )
-    if any(_rank(other) > _rank(filing) for other in other_restatements):
-        return False
-
-    changed = False
-    superseded = (
-        session.query(Filing13F)
-        .filter(Filing13F.manager_id == filing.manager_id)
-        .filter(Filing13F.quarter_end_date == filing.quarter_end_date)
-        .filter(Filing13F.id != filing.id)
-        .filter(Filing13F.is_active_for_manager_period.is_(True))
-        .all()
-    )
-    for other in superseded:
-        other.is_active_for_manager_period = False
-        session.add(other)
-        changed = True
-    # Flush the demotions before activating this filing so the unique
-    # constraint uq_active_filing_per_manager_period never sees two active rows
-    # mid-statement — SQLAlchemy's unit of work emits UPDATEs in PK order, so a
-    # demotion of a higher-id active row would otherwise fire AFTER this
-    # (lower-id) activation.
-    if changed:
-        session.flush()
-    if not filing.is_active_for_manager_period:
-        filing.is_active_for_manager_period = True
-        changed = True
-    if filing.amendment_status != "applied":
-        filing.amendment_status = "applied"
-        changed = True
-    if changed:
-        session.add(filing)
-    return changed
+    return bool(outcome.get("changed"))
 
 
 def _do_ingest_holdings(

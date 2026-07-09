@@ -131,7 +131,11 @@ def _numeric_version(value: str | None) -> tuple[int, ...] | None:
 
 def _accepted_date(value: datetime | date | None) -> date | None:
     if isinstance(value, datetime):
-        return value.date()
+        # The SEC schema-transition cutover is an EASTERN calendar date; the
+        # stored acceptance instant is UTC (T1-FU).
+        from app.edgar.parsers.primary_doc import edgar_accepted_date_eastern
+
+        return edgar_accepted_date_eastern(value)
     return value
 
 

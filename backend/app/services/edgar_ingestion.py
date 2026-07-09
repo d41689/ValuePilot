@@ -1320,6 +1320,7 @@ def backfill_period_routing(db: Session, *, filings=None) -> dict[str, int]:
     from app.services.thirteenf_filing_detail import (
         route_period,
         calculate_official_filing_deadline,
+        merge_accepted_at,
     )
 
     if filings is None:
@@ -1344,6 +1345,7 @@ def backfill_period_routing(db: Session, *, filings=None) -> dict[str, int]:
     # partial_success.
     needs_review_count = 0
     failed_count = 0
+    accepted_at_filled = 0
     for filing in filings:
         if filing.raw_primary_doc_id is None:
             continue
@@ -1356,6 +1358,17 @@ def backfill_period_routing(db: Session, *, filings=None) -> dict[str, int]:
         except Exception as exc:
             logger.warning("backfill_period_routing: %s: %s", filing.accession_no, exc)
             continue
+
+        # T1-FU: fill accepted_at from the primary doc's <ACCEPTANCE-DATETIME>
+        # BEFORE route_period reads it. The bulk path never wrote it (all 373
+        # real filings NULL), degrading active-filing ranking to accession_no
+        # and starving route_period of the real acceptance date. Idempotent;
+        # this loop doubles as the one-time backfill over stored docs.
+        # merge_accepted_at: never erases a known value with NULL; a non-NULL
+        # re-parse propagates parser corrections (e.g. the Eastern→UTC fix).
+        if merge_accepted_at(filing, summary.accepted_at):
+            accepted_at_filled += 1
+
         if not summary.period_of_report:
             continue
 
@@ -1394,8 +1407,8 @@ def backfill_period_routing(db: Session, *, filings=None) -> dict[str, int]:
     rq_count = sum(1 for f, _, rq in other_changes if rq is not None and f.report_quarter is None)
 
     if not period_changes and not other_changes:
-        if needs_review_count or failed_count:
-            db.flush()  # persist the parse_warning / parse_error stamps
+        if needs_review_count or failed_count or accepted_at_filled:
+            db.flush()  # persist warning/error stamps + accepted_at fills
         else:
             logger.info("backfill_period_routing: nothing to fix")
         return {
@@ -1404,6 +1417,7 @@ def backfill_period_routing(db: Session, *, filings=None) -> dict[str, int]:
             "report_quarter_added": 0,
             "needs_review": needs_review_count,
             "failed": failed_count,
+            "accepted_at_filled": accepted_at_filled,
         }
 
     # Pass 2: apply period_of_report changes with the is_latest_for_period
@@ -1443,8 +1457,9 @@ def backfill_period_routing(db: Session, *, filings=None) -> dict[str, int]:
 
     logger.info(
         "backfill_period_routing: period_changed=%d quarter_end_added=%d "
-        "report_quarter_added=%d needs_review=%d failed=%d",
+        "report_quarter_added=%d needs_review=%d failed=%d accepted_at_filled=%d",
         period_count, qend_count, rq_count, needs_review_count, failed_count,
+        accepted_at_filled,
     )
     return {
         "period_changed": period_count,
@@ -1452,4 +1467,5 @@ def backfill_period_routing(db: Session, *, filings=None) -> dict[str, int]:
         "report_quarter_added": rq_count,
         "needs_review": needs_review_count,
         "failed": failed_count,
+        "accepted_at_filled": accepted_at_filled,
     }

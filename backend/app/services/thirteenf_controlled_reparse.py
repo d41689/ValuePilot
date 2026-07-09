@@ -132,13 +132,13 @@ def controlled_reparse_accession(
     gate_passed, validation_errors = _run_validation_gate(validation_gate, session, filing, new_run)
     if not gate_passed:
         _restore_current_pointer(session, before["current_parse_run_id"], new_run.id)
-        # SME C1: also undo amendment activation, not just the parse_run pointer.
-        _restore_active_filing(
-            session,
-            filing_id=filing.id,
-            filing_was_active=bool(before["filing_is_active_for_manager_period"]),
-            prior_active_filing_id=before["prior_active_filing_id"],
-        )
+        # SME C1 + T1-FU: undo the amendment activation DURABLY. A bare
+        # active-pointer restore is not enough — the parsed restatement stays
+        # eligible, so the next policy sweep would deterministically switch
+        # the active pointer right back, undoing the validation gate. Instead
+        # persist a state the authority honors (rejected) and converge the
+        # group under the period lock.
+        _reject_validation_failed_amendment(session, filing)
         if override is not None:
             override.status = "reparse_failed"
             override.result_parse_run_id = new_run.id
@@ -234,42 +234,38 @@ def _restore_current_pointer(
             session.flush()
 
 
-def _restore_active_filing(
-    session: Session,
-    *,
-    filing_id: int,
-    filing_was_active: bool,
-    prior_active_filing_id: int | None,
-) -> None:
-    """Undo any amendment activation that the parser committed before the
-    validation gate ran.
+def _reject_validation_failed_amendment(session: Session, filing: Filing13F) -> None:
+    """Durably undo an amendment activation the parser committed before the
+    validation gate failed (SME C1, hardened by T1-FU).
 
     Background: ingest_holdings_for_filing flips
     ``Filing13F.is_active_for_manager_period`` for a RESTATEMENT amendment as
     part of its success path, before controlled_reparse_accession evaluates
-    the validation gate. If the gate fails we need to roll that flip back
-    too — otherwise a failed-validation amendment stays "active" and product
-    queries return holdings the gate rejected.
+    the validation gate. The old fix restored the prior active pointer
+    directly — outside the period lock, and WITHOUT any state change that
+    would stop the next active-filing policy sweep from re-activating the
+    (still parsed, still eligible) restatement, silently undoing the gate.
 
-    Demote before promote, same reason as _restore_current_pointer: the
-    partial unique index ``uq_active_filing_per_manager_period`` fires on
-    flush.
+    Now the failed amendment is marked ``rejected`` — the terminal status the
+    authority excludes from competition — and the group is converged through
+    ``apply_active_filing_policy`` under the (manager, period) advisory lock,
+    which reinstates the prior original deterministically. An admin can
+    re-apply the amendment after the underlying issue is fixed (the standard
+    resolve flow sets ``applied`` again).
     """
-    filing = session.get(Filing13F, filing_id)
-    # Only act when the parser-side flip actually changed the active state.
-    if filing is None or filing.is_active_for_manager_period == filing_was_active:
+    if not (filing.is_amendment and filing.amendment_type == "RESTATEMENT"):
+        # Non-restatement replays never flip the active pointer at parse time.
         return
-
-    filing.is_active_for_manager_period = filing_was_active
+    filing.amendment_status = "rejected"
+    filing.parse_warning = (
+        (filing.parse_warning or "") + " [validation gate failed: auto-rejected]"
+    )
     session.add(filing)
-    session.flush()
+    if filing.quarter_end_date is not None:
+        from app.services.thirteenf_filing_detail import apply_active_filing_policy
 
-    if prior_active_filing_id is not None:
-        prior = session.get(Filing13F, prior_active_filing_id)
-        if prior is not None and not prior.is_active_for_manager_period:
-            prior.is_active_for_manager_period = True
-            session.add(prior)
-            session.flush()
+        session.flush()  # the authority must see the rejected status
+        apply_active_filing_policy(session, filing.manager_id, filing.quarter_end_date)
 
 
 def _snapshot(session: Session, filing: Filing13F) -> dict[str, Any]:

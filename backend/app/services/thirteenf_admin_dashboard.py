@@ -443,10 +443,29 @@ def get_amendment(session: Session, accession_no: str) -> dict[str, Any]:
 
 
 def resolve_amendment(session: Session, accession_no: str, action: str, note: str | None = None) -> dict[str, Any]:
+    """Admin amendment resolution — status transition + authority convergence.
+
+    T1-FU: this used to demote/activate `is_active_for_manager_period` directly,
+    bypassing the single authority AND the period lock (deadlock with a
+    concurrent sweep; a rejected filing stayed active until some future sweep).
+    Now the admin action only expresses INTENT through `amendment_status`, then
+    `apply_active_filing_policy` converges the group under the period advisory
+    lock — so a reject immediately hands the slot to the next eligible filing,
+    and an apply activates the target unless something outranks it by the
+    documented rules (reject the unwanted filing first).
+
+    Lock ordering: the advisory period lock is taken BEFORE any row is
+    mutated. The old `SELECT ... FOR UPDATE` acquired a row lock first, which
+    inverted the sweep's advisory→row order and could deadlock.
+    """
+    from app.services.thirteenf_filing_detail import (
+        _acquire_period_lock,
+        apply_active_filing_policy,
+    )
+
     filing = (
         session.query(Filing13F)
         .filter(Filing13F.accession_no == accession_no)
-        .with_for_update()
         .one_or_none()
     )
     if filing is None:
@@ -456,27 +475,25 @@ def resolve_amendment(session: Session, accession_no: str, action: str, note: st
     if action not in valid_actions:
         raise ValueError(f"Invalid resolution action: {action}")
 
+    if filing.quarter_end_date is not None:
+        # Serialize with every other activation site, then re-read the target
+        # under the lock (guards the stale-read the direct path suffered).
+        _acquire_period_lock(session, filing.manager_id, filing.quarter_end_date)
+        session.refresh(filing)
+
     if action in {"apply", "activate_as_original"}:
-        # Demote current active
-        active_original = (
-            session.query(Filing13F)
-            .filter(Filing13F.manager_id == filing.manager_id)
-            .filter(Filing13F.quarter_end_date == filing.quarter_end_date)
-            .filter(Filing13F.is_active_for_manager_period.is_(True))
-            .filter(Filing13F.id != filing.id)
-            .first()
-        )
-        if active_original:
-            active_original.is_active_for_manager_period = False
-            session.add(active_original)
-        
-        filing.is_active_for_manager_period = True
         filing.amendment_status = "applied"
         filing.amendment_sort_warning = False
     elif action == "reject":
         filing.amendment_status = "rejected"
     elif action == "defer":
-        filing.amendment_status = "amendments_pending"
+        # "deferred" (not amendments_pending): a dedicated admin-decided state
+        # the authority excludes from automatic RESTATEMENT competition —
+        # amendments_pending is a COMPETING state, so the old value meant the
+        # convergence below re-applied the restatement in the same transaction
+        # that deferred it (T1-FU re-review P1). An admin apply/reject later
+        # supersedes the deferral.
+        filing.amendment_status = "deferred"
     elif action == "mark_informational":
         filing.amendment_status = "informational"
 
@@ -484,6 +501,11 @@ def resolve_amendment(session: Session, accession_no: str, action: str, note: st
         filing.parse_warning = (filing.parse_warning or "") + f" [Admin Note: {note}]"
 
     session.add(filing)
+
+    if filing.quarter_end_date is not None:
+        session.flush()  # the authority must see the new status
+        apply_active_filing_policy(session, filing.manager_id, filing.quarter_end_date)
+
     session.commit()
     session.refresh(filing)
     return _amendment_payload(session, filing)
@@ -2726,10 +2748,11 @@ def _amendment_payload(session: Session, filing: Filing13F) -> dict[str, Any]:
         status = "failed"
     elif filing.raw_infotable_doc_id is None or holdings_count == 0:
         status = "pending"
-    elif filing.amendment_status in ("amendments_pending", "pending_parse"):
-        # An amendment still awaiting resolution — keep the row consistent with
-        # the "X pending" warning above the table (which counts amendment_status)
-        # rather than mislabelling it "applied" off is_latest_for_period.
+    elif filing.amendment_status in ("amendments_pending", "pending_parse", "deferred"):
+        # An amendment still awaiting resolution (incl. admin-deferred) — keep
+        # the row consistent with the "X pending" warning above the table
+        # rather than mislabelling it "applied"/"superseded" off
+        # is_latest_for_period.
         status = "pending"
     elif filing.is_latest_for_period:
         status = "applied"
@@ -3419,7 +3442,6 @@ def _is_programming_error(exc: BaseException) -> bool:
 def _execute_ingest_job(session: Session, job_type: str, payload: dict[str, Any]) -> dict[str, Any]:
     from app.services.thirteenf_holdings_ingest import (
         ingest_if_needed,
-        reconcile_restatement_activation,
         reparse_accession,
     )
 
@@ -3463,8 +3485,6 @@ def _execute_ingest_job(session: Session, job_type: str, payload: dict[str, Any]
     xml_fetched = 0
     no_cik = 0
     failures: list[dict[str, str]] = []
-
-    from collections import Counter
 
     from app.edgar.fetcher import load_body
     from app.services.edgar_ingestion import (
@@ -3561,6 +3581,11 @@ def _execute_ingest_job(session: Session, job_type: str, payload: dict[str, Any]
             failures.append({"accession_no": filing.accession_no, "error": f"primary_doc: {exc}"})
     for filing in metadata_filings:
         apply_amendment_policy(session, filing)
+        # Per-filing commit: the policy takes the (manager, period) advisory
+        # lock; committing releases it immediately instead of accumulating
+        # every group's lock until the end of pass 2 (T1-FU review P2 —
+        # same head-of-line rationale as the Phase-5 sweep). Idempotent.
+        session.commit()
     session.commit()  # commit barrier — primary-doc metadata is durable.
 
     # Phase 3: parse holdings. ingest_if_needed → _do_ingest_holdings commits
@@ -3616,58 +3641,40 @@ def _execute_ingest_job(session: Session, job_type: str, payload: dict[str, Any]
         )
         holdings_rq_synced = session.execute(rq_stmt).rowcount or 0
 
-        # 4c: Filing13F.is_active_for_manager_period — the modern
-        # _do_ingest_holdings path only sets this for RESTATEMENT
-        # amendments, never for plain 13F-HR filings, so Oracle's Lens
-        # scoring (which filters is_active_for_manager_period=True) sees
-        # nothing.
-        #
-        # SAFETY — this heuristic only activates a filing when BOTH hold:
-        #   (1) it is the sole filing in its (manager, quarter_end_date)
-        #       group — multi-filing groups carry amendment complexity and
-        #       are left to the amendment policy in thirteenf_filing_detail;
-        #   (2) its form_type is exactly "13F-HR" — a plain original
-        #       holdings report. 13F-HR/A (amendment) and 13F-NT (notice,
-        #       no holdings) are never auto-activated here.
-        #
-        # Condition (2) was added after a third review (PR #56 re-review):
-        # condition (1) alone still let a *solo* 13F-HR/A be activated, and
-        # an amendment must not become active without going through the
-        # amendment policy. form_type is used rather than is_amendment
-        # because is_amendment is unreliably populated by the modern ingest
-        # path, whereas the "/A" form_type suffix is authoritative.
-        # Correct active-filing selection across amendments belongs in a
-        # single shared policy (tracked separately).
-        group_counts = Counter(
-            (f.manager_id, f.quarter_end_date)
-            for f in filings if f.quarter_end_date is not None
-        )
-        solo_filing_ids = [
-            f.id for f in filings
-            if f.quarter_end_date is not None
-            and f.form_type == "13F-HR"
-            and group_counts[(f.manager_id, f.quarter_end_date)] == 1
-        ]
-        if solo_filing_ids:
-            activate_stmt = (
-                update(Filing13F)
-                .where(Filing13F.id.in_(solo_filing_ids))
-                .where(Filing13F.is_active_for_manager_period.is_(False))
-                .values(is_active_for_manager_period=True)
-                .execution_options(synchronize_session=False)
-            )
-            filings_activated = session.execute(activate_stmt).rowcount or 0
-    session.commit()  # final commit barrier — Phase 4 healing is durable.
+    session.commit()  # commit barrier — Phase 4a/4b column heals are durable.
 
-    # Phase 5: amendment activation. A parsed RESTATEMENT amendment supersedes
-    # its original. reconcile_restatement_activation is idempotent, so this also
-    # heals restatements ingested before is_amendment/amendment_type were set
-    # (e.g. before Phase 2.5 existed) — a plain re-run activates them.
+    # Phase 5 (T1-FU): active-filing policy sweep. One call per
+    # (manager, quarter_end_date) group replaces the old Phase-4c solo-HR
+    # bulk-UPDATE heuristic AND the old per-filing restatement reconcile
+    # loop — every activation decision now goes through
+    # apply_active_filing_policy: single authority, (manager, period)
+    # advisory lock, NT-never-beats-HR, equal-accepted_at tie handling,
+    # terminal admin statuses (rejected/informational) respected. Groups are
+    # sorted so concurrent sessions acquire the advisory locks in the same
+    # order (no deadlock). Idempotent — a plain re-run also heals filings
+    # ingested before Phase 2.5 existed.
+    from app.services.thirteenf_filing_detail import apply_active_filing_policy
+
     restatements_applied = 0
-    for filing in filings:
-        if reconcile_restatement_activation(session, filing):
+    groups = sorted(
+        {
+            (f.manager_id, f.quarter_end_date)
+            for f in filings
+            if f.quarter_end_date is not None
+        }
+    )
+    for group_manager_id, group_qend in groups:
+        outcome = apply_active_filing_policy(session, group_manager_id, group_qend)
+        if outcome.get("decision") == "restatement" and outcome.get("changed"):
             restatements_applied += 1
-    session.commit()  # commit barrier — amendment activation is durable.
+        elif outcome.get("newly_activated"):
+            filings_activated += 1
+        # Commit PER GROUP: each group's decision is independent and
+        # idempotent, and the commit releases that group's advisory lock
+        # immediately — holding every period lock until one final commit
+        # head-of-line-blocks unrelated per-accession reparse jobs for the
+        # whole sweep (T1-FU review P2).
+        session.commit()
 
     # Degraded period routing (needs_review / failed outcomes from
     # route_period) is surfaced as partial_success so the operator sees it
