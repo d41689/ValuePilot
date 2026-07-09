@@ -147,14 +147,14 @@ def test_backfill_fills_from_stored_doc_and_gate_then_passes(db_session, monkeyp
     assert report2["failures"] == []
 
 
-def test_at_risk_groups_flag_only_multi_filing_periods(db_session):
+def test_at_risk_groups_flag_only_real_competition_pools(db_session):
     """A solo NULL filing is unpopulated-but-harmless (the authority resolves it
-    without ordering evidence); a NULL inside a ≥2 group WILL freeze. Both fail
+    without ordering evidence); a NULL inside a ≥2 POOL will freeze. Both fail
     the gate, but only the latter is reported as at-risk."""
     solo_mgr = _manager(db_session)
     _filing(db_session, solo_mgr, accepted_at=None)
 
-    pool_mgr = _manager(db_session)
+    pool_mgr = _manager(db_session)  # two competing originals
     _filing(db_session, pool_mgr, accepted_at=None)
     _filing(db_session, pool_mgr, accepted_at=datetime(2024, 5, 16, 20, 30, tzinfo=timezone.utc))
 
@@ -165,7 +165,67 @@ def test_at_risk_groups_flag_only_multi_filing_periods(db_session):
     at_risk = report["at_risk_groups"]
     assert len(at_risk) == 1
     assert at_risk[0]["manager_id"] == pool_mgr.id
-    assert at_risk[0]["group_size"] == 2
+    assert at_risk[0]["pool_kind"] == "originals"
+    assert at_risk[0]["pool_size"] == 2
+    assert at_risk[0]["pool_missing_accepted_at"] == 1
+
+
+def test_group_of_two_with_one_member_pool_is_not_at_risk(db_session):
+    """Rehearsal regression (real data, Berkshire 2025-Q1): a group holding ONE
+    original plus ONE non-restatement amendment has a one-member competition
+    pool — it resolves without ordering evidence and must NOT be reported as
+    "will freeze". The old group_size>=2 proxy reported 16 such groups on a
+    373-filing snapshot where only 2 could actually freeze."""
+    mgr = _manager(db_session)
+    original = _filing(db_session, mgr, accepted_at=None)
+    amendment = _filing(db_session, mgr, accepted_at=None)
+    amendment.form_type = "13F-HR/A"
+    amendment.is_amendment = True
+    amendment.amendment_type = "NEW_HOLDINGS"   # not a RESTATEMENT
+    amendment.amendment_status = "amendments_pending"
+    amendment.parse_status = "succeeded"
+    db_session.flush()
+
+    report = verify_accepted_at_populated(db_session)
+
+    assert report["null_total"] == 2      # both still block the gate
+    assert report["at_risk_groups"] == []  # ...but nothing will freeze
+    assert original.accepted_at is None
+
+
+def test_two_competing_restatements_with_null_are_at_risk(db_session):
+    mgr = _manager(db_session)
+    _filing(db_session, mgr, accepted_at=datetime(2024, 5, 15, 20, 30, tzinfo=timezone.utc))
+    for _ in range(2):
+        r = _filing(db_session, mgr, accepted_at=None)
+        r.form_type = "13F-HR/A"
+        r.is_amendment = True
+        r.amendment_type = "RESTATEMENT"
+        r.amendment_status = "pending_parse"
+        r.parse_status = "succeeded"
+    db_session.flush()
+
+    at_risk = verify_accepted_at_populated(db_session)["at_risk_groups"]
+
+    assert len(at_risk) == 1
+    assert at_risk[0]["pool_kind"] == "restatement"
+    assert at_risk[0]["pool_size"] == 2
+
+
+def test_admin_applied_amendment_slot_needs_no_ordering_evidence(db_session):
+    """`amendment_owned`: an admin already decided; a NULL accepted_at there
+    cannot freeze anything, so it is not an at-risk group."""
+    mgr = _manager(db_session)
+    _filing(db_session, mgr, accepted_at=None)
+    applied = _filing(db_session, mgr, accepted_at=None)
+    applied.form_type = "13F-HR/A"
+    applied.is_amendment = True
+    applied.amendment_type = "NEW_HOLDINGS"
+    applied.amendment_status = "applied"
+    applied.parse_status = "succeeded"
+    db_session.flush()
+
+    assert verify_accepted_at_populated(db_session)["at_risk_groups"] == []
 
 
 def test_filing_without_quarter_end_date_fails_gate_but_is_not_at_risk(db_session):

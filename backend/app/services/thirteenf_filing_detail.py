@@ -451,6 +451,57 @@ def _active_filing_rank(f: Filing13F) -> tuple:
     return (f.accepted_at or _MIN_ACCEPTED_AT, f.accession_no or "")
 
 
+def is_amendment_filing(f: Filing13F) -> bool:
+    """`is_amendment` is unreliably populated by the bulk path; the "/A" form
+    suffix is authoritative (Phase-4c lesson, PR #56 re-review)."""
+    return bool(f.is_amendment) or str(f.form_type or "").endswith("/A")
+
+
+def competition_pool(filings: list[Filing13F]) -> tuple[str, list[Filing13F]]:
+    """THE definition of "which filings compete for the active slot" in one
+    (manager, quarter_end_date) group. Returns ``(kind, pool)``.
+
+    kind:
+      "restatement"    — parsed, non-rejected/-informational/-deferred HR-family
+                         RESTATEMENTs supersede everything; they are the pool.
+      "amendment_owned"— no competing restatement, but an admin-`applied`
+                         amendment owns the slot; the ranked-latest of those is
+                         the owner. Ordering evidence is NOT required here (an
+                         admin decided), so this kind is never "at risk".
+      "originals"      — originals compete; HR family beats NT.
+      "none"           — nothing eligible.
+
+    `apply_active_filing_policy` AND the accepted_at deploy gate both call this,
+    so the gate's at-risk diagnostic can never drift from the real rule. It used
+    to approximate the pool as "group has ≥2 filings", which over-reported 16
+    groups as "will freeze" on a real 373-filing dataset where only 2 could
+    (a Berkshire quarter with 1 original + 1 non-restatement amendment has a
+    ONE-member pool and resolves without any ordering evidence).
+    """
+    amendments = [f for f in filings if is_amendment_filing(f)]
+    originals = [f for f in filings if not is_amendment_filing(f)]
+
+    competing = [
+        a for a in amendments
+        if a.amendment_type == "RESTATEMENT"
+        and (a.form_type or "") in _HR_FORM_TYPES  # an NT/A never owns holdings
+        and a.parse_status == "succeeded"
+        and a.amendment_status not in ("rejected", "informational", "deferred")
+    ]
+    if competing:
+        return "restatement", competing
+
+    applied = [a for a in amendments if a.amendment_status == "applied"]
+    if applied:
+        return "amendment_owned", applied
+
+    hr_originals = [o for o in originals if (o.form_type or "") in _HR_FORM_TYPES]
+    pool = hr_originals or originals
+    if not pool:
+        return "none", []
+    return "originals", pool
+
+
 def _acquire_period_lock(session: Session, manager_id: int, quarter_end_date: date) -> None:
     """Serialize active-filing decisions for one (manager, period).
 
@@ -538,9 +589,11 @@ def apply_active_filing_policy(
     if not filings:
         return {"decision": "no_filings", "changed": False, "newly_activated": False, "active_id": None}
 
-    def _is_amendment(f: Filing13F) -> bool:
-        return bool(f.is_amendment) or str(f.form_type or "").endswith("/A")
-
+    _is_amendment = is_amendment_filing
+    # Pool selection lives in `competition_pool` — the SAME function the
+    # accepted_at deploy gate uses for its at-risk diagnostic, so the two can
+    # never drift apart.
+    pool_kind, _pool = competition_pool(filings)
     amendments = [f for f in filings if _is_amendment(f)]
     originals = [f for f in filings if not _is_amendment(f)]
 
@@ -621,17 +674,11 @@ def apply_active_filing_policy(
             session.add(f)
 
     # --- Rule 1: parsed, non-rejected HR-family restatements supersede all. ---
-    # Excluded statuses: rejected / informational (admin negative) and
-    # deferred (admin "park it — do NOT auto-apply"; re-review P1: without
-    # this exclusion the authority re-applied a restatement in the same
+    # Excluded statuses (see competition_pool): rejected / informational (admin
+    # negative) and deferred (admin "park it — do NOT auto-apply"; re-review P1:
+    # without that exclusion the authority re-applied a restatement in the same
     # transaction that deferred it).
-    competing = [
-        a for a in amendments
-        if a.amendment_type == "RESTATEMENT"
-        and (a.form_type or "") in _HR_FORM_TYPES  # an NT/A never owns holdings
-        and a.parse_status == "succeeded"
-        and a.amendment_status not in ("rejected", "informational", "deferred")
-    ]
+    competing = _pool if pool_kind == "restatement" else []
     if competing:
         # Missing acceptance evidence: NULL is missing data, NOT "earliest".
         # With ≥2 candidates and any NULL, ordering is unknowable — do not
@@ -681,20 +728,19 @@ def apply_active_filing_policy(
         return _result("restatement")
 
     # --- Rule 2: applied amendments own the slot (admin decision). ---
-    applied_amendments = [a for a in amendments if a.amendment_status == "applied"]
-    if applied_amendments:
+    if pool_kind == "amendment_owned":
         # Select ONE owner (ranked latest) and converge the whole group:
         # a rejected-but-still-active amendment or a stale original must be
         # demoted, not merely tolerated. Admin intent is expressed through
-        # statuses — reject what should not own the slot.
-        owner = max(applied_amendments, key=_active_filing_rank)
+        # statuses — reject what should not own the slot. No ordering-evidence
+        # gate here: an admin already decided.
+        owner = max(_pool, key=_active_filing_rank)
         _set_active(owner)
         _clear_stale_residue([f for f in filings if f is not owner])
         return _result("amendment_owned")
 
     # --- Rule 3: originals compete; HR family beats NT. ---
-    hr_originals = [o for o in originals if (o.form_type or "") in _HR_FORM_TYPES]
-    pool = hr_originals or originals
+    pool = _pool if pool_kind == "originals" else []
     if not pool:
         # Nothing eligible (only unresolved/rejected amendments): nothing may
         # keep serving the product — demote any stray active row.

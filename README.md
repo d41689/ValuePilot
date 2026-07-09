@@ -86,9 +86,6 @@ docker compose exec api python -m app.cli.edgar enrich-cusip
 
 # Round 2: bootstrap stocks table + backfill stock_id
 docker compose exec api python -m app.cli.edgar bootstrap-stocks
-
-# Round 3: match remaining tickers against SEC company_tickers.json
-docker compose exec api python -m app.cli.edgar enrich-stocks-edgar
 ```
 
 **Step 4 — Data quality check**
@@ -120,7 +117,6 @@ docker compose exec api python -m app.cli.edgar backfill --quarters 1
 # 2. Refresh CUSIP mappings for any new holdings
 docker compose exec api python -m app.cli.edgar enrich-cusip
 docker compose exec api python -m app.cli.edgar bootstrap-stocks
-docker compose exec api python -m app.cli.edgar enrich-stocks-edgar
 
 # 3. Verify data quality
 docker compose exec api python -m app.cli.edgar quality-check --quarter <YYYY-Qn>

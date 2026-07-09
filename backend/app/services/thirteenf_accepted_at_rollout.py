@@ -21,6 +21,7 @@ from sqlalchemy.orm import Session
 
 from app.models.institutions import Filing13F
 from app.services.edgar_ingestion import backfill_period_routing
+from app.services.thirteenf_filing_detail import competition_pool
 
 
 def _null_accepted_at_filings(session: Session) -> list[Filing13F]:
@@ -36,14 +37,22 @@ def _at_risk_groups(session: Session, null_filings: list[Filing13F]) -> list[dic
     """(manager, quarter_end_date) groups where a NULL accepted_at will actually
     freeze the authority.
 
-    The missing-acceptance rule only fires when the COMPETITION POOL has ≥2
-    members. A filing alone in its group wins without ordering evidence (see
-    `test_solo_restatement_with_null_acceptance_still_wins`), so it is
-    unpopulated-but-harmless. Group size ≥2 is a deliberately CONSERVATIVE
-    superset of the real pool (which is either the competing restatements or
-    the HR-family originals) — it may over-report, never under-report.
-    Filings without a quarter_end_date belong to no group (the authority
-    returns `no_period`) and are excluded here, though they still fail the gate.
+    The missing-acceptance rule fires only when the COMPETITION POOL has ≥2
+    members AND one of them lacks `accepted_at`. A filing alone in its pool wins
+    without ordering evidence (see
+    `test_solo_restatement_with_null_acceptance_still_wins`); an
+    admin-`applied` amendment owns its slot by decision, not by ranking.
+
+    We ask :func:`competition_pool` — the SAME function the authority uses — so
+    this diagnostic cannot drift from the rule it describes. It previously
+    approximated the pool as "the group has ≥2 filings", which on a real
+    373-filing snapshot reported 16 groups as "will freeze" when only 2 could:
+    a Berkshire quarter holding one original plus one non-restatement amendment
+    has a ONE-member pool. An operator reading an 8×-inflated blocker list
+    either aborts a safe deploy or learns to ignore the diagnostic.
+
+    Filings without a quarter_end_date belong to no group (the authority returns
+    `no_period`) and are excluded here, though they still fail the gate.
     """
     affected = {
         (f.manager_id, f.quarter_end_date)
@@ -52,20 +61,26 @@ def _at_risk_groups(session: Session, null_filings: list[Filing13F]) -> list[dic
     }
     groups: list[dict[str, Any]] = []
     for manager_id, quarter_end_date in sorted(affected, key=lambda g: (g[0], g[1])):
-        size = (
+        filings = (
             session.query(Filing13F)
             .filter(Filing13F.manager_id == manager_id)
             .filter(Filing13F.quarter_end_date == quarter_end_date)
-            .count()
+            .all()
         )
-        if size >= 2:
-            groups.append(
-                {
-                    "manager_id": manager_id,
-                    "quarter_end_date": quarter_end_date.isoformat(),
-                    "group_size": size,
-                }
-            )
+        kind, pool = competition_pool(filings)
+        if kind not in ("restatement", "originals"):
+            continue  # amendment_owned / none: no ordering evidence required
+        if len(pool) < 2 or all(f.accepted_at is not None for f in pool):
+            continue
+        groups.append(
+            {
+                "manager_id": manager_id,
+                "quarter_end_date": quarter_end_date.isoformat(),
+                "pool_kind": kind,
+                "pool_size": len(pool),
+                "pool_missing_accepted_at": sum(1 for f in pool if f.accepted_at is None),
+            }
+        )
     return groups
 
 
