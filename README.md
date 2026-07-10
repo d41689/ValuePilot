@@ -61,17 +61,38 @@ docker compose exec api python -m app.cli.edgar <command>
 
 ### Initial Setup (run once, in order)
 
-**Step 0 — Seed the superinvestor whitelist from Dataroma**
+**Step 0 — Seed the curated manager universe (offline)**
 ```bash
-docker compose exec api python -m app.cli.edgar bootstrap-whitelist
+docker compose exec api python -m app.cli.edgar seed-confirmed-managers
 ```
-Parses Dataroma's manager list and inserts ~80 superinvestors into `institution_managers`.
+Upserts the ~82 curated value-investing managers from
+`backend/app/services/seed_data/confirmed_managers.json` — offline, no Dataroma
+call. New rows land `match_status='confirmed'` with their CIK already set.
 
-**Step 1 — Match managers to EDGAR CIKs**
+Safe to re-run (and to run on every deploy): **the seed expresses intent, a human
+owns lifecycle.** It never writes `match_status` / `status` on an existing row and
+never deactivates anyone. Read the diff it prints:
+
+- `skipped human-decided` — retired / revoked / rejected; seeding will not resurrect them.
+- `skipped needs-review` — an operator parked these; seeding will not touch them.
+- `awaiting confirmation` — in the seed file but not confirmed; **confirm them in the
+  admin Managers page or they will never be ingested** (ingestion selects on
+  `match_status='confirmed'`).
+- `ambiguous name match` — another row normalizes to the same name, so the manager was
+  NOT created; resolve the duplicate by hand.
+
+(`bootstrap-whitelist` is a deprecated alias for this command. `sync-dataroma`
+diffs Dataroma's list against ours — read-only, it proposes and never applies.)
+
+**Step 1 — Match any remaining managers to EDGAR CIKs**
 ```bash
 docker compose exec api python -m app.cli.edgar match-cik
 ```
-Searches EDGAR for each manager by name and scores candidates. High-confidence matches are marked `confirmed` automatically; the rest need manual review in the DB (`match_status = 'candidate'`).
+Only scans rows with no CIK whose `match_status` is `seeded` / `candidate` — the
+seeded managers above already carry theirs, so this is for managers added outside
+the seed file. Searches EDGAR by name and scores candidates; high-confidence
+matches are marked `confirmed`, the rest need manual review
+(`match_status = 'candidate'`).
 
 **Step 2 — Backfill historical quarters (one-time)**
 ```bash

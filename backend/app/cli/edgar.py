@@ -26,20 +26,52 @@ app = typer.Typer(
 
 @app.command()
 def seed_confirmed_managers() -> None:
-    """Seed institution_managers from a predefined list of confirmed CIKs (Step 0)."""
+    """Seed institution_managers from the curated confirmed-managers list (Step 0).
+
+    Safe to re-run (and to run on every deploy): the seed expresses intent, a
+    human owns lifecycle. Retired managers are skipped, nobody is deactivated,
+    and rows awaiting human confirmation are reported rather than promoted.
+    """
     from app.services.edgar_ingestion import seed_confirmed_managers as _seed
 
     db = SessionLocal()
     try:
-        n = _seed(db)
+        report = _seed(db)
         db.commit()
-        typer.echo(f"Seeded {n} confirmed managers.")
+        _echo_seed_report(report)
     except Exception as exc:
         db.rollback()
         typer.echo(f"Error: {exc}", err=True)
         raise typer.Exit(1)
     finally:
         db.close()
+
+
+def _echo_seed_report(report: dict) -> None:
+    """Print the seeding diff, never a bare count — an operator must be able to
+    see what a deploy-time re-seed did (and refused to do)."""
+    typer.echo(
+        f"Seed entries {report['seed_entries']}: "
+        f"created {report['created']}, updated {report['updated']}, "
+        f"skipped human-decided {report['skipped_human_decided']}, "
+        f"skipped needs-review {report['skipped_needs_review']}, "
+        f"awaiting confirmation {report['awaiting_confirmation']}, "
+        f"ambiguous name match {report['ambiguous_name_match']}"
+    )
+    for key, header in (
+        ("skipped_human_decided_ciks",
+         "skipped - an operator retired/revoked/rejected these; seeding will not resurrect them:"),
+        ("skipped_needs_review_ciks",
+         "skipped - an operator parked these in needs_review; seeding will not touch them:"),
+        ("awaiting_confirmation_ciks",
+         "in the seed file but NOT confirmed - confirm them in the admin Managers page:"),
+        ("ambiguous_name_match_ciks",
+         "NOT created - another row normalizes to the same name; resolve the duplicate by hand:"),
+    ):
+        if report.get(key):
+            typer.echo(f"  {header}")
+            for cik in report[key]:
+                typer.echo(f"    - {cik}")
 
 
 @app.command()
@@ -77,9 +109,9 @@ def bootstrap_whitelist() -> None:
 
     db = SessionLocal()
     try:
-        n = _seed(db)
+        report = _seed(db)
         db.commit()
-        typer.echo(f"Seeded {n} confirmed managers.")
+        _echo_seed_report(report)
     except Exception as exc:
         db.rollback()
         typer.echo(f"Error: {exc}", err=True)

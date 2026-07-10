@@ -11,7 +11,7 @@ import re
 import unicodedata
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Optional
+from typing import Any, Optional
 
 from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
@@ -37,6 +37,7 @@ from app.models.institutions import (
     Filing13F,
     Holding13F,
     InstitutionManager,
+    InstitutionManagerCikReviewEvent,
     RawSourceDocument,
 )
 from app.services.oracles_lens.manager_style import derive_legacy_manager_type
@@ -80,34 +81,156 @@ def _name_score(a: str, b: str) -> float:
 # Step 0 – whitelist bootstrap
 # ---------------------------------------------------------------------------
 
-def seed_confirmed_managers(db: Session) -> int:
-    """Seed institution_managers from a predefined list of confirmed CIKs.
+# Lifecycle states a human owns. Seeding must not touch these rows at all.
+#   status:       PRD lifecycle field; admin "retire" writes inactive,
+#                 a rejected CIK match derives ignored.
+#   match_status: revoked = an audited, note-required decision that this CIK
+#                 does NOT belong to this manager (revoke_confirmed_cik also
+#                 nulls the CIK); rejected / inactive likewise.
+_DEACTIVATED_MANAGER_STATUSES = frozenset({"inactive", "ignored"})
+_HUMAN_DECIDED_MATCH_STATUSES = frozenset({"inactive", "revoked", "rejected"})
+# An operator explicitly parked this row (admin PATCH sets status +
+# match_status). Distinct from `awaiting_confirmation`, which merely means
+# "the seed knows him but nobody has confirmed him yet" — the operator action
+# differs, so the buckets must differ.
+_NEEDS_REVIEW_STATES = frozenset({"needs_review"})
 
-    This bypasses the match-cik step for high-priority managers. As of
-    the manager-taxonomy-v2 change
-    (``docs/tasks/2026-05-24_manager-taxonomy-v2.md``), each seed entry
-    also carries the two-layer ``style_primary`` / ``capital_structure``
-    classification plus optional metadata, and the legacy
-    ``manager_type`` column is derived from ``style_primary`` via
-    ``derive_legacy_manager_type``.
 
-    Idempotency contract: re-running this function on a DB that already
-    has these managers updates fields in place without duplicating rows
-    and without writing to fields the entry doesn't specify.
+def _human_owns_lifecycle(manager: "InstitutionManager") -> bool:
+    return (
+        manager.status in _DEACTIVATED_MANAGER_STATUSES
+        or manager.match_status in _HUMAN_DECIDED_MATCH_STATUSES
+    )
+
+
+def _human_parked_for_review(manager: "InstitutionManager") -> bool:
+    return (
+        manager.status in _NEEDS_REVIEW_STATES
+        or manager.match_status in _NEEDS_REVIEW_STATES
+    )
+
+
+def _cik_was_revoked_by_a_human(db: Session, cik: str) -> bool:
+    """Did an operator revoke exactly this CIK from some manager?
+
+    `revoke_confirmed_cik` is the heaviest decision in this table: it demands a
+    note, writes an `InstitutionManagerCikReviewEvent`, and NULLs the CIK —
+    meaning "this CIK is not this manager". That NULL also removes the only key
+    the seed matched on for the 62 of 82 entries that carry no dataroma_code, so
+    a naive re-seed CREATES A DUPLICATE `confirmed` row and defeats the
+    revocation entirely.
+
+    The audit trail is the exact, non-fuzzy way to detect it. (An earlier fix
+    used a `name_normalized` fallback instead; `_normalize_name` strips
+    'capital' / 'management' / 'investments' / … so 35 of the 82 seed names
+    collapse to a single token — 'ariel', 'atlantic', 'cas' — and the fallback
+    could silently attach a seed CIK to an unrelated manager. Names are now used
+    only to REFUSE and report, never to write.)
+    """
+    return (
+        db.query(InstitutionManagerCikReviewEvent.id)
+        .filter(InstitutionManagerCikReviewEvent.old_cik == cik)
+        .filter(InstitutionManagerCikReviewEvent.event_type == "revoke_confirmed_cik")
+        .first()
+        is not None
+    )
+
+
+def seed_confirmed_managers(db: Session) -> dict[str, Any]:
+    """Seed institution_managers from the curated `confirmed_managers.json`.
+
+    **The seed expresses INTENT; a human expresses LIFECYCLE; the human wins.**
+    This function is meant to run on every deploy, so it must never silently
+    undo an operator's decision:
+
+    - It **never writes** ``match_status`` or ``status`` on an existing row.
+      Re-seeding used to force ``match_status = "confirmed"`` unconditionally,
+      which resurrected a retired manager — and worse, left him split-brained:
+      ``ingest_quarter_index`` selects on ``match_status == "confirmed"`` while
+      daily-sync / readiness / historical-backfill filter ``status ==
+      "active"``, and the model's before_update listener only derives ``status``
+      when it is NULL/``candidate``. So the row would be ingested into the
+      product and Oracle's Lens consensus while missing from the expected-filers
+      denominator.
+    - A manager whose lifecycle a human decided — retired (``inactive``),
+      ``revoked`` (an audited, note-required CIK detachment) or ``rejected`` —
+      is skipped entirely; not even his identity fields are refreshed, because
+      re-writing ``cik`` would undo the revocation.
+    - It **never deactivates** anyone. A manager absent from the JSON is left
+      untouched; proposing removals is the Dataroma sync's job, and it only
+      ever proposes.
+    - A row that exists but is **not yet confirmed** (e.g. a Dataroma candidate
+      later added to the JSON) gets its identity/classification refreshed but is
+      NOT promoted — a human confirms it. Such rows are reported under
+      ``awaiting_confirmation`` so that "I added them to the seed and nothing
+      happened" can never be a silent failure.
+    - A row an operator explicitly parked in ``needs_review`` is also skipped
+      whole (bucket ``skipped_needs_review``): refreshing its name or
+      classification mid-review would overwrite the very fields being
+      adjudicated.
+    - New rows are created ``match_status = "confirmed"``; the model's
+      before_insert listener derives ``status = "active"`` from that. This
+      implicit dependency is pinned by
+      ``test_new_rows_are_active_so_the_universe_is_actually_tracked``.
+    - Names are used only to REFUSE and report (``ambiguous_name_match``), never
+      to write: 35 of the 82 curated names normalize to a single token, so a
+      name-keyed update could attach a curated CIK to an unrelated manager and
+      ingest the wrong SEC filer.
+    - The whole seed runs under a transaction-scoped advisory lock, so two api
+      containers starting at once cannot race the create path into the unique
+      ``cik`` index.
+
+    Why it matters: the manager universe is a scoring input — Oracle's Lens
+    requires ``min_holders = 3`` for consensus, so a universe that changes
+    silently changes historical scores silently.
+
+    Returns a diff report::
+
+        {"seed_entries", "created", "updated", "skipped_human_decided",
+         "skipped_needs_review", "awaiting_confirmation",
+         "ambiguous_name_match", + the matching *_ciks lists}
+
+    Idempotent: a second run creates nothing and rewrites the same values.
     """
     import json
     import os
     from pathlib import Path
 
+    def _report(**kw: Any) -> dict[str, Any]:
+        base = {
+            "seed_entries": 0, "created": 0, "updated": 0,
+            "skipped_human_decided": 0, "skipped_needs_review": 0,
+            "awaiting_confirmation": 0, "ambiguous_name_match": 0,
+            "skipped_human_decided_ciks": [], "skipped_needs_review_ciks": [],
+            "awaiting_confirmation_ciks": [], "ambiguous_name_match_ciks": [],
+        }
+        base.update(kw)
+        return base
+
     seed_path = Path(__file__).parent / "seed_data" / "confirmed_managers.json"
     if not os.path.exists(seed_path):
         logger.warning("Seed data not found at %s", seed_path)
-        return 0
+        return _report()
 
     with open(seed_path, "r") as f:
         seed_data = json.load(f)
 
+    # Serialize the whole seed. M2 runs this on every deploy, and prod may
+    # start more than one api container: two processes would each see "no such
+    # manager", both INSERT, and one would die on the unique `cik` index —
+    # aborting startup into a `restart: unless-stopped` crash loop. Same
+    # mechanism the 13F authority uses (`_acquire_period_lock`). Transaction
+    # scoped: released when the caller commits or rolls back.
+    db.execute(
+        text("SELECT pg_advisory_xact_lock(hashtextextended('seed_confirmed_managers', 0))")
+    )
+
+    created = 0
     updated = 0
+    skipped_human_decided: list[str] = []
+    skipped_needs_review: list[str] = []
+    awaiting_confirmation: list[str] = []
+    ambiguous_name_match: list[str] = []
     for entry in seed_data:
         dataroma_code = entry.get("dataroma_code")
         cik = entry.get("cik")
@@ -132,11 +255,42 @@ def seed_confirmed_managers(db: Session) -> int:
                 .filter_by(dataroma_code=dataroma_code)
                 .one_or_none()
             )
+        if existing is None and _cik_was_revoked_by_a_human(db, cik):
+            # A human detached exactly this CIK, with a note and an audit event.
+            # Neither key above can find that manager (revoke NULLs the CIK, and
+            # only 20/82 entries carry a dataroma_code) — so without this the
+            # create path below would mint a fresh `confirmed` row and undo the
+            # revocation. The seed and the operator disagree; the operator wins.
+            skipped_human_decided.append(cik)
+            continue
 
         if existing:
-            # Update existing record to confirmed + V2 classification
+            # LIFECYCLE IS THE HUMAN'S. Retired / revoked / rejected rows are
+            # skipped WHOLE — touching even their identity fields would be an
+            # automated system reaching into a decision it does not own. In
+            # particular, writing `existing.cik = cik` on a revoked manager
+            # would silently re-attach the very CIK a human detached, leaving
+            # the row contradicting its own audit trail.
+            if _human_owns_lifecycle(existing):
+                skipped_human_decided.append(cik)
+                continue
+            # Checked AFTER the line above on purpose: a `revoked` row derives
+            # status='needs_review', and it belongs in the human-decided bucket.
+            # What lands here is a row an operator explicitly PATCHed into
+            # needs_review — refreshing its name/classification mid-review would
+            # overwrite the very fields the operator is adjudicating.
+            if _human_parked_for_review(existing):
+                skipped_needs_review.append(cik)
+                continue
+            # Exists but not yet confirmed (e.g. a Dataroma candidate that was
+            # later curated into the JSON). Refresh what the seed owns, but do
+            # NOT promote him — a human confirms. Reported so this is visible.
+            if existing.match_status != "confirmed":
+                awaiting_confirmation.append(cik)
+
+            # Identity + classification only. `match_status` / `status` are
+            # deliberately NOT written here (see the docstring).
             existing.cik = cik
-            existing.match_status = "confirmed"
             if entry.get("display_name"):
                 existing.display_name = entry["display_name"]
             if entry.get("legal_name"):
@@ -162,6 +316,28 @@ def seed_confirmed_managers(db: Session) -> int:
                 existing.ideology_tags = entry["ideology_tags"]
             updated += 1
         else:
+            # Before minting a new manager, REFUSE if some row already
+            # normalizes to the same name. 35 of the 82 curated names collapse
+            # to a single token ('ariel', 'atlantic', 'cas'), so this is not
+            # hypothetical. Names are used ONLY to refuse — never to write
+            # through — because attaching a curated CIK to the wrong manager
+            # would ingest and score the wrong SEC filer.
+            #
+            # Refusing (rather than minting a second row) is the conservative
+            # default, and it also covers a `revoked` manager whose audit event
+            # is missing — legacy rows, or a manual DB edit — for whom
+            # `_cik_was_revoked_by_a_human` returns False. When the seed and the
+            # database disagree about who someone is, an automated writer should
+            # do nothing and name the conflict.
+            normalized = _normalize_name(entry.get("legal_name") or entry.get("display_name"))
+            if normalized and (
+                db.query(InstitutionManager.id)
+                .filter(InstitutionManager.name_normalized == normalized)
+                .first()
+            ):
+                ambiguous_name_match.append(cik)
+                continue
+
             # Create new confirmed record with V2 classification
             record = InstitutionManager(
                 cik=cik,
@@ -184,9 +360,30 @@ def seed_confirmed_managers(db: Session) -> int:
                 ideology_tags=entry.get("ideology_tags"),
             )
             db.add(record)
-            updated += 1
+            created += 1
 
-    return updated
+    report = {
+        "seed_entries": len(seed_data),
+        "created": created,
+        "updated": updated,
+        "skipped_human_decided": len(skipped_human_decided),
+        "skipped_needs_review": len(skipped_needs_review),
+        "awaiting_confirmation": len(awaiting_confirmation),
+        "ambiguous_name_match": len(ambiguous_name_match),
+        "skipped_human_decided_ciks": skipped_human_decided,
+        "skipped_needs_review_ciks": skipped_needs_review,
+        "awaiting_confirmation_ciks": awaiting_confirmation,
+        "ambiguous_name_match_ciks": ambiguous_name_match,
+    }
+    logger.info(
+        "seed_confirmed_managers: entries=%d created=%d updated=%d "
+        "skipped_human_decided=%d skipped_needs_review=%d "
+        "awaiting_confirmation=%d ambiguous_name_match=%d",
+        report["seed_entries"], created, updated,
+        report["skipped_human_decided"], report["skipped_needs_review"],
+        report["awaiting_confirmation"], report["ambiguous_name_match"],
+    )
+    return report
 
 
 def seed_pending_cik_review_fixture(db: Session) -> int:

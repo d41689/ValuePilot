@@ -2879,6 +2879,11 @@ def _oracles_lens_score_version() -> str:
     return SCORE_VERSION
 
 
+# Keep job summaries bounded: a pathological seed file must not write an
+# unbounded JSONB blob into job_runs.summary_json.
+_SEED_SUMMARY_CIK_CAP = 25
+
+
 _JOB_LOCK_BUILDERS = {
     "quarterly_pipeline": lambda payload: f"quarterly_pipeline:{_required(payload, 'quarter')}",
     "fetch_daily_index": lambda payload: f"fetch_daily_index:{_required(payload, 'sync_date')}",
@@ -3030,8 +3035,26 @@ def _execute_job(session: Session, job_type: str, payload: dict[str, Any]) -> di
         # job_type ``dataroma_sync`` below.
         from app.services.edgar_ingestion import seed_confirmed_managers
 
+        seed_report = seed_confirmed_managers(session)
         return {
-            "managers_seeded": seed_confirmed_managers(session),
+            # `managers_seeded` keeps its original meaning (rows the seed
+            # touched) for existing consumers; the diff surfaces what a
+            # deploy-time re-seed refused to do — resurrect a retired manager,
+            # or promote one still awaiting human confirmation.
+            "managers_seeded": seed_report["created"] + seed_report["updated"],
+            "managers_created": seed_report["created"],
+            "managers_updated": seed_report["updated"],
+            "managers_skipped_human_decided": seed_report["skipped_human_decided"],
+            "managers_skipped_needs_review": seed_report["skipped_needs_review"],
+            "managers_awaiting_confirmation": seed_report["awaiting_confirmation"],
+            "managers_ambiguous_name_match": seed_report["ambiguous_name_match"],
+            # Counts alone are not actionable: an operator seeing
+            # "awaiting_confirmation: 3" cannot tell WHICH managers need a
+            # decision. Keep bounded identifier lists in the stored summary.
+            "managers_skipped_human_decided_ciks": seed_report["skipped_human_decided_ciks"][:_SEED_SUMMARY_CIK_CAP],
+            "managers_skipped_needs_review_ciks": seed_report["skipped_needs_review_ciks"][:_SEED_SUMMARY_CIK_CAP],
+            "managers_awaiting_confirmation_ciks": seed_report["awaiting_confirmation_ciks"][:_SEED_SUMMARY_CIK_CAP],
+            "managers_ambiguous_name_match_ciks": seed_report["ambiguous_name_match_ciks"][:_SEED_SUMMARY_CIK_CAP],
             "status": "succeeded",
         }
     if job_type == "dataroma_sync":
