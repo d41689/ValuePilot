@@ -180,6 +180,100 @@ def test_an_already_parsed_filing_is_not_reclaimed_by_the_filed_quarter_window(
     assert parsed.accession_no not in _accessions(picked)
 
 
+def test_a_pipeline_that_fetched_filings_but_ingested_none_is_not_green(
+    db_session, monkeypatch
+):
+    """The cross-stage invariant that would have caught this class of bug.
+
+    Per-stage statuses cannot see it: `ingest_holdings` legitimately returns
+    "succeeded" when its query matches nothing. Only the *pair* — 75 filings
+    inserted, 0 processed — reveals that the four downstream stages are about to
+    score an empty quarter.
+    """
+    from app.services.thirteenf_admin_dashboard import execute_job_payload
+    from app.services.edgar_quality import QualityReport
+
+    monkeypatch.setattr(
+        "app.services.edgar_ingestion.ingest_quarter_index",
+        lambda session, quarter: 75,
+    )
+    monkeypatch.setattr(
+        "app.services.thirteenf_admin_dashboard._execute_ingest_job",
+        lambda session, job_type, payload: {
+            "filings_processed": 0, "filings_failed": 0,
+            "holdings_inserted": 0, "status": "succeeded",
+        },
+    )
+    monkeypatch.setattr(
+        "app.services.cusip_enrichment.enrich_cusips_from_openfigi", lambda session: 0
+    )
+    monkeypatch.setattr(
+        "app.services.cusip_enrichment.bootstrap_stocks_from_cusip_map", lambda session: 0
+    )
+    monkeypatch.setattr(
+        "app.services.cusip_enrichment.backfill_stock_ids", lambda session: 0
+    )
+    monkeypatch.setattr(
+        "app.services.thirteenf_admin_dashboard.run_quality_checks",
+        lambda session, quarter: QualityReport(),
+    )
+    monkeypatch.setattr(
+        "app.services.oracles_lens.signal_weighted_score.compute_signal_weighted_scores",
+        lambda session, **kw: {"quarter": kw["quarter"], "filings_scored": 0},
+    )
+
+    result = execute_job_payload(
+        db_session, "quarterly_pipeline", {"quarter": "2025-Q4", "_job_id": 1}
+    )
+
+    assert result["status"] == "partial_success"
+    assert "ingest_holdings processed 0" in result["pipeline_warning"]
+    assert {s["status"] for s in result["stages"]} == {"succeeded"}
+
+
+def test_a_pipeline_rerun_that_fetches_nothing_new_stays_green(
+    db_session, monkeypatch
+):
+    """The legitimate no-op: idempotent re-run, 0 inserted and 0 processed."""
+    from app.services.thirteenf_admin_dashboard import execute_job_payload
+    from app.services.edgar_quality import QualityReport
+
+    monkeypatch.setattr(
+        "app.services.edgar_ingestion.ingest_quarter_index", lambda session, quarter: 0
+    )
+    monkeypatch.setattr(
+        "app.services.thirteenf_admin_dashboard._execute_ingest_job",
+        lambda session, job_type, payload: {
+            "filings_processed": 0, "filings_failed": 0,
+            "holdings_inserted": 0, "status": "succeeded",
+        },
+    )
+    monkeypatch.setattr(
+        "app.services.cusip_enrichment.enrich_cusips_from_openfigi", lambda session: 0
+    )
+    monkeypatch.setattr(
+        "app.services.cusip_enrichment.bootstrap_stocks_from_cusip_map", lambda session: 0
+    )
+    monkeypatch.setattr(
+        "app.services.cusip_enrichment.backfill_stock_ids", lambda session: 0
+    )
+    monkeypatch.setattr(
+        "app.services.thirteenf_admin_dashboard.run_quality_checks",
+        lambda session, quarter: QualityReport(),
+    )
+    monkeypatch.setattr(
+        "app.services.oracles_lens.signal_weighted_score.compute_signal_weighted_scores",
+        lambda session, **kw: {"quarter": kw["quarter"], "filings_scored": 0},
+    )
+
+    result = execute_job_payload(
+        db_session, "quarterly_pipeline", {"quarter": "2025-Q4", "_job_id": 2}
+    )
+
+    assert result["status"] == "succeeded"
+    assert "pipeline_warning" not in result
+
+
 def test_the_newest_report_quarter_is_reachable(db_session, manager):
     """The bug's sharpest edge: 2026-Q1's filings are filed in 2026-Q2.
 
