@@ -64,6 +64,17 @@ function priorityTone(priority) {
   return 'secondary';
 }
 
+// Readiness warnings/blockers are `{ code, message }`. Wrap a legacy bare string
+// so a consumer can always read `.message` and key on `.code`.
+function normalizeReadinessMessages(list) {
+  if (!Array.isArray(list)) return [];
+  return list.map((entry) =>
+    entry && typeof entry === 'object'
+      ? { code: entry.code ?? null, message: entry.message ?? '' }
+      : { code: null, message: String(entry ?? '') },
+  );
+}
+
 function normalizeReadiness(payload) {
   const data = payload && typeof payload === 'object' ? payload : {};
   const currentQuarter = data.current_quarter && typeof data.current_quarter === 'object'
@@ -93,8 +104,11 @@ function normalizeReadiness(payload) {
           adminAction: item.admin_action ?? '',
         }))
       : [],
-    warnings: Array.isArray(data.warnings) ? data.warnings : [],
-    blockers: Array.isArray(data.blockers) ? data.blockers : [],
+    // Structured `{ code, message }` (backend thirteenf_readiness `_message`).
+    // Normalize to that shape so consumers never render a bare object as a React
+    // child; a legacy string is wrapped so it still carries a message.
+    warnings: normalizeReadinessMessages(data.warnings),
+    blockers: normalizeReadinessMessages(data.blockers),
     counts: data.counts && typeof data.counts === 'object' ? data.counts : {},
     thresholds: data.thresholds && typeof data.thresholds === 'object' ? data.thresholds : {},
     topTask: data.top_task && typeof data.top_task === 'object' ? data.top_task : null,

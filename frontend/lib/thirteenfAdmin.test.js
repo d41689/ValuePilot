@@ -70,6 +70,25 @@ test('readinessTone maps readiness levels to badge variants', () => {
   assert.equal(readinessTone('unavailable'), 'secondary');
 });
 
+test('normalizeReadiness normalizes warnings/blockers to {code,message}', () => {
+  // Backend readiness warnings are structured objects. Rendering one directly as
+  // a React child crashed the Oracle's Lens page ("Objects are not valid as a
+  // React child") and keyed on `[object Object]`. Normalize to a shape every
+  // consumer can read `.message`/`.code` from, tolerating a legacy string.
+  const readiness = normalizeReadiness({
+    warnings: [{ code: 'AMENDMENTS_PENDING', message: 'Amendments are pending.' }, 'legacy string'],
+    blockers: [{ code: 'NO_DATA', message: 'No data.' }],
+  });
+  assert.deepEqual(readiness.warnings, [
+    { code: 'AMENDMENTS_PENDING', message: 'Amendments are pending.' },
+    { code: null, message: 'legacy string' },
+  ]);
+  assert.deepEqual(readiness.blockers, [{ code: 'NO_DATA', message: 'No data.' }]);
+  // keys derived from these must be unique strings, not [object Object]
+  const keys = readiness.warnings.map((w, i) => w.code ?? i);
+  assert.equal(new Set(keys).size, keys.length);
+});
+
 test('normalizeReadiness preserves consumer-visible freshness fields', () => {
   const readiness = normalizeReadiness({
     readiness_level: 'usable_with_warning',
