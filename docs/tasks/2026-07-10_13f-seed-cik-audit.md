@@ -1,7 +1,7 @@
 # 13F — 11 curated managers have a CIK that never files a 13F
 
 Date opened: 2026-07-10
-Status: **open, not started**
+Status: **CIKs corrected 2026-07-10; guards + recompute still open**
 Severity: **high** — silent, product-visible, affects Oracle's Lens consensus
 Found: while answering "can we confirm the pipeline parses 13F data correctly?"
 after PR #115 merged. The pipeline is correct; the universe it is fed is not.
@@ -91,17 +91,38 @@ manager rendered as an absent one.
    caught by CI or by the admin dashboard rather than by a person asking the right
    question two months later.
 
+## Progress (2026-07-10)
+
+All 82 CIKs were verified against **EDGAR's submissions API** through Rate Guard —
+entity name plus a 13F-HR filed in 2026-05 — not by grepping names. The eleven were
+entities that had simply **stopped filing**, from 2004 to 2024. `0001350685` was not
+Bridgewater at all: it resolves to a natural person, `LEWSADDER SUZANNE`, with zero
+filings ever. Greenlight's real filer is `DME Capital Management, LP` (`0001489933`).
+
+After the fix, **82/82 seeded CIKs filed a 13F-HR in 2025 or later.** A from-zero
+unattended run then produced: filings 148 → 170, holdings 10 707 → 13 472, Lens
+signals 859 → 1 282, and **81 of 82 managers ingest**. The one that does not is
+Michael Burry (Scion) — his CIK is correct and he genuinely stopped filing after
+2025-11-03.
+
+Two offline guards shipped with it: every CIK must be a distinct 10-digit
+zero-padded string, and no two managers may normalize to the same name (a collision
+makes the seed refuse to create one of them). Both are red against a broken file.
+
+**Still open:** the `audit_seed_ciks` job, the readiness check, and the downstream
+recompute for existing databases.
+
 ## Acceptance criteria
 
-- [ ] Each of the 11 CIKs is corrected in `confirmed_managers.json`, or the manager
+- [x] Each of the 11 CIKs is corrected in `confirmed_managers.json`, or the manager
       is explicitly marked as not-a-13F-filer with a recorded reason. **A human
       confirms each CIK against EDGAR** — a name grep over `form.idx` is evidence,
       not proof.
-- [ ] `dev`: after re-seeding, `confirmed managers with zero filings` drops to 0
+- [ ] `dev`/`prod`: after re-seeding, `confirmed managers with zero filings` drops to 0
       (or to the count of managers explicitly ruled not-13F-filers).
-- [ ] A new offline test asserts every seeded CIK is a distinct, 10-digit,
-      zero-padded string (partially covered today by
-      `test_the_curated_seed_file_is_valid`).
+- [x] A new offline test asserts every seeded CIK is a distinct, 10-digit,
+      zero-padded string, and that no two managers normalize to the same name
+      (`test_13f_manager_seed_startup.py`).
 - [ ] A new **`audit_seed_ciks`** admin job / CLI command checks every confirmed
       manager's CIK against EDGAR (through Rate Guard) and reports any that has
       never filed a 13F-HR. It is read-only and proposes; it never rewrites a CIK.

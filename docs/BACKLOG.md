@@ -634,3 +634,43 @@ long — escalate to the user. **medium / low** = ordinary follow-up.
   ownership_changes + Lens for every quarter, because fixing this IS a universe change.
 - **Context:** `docs/tasks/2026-07-10_13f-seed-cik-audit.md`
 - **Issue:** —
+
+### 13F: fixing the seed CIKs cannot repair an existing database
+- **Found:** 2026-07-10, while correcting `confirmed_managers.json`
+- **Severity:** high (blocks applying the CIK fix to dev/prod)
+- **Problem:** `seed_confirmed_managers` looks a manager up by `cik`, then by
+  `dataroma_code`. A **changed** CIK is found by neither for 10 of the 11 corrected
+  managers (only Bridgewater carries a dataroma_code). The seed therefore takes the
+  CREATE path: where the normalized name still collides it refuses
+  (`ambiguous_name_match`, loud and safe), and where the legal_name also changed —
+  Icahn (`ICAHN CAPITAL MANAGEMENT LP` → `ICAHN CARL C`) and Greenlight
+  (`GREENLIGHT CAPITAL INC` → `DME Capital Management, LP`) — it would mint a
+  DUPLICATE confirmed manager row. An empty database is unaffected; dev and prod are not.
+- **Fix sketch:** teach the seed a `previous_ciks` field (or an explicit re-point
+  admin action that writes an `InstitutionManagerCikReviewEvent`), so a CIK change is
+  an audited identity edit rather than a create. Then re-seed, backfill the 11
+  managers' filings, and re-run `compute_ownership_changes` +
+  `oracles_lens_score_backfill` for every quarter — adding 11 managers IS a universe
+  change and `min_holders = 3` makes it a scoring change.
+- **Context:** `docs/tasks/2026-07-10_13f-seed-cik-audit.md`
+- **Issue:** —
+
+### 13F: six managers report values in thousands under a dollars schema
+- **Found:** 2026-07-10, from-zero rehearsal with the corrected seed
+- **Severity:** medium (absolute values wrong by 1000x; weights and Lens unaffected)
+- **Problem:** Every holding is tagged `value_unit_raw='dollars'`,
+  `value_parse_rule='schema_dollars'`. Six managers file in **thousands** anyway, so
+  their `value_usd` is 1000x too small. Detected by median implied share price
+  (`value_usd / shares`), which should be $1–$1,000,000 for a US equity:
+  Olstein $0.08, **Baupost / Klarman $0.12**, Vulcan $0.15, Triple Frond $0.22–0.25,
+  AKO $0.28–0.29, Aquamarine $0.48–0.50. Compliant filers land where you'd expect:
+  Berkshire $92–97, Bridgewater $77–80, Greenlight $25–30.
+  The reconciliation check cannot catch this — the filer's own `tableValueTotal` is
+  in the same wrong unit, so computed and reported agree exactly. Oracle's Lens is
+  unaffected (portfolio weight is a within-manager ratio, hence scale-invariant), but
+  every absolute dollar figure the product shows for those six is 1000x low.
+- **Fix sketch:** an implied-price sanity check at ingest (median `value/shares`
+  outside $0.50–$1e6 → flag), feeding the existing `effective_value_unit_override`
+  mechanism instead of `infer`. Add it to `edgar_quality` as a warning first.
+- **Context:** `docs/tasks/2026-07-10_13f-seed-cik-audit.md`
+- **Issue:** —
