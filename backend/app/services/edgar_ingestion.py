@@ -1403,21 +1403,33 @@ def next_quarter_label(label: str) -> str:
     return f"{year + 1}-Q1" if qtr == 4 else f"{year}-Q{qtr + 1}"
 
 
+def previous_quarter_label(label: str) -> str:
+    """Calendar quarter before ``label`` ("2026-Q1" → "2025-Q4")."""
+    year_text, qtr_text = label.upper().split("-Q", 1)
+    year, qtr = int(year_text), int(qtr_text)
+    return f"{year - 1}-Q4" if qtr == 1 else f"{year}-Q{qtr - 1}"
+
+
 def pending_ingest_quarters(db: Session) -> list[str]:
-    """Distinct calendar quarters that still have un-ingested 13F filings.
+    """**Report** quarters that still have un-ingested 13F filings.
 
     A filing is un-ingested while ``raw_infotable_doc_id IS NULL`` (its
-    infotable has not been fetched/parsed). We key on the filing's *current*
-    ``period_of_report`` — which for an un-ingested filing is a proxy equal to
-    ``filed_at`` (the *filing* quarter), corrected to the true report quarter
-    only after its primary doc is parsed (see ``backfill_period_routing``).
+    infotable has not been fetched/parsed). Its ``period_of_report`` is then only
+    a proxy equal to ``filed_at`` — the *filing* quarter — and is corrected to
+    the true report quarter when the primary doc is parsed
+    (``backfill_period_routing``).
 
-    Grouping by this proxy is exactly what makes the newest report quarter
-    reachable: its filings are filed the following calendar quarter, so a
-    report-quarter window would miss them (F5). Delegating the ingest to the
-    quarter matching the proxy period lands them in the right job window, after
-    which the parse corrects the period. Idempotent: once ingested a filing has
-    ``raw_infotable_doc_id`` set and drops out.
+    A 13F for report quarter Q is filed within 45 days after Q ends, so the proxy
+    lands in Q+1. The ``ingest_holdings`` job takes a **report** quarter (the same
+    thing ``fetch_quarter_index`` means by it) and already widens to the filed
+    quarter internally — see ``_ingest_candidate_filings``. So we translate the
+    proxy back: proxy quarter Q+1 → report quarter Q.
+
+    Returning the proxy quarter instead would hand the job a label one quarter
+    ahead of the filings it is meant to parse, and it would ingest nothing.
+
+    Idempotent: once ingested a filing has ``raw_infotable_doc_id`` set and drops
+    out of the pool.
     """
     rows = (
         db.query(Filing13F.period_of_report)
@@ -1426,7 +1438,9 @@ def pending_ingest_quarters(db: Session) -> list[str]:
         .distinct()
         .all()
     )
-    return sorted({_date_to_quarter(row[0]) for row in rows})
+    return sorted(
+        {previous_quarter_label(_date_to_quarter(row[0])) for row in rows}
+    )
 
 
 def ingest_pending_holdings(db: Session, *, quarters=None, ingest_fn=None, log=None) -> dict:

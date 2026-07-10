@@ -391,6 +391,43 @@ def test_every_filing_shape_is_claimed_by_exactly_one_quarter(db_session):
         assert claimed_by == [owner], f"{name}: claimed by {claimed_by}, want [{owner}]"
 
 
+def test_pending_ingest_quarters_speaks_the_same_language_as_the_ingest_job(
+    db_session, manager
+):
+    """The CLI hands `pending_ingest_quarters()` output straight to the job.
+
+    `ingest_pending_holdings` calls `run_locked_job("ingest_holdings", {"quarter": q})`
+    for each label this returns, so the two must agree on what a quarter label
+    means. They did not: the helper grouped by the *proxy* period (the filing
+    quarter) while `_ingest_candidate_filings` reads a *report* quarter. The CLI
+    would have handed the job a label one quarter ahead of the filings it was
+    meant to parse, and ingested nothing.
+
+    No test caught it because every CLI test injects its own `ingest_fn`, so the
+    label's meaning was never exercised against the real selection.
+    """
+    from app.services.edgar_ingestion import pending_ingest_quarters
+
+    db_session.query(Filing13F).delete()
+    db_session.flush()
+    pending = _filing(
+        db_session, manager,
+        accession="0001067983-26-000020",
+        period=date(2026, 2, 17),   # proxy == filed_at
+        filed=date(2026, 2, 17),
+    )
+
+    targets = pending_ingest_quarters(db_session)
+
+    assert targets == ["2025-Q4"], f"got {targets}"
+    reached = set()
+    for quarter in targets:
+        reached |= _accessions(_ingest_candidate_filings(db_session, quarter))
+    assert pending.accession_no in reached, (
+        "the CLI would call ingest_holdings with a quarter that selects nothing"
+    )
+
+
 def test_a_pipeline_that_fetched_filings_but_ingested_none_is_not_green(
     db_session, monkeypatch
 ):

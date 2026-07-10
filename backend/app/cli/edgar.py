@@ -203,9 +203,12 @@ def ingest_holdings(
     ``parse_run_id = NULL`` holdings invisible to the product query contract).
     Runs under the shared ``ingest_holdings:{quarter}`` lock, so a concurrent
     scheduled/dashboard ingest for the same quarter is reported as a conflict
-    rather than run as an untracked second copy. ``quarter`` is the calendar
-    quarter the filings' period_of_report falls in (a proxy = filed_at until
-    parsed), matching the job's window.
+    rather than run as an untracked second copy.
+
+    ``quarter`` is a **report quarter** — the period the holdings are "as of",
+    the same thing ``fetch-holdings`` means by it. The job widens to the filing
+    quarter internally (13Fs for Q are filed within 45 days after Q ends); see
+    ``_ingest_candidate_filings``.
     """
     from app.services.thirteenf_admin_dashboard import run_locked_job
 
@@ -273,7 +276,6 @@ def backfill(
     from app.services.edgar_ingestion import (
         backfill_quarters,
         ingest_pending_holdings,
-        next_quarter_label,
     )
 
     db = SessionLocal()
@@ -290,17 +292,21 @@ def backfill(
 
         # Step 2: ingest the freshly-indexed (un-ingested) filings via the modern
         # job path. `ingest_pending_holdings` groups pending filings by the
-        # calendar quarter their (proxy) period_of_report falls in and delegates
-        # each to the ingest job so holdings are ParseRun-backed and
-        # product-visible (fixes F6). We bound it to the report quarters Step 1
-        # indexed PLUS each one's following (filing) calendar quarter — where a
-        # freshly-indexed filing's proxy period (= filed_at) lands until parsed.
-        # That reaches the newest report quarter's filings, filed the following
-        # quarter and therefore outside any report-quarter window (fixes F5),
-        # while keeping `--quarters N` honest: without the bound a single
-        # permanently-stuck filing (e.g. a CIK-less manager) would drag every
-        # historical quarter into every run.
-        scoped = {q for q in results} | {next_quarter_label(q) for q in results}
+        # REPORT quarter their filings belong to, and delegates each to the
+        # ingest job so holdings are ParseRun-backed and product-visible (F6).
+        #
+        # The bound is exactly the report quarters Step 1 indexed. It used to be
+        # widened to `{q} | {next_quarter_label(q)}` because `ingest_holdings`
+        # windowed on the proxy period, so the newest report quarter's filings —
+        # submitted the following calendar quarter — fell outside every
+        # report-quarter window (F5). `_ingest_candidate_filings` now owns that
+        # translation, so the widening here would only reach into a quarter this
+        # backfill never indexed.
+        #
+        # The bound keeps `--quarters N` honest: without it, one permanently
+        # stuck filing (e.g. a CIK-less manager) drags every historical quarter
+        # into every run.
+        scoped = set(results)
         summaries = ingest_pending_holdings(
             db, quarters=scoped, log=lambda m: typer.echo(f"  {m}")
         )
