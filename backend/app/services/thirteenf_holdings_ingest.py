@@ -29,6 +29,56 @@ logger = logging.getLogger(__name__)
 PARSER_VERSION = "v1"
 FINGERPRINT_VERSION = "v1"
 
+# Same 0.1% band the quality reconciliation uses (edgar_quality._RECONCILE_THRESHOLD).
+_REPARSE_RECONCILE_THRESHOLD = 0.001
+
+
+def _reparse_regression_reason(
+    session: Session,
+    filing: "Filing13F",
+    candidate_computed: int,
+    candidate_rows: int,
+    old_current_run_id: int | None,
+) -> str | None:
+    """Why a reparse must NOT replace the current run — or None to proceed.
+
+    Only a reparse switches the current pointer (`old_current_run_id` set); a
+    first ingest is never gated. Two checks:
+
+    * **Value.** The filer's own `reported_total_value_thousands` comes from the
+      primary doc and does not change on reparse. A candidate whose holdings sum
+      disagrees with it by more than the reconciliation band is not trustworthy
+      enough to auto-replace the current run. (The 6 known filers who report
+      thousands-under-a-dollars-schema still pass: their reported total carries
+      the same unit, so computed and reported agree.)
+    * **Row count.** When the filer declared no total, a candidate with strictly
+      fewer rows than the prior current run is a partial parse.
+
+    A quarantined run is kept for audit; the prior current run keeps serving.
+    """
+    if old_current_run_id is None:
+        return None
+
+    reported = filing.reported_total_value_thousands
+    if reported and reported > 0:
+        divergence = abs(candidate_computed - reported) / reported
+        if divergence > _REPARSE_RECONCILE_THRESHOLD:
+            return (
+                f"candidate total {candidate_computed:,} diverges "
+                f"{divergence * 100:.1f}% from the filer's reported total "
+                f"{reported:,} — failed reconciliation gate"
+            )
+        return None
+
+    prior = session.get(ParseRun13F, old_current_run_id)
+    if prior is not None and prior.holdings_count and candidate_rows < prior.holdings_count:
+        return (
+            f"candidate has {candidate_rows} rows vs the prior current run's "
+            f"{prior.holdings_count}, and the filer declared no total to check "
+            f"against — possible partial parse"
+        )
+    return None
+
 
 def normalize_investment_discretion(raw: str | None) -> str | None:
     if raw is None:
@@ -260,11 +310,57 @@ def _do_ingest_holdings(
         session.bulk_save_objects(holdings)
         session.flush()
 
+        candidate_computed = sum(h.value_thousands or 0 for h in holdings)
+        parse_run.holdings_count = len(holdings)
+        parse_run.finished_at = datetime.now(timezone.utc)
+
+        # Activation gate (external review P1). A reparse — and only a reparse,
+        # `old_current_run_id is not None` — must not replace a verified current
+        # run with a value-inconsistent one. A valid-but-partial InfoTable (one
+        # Apple row where the filer declared two positions) parses cleanly, so
+        # nothing below would reject it; it would become current, overwrite
+        # `computed_total_value_thousands`, and — because that is the PREFERRED
+        # denominator in `compute_portfolio_weight` — send every weight on the
+        # filing wrong (Apple 47% -> 100%), silently, with the job green.
+        #
+        # A first ingest (`old_current_run_id is None`) is never gated: a
+        # genuinely non-compliant filer must still get its one and only run.
+        quarantine_reason = _reparse_regression_reason(
+            session, filing, candidate_computed, len(holdings), old_current_run_id
+        )
+        if quarantine_reason is not None:
+            # Keep the run for audit, succeeded but NOT current, and restore the
+            # prior current run in this same transaction (no committed
+            # no-current window — series-review P1). The filing's totals and
+            # parse_status keep the prior good values.
+            parse_run.status = "succeeded"
+            parse_run.is_current = False
+            session.add(parse_run)
+            restored = session.get(ParseRun13F, old_current_run_id)
+            if restored is not None and not restored.is_current:
+                restored.is_current = True
+                session.add(restored)
+            logger.warning(
+                "Reparse of %s quarantined: %s (candidate not made current)",
+                accession_number, quarantine_reason,
+            )
+            sp.commit()
+            session.commit()
+            session.refresh(parse_run)
+            return {
+                "parse_run_id": parse_run.id,
+                "holdings_count": len(holdings),
+                "quarantined": True,
+                "quarantine_reason": quarantine_reason,
+                "value_unit_raw": decision.value_unit_raw,
+                "value_parse_rule": decision.value_parse_rule,
+                "warnings": decision.warnings,
+                "skipped": False,
+            }
+
         # Phase 2: atomic switch — mark succeeded + is_current=True.
         parse_run.status = "succeeded"
         parse_run.is_current = True
-        parse_run.holdings_count = len(holdings)
-        parse_run.finished_at = datetime.now(timezone.utc)
         session.add(parse_run)
 
         # Mirror the run outcome onto the filing — Filing13F.parse_status is the
@@ -278,12 +374,10 @@ def _do_ingest_holdings(
         # reported total. The legacy per-filing path wrote it; this one did not,
         # so an automated database had NULL weights everywhere and a
         # reconciliation check that compared nothing and passed.
-        filing.computed_total_value_thousands = sum(
-            h.value_thousands or 0 for h in holdings
-        )
+        filing.computed_total_value_thousands = candidate_computed
         filing.common_holdings_count = sum(1 for h in holdings if h.put_call is None)
         session.add(filing)
-        
+
         # A parsed RESTATEMENT amendment supersedes the original — activate it
         # and demote the superseded filing. Idempotent; the bulk pipeline's
         # reconciliation phase re-runs it for already-ingested restatements.
