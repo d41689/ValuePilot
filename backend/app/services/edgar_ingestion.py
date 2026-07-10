@@ -249,6 +249,8 @@ def seed_confirmed_managers(db: Session) -> dict[str, Any]:
         legacy_manager_type = derive_legacy_manager_type(style_primary)
         capital_structure = entry.get("capital_structure", "unknown")
 
+        previous_ciks = [c for c in (entry.get("previous_ciks") or []) if c]
+
         # Match by CIK first (authoritative SEC identifier), then fall back to dataroma_code.
         # Avoids MultipleResultsFound when separate DB records each satisfy one side of an OR.
         existing = db.query(InstitutionManager).filter_by(cik=cik).one_or_none()
@@ -269,15 +271,21 @@ def seed_confirmed_managers(db: Session) -> dict[str, Any]:
         # deploy (external review P1). Finding the row by its previous CIK turns
         # that into an audited re-point, handled by the existing update path
         # below — which writes the new CIK and (further down) records the change.
-        if existing is None:
-            previous_ciks = [c for c in (entry.get("previous_ciks") or []) if c]
-            if previous_ciks:
-                existing = (
-                    db.query(InstitutionManager)
-                    .filter(InstitutionManager.cik.in_(previous_ciks))
-                    .one_or_none()
-                )
-        if existing is None and _cik_was_revoked_by_a_human(db, cik):
+        if existing is None and previous_ciks:
+            existing = (
+                db.query(InstitutionManager)
+                .filter(InstitutionManager.cik.in_(previous_ciks))
+                .one_or_none()
+            )
+        # A revoke NULLs the CIK, so a human who revoked this manager at ANY of
+        # its known CIKs — the current one OR a previous one — cannot be found by
+        # the lookups above (round 2: the previous_ciks lookup filters on a
+        # non-NULL cik, and the revoke audit event records the OLD cik, not the
+        # new). Check every CIK the seed knows for this manager, else the create
+        # path below would resurrect a human-revoked manager under the new CIK.
+        if existing is None and any(
+            _cik_was_revoked_by_a_human(db, c) for c in (cik, *previous_ciks)
+        ):
             # A human detached exactly this CIK, with a note and an audit event.
             # Neither key above can find that manager (revoke NULLs the CIK, and
             # only 20/82 entries carry a dataroma_code) — so without this the
