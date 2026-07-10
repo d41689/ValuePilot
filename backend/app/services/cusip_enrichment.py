@@ -375,7 +375,14 @@ def enrich_all_unmapped_holdings(
         "batches_run": batches,
         "new_stocks": new_stocks,
         "holdings_linked": holdings_linked,
-        "holdings_still_unmapped": _count_enrichable_holdings(db),
+        # NOT "how many holdings lack a stock_id". `_count_enrichable_holdings`
+        # is the OpenFIGI work queue: it excludes `needs_review` (the human
+        # adjudication queue) and any CUSIP that already has a cusip_ticker_map
+        # row, including one that resolved to nothing. Those holdings are still
+        # unlinked and still invisible to the product. Named for what it is so
+        # nobody reads 0 as "everything is linked" — see
+        # `_execute_enrichment_metadata`, which reports the unlinked buckets.
+        "holdings_still_enrichable": _count_enrichable_holdings(db),
     }
 
 

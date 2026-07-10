@@ -390,7 +390,7 @@ def test_enrich_all_runs_to_completion(db_session):
         db_session, client=OpenFigiClient(use_stub=True), batch_size=2,
     )
 
-    assert summary["holdings_still_unmapped"] == 0
+    assert summary["holdings_still_enrichable"] == 0
     assert summary["batches_run"] >= 2          # 4 CUSIPs at batch_size 2
     assert summary["mappings_created"] >= 4
     assert summary["holdings_linked"] >= 4
@@ -408,5 +408,5 @@ def test_enrich_all_terminates_on_unresolvable_cusip(db_session):
     )
 
     assert summary["batches_run"] == 1            # terminated, did not spin
-    assert summary["holdings_still_unmapped"] == 0
+    assert summary["holdings_still_enrichable"] == 0
     assert db_session.query(CusipTickerMap).filter_by(cusip="037833100").count() == 1

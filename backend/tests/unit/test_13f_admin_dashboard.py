@@ -1611,7 +1611,7 @@ def test_quarterly_pipeline_records_retryable_stage_jobs(db_session, monkeypatch
         lambda session, **kw: calls.append("enrich_cusip")
         or {
             "mappings_created": 3, "batches_run": 1, "new_stocks": 4,
-            "holdings_linked": 5, "holdings_still_unmapped": 0,
+            "holdings_linked": 5, "holdings_still_enrichable": 0,
         },
     )
     monkeypatch.setattr(

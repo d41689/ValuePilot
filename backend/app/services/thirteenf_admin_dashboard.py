@@ -3840,11 +3840,35 @@ def _execute_enrichment_metadata(session: Session, payload: dict[str, Any]) -> d
         "batches_run": enriched["batches_run"],
         "new_stocks": enriched["new_stocks"],
         "holdings_linked": enriched["holdings_linked"],
-        # Surfaced on purpose: holdings we still cannot map are silently missing
-        # from Oracle's Lens, so the number belongs in the job summary.
-        "holdings_still_unmapped": enriched["holdings_still_unmapped"],
+        # The OpenFIGI work queue. Draining it to 0 does NOT mean every holding
+        # is linked, so it is reported alongside — never instead of — the
+        # unlinked buckets below (external review P2).
+        "holdings_still_enrichable": enriched["holdings_still_enrichable"],
+        # What Oracle's Lens actually cares about: `stock_id IS NULL` means the
+        # holding is absent from `_eligible_stock_ids`, from the Watchlist × 13F
+        # columns, and from the stock-detail drawer. `needs_review` holdings sit
+        # here permanently until a human resolves them via
+        # `/cusip-mappings?needs_review=true`.
+        **_unlinked_holding_buckets(session),
         "edgar_stock_enrichment": edgar_stock_enrichment,
         "status": "succeeded",
+    }
+
+
+def _unlinked_holding_buckets(session: Session) -> dict[str, Any]:
+    """Holdings with no `stock_id`, split by why — the product-visible truth."""
+    from app.models.institutions import Holding13F
+
+    rows = (
+        session.query(Holding13F.cusip_mapping_status, func.count(Holding13F.id))
+        .filter(Holding13F.stock_id.is_(None))
+        .group_by(Holding13F.cusip_mapping_status)
+        .all()
+    )
+    by_status = {status or "unknown": count for status, count in rows}
+    return {
+        "holdings_unlinked_total": sum(by_status.values()),
+        "holdings_unlinked_by_status": dict(sorted(by_status.items())),
     }
 def build_cusip_mappings(session: Session, limit: int, needs_review: bool, unresolved: bool) -> list[dict[str, Any]]:
     from app.models.institutions import CusipTickerMap, Holding13F
