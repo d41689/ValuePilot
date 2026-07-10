@@ -635,8 +635,9 @@ long — escalate to the user. **medium / low** = ordinary follow-up.
 - **Context:** `docs/tasks/2026-07-10_13f-seed-cik-audit.md`
 - **Issue:** —
 
-### 13F: fixing the seed CIKs cannot repair an existing database
+### 13F: fixing the seed CIKs cannot repair an existing database — RESOLVED 2026-07-10 (PR #116)
 - **Found:** 2026-07-10, while correcting `confirmed_managers.json`
+- **Resolved:** `previous_ciks` + an audited `seed_cik_repoint` event make re-seed idempotent on an existing DB (`created=0`, one row per manager). The downstream recompute remains in the ticket.
 - **Severity:** high (blocks applying the CIK fix to dev/prod)
 - **Problem:** `seed_confirmed_managers` looks a manager up by `cik`, then by
   `dataroma_code`. A **changed** CIK is found by neither for 10 of the 11 corrected

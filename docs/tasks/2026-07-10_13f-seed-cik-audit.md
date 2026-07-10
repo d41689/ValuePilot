@@ -1,7 +1,7 @@
 # 13F — 11 curated managers have a CIK that never files a 13F
 
 Date opened: 2026-07-10
-Status: **CIKs corrected 2026-07-10; guards + recompute still open**
+Status: **CIKs corrected + audited re-point + reparse gate landed (PR #116, review round 1); readiness check + recompute still open**
 Severity: **high** — silent, product-visible, affects Oracle's Lens consensus
 Found: while answering "can we confirm the pipeline parses 13F data correctly?"
 after PR #115 merged. The pipeline is correct; the universe it is fed is not.
@@ -118,8 +118,12 @@ recompute for existing databases.
       is explicitly marked as not-a-13F-filer with a recorded reason. **A human
       confirms each CIK against EDGAR** — a name grep over `form.idx` is evidence,
       not proof.
-- [ ] `dev`/`prod`: after re-seeding, `confirmed managers with zero filings` drops to 0
-      (or to the count of managers explicitly ruled not-13F-filers).
+- [x] The seed can safely re-point an existing DB: `previous_ciks` + an audited
+      `seed_cik_repoint` event make re-seed idempotent (`created=0`, one row per
+      manager). Verified against the real dev DB (rolled back).
+- [ ] `dev`/`prod`: run the re-seed for real, then execute the downstream recompute
+      (ownership_changes + Oracle's Lens) for every quarter — a re-point is a
+      universe change; the audit events flag it `requires_downstream_review`.
 - [x] A new offline test asserts every seeded CIK is a distinct, 10-digit,
       zero-padded string, and that no two managers normalize to the same name
       (`test_13f_manager_seed_startup.py`).
