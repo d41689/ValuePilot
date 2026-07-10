@@ -77,7 +77,10 @@
       "tepper"
     ],
     "classification_rationale": "Distressed credit + equity + macro overlay; converted to family office.",
-    "cik_source": "EDGAR submissions API, verified 2026-07-10. Was 0001006438: Appaloosa Management LP stopped filing 13F-HR after 2016-02-12."
+    "cik_source": "EDGAR submissions API, verified 2026-07-10. Was 0001006438: Appaloosa Management LP stopped filing 13F-HR after 2016-02-12.",
+    "previous_ciks": [
+      "0001006438"
+    ]
   },
   {
     "display_name": "Guy Spier - Aquamarine Capital",
@@ -93,7 +96,10 @@
       "concentrated"
     ],
     "classification_rationale": "Self-described Buffett disciple; concentrated buy-and-hold.",
-    "cik_source": "EDGAR submissions API, verified 2026-07-10. Was 0001404599: Aquamarine Capital Management LLC stopped filing 13F-HR after 2022-08-02; Spier's firm now files from Zurich."
+    "cik_source": "EDGAR submissions API, verified 2026-07-10. Was 0001404599: Aquamarine Capital Management LLC stopped filing 13F-HR after 2022-08-02; Spier's firm now files from Zurich.",
+    "previous_ciks": [
+      "0001404599"
+    ]
   },
   {
     "display_name": "John Rogers - Ariel Investments",
@@ -206,7 +212,10 @@
       "risk_parity"
     ],
     "classification_rationale": "Global macro / All Weather; 13F equity sleeve has weak stock-pick signal.",
-    "cik_source": "EDGAR submissions API, verified 2026-07-10. Was 0001350685: seeded CIK resolves to a natural person (LEWSADDER SUZANNE) with zero filings — a typo."
+    "cik_source": "EDGAR submissions API, verified 2026-07-10. Was 0001350685: seeded CIK resolves to a natural person (LEWSADDER SUZANNE) with zero filings — a typo.",
+    "previous_ciks": [
+      "0001350685"
+    ]
   },
   {
     "display_name": "William von Mueffling - Cantillon Capital",
@@ -266,7 +275,10 @@
       "special_situations"
     ],
     "classification_rationale": "Deep value + special situations + distressed credit.",
-    "cik_source": "EDGAR submissions API, verified 2026-07-10. Was 0001389402: seeded CIK was the FUND (Chou Associates Fund), last 13F-HR 2011-08-15; off by one digit from the manager."
+    "cik_source": "EDGAR submissions API, verified 2026-07-10. Was 0001389402: seeded CIK was the FUND (Chou Associates Fund), last 13F-HR 2011-08-15; off by one digit from the manager.",
+    "previous_ciks": [
+      "0001389402"
+    ]
   },
   {
     "dataroma_code": "DAV",
@@ -457,7 +469,10 @@
       "romick"
     ],
     "classification_rationale": "FPA Crescent / FPA Capital; classic absolute-return value.",
-    "cik_source": "EDGAR submissions API, verified 2026-07-10. Was 0000109501: First Pacific Advisors INC stopped filing 13F-HR after 2006-11-14."
+    "cik_source": "EDGAR submissions API, verified 2026-07-10. Was 0000109501: First Pacific Advisors INC stopped filing 13F-HR after 2006-11-14.",
+    "previous_ciks": [
+      "0000109501"
+    ]
   },
   {
     "display_name": "Terry Smith - Fundsmith Equity",
@@ -474,7 +489,10 @@
       "global_franchises"
     ],
     "classification_rationale": "'Buy good companies, don't overpay, do nothing'; ~25 global franchises.",
-    "cik_source": "EDGAR submissions API, verified 2026-07-10. Was 0001520023: seeded CIK was the FUND (Fundsmith Equity Fund LP), last 13F-HR 2018-09-04; the manager is Fundsmith LLP."
+    "cik_source": "EDGAR submissions API, verified 2026-07-10. Was 0001520023: seeded CIK was the FUND (Fundsmith Equity Fund LP), last 13F-HR 2018-09-04; the manager is Fundsmith LLP.",
+    "previous_ciks": [
+      "0001520023"
+    ]
   },
   {
     "display_name": "Thomas Russo - Gardner Russo & Quinn",
@@ -567,7 +585,10 @@
       "short_bias_capability"
     ],
     "classification_rationale": "Long-short value; well-known for short calls (Lehman, etc.) — 13F only shows longs.",
-    "cik_source": "EDGAR submissions API, verified 2026-07-10. Was 0001079114: Greenlight Capital Inc stopped filing 13F-HR after 2024-02-14; Einhorn's holdings now file under DME."
+    "cik_source": "EDGAR submissions API, verified 2026-07-10. Was 0001079114: Greenlight Capital Inc stopped filing 13F-HR after 2024-02-14; Einhorn's holdings now file under DME.",
+    "previous_ciks": [
+      "0001079114"
+    ]
   },
   {
     "display_name": "Duan Yongping - H&H International Investment",
@@ -632,7 +653,10 @@
       "activist"
     ],
     "classification_rationale": "Permanent capital via Icahn Enterprises; classic activist.",
-    "cik_source": "EDGAR submissions API, verified 2026-07-10. Was 0001413902: Icahn Capital Management LP stopped filing 13F-HR after 2007-11-14; Icahn now files under his own CIK."
+    "cik_source": "EDGAR submissions API, verified 2026-07-10. Was 0001413902: Icahn Capital Management LP stopped filing 13F-HR after 2007-11-14; Icahn now files under his own CIK.",
+    "previous_ciks": [
+      "0001413902"
+    ]
   },
   {
     "display_name": "Jensen Investment Management",
@@ -1089,7 +1113,10 @@
       "deep_value"
     ],
     "classification_rationale": "Marty Whitman legacy; 'safe and cheap' deep value.",
-    "cik_source": "EDGAR submissions API, verified 2026-07-10. Was 0001002858: an old CIK for the same firm; last 13F-HR 2004-11-15."
+    "cik_source": "EDGAR submissions API, verified 2026-07-10. Was 0001002858: an old CIK for the same firm; last 13F-HR 2004-11-15.",
+    "previous_ciks": [
+      "0001002858"
+    ]
   },
   {
     "display_name": "Daniel Loeb - Third Point",
@@ -1154,7 +1181,10 @@
       "consumer_brands"
     ],
     "classification_rationale": "Activist on consumer brands and industrials (P&G, Disney, Heinz).",
-    "cik_source": "EDGAR submissions API, verified 2026-07-10. Was 0001345472: seeded CIK was the GP entity, last 13F-HR 2011-05-16; off by one digit from the filing L.P.."
+    "cik_source": "EDGAR submissions API, verified 2026-07-10. Was 0001345472: seeded CIK was the GP entity, last 13F-HR 2011-05-16; off by one digit from the filing L.P..",
+    "previous_ciks": [
+      "0001345472"
+    ]
   },
   {
     "display_name": "Triple Frond Partners",
@@ -1216,7 +1246,10 @@
       "constructive_activist"
     ],
     "classification_rationale": "Constructive activist (Microsoft historical, Spotify, etc.); long-hold.",
-    "cik_source": "EDGAR submissions API, verified 2026-07-10. Was 0001351069: ValueAct Capital Management LP stopped filing 13F-HR after 2008-08-14."
+    "cik_source": "EDGAR submissions API, verified 2026-07-10. Was 0001351069: ValueAct Capital Management LP stopped filing 13F-HR after 2008-08-14.",
+    "previous_ciks": [
+      "0001351069"
+    ]
   },
   {
     "display_name": "O. Andreas Halvorsen - Viking Global",

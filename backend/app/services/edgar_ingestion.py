@@ -201,7 +201,7 @@ def seed_confirmed_managers(db: Session) -> dict[str, Any]:
             "seed_entries": 0, "created": 0, "updated": 0,
             "skipped_human_decided": 0, "skipped_needs_review": 0,
             "awaiting_confirmation": 0, "ambiguous_name_match": 0,
-            "created_ciks": [],
+            "created_ciks": [], "cik_repointed": 0, "cik_repointed_ciks": [],
             "skipped_human_decided_ciks": [], "skipped_needs_review_ciks": [],
             "awaiting_confirmation_ciks": [], "ambiguous_name_match_ciks": [],
         }
@@ -228,6 +228,7 @@ def seed_confirmed_managers(db: Session) -> dict[str, Any]:
 
     created = 0
     created_ciks: list[str] = []
+    cik_repointed: list[str] = []
     updated = 0
     skipped_human_decided: list[str] = []
     skipped_needs_review: list[str] = []
@@ -257,6 +258,25 @@ def seed_confirmed_managers(db: Session) -> dict[str, Any]:
                 .filter_by(dataroma_code=dataroma_code)
                 .one_or_none()
             )
+        # Then by a CURATED previous CIK. A curated CIK sometimes changes — the
+        # filer moved entities (Greenlight → DME), or the original was simply
+        # wrong (Trian's GP vs its L.P., off by one digit). On a database seeded
+        # from the OLD file, neither key above finds that manager: the row still
+        # carries the old CIK, and only 20/82 entries have a dataroma_code. Left
+        # alone, the seed would CREATE a second confirmed row for the same
+        # manager (5 real duplicates on the current file) or refuse it as a name
+        # collision (5 more left absent), turning 82 managers into 87 on every
+        # deploy (external review P1). Finding the row by its previous CIK turns
+        # that into an audited re-point, handled by the existing update path
+        # below — which writes the new CIK and (further down) records the change.
+        if existing is None:
+            previous_ciks = [c for c in (entry.get("previous_ciks") or []) if c]
+            if previous_ciks:
+                existing = (
+                    db.query(InstitutionManager)
+                    .filter(InstitutionManager.cik.in_(previous_ciks))
+                    .one_or_none()
+                )
         if existing is None and _cik_was_revoked_by_a_human(db, cik):
             # A human detached exactly this CIK, with a note and an audit event.
             # Neither key above can find that manager (revoke NULLs the CIK, and
@@ -292,6 +312,29 @@ def seed_confirmed_managers(db: Session) -> dict[str, Any]:
 
             # Identity + classification only. `match_status` / `status` are
             # deliberately NOT written here (see the docstring).
+            #
+            # A CIK change on a confirmed manager is the same identity edit
+            # `revoke_confirmed_cik` demands a note for, so record it: an audit
+            # event with the old and new CIK, flagged for downstream review
+            # because the manager's holdings will now be ingested under the new
+            # filer and every quarter's Oracle's Lens consensus shifts.
+            if existing.cik and existing.cik != cik:
+                db.add(
+                    InstitutionManagerCikReviewEvent(
+                        manager_id=existing.id,
+                        event_type="seed_cik_repoint",
+                        old_cik=existing.cik,
+                        new_cik=cik,
+                        old_match_status=existing.match_status,
+                        new_match_status=existing.match_status,
+                        note=(
+                            "Automated seed re-point: the curated CIK changed. "
+                            + (entry.get("cik_source") or "")
+                        ).strip(),
+                        requires_downstream_review=True,
+                    )
+                )
+                cik_repointed.append(cik)
             existing.cik = cik
             if entry.get("display_name"):
                 existing.display_name = entry["display_name"]
@@ -369,6 +412,8 @@ def seed_confirmed_managers(db: Session) -> dict[str, Any]:
         "seed_entries": len(seed_data),
         "created": created,
         "created_ciks": created_ciks,
+        "cik_repointed": len(cik_repointed),
+        "cik_repointed_ciks": cik_repointed,
         "updated": updated,
         "skipped_human_decided": len(skipped_human_decided),
         "skipped_needs_review": len(skipped_needs_review),

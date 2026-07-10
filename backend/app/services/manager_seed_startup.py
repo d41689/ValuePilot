@@ -109,23 +109,33 @@ def _report_findings(report: dict[str, Any]) -> None:
 
 
 def _note_universe_change(db: Session, report: dict[str, Any]) -> bool:
-    """True when this deploy widened an already-scored manager universe."""
-    if not report["created"]:
+    """True when this deploy changed an already-scored manager universe.
+
+    Both a newly CREATED manager and a RE-POINTED one change the universe: the
+    first adds a filer, the second swaps which SEC filer a manager's holdings
+    come from. Either shifts Oracle's Lens consensus for every affected quarter.
+    """
+    created = report.get("created") or 0
+    repointed = report.get("cik_repointed") or 0
+    if not created and not repointed:
         return False
     if not _database_has_13f_holdings(db):
         # Day 0. Managers created, but there is no prior scoring to invalidate.
         return False
 
     logger.warning(
-        "MANAGER UNIVERSE CHANGED: this deploy added %d manager(s) to a database "
-        "that already holds 13F data. Oracle's Lens consensus depends on the "
-        "universe (min_holders=3), so existing ownership_changes, Lens signals, "
-        "and readiness metrics were computed under the OLD universe and are now "
-        "stale. No recompute was triggered — an operator must re-run "
-        "compute_ownership_changes and oracles_lens_score_backfill for the "
-        "affected quarters. Created: %s",
-        report["created"],
+        "MANAGER UNIVERSE CHANGED: this deploy created %d and re-pointed %d "
+        "manager(s) on a database that already holds 13F data. Oracle's Lens "
+        "consensus depends on the universe (min_holders=3), so existing "
+        "ownership_changes, Lens signals, and readiness metrics were computed "
+        "under the OLD universe and are now stale. No recompute was triggered — "
+        "an operator must re-run compute_ownership_changes and "
+        "oracles_lens_score_backfill for the affected quarters. Created: %s; "
+        "re-pointed: %s",
+        created,
+        repointed,
         _capped(report.get("created_ciks") or []),
+        _capped(report.get("cik_repointed_ciks") or []),
     )
     return True
 

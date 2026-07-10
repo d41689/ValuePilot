@@ -3160,6 +3160,11 @@ def _execute_job(session: Session, job_type: str, payload: dict[str, Any]) -> di
             "managers_seeded": seed_report["created"] + seed_report["updated"],
             "managers_created": seed_report["created"],
             "managers_updated": seed_report["updated"],
+            # A CIK re-point changes which SEC filer a manager's holdings come
+            # from, so it is flagged for a downstream recompute (an audit event
+            # is also written per manager).
+            "managers_cik_repointed": seed_report.get("cik_repointed", 0),
+            "managers_cik_repointed_ciks": seed_report.get("cik_repointed_ciks", [])[:_SEED_SUMMARY_CIK_CAP],
             "managers_skipped_human_decided": seed_report["skipped_human_decided"],
             "managers_skipped_needs_review": seed_report["skipped_needs_review"],
             "managers_awaiting_confirmation": seed_report["awaiting_confirmation"],
