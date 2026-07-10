@@ -23,6 +23,7 @@ import {
   type UniverseFilters,
 } from '@/components/oraclesLens/UniverseSelector';
 import thirteenfAdminHelpers from '@/lib/thirteenfAdmin';
+import { ReadinessWarnings } from '@/lib/readinessWarnings';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
@@ -434,11 +435,10 @@ export default function OraclesLensPage() {
       ) : readiness.warnings.length ? (
         <div className="flex gap-3 rounded-md border border-border/70 bg-muted/40 px-4 py-3 text-sm text-muted-foreground">
           <Info className="mt-0.5 h-4 w-4 shrink-0" />
-          <div className="space-y-1">
-            {readiness.warnings.slice(0, 3).map((warning) => (
-              <div key={warning}>{warning}</div>
-            ))}
-          </div>
+          {/* Structured `{ code, message }` warnings — rendered via the extracted
+              ReadinessWarnings so the render boundary is covered by a lib test
+              (readinessWarnings.test.js). See its header for the crash it prevents. */}
+          <ReadinessWarnings warnings={readiness.warnings} />
         </div>
       ) : null}
 
