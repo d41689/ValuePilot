@@ -1602,7 +1602,15 @@ def test_quarterly_pipeline_records_retryable_stage_jobs(db_session, monkeypatch
     monkeypatch.setattr(
         "app.services.thirteenf_admin_dashboard._execute_ingest_job",
         lambda session, job_type, payload: calls.append(f"{job_type}:{payload['quarter']}")
-        or {"filings_processed": 2, "filings_failed": 0, "holdings_inserted": 10, "status": "succeeded"},
+        or {
+            "filings_processed": 2,
+            # Both filings belong to the quarter this pipeline is about to score.
+            # Omit it and the run reads as "ingested filings, but none for this
+            # quarter" — the pipeline then correctly refuses to report green.
+            "filings_for_requested_quarter": 2,
+            "filings_routed_to_other_quarters": {},
+            "filings_failed": 0, "holdings_inserted": 10, "status": "succeeded",
+        },
     )
     # enrich_metadata now runs CUSIP mapping to completion (bootstrap + backfill
     # happen inside the loop), same as the standalone enrich_cusip job.

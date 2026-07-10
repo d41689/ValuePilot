@@ -67,14 +67,28 @@ def _infotable_doc(db_session, accession):
     return doc
 
 
-def _filing(db_session, manager, *, accession, period, filed, ingested=False):
+def _quarter_of(d):
+    return f"{d.year}-Q{(d.month - 1) // 3 + 1}"
+
+
+def _filing(
+    db_session, manager, *, accession, period, filed, ingested=False,
+    form_type="13F-HR", routed=None,
+):
+    """`routed` mirrors `backfill_period_routing`, which writes period_of_report,
+    quarter_end_date and report_quarter in one pass. Defaults to `ingested`.
+    Pass `routed=False, ingested=True` to model a job that died between Phase 1
+    (infotable fetched) and Phase 2 (period routed).
+    """
+    is_routed = ingested if routed is None else routed
     f = Filing13F(
         manager_id=manager.id,
         accession_no=accession,
-        form_type="13F-HR",
+        form_type=form_type,
         period_of_report=period,
         filed_at=datetime.combine(filed, datetime.min.time(), tzinfo=timezone.utc),
         parse_status="succeeded" if ingested else "pending",
+        report_quarter=_quarter_of(period) if is_routed else None,
         raw_infotable_doc_id=(
             _infotable_doc(db_session, accession).id if ingested else None
         ),
@@ -161,12 +175,7 @@ def test_ingest_does_not_steal_the_next_quarters_unparsed_filings(
 def test_an_already_parsed_filing_is_not_reclaimed_by_the_filed_quarter_window(
     db_session, manager
 ):
-    """After parsing, a 2025-Q4 filing must not also answer to `ingest(2026-Q1)`.
-
-    Its proxy period is gone — `period_of_report` is now 2025-12-31 — but the
-    filed-quarter arm of the selection is restricted to un-ingested rows, so it
-    cannot match. Otherwise every quarter would re-ingest its predecessor.
-    """
+    """After routing, a 2025-Q4 filing must not also answer to `ingest(2026-Q1)`."""
     parsed = _filing(
         db_session, manager,
         accession="0001067983-26-000004",
@@ -180,6 +189,208 @@ def test_an_already_parsed_filing_is_not_reclaimed_by_the_filed_quarter_window(
     assert parsed.accession_no not in _accessions(picked)
 
 
+def test_an_unrouted_filing_is_claimed_by_exactly_one_quarter(db_session, manager):
+    """The P1 regression, reproduced by the external reviewer.
+
+    A 2025-Q4 13F-HR filed 2026-02-17 carries proxy period 2026-02-17. Under the
+    first fix it satisfied BOTH `ingest(2025-Q4)`'s filed-window arm AND
+    `ingest(2026-Q1)`'s period-window arm. `lock_key` is
+    `ingest_holdings:{quarter}`, so the two jobs do not exclude each other:
+    whichever ran first parsed the other's filings, and the rightful quarter's
+    downstream stages scored holdings it never ingested — with
+    `filings_processed > 0`, so the D2 guard stayed silent.
+    """
+    proxy = _filing(
+        db_session, manager,
+        accession="0001067983-26-000010",
+        period=date(2026, 2, 17),
+        filed=date(2026, 2, 17),
+    )
+
+    claimed_by = [
+        q for q in ("2025-Q3", "2025-Q4", "2026-Q1", "2026-Q2")
+        if proxy.accession_no in _accessions(_ingest_candidate_filings(db_session, q))
+    ]
+
+    assert claimed_by == ["2025-Q4"], f"claimed by {claimed_by}, must be exactly one"
+
+
+def test_every_unrouted_filing_across_adjacent_quarters_is_claimed_once(
+    db_session, manager
+):
+    """No un-routed row may be claimed twice, and none may be orphaned."""
+    rows = {
+        # (accession suffix, proxy period == filed_at) -> the quarter that owns it
+        "000011": (date(2026, 2, 17), "2025-Q4"),   # 2025-Q4 HR, filed on time
+        "000012": (date(2026, 5, 14), "2026-Q1"),   # 2026-Q1 HR, filed on time
+        "000013": (date(2026, 8, 12), "2026-Q2"),   # 2026-Q2 HR, filed on time
+    }
+    for suffix, (period, _) in rows.items():
+        _filing(
+            db_session, manager,
+            accession=f"0001067983-26-{suffix}", period=period, filed=period,
+        )
+
+    for suffix, (_, owner) in rows.items():
+        accession = f"0001067983-26-{suffix}"
+        claimed_by = [
+            q for q in ("2025-Q3", "2025-Q4", "2026-Q1", "2026-Q2", "2026-Q3")
+            if accession in _accessions(_ingest_candidate_filings(db_session, q))
+        ]
+        assert claimed_by == [owner], f"{accession} claimed by {claimed_by}"
+
+
+def test_a_filing_with_an_infotable_but_no_routed_period_uses_the_filed_window(
+    db_session, manager
+):
+    """`raw_infotable_doc_id` is not a routing marker.
+
+    Phase 1 of `_execute_ingest_job` sets the infotable link; Phase 2 routes the
+    period. A job that dies between them leaves a row with an infotable and a
+    still-proxy period. Keying the routed arm on `raw_infotable_doc_id` would
+    file that row under its filed quarter instead of its report quarter.
+    """
+    half_done = _filing(
+        db_session, manager,
+        accession="0001067983-26-000014",
+        period=date(2026, 2, 17),   # still the proxy
+        filed=date(2026, 2, 17),
+        ingested=True,              # infotable fetched
+        routed=False,               # ...but Phase 2 never ran
+    )
+
+    assert half_done.accession_no in _accessions(
+        _ingest_candidate_filings(db_session, "2025-Q4")
+    )
+    assert half_done.accession_no not in _accessions(
+        _ingest_candidate_filings(db_session, "2026-Q1")
+    )
+
+
+def test_a_late_filed_13f_is_claimed_by_its_filed_quarters_pipeline(
+    db_session, manager
+):
+    """A 2025-Q4 HR filed in 2026-Q3 (two quarters late).
+
+    No `quarterly_pipeline(2025-Q4)` can reach it — its proxy is 2026-Q3, and a
+    report-quarter job only widens to Q+1. It is claimed by `ingest(2026-Q2)`,
+    whose filed-window is 2026-Q3, and routes to 2025-Q4 on parse. The pipeline
+    must then say so rather than leave 2025-Q4's stale scores unannounced; see
+    `test_a_pipeline_that_restated_another_quarter_says_so`.
+    """
+    late = _filing(
+        db_session, manager,
+        accession="0001067983-26-000015",
+        period=date(2026, 7, 15),
+        filed=date(2026, 7, 15),
+    )
+
+    claimed_by = [
+        q for q in ("2025-Q4", "2026-Q1", "2026-Q2", "2026-Q3")
+        if late.accession_no in _accessions(_ingest_candidate_filings(db_session, q))
+    ]
+
+    assert claimed_by == ["2026-Q2"], f"claimed by {claimed_by}"
+
+
+def test_an_amendment_restating_an_old_period_is_claimed_by_its_filed_quarter(
+    db_session, manager
+):
+    """A 13F-HR/A filed 2026-05-14 restating 2025-Q1.
+
+    Before parse its proxy is 2026-Q2, so `ingest(2026-Q1)` claims it. After
+    routing, `report_quarter` becomes 2025-Q1 and only `ingest(2025-Q1)` will
+    ever pick it up again — the re-run / heal path stays keyed to the truth.
+    """
+    amendment = _filing(
+        db_session, manager,
+        accession="0001067983-26-000016",
+        period=date(2026, 5, 14),
+        filed=date(2026, 5, 14),
+        form_type="13F-HR/A",
+    )
+    assert amendment.accession_no in _accessions(
+        _ingest_candidate_filings(db_session, "2026-Q1")
+    )
+
+    # backfill_period_routing corrects it
+    amendment.period_of_report = date(2025, 3, 31)
+    amendment.report_quarter = "2025-Q1"
+    db_session.flush()
+
+    assert amendment.accession_no in _accessions(
+        _ingest_candidate_filings(db_session, "2025-Q1")
+    )
+    assert amendment.accession_no not in _accessions(
+        _ingest_candidate_filings(db_session, "2026-Q1")
+    )
+
+
+def test_every_filing_shape_is_claimed_by_exactly_one_quarter(db_session):
+    """The whole selection, stated as one property.
+
+    Not "the cases I thought of" — every shape a `Filing13F` can hold. Claimed
+    twice means two pipelines race for it (their `lock_key`s differ, so nothing
+    stops them). Claimed zero times means it is stranded forever.
+
+    The degraded row is the subtle one: `route_period` can return a REAL period
+    with `report_quarter = None` (`PERIOD_TOO_FAR_FROM_QUARTER_END`,
+    `PERIOD_WEEKEND_ADJUSTED_UNVERIFIABLE`). It is claimed by the filed-window
+    arm of whichever quarter contains that period, gets re-routed on every pass,
+    and is surfaced to a human through `filings_routing_needs_review`. Landing in
+    an unexpected quarter is acceptable; being stranded is not.
+    """
+    shapes = {
+        "unrouted, filed on time for 2025-Q4": (
+            date(2026, 2, 17), date(2026, 2, 17), None, "2025-Q4",
+        ),
+        "unrouted, filed on time for 2026-Q1": (
+            date(2026, 5, 14), date(2026, 5, 14), None, "2026-Q1",
+        ),
+        "unrouted, filed two quarters late": (
+            date(2026, 7, 15), date(2026, 7, 15), None, "2026-Q2",
+        ),
+        "routed to 2025-Q4": (
+            date(2025, 12, 31), date(2026, 2, 17), "2025-Q4", "2025-Q4",
+        ),
+        "routed to 2026-Q1": (
+            date(2026, 3, 31), date(2026, 5, 14), "2026-Q1", "2026-Q1",
+        ),
+        "routed amendment restating 2025-Q1": (
+            date(2025, 3, 31), date(2026, 5, 14), "2025-Q1", "2025-Q1",
+        ),
+        "degraded: real period, report_quarter NULL": (
+            date(2025, 11, 15), date(2026, 2, 14), None, "2025-Q3",
+        ),
+        "half-done: infotable fetched, never routed": (
+            date(2026, 2, 18), date(2026, 2, 18), None, "2025-Q4",
+        ),
+    }
+    every_quarter = [f"{y}-Q{q}" for y in (2024, 2025, 2026, 2027) for q in (1, 2, 3, 4)]
+
+    for index, (name, (period, filed, rq, _)) in enumerate(shapes.items()):
+        # One manager each: `uq_filings_13f_latest_per_period` is on
+        # (manager_id, period_of_report).
+        m = InstitutionManager(
+            cik=f"999999{index:04d}", legal_name=f"Shape {index}",
+            name_normalized=f"shape-{index}", match_status="confirmed",
+        )
+        db_session.add(m)
+        db_session.flush()
+        _filing(
+            db_session, m, accession=f"9999999998-26-{index:06d}",
+            period=period, filed=filed, routed=rq is not None,
+        )
+
+    for index, (name, (_, _, _, owner)) in enumerate(shapes.items()):
+        accession = f"9999999998-26-{index:06d}"
+        claimed_by = [
+            q for q in every_quarter
+            if accession in _accessions(_ingest_candidate_filings(db_session, q))
+        ]
+        assert claimed_by == [owner], f"{name}: claimed by {claimed_by}, want [{owner}]"
+
+
 def test_a_pipeline_that_fetched_filings_but_ingested_none_is_not_green(
     db_session, monkeypatch
 ):
@@ -191,36 +402,13 @@ def test_a_pipeline_that_fetched_filings_but_ingested_none_is_not_green(
     score an empty quarter.
     """
     from app.services.thirteenf_admin_dashboard import execute_job_payload
-    from app.services.edgar_quality import QualityReport
 
-    monkeypatch.setattr(
-        "app.services.edgar_ingestion.ingest_quarter_index",
-        lambda session, quarter: 75,
-    )
-    monkeypatch.setattr(
-        "app.services.thirteenf_admin_dashboard._execute_ingest_job",
-        lambda session, job_type, payload: {
-            "filings_processed": 0, "filings_failed": 0,
-            "holdings_inserted": 0, "status": "succeeded",
-        },
-    )
-    monkeypatch.setattr(
-        "app.services.cusip_enrichment.enrich_cusips_from_openfigi", lambda session: 0
-    )
-    monkeypatch.setattr(
-        "app.services.cusip_enrichment.bootstrap_stocks_from_cusip_map", lambda session: 0
-    )
-    monkeypatch.setattr(
-        "app.services.cusip_enrichment.backfill_stock_ids", lambda session: 0
-    )
-    monkeypatch.setattr(
-        "app.services.thirteenf_admin_dashboard.run_quality_checks",
-        lambda session, quarter: QualityReport(),
-    )
-    monkeypatch.setattr(
-        "app.services.oracles_lens.signal_weighted_score.compute_signal_weighted_scores",
-        lambda session, **kw: {"quarter": kw["quarter"], "filings_scored": 0},
-    )
+    _stub_pipeline(monkeypatch, inserted=75, ingest_summary={
+        "filings_processed": 0,
+        "filings_for_requested_quarter": 0,
+        "filings_routed_to_other_quarters": {},
+        "filings_failed": 0, "holdings_inserted": 0,
+    })
 
     result = execute_job_payload(
         db_session, "quarterly_pipeline", {"quarter": "2025-Q4", "_job_id": 1}
@@ -231,31 +419,27 @@ def test_a_pipeline_that_fetched_filings_but_ingested_none_is_not_green(
     assert {s["status"] for s in result["stages"]} == {"succeeded"}
 
 
-def test_a_pipeline_rerun_that_fetches_nothing_new_stays_green(
-    db_session, monkeypatch
-):
-    """The legitimate no-op: idempotent re-run, 0 inserted and 0 processed."""
-    from app.services.thirteenf_admin_dashboard import execute_job_payload
+def _stub_pipeline(monkeypatch, *, inserted, ingest_summary):
     from app.services.edgar_quality import QualityReport
 
     monkeypatch.setattr(
-        "app.services.edgar_ingestion.ingest_quarter_index", lambda session, quarter: 0
+        "app.services.edgar_ingestion.ingest_quarter_index",
+        lambda session, quarter: inserted,
     )
     monkeypatch.setattr(
         "app.services.thirteenf_admin_dashboard._execute_ingest_job",
-        lambda session, job_type, payload: {
-            "filings_processed": 0, "filings_failed": 0,
-            "holdings_inserted": 0, "status": "succeeded",
+        lambda session, job_type, payload: {**ingest_summary, "status": "succeeded"},
+    )
+    monkeypatch.setattr(
+        "app.services.cusip_enrichment.enrich_all_unmapped_holdings",
+        lambda session, **kw: {
+            "mappings_created": 0, "batches_run": 0, "new_stocks": 0,
+            "holdings_linked": 0, "holdings_still_enrichable": 0,
         },
     )
     monkeypatch.setattr(
-        "app.services.cusip_enrichment.enrich_cusips_from_openfigi", lambda session: 0
-    )
-    monkeypatch.setattr(
-        "app.services.cusip_enrichment.bootstrap_stocks_from_cusip_map", lambda session: 0
-    )
-    monkeypatch.setattr(
-        "app.services.cusip_enrichment.backfill_stock_ids", lambda session: 0
+        "app.services.cusip_enrichment.enrich_stocks_from_edgar_tickers",
+        lambda session: {"new_mappings": 0},
     )
     monkeypatch.setattr(
         "app.services.thirteenf_admin_dashboard.run_quality_checks",
@@ -266,8 +450,93 @@ def test_a_pipeline_rerun_that_fetches_nothing_new_stays_green(
         lambda session, **kw: {"quarter": kw["quarter"], "filings_scored": 0},
     )
 
+
+def test_a_pipeline_that_ingested_only_another_quarters_filings_is_not_green(
+    db_session, monkeypatch
+):
+    """`filings_processed > 0` is too weak a signal.
+
+    The P1 overlap produced exactly this shape: ingest(2026-Q1) parsed 2025-Q4's
+    filings, reported 75 processed, and the D2 guard — which only compared
+    inserted against processed — stayed silent while the remaining stages scored
+    a quarter that had received nothing.
+    """
+    from app.services.thirteenf_admin_dashboard import execute_job_payload
+
+    _stub_pipeline(monkeypatch, inserted=73, ingest_summary={
+        "filings_processed": 75,
+        "filings_for_requested_quarter": 0,
+        "filings_routed_to_other_quarters": {"2025-Q4": 75},
+        "filings_failed": 0, "holdings_inserted": 5023,
+    })
+
+    result = execute_job_payload(
+        db_session, "quarterly_pipeline", {"quarter": "2026-Q1", "_job_id": 3}
+    )
+
+    assert result["status"] == "partial_success"
+    assert "none belong to report quarter 2026-Q1" in result["pipeline_warning"]
+
+
+def test_a_pipeline_that_restated_another_quarter_says_so(db_session, monkeypatch):
+    """A late filing or an old-period amendment leaves that quarter's scores stale.
+
+    The pipeline cannot recompute it (that quarter is not its own), but it must
+    not stay green about it — name the quarters and the two jobs to re-run.
+    """
+    from app.services.thirteenf_admin_dashboard import execute_job_payload
+
+    _stub_pipeline(monkeypatch, inserted=75, ingest_summary={
+        "filings_processed": 75,
+        "filings_for_requested_quarter": 72,
+        "filings_routed_to_other_quarters": {"2025-Q1": 1, "2025-Q2": 1, "2025-Q3": 1},
+        "filings_failed": 0, "holdings_inserted": 4798,
+    })
+
+    result = execute_job_payload(
+        db_session, "quarterly_pipeline", {"quarter": "2025-Q4", "_job_id": 4}
+    )
+
+    assert result["status"] == "partial_success"
+    assert result["quarters_needing_recompute"] == ["2025-Q1", "2025-Q2", "2025-Q3"]
+    assert "oracles_lens_score_backfill" in result["pipeline_warning"]
+
+
+def test_a_pipeline_rerun_that_fetches_nothing_new_stays_green(
+    db_session, monkeypatch
+):
+    """The legitimate no-op: idempotent re-run, 0 inserted and 0 processed."""
+    from app.services.thirteenf_admin_dashboard import execute_job_payload
+
+    _stub_pipeline(monkeypatch, inserted=0, ingest_summary={
+        "filings_processed": 0,
+        "filings_for_requested_quarter": 0,
+        "filings_routed_to_other_quarters": {},
+        "filings_failed": 0, "holdings_inserted": 0,
+    })
+
     result = execute_job_payload(
         db_session, "quarterly_pipeline", {"quarter": "2025-Q4", "_job_id": 2}
+    )
+
+    assert result["status"] == "succeeded"
+    assert "pipeline_warning" not in result
+
+
+def test_a_healthy_pipeline_that_ingested_its_own_quarter_stays_green(
+    db_session, monkeypatch
+):
+    from app.services.thirteenf_admin_dashboard import execute_job_payload
+
+    _stub_pipeline(monkeypatch, inserted=73, ingest_summary={
+        "filings_processed": 73,
+        "filings_for_requested_quarter": 73,
+        "filings_routed_to_other_quarters": {},
+        "filings_failed": 0, "holdings_inserted": 5684,
+    })
+
+    result = execute_job_payload(
+        db_session, "quarterly_pipeline", {"quarter": "2026-Q1", "_job_id": 5}
     )
 
     assert result["status"] == "succeeded"

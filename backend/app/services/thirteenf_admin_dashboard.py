@@ -90,16 +90,16 @@ def _ingest_candidate_filings(session: Session, quarter: str) -> list["Filing13F
     """Filings the `ingest_holdings` job must parse for **report quarter** `quarter`.
 
     `quarter` is a report quarter, the same thing `fetch_quarter_index` means by
-    it. Two arms, because `period_of_report` means two different things
-    depending on whether the filing has been parsed:
+    it. Two arms, split on whether the filing's period has been **routed** yet:
 
-    * **Parsed** rows carry their true period, written by
-      `backfill_period_routing`. Select them by the report-quarter window — this
-      is the heal / re-run path.
-    * **Un-ingested** rows carry a *proxy* period equal to `filed_at`, stamped at
-      index time before any document is read. A 13F for period Q is filed within
-      45 days after Q ends, so its proxy lands in Q+1. Select those by the
-      **filed**-quarter window.
+    * **Routed** rows carry their true period. `backfill_period_routing` writes
+      `period_of_report`, `quarter_end_date` and `report_quarter` in one pass, so
+      a non-NULL `report_quarter` *is* the routed answer — match it directly.
+      This is the heal / re-run path.
+    * **Un-routed** rows carry a *proxy* `period_of_report` equal to `filed_at`,
+      stamped at index time before any document is read. A 13F for period Q is
+      filed within 45 days after Q ends, so its proxy lands in Q+1. Select those
+      by the **filed**-quarter window.
 
     Without the second arm, `ingest_holdings(Q)` never sees the rows
     `fetch_quarter_index(Q)` just inserted (it deliberately downloads Q+1's
@@ -109,25 +109,42 @@ def _ingest_candidate_filings(session: Session, quarter: str) -> list["Filing13F
     until that quarter itself becomes scoreable. Same defect class as F5, which
     T4 fixed only in the CLI `backfill` path.
 
-    The `raw_infotable_doc_id IS NULL` guard on the second arm keeps the two arms
-    disjoint: once a filing is ingested its proxy is gone, so it must not be
-    reclaimed by the *next* quarter's filed-window.
+    **The arms must be disjoint, and `report_quarter` is the only key that makes
+    them so.** Matching the routed arm on `period_of_report` within the
+    report-quarter window instead left every un-routed row claimed by *two
+    adjacent quarters*: a 2025-Q4 filing whose proxy is 2026-02-17 satisfies both
+    `ingest(2025-Q4)`'s filed-window arm and `ingest(2026-Q1)`'s period-window
+    arm. `lock_key` is `ingest_holdings:{quarter}`, so two quarters' jobs do not
+    exclude each other, and whichever ran first parsed the other's filings —
+    leaving the rightful quarter's downstream stages to score holdings it never
+    ingested (external review P1, reproduced).
 
-    We deliberately do NOT filter the first arm on `raw_infotable_doc_id` — per
+    `raw_infotable_doc_id` cannot be that key: Phase 1 of `_execute_ingest_job`
+    sets it, Phase 2 routes the period. A job that dies between the two leaves a
+    row with an infotable and a still-proxy period, which a period-window arm
+    would then file under the wrong quarter.
+
+    We deliberately do NOT filter the routed arm on `raw_infotable_doc_id` — per
     #43 the job fetches missing infotable XML inline, and filings whose XML is
     already on disk are fast-pathed by `ensure_filing_infotable_doc`.
+
+    A filing submitted later than Q+1 — a late 13F-HR, or an amendment restating
+    an older period — is claimed by the pipeline of its own filed-quarter, not by
+    `quarterly_pipeline(Q)`. Its period still routes correctly, but the quarter it
+    restates now has stale `ownership_changes` and Lens signals. That is not
+    silently ignored: `_execute_ingest_job` reports those quarters under
+    `filings_routed_to_other_quarters`, and the pipeline refuses to stay green.
     """
     from app.services.edgar_ingestion import next_quarter_label
 
-    window = quarter_window(quarter)
     filed_window = quarter_window(next_quarter_label(quarter))
     return (
         session.query(Filing13F)
         .filter(
             or_(
-                Filing13F.period_of_report.between(window.start, window.end),
+                Filing13F.report_quarter == quarter,
                 and_(
-                    Filing13F.raw_infotable_doc_id.is_(None),
+                    Filing13F.report_quarter.is_(None),
                     Filing13F.period_of_report.between(
                         filed_window.start, filed_window.end
                     ),
@@ -3001,17 +3018,44 @@ def _execute_job(session: Session, job_type: str, payload: dict[str, Any]) -> di
         # `quarter` means (see `_ingest_candidate_filings`), and the symptom was
         # silent: ingest matched nothing, returned "succeeded" in 7ms, and the
         # four downstream stages happily scored an empty quarter. Nothing in a
-        # per-stage status can catch that — only the pair can. A re-run inserts
-        # 0 filings and processes 0, which is the legitimate no-op and stays
-        # green.
+        # per-stage status can catch that — only the pair can.
+        #
+        # `filings_processed` alone is too weak a signal: a selection bug that
+        # claims the NEIGHBOURING quarter's filings still reports a healthy
+        # count. So the second check asks the outcome question — after routing,
+        # did anything actually land in the quarter we are about to score?
+        # (external review P1.)
+        #
+        # A re-run inserts 0 and processes 0: the legitimate no-op, stays green.
         inserted = results.get("index_filings") or 0
-        processed = (ingest_results or {}).get("filings_processed") or 0
+        summary = ingest_results or {}
+        processed = summary.get("filings_processed") or 0
+        for_quarter = summary.get("filings_for_requested_quarter") or 0
+        elsewhere = summary.get("filings_routed_to_other_quarters") or {}
+        warnings: list[str] = []
         if inserted and not processed:
-            results["pipeline_warning"] = (
+            warnings.append(
                 f"fetch_quarter_index inserted {inserted} filing(s) for {quarter} "
                 f"but ingest_holdings processed 0 — the remaining stages would "
                 f"run on a quarter with no holdings"
             )
+        elif processed and not for_quarter:
+            warnings.append(
+                f"ingest_holdings processed {processed} filing(s) but none belong "
+                f"to report quarter {quarter} — the remaining stages would score a "
+                f"quarter this pipeline never populated"
+            )
+        if elsewhere:
+            detail = ", ".join(f"{q} ({n})" for q, n in sorted(elsewhere.items()))
+            warnings.append(
+                f"ingest_holdings parsed filings restating other report quarters: "
+                f"{detail}. Their ownership_changes and Oracle's Lens signals are "
+                f"now stale — re-run compute_ownership_changes and "
+                f"oracles_lens_score_backfill for those quarters"
+            )
+            results["quarters_needing_recompute"] = sorted(elsewhere)
+        if warnings:
+            results["pipeline_warning"] = " | ".join(warnings)
 
         # Stage 3: Enrich metadata (CUSIP -> Ticker) — continue to quality check even on failure.
         enrich_stage = _execute_pipeline_stage_job(
@@ -3787,8 +3831,38 @@ def _execute_ingest_job(session: Session, job_type: str, payload: dict[str, Any]
     routing_failed = routing_summary.get("failed", 0)
     degraded = bool(failures) or routing_needs_review > 0 or routing_failed > 0
 
+    # Post-routing invariant. The job is asked for report quarter `quarter`, but
+    # what a filing's period turns out to be is only known AFTER Phase 2 routes
+    # it. A late 13F-HR, or an amendment restating an older period, arrives in a
+    # later filed-quarter and therefore lands in a different pipeline's window.
+    # Its own quarter's ownership_changes and Lens signals are now stale.
+    #
+    # Counting the outcome is the only check that can catch a window bug: a
+    # selection that quietly claims the neighbouring quarter's filings still
+    # reports a healthy `filings_processed`. Ask instead how many of them
+    # actually belong to the quarter whose scores this pipeline is about to
+    # compute (external review P1).
+    for_requested_quarter = 0
+    routed_elsewhere: dict[str, int] = {}
+    for filing in filings:
+        rq = filing.report_quarter
+        if rq == quarter:
+            for_requested_quarter += 1
+        elif rq:
+            routed_elsewhere[rq] = routed_elsewhere.get(rq, 0) + 1
+    if routed_elsewhere:
+        logger.warning(
+            "ingest_holdings(%s) parsed filings belonging to other report "
+            "quarters: %s. Their ownership_changes and Oracle's Lens signals are "
+            "now stale and must be recomputed.",
+            quarter,
+            ", ".join(f"{q}={n}" for q, n in sorted(routed_elsewhere.items())),
+        )
+
     return {
         "filings_processed": len(filings),
+        "filings_for_requested_quarter": for_requested_quarter,
+        "filings_routed_to_other_quarters": dict(sorted(routed_elsewhere.items())),
         "filings_skipped": skipped,
         "filings_xml_fetched": xml_fetched,
         "filings_skipped_no_cik": no_cik,

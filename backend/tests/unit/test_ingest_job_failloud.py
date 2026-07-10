@@ -42,14 +42,21 @@ def _make_filing(
     form_type="13F-HR",
     quarter_end_date=None,
 ) -> Filing13F:
-    # period_of_report inside the 2025-Q4 window so the ingest_holdings job
-    # query picks it up.
+    # A freshly-indexed 2025-Q4 filing, exactly as `ingest_quarter_index` writes
+    # it: `period_of_report` is a PROXY equal to `filed_at` (see
+    # `_accession_period_of_report`) and `report_quarter` stays NULL until
+    # `backfill_period_routing` runs. `ingest_holdings("2025-Q4")` finds it
+    # through the filed-quarter arm — 13Fs for 2025-Q4 are filed in 2026-Q1.
+    #
+    # The old fixture paired `period_of_report=date(2025, 11, 15)` with
+    # `filed_at=date(2026, 2, 14)` so the pre-fix period-window query would match
+    # it. No code path produces that row.
     filing = Filing13F(
         manager_id=manager.id,
         accession_no=accession,
         form_type=form_type,
         filed_at=date(2026, 2, 14),
-        period_of_report=date(2025, 11, 15),
+        period_of_report=date(2026, 2, 14),
         quarter_end_date=quarter_end_date,
         is_latest_for_period=True,
     )
