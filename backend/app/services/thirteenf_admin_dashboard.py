@@ -3623,11 +3623,18 @@ def _execute_ingest_job(session: Session, job_type: str, payload: dict[str, Any]
     if job_type in {"reprocess_amendment", "reparse_accession"}:
         accession_no = _required(payload, "accession_no")
         result = reparse_accession(session, accession_no)
+        # A quarantined reparse parsed cleanly but failed the activation gate:
+        # the candidate run was rejected and the prior current run kept serving.
+        # Reporting it as plain "succeeded" hides from the operator that their
+        # reparse did NOT take effect (external review round 2).
+        quarantined = bool(result.get("quarantined"))
         return {
             "filings_processed": 1,
             "parse_run_id": result["parse_run_id"],
             "holdings_count": result["holdings_count"],
-            "status": "succeeded",
+            "quarantined": quarantined,
+            "quarantine_reason": result.get("quarantine_reason"),
+            "status": "partial_success" if quarantined else "succeeded",
         }
 
     # job_type == "ingest_holdings": bulk quarterly ingest via ingest_if_needed.
@@ -3638,6 +3645,7 @@ def _execute_ingest_job(session: Session, job_type: str, payload: dict[str, Any]
     xml_fetched = 0
     no_cik = 0
     failures: list[dict[str, str]] = []
+    quarantined: list[dict[str, str]] = []
 
     from app.edgar.fetcher import load_body
     from app.services.edgar_ingestion import (
@@ -3753,6 +3761,14 @@ def _execute_ingest_job(session: Session, job_type: str, payload: dict[str, Any]
             result = ingest_if_needed(session, filing, infotable_bytes)
             if result.get("skipped"):
                 skipped += 1
+            elif result.get("quarantined"):
+                # A fingerprint-upgrade reparse that failed the activation gate:
+                # the prior current run keeps serving, but the operator must know
+                # the reparse was rejected (external review round 2).
+                quarantined.append(
+                    {"accession_no": filing.accession_no,
+                     "reason": result.get("quarantine_reason")}
+                )
             else:
                 total_holdings += result.get("holdings_count", 0)
         except Exception as exc:
@@ -3834,7 +3850,10 @@ def _execute_ingest_job(session: Session, job_type: str, payload: dict[str, Any]
     # — previously these were silent (external review R2-P1).
     routing_needs_review = routing_summary.get("needs_review", 0)
     routing_failed = routing_summary.get("failed", 0)
-    degraded = bool(failures) or routing_needs_review > 0 or routing_failed > 0
+    degraded = (
+        bool(failures) or bool(quarantined)
+        or routing_needs_review > 0 or routing_failed > 0
+    )
 
     # Post-routing invariant. The job is asked for report quarter `quarter`, but
     # what a filing's period turns out to be is only known AFTER Phase 2 routes
@@ -3873,6 +3892,8 @@ def _execute_ingest_job(session: Session, job_type: str, payload: dict[str, Any]
         "filings_skipped_no_cik": no_cik,
         "filings_failed": len(failures),
         "failed_accessions": failures,
+        "filings_quarantined": len(quarantined),
+        "quarantined_accessions": quarantined,
         "holdings_inserted": total_holdings,
         "holdings_quarter_end_synced": holdings_qend_synced,
         "holdings_report_quarter_synced": holdings_rq_synced,

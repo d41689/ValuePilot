@@ -138,6 +138,50 @@ def test_a_first_ingest_is_never_gated(db_session, filing):
     assert not result.get("quarantined")
 
 
+def test_the_reparse_job_reports_a_quarantine_as_partial_not_succeeded(
+    db_session, monkeypatch
+):
+    """External review round 2. The reparse_accession job branch hardcoded
+    `status: succeeded`, so a quarantined reparse looked fully successful to the
+    operator — hiding that their reparse did not take effect. The job layer must
+    surface the quarantine."""
+    from app.services import thirteenf_admin_dashboard as dash
+
+    monkeypatch.setattr(
+        "app.services.thirteenf_holdings_ingest.reparse_accession",
+        lambda session, accession_no: {
+            "parse_run_id": 1, "holdings_count": 1,
+            "quarantined": True, "quarantine_reason": "failed reconciliation gate",
+        },
+    )
+
+    result = dash._execute_ingest_job(
+        db_session, "reparse_accession", {"accession_no": "X-26-000001"}
+    )
+
+    assert result["status"] == "partial_success"
+    assert result["quarantined"] is True
+    assert result.get("quarantine_reason")
+
+
+def test_the_reparse_job_still_reports_a_clean_reparse_as_succeeded(
+    db_session, monkeypatch
+):
+    from app.services import thirteenf_admin_dashboard as dash
+
+    monkeypatch.setattr(
+        "app.services.thirteenf_holdings_ingest.reparse_accession",
+        lambda session, accession_no: {"parse_run_id": 1, "holdings_count": 5},
+    )
+
+    result = dash._execute_ingest_job(
+        db_session, "reparse_accession", {"accession_no": "X-26-000002"}
+    )
+
+    assert result["status"] == "succeeded"
+    assert result["quarantined"] is False
+
+
 def test_a_reparse_is_not_gated_when_the_filer_declared_no_total(db_session):
     """Reported NULL falls back to a row-count floor, not a value check."""
     m = InstitutionManager(
