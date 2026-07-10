@@ -945,18 +945,23 @@ export default function JobsAdminPage() {
                   <div className="mt-1 text-sm">{selectedJob.finished_at ?? '—'}</div>
                 </div>
               </div>
-              {selectedJob.error_message ||
-              (typeof selectedJob.summary_json === 'object' &&
-                selectedJob.summary_json !== null &&
-                (selectedJob.summary_json as Record<string, unknown>).pipeline_error) ? (
-                <div className="rounded-md border border-rose-300/70 bg-rose-50 px-3 py-2 text-sm text-rose-950">
-                  {selectedJob.error_message ??
-                    String(
-                      (selectedJob.summary_json as Record<string, unknown>)
-                        .pipeline_error ?? '',
-                    )}
-                </div>
-              ) : null}
+              {/* A pipeline whose every stage is green can still have produced
+                  nothing usable — `pipeline_warning` is the only place that says
+                  so, and it used to be reachable only via the raw summary JSON. */}
+              {thirteenfAdmin.jobAlerts(selectedJob).map(
+                (alert: { tone: string; text: string }) => (
+                  <div
+                    key={alert.text}
+                    className={
+                      alert.tone === 'danger'
+                        ? 'rounded-md border border-rose-300/70 bg-rose-50 px-3 py-2 text-sm text-rose-950'
+                        : 'rounded-md border border-amber-300/70 bg-amber-50 px-3 py-2 text-sm text-amber-950'
+                    }
+                  >
+                    {alert.text}
+                  </div>
+                ),
+              )}
               {selectedJob.can_release_stale_lock ? (
                 <div className="rounded-md border border-amber-300/70 bg-amber-50 px-3 py-3 text-sm text-amber-950">
                   <div className="font-medium">This running job lock appears stale.</div>
