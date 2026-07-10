@@ -1604,17 +1604,15 @@ def test_quarterly_pipeline_records_retryable_stage_jobs(db_session, monkeypatch
         lambda session, job_type, payload: calls.append(f"{job_type}:{payload['quarter']}")
         or {"filings_processed": 2, "filings_failed": 0, "holdings_inserted": 10, "status": "succeeded"},
     )
+    # enrich_metadata now runs CUSIP mapping to completion (bootstrap + backfill
+    # happen inside the loop), same as the standalone enrich_cusip job.
     monkeypatch.setattr(
-        "app.services.cusip_enrichment.enrich_cusips_from_openfigi",
-        lambda session: calls.append("enrich_cusip") or 3,
-    )
-    monkeypatch.setattr(
-        "app.services.cusip_enrichment.bootstrap_stocks_from_cusip_map",
-        lambda session: calls.append("bootstrap_stocks") or 4,
-    )
-    monkeypatch.setattr(
-        "app.services.cusip_enrichment.backfill_stock_ids",
-        lambda session: calls.append("backfill_stock_ids") or 5,
+        "app.services.cusip_enrichment.enrich_all_unmapped_holdings",
+        lambda session, **kw: calls.append("enrich_cusip")
+        or {
+            "mappings_created": 3, "batches_run": 1, "new_stocks": 4,
+            "holdings_linked": 5, "holdings_still_unmapped": 0,
+        },
     )
     monkeypatch.setattr(
         "app.services.cusip_enrichment.enrich_stocks_from_edgar_tickers",
@@ -1647,8 +1645,6 @@ def test_quarterly_pipeline_records_retryable_stage_jobs(db_session, monkeypatch
         "index:2025-Q4",
         "ingest_holdings:2025-Q4",
         "enrich_cusip",
-        "bootstrap_stocks",
-        "backfill_stock_ids",
         "enrich_stocks_edgar",
         "quality:2025-Q4",
         "oracles_lens_score:2025-Q4",
@@ -1795,10 +1791,12 @@ def test_quarterly_pipeline_continues_after_retryable_enrichment_failure(
         lambda session, job_type, payload: {"filings_processed": 1, "status": "succeeded"},
     )
 
-    def fail_enrichment(session):
+    def fail_enrichment(session, **kwargs):
         raise RuntimeError("CUSIP enrichment failed")
 
-    monkeypatch.setattr("app.services.cusip_enrichment.enrich_cusips_from_openfigi", fail_enrichment)
+    monkeypatch.setattr(
+        "app.services.cusip_enrichment.enrich_all_unmapped_holdings", fail_enrichment
+    )
 
     report = QualityReport()
 

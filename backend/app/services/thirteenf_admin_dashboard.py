@@ -3810,22 +3810,39 @@ def _execute_ingest_job(session: Session, job_type: str, payload: dict[str, Any]
 
 
 def _execute_enrichment_metadata(session: Session, payload: dict[str, Any]) -> dict[str, Any]:
+    """CUSIP → ticker → `stock_id`, run to completion.
+
+    This stage used to call `enrich_cusips_from_openfigi`, which maps a **single
+    batch of 100 CUSIPs** and returns. The standalone `enrich_cusip` job has
+    always called `enrich_all_unmapped_holdings`, which loops until no enrichable
+    holding remains. So the manual path converged and the automated one did not:
+    a `quarterly_pipeline` run mapped ~100 of the ~2000 CUSIPs a quarter of 13F
+    holdings contains, and the rest stayed unlinked.
+
+    That is not cosmetic. `stock_id` is the join key for the Watchlist × 13F
+    columns and for Oracle's Lens eligibility, so an unlinked holding is
+    invisible to the product and absent from consensus scoring.
+
+    `enrich_all_unmapped_holdings` already bootstraps stocks and backfills
+    `stock_id` after its loop; it is resumable, its per-batch mappings are
+    committed, and `max_batches` bounds it. Rate limiting is Rate Guard's job.
+    """
     from app.services.cusip_enrichment import (
-        backfill_stock_ids,
-        bootstrap_stocks_from_cusip_map,
-        enrich_cusips_from_openfigi,
+        enrich_all_unmapped_holdings,
         enrich_stocks_from_edgar_tickers,
     )
 
-    mappings_created = enrich_cusips_from_openfigi(session)
-    new_stocks = bootstrap_stocks_from_cusip_map(session)
-    holdings_linked = backfill_stock_ids(session)
+    enriched = enrich_all_unmapped_holdings(session)
     edgar_stock_enrichment = enrich_stocks_from_edgar_tickers(session)
     return {
-        "cusip_mappings": mappings_created,
-        "mappings_created": mappings_created,
-        "new_stocks": new_stocks,
-        "holdings_linked": holdings_linked,
+        "cusip_mappings": enriched["mappings_created"],
+        "mappings_created": enriched["mappings_created"],
+        "batches_run": enriched["batches_run"],
+        "new_stocks": enriched["new_stocks"],
+        "holdings_linked": enriched["holdings_linked"],
+        # Surfaced on purpose: holdings we still cannot map are silently missing
+        # from Oracle's Lens, so the number belongs in the job summary.
+        "holdings_still_unmapped": enriched["holdings_still_unmapped"],
         "edgar_stock_enrichment": edgar_stock_enrichment,
         "status": "succeeded",
     }
