@@ -385,6 +385,24 @@ def apply_primary_doc_metadata(session: Session, filing: Filing13F, summary: Any
     # fallback). getattr: summary is typed Any and some callers pass partial
     # stubs.
     merge_accepted_at(filing, getattr(summary, "accepted_at", None))
+    # The filer's own totals come from this same primary doc, and suffered the
+    # same omission. `compute_portfolio_weight` divides by
+    # `computed_total_value_thousands or reported_total_value_thousands`; with
+    # both NULL it returns None, so no holding gets a weight, Oracle's Lens
+    # distinctiveness is identically zero, and conviction's position-importance
+    # component is capped at a third of its range — silently, with every job
+    # green. The legacy per-filing `ingest_filing_holdings` wrote them; the
+    # modern ParseRun-backed job the pipeline uses never did.
+    #
+    # Merge, never erase-with-NULL — the `accepted_at` rule: a re-parse that
+    # reads nothing must not wipe what an earlier parse established, while a
+    # non-NULL re-parse is authoritative so a parser fix propagates.
+    table_value_total = getattr(summary, "table_value_total", None)
+    if table_value_total is not None:
+        filing.reported_total_value_thousands = table_value_total
+    table_entry_total = getattr(summary, "table_entry_total", None)
+    if table_entry_total is not None:
+        filing.holdings_count = table_entry_total
     filing.other_managers_reporting = summary.other_managers_reporting or None
     filing.other_managers_included = summary.other_managers_included or None
     # A "/A" form type is, by definition, an amendment — trust it even when the

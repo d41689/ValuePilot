@@ -272,6 +272,16 @@ def _do_ingest_holdings(
         # readiness/health. Without this it stays "pending" forever even though
         # holdings parsed fine.
         filing.parse_status = "succeeded"
+        # The value this run actually stored. It is the PREFERRED denominator in
+        # `compute_portfolio_weight` (`computed ... or reported ...`) and the
+        # left-hand side of the quality reconciliation against the filer's own
+        # reported total. The legacy per-filing path wrote it; this one did not,
+        # so an automated database had NULL weights everywhere and a
+        # reconciliation check that compared nothing and passed.
+        filing.computed_total_value_thousands = sum(
+            h.value_thousands or 0 for h in holdings
+        )
+        filing.common_holdings_count = sum(1 for h in holdings if h.put_call is None)
         session.add(filing)
         
         # A parsed RESTATEMENT amendment supersedes the original — activate it
