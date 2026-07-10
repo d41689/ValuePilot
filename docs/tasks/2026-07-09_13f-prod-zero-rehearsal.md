@@ -216,7 +216,114 @@ New tests:
 * `tests/unit/test_13f_pipeline_enrichment_convergence.py` (3) — the stage must
   delegate to the converging loop; summary keys preserved; leftovers reported.
 
+## External review round (2026-07-10)
+
+Verdict: *需补正后合并*. Three findings, **all three real and reproduced**, plus a
+fourth I found while fixing the first.
+
+### R-P1 — the D1 fix left every un-routed filing claimed by two quarters
+
+The first arm was a bare `period_of_report BETWEEN window(Q)`, and only the
+second arm was guarded with `raw_infotable_doc_id IS NULL`. For an un-routed
+filing `period_of_report` is the `filed_at` proxy, so a 2025-Q4 filing with proxy
+2026-02-17 satisfied **both** `ingest(2025-Q4)`'s filed-window arm and
+`ingest(2026-Q1)`'s period-window arm. `lock_key` is `ingest_holdings:{quarter}`,
+so the two jobs do not exclude each other; whichever ran first parsed the other's
+filings. `filings_processed` stayed healthy, so the D2 guard never fired.
+
+Reproduced: every un-routed filing was claimed by two adjacent quarters.
+
+**Fix.** The routed arm is keyed on `report_quarter == quarter`, the field
+`backfill_period_routing` writes together with `period_of_report`. The un-routed
+arm is `report_quarter IS NULL`. The arms are now disjoint by construction.
+
+`raw_infotable_doc_id` cannot be that key: Phase 1 of `_execute_ingest_job` sets
+it and Phase 2 routes the period, so a job that dies between the two leaves an
+infotable with a still-proxy period.
+
+Verified on both real databases: `report_quarter` is non-NULL on 373/373 (dev) and
+148/148 (sandbox) filings, and never disagrees with `period_of_report`.
+
+`test_every_filing_shape_is_claimed_by_exactly_one_quarter` now pins the whole
+selection as one property over eight shapes — on-time, two-quarters-late, routed,
+amendment restating an older period, `PERIOD_TOO_FAR` (a real period with
+`report_quarter IS NULL`), and a half-ingested row. Claimed twice means two
+pipelines race; claimed zero times means stranded forever.
+
+### R-P1 follow-on — `filings_processed` was too weak a guard
+
+The reviewer's point stands beyond the selection: a job that quietly parses the
+neighbouring quarter's filings still reports a healthy count. So the ingest stage
+now reports the **outcome** — `filings_for_requested_quarter` and
+`filings_routed_to_other_quarters` — and the pipeline warns when it processed
+filings but none belong to the quarter it is about to score.
+
+A late filing or an amendment restating an older period is claimed by its own
+filed-quarter's pipeline. That pipeline cannot recompute the restated quarter, but
+it no longer stays green about it: `quarters_needing_recompute` names them and the
+warning names the two jobs to re-run. On the sandbox this fires for real —
+`ingest_holdings:2025-Q4` parsed 75 filings, 72 for itself and 3 restating
+2025-Q1/Q2/Q3.
+
+### R-P1 regression I introduced — the CLI spoke the other language
+
+`pending_ingest_quarters()` grouped by the **proxy** (filing) quarter and
+`ingest_pending_holdings` handed each label straight to
+`run_locked_job("ingest_holdings", {"quarter": q})`. Once the job's `quarter`
+means a *report* quarter, the CLI was off by one and would have ingested nothing.
+No test caught it: every CLI test injects its own `ingest_fn`, so the label's
+meaning was never exercised against the real selection.
+
+**Fix.** `pending_ingest_quarters` returns report quarters. `backfill`'s
+`scoped = {q} ∪ {next_quarter_label(q)}` widening — T4's F5 workaround — is
+deleted, because `_ingest_candidate_filings` now owns that translation.
+`test_pending_ingest_quarters_speaks_the_same_language_as_the_ingest_job` binds
+the two.
+
+### R-P2 — `holdings_still_unmapped = 0` hid 527 unlinked holdings
+
+`_count_enrichable_holdings` is the OpenFIGI **work queue**: it excludes
+`needs_review` (the human adjudication queue) and any CUSIP that already has a
+`cusip_ticker_map` row, including one that resolved to nothing. Those holdings are
+still `stock_id IS NULL`, so still invisible to Oracle's Lens. The field name — and
+my comment claiming it showed "holdings we still cannot map" — invited exactly the
+wrong reading.
+
+**Fix.** Renamed to `holdings_still_enrichable` everywhere, and the stage now also
+reports `holdings_unlinked_total` and `holdings_unlinked_by_status`. On the
+sandbox: `still_enrichable = 0`, `unlinked_total = 527`
+(`needs_review 504 / unresolved 21 / invalid_cusip 2`).
+
+### R-P3 — `pipeline_warning` was invisible in the admin UI
+
+The job-detail alert rendered `error_message` and `summary_json.pipeline_error`
+only. D2's whole shape is "every stage green, parent has a warning", so the text
+was reachable only in the raw summary JSON.
+
+**Fix.** `jobAlerts(job)` in `frontend/lib/thirteenfAdmin.js` — a pure function,
+so it is covered by `node --test lib/*.test.js` — returns danger/warning alerts in
+severity order, including a rendered `quarters_needing_recompute` line. The page
+maps over it.
+
+### Reviewer's non-findings, confirmed
+
+The two numbers I could not explain are now explained, by the reviewer:
+`10707 − 9811 = 896` is entirely inactive-filing holdings (602 + 142 + 142 + 9 + 1),
+and the `ownership_changes` delta is enrichment coverage, not a stage-order bug.
+The lease and transaction-boundary concerns I raised in the review prompt were both
+checked and cleared.
+
+### Verification after the review round
+
+Backend **1212 passed**; frontend 179 / lint / build green. The sandbox was dropped
+and rebuilt from an empty database twice more; a single unattended boot reproduces
+holdings 10707, linked 10180, signals 859, `active_hr_holdings_query` 9811, and all
+twelve invariants at zero (`filings_unrouted` added). The CLI contract was
+exercised against a real 2026-Q1 filing rewound to its freshly-indexed state.
+
 ## Follow-ups
 
 Recorded in `docs/BACKLOG.md`: the misleading `new_stocks` counter, the HTML
-error page stored in `JobRun.summary_json`, and M5's dependency on this fix.
+error page stored in `JobRun.summary_json`, M5's dependency on this fix, and the
+startup-path tests M5 will need (DB unavailable, advisory-lock contention,
+ambiguous/awaiting buckets against real prod data).

@@ -598,3 +598,18 @@ long — escalate to the user. **medium / low** = ordinary follow-up.
   `pipeline_warning` guard then makes a regression visible in the admin job list.
 - **Context:** `docs/tasks/2026-07-09_13f-prod-zero-rehearsal.md`
 - **Issue:** —
+
+### 13F: M5 needs startup-path tests the current suite does not have
+- **Found:** 2026-07-10, external review of PR #115 (Missing Tests §7)
+- **Severity:** medium (blocks M5, not this PR)
+- **Problem:** `MANAGER_SEED_ON_STARTUP` is fail-loud by design, but no test covers
+  what the API does when the database is unavailable at boot, when the seed's
+  `pg_advisory_xact_lock` waits behind another container, or when real prod data
+  puts managers in the `ambiguous_name_match` / `awaiting_confirmation` buckets.
+  Fail-loud, hang, and degraded-start are three different outcomes and only one is
+  acceptable.
+- **Fix sketch:** boot-path tests with a refused connection, a held advisory lock
+  in a second session, and a seeded ambiguous row; assert the process exits rather
+  than hangs, and that the exit is distinguishable in the container logs.
+- **Context:** `docs/tasks/2026-07-09_13f-prod-zero-rehearsal.md` (external review round)
+- **Issue:** —
