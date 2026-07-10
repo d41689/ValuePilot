@@ -305,6 +305,46 @@ so it is covered by `node --test lib/*.test.js` — returns danger/warning alert
 severity order, including a rendered `quarters_needing_recompute` line. The page
 maps over it.
 
+### R2-P1 — `pending_ingest_quarters()` subtracted a quarter from routed filings
+
+Second review round. Real, reproduced, and it is the **third** bug produced by the
+same cause: the rule "which report quarter's job claims this filing" was stated
+twice, once as a SQL predicate and once in Python.
+
+`ingest_accession_filing_detail()` — the daily-sync path — fetches the primary doc
+and routes the period, and **never fetches the infotable**. So it writes a
+persistent, legitimate state that no other path produces:
+`report_quarter = '2024-Q1'`, `period_of_report = 2024-03-31`,
+`raw_infotable_doc_id IS NULL`. `test_ingest_accession_detail_routes_by_period_not_sync_date_and_persists_metadata`
+already pinned it.
+
+`pending_ingest_quarters()` applied `previous_quarter_label()` to **every**
+un-ingested row, which is only correct for un-routed ones whose
+`period_of_report` is the `filed_at` proxy. For the daily-synced row it returned
+`2023-Q4`; `_ingest_candidate_filings("2023-Q4")` matches neither arm — not the
+routed arm (`report_quarter == '2024-Q1'`) nor the un-routed one
+(`report_quarter IS NOT NULL`). Reproduced:
+
+    pending_ingest_quarters()            -> ['2023-Q4']
+    _ingest_candidate_filings('2023-Q4') -> []
+    _ingest_candidate_filings('2024-Q1') -> ['9999999996-24-000001']
+
+So every daily-synced filing is **permanently skipped by the CLI / backfill
+recovery path**, which reports a clean zero for a quarter that has no data.
+
+Latent today — dev runs with daily sync off, and the sandbox's `fetch_daily_index`
+was killed by a Rate Guard 502, so `routed_but_no_infotable = 0` on both real
+databases. It goes live the moment M5 turns daily sync on.
+
+**Fix, one altitude up from the reviewer's suggestion.** Rather than add a third
+copy of the rule, `ingest_quarter_for_filing(filing)` states it once:
+`report_quarter` when routed, `previous_quarter_label(proxy)` when not.
+`pending_ingest_quarters` calls it, and
+`test_pending_ingest_quarters_matches_the_job_that_claims_each_filing` asserts that
+for every un-ingested shape the quarter the helper names is exactly the quarter
+whose SQL predicate selects that filing — and no other. The test is red against the
+old rule.
+
 ### Reviewer's non-findings, confirmed
 
 The two numbers I could not explain are now explained, by the reviewer:
@@ -315,11 +355,12 @@ checked and cleared.
 
 ### Verification after the review round
 
-Backend **1212 passed**; frontend 179 / lint / build green. The sandbox was dropped
+Backend **1214 passed**; frontend 179 / lint / build green. The sandbox was dropped
 and rebuilt from an empty database twice more; a single unattended boot reproduces
 holdings 10707, linked 10180, signals 859, `active_hr_holdings_query` 9811, and all
 twelve invariants at zero (`filings_unrouted` added). The CLI contract was
-exercised against a real 2026-Q1 filing rewound to its freshly-indexed state.
+exercised against a real 2026-Q1 filing rewound to its freshly-indexed state, and
+after round 2 against a synthetic daily-synced filing (routed, no infotable).
 
 ## Follow-ups
 
