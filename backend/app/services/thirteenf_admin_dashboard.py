@@ -3054,6 +3054,19 @@ def _execute_job(session: Session, job_type: str, payload: dict[str, Any]) -> di
                 f"oracles_lens_score_backfill for those quarters"
             )
             results["quarters_needing_recompute"] = sorted(elsewhere)
+        quarantined = summary.get("quarantined_accessions") or []
+        if quarantined:
+            # A fingerprint-upgrade reparse that failed the activation gate keeps
+            # the prior run serving, so the quarter is not empty — but the
+            # candidate (which may carry a parser fix) was rejected, and the
+            # operator must be told why, not just shown a yellow status
+            # (external review round 2).
+            accs = ", ".join(q.get("accession_no", "?") for q in quarantined)
+            warnings.append(
+                f"{len(quarantined)} reparse(s) quarantined — the prior holdings "
+                f"keep serving but the new parse was rejected: {accs}"
+            )
+            results["quarantined_accessions"] = quarantined
         if warnings:
             results["pipeline_warning"] = " | ".join(warnings)
 

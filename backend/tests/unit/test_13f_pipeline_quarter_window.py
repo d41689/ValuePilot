@@ -663,6 +663,32 @@ def test_a_healthy_pipeline_that_ingested_its_own_quarter_stays_green(
     assert "pipeline_warning" not in result
 
 
+def test_a_pipeline_with_a_quarantined_reparse_says_so(db_session, monkeypatch):
+    """External review round 2. A fingerprint-upgrade reparse quarantined inside
+    the ingest stage must surface in the pipeline_warning and downgrade the run —
+    not just leave a yellow status with no reason."""
+    from app.services.thirteenf_admin_dashboard import execute_job_payload
+
+    _stub_pipeline(monkeypatch, inserted=73, ingest_summary={
+        "filings_processed": 73,
+        "filings_for_requested_quarter": 73,
+        "filings_routed_to_other_quarters": {},
+        "filings_quarantined": 1,
+        "quarantined_accessions": [
+            {"accession_no": "0001067983-26-000009", "reason": "failed reconciliation gate"}
+        ],
+        "filings_failed": 0, "holdings_inserted": 5684,
+    })
+
+    result = execute_job_payload(
+        db_session, "quarterly_pipeline", {"quarter": "2026-Q1", "_job_id": 6}
+    )
+
+    assert result["status"] == "partial_success"
+    assert "quarantined" in result["pipeline_warning"]
+    assert "0001067983-26-000009" in result["pipeline_warning"]
+
+
 def test_the_newest_report_quarter_is_reachable(db_session, manager):
     """The bug's sharpest edge: 2026-Q1's filings are filed in 2026-Q2.
 
