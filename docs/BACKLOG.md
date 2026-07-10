@@ -558,3 +558,43 @@ long — escalate to the user. **medium / low** = ordinary follow-up.
   Oracle's Lens candidates table and manager holdings.
 - **Context:** `docs/tasks/2026-07-03_13f-po-review-value-investor.md`
 - **Issue:** —
+
+### 13F: `enrich_metadata` reports `new_stocks: 0` while creating thousands of stocks
+- **Found:** 2026-07-10, prod-zero rehearsal (`claude/13f-prod-zero-rehearsal`)
+- **Severity:** low (observability, not correctness)
+- **Problem:** `enrich_all_unmapped_holdings` calls `bootstrap_stocks_from_cusip_map`
+  once *after* its loop, but the per-batch path has already created the Stock
+  rows, so the post-loop call returns 0. The sandbox created 1896 stocks and
+  every `enrich_metadata` summary reported `new_stocks: 0`. An operator reading
+  the job summary would conclude no stocks were created.
+- **Fix sketch:** count created stocks inside the batch loop, or drop the
+  post-loop bootstrap's return value from the summary and report the delta in
+  `stocks` instead.
+- **Context:** `docs/tasks/2026-07-09_13f-prod-zero-rehearsal.md`
+- **Issue:** —
+
+### 13F: a Rate Guard HTML error page is stored verbatim in `job_runs.summary_json`
+- **Found:** 2026-07-10, prod-zero rehearsal
+- **Severity:** low (observability)
+- **Problem:** When the Rate Guard tunnel returns a Cloudflare 502, the whole
+  HTML body (with IE conditional comments) is embedded in the daily-sync
+  `last_error` and persisted into `JobRun.summary_json`. The actual signal — the
+  HTTP status — has to be recovered by reading HTML out of JSONB. `edgar_fetch`
+  errors should carry a status code and a truncated body.
+- **Fix sketch:** in the Rate Guard client, raise with `status_code` and the
+  first ~200 chars of the body; store both as structured fields.
+- **Context:** `docs/tasks/2026-07-09_13f-prod-zero-rehearsal.md`
+- **Issue:** —
+
+### 13F: M5 (turn on the prod switches) must not ship before the pipeline fixes land
+- **Found:** 2026-07-10, prod-zero rehearsal
+- **Severity:** high (blocking dependency, no action needed until M5 opens)
+- **Problem:** Turning on `EDGAR_SCHEDULER_ENABLED` / `THIRTEENF_JOB_WORKER_ENABLED`
+  / `THIRTEENF_START_QUARTER` in prod *before* the `_ingest_candidate_filings`
+  and `enrich_metadata` fixes would ingest holdings that never get scored, and
+  would leave the newest report quarter permanently `pending` — while every job
+  reported green. M5 depends on `claude/13f-prod-zero-rehearsal`.
+- **Fix sketch:** land the rehearsal branch first; the cross-stage
+  `pipeline_warning` guard then makes a regression visible in the admin job list.
+- **Context:** `docs/tasks/2026-07-09_13f-prod-zero-rehearsal.md`
+- **Issue:** —
