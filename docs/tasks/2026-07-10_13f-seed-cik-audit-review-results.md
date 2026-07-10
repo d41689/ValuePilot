@@ -68,3 +68,51 @@ Reviewed 2026-07-10 against `main...claude/13f-seed-cik-audit`.
 - `docker compose exec -T web sh -lc 'node --test lib/*.test.js'` — 179 passed
 - `docker compose exec -T web npm run lint` — passed
 - `docker compose exec -T web sh -lc 'NODE_ENV=production npm run build'` — passed (Browserslist database age notice only)
+
+---
+
+# Round 2 — post-fix review (2026-07-10)
+
+## Verdict
+
+需补正后合并。上一轮的“旧库 82 → 87”和“部分 reparse 覆盖分母”两个主路径已正确修复并有回归测试；但 `previous_ciks` 没有覆盖真实 revoke 的 `cik=NULL` 状态，会重新创建 confirmed manager 并推翻人工撤销。另有 quarantine 结果在 job/pipeline 层仍被报告为成功，导致安全地保留旧 run 的同时静默留下过期数据。
+
+## Findings
+
+### P1 — 已撤销的旧 CIK 会绕过 `previous_ciks` 并创建新的 confirmed manager
+
+- 文件/行: `backend/app/services/edgar_ingestion.py:261-287`；真实撤销行为在 `backend/app/services/thirteenf_admin_dashboard.py:976-1015`。
+- 精确状态或输入: 已有一个由旧 seed 创建的 Icahn 行（旧 CIK `0001413902`），操作员执行 `revoke_manager_cik` 的真实语义：`cik=NULL`、`match_status='revoked'`，并写入 `revoke_confirmed_cik(old_cik='0001413902')` 事件。随后启动本分支的 seed；Icahn entry 的新 CIK 是 `0000921669`，`previous_ciks=['0001413902']`。
+- 现有代码会怎么做: 当前 CIK 和 dataroma code 均无法命中；previous-CIK 查询只查 `InstitutionManager.cik`，而真实 revoke 已把它置 NULL；随后 `_cik_was_revoked_by_a_human` 错误地查询新 CIK `0000921669`，而 audit 事件保存的是旧 CIK `0001413902`。由于 `ICAHN CAPITAL MANAGEMENT LP` 与 `ICAHN CARL C` 的 normalized name 不相同，seed create 新行。
+- 错误的产品后果: 人工明确撤销的 manager 仍保留在 needs-review，但自动 seed 又创建一个 active/confirmed Icahn 记录；新记录会进入 `form.idx` 白名单与 Lens universe。这违反“human wins”的生命周期契约，并会在每次自动启动 seed 时重新把未经人工确认的实体带入产品。
+- 是否已复现（贴命令 + before/after）: 已复现（隔离 `valuepilot_test`，外层事务回滚）。容器内先插入真实 revoke 形态的旧 Icahn 行及 event，再调用 `seed_confirmed_managers()`；输出：`report {'created': 82, 'cik_repointed': 0, 'skipped_human_decided': 0, 'ambiguous_name_match': 0}`，Icahn 两行分别为 `(None, 'revoked', 'needs_review', 'ICAHN CAPITAL MANAGEMENT LP')` 和 `('0000921669', 'confirmed', 'active', 'ICAHN CARL C')`。
+- 建议修法: 在 create 路径之前，将 `previous_ciks` 也传给 revoked-event 检查；任一 previous CIK 有 `revoke_confirmed_cik` event 时必须把新 CIK 记入 `skipped_human_decided`，绝不能 create。加入端到端回归测试，使用实际 `revoke_manager_cik` 状态（CIK 为 NULL），而不是当前测试的 `inactive + old_cik` 近似状态。
+
+### P2 — quarantine 被 job/pipeline 吞掉，仍以成功状态完成
+
+- 文件/行: `backend/app/services/thirteenf_holdings_ingest.py:331-359`; `backend/app/services/thirteenf_admin_dashboard.py:3623-3630,3747-3757`。
+- 精确状态或输入: reparse activation gate 判断候选 run 部分解析并返回 `{'quarantined': True, 'quarantine_reason': ...}`；旧 current run 保持可服务。
+- 现有代码会怎么做: 单 accession job 丢弃 `quarantined` 和 `quarantine_reason`，固定返回 `status='succeeded'`。季度 ingest 同样将 quarantine 当普通非-skip result，累加候选的 `holdings_count`，不增加 `failures`、不生成 `pipeline_warning`、不创建质量 finding。`rg` 证实没有其它 `quarantined`/`quarantine_reason` 消费者。
+- 错误的产品后果: 产品继续使用旧 holdings（安全），但操作员得到全绿 job；如果候选含 parser 修复或真实更新，数据将持续过期且没有 admin task/quality status 指示。原票的目标正是阻止自动路径静默退化，此处仍留下同类静默失败。
+- 是否已复现: 推理已复现于 job-adapter 代码路径：`reparse_accession` 的唯一新结果字段在 `_execute_ingest_job` 返回体和季度循环中均未读取；隔离 reparse gate 测试也已确认会返回 `quarantined=True`。尚未构造带持久 raw document 的完整 dashboard job fixture。
+- 建议修法: 将 quarantine 映射为 job `partial_success`/`needs_review`，把 accession 与 reason 放入 summary 和 `pipeline_warning`；季度路径应记录 `filings_quarantined` 并使总 job 至少 `partial_success`。同时持久化可在 readiness/admin 中显示的 finding 或 parse warning，避免仅依赖日志。
+
+## Missing Tests
+
+- 使用 `revoke_manager_cik` 的真实 CIK=NULL + `previous_ciks` seed 回归测试，断言不创建新 confirmed 行。
+- `reparse_accession` job 与 quarterly `ingest_holdings` 对 quarantine 的端到端测试：job 不得 `succeeded`，summary/readiness 必须含 accession 和原因。
+
+## Non-findings
+
+- 上一轮 P1 seed 主场景已修复：旧 82 行重 seed 的新增测试覆盖 `created=0`、`updated=82`、`cik_repointed=11`、0 name collision、82 → 82、11 个 audit event；定向测试 39 passed。
+- 上一轮 P1 reparse 主场景已修复：17M 两行 current run 对 8M 一行 candidate reparse 会 quarantine，保留 17M 分母和两条 current holdings；可正常 reconciliation 的 reparse 仍会切换。
+- `previous_ciks` 当前数据本身完整：11 个 entry、11 个 10 位数字、无重复、且与 current CIK 无交集。
+
+## Verification
+
+- `docker compose up -d --build` — passed
+- `docker compose exec -T api alembic upgrade head` — passed
+- `TEST_URL=postgresql://valuepilot:valuepilot@postgres:5432/valuepilot_test docker compose exec -T -e DATABASE_URL="$TEST_URL" api pytest -q` — 1228 passed, 3 existing SQLAlchemy legacy warnings
+- `docker compose exec -T web sh -lc 'node --test lib/*.test.js'` — 179 passed
+- `docker compose exec -T web npm run lint` — passed
+- `docker compose exec -T web sh -lc 'NODE_ENV=production npm run build'` — passed (Browserslist database age notice only)
