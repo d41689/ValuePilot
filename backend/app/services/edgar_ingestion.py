@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Optional
 
-from sqlalchemy import text
+from sqlalchemy import or_, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -1410,37 +1410,64 @@ def previous_quarter_label(label: str) -> str:
     return f"{year - 1}-Q4" if qtr == 1 else f"{year}-Q{qtr - 1}"
 
 
+def ingest_quarter_for_filing(filing) -> Optional[str]:
+    """The one **report** quarter whose ``ingest_holdings`` job claims ``filing``.
+
+    Single source of truth for a rule that ``_ingest_candidate_filings`` expresses
+    as a SQL predicate. Stating it twice has now produced two bugs, so state it
+    once here and pin the two together with
+    ``test_pending_ingest_quarters_matches_the_job_that_claims_each_filing``.
+
+    ``filing`` needs only ``report_quarter`` and ``period_of_report``.
+
+    * **Routed** — ``report_quarter`` is set, so it *is* the answer.
+      ``backfill_period_routing`` writes it together with the true
+      ``period_of_report``, and the daily-sync path
+      (``ingest_accession_filing_detail``) writes it while deliberately leaving
+      ``raw_infotable_doc_id`` NULL: that job fetches the primary doc and routes
+      the period, never the infotable. Such a filing is routed AND un-ingested,
+      and it stays that way until some ``ingest_holdings`` run parses its
+      holdings.
+    * **Un-routed** — ``period_of_report`` is only a proxy equal to ``filed_at``,
+      stamped at index time before any document is read. A 13F for report quarter
+      Q is filed within 45 days after Q ends, so the proxy lands in Q+1; translate
+      it back.
+
+    Subtracting a quarter from a *routed* filing's period — which is what this
+    rule used to do to every un-ingested row — sends the CLI to a quarter that
+    selects nothing, and it reports a clean zero (external review, round 2).
+    """
+    if filing.report_quarter:
+        return filing.report_quarter
+    if filing.period_of_report is None:
+        return None
+    return previous_quarter_label(_date_to_quarter(filing.period_of_report))
+
+
 def pending_ingest_quarters(db: Session) -> list[str]:
     """**Report** quarters that still have un-ingested 13F filings.
 
-    A filing is un-ingested while ``raw_infotable_doc_id IS NULL`` (its
-    infotable has not been fetched/parsed). Its ``period_of_report`` is then only
-    a proxy equal to ``filed_at`` — the *filing* quarter — and is corrected to
-    the true report quarter when the primary doc is parsed
-    (``backfill_period_routing``).
-
-    A 13F for report quarter Q is filed within 45 days after Q ends, so the proxy
-    lands in Q+1. The ``ingest_holdings`` job takes a **report** quarter (the same
-    thing ``fetch_quarter_index`` means by it) and already widens to the filed
-    quarter internally — see ``_ingest_candidate_filings``. So we translate the
-    proxy back: proxy quarter Q+1 → report quarter Q.
-
-    Returning the proxy quarter instead would hand the job a label one quarter
-    ahead of the filings it is meant to parse, and it would ingest nothing.
+    A filing is un-ingested while ``raw_infotable_doc_id IS NULL`` — its infotable
+    has not been fetched or parsed. Each such filing is claimed by exactly one
+    ``ingest_holdings`` job; :func:`ingest_quarter_for_filing` says which.
 
     Idempotent: once ingested a filing has ``raw_infotable_doc_id`` set and drops
     out of the pool.
     """
     rows = (
-        db.query(Filing13F.period_of_report)
+        db.query(Filing13F.report_quarter, Filing13F.period_of_report)
         .filter(Filing13F.raw_infotable_doc_id.is_(None))
-        .filter(Filing13F.period_of_report.isnot(None))
+        .filter(
+            or_(
+                Filing13F.report_quarter.isnot(None),
+                Filing13F.period_of_report.isnot(None),
+            )
+        )
         .distinct()
         .all()
     )
-    return sorted(
-        {previous_quarter_label(_date_to_quarter(row[0])) for row in rows}
-    )
+    quarters = {ingest_quarter_for_filing(row) for row in rows}
+    return sorted(q for q in quarters if q)
 
 
 def ingest_pending_holdings(db: Session, *, quarters=None, ingest_fn=None, log=None) -> dict:

@@ -391,6 +391,89 @@ def test_every_filing_shape_is_claimed_by_exactly_one_quarter(db_session):
         assert claimed_by == [owner], f"{name}: claimed by {claimed_by}, want [{owner}]"
 
 
+def test_a_daily_synced_filing_is_routed_but_has_no_infotable(db_session, manager):
+    """`ingest_accession_filing_detail` fetches the primary doc and routes the
+    period; it never fetches the infotable. So `report_quarter` is set while
+    `raw_infotable_doc_id IS NULL` — routed AND un-ingested, persistently.
+
+    The `ingest_holdings` job claims it through the routed arm. Nothing else may.
+    """
+    daily = _filing(
+        db_session, manager,
+        accession="0001067983-24-000006",
+        period=date(2024, 3, 31),   # the TRUE period, written by route_period
+        filed=date(2024, 5, 15),
+        routed=True, ingested=False,   # no infotable yet
+    )
+    assert daily.report_quarter == "2024-Q1"
+    assert daily.raw_infotable_doc_id is None
+
+    claimed_by = [
+        q for q in ("2023-Q4", "2024-Q1", "2024-Q2")
+        if daily.accession_no in _accessions(_ingest_candidate_filings(db_session, q))
+    ]
+    assert claimed_by == ["2024-Q1"], f"claimed by {claimed_by}"
+
+
+def test_pending_ingest_quarters_matches_the_job_that_claims_each_filing(
+    db_session, manager
+):
+    """The two statements of one rule must never drift again.
+
+    `ingest_quarter_for_filing()` is the Python statement; the `or_(...)` in
+    `_ingest_candidate_filings` is the SQL one. Stating the rule twice has now
+    produced two bugs: the CLI handed the job a filed quarter, and then it
+    subtracted a quarter from a *routed* daily-sync filing and sent the job to a
+    quarter that selects nothing.
+
+    So assert the two agree on every un-ingested shape: the quarter the helper
+    names is exactly the quarter whose job selects that filing, and no other.
+    """
+    from app.services.edgar_ingestion import (
+        ingest_quarter_for_filing,
+        pending_ingest_quarters,
+    )
+
+    db_session.query(Filing13F).delete()
+    db_session.flush()
+
+    shapes = {
+        # accession suffix -> (period_of_report, filed_at, routed?)
+        "000030": (date(2026, 2, 17), date(2026, 2, 17), False),  # un-routed, on time
+        "000031": (date(2026, 7, 15), date(2026, 7, 15), False),  # un-routed, late
+        "000032": (date(2024, 3, 31), date(2024, 5, 15), True),   # daily-sync routed
+        "000033": (date(2025, 12, 31), date(2026, 2, 17), True),  # routed by backfill
+    }
+    filings = {}
+    for index, (suffix, (period, filed, routed)) in enumerate(shapes.items()):
+        m = InstitutionManager(
+            cik=f"888888{index:04d}", legal_name=f"Agree {index}",
+            name_normalized=f"agree-{index}", match_status="confirmed",
+        )
+        db_session.add(m)
+        db_session.flush()
+        filings[suffix] = _filing(
+            db_session, m, accession=f"0001067983-26-{suffix}",
+            period=period, filed=filed, routed=routed, ingested=False,
+        )
+
+    every_quarter = [f"{y}-Q{q}" for y in (2023, 2024, 2025, 2026) for q in (1, 2, 3, 4)]
+    for suffix, filing in filings.items():
+        named = ingest_quarter_for_filing(filing)
+        claimed_by = [
+            q for q in every_quarter
+            if filing.accession_no in _accessions(_ingest_candidate_filings(db_session, q))
+        ]
+        assert claimed_by == [named], (
+            f"{suffix}: helper says {named}, SQL says {claimed_by}"
+        )
+
+    # And the CLI's whole target list is exactly the set of claiming quarters.
+    assert pending_ingest_quarters(db_session) == sorted(
+        {ingest_quarter_for_filing(f) for f in filings.values()}
+    )
+
+
 def test_pending_ingest_quarters_speaks_the_same_language_as_the_ingest_job(
     db_session, manager
 ):
