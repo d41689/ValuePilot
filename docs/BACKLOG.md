@@ -613,3 +613,24 @@ long — escalate to the user. **medium / low** = ordinary follow-up.
   than hangs, and that the exit is distinguishable in the container logs.
 - **Context:** `docs/tasks/2026-07-09_13f-prod-zero-rehearsal.md` (external review round)
 - **Issue:** —
+
+### 13F: 11 curated managers have a CIK that never files a 13F
+- **Found:** 2026-07-10, verifying the from-zero rehearsal's claim that the pipeline "parses 13F data correctly"
+- **Severity:** high — silent, product-visible, changes Oracle's Lens consensus
+- **Problem:** `institution_managers` holds 82 confirmed managers; only 71 have ever
+  produced a filing. The other 11 carry a CIK that is not the entity filing the 13F
+  (Chou and Trian are off by one digit). `ingest_quarter_index` whitelists by CIK, so
+  a wrong CIK matches nothing, forever, silently. `min_holders = 3` means Oracle's
+  Lens consensus has been computed over 71 managers, missing Icahn, Einhorn, Tepper,
+  Dalio, Peltz, ValueAct, Bridgewater, FPA, Third Avenue, Chou and Fundsmith.
+  Verified against 45 319 13F records across 5 stored `form.idx` quarters: none of
+  the 11 seeded CIKs appears as a filer in any of them. The other 71 are name-consistent
+  with their EDGAR filer — no manager ingests the wrong filer's holdings.
+  `match_cik_candidates()` cannot catch it: it only scans `cik IS NULL AND
+  match_status IN ('seeded','candidate')`.
+- **Fix sketch:** see the ticket. Correct the 11 CIKs; add a read-only
+  `audit_seed_ciks` job that checks each confirmed CIK against EDGAR; add a readiness
+  check for "confirmed manager, zero filings in the last N quarters"; then recompute
+  ownership_changes + Lens for every quarter, because fixing this IS a universe change.
+- **Context:** `docs/tasks/2026-07-10_13f-seed-cik-audit.md`
+- **Issue:** —
