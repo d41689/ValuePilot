@@ -272,8 +272,10 @@ def test_seed_json_gates_foundation_is_endowment_passive():
 
 def test_seed_confirmed_managers_populates_v2_columns(db_session):
     # Run the seeding code against the fixture-rolled-back session.
-    n = seed_confirmed_managers(db_session)
-    assert n >= 80, f"expected to seed >= 80, got {n}"
+    # M1: seeding returns a diff report now, not a bare count — a deploy-time
+    # re-seed must be able to show what it did, and what it refused to do.
+    report = seed_confirmed_managers(db_session)
+    assert report["created"] >= 80, f"expected to seed >= 80, got {report}"
     db_session.flush()
 
     # Spot-check a Tiger Cub: legacy manager_type must be derived from
