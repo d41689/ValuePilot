@@ -71,6 +71,38 @@ Reviewed 2026-07-10 against `main...claude/13f-seed-cik-audit`.
 
 ---
 
+# Round 3 — post-fix review (2026-07-10)
+
+## Verdict
+
+可合并。第二轮的 P1（真实 revoke 后被 `previous_ciks` resurrection）与 P2（quarantine 被 job/pipeline 吞掉）均已修复；独立复现通过，未发现新问题。
+
+## Findings
+
+无。
+
+## Missing Tests
+
+无阻断性缺口。当前覆盖包含真实 revoke 形态（`cik=NULL` + `revoke_confirmed_cik` event）、单 accession reparse job 的 `partial_success`、以及季度 pipeline 的 quarantine warning。
+
+## Non-findings
+
+- P1 已独立复现修复：在隔离 `valuepilot_test` 中构造旧 Icahn CIK `0001413902` 的真实 revoke 状态后 re-seed，输出 `created=81, skipped_human_decided=1`（其余 81 个 seed entry 为新建），Icahn 仅剩一行 `(cik=None, match_status='revoked', status='needs_review')`，新 CIK `0000921669` 位于 `skipped_human_decided_ciks`。外层事务已回滚。
+- P2 的结果传播完整：activation gate 的 quarantine 会令单 accession job 返回 `partial_success` 与 `quarantine_reason`；季度 ingest 返回 `filings_quarantined` / `quarantined_accessions` 并进入 `partial_success`；父 pipeline 把 accession 写入 `pipeline_warning`，因此 admin job alert 有可行动的原因。
+- `previous_ciks` 数据保持干净：11 个 entry、11 个 10 位数字、无重复、与当前 CIK 无交集。
+- 审查了 stage wrapper：它保留 `_execute_job` 返回的 `partial_success` 到 `JobRun.status` 与 stage summary，不会把 quarantine 再提升为 `succeeded`。Pipeline 在 warning 下继续以旧 current holdings 评分，但总状态为 `partial_success`，符合“旧数据可服务、操作员必须获知”的隔离语义。
+
+## Verification
+
+- `docker compose up -d --build` — passed
+- `docker compose exec -T api alembic upgrade head` — passed
+- `TEST_URL=postgresql://valuepilot:valuepilot@postgres:5432/valuepilot_test docker compose exec -T -e DATABASE_URL="$TEST_URL" api pytest -q` — 1232 passed, 3 existing SQLAlchemy legacy warnings
+- `docker compose exec -T web sh -lc 'node --test lib/*.test.js'` — 179 passed
+- `docker compose exec -T web npm run lint` — passed
+- `docker compose exec -T web sh -lc 'NODE_ENV=production npm run build'` — passed (Browserslist database age notice only)
+
+---
+
 # Round 2 — post-fix review (2026-07-10)
 
 ## Verdict
