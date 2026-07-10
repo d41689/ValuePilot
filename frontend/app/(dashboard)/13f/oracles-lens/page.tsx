@@ -23,6 +23,7 @@ import {
   type UniverseFilters,
 } from '@/components/oraclesLens/UniverseSelector';
 import thirteenfAdminHelpers from '@/lib/thirteenfAdmin';
+import { ReadinessWarnings } from '@/lib/readinessWarnings';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
@@ -434,19 +435,10 @@ export default function OraclesLensPage() {
       ) : readiness.warnings.length ? (
         <div className="flex gap-3 rounded-md border border-border/70 bg-muted/40 px-4 py-3 text-sm text-muted-foreground">
           <Info className="mt-0.5 h-4 w-4 shrink-0" />
-          <div className="space-y-1">
-            {readiness.warnings.slice(0, 3).map((warning, index) => {
-              // Readiness warnings are structured `{ code, message }` (backend
-              // thirteenf_readiness `_message`), not bare strings. Rendering the
-              // object directly crashed the page ("Objects are not valid as a
-              // React child") and used `[object Object]` as the key. normalizeReadiness
-              // keeps them as objects but tolerates a legacy string.
-              const code = typeof warning === 'object' && warning ? warning.code : undefined;
-              const message =
-                typeof warning === 'object' && warning ? warning.message : warning;
-              return <div key={code ?? index}>{message}</div>;
-            })}
-          </div>
+          {/* Structured `{ code, message }` warnings — rendered via the extracted
+              ReadinessWarnings so the render boundary is covered by a lib test
+              (readinessWarnings.test.js). See its header for the crash it prevents. */}
+          <ReadinessWarnings warnings={readiness.warnings} />
         </div>
       ) : null}
 
