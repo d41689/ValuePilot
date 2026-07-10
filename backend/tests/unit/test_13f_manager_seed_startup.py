@@ -166,6 +166,14 @@ def test_a_missing_seed_file_blocks_startup(monkeypatch, db_session):
         run_startup_manager_seed(_factory(db_session))
 
 
+def _curated_seed():
+    path = (
+        Path(__file__).resolve().parents[2]
+        / "app" / "services" / "seed_data" / "confirmed_managers.json"
+    )
+    return json.loads(path.read_text())
+
+
 def test_the_curated_seed_file_is_valid(db_session):
     """The guard that makes fail-loud safe: a bad file can never reach prod.
 
@@ -173,11 +181,7 @@ def test_the_curated_seed_file_is_valid(db_session):
     """
     from app.services.oracles_lens.manager_style import derive_legacy_manager_type
 
-    path = (
-        Path(__file__).resolve().parents[2]
-        / "app" / "services" / "seed_data" / "confirmed_managers.json"
-    )
-    entries = json.loads(path.read_text())
+    entries = _curated_seed()
 
     assert len(entries) > 0
     ciks = [e.get("cik") for e in entries]
@@ -186,6 +190,43 @@ def test_the_curated_seed_file_is_valid(db_session):
     for entry in entries:
         # Raises ValueError on a typo — that is the loud failure we rely on.
         derive_legacy_manager_type(entry.get("style_primary", "unknown"))
+
+
+def test_every_curated_cik_is_a_ten_digit_zero_padded_string(db_session):
+    """`ingest_quarter_index` matches `form.idx` on the CIK, exactly.
+
+    An unpadded or non-numeric CIK matches nothing, forever, silently — the
+    manager simply never appears. Eleven of the 82 shipped with a CIK that does
+    not file 13F at all; two were off by a single digit. Shape is the only part
+    of that a test can check offline. `audit-seed-ciks` checks the rest against
+    EDGAR.
+    """
+    for entry in _curated_seed():
+        cik = entry["cik"]
+        assert isinstance(cik, str), f"{entry['display_name']}: CIK must be a string"
+        assert len(cik) == 10 and cik.isdigit(), (
+            f"{entry['display_name']}: CIK {cik!r} must be 10 digits, zero-padded"
+        )
+
+
+def test_no_two_curated_managers_normalize_to_the_same_name(db_session):
+    """A collision means one of them is silently never created.
+
+    `seed_confirmed_managers` REFUSES to create a manager whose `name_normalized`
+    already exists (it cannot tell which of the two the seed means). On a fresh
+    database that turns a curated manager into an `ambiguous_name_match` report
+    line and nothing else — 81 managers where the file says 82.
+    """
+    from app.services.edgar_ingestion import _normalize_name
+
+    seen: dict[str, str] = {}
+    for entry in _curated_seed():
+        norm = _normalize_name(entry.get("legal_name") or entry["display_name"])
+        assert norm not in seen, (
+            f"{entry['display_name']} and {seen[norm]} both normalize to {norm!r}; "
+            f"one of them would never be created"
+        )
+        seen[norm] = entry["display_name"]
 
 
 # --------------------------------------------------------------------------

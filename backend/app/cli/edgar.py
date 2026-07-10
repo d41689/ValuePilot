@@ -53,12 +53,16 @@ def _echo_seed_report(report: dict) -> None:
     typer.echo(
         f"Seed entries {report['seed_entries']}: "
         f"created {report['created']}, updated {report['updated']}, "
+        f"cik re-pointed {report.get('cik_repointed', 0)}, "
         f"skipped human-decided {report['skipped_human_decided']}, "
         f"skipped needs-review {report['skipped_needs_review']}, "
         f"awaiting confirmation {report['awaiting_confirmation']}, "
         f"ambiguous name match {report['ambiguous_name_match']}"
     )
     for key, header in (
+        ("cik_repointed_ciks",
+         "CIK RE-POINTED - the curated CIK changed; an audit event was written and "
+         "downstream ownership_changes / Oracle's Lens must be recomputed:"),
         ("skipped_human_decided_ciks",
          "skipped - an operator retired/revoked/rejected these; seeding will not resurrect them:"),
         ("skipped_needs_review_ciks",

@@ -9,7 +9,11 @@
     "market_cap_focus": "large",
     "geo_focus": "us",
     "historical_turnover": "low",
-    "ideology_tags": ["klarman_protege", "deep_value", "concentrated"],
+    "ideology_tags": [
+      "klarman_protege",
+      "deep_value",
+      "concentrated"
+    ],
     "classification_rationale": "Ex-Baupost; concentrated deep value with multi-year holding periods."
   },
   {
@@ -21,7 +25,10 @@
     "market_cap_focus": "large",
     "geo_focus": "global",
     "historical_turnover": "low",
-    "ideology_tags": ["quality_compounder", "global_quality"],
+    "ideology_tags": [
+      "quality_compounder",
+      "global_quality"
+    ],
     "classification_rationale": "European long-bias quality compounder fund."
   },
   {
@@ -34,7 +41,10 @@
     "market_cap_focus": "large",
     "geo_focus": "us",
     "historical_turnover": "low",
-    "ideology_tags": ["three_legged_stool", "compounder"],
+    "ideology_tags": [
+      "three_legged_stool",
+      "compounder"
+    ],
     "classification_rationale": "Akre's 'three-legged stool' framework: high-quality business, talented management, reinvestment runway."
   },
   {
@@ -46,32 +56,50 @@
     "market_cap_focus": "large",
     "geo_focus": "us",
     "historical_turnover": "low",
-    "ideology_tags": ["concentrated_quality", "compounder"],
+    "ideology_tags": [
+      "concentrated_quality",
+      "compounder"
+    ],
     "classification_rationale": "Concentrated long-only quality compounder (Constellation Software / Topicus / Roper-type names); PO review reclassified from value_concentrated."
   },
   {
     "display_name": "David Tepper - Appaloosa Management",
-    "legal_name": "APPALOOSA MANAGEMENT LP",
-    "cik": "0001006438",
+    "legal_name": "Appaloosa LP",
+    "cik": "0001656456",
     "style_primary": "multi_strategy_macro",
     "capital_structure": "permanent_capital",
     "market_cap_focus": "all",
     "geo_focus": "global",
     "historical_turnover": "high",
-    "ideology_tags": ["distressed", "macro", "tepper"],
-    "classification_rationale": "Distressed credit + equity + macro overlay; converted to family office."
+    "ideology_tags": [
+      "distressed",
+      "macro",
+      "tepper"
+    ],
+    "classification_rationale": "Distressed credit + equity + macro overlay; converted to family office.",
+    "cik_source": "EDGAR submissions API, verified 2026-07-10. Was 0001006438: Appaloosa Management LP stopped filing 13F-HR after 2016-02-12.",
+    "previous_ciks": [
+      "0001006438"
+    ]
   },
   {
     "display_name": "Guy Spier - Aquamarine Capital",
-    "legal_name": "Aquamarine Capital Management, LLC",
-    "cik": "0001404599",
+    "legal_name": "Aquamarine Zurich AG",
+    "cik": "0001953324",
     "style_primary": "value_concentrated",
     "capital_structure": "locked_lp",
     "market_cap_focus": "mid",
     "geo_focus": "global",
     "historical_turnover": "low",
-    "ideology_tags": ["buffett_disciple", "concentrated"],
-    "classification_rationale": "Self-described Buffett disciple; concentrated buy-and-hold."
+    "ideology_tags": [
+      "buffett_disciple",
+      "concentrated"
+    ],
+    "classification_rationale": "Self-described Buffett disciple; concentrated buy-and-hold.",
+    "cik_source": "EDGAR submissions API, verified 2026-07-10. Was 0001404599: Aquamarine Capital Management LLC stopped filing 13F-HR after 2022-08-02; Spier's firm now files from Zurich.",
+    "previous_ciks": [
+      "0001404599"
+    ]
   },
   {
     "display_name": "John Rogers - Ariel Investments",
@@ -82,7 +110,10 @@
     "market_cap_focus": "mid",
     "geo_focus": "us",
     "historical_turnover": "low",
-    "ideology_tags": ["small_mid_cap_value", "patient_capital"],
+    "ideology_tags": [
+      "small_mid_cap_value",
+      "patient_capital"
+    ],
     "classification_rationale": "Classic value; flagship Ariel Fund has drifted to mid-cap (PO review reclassified from small)."
   },
   {
@@ -94,7 +125,10 @@
     "market_cap_focus": "mid",
     "geo_focus": "global",
     "historical_turnover": "med",
-    "ideology_tags": ["concentrated_value", "constructive_activist"],
+    "ideology_tags": [
+      "concentrated_value",
+      "constructive_activist"
+    ],
     "classification_rationale": "Concentrated value with constructive engagement, US + Japan."
   },
   {
@@ -107,7 +141,11 @@
     "market_cap_focus": "all",
     "geo_focus": "global",
     "historical_turnover": "med",
-    "ideology_tags": ["klarman", "deep_value", "special_situations"],
+    "ideology_tags": [
+      "klarman",
+      "deep_value",
+      "special_situations"
+    ],
     "classification_rationale": "Margin of Safety; deep value + distressed + special situations."
   },
   {
@@ -121,7 +159,11 @@
     "geo_focus": "us",
     "historical_turnover": "low",
     "position_concentration_top10_pct": 80.0,
-    "ideology_tags": ["buffett", "permanent_capital", "insurance_float"],
+    "ideology_tags": [
+      "buffett",
+      "permanent_capital",
+      "insurance_float"
+    ],
     "classification_rationale": "Top 10 positions ~80% of equity book; insurance float as permanent capital."
   },
   {
@@ -134,7 +176,10 @@
     "market_cap_focus": "large",
     "geo_focus": "global",
     "historical_turnover": "low",
-    "ideology_tags": ["oakmark", "deep_value"],
+    "ideology_tags": [
+      "oakmark",
+      "deep_value"
+    ],
     "classification_rationale": "Oakmark Fund's classic value style; 60-70 positions."
   },
   {
@@ -146,21 +191,31 @@
     "market_cap_focus": "large",
     "geo_focus": "us",
     "historical_turnover": "low",
-    "ideology_tags": ["concentrated_quality"],
+    "ideology_tags": [
+      "concentrated_quality"
+    ],
     "classification_rationale": "Concentrated quality (8-12 positions); Chieftain Capital legacy."
   },
   {
     "dataroma_code": "BRIDGEWATER",
     "display_name": "Ray Dalio - Bridgewater Associates",
-    "legal_name": "BRIDGEWATER ASSOCIATES, LP",
-    "cik": "0001350685",
+    "legal_name": "Bridgewater Associates, LP",
+    "cik": "0001350694",
     "style_primary": "multi_strategy_macro",
     "capital_structure": "locked_lp",
     "market_cap_focus": "all",
     "geo_focus": "global",
     "historical_turnover": "med",
-    "ideology_tags": ["dalio", "macro", "risk_parity"],
-    "classification_rationale": "Global macro / All Weather; 13F equity sleeve has weak stock-pick signal."
+    "ideology_tags": [
+      "dalio",
+      "macro",
+      "risk_parity"
+    ],
+    "classification_rationale": "Global macro / All Weather; 13F equity sleeve has weak stock-pick signal.",
+    "cik_source": "EDGAR submissions API, verified 2026-07-10. Was 0001350685: seeded CIK resolves to a natural person (LEWSADDER SUZANNE) with zero filings — a typo.",
+    "previous_ciks": [
+      "0001350685"
+    ]
   },
   {
     "display_name": "William von Mueffling - Cantillon Capital",
@@ -171,7 +226,10 @@
     "market_cap_focus": "large",
     "geo_focus": "global",
     "historical_turnover": "low",
-    "ideology_tags": ["quality_compounder", "global_quality"],
+    "ideology_tags": [
+      "quality_compounder",
+      "global_quality"
+    ],
     "classification_rationale": "Global quality compounder; ex-Lazard."
   },
   {
@@ -183,7 +241,9 @@
     "market_cap_focus": "mid",
     "geo_focus": "us",
     "historical_turnover": "low",
-    "ideology_tags": ["concentrated_value"],
+    "ideology_tags": [
+      "concentrated_value"
+    ],
     "classification_rationale": "Concentrated value; ex-Glenview."
   },
   {
@@ -195,20 +255,30 @@
     "market_cap_focus": "large",
     "geo_focus": "global",
     "historical_turnover": "med",
-    "ideology_tags": ["global_value"],
+    "ideology_tags": [
+      "global_value"
+    ],
     "classification_rationale": "International / global value mutual fund."
   },
   {
     "display_name": "Francis Chou - Chou Associates",
-    "legal_name": "Chou Associates Fund",
-    "cik": "0001389402",
+    "legal_name": "Chou Associates Management Inc.",
+    "cik": "0001389403",
     "style_primary": "value_concentrated",
     "capital_structure": "mutual_fund_etf",
     "market_cap_focus": "mid",
     "geo_focus": "global",
     "historical_turnover": "low",
-    "ideology_tags": ["chou", "deep_value", "special_situations"],
-    "classification_rationale": "Deep value + special situations + distressed credit."
+    "ideology_tags": [
+      "chou",
+      "deep_value",
+      "special_situations"
+    ],
+    "classification_rationale": "Deep value + special situations + distressed credit.",
+    "cik_source": "EDGAR submissions API, verified 2026-07-10. Was 0001389402: seeded CIK was the FUND (Chou Associates Fund), last 13F-HR 2011-08-15; off by one digit from the manager.",
+    "previous_ciks": [
+      "0001389402"
+    ]
   },
   {
     "dataroma_code": "DAV",
@@ -220,7 +290,11 @@
     "market_cap_focus": "large",
     "geo_focus": "us",
     "historical_turnover": "low",
-    "ideology_tags": ["davis", "quality", "multigenerational"],
+    "ideology_tags": [
+      "davis",
+      "quality",
+      "multigenerational"
+    ],
     "classification_rationale": "Multi-generational family investing house; quality at reasonable price."
   },
   {
@@ -232,7 +306,10 @@
     "market_cap_focus": "small",
     "geo_focus": "us",
     "historical_turnover": "med",
-    "ideology_tags": ["concentrated_value", "small_cap"],
+    "ideology_tags": [
+      "concentrated_value",
+      "small_cap"
+    ],
     "classification_rationale": "Small/mid-cap concentrated value boutique."
   },
   {
@@ -245,7 +322,11 @@
     "market_cap_focus": "mid",
     "geo_focus": "global",
     "historical_turnover": "low",
-    "ideology_tags": ["munger", "permanent_capital", "long_hold"],
+    "ideology_tags": [
+      "munger",
+      "permanent_capital",
+      "long_hold"
+    ],
     "classification_rationale": "Munger's legacy portfolio; <5 positions held for >10 years."
   },
   {
@@ -258,7 +339,10 @@
     "market_cap_focus": "large",
     "geo_focus": "global",
     "historical_turnover": "low",
-    "ideology_tags": ["deep_value", "team_based"],
+    "ideology_tags": [
+      "deep_value",
+      "team_based"
+    ],
     "classification_rationale": "Team-based deep value; Stock / Income / International fund family."
   },
   {
@@ -270,7 +354,10 @@
     "market_cap_focus": "mid",
     "geo_focus": "us",
     "historical_turnover": "low",
-    "ideology_tags": ["dorsey", "moat_investing"],
+    "ideology_tags": [
+      "dorsey",
+      "moat_investing"
+    ],
     "classification_rationale": "Ex-Morningstar; moat-driven quality."
   },
   {
@@ -282,7 +369,11 @@
     "market_cap_focus": "large",
     "geo_focus": "us",
     "historical_turnover": "high",
-    "ideology_tags": ["growth", "tmt", "ex_t_rowe"],
+    "ideology_tags": [
+      "growth",
+      "tmt",
+      "ex_t_rowe"
+    ],
     "classification_rationale": "Ex T. Rowe Price growth; momentum-style book, high turnover."
   },
   {
@@ -294,7 +385,10 @@
     "market_cap_focus": "large",
     "geo_focus": "global",
     "historical_turnover": "med",
-    "ideology_tags": ["uk_long_bias", "quality"],
+    "ideology_tags": [
+      "uk_long_bias",
+      "quality"
+    ],
     "classification_rationale": "UK-based long-biased quality."
   },
   {
@@ -306,7 +400,10 @@
     "market_cap_focus": "small",
     "geo_focus": "us",
     "historical_turnover": "med",
-    "ideology_tags": ["activist", "small_cap_activist"],
+    "ideology_tags": [
+      "activist",
+      "small_cap_activist"
+    ],
     "classification_rationale": "Small/mid-cap constructive activist."
   },
   {
@@ -318,7 +415,11 @@
     "market_cap_focus": "large",
     "geo_focus": "global",
     "historical_turnover": "low",
-    "ideology_tags": ["watsa", "insurance_float", "deep_value"],
+    "ideology_tags": [
+      "watsa",
+      "insurance_float",
+      "deep_value"
+    ],
     "classification_rationale": "Canadian Berkshire analogue; insurance float + deep value."
   },
   {
@@ -330,7 +431,11 @@
     "market_cap_focus": "large",
     "geo_focus": "us",
     "historical_turnover": "low",
-    "ideology_tags": ["berkowitz", "deep_value", "special_situations"],
+    "ideology_tags": [
+      "berkowitz",
+      "deep_value",
+      "special_situations"
+    ],
     "classification_rationale": "Concentrated deep value (often <10 positions); known for special situations."
   },
   {
@@ -342,32 +447,52 @@
     "market_cap_focus": "large",
     "geo_focus": "global",
     "historical_turnover": "low",
-    "ideology_tags": ["first_eagle", "deep_value", "gold_overlay"],
+    "ideology_tags": [
+      "first_eagle",
+      "deep_value",
+      "gold_overlay"
+    ],
     "classification_rationale": "Global Value Fund; classic Graham-Dodd with gold overlay."
   },
   {
     "display_name": "Steven Romick - First Pacific Advisors",
-    "legal_name": "FIRST PACIFIC ADVISORS INC",
-    "cik": "0000109501",
+    "legal_name": "First Pacific Advisors, LP",
+    "cik": "0001377581",
     "style_primary": "value_deep",
     "capital_structure": "mutual_fund_etf",
     "market_cap_focus": "large",
     "geo_focus": "us",
     "historical_turnover": "low",
-    "ideology_tags": ["fpa", "deep_value", "romick"],
-    "classification_rationale": "FPA Crescent / FPA Capital; classic absolute-return value."
+    "ideology_tags": [
+      "fpa",
+      "deep_value",
+      "romick"
+    ],
+    "classification_rationale": "FPA Crescent / FPA Capital; classic absolute-return value.",
+    "cik_source": "EDGAR submissions API, verified 2026-07-10. Was 0000109501: First Pacific Advisors INC stopped filing 13F-HR after 2006-11-14.",
+    "previous_ciks": [
+      "0000109501"
+    ]
   },
   {
     "display_name": "Terry Smith - Fundsmith Equity",
-    "legal_name": "Fundsmith Equity Fund, L.P.",
-    "cik": "0001520023",
+    "legal_name": "Fundsmith LLP",
+    "cik": "0001569205",
     "style_primary": "quality_compounder",
     "capital_structure": "mutual_fund_etf",
     "market_cap_focus": "large",
     "geo_focus": "global",
     "historical_turnover": "low",
-    "ideology_tags": ["fundsmith", "quality_compounder", "global_franchises"],
-    "classification_rationale": "'Buy good companies, don't overpay, do nothing'; ~25 global franchises."
+    "ideology_tags": [
+      "fundsmith",
+      "quality_compounder",
+      "global_franchises"
+    ],
+    "classification_rationale": "'Buy good companies, don't overpay, do nothing'; ~25 global franchises.",
+    "cik_source": "EDGAR submissions API, verified 2026-07-10. Was 0001520023: seeded CIK was the FUND (Fundsmith Equity Fund LP), last 13F-HR 2018-09-04; the manager is Fundsmith LLP.",
+    "previous_ciks": [
+      "0001520023"
+    ]
   },
   {
     "display_name": "Thomas Russo - Gardner Russo & Quinn",
@@ -378,7 +503,10 @@
     "market_cap_focus": "large",
     "geo_focus": "global",
     "historical_turnover": "low",
-    "ideology_tags": ["consumer_staples", "global_value"],
+    "ideology_tags": [
+      "consumer_staples",
+      "global_value"
+    ],
     "classification_rationale": "Global consumer staples value, 'capacity to suffer'."
   },
   {
@@ -391,7 +519,10 @@
     "market_cap_focus": "mega",
     "geo_focus": "us",
     "historical_turnover": "low",
-    "ideology_tags": ["endowment", "buffett_donation"],
+    "ideology_tags": [
+      "endowment",
+      "buffett_donation"
+    ],
     "classification_rationale": "Holds Buffett-donated stock; 'trades' are gifting timing, not investment views — index_like weight is correct."
   },
   {
@@ -403,7 +534,10 @@
     "market_cap_focus": "large",
     "geo_focus": "global",
     "historical_turnover": "low",
-    "ideology_tags": ["rochon", "quality"],
+    "ideology_tags": [
+      "rochon",
+      "quality"
+    ],
     "classification_rationale": "Canadian long-term quality compounder; Rochon's 'art of investing'."
   },
   {
@@ -415,7 +549,10 @@
     "market_cap_focus": "large",
     "geo_focus": "us",
     "historical_turnover": "low",
-    "ideology_tags": ["wachenheim", "deep_value"],
+    "ideology_tags": [
+      "wachenheim",
+      "deep_value"
+    ],
     "classification_rationale": "Long-term cyclical value; 'Common Stocks and Common Sense'."
   },
   {
@@ -427,20 +564,31 @@
     "market_cap_focus": "small",
     "geo_focus": "us",
     "historical_turnover": "low",
-    "ideology_tags": ["small_cap", "concentrated"],
+    "ideology_tags": [
+      "small_cap",
+      "concentrated"
+    ],
     "classification_rationale": "Small-cap concentrated value."
   },
   {
     "display_name": "David Einhorn - Greenlight Capital",
-    "legal_name": "GREENLIGHT CAPITAL INC",
-    "cik": "0001079114",
+    "legal_name": "DME Capital Management, LP",
+    "cik": "0001489933",
     "style_primary": "value_concentrated",
     "capital_structure": "locked_lp",
     "market_cap_focus": "all",
     "geo_focus": "us",
     "historical_turnover": "med",
-    "ideology_tags": ["einhorn", "event_driven", "short_bias_capability"],
-    "classification_rationale": "Long-short value; well-known for short calls (Lehman, etc.) — 13F only shows longs."
+    "ideology_tags": [
+      "einhorn",
+      "event_driven",
+      "short_bias_capability"
+    ],
+    "classification_rationale": "Long-short value; well-known for short calls (Lehman, etc.) — 13F only shows longs.",
+    "cik_source": "EDGAR submissions API, verified 2026-07-10. Was 0001079114: Greenlight Capital Inc stopped filing 13F-HR after 2024-02-14; Einhorn's holdings now file under DME.",
+    "previous_ciks": [
+      "0001079114"
+    ]
   },
   {
     "display_name": "Duan Yongping - H&H International Investment",
@@ -451,7 +599,11 @@
     "market_cap_focus": "large",
     "geo_focus": "global",
     "historical_turnover": "low",
-    "ideology_tags": ["duan_yongping", "buffett_disciple", "concentrated"],
+    "ideology_tags": [
+      "duan_yongping",
+      "buffett_disciple",
+      "concentrated"
+    ],
     "classification_rationale": "Family office; Chinese Buffett-disciple style, very concentrated."
   },
   {
@@ -464,7 +616,10 @@
     "market_cap_focus": "mid",
     "geo_focus": "us",
     "historical_turnover": "med",
-    "ideology_tags": ["hillman", "deep_value"],
+    "ideology_tags": [
+      "hillman",
+      "deep_value"
+    ],
     "classification_rationale": "Classic 'Hillman Focused Advantage' value mutual fund."
   },
   {
@@ -477,20 +632,31 @@
     "market_cap_focus": "large",
     "geo_focus": "global",
     "historical_turnover": "low",
-    "ideology_tags": ["li_lu", "munger_endorsed", "concentrated"],
+    "ideology_tags": [
+      "li_lu",
+      "munger_endorsed",
+      "concentrated"
+    ],
     "classification_rationale": "Munger-endorsed; deeply concentrated long-hold value, US + China."
   },
   {
     "display_name": "Carl Icahn - Icahn Capital",
-    "legal_name": "ICAHN CAPITAL MANAGEMENT LP",
-    "cik": "0001413902",
+    "legal_name": "ICAHN CARL C",
+    "cik": "0000921669",
     "style_primary": "activist",
     "capital_structure": "permanent_capital",
     "market_cap_focus": "large",
     "geo_focus": "us",
     "historical_turnover": "med",
-    "ideology_tags": ["icahn", "activist"],
-    "classification_rationale": "Permanent capital via Icahn Enterprises; classic activist."
+    "ideology_tags": [
+      "icahn",
+      "activist"
+    ],
+    "classification_rationale": "Permanent capital via Icahn Enterprises; classic activist.",
+    "cik_source": "EDGAR submissions API, verified 2026-07-10. Was 0001413902: Icahn Capital Management LP stopped filing 13F-HR after 2007-11-14; Icahn now files under his own CIK.",
+    "previous_ciks": [
+      "0001413902"
+    ]
   },
   {
     "display_name": "Jensen Investment Management",
@@ -501,7 +667,11 @@
     "market_cap_focus": "large",
     "geo_focus": "us",
     "historical_turnover": "low",
-    "ideology_tags": ["jensen", "garp", "15yr_roe"],
+    "ideology_tags": [
+      "jensen",
+      "garp",
+      "15yr_roe"
+    ],
     "classification_rationale": "Quality at reasonable price; 15-yr 15%+ ROE filter."
   },
   {
@@ -513,7 +683,11 @@
     "market_cap_focus": "small",
     "geo_focus": "us",
     "historical_turnover": "low",
-    "ideology_tags": ["kahn", "graham_disciple", "deep_value"],
+    "ideology_tags": [
+      "kahn",
+      "graham_disciple",
+      "deep_value"
+    ],
     "classification_rationale": "Irving Kahn was a direct Graham student; classic statistical deep value."
   },
   {
@@ -526,7 +700,10 @@
     "market_cap_focus": "large",
     "geo_focus": "us",
     "historical_turnover": "med",
-    "ideology_tags": ["cooperman", "family_office"],
+    "ideology_tags": [
+      "cooperman",
+      "family_office"
+    ],
     "classification_rationale": "Omega closed to outside capital — now family office; concentrated long-bias value."
   },
   {
@@ -538,7 +715,11 @@
     "market_cap_focus": "large",
     "geo_focus": "global",
     "historical_turnover": "low",
-    "ideology_tags": ["lindsell_train", "quality_compounder", "low_turnover"],
+    "ideology_tags": [
+      "lindsell_train",
+      "quality_compounder",
+      "low_turnover"
+    ],
     "classification_rationale": "UK-listed quality compounder; near-zero turnover."
   },
   {
@@ -550,7 +731,11 @@
     "market_cap_focus": "large",
     "geo_focus": "global",
     "historical_turnover": "high",
-    "ideology_tags": ["tiger_cub", "growth", "long_short"],
+    "ideology_tags": [
+      "tiger_cub",
+      "growth",
+      "long_short"
+    ],
     "classification_rationale": "Tiger Cub; long-bias growth equity, NOT value. PO acceptance review identified this as a critical misclassification in V1 prod."
   },
   {
@@ -563,7 +748,11 @@
     "market_cap_focus": "large",
     "geo_focus": "us",
     "historical_turnover": "low",
-    "ideology_tags": ["mairs_and_power", "long_hold", "midwest_quality"],
+    "ideology_tags": [
+      "mairs_and_power",
+      "long_hold",
+      "midwest_quality"
+    ],
     "classification_rationale": "Famously low-turnover Midwest quality fund."
   },
   {
@@ -575,7 +764,9 @@
     "market_cap_focus": "mid",
     "geo_focus": "us",
     "historical_turnover": "low",
-    "ideology_tags": ["concentrated"],
+    "ideology_tags": [
+      "concentrated"
+    ],
     "classification_rationale": "Concentrated value boutique."
   },
   {
@@ -587,7 +778,11 @@
     "market_cap_focus": "large",
     "geo_focus": "us",
     "historical_turnover": "low",
-    "ideology_tags": ["gayner", "insurance_float", "berkshire_like"],
+    "ideology_tags": [
+      "gayner",
+      "insurance_float",
+      "berkshire_like"
+    ],
     "classification_rationale": "'Baby Berkshire': insurance float invested by Tom Gayner in quality at reasonable price."
   },
   {
@@ -599,7 +794,10 @@
     "market_cap_focus": "mid",
     "geo_focus": "us",
     "historical_turnover": "med",
-    "ideology_tags": ["matrix", "deep_value"],
+    "ideology_tags": [
+      "matrix",
+      "deep_value"
+    ],
     "classification_rationale": "Classic mid-cap deep value separate account/fund."
   },
   {
@@ -611,7 +809,11 @@
     "market_cap_focus": "large",
     "geo_focus": "global",
     "historical_turnover": "high",
-    "ideology_tags": ["tiger_cub", "long_short", "growth"],
+    "ideology_tags": [
+      "tiger_cub",
+      "long_short",
+      "growth"
+    ],
     "classification_rationale": "Tiger Cub; long/short global equity with growth tilt. PO acceptance review flagged this as misclassified in V1 prod."
   },
   {
@@ -623,7 +825,10 @@
     "market_cap_focus": "large",
     "geo_focus": "us",
     "historical_turnover": "med",
-    "ideology_tags": ["miller", "contrarian"],
+    "ideology_tags": [
+      "miller",
+      "contrarian"
+    ],
     "classification_rationale": "Miller Opportunity / Miller Value Trust; contrarian value with momentum tolerance."
   },
   {
@@ -636,7 +841,11 @@
     "market_cap_focus": "mid",
     "geo_focus": "global",
     "historical_turnover": "low",
-    "ideology_tags": ["pabrai", "buffett_disciple", "dhandho"],
+    "ideology_tags": [
+      "pabrai",
+      "buffett_disciple",
+      "dhandho"
+    ],
     "classification_rationale": "Self-described Buffett-Munger cloner; concentrated 'Dhandho' style."
   },
   {
@@ -648,7 +857,10 @@
     "market_cap_focus": "small",
     "geo_focus": "us",
     "historical_turnover": "low",
-    "ideology_tags": ["concentrated", "small_cap"],
+    "ideology_tags": [
+      "concentrated",
+      "small_cap"
+    ],
     "classification_rationale": "Concentrated small/mid-cap value."
   },
   {
@@ -660,7 +872,11 @@
     "market_cap_focus": "all",
     "geo_focus": "global",
     "historical_turnover": "med",
-    "ideology_tags": ["howard_marks", "distressed", "credit"],
+    "ideology_tags": [
+      "howard_marks",
+      "distressed",
+      "credit"
+    ],
     "classification_rationale": "Distressed credit primary; 13F equity is small sleeve — signal weight conservatively low."
   },
   {
@@ -672,7 +888,10 @@
     "market_cap_focus": "mid",
     "geo_focus": "us",
     "historical_turnover": "med",
-    "ideology_tags": ["olstein", "forensic_accounting"],
+    "ideology_tags": [
+      "olstein",
+      "forensic_accounting"
+    ],
     "classification_rationale": "Forensic accounting-driven value; Olstein All Cap Value Fund."
   },
   {
@@ -684,7 +903,9 @@
     "market_cap_focus": "large",
     "geo_focus": "us",
     "historical_turnover": "med",
-    "ideology_tags": ["miller_legacy"],
+    "ideology_tags": [
+      "miller_legacy"
+    ],
     "classification_rationale": "Successor to Bill Miller's Miller Opportunity Trust; contrarian concentrated value."
   },
   {
@@ -698,7 +919,11 @@
     "geo_focus": "global",
     "historical_turnover": "low",
     "position_concentration_top10_pct": 100.0,
-    "ideology_tags": ["ackman", "activist", "concentrated"],
+    "ideology_tags": [
+      "ackman",
+      "activist",
+      "concentrated"
+    ],
     "classification_rationale": "Pershing Square Holdings (closed-end) + private funds; classic activist with concentrated holdings."
   },
   {
@@ -710,7 +935,10 @@
     "market_cap_focus": "large",
     "geo_focus": "us",
     "historical_turnover": "low",
-    "ideology_tags": ["polen", "quality_growth"],
+    "ideology_tags": [
+      "polen",
+      "quality_growth"
+    ],
     "classification_rationale": "Polen Focus Growth: 'quality growth' with low turnover."
   },
   {
@@ -722,7 +950,11 @@
     "market_cap_focus": "small",
     "geo_focus": "us",
     "historical_turnover": "low",
-    "ideology_tags": ["punch_card", "concentrated", "small_cap"],
+    "ideology_tags": [
+      "punch_card",
+      "concentrated",
+      "small_cap"
+    ],
     "classification_rationale": "Buffett 'punch card' philosophy; small-cap deeply concentrated value."
   },
   {
@@ -734,7 +966,11 @@
     "market_cap_focus": "large",
     "geo_focus": "global",
     "historical_turnover": "low",
-    "ideology_tags": ["pzena", "deep_value", "global_value"],
+    "ideology_tags": [
+      "pzena",
+      "deep_value",
+      "global_value"
+    ],
     "classification_rationale": "Classic 'cheapest 20% by P/normalized-earnings' deep value."
   },
   {
@@ -747,7 +983,10 @@
     "market_cap_focus": "mid",
     "geo_focus": "global",
     "historical_turnover": "low",
-    "ideology_tags": ["vinall", "concentrated"],
+    "ideology_tags": [
+      "vinall",
+      "concentrated"
+    ],
     "classification_rationale": "Swiss-based 'Business Owner Fund'; long-term concentrated value."
   },
   {
@@ -760,7 +999,10 @@
     "market_cap_focus": "large",
     "geo_focus": "global",
     "historical_turnover": "low",
-    "ideology_tags": ["sequoia_fund", "buffett_origin"],
+    "ideology_tags": [
+      "sequoia_fund",
+      "buffett_origin"
+    ],
     "classification_rationale": "Sequoia Fund successor; quality compounder lineage originating with Buffett's recommendation."
   },
   {
@@ -773,7 +1015,11 @@
     "market_cap_focus": "all",
     "geo_focus": "global",
     "historical_turnover": "high",
-    "ideology_tags": ["burry", "contrarian", "macro_short_capable"],
+    "ideology_tags": [
+      "burry",
+      "contrarian",
+      "macro_short_capable"
+    ],
     "classification_rationale": "Macro-contrarian with occasional high-conviction equity longs; special_situations captures Burry's setup-driven style better than the V1 'high_turnover' label, which understated the signal quality."
   },
   {
@@ -785,7 +1031,11 @@
     "market_cap_focus": "mid",
     "geo_focus": "us",
     "historical_turnover": "low",
-    "ideology_tags": ["bloomstran", "deep_value", "insurance_analysis"],
+    "ideology_tags": [
+      "bloomstran",
+      "deep_value",
+      "insurance_analysis"
+    ],
     "classification_rationale": "Concentrated absolute-return value; deep insurance/insurance-float expertise."
   },
   {
@@ -797,7 +1047,9 @@
     "market_cap_focus": "mid",
     "geo_focus": "global",
     "historical_turnover": "low",
-    "ideology_tags": ["concentrated"],
+    "ideology_tags": [
+      "concentrated"
+    ],
     "classification_rationale": "Concentrated long-hold value."
   },
   {
@@ -809,7 +1061,10 @@
     "market_cap_focus": "large",
     "geo_focus": "us",
     "historical_turnover": "med",
-    "ideology_tags": ["sound_shore", "contrarian_value"],
+    "ideology_tags": [
+      "sound_shore",
+      "contrarian_value"
+    ],
     "classification_rationale": "Sound Shore Fund; large-cap contrarian deep value."
   },
   {
@@ -821,7 +1076,11 @@
     "market_cap_focus": "large",
     "geo_focus": "global",
     "historical_turnover": "low",
-    "ideology_tags": ["hawkins", "longleaf", "deep_value"],
+    "ideology_tags": [
+      "hawkins",
+      "longleaf",
+      "deep_value"
+    ],
     "classification_rationale": "Longleaf Partners family; classic 60% of intrinsic value buy discipline."
   },
   {
@@ -833,20 +1092,31 @@
     "market_cap_focus": "large",
     "geo_focus": "global",
     "historical_turnover": "low",
-    "ideology_tags": ["hohn", "constructive_activist", "concentrated"],
+    "ideology_tags": [
+      "hohn",
+      "constructive_activist",
+      "concentrated"
+    ],
     "classification_rationale": "Constructive activist on quality businesses (Visa, Charter, Moody's, ABInBev). PO acceptance review flagged this as misclassified in V1 prod (was value_concentrated)."
   },
   {
     "display_name": "Third Avenue Management",
     "legal_name": "THIRD AVENUE MANAGEMENT LLC",
-    "cik": "0001002858",
+    "cik": "0001099281",
     "style_primary": "value_deep",
     "capital_structure": "mutual_fund_etf",
     "market_cap_focus": "mid",
     "geo_focus": "global",
     "historical_turnover": "med",
-    "ideology_tags": ["whitman_legacy", "deep_value"],
-    "classification_rationale": "Marty Whitman legacy; 'safe and cheap' deep value."
+    "ideology_tags": [
+      "whitman_legacy",
+      "deep_value"
+    ],
+    "classification_rationale": "Marty Whitman legacy; 'safe and cheap' deep value.",
+    "cik_source": "EDGAR submissions API, verified 2026-07-10. Was 0001002858: an old CIK for the same firm; last 13F-HR 2004-11-15.",
+    "previous_ciks": [
+      "0001002858"
+    ]
   },
   {
     "display_name": "Daniel Loeb - Third Point",
@@ -857,7 +1127,11 @@
     "market_cap_focus": "all",
     "geo_focus": "global",
     "historical_turnover": "med",
-    "ideology_tags": ["loeb", "activist", "event_driven"],
+    "ideology_tags": [
+      "loeb",
+      "activist",
+      "event_driven"
+    ],
     "classification_rationale": "Event-driven activist + credit; 13F surfaces equity sleeve."
   },
   {
@@ -869,7 +1143,11 @@
     "market_cap_focus": "large",
     "geo_focus": "global",
     "historical_turnover": "high",
-    "ideology_tags": ["tiger_cub", "growth", "tmt"],
+    "ideology_tags": [
+      "tiger_cub",
+      "growth",
+      "tmt"
+    ],
     "classification_rationale": "Tiger Cub; aggressive growth equity + venture. NOT value. PO acceptance review identified this as the single worst V1 misclassification — was long_term_fundamental (weight 1.00)."
   },
   {
@@ -882,20 +1160,31 @@
     "market_cap_focus": "large",
     "geo_focus": "us",
     "historical_turnover": "low",
-    "ideology_tags": ["torray", "deep_value"],
+    "ideology_tags": [
+      "torray",
+      "deep_value"
+    ],
     "classification_rationale": "Torray Fund; classic large-cap deep value."
   },
   {
     "display_name": "Nelson Peltz - Trian Fund Management",
-    "legal_name": "Trian Fund Management GP, LLC",
-    "cik": "0001345472",
+    "legal_name": "TRIAN FUND MANAGEMENT, L.P.",
+    "cik": "0001345471",
     "style_primary": "activist",
     "capital_structure": "locked_lp",
     "market_cap_focus": "large",
     "geo_focus": "us",
     "historical_turnover": "low",
-    "ideology_tags": ["peltz", "activist", "consumer_brands"],
-    "classification_rationale": "Activist on consumer brands and industrials (P&G, Disney, Heinz)."
+    "ideology_tags": [
+      "peltz",
+      "activist",
+      "consumer_brands"
+    ],
+    "classification_rationale": "Activist on consumer brands and industrials (P&G, Disney, Heinz).",
+    "cik_source": "EDGAR submissions API, verified 2026-07-10. Was 0001345472: seeded CIK was the GP entity, last 13F-HR 2011-05-16; off by one digit from the filing L.P..",
+    "previous_ciks": [
+      "0001345472"
+    ]
   },
   {
     "display_name": "Triple Frond Partners",
@@ -906,7 +1195,9 @@
     "market_cap_focus": "mid",
     "geo_focus": "global",
     "historical_turnover": "low",
-    "ideology_tags": ["concentrated"],
+    "ideology_tags": [
+      "concentrated"
+    ],
     "classification_rationale": "Concentrated long-only value boutique."
   },
   {
@@ -918,7 +1209,12 @@
     "market_cap_focus": "mid",
     "geo_focus": "global",
     "historical_turnover": "low",
-    "ideology_tags": ["tweedy", "graham_legacy", "deep_value", "net_net"],
+    "ideology_tags": [
+      "tweedy",
+      "graham_legacy",
+      "deep_value",
+      "net_net"
+    ],
     "classification_rationale": "Direct Graham lineage; book 'What Has Worked in Investing'. Canonical deep value reference."
   },
   {
@@ -930,20 +1226,30 @@
     "market_cap_focus": "large",
     "geo_focus": "us",
     "historical_turnover": "low",
-    "ideology_tags": ["concentrated_quality", "long_hold"],
+    "ideology_tags": [
+      "concentrated_quality",
+      "long_hold"
+    ],
     "classification_rationale": "Concentrated quality compounder (<10 positions, very low turnover)."
   },
   {
     "display_name": "Mason Morfit - ValueAct Capital Management",
-    "legal_name": "ValueAct Capital Management, L.P.",
-    "cik": "0001351069",
+    "legal_name": "ValueAct Holdings, L.P.",
+    "cik": "0001418814",
     "style_primary": "activist",
     "capital_structure": "locked_lp",
     "market_cap_focus": "large",
     "geo_focus": "us",
     "historical_turnover": "low",
-    "ideology_tags": ["valueact", "constructive_activist"],
-    "classification_rationale": "Constructive activist (Microsoft historical, Spotify, etc.); long-hold."
+    "ideology_tags": [
+      "valueact",
+      "constructive_activist"
+    ],
+    "classification_rationale": "Constructive activist (Microsoft historical, Spotify, etc.); long-hold.",
+    "cik_source": "EDGAR submissions API, verified 2026-07-10. Was 0001351069: ValueAct Capital Management LP stopped filing 13F-HR after 2008-08-14.",
+    "previous_ciks": [
+      "0001351069"
+    ]
   },
   {
     "display_name": "O. Andreas Halvorsen - Viking Global",
@@ -954,7 +1260,11 @@
     "market_cap_focus": "large",
     "geo_focus": "global",
     "historical_turnover": "high",
-    "ideology_tags": ["tiger_cub", "long_short", "growth"],
+    "ideology_tags": [
+      "tiger_cub",
+      "long_short",
+      "growth"
+    ],
     "classification_rationale": "Tiger Cub; long/short global equity, growth tilt. PO acceptance review flagged this as misclassified in V1 prod."
   },
   {
@@ -966,7 +1276,11 @@
     "market_cap_focus": "large",
     "geo_focus": "us",
     "historical_turnover": "low",
-    "ideology_tags": ["fitzpatrick", "concentrated_value", "mos_discipline"],
+    "ideology_tags": [
+      "fitzpatrick",
+      "concentrated_value",
+      "mos_discipline"
+    ],
     "classification_rationale": "Self-described 'concentrated value with margin of safety'; PO review flagged it should not be in long_term_fundamental bucket."
   },
   {
@@ -978,7 +1292,10 @@
     "market_cap_focus": "large",
     "geo_focus": "us",
     "historical_turnover": "low",
-    "ideology_tags": ["rolfe", "concentrated_quality"],
+    "ideology_tags": [
+      "rolfe",
+      "concentrated_quality"
+    ],
     "classification_rationale": "Concentrated quality growth; 20-position rule."
   },
   {
@@ -990,7 +1307,11 @@
     "market_cap_focus": "large",
     "geo_focus": "us",
     "historical_turnover": "low",
-    "ideology_tags": ["weitz", "deep_value", "omaha"],
+    "ideology_tags": [
+      "weitz",
+      "deep_value",
+      "omaha"
+    ],
     "classification_rationale": "Omaha-based; Berkshire-influenced classic value mutual fund family."
   },
   {
@@ -1002,7 +1323,11 @@
     "market_cap_focus": "large",
     "geo_focus": "us",
     "historical_turnover": "low",
-    "ideology_tags": ["yacktman", "low_turnover", "deep_value"],
+    "ideology_tags": [
+      "yacktman",
+      "low_turnover",
+      "deep_value"
+    ],
     "classification_rationale": "Yacktman Fund / Focused Fund; deep value with notably low turnover."
   }
 ]

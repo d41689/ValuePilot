@@ -220,7 +220,37 @@ def _check_reconciliation(db: Session, report: QualityReport, quarter: str | Non
             value=diff_pct,
         )
 
-    if not rows:
+    # A filing with holdings but no value total is invisible to the comparison
+    # above — and to `compute_portfolio_weight`, which divides by
+    # `computed_total_value_thousands or reported_total_value_thousands` and
+    # returns None when both are NULL. An entire automated database once looked
+    # like this, and this function reported "All filings within tolerance"
+    # because it had compared exactly zero filings. Never again: a vacuous pass
+    # must not be spelled like a clean one.
+    missing = db.execute(text(f"""
+        SELECT f.accession_no
+        FROM filings_13f f
+        WHERE COALESCE(f.computed_total_value_thousands,
+                       f.reported_total_value_thousands) IS NULL
+          AND EXISTS (
+              SELECT 1 FROM holdings_13f h
+              JOIN parse_runs pr ON pr.id = h.parse_run_id AND pr.is_current
+              WHERE pr.accession_number = f.accession_no
+          )
+        {qf}
+    """), qp).fetchall()
+
+    for row in missing:
+        report.add(
+            "reconciliation",
+            "warning",
+            "filing has holdings but no value total — every portfolio weight is "
+            "NULL, so Oracle's Lens distinctiveness scores 0 and conviction's "
+            "position-importance is capped",
+            accession_no=row.accession_no,
+        )
+
+    if not rows and not missing:
         report.add("reconciliation", "info",
                    f"All filings within {_RECONCILE_THRESHOLD*100:.1f}% tolerance")
 

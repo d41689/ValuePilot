@@ -37,6 +37,182 @@ def _seeded(db_session) -> InstitutionManager:
     return m
 
 
+def test_reseeding_a_database_seeded_from_the_old_file_re_points_not_duplicates(
+    db_session,
+):
+    """External review P1 — the regression that blocked deploy.
+
+    A curated CIK can change: the filer moves entities, or the original was
+    simply wrong. On a database seeded from the OLD file — 82 rows carrying the
+    OLD CIKs — the new seed must find each manager by its `previous_ciks` and
+    RE-POINT the existing row, not create a second confirmed row for the same
+    manager (5 real duplicates) and refuse the rest as name collisions (5 more
+    left absent), turning 82 into 87 on every deploy.
+    """
+    import json
+    from pathlib import Path
+
+    from app.services.edgar_ingestion import _normalize_name
+
+    seed_path = (
+        Path(__file__).resolve().parents[2]
+        / "app" / "services" / "seed_data" / "confirmed_managers.json"
+    )
+    entries = json.loads(seed_path.read_text())
+
+    # Build the DB as the OLD file would have: every manager at its previous CIK
+    # where one is recorded, else its current CIK.
+    for e in entries:
+        old_cik = (e.get("previous_ciks") or [e["cik"]])[0]
+        db_session.add(
+            InstitutionManager(
+                cik=old_cik, legal_name=e["legal_name"], display_name=e["display_name"],
+                name_normalized=_normalize_name(e["legal_name"]),
+                dataroma_code=e.get("dataroma_code"), match_status="confirmed",
+                status="active", is_superinvestor=True,
+                style_primary=e.get("style_primary", "unknown"),
+                capital_structure=e.get("capital_structure", "unknown"),
+            )
+        )
+    db_session.flush()
+    before = db_session.query(InstitutionManager).count()
+
+    report = seed_confirmed_managers(db_session)
+    db_session.flush()
+
+    n_changed = sum(1 for e in entries if e.get("previous_ciks"))
+    assert report["created"] == 0, "a re-seed must never create a duplicate manager"
+    assert report["ambiguous_name_match"] == 0, "no manager left absent as a collision"
+    assert report["updated"] == len(entries)
+    assert report["cik_repointed"] == n_changed
+    assert db_session.query(InstitutionManager).count() == before == len(entries)
+
+    # Every display_name resolves to exactly one row, now at the new CIK.
+    for e in entries:
+        rows = (
+            db_session.query(InstitutionManager)
+            .filter(InstitutionManager.display_name == e["display_name"])
+            .all()
+        )
+        assert len(rows) == 1, f"{e['display_name']} has {len(rows)} rows"
+        assert rows[0].cik == e["cik"]
+
+    # Each re-point left an audit event naming the old and new CIK.
+    events = (
+        db_session.query(InstitutionManagerCikReviewEvent)
+        .filter(InstitutionManagerCikReviewEvent.event_type == "seed_cik_repoint")
+        .all()
+    )
+    assert len(events) == n_changed
+    assert all(ev.requires_downstream_review for ev in events)
+    changed = {(e["previous_ciks"][0], e["cik"]) for e in entries if e.get("previous_ciks")}
+    assert {(ev.old_cik, ev.new_cik) for ev in events} == changed
+
+
+def test_a_re_point_does_not_fire_on_a_fresh_or_already_migrated_database(db_session):
+    """No spurious audit events when the CIK is already correct."""
+    first = seed_confirmed_managers(db_session)
+    db_session.flush()
+    assert first["cik_repointed"] == 0  # fresh DB: everyone created at the new CIK
+
+    second = seed_confirmed_managers(db_session)
+    assert second["cik_repointed"] == 0  # already-migrated DB: nothing to re-point
+    events = (
+        db_session.query(InstitutionManagerCikReviewEvent)
+        .filter(InstitutionManagerCikReviewEvent.event_type == "seed_cik_repoint")
+        .count()
+    )
+    assert events == 0
+
+
+def test_a_manager_revoked_at_its_previous_cik_is_not_resurrected(db_session):
+    """External review round 2. A revoke NULLs the CIK and records the OLD cik in
+    an audit event. Neither the previous_ciks lookup (filters on a non-NULL cik)
+    nor the revoke guard (checked only the NEW cik) would find it — so the create
+    path resurrected a human-revoked manager under the new CIK, defeating the
+    revocation. The revoke guard must consider every CIK the seed knows for this
+    manager, current and previous.
+    """
+    import json
+    from pathlib import Path
+
+    from app.models.institutions import InstitutionManagerCikReviewEvent
+    from app.services.edgar_ingestion import _normalize_name
+
+    entries = json.loads(
+        (Path(__file__).resolve().parents[2]
+         / "app" / "services" / "seed_data" / "confirmed_managers.json").read_text()
+    )
+    changed = next(e for e in entries if e.get("previous_ciks"))
+    old_cik = changed["previous_ciks"][0]
+
+    # A database seeded from the OLD file: this manager at his OLD cik.
+    m = InstitutionManager(
+        cik=old_cik, legal_name=changed["legal_name"], display_name=changed["display_name"],
+        name_normalized=_normalize_name(changed["legal_name"]), match_status="confirmed",
+        status="active", is_superinvestor=True,
+    )
+    db_session.add(m)
+    db_session.flush()
+
+    # A human revokes him at that OLD cik (the real revoke: NULL cik + event).
+    db_session.add(
+        InstitutionManagerCikReviewEvent(
+            manager_id=m.id, event_type="revoke_confirmed_cik",
+            old_cik=old_cik, new_cik=None,
+            old_match_status="confirmed", new_match_status="revoked",
+            note="human revoked",
+        )
+    )
+    m.cik = None
+    m.match_status = "revoked"
+    m.status = "needs_review"
+    db_session.flush()
+
+    report = seed_confirmed_managers(db_session)
+    db_session.flush()
+
+    rows = (
+        db_session.query(InstitutionManager)
+        .filter(InstitutionManager.display_name == changed["display_name"])
+        .all()
+    )
+    assert len(rows) == 1, "the revoked manager must not be duplicated"
+    assert rows[0].match_status == "revoked", "the revocation stands"
+    assert rows[0].cik is None, "the new CIK is not re-attached"
+    assert changed["cik"] in report["skipped_human_decided_ciks"]
+
+
+def test_a_human_retired_manager_is_not_re_pointed(db_session):
+    """The re-point lookup feeds the same update path, so the human still wins."""
+    seed_confirmed_managers(db_session)
+    db_session.flush()
+    import json
+    from pathlib import Path
+
+    entries = json.loads(
+        (Path(__file__).resolve().parents[2]
+         / "app" / "services" / "seed_data" / "confirmed_managers.json").read_text()
+    )
+    changed = next(e for e in entries if e.get("previous_ciks"))
+    m = (
+        db_session.query(InstitutionManager)
+        .filter(InstitutionManager.cik == changed["cik"])
+        .one()
+    )
+    # An operator retires him and detaches the CIK to the OLD value.
+    m.status = "inactive"
+    m.cik = changed["previous_ciks"][0]
+    db_session.flush()
+
+    report = seed_confirmed_managers(db_session)
+
+    db_session.refresh(m)
+    assert m.status == "inactive", "a retired manager is not reactivated"
+    assert m.cik == changed["previous_ciks"][0], "and his CIK is not re-pointed"
+    assert changed["cik"] in report["skipped_human_decided_ciks"]
+
+
 def test_seed_returns_a_diff_report_not_a_bare_count(db_session):
     report = seed_confirmed_managers(db_session)
 
