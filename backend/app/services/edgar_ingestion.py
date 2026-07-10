@@ -201,6 +201,7 @@ def seed_confirmed_managers(db: Session) -> dict[str, Any]:
             "seed_entries": 0, "created": 0, "updated": 0,
             "skipped_human_decided": 0, "skipped_needs_review": 0,
             "awaiting_confirmation": 0, "ambiguous_name_match": 0,
+            "created_ciks": [],
             "skipped_human_decided_ciks": [], "skipped_needs_review_ciks": [],
             "awaiting_confirmation_ciks": [], "ambiguous_name_match_ciks": [],
         }
@@ -226,6 +227,7 @@ def seed_confirmed_managers(db: Session) -> dict[str, Any]:
     )
 
     created = 0
+    created_ciks: list[str] = []
     updated = 0
     skipped_human_decided: list[str] = []
     skipped_needs_review: list[str] = []
@@ -361,10 +363,12 @@ def seed_confirmed_managers(db: Session) -> dict[str, Any]:
             )
             db.add(record)
             created += 1
+            created_ciks.append(cik)
 
     report = {
         "seed_entries": len(seed_data),
         "created": created,
+        "created_ciks": created_ciks,
         "updated": updated,
         "skipped_human_decided": len(skipped_human_decided),
         "skipped_needs_review": len(skipped_needs_review),
