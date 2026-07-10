@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 from typing import Any
 
-from sqlalchemy import func, or_
+from sqlalchemy import and_, func, or_
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -84,6 +84,59 @@ def quarter_window(quarter: str) -> QuarterWindow:
 
 def quarter_label_for_date(value: date) -> str:
     return f"{value.year}-Q{((value.month - 1) // 3) + 1}"
+
+
+def _ingest_candidate_filings(session: Session, quarter: str) -> list["Filing13F"]:
+    """Filings the `ingest_holdings` job must parse for **report quarter** `quarter`.
+
+    `quarter` is a report quarter, the same thing `fetch_quarter_index` means by
+    it. Two arms, because `period_of_report` means two different things
+    depending on whether the filing has been parsed:
+
+    * **Parsed** rows carry their true period, written by
+      `backfill_period_routing`. Select them by the report-quarter window — this
+      is the heal / re-run path.
+    * **Un-ingested** rows carry a *proxy* period equal to `filed_at`, stamped at
+      index time before any document is read. A 13F for period Q is filed within
+      45 days after Q ends, so its proxy lands in Q+1. Select those by the
+      **filed**-quarter window.
+
+    Without the second arm, `ingest_holdings(Q)` never sees the rows
+    `fetch_quarter_index(Q)` just inserted (it deliberately downloads Q+1's
+    form.idx), so a `quarterly_pipeline(Q)` run ingests nothing and then scores
+    an empty quarter — every stage green. Worse, the newest report quarter is
+    unreachable: its filings' proxy is Q+1, and no pipeline for Q+1 is enqueued
+    until that quarter itself becomes scoreable. Same defect class as F5, which
+    T4 fixed only in the CLI `backfill` path.
+
+    The `raw_infotable_doc_id IS NULL` guard on the second arm keeps the two arms
+    disjoint: once a filing is ingested its proxy is gone, so it must not be
+    reclaimed by the *next* quarter's filed-window.
+
+    We deliberately do NOT filter the first arm on `raw_infotable_doc_id` — per
+    #43 the job fetches missing infotable XML inline, and filings whose XML is
+    already on disk are fast-pathed by `ensure_filing_infotable_doc`.
+    """
+    from app.services.edgar_ingestion import next_quarter_label
+
+    window = quarter_window(quarter)
+    filed_window = quarter_window(next_quarter_label(quarter))
+    return (
+        session.query(Filing13F)
+        .filter(
+            or_(
+                Filing13F.period_of_report.between(window.start, window.end),
+                and_(
+                    Filing13F.raw_infotable_doc_id.is_(None),
+                    Filing13F.period_of_report.between(
+                        filed_window.start, filed_window.end
+                    ),
+                ),
+            )
+        )
+        .order_by(Filing13F.filed_at.asc(), Filing13F.accession_no.asc())
+        .all()
+    )
 
 
 def previous_quarter_label(quarter: str) -> str:
@@ -3510,17 +3563,8 @@ def _execute_ingest_job(session: Session, job_type: str, payload: dict[str, Any]
         }
 
     # job_type == "ingest_holdings": bulk quarterly ingest via ingest_if_needed.
-    # We deliberately do NOT filter on raw_infotable_doc_id here — per #43, the
-    # job is responsible for fetching missing infotable XML inline. Filings
-    # whose XML is already on disk are fast-pathed by ensure_filing_infotable_doc.
     quarter = _required(payload, "quarter")
-    window = quarter_window(quarter)
-    filings = (
-        session.query(Filing13F)
-        .filter(Filing13F.period_of_report.between(window.start, window.end))
-        .order_by(Filing13F.filed_at.asc(), Filing13F.accession_no.asc())
-        .all()
-    )
+    filings = _ingest_candidate_filings(session, quarter)
     total_holdings = 0
     skipped = 0
     xml_fetched = 0
@@ -3747,22 +3791,39 @@ def _execute_ingest_job(session: Session, job_type: str, payload: dict[str, Any]
 
 
 def _execute_enrichment_metadata(session: Session, payload: dict[str, Any]) -> dict[str, Any]:
+    """CUSIP → ticker → `stock_id`, run to completion.
+
+    This stage used to call `enrich_cusips_from_openfigi`, which maps a **single
+    batch of 100 CUSIPs** and returns. The standalone `enrich_cusip` job has
+    always called `enrich_all_unmapped_holdings`, which loops until no enrichable
+    holding remains. So the manual path converged and the automated one did not:
+    a `quarterly_pipeline` run mapped ~100 of the ~2000 CUSIPs a quarter of 13F
+    holdings contains, and the rest stayed unlinked.
+
+    That is not cosmetic. `stock_id` is the join key for the Watchlist × 13F
+    columns and for Oracle's Lens eligibility, so an unlinked holding is
+    invisible to the product and absent from consensus scoring.
+
+    `enrich_all_unmapped_holdings` already bootstraps stocks and backfills
+    `stock_id` after its loop; it is resumable, its per-batch mappings are
+    committed, and `max_batches` bounds it. Rate limiting is Rate Guard's job.
+    """
     from app.services.cusip_enrichment import (
-        backfill_stock_ids,
-        bootstrap_stocks_from_cusip_map,
-        enrich_cusips_from_openfigi,
+        enrich_all_unmapped_holdings,
         enrich_stocks_from_edgar_tickers,
     )
 
-    mappings_created = enrich_cusips_from_openfigi(session)
-    new_stocks = bootstrap_stocks_from_cusip_map(session)
-    holdings_linked = backfill_stock_ids(session)
+    enriched = enrich_all_unmapped_holdings(session)
     edgar_stock_enrichment = enrich_stocks_from_edgar_tickers(session)
     return {
-        "cusip_mappings": mappings_created,
-        "mappings_created": mappings_created,
-        "new_stocks": new_stocks,
-        "holdings_linked": holdings_linked,
+        "cusip_mappings": enriched["mappings_created"],
+        "mappings_created": enriched["mappings_created"],
+        "batches_run": enriched["batches_run"],
+        "new_stocks": enriched["new_stocks"],
+        "holdings_linked": enriched["holdings_linked"],
+        # Surfaced on purpose: holdings we still cannot map are silently missing
+        # from Oracle's Lens, so the number belongs in the job summary.
+        "holdings_still_unmapped": enriched["holdings_still_unmapped"],
         "edgar_stock_enrichment": edgar_stock_enrichment,
         "status": "succeeded",
     }
