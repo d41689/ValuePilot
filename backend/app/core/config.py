@@ -56,6 +56,12 @@ class Settings(BaseSettings):
     # (auth disabled). The same value goes in the shared .env so the rate-guard
     # container and the api containers agree.
     RATE_GUARD_API_KEY: Optional[str] = None
+    # Seed the curated manager universe on every API boot (M2). Off by default
+    # so dev and test boots never write to institution_managers; prod turns it
+    # on. A failure here is FATAL by design — an API with an empty or partial
+    # manager universe ingests nothing and scores nothing, silently. See
+    # app/services/manager_seed_startup.py.
+    MANAGER_SEED_ON_STARTUP: bool = False     # prod: true
     EDGAR_SCHEDULER_ENABLED: bool = False     # prod: true
     THIRTEENF_SMART_RETRY_ENABLED: bool = False
     THIRTEENF_JOB_WORKER_ENABLED: bool = False

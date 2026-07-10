@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Optional
 
-from sqlalchemy import text
+from sqlalchemy import or_, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -201,6 +201,7 @@ def seed_confirmed_managers(db: Session) -> dict[str, Any]:
             "seed_entries": 0, "created": 0, "updated": 0,
             "skipped_human_decided": 0, "skipped_needs_review": 0,
             "awaiting_confirmation": 0, "ambiguous_name_match": 0,
+            "created_ciks": [],
             "skipped_human_decided_ciks": [], "skipped_needs_review_ciks": [],
             "awaiting_confirmation_ciks": [], "ambiguous_name_match_ciks": [],
         }
@@ -226,6 +227,7 @@ def seed_confirmed_managers(db: Session) -> dict[str, Any]:
     )
 
     created = 0
+    created_ciks: list[str] = []
     updated = 0
     skipped_human_decided: list[str] = []
     skipped_needs_review: list[str] = []
@@ -361,10 +363,12 @@ def seed_confirmed_managers(db: Session) -> dict[str, Any]:
             )
             db.add(record)
             created += 1
+            created_ciks.append(cik)
 
     report = {
         "seed_entries": len(seed_data),
         "created": created,
+        "created_ciks": created_ciks,
         "updated": updated,
         "skipped_human_decided": len(skipped_human_decided),
         "skipped_needs_review": len(skipped_needs_review),
@@ -1399,30 +1403,71 @@ def next_quarter_label(label: str) -> str:
     return f"{year + 1}-Q1" if qtr == 4 else f"{year}-Q{qtr + 1}"
 
 
+def previous_quarter_label(label: str) -> str:
+    """Calendar quarter before ``label`` ("2026-Q1" → "2025-Q4")."""
+    year_text, qtr_text = label.upper().split("-Q", 1)
+    year, qtr = int(year_text), int(qtr_text)
+    return f"{year - 1}-Q4" if qtr == 1 else f"{year}-Q{qtr - 1}"
+
+
+def ingest_quarter_for_filing(filing) -> Optional[str]:
+    """The one **report** quarter whose ``ingest_holdings`` job claims ``filing``.
+
+    Single source of truth for a rule that ``_ingest_candidate_filings`` expresses
+    as a SQL predicate. Stating it twice has now produced two bugs, so state it
+    once here and pin the two together with
+    ``test_pending_ingest_quarters_matches_the_job_that_claims_each_filing``.
+
+    ``filing`` needs only ``report_quarter`` and ``period_of_report``.
+
+    * **Routed** — ``report_quarter`` is set, so it *is* the answer.
+      ``backfill_period_routing`` writes it together with the true
+      ``period_of_report``, and the daily-sync path
+      (``ingest_accession_filing_detail``) writes it while deliberately leaving
+      ``raw_infotable_doc_id`` NULL: that job fetches the primary doc and routes
+      the period, never the infotable. Such a filing is routed AND un-ingested,
+      and it stays that way until some ``ingest_holdings`` run parses its
+      holdings.
+    * **Un-routed** — ``period_of_report`` is only a proxy equal to ``filed_at``,
+      stamped at index time before any document is read. A 13F for report quarter
+      Q is filed within 45 days after Q ends, so the proxy lands in Q+1; translate
+      it back.
+
+    Subtracting a quarter from a *routed* filing's period — which is what this
+    rule used to do to every un-ingested row — sends the CLI to a quarter that
+    selects nothing, and it reports a clean zero (external review, round 2).
+    """
+    if filing.report_quarter:
+        return filing.report_quarter
+    if filing.period_of_report is None:
+        return None
+    return previous_quarter_label(_date_to_quarter(filing.period_of_report))
+
+
 def pending_ingest_quarters(db: Session) -> list[str]:
-    """Distinct calendar quarters that still have un-ingested 13F filings.
+    """**Report** quarters that still have un-ingested 13F filings.
 
-    A filing is un-ingested while ``raw_infotable_doc_id IS NULL`` (its
-    infotable has not been fetched/parsed). We key on the filing's *current*
-    ``period_of_report`` — which for an un-ingested filing is a proxy equal to
-    ``filed_at`` (the *filing* quarter), corrected to the true report quarter
-    only after its primary doc is parsed (see ``backfill_period_routing``).
+    A filing is un-ingested while ``raw_infotable_doc_id IS NULL`` — its infotable
+    has not been fetched or parsed. Each such filing is claimed by exactly one
+    ``ingest_holdings`` job; :func:`ingest_quarter_for_filing` says which.
 
-    Grouping by this proxy is exactly what makes the newest report quarter
-    reachable: its filings are filed the following calendar quarter, so a
-    report-quarter window would miss them (F5). Delegating the ingest to the
-    quarter matching the proxy period lands them in the right job window, after
-    which the parse corrects the period. Idempotent: once ingested a filing has
-    ``raw_infotable_doc_id`` set and drops out.
+    Idempotent: once ingested a filing has ``raw_infotable_doc_id`` set and drops
+    out of the pool.
     """
     rows = (
-        db.query(Filing13F.period_of_report)
+        db.query(Filing13F.report_quarter, Filing13F.period_of_report)
         .filter(Filing13F.raw_infotable_doc_id.is_(None))
-        .filter(Filing13F.period_of_report.isnot(None))
+        .filter(
+            or_(
+                Filing13F.report_quarter.isnot(None),
+                Filing13F.period_of_report.isnot(None),
+            )
+        )
         .distinct()
         .all()
     )
-    return sorted({_date_to_quarter(row[0]) for row in rows})
+    quarters = {ingest_quarter_for_filing(row) for row in rows}
+    return sorted(q for q in quarters if q)
 
 
 def ingest_pending_holdings(db: Session, *, quarters=None, ingest_fn=None, log=None) -> dict:

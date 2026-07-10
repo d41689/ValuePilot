@@ -7,9 +7,17 @@ invisible to the product query contract, and (F5) selected pending filings by a
 quarter, whose freshly-indexed filings carry a proxy period (= filed_at) that
 lands in the FOLLOWING calendar quarter until parsed.
 
-These tests pin the fix: `pending_ingest_quarters` groups by the proxy period so
-the newest quarter is reachable, and `ingest_pending_holdings` delegates every
-pending quarter to the modern job path (never the legacy per-filing call).
+These tests pin the fix: `pending_ingest_quarters` translates each pending
+filing's proxy period back to the REPORT quarter the `ingest_holdings` job
+expects, so the newest quarter is reachable, and `ingest_pending_holdings`
+delegates every pending quarter to the modern job path (never the legacy
+per-filing call).
+
+The job's `quarter` payload is a report quarter — the same thing
+`fetch_quarter_index` means by it — and `_ingest_candidate_filings` widens to the
+filed quarter internally. Handing it a filed quarter selects nothing;
+`test_pending_ingest_quarters_speaks_the_same_language_as_the_ingest_job`
+(tests/unit/test_13f_pipeline_quarter_window.py) pins the two together.
 """
 import inspect
 import itertools
@@ -31,6 +39,7 @@ from app.services.edgar_ingestion import (
     pending_ingest_quarters,
     ingest_pending_holdings,
     next_quarter_label,
+    previous_quarter_label,
 )
 
 _SEQ = itertools.count(1)
@@ -104,14 +113,15 @@ def test_pending_ingest_quarters_excludes_already_ingested(db_session):
         ingested=False,
     )
 
-    assert pending_ingest_quarters(db_session) == ["2025-Q2"]
+    # filed 2025-05 → report quarter 2025-Q1
+    assert pending_ingest_quarters(db_session) == ["2025-Q1"]
 
 
 def test_pending_ingest_quarters_covers_newest_report_quarter(db_session):
     """F5 regression: the newest report quarter's filings are filed the
     FOLLOWING quarter, so their proxy period (= filed_at) sits one quarter
-    ahead. Grouping by the proxy period must still surface them — a
-    report-quarter window would drop them entirely."""
+    ahead. Translating the proxy back to its report quarter must still surface
+    them — a naive report-quarter window over the proxy would drop them."""
     mgr = _manager(db_session)
     # Reports 2025-Q1 but was filed 2025-05 (2025-Q2). Un-ingested, so its
     # period_of_report is still the filed_at proxy.
@@ -128,8 +138,9 @@ def test_pending_ingest_quarters_covers_newest_report_quarter(db_session):
     )
 
     quarters = pending_ingest_quarters(db_session)
-    # Both filing quarters present — the newest (2025-Q3) is NOT skipped.
-    assert quarters == ["2025-Q2", "2025-Q3"]
+    # Filed 2025-05 → reports 2025-Q1; filed 2025-08 → reports 2025-Q2.
+    # The newest report quarter (2025-Q2) is NOT skipped.
+    assert quarters == ["2025-Q1", "2025-Q2"]
 
 
 def test_pending_ingest_quarters_deduplicates(db_session):
@@ -140,7 +151,8 @@ def test_pending_ingest_quarters_deduplicates(db_session):
             period_of_report=date(2025, 5, day), filed_at=date(2025, 5, day),
             ingested=False,
         )
-    assert pending_ingest_quarters(db_session) == ["2025-Q2"]
+    # Three filings, all filed in 2025-Q2 → one report quarter, 2025-Q1.
+    assert pending_ingest_quarters(db_session) == ["2025-Q1"]
 
 
 def test_ingest_pending_holdings_delegates_to_job_per_quarter(db_session):
@@ -167,9 +179,10 @@ def test_ingest_pending_holdings_delegates_to_job_per_quarter(db_session):
 
     summaries = ingest_pending_holdings(db_session, ingest_fn=fake_ingest)
 
-    assert calls == ["2025-Q2", "2025-Q3"]
-    assert set(summaries) == {"2025-Q2", "2025-Q3"}
-    assert summaries["2025-Q2"]["filings_processed"] == 1
+    # Report quarters, because that is what the job's `quarter` payload means.
+    assert calls == ["2025-Q1", "2025-Q2"]
+    assert set(summaries) == {"2025-Q1", "2025-Q2"}
+    assert summaries["2025-Q1"]["filings_processed"] == 1
 
 
 def test_next_quarter_label_boundaries():
@@ -177,6 +190,16 @@ def test_next_quarter_label_boundaries():
     assert next_quarter_label("2025-Q3") == "2025-Q4"
     assert next_quarter_label("2025-Q4") == "2026-Q1"
     assert next_quarter_label("2025-q2") == "2025-Q3"  # case-insensitive
+
+
+def test_previous_quarter_label_boundaries():
+    """The inverse of next_quarter_label; pending_ingest_quarters rides on it."""
+    assert previous_quarter_label("2026-Q1") == "2025-Q4"   # year boundary
+    assert previous_quarter_label("2025-Q4") == "2025-Q3"
+    assert previous_quarter_label("2025-Q2") == "2025-Q1"
+    assert previous_quarter_label("2025-q3") == "2025-Q2"   # case-insensitive
+    for q in ("2024-Q1", "2025-Q2", "2025-Q3", "2025-Q4", "2026-Q1"):
+        assert next_quarter_label(previous_quarter_label(q)) == q
 
 
 def test_ingest_pending_holdings_bounds_to_requested_quarters(db_session):
@@ -200,20 +223,22 @@ def test_ingest_pending_holdings_bounds_to_requested_quarters(db_session):
 
     calls: list[str] = []
     summaries = ingest_pending_holdings(
-        db_session, quarters={"2025-Q3"}, ingest_fn=lambda q: calls.append(q) or {}
+        db_session, quarters={"2025-Q2"}, ingest_fn=lambda q: calls.append(q) or {}
     )
 
-    # Only the in-scope quarter is ingested; the ancient one is left alone.
-    assert calls == ["2025-Q3"]
-    assert set(summaries) == {"2025-Q3"}
+    # Only the in-scope report quarter is ingested; the ancient one (2020-Q1,
+    # filed 2020-05) is left alone.
+    assert calls == ["2025-Q2"]
+    assert set(summaries) == {"2025-Q2"}
 
 
 def test_ingest_pending_holdings_bound_still_reaches_newest_report_quarter(db_session):
-    """F5 must survive the bound: the newest report quarter's filings are filed
-    the FOLLOWING calendar quarter, so `backfill` scopes to report quarters PLUS
-    their next quarter. A 2025-Q1 report filed 2025-05 (proxy period 2025-Q2)
-    must still be ingested when the scope is derived from report quarter
-    2025-Q1."""
+    """F5 must survive the bound.
+
+    A 2025-Q1 report filed 2025-05 carries a proxy period in 2025-Q2. `backfill`
+    now scopes to the report quarters it indexed, with no widening: the Q -> Q+1
+    translation lives in `pending_ingest_quarters` and `_ingest_candidate_filings`.
+    Widening here would only reach a quarter this backfill never indexed."""
     mgr = _manager(db_session)
     _filing(
         db_session, mgr,
@@ -221,15 +246,14 @@ def test_ingest_pending_holdings_bound_still_reaches_newest_report_quarter(db_se
         ingested=False,
     )
 
-    report_quarters = ["2025-Q1"]
-    scoped = set(report_quarters) | {next_quarter_label(q) for q in report_quarters}
+    scoped = {"2025-Q1"}   # exactly what `backfill` passes now
 
     calls: list[str] = []
     ingest_pending_holdings(
         db_session, quarters=scoped, ingest_fn=lambda q: calls.append(q) or {}
     )
 
-    assert calls == ["2025-Q2"]  # reached via the following filing quarter
+    assert calls == ["2025-Q1"]
 
 
 def test_ingest_pending_holdings_isolates_quarter_failure(db_session):
@@ -245,17 +269,18 @@ def test_ingest_pending_holdings_isolates_quarter_failure(db_session):
         )
 
     def flaky_ingest(quarter: str) -> dict:
-        if quarter == "2025-Q3":
+        if quarter == "2025-Q2":
             raise RuntimeError("boom")
         return {"quarter": quarter, "ok": True}
 
     summaries = ingest_pending_holdings(db_session, ingest_fn=flaky_ingest)
 
-    # All three quarters attempted; the failure recorded, the rest succeeded.
-    assert set(summaries) == {"2025-Q2", "2025-Q3", "2025-Q4"}
-    assert summaries["2025-Q3"] == {"error": "boom"}
-    assert summaries["2025-Q2"]["ok"] is True
-    assert summaries["2025-Q4"]["ok"] is True
+    # Filed 05 / 08 / 11 → reports 2025-Q1 / Q2 / Q3. All three attempted; the
+    # failure recorded, the rest succeeded.
+    assert set(summaries) == {"2025-Q1", "2025-Q2", "2025-Q3"}
+    assert summaries["2025-Q2"] == {"error": "boom"}
+    assert summaries["2025-Q1"]["ok"] is True
+    assert summaries["2025-Q3"]["ok"] is True
 
 
 def test_ingest_pending_holdings_noop_when_all_ingested(db_session):

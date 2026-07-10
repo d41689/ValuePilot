@@ -5,6 +5,7 @@ const assert = require('node:assert/strict');
 const {
   buildAdminJobsQueryPath,
   freshnessLine,
+  jobAlerts,
   jobPreviewRows,
   managerCikReviewDefaults,
   jobPreviewLine,
@@ -561,4 +562,54 @@ test('prioritizeManagersForReview surfaces actionable CIK review rows first', ()
     ['QA Pending CIK Manager', 'Beta Seeded', 'Gamma Revoked', 'Delta Rejected', 'Alpha Confirmed']
   );
   assert.equal(managers[0].legal_name, 'Alpha Confirmed');
+});
+
+
+test('jobAlerts surfaces a pipeline_warning that every green stage would hide', () => {
+  // The D1 shape: fetch inserted 75 filings, ingest processed 0, and every
+  // stage still reported "succeeded". Only the parent's warning explains why
+  // the run is partial_success.
+  const alerts = jobAlerts({
+    status: 'partial_success',
+    error_message: null,
+    summary_json: {
+      pipeline_warning:
+        'fetch_quarter_index inserted 75 filing(s) for 2025-Q4 but ingest_holdings processed 0',
+      stages: [{ status: 'succeeded' }, { status: 'succeeded' }],
+    },
+  });
+
+  assert.equal(alerts.length, 1);
+  assert.equal(alerts[0].tone, 'warning');
+  assert.match(alerts[0].text, /ingest_holdings processed 0/);
+});
+
+test('jobAlerts names the quarters whose scores a restatement made stale', () => {
+  const alerts = jobAlerts({
+    status: 'partial_success',
+    summary_json: { quarters_needing_recompute: ['2025-Q1', '2025-Q2'] },
+  });
+
+  assert.equal(alerts.length, 1);
+  assert.equal(alerts[0].tone, 'warning');
+  assert.match(alerts[0].text, /2025-Q1, 2025-Q2/);
+  assert.match(alerts[0].text, /oracles_lens_score_backfill/);
+});
+
+test('jobAlerts puts a hard error above a warning', () => {
+  const alerts = jobAlerts({
+    status: 'failed',
+    error_message: 'Stage ingest_holdings failed',
+    summary_json: { pipeline_warning: 'also worth knowing' },
+  });
+
+  assert.deepEqual(
+    alerts.map((a) => a.tone),
+    ['danger', 'warning'],
+  );
+});
+
+test('jobAlerts is empty for a healthy job', () => {
+  assert.deepEqual(jobAlerts({ status: 'succeeded', summary_json: { stages: [] } }), []);
+  assert.deepEqual(jobAlerts(null), []);
 });

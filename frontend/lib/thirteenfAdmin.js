@@ -323,6 +323,44 @@ function jobStatusTone(status) {
   return 'secondary';
 }
 
+/**
+ * Alerts to surface on a job's detail panel, most severe first.
+ *
+ * A `quarterly_pipeline` can have every stage green and still have produced
+ * nothing usable — that is the whole reason `pipeline_warning` exists. The
+ * backend downgrades such a run to `partial_success`, but a yellow badge does
+ * not tell an operator what went wrong or what to do, and until now the text was
+ * only reachable by reading the raw summary JSON.
+ */
+function jobAlerts(job) {
+  const summary =
+    job && typeof job.summary_json === 'object' && job.summary_json !== null
+      ? job.summary_json
+      : {};
+  const alerts = [];
+
+  const error = job?.error_message ?? summary.pipeline_error;
+  if (error) alerts.push({ tone: 'danger', text: String(error) });
+
+  if (summary.pipeline_warning) {
+    alerts.push({ tone: 'warning', text: String(summary.pipeline_warning) });
+  }
+
+  const stale = Array.isArray(summary.quarters_needing_recompute)
+    ? summary.quarters_needing_recompute
+    : [];
+  if (stale.length) {
+    alerts.push({
+      tone: 'warning',
+      text:
+        'These report quarters were restated by filings this run ingested and ' +
+        `now hold stale scores: ${stale.join(', ')}. Re-run ` +
+        'compute_ownership_changes and oracles_lens_score_backfill for each.',
+    });
+  }
+  return alerts;
+}
+
 function normalizePagination(payload) {
   const data = payload && typeof payload === 'object' ? payload : {};
   return {
@@ -619,6 +657,7 @@ module.exports = {
   normalizeHoldingsCoverage,
   normalizeParseRuns,
   healthTone,
+  jobAlerts,
   normalizeQuarters,
   normalizeQualityReports,
   normalizeReadiness,

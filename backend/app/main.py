@@ -23,6 +23,23 @@ async def lifespan(app: FastAPI):
             "EDGAR_FETCH_MODE=replay. See rate-guard/README.md."
         )
 
+    # Seed the curated manager universe BEFORE the scheduler or the job worker
+    # can act on it: ingestion selects managers on `match_status == 'confirmed'`,
+    # so a pipeline job that ran first would ingest an empty universe.
+    #
+    # Deliberately NOT wrapped in try/except, unlike the start-quarter reconcile
+    # below. That reconcile is idempotent and retried on the next boot, so
+    # swallowing its failure costs nothing. The manager seed is the opposite: an
+    # API that starts with an empty or partial universe ingests no filings and
+    # scores nothing, silently. `test_the_curated_seed_file_is_valid` keeps a
+    # malformed seed file out of the image, so failing loud here cannot
+    # crash-loop prod on anything CI could have caught.
+    if settings.MANAGER_SEED_ON_STARTUP:
+        from app.core.db import SessionLocal
+        from app.services.manager_seed_startup import run_startup_manager_seed
+
+        run_startup_manager_seed(SessionLocal)
+
     scheduler = None
     job_worker = None
     if settings.EDGAR_SCHEDULER_ENABLED:

@@ -574,7 +574,7 @@ def main(argv: list[str] | None = None) -> int:
                 f"  mappings_created={summary.get('mappings_created')} "
                 f"new_stocks={summary.get('new_stocks')} "
                 f"holdings_linked={summary.get('holdings_linked')} "
-                f"still_unmapped={summary.get('holdings_still_unmapped')}"
+                f"still_enrichable={summary.get('holdings_still_enrichable')}"
             )
         else:
             print(f"  STATUS={res.get('status')} error={summary.get('error')}")

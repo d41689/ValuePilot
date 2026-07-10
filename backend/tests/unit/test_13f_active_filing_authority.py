@@ -865,7 +865,10 @@ def _job_filing(db_session, mgr, *, accession, form="13F-HR", filed, primary_byt
         manager_id=mgr.id, cik=mgr.cik,
         accession_no=accession, accession_number=accession,
         form_type=form,
-        period_of_report=date(2025, 11, 15),  # proxy inside the 2025-Q4 window
+        # The proxy IS filed_at (see `_accession_period_of_report`); `report_quarter`
+        # stays NULL until routing. ingest_holdings("2025-Q4") claims it through
+        # the filed-quarter arm, because 2025-Q4 13Fs are filed in 2026-Q1.
+        period_of_report=filed,
         filed_at=filed, filing_date=filed,
         raw_primary_doc_id=primary.id, raw_infotable_doc_id=infotable.id,
         is_latest_for_period=False, parse_status="pending",

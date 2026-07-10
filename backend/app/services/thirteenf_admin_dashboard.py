@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 from typing import Any
 
-from sqlalchemy import func, or_
+from sqlalchemy import and_, func, or_
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -84,6 +84,76 @@ def quarter_window(quarter: str) -> QuarterWindow:
 
 def quarter_label_for_date(value: date) -> str:
     return f"{value.year}-Q{((value.month - 1) // 3) + 1}"
+
+
+def _ingest_candidate_filings(session: Session, quarter: str) -> list["Filing13F"]:
+    """Filings the `ingest_holdings` job must parse for **report quarter** `quarter`.
+
+    `quarter` is a report quarter, the same thing `fetch_quarter_index` means by
+    it. Two arms, split on whether the filing's period has been **routed** yet:
+
+    * **Routed** rows carry their true period. `backfill_period_routing` writes
+      `period_of_report`, `quarter_end_date` and `report_quarter` in one pass, so
+      a non-NULL `report_quarter` *is* the routed answer — match it directly.
+      This is the heal / re-run path.
+    * **Un-routed** rows carry a *proxy* `period_of_report` equal to `filed_at`,
+      stamped at index time before any document is read. A 13F for period Q is
+      filed within 45 days after Q ends, so its proxy lands in Q+1. Select those
+      by the **filed**-quarter window.
+
+    Without the second arm, `ingest_holdings(Q)` never sees the rows
+    `fetch_quarter_index(Q)` just inserted (it deliberately downloads Q+1's
+    form.idx), so a `quarterly_pipeline(Q)` run ingests nothing and then scores
+    an empty quarter — every stage green. Worse, the newest report quarter is
+    unreachable: its filings' proxy is Q+1, and no pipeline for Q+1 is enqueued
+    until that quarter itself becomes scoreable. Same defect class as F5, which
+    T4 fixed only in the CLI `backfill` path.
+
+    **The arms must be disjoint, and `report_quarter` is the only key that makes
+    them so.** Matching the routed arm on `period_of_report` within the
+    report-quarter window instead left every un-routed row claimed by *two
+    adjacent quarters*: a 2025-Q4 filing whose proxy is 2026-02-17 satisfies both
+    `ingest(2025-Q4)`'s filed-window arm and `ingest(2026-Q1)`'s period-window
+    arm. `lock_key` is `ingest_holdings:{quarter}`, so two quarters' jobs do not
+    exclude each other, and whichever ran first parsed the other's filings —
+    leaving the rightful quarter's downstream stages to score holdings it never
+    ingested (external review P1, reproduced).
+
+    `raw_infotable_doc_id` cannot be that key: Phase 1 of `_execute_ingest_job`
+    sets it, Phase 2 routes the period. A job that dies between the two leaves a
+    row with an infotable and a still-proxy period, which a period-window arm
+    would then file under the wrong quarter.
+
+    We deliberately do NOT filter the routed arm on `raw_infotable_doc_id` — per
+    #43 the job fetches missing infotable XML inline, and filings whose XML is
+    already on disk are fast-pathed by `ensure_filing_infotable_doc`.
+
+    A filing submitted later than Q+1 — a late 13F-HR, or an amendment restating
+    an older period — is claimed by the pipeline of its own filed-quarter, not by
+    `quarterly_pipeline(Q)`. Its period still routes correctly, but the quarter it
+    restates now has stale `ownership_changes` and Lens signals. That is not
+    silently ignored: `_execute_ingest_job` reports those quarters under
+    `filings_routed_to_other_quarters`, and the pipeline refuses to stay green.
+    """
+    from app.services.edgar_ingestion import next_quarter_label
+
+    filed_window = quarter_window(next_quarter_label(quarter))
+    return (
+        session.query(Filing13F)
+        .filter(
+            or_(
+                Filing13F.report_quarter == quarter,
+                and_(
+                    Filing13F.report_quarter.is_(None),
+                    Filing13F.period_of_report.between(
+                        filed_window.start, filed_window.end
+                    ),
+                ),
+            )
+        )
+        .order_by(Filing13F.filed_at.asc(), Filing13F.accession_no.asc())
+        .all()
+    )
 
 
 def previous_quarter_label(quarter: str) -> str:
@@ -2944,6 +3014,49 @@ def _execute_job(session: Session, job_type: str, payload: dict[str, Any]) -> di
             results["pipeline_error"] = ingest_stage.get("error", "Stage ingest_holdings failed")
             return {**results, "status": "failed"}
 
+        # Cross-stage invariant. The two stages disagreed once about what
+        # `quarter` means (see `_ingest_candidate_filings`), and the symptom was
+        # silent: ingest matched nothing, returned "succeeded" in 7ms, and the
+        # four downstream stages happily scored an empty quarter. Nothing in a
+        # per-stage status can catch that — only the pair can.
+        #
+        # `filings_processed` alone is too weak a signal: a selection bug that
+        # claims the NEIGHBOURING quarter's filings still reports a healthy
+        # count. So the second check asks the outcome question — after routing,
+        # did anything actually land in the quarter we are about to score?
+        # (external review P1.)
+        #
+        # A re-run inserts 0 and processes 0: the legitimate no-op, stays green.
+        inserted = results.get("index_filings") or 0
+        summary = ingest_results or {}
+        processed = summary.get("filings_processed") or 0
+        for_quarter = summary.get("filings_for_requested_quarter") or 0
+        elsewhere = summary.get("filings_routed_to_other_quarters") or {}
+        warnings: list[str] = []
+        if inserted and not processed:
+            warnings.append(
+                f"fetch_quarter_index inserted {inserted} filing(s) for {quarter} "
+                f"but ingest_holdings processed 0 — the remaining stages would "
+                f"run on a quarter with no holdings"
+            )
+        elif processed and not for_quarter:
+            warnings.append(
+                f"ingest_holdings processed {processed} filing(s) but none belong "
+                f"to report quarter {quarter} — the remaining stages would score a "
+                f"quarter this pipeline never populated"
+            )
+        if elsewhere:
+            detail = ", ".join(f"{q} ({n})" for q, n in sorted(elsewhere.items()))
+            warnings.append(
+                f"ingest_holdings parsed filings restating other report quarters: "
+                f"{detail}. Their ownership_changes and Oracle's Lens signals are "
+                f"now stale — re-run compute_ownership_changes and "
+                f"oracles_lens_score_backfill for those quarters"
+            )
+            results["quarters_needing_recompute"] = sorted(elsewhere)
+        if warnings:
+            results["pipeline_warning"] = " | ".join(warnings)
+
         # Stage 3: Enrich metadata (CUSIP -> Ticker) — continue to quality check even on failure.
         enrich_stage = _execute_pipeline_stage_job(
             session,
@@ -2994,8 +3107,11 @@ def _execute_job(session: Session, job_type: str, payload: dict[str, Any]) -> di
         results["oracles_lens_scoring"] = scoring_stage["summary"]
 
         # Any non-succeeded stage (after the critical stage 1+2 gates) → partial_success.
+        # A pipeline_warning does the same: every stage can be green while the
+        # run as a whole produced nothing.
         stage_statuses = {s["status"] for s in results["stages"]}
-        status = "succeeded" if stage_statuses == {"succeeded"} else "partial_success"
+        all_green = stage_statuses == {"succeeded"} and "pipeline_warning" not in results
+        status = "succeeded" if all_green else "partial_success"
         return {**results, "status": status}
 
     if job_type == "enrich_metadata":
@@ -3510,17 +3626,8 @@ def _execute_ingest_job(session: Session, job_type: str, payload: dict[str, Any]
         }
 
     # job_type == "ingest_holdings": bulk quarterly ingest via ingest_if_needed.
-    # We deliberately do NOT filter on raw_infotable_doc_id here — per #43, the
-    # job is responsible for fetching missing infotable XML inline. Filings
-    # whose XML is already on disk are fast-pathed by ensure_filing_infotable_doc.
     quarter = _required(payload, "quarter")
-    window = quarter_window(quarter)
-    filings = (
-        session.query(Filing13F)
-        .filter(Filing13F.period_of_report.between(window.start, window.end))
-        .order_by(Filing13F.filed_at.asc(), Filing13F.accession_no.asc())
-        .all()
-    )
+    filings = _ingest_candidate_filings(session, quarter)
     total_holdings = 0
     skipped = 0
     xml_fetched = 0
@@ -3724,8 +3831,38 @@ def _execute_ingest_job(session: Session, job_type: str, payload: dict[str, Any]
     routing_failed = routing_summary.get("failed", 0)
     degraded = bool(failures) or routing_needs_review > 0 or routing_failed > 0
 
+    # Post-routing invariant. The job is asked for report quarter `quarter`, but
+    # what a filing's period turns out to be is only known AFTER Phase 2 routes
+    # it. A late 13F-HR, or an amendment restating an older period, arrives in a
+    # later filed-quarter and therefore lands in a different pipeline's window.
+    # Its own quarter's ownership_changes and Lens signals are now stale.
+    #
+    # Counting the outcome is the only check that can catch a window bug: a
+    # selection that quietly claims the neighbouring quarter's filings still
+    # reports a healthy `filings_processed`. Ask instead how many of them
+    # actually belong to the quarter whose scores this pipeline is about to
+    # compute (external review P1).
+    for_requested_quarter = 0
+    routed_elsewhere: dict[str, int] = {}
+    for filing in filings:
+        rq = filing.report_quarter
+        if rq == quarter:
+            for_requested_quarter += 1
+        elif rq:
+            routed_elsewhere[rq] = routed_elsewhere.get(rq, 0) + 1
+    if routed_elsewhere:
+        logger.warning(
+            "ingest_holdings(%s) parsed filings belonging to other report "
+            "quarters: %s. Their ownership_changes and Oracle's Lens signals are "
+            "now stale and must be recomputed.",
+            quarter,
+            ", ".join(f"{q}={n}" for q, n in sorted(routed_elsewhere.items())),
+        )
+
     return {
         "filings_processed": len(filings),
+        "filings_for_requested_quarter": for_requested_quarter,
+        "filings_routed_to_other_quarters": dict(sorted(routed_elsewhere.items())),
         "filings_skipped": skipped,
         "filings_xml_fetched": xml_fetched,
         "filings_skipped_no_cik": no_cik,
@@ -3747,24 +3884,65 @@ def _execute_ingest_job(session: Session, job_type: str, payload: dict[str, Any]
 
 
 def _execute_enrichment_metadata(session: Session, payload: dict[str, Any]) -> dict[str, Any]:
+    """CUSIP → ticker → `stock_id`, run to completion.
+
+    This stage used to call `enrich_cusips_from_openfigi`, which maps a **single
+    batch of 100 CUSIPs** and returns. The standalone `enrich_cusip` job has
+    always called `enrich_all_unmapped_holdings`, which loops until no enrichable
+    holding remains. So the manual path converged and the automated one did not:
+    a `quarterly_pipeline` run mapped ~100 of the ~2000 CUSIPs a quarter of 13F
+    holdings contains, and the rest stayed unlinked.
+
+    That is not cosmetic. `stock_id` is the join key for the Watchlist × 13F
+    columns and for Oracle's Lens eligibility, so an unlinked holding is
+    invisible to the product and absent from consensus scoring.
+
+    `enrich_all_unmapped_holdings` already bootstraps stocks and backfills
+    `stock_id` after its loop; it is resumable, its per-batch mappings are
+    committed, and `max_batches` bounds it. Rate limiting is Rate Guard's job.
+    """
     from app.services.cusip_enrichment import (
-        backfill_stock_ids,
-        bootstrap_stocks_from_cusip_map,
-        enrich_cusips_from_openfigi,
+        enrich_all_unmapped_holdings,
         enrich_stocks_from_edgar_tickers,
     )
 
-    mappings_created = enrich_cusips_from_openfigi(session)
-    new_stocks = bootstrap_stocks_from_cusip_map(session)
-    holdings_linked = backfill_stock_ids(session)
+    enriched = enrich_all_unmapped_holdings(session)
     edgar_stock_enrichment = enrich_stocks_from_edgar_tickers(session)
     return {
-        "cusip_mappings": mappings_created,
-        "mappings_created": mappings_created,
-        "new_stocks": new_stocks,
-        "holdings_linked": holdings_linked,
+        "cusip_mappings": enriched["mappings_created"],
+        "mappings_created": enriched["mappings_created"],
+        "batches_run": enriched["batches_run"],
+        "new_stocks": enriched["new_stocks"],
+        "holdings_linked": enriched["holdings_linked"],
+        # The OpenFIGI work queue. Draining it to 0 does NOT mean every holding
+        # is linked, so it is reported alongside — never instead of — the
+        # unlinked buckets below (external review P2).
+        "holdings_still_enrichable": enriched["holdings_still_enrichable"],
+        # What Oracle's Lens actually cares about: `stock_id IS NULL` means the
+        # holding is absent from `_eligible_stock_ids`, from the Watchlist × 13F
+        # columns, and from the stock-detail drawer. `needs_review` holdings sit
+        # here permanently until a human resolves them via
+        # `/cusip-mappings?needs_review=true`.
+        **_unlinked_holding_buckets(session),
         "edgar_stock_enrichment": edgar_stock_enrichment,
         "status": "succeeded",
+    }
+
+
+def _unlinked_holding_buckets(session: Session) -> dict[str, Any]:
+    """Holdings with no `stock_id`, split by why — the product-visible truth."""
+    from app.models.institutions import Holding13F
+
+    rows = (
+        session.query(Holding13F.cusip_mapping_status, func.count(Holding13F.id))
+        .filter(Holding13F.stock_id.is_(None))
+        .group_by(Holding13F.cusip_mapping_status)
+        .all()
+    )
+    by_status = {status or "unknown": count for status, count in rows}
+    return {
+        "holdings_unlinked_total": sum(by_status.values()),
+        "holdings_unlinked_by_status": dict(sorted(by_status.items())),
     }
 def build_cusip_mappings(session: Session, limit: int, needs_review: bool, unresolved: bool) -> list[dict[str, Any]]:
     from app.models.institutions import CusipTickerMap, Holding13F
