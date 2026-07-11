@@ -137,3 +137,21 @@ invariant "financial data: unknown is not zero" — a partial `SUM(value_usd)` (
   `{'manager_count': 3, 'value_usd': 100, 'value_usd_missing_count': 2}`.
 - **Gates re-run green:** backend **1242 passed** (2 new), frontend **185
   passed**, lint clean, production build succeeded, dev `.next` restored.
+
+## Re-review (2026-07-10)
+
+**Verdict: mergeable.** The P2 is correctly fixed and this follow-up found no
+new defect.
+
+- The query now returns `value_usd_missing_count = count(*) - count(value_usd)`.
+  This correctly exposes every holding that PostgreSQL omitted from the nullable
+  sum without reintroducing the unsafe `value_thousands` fallback.
+- Independent rollback-transaction reproduction confirmed both boundaries:
+  partial normalized data returns `value_usd=100, value_usd_missing_count=2`;
+  all unnormalized data returns `value_usd=0, value_usd_missing_count=3`.
+  The UI's formatter renders these as a qualified lower bound and an unavailable
+  impact respectively, rather than as a complete dollar value.
+- Regression tests: targeted guardrail suite **10 passed**; full backend suite
+  **1242 passed** (the same three pre-existing SQLAlchemy legacy warnings);
+  frontend unit suite **185 passed**, lint and production build passed. The
+  production build output was cleared and the dev web container restarted.
