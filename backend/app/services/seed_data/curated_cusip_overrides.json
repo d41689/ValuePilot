@@ -1,0 +1,14 @@
+[
+  {
+    "cusip": "30231G102",
+    "ticker": "XOM",
+    "issuer_name": "Exxon Mobil Corp",
+    "reason": "US mega-cap; OpenFIGI mapCusips returns no US-composite listing for this CUSIP. Its US venues carry ticker XOM under codes PE/CB/CX/UZ/OU/QU, mixed with foreign variants (EXMOC/XOMCHF/XOM_KZ/1XOMM); exchCode=US and micCode=XNYS filters return zero. Operator-confirmed unambiguous identity. Verified 2026-07-10 via Rate Guard."
+  },
+  {
+    "cusip": "438516106",
+    "ticker": "HON",
+    "issuer_name": "Honeywell International Inc",
+    "reason": "US mega-cap; OpenFIGI mapCusips returns only foreign-currency variants (HONGBP/HONEUR/HONGBX/HONRUB, all exchCode=X1) — the correct US ticker HON is absent from the response entirely, so no forward-lookup heuristic can recover it. Operator-confirmed unambiguous identity. Verified 2026-07-10 via Rate Guard."
+  }
+]
