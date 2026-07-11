@@ -129,3 +129,20 @@ defect was latent for any future case-variant entry.)
 - **Gates re-run green:** override tests **9 passed**, full backend **1250
   passed**, frontend **185 passed**, lint clean; no migration; frontend identical
   to `main`.
+
+## Re-review (2026-07-11)
+
+**Verdict: mergeable.** The P1 is correctly fixed; this independent re-review
+found no new issue.
+
+- Re-ran the original adversarial input in a rolled-back `valuepilot_test`
+  transaction: seed `30231g102` / `xom` now returns
+  `applied_cusips=['30231G102']`, stores `('30231G102', 'XOM')`, and leaves zero
+  lowercase rows. That is the exact canonical key used by the holdings linker.
+- The real dev probe, also rolled back, remains idempotent:
+  `entries=2, unchanged=2, applied=0, conflicts=0`, with two active XOM/HON
+  mappings. No real data was changed.
+- Verification repeated: focused override suite **9 passed**; full backend
+  suite **1251 passed** (the same three SQLAlchemy legacy warnings); frontend
+  unit suite **185 passed** and lint passed. Frontend has no PR diff, so the
+  review prompt's conditional production build remains inapplicable.
