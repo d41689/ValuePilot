@@ -68,6 +68,16 @@ function formatInteger(value: unknown) {
   return value.toLocaleString('en-US');
 }
 
+// Post-2023 13F values are reported in dollars; render a compact magnitude.
+function formatCompactUsd(value: unknown) {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return '—';
+  const abs = Math.abs(value);
+  if (abs >= 1_000_000_000) return `$${(value / 1_000_000_000).toFixed(2)}B`;
+  if (abs >= 1_000_000) return `$${(value / 1_000_000).toFixed(1)}M`;
+  if (abs >= 1_000) return `$${(value / 1_000).toFixed(0)}K`;
+  return `$${value.toLocaleString('en-US')}`;
+}
+
 // MVP6-07: ``formatJson`` removed along with the Quarter Detail Drawer
 // that consumed it.
 // MVP6-02: ``MANAGER_TYPE_OPTIONS`` moved to
@@ -831,6 +841,40 @@ export default function Admin13FPage() {
                         <span className="text-foreground">
                           {task.metadata.affected_quarters.slice(0, 5).join(', ')}
                         </span>
+                      </div>
+                    ) : null}
+                    {Array.isArray(task.metadata.managers) &&
+                    task.metadata.managers.length > 0 ? (
+                      <div className="space-y-1">
+                        <div className="text-muted-foreground">Managers:</div>
+                        <ul className="space-y-0.5">
+                          {(task.metadata.managers as Record<string, unknown>[]).map((m, i) => (
+                            <li key={`${String(m.cik ?? i)}`} className="text-foreground">
+                              <span className="font-medium">{String(m.name ?? '—')}</span>{' '}
+                              <span className="font-mono text-muted-foreground">
+                                CIK {String(m.cik ?? '—')}
+                              </span>
+                            </li>
+                          ))}
+                        </ul>
+                      </div>
+                    ) : null}
+                    {Array.isArray(task.metadata.cusips) &&
+                    task.metadata.cusips.length > 0 ? (
+                      <div className="space-y-1">
+                        <div className="text-muted-foreground">Unresolved CUSIPs:</div>
+                        <ul className="space-y-0.5">
+                          {(task.metadata.cusips as Record<string, unknown>[]).map((c, i) => (
+                            <li key={`${String(c.cusip ?? i)}`} className="text-foreground">
+                              <span className="font-mono">{String(c.cusip ?? '—')}</span>{' '}
+                              <span className="font-medium">{String(c.issuer_name ?? '—')}</span>{' '}
+                              <span className="text-muted-foreground">
+                                · {formatInteger(Number(c.manager_count ?? 0))} managers ·{' '}
+                                {formatCompactUsd(Number(c.value_usd ?? 0))}
+                              </span>
+                            </li>
+                          ))}
+                        </ul>
                       </div>
                     ) : null}
                   </div>
