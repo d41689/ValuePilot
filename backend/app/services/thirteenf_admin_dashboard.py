@@ -1826,6 +1826,11 @@ def _high_impact_unresolved_cusips(
             func.max(Holding13F.issuer_name).label("issuer_name"),
             func.count(func.distinct(Holding13F.manager_id)).label("manager_count"),
             func.sum(Holding13F.value_usd).label("value_usd"),
+            # Holdings whose value could not be normalized (value_usd IS NULL).
+            # SQL SUM silently skips them, so the dollar impact above is only a
+            # lower bound when this is > 0 — the caller must qualify it, never
+            # present a partial sum as the complete impact ("unknown is not zero").
+            (func.count() - func.count(Holding13F.value_usd)).label("value_usd_missing_count"),
         )
         # Canonical current-holdings join (see thirteenf_holdings_query): join each
         # holding to its OWN parse run by PK so a superseded parse run on the same
@@ -1850,8 +1855,12 @@ def _high_impact_unresolved_cusips(
             "issuer_name": r.issuer_name,
             "manager_count": int(r.manager_count),
             # Post-2023 13F values are reported in dollars; `value_usd` is the
-            # normalized dollar amount (fully populated for recent quarters).
+            # normalized dollar amount (fully populated for recent quarters). When
+            # `value_usd_missing_count > 0` some holdings could not be normalized,
+            # so `value_usd` is only a lower bound — the UI qualifies it rather
+            # than presenting a partial sum as the complete impact.
             "value_usd": int(r.value_usd or 0),
+            "value_usd_missing_count": int(r.value_usd_missing_count or 0),
         }
         for r in rows
     ]

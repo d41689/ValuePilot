@@ -47,7 +47,8 @@ def _manager(db_session, *, cik, name, norm, status="active", match="confirmed")
 
 def _active_filing_with_holdings(db_session, manager, *, quarter, qend, holdings):
     """A parsed, active HR filing whose current run holds `holdings`
-    (list of (cusip, issuer, stock_id, put_call))."""
+    (list of (cusip, issuer, stock_id, put_call) with an optional 5th element
+    `value_usd` — omit it to default to 1000, pass None for an un-normalized value)."""
     acc = f"{manager.cik}-26-{manager.id:06d}"
     f = Filing13F(
         manager_id=manager.id, accession_no=acc, accession_number=acc,
@@ -62,10 +63,12 @@ def _active_filing_with_holdings(db_session, manager, *, quarter, qend, holdings
                      status="succeeded", is_current=True, holdings_count=len(holdings))
     db_session.add(pr)
     db_session.flush()
-    for i, (cusip, issuer, stock_id, put_call) in enumerate(holdings):
+    for i, holding in enumerate(holdings):
+        cusip, issuer, stock_id, put_call = holding[:4]
+        value_usd = holding[4] if len(holding) > 4 else 1000
         db_session.add(Holding13F(
             filing_id=f.id, parse_run_id=pr.id, manager_id=manager.id, cusip=cusip,
-            accession_number=acc, issuer_name=issuer, value_thousands=1000, value_usd=1000,
+            accession_number=acc, issuer_name=issuer, value_thousands=1000, value_usd=value_usd,
             row_fingerprint=f"{acc}-{i}", stock_id=stock_id, put_call=put_call,
             cusip_mapping_status="linked" if stock_id else "unresolved",
         ))
@@ -153,8 +156,9 @@ def test_an_unresolved_cusip_held_by_many_managers_raises_a_task(db_session):
     assert "30231G102" in offenders
     assert offenders["30231G102"]["manager_count"] == 4
     # Dollar impact is summed from value_usd (unit-safe), not the misnamed
-    # `value_thousands` column: 4 managers x 1000 each.
+    # `value_thousands` column: 4 managers x 1000 each, all normalized.
     assert offenders["30231G102"]["value_usd"] == 4000
+    assert offenders["30231G102"]["value_usd_missing_count"] == 0
 
 
 def test_an_unresolved_cusip_held_by_one_manager_is_below_the_bar(db_session):
@@ -181,6 +185,46 @@ def test_a_widely_held_LINKED_cusip_is_not_flagged(db_session, linked_stock):
     assert "HIGH_IMPACT_CUSIP_UNRESOLVED" not in _codes(
         build_admin_tasks(db_session, today=date(2026, 3, 1))
     )
+
+
+def test_partial_null_value_usd_is_a_qualified_lower_bound_not_a_complete_sum(db_session):
+    """When some holdings can't be normalized (value_usd IS NULL), SUM silently
+    drops them. The task must expose that so a partial sum is never shown as the
+    complete impact ('unknown is not zero')."""
+    qend = date(2025, 12, 31)
+    for i, value_usd in enumerate((100, None, None)):  # 3 holders, 2 un-normalized
+        m = _manager(db_session, cik=f"000000010{i}", name=f"P{i}", norm=f"p{i}")
+        _active_filing_with_holdings(
+            db_session, m, quarter="2025-Q4", qend=qend,
+            holdings=[("999999999", "UNKNOWN UNIT CO", None, None, value_usd)],
+        )
+
+    task = _by_code(
+        build_admin_tasks(db_session, today=date(2026, 3, 1)), "HIGH_IMPACT_CUSIP_UNRESOLVED"
+    )
+    row = next(c for c in task["metadata"]["cusips"] if c["cusip"] == "999999999")
+    assert row["manager_count"] == 3
+    assert row["value_usd"] == 100  # lower bound — only the one normalized row
+    assert row["value_usd_missing_count"] == 2  # the two NULLs are surfaced, not hidden
+
+
+def test_all_null_value_usd_reports_zero_with_full_missing_count(db_session):
+    """Every holding un-normalized: impact is genuinely unavailable, not $0."""
+    qend = date(2025, 12, 31)
+    for i in range(3):
+        m = _manager(db_session, cik=f"000000020{i}", name=f"A{i}", norm=f"a{i}")
+        _active_filing_with_holdings(
+            db_session, m, quarter="2025-Q4", qend=qend,
+            holdings=[("999999888", "ALL NULL CO", None, None, None)],
+        )
+
+    task = _by_code(
+        build_admin_tasks(db_session, today=date(2026, 3, 1)), "HIGH_IMPACT_CUSIP_UNRESOLVED"
+    )
+    row = next(c for c in task["metadata"]["cusips"] if c["cusip"] == "999999888")
+    assert row["manager_count"] == 3
+    assert row["value_usd"] == 0
+    assert row["value_usd_missing_count"] == 3  # the UI renders "impact unavailable"
 
 
 def test_options_are_not_counted_as_unresolved_impact(db_session):

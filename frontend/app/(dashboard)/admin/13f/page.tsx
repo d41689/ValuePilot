@@ -78,6 +78,19 @@ function formatCompactUsd(value: unknown) {
   return `$${value.toLocaleString('en-US')}`;
 }
 
+// Some holdings may have an un-normalizable value (value_usd IS NULL), which SUM
+// silently drops. Never present a partial sum as the complete impact — qualify it
+// as a lower bound, or say it is unavailable when every value is missing.
+function formatCusipImpact(valueUsd: unknown, missingCount: unknown) {
+  const missing =
+    typeof missingCount === 'number' && Number.isFinite(missingCount) ? missingCount : 0;
+  const value = typeof valueUsd === 'number' && Number.isFinite(valueUsd) ? valueUsd : 0;
+  if (missing <= 0) return formatCompactUsd(value);
+  const note = `${formatInteger(missing)} unnormalized`;
+  if (value <= 0) return `impact unavailable · ${note}`;
+  return `≥ ${formatCompactUsd(value)} · ${note}`;
+}
+
 // MVP6-07: ``formatJson`` removed along with the Quarter Detail Drawer
 // that consumed it.
 // MVP6-02: ``MANAGER_TYPE_OPTIONS`` moved to
@@ -870,7 +883,7 @@ export default function Admin13FPage() {
                               <span className="font-medium">{String(c.issuer_name ?? '—')}</span>{' '}
                               <span className="text-muted-foreground">
                                 · {formatInteger(Number(c.manager_count ?? 0))} managers ·{' '}
-                                {formatCompactUsd(Number(c.value_usd ?? 0))}
+                                {formatCusipImpact(c.value_usd, c.value_usd_missing_count)}
                               </span>
                             </li>
                           ))}
