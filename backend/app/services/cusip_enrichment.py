@@ -190,8 +190,16 @@ def seed_curated_cusip_overrides(
     )
 
     for entry in data:
-        cusip = (entry.get("cusip") or "").strip()
-        ticker = (entry.get("ticker") or "").strip()
+        # Canonicalize to the STORED form before validate/lookup/write. CUSIPs and
+        # tickers are persisted uppercase (the parser uppercases; is_valid_cusip
+        # only uppercases a local copy to validate), and _apply_mappings_to_holdings
+        # matches `CusipTickerMap.cusip == Holding13F.cusip` EXACTLY. A lowercase
+        # seed CUSIP would pass the case-insensitive validator, get stored
+        # lowercase, be reported as "applied", yet never match an uppercase
+        # holding — a silent mega-cap omission, the exact failure this loader is
+        # meant to prevent. Uppercasing here (and in the report) closes that gap.
+        cusip = (entry.get("cusip") or "").strip().upper()
+        ticker = (entry.get("ticker") or "").strip().upper()
         issuer_name = (entry.get("issuer_name") or "").strip()
         reason = (entry.get("reason") or "").strip()
         if not (cusip and ticker and issuer_name and reason):

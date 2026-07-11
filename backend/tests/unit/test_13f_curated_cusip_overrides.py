@@ -81,6 +81,11 @@ def test_the_seed_file_is_structurally_valid():
         for field in ("cusip", "ticker", "issuer_name", "reason"):
             assert e.get(field), f"entry missing/empty '{field}': {e}"
         assert is_valid_cusip(e["cusip"]), f"invalid cusip {e['cusip']}"
+        # The stored form is uppercase (the parser uppercases holdings and the
+        # link match is exact) — the checked-in file must already be canonical so
+        # a case typo can never slip a mega-cap past the linker.
+        assert e["cusip"] == e["cusip"].upper(), f"seed cusip not uppercase: {e['cusip']}"
+        assert e["ticker"] == e["ticker"].upper(), f"seed ticker not uppercase: {e['ticker']}"
         assert e["cusip"] not in seen, f"duplicate cusip {e['cusip']}"
         seen.add(e["cusip"])
     # The two backlog-named, guardrail-flagged mega-caps must be present.
@@ -125,6 +130,33 @@ def test_override_resolves_a_cusip_openfigi_left_in_review(db_session, tmp_path)
     assert h.stock_id is not None
     stock = db_session.get(Stock, h.stock_id)
     assert stock.ticker == "FAKE" and stock.company_name == "Fake Mega Co"
+
+
+def test_a_lowercase_seed_cusip_is_canonicalized_and_links_an_uppercase_holding(db_session, tmp_path):
+    """P1 regression: a case-variant CUSIP must not become a silent omission.
+    The validator (is_valid_cusip) only uppercases a local copy, so a lowercase
+    seed value passes; holdings are stored uppercase and the link match is exact.
+    The loader must canonicalize to uppercase so the override actually links —
+    and report the canonical CUSIP, never the lowercase input."""
+    canonical = "11111A118"  # has a letter, so case matters
+    h = _holding(db_session, cusip=canonical, status="needs_review")  # parser stores uppercase
+    seed = _write_seed(tmp_path, [
+        {"cusip": canonical.lower(), "ticker": "meg", "issuer_name": "Mega Co", "reason": "test"},
+    ])
+    report = seed_curated_cusip_overrides(db_session, seed_path=seed)
+
+    # Reported + stored in canonical UPPERCASE, not the lowercase input.
+    assert canonical in report["applied_cusips"]
+    assert canonical.lower() not in report["applied_cusips"]
+    m = _active(db_session, canonical)
+    assert m is not None and m.cusip == canonical and m.ticker == "MEG"
+    assert _active(db_session, canonical.lower()) is None
+
+    # And it actually links the real (uppercase) holding — no silent omission.
+    bootstrap_stocks_from_cusip_map(db_session)
+    backfill_stock_ids(db_session)
+    db_session.refresh(h)
+    assert h.cusip_mapping_status == "linked" and h.stock_id is not None
 
 
 def test_a_later_openfigi_run_never_overrides_a_curated_ticker(db_session, tmp_path):
