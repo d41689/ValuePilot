@@ -370,6 +370,27 @@ test('taskPrimaryAction maps safe admin tasks to concrete operations', () => {
       kind: 'manual',
     }
   );
+
+  // Data-trust guardrails: a widely-held unresolved CUSIP is fixed by enrichment;
+  // a confirmed manager that never files is fixed by a human CIK re-point.
+  assert.deepEqual(
+    taskPrimaryAction(
+      normalizeTasks([{ code: 'HIGH_IMPACT_CUSIP_UNRESOLVED', title: 'Unresolved mega-caps' }])[0],
+      '2025-Q4'
+    ),
+    {
+      label: 'Run CUSIP enrichment',
+      payload: { job_type: 'enrich_metadata', quarter: '2025-Q4' },
+      kind: 'job',
+    }
+  );
+  assert.deepEqual(
+    taskPrimaryAction(
+      normalizeTasks([{ code: 'CONFIRMED_MANAGERS_NOT_FILING', title: 'Non-filers' }])[0],
+      '2025-Q4'
+    ),
+    { label: 'Review managers', kind: 'anchor', target: 'managers' }
+  );
 });
 
 test('normalizeQualityReports maps persisted report counts and status', () => {

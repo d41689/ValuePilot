@@ -28,6 +28,7 @@ from app.models.institutions import (
     RawSourceDocument,
 )
 from app.services.edgar_quality import persist_quality_report, run_quality_checks
+from app.services.thirteenf_holdings_query import HR_FORM_TYPES
 from app.services.thirteenf_job_worker import list_worker_heartbeats
 
 
@@ -612,6 +613,36 @@ def build_admin_tasks(session: Session, *, today: date | None = None) -> list[di
         tasks.append(_task("P1", "AMENDMENT_PENDING_OR_FAILED", "Amendment pending or failed", "Run Reprocess amendment for each pending or failed 13F/A accession"))
     if summary["linked_holding_ratio"] is not None and summary["linked_holding_ratio"] < _ready_link_ratio():
         tasks.append(_task("P2", "LOW_STOCK_LINK_COVERAGE", "Low stock link coverage", "Run CUSIP enrichment, review unmatched CUSIPs"))
+    # Data-trust guardrail 1: confirmed managers that produce nothing. The
+    # coverage ratio above is aggregate — 71/82 = 86.6% cleared the 80% ready
+    # threshold while 11 named superinvestors carried a CIK that never files and
+    # were absent from every quarter. A ratio cannot see a persistent per-manager
+    # absence; this can. Names the offenders so an operator can fix the CIK.
+    not_filing = _confirmed_managers_never_filed(session)
+    if not_filing:
+        tasks.append(_task_with_metadata(
+            "P1", "CONFIRMED_MANAGERS_NOT_FILING",
+            f"{len(not_filing)} confirmed manager(s) have never filed a 13F",
+            "Verify each CIK against EDGAR (submissions API); a confirmed manager "
+            "that files nothing almost always has the wrong CIK. Re-point it, then "
+            "backfill and recompute.",
+            {"count": len(not_filing), "managers": not_filing[:_SEED_SUMMARY_CIK_CAP]},
+        ))
+    # Data-trust guardrail 2: high-impact CUSIPs that cannot link to a stock. The
+    # linked-common ratio is aggregate too — a high ratio hid that ExxonMobil
+    # (held by ~10 managers, ~$1.2B) sat unresolved and was therefore invisible in
+    # Oracle's Lens. A CUSIP held by >= min_holders managers that has no stock_id
+    # is a lost consensus signal for a widely-owned name, not long-tail noise.
+    high_impact = _high_impact_unresolved_cusips(session, latest)
+    if high_impact:
+        tasks.append(_task_with_metadata(
+            "P1", "HIGH_IMPACT_CUSIP_UNRESOLVED",
+            f"{len(high_impact)} widely-held CUSIP(s) cannot link to a stock",
+            "Resolve these in the CUSIP review queue (they are held by many "
+            "managers, so each is a mega-cap missing from Oracle's Lens). Then "
+            "re-run enrichment and recompute the affected quarter.",
+            {"count": len(high_impact), "cusips": high_impact[:_SEED_SUMMARY_CIK_CAP]},
+        ))
     if summary["quality_status"] == "failed":
         tasks.append(_task("P1", "QUALITY_ERRORS", "Quality errors", "Inspect latest quality report and rerun quality check after fixes"))
     if summary["quality_status"] == "warning":
@@ -1744,6 +1775,95 @@ def _confirmed_manager_count(session: Session) -> int:
         .filter(InstitutionManager.cik.isnot(None))
         .count()
     )
+
+
+# Held by at least this many managers, an unresolved CUSIP is a lost consensus
+# signal for a widely-owned name (Oracle's Lens needs min_holders=3), not the
+# long tail of foreign micro-caps.
+_HIGH_IMPACT_CUSIP_MIN_HOLDERS = 3
+
+
+def _confirmed_managers_never_filed(session: Session) -> list[dict[str, Any]]:
+    """Confirmed, active, CIK-bearing managers with ZERO filings in any quarter.
+
+    The disaster class the ratio coverage check cannot see: a manager we expect
+    to ingest that produces nothing. Excludes CIK-less managers (that is the
+    match-CIK queue's job) and human-decided lifecycle states (inactive/revoked/
+    rejected — a human's call, not a data gap).
+    """
+    rows = (
+        session.query(InstitutionManager.cik, InstitutionManager.display_name)
+        .filter(InstitutionManager.match_status == "confirmed")
+        .filter(InstitutionManager.status == "active")
+        .filter(InstitutionManager.cik.isnot(None))
+        # `manager_id` is NOT NULL today, but filter the subquery explicitly so a
+        # future nullable NULL cannot turn this NOT IN into UNKNOWN-for-all-rows
+        # (SQL three-valued logic) and silently hide every offender.
+        .filter(~InstitutionManager.id.in_(
+            session.query(Filing13F.manager_id).filter(Filing13F.manager_id.isnot(None))
+        ))
+        .order_by(InstitutionManager.display_name)
+        .all()
+    )
+    return [{"cik": r.cik, "name": r.display_name} for r in rows]
+
+
+def _high_impact_unresolved_cusips(
+    session: Session, quarter: str, *, min_holders: int = _HIGH_IMPACT_CUSIP_MIN_HOLDERS
+) -> list[dict[str, Any]]:
+    """Common-stock CUSIPs held by >= min_holders managers in `quarter`, on the
+    active HR filing's current parse run, that have no stock_id.
+
+    Each is a widely-owned name missing from Oracle's Lens because it cannot link
+    to a stock. Options (put_call set) are excluded — Lens excludes them anyway.
+    Ordered by manager count (impact) descending.
+    """
+    if not quarter:
+        return []
+    rows = (
+        session.query(
+            Holding13F.cusip,
+            func.max(Holding13F.issuer_name).label("issuer_name"),
+            func.count(func.distinct(Holding13F.manager_id)).label("manager_count"),
+            func.sum(Holding13F.value_usd).label("value_usd"),
+            # Holdings whose value could not be normalized (value_usd IS NULL).
+            # SQL SUM silently skips them, so the dollar impact above is only a
+            # lower bound when this is > 0 — the caller must qualify it, never
+            # present a partial sum as the complete impact ("unknown is not zero").
+            (func.count() - func.count(Holding13F.value_usd)).label("value_usd_missing_count"),
+        )
+        # Canonical current-holdings join (see thirteenf_holdings_query): join each
+        # holding to its OWN parse run by PK so a superseded parse run on the same
+        # accession cannot double-count, then the active HR filing via that run.
+        .join(ParseRun13F, Holding13F.parse_run_id == ParseRun13F.id)
+        .join(Filing13F, Filing13F.accession_number == ParseRun13F.accession_number)
+        .filter(ParseRun13F.is_current.is_(True))
+        .filter(Filing13F.report_quarter == quarter)
+        .filter(Filing13F.is_active_for_manager_period.is_(True))
+        .filter(Filing13F.form_type.in_(HR_FORM_TYPES))
+        .filter(Holding13F.stock_id.is_(None))
+        .filter(Holding13F.put_call.is_(None))
+        .filter(Holding13F.cusip.isnot(None))
+        .group_by(Holding13F.cusip)
+        .having(func.count(func.distinct(Holding13F.manager_id)) >= min_holders)
+        .order_by(func.count(func.distinct(Holding13F.manager_id)).desc())
+        .all()
+    )
+    return [
+        {
+            "cusip": r.cusip,
+            "issuer_name": r.issuer_name,
+            "manager_count": int(r.manager_count),
+            # Post-2023 13F values are reported in dollars; `value_usd` is the
+            # normalized dollar amount (fully populated for recent quarters). When
+            # `value_usd_missing_count > 0` some holdings could not be normalized,
+            # so `value_usd` is only a lower bound — the UI qualifies it rather
+            # than presenting a partial sum as the complete impact.
+            "value_usd": int(r.value_usd or 0),
+            "value_usd_missing_count": int(r.value_usd_missing_count or 0),
+        }
+        for r in rows
+    ]
 
 
 def _setup_checklist(

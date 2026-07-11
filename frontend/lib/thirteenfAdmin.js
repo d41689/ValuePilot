@@ -612,6 +612,15 @@ function taskPrimaryAction(task, latestQuarter) {
   if (code === 'LOW_STOCK_LINK_COVERAGE' && quarter) {
     return { label: 'Run CUSIP enrichment', payload: { job_type: 'enrich_metadata', quarter }, kind: 'job' };
   }
+  if (code === 'HIGH_IMPACT_CUSIP_UNRESOLVED' && quarter) {
+    // Widely-held CUSIPs missing a stock link are fixed by re-running enrichment
+    // for the quarter (same operation as LOW_STOCK_LINK_COVERAGE, higher stakes).
+    return { label: 'Run CUSIP enrichment', payload: { job_type: 'enrich_metadata', quarter }, kind: 'job' };
+  }
+  if (code === 'CONFIRMED_MANAGERS_NOT_FILING') {
+    // The fix is a human CIK re-point in the Managers queue, never an automated job.
+    return { label: 'Review managers', kind: 'anchor', target: 'managers' };
+  }
   if (code === 'HISTORICAL_COVERAGE_BELOW_TARGET' || code === 'EXTENDED_BACKFILL_RECOMMENDED') {
     return { label: 'Backfill quarters', payload: { job_type: 'backfill_quarters', quarters: 4 }, kind: 'job' };
   }

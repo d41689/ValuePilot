@@ -9,6 +9,98 @@ long — escalate to the user. **medium / low** = ordinary follow-up.
 
 ## Open
 
+### OpenFIGI matcher silently drops mega-caps whose CUSIP has no US-composite listing
+- **Found:** 2026-07-10, PR (13f-data-trust-guardrails) — surfaced by the new
+  `HIGH_IMPACT_CUSIP_UNRESOLVED` guardrail
+- **Severity:** **high** (real product-value loss — the two largest names in the
+  affected set are invisible in Oracle's Lens; recurs every quarter on prod)
+- **Problem:** `evaluate_openfigi_matches` only auto-confirms a CUSIP→ticker when
+  a listing with `exchCode == "US"` (the composite) is present. For some
+  mega-caps OpenFIGI returns **no US-composite row at all** — the US listings come
+  back under venue codes. Live `mapCusips` on 2026-07-10: ExxonMobil `30231G102`
+  → 14 listings, 6 agree on ticker `XOM` under codes `PE/CB/CX/UZ/OU/QU` (plus
+  foreign `EXMOC/XOMCHF/XOM_KZ/1XOMM`), **zero `US`**; Honeywell `438516106` → 4
+  listings, all foreign-currency variants, **zero `US`**. Both fall to
+  `review_needed:low` and never link, so ExxonMobil (~10 managers, ~$1.2B) and
+  Honeywell (~4 managers) are absent from Oracle's Lens. Re-running enrichment
+  cannot fix it — the heuristic itself is the gap.
+- **Dev stopgap already applied (NOT a systemic fix):** both CUSIPs were resolved
+  on the **dev** DB via the designed manual-override path
+  (`upsert_cusip_mapping(source="manual", confidence="manual")` → bootstrap →
+  backfill → recompute 8 quarters). Dev now scores XOM/HON in Lens and the
+  guardrail is quiet. **Prod and every future quarter still hit the bug** until
+  the matcher is fixed.
+- **Fix sketch (own PR — risky heuristic change):** when there is no `US`-composite
+  equity listing, fall back to a consensus rule over the US-venue listings —
+  but first establish which OpenFIGI `exchCode` values are US venues (do NOT
+  assume; the 2026-05-22 `exchCode=="US"` restriction was a deliberate
+  cross-listing-safety choice). Alternative/complement: a curated CUSIP override
+  seed for the mega-cap tail. Preserve the existing safety: if US-venue listings
+  disagree on a ticker, still route to the review queue. Add regression coverage
+  with a fixture mirroring the XOM (no-US-composite, consensus ticker) response.
+- **Context:** `docs/tasks/2026-07-10_13f-data-trust-guardrails.md`
+- **Issue:** —
+
+### Managers page has no per-manager data-health column
+- **Found:** 2026-07-10, PO review of `/admin/13f`
+- **Severity:** medium (visibility gap, not data loss)
+- **Problem:** The acute per-manager gap — a confirmed manager that never files —
+  is now surfaced on the admin overview by the `CONFIRMED_MANAGERS_NOT_FILING`
+  guardrail. But `/admin/13f/managers` still shows no per-manager health at a
+  glance: last filing quarter, holdings count, linked-CUSIP ratio, or a
+  never-filed / stale badge. An operator triaging the manager universe cannot see
+  which specific managers are thin without drilling into each.
+- **Fix sketch:** add a health column (last-filed quarter + a stale/never-filed
+  badge + linked-ratio) to the managers list, sourced from the same queries the
+  guardrails already use. Additive UI; own PR.
+- **Context:** `docs/tasks/2026-07-10_13f-data-trust-guardrails.md`
+- **Issue:** —
+
+### Oracle's Lens: consensus-vs-distinctiveness ranking philosophy is unspecified
+- **Found:** 2026-07-10, PO/value-investor review of `/admin/13f`
+- **Severity:** medium (product-strategy decision, not a bug)
+- **Problem:** The Lens blends consensus (many managers hold), distinctiveness
+  (few managers, high conviction), and conviction into one score, but the product
+  has never stated which it is *for*. A value investor wants the opposite of the
+  crowd as often as the consensus; a single blended rank can bury a
+  high-distinctiveness idea under a mega-cap everyone owns. This is a PO decision
+  (what is the Lens optimizing for?), not a unilateral code change — surfacing it
+  so the ranking weights are chosen deliberately, with a stated thesis.
+- **Fix sketch:** write the ranking thesis down first (PRD note), then, if
+  wanted, expose consensus vs. distinctiveness as separate sortable lenses rather
+  than one opaque blend.
+- **Context:** `docs/tasks/2026-07-10_13f-data-trust-guardrails.md`
+- **Issue:** —
+
+### 13F: no "unrepresentative filer" flag for activist / macro managers
+- **Found:** 2026-07-10, PO/value-investor review of `/admin/13f`
+- **Severity:** medium (signal-quality; can mislead)
+- **Problem:** A 13F reports only long US-listed equity positions. For an activist
+  running concentrated control stakes and derivatives (Icahn) or a macro shop
+  whose book is mostly futures/FX/credit (Bridgewater), the 13F is a poor proxy
+  for the actual portfolio — yet the Lens treats every manager's holdings as an
+  equally faithful conviction signal. Weighting these managers the same as a
+  long-only equity picker distorts consensus and conviction.
+- **Fix sketch:** a per-manager `thirteenf_representativeness` classification
+  (faithful / partial / unrepresentative) that down-weights or annotates such
+  managers in the Lens. Needs a stated methodology + PO sign-off before it changes
+  scores.
+- **Context:** `docs/tasks/2026-07-10_13f-data-trust-guardrails.md`
+- **Issue:** —
+
+### 13F daily-sync job failure needs a decision
+- **Found:** 2026-07-10, PO review of `/admin/13f` (scheduler enabled on dev)
+- **Severity:** low (the recurring daily-sync poll surfaces a failing/no-op state)
+- **Problem:** With the scheduler enabled, the daily-sync path reports a failure /
+  empty state on the admin surface. It has not been root-caused: it may be a real
+  fetch/parse failure, or an expected no-op outside filing season being rendered as
+  a failure. Left undiagnosed it trains operators to ignore a red state.
+- **Fix sketch:** reproduce the daily-sync run, classify (real failure vs.
+  benign no-op), and either fix the fetch path or render the no-op as an explicit
+  "nothing to sync" state instead of a failure.
+- **Context:** `docs/tasks/2026-07-10_13f-data-trust-guardrails.md`
+- **Issue:** —
+
 ### Authority rule 2 ranks admin-`applied` amendments by the accession_no fallback that rules 1 and 3 removed
 - **Found:** 2026-07-09, PR #113 self-review (the external review skipped this
   prompt question)
