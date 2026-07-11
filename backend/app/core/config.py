@@ -62,6 +62,14 @@ class Settings(BaseSettings):
     # manager universe ingests nothing and scores nothing, silently. See
     # app/services/manager_seed_startup.py.
     MANAGER_SEED_ON_STARTUP: bool = False     # prod: true
+    # Apply the curated CUSIP override seed (seed_data/curated_cusip_overrides.json)
+    # at the start of every full enrichment pass, so mega-caps OpenFIGI cannot map
+    # (no US-composite listing — ExxonMobil, Honeywell) still link. Off by default
+    # so dev/test enrichment never writes override mappings; prod turns it on at the
+    # 13f-data-v1 data gate. Inert unless the enrichment pipeline runs at all, and
+    # any un-applied override stays loud via the HIGH_IMPACT_CUSIP_UNRESOLVED
+    # guardrail — so a forgotten flag can never fail silently.
+    CUSIP_OVERRIDE_SEED_ENABLED: bool = False  # prod: true at data gate
     EDGAR_SCHEDULER_ENABLED: bool = False     # prod: true
     THIRTEENF_SMART_RETRY_ENABLED: bool = False
     THIRTEENF_JOB_WORKER_ENABLED: bool = False

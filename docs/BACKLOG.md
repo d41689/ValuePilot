@@ -9,7 +9,7 @@ long — escalate to the user. **medium / low** = ordinary follow-up.
 
 ## Open
 
-### OpenFIGI matcher silently drops mega-caps whose CUSIP has no US-composite listing
+### ~~OpenFIGI matcher silently drops mega-caps whose CUSIP has no US-composite listing~~ (RESOLVED — curated CUSIP overrides)
 - **Found:** 2026-07-10, PR (13f-data-trust-guardrails) — surfaced by the new
   `HIGH_IMPACT_CUSIP_UNRESOLVED` guardrail
 - **Severity:** **high** (real product-value loss — the two largest names in the
@@ -24,21 +24,26 @@ long — escalate to the user. **medium / low** = ordinary follow-up.
   `review_needed:low` and never link, so ExxonMobil (~10 managers, ~$1.2B) and
   Honeywell (~4 managers) are absent from Oracle's Lens. Re-running enrichment
   cannot fix it — the heuristic itself is the gap.
-- **Dev stopgap already applied (NOT a systemic fix):** both CUSIPs were resolved
-  on the **dev** DB via the designed manual-override path
-  (`upsert_cusip_mapping(source="manual", confidence="manual")` → bootstrap →
-  backfill → recompute 8 quarters). Dev now scores XOM/HON in Lens and the
-  guardrail is quiet. **Prod and every future quarter still hit the bug** until
-  the matcher is fixed.
-- **Fix sketch (own PR — risky heuristic change):** when there is no `US`-composite
-  equity listing, fall back to a consensus rule over the US-venue listings —
-  but first establish which OpenFIGI `exchCode` values are US venues (do NOT
-  assume; the 2026-05-22 `exchCode=="US"` restriction was a deliberate
-  cross-listing-safety choice). Alternative/complement: a curated CUSIP override
-  seed for the mega-cap tail. Preserve the existing safety: if US-venue listings
-  disagree on a ticker, still route to the review queue. Add regression coverage
-  with a fixture mirroring the XOM (no-US-composite, consensus ticker) response.
-- **Context:** `docs/tasks/2026-07-10_13f-data-trust-guardrails.md`
+- **Resolved:** 2026-07-10, curated CUSIP overrides
+  (`docs/tasks/2026-07-10_13f-curated-cusip-overrides.md`). Live evidence killed
+  the "US-venue consensus heuristic" option: for HON the correct ticker `HON` is
+  **absent from the response entirely** (only `HONGBP/EUR/…`), and Carnival
+  `143658300` is the same (only `CCL1USD/EUR/…`), so a forward-lookup heuristic
+  would either fail or **mis-link to a foreign-currency ticker** — worse than a
+  known-unresolved CUSIP. Fix is a deterministic, human-verified override seed
+  (`seed_data/curated_cusip_overrides.json`, XOM + HON) applied by
+  `seed_curated_cusip_overrides()` at the start of every full enrichment pass
+  (gated by `CUSIP_OVERRIDE_SEED_ENABLED`, prod on at the data gate). It rides
+  the existing rank-4 `manual` precedence: beats any OpenFIGI row, never
+  downgraded by a later run, auto-creates the `Stock` and links holdings via the
+  existing bootstrap/backfill. `evaluate_openfigi_matches` is deliberately NOT
+  changed. Tests: `test_13f_curated_cusip_overrides.py` (8, incl. no-US-listing
+  override, rank-4 protection, idempotency, prior-manual conflict). Dev probe:
+  loader is an idempotent no-op for the already-resolved XOM/HON (unchanged=2,
+  0 applied, 0 regression). The `HIGH_IMPACT_CUSIP_UNRESOLVED` guardrail remains
+  the detection half of the loop for the next mega-cap an operator must add.
+- **Context:** `docs/tasks/2026-07-10_13f-data-trust-guardrails.md`,
+  `docs/tasks/2026-07-10_13f-curated-cusip-overrides.md`
 - **Issue:** —
 
 ### Managers page has no per-manager data-health column

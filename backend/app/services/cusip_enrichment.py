@@ -3,15 +3,18 @@
 Implements strict temporal overlap rules and application-level 64-bit advisory locks
 to prevent race conditions when mapping identical CUSIPs concurrently.
 """
+import json
 import logging
 import struct
 import hashlib
 from datetime import date, datetime, timezone
+from pathlib import Path
 from typing import Optional, Dict, Any, List
 
 from sqlalchemy.orm import Session
 from sqlalchemy import text
 
+from app.core.config import settings
 from app.models.institutions import CusipTickerMap, Holding13F, InstitutionManager
 from app.models.stocks import Stock
 from app.openfigi.client import OpenFigiClient
@@ -117,6 +120,117 @@ def upsert_cusip_mapping(
         logger.warning("upsert_cusip_mapping flush failed for %s: %s", cusip, exc)
         raise
     return mapping
+
+
+_CURATED_CUSIP_SEED_PATH = Path(__file__).parent / "seed_data" / "curated_cusip_overrides.json"
+
+
+def seed_curated_cusip_overrides(
+    db: Session,
+    *,
+    seed_path: Optional[Path] = None,
+) -> dict[str, Any]:
+    """Apply human-verified CUSIP→ticker overrides that OpenFIGI cannot resolve.
+
+    Some US mega-caps have no US-composite listing in OpenFIGI's ``mapCusips``
+    response, so ``evaluate_openfigi_matches`` can only mark them
+    ``review_needed`` — ExxonMobil (30231G102), Honeywell (438516106) and their
+    class are then absent from Oracle's Lens every quarter. Worse, the correct US
+    ticker is often *absent from the response entirely* (HON → only HONGBP/EUR/…;
+    Carnival → only CCL1USD/EUR/…), so no forward-lookup heuristic can recover it
+    without risking a wrong foreign-currency link. A wrong link silently corrupts
+    Lens identity, which is worse than a known-unresolved CUSIP. So we resolve
+    this tail deterministically from a curated, operator-verified seed that
+    **cannot mis-link**.
+
+    This does not add any new precedence logic — it rides the existing rank
+    machinery in ``upsert_cusip_mapping``: ``source="manual"`` /
+    ``confidence="manual"`` is rank 4, so each override (a) beats and deactivates
+    any OpenFIGI row for the same CUSIP, (b) is never downgraded by a later
+    OpenFIGI run, and (c) passes the ``~confidence.like("review_needed:%")``
+    filter in both ``bootstrap_stocks_from_cusip_map`` and
+    ``_apply_mappings_to_holdings`` — so the ``Stock`` is created and the holdings
+    flip to ``linked`` on the next bootstrap + backfill (which
+    ``enrich_all_unmapped_holdings`` runs immediately after this).
+
+    Fail-loud, like ``seed_confirmed_managers``: a malformed entry (missing field
+    or invalid CUSIP) raises — a deploy typo must never silently drop a mega-cap
+    the operator believes is covered (the CI seed-validity test guards this
+    pre-merge). A *missing* file is a no-op. A CUSIP an operator already
+    manual-mapped to a **different** ticker is reported as a ``conflict`` and left
+    untouched — the seed never clobbers a prior human decision.
+
+    Idempotent: re-running re-derives the same mappings (rank 4 vs rank 4 →
+    unchanged). Returns a diff report with per-bucket CUSIP lists.
+    """
+    if seed_path is None:
+        seed_path = _CURATED_CUSIP_SEED_PATH
+    seed_path = Path(seed_path)
+
+    report: dict[str, Any] = {
+        "entries": 0, "applied": 0, "unchanged": 0, "conflicts": 0,
+        "applied_cusips": [], "unchanged_cusips": [], "conflict_cusips": [],
+    }
+    if not seed_path.exists():
+        logger.warning("Curated CUSIP override seed not found at %s", seed_path)
+        return report
+
+    data = json.loads(seed_path.read_text())
+    if not isinstance(data, list):
+        raise ValueError(
+            f"Curated CUSIP override seed must be a JSON list, got {type(data).__name__}"
+        )
+
+    # Serialize the whole seed under a transaction-scoped advisory lock, exactly
+    # as seed_confirmed_managers does — prod may boot more than one api container
+    # and each per-CUSIP upsert lock is independent, so the file-level lock keeps
+    # the diff report coherent under concurrency.
+    db.execute(
+        text("SELECT pg_advisory_xact_lock(hashtextextended('seed_curated_cusip_overrides', 0))")
+    )
+
+    for entry in data:
+        cusip = (entry.get("cusip") or "").strip()
+        ticker = (entry.get("ticker") or "").strip()
+        issuer_name = (entry.get("issuer_name") or "").strip()
+        reason = (entry.get("reason") or "").strip()
+        if not (cusip and ticker and issuer_name and reason):
+            raise ValueError(
+                f"Curated CUSIP override entry missing cusip/ticker/issuer_name/reason: {entry!r}"
+            )
+        if not is_valid_cusip(cusip):
+            raise ValueError(f"Curated CUSIP override has invalid cusip: {cusip!r}")
+
+        report["entries"] += 1
+        prior = _active_mapping(db, cusip, None)
+        prior_is_same_curated = (
+            prior is not None and prior.is_active
+            and prior.confidence == "manual" and prior.ticker == ticker
+        )
+        mapping = upsert_cusip_mapping(
+            db, cusip=cusip, ticker=ticker, issuer_name=issuer_name,
+            source="manual", confidence="manual",
+            mapping_reason=f"Curated override: {reason}",
+        )
+        if mapping.ticker != ticker:
+            # An existing equal/higher-rank mapping (a prior human manual decision)
+            # with a DIFFERENT ticker blocked the override. Surface it — do not
+            # clobber the human decision, do not pretend the seed was applied.
+            report["conflicts"] += 1
+            report["conflict_cusips"].append(cusip)
+            logger.warning(
+                "Curated CUSIP override for %s (seed → %s) conflicts with an existing "
+                "%s mapping → %s; leaving the existing mapping, flagging for review.",
+                cusip, ticker, mapping.source, mapping.ticker,
+            )
+        elif prior_is_same_curated:
+            report["unchanged"] += 1
+            report["unchanged_cusips"].append(cusip)
+        else:
+            report["applied"] += 1
+            report["applied_cusips"].append(cusip)
+
+    return report
 
 
 # securityType values that 13F common holdings legitimately resolve to. A
@@ -340,6 +454,21 @@ def enrich_all_unmapped_holdings(
     and links holdings. `max_batches` is a hard safety cap; OpenFIGI rate
     limiting is owned by Rate Guard, so the loop itself does not throttle.
     """
+    # Curated CUSIP overrides first: resolve the mega-caps OpenFIGI cannot map
+    # (no US-composite listing) so the bootstrap + backfill below link them in the
+    # same pass. Gated by a flag (default OFF) so dev/test enrichment stays clean;
+    # inert until the enrichment pipeline runs at all, and any un-applied override
+    # stays loud via the HIGH_IMPACT_CUSIP_UNRESOLVED guardrail.
+    overrides = {"applied": 0, "conflicts": 0}
+    if settings.CUSIP_OVERRIDE_SEED_ENABLED:
+        overrides = seed_curated_cusip_overrides(db)
+        db.commit()
+        if overrides["conflicts"]:
+            logger.warning(
+                "Curated CUSIP overrides: %d conflict(s) with prior manual mappings: %s",
+                overrides["conflicts"], overrides["conflict_cusips"],
+            )
+
     owns_client = client is None
     if owns_client:
         client = OpenFigiClient()
@@ -375,6 +504,10 @@ def enrich_all_unmapped_holdings(
         "batches_run": batches,
         "new_stocks": new_stocks,
         "holdings_linked": holdings_linked,
+        # Curated overrides applied this pass (mega-caps OpenFIGI can't map), and
+        # any override that conflicted with a prior manual mapping (needs a human).
+        "overrides_applied": overrides["applied"],
+        "override_conflicts": overrides["conflicts"],
         # NOT "how many holdings lack a stock_id". `_count_enrichable_holdings`
         # is the OpenFIGI work queue: it excludes `needs_review` (the human
         # adjudication queue) and any CUSIP that already has a cusip_ticker_map
