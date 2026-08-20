@@ -1,9 +1,12 @@
 # Research Decision Support architecture — adversarial review
 
-Date: 2026-08-20  
-Target: `docs/architecture/research-decision-support.md`  
-Review scope: the ten decisions declared in architecture §1  
-Status: contract pass; final link/conformance repeat required after Vision extraction
+Date: 2026-08-20
+
+Target: `docs/architecture/research-decision-support.md`
+
+Review scope: the ten decisions declared in architecture §1
+
+Status: signed off
 
 ## Method
 
@@ -73,7 +76,28 @@ boundaries without redefining the underlying metric, storage, source, scoring,
 or roadmap contracts. It does not certify an implementation and does not make
 the old 7,056-line document normative.
 
-The planned rename/extraction will activate the architecture's Vision link and
-may make mechanical wording adjustments. After that work, the link/conformance
-checks and Round 3 matrix must be repeated before final sign-off.
+## Round 4 — post-extraction conformance repeat
 
+Result: **PASS — no new valid finding**
+
+The old source was replaced in the active tree only after the contract pass.
+The frozen content remains recoverable from commit `626f797`. The final repeat
+verified:
+
+- the architecture's Vision and case-study targets now exist;
+- the Vision declares itself non-normative and lists the contracts it cannot
+  define;
+- normative roadmap, state-machine, data-model, MVP, and acceptance material is
+  absent from the Vision;
+- EXLS figures and hypotheses are isolated in a clearly illustrative,
+  non-authoritative case study;
+- the Vision's AI, valuation, ownership, source, and option language conforms to
+  the architecture boundary;
+- all ten Round 3 boundary results remain unchanged.
+
+## Final sign-off
+
+**Granted.** No valid authority, ownership, AI-promotion, canonical-truth,
+point-in-time, state, trading-boundary, privacy, or integration defect remains
+in the architecture's declared scope. This sign-off is for the documentation
+contract, not an assertion that every described implementation exists.

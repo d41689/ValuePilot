@@ -1,8 +1,11 @@
 # Research Decision Support architecture
 
-Status: normative architecture boundary, subordinate to the authoritative PRD  
-Owner: Product / Engineering  
-Version: 1.0  
+Status: normative architecture boundary, subordinate to the authoritative PRD
+
+Owner: Product / Engineering
+
+Version: 1.0
+
 Last updated: 2026-08-20
 
 ## 1. Decision and scope

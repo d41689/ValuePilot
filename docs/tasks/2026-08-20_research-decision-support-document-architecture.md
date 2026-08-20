@@ -1,8 +1,10 @@
 # Research Decision Support document architecture
 
-Date: 2026-08-20  
-Owner: Product / Engineering  
-Status: in progress
+Date: 2026-08-20
+
+Owner: Product / Engineering
+
+Status: complete
 
 ## Goal
 
@@ -101,3 +103,14 @@ changed, run the complete canonical Docker gate before sign-off.
 - 2026-08-20: Architecture adversarial review Rounds 1–2 found and resolved
   eight valid boundary issues. Round 3 passed all ten declared decisions; Vision
   extraction is now unblocked, with a final link/conformance repeat required.
+- 2026-08-20: Replaced the active 7,056-line mixed-purpose document with a
+  678-line non-normative Vision and a 304-line illustrative EXLS case study. The
+  frozen source remains recoverable from `626f797`.
+- 2026-08-20: Post-extraction Round 4 repeated the architecture matrix and link/
+  boundary checks with no new valid finding. Documentation contract signed off.
+- Dependency note: the referenced coverage-source policy, Oracle's Lens policy,
+  Research Decision Loop roadmap, and PRD §G were pre-existing workspace
+  authorities owned by other work. They were intentionally not staged into
+  these commits. This branch must be integrated with the change that commits
+  those authorities; the task does not appropriate unrelated dirty-worktree
+  changes merely to make a standalone diff.
