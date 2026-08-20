@@ -1,4 +1,4 @@
-# Research Decision Support architecture — adversarial review
+# Research Decision Support Architecture — adversarial review
 
 Date: 2026-08-20
 
@@ -71,7 +71,7 @@ Result: **PASS — no new valid contract finding**
 
 ## Pass interpretation
 
-The pass means the 520-line architecture states the agreed cross-system
+The pass means the compact architecture states the agreed cross-system
 boundaries without redefining the underlying metric, storage, source, scoring,
 or roadmap contracts. It does not certify an implementation and does not make
 the old 7,056-line document normative.
@@ -94,6 +94,60 @@ verified:
 - the Vision's AI, valuation, ownership, source, and option language conforms to
   the architecture boundary;
 - all ten Round 3 boundary results remain unchanged.
+
+## Round 5 — external review disposition
+
+Result: **PASS WITH MINOR REVISIONS — four document changes accepted; one
+implementation concern kept out of Architecture**
+
+| ID | Feedback | Disposition |
+| --- | --- | --- |
+| E5-01 | Normalize the title casing. | Accepted as an editorial correction. |
+| E5-02 | The AI-to-user arrow still resembles workflow state progression. | Accepted. Replaced the arrow with an authority-boundary table and explicitly excluded workflow, lifecycle, and enum semantics. |
+| E5-03 | Standardize ownership and granularity for model, prompt, valuation-policy, and extraction-policy versions. | Valid implementation concern, but not an Architecture change. Its object/storage contract belongs in the PRD or implementation spec before persisted AI/version provenance ships. |
+| E5-04 | Make provider-specific post-revocation retention granularity explicit. | Accepted narrowly. Architecture now delegates retained claims, identities, and excerpts to PRD §G.3 plus the applicable source-specific retention contract; it defines no provider fields. |
+| E5-05 | Separate Architecture conformance from feature readiness and product acceptance. | Accepted verbatim in §12. |
+
+Version advanced from 1.0 to 1.1 because E5-02, E5-04, and E5-05 clarify
+normative boundaries. No schema, API, enum, source permission, or release gate
+was added.
+
+## Round 6 — revision-induced authority collision
+
+Result: **FAIL — one valid issue found and fixed**
+
+| ID | Severity | Finding | Resolution |
+| --- | --- | --- | --- |
+| R6-01 | medium | The first retention edit said the source-specific contract “alone” determined retained fields, which could exclude PRD §G.3 and its privacy/account-erasure rules. | Replaced “alone” with an explicit joint delegation to PRD §G.3 and the applicable source-specific retention contract. |
+
+## Round 7 — fresh ten-boundary attack
+
+Result: **PASS — no new valid contract finding**
+
+| Boundary | Adversarial implementation attempted | Why it is rejected |
+| --- | --- | --- |
+| Authority | Treat Architecture 1.1 as permission to define version or retention fields. | §§2.1–2.3 keep schema in the PRD and provider retention in the source contract. |
+| Ownership | Reuse one accepted thesis or projection across users sharing a stock. | §§3 and 10 require user ownership and server-side visibility independently of stock identity. |
+| AI/human | Persist the three authority labels as a lifecycle enum or auto-advance them. | §4.1 calls them vocabulary, not states; §4.2 requires explicit authenticated acceptance and canonical publication. |
+| Financial truth | Query revision snapshots or AI numbers as a second fact store. | §5 permits snapshots only as evidence and reserves queryable truth to `metric_facts`. |
+| Valuation truth | Publish a saved/AI/system value outside the canonical service. | §§4.2 and 6 preserve the PRD §G.4 atomic writer and typed unavailable behavior. |
+| Point in time | Recompute history with today's model/policy or silently invent missing timestamps. | §7 requires knowledge-time-eligible versions and typed unknown time without defining their storage. |
+| Orthogonal states | Implement the authority labels, decision, zone, and option eligibility as one state machine. | §§4.1 and 8 separately prohibit both collapses. |
+| Trading boundary | Interpret option analysis or a published value as authorization to submit an order. | §9 prohibits every trading rail and keeps option analysis optional and provider-gated. |
+| Privacy/visibility | Retain or show a revoked proprietary snippet because it appears in a historical revision. | §10.2 grants research history no independent retention right and delegates allowed fields to the governing contracts. |
+| Origins/integration | Route every idea through Oracle's Lens or overwrite a prior origin. | §11 defines parallel entry, idempotent create/open, and append-only validated origins. |
+
+## Round 8 — ambiguity and regression repeat
+
+Result: **PASS — no new valid contract finding**
+
+The repeat targeted the five revised areas specifically. The authority table
+cannot be read as a persistence contract; accepted revisions still do not
+create a second valuation writer; retention language neither grants content
+retention nor displaces PRD §G.3; version-object granularity remains visibly
+outside Architecture; and Architecture conformance cannot be used as a release
+or product-acceptance gate. Link, terminology, and whitespace checks found no
+regression.
 
 ## Final sign-off
 

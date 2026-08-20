@@ -1,10 +1,10 @@
-# Research Decision Support architecture
+# Research Decision Support Architecture
 
 Status: normative architecture boundary, subordinate to the authoritative PRD
 
 Owner: Product / Engineering
 
-Version: 1.0
+Version: 1.1
 
 Last updated: 2026-08-20
 
@@ -124,22 +124,17 @@ research to the platform or authorize cross-user model training or reuse.
 
 Investment-research content has three authority layers:
 
-```text
-AI_PROPOSED
-    -> explicit authenticated user action
-USER_ACCEPTED_REVISION
-    -> canonical publication transaction when applicable
-CURRENT_PUBLISHED_PROJECTION
-```
+| Layer | Authority boundary |
+| --- | --- |
+| `AI_PROPOSED` | A draft suggestion, extraction review, comparison, challenge, or candidate change. It has no user authority and is never the user's current thesis or valuation. |
+| `USER_ACCEPTED_REVISION` | An immutable, user-owned research revision exists only after an explicit authenticated Save/Decide/Review action under PRD §G.2. |
+| `CURRENT_PUBLISHED_PROJECTION` | An operational current projection exists only through the canonical publication transaction when applicable, such as current user `val.fair_value`. |
 
-These names describe authority, not a new database enum.
-
-- `AI_PROPOSED` is a draft suggestion, extraction review, comparison, challenge,
-  or candidate change. It is never the user's current thesis or valuation.
-- `USER_ACCEPTED_REVISION` is an immutable research revision created only by an
-  explicit authenticated Save/Decide/Review action under PRD §G.2.
-- `CURRENT_PUBLISHED_PROJECTION` is an operational projection derived through a
-  canonical publication service, such as current user `val.fair_value`.
+The relationship is about how content acquires authority: explicit user action
+is the only boundary between a proposal and an accepted revision, while the
+canonical publication service is the only boundary between an accepted value
+and its current operational projection. These labels are architecture
+vocabulary, not workflow states, lifecycle stages, or a database enum.
 
 ### 4.2 Promotion rules
 
@@ -428,9 +423,11 @@ source version, and current permission. A shared fact derived from a private
 artifact may expose only the portion explicitly authorized by the governing
 contract; it MUST NOT leak the artifact or snippet.
 
-Loss of source permission produces `source_unavailable`. Historical research
-keeps the permitted recorded claim and identity but does not bypass access by
-copying proprietary content into every revision.
+Loss of source permission produces `source_unavailable`. PRD §G.3 and the
+applicable source-specific retention contract determine which recorded claim,
+identity, and excerpt fields may remain afterward. Historical research creates
+no independent retention right and MUST NOT bypass access by copying
+proprietary content into revisions.
 
 Source acquisition and product visibility remain distinct decisions. A source
 being publicly reachable, purchasable, configured, or technically fetchable is
@@ -528,4 +525,5 @@ are true:
 
 Implementation acceptance, tests, rollout, and rollback remain governed by the
 authoritative PRD and roadmap. This document is complete when it states these
-boundaries unambiguously; it is not an alternate delivery plan.
+boundaries unambiguously; it is not an alternate delivery plan. Conformance to
+this architecture does not imply feature readiness or product acceptance.
