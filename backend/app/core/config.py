@@ -78,6 +78,11 @@ class Settings(BaseSettings):
     THIRTEENF_JOB_LEASE_SECONDS: int = 300
     DAILY_SYNC_EARLIEST_ATTEMPT_ET: str = "20:00"
     THIRTEENF_DAILY_SYNC_MAX_ATTEMPTS: int = 3
+    # When daily sync has no watermark yet, materialize this many calendar days
+    # ending today. Once a watermark exists, every later missing date is filled
+    # regardless of outage length. This bounded first-run window avoids silently
+    # assuming the scheduler was already running before the first status row.
+    THIRTEENF_DAILY_SYNC_BOOTSTRAP_DAYS: int = 7
     THIRTEENF_WATCHDOG_INTERVAL_MINUTES: int = 15
     THIRTEENF_READY_LINK_RATIO: float = 0.80
     THIRTEENF_WARNING_LINK_RATIO: float = 0.50
@@ -97,9 +102,14 @@ class Settings(BaseSettings):
     EDGAR_RAW_STORAGE_DIR: str = "/code/storage/edgar_raw"
 
     # Market Data
-    MARKET_DATA_PRIMARY: str = "yfinance"
-    MARKET_DATA_SECONDARY: str = "twelvedata"
+    MARKET_DATA_PRIMARY: str = "none"
+    MARKET_DATA_SECONDARY: str = "none"
     TWELVE_DATA_API_KEY: Optional[str] = None
+    # Provider activation is an explicit authorization decision, not inferred
+    # from a key that happens to exist in an inherited environment.
+    MARKET_DATA_COMMERCIAL_ENABLED: bool = False
+    # Yahoo's endpoint is development-only under the coverage source policy.
+    MARKET_DATA_ALLOW_DEVELOPMENT_PROVIDER: bool = False
 
     # Initial Setup
     INITIAL_ADMIN_PASSWORD: Optional[str] = None
@@ -108,6 +118,20 @@ class Settings(BaseSettings):
     SLACK_WEBHOOK_URL: Optional[str] = None
     DISCORD_WEBHOOK_URL: Optional[str] = None
     BASE_URL: str = "http://localhost:3000"  # For links in notifications
+    # Comma-separated current+previous Fernet keys: ``v2:<key>,v1:<key>``.
+    # User destinations fail closed when this is absent or invalid.
+    NOTIFICATION_SECRET_KEYS: Optional[str] = None
+    NOTIFICATION_DELIVERY_ENABLED: bool = False
+    # Materializes in-app research events even when EDGAR scheduling and
+    # external delivery are disabled. Kept separate to avoid hidden coupling.
+    RESEARCH_NOTIFICATION_SCHEDULER_ENABLED: bool = False
+    SMTP_HOST: Optional[str] = None
+    SMTP_PORT: int = 587
+    SMTP_USERNAME: Optional[str] = None
+    SMTP_PASSWORD: Optional[str] = None
+    SMTP_FROM: Optional[str] = None
+    SMTP_TLS_REQUIRED: bool = True
+    SMTP_TIMEOUT_SECONDS: float = 10.0
 
     # extra="ignore": docker-compose may inject deployment-only vars (e.g. VALUEPILOT_DB_*)
     # that are not declared in Settings; silently ignoring them avoids startup failures.

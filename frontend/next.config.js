@@ -28,6 +28,9 @@ const securityHeaders = [
 const nextConfig = {
   reactStrictMode: true,
   output: 'standalone',
+  // Keep the long-running dev server's chunks isolated from the canonical
+  // production build, which runs in the same bind-mounted container.
+  distDir: isDev ? '.next-dev' : '.next',
   poweredByHeader: false,
   async headers() {
     return [

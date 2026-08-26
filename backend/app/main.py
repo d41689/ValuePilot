@@ -41,6 +41,7 @@ async def lifespan(app: FastAPI):
         run_startup_manager_seed(SessionLocal)
 
     scheduler = None
+    research_notification_scheduler = None
     job_worker = None
     if settings.EDGAR_SCHEDULER_ENABLED:
         from app.core.db import SessionLocal
@@ -48,6 +49,15 @@ async def lifespan(app: FastAPI):
         scheduler = create_scheduler(SessionLocal)
         scheduler.start()
         logger.info("EDGAR quarterly scheduler started")
+    if settings.RESEARCH_NOTIFICATION_SCHEDULER_ENABLED:
+        from app.core.db import SessionLocal
+        from app.services.scheduler import create_research_notification_scheduler
+
+        research_notification_scheduler = create_research_notification_scheduler(
+            SessionLocal
+        )
+        research_notification_scheduler.start()
+        logger.info("Research notification scheduler started")
     if settings.THIRTEENF_JOB_WORKER_ENABLED and not app.dependency_overrides:
         from app.core.db import SessionLocal
         from app.services.thirteenf_job_worker import ThirteenFJobWorker
@@ -58,7 +68,7 @@ async def lifespan(app: FastAPI):
 
         # Issue #40: if a system-level start quarter is configured, enqueue
         # quarterly_pipeline jobs for every missing quarter in the range.
-        # Idempotent — succeeded quarters are skipped. Wrapped in try/except
+        # Idempotent — quarters with complete six-stage manifests are skipped. Wrapped in try/except
         # so a reconcile failure never blocks API startup.
         if settings.THIRTEENF_START_QUARTER:
             try:
@@ -83,6 +93,9 @@ async def lifespan(app: FastAPI):
     if scheduler is not None:
         scheduler.shutdown(wait=False)
         logger.info("EDGAR scheduler stopped")
+    if research_notification_scheduler is not None:
+        research_notification_scheduler.shutdown(wait=False)
+        logger.info("Research notification scheduler stopped")
 
 
 app = FastAPI(

@@ -3,6 +3,8 @@ from datetime import date
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
+
 from app.ingestion.pdf_extractor import PdfExtractor
 from app.models.facts import MetricFact
 from app.models.stocks import Stock
@@ -211,6 +213,34 @@ def test_annual_financials_series_are_expanded(client, db_session, user_factory,
     )
     assert fact.value_numeric == net_profit_2017 * 1_000_000.0
     assert fact.period_type == "FY"
+
+
+def test_insurance_percent_facts_are_normalized_once_to_base_ratios(
+    client, db_session, user_factory, auth_headers
+):
+    _, stock, _, doc_id = upload_axs(client, db_session, user_factory, auth_headers)
+
+    loss_ratio = _fact(
+        db_session,
+        stock_id=stock.id,
+        metric_key="ins.loss_ratio",
+        source_document_id=doc_id,
+        period_end_date=date(2015, 12, 31),
+        period_type="FY",
+    )
+    assert loss_ratio.value_numeric == pytest.approx(0.59)
+    assert loss_ratio.unit == "ratio"
+
+    tax_rate = _fact(
+        db_session,
+        stock_id=stock.id,
+        metric_key="ins.income_tax_rate",
+        source_document_id=doc_id,
+        period_end_date=date(2015, 12, 31),
+        period_type="FY",
+    )
+    assert tax_rate.value_numeric == pytest.approx(0.014)
+    assert tax_rate.unit == "ratio"
 
 
 def test_annual_financials_estimate_years_keep_estimate_semantics(client, db_session, user_factory, auth_headers):

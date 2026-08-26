@@ -356,6 +356,7 @@ Note:
 - adj_close (nullable)
 - volume (nullable)
 - source
+- currency (nullable ISO-4217; required for new provider writes)
 - created_at
 
 #### price_alerts
@@ -418,12 +419,424 @@ Confidence Strategy (V1):
 
 ### F.4 Alert Trigger Logic (V1)
 
+- This subsection describes the legacy `price_alerts` proximity behavior only.
+  Research Decision Loop intrinsic-value crossing notifications use the stricter
+  contract in §G.8 and MUST NOT reuse proximity behavior silently.
 - An alert is triggered when:
   abs(close - target_price) <= target_price * tolerance_pct
 - `cooldown_hours` suppresses repeated alerts for the same stock after a trigger.
 - `daily_summary` emails include:
   - all stocks currently within alert range
   - regardless of whether a threshold alert was triggered that day
+
+---
+
+## G. Research Decision Loop (V1)
+
+The approved sequencing and acceptance source is
+`docs/plans/research_decision_loop_product_roadmap.md`. This section is the
+authoritative system/storage contract for that roadmap. It does not redefine
+metric semantics from `docs/metric_facts_mapping_spec.yml`.
+
+### G.1 Product boundary
+
+Research Decision Loop turns 13F discovery into an independent, user-authored
+research decision. It is not a recommendation, real-time signal, broker record,
+or tax system. Required copy distinctions:
+
+- 13F data is a delayed reported snapshot, never current ownership or cost basis.
+- `val.fair_value` is a user's USD intrinsic-value estimate.
+- Value Line targets and system outputs are valuation references; they never
+  produce a label of “user fair value” or “margin of safety.”
+- `margin_of_safety` is computed only from a current user intrinsic value and a
+  fresh same-currency price.
+- a system reference may produce only `discount_to_reference` or
+  `premium_to_reference`, with source type/date.
+
+### G.2 Research cases
+
+#### `research_cases`
+
+- `id` BIGINT primary key
+- `user_id` FK users, required
+- `stock_id` FK stocks, required; stock deletion is restricted
+- `state` one of `queued`, `researching`, `monitoring`, `closed`, `voided`
+- `decision` nullable; when present one of `watch`, `own`, `pass`
+- `next_review_on` DATE nullable
+- `void_reason` TEXT nullable
+- `head_revision_number` INTEGER required, default 0
+- `version` INTEGER required, default 1
+- `created_at`, `updated_at`, `closed_at`
+
+Database constraints MUST enforce:
+
+- queued/researching: decision NULL, review date NULL, void reason NULL;
+- monitoring: decision in watch/own, review date non-null, void reason NULL;
+- closed: decision pass, review date NULL, void reason NULL;
+- voided: decision/review date NULL, non-blank void reason;
+- one active case per `(user_id, stock_id)` using a partial unique index over
+  queued/researching/monitoring.
+
+Valid transitions:
+
+- queued -> researching / closed / voided
+- researching -> monitoring / closed / voided
+- monitoring -> researching / closed / voided
+- closed and voided are terminal; a later revisit creates a new cycle
+
+Duplicate create is idempotent: it returns the existing active case with
+`created=false`. The create transaction still records a new origin when the
+source context is materially new.
+
+#### `research_case_origins`
+
+- append-only, many-to-one with a case;
+- fields: case ID, `origin_type`, stable `origin_key`, source version,
+  source-reference JSON, created timestamp;
+- unique `(case_id, origin_type, origin_key, source_version)`;
+- first origin is derived by `(created_at, id)`, avoiding a cyclic reverse FK;
+- supported origins: manual, ticker search, Watchlist, screener, Oracle lens
+  mode/score, manager holding/change.
+
+Origin validation MUST verify visibility, stock identity, and source version.
+
+#### `research_case_revisions`
+
+- append-only except the privacy-redaction rule below;
+- unique `(case_id, revision_number)`;
+- records complete user decision content: thesis, variant view, decision reason,
+  assumptions JSON, risks JSON, evidence JSON, valuation low/base/high,
+  currency, valuation-unavailable reason, decision, review date;
+- records ticker, company name, exchange/listing identity displayed at save time;
+- fixed-precision monetary columns; API serializes them as decimal strings;
+- `created_by_user_id`, created timestamp;
+- each save supplies expected head revision; a stale writer receives typed 409.
+
+Valuation rules:
+
+- a draft may omit valuation;
+- if either low/high is present, low/base/high and currency are all required;
+- `low <= base <= high`;
+- a qualifying decision has the full range or one typed unavailable reason;
+- V1 research valuation currency is USD, matching canonical
+  `val.fair_value`; other currencies require a mapping-contract change.
+
+Editing is client-local until explicit Save/Decide. Server saves append one
+revision and warn/reject stale heads rather than overwriting.
+
+#### `research_case_events`
+
+- append-only event log for create, origin added, revision saved, transition,
+  snooze/dismiss links, redaction, and closure/void;
+- contains case ID, event type, actor, correlation ID, payload JSON, timestamp;
+- no normal API mutates or deletes an event.
+
+Privacy exception: an explicit authenticated redaction/account-erasure flow may
+overwrite only user-authored revision content with a tombstone hash/reason/
+actor/timestamp in one audited transaction. It MUST NOT alter sourced financial
+facts, source/stock identity, decision/state metadata, or pretend the revision
+never existed.
+
+Qualified-decision measurement is explicit rather than inferred from any
+content-complete save. Revision requests carry `decision_action` with one of:
+
+- `draft`: save history/current projection but do not count a decision;
+- `decision`: record a qualifying initial or changed decision transition;
+- `review`: explicitly reaffirm an existing monitoring decision.
+
+`decision` and `review` require a fully qualified snapshot. A `decision` cannot
+restate the unchanged current decision, while a `review` can only reaffirm the
+same `watch`/`own` monitoring decision. Each accepted action appends one
+`qualified_decision_recorded` case event containing the action type and revision
+ID. `qualified_research_decisions_per_active_user_per_week` counts those events,
+not every revision whose content happens to be complete.
+
+### G.3 Evidence
+
+Evidence supports Value Line document/fact, 13F filing/holding/change/signal,
+stock price, user-authored note, and external HTTPS URL references.
+
+- Every reference is validated for existence, user visibility, and matching
+  stock where applicable.
+- A shared stock/fact ID cannot reveal another user's private document/snippet.
+- Revisions keep only the permitted minimal recorded claim and source metadata;
+  proprietary excerpts stay behind original document access control.
+- A lost permission/source renders `source_unavailable`; historical claims are
+  not silently replaced by current data.
+- External URLs accept normalized HTTPS only, are never server-fetched, render
+  as untrusted external links with visible domain and safe new-window isolation.
+
+### G.4 Canonical current intrinsic value
+
+One service owns every product read/write of `metric_key='val.fair_value'`.
+
+A saved revision with a base value atomically:
+
+1. appends the revision;
+2. demotes only the same `(user_id, stock_id, metric_key, period_type,
+   period_end_date, source_type='manual')` slot;
+3. inserts the current manual AS-OF fact with the revision ID in
+   `source_ref_id`;
+4. updates the case projection and appends an event.
+
+For this metric and `source_type='manual'`, `source_ref_id` may identify a
+research-case revision. This typed use MUST be documented in the ORM/service;
+it is not interpreted as an extraction/formula run.
+
+Multiple current manual facts across AS-OF dates are correct. Reads use:
+
+```text
+period_end_date DESC NULLS LAST, created_at DESC, id DESC
+```
+
+They select the newest row before reading its value. Explicit clear/unavailable
+publishes a newest manual row with `value_numeric=NULL` and typed reason in
+`value_json`; consumers MUST NOT fall through to an older manual value. A Value
+Line reference remains separately displayable.
+
+Watchlist inline edits and saved DCF values use this service. DCF is otherwise
+an unsaved calculator and cannot mutate current value merely by changing inputs.
+When either path changes the valuation of a `monitoring` case, the atomic save
+transitions it to `researching`, clears the current decision and review date,
+and preserves the superseded judgment only in the prior immutable revision.
+The new value is under review and cannot trigger intrinsic-value alerts until a
+new qualified monitoring decision is saved.
+
+### G.5 Research Inbox
+
+#### `research_inbox_actions`
+
+User-owned current projection with:
+
+- stable logical key, action family, subject and source version;
+- optional superseded-action ID;
+- priority/freshness policy versions, matched rule, rank components, reason;
+- state in open/snoozed/dismissed/completed/superseded;
+- snooze date, target case/evidence, first/last observed timestamps;
+- unique user + logical key + source version.
+
+#### `research_inbox_action_events`
+
+Append-only event history for creation, material update, correction,
+snooze/dismiss/complete/supersede.
+
+Priority order:
+
+1. owned cases and overdue monitoring;
+2. watched cases and overdue monitoring;
+3. researching cases;
+4. queued cases;
+5. Watchlist stocks;
+6. selected top Oracle candidates;
+7. all other stocks excluded.
+
+Permanent dismissal is informational-discovery only and scoped to a source
+version. Monitoring obligations may be snoozed at most 30 days and reappear.
+
+### G.6 Coverage and price freshness
+
+#### `research_coverage_requirements`
+
+Durable, explainable current coverage projection:
+
+- user/stock, kind, priority policy version/rule, freshness policy version;
+- state: ready/missing/stale/blocked/in_progress/failed;
+- reason, source/evidence, observed/evaluated times, permitted next action;
+- unique current requirement by user/stock/kind/policy version;
+- kinds: EOD price, current Value Line report, valuation input, identity review,
+  CUSIP review.
+
+Proprietary acquisition enters in-progress only from a configured authorized
+source or explicit upload. Blocked is not covered.
+
+Value Line freshness defaults to a visible 120-calendar-day ValuePilot policy;
+the policy version and evaluation timestamp are persisted. The threshold does
+not claim a vendor publication cadence.
+
+`stock_prices` adds nullable ISO-4217 `currency`. Existing unknown rows remain
+NULL absent a source-backed backfill; new provider writes require currency.
+Freshness is based on the most recent expected trading session under the mapped
+market calendar. Unknown identity/calendar/currency remains typed unknown.
+
+Canonical EOD reads use configured source priority, price date, created time and
+ID. Refresh is batched, idempotent at job/request level, rate-limited, and never
+performed per rendered row. Inactive or unresolved stocks retain history but do
+not auto-refresh.
+
+### G.7 Oracle lenses and manager follows
+
+The normative lens thesis, calibration versions and reviewed manager
+representativeness methodology are recorded in
+`docs/13f/oracles_lens_signal_policy.md`.
+
+Oracle's Lens exposes separate versioned `consensus` and `distinctive` modes.
+Both show score components, manager/classification versions, exclusions,
+representativeness, incomplete-filing caveats, and never infer current ownership
+or transaction price.
+
+Manager representativeness is versioned human-reviewed metadata:
+`faithful`, `partial`, `unrepresentative`, or `unknown`, with reviewer,
+rationale, evidence and effective time. Persisted score/action rows record the
+classification version used. Unknown never silently means faithful.
+
+`manager_follows` is user-owned and unique `(user_id, manager_id)`. Follow state
+affects only that user's Inbox/subscriptions, never ingestion or canonical global
+ranking. Unfollow preserves historical evidence/delivery audit.
+
+### G.8 Notifications
+
+Logical notifications, user subscriptions, encrypted destinations, in-app read
+state, and delivery attempts are separate records. Domain transactions append a
+durable outbox/logical event; network send is asynchronous.
+
+Required event families:
+
+- followed-manager filing;
+- new/add/reduce/exit affecting a Watchlist/open case;
+- intrinsic-value threshold crossing;
+- research review due/overdue;
+- open-case coverage completed/failed;
+- correction/supersession of a prior 13F event.
+
+13F logical source version includes active accession and authority/parse result.
+An amendment emits a linked correction instead of mutating or duplicating the
+old event. Delivery idempotency is `(logical_notification_id, destination_id,
+content_version)`.
+
+Intrinsic-value alerts require two consecutive canonical fresh closes, an exact
+currency match (USD in V1), a direction-aware crossing, initialization without
+alert, hysteresis and cooldown. Same-session/stale/unknown/mismatched data cannot
+trigger. Alert state records the last canonical price ID, exact user intrinsic-
+value fact ID, monitoring research-revision ID, and threshold/hysteresis values
+used. Publishing a newer valuation, saving a new monitoring revision, or
+changing either boundary parameter reinitializes the boundary without an alert;
+only a later fresh price can create a true crossing. Returning a case to
+researching pauses value alerts until a new monitoring decision, whose revision
+initializes a new boundary.
+
+The threshold ratio, hysteresis and logical-event cooldown form one user-level
+policy for this event family because crossing state is one row per user/stock.
+Saving the policy through any destination atomically synchronizes those three
+fields across the user's intrinsic-value subscriptions. Channel frequency,
+timezone, quiet hours and enablement remain destination-specific; the API/UI
+must not pretend that conflicting per-destination boundaries can coexist.
+Alert evaluation takes a transaction-scoped user/stock advisory lock before
+reading or creating crossing state, including the initial no-row case.
+
+Destinations:
+
+- In-app: always available, durable read/dismiss state.
+- Slack: user-owned webhook, exact approved HTTPS Slack host/path, redirects
+  disabled, secret encrypted at rest with key version and masked in all reads.
+  Current+previous keys support rotation; unreadable secrets fail closed. Test
+  send requires an explicit user action.
+- Email: TLS-required SMTP; destination remains pending until a short-lived,
+  single-use hashed verification challenge is completed. Login email is not
+  implicitly verified.
+
+Subscriptions support event family, enabled state, frequency, IANA timezone,
+quiet hours and cooldown. Scheduling materializes UTC timestamps with DST-aware
+timezone behavior. Attempts store typed response/failure, count, next retry and
+timestamps without credentials. Permanent failures stop and remain visible.
+
+In-app history is always immediate. For an enabled external destination,
+`immediate` queues one attempt per source event; `daily_digest` and
+`weekly_digest` materialize a derived digest after 08:00 in the subscription's
+local timezone. A digest records its source-count/range and is inserted with its
+delivery attempt in one transaction. The next due digest catches up source
+events since the last digest, so scheduler downtime does not silently discard
+them. Replays are idempotent by subscription, closed local period and source
+range. Quiet hours and cooldown still apply to the resulting attempt.
+
+Research notification materialization and outbox delivery run on an independent
+15-minute scheduler, not as a side effect of EDGAR ingestion. Provider calls
+occur only after a committed lease and attempted event. Typed transient provider
+failures retry with bounded backoff. Because Slack webhooks and SMTP provide no
+application idempotency key, an expired lease or unexpected adapter exception is
+classified `delivery_outcome_unknown`, stopped rather than blindly resent, and
+shown in both the user's delivery audit and aggregate admin operations view.
+
+Destination ciphertext records a key version. The configured window contains
+the current key and at most one previous key. A bounded, advisory-locked
+re-encryption job records a credential-free `job_runs` audit; unreadable secrets
+become `configuration_blocked`. When no keyring is configured, the independent
+scheduler reports a skipped rotation rather than creating repetitive failed
+jobs. Admin visibility is aggregate/readiness-only and cannot expose notification
+content, labels, destination hints, or credentials.
+
+Existing notification events remain readable. Legacy preferences migrate to
+immediate in-app history only; their former frequency label is retained solely
+for reversible migration audit. No legacy `channel='email'` activates external delivery.
+The deployment operations Slack webhook is never a user research destination.
+
+### G.9 Manual portfolios and journal
+
+#### `portfolios`
+
+User-owned name/description/current projection; normal deletion archives rather
+than erasing linked history.
+
+#### `portfolio_positions`
+
+- user/portfolio/stock, open/closed state, positive fixed-decimal quantity;
+- optional fixed-decimal average unit cost and ISO-4217 currency;
+- optional supporting research case/revision;
+- expected version, timestamps;
+- V1 is long-only; close is an event, never negative quantity.
+
+#### `portfolio_position_events`
+
+Append-only open/resize/close/review events with expected prior version,
+quantity/unit-cost snapshot, optional reason, actor/correlation/timestamps.
+Projection update and event append are atomic; stale writers receive 409.
+
+V1 performs no FX. A value/return calculation requires a known canonical price
+currency equal to the position currency. Otherwise it returns typed unknown or
+mismatch and performs no arithmetic. No broker balance, execution, tax lot,
+fees, realized gain, or tax correctness is claimed.
+
+### G.10 Authorization, limits and operations
+
+- New user-owned endpoints derive user identity from authentication; query/body
+  `user_id` is never authority.
+- Cross-user resources return non-disclosing 404 behavior and have regression
+  tests.
+- Ordinary admins see aggregate operational health, not private research,
+  destinations or portfolios.
+- Text/JSON/list/batch/page fields have schema limits; external/expensive
+  operations have durable per-user rate limits. V1 limits are six coverage price
+  refreshes/hour, twenty PDF uploads/hour, ten destination-verification attempts
+  per ten minutes, and three explicit destination tests per ten minutes. PDFs
+  are rejected above 10 MiB before ingestion.
+- User rules compile to SQLAlchemy expressions; no raw SQL from input and no
+  unrestricted eval/exec.
+- Background coverage/notification work uses durable idempotency, leases or
+  equivalent recovery, typed retry/permanent failure and readiness visibility.
+- Normal UI actions preserve history. Account erasure revokes credentials and
+  purges/tombstones user-authored content under the audited privacy exception.
+  The transaction verifies the current password, revokes refresh tokens and
+  destinations, disables subscriptions, stops pending delivery, redacts research
+  prose/evidence and manual unavailable reasons, tombstones portfolio quantities,
+  costs and journal notes, pseudonymizes the login, deactivates the user, and
+  retains only non-content integrity metadata plus one hash/summary audit event.
+
+### G.11 API surface
+
+Routes are under `/api/v1` and session-authorized:
+
+- `/research/cases`, `/research/cases/{id}`, revisions, origins and redaction;
+- `/research/inbox` plus snooze/dismiss/complete;
+- `/research/coverage` and admin aggregate coverage operations;
+- stock-scoped canonical valuation read/write;
+- manager follow/unfollow/list;
+- notification destinations, verification, subscriptions, in-app events and
+  delivery audit;
+- portfolios, positions and position events.
+
+Every list is paginated with stable ordering. Create, coverage work, source
+event generation and delivery have explicit idempotency. Typed 409/422 responses
+cover stale version, invalid transition, duplicate domain conflict and invalid
+input.
 
 ---
 

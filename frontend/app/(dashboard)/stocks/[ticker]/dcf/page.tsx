@@ -389,10 +389,28 @@ export default function StockDcfPage() {
       await apiClient.put(`/stocks/${stockId}/facts`, {
         metric_key: 'val.fair_value',
         value_numeric: totalValue,
+        source: 'dcf',
+        assumptions: [
+          {
+            source: 'dcf',
+            label: 'DCF model inputs',
+            based_on_per_share: basedOnValue,
+            based_on_selection: basedOnSelection,
+            discount_rate_pct: discountRate,
+            growth_years: growthYears,
+            growth_rate_pct: growthRate,
+            growth_rate_selection: growthRateSelection,
+            terminal_years: terminalYears,
+            terminal_rate_pct: terminalRate,
+            computed_growth_value: growthValue,
+            computed_terminal_value: terminalValue,
+            computed_total_value: totalValue,
+          },
+        ],
       });
       toast({
         title: 'Saved',
-        description: 'Fair Value updated from Total Value.',
+        description: 'Fair Value and labeled DCF assumptions saved to research history.',
       });
     } catch {
       toast({

@@ -176,14 +176,15 @@ INSURANCE_TABLE_TEXT = (
 )
 
 
-def test_percent_row_divides_sub_one_percent_values():
+def test_percent_row_preserves_percentage_points_for_mapping_normalization():
     parser = ValueLineV1Parser(INSURANCE_TABLE_TEXT)
     tables = parser._parse_time_series_tables()
     assert tables is not None
     margin = tables[ANNUAL_KEY]["income_statement_usd_millions"]["underwriting_margin_pct"]
-    # 0.9 (meaning 0.9%) must normalize to 0.009 — not stay 0.9 (100x error).
-    assert margin[2] == pytest.approx(0.009)
-    assert margin[0] == pytest.approx(0.852)
+    # The parser/page-JSON contract uses percentage points. MappingSpec is the
+    # single normalization boundary that converts 0.9% to the base ratio 0.009.
+    assert margin[2] == pytest.approx(0.9)
+    assert margin[0] == pytest.approx(85.2)
 
 
 # --- F5: side-row fiscal dates + estimate split -------------------------------

@@ -2,10 +2,10 @@
 
 # Watchlist Feature Spec (V1)
 
-Status: Draft  
-Owner: Product / Backend / Frontend  
-Version: v1  
-Last Updated: 2026-02-03
+Status: Implemented baseline; Research Decision Loop evolution governed by the authoritative PRD §G
+Owner: Product / Backend / Frontend
+Version: v1
+Last Updated: 2026-07-20
 
 ---
 
@@ -124,9 +124,11 @@ V1 建议列：
 |--------|------------|
 | Ticker | 股票代码 |
 | Name | 公司名（可选） |
-| Price | 当前价格（EOD close，来自 `stock_prices`；页面打开时可触发 refresh；单位由数据源/交易所决定，V1 默认美股，通常为 USD） |
-| Fair Value | Fair Value（可编辑；按用户/按股票全局值，跨 watchlist 共享；存储在 `metric_facts` 的 manual fact；若不存在，可回退展示 Value Line 的 `target.price_18m.mid`；展示优先级见 §7） |
-| Margin of Safety | (FV - Price) / FV（FV 为空则 MOS 为空） |
+| Price | Canonical EOD close（来自 `stock_prices`，显示交易日、来源、币种和 freshness；缺失/过期由覆盖队列触发一次去重批量 refresh，禁止逐行页面请求） |
+| User Intrinsic Value | 用户估值（可编辑；按用户/按股票全局值，跨 watchlist 共享；存储在 `metric_facts` 的 manual fact） |
+| Margin of Safety | 仅当 User Intrinsic Value 与 Price 同为 USD 时计算 `(FV - Price) / FV`；否则为空并显示原因 |
+| Valuation Reference | Value Line target 等系统参考值，只读，显示来源与日期 |
+| Discount to Reference | 仅针对系统参考值；不得标为 Margin of Safety |
 | Δ Today | 当日涨跌（EOD；`close(target_date) - close(prev_price_date)`；`prev_price_date` 为 target_date 之前最近一次有价的 `price_date`；两天数据齐全才显示；可选） |
 | Last Update | 数据更新时间 |
 
@@ -246,13 +248,15 @@ V1 不引入新的 `watchlists` / `watchlist_items` 表，避免与 v0.1 PRD 和
 - adj_close (nullable)
 - volume (nullable)
 - source
+- currency（Research Decision Loop 迁移新增；历史未知保持 NULL）
 - created_at
 
 说明：
 
 - 不新增行情表
 - 直接复用 stock_prices
-- 写入侧为 insert-only；同一 `stock_id + price_date` 可能存在多条记录，读取侧以最新 `created_at` 为准。
+- 写入侧为 insert-only；同一 `stock_id + price_date` 可能存在多条记录。所有产品读取必须经过 canonical EOD reader：先按已配置的可信来源优先级，再按 `created_at`、`id` 确定同日权威行，并按交易所日历判断 fresh/stale/unknown。不得由各页面直接选择 `stock_prices`。
+- 页面只读取已存储价格；缺失、过期或历史行缺币种时进入用户覆盖队列，由一个可观察、去重、批量的 `coverage_eod_refresh` job 处理。生产环境没有显式启用且获授权的数据源时 fail closed。
 
 ### metric_facts（已有，Fair Value 存储方式）
 
@@ -261,28 +265,34 @@ V1 不引入新的 `watchlists` / `watchlist_items` 表，避免与 v0.1 PRD 和
 - 注意：`metric_key / unit / period_type / period_end_date` 属于 **metric semantics**，必须以 `docs/metric_facts_mapping_spec.yml` 为权威；本 PRD 不在此处定义它们。
 - Watchlist 实现时需要在 mapping spec 中新增一个“用户 Fair Value”对应的条目（unit=USD，period_type=AS_OF），并在写入时遵循 v0.1 的 `is_current` 语义。
 
-Fair Value 展示优先级（deterministic）：
-1) 用户手动输入的 Fair Value（`metric_facts`, `source_type=manual`, `is_current=true`）
-2) Value Line 的 18M Target Mid（`metric_facts.metric_key = target.price_18m.mid`, `is_current=true`，只作为只读 fallback）
-3) 无（显示空值）
+估值展示分为两条互不替代的数据支路：
+
+1) User Intrinsic Value：用户手动输入的 `val.fair_value`；可用于 MOS。
+2) System Valuation Reference：例如 Value Line `target.price_18m.mid`；只可用于
+   Discount/Premium to Reference，不得回退冒充 Fair Value 或 MOS。
+
+手动值读取必须先按 `period_end_date DESC NULLS LAST, created_at DESC, id DESC`
+选择最新一行，再检查数值。最新的显式 unavailable/null tombstone 会压住旧值，
+不能继续显示旧 Fair Value。
 
 ---
 
 ## 8. API Contracts（V1）
 
-说明：当前 codebase 尚未提供 watchlist/stock_pools 的 API；本节定义 V1 需要新增的 endpoints（遵循现有 `/api/v1` 路由风格与 user-owned 资源的 `user_id` query 参数模式）。
+说明：这些 API 已实现。用户身份来自认证会话；query/body 的 `user_id` 不构成
+权限依据。
 
 ### Watchlists（stock_pools）
 
-GET /api/v1/stock_pools?user_id={user_id}  
-POST /api/v1/stock_pools?user_id={user_id}  
-DELETE /api/v1/stock_pools/{pool_id}?user_id={user_id}
+GET /api/v1/stock_pools
+POST /api/v1/stock_pools
+DELETE /api/v1/stock_pools/{pool_id}
 
 ### Items（pool_memberships）
 
-GET /api/v1/stock_pools/{pool_id}/members?user_id={user_id}  
-POST /api/v1/stock_pools/{pool_id}/members?user_id={user_id}  
-DELETE /api/v1/stock_pools/{pool_id}/members/{membership_id}?user_id={user_id}
+GET /api/v1/stock_pools/{pool_id}/members
+POST /api/v1/stock_pools/{pool_id}/members
+DELETE /api/v1/stock_pools/{pool_id}/members/{membership_id}
 
 Add Ticker 限制（V1）：
 - V1 仅允许添加已存在于 `stocks` 表的 ticker（通常由 Value Line ingestion 创建）。
@@ -290,7 +300,7 @@ Add Ticker 限制（V1）：
 
 ### Fair Value（metric_facts, manual）
 
-PUT /api/v1/stocks/{stock_id}/facts?user_id={user_id}
+PUT /api/v1/stocks/{stock_id}/facts
 
 Body:
 ```json
@@ -300,9 +310,13 @@ Body:
 }
 ```
 
-Behavior:
-- 写入 `metric_facts`（`source_type=manual`；其余语义从 mapping spec 读取）
-- 置前一条同 `metric_key` 的 current 为 false，并将新值置为 current（与 v0.1 “Active Value”语义一致）
+Behavior（Research Decision Loop 迁移后）：
+
+- 通过权威 PRD §G.4 的 canonical valuation service 保存研究 revision 并发布
+  `metric_facts` manual projection；
+- 只 demote 同 `(user_id, stock_id, metric_key, period_type,
+  period_end_date, source_type='manual')` 的 current 行；
+- 不得跨 AS-OF 日期全局 demote，也不得维护第二条直接写入路径。
 
 ### Price Refresh（已存在）
 
@@ -330,26 +344,26 @@ POST /api/v1/stocks/prices/refresh
 
 ## 10. Definition of Done（验收标准）
 
-- [ ] 用户可以创建多个 watchlist
-- [ ] 可以添加/删除 ticker
-- [ ] 可以编辑 fair value
-- [ ] 自动计算 MOS
-- [ ] 默认按 MOS 排序
-- [ ] 页面刷新时自动补齐当日价格
-- [ ] 无实时依赖
-- [ ] 100+ 行表格仍流畅
+- [x] 用户可以创建多个 watchlist
+- [x] 可以添加/删除 ticker
+- [x] 可以编辑 fair value（现有直接写路径将在 §G 迁移为 canonical service）
+- [x] 自动计算 MOS
+- [x] 默认按 MOS 排序
+- [x] 页面刷新时补齐 EOD 价格
+- [x] 无实时依赖
+- [x] 100+ 行表格采用批量 API/客户端排序，不做逐行网络请求
 
 ---
 
 ## 11. Future Roadmap（非 V1）
 
 - 自动估值模型（DCF/Multiples/AI）
-- Notes / 标签
-- Alerts
+- Notes / 标签（进入 Research Decision Loop §G）
+- Alerts（进入 Research Decision Loop §G）
 - Charts
 - CSV 导出
 - Intraday quote
-- Portfolio 模块
+- Portfolio 模块（进入 Research Decision Loop §G）
 
 ---
 

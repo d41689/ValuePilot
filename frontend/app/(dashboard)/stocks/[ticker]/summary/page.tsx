@@ -9,10 +9,12 @@ import apiClient from '@/lib/api/client';
 import TickerSearchBox from '@/components/TickerSearchBox';
 import DynamicFScoreCard from '@/components/DynamicFScoreCard';
 import StockSummaryCard from '@/components/StockSummaryCard';
+import { Stock13FValueHoldersCard } from '@/components/stocks/Stock13FValueHoldersCard';
 import actualConflictHelpers from '@/lib/actualConflicts';
 import provenanceHelpers from '@/lib/factProvenance';
 import { buildStockRoute, normalizeTicker } from '@/lib/stockRoutes';
 import type { DynamicFScoreApiCard } from '@/lib/dynamicFScoreCard';
+import { OpenResearchCaseButton } from '@/components/research/OpenResearchCaseButton';
 
 const { buildActualConflictDisplayItems } = actualConflictHelpers;
 const { formatFactProvenanceLabel } = provenanceHelpers;
@@ -143,6 +145,15 @@ export default function StockSummaryPage() {
             ticker={summary.ticker}
             companyName={summary.company_name}
             card={summary.piotroski_f_score_card ?? null}
+          />
+          <Stock13FValueHoldersCard stockId={summary.id} />
+          <OpenResearchCaseButton
+            stockId={summary.id}
+            originType="ticker_search"
+            originKey={`ticker-search:${summary.ticker}`}
+            sourceVersion="ticker-search-v1"
+            sourceRef={{ ticker: summary.ticker }}
+            label="Open research case"
           />
         </>
       )}

@@ -1,22 +1,30 @@
 from typing import Any
 from fastapi import APIRouter, HTTPException, Body, Query
-from sqlalchemy import select, func, update, and_, or_
+from sqlalchemy import select, func, and_, or_
 from datetime import date, datetime, timezone
 from zoneinfo import ZoneInfo
 from app.api.deps import SessionDep, CurrentUser
 from app.models.artifacts import PdfDocument
-from app.models.stocks import Stock, StockPrice
+from app.models.stocks import Stock
 from app.models.facts import MetricFact
+from app.services.valuation import USER_INTRINSIC_VALUE_KEY
 from app.models.users import User
 from app.services.active_report_resolver import ActiveReportSelection, resolve_active_reports
 from app.services.actual_conflict_service import detect_actual_conflicts
-from app.services.market_data_service import MarketDataService
-from app.services.market_data_service import compute_target_date
+from app.schemas.stock import ResearchValuationSave
+from app.services.research_cases import (
+    ResearchCaseError,
+    save_product_valuation_revision,
+)
+from app.services.market_data_service import (
+    MarketDataService,
+    compute_target_date,
+    read_canonical_eod_price,
+)
 
 router = APIRouter()
 
 ET = ZoneInfo("America/New_York")
-FAIR_VALUE_KEY = "val.fair_value"
 DCF_INPUT_FACT_KEYS = {
     "net_profit_per_share": "per_share.eps",
     "depreciation": "is.depreciation",
@@ -328,12 +336,18 @@ def _formula_details(
     }
 
 
-def _build_piotroski_f_score_card(session: SessionDep, stock_id: int) -> dict[str, Any]:
+def _build_piotroski_f_score_card(
+    session: SessionDep,
+    stock_id: int,
+    *,
+    current_user_id: int,
+) -> dict[str, Any]:
     metric_keys = [row["metric_key"] for row in PIOTROSKI_CARD_ROWS] + [PIOTROSKI_TOTAL_KEY]
     facts = session.scalars(
         select(MetricFact)
         .where(
             MetricFact.stock_id == stock_id,
+            MetricFact.user_id == current_user_id,
             MetricFact.metric_key.in_(metric_keys),
             MetricFact.source_type == "calculated",
             MetricFact.is_current.is_(True),
@@ -524,7 +538,13 @@ def _visible_fact_predicate(current_user_id: int, admin_user_ids: list[int]):
     )
 
 
-def _select_stock_for_ticker(session: SessionDep, ticker_normalized: str) -> Stock | None:
+def _select_stock_for_ticker(
+    session: SessionDep,
+    ticker_normalized: str,
+    *,
+    current_user_id: int,
+    admin_user_ids: list[int],
+) -> Stock | None:
     stocks = session.scalars(
         select(Stock)
         .where(func.lower(Stock.ticker) == ticker_normalized)
@@ -536,13 +556,19 @@ def _select_stock_for_ticker(session: SessionDep, ticker_normalized: str) -> Sto
         return stocks[0]
 
     stock_ids = [stock.id for stock in stocks]
-    active_reports = resolve_active_reports(session, stock_ids=stock_ids)
+    active_reports = resolve_active_reports(
+        session,
+        stock_ids=stock_ids,
+        current_user_id=current_user_id,
+        shared_parsed_user_ids=admin_user_ids,
+    )
     fact_counts = dict(
         session.execute(
             select(MetricFact.stock_id, func.count(MetricFact.id))
             .where(
                 MetricFact.stock_id.in_(stock_ids),
                 MetricFact.is_current.is_(True),
+                _visible_fact_predicate(current_user_id, admin_user_ids),
             )
             .group_by(MetricFact.stock_id)
         ).all()
@@ -566,19 +592,32 @@ def _select_stock_for_ticker(session: SessionDep, ticker_normalized: str) -> Sto
 def read_stock_by_ticker(
     ticker: str,
     session: SessionDep,
+    current_user: CurrentUser,
 ) -> Any:
     """
     Get stock overview by ticker (case-insensitive).
     """
     ticker_normalized = ticker.strip().lower()
-    stock = _select_stock_for_ticker(session, ticker_normalized)
+    admin_user_ids = list(session.scalars(select(User.id).where(User.role == "admin")).all())
+    stock = _select_stock_for_ticker(
+        session,
+        ticker_normalized,
+        current_user_id=current_user.id,
+        admin_user_ids=admin_user_ids,
+    )
     if not stock:
         raise HTTPException(status_code=404, detail="Stock not found")
-    active_report = resolve_active_reports(session, stock_ids=[stock.id]).get(stock.id)
+    active_report = resolve_active_reports(
+        session,
+        stock_ids=[stock.id],
+        current_user_id=current_user.id,
+        shared_parsed_user_ids=admin_user_ids,
+    ).get(stock.id)
 
     facts_stmt = select(MetricFact).where(
         MetricFact.stock_id == stock.id,
         MetricFact.is_current.is_(True),
+        _visible_fact_predicate(current_user.id, admin_user_ids),
         MetricFact.metric_key.in_(
             ["mkt.price", "val.pe", "owners_earnings_per_share_normalized"]
         ),
@@ -588,25 +627,19 @@ def read_stock_by_ticker(
 
     now_et = datetime.now(timezone.utc).astimezone(ET)
     target_date = compute_target_date(now_et)
-    latest_price = session.scalars(
-        select(StockPrice)
-        .where(StockPrice.stock_id == stock.id, StockPrice.price_date == target_date)
-        .order_by(StockPrice.created_at.desc())
-        .limit(1)
-    ).first()
-    if latest_price is None:
-        latest_price = session.scalars(
-            select(StockPrice)
-            .where(StockPrice.stock_id == stock.id)
-            .order_by(StockPrice.price_date.desc(), StockPrice.created_at.desc())
-            .limit(1)
-        ).first()
+    latest_price = read_canonical_eod_price(
+        session,
+        stock=stock,
+        as_of=target_date,
+        include_as_of_session=True,
+    )
 
     oeps_stmt = (
         select(MetricFact)
         .where(
             MetricFact.stock_id == stock.id,
             MetricFact.is_current.is_(True),
+            _visible_fact_predicate(current_user.id, admin_user_ids),
             MetricFact.metric_key == "owners_earnings_per_share",
             MetricFact.period_type == "FY",
         )
@@ -620,6 +653,7 @@ def read_stock_by_ticker(
         .where(
             MetricFact.stock_id == stock.id,
             MetricFact.is_current.is_(True),
+            _visible_fact_predicate(current_user.id, admin_user_ids),
             MetricFact.period_type == "FY",
             MetricFact.metric_key.in_(list(DCF_INPUT_FACT_KEYS.values())),
         )
@@ -649,6 +683,7 @@ def read_stock_by_ticker(
         .where(
             MetricFact.stock_id == stock.id,
             MetricFact.is_current.is_(True),
+            _visible_fact_predicate(current_user.id, admin_user_ids),
             MetricFact.metric_key.in_(growth_metric_keys),
         )
         .order_by(MetricFact.metric_key.asc(), MetricFact.period_end_date.desc())
@@ -687,7 +722,12 @@ def read_stock_by_ticker(
     if source_document_ids:
         report_dates_by_doc = dict(
             session.execute(
-                select(PdfDocument.id, PdfDocument.report_date).where(PdfDocument.id.in_(source_document_ids))
+                select(PdfDocument.id, PdfDocument.report_date).where(
+                    PdfDocument.id.in_(source_document_ids),
+                    PdfDocument.user_id.in_(
+                        sorted(set([current_user.id, *admin_user_ids]))
+                    ),
+                )
             ).all()
         )
 
@@ -782,6 +822,8 @@ def read_stock_by_ticker(
         session,
         stock_id=stock.id,
         active_report=active_report,
+        current_user_id=current_user.id,
+        shared_parsed_user_ids=admin_user_ids,
     )
 
     return {
@@ -799,9 +841,13 @@ def read_stock_by_ticker(
             active_report=active_report,
             report_dates_by_doc=report_dates_by_doc,
         ),
-        "latest_price": float(latest_price.close) if latest_price and latest_price.close is not None else None,
-        "latest_price_date": latest_price.price_date.isoformat() if latest_price else None,
-        "latest_price_updated_at": latest_price.created_at.isoformat() if latest_price else None,
+        "latest_price": latest_price.close,
+        "latest_price_date": latest_price.price_date.isoformat() if latest_price.price_date else None,
+        "latest_price_updated_at": latest_price.observed_at.isoformat() if latest_price.observed_at else None,
+        "latest_price_currency": latest_price.currency,
+        "latest_price_source": latest_price.source,
+        "latest_price_freshness": latest_price.freshness_state,
+        "latest_price_reason": latest_price.reason_code,
         "pe": facts_by_key.get("val.pe").value_numeric if facts_by_key.get("val.pe") else None,
         "pe_provenance": _fact_provenance(
             facts_by_key.get("val.pe"),
@@ -822,7 +868,11 @@ def read_stock_by_ticker(
         "dcf_inputs": dcf_inputs,
         "dcf_inputs_series": dcf_inputs_series,
         "growth_rate_options": growth_rate_options,
-        "piotroski_f_score_card": _build_piotroski_f_score_card(session, stock.id),
+        "piotroski_f_score_card": _build_piotroski_f_score_card(
+            session,
+            stock.id,
+            current_user_id=current_user.id,
+        ),
         "actual_conflict_count": len(actual_conflicts),
         "actual_conflicts": actual_conflicts,
     }
@@ -838,7 +888,6 @@ def read_stock(
     stock = session.get(Stock, stock_id)
     if not stock:
         raise HTTPException(status_code=404, detail="Stock not found")
-
     return {
         "id": stock.id,
         "ticker": stock.ticker,
@@ -894,47 +943,35 @@ def upsert_stock_fact(
     stock_id: int,
     session: SessionDep,
     current_user: CurrentUser,
-    payload: dict = Body(...),
+    payload: ResearchValuationSave,
 ) -> Any:
     user_id = current_user.id
 
     stock = session.get(Stock, stock_id)
     if not stock:
         raise HTTPException(status_code=404, detail="Stock not found")
-
-    metric_key = payload.get("metric_key")
-    value_numeric = payload.get("value_numeric")
-    if metric_key != FAIR_VALUE_KEY:
+    if payload.metric_key != USER_INTRINSIC_VALUE_KEY:
         raise HTTPException(status_code=400, detail="Unsupported metric_key")
-    if value_numeric is None or not isinstance(value_numeric, (int, float)):
-        raise HTTPException(status_code=400, detail="value_numeric must be a number")
-
-    session.execute(
-        update(MetricFact)
-        .where(
-            MetricFact.user_id == user_id,
-            MetricFact.stock_id == stock_id,
-            MetricFact.metric_key == metric_key,
-            MetricFact.is_current.is_(True),
-        )
-        .values(is_current=False)
-    )
 
     now_et = datetime.now(timezone.utc).astimezone(ET)
-    fact = MetricFact(
-        user_id=user_id,
-        stock_id=stock_id,
-        metric_key=metric_key,
-        value_numeric=float(value_numeric),
-        unit="USD",
-        period_type="AS_OF",
-        period_end_date=now_et.date(),
-        source_type="manual",
-        is_current=True,
-    )
-    session.add(fact)
-    session.commit()
-    session.refresh(fact)
+    try:
+        case, revision, fact = save_product_valuation_revision(
+            session,
+            user_id=user_id,
+            stock_id=stock_id,
+            value_numeric=payload.value_numeric,
+            valuation_low=payload.valuation_low,
+            valuation_high=payload.valuation_high,
+            as_of_date=payload.as_of_date or now_et.date(),
+            source=payload.source,
+            pool_id=payload.pool_id,
+            assumptions=payload.assumptions,
+        )
+    except ResearchCaseError as error:
+        raise HTTPException(
+            status_code=error.status_code,
+            detail={"code": error.code, "message": error.message},
+        ) from error
 
     return {
         "id": fact.id,
@@ -947,6 +984,8 @@ def upsert_stock_fact(
         "source_type": fact.source_type,
         "is_current": fact.is_current,
         "created_at": fact.created_at,
+        "research_case_id": case.id,
+        "research_revision_id": revision.id,
     }
 
 

@@ -2336,22 +2336,24 @@ class ValueLineV1Parser(BaseParser):
         if proj is not None:
             projection["pc_premiums_earned_usd_millions"] = proj
 
-        series, proj = parse_series(r'LosstoPremEarned', percent_ratio=True)
+        # All page-JSON percentage fields use percentage points.  MappingSpec
+        # is the one normalization boundary that converts them to base ratios.
+        series, proj = parse_series(r'LosstoPremEarned', percent_ratio=False)
         income_statement["loss_to_prem_earned_pct"] = series
         if proj is not None:
             projection["loss_to_prem_earned_pct"] = proj
 
-        series, proj = parse_series(r'ExpensetoPremWrit', percent_ratio=True)
+        series, proj = parse_series(r'ExpensetoPremWrit', percent_ratio=False)
         income_statement["expense_to_prem_written"] = series
         if proj is not None:
             projection["expense_to_prem_written"] = proj
 
-        series, proj = parse_series(r'UnderwritingMargin', percent_ratio=True)
+        series, proj = parse_series(r'UnderwritingMargin', percent_ratio=False)
         income_statement["underwriting_margin_pct"] = series
         if proj is not None:
             projection["underwriting_margin_pct"] = proj
 
-        series, proj = parse_series(r'IncomeTaxRate', percent_ratio=insurance_layout)
+        series, proj = parse_series(r'IncomeTaxRate', percent_ratio=False)
         income_statement["income_tax_rate_pct"] = series
         if proj is not None:
             projection["income_tax_rate_pct"] = proj
@@ -2362,7 +2364,7 @@ class ValueLineV1Parser(BaseParser):
             proj_key = "net_profit_usd_millions" if insurance_layout else "net_profit"
             projection[proj_key] = proj
 
-        series, proj = parse_series(r'InvInc/TotalInv', percent_ratio=True)
+        series, proj = parse_series(r'InvInc/TotalInv', percent_ratio=False)
         income_statement["inv_inc_to_total_investments_pct"] = series
         if proj is not None:
             projection["inv_inc_to_total_investments_pct"] = proj
@@ -2379,17 +2381,17 @@ class ValueLineV1Parser(BaseParser):
             proj_key = "shareholders_equity_usd_millions" if insurance_layout else "shareholders_equity"
             projection[proj_key] = proj
 
-        series, proj = parse_series(r'ReturnonShr.?Equity', percent_ratio=insurance_layout)
+        series, proj = parse_series(r'ReturnonShr.?Equity', percent_ratio=False)
         balance_sheet["return_on_shareholders_equity_pct"] = series
         if proj is not None:
             projection["return_on_shareholders_equity_pct"] = proj
 
-        series, proj = parse_series(r'RetainedtoComEq', percent_ratio=insurance_layout)
+        series, proj = parse_series(r'RetainedtoComEq', percent_ratio=False)
         balance_sheet["retained_to_common_equity_pct"] = series
         if proj is not None:
             projection["retained_to_common_equity_pct"] = proj
 
-        series, proj = parse_series(r'AllDiv.*toNetProf', percent_ratio=insurance_layout)
+        series, proj = parse_series(r'AllDiv.*toNetProf', percent_ratio=False)
         balance_sheet["all_dividends_to_net_profit_pct"] = series
         if proj is not None:
             projection["all_dividends_to_net_profit_pct"] = proj

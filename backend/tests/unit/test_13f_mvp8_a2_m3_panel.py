@@ -58,7 +58,7 @@ def _fact(
 
 def test_m3_panel_returns_has_value_line_false_when_no_facts(db_session):
     stock = _stock(db_session, "NOVL")
-    result = _m3_panel_for_stock(db_session, stock.id)
+    result = _m3_panel_for_stock(db_session, stock.id, user_id=None)
     assert result.has_value_line is False
     # No VL data → all value fields default to None including provenance.
     assert result.vl_target_period_end is None
@@ -98,7 +98,7 @@ def test_m3_panel_returns_populated_panel_with_vl_facts(db_session):
     _fact(db_session, user_id=user.id, stock_id=stock.id,
           metric_key="proj.long_term.high_price", value_numeric=885.0)
 
-    result = _m3_panel_for_stock(db_session, stock.id)
+    result = _m3_panel_for_stock(db_session, stock.id, user_id=user.id)
 
     assert result.has_value_line is True
     assert result.piotroski_score == 7
@@ -126,7 +126,7 @@ def test_m3_panel_handles_piotroski_only_without_other_facts(db_session):
                     "fact_nature": "actual"},
     )
 
-    result = _m3_panel_for_stock(db_session, stock.id)
+    result = _m3_panel_for_stock(db_session, stock.id, user_id=user.id)
 
     assert result.has_value_line is True
     assert result.piotroski_score == 5

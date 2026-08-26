@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone, date
+from datetime import date, datetime, timedelta, timezone
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Body
@@ -9,64 +9,27 @@ from sqlalchemy import select, func, delete
 from app.api.deps import SessionDep, CurrentUser
 from app.models.stocks import StockPool, PoolMembership, Stock, StockPrice
 from app.models.facts import MetricFact
-from app.services.market_data_service import compute_target_date, ET
+from app.services.market_data_service import (
+    ET,
+    compute_target_date,
+    read_canonical_eod_series,
+)
+from app.services.valuation import read_valuation_context, relative_discount
 
 
 router = APIRouter()
 
-FAIR_VALUE_KEY = "val.fair_value"
-TARGET_FALLBACK_KEY = "target.price_18m.mid"
 PIOTROSKI_TOTAL_KEY = "score.piotroski.total"
 
 
 def _latest_price_for_date(session: SessionDep, stock_id: int, price_date: date) -> StockPrice | None:
-    return session.scalars(
-        select(StockPrice)
-        .where(StockPrice.stock_id == stock_id, StockPrice.price_date == price_date)
-        .order_by(StockPrice.created_at.desc())
-        .limit(1)
-    ).first()
-
-
-def _fair_value_for_stock(session: SessionDep, user_id: int, stock_id: int) -> tuple[float | None, str | None]:
-    manual = session.scalars(
-        select(MetricFact)
-        .where(
-            MetricFact.user_id == user_id,
-            MetricFact.stock_id == stock_id,
-            MetricFact.metric_key == FAIR_VALUE_KEY,
-            MetricFact.is_current.is_(True),
-            MetricFact.source_type == "manual",
-        )
-        .order_by(MetricFact.created_at.desc())
-        .limit(1)
-    ).first()
-    if manual and manual.value_numeric is not None:
-        return float(manual.value_numeric), "manual"
-
-    fallback = session.scalars(
-        select(MetricFact)
-        .where(
-            MetricFact.user_id == user_id,
-            MetricFact.stock_id == stock_id,
-            MetricFact.metric_key == TARGET_FALLBACK_KEY,
-            MetricFact.is_current.is_(True),
-        )
-        .order_by(MetricFact.created_at.desc())
-        .limit(1)
-    ).first()
-    if fallback and fallback.value_numeric is not None:
-        return float(fallback.value_numeric), TARGET_FALLBACK_KEY
-
-    return None, None
-
-
-def _calc_mos(price: float | None, fair_value: float | None) -> float | None:
-    if price is None or fair_value is None:
-        return None
-    if fair_value == 0:
-        return None
-    return (fair_value - price) / fair_value
+    rows = read_canonical_eod_series(
+        session,
+        stock_ids=[stock_id],
+        through=price_date,
+        from_date=price_date,
+    )
+    return (rows.get(stock_id) or [None])[0]
 
 
 def _serialize_piotroski_total(fact: MetricFact) -> dict[str, Any]:
@@ -274,21 +237,21 @@ def _watchlist_rows_for_memberships(
         price = float(latest.close) if latest else None
         price_updated_at = latest.created_at if latest else None
 
-        prev_price_date = session.scalar(
-            select(func.max(StockPrice.price_date))
-            .where(
-                StockPrice.stock_id == stock.id,
-                StockPrice.price_date < target_date,
-            )
-        )
+        previous_rows = read_canonical_eod_series(
+            session,
+            stock_ids=[stock.id],
+            through=target_date - timedelta(days=1),
+        ).get(stock.id) or []
+        prev_price_date = previous_rows[0].price_date if previous_rows else None
         delta_today = None
         if prev_price_date and latest:
-            prev_price = _latest_price_for_date(session, stock.id, prev_price_date)
+            prev_price = previous_rows[0]
             if prev_price and prev_price.close is not None:
                 delta_today = float(latest.close) - float(prev_price.close)
 
-        fair_value, fair_value_source = _fair_value_for_stock(session, user_id, stock.id)
-        mos = _calc_mos(price, fair_value)
+        valuation = read_valuation_context(session, user_id=user_id, stock_id=stock.id)
+        fair_value = valuation.user_intrinsic_value
+        mos = relative_discount(price, fair_value)
 
         rows.append(
             {
@@ -303,8 +266,16 @@ def _watchlist_rows_for_memberships(
                 "price_date": target_date.isoformat(),
                 "price_updated_at": price_updated_at,
                 "fair_value": fair_value,
-                "fair_value_source": fair_value_source,
+                "fair_value_source": "manual" if fair_value is not None else None,
+                "fair_value_status": valuation.user_intrinsic_value_status,
+                "fair_value_as_of": valuation.user_intrinsic_value_as_of,
                 "mos": mos,
+                "valuation_reference": valuation.system_reference_value,
+                "valuation_reference_source": valuation.system_reference_type,
+                "valuation_reference_as_of": valuation.system_reference_as_of,
+                "discount_to_reference": relative_discount(
+                    price, valuation.system_reference_value
+                ),
                 "delta_today": delta_today,
                 "piotroski_f_scores": piotroski_scores_by_stock_id.get(stock.id, []),
             }

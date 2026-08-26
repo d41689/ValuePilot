@@ -114,6 +114,25 @@ def test_mapping_spec_maps_value_line_return_on_total_capital_proxy():
     assert rotc_2024["value_json"]["fact_nature"] == "actual"
 
 
+def test_mapping_spec_maps_value_line_profitability_percent_rows():
+    spec = MappingSpec.load(SPEC_PATH)
+    page_json = load_fnv_page_json()
+
+    facts, _, _ = spec.generate_facts(page_json)
+    by_key = {(f["metric_key"], f.get("period_type"), f.get("period_end_date")): f for f in facts}
+
+    expected = {
+        "is.income_tax_rate": 0.255,
+        "is.net_profit_margin": 0.555,
+        "bs.return_on_equity": 0.105,
+    }
+    for metric_key, value in expected.items():
+        fact = by_key.get((metric_key, "FY", date(2024, 12, 31)))
+        assert fact is not None
+        assert fact["value_numeric"] == pytest.approx(value)
+        assert fact["unit"] == "ratio"
+
+
 def test_mapping_spec_maps_blank_value_line_long_term_debt_cells_as_zero():
     spec = MappingSpec.load(SPEC_PATH)
     page_json = load_fnv_page_json()

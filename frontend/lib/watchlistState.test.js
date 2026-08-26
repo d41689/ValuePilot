@@ -13,6 +13,7 @@ const {
   hasFairValueEditChanges,
   isOverviewWatchlistId,
   formatPiotroskiFScoreSeries,
+  formatValuationReferenceLabel,
 } = require('./watchlistState');
 
 test('sortWatchlistMembers orders by MOS descending and ticker ascending as tie-breaker', () => {
@@ -41,6 +42,14 @@ test('buildFairValueEdits formats current fair value strings for each stock', ()
     11: '',
     12: '98.46',
   });
+});
+
+test('formatValuationReferenceLabel keeps system reference distinct from user fair value', () => {
+  assert.equal(
+    formatValuationReferenceLabel(80, 'target.price_18m.mid'),
+    '80.00 · VL 18M target'
+  );
+  assert.equal(formatValuationReferenceLabel(null, null), '—');
 });
 
 test('hasFairValueEditChanges detects identical and changed edit maps', () => {

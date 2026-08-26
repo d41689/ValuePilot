@@ -45,8 +45,8 @@ services:
       DATABASE_URL: postgresql://${VALUEPILOT_DB_USER:-valuepilot}:${VALUEPILOT_DB_PASSWORD:-valuepilot}@postgres:5432/${VALUEPILOT_PROD_DB:-valuepilot_prod}
     volumes:
       - ./docs:/code/docs:ro
-      - ./storage/uploads:/code/storage/uploads
-      - ./storage/edgar_raw:/code/storage/edgar_raw
+      - ${VALUEPILOT_UPLOADS_DIR:-./storage/uploads}:/code/storage/uploads
+      - ${VALUEPILOT_EDGAR_RAW_DIR:-./storage/edgar_raw}:/code/storage/edgar_raw
     # Explicit shutdown budget for the graceful path below: uvicorn drains
     # connections, then FastAPI lifespan runs scheduler.shutdown() +
     # job_worker.stop(timeout=5s). 15s leaves margin over Docker's 10s default.

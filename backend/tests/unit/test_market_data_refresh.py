@@ -26,6 +26,7 @@ class FakeProvider:
             "close": 105.0,
             "volume": 1_000_000,
             "adj_close": None,
+            "currency": "USD",
         }
 
 
@@ -227,8 +228,10 @@ def test_backfill_13f_linked_period_prices_skips_existing_and_uses_period_busine
     microsoft = Stock(ticker="MSFT", exchange="NDQ", company_name="Microsoft")
     db_session.add_all([apple, microsoft])
     db_session.flush()
-    period = date(2024, 3, 31)  # Sunday; target price date should be Friday.
-    target_date = date(2024, 3, 29)
+    # Sunday quarter end; Friday was Good Friday, so the last NYSE/Nasdaq
+    # session was Thursday.
+    period = date(2024, 3, 31)
+    target_date = date(2024, 3, 28)
     _make_filing_holding(db_session, manager, apple, period=period, accession="backfill-a")
     _make_filing_holding(db_session, manager_2, microsoft, period=period, accession="backfill-m")
     db_session.add(
@@ -254,8 +257,8 @@ def test_backfill_13f_linked_period_prices_skips_existing_and_uses_period_busine
     )
 
     assert sorted((row["ticker"], row["status"], row["target_date"]) for row in results) == [
-        ("AAPL", "skipped", "2024-03-29"),
-        ("MSFT", "refreshed", "2024-03-29"),
+        ("AAPL", "skipped", "2024-03-28"),
+        ("MSFT", "refreshed", "2024-03-28"),
     ]
     assert provider.calls == [("MSFT", "NDQ", target_date)]
     microsoft_price = (
