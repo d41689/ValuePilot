@@ -4,7 +4,12 @@ from datetime import date
 
 import pytest
 
-from app.edgar.parsers.form_idx import parse_form_idx, quarter_to_year_qtr, form_idx_url
+from app.edgar.parsers.form_idx import (
+    form_idx_url,
+    parse_daily_13f_form_idx,
+    parse_form_idx,
+    quarter_to_year_qtr,
+)
 from app.edgar.parsers.infotable import parse_infotable, compute_total_value, _fingerprint
 from app.dataroma.parsers.managers import parse_managers
 from app.dataroma.parsers.holdings import parse_holdings
@@ -41,6 +46,49 @@ def test_parse_form_idx_skips_non_13f():
     records = parse_form_idx(FORM_IDX_SAMPLE)
     ciks = {r.cik for r in records}
     assert "0009999999" not in ciks
+
+
+def test_daily_form_idx_includes_notice_and_notice_amendment_family():
+    sample = textwrap.dedent("""\
+        Form Type   Company Name                                                  CIK         Date Filed  File Name
+        ------------------------------------------------------------------------------------------------------------------------
+        13F-NT      NOTICE MANAGER LLC                                             1000001     2024-02-14  edgar/data/1000001/0001000001-24-000001.txt
+        13F-NT/A    NOTICE MANAGER LLC                                             1000001     2024-02-15  edgar/data/1000001/0001000001-24-000002.txt
+    """).encode()
+
+    records = parse_daily_13f_form_idx(sample)
+
+    assert [record.form_type for record in records] == ["13F-NT", "13F-NT/A"]
+
+
+def test_daily_form_idx_accepts_secs_compact_yyyymmdd_date_format():
+    """Real EDGAR daily indexes use 20260514, unlike quarterly YYYY-MM-DD."""
+    sample = textwrap.dedent("""\
+        Form Type   Company Name                                                  CIK
+              Date Filed  File Name
+        ---------------------------------------------------------------------------------------------------------------------------------------------
+        13F-HR           BERKSHIRE HATHAWAY INC                                   1067983     20260514    edgar/data/1067983/0001067983-26-000001.txt
+    """).encode()
+
+    records = parse_daily_13f_form_idx(sample)
+
+    assert len(records) == 1
+    assert records[0].filed_at == date(2026, 5, 14)
+    assert records[0].accession_no == "0001067983-26-000001"
+
+
+def test_quarterly_form_idx_includes_notice_family_for_historical_coverage():
+    sample = textwrap.dedent("""\
+        Form Type   Company Name                                                  CIK         Date Filed  File Name
+        ------------------------------------------------------------------------------------------------------------------------
+        13F-HR      HOLDINGS MANAGER LLC                                           1000001     2024-02-14  edgar/data/1000001/0001000001-24-000001.txt
+        13F-NT      NOTICE MANAGER LLC                                             1000002     2024-02-14  edgar/data/1000002/0001000002-24-000001.txt
+        13F-NT/A    NOTICE MANAGER LLC                                             1000002     2024-02-15  edgar/data/1000002/0001000002-24-000002.txt
+    """).encode()
+
+    records = parse_form_idx(sample)
+
+    assert [record.form_type for record in records] == ["13F-HR", "13F-NT", "13F-NT/A"]
 
 
 def test_quarter_to_year_qtr():

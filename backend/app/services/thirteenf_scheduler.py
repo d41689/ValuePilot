@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import date, datetime, time, timezone
+from datetime import date, datetime, time, timedelta, timezone
 from zoneinfo import ZoneInfo
 
 from sqlalchemy.orm import Session
@@ -25,12 +25,15 @@ def queue_daily_sync_poll(
     queued = 0
     skipped_active = 0
     skipped_before_earliest = 0
+    skipped_no_index = 0
 
     for sync_date in target_dates:
         if _is_today_in_eastern(sync_date, now) and not _past_earliest_attempt(now):
             skipped_before_earliest += 1
             continue
+        _materialize_weekend(session, sync_date)
         if NoIndexExpectedDate.active_for_date(session, sync_date):
+            skipped_no_index += 1
             continue
         dedupe_key = f"fetch_daily_index:{sync_date.isoformat()}"
         existing = (
@@ -59,6 +62,7 @@ def queue_daily_sync_poll(
         "queued": queued,
         "skipped_active": skipped_active,
         "skipped_before_earliest_attempt": skipped_before_earliest,
+        "skipped_no_index": skipped_no_index,
     }
 
 
@@ -94,16 +98,56 @@ def mark_retry_exhausted_daily_syncs_no_data(
 
 def _eligible_sync_dates(session: Session, *, now: datetime) -> list[date]:
     today_et = now.astimezone(EASTERN).date()
-    rows = (
-        session.query(EdgarSyncStatus.sync_date)
-        .filter(EdgarSyncStatus.status.in_(RETRYABLE_SYNC_STATUSES))
-        .order_by(EdgarSyncStatus.sync_date.desc())
+    recorded_rows = (
+        session.query(EdgarSyncStatus.sync_date, EdgarSyncStatus.status)
+        .filter(EdgarSyncStatus.sync_date <= today_et)
+        .order_by(EdgarSyncStatus.sync_date.asc())
         .all()
     )
-    dates = [row.sync_date for row in rows]
-    if today_et not in dates:
-        dates.insert(0, today_et)
-    return dates
+    bootstrap_days = max(int(settings.THIRTEENF_DAILY_SYNC_BOOTSTRAP_DAYS), 1)
+    bootstrap_start = today_et - timedelta(days=bootstrap_days - 1)
+    scan_start = min(recorded_rows[0].sync_date, bootstrap_start) if recorded_rows else bootstrap_start
+    recorded_dates = {row.sync_date for row in recorded_rows}
+    no_index_dates = {
+        row.date
+        for row in (
+            session.query(NoIndexExpectedDate.date)
+            .filter(NoIndexExpectedDate.date <= today_et)
+            .filter(NoIndexExpectedDate.active.is_(True))
+            .all()
+        )
+    }
+    dates = {
+        row.sync_date
+        for row in recorded_rows
+        if row.status in RETRYABLE_SYNC_STATUSES
+    }
+    cursor = scan_start
+    while cursor <= today_et:
+        if cursor not in recorded_dates and cursor not in no_index_dates:
+            dates.add(cursor)
+        cursor += timedelta(days=1)
+    return sorted(dates, reverse=True)
+
+
+def _materialize_weekend(session: Session, sync_date: date) -> None:
+    """Record deterministic no-index weekends before the queue decision.
+
+    Federal holidays and special EDGAR closures remain table-driven because
+    their operational calendar is not identical to a market-holiday calendar.
+    Weekends require no provider and must never produce predictable 404 noise.
+    """
+    if sync_date.weekday() < 5 or session.get(NoIndexExpectedDate, sync_date) is not None:
+        return
+    session.add(
+        NoIndexExpectedDate(
+            date=sync_date,
+            reason="weekend",
+            source="auto_generated",
+            holiday_name=sync_date.strftime("%A"),
+        )
+    )
+    session.flush()
 
 
 def _is_today_in_eastern(sync_date: date, now: datetime) -> bool:

@@ -1,0 +1,120 @@
+{
+  "schema": "thirteenf_dataroma_reconciliation.v1",
+  "generated_at": "2026-07-19T15:17:35.130799+00:00",
+  "authority": "SEC/EDGAR via ValuePilot active filing and current parse run",
+  "corroborating_source": "Dataroma",
+  "counts": {
+    "managers_total": 1,
+    "managers_mapped": 1,
+    "managers_unmapped": 0,
+    "managers_fetch_failed": 0,
+    "managers_with_differences": 1,
+    "differences_total": 7,
+    "suspected_valuepilot_defects": 0,
+    "unclassified_material_differences": 0
+  },
+  "managers": [
+    {
+      "manager_id": 4036,
+      "cik": "0001720792",
+      "display_name": "Ruane, Cunniff & Goldfarb",
+      "dataroma_code": "RC",
+      "status": "compared",
+      "source_urls": {
+        "holdings": "https://www.dataroma.com/m/holdings.php?m=RC",
+        "activity": "https://www.dataroma.com/m/m_activity.php?m=RC&typ=a",
+        "buys": "https://www.dataroma.com/m/m_activity.php?m=RC&typ=b",
+        "sells": "https://www.dataroma.com/m/m_activity.php?m=RC&typ=s",
+        "history": "https://www.dataroma.com/m/hist/p_hist.php?f=RC"
+      },
+      "differences": [
+        {
+          "scope": "holdings",
+          "field": "position_presence",
+          "quarter": "2026-Q1",
+          "ticker": "GLBAV.OLD",
+          "valuepilot": "missing",
+          "dataroma": "present",
+          "classification": "identity_or_coverage",
+          "valuepilot_defect": null,
+          "severity": "error",
+          "explanation": "A ticker exists in only one normalized holdings set; inspect SEC row identity, options, amendments, and Dataroma policy."
+        },
+        {
+          "scope": "holdings",
+          "field": "position_presence",
+          "quarter": "2026-Q1",
+          "ticker": "GLIBA",
+          "valuepilot": "present",
+          "dataroma": "missing",
+          "classification": "identity_or_coverage",
+          "valuepilot_defect": null,
+          "severity": "error",
+          "explanation": "A ticker exists in only one normalized holdings set; inspect SEC row identity, options, amendments, and Dataroma policy."
+        },
+        {
+          "scope": "activity",
+          "field": "position_presence",
+          "quarter": "2026-Q1",
+          "ticker": "GLBAV.OLD",
+          "valuepilot": "missing",
+          "dataroma": "present",
+          "classification": "identity_or_coverage",
+          "valuepilot_defect": null,
+          "severity": "error",
+          "explanation": "An activity row exists in only one normalized set."
+        },
+        {
+          "scope": "activity",
+          "field": "action",
+          "quarter": "2026-Q1",
+          "ticker": "GLIBA",
+          "valuepilot": "reduce",
+          "dataroma": "sell",
+          "classification": "identity_or_source_policy",
+          "valuepilot_defect": null,
+          "severity": "warning",
+          "explanation": "The sources classify the quarter-over-quarter transition differently; inspect CUSIP changes, corporate actions, and source carry-forward policy."
+        },
+        {
+          "scope": "activity",
+          "field": "share_change",
+          "quarter": "2026-Q1",
+          "ticker": "GLIBA",
+          "valuepilot": 3620,
+          "dataroma": 131168,
+          "classification": "identity_or_source_policy",
+          "valuepilot_defect": null,
+          "severity": "warning",
+          "explanation": "Share-change amounts differ; inspect fractional splits, CUSIP transitions, amendments, and source carry-forward policy."
+        },
+        {
+          "scope": "activity",
+          "field": "activity_pct",
+          "quarter": "2026-Q1",
+          "ticker": "GLIBA",
+          "valuepilot": 2.7598,
+          "dataroma": 100.0,
+          "classification": "calculation_policy_difference",
+          "valuepilot_defect": false,
+          "severity": "warning",
+          "explanation": "The displayed share-change percentage differs; ValuePilot uses SEC current/previous shares while Dataroma may use adjusted identity or a different denominator."
+        },
+        {
+          "scope": "activity",
+          "field": "portfolio_impact_pct",
+          "quarter": "2026-Q1",
+          "ticker": "GLIBA",
+          "valuepilot": 0.002212862321644841,
+          "dataroma": 0.08,
+          "classification": "reporting_policy_difference",
+          "valuepilot_defect": false,
+          "severity": "info",
+          "explanation": "Portfolio-impact denominators are not standardized in 13F; ValuePilot uses filing-derived current/previous weights while Dataroma applies its own adjusted denominator."
+        }
+      ],
+      "dataroma_latest_quarter": "2026-Q1",
+      "valuepilot_latest_quarter": "2026-Q1"
+    }
+  ]
+}

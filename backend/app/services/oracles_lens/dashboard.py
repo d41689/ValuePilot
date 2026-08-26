@@ -11,12 +11,19 @@ from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.models.facts import MetricFact
-from app.models.institutions import Filing13F, Holding13F, InstitutionManager
+from app.models.institutions import Filing13F, Holding13F, InstitutionManager, ParseRun13F
 from app.models.oracles_lens import OraclesLensSignal
 from app.models.stocks import Stock, StockPrice
+from app.services.market_data_service import read_canonical_eod_series
 from app.edgar.parsers.value_units import TRANSITION_ACCEPTED_DATE
 from app.services.oracles_lens.constants import SCORE_VERSION
+from app.services.valuation import (
+    USER_INTRINSIC_VALUE_KEY,
+    VALUE_LINE_TARGET_REFERENCE_KEY,
+    read_valuation_facts_by_stock,
+)
 from app.services.oracles_lens.manager_signal import derive_manager_signal_profile
+from app.services.thirteenf_holdings_query import HR_FORM_TYPES, active_hr_holdings_query
 
 
 BASELINE_NOTICE = (
@@ -31,12 +38,6 @@ QUALITY_METRIC_KEYS = {
     "net_profit_margin": "is.net_profit_margin",
     "debt_to_capital": "leverage.long_term_debt_to_capital",
     "owners_earnings": "owners_earnings_per_share_normalized",
-}
-MANUAL_VALUATION_REFERENCE_KEY = "val.fair_value"
-VALUE_LINE_VALUATION_REFERENCE_KEY = "target.price_18m.mid"
-VALUATION_REFERENCE_KEYS = {
-    MANUAL_VALUATION_REFERENCE_KEY,
-    VALUE_LINE_VALUATION_REFERENCE_KEY,
 }
 
 
@@ -105,6 +106,7 @@ def build_oracles_lens_dashboard(
     use_persisted_scores: bool = False,
     manager_id_allowlist: set[int] | None = None,
     universe_metadata: dict[str, Any] | None = None,
+    user_id: int | None = None,
 ) -> dict[str, Any]:
     """Build the Oracle's Lens dashboard payload.
 
@@ -254,6 +256,7 @@ def build_oracles_lens_dashboard(
         [item["stock_id"] for item in items],
         price_as_of_date=price_as_of_date,
         price_context=price_context,
+        user_id=user_id,
     )
     valuation_by_stock = _valuation_reference_by_stock(
         session,
@@ -266,6 +269,7 @@ def build_oracles_lens_dashboard(
         },
         price_as_of_date=price_as_of_date,
         price_context=price_context,
+        user_id=user_id,
     )
     for item in items:
         item["quality_overlay"] = quality_by_stock.get(item["stock_id"], _empty_quality_overlay())
@@ -507,8 +511,12 @@ def _periods(session: Session, *, superinvestor_only: bool) -> list[PeriodInfo]:
             Filing13F.period_of_report,
             func.count(func.distinct(Filing13F.manager_id)),
         )
+        .join(ParseRun13F, ParseRun13F.accession_number == Filing13F.accession_number)
         .join(InstitutionManager, InstitutionManager.id == Filing13F.manager_id)
-        .filter(Filing13F.is_latest_for_period.is_(True))
+        .filter(Filing13F.form_type.in_(HR_FORM_TYPES))
+        .filter(Filing13F.is_active_for_manager_period.is_(True))
+        .filter(ParseRun13F.is_current.is_(True))
+        .filter(ParseRun13F.status == "succeeded")
         .filter(InstitutionManager.match_status == "confirmed")
         .filter(InstitutionManager.cik.isnot(None))
     )
@@ -559,12 +567,13 @@ def _holdings_for_period(
         # Empty allowlist = no managers qualify; nothing to load.
         return {}
     query = (
-        session.query(Holding13F, Filing13F, InstitutionManager, Stock)
-        .join(Filing13F, Filing13F.id == Holding13F.filing_id)
+        active_hr_holdings_query(session)
+        .add_entity(Filing13F)
+        .add_entity(InstitutionManager)
+        .add_entity(Stock)
         .join(InstitutionManager, InstitutionManager.id == Filing13F.manager_id)
         .join(Stock, Stock.id == Holding13F.stock_id)
         .filter(Filing13F.period_of_report == period_end)
-        .filter(Filing13F.is_latest_for_period.is_(True))
         .filter(InstitutionManager.match_status == "confirmed")
         .filter(InstitutionManager.cik.isnot(None))
         .filter(Holding13F.stock_id.isnot(None))
@@ -1137,6 +1146,8 @@ def _m3_facts_by_stock(
     session: Session,
     stock_ids: list[int],
     metric_keys: list[str],
+    *,
+    user_id: int | None = None,
 ) -> dict[int, dict[str, MetricFact]]:
     """Most-recent ``is_current=True`` ``MetricFact`` per (stock_id, metric_key).
 
@@ -1153,11 +1164,12 @@ def _m3_facts_by_stock(
     ingestion-side fix lands (D4 of this sweep ticket).
     """
     unique_stock_ids = list(dict.fromkeys(stock_ids))
-    if not unique_stock_ids or not metric_keys:
+    if user_id is None or not unique_stock_ids or not metric_keys:
         return {stock_id: {} for stock_id in unique_stock_ids}
 
     facts = (
         session.query(MetricFact)
+        .filter(MetricFact.user_id == user_id)
         .filter(MetricFact.stock_id.in_(unique_stock_ids))
         .filter(MetricFact.metric_key.in_(metric_keys))
         .filter(MetricFact.is_current.is_(True))
@@ -1183,13 +1195,17 @@ def _quality_overlay_by_stock(
     *,
     price_as_of_date: date | None = None,
     price_context: str = "latest",
+    user_id: int | None = None,
 ) -> dict[int, dict[str, Any]]:
     unique_stock_ids = list(dict.fromkeys(stock_ids))
     if not unique_stock_ids:
         return {}
 
     facts_by_metric_key = _m3_facts_by_stock(
-        session, unique_stock_ids, list(QUALITY_METRIC_KEYS.values())
+        session,
+        unique_stock_ids,
+        list(QUALITY_METRIC_KEYS.values()),
+        user_id=user_id,
     )
     reverse_keys = {metric_key: label for label, metric_key in QUALITY_METRIC_KEYS.items()}
     facts_by_stock: dict[int, dict[str, MetricFact]] = {stock_id: {} for stock_id in unique_stock_ids}
@@ -1216,20 +1232,21 @@ def _latest_prices_by_stock(
     *,
     as_of_date: date | None = None,
 ) -> dict[int, StockPrice]:
-    query = (
-        session.query(StockPrice)
-        .filter(StockPrice.stock_id.in_(stock_ids))
+    # The latest-period dashboard historically means latest locally stored
+    # observation; fixture datasets may intentionally be forward-dated. The
+    # coverage/freshness surface separately classifies whether that observation
+    # is plausible for the real current session.
+    through = as_of_date or date.max
+    series = read_canonical_eod_series(
+        session,
+        stock_ids=stock_ids,
+        through=through,
     )
-    if as_of_date is not None:
-        query = query.filter(StockPrice.price_date <= as_of_date)
-    prices = (
-        query.order_by(StockPrice.stock_id.asc(), StockPrice.price_date.desc(), StockPrice.created_at.desc()).all()
-    )
-    result: dict[int, StockPrice] = {}
-    for price in prices:
-        if price.stock_id not in result:
-            result[price.stock_id] = price
-    return result
+    return {
+        stock_id: rows[0]
+        for stock_id, rows in series.items()
+        if rows
+    }
 
 
 def _quality_payload(
@@ -1357,39 +1374,17 @@ def _valuation_reference_by_stock(
     *,
     price_as_of_date: date | None = None,
     price_context: str = "latest",
+    user_id: int | None = None,
 ) -> dict[int, dict[str, Any]]:
     stock_ids = list(holder_ranges_by_stock)
     if not stock_ids:
         return {}
 
-    # PR #33 Staff A1: align the tiebreak with ``_m3_facts_by_stock`` so
-    # opinion metrics (``target.price_18m.mid``) pick the most recent VL
-    # publication when multiple ``is_current=True`` rows coexist across
-    # ``period_end_date`` values. Pre-PR-33 this only ordered by
-    # ``created_at DESC``, which could surface a stale opinion when an
-    # older row was ingested later. Full unification with
-    # ``_m3_facts_by_stock`` is queued in the Option A read-path audit
-    # follow-up ticket; this minimal change closes the immediate
-    # inconsistency.
-    facts = (
-        session.query(MetricFact)
-        .filter(MetricFact.stock_id.in_(stock_ids))
-        .filter(MetricFact.metric_key.in_(VALUATION_REFERENCE_KEYS))
-        .filter(MetricFact.is_current.is_(True))
-        .filter(MetricFact.value_numeric.isnot(None))
-        .order_by(
-            MetricFact.stock_id.asc(),
-            MetricFact.period_end_date.desc().nullslast(),
-            MetricFact.created_at.desc(),
-        )
-        .all()
+    facts_by_stock = read_valuation_facts_by_stock(
+        session,
+        user_id=user_id,
+        stock_ids=stock_ids,
     )
-    facts_by_stock: dict[int, dict[str, MetricFact]] = {stock_id: {} for stock_id in stock_ids}
-    for fact in facts:
-        if fact.metric_key == MANUAL_VALUATION_REFERENCE_KEY and fact.source_type != "manual":
-            continue
-        if fact.metric_key not in facts_by_stock[fact.stock_id]:
-            facts_by_stock[fact.stock_id][fact.metric_key] = fact
 
     latest_prices = _latest_prices_by_stock(session, stock_ids, as_of_date=price_as_of_date)
     return {
@@ -1412,8 +1407,8 @@ def _valuation_payload(
 ) -> dict[str, Any]:
     price = float(latest_price.close) if latest_price and latest_price.close is not None else None
     holder_low, holder_high = holder_range
-    manual = facts.get(MANUAL_VALUATION_REFERENCE_KEY)
-    target = facts.get(VALUE_LINE_VALUATION_REFERENCE_KEY)
+    manual = facts.get(USER_INTRINSIC_VALUE_KEY)
+    target = facts.get(VALUE_LINE_TARGET_REFERENCE_KEY)
     reference = None
     reference_label = None
     reference_type = "missing"
@@ -1475,11 +1470,11 @@ def _coverage(
     price_target_date: date | None = None,
 ) -> dict[str, Any]:
     query = (
-        session.query(Holding13F, Filing13F, InstitutionManager)
-        .join(Filing13F, Filing13F.id == Holding13F.filing_id)
+        active_hr_holdings_query(session)
+        .add_entity(Filing13F)
+        .add_entity(InstitutionManager)
         .join(InstitutionManager, InstitutionManager.id == Filing13F.manager_id)
         .filter(Filing13F.period_of_report == period_end)
-        .filter(Filing13F.is_latest_for_period.is_(True))
         .filter(InstitutionManager.match_status == "confirmed")
         .filter(InstitutionManager.cik.isnot(None))
     )

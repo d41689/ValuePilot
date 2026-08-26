@@ -3,14 +3,14 @@
 When ``THIRTEENF_START_QUARTER`` is configured, the API boot lifespan calls
 ``reconcile_start_quarter_coverage`` which walks each quarter from the
 configured start through ``latest_scoreable_quarter()`` and enqueues a
-``quarterly_pipeline`` job for any quarter that has no Oracle's Lens signal
-rows yet (see ``_has_meaningful_coverage``).
+``quarterly_pipeline`` job for any quarter that has no complete six-stage
+pipeline manifest yet (see ``_has_meaningful_coverage``).
 
 This implements the "set a start date and walk away" PRD vision: operators
 configure one env var; the system fills the backfill end-to-end without
 further button clicks. Re-runs across restarts are safe — quarters whose
-pipeline produced terminal output (signal rows) are skipped, and every
-pipeline stage is individually idempotent.
+pipeline completed all required stages are skipped, and every pipeline stage
+is individually idempotent.
 """
 from __future__ import annotations
 
@@ -102,54 +102,112 @@ def quarters_in_range(start: str, end: str) -> Iterator[str]:
             y += 1
 
 
+_REQUIRED_PIPELINE_STAGES = {
+    "fetch_quarter_index",
+    "ingest_holdings",
+    "enrich_metadata",
+    "quality_check",
+    "compute_ownership_changes",
+    "oracles_lens_score_backfill",
+}
+
+
 def _has_meaningful_coverage(db: Session, quarter: str) -> bool:
-    """Return True iff this quarter has Oracle's Lens signal rows — i.e. the
-    quarterly_pipeline ran all the way through and its final stage produced
-    output. Used by the reconcile to decide "skip — done" versus "re-enqueue
-    — work missing".
+    """Return True only for a persisted, complete quarterly-pipeline manifest.
 
-    Why anchor strictly on oracles_lens_signals row existence?
+    Neither one filing nor one Oracle's Lens signal proves full-quarter
+    ingestion. Conversely, a legitimately empty scoring result should not make
+    an otherwise complete quarter run forever. The completion contract is the
+    terminal parent job plus exactly the six required stages and no pipeline
+    warning/error. A narrowly-defined exception accepts a partial ingest whose
+    only degradation is fully-routed human-review evidence (for example a very
+    late filing with an explicit quarter-end) after all dependent read models
+    have been recomputed. The review signal remains visible, but rebooting does
+    not enqueue the same deterministic data forever.
 
-    This criterion has now been moved several times, each time hitting the
-    same trap — using a *job status* or an *intermediate* column as proof of
-    completeness:
-
-      - JobRun.status == 'succeeded' — stage status reflects whether stages
-        threw, not whether they did useful work (a swallowed ImportError
-        still returned 'succeeded').
-      - Filing13F.quarter_end_date populated — an intermediate column; once
-        routing backfilled it, the reconcile skipped quarters whose later
-        stages had never run.
-      - A succeeded oracles_lens_score_backfill job (PR #56's first cut) —
-        rejected on re-review: scoring can succeed with ZERO signals when
-        the upstream is incomplete (managers not yet seeded, routing
-        partial, holdings not yet CUSIP-linked). Treating that as terminal
-        freezes an incomplete quarter forever — the exact bug we keep
-        trying to escape.
-
-    The only signal that genuinely means "the pipeline completed and
-    produced results" is the terminal output itself: oracles_lens_signals
-    rows. A quarter with 0 signal rows is either incomplete (re-run will
-    self-heal once upstream is fixed) or — for a real ~70-manager universe —
-    a near-impossible "no stock held by >= min_holders managers" case. In
-    that rare case the quarter re-enqueues once per boot; the re-run is an
-    idempotent no-op (cache hits, fingerprint-skip, score upserts) and boots
-    are infrequent. The in-progress calendar quarter, which structurally has
-    no signals, is already excluded by latest_scoreable_quarter() bounding
-    end_quarter — so this method never sees it.
-
-    Net: never treat job success as data completeness. Re-running a
-    genuinely-empty quarter occasionally is a negligible cost; freezing an
-    incomplete quarter is not.
+    This is deliberately stricter than ``JobRun.status == 'succeeded'``. Old
+    jobs without the structured manifest, partial stage lists, and summaries
+    produced by the former swallow-and-continue paths all fail closed and are
+    re-enqueued. The current stage runner fails programming errors loudly and
+    the parent downgrades any non-green stage or cross-stage warning.
     """
-    from app.models.oracles_lens import OraclesLensSignal
+    from app.models.institutions import JobRun
 
-    return (
-        db.query(OraclesLensSignal.id)
-        .filter(OraclesLensSignal.report_quarter == quarter)
-        .first()
-        is not None
+    jobs = (
+        db.query(JobRun)
+        .filter(JobRun.job_type == "quarterly_pipeline")
+        .filter(JobRun.quarter == quarter)
+        .filter(JobRun.status.in_(["succeeded", "partial_success"]))
+        .order_by(JobRun.created_at.desc(), JobRun.id.desc())
+        .all()
     )
+    for job in jobs:
+        summary = job.summary_json if isinstance(job.summary_json, dict) else {}
+        if summary.get("summary_schema") != "quarterly_pipeline_summary.v1":
+            continue
+        if summary.get("quarter") != quarter:
+            continue
+        if summary.get("pipeline_warning") or summary.get("pipeline_error"):
+            continue
+        stages = summary.get("stages")
+        if not isinstance(stages, list) or len(stages) != len(_REQUIRED_PIPELINE_STAGES):
+            continue
+        if any(not isinstance(stage, dict) for stage in stages):
+            continue
+        stage_types = {stage.get("job_type") for stage in stages}
+        if stage_types != _REQUIRED_PIPELINE_STAGES:
+            continue
+        stages_all_green = all(
+            stage.get("status") == "succeeded" for stage in stages
+        )
+        if job.status == "succeeded":
+            if not stages_all_green:
+                continue
+        elif not _is_resolved_routing_review_manifest(job, summary, stages):
+            continue
+        return True
+    return False
+
+
+def _is_resolved_routing_review_manifest(
+    job, summary: dict, stages: list[dict]
+) -> bool:
+    """True only for a terminal, fully-routed ingest review.
+
+    Missing/invalid/off-quarter periods remain incomplete because they have no
+    trustworthy report quarter. Fetch, parse, quarantine, and dependent-refresh
+    failures also fail closed.
+    """
+    if job.status != "partial_success":
+        return False
+    non_green = [stage for stage in stages if stage.get("status") != "succeeded"]
+    if len(non_green) != 1 or non_green[0].get("job_type") != "ingest_holdings":
+        return False
+
+    ingest = summary.get("holdings_ingestion")
+    if not isinstance(ingest, dict) or ingest.get("status") != "partial_success":
+        return False
+    if any(
+        int(ingest.get(key) or 0) > 0
+        for key in (
+            "filings_failed",
+            "filings_quarantined",
+            "filings_routing_failed",
+        )
+    ):
+        return False
+
+    review_total = int(ingest.get("filings_routing_needs_review") or 0)
+    review_routed = int(ingest.get("filings_routing_needs_review_routed") or 0)
+    review_unrouted = int(ingest.get("filings_routing_needs_review_unrouted") or 0)
+    if review_total <= 0 or review_total != review_routed or review_unrouted:
+        return False
+
+    targets = set(summary.get("dependent_recompute_targets") or [])
+    recomputed = set(summary.get("quarters_recomputed") or [])
+    if targets - recomputed or summary.get("quarters_needing_recompute"):
+        return False
+    return True
 
 
 # Back-compat alias — older code paths might import this name.
@@ -164,7 +222,7 @@ def reconcile_start_quarter_coverage(
     requested_by_user_id: int | None = None,
 ) -> dict[str, list[str] | str]:
     """Enqueue ``quarterly_pipeline`` jobs for every quarter in the configured
-    range that has no prior successful run.
+    range that has no prior complete six-stage run.
 
     Defaults:
         - ``start_quarter`` from ``settings.THIRTEENF_START_QUARTER``.

@@ -32,7 +32,12 @@ from datetime import date, datetime, timezone
 
 import pytest
 
-from app.models.institutions import Filing13F, InstitutionManager, RawSourceDocument
+from app.models.institutions import (
+    Filing13F,
+    InstitutionManager,
+    JobRun,
+    RawSourceDocument,
+)
 from app.services.thirteenf_admin_dashboard import (
     _ingest_candidate_filings,
     quarter_window,
@@ -275,8 +280,8 @@ def test_a_late_filed_13f_is_claimed_by_its_filed_quarters_pipeline(
     No `quarterly_pipeline(2025-Q4)` can reach it — its proxy is 2026-Q3, and a
     report-quarter job only widens to Q+1. It is claimed by `ingest(2026-Q2)`,
     whose filed-window is 2026-Q3, and routes to 2025-Q4 on parse. The pipeline
-    must then say so rather than leave 2025-Q4's stale scores unannounced; see
-    `test_a_pipeline_that_restated_another_quarter_says_so`.
+    must then automatically refresh 2025-Q4's dependent read models; see
+    `test_a_pipeline_automatically_recomputes_a_restated_quarter`.
     """
     late = _filing(
         db_session, manager,
@@ -598,11 +603,15 @@ def test_a_pipeline_that_ingested_only_another_quarters_filings_is_not_green(
     assert "none belong to report quarter 2026-Q1" in result["pipeline_warning"]
 
 
-def test_a_pipeline_that_restated_another_quarter_says_so(db_session, monkeypatch):
-    """A late filing or an old-period amendment leaves that quarter's scores stale.
+def test_a_pipeline_automatically_recomputes_a_restated_quarter(
+    db_session, monkeypatch
+):
+    """Late filings must not turn unattended bootstrap into operator work.
 
-    The pipeline cannot recompute it (that quarter is not its own), but it must
-    not stay green about it — name the quarters and the two jobs to re-run.
+    The filed-quarter pipeline already has the authoritative parse in hand and
+    global enrichment has converged. It must refresh quality, ownership changes,
+    and Lens scores for every report quarter it changed instead of merely
+    reporting that those read models are stale.
     """
     from app.services.thirteenf_admin_dashboard import execute_job_payload
 
@@ -617,9 +626,101 @@ def test_a_pipeline_that_restated_another_quarter_says_so(db_session, monkeypatc
         db_session, "quarterly_pipeline", {"quarter": "2025-Q4", "_job_id": 4}
     )
 
+    assert result["status"] == "succeeded"
+    assert result["quarters_recomputed"] == ["2025-Q1", "2025-Q2", "2025-Q3"]
+    assert "quarters_needing_recompute" not in result
+    assert "pipeline_warning" not in result
+    assert {
+        (row.job_type, row.quarter)
+        for row in db_session.query(JobRun)
+        .filter(JobRun.trigger_source == "pipeline_recompute")
+        .all()
+    } == {
+        (job_type, quarter)
+        for quarter in ("2025-Q1", "2025-Q2", "2025-Q3")
+        for job_type in (
+            "quality_check",
+            "compute_ownership_changes",
+            "oracles_lens_score_backfill",
+        )
+    }
+
+
+def test_restated_holdings_also_refresh_the_materialized_following_quarter(
+    db_session, manager, monkeypatch
+):
+    """A quarter's holdings are the next quarter's comparison baseline.
+
+    Recomputing only the restated quarter would fix its own change rows while
+    leaving the already-materialized following quarter's Reduce/Sell/Add/Buy
+    classifications and Lens components stale.
+    """
+    from app.services.thirteenf_admin_dashboard import execute_job_payload
+
+    _filing(
+        db_session,
+        manager,
+        accession="0001067983-25-000099",
+        period=date(2025, 6, 30),
+        filed=date(2025, 8, 14),
+        ingested=True,
+    )
+    _stub_pipeline(monkeypatch, inserted=1, ingest_summary={
+        "filings_processed": 1,
+        "filings_for_requested_quarter": 0,
+        "filings_routed_to_other_quarters": {"2025-Q1": 1},
+        "filings_failed": 0,
+        "holdings_inserted": 1,
+    })
+
+    result = execute_job_payload(
+        db_session, "quarterly_pipeline", {"quarter": "2025-Q4", "_job_id": 5}
+    )
+
+    assert result["dependent_recompute_targets"] == ["2025-Q1", "2025-Q2"]
+    assert result["quarters_recomputed"] == ["2025-Q1", "2025-Q2"]
+
+
+def test_failed_automatic_recompute_keeps_the_parent_degraded(
+    db_session, monkeypatch
+):
+    """Automation must fail loud if a dependent refresh cannot converge."""
+    import app.services.thirteenf_admin_dashboard as dashboard
+
+    _stub_pipeline(monkeypatch, inserted=1, ingest_summary={
+        "filings_processed": 1,
+        "filings_for_requested_quarter": 1,
+        "filings_routed_to_other_quarters": {"2025-Q1": 1},
+        "filings_failed": 0,
+        "holdings_inserted": 1,
+    })
+    real_stage = dashboard._execute_pipeline_stage_job
+
+    def fail_dependent_quality(session, **kwargs):
+        if (
+            kwargs.get("trigger_source") == "pipeline_recompute"
+            and kwargs.get("job_type") == "quality_check"
+        ):
+            return {
+                "stage": {
+                    "job_type": "quality_check",
+                    "job_id": 999,
+                    "status": "failed",
+                },
+                "summary": {"status": "failed"},
+                "error": "synthetic dependent failure",
+            }
+        return real_stage(session, **kwargs)
+
+    monkeypatch.setattr(dashboard, "_execute_pipeline_stage_job", fail_dependent_quality)
+
+    result = dashboard.execute_job_payload(
+        db_session, "quarterly_pipeline", {"quarter": "2025-Q4", "_job_id": 6}
+    )
+
     assert result["status"] == "partial_success"
-    assert result["quarters_needing_recompute"] == ["2025-Q1", "2025-Q2", "2025-Q3"]
-    assert "oracles_lens_score_backfill" in result["pipeline_warning"]
+    assert result["quarters_needing_recompute"] == ["2025-Q1"]
+    assert "automatic downstream recompute failed" in result["pipeline_warning"]
 
 
 def test_a_pipeline_rerun_that_fetches_nothing_new_stays_green(

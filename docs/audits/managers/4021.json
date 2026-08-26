@@ -1,0 +1,210 @@
+{
+  "schema": "thirteenf_dataroma_reconciliation.v1",
+  "generated_at": "2026-07-19T15:17:24.752850+00:00",
+  "authority": "SEC/EDGAR via ValuePilot active filing and current parse run",
+  "corroborating_source": "Dataroma",
+  "counts": {
+    "managers_total": 1,
+    "managers_mapped": 1,
+    "managers_unmapped": 0,
+    "managers_fetch_failed": 0,
+    "managers_with_differences": 1,
+    "differences_total": 9,
+    "suspected_valuepilot_defects": 0,
+    "unclassified_material_differences": 0
+  },
+  "managers": [
+    {
+      "manager_id": 4021,
+      "cik": "0001540866",
+      "display_name": "Tom Bancroft - Makaira Partners",
+      "dataroma_code": "MP",
+      "status": "compared",
+      "source_urls": {
+        "holdings": "https://www.dataroma.com/m/holdings.php?m=MP",
+        "activity": "https://www.dataroma.com/m/m_activity.php?m=MP&typ=a",
+        "buys": "https://www.dataroma.com/m/m_activity.php?m=MP&typ=b",
+        "sells": "https://www.dataroma.com/m/m_activity.php?m=MP&typ=s",
+        "history": "https://www.dataroma.com/m/hist/p_hist.php?f=MP"
+      },
+      "differences": [
+        {
+          "scope": "history",
+          "field": "portfolio_value_usd",
+          "quarter": "2025-Q4",
+          "ticker": null,
+          "valuepilot": 127897188,
+          "dataroma": 0.0,
+          "classification": "reporting_policy_or_value_unit",
+          "valuepilot_defect": null,
+          "severity": "error",
+          "explanation": "History value differs beyond the precision implied by '$0 M'."
+        },
+        {
+          "scope": "history",
+          "field": "top_holdings_order",
+          "quarter": "2023-Q3",
+          "ticker": null,
+          "valuepilot": [
+            "LBRDK",
+            "PGR",
+            "CDW",
+            null,
+            "BBWI",
+            "KMX",
+            "LAMR",
+            "DPZ",
+            "ZBRA",
+            "HEI.A"
+          ],
+          "dataroma": [
+            "LBRDK",
+            "PGR",
+            "CDW",
+            "ATVI",
+            "BBWI",
+            "KMX",
+            "LAMR",
+            "DPZ",
+            "ZBRA",
+            "HEI.A"
+          ],
+          "classification": "identity_or_aggregation",
+          "valuepilot_defect": null,
+          "severity": "error",
+          "explanation": "Top-holding ticker order differs after normalizing share-class separators."
+        },
+        {
+          "scope": "history",
+          "field": "top_holdings_order",
+          "quarter": "2023-Q2",
+          "ticker": null,
+          "valuepilot": [
+            "LBRDK",
+            "PGR",
+            "CDW",
+            null,
+            "BBWI",
+            "KMX",
+            "LAMR",
+            "DPZ",
+            "ZBRA",
+            "HEI.A"
+          ],
+          "dataroma": [
+            "LBRDK",
+            "PGR",
+            "CDW",
+            "ATVI",
+            "BBWI",
+            "KMX",
+            "LAMR",
+            "DPZ",
+            "ZBRA",
+            "HEI.A"
+          ],
+          "classification": "identity_or_aggregation",
+          "valuepilot_defect": null,
+          "severity": "error",
+          "explanation": "Top-holding ticker order differs after normalizing share-class separators."
+        },
+        {
+          "scope": "history",
+          "field": "top_holdings_order",
+          "quarter": "2023-Q1",
+          "ticker": null,
+          "valuepilot": [
+            "LBRDK",
+            "PGR",
+            "CDW",
+            null,
+            "BBWI",
+            "KMX",
+            "ZBRA",
+            "LAMR",
+            "DPZ",
+            "HEI.A"
+          ],
+          "dataroma": [
+            "LBRDK",
+            "PGR",
+            "CDW",
+            "ATVI",
+            "BBWI",
+            "KMX",
+            "ZBRA",
+            "LAMR",
+            "DPZ",
+            "HEI.A"
+          ],
+          "classification": "identity_or_aggregation",
+          "valuepilot_defect": null,
+          "severity": "error",
+          "explanation": "Top-holding ticker order differs after normalizing share-class separators."
+        },
+        {
+          "scope": "history",
+          "field": "quarter_coverage",
+          "quarter": "2022-Q4",
+          "ticker": null,
+          "valuepilot": "missing",
+          "dataroma": "available",
+          "classification": "intentional_scope_boundary",
+          "valuepilot_defect": false,
+          "severity": "info",
+          "explanation": "Dataroma exposes history before ValuePilot's locked default production backfill boundary (2023-Q1); this is an intentional scope difference."
+        },
+        {
+          "scope": "history",
+          "field": "quarter_coverage",
+          "quarter": "2022-Q3",
+          "ticker": null,
+          "valuepilot": "missing",
+          "dataroma": "available",
+          "classification": "intentional_scope_boundary",
+          "valuepilot_defect": false,
+          "severity": "info",
+          "explanation": "Dataroma exposes history before ValuePilot's locked default production backfill boundary (2023-Q1); this is an intentional scope difference."
+        },
+        {
+          "scope": "history",
+          "field": "quarter_coverage",
+          "quarter": "2022-Q2",
+          "ticker": null,
+          "valuepilot": "missing",
+          "dataroma": "available",
+          "classification": "intentional_scope_boundary",
+          "valuepilot_defect": false,
+          "severity": "info",
+          "explanation": "Dataroma exposes history before ValuePilot's locked default production backfill boundary (2023-Q1); this is an intentional scope difference."
+        },
+        {
+          "scope": "history",
+          "field": "quarter_coverage",
+          "quarter": "2022-Q1",
+          "ticker": null,
+          "valuepilot": "missing",
+          "dataroma": "available",
+          "classification": "intentional_scope_boundary",
+          "valuepilot_defect": false,
+          "severity": "info",
+          "explanation": "Dataroma exposes history before ValuePilot's locked default production backfill boundary (2023-Q1); this is an intentional scope difference."
+        },
+        {
+          "scope": "history",
+          "field": "quarter_coverage",
+          "quarter": "2021-Q4",
+          "ticker": null,
+          "valuepilot": "missing",
+          "dataroma": "available",
+          "classification": "intentional_scope_boundary",
+          "valuepilot_defect": false,
+          "severity": "info",
+          "explanation": "Dataroma exposes history before ValuePilot's locked default production backfill boundary (2023-Q1); this is an intentional scope difference."
+        }
+      ],
+      "dataroma_latest_quarter": "2026-Q1",
+      "valuepilot_latest_quarter": "2026-Q1"
+    }
+  ]
+}

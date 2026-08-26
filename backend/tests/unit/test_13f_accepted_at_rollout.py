@@ -213,8 +213,7 @@ def test_two_competing_restatements_with_null_are_at_risk(db_session):
 
 
 def test_admin_applied_amendment_slot_needs_no_ordering_evidence(db_session):
-    """`amendment_owned`: an admin already decided; a NULL accepted_at there
-    cannot freeze anything, so it is not an at-risk group."""
+    """A single applied amendment needs no ordering evidence."""
     mgr = _manager(db_session)
     _filing(db_session, mgr, accepted_at=None)
     applied = _filing(db_session, mgr, accepted_at=None)
@@ -226,6 +225,24 @@ def test_admin_applied_amendment_slot_needs_no_ordering_evidence(db_session):
     db_session.flush()
 
     assert verify_accepted_at_populated(db_session)["at_risk_groups"] == []
+
+
+def test_multiple_admin_applied_amendments_with_missing_acceptance_are_at_risk(db_session):
+    mgr = _manager(db_session)
+    for accepted_at in (None, datetime(2024, 5, 16, 20, 30, tzinfo=timezone.utc)):
+        applied = _filing(db_session, mgr, accepted_at=accepted_at)
+        applied.form_type = "13F-HR/A"
+        applied.is_amendment = True
+        applied.amendment_type = "NEW_HOLDINGS"
+        applied.amendment_status = "applied"
+        applied.parse_status = "succeeded"
+    db_session.flush()
+
+    at_risk = verify_accepted_at_populated(db_session)["at_risk_groups"]
+
+    assert len(at_risk) == 1
+    assert at_risk[0]["pool_kind"] == "amendment_owned"
+    assert at_risk[0]["pool_missing_accepted_at"] == 1
 
 
 def test_filing_without_quarter_end_date_fails_gate_but_is_not_at_risk(db_session):

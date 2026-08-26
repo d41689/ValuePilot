@@ -20,6 +20,22 @@ HR_FORM_TYPES = ("13F-HR", "13F-HR/A")
 NT_FORM_TYPES = ("13F-NT", "13F-NT/A")
 
 
+def current_parse_holdings_query(session: Session) -> Query:
+    """Holdings from the current successful parse of each accession.
+
+    This is the audit/version-detail primitive. Product snapshots should use
+    :func:`active_hr_holdings_query`, which adds active-filing authority.
+    """
+    return (
+        session.query(Holding13F)
+        .join(ParseRun13F, Holding13F.parse_run_id == ParseRun13F.id)
+        .filter(
+            ParseRun13F.is_current.is_(True),
+            ParseRun13F.status == "succeeded",
+        )
+    )
+
+
 def active_hr_holdings_query(session: Session) -> Query:
     """Base query for product-facing 13F holdings (PRD §7.3 contract).
 
@@ -32,8 +48,7 @@ def active_hr_holdings_query(session: Session) -> Query:
     rather than querying holdings_13f directly.
     """
     return (
-        session.query(Holding13F)
-        .join(ParseRun13F, Holding13F.parse_run_id == ParseRun13F.id)
+        current_parse_holdings_query(session)
         .join(
             Filing13F,
             Filing13F.accession_number == ParseRun13F.accession_number,
@@ -41,7 +56,6 @@ def active_hr_holdings_query(session: Session) -> Query:
         .filter(
             Filing13F.form_type.in_(HR_FORM_TYPES),
             Filing13F.is_active_for_manager_period.is_(True),
-            ParseRun13F.is_current.is_(True),
         )
     )
 

@@ -122,6 +122,25 @@ def parse_infotable(content: bytes) -> list[HoldingRow]:
         value_thousands = _int(value_raw_s) or 0
         shares = _int(shares_raw)
 
+        # Some valid zero-position 13F-HR filings encode an all-zero "NONE"
+        # infoTable row because their XML generator cannot emit an empty table
+        # (real example: Makaira Partners accession 0001540866-26-000002).
+        # It is filing metadata, not an economic security. Match the complete
+        # sentinel signature narrowly: legitimate sub-$1,000 holdings can have
+        # value=0 and must remain queryable.
+        if (
+            cusip == "000000000"
+            and issuer_name.strip().upper() == "NONE"
+            and (title_of_class or "").strip().upper() == "NONE"
+            and value_thousands == 0
+            and shares == 0
+            and (voting_sole or 0) == 0
+            and (voting_shared or 0) == 0
+            and (voting_none or 0) == 0
+        ):
+            source_row_index += 1
+            continue
+
         row_data = {
             "cusip": cusip,
             "issuer_name": issuer_name,
@@ -148,6 +167,25 @@ def parse_infotable(content: bytes) -> list[HoldingRow]:
         source_row_index += 1
 
     return rows
+
+
+def has_explicit_empty_portfolio_placeholder(content: bytes) -> bool:
+    """True only for the SEC all-zero NONE row used by zero-position filers."""
+    root = ET.fromstring(content)
+    entries = [elem for elem in root.iter() if _strip_ns(elem.tag) == "infoTable"]
+    if len(entries) != 1:
+        return False
+    elem = entries[0]
+    return (
+        (_text(elem, "cusip") or "").upper() == "000000000"
+        and (_text(elem, "nameOfIssuer") or "").upper() == "NONE"
+        and (_text(elem, "titleOfClass") or "").upper() == "NONE"
+        and (_int(_text(elem, "value")) or 0) == 0
+        and (_int(_text(elem, "sshPrnamt")) or 0) == 0
+        and (_int(_text(elem, "Sole") or _text(elem, "sole")) or 0) == 0
+        and (_int(_text(elem, "Shared") or _text(elem, "shared")) or 0) == 0
+        and (_int(_text(elem, "None") or _text(elem, "none")) or 0) == 0
+    )
 
 
 def compute_total_value(rows: list[HoldingRow]) -> int:

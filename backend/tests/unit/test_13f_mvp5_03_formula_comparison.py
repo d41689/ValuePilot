@@ -267,11 +267,13 @@ def test_endpoint_returns_comparison_payload_shape(
 
     # Seed a persisted score for the same stock + quarter.
     seeded_persisted_score = Decimal("0.4567")
+    from app.services.oracles_lens.constants import SCORE_VERSION
+
     signal = OraclesLensSignal(
         stock_id=stock.id,
         report_quarter=_QUARTER,
         quarter_end_date=_QUARTER_END,
-        score_version="v1.0",
+        score_version=SCORE_VERSION,
         signal_weighted_consensus_score=seeded_persisted_score,
         raw_consensus_count=3,
         score_confidence="high_confidence",
@@ -289,7 +291,7 @@ def test_endpoint_returns_comparison_payload_shape(
     assert response.status_code == 200
     payload = response.json()
     assert payload["quarter"] == _QUARTER
-    assert payload["score_version"] == "v1.0"
+    assert payload["score_version"] == SCORE_VERSION
     assert payload["total_stocks_compared"] >= 1
     assert "items" in payload
     assert "top10_swap_count" in payload

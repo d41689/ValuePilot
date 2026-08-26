@@ -507,6 +507,9 @@ def test_pool_members_include_price_and_fair_value(client, db_session, monkeypat
     assert row_a["fair_value"] == pytest.approx(200.0)
     assert row_a["fair_value_source"] == "manual"
     assert row_a["mos"] == pytest.approx(0.5)
+    assert row_a["valuation_reference"] == pytest.approx(180.0)
+    assert row_a["valuation_reference_source"] == TARGET_KEY
+    assert row_a["discount_to_reference"] == pytest.approx((180.0 - 100.0) / 180.0)
     assert row_a["piotroski_f_scores"] == [
         {
             "period_end_date": "2024-12-31",
@@ -546,7 +549,10 @@ def test_pool_members_include_price_and_fair_value(client, db_session, monkeypat
     row_b = next(row for row in rows if row["ticker"] == "MSFT")
     assert row_b["price"] == pytest.approx(50.0)
     assert row_b["delta_today"] == pytest.approx(-5.0)
-    assert row_b["fair_value"] == pytest.approx(80.0)
-    assert row_b["fair_value_source"] == TARGET_KEY
-    assert row_b["mos"] == pytest.approx(0.375)
+    assert row_b["fair_value"] is None
+    assert row_b["fair_value_source"] is None
+    assert row_b["mos"] is None
+    assert row_b["valuation_reference"] == pytest.approx(80.0)
+    assert row_b["valuation_reference_source"] == TARGET_KEY
+    assert row_b["discount_to_reference"] == pytest.approx(0.375)
     assert row_b["piotroski_f_scores"] == []

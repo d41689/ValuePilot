@@ -102,7 +102,7 @@ def test_daily_index_sync_matches_active_managers_and_enqueues_accession_jobs(db
             "form_type": "13F-NT",
             "accession_number": "0001067983-24-000007",
             "filename": "edgar/data/1067983/0001067983-24-000007.txt",
-            "job_enqueued": False,
+            "job_enqueued": True,
         },
     ]
 
@@ -116,12 +116,38 @@ def test_daily_index_sync_matches_active_managers_and_enqueues_accession_jobs(db
     assert raw_doc.source_url == sync.form_idx_url
 
     jobs = db_session.query(JobRun).order_by(JobRun.id.asc()).all()
-    assert len(jobs) == 1
-    assert jobs[0].job_type == "ingest_accession"
-    assert jobs[0].sync_date == date(2024, 2, 14)
-    assert jobs[0].dedupe_key == "0001067983-24-000006"
-    assert jobs[0].lock_key == "ingest_accession:0001067983-24-000006"
-    assert jobs[0].input_json["accession_no"] == "0001067983-24-000006"
+    assert len(jobs) == 2
+    assert [job.job_type for job in jobs] == ["ingest_accession", "ingest_accession"]
+    assert [job.sync_date for job in jobs] == [date(2024, 2, 14), date(2024, 2, 14)]
+    assert [job.dedupe_key for job in jobs] == [
+        "0001067983-24-000006",
+        "0001067983-24-000007",
+    ]
+    assert jobs[1].input_json["form_type"] == "13F-NT"
+
+
+def test_daily_index_sync_valid_index_with_no_tracked_filings_is_successful_noop(
+    db_session,
+):
+    """Outside a tracked manager's filing day, an available valid index with
+    no matches is healthy polling—not a failed sync that should train operators
+    to ignore red alerts.
+    """
+    _clear_13f(db_session)
+    _manager(db_session, "Different Active Manager", cik="0000000001")
+    client = FakeEdgarClient((FIXTURE_DIR / "2024-02-14_form.idx").read_bytes())
+
+    result = run_daily_index_sync(db_session, date(2024, 2, 14), client=client)
+
+    assert result["status"] == "success"
+    assert result["filings_seen_count"] == 4
+    assert result["tracked_13f_hr_found_count"] == 0
+    assert result["tracked_13f_nt_found_count"] == 0
+    assert result["jobs_created"] == 0
+    assert result["matched_accessions"] == []
+    sync = db_session.get(EdgarSyncStatus, date(2024, 2, 14))
+    assert sync.status == "success"
+    assert sync.last_error is None
 
 
 def test_daily_index_sync_requeues_when_prior_accession_job_failed(db_session):
@@ -143,7 +169,7 @@ def test_daily_index_sync_requeues_when_prior_accession_job_failed(db_session):
 
     result = run_daily_index_sync(db_session, date(2024, 2, 14), client=client)
 
-    assert result["jobs_created"] == 1
+    assert result["jobs_created"] == 2
     assert result["matched_accessions"][0] == {
         "manager_id": active.id,
         "cik": "0001067983",
@@ -170,7 +196,7 @@ def test_daily_index_sync_is_idempotent_for_active_accession_jobs(db_session):
     first = run_daily_index_sync(db_session, date(2024, 2, 14), client=FakeEdgarClient(body))
     second = run_daily_index_sync(db_session, date(2024, 2, 14), client=FakeEdgarClient(body))
 
-    assert first["jobs_created"] == 1
+    assert first["jobs_created"] == 2
     assert second["jobs_created"] == 0
     assert second["matched_accessions"][0] == {
         "manager_id": active.id,
@@ -180,7 +206,7 @@ def test_daily_index_sync_is_idempotent_for_active_accession_jobs(db_session):
         "filename": "edgar/data/1067983/0001067983-24-000006.txt",
         "job_enqueued": False,
     }
-    assert db_session.query(JobRun).filter(JobRun.job_type == "ingest_accession").count() == 1
+    assert db_session.query(JobRun).filter(JobRun.job_type == "ingest_accession").count() == 2
 
 
 def test_expected_no_index_404_marks_sync_no_data(db_session):

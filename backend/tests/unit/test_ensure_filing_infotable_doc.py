@@ -210,7 +210,7 @@ def test_fetches_and_links_when_missing(db_session, tmp_path, monkeypatch):
     # Both URLs were requested exactly once.
     assert sorted(client.requested_urls) == sorted([primary_url, infotable_url])
     # Both RawSourceDocument rows were written.
-    primary_doc = db_session.query(RawSourceDocument).get(filing.raw_primary_doc_id)
+    primary_doc = db_session.get(RawSourceDocument, filing.raw_primary_doc_id)
     assert primary_doc.document_type == "primary_doc_xml"
     assert primary_doc.source_url == primary_url
 

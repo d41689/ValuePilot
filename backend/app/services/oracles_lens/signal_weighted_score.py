@@ -62,6 +62,10 @@ from app.services.oracles_lens.constants import (
     ACTION_ADJUSTMENT_NEW,
     ACTION_ADJUSTMENT_REDUCE,
     MANAGER_SIGNAL_WEIGHTS,
+    CONSENSUS_LENS_VERSION,
+    DISTINCTIVE_LENS_VERSION,
+    MANAGER_TAXONOMY_VERSION,
+    REPRESENTATIVENESS_POLICY_VERSION,
     POSITION_BASE_BONUS_STREAK,
     POSITION_BASE_BONUS_TOP_10,
     POSITION_BASE_BONUS_WEIGHT_5PCT,
@@ -250,6 +254,13 @@ class _HolderContribution:
     # re-derive them from the position_signal_weight bonuses.
     holding_streak_quarters: int = 0
     add_intensity: Optional[Decimal] = None
+    base_manager_weight: Optional[Decimal] = None
+    representativeness: str = "unknown"
+    representativeness_factor: Decimal = Decimal("1.00")
+    representativeness_policy_version: Optional[str] = None
+    representativeness_reviewed_at: Optional[datetime] = None
+    representativeness_source: str = "unreviewed_compatibility"
+    representativeness_scoring_applied: bool = False
 
 
 @dataclass(frozen=True)
@@ -806,19 +817,32 @@ def _contributions_for_stock(
             manager, derived_profile=derived_profile,
         )
 
-        contribution = type_resolution.weight * position_signal_weight.value
+        from app.services.oracles_lens.representativeness import (
+            resolve_manager_representativeness,
+        )
+        representativeness = resolve_manager_representativeness(manager)
+
+        manager_weight = type_resolution.weight * representativeness.factor
+        contribution = manager_weight * position_signal_weight.value
         contributions.append(
             _HolderContribution(
                 holding_id=holding.id,
                 manager_id=manager.id,
                 manager_canonical_type=type_resolution.canonical_type,
                 manager_type_source=type_resolution.source,
-                manager_weight=type_resolution.weight,
+                manager_weight=manager_weight,
                 position_signal_weight=position_signal_weight,
                 contribution=contribution,
                 caveats=per_holder_caveats,
                 holding_streak_quarters=streak_result.streak_quarters,
                 add_intensity=add_intensity_result.value,
+                base_manager_weight=type_resolution.weight,
+                representativeness=representativeness.classification,
+                representativeness_factor=representativeness.factor,
+                representativeness_policy_version=representativeness.policy_version,
+                representativeness_reviewed_at=representativeness.reviewed_at,
+                representativeness_source=representativeness.source,
+                representativeness_scoring_applied=representativeness.scoring_applied,
             )
         )
 
@@ -940,6 +964,12 @@ def _build_score_explanation(
         "manager_type_source_counts": manager_type_source_counts,
         "excluded_holder_count": len(excluded_payload),
         "excluded_holders": excluded_payload,
+        "versions": {
+            "consensus_lens": CONSENSUS_LENS_VERSION,
+            "distinctive_lens": DISTINCTIVE_LENS_VERSION,
+            "manager_taxonomy": MANAGER_TAXONOMY_VERSION,
+            "representativeness_policy": REPRESENTATIVENESS_POLICY_VERSION,
+        },
     }
 
 
@@ -1030,6 +1060,18 @@ def _replace_components(
         manager_evidence = {
             "manager_type": c.manager_canonical_type,
             "source": c.manager_type_source,
+            "base_manager_weight": str(c.base_manager_weight or c.manager_weight),
+            "representativeness": c.representativeness,
+            "representativeness_factor": str(c.representativeness_factor),
+            "representativeness_policy_version": c.representativeness_policy_version,
+            "representativeness_reviewed_at": (
+                c.representativeness_reviewed_at.isoformat()
+                if c.representativeness_reviewed_at
+                else None
+            ),
+            "representativeness_source": c.representativeness_source,
+            "representativeness_scoring_applied": c.representativeness_scoring_applied,
+            "manager_taxonomy_version": MANAGER_TAXONOMY_VERSION,
         }
         position_evidence = {
             "base": str(c.position_signal_weight.base),

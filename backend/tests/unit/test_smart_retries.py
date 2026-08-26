@@ -86,6 +86,48 @@ def test_smart_retry_handles_nested_quarterly_failures(db_session):
     assert mock_trigger.call_args[1]["payload"]["accession_no"] == "abc-def"
 
 
+def test_smart_retry_replays_failed_daily_accession_with_full_ingest_context(db_session):
+    """A green daily index must not strand a failed child accession forever."""
+    failed = JobRun(
+        job_type="ingest_accession",
+        status="failed",
+        lock_key="ingest_accession:0001067983-26-000001",
+        dedupe_key="0001067983-26-000001",
+        trigger_source="daily_sync",
+        created_at=NOW - timedelta(hours=30),
+        finished_at=NOW - timedelta(hours=25),
+        input_json={
+            "job_type": "ingest_accession",
+            "accession_no": "0001067983-26-000001",
+            "manager_id": 9,
+            "cik": "0001067983",
+            "form_type": "13F-HR/A",
+            "source": "daily_index",
+            "sync_date": "2026-05-05",
+            "filename": "edgar/data/1067983/0001067983-26-000001.txt",
+        },
+    )
+    db_session.add(failed)
+    db_session.commit()
+
+    with patch("app.services.thirteenf_admin_dashboard.trigger_job") as mock_trigger:
+        mock_trigger.return_value = {"id": 101}
+        results = smart_retry_failed_jobs(db_session, now=NOW)
+
+    assert len(results) == 1
+    assert mock_trigger.call_args[1]["payload"] == {
+        "job_type": "ingest_accession",
+        "accession_no": "0001067983-26-000001",
+        "manager_id": 9,
+        "cik": "0001067983",
+        "form_type": "13F-HR/A",
+        "source": "daily_index",
+        "sync_date": "2026-05-05",
+        "filename": "edgar/data/1067983/0001067983-26-000001.txt",
+        "trigger_source": "smart_retry",
+    }
+
+
 def test_smart_retry_handles_quarterly_enrichment_stage_failure(db_session):
     """Pipeline enrichment stage failures should queue an enrichment-only retry."""
     pipeline_job = JobRun(

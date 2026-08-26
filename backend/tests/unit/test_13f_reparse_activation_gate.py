@@ -44,6 +44,14 @@ TWO_ROWS = _infotable(
     ("MICROSOFT CORP", "594918104", 9_000_000, 20_000),
 )
 ONE_ROW = _infotable(("APPLE INC", "037833100", 8_000_000, 50_000))
+EMPTY_PORTFOLIO_SENTINEL = b"""<?xml version="1.0"?>
+<informationTable xmlns="http://www.sec.gov/edgar/document/thirteenf/informationtable">
+  <infoTable><nameOfIssuer>NONE</nameOfIssuer><titleOfClass>NONE</titleOfClass>
+  <cusip>000000000</cusip><value>0</value><shrsOrPrnAmt>
+  <sshPrnamt>0</sshPrnamt><sshPrnamtType>SH</sshPrnamtType></shrsOrPrnAmt>
+  <investmentDiscretion>SOLE</investmentDiscretion><votingAuthority>
+  <Sole>0</Sole><Shared>0</Shared><None>0</None></votingAuthority></infoTable>
+</informationTable>"""
 
 
 @pytest.fixture
@@ -208,3 +216,35 @@ def test_a_reparse_is_not_gated_when_the_filer_declared_no_total(db_session):
     )
     assert result.get("quarantined") is True
     assert _current_rows(db_session, "9999999994-26-000001") == 2
+
+
+def test_explicit_empty_portfolio_sentinel_can_replace_prior_placeholder_run(db_session):
+    m = InstitutionManager(
+        cik="9999999993", legal_name="Explicit Empty", name_normalized="explicit-empty",
+        match_status="confirmed",
+    )
+    db_session.add(m)
+    db_session.flush()
+    f = Filing13F(
+        manager_id=m.id, accession_no="9999999993-26-000001",
+        accession_number="9999999993-26-000001", form_type="13F-HR",
+        period_of_report=date(2025, 12, 31), report_quarter="2025-Q4",
+        filed_at=datetime(2026, 2, 17, tzinfo=timezone.utc), parse_status="pending",
+        reported_total_value_thousands=None,
+    )
+    db_session.add(f)
+    db_session.flush()
+    ingest_holdings_for_filing(db_session, f, ONE_ROW)
+
+    result = reparse_accession(
+        db_session,
+        "9999999993-26-000001",
+        infotable_bytes=EMPTY_PORTFOLIO_SENTINEL,
+    )
+
+    db_session.refresh(f)
+    assert not result.get("quarantined")
+    assert result["holdings_count"] == 0
+    assert _current_rows(db_session, "9999999993-26-000001") == 0
+    assert f.computed_total_value_thousands == 0
+    assert f.common_holdings_count == 0

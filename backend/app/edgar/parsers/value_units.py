@@ -2,8 +2,10 @@
 from __future__ import annotations
 
 import re
+from statistics import median
 from dataclasses import dataclass
 from datetime import date, datetime
+from typing import Iterable
 from xml.etree import ElementTree as ET
 
 
@@ -12,7 +14,13 @@ SEC_13F_INFORMATION_TABLE_NAMESPACE = (
 )
 TRANSITION_ACCEPTED_DATE = date(2023, 1, 3)
 VALUE_UNIT_UNCERTAIN = "VALUE_UNIT_UNCERTAIN"
+VALUE_UNIT_SCHEMA_NONCOMPLIANT = "VALUE_UNIT_SCHEMA_NONCOMPLIANT"
 XSI_SCHEMA_LOCATION = "{http://www.w3.org/2001/XMLSchema-instance}schemaLocation"
+
+_IMPLIED_PRICE_MIN_SAMPLE = 3
+_RAW_DOLLAR_PRICE_MAX = 1.0
+_CORRECTED_PRICE_MIN = 1.0
+_CORRECTED_PRICE_MAX = 1_000_000.0
 
 
 @dataclass(frozen=True)
@@ -65,6 +73,56 @@ def infer_value_unit(
         value_parse_rule="inferred",
         warnings=[VALUE_UNIT_UNCERTAIN],
         evidence=evidence | {"decided_by": "fallback_uncertain"},
+    )
+
+
+def reconcile_with_implied_prices(
+    decision: ValueUnitDecision,
+    positions: Iterable[tuple[int | None, int | None, str | None]],
+) -> ValueUnitDecision:
+    """Correct a narrow class of post-2023 filer schema violations.
+
+    Form 13F v1.7 requires nearest-dollar values, but some filers continue to
+    submit legacy thousands under the current namespace/schema. The filing's
+    own summary total repeats the same wrong scale, so reconciliation cannot
+    detect it. A portfolio-level common-stock implied-price median can.
+
+    Fail closed unless at least three usable common positions all produce a
+    median below $1 as dollars and a plausible $1-$1,000,000 median after a
+    1000x correction. Pre-2023/schema-thousands and uncertain decisions are
+    never changed here.
+    """
+    if decision.value_parse_rule != "schema_dollars":
+        return decision
+
+    implied_prices = [
+        value / shares
+        for value, shares, put_call in positions
+        if put_call is None and value is not None and shares is not None
+        and value > 0 and shares > 0
+    ]
+    if len(implied_prices) < _IMPLIED_PRICE_MIN_SAMPLE:
+        return decision
+
+    raw_median = float(median(implied_prices))
+    corrected_median = raw_median * 1000
+    if not (
+        raw_median < _RAW_DOLLAR_PRICE_MAX
+        and _CORRECTED_PRICE_MIN <= corrected_median <= _CORRECTED_PRICE_MAX
+    ):
+        return decision
+
+    return ValueUnitDecision(
+        value_unit_raw="thousands",
+        value_parse_rule="implied_price_thousands",
+        warnings=[*decision.warnings, VALUE_UNIT_SCHEMA_NONCOMPLIANT],
+        evidence=decision.evidence | {
+            "schema_rule": decision.value_parse_rule,
+            "implied_price_sample_size": str(len(implied_prices)),
+            "raw_implied_price_median": f"{raw_median:.8g}",
+            "corrected_implied_price_median": f"{corrected_median:.8g}",
+            "decided_by": "implied_price_sanity",
+        },
     )
 
 

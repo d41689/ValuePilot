@@ -1,4 +1,5 @@
 import os
+from pathlib import Path
 
 # The app's live-mode startup guard (app/main.py) requires RATE_GUARD_URL, and
 # the `client` fixture below runs that guard via `with TestClient(app)`. Tests
@@ -8,37 +9,73 @@ import os
 # fake clients rather than the replay-from-DB path.
 os.environ.setdefault("RATE_GUARD_URL", "http://rate-guard.invalid")
 
+# The canonical compose command runs inside the normal API container, whose
+# DATABASE_URL intentionally points at the shared development database. Derive
+# a unique PostgreSQL schema before importing the app so every app-level engine
+# and SessionLocal uses the isolated search_path. The session fixture migrates
+# and later drops only this generated schema; public dev data is never visible.
+from test_support.database_isolation import (  # noqa: E402
+    build_isolated_database_url,
+    create_test_schema,
+    drop_test_schema,
+    new_test_schema_name,
+)
+
+_BASE_DATABASE_URL = os.environ.get("DATABASE_URL")
+if not _BASE_DATABASE_URL:
+    raise RuntimeError(
+        "pytest must run in Docker with the compose-provided DATABASE_URL"
+    )
+_TEST_SCHEMA_NAME = new_test_schema_name()
+os.environ["DATABASE_URL"] = build_isolated_database_url(
+    _BASE_DATABASE_URL,
+    _TEST_SCHEMA_NAME,
+)
+
+# Never let a developer's unattended-ingestion settings start background work
+# inside the ephemeral test schema. Individual scheduler/worker tests invoke or
+# monkeypatch those paths explicitly.
+os.environ["EDGAR_SCHEDULER_ENABLED"] = "false"
+os.environ["THIRTEENF_JOB_WORKER_ENABLED"] = "false"
+os.environ["THIRTEENF_SMART_RETRY_ENABLED"] = "false"
+os.environ["MANAGER_SEED_ON_STARTUP"] = "false"
+os.environ["CUSIP_OVERRIDE_SEED_ENABLED"] = "false"
+
 import pytest
+from alembic import command
+from alembic.config import Config
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 from app.api.deps import get_db
+from app.core.db import engine as app_engine
 from app.core.security import create_access_token, hash_password
 from app.main import app
 from app.models.users import User
 
-# Use an in-memory SQLite database for testing to avoid affecting the development DB
-# OR use the Postgres DB but with rollbacks.
-# Given we have postgres set up, let's try to use a separate test DB or just careful transaction management.
-# For simplicity and speed in this environment, SQLite in-memory is great for logic tests,
-# but since we use Postgres-specific types (JSON, maybe others later), we should ideally use Postgres.
-# However, to avoid complexity of creating a test DB on the fly in this docker setup,
-# I will use the *existing* DB but wrap everything in a transaction that always rolls back.
-
 from app.core.config import settings
 
-# Override the engine to use the same DB but we will manage sessions carefully
+# Both engines resolve unqualified tables only inside the generated schema.
 engine = create_engine(settings.SQLALCHEMY_DATABASE_URI, pool_pre_ping=True)
 TestingSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
 @pytest.fixture(scope="session", autouse=True)
 def setup_test_db():
-    # In a real scenario, we might drop/create tables here or use a separate DB.
-    # For Phase 1, assuming fresh DB from docker-compose, we can just use it.
-    # Base.metadata.create_all(bind=engine)
-    yield
-    # Base.metadata.drop_all(bind=engine)
+    backend_dir = Path(__file__).resolve().parents[1]
+    alembic_config = Config(str(backend_dir / "alembic.ini"))
+    alembic_config.set_main_option(
+        "script_location", str(backend_dir / "alembic")
+    )
+
+    create_test_schema(_BASE_DATABASE_URL, _TEST_SCHEMA_NAME)
+    try:
+        command.upgrade(alembic_config, "head")
+        yield
+    finally:
+        engine.dispose()
+        app_engine.dispose()
+        drop_test_schema(_BASE_DATABASE_URL, _TEST_SCHEMA_NAME)
 
 @pytest.fixture(scope="function")
 def db_session():

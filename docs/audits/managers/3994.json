@@ -1,0 +1,40 @@
+{
+  "schema": "thirteenf_dataroma_reconciliation.v1",
+  "generated_at": "2026-07-19T15:17:06.257600+00:00",
+  "authority": "SEC/EDGAR via ValuePilot active filing and current parse run",
+  "corroborating_source": "Dataroma",
+  "counts": {
+    "managers_total": 1,
+    "managers_mapped": 0,
+    "managers_unmapped": 1,
+    "managers_fetch_failed": 0,
+    "managers_with_differences": 1,
+    "differences_total": 1,
+    "suspected_valuepilot_defects": 0,
+    "unclassified_material_differences": 0
+  },
+  "managers": [
+    {
+      "manager_id": 3994,
+      "cik": "0000783412",
+      "display_name": "Charlie Munger - Daily Journal Corp",
+      "dataroma_code": null,
+      "status": "unmapped",
+      "source_urls": {},
+      "differences": [
+        {
+          "scope": "manager_mapping",
+          "field": "dataroma_code",
+          "quarter": null,
+          "ticker": null,
+          "valuepilot": null,
+          "dataroma": null,
+          "classification": "unavailable_evidence",
+          "valuepilot_defect": false,
+          "severity": "info",
+          "explanation": "This tracked manager is not listed in Dataroma's current manager universe."
+        }
+      ]
+    }
+  ]
+}

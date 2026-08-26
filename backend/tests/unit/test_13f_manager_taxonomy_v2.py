@@ -39,6 +39,7 @@ from app.services.oracles_lens.manager_style import (
     STYLE_PRIMARY_TO_LEGACY,
     derive_legacy_manager_type,
 )
+from scripts.seed_13f_dev_fixture import _seed_managers
 
 
 SEED_PATH = (
@@ -158,6 +159,45 @@ def test_derive_legacy_manager_type_unknown_passthrough():
 def test_derive_legacy_manager_type_rejects_garbage():
     with pytest.raises(ValueError):
         derive_legacy_manager_type("not_a_style")
+
+
+def test_dev_fixture_seeds_value_investor_v2_metadata(db_session):
+    """The visual-acceptance fixture must populate the product taxonomy.
+
+    Legacy ``manager_type`` remains deliberately exhaustive so the scoring
+    fixture still exercises all eight weight branches. The consumer product,
+    however, filters on V2 ``style_primary`` and would otherwise render an
+    empty default manager universe.
+    """
+    managers = _seed_managers(db_session)
+
+    assert len(managers) == 32
+    assert {manager.manager_type for manager in managers} == MANAGER_TYPES
+    assert all(manager.capital_structure != "unknown" for manager in managers)
+    assert all(manager.historical_turnover in TURNOVER_BUCKETS for manager in managers)
+
+    value_styles = {"value_deep", "value_concentrated", "quality_compounder"}
+    value_managers = [
+        manager for manager in managers if manager.style_primary in value_styles
+    ]
+    assert len(value_managers) == 8
+    assert {manager.style_primary for manager in value_managers} == value_styles
+
+    noisy_types = {"quant", "high_turnover", "index_like", "multi_strategy"}
+    assert all(
+        manager.style_primary not in value_styles
+        for manager in managers
+        if manager.manager_type in noisy_types
+    )
+
+    # Re-running updates fixture-owned metadata without duplicating managers.
+    managers[0].style_primary = "unknown"
+    rerun = _seed_managers(db_session)
+    assert len(rerun) == 32
+    assert rerun[0].style_primary == "quality_compounder"
+    assert db_session.query(InstitutionManager).filter(
+        InstitutionManager.canonical_name.like("DEVSEED %")
+    ).count() == 32
 
 
 # ---------------------------------------------------------------------------

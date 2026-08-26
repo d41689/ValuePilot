@@ -4,9 +4,11 @@ Audience: a brand-new ValuePilot operator who has just deployed the system and w
 
 ## Current contract
 
-The 13F pipeline now supports the PRD's "set a start date and walk away" operator path once the manager universe exists:
+The 13F pipeline supports the PRD's "set a start date and walk away" operator path from an empty database:
 
 ```
+MANAGER_SEED_ON_STARTUP
+  -> curated confirmed manager seed
 THIRTEENF_START_QUARTER
   -> boot reconcile
   -> quarterly_pipeline
@@ -14,25 +16,38 @@ THIRTEENF_START_QUARTER
   -> ingest_holdings
   -> enrich_metadata
   -> quality_check
+  -> compute_ownership_changes
   -> oracles_lens_score_backfill
   -> /watchlist 13F columns
 ```
 
-The one remaining Day-0 front-door manual step is the manager universe: seed managers and confirm CIKs before expecting EDGAR scans to find anything. Dataroma auto-sync remains a future enhancement.
+The curated manager universe is seeded before the scheduler and worker start.
+Manual manager/CIK review remains available for additions or disputed identities;
+it is not part of the normal empty-database bootstrap path. Dataroma auto-sync
+remains a future enhancement.
 
 ## Prerequisites (one-time)
 
 - `EDGAR_SCHEDULER_ENABLED=true` in `~/.config/valuepilot/.env.prod` (already on in prod as of 2026-05-19).
 - `THIRTEENF_JOB_WORKER_ENABLED=true` (already on).
 - `THIRTEENF_SMART_RETRY_ENABLED=true` (already on).
-- `THIRTEENF_START_QUARTER=<YYYY-QN>` in `~/.config/valuepilot/.env.prod`, for example `THIRTEENF_START_QUARTER=2025-Q3`.
+- `MANAGER_SEED_ON_STARTUP=true`.
+- `CUSIP_OVERRIDE_SEED_ENABLED=true`.
+- `THIRTEENF_DAILY_SYNC_BOOTSTRAP_DAYS=7` (or another deliberate first-poll window).
+- `THIRTEENF_START_QUARTER=<YYYY-QN>` in `~/.config/valuepilot/.env.prod`. Configure one warm-up quarter before the first product-history quarter; for history beginning at `2023-Q1`, use `THIRTEENF_START_QUARTER=2022-Q4`.
 - `SEC_CONTACT_EMAIL=<reachable inbox>` in `~/.config/valuepilot/.env.prod`. SEC requires this in the User-Agent or live EDGAR calls will fail with `RuntimeError: SEC_CONTACT_EMAIL is required for EDGAR requests`. Documented in `.env.prod.example`.
 
-## Step 1 — Seed the manager universe
+## Step 1 — Verify automatic manager seeding
 
-On a fresh database the Managers table is empty. `/admin/13f` will show a yellow "No managers tracked yet" banner and `0 managers`. Daily sync runs but has nothing to scan.
+At API startup, `MANAGER_SEED_ON_STARTUP=true` loads the curated confirmed
+manager file before either the scheduler or worker can scan EDGAR. A missing,
+empty, or malformed seed fails startup rather than allowing an empty-universe
+pipeline to look green.
 
-Pick one of:
+Verify `/admin/13f/managers` shows the expected confirmed universe (82 managers
+as of 2026-07-19). Repeated boots are idempotent.
+
+For a manager outside the curated universe, pick one of:
 
 **Option A — Bulk CSV import (preferred for >5 managers):**
 
@@ -50,7 +65,7 @@ Each row creates a manager with `status="candidate"` and no CIK confirmed yet.
 
 `/admin/13f/managers` → "Add manager" form. Same end state.
 
-## Step 2 — Confirm each manager's CIK
+## Step 2 — Confirm CIKs only for manually-added managers
 
 `status="candidate"` managers are ignored by the daily sync. To activate them, confirm their SEC Central Index Key.
 
@@ -62,27 +77,37 @@ On `/admin/13f/managers`, for each candidate:
 
 Watch for `match_status="ambiguous"` — multiple SEC entities matched. Resolve by picking the right one (the audit trail records who confirmed).
 
-## Step 3 — Configure the start quarter
+## Step 3 — Configure the start quarter and baseline
 
 Set the first quarter the system should cover:
 
 ```
-THIRTEENF_START_QUARTER=2025-Q3
+THIRTEENF_START_QUARTER=2022-Q4
 ```
 
-Then redeploy or restart the API process so the boot-time reconcile runs. On each boot, `reconcile_start_quarter_coverage` walks from `THIRTEENF_START_QUARTER` through the latest scoreable quarter and enqueues a `quarterly_pipeline` job for any quarter that has not produced Oracle's Lens signal rows yet.
+The warm-up quarter supplies the prior holdings required to classify the first
+visible quarter's Buy/Add/Reduce/Sell activity correctly.
+
+Then redeploy or restart the API process so the boot-time reconcile runs. On each boot, `reconcile_start_quarter_coverage` walks from `THIRTEENF_START_QUARTER` through the latest scoreable quarter and enqueues a `quarterly_pipeline` job for any quarter that does not have a successful six-stage pipeline manifest. One filing or one Oracle's Lens signal is not considered proof of full-quarter completion.
 
 The reconcile intentionally anchors on the terminal output (`oracles_lens_signals`), not intermediate job success. If a quarter is partially healed later, the next boot can enqueue it again and let the idempotent pipeline finish the missing work.
 
 ## Step 4 — Let the quarterly pipeline run
 
-The worker processes each queued `quarterly_pipeline` through five stages:
+The worker processes each queued `quarterly_pipeline` through six stages:
 
 1. `fetch_quarter_index` — walks SEC quarterly `form.idx` files for active managers.
 2. `ingest_holdings` — downloads missing primary-doc and infotable XML, routes report period/quarter, parses holdings, and heals historical rows.
 3. `enrich_metadata` — maps CUSIP -> ticker -> `stock_id`.
 4. `quality_check` — records ingestion quality findings.
-5. `oracles_lens_score_backfill` — writes persisted Oracle's Lens signal rows that `/watchlist` reads.
+5. `compute_ownership_changes` — materializes Buy/Add/Reduce/Sell activity against the prior quarter.
+6. `oracles_lens_score_backfill` — writes persisted Oracle's Lens signal rows that `/watchlist` reads.
+
+If an on-time filed-quarter batch contains a late filing or amendment for an
+older report period, the pipeline automatically refreshes that period's quality,
+ownership-change, and Lens read models, plus an already-materialized following
+quarter whose comparisons use the changed holdings as a baseline. A failed
+dependent refresh keeps the parent job degraded and visible.
 
 Monitor:
 
@@ -110,7 +135,7 @@ Columns will show `unavailable_reason='no_holders'` or `'below_min_holders'` if 
 
 The Admin Tasks panel on `/admin/13f` is **diagnostic, not a control panel** — cards summarize what failed and why, but have no inline retry button. Where retries actually live:
 
-- **To retry an entire quarter** — prefer the automatic reconcile path: fix the underlying data/config issue, then restart/redeploy the API so `THIRTEENF_START_QUARTER` reconciliation can enqueue any quarter still missing Oracle's Lens signal rows.
+- **To retry an entire quarter** — prefer the automatic reconcile path: fix the underlying data/config issue, then restart/redeploy the API so `THIRTEENF_START_QUARTER` reconciliation can enqueue any quarter still missing a successful six-stage pipeline manifest.
 - **To retry one stage manually** — use the **Manual Controls** section of `/admin/13f`. Enter the target quarter in the textbox, then click the matching pipeline button (e.g. **Fetch quarter index**, **Ingest holdings**) to create a fresh `JobRun`.
 - **For per-job details and review** — `/admin/13f/jobs` → **Review** button on the row. Use this to inspect what a particular job did or failed on.
 - **Stale failure cards** — a later succeeded `JobRun` for the same lock key (e.g. `fetch_quarter_index:2025-Q4`) supersedes earlier failures operationally; the quarter is healthy even if old failure cards linger in the Admin Tasks panel. The panel currently doesn't fold them automatically — see [#41](https://github.com/d41689/ValuePilot/issues/41).
@@ -120,8 +145,8 @@ The Admin Tasks panel on `/admin/13f` is **diagnostic, not a control panel** —
 
 | Symptom | Probable cause | Where to look |
 |---|---|---|
-| Yellow "No managers tracked yet" banner on /admin/13f | Step 1 skipped. | `/admin/13f/managers`. |
-| No `quarterly_pipeline` jobs appear after deploy | `THIRTEENF_START_QUARTER` is missing or malformed, API did not restart, or the requested quarters already have signal rows. | `.env.prod`, API logs, `/admin/13f/jobs`. |
+| Yellow "No managers tracked yet" banner on /admin/13f | `MANAGER_SEED_ON_STARTUP` is off, the seed failed, or the curated file is missing/empty. | `.env.prod`, API startup logs, `/admin/13f/managers`. |
+| No `quarterly_pipeline` jobs appear after deploy | `THIRTEENF_START_QUARTER` is missing or malformed, API did not restart, or the requested quarters already have complete six-stage pipeline manifests. | `.env.prod`, API logs, `/admin/13f/jobs`. |
 | Pipeline succeeds but `/watchlist` still shows dashes | The watched stocks are not held by tracked managers, CUSIP coverage is thin, or the stock is below the Oracle's Lens `min_holders` threshold. | `/admin/13f/readiness`, `/admin/13f/holdings`, `/admin/13f/jobs`. |
 | `fetch_quarter_index` fails ENOENT on a specific SHA | Stale `raw_source_documents` row from before the persistent `edgar_raw` volume was mounted (PR #35). | Fixed in PR #37: fetcher self-heals by re-fetching the URL. Re-trigger the same job; the row updates in place. |
 | Holdings ingest fails with `SEC_CONTACT_EMAIL is required` | Missing env var. | Add `SEC_CONTACT_EMAIL=<inbox>` to `~/.config/valuepilot/.env.prod` and redeploy. |

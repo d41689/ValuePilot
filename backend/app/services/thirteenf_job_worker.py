@@ -213,8 +213,6 @@ def mark_stale_running_jobs_abandoned(
         session.query(JobRun)
         .filter(JobRun.status == "running")
         .filter(JobRun.started_at.isnot(None))
-        .filter(JobRun.lease_expires_at.isnot(None))
-        .filter(JobRun.lease_expires_at < now)
         .all()
     )
     abandoned = []
@@ -222,9 +220,20 @@ def mark_stale_running_jobs_abandoned(
         job_timeout = timeout_seconds or job_timeout_seconds(job.job_type)
         if job.started_at >= now - timedelta(seconds=job_timeout):
             continue
+        # Top-level jobs are claimed with renewable leases; a still-valid
+        # lease proves a worker owns the job. Pipeline child stages execute
+        # synchronously inside that worker and historically had no independent
+        # lease. If the process dies mid-stage, such a row otherwise remains
+        # `running` forever and its partial unique lock blocks every retry.
+        if job.lease_expires_at is not None and job.lease_expires_at >= now:
+            continue
         abandoned.append(job)
         job.status = "failed"
-        job.error_message = "job_lease_expired_or_timeout"
+        job.error_message = (
+            "job_missing_lease_or_timeout"
+            if job.lease_expires_at is None
+            else "job_lease_expired_or_timeout"
+        )
         job.finished_at = now
         session.add(job)
     session.commit()
@@ -363,7 +372,13 @@ def _start_lease_heartbeat(
     heartbeat_interval_s: float | None,
     lease_seconds: int | None,
 ) -> Callable[[], None]:
-    if heartbeat_session_factory is None or not job.lease_token:
+    # Capture immutable scalar identity on the worker thread before starting
+    # the heartbeat thread. JobRun is attached to the worker's Session and
+    # commits expire ORM attributes; dereferencing it from this background
+    # thread can otherwise issue SQL concurrently on the same Session.
+    job_id = job.id
+    lease_token = job.lease_token
+    if heartbeat_session_factory is None or not lease_token:
         return lambda: None
 
     stop_event = threading.Event()
@@ -375,20 +390,20 @@ def _start_lease_heartbeat(
             try:
                 heartbeat_job_lease(
                     heartbeat_session,
-                    job_id=job.id,
+                    job_id=job_id,
                     worker_id=worker_id,
-                    lease_token=job.lease_token,
+                    lease_token=lease_token,
                     lease_seconds=lease_seconds,
                 )
             except Exception:
-                logger.warning("Failed to renew lease for job %s", job.id, exc_info=True)
+                logger.warning("Failed to renew lease for job %s", job_id, exc_info=True)
             finally:
                 close = getattr(heartbeat_session, "close", None)
                 if callable(close):
                     close()
             stop_event.wait(interval)
 
-    thread = threading.Thread(target=_run, name=f"lease-heartbeat-{job.id}", daemon=True)
+    thread = threading.Thread(target=_run, name=f"lease-heartbeat-{job_id}", daemon=True)
     thread.start()
 
     def _stop() -> None:

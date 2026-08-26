@@ -20,7 +20,7 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
-from app.api.deps import get_db
+from app.api.deps import OptionalCurrentUser, get_db
 from app.schemas.stocks_13f_snapshot import (
     AvailableStockDetail,
     AvailableStockSnapshot,
@@ -37,13 +37,15 @@ from app.services.oracles_lens.dashboard import (
     _m3_facts_by_stock,
     build_oracles_lens_dashboard,
 )
+from app.services.thirteenf_holdings_query import active_hr_holdings_query
+from app.services.valuation import VALUE_LINE_TARGET_REFERENCE_KEY
 
 router = APIRouter()
 
 # MVP8-A2: metric keys used by the drawer M3 panel.
 _M3_METRIC_KEYS: list[str] = [
     "score.piotroski.total",
-    "target.price_18m.mid",
+    VALUE_LINE_TARGET_REFERENCE_KEY,
     "target.price_18m.low",
     "target.price_18m.high",
     "proj.long_term.low_price",
@@ -52,7 +54,12 @@ _M3_METRIC_KEYS: list[str] = [
 ]
 
 
-def _m3_panel_for_stock(db: Session, stock_id: int) -> QualityOverlay:
+def _m3_panel_for_stock(
+    db: Session,
+    stock_id: int,
+    *,
+    user_id: int | None,
+) -> QualityOverlay:
     """Compact M3 quality/valuation overlay for the Watchlist drawer.
 
     Returns ``QualityOverlay(has_value_line=False)`` when no Value Line
@@ -66,7 +73,12 @@ def _m3_panel_for_stock(db: Session, stock_id: int) -> QualityOverlay:
     post-MVP8-A2 sweep). Return is a typed ``QualityOverlay`` Pydantic
     model so the API contract is enforced at this boundary (D1).
     """
-    by_key = _m3_facts_by_stock(db, [stock_id], _M3_METRIC_KEYS).get(stock_id, {})
+    by_key = _m3_facts_by_stock(
+        db,
+        [stock_id],
+        _M3_METRIC_KEYS,
+        user_id=user_id,
+    ).get(stock_id, {})
     if not by_key:
         return QualityOverlay(has_value_line=False)
 
@@ -106,7 +118,7 @@ def _m3_panel_for_stock(db: Session, stock_id: int) -> QualityOverlay:
     # ``target.price_18m.mid`` fact (the one the drawer renders most
     # prominently). When multiple VL publications exist, the helper's
     # tiebreak already picked the most recent.
-    target_mid_fact = by_key.get("target.price_18m.mid")
+    target_mid_fact = by_key.get(VALUE_LINE_TARGET_REFERENCE_KEY)
     vl_target_period_end: str | None = None
     vl_target_source_document_id: int | None = None
     if target_mid_fact is not None:
@@ -120,7 +132,7 @@ def _m3_panel_for_stock(db: Session, stock_id: int) -> QualityOverlay:
         piotroski_max=piotroski_max,
         piotroski_status=piotroski_status,
         earnings_predictability=_num("quality.earnings_predictability"),
-        vl_target_mid=_num("target.price_18m.mid"),
+        vl_target_mid=_num(VALUE_LINE_TARGET_REFERENCE_KEY),
         vl_target_low=_num("target.price_18m.low"),
         vl_target_high=_num("target.price_18m.high"),
         vl_3y_low=_num("proj.long_term.low_price"),
@@ -255,11 +267,9 @@ def _holdings_count_for_stock(session: Session, stock_id: int, period_end: str) 
     except ValueError:
         return 0
     return (
-        session.query(Holding13F)
-        .join(Filing13F, Holding13F.filing_id == Filing13F.id)
+        active_hr_holdings_query(session)
         .filter(Holding13F.stock_id == stock_id)
         .filter(Filing13F.period_of_report == end_date)
-        .filter(Filing13F.is_latest_for_period == True)  # noqa: E712
         .count()
     )
 
@@ -267,6 +277,7 @@ def _holdings_count_for_stock(session: Session, stock_id: int, period_end: str) 
 @router.post("/13f-snapshots", response_model=StockSnapshotResponse)
 def read_stocks_13f_snapshots(
     body: StockSnapshotRequest,
+    current_user: OptionalCurrentUser,
     use_persisted_scores: bool = Query(
         True,
         description=(
@@ -289,6 +300,7 @@ def read_stocks_13f_snapshots(
             period=period_arg,
             limit=0,                  # disable top-50 truncation; we need the full universe for percentile
             use_persisted_scores=use_persisted_scores,
+            user_id=current_user.id if current_user else None,
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -477,6 +489,7 @@ def _stock_meta(db: Session, stock_id: int) -> tuple[str, str | None] | None:
 @router.get("/{stock_id}/13f-detail", response_model=StockDetailResponse)
 def read_stock_13f_detail(
     stock_id: int,
+    current_user: OptionalCurrentUser,
     period: str | None = None,
     use_persisted_scores: bool = Query(
         True,
@@ -504,6 +517,7 @@ def read_stock_13f_detail(
             period=period_arg,
             limit=0,
             use_persisted_scores=use_persisted_scores,
+            user_id=current_user.id if current_user else None,
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -600,7 +614,11 @@ def read_stock_13f_detail(
         score_confidence=_normalize_score_confidence(item.get("score_confidence")),
         top_holders=top_holders,
         caveat_flags=structured_caveats,
-        quality_overlay=_m3_panel_for_stock(db, stock_id),
+        quality_overlay=_m3_panel_for_stock(
+            db,
+            stock_id,
+            user_id=current_user.id if current_user else None,
+        ),
     )
 
     return StockDetailResponse(

@@ -1,13 +1,18 @@
 from datetime import date
 from unittest.mock import MagicMock, patch
 from app.services.scheduler import (
+    _quarter_already_ingested,
     create_scheduler,
+    create_research_notification_scheduler,
     run_13f_health_summary,
     run_daily_sync_poll,
+    run_filing_season_digest,
     run_job_watchdog,
     run_quarterly_pipeline,
+    run_research_notifications,
     run_smart_retries,
 )
+from app.models.institutions import Filing13F, InstitutionManager, JobRun
 
 
 def test_run_quarterly_pipeline_triggers_job():
@@ -43,6 +48,29 @@ def test_run_quarterly_pipeline_skips_if_already_ingested():
         run_quarterly_pipeline(db_factory)
 
         mock_trigger_job.assert_not_called()
+
+
+def test_one_filing_does_not_mark_a_quarter_complete(db_session):
+    manager = InstitutionManager(
+        legal_name="Partial Manager",
+        canonical_name="Partial Manager",
+        match_status="confirmed",
+        status="active",
+    )
+    db_session.add(manager)
+    db_session.flush()
+    db_session.add(
+        Filing13F(
+            manager_id=manager.id,
+            accession_no="0000000001-26-000001",
+            period_of_report=date(2025, 12, 31),
+            filed_at=date(2026, 2, 14),
+            form_type="13F-HR",
+        )
+    )
+    db_session.flush()
+
+    assert _quarter_already_ingested(db_session, "2025-Q4") is False
 
 
 def test_run_quarterly_pipeline_skips_on_lock_conflict():
@@ -107,6 +135,121 @@ def test_create_scheduler_registers_daily_health_summary_at_8am_et():
     assert str(job.trigger.timezone) == "America/New_York"
     assert "hour='8'" in str(job.trigger)
     assert "minute='0'" in str(job.trigger)
+
+
+def test_create_scheduler_registers_daily_filing_season_digest():
+    scheduler = create_scheduler(MagicMock())
+
+    job = scheduler.get_job("thirteenf_filing_season_digest")
+
+    assert job is not None
+    assert job.func == run_filing_season_digest
+    assert str(job.trigger.timezone) == "America/New_York"
+    assert "hour='7'" in str(job.trigger)
+
+
+def test_research_notification_scheduler_is_independent_from_edgar_jobs():
+    scheduler = create_research_notification_scheduler(MagicMock())
+
+    notification_job = scheduler.get_job("research_notification_materializer")
+    assert notification_job is not None
+    assert notification_job.func == run_research_notifications
+    assert scheduler.get_job("quarterly_edgar_pipeline") is None
+
+    edgar_scheduler = create_scheduler(MagicMock())
+    assert edgar_scheduler.get_job("research_notification_materializer") is None
+
+
+def test_research_notification_run_skips_rotation_when_keyring_is_unconfigured(monkeypatch):
+    db_factory = MagicMock()
+    monkeypatch.setattr(
+        "app.services.scheduler.settings.NOTIFICATION_SECRET_KEYS",
+        None,
+    )
+    monkeypatch.setattr(
+        "app.services.research_notifications.materialize_due_research_reviews",
+        MagicMock(return_value=0),
+    )
+    monkeypatch.setattr(
+        "app.services.research_notifications.materialize_intrinsic_value_crossings",
+        MagicMock(return_value=0),
+    )
+    monkeypatch.setattr(
+        "app.services.research_notifications.materialize_research_coverage_changes",
+        MagicMock(return_value=0),
+    )
+    digest = MagicMock(return_value=0)
+    monkeypatch.setattr(
+        "app.services.research_notifications.materialize_scheduled_digests",
+        digest,
+    )
+    rotation = MagicMock()
+    monkeypatch.setattr(
+        "app.services.research_notifications.run_destination_secret_rotation",
+        rotation,
+    )
+    monkeypatch.setattr(
+        "app.services.research_notifications.deliver_pending_attempts",
+        MagicMock(return_value={"delivered": 0}),
+    )
+
+    run_research_notifications(db_factory)
+
+    rotation.assert_not_called()
+    digest.assert_called_once()
+    db_factory.return_value.close.assert_called_once()
+
+
+def test_research_notification_run_skips_noop_secret_rotation(monkeypatch):
+    db_factory = MagicMock()
+    monkeypatch.setattr(
+        "app.services.scheduler.settings.NOTIFICATION_SECRET_KEYS",
+        "v1:configured-for-condition-test",
+    )
+    for name in (
+        "materialize_due_research_reviews",
+        "materialize_intrinsic_value_crossings",
+        "materialize_research_coverage_changes",
+        "materialize_scheduled_digests",
+    ):
+        monkeypatch.setattr(
+            f"app.services.research_notifications.{name}",
+            MagicMock(return_value=0),
+        )
+    needed = MagicMock(return_value=False)
+    rotation = MagicMock()
+    monkeypatch.setattr(
+        "app.services.research_notifications.destination_secret_rotation_needed",
+        needed,
+    )
+    monkeypatch.setattr(
+        "app.services.research_notifications.run_destination_secret_rotation",
+        rotation,
+    )
+    monkeypatch.setattr(
+        "app.services.research_notifications.deliver_pending_attempts",
+        MagicMock(return_value={"delivered": 0}),
+    )
+
+    run_research_notifications(db_factory)
+
+    needed.assert_called_once_with(db_factory.return_value)
+    rotation.assert_not_called()
+    db_factory.return_value.close.assert_called_once()
+
+
+def test_run_filing_season_digest_persists_and_closes_session(monkeypatch):
+    db_factory = MagicMock()
+    persist = MagicMock(return_value={"status": "persisted", "created": 2, "existing": 0})
+    monkeypatch.setattr(
+        "app.services.thirteenf_filing_season.persist_filing_season_digest",
+        persist,
+    )
+
+    run_filing_season_digest(db_factory)
+
+    persist.assert_called_once_with(db_factory.return_value)
+    db_factory.return_value.close.assert_called_once()
 
 
 def test_run_13f_health_summary_emits_alerts_before_summary(monkeypatch):

@@ -352,6 +352,57 @@ def test_rule2_selects_unique_owner_and_demotes_rejected_active(db_session):
     assert orig.is_active_for_manager_period is False
 
 
+def test_rule2_missing_acceptance_keeps_only_current_applied_owner(db_session):
+    """Two admin-applied amendments still need evidence about which decision
+    is later. An accession string is not a filing-time proxy."""
+    from app.services.thirteenf_filing_detail import apply_active_filing_policy
+
+    mgr = _manager(db_session)
+    current = _filing(
+        db_session, mgr, form_type="13F-HR/A", accepted_at=None,
+        is_amendment=True, amendment_type="NEW_HOLDINGS",
+        amendment_status="applied", parse_status="succeeded", active=True,
+    )
+    sibling = _filing(
+        db_session, mgr, form_type="13F-HR/A", accepted_at=_ts(13),
+        is_amendment=True, amendment_type="NEW_HOLDINGS",
+        amendment_status="applied", parse_status="succeeded",
+    )
+
+    out = apply_active_filing_policy(db_session, mgr.id, _QEND)
+
+    assert out["decision"] == "missing_acceptance"
+    assert current.is_active_for_manager_period is True
+    assert sibling.is_active_for_manager_period is False
+    assert current.amendment_sort_warning is True
+    assert sibling.amendment_sort_warning is True
+
+
+def test_rule2_tie_without_current_owner_activates_nothing(db_session):
+    """Equal acceptance instants cannot be broken by accession order. A stray
+    rejected active row is demoted and neither applied amendment is guessed."""
+    from app.services.thirteenf_filing_detail import apply_active_filing_policy
+
+    mgr = _manager(db_session)
+    for _ in range(2):
+        _filing(
+            db_session, mgr, form_type="13F-HR/A", accepted_at=_ts(13),
+            is_amendment=True, amendment_type="NEW_HOLDINGS",
+            amendment_status="applied", parse_status="succeeded",
+        )
+    stray = _filing(
+        db_session, mgr, form_type="13F-HR/A", accepted_at=_ts(14),
+        is_amendment=True, amendment_type="NEW_HOLDINGS",
+        amendment_status="rejected", parse_status="succeeded", active=True,
+    )
+
+    out = apply_active_filing_policy(db_session, mgr.id, _QEND)
+
+    assert out["decision"] == "missing_acceptance"
+    assert out["active_id"] is None
+    assert stray.is_active_for_manager_period is False
+
+
 def test_none_eligible_demotes_stray_active(db_session):
     """P1-2 corollary: a period whose ONLY filing is a rejected-but-active
     amendment must end with nothing active."""
@@ -488,6 +539,23 @@ def test_nt_a_restatement_never_competes_for_holdings_slot(db_session):
         db_session, mgr, form_type="13F-NT/A", accepted_at=_ts(12),
         is_amendment=True, amendment_type="RESTATEMENT",
         amendment_status="pending_parse", parse_status="succeeded",
+    )
+
+    apply_active_filing_policy(db_session, mgr.id, _QEND)
+
+    assert hr.is_active_for_manager_period is True
+    assert nta.is_active_for_manager_period is False
+
+
+def test_applied_notice_amendment_never_displaces_hr_original(db_session):
+    from app.services.thirteenf_filing_detail import apply_active_filing_policy
+
+    mgr = _manager(db_session)
+    hr = _filing(db_session, mgr, accepted_at=_ts(9), active=True)
+    nta = _filing(
+        db_session, mgr, form_type="13F-NT/A", accepted_at=_ts(12),
+        is_amendment=True, amendment_type="unknown",
+        amendment_status="applied", parse_status="succeeded",
     )
 
     apply_active_filing_policy(db_session, mgr.id, _QEND)
@@ -741,6 +809,17 @@ _PRIMARY_DOC = b"""<SEC-HEADER>
   </coverPage></formData>
 </edgarSubmission>"""
 
+_STALE_PRIMARY_DOC = b"""<SEC-HEADER>
+<ACCEPTANCE-DATETIME>20250720163000
+</SEC-HEADER>
+<edgarSubmission>
+  <submissionType>13F-HR</submissionType>
+  <periodOfReport>03-31-2024</periodOfReport>
+  <formData><coverPage>
+    <reportCalendarOrQuarter>03-31-2024</reportCalendarOrQuarter>
+  </coverPage></formData>
+</edgarSubmission>"""
+
 
 def test_apply_primary_doc_metadata_sets_accepted_at(db_session):
     from app.edgar.parsers.primary_doc import parse_primary_doc
@@ -784,6 +863,35 @@ def test_backfill_period_routing_fills_accepted_at(db_session, monkeypatch):
     # Idempotent: second run fills nothing.
     summary2 = backfill_period_routing(db_session, filings=[filing])
     assert summary2.get("accepted_at_filled") == 0
+
+
+def test_backfill_distinguishes_routed_review_from_unrouted_review(
+    db_session, monkeypatch
+):
+    from app.models.institutions import RawSourceDocument
+    from app.services.edgar_ingestion import backfill_period_routing
+
+    mgr = _manager(db_session)
+    filing = _filing(db_session, mgr)
+    doc = RawSourceDocument(
+        source_system="edgar",
+        document_type="13f_primary",
+        source_url="https://example.test/stale-primary.xml",
+        body_path="/nonexistent",
+    )
+    db_session.add(doc)
+    db_session.flush()
+    filing.raw_primary_doc_id = doc.id
+    db_session.flush()
+    monkeypatch.setattr("app.edgar.fetcher.load_body", lambda d: _STALE_PRIMARY_DOC)
+
+    summary = backfill_period_routing(db_session, filings=[filing])
+
+    assert summary["needs_review"] == 1
+    assert summary["needs_review_routed"] == 1
+    assert summary["needs_review_unrouted"] == 0
+    assert filing.report_quarter == "2024-Q1"
+    assert filing.parse_warning == "PERIOD_SUSPICIOUSLY_STALE"
 
 
 # ---------------------------------------------------------------------------
@@ -916,6 +1024,203 @@ def test_bulk_ingest_job_composition_end_to_end(db_session, monkeypatch):
         .count()
     )
     assert visible == 1  # product-visible end to end
+
+
+def _infotable(*, shares: int, value_usd: int) -> bytes:
+    return f"""<informationTable xmlns="http://www.sec.gov/edgar/document/thirteenf/informationtable">
+  <infoTable>
+    <nameOfIssuer>APPLE INC</nameOfIssuer><titleOfClass>COM</titleOfClass>
+    <cusip>037833100</cusip><value>{value_usd}</value>
+    <shrsOrPrnAmt><sshPrnamt>{shares}</sshPrnamt><sshPrnamtType>SH</sshPrnamtType></shrsOrPrnAmt>
+    <investmentDiscretion>SOLE</investmentDiscretion>
+    <votingAuthority><Sole>{shares}</Sole><Shared>0</Shared><None>0</None></votingAuthority>
+  </infoTable>
+</informationTable>""".encode()
+
+
+def test_quarterly_pipeline_real_stages_from_stored_edgar_docs(db_session, monkeypatch):
+    """The quarterly entrypoint, not merely each isolated stage, must turn
+    stored EDGAR evidence into all product read models.
+
+    External acquisition/enrichment calls are replaced at their network
+    boundaries. Routing, parsing, active-filing authority, quality persistence,
+    ownership-change computation, and Oracle's Lens scoring all run their real
+    production bodies over three managers and two consecutive quarters.
+    """
+    from app.models.institutions import (
+        CusipTickerMap,
+        JobRun,
+        OwnershipChange13F,
+        QualityReport13F,
+    )
+    from app.models.oracles_lens import OraclesLensSignal
+    from app.models.stocks import Stock
+    from app.services.cusip_enrichment import backfill_stock_ids
+    from app.services.oracles_lens.constants import SCORE_VERSION
+    from app.services.thirteenf_admin_dashboard import execute_job_payload
+    from app.services.thirteenf_holdings_query import active_hr_holdings_query
+
+    stock = Stock(
+        ticker="AAPL",
+        company_name="Apple Inc.",
+        exchange="NASDAQ",
+        market_country="US",
+        is_active=True,
+    )
+    db_session.add(stock)
+    db_session.flush()
+    db_session.add(
+        CusipTickerMap(
+            cusip="037833100",
+            ticker="AAPL",
+            issuer_name="APPLE INC",
+            exchange="NASDAQ",
+            stock_id=stock.id,
+            source="pipeline_integration_fixture",
+            confidence="high",
+            mapping_status="confirmed",
+            is_active=True,
+        )
+    )
+    db_session.flush()
+
+    bodies: dict[int, bytes] = {}
+    filings: list[Filing13F] = []
+    managers: list[InstitutionManager] = []
+    for ordinal in range(1, 4):
+        cik = f"0000001{ordinal:03d}"
+        manager = InstitutionManager(
+            canonical_name=f"Pipeline Manager {ordinal}",
+            legal_name=f"Pipeline Manager {ordinal}",
+            edgar_legal_name=f"Pipeline Manager {ordinal}",
+            cik=cik,
+            status="active",
+            match_status="confirmed",
+            manager_type="long_term_fundamental",
+            style_primary="quality_compounder",
+        )
+        db_session.add(manager)
+        db_session.flush()
+        managers.append(manager)
+
+        q3, q3_bodies = _job_filing(
+            db_session,
+            manager,
+            accession=f"{cik}-25-{ordinal:06d}",
+            filed=date(2025, 11, 14),
+            primary_bytes=_sgml("20251114163000", period="09-30-2025"),
+        )
+        q3_bodies[q3.raw_infotable_doc_id] = _infotable(
+            shares=40_000,
+            value_usd=7_000_000,
+        )
+        q4, q4_bodies = _job_filing(
+            db_session,
+            manager,
+            accession=f"{cik}-26-{ordinal:06d}",
+            filed=date(2026, 2, 14),
+            primary_bytes=_sgml("20260214163000", period="12-31-2025"),
+        )
+        q4_bodies[q4.raw_infotable_doc_id] = _infotable(
+            shares=50_000,
+            value_usd=8_000_000,
+        )
+        bodies.update(q3_bodies)
+        bodies.update(q4_bodies)
+        filings.extend([q3, q4])
+
+    monkeypatch.setattr(
+        "app.services.edgar_ingestion.ingest_quarter_index",
+        lambda _session, _quarter: 0,
+    )
+    monkeypatch.setattr("app.edgar.fetcher.load_body", lambda doc: bodies[doc.id])
+    monkeypatch.setattr(
+        "app.services.edgar_ingestion.ensure_filing_infotable_doc",
+        lambda _session, filing: filing.raw_infotable_doc,
+    )
+
+    def _link_known_cusips(session):
+        linked = backfill_stock_ids(session)
+        return {
+            "mappings_created": 0,
+            "batches_run": 0,
+            "new_stocks": 0,
+            "holdings_linked": linked,
+            "holdings_still_enrichable": 0,
+        }
+
+    monkeypatch.setattr(
+        "app.services.cusip_enrichment.enrich_all_unmapped_holdings",
+        _link_known_cusips,
+    )
+    monkeypatch.setattr(
+        "app.services.cusip_enrichment.enrich_stocks_from_edgar_tickers",
+        lambda _session: {"new_mappings": 0},
+    )
+
+    q3_result = execute_job_payload(
+        db_session, "quarterly_pipeline", {"quarter": "2025-Q3"}
+    )
+    q4_result = execute_job_payload(
+        db_session, "quarterly_pipeline", {"quarter": "2025-Q4"}
+    )
+
+    assert q3_result["status"] == "succeeded", q3_result
+    assert q4_result["status"] == "succeeded", q4_result
+    assert [stage["job_type"] for stage in q4_result["stages"]] == [
+        "fetch_quarter_index",
+        "ingest_holdings",
+        "enrich_metadata",
+        "quality_check",
+        "compute_ownership_changes",
+        "oracles_lens_score_backfill",
+    ]
+    assert all(stage["status"] == "succeeded" for stage in q4_result["stages"])
+
+    for filing in filings:
+        db_session.refresh(filing)
+        assert filing.parse_status == "succeeded"
+        assert filing.is_active_for_manager_period is True
+    assert active_hr_holdings_query(db_session).count() == 6
+
+    quality_reports = (
+        db_session.query(QualityReport13F)
+        .filter(QualityReport13F.quarter.in_(["2025-Q3", "2025-Q4"]))
+        .all()
+    )
+    assert {report.quarter for report in quality_reports} == {"2025-Q3", "2025-Q4"}
+    assert all(report.source_job_id is not None for report in quality_reports)
+    assert all(
+        db_session.get(JobRun, report.source_job_id).job_type == "quality_check"
+        for report in quality_reports
+    )
+
+    changes = (
+        db_session.query(OwnershipChange13F)
+        .filter(OwnershipChange13F.report_quarter == "2025-Q4")
+        .order_by(OwnershipChange13F.manager_id)
+        .all()
+    )
+    assert len(changes) == 3
+    assert {row.manager_id for row in changes} == {manager.id for manager in managers}
+    assert all(row.stock_id == stock.id for row in changes)
+    assert all(row.change_status == "increased" for row in changes)
+    assert all(row.current_shares == 50_000 for row in changes)
+    assert all(row.previous_shares == 40_000 for row in changes)
+
+    signal = (
+        db_session.query(OraclesLensSignal)
+        .filter_by(
+            stock_id=stock.id,
+            report_quarter="2025-Q4",
+            score_version=SCORE_VERSION,
+        )
+        .one()
+    )
+    assert signal.raw_consensus_count == 3
+    assert signal.source_job_id is not None
+    assert db_session.get(JobRun, signal.source_job_id).job_type == "oracles_lens_score_backfill"
+    assert signal.components
 
 
 def test_bulk_ingest_job_mixed_null_acceptance_does_not_flip(db_session, monkeypatch):

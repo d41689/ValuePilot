@@ -19,6 +19,7 @@ from __future__ import annotations
 from app.models.institutions import (
     InstitutionManager,
     InstitutionManagerCikReviewEvent,
+    InstitutionManagerRepresentativenessReview,
 )
 from app.services.edgar_ingestion import seed_confirmed_managers
 
@@ -576,6 +577,7 @@ def test_concurrent_seed_serializes_on_the_advisory_lock():
         s_a.close()
         cleanup = SessionLocal()
         try:
+            cleanup.query(InstitutionManagerRepresentativenessReview).delete()
             cleanup.query(InstitutionManager).delete()
             cleanup.commit()
         finally:

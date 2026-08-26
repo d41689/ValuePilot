@@ -4,7 +4,7 @@ from datetime import date
 
 from app.models.artifacts import PdfDocument
 from app.models.facts import MetricFact
-from app.models.institutions import Filing13F, Holding13F, InstitutionManager
+from app.models.institutions import Filing13F, Holding13F, InstitutionManager, ParseRun13F
 from app.models.stocks import Stock, StockPrice
 from app.models.users import User
 
@@ -62,9 +62,37 @@ def _holding(
     shares: int,
     value_thousands: int,
 ) -> Holding13F:
+    quarter = f"{filing.period_of_report.year}-Q{((filing.period_of_report.month - 1) // 3) + 1}"
+    filing.report_quarter = quarter
+    filing.quarter_end_date = filing.period_of_report
+    filing.accession_number = filing.accession_no
+    filing.is_active_for_manager_period = filing.is_latest_for_period
+    filing.parse_status = "succeeded"
+    parse_run = (
+        db_session.query(ParseRun13F)
+        .filter(ParseRun13F.accession_number == filing.accession_no)
+        .filter(ParseRun13F.is_current.is_(True))
+        .one_or_none()
+    )
+    if parse_run is None:
+        parse_run = ParseRun13F(
+            accession_number=filing.accession_no,
+            parser_version="test",
+            fingerprint_version="v1",
+            status="succeeded",
+            is_current=True,
+        )
+        db_session.add(parse_run)
+        db_session.flush()
     holding = Holding13F(
         filing_id=filing.id,
+        parse_run_id=parse_run.id,
+        manager_id=filing.manager_id,
+        accession_number=filing.accession_no,
+        report_quarter=quarter,
+        quarter_end_date=filing.period_of_report,
         row_fingerprint=f"{filing.accession_no}-{cusip}-{stock.ticker}",
+        holding_row_fingerprint=f"{filing.accession_no}-{cusip}-{stock.ticker}",
         cusip=cusip,
         issuer_name=stock.company_name,
         title_of_class="COM",
@@ -72,6 +100,8 @@ def _holding(
         shares=shares,
         share_type="SH",
         stock_id=stock.id,
+        cusip_mapping_status="linked",
+        holding_attribution_status="direct",
     )
     db_session.add(holding)
     db_session.flush()
@@ -325,7 +355,9 @@ def test_oracles_lens_uses_latest_effective_amendment_and_excludes_superseded_ho
     assert "OLDAM" not in tickers
 
 
-def test_oracles_lens_adds_value_line_quality_overlay(client, db_session):
+def test_oracles_lens_adds_value_line_quality_overlay(
+    client, db_session, auth_headers,
+):
     target = _seed_oracles_lens_fixture(db_session)
     document = _pdf_document(db_session, target)
     db_session.add_all(
@@ -369,7 +401,10 @@ def test_oracles_lens_adds_value_line_quality_overlay(client, db_session):
     )
     db_session.commit()
 
-    response = client.get("/api/v1/13f/oracles-lens?use_persisted_scores=false")
+    response = client.get(
+        "/api/v1/13f/oracles-lens?use_persisted_scores=false",
+        headers=auth_headers(db_session.get(User, target._test_user_id)),
+    )
     assert response.status_code == 200
 
     item = next(row for row in response.json()["items"] if row["stock_id"] == target.id)
@@ -450,7 +485,7 @@ def test_oracles_lens_adds_value_line_quality_overlay(client, db_session):
 
 
 def test_oracles_lens_reads_piotroski_from_value_json_when_value_numeric_null(
-    client, db_session,
+    client, db_session, auth_headers,
 ):
     """D2 regression: ``score.piotroski.total`` stores the composite score in
     ``value_json['partial_score']`` with ``value_numeric=NULL`` (269/272 dev
@@ -484,7 +519,10 @@ def test_oracles_lens_reads_piotroski_from_value_json_when_value_numeric_null(
     )
     db_session.commit()
 
-    response = client.get("/api/v1/13f/oracles-lens?use_persisted_scores=false")
+    response = client.get(
+        "/api/v1/13f/oracles-lens?use_persisted_scores=false",
+        headers=auth_headers(db_session.get(User, target._test_user_id)),
+    )
     assert response.status_code == 200
 
     item = next(row for row in response.json()["items"] if row["stock_id"] == target.id)
@@ -494,7 +532,7 @@ def test_oracles_lens_reads_piotroski_from_value_json_when_value_numeric_null(
 
 
 def test_oracles_lens_value_numeric_takes_precedence_over_partial_score(
-    client, db_session,
+    client, db_session, auth_headers,
 ):
     """D2 post-review (Backend B5): when BOTH ``value_numeric`` and
     ``value_json['partial_score']`` are set with different values, the
@@ -525,14 +563,19 @@ def test_oracles_lens_value_numeric_takes_precedence_over_partial_score(
     )
     db_session.commit()
 
-    response = client.get("/api/v1/13f/oracles-lens?use_persisted_scores=false")
+    response = client.get(
+        "/api/v1/13f/oracles-lens?use_persisted_scores=false",
+        headers=auth_headers(db_session.get(User, target._test_user_id)),
+    )
     assert response.status_code == 200
     item = next(row for row in response.json()["items"] if row["stock_id"] == target.id)
     # value_numeric (8.0) wins over value_json.partial_score (3).
     assert item["quality_overlay"]["piotroski_total"] == 8.0
 
 
-def test_oracles_lens_adds_conservative_valuation_reference(client, db_session):
+def test_oracles_lens_adds_conservative_valuation_reference(
+    client, db_session, auth_headers,
+):
     target = _seed_oracles_lens_fixture(db_session)
     db_session.add_all(
         [
@@ -561,7 +604,10 @@ def test_oracles_lens_adds_conservative_valuation_reference(client, db_session):
     )
     db_session.commit()
 
-    response = client.get("/api/v1/13f/oracles-lens?use_persisted_scores=false")
+    response = client.get(
+        "/api/v1/13f/oracles-lens?use_persisted_scores=false",
+        headers=auth_headers(db_session.get(User, target._test_user_id)),
+    )
     assert response.status_code == 200
 
     item = next(row for row in response.json()["items"] if row["stock_id"] == target.id)
@@ -591,7 +637,9 @@ def test_oracles_lens_adds_conservative_valuation_reference(client, db_session):
     assert response.json()["coverage"]["valuation_reference_coverage_count"] >= 1
 
 
-def test_oracles_lens_labels_value_line_target_as_reference_not_intrinsic_value(client, db_session):
+def test_oracles_lens_labels_value_line_target_as_reference_not_intrinsic_value(
+    client, db_session, auth_headers,
+):
     target = _seed_oracles_lens_fixture(db_session)
     db_session.add(_metric_fact(target, "target.price_18m.mid", 150.0, period_end=date(2032, 1, 1)))
     db_session.add(
@@ -609,7 +657,10 @@ def test_oracles_lens_labels_value_line_target_as_reference_not_intrinsic_value(
     )
     db_session.commit()
 
-    response = client.get("/api/v1/13f/oracles-lens?use_persisted_scores=false")
+    response = client.get(
+        "/api/v1/13f/oracles-lens?use_persisted_scores=false",
+        headers=auth_headers(db_session.get(User, target._test_user_id)),
+    )
     assert response.status_code == 200
 
     item = next(row for row in response.json()["items"] if row["stock_id"] == target.id)
@@ -620,7 +671,9 @@ def test_oracles_lens_labels_value_line_target_as_reference_not_intrinsic_value(
     assert item["valuation_unavailable_reasons"] == []
 
 
-def test_oracles_lens_uses_period_price_for_historical_snapshot(client, db_session):
+def test_oracles_lens_uses_period_price_for_historical_snapshot(
+    client, db_session, auth_headers,
+):
     target = _seed_oracles_lens_fixture(db_session)
     db_session.add_all(
         [
@@ -656,7 +709,10 @@ def test_oracles_lens_uses_period_price_for_historical_snapshot(client, db_sessi
     )
     db_session.commit()
 
-    response = client.get("/api/v1/13f/oracles-lens?period=2031-Q3&use_persisted_scores=false")
+    response = client.get(
+        "/api/v1/13f/oracles-lens?period=2031-Q3&use_persisted_scores=false",
+        headers=auth_headers(db_session.get(User, target._test_user_id)),
+    )
     assert response.status_code == 200
 
     item = next(row for row in response.json()["items"] if row["stock_id"] == target.id)
@@ -673,6 +729,54 @@ def test_oracles_lens_uses_period_price_for_historical_snapshot(client, db_sessi
     assert response.json()["coverage"]["price_missing_count"] == 0
     assert response.json()["coverage"]["price_coverage_ratio"] == 1.0
     assert response.json()["coverage"]["price_backfill_required"] is False
+
+
+def test_oracles_lens_never_leaks_another_users_valuation(
+    client, db_session, user_factory, auth_headers,
+):
+    target = _seed_oracles_lens_fixture(db_session)
+    owner = db_session.get(User, target._test_user_id)
+    viewer = user_factory(email="oracles-viewer@example.com")
+    db_session.add(
+        _metric_fact(
+            target,
+            "val.fair_value",
+            987.0,
+            period_end=date(2032, 1, 2),
+            source_type="manual",
+        )
+    )
+    db_session.add(
+        _metric_fact(
+            target,
+            "bs.return_on_equity",
+            0.42,
+            period_end=date(2032, 1, 2),
+        )
+    )
+    db_session.commit()
+
+    owner_response = client.get(
+        "/api/v1/13f/oracles-lens?use_persisted_scores=false",
+        headers=auth_headers(owner),
+    )
+    viewer_response = client.get(
+        "/api/v1/13f/oracles-lens?use_persisted_scores=false",
+        headers=auth_headers(viewer),
+    )
+
+    owner_item = next(
+        row for row in owner_response.json()["items"] if row["stock_id"] == target.id
+    )
+    viewer_item = next(
+        row for row in viewer_response.json()["items"] if row["stock_id"] == target.id
+    )
+    assert owner_item["valuation_reference"] == 987.0
+    assert viewer_item["valuation_reference"] is None
+    assert viewer_item["valuation_reference_type"] == "missing"
+    assert owner_item["quality_overlay"]["return_on_equity"] == 0.42
+    assert viewer_item["quality_overlay"]["return_on_equity"] is None
+    assert viewer_item["quality_overlay"]["coverage"]["value_line"] is False
 
 
 def test_oracles_lens_marks_old_selected_period(client, db_session):

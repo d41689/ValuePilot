@@ -7,7 +7,8 @@ Responsibilities:
 - Compute holding_row_fingerprint anchored to raw row values and source_row_index.
 - Two-phase ParseRun13F: create running → bulk insert holdings → mark succeeded+is_current.
 - Write portfolio_weight_pct=NULL (MVP 2 responsibility).
-- Set cusip_mapping_status=pending_mapping on all new rows.
+- Set cusip_mapping_status=pending_mapping on first ingest; a reparse carries
+  forward an unambiguous verified CUSIP-to-stock link from the prior run.
 - reparse_accession: atomic switch to new parse_run; retains old holdings on failure (PRD §6.3-§6.5).
 - ingest_if_needed: idempotent skip/reparse based on fingerprint_version (PRD §6.1).
 """
@@ -20,14 +21,18 @@ from typing import Any
 
 from sqlalchemy.orm import Session
 
-from app.edgar.parsers.infotable import HoldingRow, parse_infotable
-from app.edgar.parsers.value_units import infer_value_unit
+from app.edgar.parsers.infotable import (
+    HoldingRow,
+    has_explicit_empty_portfolio_placeholder,
+    parse_infotable,
+)
+from app.edgar.parsers.value_units import infer_value_unit, reconcile_with_implied_prices
 from app.models.institutions import Filing13F, Holding13F, ParseRun13F
 
 logger = logging.getLogger(__name__)
 
-PARSER_VERSION = "v1"
-FINGERPRINT_VERSION = "v1"
+PARSER_VERSION = "v2"
+FINGERPRINT_VERSION = "v2"
 
 # Same 0.1% band the quality reconciliation uses (edgar_quality._RECONCILE_THRESHOLD).
 _REPARSE_RECONCILE_THRESHOLD = 0.001
@@ -39,6 +44,8 @@ def _reparse_regression_reason(
     candidate_computed: int,
     candidate_rows: int,
     old_current_run_id: int | None,
+    *,
+    explicit_empty_portfolio: bool = False,
 ) -> str | None:
     """Why a reparse must NOT replace the current run — or None to proceed.
 
@@ -57,6 +64,8 @@ def _reparse_regression_reason(
     A quarantined run is kept for audit; the prior current run keeps serving.
     """
     if old_current_run_id is None:
+        return None
+    if explicit_empty_portfolio and candidate_rows == 0 and candidate_computed == 0:
         return None
 
     reported = filing.reported_total_value_thousands
@@ -254,6 +263,22 @@ def _do_ingest_holdings(
         )
 
         rows = parse_infotable(infotable_bytes)
+        decision = reconcile_with_implied_prices(
+            decision,
+            [
+                (
+                    int(row.value_raw_str) if row.value_raw_str else row.value_thousands,
+                    row.shares,
+                    row.put_call,
+                )
+                for row in rows
+            ],
+        )
+
+        prior_linked_stock_ids = _prior_linked_stock_ids_by_cusip(
+            session,
+            old_current_run_id=old_current_run_id,
+        )
 
         holdings: list[Holding13F] = []
         for row in rows:
@@ -263,8 +288,9 @@ def _do_ingest_holdings(
             # row_fingerprint must be unique per (filing_id, row_fingerprint).
             # Include parse_run_id so re-parses of the same filing don't collide.
             row_fp = hashlib.sha256(f"{holding_fp}|{parse_run.id}".encode()).hexdigest()
+            prior_stock_id = prior_linked_stock_ids.get(row.cusip.upper())
 
-            if decision.value_parse_rule == "schema_thousands":
+            if decision.value_parse_rule in {"schema_thousands", "implied_price_thousands"}:
                 value_usd = int(row.value_raw_str) * 1000 if row.value_raw_str else row.value_thousands * 1000
             elif decision.value_parse_rule == "schema_dollars":
                 value_usd = int(row.value_raw_str) if row.value_raw_str else row.value_thousands
@@ -302,7 +328,8 @@ def _do_ingest_holdings(
                 voting_sole=row.voting_sole,
                 voting_shared=row.voting_shared,
                 voting_none=row.voting_none,
-                cusip_mapping_status="pending_mapping",
+                stock_id=prior_stock_id,
+                cusip_mapping_status="linked" if prior_stock_id else "pending_mapping",
                 portfolio_weight_pct=None,
             )
             holdings.append(holding)
@@ -326,7 +353,14 @@ def _do_ingest_holdings(
         # A first ingest (`old_current_run_id is None`) is never gated: a
         # genuinely non-compliant filer must still get its one and only run.
         quarantine_reason = _reparse_regression_reason(
-            session, filing, candidate_computed, len(holdings), old_current_run_id
+            session,
+            filing,
+            candidate_computed,
+            len(holdings),
+            old_current_run_id,
+            explicit_empty_portfolio=has_explicit_empty_portfolio_placeholder(
+                infotable_bytes
+            ),
         )
         if quarantine_reason is not None:
             # Keep the run for audit, succeeded but NOT current, and restore the
@@ -459,6 +493,43 @@ def _do_ingest_holdings(
 
 
 
+
+
+def _prior_linked_stock_ids_by_cusip(
+    session: Session,
+    *,
+    old_current_run_id: int | None,
+) -> dict[str, int]:
+    """Carry verified identity through a byte-for-byte source replay.
+
+    Reparse creates immutable replacement rows. Resetting every replacement to
+    pending mapping makes a successful parser repair disappear from product
+    surfaces until a separate enrichment job happens to run. Preserve only
+    unambiguous prior links: a CUSIP with exactly one linked stock id.
+    """
+    if old_current_run_id is None:
+        return {}
+    old_run = session.get(ParseRun13F, old_current_run_id)
+    if old_run is None:
+        return {}
+    rows = (
+        session.query(Holding13F.cusip, Holding13F.stock_id)
+        .join(ParseRun13F, ParseRun13F.id == Holding13F.parse_run_id)
+        .filter(
+            ParseRun13F.accession_number == old_run.accession_number,
+            Holding13F.cusip_mapping_status == "linked",
+            Holding13F.stock_id.is_not(None),
+        )
+        .all()
+    )
+    candidates: dict[str, set[int]] = {}
+    for cusip, stock_id in rows:
+        candidates.setdefault(cusip.upper(), set()).add(stock_id)
+    return {
+        cusip: next(iter(stock_ids))
+        for cusip, stock_ids in candidates.items()
+        if len(stock_ids) == 1
+    }
 
 
 def ingest_holdings_for_filing(

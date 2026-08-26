@@ -204,6 +204,7 @@ def test_nt_ingest_creates_coverage_record_with_correct_fields(db_session):
     assert filing.report_quarter == "2024-Q1"
     assert filing.raw_primary_doc_id is not None
     assert result["status"] == "succeeded"
+    assert filing.parse_status == "succeeded"
 
 
 def test_nt_ingest_stores_other_managers_reporting_with_distinct_keys(db_session):
@@ -247,6 +248,53 @@ def test_nt_ingest_creates_no_parse_run_and_no_holdings(db_session):
     assert db_session.query(Holding13F).join(
         Filing13F, Holding13F.filing_id == Filing13F.id
     ).filter(Filing13F.accession_number == accession).count() == 0
+
+
+def test_nt_amendment_is_accepted_as_notice_family_without_holdings(db_session):
+    _clear(db_session)
+    manager = _manager(db_session)
+    accession = "0001067983-24-000033"
+    payload = _nt_payload(manager, accession)
+    payload["form_type"] = "13F-NT/A"
+
+    result = ingest_accession_filing_detail(
+        db_session,
+        payload,
+        client=FakeEdgarClient(_nt_submission()),
+    )
+
+    filing = db_session.query(Filing13F).filter_by(accession_number=accession).one()
+    assert result["status"] == "succeeded"
+    assert filing.form_type == "13F-NT/A"
+    assert filing.coverage_type == "notice_reported_elsewhere"
+    assert db_session.query(ParseRun13F).filter_by(accession_number=accession).count() == 0
+    assert db_session.query(Holding13F).filter_by(filing_id=filing.id).count() == 0
+
+
+def test_nt_amendment_automatically_supersedes_prior_notice(db_session):
+    _clear(db_session)
+    manager = _manager(db_session)
+    original_accession = "0001067983-24-000034"
+    amendment_accession = "0001067983-24-000035"
+
+    ingest_accession_filing_detail(
+        db_session,
+        _nt_payload(manager, original_accession),
+        client=FakeEdgarClient(_nt_submission()),
+    )
+    payload = _nt_payload(manager, amendment_accession)
+    payload["form_type"] = "13F-NT/A"
+    ingest_accession_filing_detail(
+        db_session,
+        payload,
+        client=FakeEdgarClient(_nt_submission(accepted="20240516170000")),
+    )
+
+    original = db_session.query(Filing13F).filter_by(accession_number=original_accession).one()
+    amendment = db_session.query(Filing13F).filter_by(accession_number=amendment_accession).one()
+    assert amendment.amendment_status == "applied"
+    assert amendment.is_active_for_manager_period is True
+    assert original.is_active_for_manager_period is False
 
 
 # ---------------------------------------------------------------------------

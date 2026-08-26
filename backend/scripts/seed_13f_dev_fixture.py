@@ -22,7 +22,9 @@ What gets seeded:
 - 32 managers — 4 per canonical 8-value taxonomy
   (``long_term_fundamental``, ``value_concentrated``, ``activist``,
   ``quant``, ``high_turnover``, ``index_like``, ``multi_strategy``,
-  ``unknown``) so the manager-weight branches are all exercised.
+  ``unknown``) so the manager-weight branches are all exercised. Every
+  manager also carries V2 product taxonomy metadata; the value-manager subset
+  therefore renders in the consumer UI's default ``Value DNA`` scope.
 - 2 quarters: 2025-Q4 (prior) and 2026-Q1 (current). Cross-quarter
   delta + streak computation has something real to work with.
 - 4 caveat cases distributed across the universe so MVP5-02
@@ -51,6 +53,7 @@ from app.models.institutions import (
     Filing13F,
     Holding13F,
     InstitutionManager,
+    OwnershipChange13F,
     ParseRun13F,
 )
 from app.models.oracles_lens import (
@@ -60,6 +63,9 @@ from app.models.oracles_lens import (
 from app.models.stocks import Stock
 from app.services.oracles_lens.signal_weighted_score import (
     compute_signal_weighted_scores,
+)
+from app.services.thirteenf_ownership_changes import (
+    compute_ownership_changes_for_manager_quarter,
 )
 
 
@@ -100,6 +106,56 @@ _STOCK_COUNT = 8
 # Per-filing holding count is round-robin within this range so the
 # universe stays in the 200-500 holding target window.
 _HOLDINGS_PER_FILING_OPTIONS = [3, 4, 5]
+
+# The dev fixture intentionally preserves every legacy manager_type branch for
+# scoring coverage. Product surfaces filter on V2 style_primary, so each branch
+# also needs an explicit, non-value-polluting presentation profile. There is no
+# V2 "quant" bucket; synthetic quant managers use multi_strategy_macro and keep
+# their legacy manager_type="quant" so they remain outside Value DNA while the
+# scorer still exercises its dedicated quant weight.
+_STYLE_PRIMARY_BY_LEGACY: dict[str, tuple[str, ...]] = {
+    "long_term_fundamental": ("quality_compounder",),
+    "value_concentrated": ("value_deep", "value_concentrated"),
+    "activist": ("activist",),
+    "quant": ("multi_strategy_macro",),
+    "high_turnover": ("growth_long_short",),
+    "index_like": ("endowment_passive",),
+    "multi_strategy": ("special_situations", "multi_strategy_macro"),
+    "unknown": ("unknown",),
+}
+
+_CAPITAL_STRUCTURE_BY_LEGACY: dict[str, str] = {
+    "long_term_fundamental": "locked_lp",
+    "value_concentrated": "permanent_capital",
+    "activist": "standard_lp",
+    "quant": "standard_lp",
+    "high_turnover": "standard_lp",
+    "index_like": "mutual_fund_etf",
+    "multi_strategy": "standard_lp",
+    "unknown": "standard_lp",
+}
+
+_TURNOVER_BY_LEGACY: dict[str, str] = {
+    "long_term_fundamental": "low",
+    "value_concentrated": "low",
+    "activist": "med",
+    "quant": "high",
+    "high_turnover": "high",
+    "index_like": "low",
+    "multi_strategy": "med",
+    "unknown": "med",
+}
+
+_TOP10_CONCENTRATION_BY_LEGACY: dict[str, float] = {
+    "long_term_fundamental": 55.0,
+    "value_concentrated": 75.0,
+    "activist": 60.0,
+    "quant": 15.0,
+    "high_turnover": 30.0,
+    "index_like": 10.0,
+    "multi_strategy": 25.0,
+    "unknown": 20.0,
+}
 
 
 # ===========================================================================
@@ -168,9 +224,11 @@ def _seed_managers(session: Session) -> list[InstitutionManager]:
     managers: list[InstitutionManager] = []
     slot = 0
     for mgr_type in _MANAGER_TYPES_ORDERED:
-        for _ in range(_MANAGERS_PER_TYPE):
+        for type_slot in range(_MANAGERS_PER_TYPE):
             slot += 1
             cik = f"{_CIK_PREFIX}{slot:06d}"
+            styles = _STYLE_PRIMARY_BY_LEGACY[mgr_type]
+            style_primary = styles[type_slot % len(styles)]
             existing = (
                 session.query(InstitutionManager)
                 .filter(InstitutionManager.cik == cik)
@@ -192,6 +250,22 @@ def _seed_managers(session: Session) -> list[InstitutionManager]:
                 session.flush()
             else:
                 manager = existing
+            # These CIKs are fixture-owned. Refresh product metadata on every
+            # idempotent run so an existing pre-V2 fixture is upgraded in place.
+            manager.manager_type = mgr_type
+            manager.style_primary = style_primary
+            manager.capital_structure = _CAPITAL_STRUCTURE_BY_LEGACY[mgr_type]
+            manager.market_cap_focus = "all"
+            manager.geo_focus = "us"
+            manager.historical_turnover = _TURNOVER_BY_LEGACY[mgr_type]
+            manager.position_concentration_top10_pct = (
+                _TOP10_CONCENTRATION_BY_LEGACY[mgr_type]
+            )
+            manager.ideology_tags = [
+                f"synthetic_{style_primary}",
+                f"legacy_{mgr_type}",
+            ]
+            session.flush()
             managers.append(manager)
     return managers
 
@@ -327,6 +401,14 @@ def _seed_filings_and_holdings(
                 stocks[(stock_offset + k) % len(stocks)]
                 for k in range(num_holdings)
             ]
+            # Product acceptance fixture: two independent, complete Value DNA
+            # managers open DEVSEED3 in the current quarter. This gives the
+            # new-position cluster UI a deterministic >=2-manager result rather
+            # than relying on an accidental overlap in the round-robin window.
+            if quarter == _CURRENT_QUARTER and m_idx in {4, 6}:
+                cluster_stock = stocks[2]
+                if cluster_stock not in chosen:
+                    chosen.append(cluster_stock)
 
             for source_idx, stock in enumerate(chosen):
                 fingerprint = f"{accession}-{stock.id}"
@@ -407,6 +489,26 @@ def _filing_deadline(quarter_end: date) -> date:
 # ===========================================================================
 
 
+def _run_ownership_changes(session: Session) -> dict[str, int]:
+    """Materialize current-quarter deltas for every synthetic manager."""
+    managers = (
+        session.query(InstitutionManager)
+        .filter(InstitutionManager.cik.like(f"{_CIK_PREFIX}%"))
+        .order_by(InstitutionManager.cik)
+        .all()
+    )
+    created = 0
+    for manager in managers:
+        result = compute_ownership_changes_for_manager_quarter(
+            session,
+            manager_id=manager.id,
+            report_quarter=_CURRENT_QUARTER,
+        )
+        created += int(result.get("created", 0))
+    session.flush()
+    return {"managers_processed": len(managers), "changes_created": created}
+
+
 def _run_persisted_scoring(session: Session) -> dict[str, Any]:
     """Compute signal-weighted scores for the current quarter so
     ``oracles_lens_signals`` is populated. The compute function does
@@ -434,6 +536,11 @@ def _acceptance_summary(session: Session) -> dict[str, Any]:
     succeeded_filings = (
         session.query(Filing13F)
         .filter(Filing13F.parse_status == "succeeded")
+        .count()
+    )
+    ownership_changes = (
+        session.query(OwnershipChange13F)
+        .filter(OwnershipChange13F.report_quarter == _CURRENT_QUARTER)
         .count()
     )
     typed_managers = (
@@ -464,6 +571,7 @@ def _acceptance_summary(session: Session) -> dict[str, Any]:
         "oracles_lens_signals_count": signals_count,
         "linked_holdings_count": linked_holdings,
         "succeeded_filings_count": succeeded_filings,
+        "ownership_changes_count": ownership_changes,
         "devseed_typed_managers": typed_managers,
         "devseed_unknown_managers": unknown_managers,
         "signals_with_excluded_holders": exclusion_signals,
@@ -486,6 +594,12 @@ def _reset_devseed(session: Session) -> dict[str, int]:
         m.id
         for m in session.query(InstitutionManager).filter(manager_cik_filter).all()
     ]
+    ownership_changes_deleted = (
+        session.query(OwnershipChange13F)
+        .filter(OwnershipChange13F.manager_id.in_(manager_ids))
+        .delete(synchronize_session=False)
+        if manager_ids else 0
+    )
     # Holdings + parse runs + filings keyed on devseed managers.
     holdings_deleted = (
         session.query(Holding13F)
@@ -550,6 +664,7 @@ def _reset_devseed(session: Session) -> dict[str, int]:
     session.commit()
     return {
         "holdings_deleted": holdings_deleted,
+        "ownership_changes_deleted": ownership_changes_deleted,
         "parse_runs_deleted": parse_runs_deleted,
         "filings_deleted": filings_deleted,
         "components_deleted": components_deleted,
@@ -607,6 +722,15 @@ def main() -> None:
             f"  -> filings created: {filings_summary['filings']}, "
             f"parse_runs created: {filings_summary['parse_runs']}, "
             f"holdings created: {filings_summary['holdings']}",
+            flush=True,
+        )
+
+        print(f"Pre-MVP6-01 seed: ownership changes for {_CURRENT_QUARTER}", flush=True)
+        ownership_summary = _run_ownership_changes(session)
+        session.commit()
+        print(
+            f"  -> managers processed: {ownership_summary['managers_processed']}, "
+            f"changes created: {ownership_summary['changes_created']}",
             flush=True,
         )
 
