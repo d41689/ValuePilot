@@ -1,8 +1,8 @@
 # Quant Alpha Roadmap — Data Sources, Research Canon, Strategy Candidates
 
-**Status:** working roadmap (companion to `quant_trading_system_architecture_plan.md` v10).
+**Status:** working roadmap (companion to `quant_trading_system_architecture_plan.md` v11). **1-R0A returned NO_GO on 2026-07-21; candidate status below does not authorize research execution.**
 **Purpose:** the proactive master inventory — which authoritative data/papers we use, what each one builds, and the ranked strategy-candidate portfolio for the goal of **sustained net-of-tax profitability** for a personal account (IBKR primary, Texas federal-only tax).
-**Discipline:** everything here is subject to the v10 governance — Edge Thesis prerequisite, pre-frozen parameter families, 1-R4 statistical protocol, kill rules. A candidate listed here is a *hypothesis*, not a commitment.
+**Discipline:** everything here is subject to the v11 governance — Edge Thesis prerequisite, pre-frozen parameter families, 1-R4 statistical protocol, kill rules. A candidate listed here is a *hypothesis*, not a commitment.
 
 ---
 
@@ -10,18 +10,18 @@
 
 | Tier | Source | What it gives us | Role | Cost |
 |---|---|---|---|---|
-| **In-house (unique)** | Parsed VL weekly archive (2025+, growing weekly) | Proprietary opinion signals with true `report_date` PIT lineage | **H2** raw material — accrues weekly, never backfillable | sunk |
-| **In-house (unique)** | EDGAR 13F pipeline + Oracle's Lens (built) | Institutional holdings, conviction/crowding scores | **H3** — our only data asset with no commodity equivalent | sunk |
+| **In-house (unique)** | Parsed VL uploads (measured 2026-07-21: 3 reports, 2 non-consecutive weeks) | Proprietary opinion signals with true `report_date` PIT lineage | **H2 raw material, currently underpowered**; authorized weekly automation does not exist | sunk |
+| **In-house (unique)** | EDGAR 13F pipeline + Oracle's Lens (built; 3.526 years actual filing availability) | Institutional holdings, conviction/crowding scores | **H3 candidate, currently underpowered**; historical amendment PIT reader still required | sunk |
 | **Free** | SEC EDGAR (XBRL Financial Statement Data Sets; Form 4) | Fundamentals cross-check; insider transactions | Enrichment; future insider-signal candidate | 0 |
 | **Free** | **Ken French Data Library** | FF3/FF5 + momentum factor returns, industry portfolios | The **null model** for every spanning test — never rebuild what the author publishes | 0 |
 | **Free** | **Open Source Asset Pricing** (Chen & Zimmermann) | 200+ published anomaly factor return series | Benchmark our factor implementations; sanity-check H1 construction | 0 |
 | **Free** | FRED | Rates, spreads, inflation, recession indicators | Regime features; 1256/financing modeling | 0 |
-| **Cheap** | **Sharadar (Nasdaq Data Link) SF1/SEP** — or equivalent | **Survivorship-free** US fundamentals + prices incl. delisted tickers | **The required 1-R0 backbone purchase** (H1/H3 universe + generic null inputs) | ~$50/mo |
-| **Cheap** | **Norgate Data** — or equivalent | Survivorship-free prices + **historical index constituent membership** (incl. NDX) | Required for any NDX-universe strategy (S3 breadth, constituent history) | ~$40/mo |
-| **Cheap** | Tiingo / Polygon / EODHD | Daily OHLCV APIs, corporate actions | `price_bars` feed redundancy | ~$10–30/mo |
+| **Candidate commercial** | **Sharadar (Nasdaq Data Link) SF1/SEP** — or equivalent | Candidate US fundamentals + prices | **Not approved or verified.** 1-R0B must verify exact PIT fields, inactive/delisted coverage, history, rights and breadth against the power contract before purchase | quote required |
+| **Candidate commercial** | **Norgate Data** — or equivalent | Candidate survivorship-free prices + historical index constituent membership | Required capability for any NDX-universe strategy; terms/depth must be verified before selection | quote required |
+| **Candidate commercial** | Tiingo / Polygon / EODHD | Candidate daily OHLCV APIs and corporate actions | `price_bars` feed redundancy only after rights/currency/corporate-action QA | quote required |
 | **Premium (not now)** | CRSP/Compustat (WRDS), IBES, Bloomberg | Gold-standard PIT fundamentals, analyst estimates | Only if the project outgrows Sharadar-class data; IBES would upgrade the SUE factor | $$$ |
 
-**Rule of thumb:** in-house data is for *differentiated* hypotheses (H2/H3); commodity data is for *backbones and nulls*. Never spend parsing effort replicating what $50/mo buys with delisted names included.
+**Rule of thumb:** in-house data is for *differentiated* hypotheses (H2/H3); licensed commodity data is for *backbones and nulls*. Never assume a price page proves PIT history, delisted-name handling, production rights, or enough power—verify the delivered schema and a sample export first.
 
 ## 2. Research canon → what each paper builds here
 
@@ -58,7 +58,7 @@
 | Faber (2007) | 10-month SMA tactical framework |
 | **Gayed (2016) *Leverage for the Long Run*** (Dow Award) | **the S3 blueprint**: MA regime filter works for *leveraged* equity because above-MA regimes have systematically **lower realized volatility** — leverage + low vol is the only regime where daily-rebalance decay math works |
 
-### Methodology (already codified in v10 §14, cite-for-implementation)
+### Methodology (codified in v11 §14, cite-for-implementation)
 | Paper | Where it lives |
 |---|---|
 | Harvey, Liu & Zhu (2016) | the `t ≥ 3` bar |
@@ -72,8 +72,8 @@
 
 | # | Strategy | Archetype | Hypothesis | Account | Status |
 |---|---|---|---|---|---|
-| S1 | **VL-proxy cross-sectional composite** (momentum+SUE+quality+low-vol+earnings-predictability) | cross_sectional | H1 | IRA (turnover shielded) | Phase 1 primary |
-| S2 | **13F conviction/crowding overlay** — quarterly clone tilt on Oracle's Lens scores | cross_sectional | H3 | taxable-friendly (low turnover) | Phase 1 co-primary |
+| S1 | **VL-proxy cross-sectional composite** (momentum+SUE+quality+low-vol+earnings-predictability) | cross_sectional | H1 | IRA (turnover shielded) | blocked by 1-R0A NO_GO |
+| S2 | **13F conviction/crowding overlay** — quarterly clone tilt on Oracle's Lens scores | cross_sectional | H3 | taxable-friendly (low turnover) | blocked by 1-R0A NO_GO |
 | S3 | **Regime-gated leverage rotation (NDX)** — see §4 | time_series | own Edge Thesis (risk-premium timing, not moat) | IRA preferred | candidate — needs full §4 kill-tests |
 | S4 | PEAD event tilt (earnings-date driven) | event overlay on S1 | extension of H1 | IRA | v-next (needs earnings-calendar data) |
 | S5 | Cross-asset futures trend + Section 1256 | time_series | TSMOM (documented) | taxable (60/40) | v-next (original Phase 2 pathfinder content) |
@@ -125,7 +125,7 @@ Edge classification: **risk-premium timing / convexity harvesting**, not informa
 3. **2008** and **2020-03**: gap-through behavior — regime exit at next open after signal, with realistic overnight gaps.
 4. **2011, 2015–16, 2018Q4, 2022**: whipsaw clusters — count round-trips; net-of-cost, net-of-tax drag of false signals must leave the strategy ahead of buy-and-hold QQQ on risk-matched terms.
 5. **Tax location test**: signal frequency × short-term rates in taxable vs IRA — expected conclusion: IRA sleeve.
-6. Standard v10 protocol: holdout, deflated Sharpe, parameter plateau (200±40 DMA, confirm 3–10d must all be profitable — a knife-edge 200/5 config is a fail).
+6. Standard v11 protocol: holdout, deflated Sharpe, parameter plateau (200±40 DMA, confirm 3–10d must all be profitable — a knife-edge 200/5 config is a fail).
 
 ### 4.6 Creative extensions (pre-registered as separate spec versions, NOT tuned in)
 - **Breadth confirm:** % of NDX constituents above their own 200-DMA (needs Norgate constituent history) as a second regime vote.
@@ -133,7 +133,7 @@ Edge classification: **risk-premium timing / convexity harvesting**, not informa
 - **Continuous vol-targeting** (already in the spec) instead of binary 3x/0x — more Sharpe-efficient than the pure Gayed switch, at slightly higher turnover.
 
 ## 5. Forward-accumulation programs (start now; each week missed is unrecoverable)
-1. **Weekly VL report archive** (H2) — automated scheduler job + missed-week alert (in Phase 1 ticket 1-R0).
+1. **Weekly VL report archive** (H2) — desired scheduler job + missed-week alert, but automated acquisition remains blocked until operator authorization is recorded. Current measured state is two non-consecutive weeks, not an operating weekly program.
 2. **NDX constituent snapshots** (S3 breadth) — weekly membership + per-constituent 200-DMA state (cheap once Norgate is live; snapshot ours anyway).
 3. **VXN / VIX term-structure daily closes** (S3 extension) — free from CBOE.
 
