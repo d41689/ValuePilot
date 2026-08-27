@@ -840,6 +840,173 @@ input.
 
 ---
 
+## H. SEC Financial-Filing Lineage (FT-03)
+
+### H.1 Boundary and authority
+
+FT-03 creates the primary-source lineage needed for future financial truth. It
+does not itself publish product financial facts. Permitted forms, acquisition,
+retention, automation and visibility are owned by
+`docs/architecture/coverage-source-policy.md`. Metric names, units and mapping
+remain owned by `docs/metric_facts_mapping_spec.yml`; adding SEC publication is
+FT-04 and requires that authority to change before implementation.
+
+The only queryable product fundamentals source remains `metric_facts`. Raw SEC
+filings, artifacts and XBRL facts MUST NOT be queried by screeners, formulas,
+the research workspace, valuation, Watchlist, or other product consumers. They
+are lineage/review inputs and future mapping inputs only. Market prices remain
+under the separate canonical EOD contract.
+
+### H.2 Effective-dated issuer identity
+
+`sec_issuer_identities` is append-only reviewed master lineage:
+
+- `id` BIGINT primary key;
+- `stock_id` FK `stocks`, required and delete-restricted;
+- zero-padded ten-digit `cik`, required;
+- `status` one of `reviewed`, `needs_review`, `retired`;
+- `confidence` fixed-precision nullable and `review_reason` required for a
+  reviewed/retired decision;
+- `effective_from` and nullable `effective_to` describe the real-world identity
+  interval; `known_at` records when ValuePilot acquired the decision;
+- reviewer identity and created timestamp are retained.
+
+Only a `reviewed` row may drive acquisition. At most one identity whose
+real-world interval contains a given instant may be active for a stock, and a
+CIK cannot be concurrently reviewed for two economic issuers. The service and
+database reject overlapping reviewed intervals. A ticker/name match or CIK
+candidate never promotes itself. A correction appends a new decision; it does
+not rewrite what the system knew earlier.
+
+An as-of identity must satisfy both its effective interval and
+`known_at <= cutoff`. Backdating `effective_from` never makes a later review
+visible at an earlier knowledge cutoff.
+
+### H.3 Financial filings
+
+`sec_financial_filings` is append-only and shared public-source lineage:
+
+- issuer-identity FK, accession number, form type and amendment flag;
+- filing date, report date, SEC acceptance timestamp and ValuePilot `known_at`;
+- primary document name/description and the constructed SEC index/source URLs;
+- submissions source URL plus discovery payload hash;
+- optional `amends_filing_id`; links are validated within the same issuer and
+  compatible base form/report period;
+- unique accession number.
+
+Discovery reads the SEC submissions manifest, including referenced historical
+submission files when necessary. Array fields are zipped only to their common
+validated length; malformed entries are rejected or recorded as typed failures,
+never shifted onto a neighboring accession. Approved base forms and amendments
+are retained independently. A later amendment does not mutate or delete the
+original filing.
+
+### H.4 Artifact manifest and immutable storage
+
+`sec_filing_artifacts` records the complete artifact list returned by the SEC
+accession index and the fetch state for each item:
+
+- filing FK, stable item sequence/name, description, SEC-declared type/size and
+  source URL;
+- state `manifest_only`, `retained`, `unavailable`, or `rejected` with typed
+  reason;
+- content MIME when known, SHA-256, byte size, storage key, fetched time and
+  `known_at`; HTTP ETag/Last-Modified are stored when supplied;
+- observation identity includes filing, filename, manifest version and state, so
+  an unavailable fetch can be followed by a retained observation without
+  mutating history; identical retained bytes reuse the same content-addressed
+  storage object and each observation retains its own lineage row.
+
+The accession manifest is complete even when policy fetches only approved
+artifact types. A manifest row is not evidence content until state is
+`retained`. Storage keys are derived from the content hash and never from
+untrusted path segments. Existing bytes are verified and reused; they are never
+overwritten. A filename containing traversal, an off-SEC URL, an oversized
+response, disallowed content, hash mismatch, or storage mismatch fails closed.
+
+The retained first vertical slice includes the primary inline-XBRL/HTML document
+and SEC index-declared XBRL instance/schema/calculation/definition/label/
+presentation artifacts when present. Archives, images and unrelated exhibits
+remain manifest-only unless the source policy is expanded.
+
+### H.5 Parse runs and raw XBRL facts
+
+`sec_financial_parse_runs` is append-only. A row is written only after an
+attempt reaches a terminal `succeeded` or `failed` state and records filing,
+parser name/version, input-manifest hash, start/completion/knowledge timestamps,
+fact count and typed error. Unique `(filing_id, parser_version,
+input_manifest_hash)` makes exact replay idempotent. A newer parser appends a
+run and never deletes an earlier run/fact.
+
+`sec_financial_parse_run_artifacts` is the append-only exact input manifest:
+each row links one parse run to one retained artifact, unique per pair. The
+manifest hash is a checksum, not a substitute for these durable identities. A
+PIT read is eligible only when every linked artifact was retained and known by
+the cutoff. The database rejects cross-filing links and artifacts learned after
+the parse run; raw facts have a composite foreign key to one of these exact
+input links.
+
+`sec_raw_xbrl_facts` is append-only and belongs to exactly one succeeded run and
+one retained source artifact. It preserves:
+
+- namespace-qualified concept and namespace URI, context ID, unit ID/definition,
+  raw lexical value, inline-XBRL transformation format, language and continuation
+  reference, decimals, scale, sign and nil state;
+- instant or duration start/end, entity identifier and dimensions JSON;
+- an evidence locator containing artifact ID plus a validated HTML element ID
+  or deterministic DOM/XPath-like locator and nearby-text hash/snippet within
+  approved limits;
+- ordinal and created timestamp, unique within the parse run.
+
+This source locator is the SEC inline-XBRL equivalent of PDF page/snippet
+provenance. `page_number` is not fabricated. When FT-04 maps a raw fact, its
+canonical provenance must retain this locator through the approved mapping
+contract; it may not silently populate an unrelated PDF `document_id`.
+
+The initial parser extracts inline-XBRL numeric and non-numeric facts plus
+context/unit definitions. It does not infer canonical metric identity, choose
+between duplicate contexts, derive quarters, normalize currency, or publish
+`value_numeric`.
+
+### H.6 Point-in-time and supersession
+
+For cutoff `T`, a replay may use only:
+
+- a reviewed issuer identity effective at the filing period and known by `T`;
+- a filing with SEC `accepted_at <= T` and ValuePilot `known_at <= T`;
+- artifact bytes with `known_at <= T`;
+- a succeeded parse run with `completed_at <= T` and `known_at <= T`.
+
+The query returns the newest eligible parse version only when the caller asks
+for that policy; it always exposes the selected filing/accession, parser and
+manifest identities. An amendment supersedes the original only at cutoffs where
+the amendment is eligible and the requested policy says amendments are
+authoritative. Historical replay before the amendment continues to return the
+original evidence. Current projection and historical replay are separate
+queries; a current row is never relabeled with an old cutoff.
+
+Every participating table is protected against ordinary UPDATE/DELETE at the
+database boundary. A narrowly defined migration/retention operation requires an
+explicit audited administrative path; application services have no mutation or
+delete method for this lineage.
+
+### H.7 Operator surface and failure behavior
+
+FT-03 exposes an operator CLI/service, not a user-facing raw-fact endpoint. The
+operation accepts a reviewed stock identity, bounded filing count, and optional
+as-of cutoff; discovery uses the form set approved by source policy. It returns
+accession/artifact/parse-run counts and typed failures without dumping artifact
+content.
+
+Acquisition is idempotent, bounded, observable and uses the shared Rate Guard.
+Rate Guard unavailable/blocked, SEC HTTP status when supplied, malformed
+manifest, identity not reviewed, storage mismatch, unsupported form, and parse
+failure remain distinct terminal outcomes. Partial work never becomes a
+succeeded parse run.
+Retries reuse retained verified artifacts and do not create duplicate raw facts.
+
+---
+
 ## Appendix A: Metric Keys & Mapping Contracts (V1)
 
 This appendix defines the authoritative contract for mapping parsed Value Line output into `metric_facts`.

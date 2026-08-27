@@ -27,3 +27,24 @@ Docker. Do NOT use OS-level `diff` for JSON comparisons.
   source.
 - Kahn Brothers (`0001039565-*`) reports values in dollars, not thousands —
   reconciliation warnings for this filer are True Positives, not bugs.
+
+## EDGAR financial-filing lineage gotchas
+
+- Read the permission and product boundary in
+  `docs/architecture/coverage-source-policy.md` and PRD §H before expanding the
+  form set, coverage universe, retention policy, or consumers.
+- An accession `index.json` item's `type` may describe the index icon (for
+  example `text.gif`) rather than the SEC exhibit type. Retention therefore
+  uses the reviewed primary-document name and approved XBRL filename suffixes;
+  the complete index remains retained as evidence of the manifest.
+- Retain both the submissions payload that discovered the filing and the
+  accession index. A hash column alone is not a replayable raw artifact.
+- A parse-run checksum is not its input lineage. Persist every retained input
+  through `sec_financial_parse_run_artifacts`; raw facts must reference one of
+  those exact inputs.
+- Inline-XBRL concept prefixes are document-local. Preserve the resolved
+  namespace URI, transformation format, language/continuation reference, and
+  structured unit meaning (including divided units) before FT-04 mapping.
+- Raw XBRL is never canonical financial truth. Only an approved FT-04 mapping
+  may publish it into `metric_facts`; product consumers must not query the raw
+  lineage tables.

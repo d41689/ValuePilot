@@ -1,0 +1,318 @@
+schema_version: 1
+cycle:
+  id: financial-truth-beta-2026-08-27-v1
+  status: locked
+  locked_at: "2026-08-27T17:42:19Z"
+  cutoff_at: "2026-08-26T23:59:59Z"
+  selection_policy:
+    basis: >-
+      Coverage strata, accounting and identity edge cases, and investor-method
+      representativeness were selected before any ValuePilot SEC-financial
+      parser result was observed.
+    parser_results_consulted: false
+    failures_removable_within_cycle: false
+  approvals:
+    po:
+      name: ValuePilot Product Owner
+      approved_on: "2026-08-27"
+      basis: User-directed execution of FT-00 and the locked beta protocol.
+    reviewer:
+      name: ValuePilot adversarial contract review
+      approved_on: "2026-08-27"
+      basis: Exact-count, identity, edge-coverage, authority, and anti-selection-bias review.
+
+cases:
+  - case_id: aapl-primary
+    economic_issuer_id: apple-inc
+    company_name: Apple Inc.
+    cik: "0000320193"
+    primary_listing: {ticker: AAPL, mic: XNAS, country: US, instrument_type: common_stock, share_class: common}
+    reporting_currency: USD
+    fiscal_year_end_mmdd: "0926"
+    filing_regime: us_10k_10q
+    primary_stratum: ordinary_us_operating
+    cross_cutting_tags: [non_calendar_fiscal_year, fifty_two_or_fifty_three_week]
+    expected_history: {available_start_on: "2015-01-01", completed_fiscal_year_cap: 10, unavailable_years: []}
+    reason: Large global operating company with non-calendar 52/53-week reporting and material capital returns.
+  - case_id: msft-primary
+    economic_issuer_id: microsoft-corp
+    company_name: Microsoft Corporation
+    cik: "0000789019"
+    primary_listing: {ticker: MSFT, mic: XNAS, country: US, instrument_type: common_stock, share_class: common}
+    reporting_currency: USD
+    fiscal_year_end_mmdd: "0630"
+    filing_regime: us_10k_10q
+    primary_stratum: ordinary_us_operating
+    cross_cutting_tags: [non_calendar_fiscal_year]
+    expected_history: {available_start_on: "2015-01-01", completed_fiscal_year_cap: 10, unavailable_years: []}
+    reason: Subscription and cloud economics with a non-calendar fiscal year and long comparable history.
+  - case_id: cost-primary
+    economic_issuer_id: costco-wholesale
+    company_name: Costco Wholesale Corporation
+    cik: "0000909832"
+    primary_listing: {ticker: COST, mic: XNAS, country: US, instrument_type: common_stock, share_class: common}
+    reporting_currency: USD
+    fiscal_year_end_mmdd: "0830"
+    filing_regime: us_10k_10q
+    primary_stratum: ordinary_us_operating
+    cross_cutting_tags: [non_calendar_fiscal_year, fifty_two_or_fifty_three_week, filing_amendment_or_restatement]
+    expected_history: {available_start_on: "2015-01-01", completed_fiscal_year_cap: 10, unavailable_years: []}
+    reason: Membership retailer with 52/53-week periods and a real 10-K amendment edge.
+  - case_id: wmt-primary
+    economic_issuer_id: walmart-inc
+    company_name: Walmart Inc.
+    cik: "0000104169"
+    primary_listing: {ticker: WMT, mic: XNAS, country: US, instrument_type: common_stock, share_class: common}
+    reporting_currency: USD
+    fiscal_year_end_mmdd: "0131"
+    filing_regime: us_10k_10q
+    primary_stratum: ordinary_us_operating
+    cross_cutting_tags: [non_calendar_fiscal_year, fifty_two_or_fifty_three_week]
+    expected_history: {available_start_on: "2015-01-01", completed_fiscal_year_cap: 10, unavailable_years: []}
+    reason: Retail working-capital economics with January year-end and 52/53-week comparability requirements.
+  - case_id: nke-primary
+    economic_issuer_id: nike-inc
+    company_name: NIKE, Inc.
+    cik: "0000320187"
+    primary_listing: {ticker: NKE, mic: XNYS, country: US, instrument_type: common_stock, share_class: class_b}
+    reporting_currency: USD
+    fiscal_year_end_mmdd: "0531"
+    filing_regime: us_10k_10q
+    primary_stratum: ordinary_us_operating
+    cross_cutting_tags: [non_calendar_fiscal_year]
+    expected_history: {available_start_on: "2015-01-01", completed_fiscal_year_cap: 10, unavailable_years: []}
+    reason: Branded consumer business with a non-calendar year and inventory-cycle evidence.
+  - case_id: pep-primary
+    economic_issuer_id: pepsico-inc
+    company_name: PepsiCo, Inc.
+    cik: "0000077476"
+    primary_listing: {ticker: PEP, mic: XNAS, country: US, instrument_type: common_stock, share_class: common}
+    reporting_currency: USD
+    fiscal_year_end_mmdd: "1226"
+    filing_regime: us_10k_10q
+    primary_stratum: ordinary_us_operating
+    cross_cutting_tags: [fifty_two_or_fifty_three_week]
+    expected_history: {available_start_on: "2015-01-01", completed_fiscal_year_cap: 10, unavailable_years: []}
+    reason: Stable consumer economics with week-based reporting and acquisition-adjusted comparability questions.
+
+  - case_id: jpm-primary
+    economic_issuer_id: jpmorgan-chase
+    company_name: JPMorgan Chase & Co.
+    cik: "0000019617"
+    primary_listing: {ticker: JPM, mic: XNYS, country: US, instrument_type: common_stock, share_class: common}
+    reporting_currency: USD
+    fiscal_year_end_mmdd: "1231"
+    filing_regime: us_10k_10q
+    primary_stratum: regulated_financial
+    cross_cutting_tags: []
+    expected_history: {available_start_on: "2015-01-01", completed_fiscal_year_cap: 10, unavailable_years: []}
+    reason: Diversified regulated bank requiring a non-industrial capital and earning-power method.
+  - case_id: bac-primary
+    economic_issuer_id: bank-of-america
+    company_name: Bank of America Corporation
+    cik: "0000070858"
+    primary_listing: {ticker: BAC, mic: XNYS, country: US, instrument_type: common_stock, share_class: common}
+    reporting_currency: USD
+    fiscal_year_end_mmdd: "1231"
+    filing_regime: us_10k_10q
+    primary_stratum: regulated_financial
+    cross_cutting_tags: []
+    expected_history: {available_start_on: "2015-01-01", completed_fiscal_year_cap: 10, unavailable_years: []}
+    reason: Deposit-funded bank with credit-cycle and regulatory-capital evidence requirements.
+  - case_id: gs-primary
+    economic_issuer_id: goldman-sachs
+    company_name: The Goldman Sachs Group, Inc.
+    cik: "0000886982"
+    primary_listing: {ticker: GS, mic: XNYS, country: US, instrument_type: common_stock, share_class: common}
+    reporting_currency: USD
+    fiscal_year_end_mmdd: "1231"
+    filing_regime: us_10k_10q
+    primary_stratum: regulated_financial
+    cross_cutting_tags: []
+    expected_history: {available_start_on: "2015-01-01", completed_fiscal_year_cap: 10, unavailable_years: []}
+    reason: Market-sensitive financial institution that tests balance-sheet and segment comparability.
+
+  - case_id: brkb-primary
+    economic_issuer_id: berkshire-hathaway
+    company_name: Berkshire Hathaway Inc.
+    cik: "0001067983"
+    primary_listing: {ticker: BRK-B, mic: XNYS, country: US, instrument_type: common_stock, share_class: class_b}
+    reporting_currency: USD
+    fiscal_year_end_mmdd: "1231"
+    filing_regime: us_10k_10q
+    primary_stratum: insurer
+    cross_cutting_tags: [adr_share_class_or_corporate_action]
+    expected_history: {available_start_on: "2015-01-01", completed_fiscal_year_cap: 10, unavailable_years: []}
+    reason: Insurance and operating-company conglomerate with multiple listed share classes.
+  - case_id: pgr-primary
+    economic_issuer_id: progressive-corp
+    company_name: The Progressive Corporation
+    cik: "0000080661"
+    primary_listing: {ticker: PGR, mic: XNYS, country: US, instrument_type: common_stock, share_class: common}
+    reporting_currency: USD
+    fiscal_year_end_mmdd: "1231"
+    filing_regime: us_10k_10q
+    primary_stratum: insurer
+    cross_cutting_tags: []
+    expected_history: {available_start_on: "2015-01-01", completed_fiscal_year_cap: 10, unavailable_years: []}
+    reason: Property-casualty insurer requiring underwriting-cycle and reserve-quality analysis.
+  - case_id: cb-primary
+    economic_issuer_id: chubb-ltd
+    company_name: Chubb Limited
+    cik: "0000896159"
+    primary_listing: {ticker: CB, mic: XNYS, country: US, instrument_type: common_stock, share_class: common}
+    reporting_currency: USD
+    fiscal_year_end_mmdd: "1231"
+    filing_regime: us_10k_10q
+    primary_stratum: insurer
+    cross_cutting_tags: []
+    expected_history: {available_start_on: "2015-01-01", completed_fiscal_year_cap: 10, unavailable_years: []}
+    reason: Global multiline insurer testing reserve, currency, and acquisition comparability.
+
+  - case_id: o-primary
+    economic_issuer_id: realty-income
+    company_name: Realty Income Corporation
+    cik: "0000726728"
+    primary_listing: {ticker: O, mic: XNYS, country: US, instrument_type: common_stock, share_class: common}
+    reporting_currency: USD
+    fiscal_year_end_mmdd: "1231"
+    filing_regime: us_10k_10q
+    primary_stratum: reit
+    cross_cutting_tags: [filing_amendment_or_restatement]
+    expected_history: {available_start_on: "2015-01-01", completed_fiscal_year_cap: 10, unavailable_years: []}
+    reason: Net-lease REIT requiring FFO/AFFO treatment and containing a real 10-K amendment.
+  - case_id: pld-primary
+    economic_issuer_id: prologis-inc
+    company_name: Prologis, Inc.
+    cik: "0001045609"
+    primary_listing: {ticker: PLD, mic: XNYS, country: US, instrument_type: common_stock, share_class: common}
+    reporting_currency: USD
+    fiscal_year_end_mmdd: "1231"
+    filing_regime: us_10k_10q
+    primary_stratum: reit
+    cross_cutting_tags: []
+    expected_history: {available_start_on: "2015-01-01", completed_fiscal_year_cap: 10, unavailable_years: []}
+    reason: Industrial REIT with development and acquisition economics distinct from ordinary capex.
+  - case_id: amt-primary
+    economic_issuer_id: american-tower
+    company_name: American Tower Corporation
+    cik: "0001053507"
+    primary_listing: {ticker: AMT, mic: XNYS, country: US, instrument_type: common_stock, share_class: common}
+    reporting_currency: USD
+    fiscal_year_end_mmdd: "1231"
+    filing_regime: us_10k_10q
+    primary_stratum: reit
+    cross_cutting_tags: []
+    expected_history: {available_start_on: "2015-01-01", completed_fiscal_year_cap: 10, unavailable_years: []}
+    reason: Infrastructure REIT with substantial foreign-currency and tenant-concentration evidence.
+
+  - case_id: crm-primary
+    economic_issuer_id: salesforce-inc
+    company_name: Salesforce, Inc.
+    cik: "0001108524"
+    primary_listing: {ticker: CRM, mic: XNYS, country: US, instrument_type: common_stock, share_class: common}
+    reporting_currency: USD
+    fiscal_year_end_mmdd: "0131"
+    filing_regime: us_10k_10q
+    primary_stratum: high_sbc_or_acquisitive
+    cross_cutting_tags: [non_calendar_fiscal_year]
+    expected_history: {available_start_on: "2015-01-01", completed_fiscal_year_cap: 10, unavailable_years: []}
+    reason: High-SBC and acquisitive software business requiring explicit dilution and acquisition treatment.
+  - case_id: adbe-primary
+    economic_issuer_id: adobe-inc
+    company_name: Adobe Inc.
+    cik: "0000796343"
+    primary_listing: {ticker: ADBE, mic: XNAS, country: US, instrument_type: common_stock, share_class: common}
+    reporting_currency: USD
+    fiscal_year_end_mmdd: "1127"
+    filing_regime: us_10k_10q
+    primary_stratum: high_sbc_or_acquisitive
+    cross_cutting_tags: [non_calendar_fiscal_year]
+    expected_history: {available_start_on: "2015-01-01", completed_fiscal_year_cap: 10, unavailable_years: []}
+    reason: Subscription software with material SBC and non-calendar reporting.
+  - case_id: avgo-primary
+    economic_issuer_id: broadcom-inc
+    company_name: Broadcom Inc.
+    cik: "0001730168"
+    primary_listing: {ticker: AVGO, mic: XNAS, country: US, instrument_type: common_stock, share_class: common}
+    reporting_currency: USD
+    fiscal_year_end_mmdd: "1101"
+    filing_regime: us_10k_10q
+    primary_stratum: high_sbc_or_acquisitive
+    cross_cutting_tags: [non_calendar_fiscal_year, adr_share_class_or_corporate_action]
+    expected_history: {available_start_on: "2018-04-04", completed_fiscal_year_cap: 10, unavailable_years: []}
+    reason: Acquisition-heavy semiconductor/software issuer with corporate-identity continuity edges.
+
+  - case_id: cop-primary
+    economic_issuer_id: conocophillips
+    company_name: ConocoPhillips
+    cik: "0001163165"
+    primary_listing: {ticker: COP, mic: XNYS, country: US, instrument_type: common_stock, share_class: common}
+    reporting_currency: USD
+    fiscal_year_end_mmdd: "1231"
+    filing_regime: us_10k_10q
+    primary_stratum: cyclical_or_commodity
+    cross_cutting_tags: []
+    expected_history: {available_start_on: "2015-01-01", completed_fiscal_year_cap: 10, unavailable_years: []}
+    reason: Commodity producer requiring through-cycle normalization and reserve evidence.
+  - case_id: cvx-primary
+    economic_issuer_id: chevron-corp
+    company_name: Chevron Corporation
+    cik: "0000093410"
+    primary_listing: {ticker: CVX, mic: XNYS, country: US, instrument_type: common_stock, share_class: common}
+    reporting_currency: USD
+    fiscal_year_end_mmdd: "1231"
+    filing_regime: us_10k_10q
+    primary_stratum: cyclical_or_commodity
+    cross_cutting_tags: [filing_amendment_or_restatement]
+    expected_history: {available_start_on: "2015-01-01", completed_fiscal_year_cap: 10, unavailable_years: []}
+    reason: Integrated energy company with a real 10-Q amendment and cycle-sensitive reinvestment.
+  - case_id: fcx-primary
+    economic_issuer_id: freeport-mcmoran
+    company_name: Freeport-McMoRan Inc.
+    cik: "0000831259"
+    primary_listing: {ticker: FCX, mic: XNYS, country: US, instrument_type: common_stock, share_class: common}
+    reporting_currency: USD
+    fiscal_year_end_mmdd: "1231"
+    filing_regime: us_10k_10q
+    primary_stratum: cyclical_or_commodity
+    cross_cutting_tags: [filing_amendment_or_restatement]
+    expected_history: {available_start_on: "2015-01-01", completed_fiscal_year_cap: 10, unavailable_years: []}
+    reason: Mining company with commodity-cycle, reserve, impairment, and multiple amendment edges.
+
+  - case_id: asml-primary
+    economic_issuer_id: asml-holding
+    company_name: ASML Holding N.V.
+    cik: "0000937966"
+    primary_listing: {ticker: ASML, mic: XNAS, country: US, instrument_type: depositary_receipt, share_class: adr}
+    reporting_currency: EUR
+    fiscal_year_end_mmdd: "1231"
+    filing_regime: foreign_20f_6k
+    primary_stratum: foreign_issuer
+    cross_cutting_tags: [adr_share_class_or_corporate_action, filing_amendment_or_restatement, non_usd_reporting_currency]
+    expected_history: {available_start_on: "2015-01-01", completed_fiscal_year_cap: 10, unavailable_years: []}
+    reason: EUR-reporting foreign issuer with ADR identity, 20-F/6-K cadence, and amendment history.
+  - case_id: tsm-primary
+    economic_issuer_id: taiwan-semiconductor
+    company_name: Taiwan Semiconductor Manufacturing Company Limited
+    cik: "0001046179"
+    primary_listing: {ticker: TSM, mic: XNYS, country: US, instrument_type: depositary_receipt, share_class: adr}
+    reporting_currency: TWD
+    fiscal_year_end_mmdd: "1231"
+    filing_regime: foreign_20f_6k
+    primary_stratum: foreign_issuer
+    cross_cutting_tags: [adr_share_class_or_corporate_action, non_usd_reporting_currency]
+    expected_history: {available_start_on: "2015-01-01", completed_fiscal_year_cap: 10, unavailable_years: []}
+    reason: TWD-reporting ADR with foreign interim-report semantics that must not be treated as 10-Q equivalence.
+  - case_id: nvo-primary
+    economic_issuer_id: novo-nordisk
+    company_name: Novo Nordisk A/S
+    cik: "0000353278"
+    primary_listing: {ticker: NVO, mic: XNYS, country: US, instrument_type: depositary_receipt, share_class: adr}
+    reporting_currency: DKK
+    fiscal_year_end_mmdd: "1231"
+    filing_regime: foreign_20f_6k
+    primary_stratum: foreign_issuer
+    cross_cutting_tags: [adr_share_class_or_corporate_action, non_usd_reporting_currency]
+    expected_history: {available_start_on: "2015-01-01", completed_fiscal_year_cap: 10, unavailable_years: []}
+    reason: DKK-reporting ADR testing foreign-form, currency, and share-ratio comparability.

@@ -21,7 +21,8 @@ long — escalate to the user. **medium / low** = ordinary follow-up.
   blockers, not accepted deferrals. Do not claim the beta ready or expand
   dependent conclusions until their gates pass.
 - **Acceptance criteria:**
-  - FT-00 through FT-15 below are resolved with version-pinned evidence.
+  - The locked FT-00 manifest remains unchanged for the evaluation cycle and
+    FT-01 through FT-15 below are resolved with version-pinned evidence.
   - The stage is evaluated against the locked manifest and protocols in
     `docs/plans/financial_truth_decision_loop_beta_acceptance.md`; fixtures are
     fixed before results are known and failures are not removed to pass.
@@ -37,28 +38,6 @@ long — escalate to the user. **medium / low** = ordinary follow-up.
 - **Context:** `docs/plans/financial_truth_decision_loop_beta_acceptance.md`;
   `docs/tasks/2026-08-27_value-core-and-next-stage-backlog.md`;
   `docs/architecture/research-decision-support.md`
-- **Issue:** —
-
-### FT-00 — lock the beta gold set, test protocols, and consumer SLO
-- **Found:** 2026-08-27, adversarial review VG-05
-- **Severity:** medium (unlocked samples and undefined interactions/timeouts let
-  an implementation claim success without a reproducible user outcome)
-- **Problem:** “representative,” “two interactions,” “five users,” and “defined
-  timeout” were not repeatable PASS/FAIL rules.
-- **Outcome:** approve the beta evaluation fixtures and protocol before product
-  implementation can optimize against the results.
-- **Acceptance criteria:**
-  - `docs/acceptance/financial_truth_beta_gold_set.yml` exists, validates against
-    the exact 24-case strata and cross-cutting requirements in the beta
-    acceptance protocol, and records reviewer/PO approval plus a cutoff date.
-  - The locked manifest, traceability sample, five-task usability rubric,
-    participant eligibility, interaction definition, 10-second settling SLO,
-    15-second hard-stop, and automatic-failure rules are versioned exactly as
-    required by the protocol.
-  - A pre-implementation review confirms that no named issuer was selected from
-    observed parser/model success and that changes start a new evaluation cycle.
-- **Context:** `docs/plans/financial_truth_decision_loop_beta_acceptance.md`;
-  `docs/plans/research_decision_loop_product_roadmap.md`
 - **Issue:** —
 
 ### FT-01 — one canonical current-price truth across every product surface
@@ -117,6 +96,14 @@ long — escalate to the user. **medium / low** = ordinary follow-up.
   SEC only for 13F ingestion.
 - **Outcome:** establish the independently testable primary-source foundation;
   do not map or publish product metrics in this item.
+- **Progress (2026-08-27):** the first locked AAPL vertical slice now covers a
+  reviewed effective-dated identity, submissions discovery, complete accession
+  manifest, immutable content-addressed artifacts, versioned inline-XBRL raw
+  facts, exact parse-run inputs, and PIT replay. A live latest-10-Q probe retained
+  the submissions/index plus approved filing inputs, recorded all 67
+  current-policy artifact observations, and extracted 860 raw facts with zero
+  `metric_facts` publication; an exact rerun created zero rows. FT-03 remains
+  open for the complete locked form/history/issuer scope and evidence package.
 - **Acceptance criteria:**
   - Before acquisition expands, `coverage-source-policy.md` records permitted
     SEC financial forms, retention, automation, rate limits, and visibility.

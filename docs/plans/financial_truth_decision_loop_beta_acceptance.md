@@ -1,9 +1,9 @@
 # Financial Truth & Decision Loop Beta — acceptance protocol
 
-Status: proposed required pre-implementation delivery gate; subordinate to the
-authoritative PRD, architecture boundaries, mapping spec, and source policy
+Status: FT-00 locked required delivery gate; subordinate to the authoritative
+PRD, architecture boundaries, mapping spec, and source policy
 
-Version: 0.1
+Version: 0.2
 
 Last updated: 2026-08-27
 
@@ -26,10 +26,12 @@ contract by implication.
 
 ## 2. Versioned gold-set manifest
 
-Before financial-data implementation begins, FT-00 must add and approve
-`docs/acceptance/financial_truth_beta_gold_set.yml`. The manifest is fixed for a
-beta evaluation cycle before results are known; failures cannot be removed or
-reclassified merely to make the gate pass.
+FT-00 locked and approved
+`docs/acceptance/financial_truth_beta_gold_set.yml` on 2026-08-27 before any
+ValuePilot SEC-financial parser result was observed. The manifest is fixed for
+this beta evaluation cycle; failures cannot be removed or reclassified merely
+to make the gate pass. A deterministic validator is exercised by the canonical
+backend suite.
 
 The manifest contains exactly 24 distinct economic issuers, each represented by
 one primary listing case. Alternate share classes or ADR relationships are tags
