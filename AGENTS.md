@@ -6,6 +6,53 @@ Code, Cursor, Aider, Copilot) follows it. Deep, task-specific detail lives in
 `docs/architecture/`; this file links to it where relevant. Read the linked doc
 before working in that area.
 
+## Product north star — the highest-priority principle
+
+ValuePilot exists to help a serious long-term investor turn noisy, delayed, and
+conflicting information into an **independent, falsifiable, source-traceable
+capital-allocation decision**, then maintain the discipline to update or reject
+that decision when the facts change.
+
+The product does **not** optimize for stock tips, buy/sell signals, trading
+activity, engagement, or the volume of data shown. When requirements compete,
+prefer the behavior that best helps the user avoid permanent capital loss and
+make a better-reasoned decision. Missing or conflicting evidence must remain
+visible; false precision and silent assumptions are product failures.
+
+Here, permanent capital loss means impairment of business earning power,
+balance-sheet or refinancing capacity, accounting or management integrity, or
+capital-allocation quality. It does not mean ordinary market-price volatility,
+low beta, or a mechanical valuation threshold. A price move may prompt research;
+it is not evidence of impairment or an investment conclusion by itself.
+
+Every meaningful product capability should help the user do at least one of
+these six jobs:
+
+1. **Stay inside the circle of competence.** Decide whether the business is
+   understandable enough for the user to evaluate and name what remains
+   outside that understanding.
+2. **Understand business quality.** Evaluate the business model, durable moat,
+   management, capital allocation, return on invested capital, and the runway
+   to reinvest at attractive incremental returns.
+3. **Estimate normalized owner earnings.** Reconstruct trustworthy historical
+   economics, distinguish reported facts from estimates and adjustments, and
+   account explicitly for capital expenditure, working capital, stock-based
+   compensation, acquisitions, and cyclicality when material.
+4. **Value with a margin of safety.** Use explainable assumptions, scenarios,
+   and ranges rather than treating a precise model output or another analyst's
+   target as intrinsic truth.
+5. **Disconfirm before deciding.** Steelman the opposing case, record evidence,
+   decision rationale, risks, and falsifiable kill criteria, while preserving
+   human authority over every investment conclusion.
+6. **Monitor the thesis, not price noise.** Surface material thesis changes,
+   preserve immutable decision history, and support review and postmortem so
+   the user can improve the quality of future decisions.
+
+An agent proposing or implementing a feature must be able to state which of
+these jobs it advances and how success will be observed. A feature that cannot
+make that connection is not a ValuePilot priority merely because it is
+technically interesting or financially adjacent.
+
 ## Start here
 
 - **Two tracks, one data layer.**

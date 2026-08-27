@@ -9,6 +9,436 @@ long — escalate to the user. **medium / low** = ordinary follow-up.
 
 ## Open
 
+### Financial Truth & Decision Loop Beta — product exit gate
+- **Found:** 2026-08-27, PO user-value acceptance of the local product
+- **Severity:** high (the current product discovers ideas but cannot yet be
+  relied on for a complete, trustworthy long-term investment decision)
+- **Problem:** verified financial history, business understanding, defensible
+  valuation, monitoring, and postmortem do not yet form one coherent user loop.
+- **Outcome:** a serious investor can turn an idea into a falsifiable,
+  source-traceable human decision and later explain what changed.
+- **PO disposition:** the high-severity FT items are acknowledged next-stage
+  blockers, not accepted deferrals. Do not claim the beta ready or expand
+  dependent conclusions until their gates pass.
+- **Acceptance criteria:**
+  - FT-00 through FT-15 below are resolved with version-pinned evidence.
+  - The stage is evaluated against the locked manifest and protocols in
+    `docs/plans/financial_truth_decision_loop_beta_acceptance.md`; fixtures are
+    fixed before results are known and failures are not removed to pass.
+  - Product financial-statement/fundamental fact reads use only `metric_facts`;
+    prices use the canonical EOD contract, while raw artifacts and raw XBRL
+    remain lineage rather than a second queryable financial truth.
+  - The stage evidence package contains zero privacy leak, look-ahead, silent
+    source substitution, conflicting current price, or unsupported industry
+    formula published as valid; any one is an automatic failure.
+  - The moderated protocol passes and demonstrates business-quality analysis,
+    disconfirmation, valuation range, kill criteria, and a human-authored
+    decision without treating 13F, AI, or a system reference as advice.
+- **Context:** `docs/plans/financial_truth_decision_loop_beta_acceptance.md`;
+  `docs/tasks/2026-08-27_value-core-and-next-stage-backlog.md`;
+  `docs/architecture/research-decision-support.md`
+- **Issue:** —
+
+### FT-00 — lock the beta gold set, test protocols, and consumer SLO
+- **Found:** 2026-08-27, adversarial review VG-05
+- **Severity:** medium (unlocked samples and undefined interactions/timeouts let
+  an implementation claim success without a reproducible user outcome)
+- **Problem:** “representative,” “two interactions,” “five users,” and “defined
+  timeout” were not repeatable PASS/FAIL rules.
+- **Outcome:** approve the beta evaluation fixtures and protocol before product
+  implementation can optimize against the results.
+- **Acceptance criteria:**
+  - `docs/acceptance/financial_truth_beta_gold_set.yml` exists, validates against
+    the exact 24-case strata and cross-cutting requirements in the beta
+    acceptance protocol, and records reviewer/PO approval plus a cutoff date.
+  - The locked manifest, traceability sample, five-task usability rubric,
+    participant eligibility, interaction definition, 10-second settling SLO,
+    15-second hard-stop, and automatic-failure rules are versioned exactly as
+    required by the protocol.
+  - A pre-implementation review confirms that no named issuer was selected from
+    observed parser/model success and that changes start a new evaluation cycle.
+- **Context:** `docs/plans/financial_truth_decision_loop_beta_acceptance.md`;
+  `docs/plans/research_decision_loop_product_roadmap.md`
+- **Issue:** —
+
+### FT-01 — one canonical current-price truth across every product surface
+- **Found:** 2026-08-27, PO acceptance of stock summary, DCF, research, and watchlist
+- **Severity:** high (a conflicting price changes margin-of-safety conclusions)
+- **Problem:** stock summary labels a Value Line report price current while
+  other surfaces use or correctly withhold canonical EOD data.
+- **Outcome:** current price has one authority and identical fail-closed behavior;
+  document prices remain dated references.
+- **Acceptance criteria:**
+  - Every current/latest/market-price field reads the canonical EOD contract and
+    exposes date, source, currency, freshness, or its typed unavailable reason.
+  - Document prices are labeled report references with an as-of date and never
+    substitute for current price.
+  - Cross-surface tests cover valid, missing, stale, unknown-currency, and
+    unauthorized states; one stock/as-of never yields conflicting current prices.
+  - Margin-of-safety and discount calculations do not publish from an invalid
+    price and show the canonical blocking reason.
+- **Context:** `backend/app/api/v1/endpoints/stocks.py`;
+  `frontend/app/(dashboard)/stocks/[ticker]/summary/page.tsx`
+- **Issue:** —
+
+### FT-02 — evidence retirement without unauthorized retention or lost lineage
+- **Found:** 2026-08-27, PO acceptance of `/documents`; adversarial review VG-01
+- **Severity:** high (physical deletion can destroy lineage, while unconditional
+  retention can violate proprietary-source permission or account erasure)
+- **Problem:** the ordinary delete path erases sourced facts and extraction
+  history, but replacing it with unconditional permanent readability would
+  create a retention right forbidden by the source-visibility contract.
+- **Outcome:** retire evidence without losing permitted lineage and without
+  retaining or exposing content after authority is lost.
+- **Acceptance criteria:**
+  - The PRD and source policy, not this backlog, own retention/redaction rules;
+    implementation references those rules without creating a parallel variant.
+  - Ordinary removal archives/tombstones the document. Artifacts and extraction
+    lineage are immutable **while retained**, and archived content is readable
+    only while the governing policy and current authorization permit it.
+  - Permission loss returns `source_unavailable`; historical research preserves
+    only the identity/claim fields the PRD and source policy allow and never
+    bypasses access by copying a proprietary excerpt into a revision.
+  - Account erasure uses the PRD's audited redaction/tombstone exception and does
+    not rewrite shared financial lineage or pretend the event never existed.
+  - Tests cover archive, current projection reconciliation, permission
+    revocation, cross-user access, account erasure, and referenced history.
+- **Context:** `docs/architecture/research-decision-support.md` §10.2;
+  `docs/prd/value-pilot-prd-v0.1.md` §G.2–G.3;
+  `docs/architecture/coverage-source-policy.md`
+- **Issue:** —
+
+### FT-03 — SEC issuer identity, authorized acquisition, raw lineage, and PIT replay
+- **Found:** 2026-08-27, PO real-data review; adversarial review VG-02/VG-06
+- **Severity:** high (without authorized, replayable primary filings later facts
+  cannot prove identity, provenance, or what was knowable at a cutoff)
+- **Problem:** 13F EDGAR infrastructure exists, but no general financial-filing
+  identity/acquisition/lineage path exists; the current source policy authorizes
+  SEC only for 13F ingestion.
+- **Outcome:** establish the independently testable primary-source foundation;
+  do not map or publish product metrics in this item.
+- **Acceptance criteria:**
+  - Before acquisition expands, `coverage-source-policy.md` records permitted
+    SEC financial forms, retention, automation, rate limits, and visibility.
+  - Versioned issuer/listing-to-CIK identity has effective dates, share class,
+    review state, and no low-confidence auto-link.
+  - Incremental discovery and raw storage cover approved forms/amendments with
+    accession, URL, accepted/fetched time, MIME, ETag when supplied, SHA-256,
+    parser version, and complete artifact manifest.
+  - Raw XBRL is immutable lineage only and no screener, formula, workspace, or
+    other product consumer can query it as financial truth.
+  - PIT selection and replay cannot observe filings, amendments, artifacts, or
+    parse versions unavailable at the requested cutoff; idempotent replay and
+    trap tests pass.
+- **Context:** `backend/app/edgar/`; `backend/app/models/institutions.py`;
+  `docs/architecture/coverage-source-policy.md`
+- **Issue:** —
+
+### FT-04 — canonical SEC mapping and `metric_facts` publication
+- **Found:** 2026-08-27, adversarial review VG-02/VG-06
+- **Severity:** high (a second SEC read store or undefined mapping would split
+  canonical financial truth)
+- **Problem:** raw filing facts require explicit, versioned conversion into the
+  existing financial-fact contract before any product use.
+- **Outcome:** publish permitted SEC actuals through `metric_facts` only.
+- **Acceptance criteria:**
+  - Metric keys, units, normalization, period semantics, source roles, and
+    mapping rules are approved in `metric_facts_mapping_spec.yml`; schema, APIs,
+    publication lifecycle, and correction behavior are approved in the PRD;
+    permission remains owned by source policy.
+  - Screening, formulas, workspace, and every product fundamental-fact read
+    query only `metric_facts`; raw SEC/XBRL tables remain lineage and review
+    inputs. Market price continues through the separate canonical EOD contract.
+  - Publication preserves raw-fact identity, accession, mapping version,
+    knowledge time, fact nature, period/context, dimensions policy, unit, and
+    currency without last-write-wins source precedence.
+  - Period tests cover instant/duration, YTD/discrete quarter, subtraction-
+    derived quarters, fiscal calendars, 52/53 weeks, amendments, dimensions,
+    units, and unresolved custom concepts.
+  - Replaying the same approved inputs is idempotent and produces the same
+    per-period current slots without globally deduplicating history.
+- **Context:** `docs/metric_facts_mapping_spec.yml`;
+  `docs/architecture/metric-facts-is-current.md`;
+  `docs/prd/value-pilot-prd-v0.1.md`
+- **Issue:** —
+
+### FT-05 — historical comparability and foreign-issuer gold-set coverage
+- **Found:** 2026-08-27, adversarial review VG-03/VG-06
+- **Severity:** high (a sourced ten-year series can still be economically false
+  after splits, ADR changes, currency changes, or incompatible filing regimes)
+- **Problem:** coverage and provenance alone do not prove that historical facts
+  or per-share values are comparable.
+- **Outcome:** complete the locked gold set with explicit comparability rather
+  than concatenating incompatible observations.
+- **Acceptance criteria:**
+  - Approved mapping/PRD policy records as-filed versus adjusted basis,
+    split/corporate-action version, share-class and ADR ratio, reporting currency,
+    and any translation basis; this backlog does not invent those semantics.
+  - Foreign-form coverage includes the forms required by the locked manifest,
+    including 20-F/6-K cases, without presenting interim 6-K availability as a
+    guaranteed 10-Q-equivalent contract.
+  - Each manifest case covers every available year in its locked denominator up
+    to ten completed fiscal years; every missing year has a typed, reviewed
+    disposition and no estimate fills an actual-history gap.
+  - A series that cannot be made comparable under approved policy returns typed
+    `unsupported`/`unavailable` and blocks per-share trend, growth, and valuation
+    consumers that depend on it.
+  - Gold-set reports reproduce the cutoff, source/mapping versions, coverage
+    denominator, conflicts, and comparability decisions.
+- **Context:** `docs/plans/financial_truth_decision_loop_beta_acceptance.md`;
+  `docs/metric_facts_mapping_spec.yml`; `docs/prd/value-pilot-prd-v0.1.md`
+- **Issue:** —
+
+### FT-06 — SEC, Value Line, and derived-fact reconciliation
+- **Found:** 2026-08-27, PO source review; adversarial review VG-02
+- **Severity:** high (definition differences can become a silent source override)
+- **Problem:** SEC as-filed actuals, Value Line adjusted actuals/estimates, and
+  ValuePilot calculations have different roles and require comparison, not a
+  newly invented precedence service.
+- **Outcome:** expose differences through the existing canonical fact and
+  evidence boundary without creating another financial truth.
+- **Acceptance criteria:**
+  - Mapping spec owns metric/source semantics, PRD owns reconciliation storage
+    and API behavior, and source policy owns permission; implementation links
+    those authorities and defines no parallel precedence contract.
+  - Reconciled fundamental metric values shown to product consumers come from
+    `metric_facts`; any reconciliation record is comparison/audit state, not a
+    second fact store. This rule does not relocate market prices or user-owned
+    research/portfolio records into `metric_facts`.
+  - Comparison aligns definition, fiscal period/duration, dimensions, unit,
+    currency/scale, fact nature, and knowledge date before computing variance.
+  - Reviewed statuses distinguish match, expected definition difference,
+    restatement, mapping conflict, and unresolved without rewriting either source.
+  - Tolerances prioritize review but never hide a material unresolved difference;
+    the locked gold set has zero silent source substitution.
+- **Context:** `docs/architecture/research-decision-support.md` §2 and §5;
+  `docs/metric_facts_mapping_spec.yml`; `docs/prd/value-pilot-prd-v0.1.md`
+- **Issue:** —
+
+### FT-07 — industry applicability and permanent-impairment method gate
+- **Found:** 2026-08-27, adversarial review VG-03 and omitted-risk finding
+- **Severity:** high (generic industrial-company formulas can publish false
+  Owner Earnings, ROIC, trends, or valuation for banks, insurers, and REITs)
+- **Problem:** industry and business-model applicability is not implied by
+  complete data. Unsupported economics must block conclusions.
+- **Outcome:** each analytical output is governed by an approved, versioned,
+  auditable applicability policy or is visibly unsupported.
+- **Acceptance criteria:**
+  - Mapping spec owns input semantics and the PRD owns calculation/publication
+    behavior and classification/applicability lifecycle for every gold-set
+    primary stratum; no formula or company classification is adopted from the
+    non-normative Vision or issuer-name inference alone.
+  - Banks, insurers, REITs, ordinary operating companies, high-SBC/acquisitive
+    businesses, and cyclical/commodity businesses each have an approved method
+    and required evidence, or return typed `unsupported` and block the affected
+    Owner Earnings, ROIC, per-share trend, and valuation conclusion.
+  - Every result records method/version, company classification at calculation
+    time, inputs, adjustments, unsupported reasons, and source/knowledge cutoff.
+  - Balance-sheet/refinancing risk, accounting credibility, management
+    integrity, dilution, and capital allocation are evidence-backed or typed
+    unknown; ordinary price volatility or low beta cannot satisfy this gate.
+  - Golden and negative tests cover every manifest stratum, including attempts
+    to apply an ordinary-company method to financials, insurers, and REITs.
+- **Context:** `docs/Investment_Research_Vision.md` §9–§15 (non-normative);
+  `docs/metric_facts_mapping_spec.yml`; `docs/prd/value-pilot-prd-v0.1.md`
+- **Issue:** —
+
+### FT-08 — decision-centered research workspace
+- **Found:** 2026-08-27, PO acceptance of `/research/cases/2`; review VG-03/VG-05
+- **Severity:** medium (the current workspace leaves users to synthesize a raw
+  fact table and blank form unaided)
+- **Problem:** the workspace is organized around fields and metric keys rather
+  than the questions required before allocating capital.
+- **Outcome:** guide evidence-based judgment without authoring the decision.
+- **Acceptance criteria:**
+  - The workspace covers circle of competence; business model/value drivers;
+    moat; management integrity and capital allocation; balance-sheet/refinancing
+    risk; accounting credibility; applicable Owner Earnings/ROIC and reinvestment;
+    valuation; disconfirmation; kill criteria; and decision rationale.
+  - Trends show investor-readable labels, actual/estimate and comparability state,
+    units, provenance, and material changes; raw keys are an optional evidence view.
+  - System observations remain proposals/references with supporting and
+    conflicting evidence and require explicit human acceptance before revision.
+  - Traceability and usability pass the exact interaction, participant, task,
+    and success protocol in the beta acceptance document.
+  - Missing, inaccessible, conflicting, or method-unsupported coverage blocks
+    affected conclusions and identifies the next evidence action.
+- **Context:** `frontend/app/(dashboard)/research/cases/[id]/page.tsx`;
+  `docs/plans/financial_truth_decision_loop_beta_acceptance.md`
+- **Issue:** —
+
+### FT-09 — owner-earnings valuation ranges without false precision
+- **Found:** 2026-08-27, PO acceptance of `/stocks/ASML/dcf`; review VG-03
+- **Severity:** high (a generic precise value can create unjustified confidence)
+- **Problem:** the current DCF uses a simplified owner-earnings proxy, one growth
+  path, and a 1,000-year terminal-stage approximation.
+- **Outcome:** produce explainable human-controlled underwriting ranges only
+  when the approved company-method and comparability gates pass.
+- **Acceptance criteria:**
+  - FT-01, FT-05, and FT-07 gates are enforced; unsupported industry method,
+    incomparable history, or invalid price blocks the dependent output.
+  - The applicable owner-economics bridge exposes all policy-required inputs and
+    adjustments—including maintenance/growth investment, working capital, SBC,
+    acquisitions, dilution, balance sheet, and currency basis when material—with
+    provenance and typed unknown/not-applicable states.
+  - Maintenance capex is an explicit user assumption or the output of an
+    approved versioned method; the system never presents a mechanically inferred
+    amount as an observed fact.
+  - Bear/base/bull hypotheses and opportunity/discount-cost assumptions are
+    user-authored or visibly proposed; no system/analyst reference self-publishes.
+  - Growth is reconciled to reinvestment economics or labeled unsupported;
+    terminal value uses a guarded explicit formulation, never a 1,000-year fiction.
+  - Results emphasize ranges and sensitivity; golden/negative tests cover every
+    supported manifest method plus cyclical, negative, and insufficient-data cases.
+- **Context:** `frontend/app/(dashboard)/stocks/[ticker]/dcf/page.tsx`;
+  `frontend/lib/dcfMath.js`; `docs/prd/value-pilot-prd-v0.1.md` §G.4
+- **Issue:** —
+
+### FT-10 — automatically materialize research coverage with each case
+- **Found:** 2026-08-27, PO acceptance of the ASML case and `/admin/coverage`
+- **Severity:** medium (an open case can have no evaluated requirements)
+- **Problem:** case creation and coverage evaluation are disconnected.
+- **Outcome:** every case explains which evidence is ready, missing, blocked,
+  stale, inaccessible, or unsupported and what the user should do next.
+- **Acceptance criteria:**
+  - Create/reopen idempotently materializes authoritative requirements without
+    an admin button; case and inbox show source, freshness/as-of, reason, and next action.
+  - Ownership follows authenticated user/workspace authority and admin aggregates
+    reveal no user, case, document, holding, or requirement detail.
+  - Current-date results agree across consumers; unsupported historical
+    reconstruction fails closed with the canonical reason.
+  - Tests cover repeat evaluation, transitions, supersession, permissions,
+    missing data, blocked source, inaccessible evidence, and unsupported method.
+- **Context:** `backend/app/services/research_coverage.py`;
+  `backend/app/services/research_cases.py`
+- **Issue:** —
+
+### FT-11 — consistent and explainable Oracle's Lens consumer state
+- **Found:** 2026-08-27, PO acceptance of `/home` and `/13f/oracles-lens`;
+  adversarial review VG-05
+- **Severity:** medium (inbox rankings can coexist with an empty, indefinitely
+  loading source dashboard)
+- **Problem:** readiness, clusters, ranking, and inbox do not present one
+  coherent period/snapshot and bounded terminal state.
+- **Outcome:** every Lens consumer explains the same versioned research signal.
+- **Acceptance criteria:**
+  - PRD/API contract owns snapshot identity, period and scope semantics;
+    dashboard, clusters, inbox, watchlist, and case origin share them or expose
+    an explicit documented scope difference.
+  - Browser acceptance passes the exact 10-second settling and 15-second hard-
+    stop SLO plus all fixtures defined in the beta protocol; no permanent spinner.
+  - Counts and readiness come from one versioned snapshot or carry distinct
+    scope/version labels that prevent comparison as if they were identical.
+  - Candidate evidence retains signal/version/period and caveats; user surfaces
+    hide operator policy codes/ranks, while authorized diagnostics remain separate.
+  - Economic-entity/share-class dedup prevents duplicate attention slots unless
+    the listing distinction is material and explicitly explained.
+- **Context:** `docs/plans/financial_truth_decision_loop_beta_acceptance.md`;
+  `frontend/app/(dashboard)/13f/oracles-lens/page.tsx`
+- **Issue:** —
+
+### FT-12 — thesis monitoring and consented notification delivery
+- **Found:** 2026-08-27, PO acceptance; adversarial review VG-06
+- **Severity:** medium (the habit loop needs an independently releasable trigger
+  and delivery boundary)
+- **Problem:** monitoring and notifications were bundled with portfolio and
+  postmortem despite separate authority, failure modes, and release value.
+- **Outcome:** surface material thesis/review obligations without engagement-
+  driven alerts or trading implications.
+- **Acceptance criteria:**
+  - Monitoring derives from explicit claims, evidence/supersession, review dates,
+    and kill criteria; price movement alone can request review but cannot assert
+    thesis impairment or a trade conclusion.
+  - Notifications are consented, permission-scoped, deduplicated, explain why
+    they matter, link to currently authorized evidence, and fail closed otherwise.
+  - Replay, cooldown, quiet-hour, retry, revocation, inaccessible-source, and
+    cross-user tests prove no duplicate send, silent loss, or content leak.
+  - Unconfigured/disabled destinations make zero external network attempts and
+    secrets never enter logs, audit payloads, APIs, or frontend state.
+- **Context:** `docs/plans/research_decision_loop_product_roadmap.md` Phase 4;
+  `docs/architecture/research-decision-support.md`
+- **Issue:** —
+
+### FT-13 — manual portfolio decision journal without trading rails
+- **Found:** 2026-08-27, PO acceptance; adversarial review VG-06
+- **Severity:** medium (portfolio context has distinct ownership, currency, and
+  lifecycle risks and should be independently releasable)
+- **Problem:** portfolio journaling was coupled to notification and calibration.
+- **Outcome:** relate exposure and user actions to the supporting research while
+  remaining explicitly non-broker, non-execution, and non-tax.
+- **Acceptance criteria:**
+  - Portfolio/position/journal ownership and server authorization follow PRD;
+    each material action links the case/revision knowable at that time.
+  - Manual or permitted imported observations retain provenance, knowledge time,
+    currency, stale state, and decimal semantics without becoming financial facts.
+  - Append-only open/resize/close/review events survive edits and closures;
+    privacy redaction follows the PRD exception rather than silent deletion.
+  - UI/API make no broker, execution, tax-lot, tax-correctness, recommendation,
+    or automatic-allocation claim; lifecycle and cross-user tests pass.
+- **Context:** `docs/plans/research_decision_loop_product_roadmap.md` Phase 5;
+  `docs/prd/value-pilot-prd-v0.1.md` §G
+- **Issue:** —
+
+### FT-14 — decision postmortem and process calibration
+- **Found:** 2026-08-27, PO acceptance; adversarial review VG-06
+- **Severity:** medium (decision learning is independently valuable and should
+  not be blocked on notification or portfolio delivery)
+- **Problem:** postmortem and calibration lacked a separately closable outcome.
+- **Outcome:** help users distinguish decision-process quality from later price
+  outcome and improve future assumptions without rewarding activity.
+- **Acceptance criteria:**
+  - A postmortem compares the original immutable decision, later revisions,
+    evidence knowable at each cutoff, valuation-assumption deltas, kill criteria,
+    and outcome without back-projecting current facts.
+  - Process assessment is separate from return/price performance and does not
+    rank users by trading frequency, short-term returns, or hindsight correctness.
+  - Users can inspect which assumptions, evidence judgments, and precommitted
+    criteria failed or held, with typed unavailable evidence and source policy enforced.
+  - No AI-generated calibration becomes the user's accepted conclusion without
+    explicit action; PIT, closure, redaction, and usability protocol tests pass.
+- **Context:** `docs/plans/research_decision_loop_product_roadmap.md` Phase 5;
+  `docs/plans/financial_truth_decision_loop_beta_acceptance.md`
+- **Issue:** —
+
+### FT-15 — licensed EOD history, corporate actions, and optional live quotes
+- **Found:** 2026-08-27, PO real-data acceptance and adversarial loop 2
+- **Severity:** high (current-price consistency alone cannot support historical
+  valuation, per-share comparability, or PIT-safe postmortem)
+- **Problem:** the current provider path is primarily a single-target-date EOD
+  refresh. It lacks an accepted 10–15-year history, provider/listing identity,
+  adjustment policy, corporate-action lineage, and delisted-name coverage.
+- **Outcome:** provide licensed, source-traceable daily market history for the
+  user-directed research universe; treat intraday quotes as a separate optional
+  convenience, not as canonical EOD truth.
+- **Acceptance criteria:**
+  - Before production fetch, source policy records the provider's permitted API
+    use, storage/retention, display/redistribution, history depth, corporate-
+    action/adjustment semantics, quota, and automation limits; development-only
+    data cannot satisfy production coverage.
+  - The PRD owns provider-symbol/MIC/listing identity, raw versus adjusted close,
+    currency, observed/provider time, source batch/hash, correction/version,
+    split/dividend/symbol-change/delisting, and PIT read behavior.
+  - At the locked evaluation cutoff, the recorded scope snapshot covers the
+    manifest, then-open cases, watchlist, and approved candidate set for every
+    provider-entitled daily session up to 15 years; each expected session is a
+    valid bar or typed market-calendar/provider/listing-life gap.
+  - Corrections and corporate actions are append-only/versioned; a historical
+    as-of read cannot use an observation, adjustment, or action version learned
+    after its cutoff.
+  - Cross-listing, share-class, ADR-ratio, currency, split, dividend, symbol-
+    change, stale, missing, and delisted fixtures prove raw/adjusted series and
+    prevent false per-share or return comparisons.
+  - Optional live/intraday quotes use a separately authorized, visibly timed
+    contract and bounded cache; they never overwrite canonical EOD or create a
+    tick-history/trading claim. If unconfigured, the product remains fully usable
+    with EOD data and makes zero live-provider calls.
+  - This item makes no survivorship-free or quant-ready claim; those remain
+    gated by the separate quant data-sufficiency contract.
+- **Context:** `backend/app/services/market_data_service.py`;
+  `backend/app/models/stocks.py`; `docs/architecture/coverage-source-policy.md`;
+  `docs/plans/financial_truth_decision_loop_beta_acceptance.md`
+- **Issue:** —
+
 ### Frontend Browserslist compatibility data is stale
 - **Found:** 2026-07-19, zero-database rehearsal closing gate
 - **Severity:** low (dependency-maintenance warning; build output and product
