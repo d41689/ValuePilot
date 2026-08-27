@@ -1,38 +1,12 @@
 'use client';
 
-import Link from 'next/link';
 import { useCallback, useEffect, useState } from 'react';
-import { AlertTriangle, CheckCircle2, Clock3, RefreshCw } from 'lucide-react';
+import { AlertTriangle, Clock3, RefreshCw } from 'lucide-react';
 
 import apiClient from '@/lib/api/client';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
-import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from '@/components/ui/table';
-
-type CoverageItem = {
-  id: number;
-  user_email: string;
-  stock_id: number;
-  ticker: string;
-  company_name: string;
-  kind: string;
-  priority_rank: number;
-  matched_rule: string;
-  state: 'ready' | 'missing' | 'stale' | 'blocked' | 'in_progress' | 'failed';
-  reason: string;
-  reason_code: string | null;
-  freshness_policy_version: string;
-  evaluated_at: string;
-  next_action: string | null;
-};
 
 type CoveragePayload = {
   priority_policy_version: string;
@@ -41,17 +15,7 @@ type CoveragePayload = {
     by_state: Record<string, number>;
     by_kind: Record<string, number>;
   };
-  items: CoverageItem[];
 };
-
-const stateVariant = {
-  ready: 'success',
-  missing: 'warning',
-  stale: 'warning',
-  blocked: 'danger',
-  in_progress: 'info',
-  failed: 'danger',
-} as const;
 
 function label(value: string) {
   return value.replaceAll('_', ' ');
@@ -93,7 +57,10 @@ export default function CoverageAdminPage() {
     }
   }
 
-  const unresolved = payload?.items.filter((item) => item.state !== 'ready').length ?? 0;
+  const unresolved = Math.max(
+    (payload?.summary.total ?? 0) - (payload?.summary.by_state.ready ?? 0),
+    0,
+  );
   const blocked = payload?.summary.by_state.blocked ?? 0;
 
   return (
@@ -154,64 +121,41 @@ export default function CoverageAdminPage() {
 
       <Card>
         <CardHeader>
-          <CardTitle>Priority queue</CardTitle>
+          <CardTitle>Aggregate only</CardTitle>
           <CardDescription>
-            Policy {payload?.priority_policy_version ?? '—'} · owned/watch cases will outrank discovery as they enter the workflow.
+            Policy {payload?.priority_policy_version ?? '—'} · operational counts intentionally exclude users,
+            stocks, cases, requirements, and source details.
           </CardDescription>
         </CardHeader>
         <CardContent>
           {loading ? (
-            <div className="py-12 text-center text-sm text-muted-foreground">Loading coverage queue…</div>
-          ) : payload && payload.items.length > 0 ? (
-            <Table>
-              <TableHeader>
-                <TableRow>
-                  <TableHead>Priority</TableHead>
-                  <TableHead>Stock / user</TableHead>
-                  <TableHead>Requirement</TableHead>
-                  <TableHead>State</TableHead>
-                  <TableHead>Why</TableHead>
-                  <TableHead>Permitted next action</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {payload.items.map((item) => (
-                  <TableRow key={item.id}>
-                    <TableCell className="font-mono text-xs">{item.priority_rank}</TableCell>
-                    <TableCell>
-                      <Link href={`/stocks/${item.ticker}/summary`} className="font-semibold text-primary hover:underline">
-                        {item.ticker}
-                      </Link>
-                      <div className="max-w-48 truncate text-xs text-muted-foreground">{item.user_email}</div>
-                      <div className="text-xs text-muted-foreground">{label(item.matched_rule)}</div>
-                    </TableCell>
-                    <TableCell>
-                      <div className="font-medium">{label(item.kind)}</div>
-                      <div className="text-xs text-muted-foreground">{item.freshness_policy_version}</div>
-                    </TableCell>
-                    <TableCell>
-                      <Badge variant={stateVariant[item.state]}>{label(item.state)}</Badge>
-                    </TableCell>
-                    <TableCell className="max-w-80">
-                      <div>{item.reason}</div>
-                      {item.reason_code ? (
-                        <div className="mt-1 font-mono text-xs text-muted-foreground">{item.reason_code}</div>
-                      ) : (
-                        <div className="mt-1 flex items-center gap-1 text-xs text-emerald-700">
-                          <CheckCircle2 className="h-3 w-3" /> Evidence ready
-                        </div>
-                      )}
-                    </TableCell>
-                    <TableCell>{item.next_action ? label(item.next_action) : 'No action'}</TableCell>
-                  </TableRow>
+            <div className="py-12 text-center text-sm text-muted-foreground">Loading aggregate coverage health…</div>
+          ) : payload && payload.summary.total > 0 ? (
+            <div className="grid gap-6 md:grid-cols-2">
+              <div className="space-y-3">
+                <div className="text-sm font-medium">By state</div>
+                {Object.entries(payload.summary.by_state).map(([state, count]) => (
+                  <div key={state} className="flex items-center justify-between rounded-lg border px-4 py-3 text-sm">
+                    <span>{label(state)}</span>
+                    <Badge variant="secondary">{count}</Badge>
+                  </div>
                 ))}
-              </TableBody>
-            </Table>
+              </div>
+              <div className="space-y-3">
+                <div className="text-sm font-medium">By requirement type</div>
+                {Object.entries(payload.summary.by_kind).map(([kind, count]) => (
+                  <div key={kind} className="flex items-center justify-between rounded-lg border px-4 py-3 text-sm">
+                    <span>{label(kind)}</span>
+                    <Badge variant="secondary">{count}</Badge>
+                  </div>
+                ))}
+              </div>
+            </div>
           ) : (
             <div className="rounded-xl border border-dashed p-10 text-center">
-              <div className="font-medium">Empty coverage queue</div>
+              <div className="font-medium">No current requirements</div>
               <p className="mt-1 text-sm text-muted-foreground">
-                Add a Watchlist stock or evaluate a current Oracle&apos;s Lens candidate universe.
+                Run the current aggregate evaluation after research priorities exist.
               </p>
             </div>
           )}

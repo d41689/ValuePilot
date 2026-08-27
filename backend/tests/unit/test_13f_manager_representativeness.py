@@ -6,6 +6,10 @@ from datetime import datetime, timezone
 from decimal import Decimal
 from pathlib import Path
 
+import pytest
+from sqlalchemy import text
+from sqlalchemy.exc import DBAPIError
+
 from app.models.institutions import (
     InstitutionManager,
     InstitutionManagerRepresentativenessReview,
@@ -116,6 +120,31 @@ def test_seeded_universe_has_reviewed_representativeness_projection(db_session):
         .count()
         == len(managers)
     )
+
+
+@pytest.mark.parametrize(
+    "statement",
+    [
+        "UPDATE institution_manager_representativeness_reviews "
+        "SET rationale = 'tampered' WHERE id = :id",
+        "DELETE FROM institution_manager_representativeness_reviews WHERE id = :id",
+    ],
+)
+def test_representativeness_reviews_reject_update_and_delete_at_database_boundary(
+    db_session, statement
+):
+    seed_confirmed_managers(db_session)
+    db_session.flush()
+    review = (
+        db_session.query(InstitutionManagerRepresentativenessReview)
+        .order_by(InstitutionManagerRepresentativenessReview.id)
+        .first()
+    )
+    assert review is not None
+
+    with pytest.raises(DBAPIError, match="append-only"):
+        db_session.execute(text(statement), {"id": review.id})
+        db_session.flush()
 
 
 def test_unreviewed_manager_resolves_unknown_without_silent_penalty_rollout():

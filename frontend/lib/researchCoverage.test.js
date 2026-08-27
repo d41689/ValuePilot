@@ -6,18 +6,21 @@ const test = require('node:test');
 
 const root = path.resolve(__dirname, '..');
 
-test('admin coverage queue exposes explainable states and permitted actions', () => {
+test('admin coverage operations expose aggregate health without private research detail', () => {
   const pagePath = path.join(root, 'app', '(dashboard)', 'admin', 'coverage', 'page.tsx');
   assert.equal(fs.existsSync(pagePath), true, 'admin coverage page must exist');
   const source = fs.readFileSync(pagePath, 'utf8');
 
   assert.match(source, /\/coverage\/admin\/requirements/);
   assert.match(source, /\/coverage\/admin\/evaluate-all/);
-  assert.match(source, /matched_rule/);
-  assert.match(source, /freshness_policy_version/);
-  assert.match(source, /next_action/);
+  assert.match(source, /by_state/);
+  assert.match(source, /by_kind/);
+  assert.doesNotMatch(source, /user_email/);
+  assert.doesNotMatch(source, /payload\.items/);
+  assert.doesNotMatch(source, /matched_rule/);
+  assert.doesNotMatch(source, /next_action/);
   assert.match(source, /Blocked is not covered/);
-  assert.match(source, /Empty coverage queue/);
+  assert.match(source, /Aggregate only/);
   assert.match(source, /Unable to load coverage queue/);
 });
 

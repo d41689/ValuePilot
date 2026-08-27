@@ -482,6 +482,11 @@ def get_portfolio_workspace(
     portfolio = _owned_portfolio(
         session, user_id=user_id, portfolio_id=portfolio_id
     )
+    if as_of != date.today():
+        raise PortfolioError(
+            "historical_as_of_not_supported",
+            "Only the current portfolio workspace is supported; event-replayed point-in-time reconstruction is unavailable.",
+        )
     rows = (
         session.query(ManualPosition, Stock)
         .join(Stock, Stock.id == ManualPosition.stock_id)

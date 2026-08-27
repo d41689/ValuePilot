@@ -46,6 +46,22 @@ from app.services.research_workspace import build_research_workspace
 router = APIRouter()
 
 
+def _current_projection_date(requested: date | None) -> date:
+    today = date.today()
+    if requested is not None and requested != today:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail={
+                "code": "historical_as_of_not_supported",
+                "message": (
+                    "Inbox regeneration updates the current projection; "
+                    "historical reconstruction is unavailable."
+                ),
+            },
+        )
+    return today
+
+
 @router.get("/metrics", response_model=dict)
 def get_research_metrics(
     session: SessionDep,
@@ -324,7 +340,7 @@ def regenerate_research_inbox(
         return regenerate_inbox(
             session,
             user_id=current_user.id,
-            as_of=as_of or date.today(),
+            as_of=_current_projection_date(as_of),
             lens=lens,
         )
     except ResearchInboxError as error:

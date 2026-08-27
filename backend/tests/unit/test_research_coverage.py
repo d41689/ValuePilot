@@ -1,9 +1,10 @@
 from __future__ import annotations
 
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 
 from app.models.artifacts import PdfDocument
+from app.models.coverage import ResearchCoverageRequirement
 from app.models.oracles_lens import OraclesLensSignal
 from app.models.stocks import PoolMembership, Stock, StockPool, StockPrice
 from app.services.oracles_lens.constants import SCORE_VERSION
@@ -211,11 +212,11 @@ def test_coverage_evaluate_endpoint_is_idempotent(
     _watchlist(db_session, user.id, stock)
 
     first = client.post(
-        "/api/v1/coverage/evaluate?as_of=2026-07-20&lens=consensus",
+        "/api/v1/coverage/evaluate?lens=consensus",
         headers=auth_headers(user),
     )
     second = client.post(
-        "/api/v1/coverage/evaluate?as_of=2026-07-20&lens=consensus",
+        "/api/v1/coverage/evaluate?lens=consensus",
         headers=auth_headers(user),
     )
 
@@ -227,6 +228,31 @@ def test_coverage_evaluate_endpoint_is_idempotent(
         "/api/v1/coverage/requirements", headers=auth_headers(user)
     ).json()
     assert len(listing["items"]) == 2
+
+
+def test_coverage_projection_endpoints_reject_historical_as_of(
+    client, db_session, user_factory, auth_headers
+):
+    owner = user_factory(email="coverage-no-false-pit@example.com")
+    admin = user_factory(email="coverage-no-false-pit-admin@example.com", role="admin")
+    stock = _stock(db_session, "CPIT")
+    _watchlist(db_session, owner.id, stock)
+    historical_day = date.today() - timedelta(days=1)
+
+    user_response = client.post(
+        f"/api/v1/coverage/evaluate?as_of={historical_day.isoformat()}",
+        headers=auth_headers(owner),
+    )
+    admin_response = client.post(
+        f"/api/v1/coverage/admin/evaluate-all?as_of={historical_day.isoformat()}",
+        headers=auth_headers(admin),
+    )
+
+    assert user_response.status_code == 422, user_response.text
+    assert admin_response.status_code == 422, admin_response.text
+    assert user_response.json()["detail"]["code"] == "historical_as_of_not_supported"
+    assert admin_response.json()["detail"]["code"] == "historical_as_of_not_supported"
+    assert db_session.query(ResearchCoverageRequirement).count() == 0
 
 
 def test_admin_coverage_queue_summarizes_all_users_and_rejects_non_admin(
@@ -258,7 +284,9 @@ def test_admin_coverage_queue_summarizes_all_users_and_rejects_non_admin(
         "eod_price": 1,
         "value_line_current_report": 1,
     }
-    assert {item["user_email"] for item in payload["items"]} == {owner.email}
+    assert "items" not in payload
+    assert owner.email not in response.text
+    assert stock.ticker not in response.text
 
 
 def test_coverage_price_refresh_is_batched_observable_and_re_evaluates(
@@ -318,7 +346,10 @@ def test_coverage_price_refresh_is_batched_observable_and_re_evaluates(
         "/api/v1/coverage/requirements", headers=auth_headers(user)
     ).json()
     price_rows = [item for item in listing["items"] if item["kind"] == "eod_price"]
-    assert {item["state"] for item in price_rows} == {"ready"}
+    assert {item["state"] for item in price_rows} == {"stale"}
+    assert {item["evidence"]["price_date"] for item in price_rows} == {
+        "2026-07-20"
+    }
 
 
 def test_open_research_cases_outrank_watchlist_and_lens_candidates(

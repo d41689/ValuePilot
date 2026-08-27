@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, timedelta
 
 import pytest
 from sqlalchemy.exc import DBAPIError
@@ -623,11 +623,11 @@ def test_workspace_combines_user_owned_fundamentals_valuation_coverage_and_publi
     db_session.commit()
 
     response = client.get(
-        f"/api/v1/research/cases/{case_id}/workspace?as_of=2026-07-20",
+        f"/api/v1/research/cases/{case_id}/workspace",
         headers=auth_headers(owner),
     )
     hidden = client.get(
-        f"/api/v1/research/cases/{case_id}/workspace?as_of=2026-07-20",
+        f"/api/v1/research/cases/{case_id}/workspace",
         headers=auth_headers(other),
     )
 
@@ -656,6 +656,23 @@ def test_workspace_combines_user_owned_fundamentals_valuation_coverage_and_publi
     assert hidden.status_code == 404
 
 
+def test_workspace_rejects_historical_as_of_until_pit_reconstruction_exists(
+    client, db_session, user_factory, auth_headers
+):
+    user = user_factory(email="workspace-no-false-pit@example.com")
+    stock = _stock(db_session, "NOPIT")
+    case_id = _create(client, auth_headers(user), stock.id).json()["case"]["id"]
+    historical_day = date.today() - timedelta(days=1)
+
+    response = client.get(
+        f"/api/v1/research/cases/{case_id}/workspace?as_of={historical_day.isoformat()}",
+        headers=auth_headers(user),
+    )
+
+    assert response.status_code == 422, response.text
+    assert response.json()["detail"]["code"] == "historical_as_of_not_supported"
+
+
 def test_workspace_marks_last_published_value_under_review_after_monitoring_reopens(
     client, db_session, user_factory, auth_headers
 ):
@@ -680,7 +697,7 @@ def test_workspace_marks_last_published_value_under_review_after_monitoring_reop
     ).status_code == 200
 
     response = client.get(
-        f"/api/v1/research/cases/{case_id}/workspace?as_of=2026-07-20",
+        f"/api/v1/research/cases/{case_id}/workspace",
         headers=headers,
     )
 

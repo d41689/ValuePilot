@@ -4,6 +4,7 @@ from datetime import date, datetime, time, timezone
 from typing import Any, Literal
 
 from fastapi import APIRouter, HTTPException, Query, status
+from sqlalchemy import func
 from sqlalchemy.exc import IntegrityError
 
 from app.api.deps import AdminUser, CurrentUser, SessionDep
@@ -22,6 +23,22 @@ from app.services.research_coverage import (
 
 router = APIRouter()
 _ACTIVE_JOB_STATUSES = {"queued", "running", "cancel_requested"}
+
+
+def _current_projection_date(requested: date | None) -> date:
+    today = date.today()
+    if requested is not None and requested != today:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail={
+                "code": "historical_as_of_not_supported",
+                "message": (
+                    "Coverage evaluation updates the current projection; "
+                    "historical reconstruction is unavailable."
+                ),
+            },
+        )
+    return today
 
 
 @router.get("/requirements", response_model=dict)
@@ -61,7 +78,7 @@ def evaluate_requirements(
     return evaluate_research_coverage(
         session,
         user_id=current_user.id,
-        as_of=as_of or date.today(),
+        as_of=_current_projection_date(as_of),
         lens=lens,
     )
 
@@ -178,12 +195,13 @@ def refresh_required_prices(
             reason="coverage_queue",
             now=refresh_now,
         )
+        coverage_as_of = date.today()
         coverage = evaluate_research_coverage(
             session,
             user_id=current_user.id,
-            as_of=target_as_of,
+            as_of=coverage_as_of,
             lens=lens,
-            include_as_of_session=True,
+            include_as_of_session=target_as_of == coverage_as_of,
         )
         failed_count = sum(
             result["status"] in {"failed", "blocked"} for result in results
@@ -235,44 +253,40 @@ def list_admin_requirements(
     session: SessionDep,
     current_user: AdminUser,
 ) -> dict[str, Any]:
-    rows = (
-        session.query(ResearchCoverageRequirement, Stock, User)
-        .join(Stock, Stock.id == ResearchCoverageRequirement.stock_id)
-        .join(User, User.id == ResearchCoverageRequirement.user_id)
-        .filter(
-            ResearchCoverageRequirement.priority_policy_version
-            == PRIORITY_POLICY_VERSION,
-            ResearchCoverageRequirement.is_current.is_(True),
+    filters = (
+        ResearchCoverageRequirement.priority_policy_version
+        == PRIORITY_POLICY_VERSION,
+        ResearchCoverageRequirement.is_current.is_(True),
+    )
+    state_rows = (
+        session.query(
+            ResearchCoverageRequirement.state,
+            func.count(ResearchCoverageRequirement.id),
         )
-        .order_by(
-            ResearchCoverageRequirement.priority_rank,
-            ResearchCoverageRequirement.user_id,
-            ResearchCoverageRequirement.stock_id,
-            ResearchCoverageRequirement.kind,
-        )
+        .filter(*filters)
+        .group_by(ResearchCoverageRequirement.state)
+        .order_by(ResearchCoverageRequirement.state)
         .all()
     )
-    by_state: dict[str, int] = {}
-    by_kind: dict[str, int] = {}
-    items = []
-    for requirement, stock, user in rows:
-        by_state[requirement.state] = by_state.get(requirement.state, 0) + 1
-        by_kind[requirement.kind] = by_kind.get(requirement.kind, 0) + 1
-        items.append(
-            {
-                **serialize_requirement(requirement, stock),
-                "user_id": user.id,
-                "user_email": user.email,
-            }
+    kind_rows = (
+        session.query(
+            ResearchCoverageRequirement.kind,
+            func.count(ResearchCoverageRequirement.id),
         )
+        .filter(*filters)
+        .group_by(ResearchCoverageRequirement.kind)
+        .order_by(ResearchCoverageRequirement.kind)
+        .all()
+    )
+    by_state = {state_value: int(count) for state_value, count in state_rows}
+    by_kind = {kind: int(count) for kind, count in kind_rows}
     return {
         "priority_policy_version": PRIORITY_POLICY_VERSION,
         "summary": {
-            "total": len(items),
-            "by_state": dict(sorted(by_state.items())),
-            "by_kind": dict(sorted(by_kind.items())),
+            "total": sum(by_state.values()),
+            "by_state": by_state,
+            "by_kind": by_kind,
         },
-        "items": items,
     }
 
 
@@ -283,6 +297,7 @@ def evaluate_all_users(
     as_of: date | None = Query(default=None),
     lens: Literal["consensus", "distinctive"] = Query(default="consensus"),
 ) -> dict[str, Any]:
+    target_as_of = _current_projection_date(as_of)
     user_ids = [
         row[0]
         for row in session.query(User.id).filter(User.is_active.is_(True)).all()
@@ -291,7 +306,7 @@ def evaluate_all_users(
         evaluate_research_coverage(
             session,
             user_id=user_id,
-            as_of=as_of or date.today(),
+            as_of=target_as_of,
             lens=lens,
         )
         for user_id in user_ids
@@ -301,6 +316,6 @@ def evaluate_all_users(
         "requirements_evaluated": sum(
             summary["requirements_evaluated"] for summary in summaries
         ),
-        "as_of": (as_of or date.today()).isoformat(),
+        "as_of": target_as_of.isoformat(),
         "lens": lens,
     }

@@ -6,6 +6,7 @@ from app.models.oracles_lens import OraclesLensSignal
 from app.models.research import ResearchCase, ResearchInboxAction, ResearchInboxActionEvent
 from app.models.stocks import PoolMembership, Stock, StockPool
 from app.services.oracles_lens.constants import SCORE_VERSION
+from app.services.research_inbox import regenerate_inbox
 
 
 def _stock(db_session, ticker: str) -> Stock:
@@ -38,6 +39,7 @@ def _watchlist(db_session, user_id: int, stock: Stock) -> None:
 def test_inbox_regeneration_is_idempotent_explainable_and_prioritized(
     client, db_session, user_factory, auth_headers
 ):
+    today = date.today()
     user = user_factory(email="inbox-priority@example.com")
     own = _stock(db_session, "IBOWN")
     watch = _stock(db_session, "IBWAT")
@@ -52,14 +54,14 @@ def test_inbox_regeneration_is_idempotent_explainable_and_prioritized(
                 stock_id=own.id,
                 state="monitoring",
                 decision="own",
-                next_review_on=date(2026, 7, 19),
+                next_review_on=today - timedelta(days=1),
             ),
             ResearchCase(
                 user_id=user.id,
                 stock_id=watch.id,
                 state="monitoring",
                 decision="watch",
-                next_review_on=date(2026, 7, 20),
+                next_review_on=today,
             ),
             ResearchCase(user_id=user.id, stock_id=researching.id, state="researching"),
             ResearchCase(user_id=user.id, stock_id=queued.id, state="queued"),
@@ -84,11 +86,11 @@ def test_inbox_regeneration_is_idempotent_explainable_and_prioritized(
     db_session.commit()
 
     first = client.post(
-        "/api/v1/research/inbox/regenerate?as_of=2026-07-20&lens=consensus",
+        "/api/v1/research/inbox/regenerate?lens=consensus",
         headers=auth_headers(user),
     )
     second = client.post(
-        "/api/v1/research/inbox/regenerate?as_of=2026-07-20&lens=consensus",
+        "/api/v1/research/inbox/regenerate?lens=consensus",
         headers=auth_headers(user),
     )
 
@@ -119,6 +121,25 @@ def test_inbox_regeneration_is_idempotent_explainable_and_prioritized(
     assert db_session.query(ResearchInboxActionEvent).count() == 6
 
 
+def test_inbox_regeneration_rejects_historical_as_of_without_mutating_projection(
+    client, db_session, user_factory, auth_headers
+):
+    user = user_factory(email="inbox-no-false-pit@example.com")
+    stock = _stock(db_session, "IPIT")
+    db_session.add(ResearchCase(user_id=user.id, stock_id=stock.id, state="queued"))
+    db_session.commit()
+    historical_day = date.today() - timedelta(days=1)
+
+    response = client.post(
+        f"/api/v1/research/inbox/regenerate?as_of={historical_day.isoformat()}",
+        headers=auth_headers(user),
+    )
+
+    assert response.status_code == 422, response.text
+    assert response.json()["detail"]["code"] == "historical_as_of_not_supported"
+    assert db_session.query(ResearchInboxAction).count() == 0
+
+
 def test_inbox_snooze_is_bounded_dismissal_is_informational_only_and_audited(
     client, db_session, user_factory, auth_headers
 ):
@@ -140,7 +161,7 @@ def test_inbox_snooze_is_bounded_dismissal_is_informational_only_and_audited(
     _watchlist(db_session, user.id, candidate_stock)
     db_session.commit()
     client.post(
-        "/api/v1/research/inbox/regenerate?as_of=2026-07-20",
+        "/api/v1/research/inbox/regenerate",
         headers=auth_headers(user),
     )
     rows = db_session.query(ResearchInboxAction).all()
@@ -179,9 +200,10 @@ def test_inbox_snooze_is_bounded_dismissal_is_informational_only_and_audited(
         == 2
     )
 
-    client.post(
-        f"/api/v1/research/inbox/regenerate?as_of={(valid_snooze_date + timedelta(days=1)).isoformat()}",
-        headers=auth_headers(user),
+    regenerate_inbox(
+        db_session,
+        user_id=user.id,
+        as_of=valid_snooze_date + timedelta(days=1),
     )
     assert db_session.get(ResearchInboxAction, due.id).state == "open"
     # Same informational source version remains dismissed.
@@ -198,7 +220,7 @@ def test_inbox_source_version_supersedes_old_action_without_deleting_history(
     db_session.commit()
 
     client.post(
-        "/api/v1/research/inbox/regenerate?as_of=2026-07-20",
+        "/api/v1/research/inbox/regenerate",
         headers=auth_headers(user),
     )
     old = db_session.query(ResearchInboxAction).filter_by(user_id=user.id).one()
@@ -206,7 +228,7 @@ def test_inbox_source_version_supersedes_old_action_without_deleting_history(
     case.version = 2
     db_session.commit()
     client.post(
-        "/api/v1/research/inbox/regenerate?as_of=2026-07-20",
+        "/api/v1/research/inbox/regenerate",
         headers=auth_headers(user),
     )
 
@@ -232,7 +254,7 @@ def test_inbox_is_user_scoped_and_cross_user_action_is_404(
     db_session.add(ResearchCase(user_id=owner.id, stock_id=stock.id, state="queued"))
     db_session.commit()
     client.post(
-        "/api/v1/research/inbox/regenerate?as_of=2026-07-20",
+        "/api/v1/research/inbox/regenerate",
         headers=auth_headers(owner),
     )
     action = db_session.query(ResearchInboxAction).filter_by(user_id=owner.id).one()

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, timedelta
 from decimal import Decimal
 
 import pytest
@@ -278,7 +278,7 @@ def test_workspace_exposes_overdue_review_calendar_and_recorded_vs_current_thesi
         db_session,
         user_id=user.id,
         portfolio_id=portfolio.id,
-        as_of=date(2026, 7, 20),
+        as_of=date.today(),
     )
 
     item = next(row for row in workspace["positions"] if row["id"] == position.id)
@@ -328,7 +328,7 @@ def test_workspace_never_calculates_unknown_or_mismatched_currency(
         db_session,
         user_id=user.id,
         portfolio_id=portfolio.id,
-        as_of=date(2026, 7, 20),
+        as_of=date.today(),
     )
     by_ticker = {item["ticker"]: item for item in workspace["positions"]}
     assert by_ticker["USD1"]["valuation_status"] == "available"
@@ -358,7 +358,7 @@ def test_inactive_stock_is_retained_with_typed_limitation(db_session, user_facto
         ),
     )
     workspace = get_portfolio_workspace(
-        db_session, user_id=user.id, portfolio_id=portfolio.id, as_of=date(2026, 7, 20)
+        db_session, user_id=user.id, portfolio_id=portfolio.id, as_of=date.today()
     )
     assert workspace["positions"][0]["identity_state"] == "stock_inactive"
     assert workspace["positions"][0]["valuation_status"] == "stock_inactive"
@@ -375,6 +375,22 @@ def test_portfolio_api_is_non_disclosing_across_users(
         f"/api/v1/portfolios/{portfolio.id}", headers=auth_headers(other)
     )
     assert response.status_code == 404
+
+
+def test_portfolio_workspace_rejects_historical_as_of_until_event_replay_exists(
+    client, db_session, user_factory, auth_headers
+):
+    user = user_factory("portfolio-no-false-pit@example.com")
+    portfolio = _portfolio(db_session, user.id)
+    historical_day = date.today() - timedelta(days=1)
+
+    response = client.get(
+        f"/api/v1/portfolios/{portfolio.id}?as_of={historical_day.isoformat()}",
+        headers=auth_headers(user),
+    )
+
+    assert response.status_code == 422, response.text
+    assert response.json()["detail"]["code"] == "historical_as_of_not_supported"
 
 
 def test_position_events_reject_update_and_delete_at_database_boundary(

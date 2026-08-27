@@ -72,6 +72,11 @@ def build_research_workspace(
     )
     if case is None:
         raise ResearchCaseError("case_not_found", "Research case not found.", status_code=404)
+    if as_of != date.today():
+        raise ResearchCaseError(
+            "historical_as_of_not_supported",
+            "Only the current research workspace is supported; point-in-time reconstruction is unavailable.",
+        )
     stock = session.get(Stock, case.stock_id)
     if stock is None:
         raise ResearchCaseError("stock_not_found", "Stock not found.", status_code=404)

@@ -25,12 +25,12 @@ Primary references:
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, datetime, time, timedelta, timezone
 import math
 from statistics import NormalDist, median
 from typing import Any
 
-from sqlalchemy import func, text
+from sqlalchemy import func, or_, text, tuple_
 from sqlalchemy.orm import Session
 
 from app.ingestion.parsers.v1_value_line.semantics import has_value_line_markers
@@ -38,7 +38,8 @@ from app.models.artifacts import PdfDocument
 from app.models.facts import MetricFact
 from app.models.institutions import Filing13F, Holding13F, ParseRun13F
 from app.models.stocks import StockPrice
-from app.services.thirteenf_holdings_query import HR_FORM_TYPES, active_hr_holdings_query
+from app.services.thirteenf_filing_detail import competition_pool
+from app.services.thirteenf_holdings_query import HR_FORM_TYPES
 
 
 POLICY_VERSION = "quant-1-r0a-v1"
@@ -270,7 +271,23 @@ def _longest_consecutive_weeks(report_dates: list[date]) -> int:
     return longest
 
 
-def _metric_fact_coverage(session: Session, *, user_id: int) -> dict[str, Any]:
+def _metric_fact_coverage(
+    session: Session,
+    *,
+    user_id: int,
+    knowledge_cutoff: datetime,
+) -> dict[str, Any]:
+    eligible_fact_documents = (
+        session.query(MetricFact.source_document_id)
+        .filter(
+            MetricFact.user_id == user_id,
+            MetricFact.source_type == "parsed",
+            MetricFact.source_document_id.is_not(None),
+            MetricFact.created_at <= knowledge_cutoff,
+            MetricFact.updated_at <= knowledge_cutoff,
+        )
+        .distinct()
+    )
     document_rows = (
         session.query(
             PdfDocument.id,
@@ -282,7 +299,10 @@ def _metric_fact_coverage(session: Session, *, user_id: int) -> dict[str, Any]:
             PdfDocument.user_id == user_id,
             PdfDocument.parse_status == "parsed",
             PdfDocument.report_date.is_not(None),
+            PdfDocument.report_date <= knowledge_cutoff.date(),
+            PdfDocument.upload_time <= knowledge_cutoff,
             PdfDocument.stock_id.is_not(None),
+            PdfDocument.id.in_(eligible_fact_documents),
         )
         .all()
     )
@@ -303,6 +323,8 @@ def _metric_fact_coverage(session: Session, *, user_id: int) -> dict[str, Any]:
             .filter(
                 MetricFact.user_id == user_id,
                 MetricFact.source_type == "parsed",
+                MetricFact.created_at <= knowledge_cutoff,
+                MetricFact.updated_at <= knowledge_cutoff,
                 PdfDocument.user_id == user_id,
                 PdfDocument.id.in_(document_ids),
             )
@@ -385,7 +407,15 @@ def _metric_fact_coverage(session: Session, *, user_id: int) -> dict[str, Any]:
     }
 
 
-def _price_coverage(session: Session) -> dict[str, Any]:
+def _price_coverage(
+    session: Session,
+    *,
+    knowledge_cutoff: datetime,
+) -> dict[str, Any]:
+    cutoff_filters = (
+        StockPrice.price_date <= knowledge_cutoff.date(),
+        StockPrice.created_at <= knowledge_cutoff,
+    )
     rows, stocks, start, end, missing_currency = (
         session.query(
             func.count(StockPrice.id),
@@ -393,10 +423,13 @@ def _price_coverage(session: Session) -> dict[str, Any]:
             func.min(StockPrice.price_date),
             func.max(StockPrice.price_date),
             func.count(StockPrice.id).filter(StockPrice.currency.is_(None)),
-        ).one()
+        )
+        .filter(*cutoff_filters)
+        .one()
     )
     source_rows = (
         session.query(StockPrice.source, func.count(StockPrice.id))
+        .filter(*cutoff_filters)
         .group_by(StockPrice.source)
         .order_by(StockPrice.source)
         .all()
@@ -417,46 +450,133 @@ def _price_coverage(session: Session) -> dict[str, Any]:
     }
 
 
-def _thirteenf_coverage(session: Session, *, as_of_date: date) -> dict[str, Any]:
-    filing_rows = (
-        session.query(
-            Filing13F.id,
-            Filing13F.manager_id,
-            Filing13F.quarter_end_date,
-            Filing13F.filed_at,
-            Filing13F.official_filing_deadline,
-        )
-        .join(ParseRun13F, ParseRun13F.accession_number == Filing13F.accession_number)
+def _parse_runs_as_of(
+    session: Session,
+    *,
+    knowledge_cutoff: datetime,
+) -> dict[str, ParseRun13F]:
+    rows = (
+        session.query(ParseRun13F)
         .filter(
-            Filing13F.form_type.in_(HR_FORM_TYPES),
-            Filing13F.is_active_for_manager_period.is_(True),
-            ParseRun13F.is_current.is_(True),
             ParseRun13F.status == "succeeded",
-            Filing13F.filed_at <= as_of_date,
+            ParseRun13F.created_at <= knowledge_cutoff,
+            ParseRun13F.finished_at.is_not(None),
+            ParseRun13F.finished_at <= knowledge_cutoff,
         )
-        .distinct()
+        .order_by(
+            ParseRun13F.accession_number,
+            ParseRun13F.finished_at.desc(),
+            ParseRun13F.created_at.desc(),
+            ParseRun13F.id.desc(),
+        )
         .all()
     )
-    version_rows = (
-        session.query(
-            Filing13F.id,
-            Filing13F.manager_id,
-            Filing13F.quarter_end_date,
-            Filing13F.filed_at,
-        )
-        .join(ParseRun13F, ParseRun13F.accession_number == Filing13F.accession_number)
+    selected: dict[str, ParseRun13F] = {}
+    for row in rows:
+        selected.setdefault(row.accession_number, row)
+    return selected
+
+
+def _filing_authorities_as_of(
+    session: Session,
+    *,
+    knowledge_cutoff: datetime,
+    parse_runs_by_accession: dict[str, ParseRun13F],
+) -> tuple[list[Filing13F], list[Filing13F]]:
+    eligible_filings = (
+        session.query(Filing13F)
         .filter(
             Filing13F.form_type.in_(HR_FORM_TYPES),
-            ParseRun13F.is_current.is_(True),
-            ParseRun13F.status == "succeeded",
-            Filing13F.filed_at <= as_of_date,
+            Filing13F.filed_at <= knowledge_cutoff.date(),
+            Filing13F.ingested_at <= knowledge_cutoff,
+            Filing13F.updated_at <= knowledge_cutoff,
+            or_(
+                Filing13F.accepted_at.is_(None),
+                Filing13F.accepted_at <= knowledge_cutoff,
+            ),
+            Filing13F.accession_number.in_(
+                list(parse_runs_by_accession) or ["__no_eligible_parse__"]
+            ),
         )
-        .distinct()
         .all()
     )
+    grouped: dict[tuple[int, date], list[Filing13F]] = {}
+    for filing in eligible_filings:
+        if filing.quarter_end_date is None:
+            continue
+        grouped.setdefault((filing.manager_id, filing.quarter_end_date), []).append(
+            filing
+        )
+
+    authorities: list[Filing13F] = []
+    for filings in grouped.values():
+        _kind, pool = competition_pool(filings)
+        if not pool:
+            continue
+        if len(pool) == 1:
+            authorities.append(pool[0])
+            continue
+        if any(filing.accepted_at is None for filing in pool):
+            continue
+        ranked = sorted(
+            pool,
+            key=lambda filing: (filing.accepted_at, filing.accession_number or ""),
+            reverse=True,
+        )
+        if ranked[0].accepted_at == ranked[1].accepted_at:
+            continue
+        authorities.append(ranked[0])
+    return authorities, eligible_filings
+
+
+def _thirteenf_coverage(
+    session: Session,
+    *,
+    knowledge_cutoff: datetime,
+) -> dict[str, Any]:
+    as_of_date = knowledge_cutoff.date()
+    parse_runs_by_accession = _parse_runs_as_of(
+        session,
+        knowledge_cutoff=knowledge_cutoff,
+    )
+    authority_filings, version_filings = _filing_authorities_as_of(
+        session,
+        knowledge_cutoff=knowledge_cutoff,
+        parse_runs_by_accession=parse_runs_by_accession,
+    )
+    filing_rows = [
+        (
+            filing.id,
+            filing.manager_id,
+            filing.quarter_end_date,
+            filing.filed_at,
+            filing.official_filing_deadline,
+        )
+        for filing in authority_filings
+    ]
+    version_rows = [
+        (
+            filing.id,
+            filing.manager_id,
+            filing.quarter_end_date,
+            filing.filed_at,
+        )
+        for filing in version_filings
+    ]
+    authority_pairs = [
+        (filing.id, parse_runs_by_accession[filing.accession_number].id)
+        for filing in authority_filings
+        if filing.accession_number in parse_runs_by_accession
+    ]
     holding_rows = (
-        active_hr_holdings_query(session)
-        .filter(Filing13F.filed_at <= as_of_date)
+        session.query(Holding13F)
+        .filter(
+            tuple_(Holding13F.filing_id, Holding13F.parse_run_id).in_(
+                authority_pairs or [(-1, -1)]
+            ),
+            Holding13F.created_at <= knowledge_cutoff,
+            Holding13F.updated_at <= knowledge_cutoff,
+        )
         .with_entities(
             Holding13F.quarter_end_date,
             Holding13F.manager_id,
@@ -600,18 +720,41 @@ def collect_database_coverage(
     *,
     user_id: int,
     as_of_date: date | None = None,
+    knowledge_cutoff: datetime | None = None,
 ) -> dict[str, Any]:
     """Collect aggregate coverage without mutating or committing the session."""
 
     if user_id <= 0:
         raise ValueError("user_id must be positive")
+    if knowledge_cutoff is not None and knowledge_cutoff.tzinfo is None:
+        raise ValueError("knowledge_cutoff must be timezone-aware")
+    normalized_cutoff = (
+        knowledge_cutoff.astimezone(timezone.utc)
+        if knowledge_cutoff is not None
+        else None
+    )
+    if (
+        as_of_date is not None
+        and normalized_cutoff is not None
+        and as_of_date != normalized_cutoff.date()
+    ):
+        raise ValueError("as_of_date and knowledge_cutoff must use the same UTC date")
+    target_date = as_of_date or (
+        normalized_cutoff.date() if normalized_cutoff is not None else date.today()
+    )
+    cutoff = normalized_cutoff or datetime.combine(
+        target_date,
+        time.max,
+        tzinfo=timezone.utc,
+    )
     return {
-        "metric_facts": _metric_fact_coverage(session, user_id=user_id),
-        "prices": _price_coverage(session),
-        "thirteenf": _thirteenf_coverage(
+        "metric_facts": _metric_fact_coverage(
             session,
-            as_of_date=as_of_date or date.today(),
+            user_id=user_id,
+            knowledge_cutoff=cutoff,
         ),
+        "prices": _price_coverage(session, knowledge_cutoff=cutoff),
+        "thirteenf": _thirteenf_coverage(session, knowledge_cutoff=cutoff),
     }
 
 
@@ -786,11 +929,13 @@ def build_audit_report(
     evaluated = evaluated_at or datetime.now(timezone.utc)
     if evaluated.tzinfo is None:
         raise ValueError("evaluated_at must be timezone-aware")
+    evaluated = evaluated.astimezone(timezone.utc)
     source_readiness = readiness or SourceReadiness()
     coverage = collect_database_coverage(
         session,
         user_id=user_id,
         as_of_date=evaluated.date(),
+        knowledge_cutoff=evaluated,
     )
     power_plans = build_power_plans(assumptions)
     gate = evaluate_hypothesis_gates(
@@ -802,7 +947,7 @@ def build_audit_report(
     return {
         "schema_version": "1.0",
         "policy_version": POLICY_VERSION,
-        "evaluated_at": evaluated.astimezone(timezone.utc).isoformat(),
+        "evaluated_at": evaluated.isoformat(),
         "environment": "development",
         "user_scope_id": user_id,
         "read_only": True,
