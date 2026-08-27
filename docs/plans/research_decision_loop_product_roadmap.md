@@ -1,9 +1,13 @@
 # ValuePilot Research Decision Loop — product roadmap
 
-Status: delivered and verified after roadmap and implementation adversarial review  
-Owner: Product / Engineering  
-Version: 1.1  
-Last updated: 2026-07-20
+Status: Research Decision Loop V1 delivered and verified; follow-on Financial
+Truth & Decision Loop Beta planned
+
+Owner: Product / Engineering
+
+Version: 1.2
+
+Last updated: 2026-08-27
 
 ## 1. Executive decision
 
@@ -29,6 +33,39 @@ This document controls product sequencing and acceptance for that program. It
 does not redefine canonical metric semantics: the mapping spec remains supreme.
 Before a phase introduces a new system/storage contract, that contract must be
 incorporated into `docs/prd/value-pilot-prd-v0.1.md` in the same change.
+
+### 1.1 Follow-on Financial Truth & Decision Loop Beta
+
+The V1 baseline above remains the historical phase record. The follow-on
+**Financial Truth & Decision Loop Beta** work is tracked as FT-00 through FT-15
+in `docs/BACKLOG.md`. This roadmap delegates that follow-on stage's repeatable
+gold-set, traceability, usability, and consumer-settling acceptance protocol to
+`financial_truth_decision_loop_beta_acceptance.md`. That protocol may define
+delivery thresholds; it cannot create metric, schema/API, source-permission,
+retention, or investment-formula contracts.
+
+The dependency gates are:
+
+1. FT-00 locks the evaluation manifest and protocol before data or UI work is
+   judged against the set.
+2. FT-02 precedes expanded durable evidence references. FT-03 requires a source-
+   policy authorization update and provides identity/raw/PIT lineage before
+   FT-04 publishes SEC-derived `metric_facts`.
+3. FT-05 depends on FT-03/FT-04. FT-06 depends on canonical publication and
+   comparability. FT-07 method-policy design may run in parallel, but its
+   calculation evidence depends on FT-04/FT-05.
+4. FT-01 and FT-15 may run alongside the fundamentals foundation. FT-01 must
+   pass before FT-09 publishes price-to-value output; FT-15 must pass before
+   historical valuation/return comparisons or market-data completeness claims.
+   FT-08 may build its non-financial workflow progressively, but automated
+   financial conclusions depend on FT-06/FT-07.
+5. FT-10 and FT-11 are independently releasable after their own contracts and
+   FT-00 fixtures pass. They do not block manual-origin case research.
+6. FT-12, FT-13, and FT-14 remain separate releases. FT-12 requires stable case
+   revisions/evidence supersession; FT-13 requires the portfolio/journal PRD;
+   FT-14 requires PIT-safe case history and FT-15 for any market-return
+   comparison, but is not coupled to notification or portfolio completion for
+   non-owned decisions.
 
 ## 2. Evidence-based baseline
 
