@@ -13,3 +13,8 @@ from app.models import extractions  # noqa: F401
 from app.models import facts  # noqa: F401
 from app.models import institutions  # noqa: F401
 from app.models import oracles_lens  # noqa: F401
+from app.models import coverage  # noqa: F401
+from app.models import research  # noqa: F401
+from app.models import notifications  # noqa: F401
+from app.models import portfolios  # noqa: F401
+from app.models import api_security  # noqa: F401

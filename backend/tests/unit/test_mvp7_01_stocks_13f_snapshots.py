@@ -30,7 +30,7 @@ from app.api.v1.endpoints.stocks_13f import (
     _normalize_score_confidence,
     _period_filing_deadline,
 )
-from app.models.institutions import Filing13F, Holding13F, InstitutionManager
+from app.models.institutions import Filing13F, Holding13F, InstitutionManager, ParseRun13F
 from app.models.oracles_lens import OraclesLensSignal
 from app.models.stocks import Stock
 from app.services.oracles_lens.constants import SCORE_VERSION
@@ -97,9 +97,37 @@ def _holding(
     shares: int,
     value_thousands: int,
 ) -> Holding13F:
+    quarter = f"{filing.period_of_report.year}-Q{((filing.period_of_report.month - 1) // 3) + 1}"
+    filing.report_quarter = quarter
+    filing.quarter_end_date = filing.period_of_report
+    filing.accession_number = filing.accession_no
+    filing.is_active_for_manager_period = filing.is_latest_for_period
+    filing.parse_status = "succeeded"
+    parse_run = (
+        db_session.query(ParseRun13F)
+        .filter(ParseRun13F.accession_number == filing.accession_no)
+        .filter(ParseRun13F.is_current.is_(True))
+        .one_or_none()
+    )
+    if parse_run is None:
+        parse_run = ParseRun13F(
+            accession_number=filing.accession_no,
+            parser_version="test",
+            fingerprint_version="v1",
+            status="succeeded",
+            is_current=True,
+        )
+        db_session.add(parse_run)
+        db_session.flush()
     holding = Holding13F(
         filing_id=filing.id,
+        parse_run_id=parse_run.id,
+        manager_id=filing.manager_id,
+        accession_number=filing.accession_no,
+        report_quarter=quarter,
+        quarter_end_date=filing.period_of_report,
         row_fingerprint=f"{filing.accession_no}-{cusip}-{stock.ticker}",
+        holding_row_fingerprint=f"{filing.accession_no}-{cusip}-{stock.ticker}",
         cusip=cusip,
         issuer_name=stock.company_name,
         title_of_class="COM",
@@ -107,6 +135,8 @@ def _holding(
         shares=shares,
         share_type="SH",
         stock_id=stock.id,
+        cusip_mapping_status="linked",
+        holding_attribution_status="direct",
     )
     db_session.add(holding)
     db_session.flush()

@@ -23,6 +23,12 @@ from app.services.oracles_lens.signal_weighted_score import (
     build_oracles_lens_response,
     compute_signal_weighted_scores,
 )
+from app.services.oracles_lens.constants import (
+    CONSENSUS_LENS_VERSION,
+    DISTINCTIVE_LENS_VERSION,
+    MANAGER_TAXONOMY_VERSION,
+    REPRESENTATIVENESS_POLICY_VERSION,
+)
 
 
 _CIK_SEQ = count(9996600000)
@@ -418,3 +424,49 @@ def test_build_oracles_lens_response_exposes_distinctive_consensus_score(db_sess
     assert item["distinctive_consensus_score"] is not None
     # API returns strings for Decimal — confirm it's numeric.
     assert float(item["distinctive_consensus_score"]) >= 0
+    assert item["score_explanation"]["versions"] == {
+        "consensus_lens": CONSENSUS_LENS_VERSION,
+        "distinctive_lens": DISTINCTIVE_LENS_VERSION,
+        "manager_taxonomy": MANAGER_TAXONOMY_VERSION,
+        "representativeness_policy": REPRESENTATIVENESS_POLICY_VERSION,
+    }
+
+
+def test_score_component_records_reviewed_representativeness_version(db_session):
+    stock = _stock(db_session)
+    managers = []
+    for _ in range(3):
+        manager = _manager(db_session)
+        manager.thirteenf_representativeness = "partial"
+        manager.representativeness_policy_version = REPRESENTATIVENESS_POLICY_VERSION
+        manager.representativeness_reviewer = "test-reviewer"
+        manager.representativeness_reviewed_at = datetime.now(timezone.utc)
+        manager.representativeness_rationale = "13F shows only the long equity sleeve."
+        managers.append(manager)
+        _holding(db_session, _filing(db_session, manager), stock)
+
+    compute_signal_weighted_scores(db_session, quarter="2026-Q1")
+
+    signal = (
+        db_session.query(OraclesLensSignal)
+        .filter(OraclesLensSignal.stock_id == stock.id)
+        .one()
+    )
+    components = (
+        db_session.query(OraclesLensScoreComponent)
+        .filter(
+            OraclesLensScoreComponent.score_id == signal.id,
+            OraclesLensScoreComponent.component_name == "manager_signal_weight",
+        )
+        .all()
+    )
+    assert len(components) == 3
+    assert {component.numeric_value for component in components} == {Decimal("0.700000")}
+    assert all(
+        component.evidence_json["representativeness"] == "partial"
+        and component.evidence_json["representativeness_factor"] == "0.70"
+        and component.evidence_json["representativeness_policy_version"]
+        == REPRESENTATIVENESS_POLICY_VERSION
+        and component.evidence_json["representativeness_scoring_applied"] is True
+        for component in components
+    )

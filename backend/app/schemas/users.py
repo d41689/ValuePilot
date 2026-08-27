@@ -1,5 +1,5 @@
 from datetime import datetime
-from typing import Optional
+from typing import Literal, Optional
 
 from pydantic import BaseModel, Field
 
@@ -33,6 +33,11 @@ class UserUpdate(BaseModel):
     role: Optional[str] = Field(None, pattern=f"^({'|'.join(ROLE_VALUES)})$")
     tier: Optional[str] = Field(None, pattern=f"^({'|'.join(TIER_VALUES)})$")
     is_active: Optional[bool] = None
+
+
+class AccountErasureRequest(BaseModel):
+    password: str = Field(min_length=8, max_length=128)
+    confirmation: Literal["ERASE MY ACCOUNT"]
 
 
 # ---------- Response schemas ----------

@@ -19,6 +19,10 @@ from app.schemas.institutions import (
     Holding13FResponse,
     InstitutionResponse,
 )
+from app.services.thirteenf_holdings_query import (
+    active_hr_holdings_query,
+    current_parse_holdings_query,
+)
 
 router = APIRouter()
 
@@ -89,9 +93,13 @@ def get_holdings(
     """
     mgr = _confirmed_manager(cik, db)
 
-    filing_q = db.query(Filing13F).filter_by(manager_id=mgr.id)
-    if not all_versions:
-        filing_q = filing_q.filter_by(is_latest_for_period=True)
+    if all_versions:
+        holdings_q = current_parse_holdings_query(db).join(
+            Filing13F, Holding13F.filing_id == Filing13F.id
+        )
+    else:
+        holdings_q = active_hr_holdings_query(db)
+    holdings_q = holdings_q.filter(Filing13F.manager_id == mgr.id)
 
     if period:
         from datetime import date
@@ -104,18 +112,9 @@ def get_holdings(
         q_start = date(year, (qtr - 1) * 3 + 1, 1)
         end_month = qtr * 3
         q_end = date(year, end_month, calendar.monthrange(year, end_month)[1])
-        filing_q = filing_q.filter(Filing13F.period_of_report.between(q_start, q_end))
+        holdings_q = holdings_q.filter(Filing13F.period_of_report.between(q_start, q_end))
 
-    filing_ids = [f.id for f in filing_q.all()]
-    if not filing_ids:
-        return []
-
-    holdings = (
-        db.query(Holding13F)
-        .filter(Holding13F.filing_id.in_(filing_ids))
-        .order_by(Holding13F.value_thousands.desc())
-        .all()
-    )
+    holdings = holdings_q.order_by(Holding13F.value_thousands.desc()).all()
 
     # Enrich with ticker from cusip_ticker_map
     cusips = {h.cusip for h in holdings}
@@ -150,13 +149,13 @@ def get_filing_holdings(
         raise HTTPException(status_code=404, detail="Filing not found")
 
     # Validate manager is confirmed
-    mgr = db.query(InstitutionManager).get(filing.manager_id)
+    mgr = db.get(InstitutionManager, filing.manager_id)
     if not mgr or mgr.match_status != "confirmed":
         raise HTTPException(status_code=404, detail="Filing not found")
 
     holdings = (
-        db.query(Holding13F)
-        .filter_by(filing_id=filing.id)
+        current_parse_holdings_query(db)
+        .filter(Holding13F.filing_id == filing.id)
         .order_by(Holding13F.value_thousands.desc())
         .all()
     )
@@ -180,10 +179,8 @@ def get_stock_institutions(
 
     cusip = mapping.cusip
     holdings = (
-        db.query(Holding13F)
-        .join(Filing13F, Holding13F.filing_id == Filing13F.id)
+        active_hr_holdings_query(db)
         .filter(Holding13F.cusip == cusip)
-        .filter(Filing13F.is_latest_for_period == True)  # noqa: E712
         .all()
     )
 

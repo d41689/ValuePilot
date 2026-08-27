@@ -1,7 +1,7 @@
 # Task: 13F investor workflow 02 — quarterly new-buys cluster view
 
 **Created:** 2026-07-03 · **Origin:** PO review `2026-07-03_13f-po-review-value-investor.md` (§3 gap #2)
-**Status:** DRAFT (next-iteration package)
+**Status:** COMPLETE (2026-07-18)
 
 ## Goal / Acceptance Criteria
 
@@ -38,3 +38,13 @@ docker compose exec -T api pytest -q          # full backend at closing gate
 PO acceptance: on seeded dev data, the view surfaces a known cluster (fixture: ≥2 featured managers newly buying the same stock) ranked above single-buyer rows, with a low-confidence buyer visibly excluded from the score.
 
 **Quant-track note:** this endpoint's output is the raw material for hypothesis **H3** (plan v10 D14) — keep the service function pure/importable so the factor engine can reuse it.
+
+## 2026-07-18 implementation decisions / sign-off trail
+
+- Added `GET /13f/new-buys/clusters` and the pure/importable `build_new_buys_clusters` service. Default scope is reviewed Value DNA; activists and all tracked managers are opt-in.
+- `cluster_size` counts distinct, score-eligible managers. Low-confidence, non-primary or caveated buyers remain in `buyers` with explicit exclusion reasons but cannot manufacture a cluster or increase its score.
+- The read model requires the ownership-change row's referenced current filing to remain the active HR-family filing. Stale rows and NT filings are excluded.
+- Missing stored portfolio weights are computed from complete normalized common-stock filing denominators; incomplete coverage stays unavailable.
+- The synthetic fixture now materializes ownership changes and guarantees a two-manager Value DNA new-position cluster in `DEVSEED3`, while retaining the caveat cases.
+- Targeted backend tests, frontend normalization tests, lint and production build are green. Seeded browser acceptance showed `DEVSEED3` ranked with 2 independent buyers and score `2.00`; manager chips and the existing research drawer worked.
+- Canonical closing gate: backend `1291 passed`; frontend `193 passed`; lint and production build green.

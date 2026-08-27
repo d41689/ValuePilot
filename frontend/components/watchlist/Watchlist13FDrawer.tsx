@@ -238,7 +238,7 @@ function TopHolderCard({ holder }: { holder: Watchlist13FTopHolder }) {
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0 flex-1">
           <Link
-            href={`/admin/13f/managers/${holder.manager_id}`}
+            href={`/13f/managers/${holder.manager_id}`}
             className="font-medium hover:underline"
           >
             {holder.manager_name || `Manager #${holder.manager_id}`}
@@ -301,21 +301,9 @@ function TopHolderCard({ holder }: { holder: Watchlist13FTopHolder }) {
         ) : null}
         {holder.filing_date ? <span>{holder.filing_date}</span> : null}
         {holder.accession_no ? (
-          holder.cik ? (
-            <Link
-              href={`https://www.sec.gov/Archives/edgar/data/${holder.cik}/${holder.accession_no.replaceAll('-', '')}/${holder.accession_no}-index.htm`}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="font-mono hover:underline"
-              title={`EDGAR filing index for accession ${holder.accession_no}`}
-            >
-              {holder.accession_no}
-            </Link>
-          ) : (
-            <span className="font-mono" title={`EDGAR accession ${holder.accession_no}`}>
-              {holder.accession_no}
-            </span>
-          )
+          <span className="font-mono" title={`EDGAR accession ${holder.accession_no}`}>
+            {holder.accession_no}
+          </span>
         ) : null}
       </div>
     </div>

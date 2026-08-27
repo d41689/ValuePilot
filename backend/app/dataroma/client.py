@@ -9,6 +9,9 @@ from app.rate_guard.client import RateGuardClient
 
 MANAGERS_URL = "https://www.dataroma.com/m/managers.php"
 HOLDINGS_URL = "https://www.dataroma.com/m/holdings.php"
+ACTIVITY_URL = "https://www.dataroma.com/m/m_activity.php"
+PORTFOLIO_HISTORY_URL = "https://www.dataroma.com/m/hist/p_hist.php"
+STOCK_HISTORY_URL = "https://www.dataroma.com/m/hist/hist.php"
 
 
 class DataromaClient:
@@ -23,8 +26,22 @@ class DataromaClient:
     def get_managers(self) -> bytes:
         return self.get(MANAGERS_URL)
 
-    def get_holdings(self, dataroma_code: str) -> bytes:
-        return self.get(f"{HOLDINGS_URL}?m={dataroma_code}")
+    def get_holdings(self, dataroma_code: str, page: int | None = None) -> bytes:
+        if page is not None and page < 1:
+            raise ValueError("page must be >= 1")
+        suffix = f"&L={page}" if page is not None else ""
+        return self.get(f"{HOLDINGS_URL}?m={dataroma_code}{suffix}")
+
+    def get_activity(self, dataroma_code: str, activity_type: str = "a") -> bytes:
+        if activity_type not in {"a", "b", "s"}:
+            raise ValueError("activity_type must be one of: a, b, s")
+        return self.get(f"{ACTIVITY_URL}?m={dataroma_code}&typ={activity_type}")
+
+    def get_portfolio_history(self, dataroma_code: str) -> bytes:
+        return self.get(f"{PORTFOLIO_HISTORY_URL}?f={dataroma_code}")
+
+    def get_stock_history(self, dataroma_code: str, ticker: str) -> bytes:
+        return self.get(f"{STOCK_HISTORY_URL}?f={dataroma_code}&s={ticker}")
 
     def close(self) -> None:
         self._rate_guard.close()

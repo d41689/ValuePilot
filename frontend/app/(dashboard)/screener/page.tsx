@@ -7,6 +7,7 @@ import apiClient from '@/lib/api/client';
 import { Search, Loader2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Textarea } from '@/components/ui/textarea';
+import { OpenResearchCaseButton } from '@/components/research/OpenResearchCaseButton';
 import {
   Table,
   TableBody,
@@ -153,6 +154,7 @@ export default function ScreenerPage() {
                   <TableHead>Stock’s Price Stability</TableHead>
                   <TableHead>Price Growth Persistence</TableHead>
                   <TableHead>Earnings Predictability</TableHead>
+                  <TableHead>Research</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody className="bg-white">
@@ -242,6 +244,17 @@ export default function ScreenerPage() {
                       <TableCell className="whitespace-nowrap text-gray-900">{formatText(priceStability)}</TableCell>
                       <TableCell className="whitespace-nowrap text-gray-900">{formatText(priceGrowthPersistence)}</TableCell>
                       <TableCell className="whitespace-nowrap text-gray-900">{formatText(earningsPredictability)}</TableCell>
+                      <TableCell>
+                        {typeof stock.id === 'number' ? (
+                          <OpenResearchCaseButton
+                            stockId={stock.id}
+                            originType="screener"
+                            originKey={`ad-hoc-screen:${stock.id}:${ruleText.length}`}
+                            sourceVersion="screener-ad-hoc-v1"
+                            sourceRef={{ rule_json: JSON.parse(ruleText) }}
+                          />
+                        ) : null}
+                      </TableCell>
                     </TableRow>
                   );
                 })}

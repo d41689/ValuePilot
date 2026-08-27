@@ -1,6 +1,7 @@
 from datetime import datetime
 from typing import Any, Optional
-from sqlalchemy import String, DateTime, Boolean, ForeignKey, JSON
+from sqlalchemy import BigInteger, String, DateTime, Boolean, ForeignKey, JSON
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.sql import func
 from app.core.db import Base
@@ -59,3 +60,17 @@ class NotificationEvent(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
     user: Mapped["User"] = relationship(back_populates="notification_events")
+
+
+class AccountErasureEvent(Base):
+    """Append-only, non-content proof of a completed privacy transaction."""
+
+    __tablename__ = "account_erasure_events"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), unique=True, nullable=False)
+    content_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    summary_json: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )

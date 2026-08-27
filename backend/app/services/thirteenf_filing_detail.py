@@ -20,7 +20,7 @@ from app.services.thirteenf_holdings_query import (
 )
 
 
-INGESTION_FORMS = {"13F-HR", "13F-HR/A", "13F-NT"}
+INGESTION_FORMS = {"13F-HR", "13F-HR/A", "13F-NT", "13F-NT/A"}
 
 
 def merge_accepted_at(filing: Filing13F, parsed_accepted_at: datetime | None) -> bool:
@@ -125,7 +125,12 @@ def ingest_accession_filing_detail(
     filing.raw_primary_doc_id = raw_doc.id
     filing.reported_total_value_thousands = summary.table_value_total
     filing.holdings_count = summary.table_entry_total or 0
-    filing.parse_status = routing.parse_status
+    # A notice filing has no information table and therefore no later holdings
+    # parse that can advance the proxy routing state. Once its primary document
+    # routes cleanly, this is the terminal successful parse. HR-family filings
+    # remain pending here until their information table is parsed.
+    clean_notice = form_type in _NT_FORM_TYPES and routing.parse_status == "pending"
+    filing.parse_status = "succeeded" if clean_notice else routing.parse_status
     filing.parse_warning = routing.parse_warning
     filing.parse_error = routing.parse_error
 
@@ -437,6 +442,18 @@ def apply_amendment_policy(session: Session, filing: Filing13F) -> None:
         # the resolution.
         if filing.amendment_status in _TERMINAL_AMENDMENT_STATUSES:
             return
+        # A clean 13F-NT/A has no holdings payload to adjudicate. It simply
+        # supersedes the prior notice slot; leaving every notice amendment in
+        # amendments_pending would turn routine SEC notice corrections into a
+        # permanent manual queue. The group authority still ensures an NT/A can
+        # never displace an HR-family holdings report.
+        if (filing.form_type or "") in _NT_FORM_TYPES and filing.parse_status == "succeeded":
+            filing.amendment_status = "applied"
+            filing.is_active_for_manager_period = False
+            session.add(filing)
+            if filing.quarter_end_date is not None:
+                apply_active_filing_policy(session, filing.manager_id, filing.quarter_end_date)
+            return
         filing.is_active_for_manager_period = False
         if filing.amendment_type == "RESTATEMENT":
             filing.amendment_status = "pending_parse"
@@ -483,9 +500,10 @@ def competition_pool(filings: list[Filing13F]) -> tuple[str, list[Filing13F]]:
       "restatement"    — parsed, non-rejected/-informational/-deferred HR-family
                          RESTATEMENTs supersede everything; they are the pool.
       "amendment_owned"— no competing restatement, but an admin-`applied`
-                         amendment owns the slot; the ranked-latest of those is
-                         the owner. Ordering evidence is NOT required here (an
-                         admin decided), so this kind is never "at risk".
+                         amendment owns the slot. Multiple applied amendments
+                         still require acceptance ordering evidence; "applied"
+                         says each is eligible, not which admin decision is
+                         latest.
       "originals"      — originals compete; HR family beats NT.
       "none"           — nothing eligible.
 
@@ -509,12 +527,27 @@ def competition_pool(filings: list[Filing13F]) -> tuple[str, list[Filing13F]]:
     if competing:
         return "restatement", competing
 
-    applied = [a for a in amendments if a.amendment_status == "applied"]
-    if applied:
-        return "amendment_owned", applied
-
     hr_originals = [o for o in originals if (o.form_type or "") in _HR_FORM_TYPES]
-    pool = hr_originals or originals
+    applied_hr = [
+        a for a in amendments
+        if a.amendment_status == "applied" and (a.form_type or "") in _HR_FORM_TYPES
+    ]
+    if applied_hr:
+        return "amendment_owned", applied_hr
+    if hr_originals:
+        return "originals", hr_originals
+
+    # With no HR-family filing, an applied notice amendment supersedes the
+    # prior notice. It remains a notice across every consumer and never enters
+    # the holdings slot while an HR original exists.
+    applied_notices = [
+        a for a in amendments
+        if a.amendment_status == "applied" and (a.form_type or "") in _NT_FORM_TYPES
+    ]
+    if applied_notices:
+        return "amendment_owned", applied_notices
+
+    pool = originals
     if not pool:
         return "none", []
     return "originals", pool
@@ -564,10 +597,11 @@ def apply_active_filing_policy(
        - **Tie** (equal AND non-NULL top-two): no auto-switch; tied
          restatements AND the kept-active filing flagged as above.
     2. Otherwise the ``applied`` amendments (admin apply / activate_as_original)
-       own the slot: the ranked-latest applied amendment is activated and
-       everything else — including a rejected-but-still-active amendment — is
-       demoted. Admin shapes eligibility via statuses (reject what you don't
-       want); ranking picks deterministically among the eligible.
+       own the slot. One candidate wins directly. Multiple candidates use the
+       same missing-acceptance/tie guard as rules 1 and 3; ``applied`` makes a
+       filing eligible but does not establish which application happened last.
+       Only a current active member of the eligible pool may remain while the
+       ambiguity is reviewed; rejected/stale active rows are demoted.
     3. Otherwise originals compete — HR family first: an NT original never
        beats a 13F-HR (it competes only when the period has no HR original).
        Missing-acceptance (≥2, any NULL) → no auto-switch + flags, as in rule
@@ -747,12 +781,29 @@ def apply_active_filing_policy(
 
     # --- Rule 2: applied amendments own the slot (admin decision). ---
     if pool_kind == "amendment_owned":
-        # Select ONE owner (ranked latest) and converge the whole group:
-        # a rejected-but-still-active amendment or a stale original must be
-        # demoted, not merely tolerated. Admin intent is expressed through
-        # statuses — reject what should not own the slot. No ordering-evidence
-        # gate here: an admin already decided.
-        owner = max(_pool, key=_active_filing_rank)
+        ranked = sorted(_pool, key=_active_filing_rank, reverse=True)
+        top_at = ranked[0].accepted_at
+        ambiguous = (
+            len(ranked) > 1
+            and (
+                any(item.accepted_at is None for item in ranked)
+                or (top_at is not None and ranked[1].accepted_at == top_at)
+            )
+        )
+        if ambiguous:
+            for item in ranked:
+                _flag_pending(item)
+            # Preserve an already-serving applied owner, but never let a
+            # rejected amendment or stale original survive merely because the
+            # eligible pool cannot yet be ordered.
+            for item in filings:
+                if item.is_active_for_manager_period and item not in _pool:
+                    item.is_active_for_manager_period = False
+                    session.add(item)
+                    changed = True
+            return _result("missing_acceptance")
+
+        owner = ranked[0]
         _set_active(owner)
         _clear_stale_residue([f for f in filings if f is not owner])
         return _result("amendment_owned")

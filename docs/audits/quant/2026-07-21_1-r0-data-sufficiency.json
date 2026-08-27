@@ -1,0 +1,581 @@
+{
+  "coverage": {
+    "metric_facts": {
+      "coverage_semantics": {
+        "embedded_period_depth": "restated/estimated rows inside observed reports; not independent PIT vintages",
+        "publication_vintage": "strict_report_date_observation",
+        "user_scoped": true
+      },
+      "documents": 3,
+      "embedded_period_span_years": 15.753917,
+      "future_or_estimate_period_rows": 75,
+      "historical_or_asof_period_rows": 693,
+      "longest_consecutive_archive_weeks": 1,
+      "median_monthly_stock_breadth": 1.5,
+      "metric_keys": 70,
+      "minimum_monthly_stock_breadth": 1,
+      "monthly_cross_sections": [
+        {
+          "fact_rows": 531,
+          "metric_key_coverage_ratio": 0.957143,
+          "metric_keys": 67,
+          "month": "2025-12",
+          "stocks": 2
+        },
+        {
+          "fact_rows": 237,
+          "metric_key_coverage_ratio": 0.828571,
+          "metric_keys": 58,
+          "month": "2026-01",
+          "stocks": 1
+        }
+      ],
+      "observed_archive_weeks": 2,
+      "parsed_fact_rows": 768,
+      "period_end_end": "2026-12-31",
+      "period_end_start": "2011-03-31",
+      "publication_months": 2,
+      "publication_span_years": 0.114992,
+      "report_date_end": "2026-01-30",
+      "report_date_start": "2025-12-19",
+      "stocks": 3
+    },
+    "prices": {
+      "date_end": "2026-07-17",
+      "date_start": "2026-07-10",
+      "missing_currency_rows": 2,
+      "qualification_note": "Local price rows have no historical-universe/delisting entitlement proof; row presence alone cannot satisfy H1/H3.",
+      "qualifies_as_survivorship_free_backbone": false,
+      "rows": 2,
+      "sources": {
+        "fallback": 2
+      },
+      "span_years": 0.019165,
+      "stocks": 1
+    },
+    "thirteenf": {
+      "authoritative_filings": 1150,
+      "authoritative_holdings": 82913,
+      "availability_date_end": "2026-07-16",
+      "availability_date_start": "2023-01-05",
+      "availability_semantics": "Signals become observable on filed_at, never on quarter_end_date; 13F filings may arrive up to the official filing deadline.",
+      "availability_span_years": 3.526424,
+      "eligible_common_mapped_holdings": 75649,
+      "filing_lag_days": {
+        "invalid_negative_count": 0,
+        "maximum": 518,
+        "median": 45.0,
+        "minimum": 2
+      },
+      "first_availability_date_end": "2026-07-16",
+      "first_availability_date_start": "2023-01-05",
+      "historical_version_semantics": "Today's active filing is a current product snapshot only. Historical research must reconstruct the filing/amendment version observable at T from versioned filings; it must not back-project today's active version.",
+      "immature_quarters": 1,
+      "manager_quarters_with_multiple_versions": 49,
+      "mapped_holding_ratio": 0.914187,
+      "mapped_holdings": 75798,
+      "mapped_stocks": 2841,
+      "mature_quarters": 17,
+      "median_manager_breadth": 81.0,
+      "median_mapped_stock_breadth": 1791.0,
+      "minimum_manager_breadth": 1,
+      "minimum_mapped_stock_breadth": 42,
+      "quarter_end_end": "2026-06-30",
+      "quarter_end_start": "2022-03-31",
+      "quarterly_cross_sections": [
+        {
+          "holdings": 55,
+          "managers": 1,
+          "mapped_stocks": 43,
+          "mature": true,
+          "official_filing_deadline": "2022-05-16",
+          "quarter_end_date": "2022-03-31"
+        },
+        {
+          "holdings": 54,
+          "managers": 1,
+          "mapped_stocks": 42,
+          "mature": true,
+          "official_filing_deadline": "2022-08-15",
+          "quarter_end_date": "2022-06-30"
+        },
+        {
+          "holdings": 68,
+          "managers": 2,
+          "mapped_stocks": 53,
+          "mature": true,
+          "official_filing_deadline": "2022-11-14",
+          "quarter_end_date": "2022-09-30"
+        },
+        {
+          "holdings": 6283,
+          "managers": 81,
+          "mapped_stocks": 1791,
+          "mature": true,
+          "official_filing_deadline": "2023-02-14",
+          "quarter_end_date": "2022-12-31"
+        },
+        {
+          "holdings": 6171,
+          "managers": 81,
+          "mapped_stocks": 1789,
+          "mature": true,
+          "official_filing_deadline": "2023-05-15",
+          "quarter_end_date": "2023-03-31"
+        },
+        {
+          "holdings": 5946,
+          "managers": 81,
+          "mapped_stocks": 1741,
+          "mature": true,
+          "official_filing_deadline": "2023-08-14",
+          "quarter_end_date": "2023-06-30"
+        },
+        {
+          "holdings": 5734,
+          "managers": 81,
+          "mapped_stocks": 1727,
+          "mature": true,
+          "official_filing_deadline": "2023-11-14",
+          "quarter_end_date": "2023-09-30"
+        },
+        {
+          "holdings": 5765,
+          "managers": 81,
+          "mapped_stocks": 1753,
+          "mature": true,
+          "official_filing_deadline": "2024-02-14",
+          "quarter_end_date": "2023-12-31"
+        },
+        {
+          "holdings": 5768,
+          "managers": 82,
+          "mapped_stocks": 1775,
+          "mature": true,
+          "official_filing_deadline": "2024-05-15",
+          "quarter_end_date": "2024-03-31"
+        },
+        {
+          "holdings": 5805,
+          "managers": 82,
+          "mapped_stocks": 1828,
+          "mature": true,
+          "official_filing_deadline": "2024-08-14",
+          "quarter_end_date": "2024-06-30"
+        },
+        {
+          "holdings": 5665,
+          "managers": 82,
+          "mapped_stocks": 1802,
+          "mature": true,
+          "official_filing_deadline": "2024-11-14",
+          "quarter_end_date": "2024-09-30"
+        },
+        {
+          "holdings": 5638,
+          "managers": 82,
+          "mapped_stocks": 1817,
+          "mature": true,
+          "official_filing_deadline": "2025-02-14",
+          "quarter_end_date": "2024-12-31"
+        },
+        {
+          "holdings": 5590,
+          "managers": 82,
+          "mapped_stocks": 1817,
+          "mature": true,
+          "official_filing_deadline": "2025-05-15",
+          "quarter_end_date": "2025-03-31"
+        },
+        {
+          "holdings": 5732,
+          "managers": 82,
+          "mapped_stocks": 1883,
+          "mature": true,
+          "official_filing_deadline": "2025-08-14",
+          "quarter_end_date": "2025-06-30"
+        },
+        {
+          "holdings": 6143,
+          "managers": 82,
+          "mapped_stocks": 2049,
+          "mature": true,
+          "official_filing_deadline": "2025-11-14",
+          "quarter_end_date": "2025-09-30"
+        },
+        {
+          "holdings": 6181,
+          "managers": 81,
+          "mapped_stocks": 2086,
+          "mature": true,
+          "official_filing_deadline": "2026-02-16",
+          "quarter_end_date": "2025-12-31"
+        },
+        {
+          "holdings": 6169,
+          "managers": 81,
+          "mapped_stocks": 2076,
+          "mature": true,
+          "official_filing_deadline": "2026-05-15",
+          "quarter_end_date": "2026-03-31"
+        },
+        {
+          "holdings": 146,
+          "managers": 5,
+          "mapped_stocks": 132,
+          "mature": false,
+          "official_filing_deadline": "2026-08-14",
+          "quarter_end_date": "2026-06-30"
+        }
+      ],
+      "quarters": 18,
+      "versioned_filings": 1204
+    }
+  },
+  "data_availability_matrix": [
+    {
+      "absolute_return_gate_eligible": false,
+      "embedded_history_use": "reconstructed-vintage relative judgments only",
+      "source": "user_uploaded_value_line",
+      "strict_publication_vintages": 2
+    },
+    {
+      "absolute_return_gate_eligible": false,
+      "embedded_history_use": "H1/H3 backbone and generic null",
+      "source": "survivorship_free_commodity_backbone",
+      "strict_publication_vintages": null
+    },
+    {
+      "absolute_return_gate_eligible": false,
+      "embedded_history_use": "H3; signals available only from filed_at",
+      "source": "sec_edgar_13f",
+      "strict_publication_vintages": 18
+    }
+  ],
+  "environment": "development",
+  "evaluated_at": "2026-07-21T12:00:00+00:00",
+  "gate": {
+    "hypotheses": {
+      "H1": {
+        "blocking_for_1_r0": true,
+        "failed_reason_codes": [
+          "backbone_authorization_missing",
+          "backbone_not_survivorship_free",
+          "backbone_missing_delisted_names",
+          "backbone_missing_fundamentals",
+          "backbone_missing_prices",
+          "insufficient_backbone_history",
+          "insufficient_backbone_cross_sectional_breadth"
+        ],
+        "requirements": [
+          {
+            "code": "backbone_authorization_missing",
+            "observed": null,
+            "passed": false,
+            "required": "recorded operator authorization evidence"
+          },
+          {
+            "code": "backbone_not_survivorship_free",
+            "observed": false,
+            "passed": false,
+            "required": true
+          },
+          {
+            "code": "backbone_missing_delisted_names",
+            "observed": false,
+            "passed": false,
+            "required": true
+          },
+          {
+            "code": "backbone_missing_fundamentals",
+            "observed": false,
+            "passed": false,
+            "required": true
+          },
+          {
+            "code": "backbone_missing_prices",
+            "observed": false,
+            "passed": false,
+            "required": true
+          },
+          {
+            "code": "insufficient_backbone_history",
+            "observed": 0.0,
+            "passed": false,
+            "required": 197.0
+          },
+          {
+            "code": "insufficient_backbone_cross_sectional_breadth",
+            "observed": 0,
+            "passed": false,
+            "required": 100
+          }
+        ],
+        "status": "NO_GO"
+      },
+      "H2": {
+        "blocking_for_1_r0": false,
+        "failed_reason_codes": [
+          "value_line_automation_authorization_missing",
+          "value_line_four_week_continuity_not_proven",
+          "insufficient_value_line_publication_history",
+          "insufficient_value_line_cross_sectional_breadth"
+        ],
+        "requirements": [
+          {
+            "code": "value_line_automation_authorization_missing",
+            "observed": null,
+            "passed": false,
+            "required": "recorded operator authorization evidence"
+          },
+          {
+            "code": "value_line_four_week_continuity_not_proven",
+            "observed": 1,
+            "passed": false,
+            "required": 4
+          },
+          {
+            "code": "insufficient_value_line_publication_history",
+            "observed": 0.114992,
+            "passed": false,
+            "required": 197.0
+          },
+          {
+            "code": "insufficient_value_line_cross_sectional_breadth",
+            "observed": 1,
+            "passed": false,
+            "required": 100
+          }
+        ],
+        "status": "NO_GO"
+      },
+      "H3": {
+        "blocking_for_1_r0": false,
+        "failed_reason_codes": [
+          "backbone_authorization_missing",
+          "backbone_not_survivorship_free",
+          "backbone_missing_delisted_names",
+          "backbone_missing_fundamentals",
+          "backbone_missing_prices",
+          "insufficient_13f_availability_history",
+          "insufficient_13f_manager_breadth",
+          "insufficient_13f_mapped_stock_breadth"
+        ],
+        "requirements": [
+          {
+            "code": "backbone_authorization_missing",
+            "observed": null,
+            "passed": false,
+            "required": "recorded operator authorization evidence"
+          },
+          {
+            "code": "backbone_not_survivorship_free",
+            "observed": false,
+            "passed": false,
+            "required": true
+          },
+          {
+            "code": "backbone_missing_delisted_names",
+            "observed": false,
+            "passed": false,
+            "required": true
+          },
+          {
+            "code": "backbone_missing_fundamentals",
+            "observed": false,
+            "passed": false,
+            "required": true
+          },
+          {
+            "code": "backbone_missing_prices",
+            "observed": false,
+            "passed": false,
+            "required": true
+          },
+          {
+            "code": "insufficient_13f_availability_history",
+            "observed": 3.526424,
+            "passed": false,
+            "required": 443.5
+          },
+          {
+            "code": "insufficient_13f_manager_breadth",
+            "observed": 1,
+            "passed": false,
+            "required": 20
+          },
+          {
+            "code": "insufficient_13f_mapped_stock_breadth",
+            "observed": 42,
+            "passed": false,
+            "required": 100
+          }
+        ],
+        "status": "NO_GO"
+      }
+    },
+    "overall_1_r0_gate": "NO_GO",
+    "phase_1_follow_on_unlocked": false,
+    "unlock_rule": "H1 data sufficiency must be GO; H2 is non-blocking and H3 cannot bypass 1-R0"
+  },
+  "policy_version": "quant-1-r0a-v1",
+  "power_assumptions": {
+    "annual_alpha": 0.02,
+    "holdout_fraction": 0.3,
+    "minimum_13f_managers": 20,
+    "minimum_13f_mapped_stocks": 100,
+    "minimum_cross_sectional_stocks": 100,
+    "t_threshold": 3.0,
+    "target_power": 0.8,
+    "tracking_error_high": 0.06,
+    "tracking_error_low": 0.04
+  },
+  "power_method": {
+    "formula": "years=((t_threshold+Phi^-1(target_power))*tracking_error/alpha)^2",
+    "limitation": "Final adequacy must be recomputed from acquired return autocorrelation and realized HAC variance; this approximation cannot certify power.",
+    "type": "normal_noncentrality_planning_approximation_for_future_HAC_test"
+  },
+  "power_plans": {
+    "H1": {
+      "breadth_policy": {
+        "minimum_cross_sectional_stocks": 100,
+        "note": "Breadth is an operational cross-sectional eligibility floor; it does not replace HAC return-history observations.",
+        "statistically_fungible_with_time": false
+      },
+      "observation_frequency": "monthly",
+      "periods_per_year": 12,
+      "selected_scenario": {
+        "expected_t_only_years_50pct_power": 36.0,
+        "required_effective_holdout_years": 59.032215,
+        "required_holdout_periods": 709,
+        "required_noncentrality": 3.841621234,
+        "required_total_calendar_periods": 2364,
+        "required_total_calendar_years": 197.0,
+        "tracking_error_annual": 0.04
+      },
+      "selected_tracking_error_annual": 0.04,
+      "sensitivity_scenarios": [
+        {
+          "expected_t_only_years_50pct_power": 36.0,
+          "required_effective_holdout_years": 59.032215,
+          "required_holdout_periods": 709,
+          "required_noncentrality": 3.841621234,
+          "required_total_calendar_periods": 2364,
+          "required_total_calendar_years": 197.0,
+          "tracking_error_annual": 0.04
+        },
+        {
+          "expected_t_only_years_50pct_power": 81.0,
+          "required_effective_holdout_years": 132.822483,
+          "required_holdout_periods": 1594,
+          "required_noncentrality": 3.841621234,
+          "required_total_calendar_periods": 5314,
+          "required_total_calendar_years": 442.833333,
+          "tracking_error_annual": 0.06
+        }
+      ]
+    },
+    "H2": {
+      "breadth_policy": {
+        "minimum_cross_sectional_stocks": 100,
+        "note": "Breadth is an operational cross-sectional eligibility floor; it does not replace HAC return-history observations.",
+        "statistically_fungible_with_time": false
+      },
+      "observation_frequency": "monthly",
+      "periods_per_year": 12,
+      "selected_scenario": {
+        "expected_t_only_years_50pct_power": 36.0,
+        "required_effective_holdout_years": 59.032215,
+        "required_holdout_periods": 709,
+        "required_noncentrality": 3.841621234,
+        "required_total_calendar_periods": 2364,
+        "required_total_calendar_years": 197.0,
+        "tracking_error_annual": 0.04
+      },
+      "selected_tracking_error_annual": 0.04,
+      "sensitivity_scenarios": [
+        {
+          "expected_t_only_years_50pct_power": 36.0,
+          "required_effective_holdout_years": 59.032215,
+          "required_holdout_periods": 709,
+          "required_noncentrality": 3.841621234,
+          "required_total_calendar_periods": 2364,
+          "required_total_calendar_years": 197.0,
+          "tracking_error_annual": 0.04
+        },
+        {
+          "expected_t_only_years_50pct_power": 81.0,
+          "required_effective_holdout_years": 132.822483,
+          "required_holdout_periods": 1594,
+          "required_noncentrality": 3.841621234,
+          "required_total_calendar_periods": 5314,
+          "required_total_calendar_years": 442.833333,
+          "tracking_error_annual": 0.06
+        }
+      ]
+    },
+    "H3": {
+      "breadth_policy": {
+        "minimum_cross_sectional_stocks": 100,
+        "note": "Breadth is an operational cross-sectional eligibility floor; it does not replace HAC return-history observations.",
+        "statistically_fungible_with_time": false
+      },
+      "observation_frequency": "quarterly",
+      "periods_per_year": 4,
+      "selected_scenario": {
+        "expected_t_only_years_50pct_power": 81.0,
+        "required_effective_holdout_years": 132.822483,
+        "required_holdout_periods": 532,
+        "required_noncentrality": 3.841621234,
+        "required_total_calendar_periods": 1774,
+        "required_total_calendar_years": 443.5,
+        "tracking_error_annual": 0.06
+      },
+      "selected_tracking_error_annual": 0.06,
+      "sensitivity_scenarios": [
+        {
+          "expected_t_only_years_50pct_power": 36.0,
+          "required_effective_holdout_years": 59.032215,
+          "required_holdout_periods": 237,
+          "required_noncentrality": 3.841621234,
+          "required_total_calendar_periods": 790,
+          "required_total_calendar_years": 197.5,
+          "tracking_error_annual": 0.04
+        },
+        {
+          "expected_t_only_years_50pct_power": 81.0,
+          "required_effective_holdout_years": 132.822483,
+          "required_holdout_periods": 532,
+          "required_noncentrality": 3.841621234,
+          "required_total_calendar_periods": 1774,
+          "required_total_calendar_years": 443.5,
+          "tracking_error_annual": 0.06
+        }
+      ]
+    }
+  },
+  "read_only": true,
+  "schema_version": "1.0",
+  "source_readiness": {
+    "backbone_authorization_evidence_ref": null,
+    "backbone_authorized": false,
+    "backbone_end_date": null,
+    "backbone_has_fundamentals": false,
+    "backbone_has_prices": false,
+    "backbone_includes_delisted": false,
+    "backbone_minimum_monthly_stock_breadth": 0,
+    "backbone_span_years": 0.0,
+    "backbone_start_date": null,
+    "backbone_survivorship_free": false,
+    "value_line_authorization_evidence_ref": null,
+    "value_line_automation_authorized": false
+  },
+  "sources": [
+    "https://www.nber.org/papers/t0055",
+    "https://www.statsmodels.org/stable/generated/statsmodels.stats.power.TTestPower.solve_power.html",
+    "https://www.sec.gov/files/form13f.pdf",
+    "https://www.sec.gov/data-research/sec-markets-data/form-13f-data-sets",
+    "docs/architecture/coverage-source-policy.md"
+  ],
+  "user_scope_id": 775
+}

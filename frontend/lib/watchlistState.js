@@ -19,6 +19,14 @@ function buildFairValueEdits(rows) {
   return next;
 }
 
+function formatValuationReferenceLabel(value, source) {
+  if (typeof value !== 'number' || !Number.isFinite(value)) {
+    return '—';
+  }
+  const sourceLabel = source === 'target.price_18m.mid' ? 'VL 18M target' : 'System reference';
+  return `${value.toFixed(2)} · ${sourceLabel}`;
+}
+
 function hasFairValueEditChanges(current, next) {
   const currentKeys = Object.keys(current);
   const nextKeys = Object.keys(next);
@@ -120,4 +128,5 @@ module.exports = {
   isOverviewWatchlistId,
   formatPiotroskiFScore,
   formatPiotroskiFScoreSeries,
+  formatValuationReferenceLabel,
 };

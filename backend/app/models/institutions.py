@@ -55,6 +55,12 @@ CAPITAL_STRUCTURE = {
 MARKET_CAP_FOCUS = {"micro", "small", "mid", "large", "mega", "all"}
 GEO_FOCUS = {"us", "global", "em", "europe", "asia"}
 TURNOVER_BUCKETS = {"low", "med", "high"}
+THIRTEENF_REPRESENTATIVENESS = {
+    "faithful",
+    "partial",
+    "unrepresentative",
+    "unknown",
+}
 VALUE_UNIT_OVERRIDES = {"infer", "thousands", "dollars"}
 VALUE_UNIT_OVERRIDE_EXPLICIT = {"thousands", "dollars"}
 EDGAR_SYNC_STATUSES = {"pending", "running", "success", "failed", "no_data", "partial_success"}
@@ -147,6 +153,27 @@ class InstitutionManager(Base):
         Numeric(6, 2), nullable=True,
     )
     ideology_tags: Mapped[Optional[list]] = mapped_column(JSONB, nullable=True)
+    # Versioned, reviewed answer to a different question than style_primary:
+    # does a delayed long-only 13F faithfully represent this manager's actual
+    # investment strategy?  Score component evidence records the version used.
+    thirteenf_representativeness: Mapped[str] = mapped_column(
+        String(24), nullable=False, default="unknown", server_default="unknown",
+    )
+    representativeness_policy_version: Mapped[Optional[str]] = mapped_column(
+        String(48), nullable=True,
+    )
+    representativeness_reviewer: Mapped[Optional[str]] = mapped_column(
+        String(120), nullable=True,
+    )
+    representativeness_reviewed_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True,
+    )
+    representativeness_rationale: Mapped[Optional[str]] = mapped_column(
+        Text, nullable=True,
+    )
+    representativeness_evidence_json: Mapped[Optional[dict]] = mapped_column(
+        JSONB, nullable=True,
+    )
     is_featured: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default=text("false"))
     source: Mapped[Optional[str]] = mapped_column(String(80), nullable=True)
     source_url: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
@@ -185,11 +212,21 @@ class InstitutionManager(Base):
     manager_type_review_events: Mapped[List["InstitutionManagerTypeReviewEvent"]] = relationship(
         order_by="InstitutionManagerTypeReviewEvent.created_at.desc()"
     )
+    representativeness_reviews: Mapped[
+        List["InstitutionManagerRepresentativenessReview"]
+    ] = relationship(
+        order_by="InstitutionManagerRepresentativenessReview.effective_at.desc()"
+    )
 
     __table_args__ = (
         Index("idx_institution_managers_parent_manager_id", "parent_manager_id"),
         Index("ix_institution_managers_status", "status"),
         Index("ix_institution_managers_cik_status", "cik", "status"),
+        CheckConstraint(
+            "thirteenf_representativeness IN "
+            "('faithful', 'partial', 'unrepresentative', 'unknown')",
+            name="ck_institution_managers_13f_representativeness",
+        ),
     )
 
     @validates("status")
@@ -225,6 +262,12 @@ class InstitutionManager(Base):
         if value is None:
             return None
         return _validate_choice("historical_turnover", value, TURNOVER_BUCKETS)
+
+    @validates("thirteenf_representativeness")
+    def _validate_thirteenf_representativeness(self, _: str, value: str) -> str:
+        return _validate_choice(
+            "thirteenf_representativeness", value, THIRTEENF_REPRESENTATIVENESS
+        )
 
     @validates("value_unit_override")
     def _validate_value_unit_override(self, _: str, value: str) -> str:
@@ -288,6 +331,54 @@ class InstitutionManagerTypeReviewEvent(Base):
         Index("ix_manager_type_review_events_manager_id", "manager_id"),
         Index("ix_manager_type_review_events_created_at", "created_at"),
     )
+
+
+class InstitutionManagerRepresentativenessReview(Base):
+    """Append-only decision record behind the manager's current projection.
+
+    A changed methodology must use a new ``policy_version`` and insert another
+    row. Oracle's Lens components persist that version and effective timestamp,
+    so a historical score remains explainable after later policy reviews.
+    """
+
+    __tablename__ = "institution_manager_representativeness_reviews"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    manager_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("institution_managers.id"), nullable=False
+    )
+    classification: Mapped[str] = mapped_column(String(24), nullable=False)
+    policy_version: Mapped[str] = mapped_column(String(48), nullable=False)
+    reviewer: Mapped[str] = mapped_column(String(120), nullable=False)
+    effective_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    rationale: Mapped[str] = mapped_column(Text, nullable=False)
+    evidence_json: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+    __table_args__ = (
+        UniqueConstraint(
+            "manager_id",
+            "policy_version",
+            name="uq_manager_representativeness_review_policy",
+        ),
+        Index(
+            "ix_manager_representativeness_reviews_manager_effective",
+            "manager_id",
+            "effective_at",
+        ),
+        CheckConstraint(
+            "classification IN ('faithful', 'partial', 'unrepresentative', 'unknown')",
+            name="ck_manager_representativeness_review_classification",
+        ),
+    )
+
+    @validates("classification")
+    def _validate_classification(self, _: str, value: str) -> str:
+        return _validate_choice(
+            "classification", value, THIRTEENF_REPRESENTATIVENESS
+        )
 
 
 class RawSourceDocument(Base):

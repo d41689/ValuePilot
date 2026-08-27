@@ -18,7 +18,8 @@ from app.models.institutions import Filing13F, InstitutionManager
 # A routing summary shaped like backfill_period_routing's real return.
 _CLEAN_ROUTING = {
     "period_changed": 0, "quarter_end_added": 0, "report_quarter_added": 0,
-    "needs_review": 0, "failed": 0,
+    "needs_review": 0, "needs_review_routed": 0,
+    "needs_review_unrouted": 0, "failed": 0,
 }
 
 
@@ -135,6 +136,50 @@ def test_ingest_holdings_tolerates_per_filing_data_error(db_session, monkeypatch
     result = execute_job_payload(db_session, "ingest_holdings", {"quarter": "2025-Q4"})
     assert result["filings_failed"] == 1
     assert result["status"] == "partial_success"
+
+
+def test_bulk_ingest_routes_notice_through_primary_doc_without_infotable(
+    db_session,
+    monkeypatch,
+):
+    mgr = _make_manager(db_session)
+    notice = _make_filing(db_session, mgr, form_type="13F-NT")
+    notice_calls = []
+
+    def _notice_detail(session, payload):
+        notice_calls.append(payload)
+        notice.report_quarter = "2025-Q4"
+        notice.quarter_end_date = date(2025, 12, 31)
+        notice.period_of_report = date(2025, 12, 31)
+        notice.parse_status = "succeeded"
+        session.add(notice)
+        session.commit()
+        return {
+            "filing_id": notice.id,
+            "accession_number": notice.accession_no,
+            "report_quarter": "2025-Q4",
+            "status": "succeeded",
+        }
+
+    monkeypatch.setattr(
+        "app.services.thirteenf_filing_detail.ingest_accession_filing_detail",
+        _notice_detail,
+    )
+
+    def _must_not_fetch_infotable(*_args, **_kwargs):
+        raise AssertionError("notice filings have no information table")
+
+    monkeypatch.setattr(
+        "app.services.edgar_ingestion.ensure_filing_infotable_doc",
+        _must_not_fetch_infotable,
+    )
+
+    result = execute_job_payload(db_session, "ingest_holdings", {"quarter": "2025-Q4"})
+
+    assert result["notice_filings_processed"] == 1
+    assert result["filings_failed"] == 0
+    assert notice_calls[0]["form_type"] == "13F-NT"
+    assert result["filings_for_requested_quarter"] == 1
 
 
 def test_ingest_holdings_routing_needs_review_marks_partial_success(db_session, monkeypatch):

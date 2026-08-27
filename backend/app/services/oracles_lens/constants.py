@@ -35,7 +35,17 @@ from decimal import Decimal
 # If concurrent multi-version reads are needed before MVP5, expose
 # ``score_version`` as an admin-only query param on the read endpoints
 # first.
-SCORE_VERSION: str = "v1.0"
+SCORE_VERSION: str = "v1.1"
+
+# A stored score row contains more than one user-facing lens.  Keep the
+# user-facing thesis versions independent from the physical score-row version:
+# changing distinctive calibration must not pretend that the consensus thesis
+# changed (and vice versa).  These values are persisted in ``score_explanation``
+# and component evidence so an old research decision remains interpretable.
+CONSENSUS_LENS_VERSION: str = "consensus-v1.1"
+DISTINCTIVE_LENS_VERSION: str = "distinctive-v1.1"
+MANAGER_TAXONOMY_VERSION: str = "manager-taxonomy-v2.0"
+REPRESENTATIVENESS_POLICY_VERSION: str = "13f-representativeness-v1.0"
 
 
 # Plan §7.2 example weights, MVP4-11 D4. Keyed on the canonical

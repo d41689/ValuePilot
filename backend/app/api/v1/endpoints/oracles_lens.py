@@ -6,7 +6,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
-from app.api.deps import get_db
+from app.api.deps import OptionalCurrentUser, get_db
 from app.models.institutions import InstitutionManager
 from app.services.oracles_lens.dashboard import build_oracles_lens_dashboard
 from app.services.oracles_lens.manager_universe import (
@@ -42,6 +42,7 @@ def _superinvestor_universe_size(session: Session, *, superinvestor_only: bool) 
 
 @router.get("/oracles-lens", response_model=dict)
 def read_oracles_lens_dashboard(
+    current_user: OptionalCurrentUser,
     period: str | None = Query(None, description="13F period, e.g. 2025-Q4"),
     lookback_quarters: int = Query(4, ge=1, le=20),
     min_holders: int = Query(3, ge=1, le=50),
@@ -134,6 +135,7 @@ def read_oracles_lens_dashboard(
             use_persisted_scores=use_persisted_scores,
             manager_id_allowlist=allowlist,
             universe_metadata=universe_metadata,
+            user_id=current_user.id if current_user else None,
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc

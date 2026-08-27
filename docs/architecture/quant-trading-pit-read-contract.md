@@ -40,3 +40,23 @@ This contract is a **read-time as-of reconstruction**; it does NOT change the cu
 
 ## 6. Missing Data Handling
 If no qualifying fact exists at date **T**, the factor is considered **missing**. The engine must never default missing values to 0. Composite scores should check for partial indicators in `value_json['partial_score']` and apply the spec's missing-value policy (e.g., sector median imputation).
+
+## 7. 13F Filing and Amendment PIT Rule (H3)
+
+`active_hr_holdings_query` is the authority for the **current product snapshot**;
+it is not a historical PIT reader. For an H3 read as of T:
+
+1. require `filed_at <= T` (or the more precise `accepted_at <= T` when
+   populated); quarter end is never the availability timestamp;
+2. select the filing/amendment version whose authority was known at T, following
+   the amendment chain and coverage type as they existed then;
+3. select that accession's current successful parse version, bounded to the
+   parser/data version frozen for the research run;
+4. never back-project today's `is_active_for_manager_period=true` filing or a
+   later amendment into an earlier date;
+5. an incomplete current quarter is not a complete cross-section until its
+   official filing deadline/readiness policy has passed.
+
+The 2026-07-21 audit found 1,204 versioned successful filings and 49
+manager-quarters with multiple versions, so this is a material look-ahead trap,
+not a theoretical edge case.

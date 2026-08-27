@@ -4,7 +4,7 @@ from pathlib import Path
 import re
 from typing import Any, Optional
 
-from fastapi import APIRouter, UploadFile, File, HTTPException, Query, Body
+from fastapi import APIRouter, UploadFile, File, HTTPException, Query, Body, status
 from fastapi.responses import FileResponse
 from sqlalchemy import select, func, update
 import yaml
@@ -29,11 +29,13 @@ from app.ingestion.parsers.v1_value_line.page_json import (
 from app.services.active_report_resolver import resolve_active_reports
 from app.services.document_dedupe_service import DocumentDedupeService
 from app.services.ingestion_service import IngestionService
+from app.services.api_rate_limits import RateLimitExceeded, consume_user_operation
 from app.services.calculated_metrics.value_line_ratios import ValueLineRatioCalculator
 from app.services.calculated_metrics.piotroski_f_score import PiotroskiFScoreCalculator
 from app.models.artifacts import PdfDocument
 
 router = APIRouter()
+MAX_PDF_UPLOAD_BYTES = 10 * 1024 * 1024
 VALUE_LINE_TAXONOMY_PATH = next(
     (
         parent / "docs" / "value_line_field_taxonomy.yml"
@@ -268,7 +270,39 @@ def upload_document(
     if file.content_type != "application/pdf":
         raise HTTPException(status_code=400, detail="Only PDF files are supported.")
 
+    upload_size = file.size
+    if upload_size is None:
+        original_position = file.file.tell()
+        file.file.seek(0, 2)
+        upload_size = file.file.tell()
+        file.file.seek(original_position)
+    if upload_size > MAX_PDF_UPLOAD_BYTES:
+        raise HTTPException(
+            status_code=status.HTTP_413_CONTENT_TOO_LARGE,
+            detail={
+                "code": "pdf_too_large",
+                "message": "PDF exceeds the 10 MiB upload limit.",
+                "max_bytes": MAX_PDF_UPLOAD_BYTES,
+            },
+        )
+
     user_id = current_user.id
+    try:
+        consume_user_operation(
+            session,
+            user_id=user_id,
+            operation="document_upload",
+        )
+    except RateLimitExceeded as error:
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail={
+                "code": "rate_limit_exceeded",
+                "operation": error.operation,
+                "message": "Too many document uploads. Try again later.",
+            },
+            headers={"Retry-After": str(error.retry_after_seconds)},
+        ) from error
     service = IngestionService(session)
     try:
         doc, page_reports = service.process_upload(user_id, file)

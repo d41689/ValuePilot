@@ -8,6 +8,8 @@ Usage (from backend/):
   python -m app.cli.edgar match-cik
 """
 import logging
+import json
+from pathlib import Path
 import sys
 
 import typer
@@ -152,6 +154,54 @@ def sync_dataroma() -> None:
                 typer.echo(f"\n{label}:")
                 for e in entries:
                     typer.echo(f"  {e.dataroma_code:12s}  {e.name}")
+    finally:
+        db.close()
+
+
+@app.command()
+def reconcile_dataroma(
+    output: Path = typer.Option(
+        Path("/tmp/valuepilot-13f-dataroma-reconciliation.json"),
+        help="Machine-readable JSON report path.",
+    ),
+    manager_id: int | None = typer.Option(
+        None,
+        help="Optional ValuePilot manager id for a targeted run (default: all active managers).",
+    ),
+) -> None:
+    """Read-only Holdings / Activity / Buys / Sells / History reconciliation.
+
+    Dataroma is corroborating evidence only. This command never writes its
+    values into institution_managers, filings_13f, holdings_13f, or
+    ownership_changes. The only filesystem write is the requested audit file.
+    """
+    from app.services.thirteenf_dataroma_reconciliation import reconcile_all_managers
+
+    # Four hundred Rate Guard calls on an 80-manager run otherwise drown the
+    # actionable one-line audit result in httpx transport logs.
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+    db = SessionLocal()
+    try:
+        report = reconcile_all_managers(
+            db,
+            manager_ids={manager_id} if manager_id is not None else None,
+        )
+        db.rollback()
+        output.parent.mkdir(parents=True, exist_ok=True)
+        output.write_text(json.dumps(report, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+        counts = report["counts"]
+        typer.echo(
+            f"Reconciled {counts['managers_total']} managers: "
+            f"mapped={counts['managers_mapped']} unmapped={counts['managers_unmapped']} "
+            f"fetch_failed={counts['managers_fetch_failed']} "
+            f"differences={counts['differences_total']} "
+            f"suspected_valuepilot_defects={counts['suspected_valuepilot_defects']}"
+        )
+        typer.echo(f"Report: {output}")
+    except Exception as exc:
+        db.rollback()
+        typer.echo(f"Error: {exc}", err=True)
+        raise typer.Exit(1)
     finally:
         db.close()
 

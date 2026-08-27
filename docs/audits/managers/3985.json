@@ -1,0 +1,2270 @@
+{
+  "schema": "thirteenf_dataroma_reconciliation.v1",
+  "generated_at": "2026-07-19T15:17:00.592003+00:00",
+  "authority": "SEC/EDGAR via ValuePilot active filing and current parse run",
+  "corroborating_source": "Dataroma",
+  "counts": {
+    "managers_total": 1,
+    "managers_mapped": 1,
+    "managers_unmapped": 0,
+    "managers_fetch_failed": 0,
+    "managers_with_differences": 1,
+    "differences_total": 83,
+    "suspected_valuepilot_defects": 0,
+    "unclassified_material_differences": 0
+  },
+  "managers": [
+    {
+      "manager_id": 3985,
+      "cik": "0000813917",
+      "display_name": "Bill Nygren - Oakmark / Harris Associates",
+      "dataroma_code": "HA",
+      "status": "compared",
+      "source_urls": {
+        "holdings": "https://www.dataroma.com/m/holdings.php?m=HA",
+        "activity": "https://www.dataroma.com/m/m_activity.php?m=HA&typ=a",
+        "buys": "https://www.dataroma.com/m/m_activity.php?m=HA&typ=b",
+        "sells": "https://www.dataroma.com/m/m_activity.php?m=HA&typ=s",
+        "history": "https://www.dataroma.com/m/hist/p_hist.php?f=HA"
+      },
+      "differences": [
+        {
+          "scope": "dataroma_internal",
+          "field": "sells_filter",
+          "quarter": null,
+          "ticker": null,
+          "valuepilot": [
+            [
+              "2026-Q1",
+              "AAPL",
+              "reduce",
+              1.22,
+              1629,
+              0.0
+            ],
+            [
+              "2026-Q1",
+              "AIG",
+              "reduce",
+              6.99,
+              1547452,
+              0.16
+            ],
+            [
+              "2026-Q1",
+              "ALLY",
+              "reduce",
+              2.35,
+              635463,
+              0.03
+            ],
+            [
+              "2026-Q1",
+              "AMRZ",
+              "reduce",
+              0.31,
+              34780,
+              0.0
+            ],
+            [
+              "2026-Q1",
+              "AXP",
+              "reduce",
+              7.02,
+              15371,
+              0.01
+            ],
+            [
+              "2026-Q1",
+              "BAC",
+              "reduce",
+              4.76,
+              945541,
+              0.06
+            ],
+            [
+              "2026-Q1",
+              "BC",
+              "reduce",
+              8.3,
+              202188,
+              0.02
+            ],
+            [
+              "2026-Q1",
+              "BRK.B",
+              "reduce",
+              2.15,
+              560,
+              0.0
+            ],
+            [
+              "2026-Q1",
+              "C",
+              "reduce",
+              7.67,
+              770517,
+              0.12
+            ],
+            [
+              "2026-Q1",
+              "CBRE",
+              "reduce",
+              7.31,
+              506431,
+              0.09
+            ],
+            [
+              "2026-Q1",
+              "CCK",
+              "reduce",
+              0.78,
+              1505,
+              0.0
+            ],
+            [
+              "2026-Q1",
+              "CHTR",
+              "reduce",
+              8.19,
+              355779,
+              0.1
+            ],
+            [
+              "2026-Q1",
+              "CMCSA",
+              "reduce",
+              3.68,
+              1010365,
+              0.04
+            ],
+            [
+              "2026-Q1",
+              "COF",
+              "reduce",
+              4.32,
+              467648,
+              0.11
+            ],
+            [
+              "2026-Q1",
+              "CSL",
+              "reduce",
+              8.08,
+              443,
+              0.0
+            ],
+            [
+              "2026-Q1",
+              "CTVA",
+              "reduce",
+              2.17,
+              370088,
+              0.04
+            ],
+            [
+              "2026-Q1",
+              "CVS",
+              "reduce",
+              5.89,
+              30925,
+              0.0
+            ],
+            [
+              "2026-Q1",
+              "CWK",
+              "reduce",
+              5.04,
+              99933,
+              0.0
+            ],
+            [
+              "2026-Q1",
+              "DAL",
+              "reduce",
+              8.46,
+              1663561,
+              0.15
+            ],
+            [
+              "2026-Q1",
+              "DEO",
+              "reduce",
+              5.72,
+              200,
+              0.0
+            ],
+            [
+              "2026-Q1",
+              "EFX",
+              "reduce",
+              0.37,
+              28011,
+              0.01
+            ],
+            [
+              "2026-Q1",
+              "FBIN",
+              "reduce",
+              3.43,
+              262005,
+              0.01
+            ],
+            [
+              "2026-Q1",
+              "GEHC",
+              "reduce",
+              1.64,
+              259658,
+              0.02
+            ],
+            [
+              "2026-Q1",
+              "GOOG",
+              "reduce",
+              7.74,
+              74406,
+              0.03
+            ],
+            [
+              "2026-Q1",
+              "GOOGL",
+              "reduce",
+              5.88,
+              524637,
+              0.2
+            ],
+            [
+              "2026-Q1",
+              "JPM",
+              "reduce",
+              2.02,
+              120,
+              0.0
+            ],
+            [
+              "2026-Q1",
+              "KKR",
+              "reduce",
+              0.1,
+              378,
+              0.0
+            ],
+            [
+              "2026-Q1",
+              "LAD",
+              "reduce",
+              0.53,
+              10398,
+              0.0
+            ],
+            [
+              "2026-Q1",
+              "LBRDK",
+              "reduce",
+              2.9,
+              120167,
+              0.01
+            ],
+            [
+              "2026-Q1",
+              "MA",
+              "reduce",
+              0.35,
+              416,
+              0.0
+            ],
+            [
+              "2026-Q1",
+              "MCO",
+              "reduce",
+              2.21,
+              43,
+              0.0
+            ],
+            [
+              "2026-Q1",
+              "MSFT",
+              "reduce",
+              1.42,
+              97,
+              0.0
+            ],
+            [
+              "2026-Q1",
+              "NDAQ",
+              "reduce",
+              7.09,
+              611506,
+              0.07
+            ],
+            [
+              "2026-Q1",
+              "NKE",
+              "reduce",
+              1.21,
+              180623,
+              0.01
+            ],
+            [
+              "2026-Q1",
+              "NVDA",
+              "reduce",
+              5.22,
+              686,
+              0.0
+            ],
+            [
+              "2026-Q1",
+              "ORCL",
+              "reduce",
+              2.69,
+              20470,
+              0.0
+            ],
+            [
+              "2026-Q1",
+              "OSK",
+              "reduce",
+              4.26,
+              70,
+              0.0
+            ],
+            [
+              "2026-Q1",
+              "SCHW",
+              "reduce",
+              0.99,
+              219017,
+              0.03
+            ],
+            [
+              "2026-Q1",
+              "STT",
+              "reduce",
+              2.51,
+              158309,
+              0.03
+            ],
+            [
+              "2026-Q1",
+              "STZ",
+              "reduce",
+              0.03,
+              885,
+              0.0
+            ],
+            [
+              "2026-Q1",
+              "TFC",
+              "reduce",
+              1.61,
+              370,
+              0.0
+            ],
+            [
+              "2026-Q1",
+              "TXN",
+              "reduce",
+              1.56,
+              755,
+              0.0
+            ],
+            [
+              "2026-Q1",
+              "V",
+              "reduce",
+              2.46,
+              18084,
+              0.01
+            ],
+            [
+              "2026-Q1",
+              "WMG",
+              "reduce",
+              2.53,
+              41800,
+              0.0
+            ]
+          ],
+          "dataroma": [
+            [
+              "2026-Q1",
+              "AAPL",
+              "reduce",
+              1.22,
+              1629,
+              0.0
+            ],
+            [
+              "2026-Q1",
+              "ABT",
+              "sell",
+              100.0,
+              2046,
+              0.0
+            ],
+            [
+              "2026-Q1",
+              "ADP",
+              "sell",
+              100.0,
+              805,
+              0.0
+            ],
+            [
+              "2026-Q1",
+              "AIG",
+              "reduce",
+              6.99,
+              1547452,
+              0.16
+            ],
+            [
+              "2026-Q1",
+              "ALLY",
+              "reduce",
+              2.35,
+              635463,
+              0.03
+            ],
+            [
+              "2026-Q1",
+              "ALSN",
+              "reduce",
+              21.59,
+              146520,
+              0.02
+            ],
+            [
+              "2026-Q1",
+              "ALV",
+              "reduce",
+              8.81,
+              22515,
+              0.0
+            ],
+            [
+              "2026-Q1",
+              "AMD",
+              "sell",
+              100.0,
+              1530,
+              0.0
+            ],
+            [
+              "2026-Q1",
+              "AMRZ",
+              "reduce",
+              0.31,
+              34780,
+              0.0
+            ],
+            [
+              "2026-Q1",
+              "AON",
+              "sell",
+              100.0,
+              699,
+              0.0
+            ],
+            [
+              "2026-Q1",
+              "APA",
+              "sell",
+              100.0,
+              11644670,
+              0.36
+            ],
+            [
+              "2026-Q1",
+              "APTV",
+              "sell",
+              100.0,
+              38815,
+              0.0
+            ],
+            [
+              "2026-Q1",
+              "AXP",
+              "reduce",
+              7.02,
+              15371,
+              0.01
+            ],
+            [
+              "2026-Q1",
+              "AZN",
+              "sell",
+              100.0,
+              1864865,
+              0.44
+            ],
+            [
+              "2026-Q1",
+              "BAC",
+              "reduce",
+              4.76,
+              945541,
+              0.06
+            ],
+            [
+              "2026-Q1",
+              "BAX",
+              "sell",
+              100.0,
+              8445832,
+              0.2
+            ],
+            [
+              "2026-Q1",
+              "BC",
+              "reduce",
+              8.3,
+              202188,
+              0.02
+            ],
+            [
+              "2026-Q1",
+              "BDX",
+              "reduce",
+              21.81,
+              619682,
+              0.13
+            ],
+            [
+              "2026-Q1",
+              "BNY",
+              "reduce",
+              36.46,
+              24670,
+              0.01
+            ],
+            [
+              "2026-Q1",
+              "BRK.B",
+              "reduce",
+              2.15,
+              560,
+              0.0
+            ],
+            [
+              "2026-Q1",
+              "BWA",
+              "reduce",
+              83.84,
+              1151851,
+              0.1
+            ],
+            [
+              "2026-Q1",
+              "C",
+              "reduce",
+              7.67,
+              770517,
+              0.12
+            ],
+            [
+              "2026-Q1",
+              "CAT",
+              "reduce",
+              23.59,
+              568,
+              0.0
+            ],
+            [
+              "2026-Q1",
+              "CBRE",
+              "reduce",
+              7.31,
+              506431,
+              0.09
+            ],
+            [
+              "2026-Q1",
+              "CCK",
+              "reduce",
+              0.78,
+              1505,
+              0.0
+            ],
+            [
+              "2026-Q1",
+              "CE",
+              "sell",
+              100.0,
+              3401656,
+              0.18
+            ],
+            [
+              "2026-Q1",
+              "CHTR",
+              "reduce",
+              8.19,
+              355779,
+              0.1
+            ],
+            [
+              "2026-Q1",
+              "CMCSA",
+              "reduce",
+              3.68,
+              1010365,
+              0.04
+            ],
+            [
+              "2026-Q1",
+              "CNH",
+              "reduce",
+              20.83,
+              15293247,
+              0.22
+            ],
+            [
+              "2026-Q1",
+              "COF",
+              "reduce",
+              4.32,
+              467648,
+              0.11
+            ],
+            [
+              "2026-Q1",
+              "COP",
+              "reduce",
+              27.39,
+              6574096,
+              1.16
+            ],
+            [
+              "2026-Q1",
+              "COST",
+              "reduce",
+              44.82,
+              294,
+              0.0
+            ],
+            [
+              "2026-Q1",
+              "CSL",
+              "reduce",
+              8.08,
+              443,
+              0.0
+            ],
+            [
+              "2026-Q1",
+              "CSX",
+              "sell",
+              100.0,
+              194360,
+              0.01
+            ],
+            [
+              "2026-Q1",
+              "CTVA",
+              "reduce",
+              2.17,
+              370088,
+              0.04
+            ],
+            [
+              "2026-Q1",
+              "CVS",
+              "reduce",
+              5.89,
+              30925,
+              0.0
+            ],
+            [
+              "2026-Q1",
+              "CWK",
+              "reduce",
+              5.04,
+              99933,
+              0.0
+            ],
+            [
+              "2026-Q1",
+              "DAL",
+              "reduce",
+              8.46,
+              1663561,
+              0.15
+            ],
+            [
+              "2026-Q1",
+              "DE",
+              "reduce",
+              83.46,
+              2616555,
+              1.97
+            ],
+            [
+              "2026-Q1",
+              "DEO",
+              "reduce",
+              5.72,
+              200,
+              0.0
+            ],
+            [
+              "2026-Q1",
+              "DHR",
+              "reduce",
+              18.71,
+              423,
+              0.0
+            ],
+            [
+              "2026-Q1",
+              "DIS",
+              "sell",
+              100.0,
+              1810,
+              0.0
+            ],
+            [
+              "2026-Q1",
+              "EFX",
+              "reduce",
+              0.37,
+              28011,
+              0.01
+            ],
+            [
+              "2026-Q1",
+              "EOG",
+              "reduce",
+              43.96,
+              3241054,
+              0.63
+            ],
+            [
+              "2026-Q1",
+              "FBIN",
+              "reduce",
+              3.43,
+              262005,
+              0.01
+            ],
+            [
+              "2026-Q1",
+              "FMX",
+              "reduce",
+              17.05,
+              461096,
+              0.07
+            ],
+            [
+              "2026-Q1",
+              "GEHC",
+              "reduce",
+              1.64,
+              259658,
+              0.02
+            ],
+            [
+              "2026-Q1",
+              "GM",
+              "reduce",
+              22.69,
+              3950036,
+              0.39
+            ],
+            [
+              "2026-Q1",
+              "GOOG",
+              "reduce",
+              7.74,
+              74406,
+              0.03
+            ],
+            [
+              "2026-Q1",
+              "GOOGL",
+              "reduce",
+              5.88,
+              524637,
+              0.2
+            ],
+            [
+              "2026-Q1",
+              "GPC",
+              "reduce",
+              9.5,
+              413007,
+              0.06
+            ],
+            [
+              "2026-Q1",
+              "GRFS",
+              "reduce",
+              32.26,
+              867433,
+              0.01
+            ],
+            [
+              "2026-Q1",
+              "GS",
+              "reduce",
+              13.33,
+              4406,
+              0.0
+            ],
+            [
+              "2026-Q1",
+              "HCA",
+              "reduce",
+              12.65,
+              22899,
+              0.01
+            ],
+            [
+              "2026-Q1",
+              "HLT",
+              "reduce",
+              16.4,
+              18769,
+              0.01
+            ],
+            [
+              "2026-Q1",
+              "HRI",
+              "reduce",
+              36.73,
+              2610,
+              0.0
+            ],
+            [
+              "2026-Q1",
+              "JCI",
+              "reduce",
+              9.98,
+              815,
+              0.0
+            ],
+            [
+              "2026-Q1",
+              "JPM",
+              "reduce",
+              2.02,
+              120,
+              0.0
+            ],
+            [
+              "2026-Q1",
+              "KAR",
+              "reduce",
+              58.46,
+              803958,
+              0.03
+            ],
+            [
+              "2026-Q1",
+              "KKR",
+              "reduce",
+              0.1,
+              378,
+              0.0
+            ],
+            [
+              "2026-Q1",
+              "LAD",
+              "reduce",
+              0.53,
+              10398,
+              0.0
+            ],
+            [
+              "2026-Q1",
+              "LBRDK",
+              "reduce",
+              2.9,
+              120167,
+              0.01
+            ],
+            [
+              "2026-Q1",
+              "LEA",
+              "reduce",
+              47.58,
+              10825,
+              0.0
+            ],
+            [
+              "2026-Q1",
+              "MA",
+              "reduce",
+              0.35,
+              416,
+              0.0
+            ],
+            [
+              "2026-Q1",
+              "MAS",
+              "reduce",
+              25.26,
+              2905177,
+              0.23
+            ],
+            [
+              "2026-Q1",
+              "MCO",
+              "reduce",
+              2.21,
+              43,
+              0.0
+            ],
+            [
+              "2026-Q1",
+              "MGA",
+              "sell",
+              100.0,
+              206680,
+              0.01
+            ],
+            [
+              "2026-Q1",
+              "MOH",
+              "reduce",
+              58.31,
+              1368290,
+              0.24
+            ],
+            [
+              "2026-Q1",
+              "MPC",
+              "reduce",
+              30.41,
+              1225990,
+              0.4
+            ],
+            [
+              "2026-Q1",
+              "MRK",
+              "reduce",
+              12.22,
+              1721772,
+              0.28
+            ],
+            [
+              "2026-Q1",
+              "MSFT",
+              "reduce",
+              1.42,
+              97,
+              0.0
+            ],
+            [
+              "2026-Q1",
+              "NDAQ",
+              "reduce",
+              7.09,
+              611506,
+              0.07
+            ],
+            [
+              "2026-Q1",
+              "NKE",
+              "reduce",
+              1.21,
+              180623,
+              0.01
+            ],
+            [
+              "2026-Q1",
+              "NVDA",
+              "reduce",
+              5.22,
+              686,
+              0.0
+            ],
+            [
+              "2026-Q1",
+              "NVST",
+              "reduce",
+              29.78,
+              1383664,
+              0.05
+            ],
+            [
+              "2026-Q1",
+              "OMC",
+              "sell",
+              100.0,
+              61340,
+              0.01
+            ],
+            [
+              "2026-Q1",
+              "ORCL",
+              "reduce",
+              2.69,
+              20470,
+              0.0
+            ],
+            [
+              "2026-Q1",
+              "OSK",
+              "reduce",
+              4.26,
+              70,
+              0.0
+            ],
+            [
+              "2026-Q1",
+              "PEP",
+              "reduce",
+              21.61,
+              459,
+              0.0
+            ],
+            [
+              "2026-Q1",
+              "PG",
+              "reduce",
+              21.24,
+              403,
+              0.0
+            ],
+            [
+              "2026-Q1",
+              "PSX",
+              "reduce",
+              34.65,
+              4844064,
+              1.18
+            ],
+            [
+              "2026-Q1",
+              "RYAAY",
+              "reduce",
+              62.12,
+              1387576,
+              0.11
+            ],
+            [
+              "2026-Q1",
+              "SCHW",
+              "reduce",
+              0.99,
+              219017,
+              0.03
+            ],
+            [
+              "2026-Q1",
+              "SEE.OLD",
+              "reduce",
+              66.41,
+              2527604,
+              0.14
+            ],
+            [
+              "2026-Q1",
+              "STT",
+              "reduce",
+              2.51,
+              158309,
+              0.03
+            ],
+            [
+              "2026-Q1",
+              "STZ",
+              "reduce",
+              0.03,
+              885,
+              0.0
+            ],
+            [
+              "2026-Q1",
+              "TEL",
+              "reduce",
+              12.81,
+              413792,
+              0.12
+            ],
+            [
+              "2026-Q1",
+              "TFC",
+              "reduce",
+              1.61,
+              370,
+              0.0
+            ],
+            [
+              "2026-Q1",
+              "THO",
+              "reduce",
+              9.28,
+              98408,
+              0.01
+            ],
+            [
+              "2026-Q1",
+              "TRGP",
+              "reduce",
+              10.35,
+              1006722,
+              0.34
+            ],
+            [
+              "2026-Q1",
+              "TXN",
+              "reduce",
+              1.56,
+              755,
+              0.0
+            ],
+            [
+              "2026-Q1",
+              "V",
+              "reduce",
+              2.46,
+              18084,
+              0.01
+            ],
+            [
+              "2026-Q1",
+              "VTV",
+              "reduce",
+              87.05,
+              17287,
+              0.0
+            ],
+            [
+              "2026-Q1",
+              "WBD",
+              "reduce",
+              58.31,
+              45980770,
+              1.69
+            ],
+            [
+              "2026-Q1",
+              "WEN",
+              "reduce",
+              40.5,
+              4036304,
+              0.04
+            ],
+            [
+              "2026-Q1",
+              "WFC",
+              "reduce",
+              14.88,
+              1920422,
+              0.2
+            ],
+            [
+              "2026-Q1",
+              "WMG",
+              "reduce",
+              2.53,
+              41800,
+              0.0
+            ],
+            [
+              "2026-Q1",
+              "WMT",
+              "reduce",
+              40.77,
+              1432,
+              0.0
+            ],
+            [
+              "2026-Q1",
+              "XOM",
+              "reduce",
+              25.43,
+              500,
+              0.0
+            ],
+            [
+              "2026-Q1",
+              "ZGN",
+              "reduce",
+              9.38,
+              301500,
+              0.0
+            ]
+          ],
+          "classification": "dataroma_page_inconsistency",
+          "valuepilot_defect": false,
+          "severity": "warning",
+          "explanation": "Dataroma's filtered page does not equal its Activity page over their shared quarter window."
+        },
+        {
+          "scope": "holdings",
+          "field": "unlinked_position_count",
+          "quarter": "2026-Q1",
+          "ticker": null,
+          "valuepilot": 2,
+          "dataroma": 0,
+          "classification": "identity_coverage_gap",
+          "valuepilot_defect": null,
+          "severity": "warning",
+          "explanation": "ValuePilot has common holdings whose CUSIPs remain unresolved or under review after authoritative enrichment; they cannot be reconciled by ticker without guessing from Dataroma."
+        },
+        {
+          "scope": "holdings",
+          "field": "position_presence",
+          "quarter": "2026-Q1",
+          "ticker": "KAR",
+          "valuepilot": "missing",
+          "dataroma": "present",
+          "classification": "identity_or_coverage",
+          "valuepilot_defect": null,
+          "severity": "error",
+          "explanation": "A ticker exists in only one normalized holdings set; inspect SEC row identity, options, amendments, and Dataroma policy."
+        },
+        {
+          "scope": "holdings",
+          "field": "position_presence",
+          "quarter": "2026-Q1",
+          "ticker": "NUV",
+          "valuepilot": "missing",
+          "dataroma": "present",
+          "classification": "identity_or_coverage",
+          "valuepilot_defect": null,
+          "severity": "error",
+          "explanation": "A ticker exists in only one normalized holdings set; inspect SEC row identity, options, amendments, and Dataroma policy."
+        },
+        {
+          "scope": "holdings",
+          "field": "position_presence",
+          "quarter": "2026-Q1",
+          "ticker": "OPLN",
+          "valuepilot": "present",
+          "dataroma": "missing",
+          "classification": "identity_or_coverage",
+          "valuepilot_defect": null,
+          "severity": "error",
+          "explanation": "A ticker exists in only one normalized holdings set; inspect SEC row identity, options, amendments, and Dataroma policy."
+        },
+        {
+          "scope": "holdings",
+          "field": "position_presence",
+          "quarter": "2026-Q1",
+          "ticker": "SEE.OLD",
+          "valuepilot": "missing",
+          "dataroma": "present",
+          "classification": "identity_or_coverage",
+          "valuepilot_defect": null,
+          "severity": "error",
+          "explanation": "A ticker exists in only one normalized holdings set; inspect SEC row identity, options, amendments, and Dataroma policy."
+        },
+        {
+          "scope": "activity",
+          "field": "position_presence",
+          "quarter": "2026-Q1",
+          "ticker": "ABT",
+          "valuepilot": "present",
+          "dataroma": "missing",
+          "classification": "dataroma_page_limit",
+          "valuepilot_defect": false,
+          "severity": "info",
+          "explanation": "ValuePilot has an activity row omitted from Dataroma's 100-row capped Activity page."
+        },
+        {
+          "scope": "activity",
+          "field": "position_presence",
+          "quarter": "2026-Q1",
+          "ticker": "ADP",
+          "valuepilot": "present",
+          "dataroma": "missing",
+          "classification": "dataroma_page_limit",
+          "valuepilot_defect": false,
+          "severity": "info",
+          "explanation": "ValuePilot has an activity row omitted from Dataroma's 100-row capped Activity page."
+        },
+        {
+          "scope": "activity",
+          "field": "position_presence",
+          "quarter": "2026-Q1",
+          "ticker": "ALSN",
+          "valuepilot": "present",
+          "dataroma": "missing",
+          "classification": "dataroma_page_limit",
+          "valuepilot_defect": false,
+          "severity": "info",
+          "explanation": "ValuePilot has an activity row omitted from Dataroma's 100-row capped Activity page."
+        },
+        {
+          "scope": "activity",
+          "field": "position_presence",
+          "quarter": "2026-Q1",
+          "ticker": "ALV",
+          "valuepilot": "present",
+          "dataroma": "missing",
+          "classification": "dataroma_page_limit",
+          "valuepilot_defect": false,
+          "severity": "info",
+          "explanation": "ValuePilot has an activity row omitted from Dataroma's 100-row capped Activity page."
+        },
+        {
+          "scope": "activity",
+          "field": "position_presence",
+          "quarter": "2026-Q1",
+          "ticker": "AMD",
+          "valuepilot": "present",
+          "dataroma": "missing",
+          "classification": "dataroma_page_limit",
+          "valuepilot_defect": false,
+          "severity": "info",
+          "explanation": "ValuePilot has an activity row omitted from Dataroma's 100-row capped Activity page."
+        },
+        {
+          "scope": "activity",
+          "field": "position_presence",
+          "quarter": "2026-Q1",
+          "ticker": "AON",
+          "valuepilot": "present",
+          "dataroma": "missing",
+          "classification": "dataroma_page_limit",
+          "valuepilot_defect": false,
+          "severity": "info",
+          "explanation": "ValuePilot has an activity row omitted from Dataroma's 100-row capped Activity page."
+        },
+        {
+          "scope": "activity",
+          "field": "position_presence",
+          "quarter": "2026-Q1",
+          "ticker": "APA",
+          "valuepilot": "present",
+          "dataroma": "missing",
+          "classification": "dataroma_page_limit",
+          "valuepilot_defect": false,
+          "severity": "info",
+          "explanation": "ValuePilot has an activity row omitted from Dataroma's 100-row capped Activity page."
+        },
+        {
+          "scope": "activity",
+          "field": "position_presence",
+          "quarter": "2026-Q1",
+          "ticker": "APTV",
+          "valuepilot": "present",
+          "dataroma": "missing",
+          "classification": "dataroma_page_limit",
+          "valuepilot_defect": false,
+          "severity": "info",
+          "explanation": "ValuePilot has an activity row omitted from Dataroma's 100-row capped Activity page."
+        },
+        {
+          "scope": "activity",
+          "field": "position_presence",
+          "quarter": "2026-Q1",
+          "ticker": "BAX",
+          "valuepilot": "present",
+          "dataroma": "missing",
+          "classification": "dataroma_page_limit",
+          "valuepilot_defect": false,
+          "severity": "info",
+          "explanation": "ValuePilot has an activity row omitted from Dataroma's 100-row capped Activity page."
+        },
+        {
+          "scope": "activity",
+          "field": "position_presence",
+          "quarter": "2026-Q1",
+          "ticker": "BDX",
+          "valuepilot": "present",
+          "dataroma": "missing",
+          "classification": "dataroma_page_limit",
+          "valuepilot_defect": false,
+          "severity": "info",
+          "explanation": "ValuePilot has an activity row omitted from Dataroma's 100-row capped Activity page."
+        },
+        {
+          "scope": "activity",
+          "field": "position_presence",
+          "quarter": "2026-Q1",
+          "ticker": "BNY",
+          "valuepilot": "present",
+          "dataroma": "missing",
+          "classification": "dataroma_page_limit",
+          "valuepilot_defect": false,
+          "severity": "info",
+          "explanation": "ValuePilot has an activity row omitted from Dataroma's 100-row capped Activity page."
+        },
+        {
+          "scope": "activity",
+          "field": "position_presence",
+          "quarter": "2026-Q1",
+          "ticker": "BWA",
+          "valuepilot": "present",
+          "dataroma": "missing",
+          "classification": "dataroma_page_limit",
+          "valuepilot_defect": false,
+          "severity": "info",
+          "explanation": "ValuePilot has an activity row omitted from Dataroma's 100-row capped Activity page."
+        },
+        {
+          "scope": "activity",
+          "field": "position_presence",
+          "quarter": "2026-Q1",
+          "ticker": "CAT",
+          "valuepilot": "present",
+          "dataroma": "missing",
+          "classification": "dataroma_page_limit",
+          "valuepilot_defect": false,
+          "severity": "info",
+          "explanation": "ValuePilot has an activity row omitted from Dataroma's 100-row capped Activity page."
+        },
+        {
+          "scope": "activity",
+          "field": "position_presence",
+          "quarter": "2026-Q1",
+          "ticker": "CE",
+          "valuepilot": "present",
+          "dataroma": "missing",
+          "classification": "dataroma_page_limit",
+          "valuepilot_defect": false,
+          "severity": "info",
+          "explanation": "ValuePilot has an activity row omitted from Dataroma's 100-row capped Activity page."
+        },
+        {
+          "scope": "activity",
+          "field": "position_presence",
+          "quarter": "2026-Q1",
+          "ticker": "CNH",
+          "valuepilot": "present",
+          "dataroma": "missing",
+          "classification": "dataroma_page_limit",
+          "valuepilot_defect": false,
+          "severity": "info",
+          "explanation": "ValuePilot has an activity row omitted from Dataroma's 100-row capped Activity page."
+        },
+        {
+          "scope": "activity",
+          "field": "position_presence",
+          "quarter": "2026-Q1",
+          "ticker": "COP",
+          "valuepilot": "present",
+          "dataroma": "missing",
+          "classification": "dataroma_page_limit",
+          "valuepilot_defect": false,
+          "severity": "info",
+          "explanation": "ValuePilot has an activity row omitted from Dataroma's 100-row capped Activity page."
+        },
+        {
+          "scope": "activity",
+          "field": "position_presence",
+          "quarter": "2026-Q1",
+          "ticker": "COST",
+          "valuepilot": "present",
+          "dataroma": "missing",
+          "classification": "dataroma_page_limit",
+          "valuepilot_defect": false,
+          "severity": "info",
+          "explanation": "ValuePilot has an activity row omitted from Dataroma's 100-row capped Activity page."
+        },
+        {
+          "scope": "activity",
+          "field": "position_presence",
+          "quarter": "2026-Q1",
+          "ticker": "CSX",
+          "valuepilot": "present",
+          "dataroma": "missing",
+          "classification": "dataroma_page_limit",
+          "valuepilot_defect": false,
+          "severity": "info",
+          "explanation": "ValuePilot has an activity row omitted from Dataroma's 100-row capped Activity page."
+        },
+        {
+          "scope": "activity",
+          "field": "position_presence",
+          "quarter": "2026-Q1",
+          "ticker": "DE",
+          "valuepilot": "present",
+          "dataroma": "missing",
+          "classification": "dataroma_page_limit",
+          "valuepilot_defect": false,
+          "severity": "info",
+          "explanation": "ValuePilot has an activity row omitted from Dataroma's 100-row capped Activity page."
+        },
+        {
+          "scope": "activity",
+          "field": "position_presence",
+          "quarter": "2026-Q1",
+          "ticker": "DHR",
+          "valuepilot": "present",
+          "dataroma": "missing",
+          "classification": "dataroma_page_limit",
+          "valuepilot_defect": false,
+          "severity": "info",
+          "explanation": "ValuePilot has an activity row omitted from Dataroma's 100-row capped Activity page."
+        },
+        {
+          "scope": "activity",
+          "field": "position_presence",
+          "quarter": "2026-Q1",
+          "ticker": "DIS",
+          "valuepilot": "present",
+          "dataroma": "missing",
+          "classification": "dataroma_page_limit",
+          "valuepilot_defect": false,
+          "severity": "info",
+          "explanation": "ValuePilot has an activity row omitted from Dataroma's 100-row capped Activity page."
+        },
+        {
+          "scope": "activity",
+          "field": "position_presence",
+          "quarter": "2026-Q1",
+          "ticker": "EOG",
+          "valuepilot": "present",
+          "dataroma": "missing",
+          "classification": "dataroma_page_limit",
+          "valuepilot_defect": false,
+          "severity": "info",
+          "explanation": "ValuePilot has an activity row omitted from Dataroma's 100-row capped Activity page."
+        },
+        {
+          "scope": "activity",
+          "field": "position_presence",
+          "quarter": "2026-Q1",
+          "ticker": "EUFN",
+          "valuepilot": "present",
+          "dataroma": "missing",
+          "classification": "dataroma_page_limit",
+          "valuepilot_defect": false,
+          "severity": "info",
+          "explanation": "ValuePilot has an activity row omitted from Dataroma's 100-row capped Activity page."
+        },
+        {
+          "scope": "activity",
+          "field": "position_presence",
+          "quarter": "2026-Q1",
+          "ticker": "FMX",
+          "valuepilot": "present",
+          "dataroma": "missing",
+          "classification": "dataroma_page_limit",
+          "valuepilot_defect": false,
+          "severity": "info",
+          "explanation": "ValuePilot has an activity row omitted from Dataroma's 100-row capped Activity page."
+        },
+        {
+          "scope": "activity",
+          "field": "position_presence",
+          "quarter": "2026-Q1",
+          "ticker": "GM",
+          "valuepilot": "present",
+          "dataroma": "missing",
+          "classification": "dataroma_page_limit",
+          "valuepilot_defect": false,
+          "severity": "info",
+          "explanation": "ValuePilot has an activity row omitted from Dataroma's 100-row capped Activity page."
+        },
+        {
+          "scope": "activity",
+          "field": "position_presence",
+          "quarter": "2026-Q1",
+          "ticker": "GPC",
+          "valuepilot": "present",
+          "dataroma": "missing",
+          "classification": "dataroma_page_limit",
+          "valuepilot_defect": false,
+          "severity": "info",
+          "explanation": "ValuePilot has an activity row omitted from Dataroma's 100-row capped Activity page."
+        },
+        {
+          "scope": "activity",
+          "field": "position_presence",
+          "quarter": "2026-Q1",
+          "ticker": "GRFS",
+          "valuepilot": "present",
+          "dataroma": "missing",
+          "classification": "dataroma_page_limit",
+          "valuepilot_defect": false,
+          "severity": "info",
+          "explanation": "ValuePilot has an activity row omitted from Dataroma's 100-row capped Activity page."
+        },
+        {
+          "scope": "activity",
+          "field": "position_presence",
+          "quarter": "2026-Q1",
+          "ticker": "GS",
+          "valuepilot": "present",
+          "dataroma": "missing",
+          "classification": "dataroma_page_limit",
+          "valuepilot_defect": false,
+          "severity": "info",
+          "explanation": "ValuePilot has an activity row omitted from Dataroma's 100-row capped Activity page."
+        },
+        {
+          "scope": "activity",
+          "field": "position_presence",
+          "quarter": "2026-Q1",
+          "ticker": "HCA",
+          "valuepilot": "present",
+          "dataroma": "missing",
+          "classification": "dataroma_page_limit",
+          "valuepilot_defect": false,
+          "severity": "info",
+          "explanation": "ValuePilot has an activity row omitted from Dataroma's 100-row capped Activity page."
+        },
+        {
+          "scope": "activity",
+          "field": "position_presence",
+          "quarter": "2026-Q1",
+          "ticker": "HDB",
+          "valuepilot": "present",
+          "dataroma": "missing",
+          "classification": "dataroma_page_limit",
+          "valuepilot_defect": false,
+          "severity": "info",
+          "explanation": "ValuePilot has an activity row omitted from Dataroma's 100-row capped Activity page."
+        },
+        {
+          "scope": "activity",
+          "field": "position_presence",
+          "quarter": "2026-Q1",
+          "ticker": "HHH",
+          "valuepilot": "present",
+          "dataroma": "missing",
+          "classification": "dataroma_page_limit",
+          "valuepilot_defect": false,
+          "severity": "info",
+          "explanation": "ValuePilot has an activity row omitted from Dataroma's 100-row capped Activity page."
+        },
+        {
+          "scope": "activity",
+          "field": "position_presence",
+          "quarter": "2026-Q1",
+          "ticker": "HLT",
+          "valuepilot": "present",
+          "dataroma": "missing",
+          "classification": "dataroma_page_limit",
+          "valuepilot_defect": false,
+          "severity": "info",
+          "explanation": "ValuePilot has an activity row omitted from Dataroma's 100-row capped Activity page."
+        },
+        {
+          "scope": "activity",
+          "field": "position_presence",
+          "quarter": "2026-Q1",
+          "ticker": "HRI",
+          "valuepilot": "present",
+          "dataroma": "missing",
+          "classification": "dataroma_page_limit",
+          "valuepilot_defect": false,
+          "severity": "info",
+          "explanation": "ValuePilot has an activity row omitted from Dataroma's 100-row capped Activity page."
+        },
+        {
+          "scope": "activity",
+          "field": "position_presence",
+          "quarter": "2026-Q1",
+          "ticker": "IEUR",
+          "valuepilot": "present",
+          "dataroma": "missing",
+          "classification": "dataroma_page_limit",
+          "valuepilot_defect": false,
+          "severity": "info",
+          "explanation": "ValuePilot has an activity row omitted from Dataroma's 100-row capped Activity page."
+        },
+        {
+          "scope": "activity",
+          "field": "position_presence",
+          "quarter": "2026-Q1",
+          "ticker": "INDA",
+          "valuepilot": "present",
+          "dataroma": "missing",
+          "classification": "dataroma_page_limit",
+          "valuepilot_defect": false,
+          "severity": "info",
+          "explanation": "ValuePilot has an activity row omitted from Dataroma's 100-row capped Activity page."
+        },
+        {
+          "scope": "activity",
+          "field": "position_presence",
+          "quarter": "2026-Q1",
+          "ticker": "JCI",
+          "valuepilot": "present",
+          "dataroma": "missing",
+          "classification": "dataroma_page_limit",
+          "valuepilot_defect": false,
+          "severity": "info",
+          "explanation": "ValuePilot has an activity row omitted from Dataroma's 100-row capped Activity page."
+        },
+        {
+          "scope": "activity",
+          "field": "position_presence",
+          "quarter": "2026-Q1",
+          "ticker": "KR",
+          "valuepilot": "present",
+          "dataroma": "missing",
+          "classification": "dataroma_page_limit",
+          "valuepilot_defect": false,
+          "severity": "info",
+          "explanation": "ValuePilot has an activity row omitted from Dataroma's 100-row capped Activity page."
+        },
+        {
+          "scope": "activity",
+          "field": "position_presence",
+          "quarter": "2026-Q1",
+          "ticker": "LEA",
+          "valuepilot": "present",
+          "dataroma": "missing",
+          "classification": "dataroma_page_limit",
+          "valuepilot_defect": false,
+          "severity": "info",
+          "explanation": "ValuePilot has an activity row omitted from Dataroma's 100-row capped Activity page."
+        },
+        {
+          "scope": "activity",
+          "field": "position_presence",
+          "quarter": "2026-Q1",
+          "ticker": "MAS",
+          "valuepilot": "present",
+          "dataroma": "missing",
+          "classification": "dataroma_page_limit",
+          "valuepilot_defect": false,
+          "severity": "info",
+          "explanation": "ValuePilot has an activity row omitted from Dataroma's 100-row capped Activity page."
+        },
+        {
+          "scope": "activity",
+          "field": "position_presence",
+          "quarter": "2026-Q1",
+          "ticker": "MBC",
+          "valuepilot": "present",
+          "dataroma": "missing",
+          "classification": "dataroma_page_limit",
+          "valuepilot_defect": false,
+          "severity": "info",
+          "explanation": "ValuePilot has an activity row omitted from Dataroma's 100-row capped Activity page."
+        },
+        {
+          "scope": "activity",
+          "field": "position_presence",
+          "quarter": "2026-Q1",
+          "ticker": "MCD",
+          "valuepilot": "present",
+          "dataroma": "missing",
+          "classification": "dataroma_page_limit",
+          "valuepilot_defect": false,
+          "severity": "info",
+          "explanation": "ValuePilot has an activity row omitted from Dataroma's 100-row capped Activity page."
+        },
+        {
+          "scope": "activity",
+          "field": "position_presence",
+          "quarter": "2026-Q1",
+          "ticker": "MGA",
+          "valuepilot": "present",
+          "dataroma": "missing",
+          "classification": "dataroma_page_limit",
+          "valuepilot_defect": false,
+          "severity": "info",
+          "explanation": "ValuePilot has an activity row omitted from Dataroma's 100-row capped Activity page."
+        },
+        {
+          "scope": "activity",
+          "field": "position_presence",
+          "quarter": "2026-Q1",
+          "ticker": "MOH",
+          "valuepilot": "present",
+          "dataroma": "missing",
+          "classification": "dataroma_page_limit",
+          "valuepilot_defect": false,
+          "severity": "info",
+          "explanation": "ValuePilot has an activity row omitted from Dataroma's 100-row capped Activity page."
+        },
+        {
+          "scope": "activity",
+          "field": "position_presence",
+          "quarter": "2026-Q1",
+          "ticker": "MPC",
+          "valuepilot": "present",
+          "dataroma": "missing",
+          "classification": "dataroma_page_limit",
+          "valuepilot_defect": false,
+          "severity": "info",
+          "explanation": "ValuePilot has an activity row omitted from Dataroma's 100-row capped Activity page."
+        },
+        {
+          "scope": "activity",
+          "field": "position_presence",
+          "quarter": "2026-Q1",
+          "ticker": "MRK",
+          "valuepilot": "present",
+          "dataroma": "missing",
+          "classification": "dataroma_page_limit",
+          "valuepilot_defect": false,
+          "severity": "info",
+          "explanation": "ValuePilot has an activity row omitted from Dataroma's 100-row capped Activity page."
+        },
+        {
+          "scope": "activity",
+          "field": "position_presence",
+          "quarter": "2026-Q1",
+          "ticker": "NVST",
+          "valuepilot": "present",
+          "dataroma": "missing",
+          "classification": "dataroma_page_limit",
+          "valuepilot_defect": false,
+          "severity": "info",
+          "explanation": "ValuePilot has an activity row omitted from Dataroma's 100-row capped Activity page."
+        },
+        {
+          "scope": "activity",
+          "field": "position_presence",
+          "quarter": "2026-Q1",
+          "ticker": "OMC",
+          "valuepilot": "present",
+          "dataroma": "missing",
+          "classification": "dataroma_page_limit",
+          "valuepilot_defect": false,
+          "severity": "info",
+          "explanation": "ValuePilot has an activity row omitted from Dataroma's 100-row capped Activity page."
+        },
+        {
+          "scope": "activity",
+          "field": "position_presence",
+          "quarter": "2026-Q1",
+          "ticker": "OPLN",
+          "valuepilot": "present",
+          "dataroma": "missing",
+          "classification": "dataroma_page_limit",
+          "valuepilot_defect": false,
+          "severity": "info",
+          "explanation": "ValuePilot has an activity row omitted from Dataroma's 100-row capped Activity page."
+        },
+        {
+          "scope": "activity",
+          "field": "position_presence",
+          "quarter": "2026-Q1",
+          "ticker": "PANW",
+          "valuepilot": "present",
+          "dataroma": "missing",
+          "classification": "dataroma_page_limit",
+          "valuepilot_defect": false,
+          "severity": "info",
+          "explanation": "ValuePilot has an activity row omitted from Dataroma's 100-row capped Activity page."
+        },
+        {
+          "scope": "activity",
+          "field": "position_presence",
+          "quarter": "2026-Q1",
+          "ticker": "PEP",
+          "valuepilot": "present",
+          "dataroma": "missing",
+          "classification": "dataroma_page_limit",
+          "valuepilot_defect": false,
+          "severity": "info",
+          "explanation": "ValuePilot has an activity row omitted from Dataroma's 100-row capped Activity page."
+        },
+        {
+          "scope": "activity",
+          "field": "position_presence",
+          "quarter": "2026-Q1",
+          "ticker": "PG",
+          "valuepilot": "present",
+          "dataroma": "missing",
+          "classification": "dataroma_page_limit",
+          "valuepilot_defect": false,
+          "severity": "info",
+          "explanation": "ValuePilot has an activity row omitted from Dataroma's 100-row capped Activity page."
+        },
+        {
+          "scope": "activity",
+          "field": "position_presence",
+          "quarter": "2026-Q1",
+          "ticker": "PSX",
+          "valuepilot": "present",
+          "dataroma": "missing",
+          "classification": "dataroma_page_limit",
+          "valuepilot_defect": false,
+          "severity": "info",
+          "explanation": "ValuePilot has an activity row omitted from Dataroma's 100-row capped Activity page."
+        },
+        {
+          "scope": "activity",
+          "field": "position_presence",
+          "quarter": "2026-Q1",
+          "ticker": "PUK",
+          "valuepilot": "present",
+          "dataroma": "missing",
+          "classification": "dataroma_page_limit",
+          "valuepilot_defect": false,
+          "severity": "info",
+          "explanation": "ValuePilot has an activity row omitted from Dataroma's 100-row capped Activity page."
+        },
+        {
+          "scope": "activity",
+          "field": "position_presence",
+          "quarter": "2026-Q1",
+          "ticker": "RYAAY",
+          "valuepilot": "present",
+          "dataroma": "missing",
+          "classification": "dataroma_page_limit",
+          "valuepilot_defect": false,
+          "severity": "info",
+          "explanation": "ValuePilot has an activity row omitted from Dataroma's 100-row capped Activity page."
+        },
+        {
+          "scope": "activity",
+          "field": "position_presence",
+          "quarter": "2026-Q1",
+          "ticker": "TEL",
+          "valuepilot": "present",
+          "dataroma": "missing",
+          "classification": "dataroma_page_limit",
+          "valuepilot_defect": false,
+          "severity": "info",
+          "explanation": "ValuePilot has an activity row omitted from Dataroma's 100-row capped Activity page."
+        },
+        {
+          "scope": "activity",
+          "field": "position_presence",
+          "quarter": "2026-Q1",
+          "ticker": "THO",
+          "valuepilot": "present",
+          "dataroma": "missing",
+          "classification": "dataroma_page_limit",
+          "valuepilot_defect": false,
+          "severity": "info",
+          "explanation": "ValuePilot has an activity row omitted from Dataroma's 100-row capped Activity page."
+        },
+        {
+          "scope": "activity",
+          "field": "position_presence",
+          "quarter": "2026-Q1",
+          "ticker": "TMO",
+          "valuepilot": "present",
+          "dataroma": "missing",
+          "classification": "dataroma_page_limit",
+          "valuepilot_defect": false,
+          "severity": "info",
+          "explanation": "ValuePilot has an activity row omitted from Dataroma's 100-row capped Activity page."
+        },
+        {
+          "scope": "activity",
+          "field": "position_presence",
+          "quarter": "2026-Q1",
+          "ticker": "TRGP",
+          "valuepilot": "present",
+          "dataroma": "missing",
+          "classification": "dataroma_page_limit",
+          "valuepilot_defect": false,
+          "severity": "info",
+          "explanation": "ValuePilot has an activity row omitted from Dataroma's 100-row capped Activity page."
+        },
+        {
+          "scope": "activity",
+          "field": "position_presence",
+          "quarter": "2026-Q1",
+          "ticker": "UNH",
+          "valuepilot": "present",
+          "dataroma": "missing",
+          "classification": "dataroma_page_limit",
+          "valuepilot_defect": false,
+          "severity": "info",
+          "explanation": "ValuePilot has an activity row omitted from Dataroma's 100-row capped Activity page."
+        },
+        {
+          "scope": "activity",
+          "field": "position_presence",
+          "quarter": "2026-Q1",
+          "ticker": "VTV",
+          "valuepilot": "present",
+          "dataroma": "missing",
+          "classification": "dataroma_page_limit",
+          "valuepilot_defect": false,
+          "severity": "info",
+          "explanation": "ValuePilot has an activity row omitted from Dataroma's 100-row capped Activity page."
+        },
+        {
+          "scope": "activity",
+          "field": "position_presence",
+          "quarter": "2026-Q1",
+          "ticker": "WBD",
+          "valuepilot": "present",
+          "dataroma": "missing",
+          "classification": "dataroma_page_limit",
+          "valuepilot_defect": false,
+          "severity": "info",
+          "explanation": "ValuePilot has an activity row omitted from Dataroma's 100-row capped Activity page."
+        },
+        {
+          "scope": "activity",
+          "field": "position_presence",
+          "quarter": "2026-Q1",
+          "ticker": "WEN",
+          "valuepilot": "present",
+          "dataroma": "missing",
+          "classification": "dataroma_page_limit",
+          "valuepilot_defect": false,
+          "severity": "info",
+          "explanation": "ValuePilot has an activity row omitted from Dataroma's 100-row capped Activity page."
+        },
+        {
+          "scope": "activity",
+          "field": "position_presence",
+          "quarter": "2026-Q1",
+          "ticker": "WFC",
+          "valuepilot": "present",
+          "dataroma": "missing",
+          "classification": "dataroma_page_limit",
+          "valuepilot_defect": false,
+          "severity": "info",
+          "explanation": "ValuePilot has an activity row omitted from Dataroma's 100-row capped Activity page."
+        },
+        {
+          "scope": "activity",
+          "field": "position_presence",
+          "quarter": "2026-Q1",
+          "ticker": "WMT",
+          "valuepilot": "present",
+          "dataroma": "missing",
+          "classification": "dataroma_page_limit",
+          "valuepilot_defect": false,
+          "severity": "info",
+          "explanation": "ValuePilot has an activity row omitted from Dataroma's 100-row capped Activity page."
+        },
+        {
+          "scope": "activity",
+          "field": "position_presence",
+          "quarter": "2026-Q1",
+          "ticker": "XOM",
+          "valuepilot": "present",
+          "dataroma": "missing",
+          "classification": "dataroma_page_limit",
+          "valuepilot_defect": false,
+          "severity": "info",
+          "explanation": "ValuePilot has an activity row omitted from Dataroma's 100-row capped Activity page."
+        },
+        {
+          "scope": "activity",
+          "field": "position_presence",
+          "quarter": "2026-Q1",
+          "ticker": "ZGN",
+          "valuepilot": "present",
+          "dataroma": "missing",
+          "classification": "dataroma_page_limit",
+          "valuepilot_defect": false,
+          "severity": "info",
+          "explanation": "ValuePilot has an activity row omitted from Dataroma's 100-row capped Activity page."
+        },
+        {
+          "scope": "history",
+          "field": "portfolio_weight_pct",
+          "quarter": "2026-Q1",
+          "ticker": "PSX",
+          "valuepilot": 2.222392,
+          "dataroma": 662.22,
+          "classification": "denominator_or_coverage",
+          "valuepilot_defect": null,
+          "severity": "error",
+          "explanation": "Historical portfolio weight differs beyond displayed precision."
+        },
+        {
+          "scope": "history",
+          "field": "portfolio_weight_pct",
+          "quarter": "2025-Q4",
+          "ticker": "PSX",
+          "valuepilot": 2.288707,
+          "dataroma": 662.29,
+          "classification": "denominator_or_coverage",
+          "valuepilot_defect": null,
+          "severity": "error",
+          "explanation": "Historical portfolio weight differs beyond displayed precision."
+        },
+        {
+          "scope": "history",
+          "field": "portfolio_weight_pct",
+          "quarter": "2025-Q3",
+          "ticker": "PSX",
+          "valuepilot": 2.974489,
+          "dataroma": 662.97,
+          "classification": "denominator_or_coverage",
+          "valuepilot_defect": null,
+          "severity": "error",
+          "explanation": "Historical portfolio weight differs beyond displayed precision."
+        },
+        {
+          "scope": "history",
+          "field": "portfolio_weight_pct",
+          "quarter": "2025-Q2",
+          "ticker": "PSX",
+          "valuepilot": 2.608855,
+          "dataroma": 662.61,
+          "classification": "denominator_or_coverage",
+          "valuepilot_defect": null,
+          "severity": "error",
+          "explanation": "Historical portfolio weight differs beyond displayed precision."
+        },
+        {
+          "scope": "history",
+          "field": "portfolio_weight_pct",
+          "quarter": "2025-Q1",
+          "ticker": "PSX",
+          "valuepilot": 2.868753,
+          "dataroma": 662.87,
+          "classification": "denominator_or_coverage",
+          "valuepilot_defect": null,
+          "severity": "error",
+          "explanation": "Historical portfolio weight differs beyond displayed precision."
+        },
+        {
+          "scope": "history",
+          "field": "portfolio_value_usd",
+          "quarter": "2024-Q4",
+          "ticker": null,
+          "valuepilot": 75993745697,
+          "dataroma": 60300000000.0,
+          "classification": "reporting_policy_or_value_unit",
+          "valuepilot_defect": null,
+          "severity": "error",
+          "explanation": "History value differs beyond the precision implied by '$60.3 B'."
+        },
+        {
+          "scope": "history",
+          "field": "top_holdings_order",
+          "quarter": "2024-Q4",
+          "ticker": null,
+          "valuepilot": [
+            null,
+            "GOOGL",
+            "IQV",
+            "COF",
+            "DE",
+            "SCHW",
+            "ICE",
+            "FISV",
+            "AIG",
+            "GM",
+            "CNC",
+            "CHTR",
+            "COP",
+            "CBRE",
+            "FCNCA",
+            "PSX",
+            "BAC",
+            "CNH",
+            "KR",
+            "C"
+          ],
+          "dataroma": [
+            "GOOGL",
+            "IQV",
+            "COF",
+            "DE",
+            "SCHW",
+            "ICE",
+            "FISV",
+            "AIG",
+            "GM",
+            "CNC",
+            "CHTR",
+            "COP",
+            "CBRE",
+            "FCNCA",
+            "PSX",
+            "BAC",
+            "CNH",
+            "KR",
+            "C",
+            "WTW"
+          ],
+          "classification": "identity_or_aggregation",
+          "valuepilot_defect": null,
+          "severity": "error",
+          "explanation": "Top-holding ticker order differs after normalizing share-class separators."
+        },
+        {
+          "scope": "history",
+          "field": "portfolio_value_usd",
+          "quarter": "2024-Q3",
+          "ticker": null,
+          "valuepilot": 76621179647,
+          "dataroma": 60800000000.0,
+          "classification": "reporting_policy_or_value_unit",
+          "valuepilot_defect": null,
+          "severity": "error",
+          "explanation": "History value differs beyond the precision implied by '$60.8 B'."
+        },
+        {
+          "scope": "history",
+          "field": "top_holdings_order",
+          "quarter": "2024-Q3",
+          "ticker": null,
+          "valuepilot": [
+            null,
+            "GOOGL",
+            "FISV",
+            "IQV",
+            "COF",
+            "ICE",
+            "DE",
+            "CNC",
+            "SCHW",
+            "CBRE",
+            "CHTR",
+            "CNH",
+            "AIG",
+            "GM",
+            "BAC",
+            "COP",
+            "CRM",
+            "KR",
+            "PSX",
+            "FCNCA"
+          ],
+          "dataroma": [
+            "GOOGL",
+            "FISV",
+            "IQV",
+            "COF",
+            "ICE",
+            "DE",
+            "CNC",
+            "SCHW",
+            "CBRE",
+            "CHTR",
+            "CNH",
+            "AIG",
+            "GM",
+            "BAC",
+            "COP",
+            "CRM",
+            "KR",
+            "PSX",
+            "FCNCA",
+            "WFC"
+          ],
+          "classification": "identity_or_aggregation",
+          "valuepilot_defect": null,
+          "severity": "error",
+          "explanation": "Top-holding ticker order differs after normalizing share-class separators."
+        },
+        {
+          "scope": "history",
+          "field": "portfolio_weight_pct",
+          "quarter": "2024-Q2",
+          "ticker": "PSX",
+          "valuepilot": 2.018281,
+          "dataroma": 662.02,
+          "classification": "denominator_or_coverage",
+          "valuepilot_defect": null,
+          "severity": "error",
+          "explanation": "Historical portfolio weight differs beyond displayed precision."
+        },
+        {
+          "scope": "history",
+          "field": "portfolio_weight_pct",
+          "quarter": "2024-Q1",
+          "ticker": "PSX",
+          "valuepilot": 1.990497,
+          "dataroma": 661.99,
+          "classification": "denominator_or_coverage",
+          "valuepilot_defect": null,
+          "severity": "error",
+          "explanation": "Historical portfolio weight differs beyond displayed precision."
+        }
+      ],
+      "dataroma_latest_quarter": "2026-Q1",
+      "valuepilot_latest_quarter": "2026-Q1"
+    }
+  ]
+}

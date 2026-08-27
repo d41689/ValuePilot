@@ -92,9 +92,22 @@ def _filing(
         filed_at=filed_at,
         # An un-ingested filing has no infotable doc yet; an ingested one does.
         raw_infotable_doc_id=_infotable_doc(db_session).id if ingested else None,
+        parse_status="succeeded" if ingested else "pending",
     )
     db_session.add(filing)
     db_session.flush()
+    if ingested:
+        db_session.add(
+            ParseRun13F(
+                accession_number=filing.accession_number,
+                parser_version="test",
+                fingerprint_version="v1",
+                status="succeeded",
+                holdings_count=1,
+                is_current=True,
+            )
+        )
+        db_session.flush()
     return filing
 
 
@@ -114,6 +127,32 @@ def test_pending_ingest_quarters_excludes_already_ingested(db_session):
     )
 
     # filed 2025-05 → report quarter 2025-Q1
+    assert pending_ingest_quarters(db_session) == ["2025-Q1"]
+
+
+def test_pending_ingest_quarters_retries_fetched_but_failed_parse(db_session):
+    mgr = _manager(db_session)
+    filing = _filing(
+        db_session, mgr,
+        period_of_report=date(2025, 3, 31), filed_at=date(2025, 5, 10),
+        ingested=False,
+    )
+    filing.report_quarter = "2025-Q1"
+    filing.raw_infotable_doc_id = _infotable_doc(db_session).id
+    filing.parse_status = "failed"
+    db_session.add(
+        ParseRun13F(
+            accession_number=filing.accession_number,
+            parser_version="test",
+            fingerprint_version="v1",
+            status="failed",
+            holdings_count=0,
+            error="synthetic failure",
+            is_current=False,
+        )
+    )
+    db_session.flush()
+
     assert pending_ingest_quarters(db_session) == ["2025-Q1"]
 
 

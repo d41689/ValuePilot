@@ -40,7 +40,9 @@ def _piotroski_fact(
     )
 
 
-def test_lookup_stock_by_ticker_returns_dynamic_piotroski_card_from_current_stock(client, db_session):
+def test_lookup_stock_by_ticker_returns_dynamic_piotroski_card_from_current_stock(
+    client, db_session, auth_headers
+):
     user = User(email="ticker_f_score@example.com")
     stock = Stock(ticker="FSC_TEST", exchange="NYSE", company_name="F SCORE INC", is_active=True)
     other_stock = Stock(ticker="OTHER_FS", exchange="NYSE", company_name="OTHER SCORE", is_active=True)
@@ -116,7 +118,9 @@ def test_lookup_stock_by_ticker_returns_dynamic_piotroski_card_from_current_stoc
     db_session.add_all(facts)
     db_session.commit()
 
-    response = client.get("/api/v1/stocks/by_ticker/fsc_test")
+    response = client.get(
+        "/api/v1/stocks/by_ticker/fsc_test", headers=auth_headers(user)
+    )
 
     assert response.status_code == 200
     card = response.json()["piotroski_f_score_card"]
@@ -177,7 +181,7 @@ def test_lookup_stock_by_ticker_returns_dynamic_piotroski_card_from_current_stoc
     assert rows_by_key["score.piotroski.total"]["formula_details"]["used_values"] == []
 
 
-def test_lookup_stock_by_ticker_returns_summary(client, db_session):
+def test_lookup_stock_by_ticker_returns_summary(client, db_session, auth_headers):
     user = User(email="ticker_lookup@example.com")
     stock = Stock(ticker="COCO_TEST", exchange="NDQ", company_name="VITA COCO", is_active=True)
     db_session.add_all([user, stock])
@@ -693,7 +697,9 @@ def test_lookup_stock_by_ticker_returns_summary(client, db_session):
     )
     db_session.commit()
 
-    response = client.get("/api/v1/stocks/by_ticker/coco_test")
+    response = client.get(
+        "/api/v1/stocks/by_ticker/coco_test", headers=auth_headers(user)
+    )
 
     assert response.status_code == 200
     payload = response.json()
@@ -1182,7 +1188,9 @@ def test_lookup_stock_by_ticker_returns_summary(client, db_session):
     ]
 
 
-def test_lookup_stock_by_ticker_returns_active_report_metadata(client, db_session):
+def test_lookup_stock_by_ticker_returns_active_report_metadata(
+    client, db_session, auth_headers
+):
     user = User(email="ticker_active_report@example.com")
     stock = Stock(ticker="FICO_TEST", exchange="NYSE", company_name="Fair Isaac", is_active=True)
     db_session.add_all([user, stock])
@@ -1241,7 +1249,9 @@ def test_lookup_stock_by_ticker_returns_active_report_metadata(client, db_sessio
     )
     db_session.commit()
 
-    response = client.get("/api/v1/stocks/by_ticker/fico_test")
+    response = client.get(
+        "/api/v1/stocks/by_ticker/fico_test", headers=auth_headers(user)
+    )
     assert response.status_code == 200
 
     payload = response.json()
@@ -1249,7 +1259,9 @@ def test_lookup_stock_by_ticker_returns_active_report_metadata(client, db_sessio
     assert payload["active_report_date"] == "2026-04-09"
 
 
-def test_lookup_stock_by_ticker_prefers_duplicate_with_active_report(client, db_session):
+def test_lookup_stock_by_ticker_prefers_duplicate_with_active_report(
+    client, db_session, auth_headers
+):
     user = User(email="ticker_duplicate_active@example.com")
     stale_stock = Stock(ticker="DUP_TEST", exchange="US", company_name="Duplicate Empty", is_active=True)
     active_stock = Stock(ticker="DUP_TEST", exchange="NDQ", company_name="Duplicate Active", is_active=True)
@@ -1285,7 +1297,9 @@ def test_lookup_stock_by_ticker_prefers_duplicate_with_active_report(client, db_
     )
     db_session.commit()
 
-    response = client.get("/api/v1/stocks/by_ticker/dup_test")
+    response = client.get(
+        "/api/v1/stocks/by_ticker/dup_test", headers=auth_headers(user)
+    )
     assert response.status_code == 200
 
     payload = response.json()
@@ -1295,7 +1309,9 @@ def test_lookup_stock_by_ticker_prefers_duplicate_with_active_report(client, db_
     assert payload["active_report_document_id"] == doc.id
 
 
-def test_lookup_stock_by_ticker_returns_actual_conflicts(client, db_session):
+def test_lookup_stock_by_ticker_returns_actual_conflicts(
+    client, db_session, auth_headers
+):
     user = User(email="ticker_conflicts@example.com")
     stock = Stock(ticker="CONF_TEST", exchange="NYSE", company_name="Conflict Co", is_active=True)
     db_session.add_all([user, stock])
@@ -1406,7 +1422,9 @@ def test_lookup_stock_by_ticker_returns_actual_conflicts(client, db_session):
     )
     db_session.commit()
 
-    response = client.get("/api/v1/stocks/by_ticker/conf_test")
+    response = client.get(
+        "/api/v1/stocks/by_ticker/conf_test", headers=auth_headers(user)
+    )
     assert response.status_code == 200
 
     payload = response.json()
@@ -1445,7 +1463,9 @@ def test_lookup_stock_by_ticker_returns_actual_conflicts(client, db_session):
     ]
 
 
-def test_lookup_stock_by_ticker_uses_revenues_growth_when_sales_missing(client, db_session):
+def test_lookup_stock_by_ticker_uses_revenues_growth_when_sales_missing(
+    client, db_session, auth_headers
+):
     user = User(email="ticker_lookup_revenues@example.com")
     stock = Stock(ticker="REV_TEST", exchange="NDQ", company_name="REVENUES INC", is_active=True)
     db_session.add_all([user, stock])
@@ -1496,7 +1516,9 @@ def test_lookup_stock_by_ticker_uses_revenues_growth_when_sales_missing(client, 
     )
     db_session.commit()
 
-    response = client.get("/api/v1/stocks/by_ticker/rev_test")
+    response = client.get(
+        "/api/v1/stocks/by_ticker/rev_test", headers=auth_headers(user)
+    )
 
     assert response.status_code == 200
     payload = response.json()
@@ -1541,7 +1563,61 @@ def test_lookup_stock_by_ticker_uses_revenues_growth_when_sales_missing(client, 
     ]
 
 
-def test_lookup_stock_by_ticker_not_found(client):
-    response = client.get("/api/v1/stocks/by_ticker/UNKNOWN")
+def test_lookup_stock_by_ticker_not_found(client, db_session, auth_headers):
+    user = User(email="ticker_missing@example.com")
+    db_session.add(user)
+    db_session.commit()
+    response = client.get(
+        "/api/v1/stocks/by_ticker/UNKNOWN", headers=auth_headers(user)
+    )
 
     assert response.status_code == 404
+
+
+def test_lookup_stock_by_ticker_never_exposes_another_users_private_facts(
+    client, db_session, auth_headers
+):
+    owner = User(email="ticker_private_owner@example.com")
+    viewer = User(email="ticker_private_viewer@example.com")
+    stock = Stock(
+        ticker="PRIVATE_TEST",
+        exchange="NYSE",
+        company_name="PRIVATE FACTS INC",
+        is_active=True,
+    )
+    db_session.add_all([owner, viewer, stock])
+    db_session.commit()
+    db_session.add_all(
+        [
+            _piotroski_fact(
+                user_id=owner.id,
+                stock_id=stock.id,
+                metric_key="score.piotroski.total",
+                year=2026,
+                value=9.0,
+            ),
+            MetricFact(
+                user_id=owner.id,
+                stock_id=stock.id,
+                metric_key="owners_earnings_per_share",
+                value_numeric=123.45,
+                unit="USD/share",
+                period_type="FY",
+                period_end_date=date(2026, 12, 31),
+                source_type="calculated",
+                is_current=True,
+            ),
+        ]
+    )
+    db_session.commit()
+
+    response = client.get(
+        "/api/v1/stocks/by_ticker/PRIVATE_TEST",
+        headers=auth_headers(viewer),
+    )
+
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload["oeps_series"] == []
+    assert payload["piotroski_f_score_card"]["years"] == []
+    assert payload["active_report_document_id"] is None

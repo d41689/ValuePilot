@@ -903,6 +903,32 @@ def _build_annual_financials(
                 note_label = "Nil values are represented as null"
             series["notes"] = note_label
 
+    insurance_operating_statistics = {}
+    if insurance_layout:
+        for source, keys in (
+            (
+                income_statement,
+                (
+                    "loss_to_prem_earned_pct",
+                    "expense_to_prem_written",
+                    "underwriting_margin_pct",
+                    "inv_inc_to_total_investments_pct",
+                ),
+            ),
+            (income_statement_ratios, ("income_tax_rate_pct",)),
+            (
+                balance_sheet,
+                (
+                    "return_on_shareholders_equity_pct",
+                    "retained_to_common_equity_pct",
+                    "all_dividends_to_net_profit_pct",
+                ),
+            ),
+        ):
+            for key in keys:
+                if key in source:
+                    insurance_operating_statistics[key] = source[key]
+
     payload = {
         "meta": {
             "source": "value_line",
@@ -922,6 +948,8 @@ def _build_annual_financials(
         "income_statement_ratios_pct": income_statement_ratios,
         "balance_sheet_and_returns_usd_millions": balance_sheet,
     }
+    if insurance_operating_statistics:
+        payload["insurance_operating_statistics"] = insurance_operating_statistics
 
     return payload
 

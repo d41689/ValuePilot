@@ -266,6 +266,26 @@ mappings:
     value:
       numeric_from: $value
 
+  - id: is.income_tax_rate.fy
+    json_path: annual_financials.income_statement_ratios_pct.income_tax_rate_pct.*
+    metric_key: is.income_tax_rate
+    period_type: FY
+    unit: percent
+    period_end_date:
+      derive: year_end_from_key
+    value:
+      numeric_from: $value
+
+  - id: is.net_profit_margin.fy
+    json_path: annual_financials.income_statement_ratios_pct.net_profit_margin_pct.*
+    metric_key: is.net_profit_margin
+    period_type: FY
+    unit: percent
+    period_end_date:
+      derive: year_end_from_key
+    value:
+      numeric_from: $value
+
   - id: is.net_premiums_earned.q
     json_path: net_premiums_earned.by_year[].quarters.*.value
     metric_key: is.net_premiums_earned
@@ -332,6 +352,16 @@ mappings:
     value:
       numeric_from: $value
     notes: "Value Line Return on Total Cap'l. Stored as a Value Line proxy for ROA-based Piotroski components when total assets are unavailable."
+
+  - id: bs.return_on_equity.fy
+    json_path: annual_financials.balance_sheet_and_returns_usd_millions.return_on_shareholders_equity_pct.*
+    metric_key: bs.return_on_equity
+    period_type: FY
+    unit: percent
+    period_end_date:
+      derive: year_end_from_key
+    value:
+      numeric_from: $value
 
   - id: bs.current_assets.current_position
     json_path: current_position.periods[].assets.total_current_assets

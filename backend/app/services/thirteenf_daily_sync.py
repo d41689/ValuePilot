@@ -16,7 +16,9 @@ from app.models.institutions import (
 )
 
 
-INGESTIBLE_13F_FORMS = {"13F-HR", "13F-HR/A"}
+HR_13F_FORMS = {"13F-HR", "13F-HR/A"}
+NT_13F_FORMS = {"13F-NT", "13F-NT/A"}
+INGESTIBLE_13F_FORMS = HR_13F_FORMS | NT_13F_FORMS
 AUTO_GENERATED_NO_INDEX_REASONS = {"weekend", "federal_holiday"}
 ACTIVE_JOB_STATUSES = {"queued", "running", "cancel_requested"}
 
@@ -52,8 +54,8 @@ def run_daily_index_sync(session: Session, sync_date: date, *, client: Any | Non
         sync.status = "success"
         sync.raw_document_id = raw_doc.id
         sync.filings_seen_count = len(records)
-        sync.tracked_13f_hr_found_count = sum(1 for record, _ in matched if record.form_type in INGESTIBLE_13F_FORMS)
-        sync.tracked_13f_nt_found_count = sum(1 for record, _ in matched if record.form_type == "13F-NT")
+        sync.tracked_13f_hr_found_count = sum(1 for record, _ in matched if record.form_type in HR_13F_FORMS)
+        sync.tracked_13f_nt_found_count = sum(1 for record, _ in matched if record.form_type in NT_13F_FORMS)
         sync.finished_at = datetime.now(timezone.utc)
         session.add(sync)
         session.commit()

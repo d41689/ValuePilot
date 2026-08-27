@@ -41,7 +41,8 @@ def _at_risk_groups(session: Session, null_filings: list[Filing13F]) -> list[dic
     members AND one of them lacks `accepted_at`. A filing alone in its pool wins
     without ordering evidence (see
     `test_solo_restatement_with_null_acceptance_still_wins`); an
-    admin-`applied` amendment owns its slot by decision, not by ranking.
+    one-member admin-`applied` amendment pool needs no ordering evidence, but
+    multiple applied amendments do.
 
     We ask :func:`competition_pool` — the SAME function the authority uses — so
     this diagnostic cannot drift from the rule it describes. It previously
@@ -68,8 +69,8 @@ def _at_risk_groups(session: Session, null_filings: list[Filing13F]) -> list[dic
             .all()
         )
         kind, pool = competition_pool(filings)
-        if kind not in ("restatement", "originals"):
-            continue  # amendment_owned / none: no ordering evidence required
+        if kind not in ("restatement", "amendment_owned", "originals"):
+            continue
         if len(pool) < 2 or all(f.accepted_at is not None for f in pool):
             continue
         groups.append(

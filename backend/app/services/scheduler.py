@@ -13,7 +13,7 @@ Pipeline steps (run by the worker, not the scheduler directly):
   5. Run data quality checks; log any errors
 """
 import logging
-from datetime import date
+from datetime import date, datetime, timezone
 from typing import Callable
 
 from apscheduler.schedulers.background import BackgroundScheduler
@@ -53,27 +53,14 @@ def latest_available_quarter(today: date) -> str:
 
 
 def _quarter_already_ingested(db, quarter: str) -> bool:
-    """True if ingestion for this quarter has already completed (at least one filing exists).
+    """True only when the complete six-stage pipeline manifest is persisted.
 
-    This is a fast-path skip for the common case where the quarter is fully
-    ingested. During active execution, the quarterly_pipeline lock_key prevents
-    duplicate jobs — so this check is the primary guard only after the worker
-    has finished and committed filings.
+    A single filing is evidence that work started, not that the SEC index,
+    holdings, enrichment, quality, ownership changes, and scoring all finished.
     """
-    from app.edgar.parsers.form_idx import quarter_to_year_qtr
-    from app.models.institutions import Filing13F
-    import calendar
+    from app.services.thirteenf_start_quarter import _has_meaningful_coverage
 
-    year, qtr = quarter_to_year_qtr(quarter)
-    q_start = date(year, (qtr - 1) * 3 + 1, 1)
-    end_month = qtr * 3
-    q_end = date(year, end_month, calendar.monthrange(year, end_month)[1])
-    count = (
-        db.query(Filing13F)
-        .filter(Filing13F.period_of_report.between(q_start, q_end))
-        .count()
-    )
-    return count > 0
+    return _has_meaningful_coverage(db, quarter)
 
 
 # ---------------------------------------------------------------------------
@@ -171,6 +158,16 @@ def create_scheduler(db_factory: Callable) -> BackgroundScheduler:
         misfire_grace_time=3600,
     )
 
+    scheduler.add_job(
+        run_filing_season_digest,
+        trigger=CronTrigger(hour=7, minute=0, timezone="America/New_York"),
+        args=[db_factory],
+        id="thirteenf_filing_season_digest",
+        name="Investor-facing 13F filing-season digest",
+        replace_existing=True,
+        misfire_grace_time=3600,
+    )
+
     if settings.THIRTEENF_SMART_RETRY_ENABLED:
         # Run every day at 02:00 UTC.
         # Checks for partially failed jobs and retries safe targets if they are old enough.
@@ -183,6 +180,21 @@ def create_scheduler(db_factory: Callable) -> BackgroundScheduler:
             replace_existing=True,
             misfire_grace_time=3600,
         )
+    return scheduler
+
+
+def create_research_notification_scheduler(db_factory: Callable) -> BackgroundScheduler:
+    """Build the independent research event/outbox scheduler."""
+    scheduler = BackgroundScheduler(timezone="UTC")
+    scheduler.add_job(
+        run_research_notifications,
+        trigger=CronTrigger(minute="*/15", timezone="UTC"),
+        args=[db_factory],
+        id="research_notification_materializer",
+        name="Research review and valuation notification materializer",
+        replace_existing=True,
+        misfire_grace_time=900,
+    )
     return scheduler
 
 
@@ -246,6 +258,69 @@ def run_13f_health_summary(db_factory: Callable) -> None:
     except Exception as exc:
         db.rollback()
         logger.exception("13F daily health summary failed: %s", exc)
+    finally:
+        db.close()
+
+
+def run_filing_season_digest(db_factory: Callable) -> None:
+    """Persist one in-app 13F digest per active user during filing season."""
+    db = db_factory()
+    try:
+        from app.services.thirteenf_filing_season import persist_filing_season_digest
+
+        result = persist_filing_season_digest(db)
+        logger.info("13F filing-season digest: %s", result)
+    except Exception as exc:
+        db.rollback()
+        logger.exception("13F filing-season digest failed: %s", exc)
+    finally:
+        db.close()
+
+
+def run_research_notifications(db_factory: Callable) -> None:
+    """Materialize user research events and drain the fail-closed outbox."""
+    db = db_factory()
+    try:
+        from app.services.research_notifications import (
+            deliver_pending_attempts,
+            destination_secret_rotation_needed,
+            materialize_due_research_reviews,
+            materialize_intrinsic_value_crossings,
+            materialize_research_coverage_changes,
+            materialize_scheduled_digests,
+            run_destination_secret_rotation,
+        )
+
+        now = datetime.now(timezone.utc)
+        due_created = materialize_due_research_reviews(db, as_of=now)
+        threshold_created = materialize_intrinsic_value_crossings(db, as_of=now)
+        coverage_created = materialize_research_coverage_changes(db)
+        digest_created = materialize_scheduled_digests(db, as_of=now)
+        rotation = (
+            run_destination_secret_rotation(db)
+            if settings.NOTIFICATION_SECRET_KEYS
+            and destination_secret_rotation_needed(db)
+            else {
+                "status": (
+                    "skipped_current"
+                    if settings.NOTIFICATION_SECRET_KEYS
+                    else "skipped_unconfigured"
+                )
+            }
+        )
+        delivery = deliver_pending_attempts(db, now=now)
+        logger.info(
+            "Research notifications: due=%d threshold=%d coverage=%d digests=%d rotation=%s delivery=%s",
+            due_created,
+            threshold_created,
+            coverage_created,
+            digest_created,
+            rotation,
+            delivery,
+        )
+    except Exception as exc:
+        db.rollback()
+        logger.exception("Research notification materializer failed: %s", exc)
     finally:
         db.close()
 

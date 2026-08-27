@@ -19,9 +19,11 @@ from app.models.institutions import (
     RawSourceDocument,
 )
 from app.models.oracles_lens import OraclesLensScoreComponent, OraclesLensSignal
+from app.models.stocks import Stock
 from app.services.thirteenf_holdings_ingest import (
     ingest_holdings_for_filing,
     normalize_investment_discretion,
+    reparse_accession,
 )
 
 
@@ -221,6 +223,27 @@ def test_parse_infotable_other_managers_raw_none_when_absent():
     xml = _sole_holding_xml(discretion="SOLE").encode()
     rows = parse_infotable(xml)
     assert rows[0].other_managers_raw is None
+
+
+def test_parse_infotable_skips_sec_empty_portfolio_placeholder_only():
+    placeholder = _sole_holding_xml(
+        cusip="000000000",
+        issuer="NONE",
+        value="0",
+        shares="0",
+    ).replace("<titleOfClass>COM</titleOfClass>", "<titleOfClass>NONE</titleOfClass>")
+
+    assert parse_infotable(placeholder.encode()) == []
+
+    # A real issuer can legitimately round below $1,000. Do not turn the
+    # sentinel rule into a broad "drop every zero row" data-loss filter.
+    real_zero = _sole_holding_xml(
+        cusip="037833100",
+        issuer="APPLE INC",
+        value="0",
+        shares="1",
+    )
+    assert len(parse_infotable(real_zero.encode())) == 1
 
 
 # ---------------------------------------------------------------------------
@@ -453,6 +476,37 @@ def test_post_2023_infotable_value_usd_equals_raw_value(db_session):
     for h in holdings:
         assert h.value_unit_raw == "dollars"
         assert h.value_usd == int(h.value_raw)
+
+
+def test_post_2023_noncompliant_thousands_filer_is_normalized_to_dollars(db_session):
+    """Some accepted 1.7+ filings still submit legacy thousands values."""
+    _clear(db_session)
+    manager = _manager(db_session)
+    filing = _hr_filing(
+        db_session,
+        manager,
+        "0001067983-26-000212",
+        accepted_at=datetime(2026, 5, 14, 17, tzinfo=timezone.utc),
+    )
+    infotable = b"""<informationTable xmlns="http://www.sec.gov/edgar/document/thirteenf/informationtable">
+      <infoTable><nameOfIssuer>A</nameOfIssuer><titleOfClass>COM</titleOfClass><cusip>000000001</cusip><value>78</value><shrsOrPrnAmt><sshPrnamt>1000</sshPrnamt><sshPrnamtType>SH</sshPrnamtType></shrsOrPrnAmt><investmentDiscretion>SOLE</investmentDiscretion><votingAuthority><Sole>1000</Sole><Shared>0</Shared><None>0</None></votingAuthority></infoTable>
+      <infoTable><nameOfIssuer>B</nameOfIssuer><titleOfClass>COM</titleOfClass><cusip>000000002</cusip><value>127</value><shrsOrPrnAmt><sshPrnamt>1000</sshPrnamt><sshPrnamtType>SH</sshPrnamtType></shrsOrPrnAmt><investmentDiscretion>SOLE</investmentDiscretion><votingAuthority><Sole>1000</Sole><Shared>0</Shared><None>0</None></votingAuthority></infoTable>
+      <infoTable><nameOfIssuer>C</nameOfIssuer><titleOfClass>COM</titleOfClass><cusip>000000003</cusip><value>251</value><shrsOrPrnAmt><sshPrnamt>1000</sshPrnamt><sshPrnamtType>SH</sshPrnamtType></shrsOrPrnAmt><investmentDiscretion>SOLE</investmentDiscretion><votingAuthority><Sole>1000</Sole><Shared>0</Shared><None>0</None></votingAuthority></infoTable>
+    </informationTable>"""
+
+    result = ingest_holdings_for_filing(db_session, filing, infotable)
+
+    holdings = (
+        db_session.query(Holding13F)
+        .filter_by(parse_run_id=result["parse_run_id"])
+        .order_by(Holding13F.source_row_index)
+        .all()
+    )
+    assert result["value_unit_raw"] == "thousands"
+    assert result["value_parse_rule"] == "implied_price_thousands"
+    assert holdings[0].value_usd == 78_000
+    assert all(h.value_unit_raw == "thousands" for h in holdings)
+    assert all(h.value_parse_rule == "implied_price_thousands" for h in holdings)
 
 
 # ---------------------------------------------------------------------------
@@ -690,6 +744,56 @@ def test_initial_holdings_cusip_mapping_status_is_pending_mapping(db_session):
     holdings = db_session.query(Holding13F).filter_by(filing_id=filing.id).all()
     assert len(holdings) == 2
     assert all(h.cusip_mapping_status == "pending_mapping" for h in holdings)
+
+
+def test_reparse_preserves_verified_cusip_mapping_from_prior_current_run(db_session):
+    _clear(db_session)
+    manager = _manager(db_session)
+    filing = _hr_filing(db_session, manager, "0001067983-24-000269")
+    xml = _sole_holding_xml(cusip="037833100", value="1000000").encode()
+    initial = ingest_holdings_for_filing(db_session, filing, xml)
+    stock = Stock(
+        ticker=f"MAP{manager.id}",
+        exchange="NASDAQ",
+        company_name="Mapped Apple Test",
+    )
+    db_session.add(stock)
+    db_session.flush()
+    old_holding = db_session.query(Holding13F).filter_by(
+        parse_run_id=initial["parse_run_id"]
+    ).one()
+    old_holding.stock_id = stock.id
+    old_holding.cusip_mapping_status = "linked"
+    db_session.flush()
+
+    reparsed = reparse_accession(
+        db_session,
+        filing.accession_number,
+        infotable_bytes=xml,
+    )
+
+    new_holding = db_session.query(Holding13F).filter_by(
+        parse_run_id=reparsed["parse_run_id"]
+    ).one()
+    assert new_holding.stock_id == stock.id
+    assert new_holding.cusip_mapping_status == "linked"
+
+    # A deployment of the old reparse behavior may already have inserted an
+    # intermediate current run with the mapping reset. A subsequent replay
+    # must recover the unique verified link from earlier immutable runs.
+    new_holding.stock_id = None
+    new_holding.cusip_mapping_status = "pending_mapping"
+    db_session.flush()
+    recovered = reparse_accession(
+        db_session,
+        filing.accession_number,
+        infotable_bytes=xml,
+    )
+    recovered_holding = db_session.query(Holding13F).filter_by(
+        parse_run_id=recovered["parse_run_id"]
+    ).one()
+    assert recovered_holding.stock_id == stock.id
+    assert recovered_holding.cusip_mapping_status == "linked"
 
 
 def test_ingest_creates_parse_run_with_is_current_true(db_session):

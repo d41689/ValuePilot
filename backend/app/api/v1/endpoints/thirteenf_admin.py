@@ -12,7 +12,7 @@ from app.schemas.thirteenf_corporate_action import (
     CorporateActionMappingPreviewRequest,
 )
 
-from app.api.deps import AdminUser, SessionDep
+from app.api.deps import AdminUser, CurrentUser, SessionDep
 from app.rate_guard.client import RateGuardFetchError
 from app.services.thirteenf_admin_dashboard import (
     build_amendments,
@@ -57,12 +57,16 @@ from app.services.thirteenf_daily_sync import (
     update_no_index_date,
 )
 from app.services.thirteenf_user_api import (
+    build_user_manager_history,
     build_user_manager_holding_changes,
     build_user_manager_holdings,
+    build_user_manager_position_history,
     build_user_manager_quarters,
     build_user_managers,
     build_user_stock_holders,
 )
+from app.services.oracles_lens.new_buys_clusters import build_new_buys_clusters
+from app.services.thirteenf_filing_season import build_filing_season_surface
 
 admin_router = APIRouter()
 consumer_router = APIRouter()
@@ -200,17 +204,72 @@ def read_user_manager_holding_changes(
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
+@consumer_router.get("/managers/{manager_id}/history", response_model=dict)
+def read_user_manager_history(manager_id: int, session: SessionDep) -> Any:
+    try:
+        return build_user_manager_history(session, manager_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@consumer_router.get("/managers/{manager_id}/stocks/{stock_id}/history", response_model=dict)
+def read_user_manager_position_history(
+    manager_id: int,
+    stock_id: int,
+    session: SessionDep,
+) -> Any:
+    try:
+        return build_user_manager_position_history(session, manager_id, stock_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
 @consumer_router.get("/stocks/{stock_id}/holders", response_model=dict)
 def read_user_stock_holders(
     stock_id: int,
     session: SessionDep,
     quarter: str | None = Query(None, pattern=r"^\d{4}-Q[1-4]$"),
     limit: int = Query(10, ge=1, le=50),
+    manager_scope: str = Query("value", pattern=r"^(value|value_plus_activist|all)$"),
 ) -> Any:
     try:
-        return build_user_stock_holders(session, stock_id, quarter=quarter, limit=limit)
+        return build_user_stock_holders(
+            session,
+            stock_id,
+            quarter=quarter,
+            limit=limit,
+            manager_scope=manager_scope,
+        )
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@consumer_router.get("/new-buys/clusters", response_model=dict)
+def read_new_buys_clusters(
+    session: SessionDep,
+    quarter: str | None = Query(None, pattern=r"^\d{4}-Q[1-4]$"),
+    min_cluster_size: int = Query(2, ge=1, le=50),
+    superinvestors_only: bool = Query(True),
+    manager_scope: str = Query("value", pattern=r"^(value|value_plus_activist|all)$"),
+) -> Any:
+    try:
+        return build_new_buys_clusters(
+            session,
+            quarter=quarter,
+            min_cluster_size=min_cluster_size,
+            superinvestors_only=superinvestors_only,
+            manager_scope=manager_scope,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@consumer_router.get("/filing-season", response_model=dict)
+def read_filing_season(
+    session: SessionDep,
+    current_user: CurrentUser,
+) -> Any:
+    return build_filing_season_surface(session, user_id=current_user.id)
 
 
 @admin_router.get("/quarters", response_model=dict)

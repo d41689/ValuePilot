@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Optional
 
-from sqlalchemy import or_, text
+from sqlalchemy import and_, exists, or_, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -38,9 +38,12 @@ from app.models.institutions import (
     Holding13F,
     InstitutionManager,
     InstitutionManagerCikReviewEvent,
+    InstitutionManagerRepresentativenessReview,
+    ParseRun13F,
     RawSourceDocument,
 )
 from app.services.oracles_lens.manager_style import derive_legacy_manager_type
+from app.services.thirteenf_holdings_query import HR_FORM_TYPES, NT_FORM_TYPES
 
 logger = logging.getLogger(__name__)
 
@@ -195,6 +198,7 @@ def seed_confirmed_managers(db: Session) -> dict[str, Any]:
     import json
     import os
     from pathlib import Path
+    from app.services.oracles_lens.representativeness import classify_reviewed_style
 
     def _report(**kw: Any) -> dict[str, Any]:
         base = {
@@ -247,6 +251,16 @@ def seed_confirmed_managers(db: Session) -> dict[str, Any]:
         # defaulting to a wrong weight.
         style_primary = entry.get("style_primary", "unknown")
         legacy_manager_type = derive_legacy_manager_type(style_primary)
+        representativeness = classify_reviewed_style(style_primary)
+        representativeness_reviewer = "valuepilot-po-review-2026-07-20"
+        representativeness_effective_at = datetime(
+            2026, 7, 20, tzinfo=timezone.utc
+        )
+        representativeness_evidence = {
+            "style_primary": style_primary,
+            "classification_rationale": entry.get("classification_rationale"),
+            "review_basis": "curated_manager_v2_review",
+        }
         capital_structure = entry.get("capital_structure", "unknown")
 
         previous_ciks = [c for c in (entry.get("previous_ciks") or []) if c]
@@ -344,6 +358,14 @@ def seed_confirmed_managers(db: Session) -> dict[str, Any]:
                 )
                 cik_repointed.append(cik)
             existing.cik = cik
+            # The offline seed owns the reviewed manager ↔ Dataroma mapping.
+            # Historically this field was populated only on INSERT, so the 62
+            # managers mapped after their initial seed (and renamed Dataroma
+            # codes such as GATES → GFT) could never converge on deploy. An
+            # explicitly absent value also clears a stale/nonexistent code.
+            if existing.dataroma_code != dataroma_code:
+                existing.dataroma_code = dataroma_code
+                existing.dataroma_synced_at = datetime.now(timezone.utc)
             if entry.get("display_name"):
                 existing.display_name = entry["display_name"]
             if entry.get("legal_name"):
@@ -352,6 +374,12 @@ def seed_confirmed_managers(db: Session) -> dict[str, Any]:
             existing.style_primary = style_primary
             existing.capital_structure = capital_structure
             existing.manager_type = legacy_manager_type
+            existing.thirteenf_representativeness = representativeness.classification
+            existing.representativeness_policy_version = representativeness.policy_version
+            existing.representativeness_reviewer = representativeness_reviewer
+            existing.representativeness_reviewed_at = representativeness_effective_at
+            existing.representativeness_rationale = representativeness.rationale
+            existing.representativeness_evidence_json = representativeness_evidence
             # Optional metadata: only overwrite when the seed entry
             # actually specifies a value, so a sparse re-seed doesn't
             # wipe richer downstream data on existing rows.
@@ -367,6 +395,7 @@ def seed_confirmed_managers(db: Session) -> dict[str, Any]:
                 ]
             if entry.get("ideology_tags") is not None:
                 existing.ideology_tags = entry["ideology_tags"]
+            review_target = existing
             updated += 1
         else:
             # Before minting a new manager, REFUSE if some row already
@@ -411,10 +440,55 @@ def seed_confirmed_managers(db: Session) -> dict[str, Any]:
                     "position_concentration_top10_pct"
                 ),
                 ideology_tags=entry.get("ideology_tags"),
+                thirteenf_representativeness=representativeness.classification,
+                representativeness_policy_version=representativeness.policy_version,
+                representativeness_reviewer=representativeness_reviewer,
+                representativeness_reviewed_at=representativeness_effective_at,
+                representativeness_rationale=representativeness.rationale,
+                representativeness_evidence_json=representativeness_evidence,
             )
             db.add(record)
+            review_target = record
             created += 1
             created_ciks.append(cik)
+
+        # Append-only policy history. The current fields above are a fast
+        # projection; this event is the durable explanation. A changed answer
+        # under the same policy version is a release error — the methodology
+        # must be version-bumped, never rewritten in place.
+        db.flush()
+        prior_review = (
+            db.query(InstitutionManagerRepresentativenessReview)
+            .filter_by(
+                manager_id=review_target.id,
+                policy_version=representativeness.policy_version,
+            )
+            .one_or_none()
+        )
+        review_payload = {
+            "classification": representativeness.classification,
+            "reviewer": representativeness_reviewer,
+            "effective_at": representativeness_effective_at,
+            "rationale": representativeness.rationale,
+            "evidence_json": representativeness_evidence,
+        }
+        if prior_review is None:
+            db.add(
+                InstitutionManagerRepresentativenessReview(
+                    manager_id=review_target.id,
+                    policy_version=representativeness.policy_version,
+                    **review_payload,
+                )
+            )
+        elif any(
+            getattr(prior_review, field) != expected
+            for field, expected in review_payload.items()
+        ):
+            raise RuntimeError(
+                "representativeness decision changed without a policy-version "
+                f"bump for manager_id={review_target.id} "
+                f"policy={representativeness.policy_version}"
+            )
 
     report = {
         "seed_entries": len(seed_data),
@@ -947,13 +1021,16 @@ def ingest_quarter_index(
     *,
     cik_whitelist: Optional[set[str]] = None,
 ) -> int:
-    """Fetch form.idx for the given report quarter and write new filings_13f rows.
+    """Fetch form.idx for the given report quarter and write tracked 13F rows.
 
     `quarter` is a **report quarter** (the period 13F holdings are "as of").
     13Fs are filed within 45 days *after* the quarter ends, so they appear in
     the EDGAR full-index of the *following* calendar quarter — fetch that one.
     Without this translation, requesting report quarter Q would fetch Q's filing
     index, which carries Q-1's holdings (see docs/architecture/parsing.md).
+
+    Both holdings reports (HR/HR-A) and notice reports (NT/NT-A) are retained;
+    notice rows later route through coverage metadata without an InfoTable.
 
     If cik_whitelist is None, all confirmed managers in institution_managers are used.
     Returns count of new filings inserted.
@@ -1019,11 +1096,13 @@ def ingest_quarter_index(
         filing = Filing13F(
             manager_id=manager.id,
             accession_no=rec.accession_no,
+            cik=cik_padded,
             period_of_report=period,
             filed_at=rec.filed_at,
             form_type=rec.form_type,
             version_rank=1,
             is_latest_for_period=False,  # recalculate sets the correct one
+            raw_filing_url=f"https://www.sec.gov/Archives/{rec.filename.lstrip('/')}",
         )
         db.add(filing)
         db.flush()
@@ -1118,7 +1197,7 @@ def ensure_filing_infotable_doc(
     from app.models.institutions import RawSourceDocument
 
     if not force_refresh and filing.raw_infotable_doc_id:
-        existing = db.query(RawSourceDocument).get(filing.raw_infotable_doc_id)
+        existing = db.get(RawSourceDocument, filing.raw_infotable_doc_id)
         if existing is not None and Path(existing.body_path).exists():
             primary_doc = (
                 db.get(RawSourceDocument, filing.raw_primary_doc_id)
@@ -1133,7 +1212,7 @@ def ensure_filing_infotable_doc(
 
     manager: InstitutionManager = filing.manager
     if manager is None:
-        manager = db.query(InstitutionManager).get(filing.manager_id)
+        manager = db.get(InstitutionManager, filing.manager_id)
     if manager is None or not (manager.cik or "").strip():
         return None
 
@@ -1196,7 +1275,7 @@ def ingest_filing_holdings(
     )
     manager: InstitutionManager = filing.manager
     if manager is None:
-        manager = db.query(InstitutionManager).get(filing.manager_id)
+        manager = db.get(InstitutionManager, filing.manager_id)
 
     cik = (manager.cik or "").lstrip("0")
     accession_raw = filing.accession_no.replace("-", "")
@@ -1204,10 +1283,10 @@ def ingest_filing_holdings(
     # If raw docs are already stored and we're not force-refreshing, skip URL resolution.
     if not force_refresh and filing.raw_infotable_doc_id and filing.raw_primary_doc_id:
         primary_doc = (
-            db.query(RawSourceDocument).get(filing.raw_primary_doc_id)
+            db.get(RawSourceDocument, filing.raw_primary_doc_id)
         )
         infotable_doc = (
-            db.query(RawSourceDocument).get(filing.raw_infotable_doc_id)
+            db.get(RawSourceDocument, filing.raw_infotable_doc_id)
         )
     else:
         with EdgarClient() as client:
@@ -1498,25 +1577,40 @@ def ingest_quarter_for_filing(filing) -> Optional[str]:
 
 
 def pending_ingest_quarters(db: Session) -> list[str]:
-    """**Report** quarters that still have un-ingested 13F filings.
+    """**Report** quarters that still have non-product-visible 13F filings.
 
-    A filing is un-ingested while ``raw_infotable_doc_id IS NULL`` — its infotable
-    has not been fetched or parsed. Each such filing is claimed by exactly one
-    ``ingest_holdings`` job; :func:`ingest_quarter_for_filing` says which.
+    HR-family completion is a current successful ParseRun, not merely a fetched
+    infotable link. Fetch is committed before parse, so keying only on
+    ``raw_infotable_doc_id IS NULL`` permanently skipped a last failed parse.
+    Notice-family filings have no infotable/ParseRun and are complete when their
+    filing-level parse status is succeeded. Each incomplete filing is claimed by
+    exactly one ``ingest_holdings`` job; :func:`ingest_quarter_for_filing` says
+    which.
 
-    Idempotent: once ingested a filing has ``raw_infotable_doc_id`` set and drops
-    out of the pool.
+    Idempotent: once an HR filing has a current successful ParseRun, or a notice
+    has succeeded, it drops out of the pool.
     """
+    current_success = exists().where(
+        and_(
+            ParseRun13F.accession_number == Filing13F.accession_number,
+            ParseRun13F.is_current.is_(True),
+            ParseRun13F.status == "succeeded",
+        )
+    )
     rows = (
-        db.query(Filing13F.report_quarter, Filing13F.period_of_report)
-        .filter(Filing13F.raw_infotable_doc_id.is_(None))
+        db.query(Filing13F)
+        .filter(
+            or_(
+                and_(Filing13F.form_type.in_(HR_FORM_TYPES), ~current_success),
+                and_(Filing13F.form_type.in_(NT_FORM_TYPES), Filing13F.parse_status != "succeeded"),
+            )
+        )
         .filter(
             or_(
                 Filing13F.report_quarter.isnot(None),
                 Filing13F.period_of_report.isnot(None),
             )
         )
-        .distinct()
         .all()
     )
     quarters = {ingest_quarter_for_filing(row) for row in rows}
@@ -1639,6 +1733,8 @@ def backfill_period_routing(db: Session, *, filings=None) -> dict[str, int]:
     # not silent. The counts are returned so the caller can mark the stage
     # partial_success.
     needs_review_count = 0
+    needs_review_routed_count = 0
+    needs_review_unrouted_count = 0
     failed_count = 0
     accepted_at_filled = 0
     for filing in filings:
@@ -1676,6 +1772,10 @@ def backfill_period_routing(db: Session, *, filings=None) -> dict[str, int]:
 
         if routing.parse_status == "needs_review":
             needs_review_count += 1
+            if routing.quarter_end_date is not None and routing.report_quarter is not None:
+                needs_review_routed_count += 1
+            else:
+                needs_review_unrouted_count += 1
             filing.parse_warning = routing.parse_warning
             logger.warning(
                 "backfill_period_routing: %s routing needs_review (%s)",
@@ -1711,6 +1811,8 @@ def backfill_period_routing(db: Session, *, filings=None) -> dict[str, int]:
             "quarter_end_added": 0,
             "report_quarter_added": 0,
             "needs_review": needs_review_count,
+            "needs_review_routed": needs_review_routed_count,
+            "needs_review_unrouted": needs_review_unrouted_count,
             "failed": failed_count,
             "accepted_at_filled": accepted_at_filled,
         }
@@ -1761,6 +1863,8 @@ def backfill_period_routing(db: Session, *, filings=None) -> dict[str, int]:
         "quarter_end_added": qend_count,
         "report_quarter_added": rq_count,
         "needs_review": needs_review_count,
+        "needs_review_routed": needs_review_routed_count,
+        "needs_review_unrouted": needs_review_unrouted_count,
         "failed": failed_count,
         "accepted_at_filled": accepted_at_filled,
     }

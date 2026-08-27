@@ -19,6 +19,8 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from itertools import count
+import io
+import json
 
 import pytest
 
@@ -304,6 +306,43 @@ def test_bootstrap_whitelist_handler_actually_seeds_v2_managers(db_session, monk
     assert tiger is not None
     assert tiger.style_primary == "growth_long_short"
     assert tiger.manager_type == "high_turnover"
+
+
+def test_seed_refreshes_current_dataroma_code_on_existing_manager(db_session, monkeypatch):
+    """The curated Dataroma mapping belongs to the offline seed.
+
+    Most of the 82 managers predate the completed mapping and already exist by
+    CIK. Re-seeding must refresh (and, when explicitly absent, clear) a stale
+    code; create-only assignment leaves production permanently unmapped.
+    """
+    from app.services import edgar_ingestion
+
+    manager = _make_existing(
+        db_session,
+        dataroma_code="OLD-CODE",
+        cik="7790000001",
+        legal_name="Mapped Manager",
+    )
+    payload = [
+        {
+            "dataroma_code": "CURRENT-CODE",
+            "display_name": "Mapped Manager",
+            "legal_name": "Mapped Manager",
+            "cik": "7790000001",
+            "style_primary": "value_concentrated",
+            "capital_structure": "locked_lp",
+        }
+    ]
+    monkeypatch.setattr(
+        "builtins.open",
+        lambda *_args, **_kwargs: io.StringIO(json.dumps(payload)),
+    )
+
+    seed_confirmed_managers(db_session)
+    db_session.flush()
+
+    assert manager.dataroma_code == "CURRENT-CODE"
+    assert manager.dataroma_synced_at is not None
 
 
 # ---------------------------------------------------------------------------

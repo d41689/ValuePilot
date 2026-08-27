@@ -1522,7 +1522,17 @@ def smart_retry_failed_jobs(session: Session, *, now: datetime | None = None) ->
             # Trigger a targeted retry
             retry_payload = {
                 key: target[key]
-                for key in ("job_type", "quarter", "accession_no")
+                for key in (
+                    "job_type",
+                    "quarter",
+                    "accession_no",
+                    "manager_id",
+                    "cik",
+                    "form_type",
+                    "source",
+                    "sync_date",
+                    "filename",
+                )
                 if target.get(key) is not None
             }
             retry_payload["trigger_source"] = "smart_retry"
@@ -2513,7 +2523,7 @@ def _job_events(job: JobRun) -> list[dict[str, Any]]:
     return sorted(events, key=lambda item: item.get("at") or "")
 
 
-def _job_retry_targets(job: JobRun) -> list[dict[str, str]]:
+def _job_retry_targets(job: JobRun) -> list[dict[str, Any]]:
     summary = job.summary_json if isinstance(job.summary_json, dict) else {}
     targets: list[dict[str, str]] = []
     seen: set[str] = set()
@@ -2550,6 +2560,32 @@ def _job_retry_targets(job: JobRun) -> list[dict[str, str]]:
                 "label": f"Retry accession {accession_no}",
             })
         return targets
+
+    if job.job_type == "ingest_accession" and job.status in {"failed", "partial_success"}:
+        # A daily form.idx job can succeed while one child accession fails.
+        # Replay the child's complete immutable discovery context; accession_no
+        # alone is insufficient when the filing row was never created because
+        # the detail fetch failed before the first commit.
+        source = job.input_json if isinstance(job.input_json, dict) else {}
+        required = ("accession_no", "manager_id", "form_type")
+        if not all(source.get(key) is not None for key in required):
+            return []
+        target: dict[str, Any] = {
+            key: source[key]
+            for key in (
+                "accession_no",
+                "manager_id",
+                "cik",
+                "form_type",
+                "source",
+                "sync_date",
+                "filename",
+            )
+            if source.get(key) is not None
+        }
+        target["job_type"] = "ingest_accession"
+        target["label"] = f"Retry accession {source['accession_no']}"
+        return [target]
 
     if job.job_type in {"enrich_metadata", "enrich_cusip"} and job.quarter and job.status in {"failed", "partial_success"}:
         return [
@@ -3166,14 +3202,7 @@ def _execute_job(session: Session, job_type: str, payload: dict[str, Any]) -> di
                 f"quarter this pipeline never populated"
             )
         if elsewhere:
-            detail = ", ".join(f"{q} ({n})" for q, n in sorted(elsewhere.items()))
-            warnings.append(
-                f"ingest_holdings parsed filings restating other report quarters: "
-                f"{detail}. Their ownership_changes and Oracle's Lens signals are "
-                f"now stale — re-run compute_ownership_changes and "
-                f"oracles_lens_score_backfill for those quarters"
-            )
-            results["quarters_needing_recompute"] = sorted(elsewhere)
+            results["restated_quarters"] = sorted(elsewhere)
         quarantined = summary.get("quarantined_accessions") or []
         if quarantined:
             # A fingerprint-upgrade reparse that failed the activation gate keeps
@@ -3200,6 +3229,72 @@ def _execute_job(session: Session, job_type: str, payload: dict[str, Any]) -> di
         results["stages"].append(enrich_stage["stage"])
         enrich_results = enrich_stage["summary"]
         results["enrichment"] = enrich_results
+
+        # A filed-quarter batch can contain a late 13F or amendment whose true
+        # report period belongs to an older quarter. Parsing it changes that
+        # quarter's authoritative holdings. Merely warning an operator left the
+        # persisted quality report, ownership changes, and Lens signals stale —
+        # which breaks empty-DB and daily-sync unattended operation. Global
+        # enrichment has converged immediately above, so refresh those three
+        # downstream read models here as visible child jobs.
+        if elsewhere:
+            from app.services.edgar_ingestion import next_quarter_label
+
+            recompute_targets = set(elsewhere)
+            for restated_quarter in elsewhere:
+                following_quarter = next_quarter_label(restated_quarter)
+                # Changes for Q+1 compare against Q. The current pipeline will
+                # refresh its own quarter below; any other already-materialized
+                # successor must be refreshed explicitly as well.
+                if following_quarter == quarter:
+                    continue
+                has_following_data = (
+                    session.query(Filing13F.id)
+                    .filter(Filing13F.report_quarter == following_quarter)
+                    .first()
+                    is not None
+                )
+                if has_following_data:
+                    recompute_targets.add(following_quarter)
+            ordered_recompute_targets = sorted(recompute_targets)
+            results["dependent_recompute_targets"] = ordered_recompute_targets
+            dependent_recomputes: list[dict[str, Any]] = []
+            recomputed: list[str] = []
+            still_stale: list[str] = []
+            for restated_quarter in ordered_recompute_targets:
+                quarter_stages: list[dict[str, Any]] = []
+                for dependent_job_type in (
+                    "quality_check",
+                    "compute_ownership_changes",
+                    "oracles_lens_score_backfill",
+                ):
+                    dependent_stage = _execute_pipeline_stage_job(
+                        session,
+                        parent_payload=payload,
+                        job_type=dependent_job_type,
+                        payload={"quarter": restated_quarter},
+                        trigger_source="pipeline_recompute",
+                    )
+                    quarter_stages.append(dependent_stage["stage"])
+                dependent_recomputes.append(
+                    {"quarter": restated_quarter, "stages": quarter_stages}
+                )
+                if all(stage["status"] == "succeeded" for stage in quarter_stages):
+                    recomputed.append(restated_quarter)
+                else:
+                    still_stale.append(restated_quarter)
+
+            results["dependent_recomputes"] = dependent_recomputes
+            if recomputed:
+                results["quarters_recomputed"] = recomputed
+            if still_stale:
+                results["quarters_needing_recompute"] = still_stale
+                warnings.append(
+                    "automatic downstream recompute failed for restated report "
+                    f"quarter(s): {', '.join(still_stale)}"
+                )
+            if warnings:
+                results["pipeline_warning"] = " | ".join(warnings)
 
         # Stage 4: Run quality checks — always attempt if we reached this point.
         quality_stage = _execute_pipeline_stage_job(
@@ -3453,6 +3548,14 @@ def _execute_job(session: Session, job_type: str, payload: dict[str, Any]) -> di
                 status_breakdown[key] = status_breakdown.get(key, 0) + 1
             except Exception as exc:  # noqa: BLE001 - isolate per-manager failure
                 failures.append({"manager_id": manager_id, "error": str(exc)})
+        session.flush()
+        from app.services.research_notifications import (
+            materialize_followed_manager_position_changes,
+        )
+
+        notification_events_created = materialize_followed_manager_position_changes(
+            session, report_quarter=quarter
+        )
         # Failure visibility: any per-manager failure degrades the stage so the
         # pipeline reports partial_success and operator alerting / smart retry can
         # see it. All-fail → failed; some succeed + some fail → partial_success.
@@ -3469,6 +3572,7 @@ def _execute_job(session: Session, job_type: str, payload: dict[str, Any]) -> di
             "status_breakdown": status_breakdown,
             "failures": failures[:50],
             "failure_count": len(failures),
+            "notification_events_created": notification_events_created,
             "status": status,
         }
 
@@ -3744,11 +3848,33 @@ def _execute_ingest_job(session: Session, job_type: str, payload: dict[str, Any]
         from app.services.thirteenf_filing_detail import ingest_accession_filing_detail
 
         result = ingest_accession_filing_detail(session, payload)
+        quarter_refresh = None
+        report_quarter = result.get("report_quarter")
+        if (
+            payload.get("source") == "daily_index"
+            and result.get("status") == "succeeded"
+            and report_quarter
+        ):
+            refresh = trigger_job(
+                session,
+                requested_by_user_id=None,
+                payload={
+                    "job_type": "quarterly_pipeline",
+                    "quarter": report_quarter,
+                    "trigger_source": "daily_sync",
+                },
+            )
+            quarter_refresh = {
+                "quarter": report_quarter,
+                "job_id": refresh.get("id") or refresh.get("active_job_id"),
+                "conflict": bool(refresh.get("conflict")),
+            }
         return {
             "filings_processed": 1,
             "filing_id": result["filing_id"],
             "accession_number": result["accession_number"],
-            "report_quarter": result["report_quarter"],
+            "report_quarter": report_quarter,
+            "quarter_refresh": quarter_refresh,
             "status": "succeeded" if result["status"] in {"succeeded", "needs_review"} else "failed",
             "detail_status": result["status"],
         }
@@ -3774,6 +3900,7 @@ def _execute_ingest_job(session: Session, job_type: str, payload: dict[str, Any]
     quarter = _required(payload, "quarter")
     filings = _ingest_candidate_filings(session, quarter)
     total_holdings = 0
+    notice_processed = 0
     skipped = 0
     xml_fetched = 0
     no_cik = 0
@@ -3785,6 +3912,8 @@ def _execute_ingest_job(session: Session, job_type: str, payload: dict[str, Any]
         backfill_period_routing,
         ensure_filing_infotable_doc,
     )
+    from app.services.thirteenf_filing_detail import ingest_accession_filing_detail
+    from app.services.thirteenf_holdings_query import NT_FORM_TYPES
     from sqlalchemy import update
 
     # --- Transaction-boundary contract (external review R1-P1) ----------
@@ -3801,6 +3930,31 @@ def _execute_ingest_job(session: Session, job_type: str, payload: dict[str, Any]
     # re-fetches when a linked body file is missing) and is idempotent.
     routing_candidates: list[Filing13F] = []
     for filing in filings:
+        if filing.form_type in NT_FORM_TYPES:
+            # Notices have a primary filing document but deliberately have no
+            # information table. Route and persist their coverage metadata via
+            # the same primary-document authority used by daily sync; never
+            # probe for an infotable that cannot exist.
+            try:
+                ingest_accession_filing_detail(
+                    session,
+                    {
+                        "accession_no": filing.accession_no,
+                        "manager_id": filing.manager_id,
+                        "cik": filing.cik or (filing.manager.cik if filing.manager else None),
+                        "form_type": filing.form_type,
+                        "filename": filing.raw_filing_url,
+                        "sync_date": filing.filed_at.isoformat(),
+                    },
+                )
+                notice_processed += 1
+            except Exception as exc:
+                if _is_programming_error(exc):
+                    raise
+                failures.append(
+                    {"accession_no": filing.accession_no, "error": f"fetch_notice: {exc}"}
+                )
+            continue
         had_doc_before = filing.raw_infotable_doc_id is not None
         try:
             with session.begin_nested():  # per-filing SAVEPOINT
@@ -3828,7 +3982,8 @@ def _execute_ingest_job(session: Session, job_type: str, payload: dict[str, Any]
     # failure mode of the route_period import bug, review R1-P1).
     routing_summary: dict[str, int] = {
         "period_changed": 0, "quarter_end_added": 0, "report_quarter_added": 0,
-        "needs_review": 0, "failed": 0,
+        "needs_review": 0, "needs_review_routed": 0,
+        "needs_review_unrouted": 0, "failed": 0,
     }
     if routing_candidates:
         routing_summary = backfill_period_routing(session, filings=routing_candidates)
@@ -3978,6 +4133,23 @@ def _execute_ingest_job(session: Session, job_type: str, payload: dict[str, Any]
         # whole sweep (T1-FU review P2).
         session.commit()
 
+    # Phase 5.5: durable, idempotent user notification facts are materialized
+    # only after the active-filing authority decision is committed. This never
+    # performs external delivery; it writes the in-app fact and external outbox
+    # rows for opted-in manager followers. Amendments become linked correction
+    # events instead of rewriting or duplicating the original notification.
+    from app.services.research_notifications import (
+        materialize_followed_manager_filing,
+    )
+
+    notification_events_created = 0
+    for filing in filings:
+        session.refresh(filing)
+        if filing.is_active_for_manager_period and filing.parse_status == "succeeded":
+            notification_events_created += materialize_followed_manager_filing(
+                session, filing_id=filing.id
+            )
+
     # Degraded period routing (needs_review / failed outcomes from
     # route_period) is surfaced as partial_success so the operator sees it
     # — previously these were silent (external review R2-P1).
@@ -4021,6 +4193,7 @@ def _execute_ingest_job(session: Session, job_type: str, payload: dict[str, Any]
         "filings_for_requested_quarter": for_requested_quarter,
         "filings_routed_to_other_quarters": dict(sorted(routed_elsewhere.items())),
         "filings_skipped": skipped,
+        "notice_filings_processed": notice_processed,
         "filings_xml_fetched": xml_fetched,
         "filings_skipped_no_cik": no_cik,
         "filings_failed": len(failures),
@@ -4033,10 +4206,17 @@ def _execute_ingest_job(session: Session, job_type: str, payload: dict[str, Any]
         "filings_activated": filings_activated,
         "filings_metadata_applied": metadata_applied,
         "restatements_applied": restatements_applied,
+        "notification_events_created": notification_events_created,
         "filings_period_changed": routing_summary.get("period_changed", 0),
         "filings_quarter_end_added": routing_summary.get("quarter_end_added", 0),
         "filings_report_quarter_added": routing_summary.get("report_quarter_added", 0),
         "filings_routing_needs_review": routing_needs_review,
+        "filings_routing_needs_review_routed": routing_summary.get(
+            "needs_review_routed", 0
+        ),
+        "filings_routing_needs_review_unrouted": routing_summary.get(
+            "needs_review_unrouted", 0
+        ),
         "filings_routing_failed": routing_failed,
         "status": "partial_success" if degraded else "succeeded",
     }

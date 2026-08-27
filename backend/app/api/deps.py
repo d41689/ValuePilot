@@ -50,6 +50,44 @@ def get_current_user(
     return user
 
 
+def get_optional_current_user(
+    db: SessionDep,
+    credentials: HTTPAuthorizationCredentials | None = Depends(_bearer_scheme),
+) -> User | None:
+    """Return the session user when present; anonymous when no token exists.
+
+    Invalid/expired credentials never degrade to anonymous.  This dependency is
+    only for legacy read endpoints that remain publicly callable while private
+    overlays are scoped to an authenticated user.
+    """
+    if credentials is None:
+        return None
+    try:
+        payload = decode_token(credentials.credentials)
+    except JWTError:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid or expired token",
+        )
+    if payload.get("type") != "access":
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid token type",
+        )
+    user = db.get(User, int(payload["sub"]))
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="User not found",
+        )
+    if not user.is_active:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Account disabled",
+        )
+    return user
+
+
 def get_current_admin(user: "User" = Depends(get_current_user)) -> User:
     if not user.is_admin:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Admin privileges required")
@@ -57,4 +95,5 @@ def get_current_admin(user: "User" = Depends(get_current_user)) -> User:
 
 
 CurrentUser = Annotated[User, Depends(get_current_user)]
+OptionalCurrentUser = Annotated[User | None, Depends(get_optional_current_user)]
 AdminUser = Annotated[User, Depends(get_current_admin)]

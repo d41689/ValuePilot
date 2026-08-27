@@ -3,21 +3,36 @@
 import Link from 'next/link';
 import { usePathname, useRouter } from 'next/navigation';
 import { useEffect, useMemo, useState } from 'react';
-import { Activity, Database, FileText, Landmark, LayoutDashboard, LogOut, Search, Upload, Star } from 'lucide-react';
+import { Activity, Bell, BookOpen, ClipboardCheck, Database, FileText, Inbox, Landmark, LogOut, Menu, PieChart, Search, ShieldCheck, Upload, Star, Users } from 'lucide-react';
 
 import * as authSession from '@/lib/authSession';
 import apiClient from '@/lib/api/client';
 import { cn } from '@/lib/utils';
 import { Button } from '@/components/ui/button';
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu';
 
 const navigation = [
-  { name: 'Dashboard', href: '/home', icon: LayoutDashboard },
+  { name: 'Research Inbox', href: '/home', icon: Inbox },
+  { name: 'Research Cases', href: '/research/cases', icon: BookOpen },
+  { name: 'Notifications', href: '/notifications', icon: Bell },
+  { name: 'Manual Portfolios', href: '/portfolios', icon: PieChart },
   { name: 'Watchlist', href: '/watchlist', icon: Star },
   { name: "Oracle's Lens", href: '/13f/oracles-lens', icon: Landmark },
+  { name: '13F Managers', href: '/13f/managers', icon: Users },
   { name: '13F Admin', href: '/admin/13f', icon: Database },
+  { name: 'Coverage Admin', href: '/admin/coverage', icon: ClipboardCheck },
+  { name: 'Notification Ops', href: '/admin/notifications', icon: Bell },
   { name: 'Documents', href: '/documents', icon: FileText },
   { name: 'Upload', href: '/upload', icon: Upload },
   { name: 'Screener', href: '/screener', icon: Search },
+  { name: 'Privacy & account', href: '/settings/privacy', icon: ShieldCheck },
 ];
 
 export default function AppShell({ children }: { children: React.ReactNode }) {
@@ -35,7 +50,7 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
 
   const visibleNavigation = useMemo(() => {
     if (role === 'admin') return navigation;
-    return navigation.filter((item) => item.href !== '/upload' && item.href !== '/admin/13f');
+    return navigation.filter((item) => !item.href.startsWith('/admin/'));
   }, [role]);
 
   async function handleSignOut() {
@@ -66,8 +81,51 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
         <div className="absolute -top-24 right-[-6rem] h-64 w-64 rounded-full bg-primary/15 blur-3xl" />
         <div className="absolute bottom-[-8rem] left-[-4rem] h-72 w-72 rounded-full bg-amber-300/30 blur-3xl" />
       </div>
-      <div className="mx-auto flex min-h-screen w-full max-w-[1600px] gap-6 p-2">
-        <aside className="flex w-56 shrink-0 flex-col gap-6 rounded-2xl border border-border/60 bg-card/90 p-5 shadow-sm backdrop-blur">
+      <div className="mx-auto flex min-h-screen w-full max-w-[1600px] flex-col gap-2 p-2 md:flex-row md:gap-6">
+        <header className="flex items-center justify-between rounded-2xl border border-border/60 bg-card/90 px-4 py-3 shadow-sm backdrop-blur md:hidden">
+          <Link href="/home" className="flex min-w-0 items-center gap-3">
+            <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-primary/10 text-primary">
+              <Activity className="h-5 w-5" />
+            </div>
+            <div className="min-w-0">
+              <div className="font-display font-semibold tracking-tight">ValuePilot</div>
+              <div className="truncate text-xs text-muted-foreground">Research Workspace</div>
+            </div>
+          </Link>
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button type="button" variant="outline" size="icon" aria-label="Open navigation menu">
+                <Menu className="h-4 w-4" />
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end" className="w-64">
+              <DropdownMenuLabel>Research navigation</DropdownMenuLabel>
+              <DropdownMenuSeparator />
+              {visibleNavigation.map((item) => {
+                const Icon = item.icon;
+                const isActive = pathname.startsWith(item.href);
+                return (
+                  <DropdownMenuItem key={item.name} asChild>
+                    <Link
+                      href={item.href}
+                      className={cn('gap-2', isActive && 'bg-primary/10 text-primary')}
+                    >
+                      <Icon className="h-4 w-4" />
+                      {item.name}
+                    </Link>
+                  </DropdownMenuItem>
+                );
+              })}
+              <DropdownMenuSeparator />
+              <DropdownMenuItem onSelect={() => void handleSignOut()} className="gap-2">
+                <LogOut className="h-4 w-4" />
+                Sign out
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
+        </header>
+
+        <aside className="hidden w-56 shrink-0 flex-col gap-6 rounded-2xl border border-border/60 bg-card/90 p-5 shadow-sm backdrop-blur md:flex">
           <div className="flex items-center gap-3">
             <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-primary/10 text-primary">
               <Activity className="h-5 w-5" />
@@ -110,7 +168,7 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
           </Button>
         </aside>
 
-        <main className="min-w-0 flex-1 overflow-auto rounded-2xl border border-border/60 bg-card/85 p-6 shadow-sm backdrop-blur">
+        <main className="min-w-0 flex-1 overflow-auto rounded-2xl border border-border/60 bg-card/85 p-4 shadow-sm backdrop-blur md:p-6">
           {children}
         </main>
       </div>

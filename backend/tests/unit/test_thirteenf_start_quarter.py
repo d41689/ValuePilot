@@ -67,7 +67,40 @@ def test_latest_scoreable_quarter_after_window_opens():
     assert ssq.latest_scoreable_quarter(date(2026, 8, 20)) == "2026-Q2"
 
 
-# ---------- _has_meaningful_coverage: signal rows are the ONLY proof --------
+# ---------- _has_meaningful_coverage: completed stage manifest is proof ------
+
+
+def _completed_pipeline_job(quarter: str = "2025-Q4", **overrides) -> JobRun:
+    stages = [
+        {"job_type": job_type, "job_id": index, "status": "succeeded"}
+        for index, job_type in enumerate(
+            [
+                "fetch_quarter_index",
+                "ingest_holdings",
+                "enrich_metadata",
+                "quality_check",
+                "compute_ownership_changes",
+                "oracles_lens_score_backfill",
+            ],
+            start=1,
+        )
+    ]
+    payload = {
+        "job_type": "quarterly_pipeline",
+        "status": "succeeded",
+        "lock_key": f"quarterly_pipeline:{quarter}",
+        "dedupe_key": f"quarterly_pipeline:{quarter}",
+        "quarter": quarter,
+        "trigger_source": "pipeline",
+        "summary_json": {
+            "summary_schema": "quarterly_pipeline_summary.v1",
+            "quarter": quarter,
+            "stages": stages,
+        },
+        "created_at": datetime.now(timezone.utc),
+    }
+    payload.update(overrides)
+    return JobRun(**payload)
 
 def test_has_meaningful_coverage_is_false_for_succeeded_job_with_zero_signals(db_session):
     """A succeeded oracles_lens_score_backfill job is NOT sufficient on its
@@ -92,9 +125,8 @@ def test_has_meaningful_coverage_is_false_for_succeeded_job_with_zero_signals(db
     assert ssq._has_meaningful_coverage(db_session, "2025-Q4") is False
 
 
-def test_has_meaningful_coverage_is_true_when_signal_rows_exist(db_session):
-    """A quarter with at least one OraclesLensSignal row — the pipeline's
-    terminal output — is covered."""
+def test_has_meaningful_coverage_is_false_for_signal_without_completed_pipeline(db_session):
+    """One score row cannot prove the SEC index and every manager completed."""
     from datetime import date
     from app.models.oracles_lens import OraclesLensSignal
     from app.models.stocks import Stock
@@ -112,8 +144,95 @@ def test_has_meaningful_coverage_is_true_when_signal_rows_exist(db_session):
     ))
     db_session.flush()
 
-    assert ssq._has_meaningful_coverage(db_session, "2025-Q4") is True
+    assert ssq._has_meaningful_coverage(db_session, "2025-Q4") is False
     assert ssq._has_meaningful_coverage(db_session, "2025-Q3") is False
+
+
+def test_has_meaningful_coverage_is_true_for_complete_pipeline_manifest(db_session):
+    """A green parent plus all six green stages is the persisted completion marker."""
+    db_session.add(_completed_pipeline_job())
+    db_session.flush()
+
+    assert ssq._has_meaningful_coverage(db_session, "2025-Q4") is True
+
+
+def test_has_meaningful_coverage_accepts_only_fully_routed_review_filings(
+    db_session,
+):
+    """An explicit old quarter-end is reviewable but not incomplete.
+
+    Late filings with ``PERIOD_SUSPICIOUSLY_STALE`` still have a deterministic
+    report quarter. Once all dependent read models were recomputed, restarting
+    the API must not enqueue the same quarter forever merely because the ingest
+    job preserved that human-review signal.
+    """
+    job = _completed_pipeline_job(status="partial_success")
+    job.summary_json["stages"][1]["status"] = "partial_success"
+    job.summary_json["holdings_ingestion"] = {
+        "status": "partial_success",
+        "filings_failed": 0,
+        "filings_quarantined": 0,
+        "filings_routing_failed": 0,
+        "filings_routing_needs_review": 4,
+        "filings_routing_needs_review_routed": 4,
+        "filings_routing_needs_review_unrouted": 0,
+    }
+    job.summary_json["dependent_recompute_targets"] = ["2025-Q1"]
+    job.summary_json["quarters_recomputed"] = ["2025-Q1"]
+    db_session.add(job)
+    db_session.flush()
+
+    assert ssq._has_meaningful_coverage(db_session, "2025-Q4") is True
+
+
+def test_has_meaningful_coverage_rejects_unrouted_review_filings(db_session):
+    job = _completed_pipeline_job(status="partial_success")
+    job.summary_json["stages"][1]["status"] = "partial_success"
+    job.summary_json["holdings_ingestion"] = {
+        "status": "partial_success",
+        "filings_failed": 0,
+        "filings_quarantined": 0,
+        "filings_routing_failed": 0,
+        "filings_routing_needs_review": 1,
+        "filings_routing_needs_review_routed": 0,
+        "filings_routing_needs_review_unrouted": 1,
+    }
+    db_session.add(job)
+    db_session.flush()
+
+    assert ssq._has_meaningful_coverage(db_session, "2025-Q4") is False
+
+
+@pytest.mark.parametrize(
+    "job_overrides",
+    [
+        {"status": "partial_success"},
+        {
+            "summary_json": {
+                "summary_schema": "quarterly_pipeline_summary.v1",
+                "quarter": "2025-Q4",
+                "stages": [
+                    {"job_type": "fetch_quarter_index", "job_id": 1, "status": "succeeded"},
+                ],
+            },
+        },
+        {
+            "summary_json": {
+                "summary_schema": "quarterly_pipeline_summary.v1",
+                "quarter": "2025-Q4",
+                "pipeline_warning": "incomplete ingestion",
+                "stages": [],
+            },
+        },
+    ],
+)
+def test_has_meaningful_coverage_rejects_incomplete_pipeline_manifest(
+    db_session, job_overrides
+):
+    db_session.add(_completed_pipeline_job(**job_overrides))
+    db_session.flush()
+
+    assert ssq._has_meaningful_coverage(db_session, "2025-Q4") is False
 
 
 # ---------- reconcile_start_quarter_coverage --------------------------------
@@ -153,28 +272,9 @@ def test_reconcile_enqueues_each_missing_quarter(db_session, monkeypatch):
     assert result["skipped_conflict"] == []
 
 
-def test_reconcile_skips_quarters_with_oracles_lens_signals(db_session, monkeypatch):
-    """Skip quarters that have Oracle's Lens signals — the terminal output
-    of quarterly_pipeline. Quarters with no signals (pipeline never finished,
-    or never ran) ARE re-enqueued. This anchors the reconcile on the
-    pipeline's last stage so a future pipeline bug fix self-heals."""
-    from datetime import date, datetime, timezone
-    from app.models.oracles_lens import OraclesLensSignal
-    from app.models.stocks import Stock
-
-    stock = Stock(ticker="TST", exchange="NYSE", company_name="Test Corp", is_active=True)
-    db_session.add(stock)
-    db_session.flush()
-    # A signal row for 2025-Q4 marks that quarter as fully covered.
-    signal = OraclesLensSignal(
-        stock_id=stock.id,
-        report_quarter="2025-Q4",
-        quarter_end_date=date(2025, 12, 31),
-        score_version="v1.0",
-        score_confidence="high_confidence",
-        computed_at=datetime.now(timezone.utc),
-    )
-    db_session.add(signal)
+def test_reconcile_skips_quarters_with_completed_pipeline(db_session, monkeypatch):
+    """Skip only a quarter carrying the full six-stage completion manifest."""
+    db_session.add(_completed_pipeline_job())
     db_session.flush()
 
     calls: list[dict] = []

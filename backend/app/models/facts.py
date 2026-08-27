@@ -1,6 +1,6 @@
 from datetime import date, datetime
 from typing import Optional, Any, TYPE_CHECKING
-from sqlalchemy import String, DateTime, Boolean, ForeignKey, Integer, Float, Date, Text, JSON
+from sqlalchemy import BigInteger, String, DateTime, Boolean, ForeignKey, Integer, Float, Date, Text, JSON
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.sql import func
@@ -28,7 +28,9 @@ class MetricFact(Base):
     as_of_date: Mapped[Optional[date]] = mapped_column(Date, nullable=True)
     source_document_id: Mapped[Optional[int]] = mapped_column(ForeignKey("pdf_documents.id"), nullable=True)
     source_type: Mapped[str] = mapped_column(String) # parsed / calculated / manual
-    source_ref_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True) # ID of extraction or formula run
+    # Polymorphic durable source reference. For manual val.fair_value facts this
+    # may identify the publishing research_case_revision.
+    source_ref_id: Mapped[Optional[int]] = mapped_column(BigInteger, nullable=True)
     is_current: Mapped[bool] = mapped_column(Boolean, default=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), onupdate=func.now(), server_default=func.now())

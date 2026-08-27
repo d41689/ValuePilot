@@ -1,7 +1,7 @@
 # Task: Quant Trading — Phase 1: Research & Signal Validation
 **ID:** `T-2026-07-01-quant-trading-phase-1`  
-**Created:** 2026-07-01 · **Updated:** 2026-07-02 (synced to plan **v10 / D14**: 2025+-only VL corpus constraint; 1-R4 restructured into hypothesis set H1/H2/H3; 1-R3 factor library = VL-proxy recipes; 1-R0 data plan revised)  
-**Status:** `READY` — **start at `1-R0` (blocking)**; `1-R1…1-R4` do not start until 1-R0 passes  
+**Created:** 2026-07-01 · **Updated:** 2026-07-21 (synced to plan **v11 / D15**: repeatable 1-R0A audit implemented; explicit NO_GO; later tasks closed)
+**Status:** `BLOCKED — 1-R0A completed NO_GO on 2026-07-21`; `1-R1…1-R4` must not start
 **Priority:** `P1`  
 **Owners:** Tech Lead / Quant PM  
 
@@ -15,9 +15,13 @@ Implement Phase 1 (Research & Signal Validation) to verify that the parsed Value
 ### Acceptance Criteria
 
 - **1-R0 Data-Sufficiency Audit + Power Analysis (BLOCKING — nothing else starts until this passes; data plan revised per plan v10 D14):**
+  - **2026-07-21 result:** the repeatable development audit is implemented and
+    archived at `docs/audits/quant/2026-07-21_1-r0-data-sufficiency.md`.
+    It returned explicit **NO_GO**. P1-A's report exists; P1-B and the overall
+    1-R0 gate do not pass.
   - Quantify actual `metric_facts` historical depth: years covered × stocks per monthly cross-section × metric coverage. *Empirical status 2026-07-02: dev and prod `metric_facts`/`pdf_documents` are both **0 rows**.*
   - **Data-availability matrix (D14 constraint):** VL reports are downloadable **2025+ only**. Each carries ~10 years of *restated* fundamentals (survivors-only, reconstructed-vintage use only) but opinion signals exist **only as of each report date** (unrecoverable). Record this matrix in the audit report.
-  - Run a pre-registered **power analysis per hypothesis (H1/H2/H3, see 1-R4)**: given the α threshold (≥ 2%/yr net) and a realistic tracking-error assumption (4–6%/yr), compute the minimum `T × breadth` required for one-sided `t_HAC ≥ 3` **including the holdout split**.
+  - Run a pre-registered **power analysis per hypothesis (H1/H2/H3, see 1-R4)**: given the α threshold (≥ 2%/yr net), realistic tracking-error scenarios (4–6%/yr), target power and holdout split, compute the required return-history time for one-sided `t_HAC ≥ 3`. Cross-sectional breadth is a separate eligibility floor and is never treated as fungible with HAC time observations.
   - Execute the **v10 data plan**:
     1. **Required:** acquire a survivorship-free commodity fundamentals + prices dataset (delisted names included) — the backbone for H1/H3 and the generic null.
     2. **Immediate:** stand up the **weekly Value Line archiving program** (every downloadable report, every week; real `report_date` → natively PIT-correct). This is H2's only raw material; a missed week can never be backfilled. Automate it (scheduler job) before any engine code.
@@ -25,6 +29,9 @@ Implement Phase 1 (Research & Signal Validation) to verify that the parsed Value
     4. Define the **reconstructed-vintage mode** as a PIT-contract amendment (goes into 1-R1 scope): synthetic publication lag `period_end_date + 90d`, results stamped `vintage_mode=reconstructed` + survivor-biased, admissible for **relative judgments only** (deciles/IC/monotonicity), never for the absolute-return Go/No-Go.
   - **Gate: audited data meets the power requirement for at least H1, else 1-R1…1-R4 stay closed.** Running any hypothesis underpowered is forbidden (inconclusive results burn the holdout).
 - **1-R1 Database PIT Read Engine**: Implement the historical Point-in-Time read contract ([quant-trading-pit-read-contract.md](../architecture/quant-trading-pit-read-contract.md), all sections incl. §5 no-global-dedup).
+  This now includes an H3 filing/amendment selector that chooses the 13F
+  version observable at T; the current product `active_hr_holdings_query` is
+  not a historical PIT reader.
 - **1-R2 Calculated-Metric Registry**: The pure builders already exist (`build_piotroski_f_score_facts`, `build_value_line_ratio_facts`); this task is the **registry mapping each calculated `metric_key` → its builder**, driving recompute-from-PIT-inputs with **fail-closed** on unregistered metrics (PIT contract §4).
 - **1-R3 Cross-Sectional Factor Engine**: Lightweight Python/Pandas factor evaluation module:
   - Decile return analysis + IC.
@@ -42,9 +49,9 @@ Implement Phase 1 (Research & Signal Validation) to verify that the parsed Value
 - **1-R4 OOS Signal Gate + Moat Hypothesis Set** (plan §14 1-R4, v10 protocol — run **once** on an untouched holdout; all pre-registered in the Edge Thesis):
   - **(a) Base gate:** net-of-friction, net-of-tax OOS Sharpe > 0.6 AND beats the strategy's **risk/tax-matched** benchmark (SPY / 60-40 as default floors) by ≥ 1.5% net CAGR.
   - **(b) Moat hypothesis set — controlled spanning regressions** against the same fixed null (FF5 + momentum + same-universe generic composite; identical universe/cadence/neutralization/cost-tax model):
-    - **H1 — VL-proxy composite** (blocking, testable NOW on the survivorship-free commodity backbone, full history): does the VL-style combination add α beyond the null?
+    - **H1 — VL-proxy composite** (blocking, designed but not currently powered): after a survivorship-free commodity backbone passes 1-R0, does the VL-style combination add α beyond the null?
     - **H2 — VL actual-vs-proxy residual** (NON-blocking forward bonus): does the published VL rank add α beyond our proxy (analyst-override value)? Evaluated on the weekly-archived 2025+ corpus at a pre-registered future date once 1-R0's power calc says it is testable.
-    - **H3 — 13F aggregation signals** (blocking-eligible, testable NOW on in-house EDGAR/Oracle's Lens data): conviction clones / crowding / 13F momentum vs the same null.
+    - **H3 — 13F aggregation signals** (blocking-eligible candidate, not currently powered): conviction clones / crowding / 13F momentum vs the same null, using the filing/amendment version observable at T.
     Each hypothesis passes only with ALL of:
     - α > 0 with one-sided **`t_HAC ≥ 3`** (Newey–West, lag `L = ceil(1.5 × rebalance_interval_periods)`, floor 3) — or the fixed-seed stationary-bootstrap alternative (10k draws, seed = `hash(strategy_key, strategy_version, backtest_run_id, holdout_id)`, lower 5th-percentile α > 0);
     - **Benjamini–Hochberg FDR q = 0.05** across the `K` pre-registered hypotheses AND **Deflated Sharpe Ratio** P(skill) ≥ 0.95 (inputs: observed non-annualized Sharpe, `T`, skew, kurtosis, base frequency, trial-Sharpe variance; `N` = `backtest_runs` rows sharing `trial_group_id` before holdout unlock);

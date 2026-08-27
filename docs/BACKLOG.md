@@ -9,6 +9,33 @@ long — escalate to the user. **medium / low** = ordinary follow-up.
 
 ## Open
 
+### Frontend Browserslist compatibility data is stale
+- **Found:** 2026-07-19, zero-database rehearsal closing gate
+- **Severity:** low (dependency-maintenance warning; build output and product
+  behavior are unaffected)
+- **Problem:** The canonical production build succeeds but reports that its
+  bundled `caniuse-lite` data is seven months old. Updating it changes frontend
+  dependency metadata and should be handled as a narrow dependency-maintenance
+  change, not folded into the 13F correctness repair.
+- **Fix sketch:** run the official Browserslist database updater in the web
+  container, review the lockfile-only dependency diff, then rerun frontend
+  tests, lint, and production build.
+- **Context:** `docs/tasks/2026-07-19_13f-current-code-zero-db-rehearsal.md`
+- **Issue:** —
+
+### 13F sector allocation has no canonical queryable taxonomy
+- **Found:** 2026-07-19, Dataroma manager-workbench implementation
+- **Severity:** low (investor-analysis coverage gap; no data correctness regression)
+- **Problem:** Dataroma's manager holdings page includes a sector-percentage
+  analysis, but ValuePilot's `stocks` identity table has no canonical sector or
+  industry field and the 13F source itself does not provide one. Inferring sector
+  from issuer names would produce precise-looking but unauditable allocations.
+- **Fix sketch:** choose a licensed/canonical classification source, persist its
+  taxonomy and provenance by stock identity, define unmapped/changed-sector
+  semantics, then add the allocation to manager holdings and history.
+- **Context:** `docs/tasks/2026-07-19_13f-manager-research-workbench.md`
+- **Issue:** —
+
 ### ~~OpenFIGI matcher silently drops mega-caps whose CUSIP has no US-composite listing~~ (RESOLVED — curated CUSIP overrides)
 - **Found:** 2026-07-10, PR (13f-data-trust-guardrails) — surfaced by the new
   `HIGH_IMPACT_CUSIP_UNRESOLVED` guardrail
@@ -61,131 +88,6 @@ long — escalate to the user. **medium / low** = ordinary follow-up.
 - **Context:** `docs/tasks/2026-07-10_13f-data-trust-guardrails.md`
 - **Issue:** —
 
-### Oracle's Lens: consensus-vs-distinctiveness ranking philosophy is unspecified
-- **Found:** 2026-07-10, PO/value-investor review of `/admin/13f`
-- **Severity:** medium (product-strategy decision, not a bug)
-- **Problem:** The Lens blends consensus (many managers hold), distinctiveness
-  (few managers, high conviction), and conviction into one score, but the product
-  has never stated which it is *for*. A value investor wants the opposite of the
-  crowd as often as the consensus; a single blended rank can bury a
-  high-distinctiveness idea under a mega-cap everyone owns. This is a PO decision
-  (what is the Lens optimizing for?), not a unilateral code change — surfacing it
-  so the ranking weights are chosen deliberately, with a stated thesis.
-- **Fix sketch:** write the ranking thesis down first (PRD note), then, if
-  wanted, expose consensus vs. distinctiveness as separate sortable lenses rather
-  than one opaque blend.
-- **Context:** `docs/tasks/2026-07-10_13f-data-trust-guardrails.md`
-- **Issue:** —
-
-### 13F: no "unrepresentative filer" flag for activist / macro managers
-- **Found:** 2026-07-10, PO/value-investor review of `/admin/13f`
-- **Severity:** medium (signal-quality; can mislead)
-- **Problem:** A 13F reports only long US-listed equity positions. For an activist
-  running concentrated control stakes and derivatives (Icahn) or a macro shop
-  whose book is mostly futures/FX/credit (Bridgewater), the 13F is a poor proxy
-  for the actual portfolio — yet the Lens treats every manager's holdings as an
-  equally faithful conviction signal. Weighting these managers the same as a
-  long-only equity picker distorts consensus and conviction.
-- **Fix sketch:** a per-manager `thirteenf_representativeness` classification
-  (faithful / partial / unrepresentative) that down-weights or annotates such
-  managers in the Lens. Needs a stated methodology + PO sign-off before it changes
-  scores.
-- **Context:** `docs/tasks/2026-07-10_13f-data-trust-guardrails.md`
-- **Issue:** —
-
-### 13F daily-sync job failure needs a decision
-- **Found:** 2026-07-10, PO review of `/admin/13f` (scheduler enabled on dev)
-- **Severity:** low (the recurring daily-sync poll surfaces a failing/no-op state)
-- **Problem:** With the scheduler enabled, the daily-sync path reports a failure /
-  empty state on the admin surface. It has not been root-caused: it may be a real
-  fetch/parse failure, or an expected no-op outside filing season being rendered as
-  a failure. Left undiagnosed it trains operators to ignore a red state.
-- **Fix sketch:** reproduce the daily-sync run, classify (real failure vs.
-  benign no-op), and either fix the fetch path or render the no-op as an explicit
-  "nothing to sync" state instead of a failure.
-- **Context:** `docs/tasks/2026-07-10_13f-data-trust-guardrails.md`
-- **Issue:** —
-
-### Authority rule 2 ranks admin-`applied` amendments by the accession_no fallback that rules 1 and 3 removed
-- **Found:** 2026-07-09, PR #113 self-review (the external review skipped this
-  prompt question)
-- **Severity:** low (latent — **0 reachable groups on the 355-group real dataset**;
-  see reachability below)
-- **Problem:** `apply_active_filing_policy` rule 2 picks the owner with
-  `max(pool, key=_active_filing_rank)`, and `_active_filing_rank` falls back to
-  `(datetime.min, accession_no)` when `accepted_at` is NULL. Rules 1 and 3 guard
-  that exact situation (`missing_acceptance`: ≥2 candidates + any NULL → do not
-  auto-switch, flag for a human) precisely because the series established that an
-  accession prefix identifies the SUBMITTING agent, not the manager, and is not a
-  time proxy (231/373 real filings differ from their manager's CIK; 3 real
-  lexical-vs-acceptance inversions). Rule 2 has neither a missing-evidence guard
-  nor a tie guard, and the accepted_at deploy gate deliberately skips
-  `amendment_owned` groups — so on a pre-gate database an operator who applied two
-  amendments to one (manager, period) gets an owner chosen by accession string,
-  with no warning.
-- **Reachability (measured, not assumed):** rule 2 fires only when NO parsed
-  non-rejected/-deferred HR-family RESTATEMENT exists (those go to rule 1, which
-  IS guarded). Over the 355 real (manager, quarter_end_date) groups the pool kinds
-  are `originals 343 / restatement 11 / none 1`, and groups reaching rule 2 with
-  ≥2 `applied` amendments: **0**. The two real groups holding ≥2 `applied`
-  amendments hold RESTATEMENTs, so they route to rule 1.
-- **Fix sketch:** give rule 2 the same guard as rules 1/3 — if ≥2 applied
-  amendments and (any NULL `accepted_at` OR a top-two tie), do not auto-switch:
-  keep the current active filing if it is in the pool, demote any active row that
-  is NOT (a rejected amendment or stale original must never serve), flag the pool,
-  and return `missing_acceptance`. Then stop skipping `amendment_owned` in
-  `_at_risk_groups`. Consider whether admin intent should be ordered by an
-  explicit `resolved_at` rather than by SEC acceptance time at all.
-- **Context:** `docs/tasks/2026-07-09_13f-release-readiness-review-results.md`
-  (Prompt 2, question 3 — unanswered by the review)
-
-### No end-to-end quarterly-pipeline test with real stage bodies
-- **Found:** 2026-07-09, T1–T4 series review (test-gap recommendation #1)
-- **Severity:** low (every stage body is unit/composition tested individually;
-  the untested surface is the full stage CHAIN — ingest/routing → authority
-  sweep → quality_check → compute_ownership_changes → Lens scoring — on a
-  multi-manager/multi-quarter fixture; existing pipeline tests stub stage bodies)
-- **Fix sketch:** one integration test driving `quarterly_pipeline` with real
-  stage bodies over stored primary/infotable docs for ≥2 managers × 2 quarters
-  (reuse the T1-FU composition-test harness), asserting changes rows + Lens
-  signals + quality report exist and agree.
-- **Context:** `2026-07-09_13f-t1-t4-series-review-results.md` missing test #1
-  (#2 and #3 landed with the series-review fixes)
-
-### No source guard for direct `Holding13F` product queries
-- **Found:** 2026-07-09, T1–T4 series review (guard recommendation)
-- **Severity:** low (review found no current violation; the guard prevents a
-  future user/API surface from bypassing `active_hr_holdings_query` — the PRD
-  §7.3 contract T4/F6 was about)
-- **Fix sketch:** T4-style source guard scanning user/API-facing services for
-  `query(Holding13F` with a whitelist for sanctioned low-level modules
-  (`thirteenf_holdings_query`, ownership-changes/scoring internals, admin
-  diagnostics).
-- **Context:** `2026-07-09_13f-t1-t4-series-review-results.md` "Useful third guard"
-
-### `13F-NT/A` has no first-class automated ingestion
-- **Found:** 2026-07-09, T1-FU external review (P2, latent); narrowed
-  2026-07-09 by the series review (the original entry's "consumers only
-  recognize exact 13F-NT" half is RESOLVED — `NT_FORM_TYPES` is now used by
-  `nt_only_manager_ids`, `thirteenf_user_api` (holdings/quarter/caveats),
-  `oracles_lens/base_primitives._is_nt_quarter`, `thirteenf_ownership_changes`,
-  and `thirteenf_filing_detail` report-type/coverage normalization; the
-  authority guards a parsed NT/A RESTATEMENT from ever competing for the HR
-  holdings slot).
-- **Severity:** low (latent — `INGESTION_FORMS` and the form.idx whitelist
-  exclude `13F-NT/A`, so none enter the data layer automatically; SEC defines
-  it as the amendment form for a 13F Notice and raw form indexes contain many)
-- **Remaining problem:** ONLY the ingestion scope — `13F-NT/A` filings are not
-  ingested automatically (`INGESTION_FORMS`, `_DAILY_13F_FORM_TYPES`), and
-  NT-slot activation semantics (an NT/A superseding an NT for the notice slot)
-  are undefined in the authority. Rows that arrive via `ingest_accession` /
-  admin apply are already handled consistently by every consumer.
-- **Fix sketch:** add `13F-NT/A` to the ingestion whitelists + define NT-slot
-  succession in `apply_active_filing_policy`, or formally document NT/A
-  ingestion as out of scope in the PRD.
-- **Context:** `docs/tasks/2026-07-08_13f-t1fu-active-filing-authority.md` 评审处置
-  P2-9 / 三审处置;series review `2026-07-09_13f-t1-t4-series-review-results.md`
-
 ### ~~CLI `reparse-filing` / `reparse-all` write product-invisible legacy holdings~~ (F7 — RESOLVED T4 rework)
 - **Found:** 2026-07-08, T4 external review (correctness finder)
 - **Severity:** medium (product-visibility / footgun — no audit-trail loss)
@@ -205,25 +107,6 @@ long — escalate to the user. **medium / low** = ordinary follow-up.
   `active_hr_holdings_query` visibility on an active filing (and 0 on an inactive
   one), plus a runtime `reparse-all` partial-failure non-zero-exit test. README
   copy updated.
-
-### `backfill` retries by missing-infotable, not by failed-parse (recoverability edge)
-- **Found:** 2026-07-08, T4 external review (correctness finder)
-- **Severity:** low (narrow; job/admin-retry path is the intended recovery)
-- **Problem:** T4's `backfill` decides which quarters to (re)ingest via
-  `pending_ingest_quarters`, whose "pending" test is `raw_infotable_doc_id IS
-  NULL`. In the ingest job, Phase 1 fetches + commits the infotable doc BEFORE
-  Phase 3 parses holdings; a filing whose infotable is fetched but whose holdings
-  then fail to parse ends up with `raw_infotable_doc_id` set and no current
-  ParseRun — so it drops out of `pending_ingest_quarters`. If it is the LAST
-  pending filing in its quarter, `backfill` won't re-invoke the job for that
-  quarter and the failed-parse filing is not retried by backfill. (The job
-  reprocesses ALL filings in an invoked quarter, so the gap only bites when no
-  other pending filing keeps the quarter in scope; the admin retry surface /
-  `reparse_accession` is the intended recovery either way.)
-- **Fix sketch:** define "needs ingest" as "no current, product-visible ParseRun"
-  (or `raw_infotable_doc_id IS NULL OR parse_status = 'failed'`) rather than
-  missing-infotable alone; bound to the same `--quarters` scope T4 already applies.
-- **Context:** `docs/tasks/2026-07-08_13f-t4-cli-ingest-hygiene.md`
 
 ### ~~Active-filing selection is scattered; accepted_at unpopulated; restatement ties + concurrency unhandled~~ (RESOLVED T1-FU)
 - **Found:** 2026-07-08, T1 external review (`2026-07-08_13f-t1-restatement-activation-fix-review-results.md`)
@@ -328,33 +211,6 @@ long — escalate to the user. **medium / low** = ordinary follow-up.
   defense-in-depth (Option B keeps the app bearer for now).
 - **Context:** `docs/tasks/2026-07-07_rate-guard-public-auth-review-results.md` (#4)
 
-### `_clear_13f` test helper raises FK violation when dev DB has committed quality_findings_13f / oracles_lens_signals rows
-- **Found:** 2026-05-24, while running canonical CI for the manager-taxonomy-v2 change
-  (`docs/tasks/2026-05-24_manager-taxonomy-v2.md`)
-- **Severity:** medium (dev-only — CI passes because CI starts from an empty volume)
-- **Problem:** `backend/tests/unit/test_13f_user_api.py::_clear_13f` deletes
-  `OraclesLensScoreComponent` / `OraclesLensSignal` / `OwnershipChange13F` /
-  `Holding13F` / `ParseRun13F` / `Filing13F` / `InstitutionManagerCikReviewEvent`
-  / `InstitutionManager` in that order, but the dev DB also accumulates
-  `quality_findings_13f` (FK → `institution_managers.id`) and several other
-  tables with FK references to managers. When the dev DB has those committed
-  rows from prior bootstrap / ingestion runs, every test that calls
-  `_clear_13f` and a few sibling helpers fails with
-  `psycopg2.errors.ForeignKeyViolation`. Confirmed pre-existing: reproduces
-  on `main` with all taxonomy-v2 changes stashed. Verified non-regressing
-  by my own work — fresh-DB CI passes, and isolating the new
-  `test_13f_manager_taxonomy_v2.py` (23 cases) and existing
-  `test_13f_mvp4_manager_taxonomy.py` / `test_13f_mvp5_05_manager_type_editor.py`
-  / `test_13f_mvp5_01_wire_behavior_manager_type.py` (28 cases) all pass.
-- **Fix sketch:** Either (a) expand `_clear_13f` to also delete `quality_findings_13f`
-  and `quality_reports_13f` (and any other FK-bearing tables) before
-  `institution_managers`; or better (b) switch the conftest to a real
-  test-DB fixture (e.g. a transient `valuepilot_test` schema) so dev data
-  never bleeds into test runs. Option (b) is the AGENTS.md-aligned long-term
-  fix — it's the same class of "long-lived branches mask failures" issue
-  the workflow already warns about.
-- **Context:** PR for manager-taxonomy-v2 change
-
 ### 13F CUSIP enrichment — monitor MUTUAL FUND / OPEN-END FUND / UNIT auto-confirms in production
 - **Found:** 2026-05-22, PR #93 review (advisory #1)
 - **Severity:** low
@@ -389,23 +245,6 @@ long — escalate to the user. **medium / low** = ordinary follow-up.
   under the report-quarter model (likely: verify each filing's `report_quarter`
   matches its actual `period_of_report`).
 - **Context:** `docs/tasks/2026-05-21_13f-web-validation.md` (Review round 1, R-P2)
-- **Issue:** —
-
-### 13F test suite is not isolated from dev-database data
-- **Found:** 2026-05-22, 13F web-validation run
-- **Severity:** low
-- **Problem:** The pytest suite runs against the dev `valuepilot` database and
-  assumes it starts empty (`conftest.py`: "assuming fresh DB from
-  docker-compose"). `test_13f_admin_dashboard.py` bulk-deletes `job_runs` in a
-  fixture; when a normal app/web run has left `job_runs` rows that
-  `quality_reports_13f.source_job_id` (and other tables) reference, that delete
-  raises `ForeignKeyViolation` and ~50 tests fail — even though the code is
-  correct (verified: 907 pass on a fresh `valuepilot_test` DB). Real CI runs on
-  a fresh DB so CI is unaffected, but local `pytest` is fragile after any web
-  use of the dev stack. Fix: point the suite at a dedicated, migrated test
-  database, or make the fixtures delete dependents first / rely solely on the
-  transactional rollback.
-- **Context:** `docs/tasks/2026-05-21_13f-web-validation.md` (F5)
 - **Issue:** —
 
 ### Rate Guard rollout is in-place, with no staged probe or rollback
@@ -491,28 +330,6 @@ long — escalate to the user. **medium / low** = ordinary follow-up.
 - **Context:** `docs/tasks/2026-05-21_cusip-link-rate-diagnosis.md`
 - **Issue:** —
 
-### Manager `manager_type` first-pass classification needs human review
-- **Found:** 2026-05-21 — supersedes the 2026-05-20 audit #9 "all `unknown`"
-  item, which is now resolved (every manager is classified).
-- **Severity:** low
-- **Problem:** A Claude first-pass `manager_type` classification has been
-  applied to all managers in prod — 86 at the time, now 82 after the
-  duplicate-manager dedup (audited; `reviewed_by_user_id` NULL;
-  every note prefixed `[auto-classified by Claude, first pass — pending human
-  review]`; every `evidence_json` carries `classified_by: claude_first_pass`).
-  The team should review and correct via the admin manager-type editor. Check
-  the 10 scoring-relevant (off-1.00-weight) rows first — 6 `activist`,
-  2 `multi_strategy`, 1 `quant`, 1 `high_turnover` — plus the ~8
-  medium-confidence judgement calls. The most debatable single call is **TCI
-  Fund Management (id 12)** — classified `value_concentrated` on its current
-  stable concentrated book, but it has an activist heritage; if it runs a
-  significant campaign it should move to `activist` (0.80 vs 1.00 — a real
-  scoring difference). Find all first-pass rows:
-  `institution_manager_type_review_events` rows with
-  `reviewed_by_user_id IS NULL`.
-- **Context:** `docs/tasks/2026-05-21_manager-type-classification.md`
-- **Issue:** —
-
 ### Extended historical backfill
 - **Found:** 2026-05-20, /admin/13f operational audit (item #11)
 - **Severity:** low
@@ -572,6 +389,10 @@ long — escalate to the user. **medium / low** = ordinary follow-up.
   fixtures.
 - **Context:** `docs/tasks/2026-07-02_value-line-parser-historical-readiness.md`
 - **Issue:** —
+- **PO disposition (2026-07-20):** do not expand the historical corpus or make
+  backtest claims until representative era fixtures exist and this alignment is
+  implemented. Modern supported-template use remains enabled. See
+  `docs/architecture/coverage-source-policy.md`.
 
 ### Value Line parser: verify fiscal column-year labeling convention
 - **Found:** 2026-07-02, parser historical-readiness review (P1-8)
@@ -587,6 +408,9 @@ long — escalate to the user. **medium / low** = ordinary follow-up.
   convention.
 - **Context:** `docs/tasks/2026-07-02_value-line-parser-historical-readiness.md`
 - **Issue:** —
+- **PO disposition (2026-07-20):** same historical-expansion block as the x0
+  item above; no inferred convention is accepted without real non-calendar-FYE
+  evidence.
 
 ### Value Line page JSON: era-hardcoded key names
 - **Found:** 2026-07-02, parser historical-readiness review (P2-13)
@@ -599,21 +423,6 @@ long — escalate to the user. **medium / low** = ordinary follow-up.
 - **Fix sketch:** era-neutral key names behind a schema-version bump; blast
   radius = mapping spec + all 55 fixture expected JSONs, so do it as its own
   ticket.
-- **Context:** `docs/tasks/2026-07-02_value-line-parser-historical-readiness.md`
-- **Issue:** —
-
-### Value Line parser: industrial-layout percent rows are not divided by 100
-- **Found:** 2026-07-02, parser historical-readiness review (found while
-  fixing F4)
-- **Severity:** medium
-- **Problem:** in `_parse_time_series_tables`, rows like `IncomeTaxRate`,
-  `ReturnonShrEquity`, `RetainedtoComEq`, `AllDivToNetProf` pass
-  `percent_ratio=insurance_layout` — so on industrial layouts the same
-  economic quantity is stored as `21.0` where an insurance layout stores
-  `0.21`. Downstream unit conventions may rely on this (fixtures lock it), but
-  it is an inconsistency waiting to bite a cross-layout consumer.
-- **Fix sketch:** decide one convention, migrate the mapping spec + fixtures
-  in a dedicated pass; confirm whether the asymmetry is intentional first.
 - **Context:** `docs/tasks/2026-07-02_value-line-parser-historical-readiness.md`
 - **Issue:** —
 
@@ -753,7 +562,7 @@ long — escalate to the user. **medium / low** = ordinary follow-up.
 - **Context:** `docs/tasks/2026-07-10_13f-seed-cik-audit.md`
 - **Issue:** —
 
-### 13F: six managers report values in thousands under a dollars schema
+### 13F: six managers report values in thousands under a dollars schema — RESOLVED 2026-07-18
 - **Found:** 2026-07-10, from-zero rehearsal with the corrected seed
 - **Severity:** medium (absolute values wrong by 1000x; weights and Lens unaffected)
 - **Problem:** Every holding is tagged `value_unit_raw='dollars'`,
@@ -772,3 +581,27 @@ long — escalate to the user. **medium / low** = ordinary follow-up.
   mechanism instead of `infer`. Add it to `edgar_quality` as a warning first.
 - **Context:** `docs/tasks/2026-07-10_13f-seed-cik-audit.md`
 - **Issue:** —
+
+**Resolution:** The holdings parser now cross-checks post-2023
+`schema_dollars` filings against a conservative filing-level median implied
+price (common positions only, minimum three observations). It switches to
+`implied_price_thousands` only when the raw median is below $0.50 and the 1000x
+corrected median is plausible. Parser/fingerprint v2 makes ordinary quarterly
+re-runs converge existing rows. A live empty-DB 2026-Q1 replay corrected 167
+current holdings across the five currently non-compliant filers; the lowest
+remaining common-stock median is $1.00 and compliant filings were unchanged.
+### Quant H3 historical filing/amendment PIT selector
+
+- **Found:** 2026-07-21, `T-2026-07-21-quant-trading-1-r0a`
+- **Where:** `docs/architecture/quant-trading-pit-read-contract.md` §7;
+  future `backend/app/services/quant_trading/pit_reader.py`
+- **Problem:** product-facing 13F reads correctly use today's active filing and
+  current successful parse, but historical H3 research must instead select the
+  filing/amendment version observable at T. The audit found 49 manager-quarters
+  with multiple successful versions; back-projecting today's active version
+  would create look-ahead. No H3 factor or holdout run may start until the
+  version-aware PIT selector and trap tests exist.
+- **Severity:** high — future research-integrity / false-alpha risk; currently
+  contained because 1-R0A is NO_GO and 1-R1…1-R4 are closed.
+- **Context:**
+  `docs/tasks/2026-07-21_quant-trading-1-r0-data-sufficiency-adversarial-review.md`

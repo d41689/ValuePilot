@@ -1,0 +1,228 @@
+{
+  "schema": "thirteenf_dataroma_reconciliation.v1",
+  "generated_at": "2026-07-19T15:17:29.171034+00:00",
+  "authority": "SEC/EDGAR via ValuePilot active filing and current parse run",
+  "corroborating_source": "Dataroma",
+  "counts": {
+    "managers_total": 1,
+    "managers_mapped": 1,
+    "managers_unmapped": 0,
+    "managers_fetch_failed": 0,
+    "managers_with_differences": 1,
+    "differences_total": 16,
+    "suspected_valuepilot_defects": 0,
+    "unclassified_material_differences": 0
+  },
+  "managers": [
+    {
+      "manager_id": 4027,
+      "cik": "0001657335",
+      "display_name": "Bryan Lawrence - Oakcliff Capital Partners",
+      "dataroma_code": "OCL",
+      "status": "compared",
+      "source_urls": {
+        "holdings": "https://www.dataroma.com/m/holdings.php?m=OCL",
+        "activity": "https://www.dataroma.com/m/m_activity.php?m=OCL&typ=a",
+        "buys": "https://www.dataroma.com/m/m_activity.php?m=OCL&typ=b",
+        "sells": "https://www.dataroma.com/m/m_activity.php?m=OCL&typ=s",
+        "history": "https://www.dataroma.com/m/hist/p_hist.php?f=OCL"
+      },
+      "differences": [
+        {
+          "scope": "history",
+          "field": "quarter_coverage",
+          "quarter": "2022-Q4",
+          "ticker": null,
+          "valuepilot": "missing",
+          "dataroma": "available",
+          "classification": "intentional_scope_boundary",
+          "valuepilot_defect": false,
+          "severity": "info",
+          "explanation": "Dataroma exposes history before ValuePilot's locked default production backfill boundary (2023-Q1); this is an intentional scope difference."
+        },
+        {
+          "scope": "history",
+          "field": "quarter_coverage",
+          "quarter": "2022-Q3",
+          "ticker": null,
+          "valuepilot": "missing",
+          "dataroma": "available",
+          "classification": "intentional_scope_boundary",
+          "valuepilot_defect": false,
+          "severity": "info",
+          "explanation": "Dataroma exposes history before ValuePilot's locked default production backfill boundary (2023-Q1); this is an intentional scope difference."
+        },
+        {
+          "scope": "history",
+          "field": "quarter_coverage",
+          "quarter": "2022-Q2",
+          "ticker": null,
+          "valuepilot": "missing",
+          "dataroma": "available",
+          "classification": "intentional_scope_boundary",
+          "valuepilot_defect": false,
+          "severity": "info",
+          "explanation": "Dataroma exposes history before ValuePilot's locked default production backfill boundary (2023-Q1); this is an intentional scope difference."
+        },
+        {
+          "scope": "history",
+          "field": "quarter_coverage",
+          "quarter": "2022-Q1",
+          "ticker": null,
+          "valuepilot": "missing",
+          "dataroma": "available",
+          "classification": "intentional_scope_boundary",
+          "valuepilot_defect": false,
+          "severity": "info",
+          "explanation": "Dataroma exposes history before ValuePilot's locked default production backfill boundary (2023-Q1); this is an intentional scope difference."
+        },
+        {
+          "scope": "history",
+          "field": "quarter_coverage",
+          "quarter": "2021-Q4",
+          "ticker": null,
+          "valuepilot": "missing",
+          "dataroma": "available",
+          "classification": "intentional_scope_boundary",
+          "valuepilot_defect": false,
+          "severity": "info",
+          "explanation": "Dataroma exposes history before ValuePilot's locked default production backfill boundary (2023-Q1); this is an intentional scope difference."
+        },
+        {
+          "scope": "history",
+          "field": "quarter_coverage",
+          "quarter": "2021-Q3",
+          "ticker": null,
+          "valuepilot": "missing",
+          "dataroma": "available",
+          "classification": "intentional_scope_boundary",
+          "valuepilot_defect": false,
+          "severity": "info",
+          "explanation": "Dataroma exposes history before ValuePilot's locked default production backfill boundary (2023-Q1); this is an intentional scope difference."
+        },
+        {
+          "scope": "history",
+          "field": "quarter_coverage",
+          "quarter": "2021-Q2",
+          "ticker": null,
+          "valuepilot": "missing",
+          "dataroma": "available",
+          "classification": "intentional_scope_boundary",
+          "valuepilot_defect": false,
+          "severity": "info",
+          "explanation": "Dataroma exposes history before ValuePilot's locked default production backfill boundary (2023-Q1); this is an intentional scope difference."
+        },
+        {
+          "scope": "history",
+          "field": "quarter_coverage",
+          "quarter": "2021-Q1",
+          "ticker": null,
+          "valuepilot": "missing",
+          "dataroma": "available",
+          "classification": "intentional_scope_boundary",
+          "valuepilot_defect": false,
+          "severity": "info",
+          "explanation": "Dataroma exposes history before ValuePilot's locked default production backfill boundary (2023-Q1); this is an intentional scope difference."
+        },
+        {
+          "scope": "history",
+          "field": "quarter_coverage",
+          "quarter": "2020-Q4",
+          "ticker": null,
+          "valuepilot": "missing",
+          "dataroma": "available",
+          "classification": "intentional_scope_boundary",
+          "valuepilot_defect": false,
+          "severity": "info",
+          "explanation": "Dataroma exposes history before ValuePilot's locked default production backfill boundary (2023-Q1); this is an intentional scope difference."
+        },
+        {
+          "scope": "history",
+          "field": "quarter_coverage",
+          "quarter": "2020-Q3",
+          "ticker": null,
+          "valuepilot": "missing",
+          "dataroma": "available",
+          "classification": "intentional_scope_boundary",
+          "valuepilot_defect": false,
+          "severity": "info",
+          "explanation": "Dataroma exposes history before ValuePilot's locked default production backfill boundary (2023-Q1); this is an intentional scope difference."
+        },
+        {
+          "scope": "history",
+          "field": "quarter_coverage",
+          "quarter": "2020-Q2",
+          "ticker": null,
+          "valuepilot": "missing",
+          "dataroma": "available",
+          "classification": "intentional_scope_boundary",
+          "valuepilot_defect": false,
+          "severity": "info",
+          "explanation": "Dataroma exposes history before ValuePilot's locked default production backfill boundary (2023-Q1); this is an intentional scope difference."
+        },
+        {
+          "scope": "history",
+          "field": "quarter_coverage",
+          "quarter": "2020-Q1",
+          "ticker": null,
+          "valuepilot": "missing",
+          "dataroma": "available",
+          "classification": "intentional_scope_boundary",
+          "valuepilot_defect": false,
+          "severity": "info",
+          "explanation": "Dataroma exposes history before ValuePilot's locked default production backfill boundary (2023-Q1); this is an intentional scope difference."
+        },
+        {
+          "scope": "history",
+          "field": "quarter_coverage",
+          "quarter": "2019-Q4",
+          "ticker": null,
+          "valuepilot": "missing",
+          "dataroma": "available",
+          "classification": "intentional_scope_boundary",
+          "valuepilot_defect": false,
+          "severity": "info",
+          "explanation": "Dataroma exposes history before ValuePilot's locked default production backfill boundary (2023-Q1); this is an intentional scope difference."
+        },
+        {
+          "scope": "history",
+          "field": "quarter_coverage",
+          "quarter": "2019-Q3",
+          "ticker": null,
+          "valuepilot": "missing",
+          "dataroma": "available",
+          "classification": "intentional_scope_boundary",
+          "valuepilot_defect": false,
+          "severity": "info",
+          "explanation": "Dataroma exposes history before ValuePilot's locked default production backfill boundary (2023-Q1); this is an intentional scope difference."
+        },
+        {
+          "scope": "history",
+          "field": "quarter_coverage",
+          "quarter": "2019-Q2",
+          "ticker": null,
+          "valuepilot": "missing",
+          "dataroma": "available",
+          "classification": "intentional_scope_boundary",
+          "valuepilot_defect": false,
+          "severity": "info",
+          "explanation": "Dataroma exposes history before ValuePilot's locked default production backfill boundary (2023-Q1); this is an intentional scope difference."
+        },
+        {
+          "scope": "history",
+          "field": "quarter_coverage",
+          "quarter": "2019-Q1",
+          "ticker": null,
+          "valuepilot": "missing",
+          "dataroma": "available",
+          "classification": "intentional_scope_boundary",
+          "valuepilot_defect": false,
+          "severity": "info",
+          "explanation": "Dataroma exposes history before ValuePilot's locked default production backfill boundary (2023-Q1); this is an intentional scope difference."
+        }
+      ],
+      "dataroma_latest_quarter": "2026-Q1",
+      "valuepilot_latest_quarter": "2026-Q1"
+    }
+  ]
+}

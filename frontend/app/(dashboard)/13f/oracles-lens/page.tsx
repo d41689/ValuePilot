@@ -22,6 +22,9 @@ import {
   UniverseSelector,
   type UniverseFilters,
 } from '@/components/oraclesLens/UniverseSelector';
+import { NewBuysClusters } from '@/components/oraclesLens/NewBuysClusters';
+import { FilingSeasonDigest } from '@/components/thirteenf/FilingSeasonDigest';
+import { OpenResearchCaseButton } from '@/components/research/OpenResearchCaseButton';
 import thirteenfAdminHelpers from '@/lib/thirteenfAdmin';
 import { ReadinessWarnings } from '@/lib/readinessWarnings';
 import { Badge } from '@/components/ui/badge';
@@ -397,6 +400,8 @@ export default function OraclesLensPage() {
         <div>{payload?.baseline_notice ?? '13F filings are delayed snapshots.'}</div>
       </div>
 
+      <FilingSeasonDigest />
+
       <div className="flex flex-col gap-3 rounded-md border border-border/70 bg-background px-4 py-3 text-sm md:flex-row md:items-start md:justify-between">
         <div className="flex gap-3">
           <Info className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground" />
@@ -554,6 +559,11 @@ export default function OraclesLensPage() {
           />
         </CardContent>
       </Card>
+
+      <NewBuysClusters
+        selectedQuarter={selectedHolderQuarter}
+        onOpenStock={openDrilldown}
+      />
 
       <Card className="rounded-md">
         <CardHeader className="pb-3">
@@ -791,6 +801,17 @@ export default function OraclesLensPage() {
                         <PanelRightOpen className="h-3.5 w-3.5" />
                         Review
                       </Button>
+                      <OpenResearchCaseButton
+                        stockId={row.stockId}
+                        originType="oracle_lens"
+                        originKey={`oracles-lens:${selectedHolderQuarter || 'latest'}:${row.stockId}`}
+                        sourceVersion={`${selectedHolderQuarter || 'latest'}:${row.scoreSource || 'derived'}:consensus`}
+                        sourceRef={{
+                          report_quarter: selectedHolderQuarter || null,
+                          lens: 'consensus',
+                        }}
+                        className="mt-2"
+                      />
                     </TableCell>
                     <TableCell className="text-right">
                       <div className="text-xl font-semibold tabular-nums">{row.signalScoreLabel}</div>
@@ -1164,7 +1185,16 @@ export default function OraclesLensPage() {
                       <div key={holder.key} className="rounded-md border border-border/70 p-2 text-sm">
                         <div className="flex items-start justify-between gap-3">
                           <div>
-                            <div className="font-medium">{holder.managerName}</div>
+                            {holder.managerId ? (
+                              <Link
+                                href={`/13f/managers/${holder.managerId}`}
+                                className="font-medium hover:underline"
+                              >
+                                {holder.managerName}
+                              </Link>
+                            ) : (
+                              <div className="font-medium">{holder.managerName}</div>
+                            )}
                             <div className="mt-1 text-xs text-muted-foreground">
                               {holder.managerType.replaceAll('_', ' ')}
                               {holder.isFeatured ? ' · featured' : ''}

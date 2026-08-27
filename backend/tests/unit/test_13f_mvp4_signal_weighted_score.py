@@ -721,7 +721,9 @@ def test_build_oracles_lens_response_returns_ranked_list(db_session):
     payload = build_oracles_lens_response(db_session, period="2026-Q1")
 
     assert payload["period"] == "2026-Q1"
-    assert payload["score_version"] == "v1.0"
+    from app.services.oracles_lens.constants import SCORE_VERSION
+
+    assert payload["score_version"] == SCORE_VERSION
     assert isinstance(payload["items"], list)
     assert len(payload["items"]) >= 1
     first = payload["items"][0]

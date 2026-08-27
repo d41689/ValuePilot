@@ -1,7 +1,7 @@
 # Task: 13F investor workflow 03 — filing-season digest & in-app awareness
 
 **Created:** 2026-07-03 · **Origin:** PO review `2026-07-03_13f-po-review-value-investor.md` (§3 gap #3)
-**Status:** DRAFT (next-iteration package)
+**Status:** COMPLETE (2026-07-18)
 
 ## Goal / Acceptance Criteria
 
@@ -35,3 +35,12 @@ docker compose exec -T api pytest -q          # full backend at closing gate
 ```
 
 PO acceptance: freeze clock inside a window on seeded dev data → banner appears with correct reported-count; digest lists yesterday's newly ingested featured filings; outside the window both surfaces are absent.
+
+## 2026-07-18 implementation decisions / sign-off trail
+
+- The reviewed seed and live rehearsal contain zero `is_featured=true` managers. The V1 digest denominator is therefore the active, CIK-confirmed Value DNA universe (`value_deep`, `value_concentrated`, `quality_compounder`) instead of a permanently empty feature flag. This matches the investor-first product scope.
+- `filing_season_state` derives each deadline from the canonical 45-day helper and respects weekends plus registered EDGAR closure dates. The surface is active from deadline day through day 14.
+- The scheduler runs the in-app digest daily at 07:00 America/New_York. Persistence reuses `notification_events`, writes at most one event per active user/date, and performs no email/push or external network action.
+- Each digest reports coverage, yesterday's newly ingested active HR filings, filing caveats and up to three eligible new positions. Oracle's Lens renders the full day-by-day panel; Watchlist renders the dismissible awareness banner.
+- Targeted season math, closure adjustment, digest content, idempotency and scheduler-registration tests are green. Outside-window behavior is covered; in-window payload behavior is frozen at 2026-05-17 in tests.
+- Canonical closing gate: backend `1291 passed`; frontend `193 passed`; lint and production build green.

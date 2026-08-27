@@ -12,7 +12,7 @@ from app.models.institutions import (
     ParseRun13F,
 )
 from app.models.oracles_lens import OraclesLensScoreComponent, OraclesLensSignal
-from app.models.stocks import Stock
+from app.models.stocks import Stock, StockPrice
 
 
 _CIK_COUNTER = count(9200000000)
@@ -37,6 +37,9 @@ def _manager(
     name: str = "Safe API Manager",
     *,
     manager_type: str = "long_term_fundamental",
+    style_primary: str = "quality_compounder",
+    capital_structure: str = "standard_lp",
+    historical_turnover: str = "low",
     is_featured: bool = True,
 ) -> InstitutionManager:
     cik = str(next(_CIK_COUNTER))
@@ -49,6 +52,9 @@ def _manager(
         status="active",
         match_status="confirmed",
         manager_type=manager_type,
+        style_primary=style_primary,
+        capital_structure=capital_structure,
+        historical_turnover=historical_turnover,
         is_featured=is_featured,
     )
     db_session.add(manager)
@@ -326,6 +332,28 @@ def test_holdings_changes_clean_rows_return_available_and_latest_quarter(client,
     assert [item["stock"]["ticker"] for item in payload["items"]] == ["CUR"]
 
 
+def test_holdings_changes_computes_missing_portfolio_weights_from_filing_denominators(client, db_session):
+    _clear_13f(db_session)
+    manager = _manager(db_session)
+    stock = _stock(db_session, "WGHT")
+    _filing(db_session, manager, "0000000090-25-000001", report_quarter="2025-Q4", quarter_end_date=date(2025, 12, 31))
+    _filing(db_session, manager, "0000000090-26-000001")
+    change = _ownership_change(db_session, manager, stock, change_status="increased")
+    change.current_portfolio_weight_pct = None
+    change.previous_portfolio_weight_pct = None
+    change.current_value_usd = 200000
+    change.previous_value_usd = 100000
+    db_session.commit()
+
+    response = client.get(f"/api/v1/13f/managers/{manager.id}/holdings/changes?quarter=2026-Q1")
+
+    assert response.status_code == 200
+    item = response.json()["items"][0]
+    assert item["current_portfolio_weight_pct"] == 20.0
+    assert item["previous_portfolio_weight_pct"] == 10.0
+    assert item["portfolio_weight_delta_pct"] == 10.0
+
+
 def test_holdings_changes_rejects_invalid_quarter(client, db_session):
     _clear_13f(db_session)
     manager = _manager(db_session)
@@ -369,6 +397,40 @@ def test_managers_endpoint_lists_only_active_cik_managers(client, db_session):
     assert response.status_code == 200
     payload = response.json()
     assert [item["id"] for item in payload["items"]] == [active.id]
+
+
+def test_managers_endpoint_exposes_value_dna_and_latest_filing_summary(client, db_session):
+    _clear_13f(db_session)
+    manager = _manager(
+        db_session,
+        "Warren Buffett - Berkshire Hathaway",
+        manager_type="value_concentrated",
+        style_primary="value_concentrated",
+        capital_structure="permanent_capital",
+        historical_turnover="low",
+        is_featured=False,
+    )
+    # The curated rationale is keyed by the confirmed seed CIK, not by display
+    # name, so a renamed label cannot attach another manager's profile.
+    manager.cik = "0001067983"
+    _filing(db_session, manager, "0001067983-26-000001")
+    db_session.commit()
+
+    response = client.get("/api/v1/13f/managers")
+
+    assert response.status_code == 200
+    item = response.json()["items"][0]
+    assert item["style_primary"] == "value_concentrated"
+    assert item["capital_structure"] == "permanent_capital"
+    assert item["historical_turnover"] == "low"
+    assert item["classification_rationale"].startswith("Top 10 positions")
+    assert item["latest_filing"] == {
+        "quarter": "2026-Q1",
+        "quarter_end_date": "2026-03-31",
+        "form_type": "13F-HR",
+        "status": "available",
+        "accepted_at": "2026-05-14T12:00:00+00:00",
+    }
 
 
 def test_manager_quarters_exposes_nt_as_reported_elsewhere(client, db_session):
@@ -495,12 +557,223 @@ def test_holdings_endpoint_uses_active_current_hr_query_contract(client, db_sess
     assert names == ["Issuer 1"]
 
 
+def test_manager_holdings_returns_position_view_with_computed_common_weights(client, db_session):
+    _clear_13f(db_session)
+    manager = _manager(db_session)
+    filing = _filing(db_session, manager, "0000000006-26-000001")
+    parse_run = _parse_run(db_session, filing)
+    alphabet = _stock(db_session, "GOOG")
+    other = _stock(db_session, "BRK")
+    # Two raw rows map to one economic stock position. The consumer view must
+    # sum them while retaining constituent count/CUSIPs; the raw audit rows stay
+    # untouched in holdings_13f.
+    first = _holding(db_session, filing, parse_run, index=1, stock=alphabet)
+    second = _holding(db_session, filing, parse_run, index=2, stock=alphabet)
+    third = _holding(db_session, filing, parse_run, index=3, stock=other)
+    first.cusip = "02079K107"
+    second.cusip = "02079K305"
+    third.cusip = "084670702"
+    first.portfolio_weight_pct = None
+    second.portfolio_weight_pct = None
+    third.portfolio_weight_pct = None
+    filing.total_13f_common_value_usd = None
+    db_session.commit()
+
+    response = client.get(f"/api/v1/13f/managers/{manager.id}/holdings?quarter=2026-Q1")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert len(payload["common_holdings"]) == 2
+    assert db_session.query(Holding13F).filter(Holding13F.filing_id == filing.id).count() == 3
+    by_ticker = {item["stock"]["ticker"]: item for item in payload["common_holdings"]}
+    assert by_ticker["GOOG"]["constituent_row_count"] == 2
+    assert by_ticker["GOOG"]["cusips"] == ["02079K107", "02079K305"]
+    assert by_ticker["GOOG"]["value_usd"] == 200000
+    assert by_ticker["GOOG"]["portfolio_weight_pct"]["value"] == 66.666667
+    assert by_ticker["GOOG"]["position_rank"] == 1
+    assert by_ticker["BRK"]["portfolio_weight_pct"]["value"] == 33.333333
+    assert by_ticker["BRK"]["position_rank"] == 2
+
+
+def test_manager_holdings_exposes_portfolio_summary_and_local_market_context(client, db_session):
+    _clear_13f(db_session)
+    manager = _manager(db_session)
+    filing = _filing(db_session, manager, "0000000007-26-000001")
+    parse_run = _parse_run(db_session, filing)
+    stock = _stock(db_session, "PRICE")
+    holding = _holding(db_session, filing, parse_run, index=1, stock=stock)
+    holding.value_usd = 300_000
+    holding.ssh_prnamt = 3_000
+    holding.shares = 3_000
+    holding.portfolio_weight_pct = 30.0
+    filing.total_13f_common_value_usd = 1_000_000
+    db_session.add_all(
+        [
+            StockPrice(
+                stock_id=stock.id,
+                price_date=date(2025, 9, 30),
+                open=75.0,
+                high=80.0,
+                low=70.0,
+                close=78.0,
+                source="test",
+            ),
+            StockPrice(
+                stock_id=stock.id,
+                price_date=date(2026, 6, 30),
+                open=118.0,
+                high=125.0,
+                low=115.0,
+                close=120.0,
+                source="test",
+            ),
+        ]
+    )
+    db_session.commit()
+
+    response = client.get(f"/api/v1/13f/managers/{manager.id}/holdings?quarter=2026-Q1")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["summary"] == {
+        "common_position_count": 1,
+        "reported_common_value_usd": 1_000_000,
+    }
+    position = payload["common_holdings"][0]
+    assert position["implied_report_price"] == 100.0
+    assert position["market_context"] == {
+        "latest_price": 120.0,
+        "latest_price_date": "2026-06-30",
+        "change_since_report_pct": 20.0,
+        "week_52_low": 70.0,
+        "week_52_high": 125.0,
+        "source": "test",
+    }
+
+
+def test_manager_history_returns_quarter_summaries_concentration_and_all_activity(client, db_session):
+    _clear_13f(db_session)
+    manager = _manager(db_session)
+    apple = _stock(db_session, "AAPL")
+    berkshire = _stock(db_session, "BRKB")
+
+    q4 = _filing(
+        db_session,
+        manager,
+        "0000000008-25-000001",
+        report_quarter="2025-Q4",
+        quarter_end_date=date(2025, 12, 31),
+    )
+    q4.total_13f_common_value_usd = 200_000
+    q4_run = _parse_run(db_session, q4)
+    q4_apple = _holding(db_session, q4, q4_run, index=1, stock=apple)
+    q4_apple.value_usd = 200_000
+    q4_apple.portfolio_weight_pct = 100.0
+
+    q1 = _filing(db_session, manager, "0000000008-26-000001")
+    q1.total_13f_common_value_usd = 400_000
+    q1_run = _parse_run(db_session, q1)
+    q1_apple = _holding(db_session, q1, q1_run, index=1, stock=apple)
+    q1_apple.value_usd = 300_000
+    q1_apple.portfolio_weight_pct = 75.0
+    q1_berkshire = _holding(db_session, q1, q1_run, index=2, stock=berkshire)
+    q1_berkshire.value_usd = 100_000
+    q1_berkshire.portfolio_weight_pct = 25.0
+
+    _ownership_change(db_session, manager, apple, report_quarter="2025-Q4", quarter_end_date=date(2025, 12, 31))
+    new_position = _ownership_change(db_session, manager, berkshire, change_status="new_position")
+    new_position.previous_value_usd = None
+    new_position.previous_shares = None
+    db_session.commit()
+
+    response = client.get(f"/api/v1/13f/managers/{manager.id}/history")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["status"] == "available"
+    assert [item["quarter"] for item in payload["quarters"]] == ["2026-Q1", "2025-Q4"]
+    latest = payload["quarters"][0]
+    assert latest["reported_common_value_usd"] == 400_000
+    assert latest["common_position_count"] == 2
+    assert [item["stock"]["ticker"] for item in latest["top_holdings"]] == ["AAPL", "BRKB"]
+    assert latest["concentration"] == {"top_1_pct": 75.0, "top_5_pct": 100.0, "top_10_pct": 100.0}
+    assert [(item["report_quarter"], item["stock"]["ticker"]) for item in payload["activity"]] == [
+        ("2026-Q1", "BRKB"),
+        ("2025-Q4", "AAPL"),
+    ]
+    assert payload["activity"][0]["change_status"] == "new_position"
+
+
+def test_manager_position_history_returns_quarter_holdings_and_activity(client, db_session):
+    _clear_13f(db_session)
+    manager = _manager(db_session)
+    stock = _stock(db_session, "LONG")
+
+    q4 = _filing(
+        db_session,
+        manager,
+        "0000000009-25-000001",
+        report_quarter="2025-Q4",
+        quarter_end_date=date(2025, 12, 31),
+    )
+    q4.total_13f_common_value_usd = 1_000_000
+    q4_run = _parse_run(db_session, q4)
+    q4_holding = _holding(db_session, q4, q4_run, index=1, stock=stock)
+    q4_holding.value_usd = 100_000
+    q4_holding.ssh_prnamt = 1_000
+    q4_holding.shares = 1_000
+    q4_holding.portfolio_weight_pct = 10.0
+
+    q1 = _filing(db_session, manager, "0000000009-26-000001")
+    q1.total_13f_common_value_usd = 1_000_000
+    q1_run = _parse_run(db_session, q1)
+    q1_holding = _holding(db_session, q1, q1_run, index=1, stock=stock)
+    q1_holding.value_usd = 150_000
+    q1_holding.ssh_prnamt = 1_500
+    q1_holding.shares = 1_500
+    q1_holding.portfolio_weight_pct = 15.0
+    change = _ownership_change(db_session, manager, stock, change_status="increased")
+    change.current_shares = 1_500
+    change.previous_shares = 1_000
+    change.share_delta = 500
+    change.share_change_pct = 0.5
+    change.current_value_usd = 150_000
+    change.previous_value_usd = 100_000
+    db_session.commit()
+
+    response = client.get(f"/api/v1/13f/managers/{manager.id}/stocks/{stock.id}/history")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["status"] == "available"
+    assert payload["stock"]["ticker"] == "LONG"
+    assert [item["quarter"] for item in payload["items"]] == ["2026-Q1", "2025-Q4"]
+    assert payload["items"][0]["shares"] == 1_500
+    assert payload["items"][0]["portfolio_weight_pct"] == 15.0
+    assert payload["items"][0]["implied_report_price"] == 100.0
+    assert payload["items"][0]["activity"]["change_status"] == "increased"
+    assert payload["items"][1]["activity"] is None
+
+
 def test_stock_holders_aggregation_counts_only_direct_common_holders(client, db_session):
     _clear_13f(db_session)
     stock = _stock(db_session, "AGG")
     featured = _manager(db_session, "Featured Fundamental", manager_type="long_term_fundamental", is_featured=True)
-    activist = _manager(db_session, "Activist Holder", manager_type="activist", is_featured=False)
-    quant = _manager(db_session, "Quant Holder", manager_type="quant", is_featured=False)
+    activist = _manager(
+        db_session,
+        "Activist Holder",
+        manager_type="activist",
+        style_primary="activist",
+        is_featured=False,
+    )
+    quant = _manager(
+        db_session,
+        "Quant Holder",
+        manager_type="quant",
+        style_primary="growth_long_short",
+        historical_turnover="high",
+        is_featured=False,
+    )
     shared = _manager(db_session, "Shared Attribution", manager_type="long_term_fundamental", is_featured=True)
     unresolved = _manager(db_session, "Unresolved Attribution", manager_type="long_term_fundamental", is_featured=True)
 
@@ -537,7 +810,11 @@ def test_stock_holders_aggregation_counts_only_direct_common_holders(client, db_
                 attribution_status="shared",
                 portfolio_weight_pct=31.0,
             )
-    _ownership_change(db_session, featured, stock, change_status="new_position")
+    new_position = _ownership_change(db_session, featured, stock, change_status="new_position")
+    new_position.previous_value_usd = None
+    new_position.value_delta_usd = None
+    new_position.previous_shares = None
+    new_position.share_delta = None
     _ownership_change(db_session, activist, stock, change_status="increased")
     _ownership_change(db_session, quant, stock, change_status="cusip_changed")
     _ownership_change(db_session, shared, stock, change_status="reduced", primary=False)
@@ -550,14 +827,28 @@ def test_stock_holders_aggregation_counts_only_direct_common_holders(client, db_
     assert payload["status"] == "available_with_caveat"
     assert payload["stock_id"] == stock.id
     assert payload["as_of_quarter"] == "2026-Q1"
-    assert payload["direct_holder_count"] == 2
-    assert payload["value_manager_direct_count"] == 2
+    assert payload["manager_scope"] == "value"
+    assert payload["direct_holder_count"] == 1
+    assert payload["value_manager_direct_count"] == 1
     assert payload["featured_holder_count"] == 1
     assert payload["attribution_caveat_count"] == 2
-    assert [item["manager"]["id"] for item in payload["top_holders"]] == [activist.id, featured.id]
-    assert payload["top_holders"][0]["portfolio_weight_pct"] == 20.0
-    assert {item["change_status"] for item in payload["recent_changes"]} == {"new_position", "increased"}
-    assert {item["manager"]["id"] for item in payload["recent_changes"]} == {featured.id, activist.id}
+    assert [item["manager"]["id"] for item in payload["top_holders"]] == [featured.id]
+    assert payload["top_holders"][0]["portfolio_weight_pct"] == 12.5
+    assert {item["change_status"] for item in payload["recent_changes"]} == {"new_position"}
+    assert {item["manager"]["id"] for item in payload["recent_changes"]} == {featured.id}
+    assert payload["recent_changes"][0]["value_delta_usd"] == 200000
+    assert payload["recent_changes"][0]["share_delta"] == 200
+
+    all_response = client.get(f"/api/v1/13f/stocks/{stock.id}/holders?manager_scope=all")
+    assert all_response.status_code == 200
+    all_payload = all_response.json()
+    assert all_payload["manager_scope"] == "all"
+    assert all_payload["direct_holder_count"] == 3
+    assert [item["manager"]["id"] for item in all_payload["top_holders"]] == [activist.id, featured.id, quant.id]
+    assert {item["manager"]["id"] for item in all_payload["recent_changes"]} == {
+        featured.id,
+        activist.id,
+    }
 
 
 def test_stock_holders_aggregation_surfaces_data_caveats(client, db_session):
@@ -636,6 +927,31 @@ def test_filing_caveats_surfaces_shared_discretion_on_complete_holdings_report(d
     codes = {c["code"] for c in _filing_caveats(filing)}
     assert "SHARED_DISCRETION" in codes
     assert "COMBINATION_REPORT" not in codes  # not gated on report_type/coverage
+
+
+def test_manager_holdings_returns_verified_empty_portfolio_as_available(db_session):
+    from app.services.thirteenf_user_api import build_user_manager_holdings
+
+    manager = _manager(db_session)
+    filing = _filing(db_session, manager, "0001540866-26-000002")
+    filing.total_13f_common_value_usd = 0
+    _parse_run(db_session, filing)
+    db_session.flush()
+
+    result = build_user_manager_holdings(
+        db_session,
+        manager.id,
+        quarter="2026-Q1",
+        include_market_context=False,
+    )
+
+    assert result["status"] == "available"
+    assert result["summary"] == {
+        "common_position_count": 0,
+        "reported_common_value_usd": 0,
+    }
+    assert result["common_holdings"] == []
+    assert result["options"] == []
 
 
 def test_filing_caveats_no_shared_discretion_without_included_managers(db_session):

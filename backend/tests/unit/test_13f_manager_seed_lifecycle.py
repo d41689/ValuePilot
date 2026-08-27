@@ -19,6 +19,7 @@ from __future__ import annotations
 from app.models.institutions import (
     InstitutionManager,
     InstitutionManagerCikReviewEvent,
+    InstitutionManagerRepresentativenessReview,
 )
 from app.services.edgar_ingestion import seed_confirmed_managers
 
@@ -576,7 +577,26 @@ def test_concurrent_seed_serializes_on_the_advisory_lock():
         s_a.close()
         cleanup = SessionLocal()
         try:
+            # This test deliberately commits through independent production
+            # sessions to prove advisory-lock serialization, so the normal
+            # per-test outer rollback cannot clean its rows. Disable only the
+            # new append-only trigger inside this teardown transaction; normal
+            # application/test writes continue to exercise the DB boundary.
+            cleanup.execute(text(
+                "ALTER TABLE institution_manager_representativeness_reviews "
+                "DISABLE TRIGGER "
+                "trg_institution_manager_representativeness_reviews_append_only"
+            ))
+            cleanup.query(InstitutionManagerRepresentativenessReview).delete()
             cleanup.query(InstitutionManager).delete()
+            cleanup.execute(text(
+                "ALTER TABLE institution_manager_representativeness_reviews "
+                "ENABLE TRIGGER "
+                "trg_institution_manager_representativeness_reviews_append_only"
+            ))
             cleanup.commit()
+        except Exception:
+            cleanup.rollback()
+            raise
         finally:
             cleanup.close()

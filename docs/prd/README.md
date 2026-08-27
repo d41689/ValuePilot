@@ -6,6 +6,15 @@ For ValuePilot v0.1, the single authoritative PRD entry point is:
 
 - `docs/prd/value-pilot-prd-v0.1.md`
 
+The approved product sequencing and acceptance plan for the research workflow
+is:
+
+- `docs/plans/research_decision_loop_product_roadmap.md`
+
+That roadmap is an execution plan, not a competing schema/metric authority. Its
+storage and behavior contracts are incorporated into §G of the authoritative
+PRD above.
+
 Any addendum documents in this directory are either:
 - merged into the entry point, or
 - explicitly labeled as historical/read-only.
@@ -27,4 +36,3 @@ Metric semantics includes (non-exhaustive):
 - `metric_key` naming
 - unit choices and normalization expectations
 - period semantics (`period_type`, `period_end_date` rules/derivations)
-

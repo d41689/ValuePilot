@@ -3,12 +3,31 @@ from typing import Any
 from fastapi import APIRouter, HTTPException, status
 from sqlalchemy import select
 
-from app.api.deps import SessionDep, AdminUser
+from app.api.deps import SessionDep, AdminUser, CurrentUser
 from app.core.security import hash_password
 from app.models.users import User
-from app.schemas.users import UserCreate, UserRead
+from app.schemas.users import AccountErasureRequest, UserCreate, UserRead
+from app.services.account_erasure import AccountErasureError, erase_account
 
 router = APIRouter()
+
+
+@router.post("/me/erase", response_model=dict)
+def erase_current_user(
+    *,
+    session: SessionDep,
+    current_user: CurrentUser,
+    body: AccountErasureRequest,
+) -> dict:
+    try:
+        return erase_account(
+            session,
+            user=current_user,
+            password=body.password,
+        )
+    except AccountErasureError as error:
+        session.rollback()
+        raise HTTPException(status_code=403, detail=str(error)) from error
 
 
 @router.post("/", response_model=UserRead, status_code=status.HTTP_201_CREATED)

@@ -24,6 +24,7 @@ import {
   formatOverviewOptionLabel,
   formatPiotroskiFScoreSeries,
   formatRefreshPricesSuccessDescription,
+  formatValuationReferenceLabel,
   formatWatchlistOptionLabel,
   getRefreshPricesButtonPresentation,
   hasFairValueEditChanges,
@@ -46,6 +47,8 @@ import {
 import { Watchlist13FColumns } from '@/components/watchlist/Watchlist13FColumns';
 import { Watchlist13FDrawer } from '@/components/watchlist/Watchlist13FDrawer';
 import { MosCrossSignalGlyph } from '@/components/watchlist/MosCrossSignalGlyph';
+import { FilingSeasonDigest } from '@/components/thirteenf/FilingSeasonDigest';
+import { OpenResearchCaseButton } from '@/components/research/OpenResearchCaseButton';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader } from '@/components/ui/card';
 import {
@@ -90,7 +93,13 @@ type WatchlistRow = {
   price_updated_at: string | null;
   fair_value: number | null;
   fair_value_source: string | null;
+  fair_value_status: 'available' | 'unavailable' | 'missing';
+  fair_value_as_of: string | null;
   mos: number | null;
+  valuation_reference: number | null;
+  valuation_reference_source: string | null;
+  valuation_reference_as_of: string | null;
+  discount_to_reference: number | null;
   delta_today: number | null;
   piotroski_f_scores: Array<{
     period_end_date: string | null;
@@ -445,10 +454,12 @@ export default function WatchlistPage() {
   });
 
   const updateFairValue = useMutation({
-    mutationFn: async (payload: { stockId: number; value: number }) => {
+    mutationFn: async (payload: { stockId: number; value: number; poolId: number | null }) => {
       const res = await apiClient.put(`/stocks/${payload.stockId}/facts`, {
         metric_key: 'val.fair_value',
         value_numeric: payload.value,
+        source: 'watchlist',
+        ...(payload.poolId === null ? {} : { pool_id: payload.poolId }),
       });
       return res.data;
     },
@@ -498,7 +509,7 @@ export default function WatchlistPage() {
       });
       return;
     }
-    updateFairValue.mutate({ stockId, value });
+    updateFairValue.mutate({ stockId, value, poolId: activePoolId });
   };
 
   const activePool = useMemo(
@@ -518,6 +529,8 @@ export default function WatchlistPage() {
           </p>
         </div>
       </header>
+
+      <FilingSeasonDigest showDigest={false} />
 
       <Card className="min-w-0 border-border/60 bg-card/85">
         <CardHeader className="gap-4">
@@ -670,10 +683,10 @@ export default function WatchlistPage() {
                   )}
                 </Button>
               </div>
-              <Table className={mdExpanded ? 'min-w-[1400px]' : 'min-w-[1080px] xl:min-w-[1400px]'}>
+              <Table className={mdExpanded ? 'min-w-[1520px]' : 'min-w-[1200px] xl:min-w-[1520px]'}>
               <TableHeader>
                 <TableRow className="border-b-0">
-                  <TableHead colSpan={8} className="border-r-0" />
+                  <TableHead colSpan={9} className="border-r-0" />
                   <TableHead
                     colSpan={4}
                     className={cn(
@@ -705,8 +718,9 @@ export default function WatchlistPage() {
                   />
                   <TableHead>F-Score 3Y</TableHead>
                   <TableHead>Price</TableHead>
-                  <TableHead>Fair Value</TableHead>
+                  <TableHead>User IV</TableHead>
                   <TableHead>MOS</TableHead>
+                  <TableHead>Valuation Reference</TableHead>
                   <TableHead>Δ Today</TableHead>
                   <TableHead>Last Update</TableHead>
                   <SortableHeader
@@ -763,7 +777,11 @@ export default function WatchlistPage() {
                           onBlur={() => handleFairValueSave(row.stock_id)}
                         />
                         <span className="text-xs text-muted-foreground">
-                          {row.fair_value_source ?? '—'}
+                          {row.fair_value_status === 'available'
+                            ? 'User estimate'
+                            : row.fair_value_status === 'unavailable'
+                              ? 'Cleared'
+                              : 'Not set'}
                         </span>
                       </div>
                     </TableCell>
@@ -783,6 +801,21 @@ export default function WatchlistPage() {
                         return <MosCrossSignalGlyph signal={signal} />;
                       })()}
                     </TableCell>
+                    <TableCell className="min-w-[10rem]">
+                      <div className="flex flex-col gap-1">
+                        <span>
+                          {formatValuationReferenceLabel(
+                            row.valuation_reference,
+                            row.valuation_reference_source,
+                          )}
+                        </span>
+                        <span className="text-xs text-muted-foreground">
+                          {row.discount_to_reference === null
+                            ? 'Discount unavailable'
+                            : `${formatPercent(row.discount_to_reference)} to reference`}
+                        </span>
+                      </div>
+                    </TableCell>
                     <TableCell>{formatNumber(row.delta_today)}</TableCell>
                     <TableCell>{formatDate(row.price_updated_at)}</TableCell>
                     <Watchlist13FColumns
@@ -800,6 +833,13 @@ export default function WatchlistPage() {
                         <Button asChild variant="outline">
                           <Link href={`/stocks/${encodeURIComponent(row.ticker)}/dcf`}>DCF</Link>
                         </Button>
+                        <OpenResearchCaseButton
+                          stockId={row.stock_id}
+                          originType="watchlist"
+                          originKey={`watchlist-membership:${row.membership_id}`}
+                          sourceVersion={`watchlist-membership-v1:${row.membership_id}`}
+                          sourceRef={{ membership_id: row.membership_id }}
+                        />
                         {!isOverviewActive && (
                           <Button
                             variant="ghost"

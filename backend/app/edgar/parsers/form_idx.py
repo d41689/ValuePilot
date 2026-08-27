@@ -38,13 +38,14 @@ class FormIdxRecord:
         return self.cik.zfill(10)
 
 
-_FORM_TYPES = frozenset({"13F-HR", "13F-HR/A"})
-_DAILY_13F_FORM_TYPES = frozenset({"13F-HR", "13F-HR/A", "13F-NT"})
+_FORM_TYPES = frozenset({"13F-HR", "13F-HR/A", "13F-NT", "13F-NT/A"})
+_DAILY_13F_FORM_TYPES = frozenset({"13F-HR", "13F-HR/A", "13F-NT", "13F-NT/A"})
 
-# Data line: form_type  company_name  cik  YYYY-MM-DD  edgar/data/...
+# Data line: form_type  company_name  cik  date  edgar/data/...
+# Quarterly full indexes use YYYY-MM-DD; real daily indexes use YYYYMMDD.
 # We anchor on the well-known structured fields: date and edgar/data path.
 _DATA_RE = re.compile(
-    r"^(\S[^\n]*?)\s{2,}(\d+)\s+(\d{4}-\d{2}-\d{2})\s+(edgar/data/\S+)"
+    r"^(\S[^\n]*?)\s{2,}(\d+)\s+(\d{4}(?:-?\d{2}){2})\s+(edgar/data/\S+)"
 )
 
 
@@ -85,7 +86,12 @@ def parse_form_idx(content: bytes, form_types: frozenset[str] = _FORM_TYPES) -> 
             continue
 
         try:
-            filed_at = date.fromisoformat(date_str)
+            normalized_date = (
+                f"{date_str[:4]}-{date_str[4:6]}-{date_str[6:]}"
+                if len(date_str) == 8
+                else date_str
+            )
+            filed_at = date.fromisoformat(normalized_date)
         except ValueError:
             continue
 
