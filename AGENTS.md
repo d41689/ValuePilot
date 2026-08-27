@@ -15,6 +15,10 @@ before working in that area.
   - **13F automation** — EDGAR ingestion + Oracle's Lens scoring + the
     Watchlist × 13F surface.
   - Both tracks write to and read from the same data layer (below).
+- **Research Decision Support boundary.** Before changing research cases,
+  AI-proposed research, valuation publication, point-in-time reconstruction,
+  case origins, or option-underwriting analysis, read
+  `docs/architecture/research-decision-support.md`.
 - **Stack.** Python backend; TypeScript / React (Next.js) frontend; PostgreSQL;
   SQLAlchemy ORM (screening rules compile to SQLAlchemy expressions); shadcn/ui
   + Tailwind + lucide-react. JSON for semi-structured fields
