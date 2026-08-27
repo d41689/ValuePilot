@@ -165,16 +165,22 @@ export default function ManualPortfolioWorkspacePage() {
     },
   });
   const positionMutation = useMutation({
-    mutationFn: ({ position, operation }: { position: Position; operation: 'resize' | 'review' | 'close' }) => {
+    mutationFn: async ({ position, operation }: { position: Position; operation: 'resize' | 'review' | 'close' }) => {
       const common = {
         expected_version: position.version,
         research_case_id: position.research_case_id,
         research_revision_id: position.research_revision_id,
         reason: actionReason[position.id] || null,
       };
-      if (operation === 'resize') return apiClient.post(`/portfolios/positions/${position.id}/resize`, { ...common, quantity: editQuantity[position.id] || position.quantity, average_unit_cost: editCost[position.id] || position.average_unit_cost });
-      if (operation === 'review') return apiClient.post(`/portfolios/positions/${position.id}/review`, { ...common, reviewed_on: today, reason: actionReason[position.id] || 'Reviewed current evidence; no journal detail supplied.' });
-      return apiClient.post(`/portfolios/positions/${position.id}/close`, { ...common, closed_on: today });
+      if (operation === 'resize') {
+        await apiClient.post(`/portfolios/positions/${position.id}/resize`, { ...common, quantity: editQuantity[position.id] || position.quantity, average_unit_cost: editCost[position.id] || position.average_unit_cost });
+        return;
+      }
+      if (operation === 'review') {
+        await apiClient.post(`/portfolios/positions/${position.id}/review`, { ...common, reviewed_on: today, reason: actionReason[position.id] || 'Reviewed current evidence; no journal detail supplied.' });
+        return;
+      }
+      await apiClient.post(`/portfolios/positions/${position.id}/close`, { ...common, closed_on: today });
     },
     onSuccess: async () => queryClient.invalidateQueries({ queryKey: ['manual-portfolio', portfolioId] }),
   });
