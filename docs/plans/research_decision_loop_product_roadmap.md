@@ -46,8 +46,9 @@ retention, or investment-formula contracts.
 
 The dependency gates are:
 
-1. FT-00 locks the evaluation manifest and protocol before data or UI work is
-   judged against the set.
+1. FT-00 is complete: the evaluation manifest and protocol were locked on
+   2026-08-27 before SEC-financial parser results were observed. Later data/UI
+   work is judged against that fixed set.
 2. FT-02 precedes expanded durable evidence references. FT-03 requires a source-
    policy authorization update and provides identity/raw/PIT lineage before
    FT-04 publishes SEC-derived `metric_facts`.
@@ -59,8 +60,9 @@ The dependency gates are:
    historical valuation/return comparisons or market-data completeness claims.
    FT-08 may build its non-financial workflow progressively, but automated
    financial conclusions depend on FT-06/FT-07.
-5. FT-10 and FT-11 are independently releasable after their own contracts and
-   FT-00 fixtures pass. They do not block manual-origin case research.
+5. FT-10 and FT-11 are independently releasable after their own contracts; the
+   FT-00 fixture prerequisite is satisfied. They do not block manual-origin
+   case research.
 6. FT-12, FT-13, and FT-14 remain separate releases. FT-12 requires stable case
    revisions/evidence supersession; FT-13 requires the portfolio/journal PRD;
    FT-14 requires PIT-safe case history and FT-15 for any market-return

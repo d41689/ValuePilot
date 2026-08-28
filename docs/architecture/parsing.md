@@ -27,3 +27,42 @@ Docker. Do NOT use OS-level `diff` for JSON comparisons.
   source.
 - Kahn Brothers (`0001039565-*`) reports values in dollars, not thousands —
   reconciliation warnings for this filer are True Positives, not bugs.
+
+## EDGAR financial-filing lineage gotchas
+
+- Read the permission and product boundary in
+  `docs/architecture/coverage-source-policy.md` and PRD §H before expanding the
+  form set, coverage universe, retention policy, or consumers.
+- An accession `index.json` item's `type` may describe the index icon (for
+  example `text.gif`) rather than the SEC exhibit type. Retention therefore
+  uses the reviewed primary-document name and approved XBRL filename suffixes;
+  the complete index remains retained as evidence of the manifest.
+- Retain both the submissions payload that discovered the filing and the
+  accession index. A hash column alone is not a replayable raw artifact.
+- Treat an SEC-declared artifact size as an integrity assertion: the fetched
+  byte length must match exactly or the observation is rejected and excluded
+  from parsing. Reuse also verifies stored length and SHA-256.
+- A parse-run checksum is not its input lineage. Persist every retained input
+  through `sec_financial_parse_run_artifacts`; raw facts must reference one of
+  those exact inputs. Commit a terminal run, its knowledge-timestamped input
+  relationships and its raw facts atomically. The deferred database check makes
+  the terminal `fact_count` agree with the evidence rows and prevents a later
+  transaction from manufacturing either the relationship or the facts. Do not
+  infer atomicity from caller-supplied timestamps: the database overwrites the
+  run/link/fact creation metadata and requires one transaction identity across
+  the group.
+- PIT selection validates the filing's own reviewed identity and cuts off both
+  knowledge time and database creation time for every parse-input relationship.
+- Exact failed-run replay remains a typed failure. Historical submissions
+  discovery is separately request-bounded even when its filing-result limit has
+  not yet been met. Preserve referenced filenames until service validation;
+  preserve array index plus a fixed invalid-record code when a reference is not
+  an object or has a missing, non-string or empty `name`. Unsafe paths,
+  malformed names and cross-CIK references remain typed failures rather than
+  silently becoming “no filing found”.
+- Inline-XBRL concept prefixes are document-local. Preserve the resolved
+  namespace URI, transformation format, language/continuation reference, and
+  structured unit meaning (including divided units) before FT-04 mapping.
+- Raw XBRL is never canonical financial truth. Only an approved FT-04 mapping
+  may publish it into `metric_facts`; product consumers must not query the raw
+  lineage tables.
