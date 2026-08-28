@@ -162,6 +162,22 @@ gate:
   meaning; it still performs no canonical normalization or publication.
 - 2026-08-27: Rate Guard failures retain a bounded typed reason, including SEC
   HTTP status classes when the shared client supplies one.
+- 2026-08-27: PR #127 follow-up review findings VP-127-01 through VP-127-06
+  were independently reproduced with red tests and accepted. Remediation makes
+  parse runs, input relationships and facts transactionally consistent; rejects
+  zero-fact or count-mismatched success; requires the filing's own reviewed
+  identity; verifies SEC-declared byte size; caps each historical-manifest scan
+  at 20 requests; and preserves the typed outcome of exact failed-run replay.
+- 2026-08-27: follow-up findings VP-127-RR-01 and VP-127-RR-02 were both
+  independently reproduced with red tests. Database-forced transaction IDs now
+  prevent a later committed transaction from forging a parse-input relationship
+  by backfilling timestamps. Unsafe historical-submissions references are
+  retained through parsing for bounded service validation, never fetched, and
+  reported as typed incomplete outcomes.
+- 2026-08-27: VP-127-RR-02B was independently reproduced for non-object,
+  missing-name and empty-name history entries. Parser output now retains every
+  array position as a valid or typed-invalid reference; the service reports
+  bounded indexed failures without issuing a request.
 
 ## Live probe evidence
 
@@ -187,14 +203,20 @@ retry ambiguity; false success on zero extracted facts; unresolved concept
 namespaces and divided units; post-cutoff artifact inputs; identity
 retirement/re-review PIT leakage; corrupt stored-byte reuse; cross-filing parse
 inputs; invalid amendment links; raw facts attached to failed runs; malformed
-manifest-item skipping; and collapsed Rate Guard/SEC fetch failures. The final
+manifest-item skipping; collapsed Rate Guard/SEC fetch failures; post-cutoff
+parse-input relationships; database fact-count drift; unreviewed filing
+identity bypass; SEC-declared-size mismatch; unbounded historical manifest
+scans; failed-run replay presented as success; and a deferred-check ordering
+bypass that could otherwise append facts beyond the declared run count;
+backfilled parse-input timestamps; and silently discarded unsafe historical
+references, including non-object and missing/empty-name entries. The final
 contract, static-consumer, targeted, migration-round-trip and live-probe review
 found no additional actionable issue within this slice.
 
 ## Sign-off trail
 
-- Targeted foundation suite: `28 passed`.
-- Canonical backend suite: `1489 passed`.
+- Targeted foundation suite: `39 passed`.
+- Canonical backend suite: `1500 passed`.
 - Canonical frontend unit suite: `216 passed`.
 - Frontend lint: no warnings or errors.
 - Production build: passed; the pre-existing Browserslist data-age warning is

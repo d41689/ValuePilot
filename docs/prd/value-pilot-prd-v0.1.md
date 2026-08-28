@@ -898,8 +898,14 @@ Discovery reads the SEC submissions manifest, including referenced historical
 submission files when necessary. Array fields are zipped only to their common
 validated length; malformed entries are rejected or recorded as typed failures,
 never shifted onto a neighboring accession. Approved base forms and amendments
-are retained independently. A later amendment does not mutate or delete the
-original filing.
+are retained independently. Historical-submissions filenames are preserved for
+service validation and must match the same reviewed CIK's SEC basename pattern;
+path traversal, cross-CIK, malformed or otherwise unsafe references are not
+requested and produce a bounded `unsafe_historical_submission_reference` typed
+failure. Parser output retains the array index plus a fixed error code for
+non-object entries and entries with a missing, non-string or empty `name`, so
+service validation cannot silently turn them into “no filing found”. A later
+amendment does not mutate or delete the original filing.
 
 ### H.4 Artifact manifest and immutable storage
 
@@ -923,6 +929,11 @@ artifact types. A manifest row is not evidence content until state is
 untrusted path segments. Existing bytes are verified and reused; they are never
 overwritten. A filename containing traversal, an off-SEC URL, an oversized
 response, disallowed content, hash mismatch, or storage mismatch fails closed.
+When the SEC manifest supplies a byte size, the downloaded response MUST match
+it exactly. A mismatch appends a `rejected` artifact observation with typed
+`declared_size_mismatch` evidence and the response MUST NOT become a parse
+input. A previously retained observation is reusable only after its stored
+bytes, recorded byte size and SHA-256 all verify.
 
 The retained first vertical slice includes the primary inline-XBRL/HTML document
 and SEC index-declared XBRL instance/schema/calculation/definition/label/
@@ -941,10 +952,25 @@ run and never deletes an earlier run/fact.
 `sec_financial_parse_run_artifacts` is the append-only exact input manifest:
 each row links one parse run to one retained artifact, unique per pair. The
 manifest hash is a checksum, not a substitute for these durable identities. A
-PIT read is eligible only when every linked artifact was retained and known by
-the cutoff. The database rejects cross-filing links and artifacts learned after
-the parse run; raw facts have a composite foreign key to one of these exact
-input links.
+link records both `known_at` and its database-created timestamp. The run, all
+input links and all raw facts are committed atomically; an input relationship
+may not be appended in a later transaction. A PIT read is eligible only when
+every linked artifact was retained and both the artifact and relationship were
+known and created by the cutoff. The database rejects cross-filing links,
+artifacts learned after the parse run and relationships created after the run;
+raw facts have a composite foreign key to one of these exact input links.
+For the atomic group, the database unconditionally stamps `created_at` and a
+64-bit creation-transaction identity on every run, input link and raw fact;
+caller-supplied values are overwritten. Each link and fact must carry the same
+database transaction identity as its run, so backfilled timestamps cannot make
+a later transaction appear contemporaneous.
+
+A `succeeded` run has a positive `fact_count`; a `failed` run has zero. A
+deferred database constraint verifies at transaction commit that the recorded
+count equals the number of raw facts attached to a succeeded run (and that a
+failed run has none). Raw facts cannot be appended in a later transaction.
+Therefore a terminal run cannot claim success without the exact evidence rows
+that make the claim true.
 
 `sec_raw_xbrl_facts` is append-only and belongs to exactly one succeeded run and
 one retained source artifact. It preserves:
@@ -972,10 +998,14 @@ between duplicate contexts, derive quarters, normalize currency, or publish
 
 For cutoff `T`, a replay may use only:
 
-- a reviewed issuer identity effective at the filing period and known by `T`;
+- the filing's own issuer identity, which must be reviewed, effective at the
+  filing period, and known by `T`;
 - a filing with SEC `accepted_at <= T` and ValuePilot `known_at <= T`;
 - artifact bytes with `known_at <= T`;
-- a succeeded parse run with `completed_at <= T` and `known_at <= T`.
+- parse-input relationships with both `known_at <= T` and the database-forced
+  `created_at <= T`, backed by the run's matching creation-transaction identity;
+- a succeeded parse run with a positive fact count, `completed_at <= T` and
+  `known_at <= T`.
 
 The query returns the newest eligible parse version only when the caller asks
 for that policy; it always exposes the selected filing/accession, parser and
@@ -1004,6 +1034,15 @@ manifest, identity not reviewed, storage mismatch, unsupported form, and parse
 failure remain distinct terminal outcomes. Partial work never becomes a
 succeeded parse run.
 Retries reuse retained verified artifacts and do not create duplicate raw facts.
+An exact replay of a failed run reports that run's typed failure; it never
+returns an empty-success result. Historical-submissions discovery reads at most
+20 referenced manifest files per operation. If the filing target is still not
+met and more history remains, the report includes
+`history_scan_limit_exceeded`; operators must continue with another bounded
+operation rather than turning one request into an unbounded crawl. Unsafe
+historical-submissions references are never fetched and appear as bounded
+`unsafe_historical_submission_reference` failures, making the CLI exit with
+the same incomplete-result status as other typed failures.
 
 ---
 

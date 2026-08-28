@@ -36,6 +36,10 @@ CIK_RE = re.compile(r"^[0-9]{10}$")
 ACCESSION_RE = re.compile(r"^[0-9]{10}-[0-9]{2}-[0-9]{6}$")
 MAX_ARTIFACT_BYTES = 20 * 1024 * 1024
 MAX_MANIFEST_ITEMS = 500
+MAX_HISTORICAL_SUBMISSION_FILES = 20
+HISTORICAL_SUBMISSION_FILENAME_RE = re.compile(
+    r"^CIK(?P<cik>[0-9]{10})-submissions-[0-9]+[.]json$"
+)
 PARSER_NAME = "valuepilot-inline-xbrl-lineage"
 ARTIFACT_RETENTION_POLICY_VERSION = "sec-financial-artifacts-v1"
 
@@ -87,6 +91,7 @@ class SecFinancialEvidenceAsOf:
 class _DiscoveryResult:
     filings: tuple[DiscoveredFinancialFiling, ...]
     source_payloads: dict[str, bytes]
+    failures: tuple[str, ...]
 
 
 def _fetch_bytes(client: EdgarLikeClient, url: str) -> bytes:
@@ -411,6 +416,8 @@ def _verify_retained_artifact(storage_root: Path, artifact: SecFilingArtifact) -
     content = target.read_bytes()
     if len(content) != artifact.byte_size:
         raise SecFinancialIntegrityError("retained artifact byte size mismatch")
+    if artifact.declared_size is not None and artifact.byte_size != artifact.declared_size:
+        raise SecFinancialIntegrityError("retained artifact differs from SEC declared size")
     if hashlib.sha256(content).hexdigest() != artifact.sha256:
         raise SecFinancialIntegrityError("retained artifact hash mismatch")
 
@@ -591,6 +598,27 @@ def _create_artifacts(
             content = _fetch_bytes(client, source_url)
             if len(content) > MAX_ARTIFACT_BYTES:
                 raise SecFinancialIngestionError("artifact exceeds byte limit")
+            if item["size"] is not None and len(content) != item["size"]:
+                artifact = SecFilingArtifact(
+                    filing_id=filing.id,
+                    sequence=item["sequence"],
+                    filename=filename,
+                    description=item["description"],
+                    sec_type=item["type"],
+                    declared_size=item["size"],
+                    source_url=source_url,
+                    manifest_hash=manifest_hash,
+                    state="rejected",
+                    reason_code="declared_size_mismatch",
+                    known_at=now,
+                )
+                db.add(artifact)
+                artifacts.append(artifact)
+                created_count += 1
+                failures.append(
+                    f"{filing.accession_no}:{filename}:declared_size_mismatch"
+                )
+                continue
             storage_key, sha256 = _store_content_immutable(storage_root, content)
             artifact = SecFilingArtifact(
                 filing_id=filing.id,
@@ -700,6 +728,10 @@ def _parse_primary_artifact(
         )
     )
     if existing is not None:
+        if existing.status == "failed":
+            return 0, 0, [
+                f"{filing.accession_no}:{existing.error_code or 'parse_failed'}"
+            ]
         return 0, 0, []
 
     primary = next(
@@ -737,7 +769,9 @@ def _parse_primary_artifact(
         for artifact in retained_inputs:
             db.add(
                 SecFinancialParseRunArtifact(
-                    parse_run_id=run.id, artifact_id=artifact.id
+                    parse_run_id=run.id,
+                    artifact_id=artifact.id,
+                    known_at=now,
                 )
             )
         return 1, 0, [f"{filing.accession_no}:required_artifact_unavailable"]
@@ -760,7 +794,9 @@ def _parse_primary_artifact(
         for artifact in retained_inputs:
             db.add(
                 SecFinancialParseRunArtifact(
-                    parse_run_id=run.id, artifact_id=artifact.id
+                    parse_run_id=run.id,
+                    artifact_id=artifact.id,
+                    known_at=now,
                 )
             )
         return 1, 0, [f"{filing.accession_no}:primary_artifact_unavailable"]
@@ -789,7 +825,9 @@ def _parse_primary_artifact(
             for artifact in retained_inputs:
                 db.add(
                     SecFinancialParseRunArtifact(
-                        parse_run_id=run.id, artifact_id=artifact.id
+                        parse_run_id=run.id,
+                        artifact_id=artifact.id,
+                        known_at=now,
                     )
                 )
             return 1, 0, [f"{filing.accession_no}:no_inline_xbrl_facts"]
@@ -811,7 +849,9 @@ def _parse_primary_artifact(
         for artifact in retained_inputs:
             db.add(
                 SecFinancialParseRunArtifact(
-                    parse_run_id=run.id, artifact_id=artifact.id
+                    parse_run_id=run.id,
+                    artifact_id=artifact.id,
+                    known_at=now,
                 )
             )
         db.flush()
@@ -865,7 +905,9 @@ def _parse_primary_artifact(
         for artifact in retained_inputs:
             db.add(
                 SecFinancialParseRunArtifact(
-                    parse_run_id=run.id, artifact_id=artifact.id
+                    parse_run_id=run.id,
+                    artifact_id=artifact.id,
+                    known_at=now,
                 )
             )
         return 1, 0, [f"{filing.accession_no}:parse_failed:{type(exc).__name__}"]
@@ -885,19 +927,51 @@ def _discover(
         raise SecFinancialIngestionError("SEC submissions CIK does not match reviewed identity")
     discovered = list(main.filings)
     source_payloads = {submissions_url: main_content}
+    failures: list[str] = []
     def eligible_count() -> int:
         return sum(1 for item in discovered if as_of is None or item.accepted_at <= as_of)
 
     if eligible_count() < max_filings:
-        for filename in main.historical_submission_files:
-            if PurePosixPath(filename).name != filename:
+        safe_historical_files: list[str] = []
+        unsafe_historical_files: list[str] = []
+        for reference in main.historical_submission_references:
+            if reference.error_code is not None or reference.name is None:
+                unsafe_historical_files.append(
+                    f"index={reference.index}:"
+                    f"{reference.error_code or 'invalid_reference'}"
+                )
                 continue
+            filename = reference.name
+            match = HISTORICAL_SUBMISSION_FILENAME_RE.fullmatch(filename)
+            if (
+                PurePosixPath(filename).name == filename
+                and match is not None
+                and match.group("cik") == cik
+            ):
+                safe_historical_files.append(filename)
+            else:
+                unsafe_historical_files.append(filename)
+        failures.extend(
+            "unsafe_historical_submission_reference:" + filename[:160]
+            for filename in unsafe_historical_files[:MAX_HISTORICAL_SUBMISSION_FILES]
+        )
+        if len(unsafe_historical_files) > MAX_HISTORICAL_SUBMISSION_FILES:
+            failures.append(
+                "unsafe_historical_submission_reference_additional:"
+                f"{len(unsafe_historical_files) - MAX_HISTORICAL_SUBMISSION_FILES}"
+            )
+        for filename in safe_historical_files[:MAX_HISTORICAL_SUBMISSION_FILES]:
             url = f"https://data.sec.gov/submissions/{quote(filename, safe='._-')}"
             content = _fetch_bytes(client, url)
             source_payloads[url] = content
             discovered.extend(parse_historical_financial_submissions(content, source_url=url))
             if eligible_count() >= max_filings:
                 break
+        if (
+            eligible_count() < max_filings
+            and len(safe_historical_files) > MAX_HISTORICAL_SUBMISSION_FILES
+        ):
+            failures.append("history_scan_limit_exceeded")
     by_accession = {item.accession_no: item for item in discovered}
     eligible = [
         item
@@ -907,7 +981,11 @@ def _discover(
     selected = sorted(
         eligible, key=lambda item: (item.accepted_at, item.accession_no), reverse=True
     )[:max_filings]
-    return _DiscoveryResult(filings=tuple(selected), source_payloads=source_payloads)
+    return _DiscoveryResult(
+        filings=tuple(selected),
+        source_payloads=source_payloads,
+        failures=tuple(failures),
+    )
 
 
 def ingest_latest_financial_filings(
@@ -937,7 +1015,7 @@ def ingest_latest_financial_filings(
     created_artifacts = 0
     created_runs = 0
     created_facts = 0
-    failures: list[str] = []
+    failures: list[str] = list(discovery.failures)
 
     for item in reversed(discovered):
         filing = db.scalar(
@@ -1082,6 +1160,8 @@ def select_sec_financial_evidence_as_of(
     linked_artifact_exists = exists(
         select(SecFinancialParseRunArtifact.id).where(
             SecFinancialParseRunArtifact.parse_run_id == SecFinancialParseRun.id,
+            SecFinancialParseRunArtifact.known_at <= cutoff,
+            SecFinancialParseRunArtifact.created_at <= cutoff,
         )
     )
     late_linked_artifact_exists = exists(
@@ -1093,6 +1173,8 @@ def select_sec_financial_evidence_as_of(
         .where(
             SecFinancialParseRunArtifact.parse_run_id == SecFinancialParseRun.id,
             or_(
+                SecFinancialParseRunArtifact.known_at > cutoff,
+                SecFinancialParseRunArtifact.created_at > cutoff,
                 SecFilingArtifact.state != "retained",
                 SecFilingArtifact.known_at > cutoff,
             ),
@@ -1110,10 +1192,13 @@ def select_sec_financial_evidence_as_of(
         )
         .where(
             SecIssuerIdentity.stock_id == stock_id,
+            SecIssuerIdentity.status == "reviewed",
+            SecIssuerIdentity.known_at <= cutoff,
             current_reviewed_identity_exists,
             SecFinancialFiling.accepted_at <= cutoff,
             SecFinancialFiling.known_at <= cutoff,
             SecFinancialParseRun.status == "succeeded",
+            SecFinancialParseRun.fact_count > 0,
             SecFinancialParseRun.completed_at <= cutoff,
             SecFinancialParseRun.known_at <= cutoff,
             linked_artifact_exists,

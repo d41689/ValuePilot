@@ -184,6 +184,11 @@ class SecFinancialParseRun(Base):
             "(status = 'failed' AND error_code IS NOT NULL)",
             name="ck_sec_financial_parse_runs_result",
         ),
+        CheckConstraint(
+            "(status = 'succeeded' AND fact_count > 0) OR "
+            "(status = 'failed' AND fact_count = 0)",
+            name="ck_sec_financial_parse_runs_fact_count",
+        ),
         UniqueConstraint(
             "filing_id",
             "parser_version",
@@ -212,6 +217,9 @@ class SecFinancialParseRun(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
+    created_txid: Mapped[int] = mapped_column(
+        BigInteger, server_default=func.txid_current(), nullable=False
+    )
 
 
 class SecFinancialParseRunArtifact(Base):
@@ -234,8 +242,12 @@ class SecFinancialParseRunArtifact(Base):
         ForeignKey("sec_filing_artifacts.id", ondelete="RESTRICT"),
         nullable=False,
     )
+    known_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    created_txid: Mapped[int] = mapped_column(
+        BigInteger, server_default=func.txid_current(), nullable=False
     )
 
 
@@ -292,4 +304,7 @@ class SecRawXbrlFact(Base):
     locator_json: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    created_txid: Mapped[int] = mapped_column(
+        BigInteger, server_default=func.txid_current(), nullable=False
     )

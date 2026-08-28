@@ -189,13 +189,28 @@ def upgrade() -> None:
             new_identity sec_issuer_identities%ROWTYPE;
             amended_identity sec_issuer_identities%ROWTYPE;
         BEGIN
+            SELECT * INTO new_identity FROM sec_issuer_identities
+            WHERE id = NEW.issuer_identity_id;
+            IF new_identity.id IS NULL
+               OR new_identity.status <> 'reviewed'
+               OR new_identity.known_at > NEW.known_at
+               OR new_identity.effective_from > COALESCE(NEW.report_date, NEW.filed_on)
+               OR (
+                   new_identity.effective_to IS NOT NULL
+                   AND new_identity.effective_to < COALESCE(NEW.report_date, NEW.filed_on)
+               )
+               OR EXISTS (
+                   SELECT 1 FROM sec_issuer_identities child
+                   WHERE child.supersedes_identity_id = new_identity.id
+                     AND child.known_at <= NEW.known_at
+               ) THEN
+                RAISE EXCEPTION 'filing requires current reviewed SEC issuer identity';
+            END IF;
             IF NEW.amends_filing_id IS NULL THEN
                 RETURN NEW;
             END IF;
             SELECT * INTO amended FROM sec_financial_filings
             WHERE id = NEW.amends_filing_id;
-            SELECT * INTO new_identity FROM sec_issuer_identities
-            WHERE id = NEW.issuer_identity_id;
             SELECT identity.* INTO amended_identity
             FROM sec_issuer_identities identity
             WHERE identity.id = amended.issuer_identity_id;
@@ -283,6 +298,7 @@ def upgrade() -> None:
         sa.Column("error_code", sa.String(length=80), nullable=True),
         sa.Column("error_detail", sa.Text(), nullable=True),
         sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.text("now()"), nullable=False),
+        sa.Column("created_txid", sa.BigInteger(), server_default=sa.text("txid_current()"), nullable=False),
         sa.CheckConstraint(
             "status IN ('succeeded', 'failed')",
             name="ck_sec_financial_parse_runs_status",
@@ -291,6 +307,11 @@ def upgrade() -> None:
             "(status = 'succeeded' AND error_code IS NULL) OR "
             "(status = 'failed' AND error_code IS NOT NULL)",
             name="ck_sec_financial_parse_runs_result",
+        ),
+        sa.CheckConstraint(
+            "(status = 'succeeded' AND fact_count > 0) OR "
+            "(status = 'failed' AND fact_count = 0)",
+            name="ck_sec_financial_parse_runs_fact_count",
         ),
         sa.ForeignKeyConstraint(["filing_id"], ["sec_financial_filings.id"], ondelete="RESTRICT"),
         sa.PrimaryKeyConstraint("id"),
@@ -304,13 +325,34 @@ def upgrade() -> None:
         "sec_financial_parse_runs",
         ["filing_id", "known_at"],
     )
+    op.execute(
+        """
+        CREATE FUNCTION stamp_sec_financial_parse_run_insert()
+        RETURNS trigger LANGUAGE plpgsql AS $$
+        BEGIN
+            NEW.created_at := clock_timestamp();
+            NEW.created_txid := txid_current();
+            RETURN NEW;
+        END;
+        $$
+        """
+    )
+    op.execute(
+        """
+        CREATE TRIGGER trg_sec_financial_parse_runs_insert_stamp
+        BEFORE INSERT ON sec_financial_parse_runs
+        FOR EACH ROW EXECUTE FUNCTION stamp_sec_financial_parse_run_insert()
+        """
+    )
 
     op.create_table(
         "sec_financial_parse_run_artifacts",
         sa.Column("id", sa.BigInteger(), autoincrement=True, nullable=False),
         sa.Column("parse_run_id", sa.BigInteger(), nullable=False),
         sa.Column("artifact_id", sa.BigInteger(), nullable=False),
+        sa.Column("known_at", sa.DateTime(timezone=True), nullable=False),
         sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.text("now()"), nullable=False),
+        sa.Column("created_txid", sa.BigInteger(), server_default=sa.text("txid_current()"), nullable=False),
         sa.ForeignKeyConstraint(["artifact_id"], ["sec_filing_artifacts.id"], ondelete="RESTRICT"),
         sa.ForeignKeyConstraint(["parse_run_id"], ["sec_financial_parse_runs.id"], ondelete="RESTRICT"),
         sa.PrimaryKeyConstraint("id"),
@@ -330,11 +372,15 @@ def upgrade() -> None:
         DECLARE
             run_filing_id bigint;
             run_known_at timestamptz;
+            run_created_txid bigint;
             artifact_filing_id bigint;
             artifact_state text;
             artifact_known_at timestamptz;
         BEGIN
-            SELECT filing_id, known_at INTO run_filing_id, run_known_at
+            NEW.created_at := clock_timestamp();
+            NEW.created_txid := txid_current();
+            SELECT filing_id, known_at, created_txid
+            INTO run_filing_id, run_known_at, run_created_txid
             FROM sec_financial_parse_runs WHERE id = NEW.parse_run_id;
             SELECT filing_id, state, known_at
             INTO artifact_filing_id, artifact_state, artifact_known_at
@@ -343,7 +389,9 @@ def upgrade() -> None:
                OR artifact_filing_id IS NULL
                OR run_filing_id <> artifact_filing_id
                OR artifact_state <> 'retained'
-               OR artifact_known_at > run_known_at THEN
+               OR artifact_known_at > run_known_at
+               OR NEW.known_at <> run_known_at
+               OR NEW.created_txid <> run_created_txid THEN
                 RAISE EXCEPTION 'invalid SEC parse-run artifact link';
             END IF;
             RETURN NEW;
@@ -385,6 +433,7 @@ def upgrade() -> None:
         sa.Column("dimensions_json", postgresql.JSONB(), server_default=sa.text("'{}'::jsonb"), nullable=False),
         sa.Column("locator_json", postgresql.JSONB(), nullable=False),
         sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.text("now()"), nullable=False),
+        sa.Column("created_txid", sa.BigInteger(), server_default=sa.text("txid_current()"), nullable=False),
         sa.ForeignKeyConstraint(["artifact_id"], ["sec_filing_artifacts.id"], ondelete="RESTRICT"),
         sa.ForeignKeyConstraint(["parse_run_id"], ["sec_financial_parse_runs.id"], ondelete="RESTRICT"),
         sa.ForeignKeyConstraint(
@@ -406,13 +455,25 @@ def upgrade() -> None:
         RETURNS trigger LANGUAGE plpgsql AS $$
         DECLARE
             run_status text;
+            run_created_txid bigint;
+            run_fact_count integer;
+            existing_fact_count integer;
             artifact_state text;
         BEGIN
-            SELECT status INTO run_status
-            FROM sec_financial_parse_runs WHERE id = NEW.parse_run_id;
+            NEW.created_at := clock_timestamp();
+            NEW.created_txid := txid_current();
+            SELECT status, created_txid, fact_count
+            INTO run_status, run_created_txid, run_fact_count
+            FROM sec_financial_parse_runs WHERE id = NEW.parse_run_id
+            FOR UPDATE;
             SELECT state INTO artifact_state
             FROM sec_filing_artifacts WHERE id = NEW.artifact_id;
-            IF run_status <> 'succeeded' OR artifact_state <> 'retained' THEN
+            SELECT count(*) INTO existing_fact_count
+            FROM sec_raw_xbrl_facts WHERE parse_run_id = NEW.parse_run_id;
+            IF run_status <> 'succeeded'
+               OR artifact_state <> 'retained'
+               OR NEW.created_txid <> run_created_txid
+               OR existing_fact_count >= run_fact_count THEN
                 RAISE EXCEPTION 'raw SEC XBRL fact requires succeeded run and retained input';
             END IF;
             RETURN NEW;
@@ -425,6 +486,33 @@ def upgrade() -> None:
         CREATE TRIGGER trg_sec_raw_xbrl_facts_insert_guard
         BEFORE INSERT ON sec_raw_xbrl_facts
         FOR EACH ROW EXECUTE FUNCTION guard_sec_raw_xbrl_fact_insert()
+        """
+    )
+    op.execute(
+        """
+        CREATE FUNCTION validate_sec_parse_run_fact_count()
+        RETURNS trigger LANGUAGE plpgsql AS $$
+        DECLARE
+            actual_count integer;
+        BEGIN
+            SELECT count(*) INTO actual_count
+            FROM sec_raw_xbrl_facts fact
+            WHERE fact.parse_run_id = NEW.id;
+            IF (NEW.status = 'succeeded' AND actual_count <> NEW.fact_count)
+               OR (NEW.status = 'failed' AND actual_count <> 0) THEN
+                RAISE EXCEPTION 'SEC parse run fact count mismatch';
+            END IF;
+            RETURN NULL;
+        END;
+        $$
+        """
+    )
+    op.execute(
+        """
+        CREATE CONSTRAINT TRIGGER trg_sec_financial_parse_runs_fact_count
+        AFTER INSERT ON sec_financial_parse_runs
+        DEFERRABLE INITIALLY DEFERRED
+        FOR EACH ROW EXECUTE FUNCTION validate_sec_parse_run_fact_count()
         """
     )
 
@@ -453,6 +541,11 @@ def downgrade() -> None:
         op.execute(f"DROP TRIGGER IF EXISTS trg_{table_name}_append_only ON {table_name}")
     op.execute("DROP FUNCTION IF EXISTS reject_sec_financial_lineage_mutation()")
     op.execute(
+        "DROP TRIGGER IF EXISTS trg_sec_financial_parse_runs_fact_count "
+        "ON sec_financial_parse_runs"
+    )
+    op.execute("DROP FUNCTION IF EXISTS validate_sec_parse_run_fact_count()")
+    op.execute(
         "DROP TRIGGER IF EXISTS trg_sec_raw_xbrl_facts_insert_guard "
         "ON sec_raw_xbrl_facts"
     )
@@ -470,6 +563,11 @@ def downgrade() -> None:
     # absent while still dropping the exact table below.
     op.execute("DROP INDEX IF EXISTS ix_sec_financial_parse_run_artifacts_run")
     op.execute("DROP TABLE IF EXISTS sec_financial_parse_run_artifacts")
+    op.execute(
+        "DROP TRIGGER IF EXISTS trg_sec_financial_parse_runs_insert_stamp "
+        "ON sec_financial_parse_runs"
+    )
+    op.execute("DROP FUNCTION IF EXISTS stamp_sec_financial_parse_run_insert()")
     op.drop_index("ix_sec_financial_parse_runs_filing_known", table_name="sec_financial_parse_runs")
     op.drop_table("sec_financial_parse_runs")
     op.drop_index("ix_sec_filing_artifacts_filing_known", table_name="sec_filing_artifacts")

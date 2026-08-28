@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 import hashlib
 import json
 from pathlib import Path
@@ -28,6 +28,7 @@ from app.services.sec_financial_ingestion import (
     _safe_artifact_url,
     _store_content_immutable,
     _fetch_bytes,
+    _discover,
     ingest_latest_financial_filings,
     register_reviewed_sec_identity,
     retire_sec_identity,
@@ -75,6 +76,7 @@ INLINE_XBRL = b"""<!doctype html>
   <ix:nonFraction id="fact-eps" name="us-gaap:EarningsPerShareDiluted"
       contextRef="D2026Q3" unitRef="USDperShare" decimals="2">1.50</ix:nonFraction>
 </body></html>"""
+SCHEMA_XBRL = b"<schema />\n"
 
 
 def _submissions_payload() -> bytes:
@@ -113,7 +115,7 @@ def _index_payload() -> bytes:
                     {
                         "name": "aapl-20260627.xsd",
                         "type": "EX-101.SCH",
-                        "size": 12,
+                        "size": len(SCHEMA_XBRL),
                         "description": "XBRL TAXONOMY EXTENSION SCHEMA",
                     },
                     {
@@ -138,7 +140,7 @@ class FakeEdgarClient:
             SUBMISSIONS_URL: _submissions_payload(),
             INDEX_URL: _index_payload(),
             PRIMARY_URL: INLINE_XBRL,
-            schema_url: b"<schema />\n",
+            schema_url: SCHEMA_XBRL,
         }
         self.calls: list[str] = []
 
@@ -158,6 +160,59 @@ class FlakyEdgarClient(FakeEdgarClient):
             self.fail_schema_once = False
             raise RuntimeError("transient SEC fixture failure")
         return super().get(url)
+
+
+class DeclaredSizeMismatchClient(FakeEdgarClient):
+    def __init__(self) -> None:
+        super().__init__()
+        payload = json.loads(_index_payload())
+        payload["directory"]["item"][0]["size"] = len(INLINE_XBRL) + 1
+        self.responses[INDEX_URL] = json.dumps(payload).encode()
+
+
+class NoFactsClient(FakeEdgarClient):
+    def __init__(self) -> None:
+        super().__init__()
+        no_facts = b"<html><body>No inline XBRL facts.</body></html>"
+        payload = json.loads(_index_payload())
+        payload["directory"]["item"][0]["size"] = len(no_facts)
+        self.responses[INDEX_URL] = json.dumps(payload).encode()
+        self.responses[PRIMARY_URL] = no_facts
+
+
+class HistoricalScanClient:
+    def __init__(self) -> None:
+        self.calls: list[str] = []
+        recent = json.loads(_submissions_payload())
+        recent["filings"]["files"] = [
+            {"name": f"CIK{CIK}-submissions-{index:03d}.json"}
+            for index in range(3)
+        ]
+        self.responses = {SUBMISSIONS_URL: json.dumps(recent).encode()}
+        for index in range(3):
+            self.responses[
+                f"https://data.sec.gov/submissions/CIK{CIK}-submissions-{index:03d}.json"
+            ] = json.dumps({"accessionNumber": []}).encode()
+
+    def get(self, url: str) -> bytes:
+        self.calls.append(url)
+        return self.responses[url]
+
+
+class UnsafeHistoricalReferenceClient:
+    def __init__(self, reference: object | None = None) -> None:
+        self.calls: list[str] = []
+        recent = json.loads(_submissions_payload())
+        recent["filings"]["files"] = [
+            reference
+            if reference is not None
+            else {"name": f"CIK{CIK}/../escaped.json"},
+        ]
+        self.responses = {SUBMISSIONS_URL: json.dumps(recent).encode()}
+
+    def get(self, url: str) -> bytes:
+        self.calls.append(url)
+        return self.responses[url]
 
 
 class FailingRateGuardClient:
@@ -242,6 +297,326 @@ def test_artifact_paths_fail_closed_on_traversal_and_storage_corruption(
         _store_content_immutable(tmp_path, content)
 
 
+def _database_lineage_fixture(db_session, *, ticker: str, cik: str):
+    stock = Stock(ticker=ticker, exchange="US", company_name=f"{ticker} Fixture")
+    db_session.add(stock)
+    db_session.flush()
+    identity = register_reviewed_sec_identity(
+        db_session,
+        stock_id=stock.id,
+        cik=cik,
+        effective_from=date(2020, 1, 1),
+        known_at=datetime(2026, 8, 27, 12, 0, tzinfo=timezone.utc),
+        review_reason="Database-boundary fixture.",
+    )
+    filing = SecFinancialFiling(
+        issuer_identity_id=identity.id,
+        accession_no=f"{cik}-26-000001",
+        form_type="10-Q",
+        is_amendment=False,
+        filed_on=date(2026, 7, 31),
+        report_date=date(2026, 6, 30),
+        accepted_at=datetime(2026, 7, 31, 16, 0, tzinfo=timezone.utc),
+        known_at=datetime(2026, 8, 27, 12, 1, tzinfo=timezone.utc),
+        primary_document="fixture.htm",
+        index_url="https://www.sec.gov/fixture/index.json",
+        source_url="https://www.sec.gov/fixture/fixture.htm",
+        submissions_source_url=f"https://data.sec.gov/submissions/CIK{cik}.json",
+        discovery_payload_sha256="a" * 64,
+    )
+    db_session.add(filing)
+    db_session.flush()
+    artifact = SecFilingArtifact(
+        filing_id=filing.id,
+        sequence=1,
+        filename="fixture.htm",
+        source_url=filing.source_url,
+        manifest_hash="b" * 64,
+        state="retained",
+        content_mime="text/html",
+        sha256="c" * 64,
+        byte_size=10,
+        storage_key="financial/cc/" + "c" * 64,
+        fetched_at=datetime(2026, 8, 27, 12, 2, tzinfo=timezone.utc),
+        known_at=datetime(2026, 8, 27, 12, 2, tzinfo=timezone.utc),
+    )
+    db_session.add(artifact)
+    db_session.commit()
+    return stock, identity, filing, artifact
+
+
+def _raw_fact(run_id: int, artifact_id: int, *, ordinal: int = 1) -> SecRawXbrlFact:
+    return SecRawXbrlFact(
+        parse_run_id=run_id,
+        artifact_id=artifact_id,
+        ordinal=ordinal,
+        concept="us-gaap:Assets",
+        raw_value="100",
+        is_nil=False,
+        dimensions_json={},
+        locator_json={"artifact_id": artifact_id, "dom_ordinal": ordinal},
+    )
+
+
+def test_database_rejects_zero_fact_success_and_fact_count_mismatch(db_session) -> None:
+    _, _, filing, artifact = _database_lineage_fixture(
+        db_session, ticker="COUNT", cik="0000000021"
+    )
+    zero = SecFinancialParseRun(
+        filing_id=filing.id,
+        parser_name="fixture",
+        parser_version="zero",
+        input_manifest_hash="d" * 64,
+        status="succeeded",
+        started_at=datetime(2026, 8, 27, 12, 3, tzinfo=timezone.utc),
+        completed_at=datetime(2026, 8, 27, 12, 3, tzinfo=timezone.utc),
+        known_at=datetime(2026, 8, 27, 12, 3, tzinfo=timezone.utc),
+        fact_count=0,
+    )
+    db_session.add(zero)
+    with pytest.raises(DBAPIError):
+        db_session.commit()
+    db_session.rollback()
+
+    mismatch = SecFinancialParseRun(
+        filing_id=filing.id,
+        parser_name="fixture",
+        parser_version="mismatch",
+        input_manifest_hash="e" * 64,
+        status="succeeded",
+        started_at=datetime(2026, 8, 27, 12, 4, tzinfo=timezone.utc),
+        completed_at=datetime(2026, 8, 27, 12, 4, tzinfo=timezone.utc),
+        known_at=datetime(2026, 8, 27, 12, 4, tzinfo=timezone.utc),
+        fact_count=1,
+    )
+    db_session.add(mismatch)
+    db_session.flush()
+    db_session.add(
+        SecFinancialParseRunArtifact(
+            parse_run_id=mismatch.id,
+            artifact_id=artifact.id,
+            known_at=mismatch.known_at,
+        )
+    )
+    db_session.flush()
+    with pytest.raises(DBAPIError, match="fact count mismatch"):
+        db_session.execute(
+            text("SET CONSTRAINTS trg_sec_financial_parse_runs_fact_count IMMEDIATE")
+        )
+    db_session.rollback()
+
+
+def test_database_overwrites_parse_link_transaction_metadata(db_session) -> None:
+    _, _, filing, artifact = _database_lineage_fixture(
+        db_session, ticker="LATE", cik="0000000022"
+    )
+    failed_run = SecFinancialParseRun(
+        filing_id=filing.id,
+        parser_name="fixture",
+        parser_version="failed",
+        input_manifest_hash="f" * 64,
+        status="failed",
+        started_at=datetime(2026, 8, 27, 12, 3, tzinfo=timezone.utc),
+        completed_at=datetime(2026, 8, 27, 12, 3, tzinfo=timezone.utc),
+        known_at=datetime(2026, 8, 27, 12, 3, tzinfo=timezone.utc),
+        fact_count=0,
+        error_code="fixture_failure",
+    )
+    db_session.add(failed_run)
+    db_session.commit()
+    db_session.refresh(failed_run)
+
+    spoofed_created_at = failed_run.created_at + timedelta(seconds=1)
+    link = SecFinancialParseRunArtifact(
+        parse_run_id=failed_run.id,
+        artifact_id=artifact.id,
+        known_at=failed_run.known_at,
+        created_at=spoofed_created_at,
+        created_txid=failed_run.created_txid - 1,
+    )
+    db_session.add(link)
+    db_session.commit()
+    db_session.refresh(link)
+
+    assert link.created_at >= failed_run.created_at
+    assert link.created_at != spoofed_created_at
+    assert link.created_txid == failed_run.created_txid
+
+
+def test_database_rejects_filing_bound_to_needs_review_identity(db_session) -> None:
+    stock, reviewed, _, _ = _database_lineage_fixture(
+        db_session, ticker="REVIEW", cik="0000000023"
+    )
+    needs_review = SecIssuerIdentity(
+        stock_id=stock.id,
+        cik=reviewed.cik,
+        status="needs_review",
+        confidence=None,
+        review_reason=None,
+        effective_from=date(2020, 1, 1),
+        known_at=datetime(2026, 8, 27, 13, 0, tzinfo=timezone.utc),
+    )
+    db_session.add(needs_review)
+    db_session.flush()
+    unreviewed_filing = SecFinancialFiling(
+        issuer_identity_id=needs_review.id,
+        accession_no="0000000023-26-000002",
+        form_type="10-Q",
+        is_amendment=False,
+        filed_on=date(2026, 8, 1),
+        report_date=date(2026, 6, 30),
+        accepted_at=datetime(2026, 8, 1, 16, 0, tzinfo=timezone.utc),
+        known_at=datetime(2026, 8, 27, 13, 1, tzinfo=timezone.utc),
+        primary_document="unreviewed.htm",
+        index_url="https://www.sec.gov/unreviewed/index.json",
+        source_url="https://www.sec.gov/unreviewed/unreviewed.htm",
+        submissions_source_url="https://data.sec.gov/submissions/CIK0000000023.json",
+        discovery_payload_sha256="f" * 64,
+    )
+    db_session.add(unreviewed_filing)
+    with pytest.raises(DBAPIError, match="reviewed SEC issuer identity"):
+        db_session.commit()
+    db_session.rollback()
+
+
+def test_declared_artifact_size_mismatch_is_rejected(db_session, tmp_path: Path) -> None:
+    stock = Stock(ticker="SIZE", exchange="US", company_name="Size Fixture")
+    db_session.add(stock)
+    db_session.flush()
+    register_reviewed_sec_identity(
+        db_session,
+        stock_id=stock.id,
+        cik=CIK,
+        effective_from=date(1980, 12, 12),
+        known_at=datetime(2026, 8, 27, 12, 0, tzinfo=timezone.utc),
+        review_reason="Declared-size fixture.",
+    )
+    db_session.commit()
+
+    report = ingest_latest_financial_filings(
+        db_session,
+        stock_id=stock.id,
+        client=DeclaredSizeMismatchClient(),
+        storage_root=tmp_path,
+        max_filings=1,
+        now=datetime(2026, 8, 27, 12, 5, tzinfo=timezone.utc),
+    )
+    db_session.commit()
+
+    primary = db_session.scalar(
+        select(SecFilingArtifact).where(
+            SecFilingArtifact.filename == "aapl-20260627.htm"
+        )
+    )
+    assert primary.state == "rejected"
+    assert primary.reason_code == "declared_size_mismatch"
+    assert report.raw_facts_created == 0
+    assert any("declared_size_mismatch" in failure for failure in report.failures)
+
+
+def test_historical_discovery_has_request_budget(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "app.services.sec_financial_ingestion.MAX_HISTORICAL_SUBMISSION_FILES", 2
+    )
+    client = HistoricalScanClient()
+
+    result = _discover(
+        client,
+        CIK,
+        max_filings=1,
+        as_of=datetime(2010, 1, 1, tzinfo=timezone.utc),
+    )
+
+    assert len(client.calls) == 3
+    assert result.failures == ("history_scan_limit_exceeded",)
+
+
+def test_historical_discovery_reports_unsafe_reference() -> None:
+    client = UnsafeHistoricalReferenceClient()
+
+    result = _discover(
+        client,
+        CIK,
+        max_filings=1,
+        as_of=datetime(2010, 1, 1, tzinfo=timezone.utc),
+    )
+
+    assert client.calls == [SUBMISSIONS_URL]
+    assert result.filings == ()
+    assert result.failures == (
+        f"unsafe_historical_submission_reference:CIK{CIK}/../escaped.json",
+    )
+
+
+@pytest.mark.parametrize(
+    ("reference", "failure_detail"),
+    [
+        pytest.param("not-an-object", "index=0:non_object", id="non-object"),
+        pytest.param({}, "index=0:missing_name", id="missing-name"),
+        pytest.param({"name": ""}, "index=0:empty_name", id="empty-name"),
+        pytest.param(
+            {"name": 123}, "index=0:name_not_string", id="non-string-name"
+        ),
+    ],
+)
+def test_historical_discovery_reports_malformed_reference(
+    reference: object,
+    failure_detail: str,
+) -> None:
+    client = UnsafeHistoricalReferenceClient(reference)
+
+    result = _discover(
+        client,
+        CIK,
+        max_filings=1,
+        as_of=datetime(2010, 1, 1, tzinfo=timezone.utc),
+    )
+
+    assert client.calls == [SUBMISSIONS_URL]
+    assert result.filings == ()
+    assert result.failures == (
+        f"unsafe_historical_submission_reference:{failure_detail}",
+    )
+
+
+def test_exact_failed_parse_replay_remains_a_failure(db_session, tmp_path: Path) -> None:
+    stock = Stock(ticker="NOFACT", exchange="US", company_name="No Facts Fixture")
+    db_session.add(stock)
+    db_session.flush()
+    register_reviewed_sec_identity(
+        db_session,
+        stock_id=stock.id,
+        cik=CIK,
+        effective_from=date(1980, 12, 12),
+        known_at=datetime(2026, 8, 27, 12, 0, tzinfo=timezone.utc),
+        review_reason="No-facts fixture.",
+    )
+    db_session.commit()
+    client = NoFactsClient()
+
+    first = ingest_latest_financial_filings(
+        db_session,
+        stock_id=stock.id,
+        client=client,
+        storage_root=tmp_path,
+        max_filings=1,
+        now=datetime(2026, 8, 27, 12, 5, tzinfo=timezone.utc),
+    )
+    db_session.commit()
+    second = ingest_latest_financial_filings(
+        db_session,
+        stock_id=stock.id,
+        client=client,
+        storage_root=tmp_path,
+        max_filings=1,
+        now=datetime(2026, 8, 27, 12, 10, tzinfo=timezone.utc),
+    )
+    db_session.commit()
+
+    assert first.failures == (f"{ACCESSION}:no_inline_xbrl_facts",)
+    assert second.failures == first.failures
+
+
 def test_ingestion_is_idempotent_pit_safe_and_does_not_publish_metric_facts(
     db_session, tmp_path: Path
 ) -> None:
@@ -316,6 +691,15 @@ def test_ingestion_is_idempotent_pit_safe_and_does_not_publish_metric_facts(
         if item.filename.startswith("__")
     }
     assert discovery_names == {"__submissions__.json", "__accession_index__.json"}
+    first_run = db_session.scalar(select(SecFinancialParseRun))
+    first_link_created_at = db_session.scalar(
+        select(func.max(SecFinancialParseRunArtifact.created_at)).where(
+            SecFinancialParseRunArtifact.parse_run_id == first_run.id
+        )
+    )
+    after_ingestion_cutoff = max(first_run.known_at, first_link_created_at) + timedelta(
+        seconds=1
+    )
 
     before_identity = select_sec_financial_evidence_as_of(
         db_session,
@@ -325,49 +709,57 @@ def test_ingestion_is_idempotent_pit_safe_and_does_not_publish_metric_facts(
     after_ingestion = select_sec_financial_evidence_as_of(
         db_session,
         stock_id=stock.id,
-        cutoff=datetime(2026, 8, 27, 12, 6, tzinfo=timezone.utc),
+        cutoff=after_ingestion_cutoff,
     )
     assert before_identity == []
     assert len(after_ingestion) == 1
     assert after_ingestion[0].accession_no == ACCESSION
     assert after_ingestion[0].parser_version == "inline-xbrl-v1"
 
-    first_run = db_session.scalar(select(SecFinancialParseRun))
     retained_inputs = db_session.scalars(
         select(SecFilingArtifact).where(SecFilingArtifact.state == "retained")
     ).all()
+    later_known_at = after_ingestion_cutoff + timedelta(minutes=10)
     later_run = SecFinancialParseRun(
         filing_id=first_run.filing_id,
         parser_name="valuepilot-inline-xbrl-lineage",
         parser_version="inline-xbrl-v2",
         input_manifest_hash="b" * 64,
         status="succeeded",
-        started_at=datetime(2026, 8, 27, 12, 20, tzinfo=timezone.utc),
-        completed_at=datetime(2026, 8, 27, 12, 20, tzinfo=timezone.utc),
-        known_at=datetime(2026, 8, 27, 12, 20, tzinfo=timezone.utc),
-        fact_count=0,
+        started_at=later_known_at,
+        completed_at=later_known_at,
+        known_at=later_known_at,
+        fact_count=1,
     )
     db_session.add(later_run)
     db_session.flush()
     db_session.add_all(
         [
             SecFinancialParseRunArtifact(
-                parse_run_id=later_run.id, artifact_id=artifact.id
+                parse_run_id=later_run.id,
+                artifact_id=artifact.id,
+                known_at=later_run.known_at,
             )
             for artifact in retained_inputs
         ]
     )
+    primary_input = next(
+        artifact
+        for artifact in retained_inputs
+        if artifact.filename == "aapl-20260627.htm"
+    )
+    db_session.add(_raw_fact(later_run.id, primary_input.id))
     db_session.commit()
 
     before_later_parser = select_sec_financial_evidence_as_of(
         db_session,
         stock_id=stock.id,
-        cutoff=datetime(2026, 8, 27, 12, 15, tzinfo=timezone.utc),
+        cutoff=later_known_at - timedelta(minutes=1),
     )
     after_later_parser = select_sec_financial_evidence_as_of(
         db_session,
         stock_id=stock.id,
-        cutoff=datetime(2026, 8, 27, 12, 21, tzinfo=timezone.utc),
+        cutoff=later_known_at + timedelta(minutes=1),
     )
     assert before_later_parser[0].parser_version == "inline-xbrl-v1"
     assert after_later_parser[0].parser_version == "inline-xbrl-v2"
@@ -383,29 +775,33 @@ def test_ingestion_is_idempotent_pit_safe_and_does_not_publish_metric_facts(
         sha256=retained_inputs[0].sha256,
         byte_size=retained_inputs[0].byte_size,
         storage_key=retained_inputs[0].storage_key,
-        fetched_at=datetime(2026, 8, 27, 12, 30, tzinfo=timezone.utc),
-        known_at=datetime(2026, 8, 27, 12, 30, tzinfo=timezone.utc),
+        fetched_at=later_known_at + timedelta(minutes=10),
+        known_at=later_known_at + timedelta(minutes=10),
     )
     db_session.add(late_input)
     db_session.flush()
     db_session.add(
         SecFinancialParseRunArtifact(
-            parse_run_id=later_run.id, artifact_id=late_input.id
+            parse_run_id=later_run.id,
+            artifact_id=late_input.id,
+            known_at=later_run.known_at,
         )
     )
     with pytest.raises(DBAPIError, match="invalid SEC parse-run artifact link"):
         db_session.commit()
     db_session.rollback()
 
+    amendment_accepted_at = later_known_at + timedelta(days=1)
+    amendment_known_at = amendment_accepted_at + timedelta(days=1)
     amendment = SecFinancialFiling(
         issuer_identity_id=identity.id,
         accession_no="0000320193-26-000080",
         form_type="10-Q/A",
         is_amendment=True,
-        filed_on=date(2026, 8, 29),
+        filed_on=amendment_accepted_at.date(),
         report_date=date(2026, 6, 27),
-        accepted_at=datetime(2026, 8, 29, 16, 0, tzinfo=timezone.utc),
-        known_at=datetime(2026, 8, 30, 12, 0, tzinfo=timezone.utc),
+        accepted_at=amendment_accepted_at,
+        known_at=amendment_known_at,
         primary_document="aapl-20260627a.htm",
         primary_doc_description="10-Q/A",
         index_url="https://www.sec.gov/amendment-index.json",
@@ -427,68 +823,76 @@ def test_ingestion_is_idempotent_pit_safe_and_does_not_publish_metric_facts(
         sha256=retained_inputs[0].sha256,
         byte_size=retained_inputs[0].byte_size,
         storage_key=retained_inputs[0].storage_key,
-        fetched_at=datetime(2026, 8, 30, 12, 0, tzinfo=timezone.utc),
-        known_at=datetime(2026, 8, 30, 12, 0, tzinfo=timezone.utc),
+        fetched_at=amendment_known_at,
+        known_at=amendment_known_at,
     )
     db_session.add(amended_artifact)
     db_session.flush()
+    amendment_run_known_at = amendment_known_at + timedelta(minutes=1)
     amendment_run = SecFinancialParseRun(
         filing_id=amendment.id,
         parser_name="valuepilot-inline-xbrl-lineage",
         parser_version="inline-xbrl-v1",
         input_manifest_hash="e" * 64,
         status="succeeded",
-        started_at=datetime(2026, 8, 30, 12, 1, tzinfo=timezone.utc),
-        completed_at=datetime(2026, 8, 30, 12, 1, tzinfo=timezone.utc),
-        known_at=datetime(2026, 8, 30, 12, 1, tzinfo=timezone.utc),
-        fact_count=0,
+        started_at=amendment_run_known_at,
+        completed_at=amendment_run_known_at,
+        known_at=amendment_run_known_at,
+        fact_count=1,
     )
     db_session.add(amendment_run)
     db_session.flush()
+    db_session.refresh(amendment_run)
     db_session.add(
         SecFinancialParseRunArtifact(
-            parse_run_id=amendment_run.id, artifact_id=amended_artifact.id
+            parse_run_id=amendment_run.id,
+            artifact_id=amended_artifact.id,
+            known_at=amendment_run.known_at,
         )
     )
+    db_session.flush()
+    db_session.add(_raw_fact(amendment_run.id, amended_artifact.id))
     db_session.commit()
 
     before_amendment = select_sec_financial_evidence_as_of(
         db_session,
         stock_id=stock.id,
-        cutoff=datetime(2026, 8, 29, 15, 59, tzinfo=timezone.utc),
+        cutoff=amendment_accepted_at - timedelta(seconds=1),
     )
     after_amendment = select_sec_financial_evidence_as_of(
         db_session,
         stock_id=stock.id,
-        cutoff=datetime(2026, 8, 31, 0, 0, tzinfo=timezone.utc),
+        cutoff=amendment_run_known_at + timedelta(minutes=1),
     )
     assert [row.form_type for row in before_amendment] == ["10-Q"]
     assert {row.form_type for row in after_amendment} == {"10-Q", "10-Q/A"}
 
+    retired_known_at = amendment_run_known_at + timedelta(days=1)
     retired = retire_sec_identity(
         db_session,
         identity_id=identity.id,
-        known_at=datetime(2026, 9, 1, 12, 0, tzinfo=timezone.utc),
+        known_at=retired_known_at,
         review_reason="Temporarily withdraw the issuer mapping.",
     )
     db_session.commit()
     assert select_sec_financial_evidence_as_of(
         db_session,
         stock_id=stock.id,
-        cutoff=datetime(2026, 9, 1, 11, 59, tzinfo=timezone.utc),
+        cutoff=retired_known_at - timedelta(seconds=1),
     )
     assert select_sec_financial_evidence_as_of(
         db_session,
         stock_id=stock.id,
-        cutoff=datetime(2026, 9, 1, 12, 1, tzinfo=timezone.utc),
+        cutoff=retired_known_at + timedelta(seconds=1),
     ) == []
 
+    restored_known_at = retired_known_at + timedelta(days=1)
     restored = register_reviewed_sec_identity(
         db_session,
         stock_id=stock.id,
         cik=CIK,
         effective_from=date(1980, 12, 12),
-        known_at=datetime(2026, 9, 2, 12, 0, tzinfo=timezone.utc),
+        known_at=restored_known_at,
         review_reason="Explicitly re-approve the same stock-to-CIK mapping.",
         supersedes_identity_id=retired.id,
     )
@@ -496,7 +900,7 @@ def test_ingestion_is_idempotent_pit_safe_and_does_not_publish_metric_facts(
     restored_evidence = select_sec_financial_evidence_as_of(
         db_session,
         stock_id=stock.id,
-        cutoff=datetime(2026, 9, 2, 12, 1, tzinfo=timezone.utc),
+        cutoff=restored_known_at + timedelta(seconds=1),
     )
     assert restored.status == "reviewed"
     assert {row.form_type for row in restored_evidence} == {"10-Q", "10-Q/A"}
@@ -507,7 +911,7 @@ def test_ingestion_is_idempotent_pit_safe_and_does_not_publish_metric_facts(
         client=client,
         storage_root=tmp_path,
         max_filings=1,
-        now=datetime(2026, 9, 2, 12, 2, tzinfo=timezone.utc),
+        now=restored_known_at + timedelta(minutes=1),
     )
     db_session.commit()
     assert replay_after_restore.filings_created == 0
@@ -528,7 +932,7 @@ def test_ingestion_is_idempotent_pit_safe_and_does_not_publish_metric_facts(
             client=client,
             storage_root=tmp_path,
             max_filings=1,
-            now=datetime(2026, 9, 2, 12, 3, tzinfo=timezone.utc),
+            now=restored_known_at + timedelta(minutes=2),
         )
 
 

@@ -35,10 +35,25 @@ class DiscoveredFinancialFiling:
 
 
 @dataclass(frozen=True)
+class HistoricalSubmissionReference:
+    index: int
+    name: str | None
+    error_code: str | None
+
+
+@dataclass(frozen=True)
 class FinancialSubmissionsResult:
     issuer: FinancialIssuerSubmission
     filings: tuple[DiscoveredFinancialFiling, ...]
-    historical_submission_files: tuple[str, ...]
+    historical_submission_references: tuple[HistoricalSubmissionReference, ...]
+
+    @property
+    def historical_submission_files(self) -> tuple[str, ...]:
+        return tuple(
+            reference.name
+            for reference in self.historical_submission_references
+            if reference.error_code is None and reference.name is not None
+        )
 
 
 def _parse_date(value: Any) -> date | None:
@@ -126,13 +141,60 @@ def parse_financial_submissions(
     data = json.loads(content)
     payload_hash = hashlib.sha256(content).hexdigest()
     cik = str(data.get("cik") or "").zfill(10)
-    recent = data.get("filings", {}).get("recent", {})
-    historical = data.get("filings", {}).get("files", [])
-    historical_files = tuple(
-        str(item.get("name"))
-        for item in historical
-        if isinstance(item, dict) and str(item.get("name") or "").startswith("CIK")
-    )
+    filings_data = data.get("filings", {})
+    if not isinstance(filings_data, dict):
+        filings_data = {}
+    recent = filings_data.get("recent", {})
+    if not isinstance(recent, dict):
+        recent = {}
+    historical = filings_data.get("files", [])
+    historical_references: list[HistoricalSubmissionReference] = []
+    if not isinstance(historical, list):
+        historical_references.append(
+            HistoricalSubmissionReference(
+                index=-1,
+                name=None,
+                error_code="files_not_array",
+            )
+        )
+    else:
+        for index, item in enumerate(historical):
+            if not isinstance(item, dict):
+                historical_references.append(
+                    HistoricalSubmissionReference(
+                        index=index,
+                        name=None,
+                        error_code="non_object",
+                    )
+                )
+                continue
+            if "name" not in item:
+                historical_references.append(
+                    HistoricalSubmissionReference(
+                        index=index,
+                        name=None,
+                        error_code="missing_name",
+                    )
+                )
+                continue
+            raw_name = item["name"]
+            if not isinstance(raw_name, str):
+                historical_references.append(
+                    HistoricalSubmissionReference(
+                        index=index,
+                        name=None,
+                        error_code="name_not_string",
+                    )
+                )
+                continue
+            name = raw_name.strip()
+            historical_references.append(
+                HistoricalSubmissionReference(
+                    index=index,
+                    name=name or None,
+                    error_code=None if name else "empty_name",
+                )
+            )
     return FinancialSubmissionsResult(
         issuer=FinancialIssuerSubmission(
             cik=cik,
@@ -145,7 +207,7 @@ def parse_financial_submissions(
             payload_hash=payload_hash,
             approved_forms=approved_forms,
         ),
-        historical_submission_files=historical_files,
+        historical_submission_references=tuple(historical_references),
     )
 
 
