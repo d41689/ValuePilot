@@ -199,14 +199,18 @@ canonical commands at each closing gate.
 
 ### Git / PR conventions
 
-- Branch off `main`; never commit directly to `main`. Branch name
-  `<agent>/<slug>` (e.g. `claude/<slug>`).
-- Before the first commit, confirm `git config user.email` is a real address,
-  not a machine hostname.
-- Commit and push only when the user asks. Keep unrelated changes on separate
-  branches and PRs.
-- A PR body states what changed and why, the verification results, and links to
-  the task doc(s).
+- One scoped feature or fix uses one dedicated branch and one PR. Never commit
+  directly to `main`.
+- A request to implement or fix something authorizes the agent to create the
+  branch, make focused commits, push, and open or update a Draft PR unless the
+  user says otherwise.
+- Commit at meaningful, reviewable checkpoints; keep unrelated changes separate
+  and run relevant tests before committing.
+- Mark the PR ready only after the full closing gate and review pass. Merge,
+  release, force-push, and destructive cleanup still require explicit user
+  approval.
+- After an approved merge, update `main` and clean up the merged branch or
+  worktree safely.
 
 ### Per-PR checklist
 
