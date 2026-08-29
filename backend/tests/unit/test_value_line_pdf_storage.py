@@ -5,6 +5,7 @@ from app.models.artifacts import PdfDocument
 from app.models.stocks import Stock
 from app.services.file_storage import FileStorageService
 from app.services.ingestion_service import IngestionService
+from app.services.account_erasure import erase_account
 
 
 def test_file_storage_archives_value_line_pdf_to_canonical_path(monkeypatch, tmp_path):
@@ -148,3 +149,58 @@ def test_ingestion_archive_backfills_matching_document_paths(
     assert different_date.file_storage_key == "/code/storage/uploads/other-date.pdf"
     assert different_stock.file_storage_key == "/code/storage/uploads/msft.pdf"
     assert same_date_different_existing_file.file_storage_key == str(different_existing_path)
+
+
+def test_ingestion_archive_never_backfills_erased_document(
+    db_session, user_factory, monkeypatch, tmp_path
+):
+    monkeypatch.setattr(settings, "UPLOAD_DIR", str(tmp_path))
+    erased_user = user_factory(
+        "canonical-erased@example.com", password="ErasePass123!"
+    )
+    active_user = user_factory("canonical-active@example.com")
+    stock = Stock(ticker="AOS", exchange="NYSE", company_name="SMITH (A.O.)")
+    db_session.add(stock)
+    db_session.flush()
+
+    old_path = tmp_path / "old.pdf"
+    old_path.write_bytes(b"%PDF-1.4\nold report\n%%EOF\n")
+    erased_document = PdfDocument(
+        user_id=erased_user.id,
+        file_name="aos-erased.pdf",
+        source="upload",
+        file_storage_key=str(old_path),
+        parse_status="parsed",
+        report_date=date(2026, 1, 2),
+        stock_id=stock.id,
+    )
+    db_session.add(erased_document)
+    db_session.commit()
+    erase_account(db_session, user=erased_user, password="ErasePass123!")
+    db_session.refresh(erased_document)
+    tombstone_key = erased_document.file_storage_key
+
+    current_temp = tmp_path / "tmp" / "replacement.pdf"
+    current_temp.parent.mkdir(parents=True, exist_ok=True)
+    current_temp.write_bytes(b"%PDF-1.4\nreplacement report\n%%EOF\n")
+    current_document = PdfDocument(
+        user_id=active_user.id,
+        file_name="aos-current.pdf",
+        source="upload",
+        file_storage_key=str(current_temp),
+        parse_status="parsed",
+        report_date=date(2026, 1, 2),
+        stock_id=stock.id,
+    )
+    db_session.add(current_document)
+    db_session.commit()
+
+    result = IngestionService(db_session)._archive_single_company_value_line_pdf(
+        current_document
+    )
+    db_session.commit()
+
+    assert result is not None
+    db_session.refresh(erased_document)
+    assert erased_document.lifecycle_state == "erased"
+    assert erased_document.file_storage_key == tombstone_key

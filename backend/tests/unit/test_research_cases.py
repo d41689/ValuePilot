@@ -1,11 +1,13 @@
 from __future__ import annotations
 
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone
 
 import pytest
+from sqlalchemy import text
 from sqlalchemy.exc import DBAPIError
 
 from app.models.artifacts import PdfDocument
+from app.models.extractions import MetricExtraction
 from app.models.facts import MetricFact
 from app.models.research import (
     ResearchCase,
@@ -14,6 +16,7 @@ from app.models.research import (
     ResearchCaseRevision,
 )
 from app.models.stocks import Stock
+from financial_truth_fixtures import authorize_parsed_facts
 
 
 def _stock(db_session, ticker: str = "CASE") -> Stock:
@@ -105,6 +108,30 @@ def test_create_is_idempotent_and_preserves_distinct_origins(
     assert another_origin.json()["case"]["id"] == first.json()["case"]["id"]
     assert db_session.query(ResearchCase).count() == 1
     assert db_session.query(ResearchCaseOrigin).count() == 2
+    from app.models.coverage import ResearchCoverageRequirement
+
+    coverage = (
+        db_session.query(ResearchCoverageRequirement)
+        .filter_by(user_id=user.id, stock_id=stock.id, is_current=True)
+        .order_by(ResearchCoverageRequirement.kind)
+        .all()
+    )
+    assert [row.kind for row in coverage] == [
+        "eod_price",
+        "method_applicability",
+        "value_line_current_report",
+    ]
+    assert {row.kind: row.state for row in coverage} == {
+        "eod_price": "missing",
+        "method_applicability": "unsupported",
+        "value_line_current_report": "missing",
+    }
+    assert (
+        db_session.query(ResearchCoverageRequirement)
+        .filter_by(user_id=user.id, stock_id=stock.id)
+        .count()
+        == 3
+    )
     assert [
         row.event_type
         for row in db_session.query(ResearchCaseEvent)
@@ -393,6 +420,165 @@ def test_evidence_rejects_non_https_and_another_users_document(
     assert private_result.json()["detail"]["code"] == "evidence_unavailable"
 
 
+def test_evidence_retains_authorized_archived_document_and_fact_lineage(
+    db_session, user_factory
+):
+    from app.services.research_cases import evidence_is_available
+
+    owner = user_factory(email="evidence-archived-owner@example.com")
+    stock = _stock(db_session, "EVARCH")
+    document = PdfDocument(
+        user_id=owner.id,
+        stock_id=stock.id,
+        file_name="archived.pdf",
+        source="Value Line",
+        file_storage_key="private/archived.pdf",
+        parse_status="parsed",
+    )
+    db_session.add(document)
+    db_session.flush()
+    document.lifecycle_state = "archived"
+    document.retired_at = datetime.now(timezone.utc)
+    document.retired_by_user_id = owner.id
+    document.retirement_reason = "user_removed"
+    db_session.flush()
+    fact = MetricFact(
+        user_id=owner.id,
+        stock_id=stock.id,
+        metric_key="is.net_income",
+        value_numeric=100,
+        source_type="parsed",
+        source_document_id=document.id,
+        period_type="FY",
+        period_end_date=date(2025, 12, 31),
+        is_current=False,
+    )
+    authorize_parsed_facts(db_session, document=document, facts=[fact])
+    db_session.commit()
+    for source_type, source_id in [
+        ("pdf_document", document.id),
+        ("metric_fact", fact.id),
+    ]:
+        assert evidence_is_available(
+            db_session,
+            user_id=owner.id,
+            stock_id=stock.id,
+            source_type=source_type,
+            source_id=source_id,
+        )
+
+
+def test_metric_fact_evidence_rejects_rows_without_exact_source_authority(
+    db_session, user_factory
+):
+    from app.services.research_cases import evidence_is_available
+
+    owner = user_factory(email="evidence-quarantine-owner@example.com")
+    stock = _stock(db_session, "EVQUAR")
+    document = PdfDocument(
+        user_id=owner.id,
+        stock_id=stock.id,
+        file_name="quarantined.pdf",
+        source="Value Line",
+        file_storage_key="private/quarantined.pdf",
+        parse_status="parsed",
+    )
+    db_session.add(document)
+    db_session.flush()
+    legacy_rows = [
+        MetricFact(
+            user_id=owner.id,
+            stock_id=stock.id,
+            metric_key="is.revenue",
+            value_numeric=999,
+            source_type="parsed",
+            source_document_id=document.id,
+            period_type="FY",
+            period_end_date=date(2025, 12, 31),
+            is_current=False,
+        ),
+        MetricFact(
+            user_id=owner.id,
+            stock_id=stock.id,
+            metric_key="score.piotroski_f",
+            value_numeric=9,
+            value_json={"method": "legacy"},
+            source_type="calculated",
+            period_type="FY",
+            period_end_date=date(2025, 12, 31),
+            is_current=False,
+        ),
+        MetricFact(
+            user_id=owner.id,
+            stock_id=stock.id,
+            metric_key="val.fair_value",
+            value_numeric=100,
+            source_type="manual",
+            period_type="AS_OF",
+            period_end_date=date(2026, 1, 1),
+            is_current=False,
+        ),
+    ]
+    db_session.add_all(legacy_rows)
+    db_session.flush()
+
+    for fact in legacy_rows:
+        assert not evidence_is_available(
+            db_session,
+            user_id=owner.id,
+            stock_id=stock.id,
+            source_type="metric_fact",
+            source_id=fact.id,
+        )
+
+
+def test_multi_company_document_evidence_requires_exact_stock_authority(
+    db_session, user_factory
+):
+    from app.services.research_cases import evidence_is_available
+
+    owner = user_factory(email="evidence-multi-company@example.com")
+    included_stock = _stock(db_session, "EVMULTI")
+    unrelated_stock = _stock(db_session, "EVOTHER")
+    document = PdfDocument(
+        user_id=owner.id,
+        stock_id=None,
+        file_name="multi-company.pdf",
+        source="Value Line",
+        file_storage_key="private/multi-company.pdf",
+        parse_status="parsed",
+    )
+    db_session.add(document)
+    db_session.flush()
+    fact = MetricFact(
+        user_id=owner.id,
+        stock_id=included_stock.id,
+        metric_key="is.revenue",
+        value_numeric=100,
+        source_type="parsed",
+        period_type="FY",
+        period_end_date=date(2025, 12, 31),
+        is_current=True,
+    )
+    authorize_parsed_facts(db_session, document=document, facts=[fact])
+    db_session.commit()
+
+    assert evidence_is_available(
+        db_session,
+        user_id=owner.id,
+        stock_id=included_stock.id,
+        source_type="pdf_document",
+        source_id=document.id,
+    )
+    assert not evidence_is_available(
+        db_session,
+        user_id=owner.id,
+        stock_id=unrelated_stock.id,
+        source_type="pdf_document",
+        source_id=document.id,
+    )
+
+
 def test_redaction_tombstones_only_authored_content_and_appends_audit_event(
     client, db_session, user_factory, auth_headers
 ):
@@ -467,13 +653,50 @@ def test_batch_valuation_reader_respects_newest_unavailable_tombstone(
 
     user = user_factory(email="case-tombstone@example.com")
     stock = _stock(db_session, "TOMB")
+    case = ResearchCase(
+        user_id=user.id,
+        stock_id=stock.id,
+        state="researching",
+        head_revision_number=2,
+    )
+    db_session.add(case)
+    db_session.flush()
+    numeric_revision = ResearchCaseRevision(
+        case_id=case.id,
+        revision_number=1,
+        case_state="researching",
+        valuation_low=100,
+        valuation_base=100,
+        valuation_high=100,
+        valuation_currency="USD",
+        valuation_as_of_date=date(2026, 7, 19),
+        snapshot_stock_id=stock.id,
+        stock_ticker=stock.ticker,
+        stock_company_name=stock.company_name,
+        stock_exchange=stock.exchange,
+        created_by_user_id=user.id,
+    )
+    unavailable_revision = ResearchCaseRevision(
+        case_id=case.id,
+        revision_number=2,
+        case_state="researching",
+        valuation_unavailable_reason="evidence_insufficient",
+        valuation_as_of_date=date(2026, 7, 20),
+        snapshot_stock_id=stock.id,
+        stock_ticker=stock.ticker,
+        stock_company_name=stock.company_name,
+        stock_exchange=stock.exchange,
+        created_by_user_id=user.id,
+    )
+    db_session.add_all([numeric_revision, unavailable_revision])
+    db_session.flush()
     publish_user_intrinsic_value(
         db_session,
         user_id=user.id,
         stock_id=stock.id,
         value_numeric=100,
         as_of_date=date(2026, 7, 19),
-        source_ref_id=1,
+        source_ref_id=numeric_revision.id,
     )
     publish_user_intrinsic_value(
         db_session,
@@ -482,7 +705,7 @@ def test_batch_valuation_reader_respects_newest_unavailable_tombstone(
         value_numeric=None,
         as_of_date=date(2026, 7, 20),
         unavailable_reason="evidence_insufficient",
-        source_ref_id=2,
+        source_ref_id=unavailable_revision.id,
     )
     db_session.commit()
 
@@ -492,6 +715,294 @@ def test_batch_valuation_reader_respects_newest_unavailable_tombstone(
 
     assert selected.value_numeric is None
     assert selected.value_json["reason"] == "evidence_insufficient"
+
+
+def test_valuation_readers_reject_target_without_exact_active_parsed_lineage(
+    db_session, user_factory
+):
+    from app.services.valuation import (
+        read_valuation_context,
+        read_valuation_facts_by_stock,
+    )
+
+    user = user_factory(email="forged-system-reference@example.com")
+    stock = _stock(db_session, "FORGEDREF")
+    unknown_source = MetricFact(
+        user_id=user.id,
+        stock_id=stock.id,
+        metric_key="target.price_18m.mid",
+        value_numeric=999,
+        unit="USD",
+        period_type="TARGET_HORIZON",
+        period_end_date=date(2027, 12, 31),
+        source_type="untrusted",
+        is_current=True,
+    )
+    db_session.add(unknown_source)
+    with pytest.raises(DBAPIError, match="ck_metric_facts_source_type"):
+        db_session.flush()
+    db_session.rollback()
+
+    documentless_manual = MetricFact(
+        user_id=user.id,
+        stock_id=stock.id,
+        metric_key="target.price_18m.mid",
+        value_numeric=999,
+        unit="USD",
+        period_type="TARGET_HORIZON",
+        period_end_date=date(2027, 12, 31),
+        source_type="manual",
+        is_current=True,
+    )
+    db_session.add(documentless_manual)
+    with pytest.raises(DBAPIError, match="ck_metric_facts_manual_authority"):
+        db_session.flush()
+    db_session.rollback()
+
+    context = read_valuation_context(
+        db_session, user_id=user.id, stock_id=stock.id
+    )
+    batch = read_valuation_facts_by_stock(
+        db_session, user_id=user.id, stock_ids=[stock.id]
+    )
+
+    assert context.system_reference_value is None
+    assert context.system_reference_fact_id is None
+    assert "target.price_18m.mid" not in batch[stock.id]
+
+
+def test_database_rejects_forged_document_manual_correction_lineage(
+    db_session, user_factory
+):
+    user = user_factory(email="forged-manual-lineage@example.com")
+    stock = _stock(db_session, "FORGEDMAN")
+    document = PdfDocument(
+        user_id=user.id,
+        stock_id=stock.id,
+        file_name="forged-manual-lineage.pdf",
+        source="value_line",
+        file_storage_key="tests/forged-manual-lineage.pdf",
+        parse_status="parsed",
+    )
+    db_session.add(document)
+    db_session.flush()
+    slot = {
+        "period_type": "FY",
+        "period_end_date": date(2025, 12, 31),
+    }
+    parsed = MetricFact(
+        user_id=user.id,
+        stock_id=stock.id,
+        metric_key="revenue",
+        value_numeric=100,
+        unit="USD",
+        currency="USD",
+        source_type="parsed",
+        is_current=True,
+        **slot,
+    )
+    authorize_parsed_facts(db_session, document=document, facts=[parsed])
+    db_session.flush()
+    extraction = db_session.get(MetricExtraction, parsed.source_ref_id)
+    assert extraction is not None
+    db_session.commit()
+
+    forged_metric = MetricFact(
+        user_id=user.id,
+        stock_id=stock.id,
+        metric_key="cogs",
+        value_numeric=1,
+        value_json={"correction": True},
+        unit="USD",
+        currency="USD",
+        source_type="manual",
+        source_document_id=document.id,
+        source_ref_id=extraction.id,
+        is_current=True,
+        **slot,
+    )
+    db_session.add(forged_metric)
+    with pytest.raises(DBAPIError, match="exact current parsed fact lineage"):
+        db_session.flush()
+        db_session.execute(text("SET CONSTRAINTS ALL IMMEDIATE"))
+    db_session.rollback()
+
+    forged_currency = MetricFact(
+        user_id=user.id,
+        stock_id=stock.id,
+        metric_key="revenue",
+        value_numeric=1,
+        value_json={"correction": True},
+        unit="USD",
+        currency="EUR",
+        source_type="manual",
+        source_document_id=document.id,
+        source_ref_id=extraction.id,
+        is_current=True,
+        **slot,
+    )
+    db_session.add(forged_currency)
+    with pytest.raises(DBAPIError, match="exact current parsed fact lineage"):
+        db_session.flush()
+        db_session.execute(text("SET CONSTRAINTS ALL IMMEDIATE"))
+    db_session.rollback()
+
+
+def test_valuation_readers_label_exact_document_correction_as_user_corrected(
+    db_session, user_factory
+):
+    from app.services.valuation import (
+        VALUE_LINE_TARGET_MANUAL_CORRECTION_REFERENCE,
+        read_valuation_context,
+        read_valuation_facts_by_stock,
+    )
+
+    user = user_factory(email="corrected-system-reference@example.com")
+    stock = _stock(db_session, "CORRREF")
+    document = PdfDocument(
+        user_id=user.id,
+        stock_id=stock.id,
+        file_name="corrected-reference.pdf",
+        source="value_line",
+        file_storage_key="tests/corrected-reference.pdf",
+        parse_status="parsed",
+    )
+    db_session.add(document)
+    db_session.flush()
+    slot = {
+        "period_type": "TARGET_HORIZON",
+        "period_end_date": date(2027, 12, 31),
+    }
+    parsed = MetricFact(
+        user_id=user.id,
+        stock_id=stock.id,
+        metric_key="target.price_18m.mid",
+        value_numeric=150,
+        unit="USD",
+        source_type="parsed",
+        is_current=True,
+        **slot,
+    )
+    authorize_parsed_facts(db_session, document=document, facts=[parsed])
+    db_session.flush()
+    extraction = db_session.get(MetricExtraction, parsed.source_ref_id)
+    assert extraction is not None
+    correction = MetricFact(
+        user_id=user.id,
+        stock_id=stock.id,
+        metric_key=parsed.metric_key,
+        value_numeric=155,
+        value_json={
+            "correction": True,
+            "corrected_from_fact_id": parsed.id,
+        },
+        unit="USD",
+        source_type="manual",
+        source_document_id=document.id,
+        source_ref_id=extraction.id,
+        is_current=True,
+        **slot,
+    )
+    db_session.add(correction)
+    db_session.commit()
+
+    context = read_valuation_context(
+        db_session, user_id=user.id, stock_id=stock.id
+    )
+    batch = read_valuation_facts_by_stock(
+        db_session, user_id=user.id, stock_ids=[stock.id]
+    )
+
+    assert context.system_reference_value == 155
+    assert (
+        context.system_reference_type
+        == VALUE_LINE_TARGET_MANUAL_CORRECTION_REFERENCE
+    )
+    assert batch[stock.id]["target.price_18m.mid"].id == correction.id
+
+    conflicting_correction = MetricFact(
+        user_id=user.id,
+        stock_id=stock.id,
+        metric_key=parsed.metric_key,
+        value_numeric=160,
+        value_json={"correction": True},
+        unit="USD",
+        source_type="manual",
+        source_document_id=document.id,
+        source_ref_id=extraction.id,
+        is_current=True,
+        **slot,
+    )
+    db_session.add(conflicting_correction)
+    with pytest.raises(
+        DBAPIError, match="uq_metric_facts_current_manual_period_slot"
+    ):
+        db_session.flush()
+
+
+def test_database_rejects_isolated_current_document_correction_demotion(
+    db_session, user_factory
+):
+    user = user_factory(email="correction-demotion@example.com")
+    stock = _stock(db_session, "CORRDEM")
+    document = PdfDocument(
+        user_id=user.id,
+        stock_id=stock.id,
+        file_name="correction-demotion.pdf",
+        source="value_line",
+        file_storage_key="tests/correction-demotion.pdf",
+        parse_status="parsed",
+    )
+    db_session.add(document)
+    db_session.flush()
+    slot = {
+        "period_type": "FY",
+        "period_end_date": date(2025, 12, 31),
+    }
+    parsed = MetricFact(
+        user_id=user.id,
+        stock_id=stock.id,
+        metric_key="revenue",
+        value_numeric=100,
+        unit="USD",
+        currency="USD",
+        source_type="parsed",
+        is_current=True,
+        **slot,
+    )
+    authorize_parsed_facts(db_session, document=document, facts=[parsed])
+    db_session.flush()
+    extraction = db_session.get(MetricExtraction, parsed.source_ref_id)
+    assert extraction is not None
+    correction = MetricFact(
+        user_id=user.id,
+        stock_id=stock.id,
+        metric_key="revenue",
+        value_numeric=101,
+        value_json={"correction": True},
+        unit="USD",
+        currency="USD",
+        source_type="manual",
+        source_document_id=document.id,
+        source_ref_id=extraction.id,
+        is_current=True,
+        **slot,
+    )
+    db_session.add(correction)
+    db_session.commit()
+
+    db_session.execute(
+        text("UPDATE metric_facts SET is_current = false WHERE id = :fact_id"),
+        {"fact_id": correction.id},
+    )
+    with pytest.raises(
+        DBAPIError,
+        match="manual current fact demotion|exact current parsed fact lineage",
+    ):
+        db_session.execute(text("SET CONSTRAINTS ALL IMMEDIATE"))
+    db_session.rollback()
+
+    assert db_session.get(MetricFact, correction.id).is_current is True
 
 
 def test_append_only_tables_reject_normal_update_and_delete(
@@ -551,20 +1062,50 @@ def test_workspace_combines_user_owned_fundamentals_valuation_coverage_and_publi
     )
     db_session.add_all([owner_doc, other_doc])
     db_session.flush()
+    coverage = (
+        db_session.query(ResearchCoverageRequirement)
+        .filter_by(
+            user_id=owner.id,
+            stock_id=stock.id,
+            kind="value_line_current_report",
+            priority_policy_version="research-coverage-priority-v1.0",
+        )
+        .one()
+    )
+    coverage.state = "ready"
+    coverage.reason = "Current report exists."
+    coverage.reason_code = None
+    coverage.source_type = "pdf_document"
+    coverage.source_ref_id = owner_doc.id
+    coverage.next_action = None
+    coverage.evaluated_at = datetime(2026, 7, 20, tzinfo=timezone.utc)
+    db_session.add(coverage)
+    owner_fact = MetricFact(
+        user_id=owner.id,
+        stock_id=stock.id,
+        metric_key="returns.return_on_equity",
+        value_numeric=0.21,
+        unit="ratio",
+        period_type="FY",
+        period_end_date=date(2025, 12, 31),
+        source_type="parsed",
+        is_current=True,
+    )
+    other_fact = MetricFact(
+        user_id=other.id,
+        stock_id=stock.id,
+        metric_key="private.other_user_metric",
+        value_numeric=999,
+        unit="USD",
+        period_type="FY",
+        period_end_date=date(2025, 12, 31),
+        source_type="parsed",
+        is_current=True,
+    )
+    authorize_parsed_facts(db_session, document=owner_doc, facts=[owner_fact])
+    authorize_parsed_facts(db_session, document=other_doc, facts=[other_fact])
     db_session.add_all(
         [
-            MetricFact(
-                user_id=owner.id,
-                stock_id=stock.id,
-                metric_key="returns.return_on_equity",
-                value_numeric=0.21,
-                unit="ratio",
-                period_type="FY",
-                period_end_date=date(2025, 12, 31),
-                source_type="parsed",
-                source_document_id=owner_doc.id,
-                is_current=True,
-            ),
             MetricFact(
                 user_id=owner.id,
                 stock_id=stock.id,
@@ -581,18 +1122,6 @@ def test_workspace_combines_user_owned_fundamentals_valuation_coverage_and_publi
                 source_type="calculated",
                 is_current=True,
             ),
-            MetricFact(
-                user_id=other.id,
-                stock_id=stock.id,
-                metric_key="private.other_user_metric",
-                value_numeric=999,
-                unit="USD",
-                period_type="FY",
-                period_end_date=date(2025, 12, 31),
-                source_type="parsed",
-                source_document_id=other_doc.id,
-                is_current=True,
-            ),
             StockPrice(
                 stock_id=stock.id,
                 price_date=date(2026, 7, 17),
@@ -604,19 +1133,6 @@ def test_workspace_combines_user_owned_fundamentals_valuation_coverage_and_publi
                 currency="USD",
                 source="twelvedata",
                 created_at=datetime(2026, 7, 17, 22, tzinfo=timezone.utc),
-            ),
-            ResearchCoverageRequirement(
-                user_id=owner.id,
-                stock_id=stock.id,
-                kind="value_line_current_report",
-                priority_policy_version="research-coverage-priority-v1.0",
-                matched_rule="open_case_queued",
-                priority_rank=40,
-                state="ready",
-                reason="Current report exists.",
-                freshness_policy_version="value-line-120d-v1.0",
-                evaluated_at=datetime(2026, 7, 20, tzinfo=timezone.utc),
-                is_current=True,
             ),
         ]
     )
@@ -639,21 +1155,29 @@ def test_workspace_combines_user_owned_fundamentals_valuation_coverage_and_publi
     assert payload["documents"][0]["id"] == owner_doc.id
     assert {fact["metric_key"] for fact in payload["fundamentals"]} == {
         "returns.return_on_equity",
-        "score.piotroski.total",
     }
-    assert payload["piotroski_f_score"] == [
-        {
-            "fiscal_year": 2025,
-            "period_end_date": "2025-12-31",
-            "score": 8.0,
-            "status": "calculated",
-            "variant": "standard",
-        }
-    ]
+    assert payload["piotroski_f_score"] == []
     assert payload["valuation"]["display_state"] == "missing"
-    assert payload["coverage"][0]["state"] == "ready"
+    coverage_by_kind = {item["kind"]: item for item in payload["coverage"]}
+    assert coverage_by_kind["value_line_current_report"]["state"] == "ready"
+    assert coverage_by_kind["eod_price"]["state"] == "missing"
+    assert coverage_by_kind["method_applicability"]["state"] == "unsupported"
     assert payload["holders_13f"]["status"] == "unavailable"
     assert hidden.status_code == 404
+
+    archived = client.delete(
+        f"/api/v1/documents/{owner_doc.id}", headers=auth_headers(owner)
+    )
+    assert archived.status_code == 200, archived.text
+    refreshed = client.get(
+        f"/api/v1/research/cases/{case_id}/workspace",
+        headers=auth_headers(owner),
+    )
+    assert refreshed.status_code == 200, refreshed.text
+    assert refreshed.json()["documents"] == []
+    assert "returns.return_on_equity" not in {
+        fact["metric_key"] for fact in refreshed.json()["fundamentals"]
+    }
 
 
 def test_workspace_rejects_historical_as_of_until_pit_reconstruction_exists(

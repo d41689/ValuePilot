@@ -16,7 +16,108 @@
 #   * FY/Q: derived from year/quarter end
 #   * AS_OF/EVENT: use the source module's as_of / event date; stored in period_end_date
 
-version: 1
+version: 2
+
+# SEC inline-XBRL publication is intentionally separate from the Value Line
+# JSON-path mappings below. Raw concepts are never product truth until one of
+# these versioned rules publishes a canonical metric_facts row.
+sec_xbrl:
+  mapping_version: sec-us-gaap-v2
+  known_at: "2026-08-28T00:00:00Z"
+  dimensions_policy: consolidated_only
+  source_role: primary_as_filed
+  fact_nature: actual
+  # v1 publishes only units already defined by the canonical fact contract.
+  # A different reporting currency is retained in raw lineage and produces the
+  # typed `unsupported_currency` outcome until a versioned mapping adds it.
+  currency_policy:
+    monetary_units:
+      USD: USD
+    per_share_units:
+      USD: USD_per_share
+  period_policy:
+    annual_duration_days: [300, 380]
+    discrete_quarter_duration_days: [70, 110]
+    ytd_duration_days: [150, 300]
+    instant_uses_filing_form: true
+  mappings:
+    - concepts:
+        - us-gaap:RevenueFromContractWithCustomerExcludingAssessedTax
+        - us-gaap:SalesRevenueNet
+        - us-gaap:Revenues
+      metric_key: is.sales
+      value_kind: monetary
+      period_basis: duration
+    - concepts: [us-gaap:NetIncomeLoss]
+      metric_key: is.net_income
+      value_kind: monetary
+      period_basis: duration
+    - concepts: [us-gaap:OperatingIncomeLoss]
+      metric_key: is.operating_income
+      value_kind: monetary
+      period_basis: duration
+    - concepts: [us-gaap:GrossProfit]
+      metric_key: is.gross_profit
+      value_kind: monetary
+      period_basis: duration
+    - concepts: [us-gaap:NetCashProvidedByUsedInOperatingActivities]
+      metric_key: is.operating_cash_flow
+      value_kind: monetary
+      period_basis: duration
+    - concepts: [us-gaap:PaymentsToAcquirePropertyPlantAndEquipment]
+      metric_key: cf.capital_expenditures
+      value_kind: monetary
+      period_basis: duration
+    - concepts: [us-gaap:ShareBasedCompensation]
+      metric_key: is.stock_based_compensation
+      value_kind: monetary
+      period_basis: duration
+    - concepts: [us-gaap:Assets]
+      metric_key: bs.total_assets
+      value_kind: monetary
+      period_basis: instant
+    - concepts: [us-gaap:AssetsCurrent]
+      metric_key: bs.current_assets
+      value_kind: monetary
+      period_basis: instant
+    - concepts: [us-gaap:Liabilities]
+      metric_key: bs.total_liabilities
+      value_kind: monetary
+      period_basis: instant
+    - concepts: [us-gaap:LiabilitiesCurrent]
+      metric_key: bs.current_liabilities
+      value_kind: monetary
+      period_basis: instant
+    - concepts:
+        - us-gaap:StockholdersEquity
+        - us-gaap:StockholdersEquityIncludingPortionAttributableToNoncontrollingInterest
+      metric_key: bs.total_equity
+      value_kind: monetary
+      period_basis: instant
+    - concepts: [us-gaap:CashAndCashEquivalentsAtCarryingValue]
+      metric_key: bs.cash_and_equivalents
+      value_kind: monetary
+      period_basis: instant
+    - concepts: [us-gaap:LongTermDebtCurrent]
+      metric_key: bs.current_long_term_debt
+      value_kind: monetary
+      period_basis: instant
+    - concepts: [us-gaap:LongTermDebtNoncurrent]
+      metric_key: cap.long_term_debt
+      value_kind: monetary
+      period_basis: instant
+    - concepts: [us-gaap:EarningsPerShareDiluted]
+      metric_key: per_share.eps
+      value_kind: currency_per_share
+      period_basis: duration
+    - concepts: [us-gaap:CommonStockSharesOutstanding]
+      metric_key: equity.shares_outstanding
+      value_kind: shares
+      period_basis: instant
+    - concepts: [us-gaap:WeightedAverageNumberOfDilutedSharesOutstanding]
+      metric_key: equity.weighted_average_diluted_shares
+      value_kind: shares
+      period_basis: duration
 
 enums:
   period_types:

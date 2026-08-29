@@ -1,12 +1,28 @@
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, datetime, timezone
 
 from app.models.artifacts import PdfDocument
+from app.models.extractions import MetricExtraction
 from app.models.facts import MetricFact
 from app.models.institutions import Filing13F, Holding13F, InstitutionManager, ParseRun13F
+from app.models.research import ResearchCase, ResearchCaseRevision
 from app.models.stocks import Stock, StockPrice
 from app.models.users import User
+from app.services.analysis_method_gate import register_reviewed_company_classification
+from financial_truth_fixtures import authorize_parsed_facts
+
+
+def _classify_ordinary(db_session, stock: Stock) -> None:
+    classification = register_reviewed_company_classification(
+        db_session,
+        stock_id=stock.id,
+        classification="ordinary_operating",
+        effective_from=date(2020, 1, 1),
+        known_at=datetime(2026, 8, 1, tzinfo=timezone.utc),
+        review_reason="Test fixture reviewed as an ordinary operating company.",
+    )
+    stock._test_classification_id = classification.id
 
 
 def _manager(db_session, name: str, *, cik: str, superinvestor: bool = True) -> InstitutionManager:
@@ -187,35 +203,72 @@ def _seed_oracles_lens_fixture(db_session):
 
 
 def _metric_fact(
+    db_session,
     stock: Stock,
     metric_key: str,
     value: float,
     *,
     period_end: date = date(2031, 12, 31),
-    source_type: str = "parsed",
+    source_type: str | None = None,
     source_document_id: int | None = None,
 ) -> MetricFact:
-    return MetricFact(
+    analysis_method = None
+    if metric_key.startswith("owners_earnings"):
+        analysis_method = {
+            "policy_version": "analysis-method-gate-v1",
+            "classification_id": getattr(stock, "_test_classification_id", None),
+            "method_id": "ordinary-owner-economics-v1",
+            "evidence_complete": True,
+        }
+    elif metric_key == "bs.return_on_total_capital":
+        analysis_method = {
+            "policy_version": "analysis-method-gate-v1",
+            "classification_id": getattr(stock, "_test_classification_id", None),
+            "method_id": "ordinary-roic-v1",
+            "evidence_complete": True,
+        }
+    effective_source_type = source_type or (
+        "parsed" if source_document_id is not None else "manual"
+    )
+    fact = MetricFact(
         user_id=stock._test_user_id,
         stock_id=stock.id,
         metric_key=metric_key,
         value_numeric=value,
-        value_json={"fact_nature": "actual"},
+        value_json={
+            "fact_nature": "actual",
+            **({"analysis_method": analysis_method} if analysis_method else {}),
+        },
         unit="ratio",
         period_type="FY",
         period_end_date=period_end,
         source_document_id=source_document_id,
-        source_type=source_type,
+        source_ref_id=(
+            getattr(stock, "_test_extraction_by_document_id", {}).get(
+                source_document_id
+            )
+            if effective_source_type in {"parsed", "manual"}
+            and source_document_id is not None
+            else None
+        ),
+        parse_generation=(
+            1
+            if effective_source_type == "parsed" and source_document_id is not None
+            else None
+        ),
+        source_type=effective_source_type,
         is_current=True,
     )
+    if effective_source_type == "parsed":
+        document = db_session.get(PdfDocument, source_document_id)
+        assert document is not None
+        authorize_parsed_facts(db_session, document=document, facts=[fact])
+    return fact
 
 
 def _pdf_document(db_session, stock: Stock, *, report_date: date = date(2032, 1, 31)) -> PdfDocument:
-    user = User(email=f"oracles-lens-doc-{stock.id}@example.com")
-    db_session.add(user)
-    db_session.flush()
     document = PdfDocument(
-        user_id=user.id,
+        user_id=stock._test_user_id,
         file_name=f"{stock.ticker}-{report_date.isoformat()}.pdf",
         source="value_line",
         report_date=report_date,
@@ -226,7 +279,80 @@ def _pdf_document(db_session, stock: Stock, *, report_date: date = date(2032, 1,
     )
     db_session.add(document)
     db_session.flush()
+    extraction = MetricExtraction(
+        user_id=stock._test_user_id,
+        document_id=document.id,
+        page_number=1,
+        field_key="quality_fixture",
+        raw_value_text="quality fixture",
+        original_text_snippet="quality fixture",
+        parsed_value_json={"fixture": True},
+        parser_version="test",
+        parse_generation=document.current_parse_generation,
+    )
+    db_session.add(extraction)
+    db_session.flush()
+    lineage = dict(
+        getattr(stock, "_test_extraction_by_document_id", {})
+    )
+    lineage[document.id] = extraction.id
+    stock._test_extraction_by_document_id = lineage
     return document
+
+
+def _manual_valuation_fact(
+    db_session,
+    stock: Stock,
+    value: float,
+    *,
+    period_end: date,
+) -> MetricFact:
+    case = (
+        db_session.query(ResearchCase)
+        .filter_by(user_id=stock._test_user_id, stock_id=stock.id)
+        .one_or_none()
+    )
+    if case is None:
+        case = ResearchCase(
+            user_id=stock._test_user_id,
+            stock_id=stock.id,
+            state="researching",
+        )
+        db_session.add(case)
+        db_session.flush()
+    revision_number = case.head_revision_number + 1
+    revision = ResearchCaseRevision(
+        case_id=case.id,
+        revision_number=revision_number,
+        case_state=case.state,
+        valuation_low=value,
+        valuation_base=value,
+        valuation_high=value,
+        valuation_currency="USD",
+        valuation_as_of_date=period_end,
+        snapshot_stock_id=stock.id,
+        stock_ticker=stock.ticker,
+        stock_company_name=stock.company_name,
+        stock_exchange=stock.exchange,
+        created_by_user_id=stock._test_user_id,
+    )
+    db_session.add(revision)
+    db_session.flush()
+    case.head_revision_number = revision_number
+    db_session.flush()
+    return MetricFact(
+        user_id=stock._test_user_id,
+        stock_id=stock.id,
+        metric_key="val.fair_value",
+        value_numeric=value,
+        unit="USD",
+        currency="USD",
+        period_type="AS_OF",
+        period_end_date=period_end,
+        source_type="manual",
+        source_ref_id=revision.id,
+        is_current=True,
+    )
 
 
 def test_oracles_lens_defaults_to_latest_complete_period_and_signal_rows(client, db_session):
@@ -356,29 +482,37 @@ def test_oracles_lens_uses_latest_effective_amendment_and_excludes_superseded_ho
 
 
 def test_oracles_lens_adds_value_line_quality_overlay(
-    client, db_session, auth_headers,
+    client, db_session, auth_headers, monkeypatch,
 ):
+    monkeypatch.setattr(
+        "app.services.oracles_lens.dashboard.compute_target_date",
+        lambda _now: date(2032, 1, 2),
+    )
     target = _seed_oracles_lens_fixture(db_session)
+    _classify_ordinary(db_session, target)
     document = _pdf_document(db_session, target)
     db_session.add_all(
         [
             _metric_fact(
+                db_session,
                 target,
                 "score.piotroski.total",
                 8,
                 source_type="calculated",
                 source_document_id=document.id,
             ),
-            _metric_fact(target, "bs.return_on_total_capital", 0.24, source_document_id=document.id),
-            _metric_fact(target, "bs.return_on_equity", 0.31, source_document_id=document.id),
-            _metric_fact(target, "is.net_profit_margin", 0.22, source_document_id=document.id),
+            _metric_fact(db_session, target, "bs.return_on_total_capital", 0.24, source_document_id=document.id),
+            _metric_fact(db_session, target, "bs.return_on_equity", 0.31, source_document_id=document.id),
+            _metric_fact(db_session, target, "is.net_profit_margin", 0.22, source_document_id=document.id),
             _metric_fact(
+                db_session,
                 target,
                 "leverage.long_term_debt_to_capital",
                 0.18,
                 source_document_id=document.id,
             ),
             _metric_fact(
+                db_session,
                 target,
                 "owners_earnings_per_share_normalized",
                 5.0,
@@ -397,6 +531,7 @@ def test_oracles_lens_adds_value_line_quality_overlay(
             adj_close=None,
             volume=1000,
             source="test",
+            currency="USD",
         )
     )
     db_session.commit()
@@ -409,35 +544,49 @@ def test_oracles_lens_adds_value_line_quality_overlay(
 
     item = next(row for row in response.json()["items"] if row["stock_id"] == target.id)
     assert item["quality_overlay"] == {
-        "piotroski_total": 8.0,
+        "piotroski_total": None,
         "return_on_total_capital": 0.24,
         "return_on_equity": 0.31,
         "net_profit_margin": 0.22,
         "debt_to_capital": 0.18,
-        "owner_earnings_yield": 0.05,
-        "latest_price": 100.0,
-        "price_date": "2032-01-02",
-        "price_context": "latest",
+        "owner_earnings_yield": None,
+            "latest_price": 100.0,
+            "price_date": "2032-01-02",
+            "price_currency": "USD",
+            "price_source": "test",
+            "price_freshness": "fresh",
+            "price_reason": None,
+            "price_context": "latest",
+            "analysis_methods": {
+                "owner_earnings": {
+                    "state": "eligible",
+                    "reason": None,
+                    "policy_version": "analysis-method-gate-v1",
+                        "classification": "ordinary_operating",
+                        "method_id": "ordinary-owner-economics-v1",
+                        "output_authorized": False,
+                },
+                "roic": {
+                    "state": "eligible",
+                    "reason": None,
+                    "policy_version": "analysis-method-gate-v1",
+                        "classification": "ordinary_operating",
+                        "method_id": "ordinary-roic-v1",
+                        "output_authorized": True,
+                },
+            },
         "coverage": {
             "value_line": True,
             "price": True,
-            "owner_earnings": True,
-            "available_metrics": 6,
+            "owner_earnings": False,
+            "available_metrics": 4,
             "expected_metrics": 6,
         },
-        "unavailable_reasons": [],
+        "unavailable_reasons": ["owner earnings output not authorized"],
         "provenance": {
             "primary_source_document_id": document.id,
             "source_document_ids": [document.id],
             "facts": [
-                {
-                    "label": "piotroski_total",
-                    "metric_key": "score.piotroski.total",
-                    "source_document_id": document.id,
-                    "source_type": "calculated",
-                    "period_type": "FY",
-                    "period_end_date": "2031-12-31",
-                },
                 {
                     "label": "return_on_total_capital",
                     "metric_key": "bs.return_on_total_capital",
@@ -470,30 +619,16 @@ def test_oracles_lens_adds_value_line_quality_overlay(
                     "period_type": "FY",
                     "period_end_date": "2031-12-31",
                 },
-                {
-                    "label": "owners_earnings",
-                    "metric_key": "owners_earnings_per_share_normalized",
-                    "source_document_id": document.id,
-                    "source_type": "parsed",
-                    "period_type": "FY",
-                    "period_end_date": "2031-12-31",
-                },
             ],
         },
     }
     assert response.json()["coverage"]["value_line_coverage_count"] >= 1
 
 
-def test_oracles_lens_reads_piotroski_from_value_json_when_value_numeric_null(
+def test_oracles_lens_quarantines_legacy_piotroski_json_score(
     client, db_session, auth_headers,
 ):
-    """D2 regression: ``score.piotroski.total`` stores the composite score in
-    ``value_json['partial_score']`` with ``value_numeric=NULL`` (269/272 dev
-    rows). The pre-D2 ``_quality_overlay_by_stock`` filtered
-    ``value_numeric.isnot(None)`` and silently dropped these rows. After D2
-    the legacy dashboard must surface Piotroski for stocks whose score lives
-    only in ``value_json``.
-    """
+    """Caller-authored legacy JSON is not sufficient publication authority."""
     target = _seed_oracles_lens_fixture(db_session)
     document = _pdf_document(db_session, target)
     # Piotroski fact: value_numeric=None, value_json carries partial_score.
@@ -527,18 +662,14 @@ def test_oracles_lens_reads_piotroski_from_value_json_when_value_numeric_null(
 
     item = next(row for row in response.json()["items"] if row["stock_id"] == target.id)
     overlay = item["quality_overlay"]
-    assert overlay["piotroski_total"] == 6.0
-    assert overlay["coverage"]["value_line"] is True
+    assert overlay["piotroski_total"] is None
+    assert overlay["coverage"]["value_line"] is False
 
 
-def test_oracles_lens_value_numeric_takes_precedence_over_partial_score(
+def test_oracles_lens_quarantines_legacy_piotroski_numeric_score(
     client, db_session, auth_headers,
 ):
-    """D2 post-review (Backend B5): when BOTH ``value_numeric`` and
-    ``value_json['partial_score']`` are set with different values, the
-    column wins. The value_json fallback only fires when value_numeric is
-    null — never as a silent override of the canonical column.
-    """
+    """A forged numeric column cannot bypass missing exact run lineage."""
     target = _seed_oracles_lens_fixture(db_session)
     document = _pdf_document(db_session, target)
     db_session.add(
@@ -569,23 +700,35 @@ def test_oracles_lens_value_numeric_takes_precedence_over_partial_score(
     )
     assert response.status_code == 200
     item = next(row for row in response.json()["items"] if row["stock_id"] == target.id)
-    # value_numeric (8.0) wins over value_json.partial_score (3).
-    assert item["quality_overlay"]["piotroski_total"] == 8.0
+    assert item["quality_overlay"]["piotroski_total"] is None
 
 
 def test_oracles_lens_adds_conservative_valuation_reference(
-    client, db_session, auth_headers,
+    client, db_session, auth_headers, monkeypatch,
 ):
+    monkeypatch.setattr(
+        "app.services.oracles_lens.dashboard.compute_target_date",
+        lambda _now: date(2032, 1, 2),
+    )
     target = _seed_oracles_lens_fixture(db_session)
+    target_document = _pdf_document(
+        db_session, target, report_date=date(2032, 1, 1)
+    )
     db_session.add_all(
         [
-            _metric_fact(target, "target.price_18m.mid", 150.0, period_end=date(2032, 1, 1)),
             _metric_fact(
+                db_session,
                 target,
-                "val.fair_value",
+                "target.price_18m.mid",
+                150.0,
+                period_end=date(2032, 1, 1),
+                source_document_id=target_document.id,
+            ),
+            _manual_valuation_fact(
+                db_session,
+                target,
                 175.0,
                 period_end=date(2032, 1, 2),
-                source_type="manual",
             ),
         ]
     )
@@ -600,6 +743,7 @@ def test_oracles_lens_adds_conservative_valuation_reference(
             adj_close=None,
             volume=1000,
             source="test",
+            currency="USD",
         )
     )
     db_session.commit()
@@ -638,10 +782,26 @@ def test_oracles_lens_adds_conservative_valuation_reference(
 
 
 def test_oracles_lens_labels_value_line_target_as_reference_not_intrinsic_value(
-    client, db_session, auth_headers,
+    client, db_session, auth_headers, monkeypatch,
 ):
+    monkeypatch.setattr(
+        "app.services.oracles_lens.dashboard.compute_target_date",
+        lambda _now: date(2032, 1, 2),
+    )
     target = _seed_oracles_lens_fixture(db_session)
-    db_session.add(_metric_fact(target, "target.price_18m.mid", 150.0, period_end=date(2032, 1, 1)))
+    target_document = _pdf_document(
+        db_session, target, report_date=date(2032, 1, 1)
+    )
+    db_session.add(
+        _metric_fact(
+            db_session,
+            target,
+            "target.price_18m.mid",
+            150.0,
+            period_end=date(2032, 1, 1),
+            source_document_id=target_document.id,
+        )
+    )
     db_session.add(
         StockPrice(
             stock_id=target.id,
@@ -653,6 +813,7 @@ def test_oracles_lens_labels_value_line_target_as_reference_not_intrinsic_value(
             adj_close=None,
             volume=1000,
             source="test",
+            currency="USD",
         )
     )
     db_session.commit()
@@ -675,10 +836,27 @@ def test_oracles_lens_uses_period_price_for_historical_snapshot(
     client, db_session, auth_headers,
 ):
     target = _seed_oracles_lens_fixture(db_session)
+    _classify_ordinary(db_session, target)
+    target_document = _pdf_document(
+        db_session, target, report_date=date(2031, 9, 30)
+    )
     db_session.add_all(
         [
-            _metric_fact(target, "target.price_18m.mid", 120.0, period_end=date(2031, 9, 30)),
-            _metric_fact(target, "owners_earnings_per_share_normalized", 4.0),
+            _metric_fact(
+                db_session,
+                target,
+                "target.price_18m.mid",
+                120.0,
+                period_end=date(2031, 9, 30),
+                source_document_id=target_document.id,
+            ),
+            _metric_fact(
+                db_session,
+                target,
+                "owners_earnings_per_share_normalized",
+                4.0,
+                source_document_id=target_document.id,
+            ),
         ]
     )
     db_session.add_all(
@@ -693,6 +871,7 @@ def test_oracles_lens_uses_period_price_for_historical_snapshot(
                 adj_close=None,
                 volume=1000,
                 source="test",
+                currency="USD",
             ),
             StockPrice(
                 stock_id=target.id,
@@ -720,7 +899,10 @@ def test_oracles_lens_uses_period_price_for_historical_snapshot(
     assert item["current_price_date"] == "2031-09-30"
     assert item["price_context"] == "historical_snapshot"
     assert item["discount_to_reference"] == 0.333333
-    assert item["quality_overlay"]["owner_earnings_yield"] == 0.05
+    assert item["quality_overlay"]["owner_earnings_yield"] is None
+    assert "owner earnings output not authorized" in item["quality_overlay"][
+        "unavailable_reasons"
+    ]
     assert item["quality_overlay"]["price_context"] == "historical_snapshot"
     assert response.json()["coverage"]["price_context"] == "historical_snapshot"
     assert response.json()["coverage"]["price_target_date"] == "2031-09-30"
@@ -737,21 +919,25 @@ def test_oracles_lens_never_leaks_another_users_valuation(
     target = _seed_oracles_lens_fixture(db_session)
     owner = db_session.get(User, target._test_user_id)
     viewer = user_factory(email="oracles-viewer@example.com")
+    quality_document = _pdf_document(
+        db_session, target, report_date=date(2032, 1, 2)
+    )
     db_session.add(
-        _metric_fact(
+        _manual_valuation_fact(
+            db_session,
             target,
-            "val.fair_value",
             987.0,
             period_end=date(2032, 1, 2),
-            source_type="manual",
         )
     )
     db_session.add(
         _metric_fact(
+            db_session,
             target,
             "bs.return_on_equity",
             0.42,
             period_end=date(2032, 1, 2),
+            source_document_id=quality_document.id,
         )
     )
     db_session.commit()

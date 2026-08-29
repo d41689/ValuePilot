@@ -1,4 +1,5 @@
 from datetime import date
+import pytest
 
 from app.models.artifacts import PdfDocument
 from app.models.facts import MetricFact
@@ -91,9 +92,12 @@ def test_backfill_owners_earnings_fact_nature_uses_source_inputs(db_session):
         .all()
         if fact.metric_key.startswith("owners_earnings_per_share")
     ]
-    result = backfill_in_session(db_session, dry_run=False, metric_fact_ids=target_ids)
-
-    assert result == {"matched": 2, "updated": 2}
+    with pytest.raises(RuntimeError, match="parsed facts are immutable"):
+        backfill_in_session(
+            db_session,
+            dry_run=False,
+            metric_fact_ids=target_ids,
+        )
 
     facts = {
         fact.metric_key: fact
@@ -102,8 +106,8 @@ def test_backfill_owners_earnings_fact_nature_uses_source_inputs(db_session):
         .all()
         if fact.metric_key.startswith("owners_earnings_per_share")
     }
-    assert facts["owners_earnings_per_share"].value_json["fact_nature"] == "estimate"
-    assert facts["owners_earnings_per_share_normalized"].value_json["fact_nature"] == "snapshot"
+    assert facts["owners_earnings_per_share"].value_json == {"raw": "2.0"}
+    assert facts["owners_earnings_per_share_normalized"].value_json == {"raw": "2.0"}
 
 
 def test_backfill_owners_earnings_fact_nature_dry_run_rolls_back(db_session):

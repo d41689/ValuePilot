@@ -1,12 +1,17 @@
 from datetime import date, datetime
 
+import pytest
 import sqlalchemy as sa
+from sqlalchemy.exc import DBAPIError
 
 from app.models.users import User
 from app.models.stocks import Stock
 from app.models.artifacts import PdfDocument, DocumentPage
 from app.models.extractions import MetricExtraction
 from app.models.facts import MetricFact
+from app.services.calculated_metrics.piotroski_f_score import PiotroskiFScoreCalculator
+from app.services.calculated_metrics.value_line_ratios import ValueLineRatioCalculator
+from financial_truth_fixtures import authorize_parsed_facts
 
 
 def test_documents_list_returns_companies_and_page_count(client, db_session, user_factory, auth_headers):
@@ -93,9 +98,7 @@ def test_documents_list_returns_companies_and_page_count(client, db_session, use
     db_session.add_all([e1, e2, e3])
     db_session.flush()
 
-    db_session.add_all(
-        [
-            MetricFact(
+    first_fact = MetricFact(
                 user_id=user.id,
                 stock_id=stock_a.id,
                 metric_key="mkt.price",
@@ -103,11 +106,9 @@ def test_documents_list_returns_companies_and_page_count(client, db_session, use
                 value_numeric=1.0,
                 unit="USD",
                 source_type="parsed",
-                source_ref_id=e1.id,
-                source_document_id=doc_one.id,
                 is_current=True,
-            ),
-            MetricFact(
+            )
+    multi_a_fact = MetricFact(
                 user_id=user.id,
                 stock_id=stock_a.id,
                 metric_key="mkt.price",
@@ -115,11 +116,9 @@ def test_documents_list_returns_companies_and_page_count(client, db_session, use
                 value_numeric=2.0,
                 unit="USD",
                 source_type="parsed",
-                source_ref_id=e2.id,
-                source_document_id=doc_two.id,
                 is_current=True,
-            ),
-            MetricFact(
+            )
+    multi_b_fact = MetricFact(
                 user_id=user.id,
                 stock_id=stock_b.id,
                 metric_key="mkt.price",
@@ -127,11 +126,11 @@ def test_documents_list_returns_companies_and_page_count(client, db_session, use
                 value_numeric=3.0,
                 unit="USD",
                 source_type="parsed",
-                source_ref_id=e3.id,
-                source_document_id=doc_two.id,
                 is_current=True,
-            ),
-        ]
+            )
+    authorize_parsed_facts(db_session, document=doc_one, facts=[first_fact])
+    authorize_parsed_facts(
+        db_session, document=doc_two, facts=[multi_a_fact, multi_b_fact]
     )
     db_session.commit()
 
@@ -158,6 +157,66 @@ def test_documents_list_returns_companies_and_page_count(client, db_session, use
     assert {c["ticker"] for c in two["companies"]} == {"AOS", "MSFT"}
     assert two["is_active_report"] is True
     assert two["active_for_tickers"] == ["MSFT"]
+
+
+def test_documents_list_hides_company_projection_without_exact_authority(
+    client, db_session, user_factory, auth_headers
+):
+    user = user_factory("documents_list_quarantine@example.com")
+    headers = auth_headers(user)
+    bound_stock = Stock(
+        ticker="BOUND",
+        exchange="NYSE",
+        company_name="Bound Company",
+    )
+    stale_stock = Stock(
+        ticker="STALE",
+        exchange="NYSE",
+        company_name="Stale Projection",
+    )
+    db_session.add_all([bound_stock, stale_stock])
+    db_session.flush()
+    document = PdfDocument(
+        user_id=user.id,
+        stock_id=bound_stock.id,
+        file_name="bound-company.pdf",
+        source="upload",
+        file_storage_key="/tmp/bound-company.pdf",
+        parse_status="parsed",
+        report_date=date(2026, 1, 2),
+        upload_time=datetime.utcnow(),
+    )
+    db_session.add(document)
+    db_session.flush()
+
+    # A retained pre-rollout projection can remain for audit after migration
+    # 4900, but without exact extraction authority it must not project a
+    # company onto the user-facing document list.
+    db_session.add(
+        MetricFact(
+            user_id=user.id,
+            stock_id=stale_stock.id,
+            metric_key="is.revenue",
+            value_json={"fact_nature": "actual"},
+            value_numeric=999,
+            unit="USD",
+            period_type="FY",
+            period_end_date=date(2025, 12, 31),
+            source_type="parsed",
+            source_document_id=document.id,
+            is_current=False,
+        )
+    )
+    db_session.flush()
+
+    response = client.get("/api/v1/documents", headers=headers)
+
+    assert response.status_code == 200, response.text
+    item = next(row for row in response.json() if row["id"] == document.id)
+    assert item["companies"] == [
+        {"ticker": "BOUND", "company_name": "Bound Company"}
+    ]
+    assert item["company_count"] == 1
 
 
 def test_documents_list_orders_by_ticker_then_report_date(
@@ -263,9 +322,7 @@ def test_documents_list_marks_latest_report_as_active_per_company(
     db_session.add_all([old_extraction, new_extraction])
     db_session.flush()
 
-    db_session.add_all(
-        [
-            MetricFact(
+    old_fact = MetricFact(
                 user_id=user.id,
                 stock_id=stock.id,
                 metric_key="mkt.price",
@@ -273,11 +330,9 @@ def test_documents_list_marks_latest_report_as_active_per_company(
                 value_numeric=100.0,
                 unit="USD",
                 source_type="parsed",
-                source_ref_id=old_extraction.id,
-                source_document_id=old_doc.id,
                 is_current=False,
-            ),
-            MetricFact(
+            )
+    new_fact = MetricFact(
                 user_id=user.id,
                 stock_id=stock.id,
                 metric_key="mkt.price",
@@ -285,12 +340,10 @@ def test_documents_list_marks_latest_report_as_active_per_company(
                 value_numeric=110.0,
                 unit="USD",
                 source_type="parsed",
-                source_ref_id=new_extraction.id,
-                source_document_id=new_doc.id,
                 is_current=True,
-            ),
-        ]
-    )
+            )
+    authorize_parsed_facts(db_session, document=old_doc, facts=[old_fact])
+    authorize_parsed_facts(db_session, document=new_doc, facts=[new_fact])
     db_session.commit()
 
     resp = client.get("/api/v1/documents", headers=headers)
@@ -400,12 +453,13 @@ def test_document_download_endpoint_reports_missing_storage_file(
     assert resp.json()["detail"] == "Stored document file not found"
 
 
-def test_delete_document_removes_dependents_and_reconciles_current(
+def test_delete_document_archives_lineage_and_reconciles_current(
     client,
     db_session,
     user_factory,
     auth_headers,
     monkeypatch,
+    tmp_path,
 ):
     user = user_factory("documents_delete@example.com")
     headers = auth_headers(user)
@@ -424,11 +478,13 @@ def test_delete_document_removes_dependents_and_reconciles_current(
         upload_time=datetime.utcnow(),
         stock_id=stock.id,
     )
+    target_path = tmp_path / "delete-target.pdf"
+    target_path.write_bytes(b"%PDF-1.4\nretained evidence\n%%EOF\n")
     target_doc = PdfDocument(
         user_id=user.id,
         file_name="delete-target.pdf",
         source="upload",
-        file_storage_key="/tmp/delete-target.pdf",
+        file_storage_key=str(target_path),
         parse_status="parsed",
         report_date=date(2026, 1, 31),
         upload_time=datetime.utcnow(),
@@ -505,7 +561,9 @@ def test_delete_document_removes_dependents_and_reconciles_current(
         source_type="calculated",
         is_current=True,
     )
-    db_session.add_all([old_fact, target_fact, manual_fact, stale_calculated_fact])
+    authorize_parsed_facts(db_session, document=old_doc, facts=[old_fact])
+    authorize_parsed_facts(db_session, document=target_doc, facts=[target_fact])
+    db_session.add_all([manual_fact, stale_calculated_fact])
     db_session.commit()
 
     page_id = page.id
@@ -536,14 +594,22 @@ def test_delete_document_removes_dependents_and_reconciles_current(
 
     assert resp.status_code == 200, resp.text
     payload = resp.json()
-    assert payload["deleted_document_id"] == target_doc_id
-    assert payload["deleted_fact_count"] == 2
-    assert db_session.get(PdfDocument, target_doc_id) is None
-    assert db_session.get(DocumentPage, page_id) is None
-    assert db_session.get(MetricExtraction, extraction_id) is None
-    assert db_session.get(MetricFact, target_fact_id) is None
-    assert db_session.get(MetricFact, manual_fact_id) is None
-    assert db_session.get(MetricFact, stale_calculated_fact_id) is None
+    assert payload["archived_document_id"] == target_doc_id
+    assert payload["lifecycle_state"] == "archived"
+    archived = db_session.get(PdfDocument, target_doc_id)
+    assert archived is not None
+    assert archived.lifecycle_state == "archived"
+    assert archived.retired_at is not None
+    assert db_session.get(DocumentPage, page_id) is not None
+    assert db_session.get(MetricExtraction, extraction_id) is not None
+    archived_parsed_fact = db_session.get(MetricFact, target_fact_id)
+    assert archived_parsed_fact is not None
+    assert archived_parsed_fact.is_current is False
+    assert db_session.get(MetricFact, manual_fact_id) is not None
+    retained_calculated_fact = db_session.get(
+        MetricFact, stale_calculated_fact_id
+    )
+    assert retained_calculated_fact is not None
 
     refreshed_old_fact = db_session.get(MetricFact, old_fact_id)
     assert refreshed_old_fact is not None
@@ -552,6 +618,16 @@ def test_delete_document_removes_dependents_and_reconciles_current(
         ("ratios", user.id, stock.id),
         ("fscore", user.id, stock.id),
     ]
+
+    listed = client.get("/api/v1/documents", headers=headers)
+    assert listed.status_code == 200
+    assert target_doc_id not in {row["id"] for row in listed.json()}
+
+    retained = client.get(
+        f"/api/v1/documents/{target_doc_id}/download", headers=headers
+    )
+    assert retained.status_code == 200
+    assert retained.content == target_path.read_bytes()
 
 
 def test_delete_document_requires_owner(client, db_session, user_factory, auth_headers):
@@ -573,6 +649,95 @@ def test_delete_document_requires_owner(client, db_session, user_factory, auth_h
 
     assert resp.status_code == 404
     assert db_session.get(PdfDocument, doc.id) is not None
+
+
+def test_database_rejects_document_unarchive_and_physical_delete(
+    client, db_session, user_factory, auth_headers
+):
+    owner = user_factory("documents_lifecycle_guard@example.com")
+    doc = PdfDocument(
+        user_id=owner.id,
+        file_name="retained.pdf",
+        source="upload",
+        file_storage_key="/tmp/retained.pdf",
+        parse_status="parsed",
+        upload_time=datetime.utcnow(),
+    )
+    db_session.add(doc)
+    active_doc = PdfDocument(
+        user_id=owner.id,
+        file_name="active-retained.pdf",
+        source="upload",
+        file_storage_key="/tmp/active-retained.pdf",
+        parse_status="parsed",
+        upload_time=datetime.utcnow(),
+    )
+    db_session.add(active_doc)
+    db_session.commit()
+    document_id = doc.id
+    active_document_id = active_doc.id
+
+    with pytest.raises(DBAPIError, match="requires audited account erasure"):
+        db_session.execute(
+            sa.text(
+                "UPDATE pdf_documents SET lifecycle_state = 'erased', "
+                "retired_at = now(), retirement_reason = 'account_erasure', "
+                "retired_by_user_id = :user_id WHERE id = :document_id"
+            ),
+            {"user_id": owner.id, "document_id": active_document_id},
+        )
+    db_session.rollback()
+
+    with pytest.raises(
+        DBAPIError,
+        match="completed account erasure forbids user-owned mutations",
+    ):
+        db_session.execute(
+            sa.text(
+                "INSERT INTO account_erasure_events "
+                "(user_id, content_hash, summary_json) "
+                "VALUES (:user_id, :content_hash, '{}'::jsonb)"
+            ),
+            {"user_id": owner.id, "content_hash": "a" * 64},
+        )
+        db_session.execute(
+            sa.text("SELECT set_config('valuepilot.account_erasure', 'on', true)")
+        )
+        db_session.execute(
+            sa.text(
+                "UPDATE pdf_documents SET lifecycle_state = 'erased', "
+                "retired_at = now(), retirement_reason = 'account_erasure', "
+                "retired_by_user_id = :user_id WHERE id = :document_id"
+            ),
+            {"user_id": owner.id, "document_id": active_document_id},
+        )
+        db_session.execute(
+            sa.text("SET CONSTRAINTS trg_pdf_documents_erasure_audit IMMEDIATE")
+        )
+    db_session.rollback()
+
+    response = client.delete(
+        f"/api/v1/documents/{document_id}", headers=auth_headers(owner)
+    )
+    assert response.status_code == 200
+
+    with pytest.raises(DBAPIError, match="cannot return to active"):
+        db_session.execute(
+            sa.text(
+                "UPDATE pdf_documents SET lifecycle_state = 'active', "
+                "retired_at = NULL, retired_by_user_id = NULL, "
+                "retirement_reason = NULL WHERE id = :document_id"
+            ),
+            {"document_id": document_id},
+        )
+    db_session.rollback()
+
+    with pytest.raises(DBAPIError, match="use lifecycle retirement"):
+        db_session.execute(
+            sa.text("DELETE FROM pdf_documents WHERE id = :document_id"),
+            {"document_id": document_id},
+        )
+    db_session.rollback()
 
 
 def test_document_evidence_endpoint_returns_evidence_only_fields(
@@ -838,8 +1003,20 @@ def test_document_review_endpoint_returns_header_summary_fields(
     db_session.add(doc)
     db_session.commit()
 
-    db_session.add_all(
-        [
+    extraction = MetricExtraction(
+        user_id=user.id,
+        document_id=doc.id,
+        page_number=1,
+        field_key="header_summary",
+        raw_value_text="summary fixture",
+        original_text_snippet="summary fixture",
+        confidence_score=1.0,
+        parser_version="v1",
+        parse_generation=1,
+    )
+    db_session.add(extraction)
+    db_session.flush()
+    facts = [
             MetricFact(
                 user_id=user.id,
                 stock_id=stock.id,
@@ -919,7 +1096,10 @@ def test_document_review_endpoint_returns_header_summary_fields(
                 is_current=True,
             ),
         ]
-    )
+    for fact in facts:
+        fact.source_ref_id = extraction.id
+        fact.parse_generation = 1
+    db_session.add_all(facts)
     db_session.commit()
 
     resp = client.get(f"/api/v1/documents/{doc.id}/review", headers=headers)
@@ -1668,7 +1848,9 @@ def test_document_review_correction_creates_manual_current_fact_without_mutating
 
     assert extraction.corrected_by_user is False
     assert extraction.corrected_at is None
-    assert parsed_fact.is_current is False
+    # Source-specific current slots preserve immutable parsed truth. Product
+    # consumers resolve the current manual correction ahead of this parsed row.
+    assert parsed_fact.is_current is True
     assert manual_fact is not None
     assert manual_fact.source_type == "manual"
     assert manual_fact.source_document_id == doc.id
@@ -1755,6 +1937,20 @@ def test_document_review_correction_rejects_unparseable_numeric_value_without_wr
     db_session.add(doc)
     db_session.commit()
 
+    extraction = MetricExtraction(
+        user_id=user.id,
+        document_id=doc.id,
+        page_number=1,
+        field_key="recent_price",
+        raw_value_text="68.11",
+        original_text_snippet="RECENT PRICE 68.11",
+        confidence_score=1.0,
+        parser_version="v1",
+        parse_generation=1,
+    )
+    db_session.add(extraction)
+    db_session.flush()
+
     fact = MetricFact(
         user_id=user.id,
         stock_id=stock.id,
@@ -1763,6 +1959,8 @@ def test_document_review_correction_rejects_unparseable_numeric_value_without_wr
         unit="USD",
         source_type="parsed",
         source_document_id=doc.id,
+        source_ref_id=extraction.id,
+        parse_generation=1,
         is_current=True,
     )
     db_session.add(fact)
@@ -1780,6 +1978,255 @@ def test_document_review_correction_rejects_unparseable_numeric_value_without_wr
     assert resp.status_code == 400
     assert fact.is_current is True
     assert after_count == before_count
+
+
+def test_extraction_correction_appends_source_linked_fact_without_mutating_extraction(
+    client, db_session, user_factory, auth_headers
+):
+    user = user_factory("extraction_correction_immutable@example.com")
+    stock = Stock(ticker="IMMUT", exchange="NYSE", company_name="Immutable Co")
+    db_session.add(stock)
+    db_session.flush()
+    doc = PdfDocument(
+        user_id=user.id,
+        file_name="immutable.pdf",
+        source="upload",
+        file_storage_key="/tmp/immutable.pdf",
+        parse_status="parsed",
+        upload_time=datetime.utcnow(),
+        stock_id=stock.id,
+    )
+    db_session.add(doc)
+    db_session.flush()
+    parsed_fact = MetricFact(
+        user_id=user.id,
+        stock_id=stock.id,
+        metric_key="mkt.price",
+        value_json={"raw": "68.11", "fact_nature": "snapshot"},
+        value_numeric=68.11,
+        unit="USD",
+        period_type="AS_OF",
+        period_end_date=date(2026, 1, 2),
+        source_type="parsed",
+        is_current=True,
+    )
+    authorize_parsed_facts(db_session, document=doc, facts=[parsed_fact])
+    extraction = db_session.get(MetricExtraction, parsed_fact.source_ref_id)
+    original_raw_value = extraction.raw_value_text
+    db_session.commit()
+
+    response = client.post(
+        f"/api/v1/extractions/{extraction.id}/correct",
+        headers=auth_headers(user),
+        json={"corrected_value": "$70.00"},
+    )
+
+    assert response.status_code == 200, response.text
+    db_session.refresh(extraction)
+    fact = db_session.get(MetricFact, response.json()["fact_id"])
+    assert extraction.corrected_by_user is False
+    assert extraction.corrected_at is None
+    assert extraction.raw_value_text == original_raw_value
+    assert fact is not None
+    assert fact.source_type == "manual"
+    assert fact.source_document_id == doc.id
+    assert fact.source_ref_id == extraction.id
+    assert fact.metric_key == "mkt.price"
+    assert fact.period_type == "AS_OF"
+    assert fact.period_end_date == date(2026, 1, 2)
+    assert fact.value_numeric == pytest.approx(70.0)
+
+
+def test_extraction_target_correction_remains_visible_to_valuation_reader(
+    client, db_session, user_factory, auth_headers
+):
+    from app.services.valuation import (
+        VALUE_LINE_TARGET_MANUAL_CORRECTION_REFERENCE,
+        read_valuation_context,
+    )
+
+    user = user_factory("extraction_target_correction@example.com")
+    stock = Stock(ticker="XTGT", exchange="NYSE", company_name="Target Co")
+    db_session.add(stock)
+    db_session.flush()
+    document = PdfDocument(
+        user_id=user.id,
+        stock_id=stock.id,
+        file_name="target-correction.pdf",
+        source="upload",
+        file_storage_key="/tmp/target-correction.pdf",
+        parse_status="parsed",
+    )
+    db_session.add(document)
+    db_session.flush()
+    parsed = MetricFact(
+        user_id=user.id,
+        stock_id=stock.id,
+        metric_key="target.price_18m.mid",
+        value_numeric=150,
+        unit="USD",
+        currency="USD",
+        period_type="TARGET_HORIZON",
+        period_end_date=date(2027, 12, 31),
+        source_type="parsed",
+        is_current=True,
+    )
+    authorize_parsed_facts(db_session, document=document, facts=[parsed])
+    extraction = db_session.get(MetricExtraction, parsed.source_ref_id)
+    db_session.commit()
+
+    response = client.post(
+        f"/api/v1/extractions/{extraction.id}/correct",
+        headers=auth_headers(user),
+        json={"corrected_value": "$155"},
+    )
+
+    assert response.status_code == 200, response.text
+    corrected = db_session.get(MetricFact, response.json()["fact_id"])
+    assert corrected.value_json["corrected_from_fact_id"] == parsed.id
+    context = read_valuation_context(
+        db_session, user_id=user.id, stock_id=stock.id
+    )
+    assert context.system_reference_value == 155
+    assert context.system_reference_fact_id == corrected.id
+    assert (
+        context.system_reference_type
+        == VALUE_LINE_TARGET_MANUAL_CORRECTION_REFERENCE
+    )
+
+
+def test_extraction_correction_rejects_archived_source_without_writes(
+    client, db_session, user_factory, auth_headers
+):
+    user = user_factory("extraction_correction_archived@example.com")
+    stock = Stock(ticker="ARCH", exchange="NYSE", company_name="Archived Co")
+    db_session.add(stock)
+    db_session.flush()
+    doc = PdfDocument(
+        user_id=user.id,
+        file_name="archived.pdf",
+        source="upload",
+        file_storage_key="/tmp/archived.pdf",
+        parse_status="parsed",
+        upload_time=datetime.utcnow(),
+        stock_id=stock.id,
+    )
+    db_session.add(doc)
+    db_session.flush()
+    extraction = MetricExtraction(
+        user_id=user.id,
+        document_id=doc.id,
+        page_number=1,
+        field_key="is.sales",
+        raw_value_text="100",
+        original_text_snippet="Sales 100",
+        confidence_score=0.9,
+    )
+    db_session.add(extraction)
+    db_session.commit()
+
+    archived = client.delete(
+        f"/api/v1/documents/{doc.id}", headers=auth_headers(user)
+    )
+    assert archived.status_code == 200, archived.text
+    before_count = db_session.scalar(sa.select(sa.func.count(MetricFact.id)))
+
+    response = client.post(
+        f"/api/v1/extractions/{extraction.id}/correct",
+        headers=auth_headers(user),
+        json={"corrected_value": "101"},
+    )
+
+    assert response.status_code == 410, response.text
+    assert response.json()["detail"]["code"] == "source_unavailable"
+    assert response.json()["detail"]["reason"] == "document_archived"
+    db_session.refresh(extraction)
+    assert extraction.corrected_by_user is False
+    assert extraction.corrected_at is None
+    assert db_session.scalar(sa.select(sa.func.count(MetricFact.id))) == before_count
+
+
+def test_extraction_correction_rebuilds_ratios_and_piotroski_projection(
+    client, db_session, user_factory, auth_headers
+):
+    user = user_factory("extraction_correction_rebuild@example.com")
+    stock = Stock(ticker="REBLD", exchange="NYSE", company_name="Rebuild Co")
+    db_session.add(stock)
+    db_session.flush()
+    doc = PdfDocument(
+        user_id=user.id,
+        stock_id=stock.id,
+        file_name="rebuild.pdf",
+        source="upload",
+        file_storage_key="/tmp/rebuild.pdf",
+        parse_status="parsed",
+    )
+    db_session.add(doc)
+    db_session.flush()
+    slot = {"period_type": "FY", "period_end_date": date(2025, 12, 31)}
+    net_income = MetricFact(
+                user_id=user.id,
+                stock_id=stock.id,
+                metric_key="is.net_income",
+                value_numeric=100,
+                unit="USD",
+                source_type="parsed",
+                is_current=True,
+                **slot,
+            )
+    total_assets = MetricFact(
+                user_id=user.id,
+                stock_id=stock.id,
+                metric_key="bs.total_assets",
+                value_numeric=1000,
+                unit="USD",
+                source_type="parsed",
+                is_current=True,
+                **slot,
+            )
+    authorize_parsed_facts(
+        db_session, document=doc, facts=[net_income, total_assets]
+    )
+    net_income_extraction = db_session.get(MetricExtraction, net_income.source_ref_id)
+    db_session.flush()
+    old_roa = ValueLineRatioCalculator(db_session).calculate_for_stock(
+        user_id=user.id, stock_id=stock.id
+    )[0]
+    old_score = next(
+        fact
+        for fact in PiotroskiFScoreCalculator(db_session).calculate_for_stock(
+            user_id=user.id, stock_id=stock.id
+        )
+        if fact.metric_key == "score.piotroski.total"
+    )
+    db_session.commit()
+    assert old_roa.value_numeric == pytest.approx(0.1)
+
+    response = client.post(
+        f"/api/v1/extractions/{net_income_extraction.id}/correct",
+        headers=auth_headers(user),
+        json={"corrected_value": "200"},
+    )
+    assert response.status_code == 200, response.text
+    db_session.expire_all()
+
+    current_roa = db_session.query(MetricFact).filter_by(
+        user_id=user.id,
+        stock_id=stock.id,
+        metric_key="returns.roa",
+        is_current=True,
+    ).one()
+    current_score = db_session.query(MetricFact).filter_by(
+        user_id=user.id,
+        stock_id=stock.id,
+        metric_key="score.piotroski.total",
+        is_current=True,
+    ).one()
+    assert current_roa.value_numeric == pytest.approx(0.2)
+    assert current_roa.id != old_roa.id
+    assert current_score.id != old_score.id
+    assert db_session.get(MetricFact, old_roa.id).is_current is False
+    assert db_session.get(MetricFact, old_score.id).is_current is False
 
 
 def test_documents_compare_endpoint_returns_structured_diffs_by_fact_nature(
@@ -1813,110 +2260,103 @@ def test_documents_compare_endpoint_returns_structured_diffs_by_fact_nature(
     db_session.add_all([left_doc, right_doc])
     db_session.commit()
 
-    db_session.add_all(
-        [
-            MetricFact(
-                user_id=user.id,
-                stock_id=stock.id,
-                metric_key="is.net_income",
-                value_json={"fact_nature": "actual"},
-                value_numeric=100.0,
-                unit="USD",
-                period_type="FY",
-                period_end_date=date(2024, 12, 31),
-                source_type="parsed",
-                source_document_id=left_doc.id,
-                is_current=False,
-            ),
-            MetricFact(
-                user_id=user.id,
-                stock_id=stock.id,
-                metric_key="is.net_income",
-                value_json={"fact_nature": "actual"},
-                value_numeric=120.0,
-                unit="USD",
-                period_type="FY",
-                period_end_date=date(2024, 12, 31),
-                source_type="parsed",
-                source_document_id=right_doc.id,
-                is_current=True,
-            ),
-            MetricFact(
-                user_id=user.id,
-                stock_id=stock.id,
-                metric_key="estimate.eps_diluted",
-                value_json={"fact_nature": "estimate"},
-                value_numeric=21.5,
-                unit="USD",
-                period_type="FY",
-                period_end_date=date(2026, 12, 31),
-                source_type="parsed",
-                source_document_id=left_doc.id,
-                is_current=False,
-            ),
-            MetricFact(
-                user_id=user.id,
-                stock_id=stock.id,
-                metric_key="estimate.eps_diluted",
-                value_json={"fact_nature": "estimate"},
-                value_numeric=22.0,
-                unit="USD",
-                period_type="FY",
-                period_end_date=date(2026, 12, 31),
-                source_type="parsed",
-                source_document_id=right_doc.id,
-                is_current=True,
-            ),
-            MetricFact(
-                user_id=user.id,
-                stock_id=stock.id,
-                metric_key="snapshot.pe",
-                value_json={"fact_nature": "snapshot"},
-                value_numeric=28.0,
-                period_type="AS_OF",
-                period_end_date=date(2026, 1, 9),
-                source_type="parsed",
-                source_document_id=left_doc.id,
-                is_current=False,
-            ),
-            MetricFact(
-                user_id=user.id,
-                stock_id=stock.id,
-                metric_key="snapshot.pe",
-                value_json={"fact_nature": "snapshot"},
-                value_numeric=31.0,
-                period_type="AS_OF",
-                period_end_date=date(2026, 4, 9),
-                source_type="parsed",
-                source_document_id=right_doc.id,
-                is_current=True,
-            ),
-            MetricFact(
-                user_id=user.id,
-                stock_id=stock.id,
-                metric_key="mkt.price",
-                value_json={"fact_nature": "snapshot"},
-                value_numeric=250.0,
-                period_type="AS_OF",
-                period_end_date=date(2026, 1, 9),
-                source_type="parsed",
-                source_document_id=left_doc.id,
-                is_current=False,
-            ),
-            MetricFact(
-                user_id=user.id,
-                stock_id=stock.id,
-                metric_key="mkt.price",
-                value_json={"fact_nature": "snapshot"},
-                value_numeric=250.0,
-                period_type="AS_OF",
-                period_end_date=date(2026, 4, 9),
-                source_type="parsed",
-                source_document_id=right_doc.id,
-                is_current=True,
-            ),
-        ]
-    )
+    def compare_fact(
+        metric_key: str,
+        fact_nature: str,
+        value: float,
+        period_type: str,
+        period_end_date: date,
+        *,
+        is_current: bool,
+        unit: str | None = None,
+    ) -> MetricFact:
+        return MetricFact(
+            user_id=user.id,
+            stock_id=stock.id,
+            metric_key=metric_key,
+            value_json={"fact_nature": fact_nature},
+            value_numeric=value,
+            unit=unit,
+            period_type=period_type,
+            period_end_date=period_end_date,
+            source_type="parsed",
+            is_current=is_current,
+        )
+
+    left_facts = [
+        compare_fact(
+            "is.net_income",
+            "actual",
+            100.0,
+            "FY",
+            date(2024, 12, 31),
+            is_current=False,
+            unit="USD",
+        ),
+        compare_fact(
+            "estimate.eps_diluted",
+            "estimate",
+            21.5,
+            "FY",
+            date(2026, 12, 31),
+            is_current=False,
+            unit="USD",
+        ),
+        compare_fact(
+            "snapshot.pe",
+            "snapshot",
+            28.0,
+            "AS_OF",
+            date(2026, 1, 9),
+            is_current=False,
+        ),
+        compare_fact(
+            "mkt.price",
+            "snapshot",
+            250.0,
+            "AS_OF",
+            date(2026, 1, 9),
+            is_current=False,
+        ),
+    ]
+    right_facts = [
+        compare_fact(
+            "is.net_income",
+            "actual",
+            120.0,
+            "FY",
+            date(2024, 12, 31),
+            is_current=True,
+            unit="USD",
+        ),
+        compare_fact(
+            "estimate.eps_diluted",
+            "estimate",
+            22.0,
+            "FY",
+            date(2026, 12, 31),
+            is_current=True,
+            unit="USD",
+        ),
+        compare_fact(
+            "snapshot.pe",
+            "snapshot",
+            31.0,
+            "AS_OF",
+            date(2026, 4, 9),
+            is_current=True,
+        ),
+        compare_fact(
+            "mkt.price",
+            "snapshot",
+            250.0,
+            "AS_OF",
+            date(2026, 4, 9),
+            is_current=True,
+        ),
+    ]
+    authorize_parsed_facts(db_session, document=left_doc, facts=left_facts)
+    authorize_parsed_facts(db_session, document=right_doc, facts=right_facts)
 
     db_session.add_all(
         [
@@ -2025,9 +2465,116 @@ def test_documents_compare_endpoint_returns_structured_diffs_by_fact_nature(
     ]
 
 
-def test_documents_list_requires_auth(client, db_session):
-    db_session.execute(sa.text("TRUNCATE TABLE users RESTART IDENTITY CASCADE"))
+def test_documents_compare_hides_parsed_facts_without_exact_authority(
+    client, db_session, user_factory, auth_headers
+):
+    user = user_factory("documents_compare_quarantine@example.com")
+    stock = Stock(
+        ticker="CMPQUAR",
+        exchange="NYSE",
+        company_name="Compare Quarantine",
+    )
+    db_session.add(stock)
+    db_session.flush()
+    left_doc = PdfDocument(
+        user_id=user.id,
+        stock_id=stock.id,
+        file_name="compare-exact-left.pdf",
+        source="upload",
+        file_storage_key="/tmp/compare-exact-left.pdf",
+        parse_status="parsed",
+        report_date=date(2026, 1, 1),
+    )
+    right_doc = PdfDocument(
+        user_id=user.id,
+        stock_id=stock.id,
+        file_name="compare-exact-right.pdf",
+        source="upload",
+        file_storage_key="/tmp/compare-exact-right.pdf",
+        parse_status="parsed",
+        report_date=date(2026, 4, 1),
+    )
+    db_session.add_all([left_doc, right_doc])
+    db_session.flush()
+    left_exact = MetricFact(
+        user_id=user.id,
+        stock_id=stock.id,
+        metric_key="is.net_income",
+        value_json={"fact_nature": "actual"},
+        value_numeric=100,
+        unit="USD",
+        period_type="FY",
+        period_end_date=date(2025, 12, 31),
+        source_type="parsed",
+        is_current=False,
+    )
+    right_exact = MetricFact(
+        user_id=user.id,
+        stock_id=stock.id,
+        metric_key="is.net_income",
+        value_json={"fact_nature": "actual"},
+        value_numeric=110,
+        unit="USD",
+        period_type="FY",
+        period_end_date=date(2025, 12, 31),
+        source_type="parsed",
+        is_current=True,
+    )
+    authorize_parsed_facts(db_session, document=left_doc, facts=[left_exact])
+    authorize_parsed_facts(db_session, document=right_doc, facts=[right_exact])
     db_session.commit()
 
+    # Simulate a retained pre-rollout/quarantined projection. It remains audit
+    # data but has no immutable exact extraction authority for product display.
+    db_session.add_all(
+        [
+            MetricFact(
+                user_id=user.id,
+                stock_id=stock.id,
+                metric_key="is.revenue",
+                value_json={"fact_nature": "actual"},
+                value_numeric=999,
+                unit="USD",
+                period_type="FY",
+                period_end_date=date(2025, 12, 31),
+                source_type="parsed",
+                source_document_id=left_doc.id,
+                is_current=False,
+            ),
+            MetricFact(
+                user_id=user.id,
+                stock_id=stock.id,
+                metric_key="is.revenue",
+                value_json={"fact_nature": "actual"},
+                value_numeric=1111,
+                unit="USD",
+                period_type="FY",
+                period_end_date=date(2025, 12, 31),
+                source_type="parsed",
+                source_document_id=right_doc.id,
+                is_current=False,
+            ),
+        ]
+    )
+    db_session.flush()
+
+    response = client.get(
+        "/api/v1/documents/compare"
+        f"?left_document_id={left_doc.id}&right_document_id={right_doc.id}",
+        headers=auth_headers(user),
+    )
+
+    assert response.status_code == 200, response.text
+    actual_keys = {
+        item["metric_key"]
+        for section in response.json()["sections"]
+        if section["fact_nature"] == "actual"
+        for item in section["items"]
+    }
+    assert "is.net_income" in actual_keys
+    assert "is.revenue" not in actual_keys
+
+
+def test_documents_list_requires_auth(client, db_session):
     resp = client.get("/api/v1/documents")
     assert resp.status_code == 401, resp.text

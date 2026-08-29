@@ -1,6 +1,6 @@
 from datetime import datetime
 from typing import Any, Optional
-from sqlalchemy import BigInteger, String, DateTime, Boolean, ForeignKey, JSON
+from sqlalchemy import BigInteger, String, DateTime, Boolean, ForeignKey, Integer, JSON, Text
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.sql import func
@@ -73,4 +73,38 @@ class AccountErasureEvent(Base):
     summary_json: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    created_txid: Mapped[int] = mapped_column(
+        BigInteger, server_default=func.txid_current(), nullable=False
+    )
+
+
+class AccountErasureFileDeletion(Base):
+    """Durable, retryable deletion of storage after the DB erasure commits."""
+
+    __tablename__ = "account_erasure_file_deletions"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    user_id: Mapped[int] = mapped_column(
+        ForeignKey("users.id", ondelete="RESTRICT"), nullable=False
+    )
+    document_id: Mapped[int] = mapped_column(
+        ForeignKey("pdf_documents.id", ondelete="RESTRICT"), unique=True, nullable=False
+    )
+    storage_path: Mapped[str] = mapped_column(Text, nullable=False)
+    storage_path_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    status: Mapped[str] = mapped_column(String(20), nullable=False)
+    attempt_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    last_error_class: Mapped[Optional[str]] = mapped_column(String(120), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    created_txid: Mapped[int] = mapped_column(
+        BigInteger, server_default=func.txid_current(), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
+    )
+    deleted_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
     )

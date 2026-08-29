@@ -11,9 +11,11 @@ from datetime import date
 import pytest
 
 from app.api.v1.endpoints.stocks_13f import _m3_panel_for_stock
+from app.models.artifacts import PdfDocument
 from app.models.facts import MetricFact
 from app.models.stocks import Stock
 from app.models.users import User
+from financial_truth_fixtures import authorize_parsed_facts
 
 
 def _user(db_session, email: str) -> User:
@@ -39,19 +41,38 @@ def _fact(
     value_numeric: float | None = None,
     value_json: dict | None = None,
     period_end: date = date(2024, 12, 31),
+    source_type: str = "parsed",
 ) -> MetricFact:
+    document = None
+    if source_type == "parsed":
+        document = PdfDocument(
+            user_id=user_id,
+            stock_id=stock_id,
+            file_name=f"{metric_key}-{period_end.isoformat()}.pdf",
+            source="value_line",
+            file_storage_key=(
+                f"test/m3-panel/{user_id}/{stock_id}/{metric_key}/"
+                f"{period_end.isoformat()}.pdf"
+            ),
+            parse_status="parsed",
+        )
+        db_session.add(document)
+        db_session.flush()
     fact = MetricFact(
         user_id=user_id,
         stock_id=stock_id,
         metric_key=metric_key,
         value_numeric=value_numeric,
         value_json=value_json or {"fact_nature": "actual"},
-        source_type="parsed",
+        source_type=source_type,
         is_current=True,
         period_type="FY",
         period_end_date=period_end,
     )
-    db_session.add(fact)
+    if document is not None:
+        authorize_parsed_facts(db_session, document=document, facts=[fact])
+    else:
+        db_session.add(fact)
     db_session.flush()
     return fact
 
@@ -81,6 +102,7 @@ def test_m3_panel_returns_populated_panel_with_vl_facts(db_session):
             "status": "partial",
             "fact_nature": "actual",
         },
+        source_type="calculated",
     )
     # Numeric-backed facts. The target_mid fact carries the as-of period
     # that D1 surfaces as provenance in the QualityOverlay.
@@ -101,9 +123,9 @@ def test_m3_panel_returns_populated_panel_with_vl_facts(db_session):
     result = _m3_panel_for_stock(db_session, stock.id, user_id=user.id)
 
     assert result.has_value_line is True
-    assert result.piotroski_score == 7
-    assert result.piotroski_max == 8
-    assert result.piotroski_status == "partial"
+    assert result.piotroski_score is None
+    assert result.piotroski_max is None
+    assert result.piotroski_status is None
     assert result.earnings_predictability == 75.0
     assert result.vl_target_mid == 538.0
     assert result.vl_target_low == 355.0
@@ -124,12 +146,13 @@ def test_m3_panel_handles_piotroski_only_without_other_facts(db_session):
         metric_key="score.piotroski.total",
         value_json={"partial_score": 5, "max_available_score": 8, "status": "partial",
                     "fact_nature": "actual"},
+        source_type="calculated",
     )
 
     result = _m3_panel_for_stock(db_session, stock.id, user_id=user.id)
 
-    assert result.has_value_line is True
-    assert result.piotroski_score == 5
+    assert result.has_value_line is False
+    assert result.piotroski_score is None
     assert result.vl_target_mid is None
     assert result.earnings_predictability is None
     # No VL target fact → provenance fields stay None even though

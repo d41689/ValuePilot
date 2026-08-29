@@ -38,6 +38,10 @@ def upload_axs(client, db_session, user_factory, auth_headers) -> tuple[User, St
         )
 
     assert resp.status_code == 200, resp.text
+    assert all(
+        report["status"] == "parsed"
+        for report in resp.json()["page_reports"]
+    ), resp.json()["page_reports"]
     doc_id = resp.json()["document_id"]
 
     stock = (

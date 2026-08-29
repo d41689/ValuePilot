@@ -1,14 +1,18 @@
 from copy import deepcopy
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 import yaml
+from typer.testing import CliRunner
 
 from app.acceptance.financial_truth_gold_set import (
     GoldSetValidationError,
+    expected_completed_fiscal_years,
     load_and_validate_gold_set,
     validate_gold_set,
 )
+from app.cli import sec_financials as sec_financials_cli
 
 
 MANIFEST = Path("/code/docs/acceptance/financial_truth_beta_gold_set.yml")
@@ -37,6 +41,69 @@ def test_locked_manifest_satisfies_ft00_protocol() -> None:
     assert report.cross_cutting_counts["adr_share_class_or_corporate_action"] >= 3
     assert report.cross_cutting_counts["filing_amendment_or_restatement"] >= 2
     assert report.cross_cutting_counts["non_usd_reporting_currency"] >= 2
+
+
+def test_recently_available_issuer_uses_actual_completed_fy_denominator() -> None:
+    data = _data()
+    avgo = next(case for case in data["cases"] if case["case_id"] == "avgo-primary")
+
+    assert expected_completed_fiscal_years(
+        avgo, cutoff_at=data["cycle"]["cutoff_at"]
+    ) == tuple(range(2018, 2026))
+
+
+def test_manifest_rejects_unavailable_year_outside_locked_denominator() -> None:
+    data = _data()
+    avgo = next(case for case in data["cases"] if case["case_id"] == "avgo-primary")
+    avgo["expected_history"]["unavailable_years"] = [
+        {"fiscal_year": 2017, "disposition": "expected"}
+    ]
+
+    with pytest.raises(GoldSetValidationError, match="locked fiscal-year denominator"):
+        validate_gold_set(data)
+
+
+def test_coverage_command_uses_locked_cutoff_not_wall_clock(monkeypatch) -> None:
+    data = _data()
+    manifest = {**data, "cases": [deepcopy(data["cases"][0])]}
+    captured: dict[str, object] = {}
+
+    class _Rows:
+        def all(self):
+            return []
+
+    class _Session:
+        def scalar(self, _statement):
+            return SimpleNamespace(id=1)
+
+        def scalars(self, _statement):
+            return _Rows()
+
+        def close(self):
+            return None
+
+    monkeypatch.setattr(sec_financials_cli, "_gold_manifest", lambda: manifest)
+    monkeypatch.setattr(
+        sec_financials_cli,
+        "_matching_stocks",
+        lambda _db, ticker: [SimpleNamespace(id=1, ticker=ticker)],
+    )
+    monkeypatch.setattr(sec_financials_cli, "SessionLocal", _Session)
+
+    def _evidence(_db, *, stock_id, cutoff):
+        captured["stock_id"] = stock_id
+        captured["cutoff"] = cutoff
+        return []
+
+    monkeypatch.setattr(
+        sec_financials_cli, "select_sec_financial_evidence_as_of", _evidence
+    )
+
+    result = CliRunner().invoke(sec_financials_cli.app, ["coverage-gold-set"])
+
+    assert result.exit_code == 2
+    assert captured["stock_id"] == 1
+    assert captured["cutoff"].isoformat() == "2026-08-26T23:59:59+00:00"
 
 
 @pytest.mark.parametrize("field", ["po", "reviewer"])

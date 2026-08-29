@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from datetime import date
 from typing import Optional
 
-from sqlalchemy import and_, or_, select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.models.artifacts import PdfDocument
@@ -24,7 +24,6 @@ def resolve_active_reports(
     document_ids: Optional[list[int]] = None,
     stock_ids: Optional[list[int]] = None,
     current_user_id: Optional[int] = None,
-    shared_parsed_user_ids: Optional[list[int]] = None,
 ) -> dict[int, ActiveReportSelection]:
     stmt = (
         select(
@@ -35,7 +34,11 @@ def resolve_active_reports(
         .join(PdfDocument, PdfDocument.id == MetricFact.source_document_id)
         .where(
             MetricFact.source_type == "parsed",
+            MetricFact.is_current.is_(True),
             MetricFact.source_document_id.is_not(None),
+            MetricFact.parse_generation == PdfDocument.current_parse_generation,
+            PdfDocument.lifecycle_state == "active",
+            func.parsed_metric_fact_has_exact_authority(MetricFact.id).is_(True),
         )
         .distinct()
     )
@@ -51,16 +54,7 @@ def resolve_active_reports(
         stmt = stmt.where(MetricFact.stock_id.in_(stock_ids))
 
     if current_user_id is not None:
-        shared_ids = shared_parsed_user_ids or []
-        stmt = stmt.where(
-            or_(
-                MetricFact.user_id == current_user_id,
-                and_(
-                    MetricFact.source_type == "parsed",
-                    MetricFact.user_id.in_(shared_ids),
-                ),
-            )
-        )
+        stmt = stmt.where(MetricFact.user_id == current_user_id)
 
     rows = session.execute(stmt).all()
     active_by_stock: dict[int, ActiveReportSelection] = {}

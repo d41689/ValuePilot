@@ -77,10 +77,80 @@ class MappingSpec:
                         "unit": unit,
                         "period_type": period_type,
                         "period_end_date": period_end_date,
+                        "source_path": match.path,
+                        "source_extraction_field_key": _source_extraction_field_key(
+                            match.path
+                        ),
                     }
                 )
         unmapped = _unmapped_paths(page_json, used_paths)
         return facts, used_paths, unmapped
+
+
+def _source_extraction_field_key(path: str) -> Optional[str]:
+    """Resolve a page-json observation to the parser row that produced it.
+
+    A mapped fact must retain an exact extraction id.  Page JSON intentionally
+    reshapes parser output, so this small adapter names the originating parser
+    field instead of asking consumers to guess from a metric-key leaf.
+    """
+    direct_prefixes = {
+        "earnings_per_share.": "earnings_per_share",
+        "quarterly_dividends_paid.": "quarterly_dividends_paid_per_share",
+        "quarterly_sales.": "quarterly_sales_usd_millions",
+        "quarterly_revenues.": "quarterly_revenues_usd_millions",
+        "net_premiums_earned.": "quarterly_sales_usd_millions",
+        "annual_financials.": "tables_time_series",
+        "annual_rates.": "annual_rates_of_change",
+        "current_position.": "current_position_usd_millions",
+        "financial_position.": "financial_position_usd_millions",
+        "institutional_decisions.": "institutional_decisions",
+        "narrative.business": "business_description",
+        "narrative.analyst_commentary": "analyst_commentary",
+    }
+    for prefix, field_key in direct_prefixes.items():
+        if path.startswith(prefix):
+            return field_key
+
+    leaf_mappings = {
+        "header.recent_price": "recent_price",
+        "header.pe_ratio": "pe_ratio",
+        "header.pe_ratio_trailing": "pe_ratio_trailing",
+        "header.pe_ratio_median": "pe_ratio_median",
+        "header.relative_pe_ratio": "relative_pe_ratio",
+        "header.dividend_yield_pct": "dividend_yield",
+        "ratings.timeliness": "timeliness",
+        "ratings.safety": "safety",
+        "ratings.technical": "technical",
+        "ratings.beta": "beta",
+        "quality_metrics.company_financial_strength": "company_financial_strength",
+        "quality_metrics.stock_price_stability": "stock_price_stability",
+        "quality_metrics.price_growth_persistence": "price_growth_persistence",
+        "quality_metrics.earnings_predictability": "earnings_predictability",
+        "target_price_18m.range.low": "target_18m_low",
+        "target_price_18m.midpoint.price": "target_18m_mid",
+        "target_price_18m.range.high": "target_18m_high",
+        "target_price_18m.midpoint.pct_to_mid": "target_18m_upside_pct",
+        "long_term_projection.scenarios.low.price": "long_term_projection_low_price",
+        "long_term_projection.scenarios.high.price": "long_term_projection_high_price",
+        "long_term_projection.scenarios.low.price_gain": "long_term_projection_low_price_gain_pct",
+        "long_term_projection.scenarios.high.price_gain": "long_term_projection_high_price_gain_pct",
+        "long_term_projection.scenarios.low.annual_total_return": "long_term_projection_low_total_return_pct",
+        "long_term_projection.scenarios.high.annual_total_return": "long_term_projection_high_total_return_pct",
+        "capital_structure.total_debt": "total_debt",
+        "capital_structure.debt_due_in_5_years": "debt_due_in_5_years",
+        "capital_structure.lt_debt": "lt_debt",
+        "capital_structure.lt_interest": "lt_interest",
+        "capital_structure.lt_interest_percent_of_capital": "lt_interest_percent_of_capital",
+        "capital_structure.preferred_stock": "preferred_stock",
+        "capital_structure.preferred_dividend": "preferred_dividend",
+        "capital_structure.common_stock.shares_outstanding": "common_stock_shares_outstanding",
+        "capital_structure.market_cap": "market_cap",
+    }
+    for prefix, field_key in leaf_mappings.items():
+        if path.startswith(prefix):
+            return field_key
+    return None
 
 
 def _iter_matches(root: dict[str, Any], json_path: str) -> Iterable[MappingMatch]:

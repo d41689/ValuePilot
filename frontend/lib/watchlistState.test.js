@@ -13,6 +13,7 @@ const {
   hasFairValueEditChanges,
   isOverviewWatchlistId,
   formatPiotroskiFScoreSeries,
+  normalizeCanonicalPriceState,
   formatValuationReferenceLabel,
 } = require('./watchlistState');
 
@@ -50,6 +51,55 @@ test('formatValuationReferenceLabel keeps system reference distinct from user fa
     '80.00 · VL 18M target'
   );
   assert.equal(formatValuationReferenceLabel(null, null), '—');
+});
+
+test('formatValuationReferenceLabel identifies a user-corrected document reference', () => {
+  assert.equal(
+    formatValuationReferenceLabel(82, 'target.price_18m.mid.manual_correction'),
+    '82.00 · User-corrected VL 18M target',
+  );
+});
+
+test('normalizeCanonicalPriceState preserves fresh quote metadata', () => {
+  assert.deepEqual(
+    normalizeCanonicalPriceState({
+      price: 101.25,
+      price_date: '2026-08-28',
+      price_currency: 'USD',
+      price_source: 'stooq',
+      price_freshness: 'fresh',
+      price_reason: null,
+    }),
+    {
+      valueLabel: '101.25',
+      dateLabel: '2026-08-28',
+      currencyLabel: 'USD',
+      sourceLabel: 'stooq',
+      freshnessLabel: 'Fresh',
+      reasonLabel: null,
+    },
+  );
+});
+
+test('normalizeCanonicalPriceState exposes unavailable reason without a price', () => {
+  assert.deepEqual(
+    normalizeCanonicalPriceState({
+      price: null,
+      price_date: '2026-08-27',
+      price_currency: null,
+      price_source: 'stooq',
+      price_freshness: 'stale',
+      price_reason: 'price_currency_unknown',
+    }),
+    {
+      valueLabel: '—',
+      dateLabel: '2026-08-27',
+      currencyLabel: 'Currency unknown',
+      sourceLabel: 'stooq',
+      freshnessLabel: 'Stale',
+      reasonLabel: 'Price currency unknown',
+    },
+  );
 });
 
 test('hasFairValueEditChanges detects identical and changed edit maps', () => {

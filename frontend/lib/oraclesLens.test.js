@@ -85,6 +85,10 @@ test('normalizeOracleLensRows emphasizes signal score with explanations', () => 
       holder_price_estimate_high: 118,
       current_price: 100,
       current_price_date: '2031-12-31',
+      current_price_currency: 'USD',
+      current_price_source: 'stooq',
+      current_price_freshness: 'fresh',
+      current_price_reason: null,
       price_context: 'historical_snapshot',
       valuation_reference: 150,
       valuation_reference_label: 'Value Line 18-month target midpoint',
@@ -115,6 +119,10 @@ test('normalizeOracleLensRows emphasizes signal score with explanations', () => 
   assert.equal(rows[0].valuation.holderRangeLabel, '$92.00–$118.00');
   assert.equal(rows[0].valuation.currentPriceLabel, '$100.00');
   assert.equal(rows[0].valuation.currentPriceDateLabel, '2031-12-31');
+  assert.equal(rows[0].valuation.currentPriceCurrencyLabel, 'USD');
+  assert.equal(rows[0].valuation.currentPriceSourceLabel, 'stooq');
+  assert.equal(rows[0].valuation.currentPriceFreshnessLabel, 'Fresh');
+  assert.equal(rows[0].valuation.currentPriceReasonLabel, null);
   assert.equal(rows[0].valuation.priceContextLabel, 'Historical snapshot');
   assert.equal(rows[0].valuation.referenceLabel, '$150.00');
   assert.equal(rows[0].valuation.discountLabel, '33.3%');
@@ -223,6 +231,44 @@ test('normalizeValuationReference keeps missing reference explicit', () => {
   assert.equal(valuation.discountLabel, '—');
   assert.equal(valuation.referenceConfidence, 'unavailable');
   assert.deepEqual(valuation.unavailableReasons, ['missing valuation reference']);
+});
+
+test('normalizeValuationReference preserves canonical stale-price state and reason', () => {
+  const valuation = normalizeValuationReference({
+    current_price: null,
+    current_price_date: '2031-12-30',
+    current_price_currency: 'USD',
+    current_price_source: 'stooq',
+    current_price_freshness: 'stale',
+    current_price_reason: 'price_stale',
+    price_context: 'latest',
+    valuation_unavailable_reasons: ['missing price'],
+  });
+
+  assert.equal(valuation.currentPriceLabel, '—');
+  assert.equal(valuation.currentPriceDateLabel, '2031-12-30');
+  assert.equal(valuation.currentPriceCurrencyLabel, 'USD');
+  assert.equal(valuation.currentPriceSourceLabel, 'stooq');
+  assert.equal(valuation.currentPriceFreshnessLabel, 'Stale');
+  assert.equal(valuation.currentPriceReasonLabel, 'Price stale');
+  assert.equal(valuation.priceContextLabel, 'Canonical EOD');
+});
+
+test('normalizeValuationReference preserves canonical unsupported-price reason', () => {
+  const valuation = normalizeValuationReference({
+    current_price: null,
+    current_price_date: null,
+    current_price_currency: null,
+    current_price_source: null,
+    current_price_freshness: 'unavailable',
+    current_price_reason: 'price_currency_unknown',
+    price_context: 'latest',
+  });
+
+  assert.equal(valuation.currentPriceCurrencyLabel, 'Currency unknown');
+  assert.equal(valuation.currentPriceSourceLabel, 'Source unavailable');
+  assert.equal(valuation.currentPriceFreshnessLabel, 'Unavailable');
+  assert.equal(valuation.currentPriceReasonLabel, 'Price currency unknown');
 });
 
 test('groupCautionFlags preserves all flags for drilldown', () => {

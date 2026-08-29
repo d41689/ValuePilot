@@ -2,6 +2,7 @@ from sqlalchemy.orm import Session
 from app.models.users import User, NotificationSettings
 from app.models.stocks import Stock, StockPrice
 from app.models.artifacts import PdfDocument
+from app.models.extractions import MetricExtraction
 from app.models.facts import MetricFact
 
 def test_create_user(db_session: Session):
@@ -71,13 +72,39 @@ def test_create_metric_fact(db_session: Session):
     db_session.add(stock)
     db_session.commit()
 
+    document = PdfDocument(
+        user_id=user.id,
+        stock_id=stock.id,
+        file_name="msft-fact.pdf",
+        source="upload",
+        file_storage_key="tests/msft-fact.pdf",
+        parse_status="parsed",
+    )
+    db_session.add(document)
+    db_session.flush()
+    extraction = MetricExtraction(
+        user_id=user.id,
+        document_id=document.id,
+        page_number=1,
+        field_key="revenue",
+        raw_value_text="30.5",
+        original_text_snippet="Revenue 30.5",
+        parsed_value_json={"value": 30.5},
+        parse_generation=document.current_parse_generation,
+    )
+    db_session.add(extraction)
+    db_session.flush()
     fact = MetricFact(
         user_id=user.id,
         stock_id=stock.id,
-        metric_key="val.pe",
+        metric_key="revenue",
         value_json={"value": 30.5},
         value_numeric=30.5,
-        source_type="manual"
+        source_type="parsed",
+        source_document_id=document.id,
+        source_ref_id=extraction.id,
+        parse_generation=document.current_parse_generation,
+        is_current=True,
     )
     db_session.add(fact)
     db_session.commit()

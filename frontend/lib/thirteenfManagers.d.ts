@@ -48,12 +48,19 @@ export type ThirteenFManagerPosition = {
   cusips: string[];
   mappingStatus: string;
   impliedReportPrice: number | null;
+  impliedReportPriceCurrency: string | null;
   marketContext: {
     latestPrice: number | null;
     latestPriceDate: string | null;
+    latestPriceCurrency: string | null;
+    latestPriceSource: string | null;
+    latestPriceFreshness: string;
+    latestPriceReason: string | null;
     changeSinceReportPct: number | null;
+    changeSinceReportReason: string | null;
     week52Low: number | null;
     week52High: number | null;
+    week52Reason: string | null;
     source: string | null;
   } | null;
 };

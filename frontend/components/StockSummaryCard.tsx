@@ -6,6 +6,13 @@ type StockSummaryCardProps = {
   ticker: string;
   exchange?: string | null;
   price?: number | null;
+  currentPriceDate?: string | null;
+  currentPriceCurrency?: string | null;
+  currentPriceSource?: string | null;
+  currentPriceFreshness?: string | null;
+  currentPriceReason?: string | null;
+  reportPriceReference?: number | null;
+  reportPriceReferenceProvenanceLabel?: string | null;
   pe?: number | null;
   activeReportDate?: string | null;
   activeReportDocumentId?: number | null;
@@ -42,6 +49,13 @@ export default function StockSummaryCard({
   ticker,
   exchange,
   price,
+  currentPriceDate,
+  currentPriceCurrency,
+  currentPriceSource,
+  currentPriceFreshness,
+  currentPriceReason,
+  reportPriceReference,
+  reportPriceReferenceProvenanceLabel,
   pe,
   activeReportDate,
   activeReportDocumentId,
@@ -69,10 +83,25 @@ export default function StockSummaryCard({
       <CardContent className="space-y-4">
         <div className="grid gap-4 sm:grid-cols-2">
         <div className="rounded-xl border border-border/60 bg-card/80 p-4">
-          <div className="text-xs uppercase text-muted-foreground">现价</div>
-          <div className="mt-2 text-2xl font-semibold">${formatNumber(price, 2)}</div>
+          <div className="text-xs uppercase text-muted-foreground">Canonical EOD price</div>
+          <div className="mt-2 text-2xl font-semibold">
+            {currentPriceCurrency ? `${currentPriceCurrency} ` : ''}{formatNumber(price, 2)}
+          </div>
+          <div className="mt-2 text-xs text-muted-foreground">
+            {price !== null && price !== undefined
+              ? [currentPriceDate, currentPriceSource, currentPriceFreshness].filter(Boolean).join(' · ')
+              : `Unavailable · ${currentPriceReason || currentPriceFreshness || 'price_missing'}`}
+          </div>
           {priceProvenanceLabel ? (
             <div className="mt-2 text-xs text-muted-foreground">{priceProvenanceLabel}</div>
+          ) : null}
+          {reportPriceReference !== null && reportPriceReference !== undefined ? (
+            <div className="mt-3 border-t border-border/60 pt-3 text-xs text-muted-foreground">
+              Value Line report price reference: {formatNumber(reportPriceReference, 2)}
+              {reportPriceReferenceProvenanceLabel
+                ? ` · ${reportPriceReferenceProvenanceLabel}`
+                : ''}
+            </div>
           ) : null}
         </div>
         <div className="rounded-xl border border-border/60 bg-card/80 p-4">

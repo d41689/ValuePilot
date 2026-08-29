@@ -426,6 +426,36 @@ long — escalate to the user. **medium / low** = ordinary follow-up.
   `docs/plans/financial_truth_decision_loop_beta_acceptance.md`
 - **Issue:** —
 
+### Trusted fixed-method derived metrics (Piotroski and Value Line ratios)
+- **Found:** 2026-08-28, financial-truth minimal-loop adversarial review
+  FTM-022
+- **Severity:** medium (the calculations remain available as historical
+  projections, but exposing caller-authored lineage would make an unsupported
+  score look canonical)
+- **Problem:** legacy Piotroski and Value Line ratio rows store method, inputs,
+  and calculation version only in mutable/caller-authored JSON. They do not
+  have the database-verifiable exact-run, exact-input, arithmetic,
+  immutability, and invalidation protocol used by `formula-v2` facts.
+- **Current containment:** all canonical product reads fail closed and hide
+  these legacy calculated rows. Their pure calculation builders and retained
+  rows are not treated as product truth.
+- **Acceptance criteria:**
+  - Define a versioned fixed-method registry whose output key and semantics
+    cannot be selected by a user formula.
+  - Bind each result to exact immutable input fact IDs and a protected run;
+    validate method selection, period slot, units, arithmetic/boolean result,
+    and total/component consistency at the database boundary.
+  - A correction, retirement, supersession, or manual override makes every
+    dependent current result unavailable or dirty atomically.
+  - Raw-SQL forgery tests cover fake method/version JSON, missing/reordered
+    inputs, wrong stock/period/user, altered results, partial totals, and stale
+    inputs before any Piotroski or fixed ratio is restored to product UI.
+- **Context:** `backend/app/services/metric_fact_visibility.py`;
+  `backend/app/services/calculated_metrics/piotroski_f_score.py`;
+  `backend/app/services/calculated_metrics/value_line_ratios.py`;
+  `docs/tasks/2026-08-28_financial-truth-minimal-loop.md`
+- **Issue:** —
+
 ### Frontend Browserslist compatibility data is stale
 - **Found:** 2026-07-19, zero-database rehearsal closing gate
 - **Severity:** low (dependency-maintenance warning; build output and product

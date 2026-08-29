@@ -1,11 +1,13 @@
 from datetime import date
 
+from app.models.artifacts import PdfDocument
 from app.models.facts import MetricFact
 from app.models.stocks import Stock
 from app.services.calculated_metrics.piotroski_f_score import (
     PiotroskiFScoreCalculator,
     build_piotroski_f_score_facts,
 )
+from financial_truth_fixtures import authorize_parsed_facts
 
 
 def _fact(metric_key, value, period_end, *, fact_nature="actual", fact_id=1, source_type="parsed", period_type="FY"):
@@ -277,21 +279,35 @@ def test_piotroski_calculator_inserts_current_calculated_facts(db_session, user_
         is_current=True,
     )
     db_session.add(old_fact)
-    for idx, fact in enumerate(_complete_standard_facts(), start=100):
-        db_session.add(
-            MetricFact(
-                user_id=user.id,
-                stock_id=stock.id,
-                metric_key=fact["metric_key"],
-                value_numeric=fact["value_numeric"],
-                value_json=fact["value_json"],
-                period_type=fact["period_type"],
-                period_end_date=fact["period_end_date"],
-                source_type="parsed",
-                is_current=True,
-                source_ref_id=idx,
-            )
+    input_document = PdfDocument(
+        user_id=user.id,
+        stock_id=stock.id,
+        file_name="piotroski-inputs.pdf",
+        source="value_line",
+        file_storage_key="tests/piotroski-inputs.pdf",
+        parse_status="parsed",
+    )
+    db_session.add(input_document)
+    db_session.flush()
+    input_facts = [
+        MetricFact(
+            user_id=user.id,
+            stock_id=stock.id,
+            metric_key=fact["metric_key"],
+            value_numeric=fact["value_numeric"],
+            value_json=fact["value_json"],
+            period_type=fact["period_type"],
+            period_end_date=fact["period_end_date"],
+            source_type="parsed",
+            is_current=True,
         )
+        for fact in _complete_standard_facts()
+    ]
+    authorize_parsed_facts(
+        db_session,
+        document=input_document,
+        facts=input_facts,
+    )
     db_session.commit()
 
     written = PiotroskiFScoreCalculator(db_session).calculate_for_stock(user_id=user.id, stock_id=stock.id)

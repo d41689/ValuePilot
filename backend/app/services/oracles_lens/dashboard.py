@@ -3,7 +3,7 @@ from __future__ import annotations
 import math
 from collections import defaultdict
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, datetime, timezone
 from statistics import median
 from typing import Any
 
@@ -13,8 +13,13 @@ from sqlalchemy.orm import Session
 from app.models.facts import MetricFact
 from app.models.institutions import Filing13F, Holding13F, InstitutionManager, ParseRun13F
 from app.models.oracles_lens import OraclesLensSignal
-from app.models.stocks import Stock, StockPrice
-from app.services.market_data_service import read_canonical_eod_series
+from app.models.stocks import Stock
+from app.services.market_data_service import (
+    CanonicalEodPrice,
+    ET,
+    compute_target_date,
+    read_canonical_eod_price,
+)
 from app.edgar.parsers.value_units import TRANSITION_ACCEPTED_DATE
 from app.services.oracles_lens.constants import SCORE_VERSION
 from app.services.valuation import (
@@ -24,6 +29,11 @@ from app.services.valuation import (
 )
 from app.services.oracles_lens.manager_signal import derive_manager_signal_profile
 from app.services.thirteenf_holdings_query import HR_FORM_TYPES, active_hr_holdings_query
+from app.services.analysis_method_gate import (
+    evaluate_analysis_method,
+    metric_fact_matches_method,
+)
+from app.services.metric_fact_visibility import visible_metric_fact_predicate
 
 
 BASELINE_NOTICE = (
@@ -1169,10 +1179,15 @@ def _m3_facts_by_stock(
 
     facts = (
         session.query(MetricFact)
-        .filter(MetricFact.user_id == user_id)
         .filter(MetricFact.stock_id.in_(unique_stock_ids))
         .filter(MetricFact.metric_key.in_(metric_keys))
         .filter(MetricFact.is_current.is_(True))
+        .filter(
+            visible_metric_fact_predicate(
+                MetricFact,
+                user_id=user_id,
+            )
+        )
         .order_by(
             MetricFact.stock_id.asc(),
             MetricFact.metric_key.asc(),
@@ -1216,11 +1231,29 @@ def _quality_overlay_by_stock(
                 facts_by_stock[stock_id][label] = fact
 
     latest_prices = _latest_prices_by_stock(session, unique_stock_ids, as_of_date=price_as_of_date)
+    method_cutoff = (
+        datetime.combine(price_as_of_date, datetime.max.time(), tzinfo=timezone.utc)
+        if price_as_of_date is not None
+        else datetime.now(timezone.utc)
+    )
+    methods_by_stock = {
+        stock_id: {
+            kind: evaluate_analysis_method(
+                session,
+                stock_id=stock_id,
+                analysis_kind=kind,
+                cutoff=method_cutoff,
+            )
+            for kind in ("owner_earnings", "roic")
+        }
+        for stock_id in unique_stock_ids
+    }
     return {
         stock_id: _quality_payload(
             facts_by_stock.get(stock_id, {}),
             latest_prices.get(stock_id),
             price_context=price_context,
+            methods=methods_by_stock[stock_id],
         )
         for stock_id in unique_stock_ids
     }
@@ -1231,31 +1264,49 @@ def _latest_prices_by_stock(
     stock_ids: list[int],
     *,
     as_of_date: date | None = None,
-) -> dict[int, StockPrice]:
-    # The latest-period dashboard historically means latest locally stored
-    # observation; fixture datasets may intentionally be forward-dated. The
-    # coverage/freshness surface separately classifies whether that observation
-    # is plausible for the real current session.
-    through = as_of_date or date.max
-    series = read_canonical_eod_series(
-        session,
-        stock_ids=stock_ids,
-        through=through,
+) -> dict[int, CanonicalEodPrice]:
+    target = as_of_date or compute_target_date(
+        datetime.now(timezone.utc).astimezone(ET)
     )
+    stocks = session.query(Stock).filter(Stock.id.in_(stock_ids)).all()
     return {
-        stock_id: rows[0]
-        for stock_id, rows in series.items()
-        if rows
+        stock.id: read_canonical_eod_price(
+            session,
+            stock=stock,
+            as_of=target,
+            include_as_of_session=True,
+        )
+        for stock in stocks
     }
 
 
 def _quality_payload(
     facts: dict[str, MetricFact],
-    latest_price: StockPrice | None,
+    latest_price: CanonicalEodPrice | None,
     *,
     price_context: str = "latest",
+    methods: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    price = float(latest_price.close) if latest_price and latest_price.close is not None else None
+    methods = methods or {}
+    owner_method = methods.get("owner_earnings")
+    roic_method = methods.get("roic")
+    facts = dict(facts)
+    if owner_method is None or not metric_fact_matches_method(
+        facts.get("owners_earnings"), owner_method
+    ):
+        facts.pop("owners_earnings", None)
+    if roic_method is None or not metric_fact_matches_method(
+        facts.get("return_on_total_capital"), roic_method
+    ):
+        facts.pop("return_on_total_capital", None)
+    price = (
+        float(latest_price.close)
+        if latest_price
+        and latest_price.freshness_state == "fresh"
+        and latest_price.close is not None
+        and latest_price.currency == "USD"
+        else None
+    )
     owners_earnings = _fact_value(facts.get("owners_earnings"))
     owner_yield = owners_earnings / price if owners_earnings is not None and price else None
     values = {
@@ -1266,8 +1317,34 @@ def _quality_payload(
         "debt_to_capital": _fact_value(facts.get("debt_to_capital")),
         "owner_earnings_yield": owner_yield,
         "latest_price": price,
-        "price_date": latest_price.price_date.isoformat() if latest_price else None,
+        "price_date": (
+            latest_price.price_date.isoformat()
+            if latest_price and latest_price.price_date
+            else None
+        ),
+        "price_currency": latest_price.currency if latest_price else None,
+        "price_source": latest_price.source if latest_price else None,
+        "price_freshness": latest_price.freshness_state if latest_price else "missing",
+        "price_reason": latest_price.reason_code if latest_price else "price_missing",
         "price_context": price_context,
+        "analysis_methods": {
+            "owner_earnings": {
+                "state": owner_method.state if owner_method else "unknown",
+                "reason": owner_method.reason_code if owner_method else "method_not_evaluated",
+                "policy_version": owner_method.policy_version if owner_method else None,
+                "classification": owner_method.classification if owner_method else None,
+                "method_id": owner_method.method_id if owner_method else None,
+                "output_authorized": owner_method.output_authorized if owner_method else False,
+            },
+            "roic": {
+                "state": roic_method.state if roic_method else "unknown",
+                "reason": roic_method.reason_code if roic_method else "method_not_evaluated",
+                "policy_version": roic_method.policy_version if roic_method else None,
+                "classification": roic_method.classification if roic_method else None,
+                "method_id": roic_method.method_id if roic_method else None,
+                "output_authorized": roic_method.output_authorized if roic_method else False,
+            },
+        },
     }
     available_metrics = sum(
         1
@@ -1286,7 +1363,9 @@ def _quality_payload(
         unavailable.append("missing Value Line facts")
     if price is None:
         unavailable.append("missing price")
-    if owners_earnings is None:
+    if owner_method is not None and not owner_method.output_authorized:
+        unavailable.append("owner earnings output not authorized")
+    elif owners_earnings is None:
         unavailable.append("missing normalized owner earnings")
     elif owner_yield is None:
         unavailable.append("owner earnings yield unavailable without price")
@@ -1400,12 +1479,19 @@ def _valuation_reference_by_stock(
 
 def _valuation_payload(
     facts: dict[str, MetricFact],
-    latest_price: StockPrice | None,
+    latest_price: CanonicalEodPrice | None,
     holder_range: tuple[float | None, float | None],
     *,
     price_context: str = "latest",
 ) -> dict[str, Any]:
-    price = float(latest_price.close) if latest_price and latest_price.close is not None else None
+    price = (
+        float(latest_price.close)
+        if latest_price
+        and latest_price.freshness_state == "fresh"
+        and latest_price.close is not None
+        and latest_price.currency == "USD"
+        else None
+    )
     holder_low, holder_high = holder_range
     manual = facts.get(USER_INTRINSIC_VALUE_KEY)
     target = facts.get(VALUE_LINE_TARGET_REFERENCE_KEY)
@@ -1420,9 +1506,14 @@ def _valuation_payload(
         reference_confidence = "user_supplied"
     elif target and target.value_numeric is not None:
         reference = float(target.value_numeric)
-        reference_label = "Value Line 18-month target midpoint"
-        reference_type = "analyst_target_reference"
-        reference_confidence = "medium"
+        if target.source_type == "manual":
+            reference_label = "User-corrected Value Line 18-month target midpoint"
+            reference_type = "analyst_target_reference_manual_correction"
+            reference_confidence = "user_corrected"
+        else:
+            reference_label = "Value Line 18-month target midpoint"
+            reference_type = "analyst_target_reference"
+            reference_confidence = "medium"
 
     discount_to_reference = None
     if price is not None and reference:
@@ -1438,7 +1529,17 @@ def _valuation_payload(
 
     return {
         "current_price": price,
-        "current_price_date": latest_price.price_date.isoformat() if latest_price else None,
+        "current_price_date": (
+            latest_price.price_date.isoformat()
+            if latest_price and latest_price.price_date
+            else None
+        ),
+        "current_price_currency": latest_price.currency if latest_price else None,
+        "current_price_source": latest_price.source if latest_price else None,
+        "current_price_freshness": (
+            latest_price.freshness_state if latest_price else "missing"
+        ),
+        "current_price_reason": latest_price.reason_code if latest_price else "price_missing",
         "price_context": price_context,
         "valuation_reference": reference,
         "valuation_reference_label": reference_label,

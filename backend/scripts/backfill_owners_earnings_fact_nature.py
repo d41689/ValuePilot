@@ -34,47 +34,40 @@ def backfill_in_session(
     dry_run: bool = False,
     metric_fact_ids: list[int] | None = None,
 ) -> dict[str, int]:
-    tx = session.begin_nested() if dry_run else None
-    try:
-        rows = session.scalars(
-            select(MetricFact).where(
-                MetricFact.source_type == "parsed",
-                MetricFact.metric_key.in_([OEPS_KEY, OEPS_NORM_KEY]),
-                or_(
-                    MetricFact.value_json.is_(None),
-                    MetricFact.value_json["fact_nature"].astext.is_(None),
-                ),
-                *( [MetricFact.id.in_(metric_fact_ids)] if metric_fact_ids else [] ),
-            )
-        ).all()
+    rows = session.scalars(
+        select(MetricFact).where(
+            MetricFact.source_type == "parsed",
+            MetricFact.metric_key.in_([OEPS_KEY, OEPS_NORM_KEY]),
+            or_(
+                MetricFact.value_json.is_(None),
+                MetricFact.value_json["fact_nature"].astext.is_(None),
+            ),
+            *(
+                [MetricFact.id.in_(metric_fact_ids)]
+                if metric_fact_ids
+                else []
+            ),
+        )
+    ).all()
 
-        updated = 0
-        for fact in rows:
-            payload = dict(fact.value_json or {})
-            if fact.metric_key == OEPS_NORM_KEY:
-                target_fact_nature = "snapshot"
-            else:
-                target_fact_nature = infer_owners_earnings_fact_nature(
-                    _owners_earnings_input_facts(session, fact)
-                )
-            if payload.get("fact_nature") == target_fact_nature:
-                continue
-            payload["fact_nature"] = target_fact_nature
-            fact.value_json = payload
-            session.add(fact)
+    updated = 0
+    for fact in rows:
+        payload = dict(fact.value_json or {})
+        if fact.metric_key == OEPS_NORM_KEY:
+            target_fact_nature = "snapshot"
+        else:
+            target_fact_nature = infer_owners_earnings_fact_nature(
+                _owners_earnings_input_facts(session, fact)
+            )
+        if payload.get("fact_nature") != target_fact_nature:
             updated += 1
 
-        if dry_run:
-            session.flush()
-            tx.rollback()
-        else:
-            session.commit()
-
-        return {"matched": len(rows), "updated": updated}
-    except Exception:
-        if tx is not None and tx.is_active:
-            tx.rollback()
-        raise
+    if not dry_run and updated:
+        raise RuntimeError(
+            "parsed facts are immutable; reparse into a new generation "
+            "instead of backfilling retained lineage"
+        )
+    return {"matched": len(rows), "updated": updated}
 
 
 def backfill(*, dry_run: bool = False) -> dict[str, int]:

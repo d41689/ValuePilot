@@ -282,19 +282,31 @@ function normalizeValuationReference(item) {
   const unavailableReasons = Array.isArray(item?.valuation_unavailable_reasons)
     ? item.valuation_unavailable_reasons
     : [];
+  const hasCurrentPrice = typeof item?.current_price === 'number';
+  const currentPriceReason = typeof item?.current_price_reason === 'string' && item.current_price_reason
+    ? item.current_price_reason
+    : null;
   return {
     holderRangeLabel:
       typeof item?.holder_price_estimate_low === 'number' &&
       typeof item?.holder_price_estimate_high === 'number'
         ? `$${formatNumber(item.holder_price_estimate_low, 2)}–$${formatNumber(item.holder_price_estimate_high, 2)}`
         : '—',
-    currentPriceLabel: typeof item?.current_price === 'number'
+    currentPriceLabel: hasCurrentPrice
       ? `$${formatNumber(item.current_price, 2)}`
       : '—',
     currentPriceDateLabel: item?.current_price_date ?? '—',
+    currentPriceCurrencyLabel: item?.current_price_currency ?? 'Currency unknown',
+    currentPriceSourceLabel: item?.current_price_source ?? 'Source unavailable',
+    currentPriceFreshnessLabel: titleizeCode(item?.current_price_freshness ?? 'unavailable'),
+    currentPriceReasonLabel: currentPriceReason
+      ? titleizeCode(currentPriceReason)
+      : hasCurrentPrice
+        ? null
+        : 'Price unavailable',
     priceContext: item?.price_context ?? 'latest',
     priceContextLabel:
-      item?.price_context === 'historical_snapshot' ? 'Historical snapshot' : 'Latest local price',
+      item?.price_context === 'historical_snapshot' ? 'Historical snapshot' : 'Canonical EOD',
     referenceLabel: typeof item?.valuation_reference === 'number'
       ? `$${formatNumber(item.valuation_reference, 2)}`
       : '—',

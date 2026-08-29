@@ -1,10 +1,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 from typing import Any, Optional
 
-from sqlalchemy import delete, select
+from sqlalchemy import delete, func, select, text
 from sqlalchemy.orm import Session
 
 from app.models.artifacts import DocumentPage, PdfDocument
@@ -59,26 +59,29 @@ class DocumentDedupeService:
         *,
         user_id: Optional[int] = None,
         stock_id: Optional[int] = None,
+        _for_update: bool = False,
     ) -> list[DuplicateDocumentGroup]:
         filters = [
             PdfDocument.stock_id.is_not(None),
             PdfDocument.report_date.is_not(None),
+            PdfDocument.lifecycle_state == "active",
         ]
         if user_id is not None:
             filters.append(PdfDocument.user_id == user_id)
         if stock_id is not None:
             filters.append(PdfDocument.stock_id == stock_id)
 
-        documents = self.db.scalars(
-            select(PdfDocument)
-            .where(*filters)
-            .order_by(
+        query = (
+            select(PdfDocument).where(*filters).order_by(
                 PdfDocument.user_id.asc(),
                 PdfDocument.stock_id.asc(),
                 PdfDocument.report_date.asc(),
                 PdfDocument.id.asc(),
             )
-        ).all()
+        )
+        if _for_update:
+            query = query.with_for_update()
+        documents = self.db.scalars(query).all()
 
         by_key: dict[tuple[int, int, date], list[PdfDocument]] = {}
         for document in documents:
@@ -120,15 +123,44 @@ class DocumentDedupeService:
         summary: dict[str, Any] = {
             "mode": "apply" if apply else "dry_run",
             "duplicate_group_count": len(groups),
-            "deleted_document_count": sum(
+            "archived_document_count": sum(
                 len(group.duplicate_documents) for group in groups
             ),
+            "deleted_document_count": 0,
             "groups": [group.to_dict() for group in groups],
         }
         if not apply or not groups:
             return summary
 
         try:
+            # Serialize every ordinary retirement path with account erasure.
+            # Re-read and row-lock the candidates after acquiring the user locks
+            # so a stale dry-run group cannot overwrite an erasure tombstone.
+            for group_user_id in sorted({group.user_id for group in groups}):
+                self.db.execute(
+                    text(
+                        "SELECT pg_advisory_xact_lock(hashtextextended(:key, 0))"
+                    ),
+                    {"key": f"account-erasure:{group_user_id}"},
+                )
+            groups = self.find_duplicate_groups(
+                user_id=user_id,
+                stock_id=stock_id,
+                _for_update=True,
+            )
+            summary = {
+                "mode": "apply",
+                "duplicate_group_count": len(groups),
+                "archived_document_count": sum(
+                    len(group.duplicate_documents) for group in groups
+                ),
+                "deleted_document_count": 0,
+                "groups": [group.to_dict() for group in groups],
+            }
+            if not groups:
+                self.db.commit()
+                return summary
+
             deleted_document_ids = [
                 document.id
                 for group in groups
@@ -137,12 +169,6 @@ class DocumentDedupeService:
             affected_user_stock_pairs = sorted(
                 {(group.user_id, group.stock_id) for group in groups}
             )
-
-            duplicate_to_keep_document_id = {
-                duplicate_document.id: group.keep_document.id
-                for group in groups
-                for duplicate_document in group.duplicate_documents
-            }
 
             affected_slots = self.db.execute(
                 select(
@@ -160,30 +186,22 @@ class DocumentDedupeService:
                 .distinct()
             ).all()
 
-            preserved_fact_count = self._detach_non_parsed_facts_from_deleted_documents(
-                duplicate_to_keep_document_id=duplicate_to_keep_document_id
-            )
-            self.db.flush()
-
-            self.db.execute(
-                delete(MetricFact).where(
+            retired_at = datetime.now(timezone.utc)
+            for group in groups:
+                for duplicate in group.duplicate_documents:
+                    duplicate.lifecycle_state = "archived"
+                    duplicate.retired_at = retired_at
+                    duplicate.retired_by_user_id = group.user_id
+                    duplicate.retirement_reason = "duplicate_archived"
+                    self.db.add(duplicate)
+            for fact in self.db.scalars(
+                select(MetricFact).where(
                     MetricFact.source_document_id.in_(deleted_document_ids),
-                    MetricFact.source_type == "parsed",
+                    MetricFact.is_current.is_(True),
                 )
-            )
-            self.db.execute(
-                delete(MetricExtraction).where(
-                    MetricExtraction.document_id.in_(deleted_document_ids)
-                )
-            )
-            self.db.execute(
-                delete(DocumentPage).where(
-                    DocumentPage.document_id.in_(deleted_document_ids)
-                )
-            )
-            self.db.execute(
-                delete(PdfDocument).where(PdfDocument.id.in_(deleted_document_ids))
-            )
+            ).all():
+                fact.is_current = False
+                self.db.add(fact)
             self.db.flush()
 
             for (
@@ -210,7 +228,7 @@ class DocumentDedupeService:
                 {"user_id": pair_user_id, "stock_id": pair_stock_id}
                 for pair_user_id, pair_stock_id in affected_user_stock_pairs
             ]
-            summary["preserved_non_parsed_fact_count"] = preserved_fact_count
+            summary["retained_lineage_document_ids"] = deleted_document_ids
             return summary
         except Exception:
             self.db.rollback()
@@ -222,14 +240,30 @@ class DocumentDedupeService:
         user_id: int,
         document_id: int,
     ) -> Optional[dict[str, Any]]:
+        self.db.execute(
+            text("SELECT pg_advisory_xact_lock(hashtextextended(:key, 0))"),
+            {"key": f"account-erasure:{user_id}"},
+        )
         document = self.db.scalar(
             select(PdfDocument).where(
                 PdfDocument.id == document_id,
                 PdfDocument.user_id == user_id,
-            )
+            ).with_for_update()
         )
         if document is None:
+            self.db.commit()
             return None
+        if document.lifecycle_state != "active":
+            result = {
+                "archived_document_id": document_id,
+                "lifecycle_state": document.lifecycle_state,
+                "retired_at": (
+                    document.retired_at.isoformat() if document.retired_at else None
+                ),
+                "already_retired": True,
+            }
+            self.db.commit()
+            return result
 
         try:
             affected_slots = self.db.execute(
@@ -254,29 +288,20 @@ class DocumentDedupeService:
             if document.stock_id is not None:
                 affected_user_stock_pairs.add((document.user_id, document.stock_id))
 
-            deleted_fact_count = (
-                self.db.execute(
-                    delete(MetricFact).where(
-                        MetricFact.source_document_id == document_id
-                    )
-                ).rowcount
-                or 0
-            )
-            deleted_extraction_count = (
-                self.db.execute(
-                    delete(MetricExtraction).where(
-                        MetricExtraction.document_id == document_id
-                    )
-                ).rowcount
-                or 0
-            )
-            deleted_page_count = (
-                self.db.execute(
-                    delete(DocumentPage).where(DocumentPage.document_id == document_id)
-                ).rowcount
-                or 0
-            )
-            self.db.execute(delete(PdfDocument).where(PdfDocument.id == document_id))
+            retired_at = datetime.now(timezone.utc)
+            document.lifecycle_state = "archived"
+            document.retired_at = retired_at
+            document.retired_by_user_id = user_id
+            document.retirement_reason = "user_removed"
+            self.db.add(document)
+            for fact in self.db.scalars(
+                select(MetricFact).where(
+                    MetricFact.source_document_id == document_id,
+                    MetricFact.is_current.is_(True),
+                )
+            ).all():
+                fact.is_current = False
+                self.db.add(fact)
             self.db.flush()
 
             for (
@@ -301,10 +326,10 @@ class DocumentDedupeService:
 
             self.db.commit()
             return {
-                "deleted_document_id": document_id,
-                "deleted_page_count": deleted_page_count,
-                "deleted_extraction_count": deleted_extraction_count,
-                "deleted_fact_count": deleted_fact_count,
+                "archived_document_id": document_id,
+                "lifecycle_state": "archived",
+                "retired_at": retired_at.isoformat(),
+                "already_retired": False,
                 "affected_user_stock_pairs": [
                     {"user_id": pair_user_id, "stock_id": pair_stock_id}
                     for pair_user_id, pair_stock_id in affected_pairs
@@ -355,17 +380,6 @@ class DocumentDedupeService:
         affected_user_stock_pairs: list[tuple[int, int]],
     ) -> None:
         for affected_user_id, affected_stock_id in affected_user_stock_pairs:
-            self.db.execute(
-                delete(MetricFact).where(
-                    MetricFact.user_id == affected_user_id,
-                    MetricFact.stock_id == affected_stock_id,
-                    MetricFact.source_type == "calculated",
-                    MetricFact.metric_key.in_(sorted(REFRESH_CALCULATED_KEYS)),
-                )
-            )
-        self.db.flush()
-
-        for affected_user_id, affected_stock_id in affected_user_stock_pairs:
             ValueLineRatioCalculator(self.db).calculate_for_stock(
                 user_id=affected_user_id,
                 stock_id=affected_stock_id,
@@ -386,7 +400,9 @@ class DocumentDedupeService:
         as_of_date: Optional[date],
     ) -> None:
         facts = self.db.scalars(
-            select(MetricFact).where(
+            select(MetricFact)
+            .join(PdfDocument, PdfDocument.id == MetricFact.source_document_id)
+            .where(
                 MetricFact.user_id == user_id,
                 MetricFact.stock_id == stock_id,
                 MetricFact.metric_key == metric_key,
@@ -394,6 +410,12 @@ class DocumentDedupeService:
                 MetricFact.period_type == period_type,
                 MetricFact.period_end_date == period_end_date,
                 MetricFact.as_of_date == as_of_date,
+                MetricFact.parse_generation
+                == PdfDocument.current_parse_generation,
+                PdfDocument.lifecycle_state == "active",
+                func.parsed_metric_fact_has_exact_authority(MetricFact.id).is_(
+                    True
+                ),
             )
         ).all()
         if not facts:

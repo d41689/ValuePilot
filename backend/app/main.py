@@ -23,6 +23,31 @@ async def lifespan(app: FastAPI):
             "EDGAR_FETCH_MODE=replay. See rate-guard/README.md."
         )
 
+    # Account erasure commits an inaccessible DB tombstone before touching the
+    # filesystem. Retry durable pending/failed deletions on every boot; failure
+    # remains observable and never restores evidence visibility.
+    try:
+        from app.core.db import SessionLocal
+        from app.services.account_erasure import (
+            process_pending_account_erasure_file_deletions,
+        )
+
+        with SessionLocal() as erasure_db:
+            deletion_result = process_pending_account_erasure_file_deletions(
+                erasure_db
+            )
+        if any(deletion_result.values()):
+            logger.info(
+                "Retried account-erasure file deletions: deleted=%d failed=%d retained_shared=%d",
+                deletion_result["file_deletions_deleted"],
+                deletion_result["file_deletions_failed"],
+                deletion_result["file_deletions_retained_shared"],
+            )
+    except Exception:
+        logger.exception(
+            "Account-erasure file deletion retry failed; durable queue retained"
+        )
+
     # Seed the curated manager universe BEFORE the scheduler or the job worker
     # can act on it: ingestion selects managers on `match_status == 'confirmed'`,
     # so a pipeline job that ran first would ingest an empty universe.

@@ -7,7 +7,7 @@ from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 from typing import Any
 
-from sqlalchemy import text
+from sqlalchemy import func, select, text
 from sqlalchemy.orm import Session
 
 from app.models.artifacts import PdfDocument
@@ -21,6 +21,7 @@ from app.models.research import (
     ResearchCaseRevision,
 )
 from app.models.stocks import PoolMembership, Stock
+from app.models.sec_financials import SecMetricPublication
 from app.services.market_data_service import stock_price_evidence_matches
 from app.schemas.research import (
     EvidenceInput,
@@ -33,6 +34,8 @@ from app.services.valuation import (
     redact_published_unavailable_reason,
 )
 from app.services.screener_service import ScreenerService
+from app.services.metric_fact_visibility import visible_metric_fact_predicate
+from app.services.financial_truth_locks import acquire_active_account_mutation_lock
 
 
 ACTIVE_STATES = {"queued", "researching", "monitoring"}
@@ -51,6 +54,15 @@ class ResearchCaseError(ValueError):
         self.code = code
         self.message = message
         self.status_code = status_code
+
+
+def _require_active_account(session: Session, *, user_id: int) -> None:
+    if not acquire_active_account_mutation_lock(session, user_id=user_id):
+        raise ResearchCaseError(
+            "account_erased",
+            "This account no longer accepts research changes.",
+            status_code=403,
+        )
 
 
 def _owned_case(
@@ -216,6 +228,7 @@ def create_or_open_case(
     origin: ResearchOriginInput,
     commit: bool = True,
 ) -> tuple[ResearchCase, bool, bool]:
+    _require_active_account(session, user_id=user_id)
     stock = session.get(Stock, stock_id)
     if stock is None:
         raise ResearchCaseError("stock_not_found", "Stock not found.", status_code=404)
@@ -247,6 +260,15 @@ def create_or_open_case(
     _, origin_created = _add_origin(
         session, case=case, user_id=user_id, origin=origin
     )
+    from app.services.research_coverage import materialize_case_coverage
+
+    materialize_case_coverage(
+        session,
+        user_id=user_id,
+        stock_id=stock_id,
+        as_of=datetime.now(timezone.utc).date(),
+        commit=False,
+    )
     if commit:
         session.commit()
         session.refresh(case)
@@ -262,6 +284,7 @@ def add_case_origin(
     case_id: int,
     origin: ResearchOriginInput,
 ) -> tuple[ResearchCaseOrigin, bool]:
+    _require_active_account(session, user_id=user_id)
     case = _owned_case(session, user_id=user_id, case_id=case_id, for_update=True)
     row, created = _add_origin(session, case=case, user_id=user_id, origin=origin)
     session.commit()
@@ -308,10 +331,87 @@ def evidence_is_available(
         return True
     if source_type == "pdf_document":
         source = session.get(PdfDocument, source_id)
-        return bool(source and source.user_id == user_id and source.stock_id == stock_id)
+        if (
+            not source
+            or source.user_id != user_id
+            or source.lifecycle_state == "erased"
+        ):
+            return False
+        if source.stock_id == stock_id:
+            return True
+        if source.stock_id is not None:
+            return False
+        # Multi-company containers intentionally have no document-level stock.
+        # The exact parsed projection is the only permitted stock binding.
+        return bool(
+            session.scalar(
+                select(MetricFact.id).where(
+                    MetricFact.user_id == user_id,
+                    MetricFact.stock_id == stock_id,
+                    MetricFact.source_type == "parsed",
+                    MetricFact.source_document_id == source.id,
+                    func.parsed_metric_fact_has_exact_authority(MetricFact.id).is_(
+                        True
+                    ),
+                )
+            )
+        )
     if source_type == "metric_fact":
         source = session.get(MetricFact, source_id)
-        return bool(source and source.user_id == user_id and source.stock_id == stock_id)
+        if not source or source.stock_id != stock_id:
+            return False
+        if source.source_type == "sec":
+            return bool(
+                source.user_id is None
+                and source.source_document_id is None
+                and session.scalar(
+                    select(MetricFact.id).where(
+                        MetricFact.id == source.id,
+                        visible_metric_fact_predicate(MetricFact, user_id=user_id),
+                    )
+                )
+                and session.scalar(
+                    select(SecMetricPublication.id).where(
+                        SecMetricPublication.metric_fact_id == source.id,
+                        SecMetricPublication.status == "published",
+                    )
+                )
+            )
+        if source.user_id != user_id:
+            return False
+        if source.source_type == "parsed":
+            document = session.get(PdfDocument, source.source_document_id)
+            return bool(
+                document
+                and document.user_id == user_id
+                and (document.stock_id is None or document.stock_id == stock_id)
+                and document.lifecycle_state != "erased"
+                and session.scalar(
+                    select(
+                        func.parsed_metric_fact_has_exact_authority(source.id)
+                    )
+                )
+            )
+        if source.source_type in {"manual", "calculated"}:
+            # Existing non-current rows may predate the protected manual or
+            # formula publication protocols. A durable ID and matching owner
+            # do not prove that such a row was ever canonical evidence.
+            # Current protected rows can be cited; after supersession the
+            # revision keeps its recorded claim while the fact reference is
+            # typed unavailable. Archived document lineage remains citable via
+            # the explicit pdf_document evidence type above.
+            return bool(
+                session.scalar(
+                    select(MetricFact.id).where(
+                        MetricFact.id == source.id,
+                        visible_metric_fact_predicate(
+                            MetricFact,
+                            user_id=user_id,
+                        ),
+                    )
+                )
+            )
+        return False
     if source_type == "filing_13f":
         return session.get(Filing13F, source_id) is not None
     if source_type == "holding_13f":
@@ -355,6 +455,7 @@ def save_revision(
     payload: ResearchRevisionCreate,
     commit: bool = True,
 ) -> tuple[ResearchCase, ResearchCaseRevision]:
+    _require_active_account(session, user_id=user_id)
     case = _owned_case(session, user_id=user_id, case_id=case_id, for_update=True)
     if payload.correlation_id:
         prior_event = (
@@ -682,6 +783,7 @@ def redact_revision(
     revision_number: int,
     reason: str,
 ) -> ResearchCaseRevision:
+    _require_active_account(session, user_id=user_id)
     case = _owned_case(session, user_id=user_id, case_id=case_id, for_update=True)
     revision = (
         session.query(ResearchCaseRevision)

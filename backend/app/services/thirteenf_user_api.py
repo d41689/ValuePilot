@@ -23,10 +23,11 @@ from app.models.institutions import (
     OwnershipChange13F,
     ParseRun13F,
 )
-from app.models.stocks import Stock, StockPrice
+from app.models.stocks import Stock
 from app.services.market_data_service import (
     ET,
     compute_target_date,
+    read_canonical_eod_price,
     read_canonical_eod_series,
 )
 from app.services.thirteenf_holdings_query import HR_FORM_TYPES, NT_FORM_TYPES, active_hr_holdings_query
@@ -1195,27 +1196,74 @@ def _attach_market_context(session: Session, positions: list[dict[str, Any]]) ->
         through=through,
         from_date=through - timedelta(days=370),
     )
+    stocks_by_id = {
+        stock.id: stock
+        for stock in session.query(Stock).filter(Stock.id.in_(stock_ids)).all()
+    }
 
     for position in positions:
         implied_report_price = position.get("implied_report_price")
-        rows = prices_by_stock.get(int(position["stock_id"])) if position.get("stock_id") is not None else None
-        if not rows:
+        stock_id = int(position["stock_id"]) if position.get("stock_id") is not None else None
+        rows = prices_by_stock.get(stock_id) if stock_id is not None else None
+        stock = stocks_by_id.get(stock_id) if stock_id is not None else None
+        if stock is None:
             position["market_context"] = None
             continue
-        latest = rows[0]
-        cutoff = latest.price_date - timedelta(days=365)
-        trailing = [row for row in rows if row.price_date >= cutoff]
-        latest_price = float(latest.close)
+        latest = read_canonical_eod_price(
+            session,
+            stock=stock,
+            as_of=through,
+            include_as_of_session=True,
+        )
+        usable_price = (
+            float(latest.close)
+            if latest.freshness_state == "fresh" and latest.close is not None
+            else None
+        )
+        cutoff = latest.price_date - timedelta(days=365) if latest.price_date else through
+        latest_currency = (
+            latest.currency
+            if isinstance(latest.currency, str)
+            and len(latest.currency) == 3
+            and latest.currency.upper() != "UNKNOWN"
+            else None
+        )
+        dated_rows = [row for row in (rows or []) if row.price_date >= cutoff]
+        trailing = [
+            row for row in dated_rows if latest_currency and row.currency == latest_currency
+        ]
+        if usable_price is None:
+            change_reason = latest.reason_code or "price_unavailable"
+        elif latest_currency != "USD":
+            change_reason = "currency_mismatch"
+        elif not implied_report_price or implied_report_price <= 0:
+            change_reason = "implied_report_price_unavailable"
+        else:
+            change_reason = None
+        if latest_currency is None:
+            week_52_reason = "currency_unavailable"
+        elif not trailing and dated_rows:
+            week_52_reason = "currency_mismatch"
+        elif not trailing:
+            week_52_reason = "price_history_unavailable"
+        else:
+            week_52_reason = None
         position["market_context"] = {
-            "latest_price": latest_price,
-            "latest_price_date": latest.price_date.isoformat(),
+            "latest_price": usable_price,
+            "latest_price_date": latest.price_date.isoformat() if latest.price_date else None,
+            "latest_price_currency": latest.currency,
+            "latest_price_source": latest.source,
+            "latest_price_freshness": latest.freshness_state,
+            "latest_price_reason": latest.reason_code,
             "change_since_report_pct": (
-                round(((latest_price / implied_report_price) - 1) * 100, 6)
-                if implied_report_price and implied_report_price > 0
+                round(((usable_price / implied_report_price) - 1) * 100, 6)
+                if change_reason is None
                 else None
             ),
-            "week_52_low": min(float(row.low) for row in trailing),
-            "week_52_high": max(float(row.high) for row in trailing),
+            "change_since_report_reason": change_reason,
+            "week_52_low": min((float(row.low) for row in trailing), default=None),
+            "week_52_high": max((float(row.high) for row in trailing), default=None),
+            "week_52_reason": week_52_reason,
             "source": latest.source,
         }
 
@@ -1232,6 +1280,9 @@ def _attach_implied_report_prices(positions: list[dict[str, Any]]) -> None:
             and isinstance(shares, int)
             and shares > 0
             else None
+        )
+        position["implied_report_price_currency"] = (
+            "USD" if position["implied_report_price"] is not None else None
         )
 
 

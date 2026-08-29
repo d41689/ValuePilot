@@ -82,6 +82,15 @@ type StockDcfPayload = {
   latest_price_updated_at?: string | null;
   active_report_document_id?: number | null;
   active_report_date?: string | null;
+  dcf_available?: boolean;
+  valuation_method?: {
+    state?: string;
+    reason?: string | null;
+    policy_version?: string;
+    classification?: string | null;
+    method_id?: string | null;
+    conclusion_authorized?: boolean;
+  } | null;
   dcf_inputs?: DcfInputsPayload | null;
   dcf_inputs_series?: DcfInputsSeriesEntry[] | null;
   oeps_normalized_provenance?: FactProvenance | null;
@@ -158,6 +167,10 @@ export default function StockDcfPage() {
         }
         const payload = (response.data ?? {}) as StockDcfPayload & Record<string, unknown>;
         setStockPayload(payload);
+        if (payload.dcf_available !== true) {
+          setHasResolvedStockDefaults(true);
+          return;
+        }
         const defaults = resolveDcfDefaults(payload);
         const nextDcfInputsPayload: DcfInputsResponsePayload = {
           dcf_inputs: payload?.dcf_inputs ?? null,
@@ -368,6 +381,14 @@ export default function StockDcfPage() {
   }, [growthRateSelection, stockPayload]);
 
   const handleSaveFairValue = async () => {
+    if (stockPayload?.dcf_available !== true) {
+      toast({
+        title: 'DCF unavailable',
+        description: 'A reviewed valuation method is required before publishing a DCF conclusion.',
+        variant: 'destructive',
+      });
+      return;
+    }
     if (stockId === null) {
       toast({
         title: 'Save failed',
@@ -422,6 +443,43 @@ export default function StockDcfPage() {
       setIsSavingFairValue(false);
     }
   };
+
+  if (stockPayload && stockPayload.dcf_available !== true) {
+    const gate = stockPayload.valuation_method;
+    return (
+      <div className="space-y-6">
+        <div className="space-y-3">
+          <h1 className="text-xl font-semibold tracking-tight">DCF</h1>
+          <TickerSearchBox destination="dcf" defaultValue={displayTicker} />
+        </div>
+        <Card className="border-amber-500/40 bg-amber-50/70 p-6 dark:bg-amber-950/20">
+          <h2 className="text-base font-semibold">Valuation method review required</h2>
+          <p className="mt-2 text-sm text-muted-foreground">
+            ValuePilot will not calculate or save a generic DCF until the company classification,
+            method applicability, and required evidence have been reviewed.
+          </p>
+          <dl className="mt-4 grid gap-2 text-sm sm:grid-cols-2">
+            <div>
+              <dt className="text-muted-foreground">Gate state</dt>
+              <dd className="font-medium">{gate?.state ?? 'unknown'}</dd>
+            </div>
+            <div>
+              <dt className="text-muted-foreground">Reason</dt>
+              <dd className="font-medium">{gate?.reason ?? 'method_not_authorized'}</dd>
+            </div>
+            <div>
+              <dt className="text-muted-foreground">Classification</dt>
+              <dd className="font-medium">{gate?.classification ?? 'not reviewed'}</dd>
+            </div>
+            <div>
+              <dt className="text-muted-foreground">Policy</dt>
+              <dd className="font-medium">{gate?.policy_version ?? 'unavailable'}</dd>
+            </div>
+          </dl>
+        </Card>
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-6">

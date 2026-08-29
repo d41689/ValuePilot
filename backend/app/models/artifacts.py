@@ -36,8 +36,21 @@ class PdfDocument(Base):
     notes: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     stock_id: Mapped[Optional[int]] = mapped_column(ForeignKey("stocks.id"), nullable=True)
     identity_needs_review: Mapped[bool] = mapped_column(Boolean, default=False)
+    lifecycle_state: Mapped[str] = mapped_column(
+        String(20), nullable=False, server_default="active"
+    )
+    retired_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    retired_by_user_id: Mapped[Optional[int]] = mapped_column(
+        ForeignKey("users.id", ondelete="RESTRICT"), nullable=True
+    )
+    retirement_reason: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    current_parse_generation: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=1, server_default="1"
+    )
 
-    user: Mapped["User"] = relationship("User")
+    user: Mapped["User"] = relationship("User", foreign_keys=[user_id])
     stock: Mapped[Optional["Stock"]] = relationship("Stock")
     parser_template: Mapped[Optional["ParserTemplate"]] = relationship("ParserTemplate")
     pages: Mapped[list["DocumentPage"]] = relationship(back_populates="document")
@@ -51,5 +64,8 @@ class DocumentPage(Base):
     page_text: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     page_image_key: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     text_extraction_method: Mapped[str] = mapped_column(String) # native_text / ocr
+    parse_generation: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=1, server_default="1"
+    )
 
     document: Mapped["PdfDocument"] = relationship(back_populates="pages")

@@ -67,6 +67,45 @@ def _keys():
     return f"v2:{Fernet.generate_key().decode()},v1:{Fernet.generate_key().decode()}"
 
 
+def _valuation_revision(
+    db_session,
+    *,
+    user_id: int,
+    stock: Stock,
+    value: float,
+    as_of_date: date,
+) -> ResearchCaseRevision:
+    db_session.flush()
+    case = (
+        db_session.query(ResearchCase)
+        .filter_by(user_id=user_id, stock_id=stock.id)
+        .one()
+    )
+    revision_number = case.head_revision_number + 1
+    revision = ResearchCaseRevision(
+        case_id=case.id,
+        revision_number=revision_number,
+        case_state=case.state,
+        decision=case.decision,
+        next_review_on=case.next_review_on,
+        valuation_low=value,
+        valuation_base=value,
+        valuation_high=value,
+        valuation_currency="USD",
+        valuation_as_of_date=as_of_date,
+        snapshot_stock_id=stock.id,
+        stock_ticker=stock.ticker,
+        stock_company_name=stock.company_name,
+        stock_exchange=stock.exchange,
+        created_by_user_id=user_id,
+    )
+    db_session.add(revision)
+    db_session.flush()
+    case.head_revision_number = revision_number
+    db_session.flush()
+    return revision
+
+
 def test_open_case_coverage_ready_and_failed_events_are_durable_and_idempotent(
     db_session, user_factory
 ):
@@ -544,12 +583,20 @@ def test_intrinsic_value_change_reinitializes_alert_without_false_crossing(
             is_enabled=True,
         )
     )
+    first_revision = _valuation_revision(
+        db_session,
+        user_id=user.id,
+        stock=stock,
+        value=100,
+        as_of_date=date(2026, 7, 17),
+    )
     first_value = publish_user_intrinsic_value(
         db_session,
         user_id=user.id,
         stock_id=stock.id,
         value_numeric=100,
         as_of_date=date(2026, 7, 17),
+        source_ref_id=first_revision.id,
     )
     first_price = StockPrice(
         stock_id=stock.id,
@@ -584,12 +631,20 @@ def test_intrinsic_value_change_reinitializes_alert_without_false_crossing(
     assert state.last_side == "above"
     assert state.last_valuation_fact_id == first_value.id
 
+    second_revision = _valuation_revision(
+        db_session,
+        user_id=user.id,
+        stock=stock,
+        value=150,
+        as_of_date=date(2026, 7, 20),
+    )
     second_value = publish_user_intrinsic_value(
         db_session,
         user_id=user.id,
         stock_id=stock.id,
         value_numeric=150,
         as_of_date=date(2026, 7, 20),
+        source_ref_id=second_revision.id,
     )
     second_price = StockPrice(
         stock_id=stock.id,
@@ -696,12 +751,14 @@ def test_new_monitoring_revision_reinitializes_alert_after_research_pause(
             is_enabled=True,
         )
     )
+    db_session.flush()
     publish_user_intrinsic_value(
         db_session,
         user_id=user.id,
         stock_id=stock.id,
         value_numeric=100,
         as_of_date=date(2026, 7, 17),
+        source_ref_id=first_revision.id,
     )
     db_session.add(
         StockPrice(
@@ -815,12 +872,20 @@ def test_intrinsic_value_policy_change_reinitializes_without_false_crossing(
         hysteresis_ratio=0.02,
         is_enabled=True,
     )
+    valuation_revision = _valuation_revision(
+        db_session,
+        user_id=user.id,
+        stock=stock,
+        value=100,
+        as_of_date=date(2026, 7, 17),
+    )
     publish_user_intrinsic_value(
         db_session,
         user_id=user.id,
         stock_id=stock.id,
         value_numeric=100,
         as_of_date=date(2026, 7, 17),
+        source_ref_id=valuation_revision.id,
     )
     db_session.add(
         StockPrice(
@@ -920,12 +985,20 @@ def test_intrinsic_value_alert_ignores_currency_mismatch_and_stale_close(
                 next_review_on=date(2026, 10, 1),
             )
         )
+        valuation_revision = _valuation_revision(
+            db_session,
+            user_id=user.id,
+            stock=stock,
+            value=100,
+            as_of_date=date(2026, 7, 17),
+        )
         publish_user_intrinsic_value(
             db_session,
             user_id=user.id,
             stock_id=stock.id,
             value_numeric=100,
             as_of_date=date(2026, 7, 17),
+            source_ref_id=valuation_revision.id,
         )
         db_session.add(
             StockPrice(

@@ -26,6 +26,7 @@ from app.services.manual_portfolios import (
     record_position_review,
     resize_position,
 )
+from app.services.market_data_service import expected_session_on_or_before
 
 
 def _stock(db_session, ticker="LONG", *, active=True):
@@ -315,11 +316,15 @@ def test_workspace_never_calculates_unknown_or_mismatched_currency(
                 ),
             )
         )
+    fresh_date = expected_session_on_or_before(
+        "NASDAQ", date.today() - timedelta(days=1)
+    ).session_date
+    assert fresh_date is not None
     db_session.add_all(
         [
-            StockPrice(stock_id=usd_stock.id, price_date=date(2026, 7, 17), open=75, high=75, low=75, close=75, currency="USD", source="fixture"),
-            StockPrice(stock_id=mismatch_stock.id, price_date=date(2026, 7, 17), open=75, high=75, low=75, close=75, currency="CAD", source="fixture"),
-            StockPrice(stock_id=unknown_stock.id, price_date=date(2026, 7, 17), open=75, high=75, low=75, close=75, currency=None, source="fixture"),
+            StockPrice(stock_id=usd_stock.id, price_date=fresh_date, open=75, high=75, low=75, close=75, currency="USD", source="fixture"),
+            StockPrice(stock_id=mismatch_stock.id, price_date=fresh_date, open=75, high=75, low=75, close=75, currency="CAD", source="fixture"),
+            StockPrice(stock_id=unknown_stock.id, price_date=fresh_date, open=75, high=75, low=75, close=75, currency=None, source="fixture"),
         ]
     )
     db_session.commit()
@@ -340,6 +345,57 @@ def test_workspace_never_calculates_unknown_or_mismatched_currency(
     assert by_ticker["UNK1"]["unrealized_return"] is None
     assert workspace["totals_by_currency"] == {"USD": "150.000000"}
     assert workspace["cross_currency_total"] is None
+
+
+def test_workspace_never_uses_stale_price_for_position_value(
+    db_session, user_factory
+):
+    user = user_factory("portfolio-stale-price@example.com")
+    stock = _stock(db_session, "STALE")
+    portfolio = _portfolio(db_session, user.id)
+    create_position(
+        db_session,
+        user_id=user.id,
+        portfolio_id=portfolio.id,
+        payload=ManualPositionCreate(
+            stock_id=stock.id,
+            quantity=Decimal("2"),
+            average_unit_cost=Decimal("50"),
+            currency="USD",
+            opened_on=date(2026, 7, 1),
+        ),
+    )
+    stale_date = date.today() - timedelta(days=30)
+    db_session.add(
+        StockPrice(
+            stock_id=stock.id,
+            price_date=stale_date,
+            open=100,
+            high=100,
+            low=100,
+            close=100,
+            currency="USD",
+            source="fixture",
+        )
+    )
+    db_session.commit()
+
+    workspace = get_portfolio_workspace(
+        db_session,
+        user_id=user.id,
+        portfolio_id=portfolio.id,
+        as_of=date.today(),
+    )
+
+    item = workspace["positions"][0]
+    assert item["valuation_status"] == "price_stale"
+    assert item["price"] is None
+    assert item["price_date"] == stale_date.isoformat()
+    assert item["price_source"] == "fixture"
+    assert item["price_reason_code"] == "price_older_than_expected_session"
+    assert item["market_value"] is None
+    assert item["unrealized_return"] is None
+    assert workspace["totals_by_currency"] == {}
 
 
 def test_inactive_stock_is_retained_with_typed_limitation(db_session, user_factory):

@@ -34,6 +34,7 @@ def build_owners_earnings_facts(
     facts: list[dict],
     *,
     report_date: Optional[date],
+    method_context: dict[str, Any] | None = None,
 ) -> list[dict]:
     by_date: dict[date, dict[str, float]] = {}
     fact_natures_by_date: dict[date, set[str]] = {}
@@ -73,12 +74,15 @@ def build_owners_earnings_facts(
         derived_fact_nature = (
             "estimate" if "estimate" in fact_natures_by_date.get(period_end, set()) else "actual"
         )
+        value_json = {"fact_nature": derived_fact_nature}
+        if method_context is not None:
+            value_json["analysis_method"] = method_context
         derived.append(
             {
                 "metric_key": OEPS_KEY,
                 "value_numeric": oeps_value,
                 "value_text": None,
-                "value_json": {"fact_nature": derived_fact_nature},
+                "value_json": value_json,
                 "unit": "USD",
                 "period_type": "FY",
                 "period_end_date": period_end,
@@ -89,12 +93,15 @@ def build_owners_earnings_facts(
         last_dates = sorted(oeps_by_date.keys())[-5:]
         series = [oeps_by_date[dt] for dt in last_dates]
         normalized_value = float(median(series)) if series else 0.0
+        normalized_value_json = {"fact_nature": "snapshot"}
+        if method_context is not None:
+            normalized_value_json["analysis_method"] = method_context
         derived.append(
             {
                 "metric_key": OEPS_NORM_KEY,
                 "value_numeric": normalized_value,
                 "value_text": None,
-                "value_json": {"fact_nature": "snapshot"},
+                "value_json": normalized_value_json,
                 "unit": "USD",
                 "period_type": "AS_OF",
                 "period_end_date": report_date,

@@ -29,6 +29,7 @@ COVERAGE_KINDS = {
     "valuation_input",
     "identity_review",
     "cusip_review",
+    "method_applicability",
 }
 COVERAGE_STATES = {
     "ready",
@@ -37,6 +38,7 @@ COVERAGE_STATES = {
     "blocked",
     "in_progress",
     "failed",
+    "unsupported",
 }
 
 
@@ -103,12 +105,13 @@ class ResearchCoverageRequirement(Base):
         ),
         CheckConstraint(
             "kind IN ('eod_price', 'value_line_current_report', "
-            "'valuation_input', 'identity_review', 'cusip_review')",
+            "'valuation_input', 'identity_review', 'cusip_review', "
+            "'method_applicability')",
             name="ck_research_coverage_kind",
         ),
         CheckConstraint(
             "state IN ('ready', 'missing', 'stale', 'blocked', "
-            "'in_progress', 'failed')",
+            "'in_progress', 'failed', 'unsupported')",
             name="ck_research_coverage_state",
         ),
     )

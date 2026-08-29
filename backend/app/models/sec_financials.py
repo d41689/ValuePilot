@@ -308,3 +308,93 @@ class SecRawXbrlFact(Base):
     created_txid: Mapped[int] = mapped_column(
         BigInteger, server_default=func.txid_current(), nullable=False
     )
+
+
+class SecMetricMappingRegistry(Base):
+    """Migration-owned allowlist of canonical SEC mapping semantics."""
+
+    __tablename__ = "sec_metric_mapping_registry"
+    __table_args__ = (
+        CheckConstraint(
+            "value_kind IN ('monetary', 'currency_per_share', 'shares')",
+            name="ck_sec_metric_mapping_registry_value_kind",
+        ),
+        CheckConstraint(
+            "period_basis IN ('instant', 'duration')",
+            name="ck_sec_metric_mapping_registry_period_basis",
+        ),
+    )
+
+    mapping_version: Mapped[str] = mapped_column(
+        String(80), primary_key=True, nullable=False
+    )
+    concept: Mapped[str] = mapped_column(Text, primary_key=True, nullable=False)
+    canonical_metric_key: Mapped[str] = mapped_column(Text, nullable=False)
+    value_kind: Mapped[str] = mapped_column(String(32), nullable=False)
+    period_basis: Mapped[str] = mapped_column(String(16), nullable=False)
+    known_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class SecMetricPublication(Base):
+    """Append-only mapping decision; product consumers never query this table."""
+
+    __tablename__ = "sec_metric_publications"
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('published', 'unresolved', 'rejected')",
+            name="ck_sec_metric_publications_status",
+        ),
+        CheckConstraint(
+            "publication_role IN ('direct', 'derived_discrete_quarter')",
+            name="ck_sec_metric_publications_role",
+        ),
+        CheckConstraint(
+            "(status = 'published' AND metric_fact_id IS NOT NULL "
+            "AND canonical_metric_key IS NOT NULL AND period_type IS NOT NULL "
+            "AND period_end_date IS NOT NULL) OR "
+            "(status <> 'published' AND metric_fact_id IS NULL)",
+            name="ck_sec_metric_publications_shape",
+        ),
+        UniqueConstraint(
+            "raw_fact_id",
+            "mapping_version",
+            "publication_role",
+            "derivation_key",
+            name="uq_sec_metric_publications_raw_mapping_role_derivation",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    raw_fact_id: Mapped[int] = mapped_column(
+        BigInteger,
+        ForeignKey("sec_raw_xbrl_facts.id", ondelete="RESTRICT"),
+        nullable=False,
+        index=True,
+    )
+    metric_fact_id: Mapped[int | None] = mapped_column(
+        Integer,
+        ForeignKey("metric_facts.id", ondelete="RESTRICT"),
+        nullable=True,
+    )
+    mapping_version: Mapped[str] = mapped_column(String(80), nullable=False)
+    publication_role: Mapped[str] = mapped_column(
+        String(40), nullable=False, default="direct"
+    )
+    derivation_key: Mapped[str] = mapped_column(
+        String(64), nullable=False, default="direct"
+    )
+    status: Mapped[str] = mapped_column(String(20), nullable=False)
+    reason_code: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    canonical_metric_key: Mapped[str | None] = mapped_column(Text, nullable=True)
+    canonical_unit: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    period_type: Mapped[str | None] = mapped_column(String(24), nullable=True)
+    period_end_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    knowledge_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    decision_json: Mapped[dict[str, Any]] = mapped_column(
+        JSONB, nullable=False, default=dict
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )

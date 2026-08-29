@@ -112,16 +112,23 @@ function normalizePosition(item) {
     mappingStatus: item?.cusip_mapping_status ?? 'unknown',
     impliedReportPrice:
       typeof item?.implied_report_price === 'number' ? item.implied_report_price : null,
+    impliedReportPriceCurrency: item?.implied_report_price_currency ?? null,
     marketContext: market
       ? {
           latestPrice: typeof market.latest_price === 'number' ? market.latest_price : null,
           latestPriceDate: market.latest_price_date ?? null,
+          latestPriceCurrency: market.latest_price_currency ?? null,
+          latestPriceSource: market.latest_price_source ?? null,
+          latestPriceFreshness: market.latest_price_freshness ?? 'unavailable',
+          latestPriceReason: market.latest_price_reason ?? null,
           changeSinceReportPct:
             typeof market.change_since_report_pct === 'number'
               ? market.change_since_report_pct
               : null,
+          changeSinceReportReason: market.change_since_report_reason ?? null,
           week52Low: typeof market.week_52_low === 'number' ? market.week_52_low : null,
           week52High: typeof market.week_52_high === 'number' ? market.week_52_high : null,
+          week52Reason: market.week_52_reason ?? null,
           source: market.source ?? null,
         }
       : null,

@@ -8,6 +8,7 @@ from app.models.facts import MetricFact
 from app.models.stocks import Stock
 from app.models.users import User
 from app.services.document_dedupe_service import DocumentDedupeService
+from financial_truth_fixtures import authorize_parsed_facts
 
 
 def _make_user_stock(db_session, *, email: str, ticker: str) -> tuple[User, Stock]:
@@ -67,7 +68,12 @@ def _make_fact(
         period_end_date=period_end_date,
         is_current=is_current,
     )
-    db_session.add(fact)
+    if source_type == "parsed":
+        document = db_session.get(PdfDocument, source_document_id)
+        assert document is not None
+        authorize_parsed_facts(db_session, document=document, facts=[fact])
+    else:
+        db_session.add(fact)
     db_session.commit()
     return fact
 
@@ -97,14 +103,15 @@ def test_cleanup_duplicates_dry_run_keeps_newest_parsed_document_without_mutatio
 
     assert result["mode"] == "dry_run"
     assert result["duplicate_group_count"] == 1
-    assert result["deleted_document_count"] == 1
+    assert result["archived_document_count"] == 1
+    assert result["deleted_document_count"] == 0
     assert result["groups"][0]["keep_document"]["id"] == keep_doc.id
     assert result["groups"][0]["duplicate_documents"][0]["id"] == old_doc.id
     assert db_session.get(PdfDocument, old_doc.id) is not None
     assert db_session.get(PdfDocument, keep_doc.id) is not None
 
 
-def test_cleanup_duplicates_apply_deletes_document_dependents_and_reconciles_current(
+def test_cleanup_duplicates_apply_archives_document_and_retains_lineage(
     db_session,
     monkeypatch,
 ):
@@ -202,12 +209,18 @@ def test_cleanup_duplicates_apply_deletes_document_dependents_and_reconciles_cur
     db_session.expire_all()
 
     assert result["mode"] == "apply"
-    assert result["deleted_document_count"] == 1
-    assert db_session.get(PdfDocument, duplicate_doc.id) is None
-    assert db_session.get(DocumentPage, page_id) is None
-    assert db_session.get(MetricExtraction, extraction_id) is None
-    assert db_session.get(MetricFact, duplicate_fact_id) is None
-    assert db_session.get(MetricFact, stale_calculated_fact_id) is None
+    assert result["archived_document_count"] == 1
+    assert result["deleted_document_count"] == 0
+    archived = db_session.get(PdfDocument, duplicate_doc.id)
+    assert archived is not None
+    assert archived.lifecycle_state == "archived"
+    assert archived.retirement_reason == "duplicate_archived"
+    assert db_session.get(DocumentPage, page_id) is not None
+    assert db_session.get(MetricExtraction, extraction_id) is not None
+    retained_duplicate_fact = db_session.get(MetricFact, duplicate_fact_id)
+    assert retained_duplicate_fact is not None
+    assert retained_duplicate_fact.is_current is False
+    assert db_session.get(MetricFact, stale_calculated_fact_id) is not None
 
     refreshed_keep_fact = db_session.get(MetricFact, keep_fact_id)
     assert refreshed_keep_fact is not None
@@ -272,7 +285,7 @@ def test_cleanup_duplicates_refreshes_each_affected_user_stock_pair(db_session, 
     ]
 
 
-def test_cleanup_duplicates_preserves_manual_facts_by_moving_them_to_kept_document(
+def test_cleanup_duplicates_retains_but_demotes_document_linked_manual_facts(
     db_session,
     monkeypatch,
 ):
@@ -343,11 +356,11 @@ def test_cleanup_duplicates_preserves_manual_facts_by_moving_them_to_kept_docume
     result = DocumentDedupeService(db_session).cleanup_duplicates(apply=True)
     db_session.expire_all()
 
-    assert result["preserved_non_parsed_fact_count"] == 1
+    assert result["retained_lineage_document_ids"] == [duplicate_doc.id]
     refreshed_manual_fact = db_session.get(MetricFact, manual_fact_id)
     refreshed_keep_parsed_fact = db_session.get(MetricFact, keep_parsed_fact_id)
     assert refreshed_manual_fact is not None
-    assert refreshed_manual_fact.source_document_id is None
-    assert refreshed_manual_fact.is_current is True
+    assert refreshed_manual_fact.source_document_id == duplicate_doc.id
+    assert refreshed_manual_fact.is_current is False
     assert refreshed_keep_parsed_fact is not None
     assert refreshed_keep_parsed_fact.is_current is False

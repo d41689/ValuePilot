@@ -20,6 +20,7 @@ from app.schemas.portfolios import (
     ManualPositionReview,
 )
 from app.services.market_data_service import read_canonical_eod_price
+from app.services.financial_truth_locks import acquire_active_account_mutation_lock
 
 
 SIX_PLACES = Decimal("0.000001")
@@ -31,6 +32,15 @@ class PortfolioError(ValueError):
         self.code = code
         self.message = message
         self.status_code = status_code
+
+
+def _require_active_account(session: Session, *, user_id: int) -> None:
+    if not acquire_active_account_mutation_lock(session, user_id=user_id):
+        raise PortfolioError(
+            "account_erased",
+            "This account no longer accepts portfolio changes.",
+            status_code=403,
+        )
 
 
 def _owned_portfolio(
@@ -151,6 +161,7 @@ def _append_event(
 def create_portfolio(
     session: Session, *, user_id: int, payload: ManualPortfolioCreate
 ) -> ManualPortfolio:
+    _require_active_account(session, user_id=user_id)
     row = ManualPortfolio(
         user_id=user_id,
         name=payload.name,
@@ -170,6 +181,7 @@ def archive_portfolio(
     portfolio_id: int,
     payload: ManualPortfolioArchive,
 ) -> ManualPortfolio:
+    _require_active_account(session, user_id=user_id)
     row = _owned_portfolio(
         session, user_id=user_id, portfolio_id=portfolio_id, for_update=True
     )
@@ -205,6 +217,7 @@ def create_position(
     portfolio_id: int,
     payload: ManualPositionCreate,
 ) -> ManualPosition:
+    _require_active_account(session, user_id=user_id)
     portfolio = _owned_portfolio(
         session, user_id=user_id, portfolio_id=portfolio_id, for_update=True
     )
@@ -280,6 +293,7 @@ def _prepare_position_write(
     research_case_id: int | None,
     research_revision_id: int | None,
 ) -> tuple[ManualPosition, Stock]:
+    _require_active_account(session, user_id=user_id)
     row = _owned_position(
         session, user_id=user_id, position_id=position_id, for_update=True
     )
@@ -572,10 +586,18 @@ def get_portfolio_workspace(
         )
         item["identity_state"] = "active" if stock.is_active else "stock_inactive"
         price = read_canonical_eod_price(session, stock=stock, as_of=as_of)
-        item["price"] = str(price.close) if price.close is not None else None
+        price_is_usable = price.close is not None and price.freshness_state == "fresh"
+        item["price"] = str(price.close) if price_is_usable else None
         item["price_date"] = price.price_date.isoformat() if price.price_date else None
         item["price_currency"] = price.currency
+        item["price_source"] = price.source
         item["price_freshness_state"] = price.freshness_state
+        item["price_reason_code"] = price.reason_code
+        item["price_expected_session_date"] = (
+            price.expected_session_date.isoformat()
+            if price.expected_session_date
+            else None
+        )
         item["market_value"] = None
         item["unrealized_return"] = None
         if not stock.is_active:
@@ -584,6 +606,10 @@ def get_portfolio_workspace(
             valuation_status = "price_unavailable"
         elif price.currency is None:
             valuation_status = "price_currency_unavailable"
+        elif price.freshness_state == "stale":
+            valuation_status = "price_stale"
+        elif price.freshness_state != "fresh":
+            valuation_status = "price_freshness_unknown"
         elif price.currency != position.currency:
             valuation_status = "currency_mismatch"
         elif position.state != "open":

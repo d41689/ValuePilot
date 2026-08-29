@@ -1,6 +1,7 @@
 from datetime import date, datetime
 from typing import Optional, Any, TYPE_CHECKING
 from sqlalchemy import String, DateTime, Boolean, ForeignKey, Integer, Float, Date, JSON
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.sql import func
 from app.core.db import Base
@@ -8,6 +9,7 @@ from app.core.db import Base
 if TYPE_CHECKING:
     from app.models.users import User
     from app.models.artifacts import PdfDocument, ParserTemplate
+    from app.models.stocks import Stock
 
 class MetricExtraction(Base):
     __tablename__ = "metric_extractions"
@@ -34,7 +36,25 @@ class MetricExtraction(Base):
     corrected_by_user: Mapped[bool] = mapped_column(Boolean, default=False)
     corrected_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
     target_year_range: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    parse_generation: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=1, server_default="1"
+    )
+    # A container document can hold more than one company, so document.stock_id
+    # is intentionally NULL for that shape.  The parser-owned extraction is the
+    # durable place to bind each page observation to its resolved company.
+    resolved_stock_id: Mapped[Optional[int]] = mapped_column(
+        ForeignKey("stocks.id", ondelete="RESTRICT"), nullable=True
+    )
+    mapping_version: Mapped[Optional[str]] = mapped_column(
+        String(64), nullable=True
+    )
+    # Immutable, non-queryable publication authority.  Each entry is the exact
+    # canonical fact shape produced by the approved mapping for this extraction.
+    canonical_projections_json: Mapped[list[dict[str, Any]]] = mapped_column(
+        JSONB, nullable=False, default=list, server_default="[]"
+    )
 
     user: Mapped["User"] = relationship("User")
     document: Mapped["PdfDocument"] = relationship("PdfDocument")
     parser_template: Mapped[Optional["ParserTemplate"]] = relationship("ParserTemplate")
+    resolved_stock: Mapped[Optional["Stock"]] = relationship("Stock")

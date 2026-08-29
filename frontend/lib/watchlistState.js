@@ -23,8 +23,32 @@ function formatValuationReferenceLabel(value, source) {
   if (typeof value !== 'number' || !Number.isFinite(value)) {
     return '—';
   }
-  const sourceLabel = source === 'target.price_18m.mid' ? 'VL 18M target' : 'System reference';
+  const sourceLabel = source === 'target.price_18m.mid'
+    ? 'VL 18M target'
+    : source === 'target.price_18m.mid.manual_correction'
+      ? 'User-corrected VL 18M target'
+      : 'System reference';
   return `${value.toFixed(2)} · ${sourceLabel}`;
+}
+
+function titleizeCode(value) {
+  const label = String(value ?? 'unknown').toLowerCase().replaceAll('_', ' ');
+  return `${label.slice(0, 1).toUpperCase()}${label.slice(1)}`;
+}
+
+function normalizeCanonicalPriceState(row) {
+  const hasPrice = typeof row?.price === 'number' && Number.isFinite(row.price);
+  const reason = typeof row?.price_reason === 'string' && row.price_reason
+    ? row.price_reason
+    : null;
+  return {
+    valueLabel: hasPrice ? row.price.toFixed(2) : '—',
+    dateLabel: row?.price_date ?? '—',
+    currencyLabel: row?.price_currency ?? 'Currency unknown',
+    sourceLabel: row?.price_source ?? 'Source unavailable',
+    freshnessLabel: titleizeCode(row?.price_freshness ?? 'unavailable'),
+    reasonLabel: reason ? titleizeCode(reason) : hasPrice ? null : 'Price unavailable',
+  };
 }
 
 function hasFairValueEditChanges(current, next) {
@@ -128,5 +152,6 @@ module.exports = {
   isOverviewWatchlistId,
   formatPiotroskiFScore,
   formatPiotroskiFScoreSeries,
+  normalizeCanonicalPriceState,
   formatValuationReferenceLabel,
 };

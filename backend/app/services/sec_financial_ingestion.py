@@ -21,12 +21,14 @@ from app.edgar.parsers.financial_submissions import (
     parse_historical_financial_submissions,
 )
 from app.edgar.parsers.inline_xbrl import parse_inline_xbrl
+from app.models.facts import MetricFact
 from app.models.sec_financials import (
     SecFilingArtifact,
     SecFinancialFiling,
     SecFinancialParseRun,
     SecFinancialParseRunArtifact,
     SecIssuerIdentity,
+    SecMetricPublication,
     SecRawXbrlFact,
 )
 from app.rate_guard.client import RateGuardFetchError
@@ -296,6 +298,40 @@ def retire_sec_identity(
         supersedes_identity_id=current.id,
     )
     db.add(retired)
+    db.flush()
+    current_facts = db.scalars(
+        select(MetricFact)
+        .join(
+            SecMetricPublication,
+            SecMetricPublication.metric_fact_id == MetricFact.id,
+        )
+        .join(
+            SecRawXbrlFact,
+            SecRawXbrlFact.id == SecMetricPublication.raw_fact_id,
+        )
+        .join(
+            SecFinancialParseRun,
+            SecFinancialParseRun.id == SecRawXbrlFact.parse_run_id,
+        )
+        .join(
+            SecFinancialFiling,
+            SecFinancialFiling.id == SecFinancialParseRun.filing_id,
+        )
+        .join(
+            SecIssuerIdentity,
+            SecIssuerIdentity.id == SecFinancialFiling.issuer_identity_id,
+        )
+        .where(
+            MetricFact.source_type == "sec",
+            MetricFact.stock_id == current.stock_id,
+            MetricFact.is_current.is_(True),
+            SecIssuerIdentity.cik == current.cik,
+            SecMetricPublication.status == "published",
+        )
+    ).all()
+    for fact in current_facts:
+        fact.is_current = False
+        db.add(fact)
     db.flush()
     return retired
 

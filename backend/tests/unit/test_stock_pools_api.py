@@ -5,8 +5,11 @@ import pytest
 
 from app.models.users import User
 from app.models.stocks import Stock, StockPool, PoolMembership, StockPrice
+from app.models.artifacts import PdfDocument
 from app.models.facts import MetricFact
+from app.models.research import ResearchCase, ResearchCaseRevision
 from app.core.security import hash_password
+from financial_truth_fixtures import authorize_parsed_facts
 
 
 ET = ZoneInfo("America/New_York")
@@ -27,6 +30,78 @@ def _make_stock(db_session, ticker: str) -> Stock:
     db_session.add(stock)
     db_session.commit()
     return stock
+
+
+def _parsed_target_fact(
+    db_session, *, user_id: int, stock: Stock, value: float, period_end: date
+) -> MetricFact:
+    document = PdfDocument(
+        user_id=user_id,
+        stock_id=stock.id,
+        file_name=f"{stock.ticker}-target.pdf",
+        source="value_line",
+        file_storage_key=f"tests/{stock.ticker}-target.pdf",
+        parse_status="parsed",
+        report_date=period_end,
+    )
+    db_session.add(document)
+    db_session.flush()
+    fact = MetricFact(
+        user_id=user_id,
+        stock_id=stock.id,
+        metric_key=TARGET_KEY,
+        value_numeric=value,
+        unit="USD",
+        period_type="TARGET_HORIZON",
+        period_end_date=period_end,
+        source_type="parsed",
+        is_current=True,
+    )
+    authorize_parsed_facts(db_session, document=document, facts=[fact])
+    return fact
+
+
+def _manual_fair_value_fact(
+    db_session, *, user_id: int, stock: Stock, value: float, period_end: date
+) -> MetricFact:
+    case = ResearchCase(
+        user_id=user_id,
+        stock_id=stock.id,
+        state="researching",
+        head_revision_number=1,
+    )
+    db_session.add(case)
+    db_session.flush()
+    revision = ResearchCaseRevision(
+        case_id=case.id,
+        revision_number=1,
+        case_state="researching",
+        valuation_low=value,
+        valuation_base=value,
+        valuation_high=value,
+        valuation_currency="USD",
+        valuation_as_of_date=period_end,
+        snapshot_stock_id=stock.id,
+        stock_ticker=stock.ticker,
+        stock_company_name=stock.company_name,
+        stock_exchange=stock.exchange,
+        created_by_user_id=user_id,
+    )
+    db_session.add(revision)
+    db_session.flush()
+    return MetricFact(
+        user_id=user_id,
+        stock_id=stock.id,
+        metric_key=FAIR_VALUE_KEY,
+        value_numeric=value,
+        unit="USD",
+        currency="USD",
+        period_type="AS_OF",
+        period_end_date=period_end,
+        source_type="manual",
+        source_ref_id=revision.id,
+        is_current=True,
+    )
 
 
 def _piotroski_total_fact(
@@ -178,7 +253,7 @@ def test_overview_members_union_deduplicates_and_scopes_to_user(client, db_sessi
     assert all(row["ticker"] != "NVDA" for row in rows)
 
 
-def test_pool_f_score_compare_returns_five_actual_and_two_estimate_years(
+def test_pool_f_score_compare_quarantines_unverifiable_legacy_rows(
     client, db_session, auth_headers
 ):
     user = _make_user(db_session, "fscore-compare@example.com")
@@ -240,25 +315,9 @@ def test_pool_f_score_compare_returns_five_actual_and_two_estimate_years(
     payload = resp.json()
 
     assert payload["watchlist"] == {"id": pool.id, "name": "Quality"}
-    assert payload["years"] == [2020, 2021, 2022, 2023, 2024, 2025, 2026]
-    row_a = next(row for row in payload["rows"] if row["ticker"] == "ASML")
-    assert row_a["scores"] == [
-        {"fiscal_year": 2020, "score": 5.0, "display_score": "5", "fact_nature": "actual", "status": "calculated"},
-        {"fiscal_year": 2021, "score": 6.0, "display_score": "6", "fact_nature": "actual", "status": "calculated"},
-        {"fiscal_year": 2022, "score": 7.0, "display_score": "7", "fact_nature": "actual", "status": "calculated"},
-        {"fiscal_year": 2023, "score": 8.0, "display_score": "8", "fact_nature": "actual", "status": "calculated"},
-        {"fiscal_year": 2024, "score": 9.0, "display_score": "9", "fact_nature": "actual", "status": "calculated"},
-        {"fiscal_year": 2025, "score": 7.0, "display_score": "7", "fact_nature": "estimate", "status": "calculated"},
-        {"fiscal_year": 2026, "score": 6.0, "display_score": "6", "fact_nature": "estimate", "status": "calculated"},
-    ]
-    row_b = next(row for row in payload["rows"] if row["ticker"] == "FICO")
-    assert row_b["scores"][-3] == {
-        "fiscal_year": 2024,
-        "score": None,
-        "display_score": "6/8",
-        "fact_nature": "actual",
-        "status": "partial",
-    }
+    assert payload["years"] == []
+    assert {row["ticker"] for row in payload["rows"]} == {"ASML", "FICO"}
+    assert all(row["scores"] == [] for row in payload["rows"])
 
 
 def test_overview_f_score_compare_deduplicates_members(client, db_session, auth_headers):
@@ -336,6 +395,7 @@ def test_pool_members_include_price_and_fair_value(client, db_session, monkeypat
                 close=100.0,
                 volume=1_000,
                 source="seed",
+                currency="USD",
                 created_at=datetime(2026, 2, 3, 21, 0, tzinfo=timezone.utc),
             ),
             StockPrice(
@@ -347,6 +407,7 @@ def test_pool_members_include_price_and_fair_value(client, db_session, monkeypat
                 close=98.0,
                 volume=1_000,
                 source="seed",
+                currency="USD",
                 created_at=datetime(2026, 2, 2, 21, 0, tzinfo=timezone.utc),
             ),
             StockPrice(
@@ -358,6 +419,7 @@ def test_pool_members_include_price_and_fair_value(client, db_session, monkeypat
                 close=50.0,
                 volume=1_000,
                 source="seed",
+                currency="USD",
                 created_at=datetime(2026, 2, 3, 21, 0, tzinfo=timezone.utc),
             ),
             StockPrice(
@@ -369,48 +431,37 @@ def test_pool_members_include_price_and_fair_value(client, db_session, monkeypat
                 close=55.0,
                 volume=1_000,
                 source="seed",
+                currency="USD",
                 created_at=datetime(2026, 2, 2, 21, 0, tzinfo=timezone.utc),
             ),
         ]
     )
 
     db_session.add(
-        MetricFact(
+        _manual_fair_value_fact(
+            db_session,
             user_id=user.id,
-            stock_id=stock_a.id,
-            metric_key=FAIR_VALUE_KEY,
-            value_numeric=200.0,
-            unit="USD",
-            period_type="AS_OF",
-            period_end_date=target_date,
-            source_type="manual",
-            is_current=True,
+            stock=stock_a,
+            value=200.0,
+            period_end=target_date,
         )
     )
     db_session.add(
-        MetricFact(
+        _parsed_target_fact(
+            db_session,
             user_id=user.id,
-            stock_id=stock_a.id,
-            metric_key=TARGET_KEY,
-            value_numeric=180.0,
-            unit="USD",
-            period_type="TARGET_HORIZON",
-            period_end_date=target_date,
-            source_type="parsed",
-            is_current=True,
+            stock=stock_a,
+            value=180.0,
+            period_end=target_date,
         )
     )
     db_session.add(
-        MetricFact(
+        _parsed_target_fact(
+            db_session,
             user_id=user.id,
-            stock_id=stock_b.id,
-            metric_key=TARGET_KEY,
-            value_numeric=80.0,
-            unit="USD",
-            period_type="TARGET_HORIZON",
-            period_end_date=target_date,
-            source_type="parsed",
-            is_current=True,
+            stock=stock_b,
+            value=80.0,
+            period_end=target_date,
         )
     )
     db_session.add_all(
@@ -503,52 +554,23 @@ def test_pool_members_include_price_and_fair_value(client, db_session, monkeypat
 
     row_a = next(row for row in rows if row["ticker"] == "AOS")
     assert row_a["price"] == pytest.approx(100.0)
+    assert row_a["price_currency"] == "USD"
+    assert row_a["price_freshness"] == "fresh"
+    assert row_a["price_reason"] is None
     assert row_a["delta_today"] == pytest.approx(2.0)
+    assert row_a["delta_today_reason"] is None
     assert row_a["fair_value"] == pytest.approx(200.0)
     assert row_a["fair_value_source"] == "manual"
     assert row_a["mos"] == pytest.approx(0.5)
     assert row_a["valuation_reference"] == pytest.approx(180.0)
     assert row_a["valuation_reference_source"] == TARGET_KEY
     assert row_a["discount_to_reference"] == pytest.approx((180.0 - 100.0) / 180.0)
-    assert row_a["piotroski_f_scores"] == [
-        {
-            "period_end_date": "2024-12-31",
-            "fiscal_year": 2024,
-            "score": 8.0,
-            "status": "calculated",
-            "variant": "valueline_proxy",
-            "partial_score": None,
-            "available_indicators": None,
-            "max_available_score": None,
-            "missing_indicators": [],
-        },
-        {
-            "period_end_date": "2023-12-31",
-            "fiscal_year": 2023,
-            "score": None,
-            "status": "partial",
-            "variant": "insurance_adjusted",
-            "partial_score": 6,
-            "available_indicators": 8,
-            "max_available_score": 8,
-            "missing_indicators": ["score.piotroski.current_ratio_improving"],
-        },
-        {
-            "period_end_date": "2022-12-31",
-            "fiscal_year": 2022,
-            "score": 4.0,
-            "status": "calculated",
-            "variant": "standard",
-            "partial_score": None,
-            "available_indicators": None,
-            "max_available_score": None,
-            "missing_indicators": [],
-        },
-    ]
+    assert row_a["piotroski_f_scores"] == []
 
     row_b = next(row for row in rows if row["ticker"] == "MSFT")
     assert row_b["price"] == pytest.approx(50.0)
     assert row_b["delta_today"] == pytest.approx(-5.0)
+    assert row_b["delta_today_reason"] is None
     assert row_b["fair_value"] is None
     assert row_b["fair_value_source"] is None
     assert row_b["mos"] is None
@@ -556,3 +578,68 @@ def test_pool_members_include_price_and_fair_value(client, db_session, monkeypat
     assert row_b["valuation_reference_source"] == TARGET_KEY
     assert row_b["discount_to_reference"] == pytest.approx(0.375)
     assert row_b["piotroski_f_scores"] == []
+
+
+def test_watchlist_daily_delta_fails_closed_across_currencies(
+    client, db_session, auth_headers, monkeypatch
+):
+    user = _make_user(db_session, "watchlist_currency_delta@example.com")
+    stock = _make_stock(db_session, "FXDELTA")
+    pool = StockPool(user_id=user.id, name="Currency checks")
+    db_session.add(pool)
+    db_session.flush()
+    db_session.add(
+        PoolMembership(
+            user_id=user.id,
+            pool_id=pool.id,
+            stock_id=stock.id,
+            inclusion_type="manual",
+        )
+    )
+
+    target_date = date(2026, 2, 3)
+    monkeypatch.setattr(
+        "app.api.v1.endpoints.stock_pools.compute_target_date",
+        lambda _: target_date,
+    )
+    db_session.add_all(
+        [
+            StockPrice(
+                stock_id=stock.id,
+                price_date=target_date,
+                open=100.0,
+                high=100.0,
+                low=100.0,
+                close=100.0,
+                volume=1_000,
+                source="seed",
+                currency="USD",
+                created_at=datetime(2026, 2, 3, 21, 0, tzinfo=timezone.utc),
+            ),
+            StockPrice(
+                stock_id=stock.id,
+                price_date=date(2026, 2, 2),
+                open=98.0,
+                high=98.0,
+                low=98.0,
+                close=98.0,
+                volume=1_000,
+                source="seed",
+                currency="GBP",
+                created_at=datetime(2026, 2, 2, 21, 0, tzinfo=timezone.utc),
+            ),
+        ]
+    )
+    db_session.commit()
+
+    response = client.get(
+        f"/api/v1/stock_pools/{pool.id}/members",
+        headers=auth_headers(user),
+    )
+
+    assert response.status_code == 200, response.text
+    row = response.json()[0]
+    assert row["price"] == pytest.approx(100.0)
+    assert row["price_currency"] == "USD"
+    assert row["delta_today"] is None
+    assert row["delta_today_reason"] == "price_currency_mismatch"

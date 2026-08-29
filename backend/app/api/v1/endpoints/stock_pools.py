@@ -7,29 +7,21 @@ from fastapi import APIRouter, HTTPException, Body
 from sqlalchemy import select, func, delete
 
 from app.api.deps import SessionDep, CurrentUser
-from app.models.stocks import StockPool, PoolMembership, Stock, StockPrice
+from app.models.stocks import StockPool, PoolMembership, Stock
 from app.models.facts import MetricFact
 from app.services.market_data_service import (
     ET,
     compute_target_date,
+    read_canonical_eod_price,
     read_canonical_eod_series,
 )
+from app.services.metric_fact_visibility import visible_metric_fact_predicate
 from app.services.valuation import read_valuation_context, relative_discount
 
 
 router = APIRouter()
 
 PIOTROSKI_TOTAL_KEY = "score.piotroski.total"
-
-
-def _latest_price_for_date(session: SessionDep, stock_id: int, price_date: date) -> StockPrice | None:
-    rows = read_canonical_eod_series(
-        session,
-        stock_ids=[stock_id],
-        through=price_date,
-        from_date=price_date,
-    )
-    return (rows.get(stock_id) or [None])[0]
 
 
 def _serialize_piotroski_total(fact: MetricFact) -> dict[str, Any]:
@@ -71,6 +63,7 @@ def _piotroski_scores_for_stocks(
             MetricFact.metric_key == PIOTROSKI_TOTAL_KEY,
             MetricFact.source_type == "calculated",
             MetricFact.is_current.is_(True),
+            visible_metric_fact_predicate(MetricFact, user_id=user_id),
             MetricFact.period_type == "FY",
             MetricFact.period_end_date.is_not(None),
         )
@@ -167,6 +160,7 @@ def _piotroski_compare_payload(
                 MetricFact.metric_key == PIOTROSKI_TOTAL_KEY,
                 MetricFact.source_type == "calculated",
                 MetricFact.is_current.is_(True),
+                visible_metric_fact_predicate(MetricFact, user_id=user_id),
                 MetricFact.period_type == "FY",
                 MetricFact.period_end_date.is_not(None),
             )
@@ -233,9 +227,19 @@ def _watchlist_rows_for_memberships(
         if not stock:
             continue
 
-        latest = _latest_price_for_date(session, stock.id, target_date)
-        price = float(latest.close) if latest else None
-        price_updated_at = latest.created_at if latest else None
+        current_price = read_canonical_eod_price(
+            session,
+            stock=stock,
+            as_of=target_date,
+            include_as_of_session=True,
+        )
+        price = (
+            float(current_price.close)
+            if current_price.freshness_state == "fresh"
+            and current_price.close is not None
+            else None
+        )
+        price_updated_at = current_price.observed_at
 
         previous_rows = read_canonical_eod_series(
             session,
@@ -244,14 +248,28 @@ def _watchlist_rows_for_memberships(
         ).get(stock.id) or []
         prev_price_date = previous_rows[0].price_date if previous_rows else None
         delta_today = None
-        if prev_price_date and latest:
+        delta_today_reason = None
+        if price is None:
+            delta_today_reason = current_price.reason_code or "current_price_unavailable"
+        elif not current_price.currency:
+            delta_today_reason = "current_price_currency_unknown"
+        elif not prev_price_date:
+            delta_today_reason = "previous_price_missing"
+        else:
             prev_price = previous_rows[0]
-            if prev_price and prev_price.close is not None:
-                delta_today = float(latest.close) - float(prev_price.close)
+            if prev_price.close is None:
+                delta_today_reason = "previous_price_missing"
+            elif not prev_price.currency:
+                delta_today_reason = "previous_price_currency_unknown"
+            elif prev_price.currency != current_price.currency:
+                delta_today_reason = "price_currency_mismatch"
+            else:
+                delta_today = price - float(prev_price.close)
 
         valuation = read_valuation_context(session, user_id=user_id, stock_id=stock.id)
         fair_value = valuation.user_intrinsic_value
-        mos = relative_discount(price, fair_value)
+        same_currency = current_price.currency == "USD"
+        mos = relative_discount(price, fair_value) if same_currency else None
 
         rows.append(
             {
@@ -263,20 +281,40 @@ def _watchlist_rows_for_memberships(
                 "listing_exchange": stock.listing_exchange,
                 "company_name": stock.company_name,
                 "price": price,
-                "price_date": target_date.isoformat(),
+                "price_date": (
+                    current_price.price_date.isoformat()
+                    if current_price.price_date
+                    else None
+                ),
                 "price_updated_at": price_updated_at,
+                "price_currency": current_price.currency,
+                "price_source": current_price.source,
+                "price_freshness": current_price.freshness_state,
+                "price_reason": current_price.reason_code,
                 "fair_value": fair_value,
                 "fair_value_source": "manual" if fair_value is not None else None,
                 "fair_value_status": valuation.user_intrinsic_value_status,
                 "fair_value_as_of": valuation.user_intrinsic_value_as_of,
                 "mos": mos,
+                "mos_reason": (
+                    None
+                    if mos is not None
+                    else current_price.reason_code
+                    if price is None
+                    else "valuation_price_currency_mismatch"
+                    if not same_currency
+                    else "intrinsic_value_missing"
+                ),
                 "valuation_reference": valuation.system_reference_value,
                 "valuation_reference_source": valuation.system_reference_type,
                 "valuation_reference_as_of": valuation.system_reference_as_of,
-                "discount_to_reference": relative_discount(
-                    price, valuation.system_reference_value
+                "discount_to_reference": (
+                    relative_discount(price, valuation.system_reference_value)
+                    if same_currency
+                    else None
                 ),
                 "delta_today": delta_today,
+                "delta_today_reason": delta_today_reason,
                 "piotroski_f_scores": piotroski_scores_by_stock_id.get(stock.id, []),
             }
         )

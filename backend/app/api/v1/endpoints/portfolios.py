@@ -47,7 +47,10 @@ def create_manual_portfolio(
     session: SessionDep,
     current_user: CurrentUser,
 ) -> dict[str, Any]:
-    row = create_portfolio(session, user_id=current_user.id, payload=payload)
+    try:
+        row = create_portfolio(session, user_id=current_user.id, payload=payload)
+    except PortfolioError as error:
+        _raise(session, error)
     return {"portfolio": serialize_portfolio(row)}
 
 

@@ -4,14 +4,24 @@ from dataclasses import dataclass
 from datetime import date
 from typing import Any
 
-from sqlalchemy import select, update
-from sqlalchemy.orm import Session
+from sqlalchemy import String, and_, cast, exists, func, or_, select, update
+from sqlalchemy.orm import Session, aliased
 
+from app.models.artifacts import PdfDocument
+from app.models.extractions import MetricExtraction
 from app.models.facts import MetricFact
+from app.services.financial_truth_locks import (
+    acquire_active_account_mutation_lock,
+    acquire_user_stock_fact_lock,
+)
+from app.services.metric_fact_visibility import visible_metric_fact_predicate
 
 
 USER_INTRINSIC_VALUE_KEY = "val.fair_value"
 VALUE_LINE_TARGET_REFERENCE_KEY = "target.price_18m.mid"
+VALUE_LINE_TARGET_MANUAL_CORRECTION_REFERENCE = (
+    "target.price_18m.mid.manual_correction"
+)
 
 
 @dataclass(frozen=True)
@@ -24,6 +34,73 @@ class ValuationContext:
     system_reference_type: str | None
     system_reference_as_of: date | None
     system_reference_fact_id: int | None
+
+
+def _valuation_source_predicate(fact_entity, *, user_id: int):
+    """Restrict valuation claims to their exact, user-visible authority."""
+    original = aliased(MetricFact)
+    document = aliased(PdfDocument)
+    extraction = aliased(MetricExtraction)
+    exact_document_correction = exists(
+        select(original.id)
+        .join(document, document.id == original.source_document_id)
+        .join(extraction, extraction.id == original.source_ref_id)
+        .where(
+            or_(
+                cast(original.id, String)
+                == fact_entity.value_json["corrected_from_fact_id"].as_string(),
+                cast(extraction.id, String)
+                == fact_entity.value_json[
+                    "corrected_from_extraction_id"
+                ].as_string(),
+            ),
+            original.user_id == fact_entity.user_id,
+            original.stock_id == fact_entity.stock_id,
+            original.metric_key == fact_entity.metric_key,
+            original.period_type.is_not_distinct_from(fact_entity.period_type),
+            original.period_end_date.is_not_distinct_from(
+                fact_entity.period_end_date
+            ),
+            original.as_of_date.is_not_distinct_from(fact_entity.as_of_date),
+            original.source_type == "parsed",
+            original.source_document_id == fact_entity.source_document_id,
+            original.source_ref_id == fact_entity.source_ref_id,
+            original.is_current.is_(True),
+            func.parsed_metric_fact_has_exact_authority(original.id).is_(True),
+            document.user_id == user_id,
+            or_(
+                document.stock_id.is_(None),
+                document.stock_id == fact_entity.stock_id,
+            ),
+            document.lifecycle_state == "active",
+            document.current_parse_generation == original.parse_generation,
+            extraction.user_id == user_id,
+            extraction.document_id == document.id,
+            extraction.resolved_stock_id == fact_entity.stock_id,
+            extraction.parse_generation == original.parse_generation,
+            extraction.original_text_snippet.is_not(None),
+        )
+    )
+    return and_(
+        visible_metric_fact_predicate(fact_entity, user_id=user_id),
+        or_(
+            and_(
+                fact_entity.metric_key == USER_INTRINSIC_VALUE_KEY,
+                fact_entity.source_type == "manual",
+            ),
+            and_(
+                fact_entity.metric_key == VALUE_LINE_TARGET_REFERENCE_KEY,
+                fact_entity.source_type == "parsed",
+            ),
+            and_(
+                fact_entity.metric_key == VALUE_LINE_TARGET_REFERENCE_KEY,
+                fact_entity.source_type == "manual",
+                fact_entity.source_document_id.is_not(None),
+                fact_entity.value_json["correction"].as_boolean().is_(True),
+                exact_document_correction,
+            ),
+        ),
+    )
 
 
 def _latest_current_fact(
@@ -39,6 +116,7 @@ def _latest_current_fact(
         MetricFact.stock_id == stock_id,
         MetricFact.metric_key == metric_key,
         MetricFact.is_current.is_(True),
+        _valuation_source_predicate(MetricFact, user_id=user_id),
     )
     if source_type is not None:
         stmt = stmt.where(MetricFact.source_type == source_type)
@@ -93,7 +171,13 @@ def read_valuation_context(
         user_intrinsic_value_fact_id=manual.id if manual else None,
         system_reference_value=reference_value,
         system_reference_type=(
-            VALUE_LINE_TARGET_REFERENCE_KEY if reference_value is not None else None
+            (
+                VALUE_LINE_TARGET_MANUAL_CORRECTION_REFERENCE
+                if reference is not None and reference.source_type == "manual"
+                else VALUE_LINE_TARGET_REFERENCE_KEY
+            )
+            if reference_value is not None
+            else None
         ),
         system_reference_as_of=reference.period_end_date if reference else None,
         system_reference_fact_id=reference.id if reference else None,
@@ -127,6 +211,7 @@ def read_valuation_facts_by_stock(
                 [USER_INTRINSIC_VALUE_KEY, VALUE_LINE_TARGET_REFERENCE_KEY]
             ),
             MetricFact.is_current.is_(True),
+            _valuation_source_predicate(MetricFact, user_id=user_id),
         )
         .order_by(
             MetricFact.stock_id.asc(),
@@ -136,11 +221,6 @@ def read_valuation_facts_by_stock(
         )
     ).all()
     for fact in facts:
-        if (
-            fact.metric_key == USER_INTRINSIC_VALUE_KEY
-            and fact.source_type != "manual"
-        ):
-            continue
         result[fact.stock_id].setdefault(fact.metric_key, fact)
     return result
 
@@ -152,9 +232,12 @@ def publish_user_intrinsic_value(
     stock_id: int,
     value_numeric: float | None,
     as_of_date: date,
+    source_ref_id: int,
     unavailable_reason: str | None = None,
-    source_ref_id: int | None = None,
 ) -> MetricFact:
+    if not acquire_active_account_mutation_lock(session, user_id=user_id):
+        raise ValueError("Account no longer accepts valuation changes")
+    acquire_user_stock_fact_lock(session, user_id=user_id, stock_id=stock_id)
     session.execute(
         update(MetricFact)
         .where(

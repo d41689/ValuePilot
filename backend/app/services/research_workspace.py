@@ -1,7 +1,7 @@
 """User-authorized, stock-centric read model for a research case."""
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, datetime, timezone
 from typing import Any
 
 from sqlalchemy import select
@@ -14,6 +14,12 @@ from app.models.oracles_lens import OraclesLensSignal
 from app.models.research import ResearchCase, ResearchCaseOrigin, ResearchCaseRevision
 from app.models.stocks import Stock
 from app.services.market_data_service import read_canonical_eod_price
+from app.services.metric_fact_visibility import visible_metric_fact_predicate
+from app.services.analysis_method_gate import (
+    analysis_kind_for_metric,
+    evaluate_analysis_method,
+    metric_fact_matches_method,
+)
 from app.services.research_cases import (
     ResearchCaseError,
     serialize_case,
@@ -26,6 +32,37 @@ from app.services.thirteenf_user_api import build_user_stock_holders
 from app.services.valuation import read_valuation_context
 from app.services.active_report_resolver import resolve_active_reports
 from app.services.actual_conflict_service import detect_actual_conflicts
+
+
+def _sec_provenance(fact: MetricFact) -> dict[str, Any] | None:
+    """Project approved public SEC lineage without querying raw SEC tables."""
+    if fact.source_type != "sec" or not isinstance(fact.value_json, dict):
+        return None
+    payload = fact.value_json
+    dimensions = payload.get("dimensions")
+    locator = payload.get("locator")
+    return {
+        "source_accession": payload.get("source_accession"),
+        "filing_form": payload.get("filing_form"),
+        "filing_id": payload.get("filing_id"),
+        "artifact_id": payload.get("artifact_id"),
+        "raw_fact_id": payload.get("raw_fact_id"),
+        "parse_run_id": payload.get("parse_run_id"),
+        "parser_version": payload.get("parser_version"),
+        "mapping_version": payload.get("mapping_version"),
+        "mapping_known_at": payload.get("mapping_known_at"),
+        "knowledge_at": payload.get("knowledge_at"),
+        "period_start": payload.get("period_start"),
+        "period_end": payload.get("period_end"),
+        "context_id": payload.get("context_id"),
+        "dimensions_policy": payload.get("dimensions_policy"),
+        "dimensions": dimensions if isinstance(dimensions, dict) else {},
+        "unit_measure": payload.get("unit_measure"),
+        "decimals": payload.get("decimals"),
+        "scale": payload.get("scale"),
+        "value_basis": payload.get("value_basis"),
+        "locator": locator if isinstance(locator, dict) else None,
+    }
 
 
 def _piotroski_series(facts: list[MetricFact]) -> list[dict[str, Any]]:
@@ -99,6 +136,7 @@ def build_research_workspace(
         .filter(
             PdfDocument.user_id == user_id,
             PdfDocument.stock_id == stock.id,
+            PdfDocument.lifecycle_state == "active",
         )
         .order_by(
             PdfDocument.report_date.desc().nullslast(),
@@ -111,9 +149,9 @@ def build_research_workspace(
     facts = session.scalars(
         select(MetricFact)
         .where(
-            MetricFact.user_id == user_id,
             MetricFact.stock_id == stock.id,
             MetricFact.is_current.is_(True),
+            visible_metric_fact_predicate(MetricFact, user_id=user_id),
         )
         .order_by(
             MetricFact.metric_key,
@@ -123,6 +161,21 @@ def build_research_workspace(
         )
         .limit(250)
     ).all()
+    method_results = {
+        kind: evaluate_analysis_method(
+            session,
+            stock_id=stock.id,
+            analysis_kind=kind,
+            cutoff=datetime.now(timezone.utc),
+        )
+        for kind in ("owner_earnings", "roic", "per_share_trend", "valuation")
+    }
+    facts = [
+        fact
+        for fact in facts
+        if (kind := analysis_kind_for_metric(fact.metric_key)) is None
+        or metric_fact_matches_method(fact, method_results[kind])
+    ]
     coverage_rows = (
         session.query(ResearchCoverageRequirement)
         .filter(
@@ -245,9 +298,23 @@ def build_research_workspace(
                     if fact.source_document_id is not None
                     else None
                 ),
+                "sec_provenance": _sec_provenance(fact),
             }
             for fact in facts
         ],
+        "analysis_methods": {
+            kind: {
+                "state": result.state,
+                "reason": result.reason_code,
+                "policy_version": result.policy_version,
+                "classification": result.classification,
+                "classification_id": result.classification_id,
+                "method_id": result.method_id,
+                "required_evidence": list(result.required_evidence),
+                "output_authorized": result.output_authorized,
+            }
+            for kind, result in method_results.items()
+        },
         "piotroski_f_score": _piotroski_series(facts),
         "actual_conflicts": actual_conflicts,
         "missing_items": [

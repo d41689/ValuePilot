@@ -1,11 +1,32 @@
 from datetime import date, datetime, timezone
 
-from sqlalchemy import update
+from sqlalchemy import select
 
 from app.models.artifacts import PdfDocument
+from app.models.extractions import MetricExtraction
 from app.models.facts import MetricFact
 from app.models.stocks import Stock, StockPrice
 from app.models.users import User
+from app.services.analysis_method_gate import register_reviewed_company_classification
+from financial_truth_fixtures import authorize_parsed_facts
+
+
+def _add_parsed_lineage(db_session, *, user_id: int, document_id: int) -> MetricExtraction:
+    extraction = MetricExtraction(
+        user_id=user_id,
+        document_id=document_id,
+        page_number=1,
+        field_key="test_fixture",
+        raw_value_text="fixture",
+        original_text_snippet="fixture",
+        parsed_value_json={"raw": "fixture"},
+        confidence_score=1.0,
+        parser_version="v1",
+        parse_generation=1,
+    )
+    db_session.add(extraction)
+    db_session.flush()
+    return extraction
 
 
 def _piotroski_fact(
@@ -40,7 +61,7 @@ def _piotroski_fact(
     )
 
 
-def test_lookup_stock_by_ticker_returns_dynamic_piotroski_card_from_current_stock(
+def test_lookup_stock_by_ticker_quarantines_unverifiable_legacy_piotroski_rows(
     client, db_session, auth_headers
 ):
     user = User(email="ticker_f_score@example.com")
@@ -124,67 +145,24 @@ def test_lookup_stock_by_ticker_returns_dynamic_piotroski_card_from_current_stoc
 
     assert response.status_code == 200
     card = response.json()["piotroski_f_score_card"]
-    assert card["years"] == [2022, 2023, 2024, 2025, 2026]
-    assert len(card["rows"]) == 10
-    rows_by_key = {row["metric_key"]: row for row in card["rows"]}
-    assert list(rows_by_key) == [
-        "score.piotroski.roa_positive",
-        "score.piotroski.cfo_positive",
-        "score.piotroski.roa_improving",
-        "score.piotroski.accrual_quality",
-        "score.piotroski.leverage_declining",
-        "score.piotroski.current_ratio_improving",
-        "score.piotroski.no_dilution",
-        "score.piotroski.gross_margin_improving",
-        "score.piotroski.asset_turnover_improving",
-        "score.piotroski.total",
-    ]
-
-    roa_row = rows_by_key["score.piotroski.roa_positive"]
-    assert roa_row["formula_details"]["used_values"] == [
-        {
-            "metric_key": "score.piotroski.roa_positive.input",
-            "value_numeric": 10.0,
-            "period_end_date": "2022-12-31",
-            "fact_nature": "actual",
-        },
-        {
-            "metric_key": "score.piotroski.roa_positive.input",
-            "value_numeric": 10.0,
-            "period_end_date": "2023-12-31",
-            "fact_nature": "actual",
-        },
-        {
-            "metric_key": "score.piotroski.roa_positive.input",
-            "value_numeric": 10.0,
-            "period_end_date": "2024-12-31",
-            "fact_nature": "actual",
-        },
-        {
-            "metric_key": "score.piotroski.roa_positive.input",
-            "value_numeric": 10.0,
-            "period_end_date": "2025-12-31",
-            "fact_nature": "actual",
-        },
-        {
-            "metric_key": "score.piotroski.roa_positive.input",
-            "value_numeric": 10.0,
-            "period_end_date": "2026-12-31",
-            "fact_nature": "estimate",
-        },
-    ]
-    assert roa_row["score_fact_natures"] == ["actual", "actual", "actual", "actual", "estimate"]
-
-    for metric_key, row in rows_by_key.items():
-        if metric_key != "score.piotroski.total":
-            assert len(row["formula_details"]["used_values"]) == 5
-    assert rows_by_key["score.piotroski.total"]["formula_details"]["used_values"] == []
+    assert card["years"] == []
+    assert card["rows"][-1]["metric_key"] == "score.piotroski.total"
+    assert card["rows"][-1]["scores"] == []
 
 
 def test_lookup_stock_by_ticker_returns_summary(client, db_session, auth_headers):
     user = User(email="ticker_lookup@example.com")
     stock = Stock(ticker="COCO_TEST", exchange="NDQ", company_name="VITA COCO", is_active=True)
     db_session.add_all([user, stock])
+    db_session.commit()
+    classification = register_reviewed_company_classification(
+        db_session,
+        stock_id=stock.id,
+        classification="ordinary_operating",
+        effective_from=date(2020, 1, 1),
+        known_at=datetime.now(timezone.utc),
+        review_reason="Test fixture reviewed as an ordinary operating company.",
+    )
     db_session.commit()
 
     doc = PdfDocument(
@@ -199,8 +177,7 @@ def test_lookup_stock_by_ticker_returns_summary(client, db_session, auth_headers
     db_session.add(doc)
     db_session.commit()
 
-    db_session.add_all(
-        [
+    summary_facts = [
             MetricFact(
                 user_id=user.id,
                 stock_id=stock.id,
@@ -670,7 +647,21 @@ def test_lookup_stock_by_ticker_returns_summary(client, db_session, auth_headers
                 is_current=True,
             ),
         ]
-    )
+    for fact in summary_facts:
+        if fact.metric_key in {
+            "owners_earnings_per_share",
+            "owners_earnings_per_share_normalized",
+        }:
+            fact.value_json = {
+                **(fact.value_json or {}),
+                "analysis_method": {
+                    "policy_version": "analysis-method-gate-v1",
+                    "classification_id": classification.id,
+                    "method_id": "ordinary-owner-economics-v1",
+                    "evidence_complete": True,
+                },
+            }
+    authorize_parsed_facts(db_session, document=doc, facts=summary_facts)
     db_session.add(
         StockPrice(
             stock_id=stock.id,
@@ -685,16 +676,6 @@ def test_lookup_stock_by_ticker_returns_summary(client, db_session, auth_headers
             created_at=datetime(2026, 1, 10, 21, 0, tzinfo=timezone.utc),
         )
     )
-    db_session.flush()
-    db_session.execute(
-        update(MetricFact)
-        .where(
-            MetricFact.user_id == user.id,
-            MetricFact.stock_id == stock.id,
-            MetricFact.source_type == "parsed",
-        )
-        .values(source_document_id=doc.id)
-    )
     db_session.commit()
 
     response = client.get(
@@ -703,16 +684,32 @@ def test_lookup_stock_by_ticker_returns_summary(client, db_session, auth_headers
 
     assert response.status_code == 200
     payload = response.json()
+    assert payload["dcf_available"] is False
+    assert payload["valuation_method"] == {
+        "state": "unsupported",
+        "reason": "valuation_method_pending_ft09",
+        "policy_version": "analysis-method-gate-v1",
+        "classification": "ordinary_operating",
+        "classification_id": payload["valuation_method"]["classification_id"],
+            "method_id": None,
+            "required_evidence": [],
+            "output_authorized": False,
+            "conclusion_authorized": False,
+    }
     assert payload["ticker"] == "COCO_TEST"
     assert payload["exchange"] == "NDQ"
     assert payload["company_name"] == "VITA COCO"
-    assert payload["price"] == 54.52
-    assert payload["latest_price"] == 55.25
+    assert payload["price"] is None
+    assert payload["latest_price"] is None
     assert payload["latest_price_date"] == "2026-01-10"
+    assert payload["latest_price_freshness"] == "unknown_freshness"
+    assert payload["latest_price_reason"] == "price_currency_unavailable"
+    assert payload["report_price_reference"] == 54.52
     assert payload["active_report_document_id"] == doc.id
     assert payload["active_report_date"] == "2026-01-09"
     assert payload["pe"] == 43.3
-    assert payload["price_provenance"] == {
+    assert payload["price_provenance"] is None
+    assert payload["report_price_reference_provenance"] == {
         "source_type": "parsed",
         "source_document_id": doc.id,
         "source_report_date": "2026-01-09",
@@ -726,130 +723,10 @@ def test_lookup_stock_by_ticker_returns_summary(client, db_session, auth_headers
         "period_end_date": "2026-01-09",
         "is_active_report": True,
     }
-    assert payload["oeps_normalized"] == 5.1
-    assert payload["oeps_normalized_provenance"] == {
-        "source_type": "parsed",
-        "source_document_id": doc.id,
-        "source_report_date": "2026-01-09",
-        "period_end_date": "2026-01-09",
-        "is_active_report": True,
-    }
-    assert payload["oeps_series"] == [
-        {
-            "year": 2026,
-            "value": 5.5,
-            "provenance": {
-                "source_type": "parsed",
-                "source_document_id": doc.id,
-                "source_report_date": "2026-01-09",
-                "period_end_date": "2026-12-31",
-                "is_active_report": True,
-            },
-        },
-        {
-            "year": 2025,
-            "value": 5.3,
-            "provenance": {
-                "source_type": "parsed",
-                "source_document_id": doc.id,
-                "source_report_date": "2026-01-09",
-                "period_end_date": "2025-12-31",
-                "is_active_report": True,
-            },
-        },
-        {
-            "year": 2024,
-            "value": 5.1,
-            "provenance": {
-                "source_type": "parsed",
-                "source_document_id": doc.id,
-                "source_report_date": "2026-01-09",
-                "period_end_date": "2024-12-31",
-                "is_active_report": True,
-            },
-        },
-        {
-            "year": 2023,
-            "value": 4.9,
-            "provenance": {
-                "source_type": "parsed",
-                "source_document_id": doc.id,
-                "source_report_date": "2026-01-09",
-                "period_end_date": "2023-12-31",
-                "is_active_report": True,
-            },
-        },
-        {
-            "year": 2022,
-            "value": 4.7,
-            "provenance": {
-                "source_type": "parsed",
-                "source_document_id": doc.id,
-                "source_report_date": "2026-01-09",
-                "period_end_date": "2022-12-31",
-                "is_active_report": True,
-            },
-        },
-        {
-            "year": 2021,
-            "value": 4.5,
-            "provenance": {
-                "source_type": "parsed",
-                "source_document_id": doc.id,
-                "source_report_date": "2026-01-09",
-                "period_end_date": "2021-12-31",
-                "is_active_report": True,
-            },
-        },
-    ]
-    assert payload["dcf_inputs"] == {
-        "net_profit_per_share": {
-            "value": 4.8,
-            "source": "fact",
-            "provenance": {
-                "source_type": "parsed",
-                "source_document_id": doc.id,
-                "source_report_date": "2026-01-09",
-                "period_end_date": "2024-12-31",
-                "is_active_report": True,
-            },
-        },
-        "depreciation_per_share": {
-            "value": 0.9,
-            "source": "computed",
-            "provenance": {
-                "inputs": [
-                    {
-                        "metric_key": "is.depreciation",
-                        "source_type": "parsed",
-                        "source_document_id": doc.id,
-                        "source_report_date": "2026-01-09",
-                        "period_end_date": "2024-12-31",
-                        "is_active_report": True,
-                    },
-                    {
-                        "metric_key": "equity.shares_outstanding",
-                        "source_type": "parsed",
-                        "source_document_id": doc.id,
-                        "source_report_date": "2026-01-09",
-                        "period_end_date": "2024-12-31",
-                        "is_active_report": True,
-                    },
-                ],
-            },
-        },
-        "capital_spending_per_share": {
-            "value": 0.6,
-            "source": "fact",
-            "provenance": {
-                "source_type": "parsed",
-                "source_document_id": doc.id,
-                "source_report_date": "2026-01-09",
-                "period_end_date": "2024-12-31",
-                "is_active_report": True,
-            },
-        },
-    }
+    assert payload["oeps_normalized"] is None
+    assert payload["oeps_normalized_provenance"] is None
+    assert payload["oeps_series"] == []
+    assert payload["dcf_inputs"] is None
     assert payload["dcf_inputs_series"][0]["net_profit_per_share"]["provenance"]["period_end_date"] == "2026-12-31"
     assert payload["dcf_inputs_series"][0]["depreciation_per_share"]["provenance"]["inputs"][0]["metric_key"] == "is.depreciation"
     assert payload["dcf_inputs_series"] == [
@@ -1217,8 +1094,7 @@ def test_lookup_stock_by_ticker_returns_active_report_metadata(
     db_session.add_all([old_doc, new_doc])
     db_session.commit()
 
-    db_session.add_all(
-        [
+    report_facts = [
             MetricFact(
                 user_id=user.id,
                 stock_id=stock.id,
@@ -1229,7 +1105,6 @@ def test_lookup_stock_by_ticker_returns_active_report_metadata(
                 period_type="AS_OF",
                 period_end_date=date(2026, 4, 9),
                 source_type="parsed",
-                source_document_id=new_doc.id,
                 is_current=True,
             ),
             MetricFact(
@@ -1242,11 +1117,10 @@ def test_lookup_stock_by_ticker_returns_active_report_metadata(
                 period_type="AS_OF",
                 period_end_date=date(2026, 4, 9),
                 source_type="parsed",
-                source_document_id=new_doc.id,
                 is_current=True,
             ),
         ]
-    )
+    authorize_parsed_facts(db_session, document=new_doc, facts=report_facts)
     db_session.commit()
 
     response = client.get(
@@ -1280,8 +1154,7 @@ def test_lookup_stock_by_ticker_prefers_duplicate_with_active_report(
     db_session.add(doc)
     db_session.commit()
 
-    db_session.add(
-        MetricFact(
+    active_report_fact = MetricFact(
             user_id=user.id,
             stock_id=active_stock.id,
             metric_key="mkt.price",
@@ -1291,9 +1164,10 @@ def test_lookup_stock_by_ticker_prefers_duplicate_with_active_report(
             period_type="AS_OF",
             period_end_date=date(2026, 5, 1),
             source_type="parsed",
-            source_document_id=doc.id,
             is_current=True,
         )
+    authorize_parsed_facts(
+        db_session, document=doc, facts=[active_report_fact]
     )
     db_session.commit()
 
@@ -1305,8 +1179,83 @@ def test_lookup_stock_by_ticker_prefers_duplicate_with_active_report(
     payload = response.json()
     assert payload["id"] == active_stock.id
     assert payload["exchange"] == "NDQ"
-    assert payload["price"] == 429.99
+    assert payload["price"] is None
+    assert payload["report_price_reference"] == 429.99
     assert payload["active_report_document_id"] == doc.id
+
+
+def test_lookup_stock_by_ticker_chooses_latest_period_not_latest_inserted_fact(
+    client, db_session, auth_headers
+):
+    user = User(email="ticker_latest_period@example.com")
+    stock = Stock(
+        ticker="LATEST_PERIOD",
+        exchange="NYSE",
+        company_name="Latest Period Co",
+        is_active=True,
+    )
+    db_session.add_all([user, stock])
+    db_session.flush()
+    newer_document = PdfDocument(
+        user_id=user.id,
+        stock_id=stock.id,
+        file_name="latest-period-2026.pdf",
+        source="value_line",
+        file_storage_key="tests/latest-period-2026.pdf",
+        parse_status="parsed",
+    )
+    older_document = PdfDocument(
+        user_id=user.id,
+        stock_id=stock.id,
+        file_name="latest-period-2025.pdf",
+        source="value_line",
+        file_storage_key="tests/latest-period-2025.pdf",
+        parse_status="parsed",
+    )
+    db_session.add_all([newer_document, older_document])
+    db_session.flush()
+    newer_period = MetricFact(
+        user_id=user.id,
+        stock_id=stock.id,
+        metric_key="val.pe",
+        value_json={"raw": "18"},
+        value_numeric=18.0,
+        unit="ratio",
+        period_type="AS_OF",
+        period_end_date=date(2026, 6, 30),
+        source_type="parsed",
+        is_current=True,
+    )
+    authorize_parsed_facts(
+        db_session, document=newer_document, facts=[newer_period]
+    )
+    db_session.flush()
+    older_but_later_inserted = MetricFact(
+        user_id=user.id,
+        stock_id=stock.id,
+        metric_key="val.pe",
+        value_json={"raw": "99"},
+        value_numeric=99.0,
+        unit="ratio",
+        period_type="AS_OF",
+        period_end_date=date(2025, 6, 30),
+        source_type="parsed",
+        is_current=True,
+    )
+    authorize_parsed_facts(
+        db_session, document=older_document, facts=[older_but_later_inserted]
+    )
+    db_session.commit()
+    assert older_but_later_inserted.id > newer_period.id
+
+    response = client.get(
+        "/api/v1/stocks/by_ticker/LATEST_PERIOD",
+        headers=auth_headers(user),
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["pe"] == 18.0
+    assert response.json()["pe_provenance"]["period_end_date"] == "2026-06-30"
 
 
 def test_lookup_stock_by_ticker_returns_actual_conflicts(
@@ -1338,8 +1287,7 @@ def test_lookup_stock_by_ticker_returns_actual_conflicts(
     db_session.add_all([old_doc, new_doc])
     db_session.commit()
 
-    db_session.add_all(
-        [
+    conflict_facts = [
             MetricFact(
                 user_id=user.id,
                 stock_id=stock.id,
@@ -1419,6 +1367,15 @@ def test_lookup_stock_by_ticker_returns_actual_conflicts(
                 is_current=True,
             ),
         ]
+    authorize_parsed_facts(
+        db_session,
+        document=old_doc,
+        facts=[fact for fact in conflict_facts if not fact.is_current],
+    )
+    authorize_parsed_facts(
+        db_session,
+        document=new_doc,
+        facts=[fact for fact in conflict_facts if fact.is_current],
     )
     db_session.commit()
 
@@ -1462,6 +1419,17 @@ def test_lookup_stock_by_ticker_returns_actual_conflicts(
         }
     ]
 
+    archived = client.delete(
+        f"/api/v1/documents/{new_doc.id}", headers=auth_headers(user)
+    )
+    assert archived.status_code == 200, archived.text
+    refreshed = client.get(
+        "/api/v1/stocks/by_ticker/conf_test", headers=auth_headers(user)
+    )
+    assert refreshed.status_code == 200
+    assert refreshed.json()["actual_conflict_count"] == 0
+    assert refreshed.json()["actual_conflicts"] == []
+
 
 def test_lookup_stock_by_ticker_uses_revenues_growth_when_sales_missing(
     client, db_session, auth_headers
@@ -1471,8 +1439,18 @@ def test_lookup_stock_by_ticker_uses_revenues_growth_when_sales_missing(
     db_session.add_all([user, stock])
     db_session.commit()
 
-    db_session.add_all(
-        [
+    doc = PdfDocument(
+        user_id=user.id,
+        file_name="revenues.pdf",
+        source="upload",
+        file_storage_key="/tmp/revenues.pdf",
+        parse_status="parsed",
+        stock_id=stock.id,
+        report_date=date(2026, 1, 9),
+    )
+    db_session.add(doc)
+    db_session.flush()
+    growth_facts = [
             MetricFact(
                 user_id=user.id,
                 stock_id=stock.id,
@@ -1481,10 +1459,9 @@ def test_lookup_stock_by_ticker_uses_revenues_growth_when_sales_missing(
                 value_numeric=0.11,
                 unit="ratio",
                 period_type="PROJECTION_RANGE",
-                period_end_date=date(2026, 1, 9),
-                source_type="parsed",
-                source_ref_id=None,
-                is_current=True,
+                    period_end_date=date(2026, 1, 9),
+                    source_type="parsed",
+                    is_current=True,
             ),
             MetricFact(
                 user_id=user.id,
@@ -1494,10 +1471,9 @@ def test_lookup_stock_by_ticker_uses_revenues_growth_when_sales_missing(
                 value_numeric=0.075,
                 unit="ratio",
                 period_type="PROJECTION_RANGE",
-                period_end_date=date(2026, 1, 9),
-                source_type="parsed",
-                source_ref_id=None,
-                is_current=True,
+                    period_end_date=date(2026, 1, 9),
+                    source_type="parsed",
+                    is_current=True,
             ),
             MetricFact(
                 user_id=user.id,
@@ -1507,13 +1483,12 @@ def test_lookup_stock_by_ticker_uses_revenues_growth_when_sales_missing(
                 value_numeric=0.05,
                 unit="ratio",
                 period_type="PROJECTION_RANGE",
-                period_end_date=date(2026, 1, 9),
-                source_type="parsed",
-                source_ref_id=None,
-                is_current=True,
+                    period_end_date=date(2026, 1, 9),
+                    source_type="parsed",
+                    is_current=True,
             ),
         ]
-    )
+    authorize_parsed_facts(db_session, document=doc, facts=growth_facts)
     db_session.commit()
 
     response = client.get(
@@ -1530,10 +1505,10 @@ def test_lookup_stock_by_ticker_uses_revenues_growth_when_sales_missing(
             "value": 11.0,
             "provenance": {
                 "source_type": "parsed",
-                "source_document_id": None,
-                "source_report_date": None,
-                "period_end_date": "2026-01-09",
-                "is_active_report": False,
+                    "source_document_id": doc.id,
+                    "source_report_date": "2026-01-09",
+                    "period_end_date": "2026-01-09",
+                    "is_active_report": True,
             },
         },
         {
@@ -1542,10 +1517,10 @@ def test_lookup_stock_by_ticker_uses_revenues_growth_when_sales_missing(
             "value": 7.5,
             "provenance": {
                 "source_type": "parsed",
-                "source_document_id": None,
-                "source_report_date": None,
-                "period_end_date": "2026-01-09",
-                "is_active_report": False,
+                    "source_document_id": doc.id,
+                    "source_report_date": "2026-01-09",
+                    "period_end_date": "2026-01-09",
+                    "is_active_report": True,
             },
         },
         {
@@ -1554,10 +1529,10 @@ def test_lookup_stock_by_ticker_uses_revenues_growth_when_sales_missing(
             "value": 5.0,
             "provenance": {
                 "source_type": "parsed",
-                "source_document_id": None,
-                "source_report_date": None,
-                "period_end_date": "2026-01-09",
-                "is_active_report": False,
+                    "source_document_id": doc.id,
+                    "source_report_date": "2026-01-09",
+                    "period_end_date": "2026-01-09",
+                    "is_active_report": True,
             },
         },
     ]
@@ -1621,3 +1596,67 @@ def test_lookup_stock_by_ticker_never_exposes_another_users_private_facts(
     assert payload["oeps_series"] == []
     assert payload["piotroski_f_score_card"]["years"] == []
     assert payload["active_report_document_id"] is None
+
+
+def test_lookup_stock_by_ticker_never_treats_admin_upload_as_shared(
+    client, db_session, auth_headers
+):
+    admin_owner = User(
+        email="ticker_admin_private_owner@example.com",
+        role="admin",
+    )
+    viewer = User(email="ticker_admin_private_viewer@example.com")
+    stock = Stock(
+        ticker="ADMIN_PRIVATE",
+        exchange="NYSE",
+        company_name="ADMIN PRIVATE FACTS INC",
+        is_active=True,
+    )
+    db_session.add_all([admin_owner, viewer, stock])
+    db_session.flush()
+    document = PdfDocument(
+        user_id=admin_owner.id,
+        stock_id=stock.id,
+        file_name="admin-private.pdf",
+        source="value_line",
+        file_storage_key="tests/admin-private.pdf",
+        parse_status="parsed",
+        report_date=date(2026, 8, 1),
+    )
+    db_session.add(document)
+    db_session.flush()
+    private_pe = MetricFact(
+        user_id=admin_owner.id,
+        stock_id=stock.id,
+        metric_key="val.pe",
+        value_numeric=7.0,
+        unit="ratio",
+        period_type="AS_OF",
+        period_end_date=date(2026, 8, 1),
+        source_type="parsed",
+        is_current=True,
+    )
+    authorize_parsed_facts(
+        db_session,
+        document=document,
+        facts=[private_pe],
+    )
+    db_session.commit()
+
+    response = client.get(
+        "/api/v1/stocks/by_ticker/ADMIN_PRIVATE",
+        headers=auth_headers(viewer),
+    )
+    facts_response = client.get(
+        f"/api/v1/stocks/{stock.id}/facts",
+        headers=auth_headers(viewer),
+    )
+
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload["pe"] is None
+    assert payload["pe_provenance"] is None
+    assert payload["active_report_document_id"] is None
+    assert payload["active_report_date"] is None
+    assert facts_response.status_code == 200, facts_response.text
+    assert facts_response.json() == []

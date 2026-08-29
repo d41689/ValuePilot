@@ -8,6 +8,7 @@ from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
 from app.models.facts import MetricFact
+from app.services.metric_fact_visibility import visible_metric_fact_predicate
 
 
 CALCULATION_VERSION = "piotroski_value_line_v1"
@@ -110,11 +111,27 @@ class PiotroskiFScoreCalculator:
         self.db = db
 
     def calculate_for_stock(self, *, user_id: int, stock_id: int) -> list[MetricFact]:
-        source_facts = self.db.scalars(
-            select(MetricFact).where(
+        output_keys = [*COMPONENT_KEYS, TOTAL_KEY]
+        # Rebuild the whole versioned projection. Missing corrected inputs must
+        # retire prior scores instead of leaving stale conclusions current.
+        self.db.execute(
+            update(MetricFact)
+            .where(
                 MetricFact.user_id == user_id,
                 MetricFact.stock_id == stock_id,
+                MetricFact.metric_key.in_(output_keys),
+                MetricFact.source_type == "calculated",
                 MetricFact.is_current.is_(True),
+            )
+            .values(is_current=False)
+        )
+        self.db.flush()
+        source_facts = self.db.scalars(
+            select(MetricFact).where(
+                MetricFact.stock_id == stock_id,
+                MetricFact.is_current.is_(True),
+                visible_metric_fact_predicate(MetricFact, user_id=user_id),
+                MetricFact.source_type.in_(["parsed", "manual"]),
             )
         ).all()
         derived = build_piotroski_f_score_facts(source_facts)
@@ -130,19 +147,6 @@ class PiotroskiFScoreCalculator:
         stock_id: int,
         payload: dict[str, Any],
     ) -> MetricFact:
-        self.db.execute(
-            update(MetricFact)
-            .where(
-                MetricFact.user_id == user_id,
-                MetricFact.stock_id == stock_id,
-                MetricFact.metric_key == payload["metric_key"],
-                MetricFact.period_type == payload.get("period_type"),
-                MetricFact.period_end_date == payload.get("period_end_date"),
-                MetricFact.source_type == "calculated",
-                MetricFact.is_current.is_(True),
-            )
-            .values(is_current=False)
-        )
         fact = MetricFact(
             user_id=user_id,
             stock_id=stock_id,

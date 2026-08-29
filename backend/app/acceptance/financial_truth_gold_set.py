@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections import Counter
 from dataclasses import dataclass
 from datetime import date, datetime
+import calendar
 from pathlib import Path
 import re
 from typing import Any
@@ -49,6 +50,34 @@ class GoldSetValidationReport:
     distinct_economic_issuers: int
     primary_strata: dict[str, int]
     cross_cutting_counts: dict[str, int]
+
+
+def expected_completed_fiscal_years(
+    case: dict[str, Any], *, cutoff_at: str | date | datetime
+) -> tuple[int, ...]:
+    """Return the locked available completed-FY denominator, capped not padded."""
+    history = case["expected_history"]
+    start_value = history["available_start_on"]
+    start = (
+        start_value
+        if isinstance(start_value, date)
+        else date.fromisoformat(str(start_value))
+    )
+    cutoff_value = _as_datetime(cutoff_at)
+    if cutoff_value is None:
+        raise GoldSetValidationError("cycle.cutoff_at must be an ISO date/datetime")
+    cutoff = cutoff_value.date()
+    fye = str(case["fiscal_year_end_mmdd"])
+    month = int(fye[:2])
+    requested_day = int(fye[2:])
+    cap = int(history["completed_fiscal_year_cap"])
+    completed: list[int] = []
+    for fiscal_year in range(start.year, cutoff.year + 1):
+        day = min(requested_day, calendar.monthrange(fiscal_year, month)[1])
+        fiscal_year_end = date(fiscal_year, month, day)
+        if start <= fiscal_year_end <= cutoff:
+            completed.append(fiscal_year)
+    return tuple(completed[-cap:])
 
 
 def _iso_value(value: Any, path: str, errors: list[str]) -> None:
@@ -235,15 +264,46 @@ def validate_gold_set(data: dict[str, Any]) -> GoldSetValidationReport:
             if not isinstance(unavailable, list):
                 errors.append(f"{path}.expected_history.unavailable_years must be a list")
             else:
-                for unavailable_index, item in enumerate(unavailable):
-                    if not isinstance(item, dict) or item.get("disposition") not in {
-                        "expected",
-                        "unexpected",
-                    }:
-                        errors.append(
-                            f"{path}.expected_history.unavailable_years[{unavailable_index}] "
-                            "requires expected/unexpected disposition"
+                unavailable_fiscal_years: list[int] = []
+                try:
+                    expected_fiscal_years = set(
+                        expected_completed_fiscal_years(
+                            case, cutoff_at=cycle.get("cutoff_at")
                         )
+                    )
+                except (KeyError, TypeError, ValueError, GoldSetValidationError):
+                    expected_fiscal_years = set()
+                for unavailable_index, item in enumerate(unavailable):
+                    item_path = (
+                        f"{path}.expected_history.unavailable_years[{unavailable_index}]"
+                    )
+                    if not isinstance(item, dict):
+                        errors.append(
+                            f"{item_path} requires fiscal_year and expected/unexpected disposition"
+                        )
+                        continue
+                    fiscal_year = item.get("fiscal_year")
+                    if not isinstance(fiscal_year, int) or isinstance(fiscal_year, bool):
+                        errors.append(f"{item_path}.fiscal_year must be an integer")
+                    else:
+                        unavailable_fiscal_years.append(fiscal_year)
+                        if fiscal_year not in expected_fiscal_years:
+                            errors.append(
+                                f"{item_path}.fiscal_year is outside the locked fiscal-year denominator"
+                            )
+                    if item.get("disposition") not in {"expected", "unexpected"}:
+                        errors.append(
+                            f"{item_path} requires expected/unexpected disposition"
+                        )
+                duplicate = [
+                    year
+                    for year, count in Counter(unavailable_fiscal_years).items()
+                    if count > 1
+                ]
+                if duplicate:
+                    errors.append(
+                        f"{path}.expected_history.unavailable_years has duplicate fiscal years: {duplicate}"
+                    )
 
     def _duplicates(values: list[Any]) -> list[Any]:
         counts = Counter(values)

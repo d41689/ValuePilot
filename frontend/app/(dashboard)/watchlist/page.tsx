@@ -29,6 +29,7 @@ import {
   getRefreshPricesButtonPresentation,
   hasFairValueEditChanges,
   isOverviewWatchlistId,
+  normalizeCanonicalPriceState,
 } from '@/lib/watchlistState';
 import {
   DEFAULT_SORT_STATE,
@@ -89,7 +90,11 @@ type WatchlistRow = {
   exchange: string;
   company_name: string;
   price: number | null;
-  price_date: string;
+  price_date: string | null;
+  price_currency: string | null;
+  price_source: string | null;
+  price_freshness: string;
+  price_reason: string | null;
   price_updated_at: string | null;
   fair_value: number | null;
   fair_value_source: string | null;
@@ -101,6 +106,7 @@ type WatchlistRow = {
   valuation_reference_as_of: string | null;
   discount_to_reference: number | null;
   delta_today: number | null;
+  delta_today_reason: string | null;
   piotroski_f_scores: Array<{
     period_end_date: string | null;
     fiscal_year: number | null;
@@ -194,6 +200,21 @@ function formatDate(value: string | null) {
   const dt = new Date(value);
   if (Number.isNaN(dt.getTime())) return '—';
   return dt.toLocaleString();
+}
+
+function CanonicalPriceCell({ row }: { row: WatchlistRow }) {
+  const state = normalizeCanonicalPriceState(row);
+  return (
+    <div className="min-w-[11rem]">
+      <div>{state.valueLabel} · {state.currencyLabel}</div>
+      <div className="mt-1 text-xs text-muted-foreground">
+        {state.dateLabel} · {state.sourceLabel} · {state.freshnessLabel}
+      </div>
+      {state.reasonLabel ? (
+        <div className="mt-1 text-xs text-amber-800">{state.reasonLabel}</div>
+      ) : null}
+    </div>
+  );
 }
 
 export default function WatchlistPage() {
@@ -762,7 +783,7 @@ export default function WatchlistPage() {
                     <TableCell className="min-w-[9rem] max-w-[11rem] whitespace-pre-line text-xs leading-5 text-muted-foreground">
                       {formatPiotroskiFScoreSeries(row.piotroski_f_scores)}
                     </TableCell>
-                    <TableCell>{formatNumber(row.price)}</TableCell>
+                    <TableCell><CanonicalPriceCell row={row} /></TableCell>
                     <TableCell>
                       <div className="flex flex-col gap-1">
                         <Input
@@ -816,7 +837,16 @@ export default function WatchlistPage() {
                         </span>
                       </div>
                     </TableCell>
-                    <TableCell>{formatNumber(row.delta_today)}</TableCell>
+                    <TableCell>
+                      <div className="flex flex-col gap-1">
+                        <span>{formatNumber(row.delta_today)}</span>
+                        {row.delta_today === null && row.delta_today_reason ? (
+                          <span className="text-xs text-muted-foreground">
+                            {row.delta_today_reason.replaceAll('_', ' ')}
+                          </span>
+                        ) : null}
+                      </div>
+                    </TableCell>
                     <TableCell>{formatDate(row.price_updated_at)}</TableCell>
                     <Watchlist13FColumns
                       snapshot={snapshotsByStockId.get(row.stock_id)}

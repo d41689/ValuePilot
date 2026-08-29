@@ -35,6 +35,21 @@ def _alembic(backend_dir: Path, database_url: str, *args: str) -> None:
     assert result.returncode == 0, f"{result.stdout}\n{result.stderr}"
 
 
+def _alembic_failure(
+    backend_dir: Path, database_url: str, *args: str
+) -> subprocess.CompletedProcess[str]:
+    result = subprocess.run(
+        ["alembic", *args],
+        cwd=backend_dir,
+        env={**os.environ, "DATABASE_URL": database_url},
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode != 0, "alembic command unexpectedly succeeded"
+    return result
+
+
 def test_research_decision_loop_migrations_round_trip_with_representative_rows():
     backend_dir = Path(__file__).resolve().parents[2]
     schema_name = new_test_schema_name()
@@ -177,21 +192,47 @@ def test_research_decision_loop_migrations_round_trip_with_representative_rows()
             )
             connection.execute(
                 text(
-                    "INSERT INTO account_erasure_events (user_id, content_hash, summary_json) "
-                    "VALUES (:user_id, :content_hash, '{}'::jsonb)"
-                ),
-                {"user_id": user_id, "content_hash": "a" * 64},
-            )
-            connection.execute(
-                text(
                     "INSERT INTO api_rate_limit_events (user_id, operation) "
                     "VALUES (:user_id, 'document_upload')"
                 ),
                 {"user_id": user_id},
             )
+            erased_user_id = connection.execute(
+                text(
+                    "INSERT INTO users "
+                    "(email, hashed_password, role, tier, is_active) "
+                    "VALUES ('pending-erasure@example.com', 'revoked', "
+                    "'user', 'free', false) RETURNING id"
+                )
+            ).scalar_one()
+            connection.execute(
+                text(
+                    "UPDATE users SET email = "
+                    "'erased-' || id || '@deleted.invalid' WHERE id = :user_id"
+                ),
+                {"user_id": erased_user_id},
+            )
+            connection.execute(
+                text(
+                    "SELECT set_config("
+                    "'valuepilot.account_erasure', 'on', true)"
+                )
+            )
+            connection.execute(
+                text(
+                    "INSERT INTO account_erasure_events "
+                    "(user_id, content_hash, summary_json) "
+                    "VALUES (:user_id, :content_hash, '{}'::jsonb)"
+                ),
+                {"user_id": erased_user_id, "content_hash": "a" * 64},
+            )
 
         engine.dispose()
-        _alembic(backend_dir, database_url, "downgrade", BASE_REVISION)
+        result = _alembic_failure(
+            backend_dir, database_url, "downgrade", BASE_REVISION
+        )
+        assert result.returncode != 0
+        assert "erasure" in (result.stdout + result.stderr).lower()
         engine = create_engine(database_url, pool_pre_ping=True)
         with engine.connect() as connection:
             assert connection.execute(
@@ -200,12 +241,6 @@ def test_research_decision_loop_migrations_round_trip_with_representative_rows()
             assert connection.execute(
                 text("SELECT count(*) FROM stocks WHERE id = :id"), {"id": stock_id}
             ).scalar_one() == 1
-            assert inspect(connection).has_table("research_cases") is False
-
-        engine.dispose()
-        _alembic(backend_dir, database_url, "upgrade", "head")
-        engine = create_engine(database_url, pool_pre_ping=True)
-        with engine.connect() as connection:
             inspector = inspect(connection)
             assert inspector.has_table("research_cases")
             assert inspector.has_table("notification_delivery_attempts")

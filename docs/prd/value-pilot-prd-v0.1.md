@@ -292,6 +292,7 @@ Normalization (V1):
 - id
 - user_id
 - name
+- output_key (required canonical metric key; immutable identity, unique per user)
 - expression
 - dependencies_json (list of metric_keys referenced)
 - compiled_ast_json (optional)
@@ -563,6 +564,15 @@ stock price, user-authored note, and external HTTPS URL references.
   proprietary excerpts stay behind original document access control.
 - A lost permission/source renders `source_unavailable`; historical claims are
   not silently replaced by current data.
+- Ordinary removal of a retained `pdf_documents` source is a lifecycle change,
+  not physical deletion. `active` documents may become `archived`; their page,
+  extraction and fact lineage remains durable while current projections demote
+  document-linked facts. Only the explicit account-erasure path may redact
+  user content, and it preserves tombstone identity and shared public facts.
+- An authorized owner may still open archived evidence by its durable ID even
+  though it is absent from current document/fact projections. An erased source
+  returns typed `source_unavailable` with `account_erasure`. Cross-user reads
+  remain indistinguishable from a missing source and never disclose lifecycle.
 - External URLs accept normalized HTTPS only, are never server-fetched, render
   as untrusted external links with visible domain and safe new-window isolation.
 
@@ -640,11 +650,11 @@ version. Monitoring obligations may be snoozed at most 30 days and reappear.
 Durable, explainable current coverage projection:
 
 - user/stock, kind, priority policy version/rule, freshness policy version;
-- state: ready/missing/stale/blocked/in_progress/failed;
+- state: ready/missing/stale/blocked/in_progress/failed/unsupported;
 - reason, source/evidence, observed/evaluated times, permitted next action;
 - unique current requirement by user/stock/kind/policy version;
 - kinds: EOD price, current Value Line report, valuation input, identity review,
-  CUSIP review.
+  CUSIP review, reviewed method applicability.
 
 Proprietary acquisition enters in-progress only from a configured authorized
 source or explicit upload. Blocked is not covered.
@@ -662,6 +672,13 @@ Canonical EOD reads use configured source priority, price date, created time and
 ID. Refresh is batched, idempotent at job/request level, rate-limited, and never
 performed per rendered row. Inactive or unresolved stocks retain history but do
 not auto-refresh.
+
+Every field named current/latest price MUST expose this canonical result's
+price date, source, currency, freshness and typed reason. Only `fresh` results
+may populate the numeric current/latest field. A report's `mkt.price` remains a
+separately labeled dated report reference and MUST NOT substitute for missing,
+stale or unknown-currency EOD truth. Discount and margin-of-safety outputs are
+absent unless the price is usable and currency-comparable with the valuation.
 
 ### G.7 Oracle lenses and manager follows
 
@@ -819,6 +836,13 @@ fees, realized gain, or tax correctness is claimed.
   prose/evidence and manual unavailable reasons, tombstones portfolio quantities,
   costs and journal notes, pseudonymizes the login, deactivates the user, and
   retains only non-content integrity metadata plus one hash/summary audit event.
+  Database tombstones and a durable file-deletion intent commit before any
+  filesystem removal. Post-commit deletion is idempotent and retried at startup;
+  a failure remains inaccessible and visibly pending/failed rather than rolling
+  the database back to an active row whose file has already been lost. A blob
+  still referenced by any other active or archived document is marked
+  `retained_shared` and MUST NOT be unlinked; later retry may remove it only
+  after every remaining document reference has been erased.
 
 ### G.11 API surface
 
@@ -844,18 +868,19 @@ input.
 
 ### H.1 Boundary and authority
 
-FT-03 creates the primary-source lineage needed for future financial truth. It
-does not itself publish product financial facts. Permitted forms, acquisition,
+FT-03 creates the primary-source lineage for financial truth; FT-04 is the sole
+approved canonical publication boundary. Permitted forms, acquisition,
 retention, automation and visibility are owned by
 `docs/architecture/coverage-source-policy.md`. Metric names, units and mapping
-remain owned by `docs/metric_facts_mapping_spec.yml`; adding SEC publication is
-FT-04 and requires that authority to change before implementation.
+remain owned by `docs/metric_facts_mapping_spec.yml`; a publication code change
+without a new mapping version is invalid.
 
 The only queryable product fundamentals source remains `metric_facts`. Raw SEC
 filings, artifacts and XBRL facts MUST NOT be queried by screeners, formulas,
 the research workspace, valuation, Watchlist, or other product consumers. They
-are lineage/review inputs and future mapping inputs only. Market prices remain
-under the separate canonical EOD contract.
+are lineage/review inputs only. Approved mapped actuals enter product surfaces
+exclusively through `metric_facts`. Market prices remain under the separate
+canonical EOD contract.
 
 ### H.2 Effective-dated issuer identity
 
@@ -1043,6 +1068,71 @@ operation rather than turning one request into an unbounded crawl. Unsafe
 historical-submissions references are never fetched and appear as bounded
 `unsafe_historical_submission_reference` failures, making the CLI exit with
 the same incomplete-result status as other typed failures.
+
+### H.8 Canonical SEC publication (FT-04)
+
+`sec_metric_publications` is the append-only decision log between one raw XBRL
+fact and a canonical `metric_facts` row. It records the mapping version,
+publication role, status (`published`, `unresolved`, or `rejected`), typed
+reason, canonical key/unit/period, knowledge time, filing/run/context identity
+and resulting fact ID. Exact `(raw_fact, mapping_version, publication_role)`
+replay is idempotent.
+
+A newer succeeded parse run is the complete current projection for its filing.
+If it omits or rejects a concept published by an older run, the older canonical
+fact is demoted from `is_current` while remaining immutable history; absence in
+the new run is never treated as permission to keep stale parser output current.
+
+Published SEC facts are shared public actuals: `source_type='sec'`,
+`user_id=NULL`, with accession, filing form, artifact/raw-fact IDs, parser and
+mapping versions, context, dimensions policy, unit/currency, period bounds,
+knowledge time and locator in provenance. User-owned, Value Line and manual
+facts retain non-null owners. Product consumers apply the canonical visibility
+predicate and never query the publication or raw-XBRL tables directly.
+Only a mapping version and concept registered by an applied migration is
+product-visible. Facts from an unknown or retired mapping version are preserved
+unchanged as quarantined lineage, excluded from every product fact projection,
+and reported as `unsupported_mapping_version`; the system does not silently
+relabel, delete, or treat them as approved under a newer mapping. New runtime
+DML using an unregistered mapping fails closed at the database boundary.
+Until FT-05/FT-06 approve source comparability and reconciliation, public SEC
+facts remain directly inspectable canonical actuals but MUST NOT be mixed with
+user Value Line/manual facts as inputs to legacy ratios, Piotroski, formulas, or
+screener predicates. Those consumers fail closed rather than selecting a source
+by row ID, query order, or whichever value satisfies a screen.
+
+The current mapping accepts consolidated facts only; dimensional facts and
+unmapped concepts remain typed outcomes. A `6-K` is not assigned 10-Q period
+semantics. Annual durations support 52/53-week fiscal calendars. A duration is
+classified as FY, discrete Q, or YTD from its actual bounds, never its calendar
+quarter label. A missing prior same-cycle YTD produces `prior_ytd_missing`;
+when no directly disclosed quarter exists, a discrete quarter may be published
+as current YTD minus the immediately prior same-cycle YTD with both input
+identities. A directly disclosed quarter takes precedence. Amendments append
+new facts and supersede only the same canonical period slot after their own
+knowledge time; prior rows remain queryable history.
+
+### H.9 Reviewed analysis-method applicability (FT-07)
+
+Company classification is append-only, effective-dated and knowledge-dated.
+The reviewed classes are ordinary operating, bank, insurer, REIT,
+high-SBC/acquisitive and cyclical/commodity. An analysis output must record the
+method-policy version, reviewed classification, method ID and required evidence
+or return typed `unknown`/`unsupported`. Applicability never authorizes an
+investment conclusion.
+
+The initial policy approves ordinary-company evidence requirements for Owner
+Earnings, ROIC and per-share trend. It does not yet authorize a canonical Owner
+Earnings computation from the legacy simplified formula, and it does not approve
+a valuation method.
+Method eligibility, output authorization and investment-conclusion authority
+are distinct gates; none may be inferred from another.
+Therefore generic DCF calculation/publication is blocked, including direct API
+writes labeled `source='dcf'`; human-entered valuation remains permitted and
+auditable. Banks, insurers, REITs, high-SBC/acquisitive and cyclical/commodity
+businesses remain explicitly unsupported until their own methods are approved.
+Price volatility, beta and a mechanical price threshold are never evidence of
+permanent impairment or method applicability.
 
 ---
 

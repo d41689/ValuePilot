@@ -4,7 +4,7 @@ from collections import defaultdict
 from datetime import date
 from typing import Any
 
-from sqlalchemy import and_, or_, select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.models.artifacts import PdfDocument
@@ -18,7 +18,6 @@ def detect_actual_conflicts(
     stock_id: int,
     active_report: ActiveReportSelection | None,
     current_user_id: int | None = None,
-    shared_parsed_user_ids: list[int] | None = None,
 ) -> list[dict[str, Any]]:
     fact_nature_expr = MetricFact.value_json["fact_nature"].as_string()
     stmt = (
@@ -36,19 +35,14 @@ def detect_actual_conflicts(
             MetricFact.stock_id == stock_id,
             MetricFact.source_type == "parsed",
             MetricFact.source_document_id.is_not(None),
+            MetricFact.parse_generation == PdfDocument.current_parse_generation,
+            PdfDocument.lifecycle_state == "active",
+            func.parsed_metric_fact_has_exact_authority(MetricFact.id).is_(True),
             fact_nature_expr == "actual",
         )
     )
     if current_user_id is not None:
-        stmt = stmt.where(
-            or_(
-                MetricFact.user_id == current_user_id,
-                and_(
-                    MetricFact.source_type == "parsed",
-                    MetricFact.user_id.in_(shared_parsed_user_ids or []),
-                ),
-            )
-        )
+        stmt = stmt.where(MetricFact.user_id == current_user_id)
     rows = session.execute(stmt).all()
 
     grouped: dict[tuple[str, str | None, date | None], list[dict[str, Any]]] = defaultdict(list)

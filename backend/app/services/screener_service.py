@@ -1,9 +1,15 @@
-from typing import List, Dict, Any, Callable
+from typing import List, Dict, Any
 from sqlalchemy.orm import Session, aliased
 from sqlalchemy import select, and_, or_
 from app.models.stocks import Stock
 from app.models.facts import MetricFact
-from app.models.users import User
+from app.services.metric_fact_visibility import visible_metric_fact_predicate
+from app.services.analysis_method_gate import (
+    METHOD_POLICY_VERSION,
+    analysis_kind_for_metric,
+    evaluate_analysis_method,
+)
+from datetime import datetime, timezone
 
 class ScreenerService:
     def __init__(self, db: Session):
@@ -69,13 +75,13 @@ class ScreenerService:
         if not stock_ids:
             return {}
 
-        admin_user_ids = self._admin_user_ids()
         fact_nature_expr = MetricFact.value_json["fact_nature"].as_string()
         stmt = select(MetricFact).where(
             MetricFact.stock_id.in_(stock_ids),
             MetricFact.metric_key.in_(self.metric_keys()),
             MetricFact.is_current.is_(True),
-            self._visibility_predicate(MetricFact, current_user_id, admin_user_ids),
+            MetricFact.source_type != "sec",
+            self._visibility_predicate(MetricFact, current_user_id),
             or_(
                 fact_nature_expr.is_(None),
                 fact_nature_expr != "estimate",
@@ -162,10 +168,8 @@ class ScreenerService:
         # WHERE f1.value_numeric < 20 AND f2.value_numeric > 0.02
         
         # We need to parse the rule and construct these joins dynamically.
-        admin_user_ids = self._admin_user_ids()
-        
         if rule_json.get("type") == "AND":
-             query = self._build_and_query(query, rule_json.get("conditions", []), current_user_id, admin_user_ids)
+             query = self._build_and_query(query, rule_json.get("conditions", []), current_user_id)
         else:
             # "OR" logic is trickier with simple inner joins (might need left joins + coalescing, or union)
             # Keeping V1 scope to AND logic for simplicity as per common screener MVPs.
@@ -179,7 +183,6 @@ class ScreenerService:
         query,
         conditions: List[Dict[str, Any]],
         current_user_id: int,
-        admin_user_ids: list[int],
     ):
         for cond in conditions:
             metric_key = self._canonical_metric_key(cond["metric"])
@@ -188,6 +191,32 @@ class ScreenerService:
             
             # Create an alias for MetricFact for this specific condition
             fact_alias = aliased(MetricFact)
+
+            analysis_kind = analysis_kind_for_metric(metric_key)
+            if analysis_kind is not None:
+                candidate_ids = list(
+                    self.db.scalars(select(Stock.id).where(Stock.is_active.is_(True))).all()
+                )
+                eligible_methods = {
+                    stock_id: method
+                    for stock_id in candidate_ids
+                    if (
+                        method := evaluate_analysis_method(
+                        self.db,
+                        stock_id=stock_id,
+                        analysis_kind=analysis_kind,
+                        cutoff=datetime.now(timezone.utc),
+                        )
+                    ).state
+                    == "eligible"
+                    and method.output_authorized
+                    and method.method_id is not None
+                    and method.classification_id is not None
+                }
+                eligible_ids = list(eligible_methods)
+                if not eligible_ids:
+                    return query.where(Stock.id.in_([]))
+                query = query.where(Stock.id.in_(eligible_ids))
             
             # Join this alias
             query = query.join(
@@ -196,7 +225,34 @@ class ScreenerService:
                     Stock.id == fact_alias.stock_id,
                     fact_alias.metric_key == metric_key,
                     fact_alias.is_current.is_(True),
-                    self._visibility_predicate(fact_alias, current_user_id, admin_user_ids),
+                    fact_alias.source_type != "sec",
+                    self._visibility_predicate(fact_alias, current_user_id),
+                    *(
+                        [
+                            fact_alias.value_json["analysis_method"]["policy_version"].as_string()
+                            == METHOD_POLICY_VERSION,
+                            fact_alias.value_json["analysis_method"]["evidence_complete"].as_boolean()
+                            .is_(True),
+                            or_(
+                                *[
+                                    and_(
+                                        Stock.id == stock_id,
+                                        fact_alias.value_json["analysis_method"][
+                                            "classification_id"
+                                        ].as_integer()
+                                        == method.classification_id,
+                                        fact_alias.value_json["analysis_method"][
+                                            "method_id"
+                                        ].as_string()
+                                        == method.method_id,
+                                    )
+                                    for stock_id, method in eligible_methods.items()
+                                ]
+                            ),
+                        ]
+                        if analysis_kind is not None
+                        else []
+                    ),
                 )
             )
             
@@ -213,20 +269,8 @@ class ScreenerService:
                 query = query.where(fact_alias.value_numeric == target_value)
                 
         return query
-    def _admin_user_ids(self) -> list[int]:
-        return list(self.db.scalars(select(User.id).where(User.role == "admin")).all())
-
-    def _visibility_predicate(self, fact_entity, current_user_id: int, admin_user_ids: list[int]):
-        return or_(
-            and_(
-                fact_entity.source_type == "parsed",
-                or_(
-                    fact_entity.user_id == current_user_id,
-                    fact_entity.user_id.in_(admin_user_ids),
-                ),
-            ),
-            and_(
-                fact_entity.user_id == current_user_id,
-                fact_entity.source_type.in_(["manual", "calculated"]),
-            ),
+    def _visibility_predicate(self, fact_entity, current_user_id: int):
+        return visible_metric_fact_predicate(
+            fact_entity,
+            user_id=current_user_id,
         )

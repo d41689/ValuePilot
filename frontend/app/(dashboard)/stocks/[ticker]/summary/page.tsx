@@ -33,10 +33,17 @@ type StockSummary = {
   exchange: string | null;
   company_name: string;
   price: number | null;
+  latest_price_date?: string | null;
+  latest_price_currency?: string | null;
+  latest_price_source?: string | null;
+  latest_price_freshness?: string | null;
+  latest_price_reason?: string | null;
+  report_price_reference?: number | null;
   pe: number | null;
   active_report_document_id?: number | null;
   active_report_date?: string | null;
   price_provenance?: FactProvenance | null;
+  report_price_reference_provenance?: FactProvenance | null;
   pe_provenance?: FactProvenance | null;
   actual_conflict_count?: number;
   actual_conflicts?: Array<{
@@ -133,6 +140,15 @@ export default function StockSummaryPage() {
             ticker={summary.ticker}
             exchange={summary.exchange}
             price={summary.price}
+            currentPriceDate={summary.latest_price_date}
+            currentPriceCurrency={summary.latest_price_currency}
+            currentPriceSource={summary.latest_price_source}
+            currentPriceFreshness={summary.latest_price_freshness}
+            currentPriceReason={summary.latest_price_reason}
+            reportPriceReference={summary.report_price_reference}
+            reportPriceReferenceProvenanceLabel={formatFactProvenanceLabel(
+              summary.report_price_reference_provenance,
+            )}
             pe={summary.pe}
             activeReportDate={summary.active_report_date}
             activeReportDocumentId={summary.active_report_document_id}

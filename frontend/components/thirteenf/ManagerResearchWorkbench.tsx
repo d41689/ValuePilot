@@ -55,14 +55,18 @@ const VIEWS: Array<{ value: ManagerView; label: string }> = [
   { value: 'history', label: 'History' },
 ];
 
-function formatPrice(value: number | null | undefined) {
+function formatPrice(value: number | null | undefined, currency = 'USD') {
   if (typeof value !== 'number' || !Number.isFinite(value)) return '—';
-  return new Intl.NumberFormat('en-US', {
-    style: 'currency',
-    currency: 'USD',
-    minimumFractionDigits: 2,
-    maximumFractionDigits: 2,
-  }).format(value);
+  try {
+    return new Intl.NumberFormat('en-US', {
+      style: 'currency',
+      currency,
+      minimumFractionDigits: 2,
+      maximumFractionDigits: 2,
+    }).format(value);
+  } catch {
+    return `${value.toFixed(2)} ${currency}`;
+  }
 }
 
 function actionVariant(status: string) {
@@ -163,7 +167,7 @@ function HoldingsView({
               <TableHead className="text-right">Shares</TableHead>
               <TableHead className="text-right">Implied report price</TableHead>
               <TableHead className="text-right">Reported value</TableHead>
-              <TableHead className="text-right">Latest local price</TableHead>
+              <TableHead className="text-right">Canonical EOD</TableHead>
               <TableHead className="text-right">Since report</TableHead>
               <TableHead className="text-right">52-week range</TableHead>
               <TableHead>Research</TableHead>
@@ -206,11 +210,30 @@ function HoldingsView({
                   </TableCell>
                   <TableCell className="text-right font-mono text-xs">
                     {formatPrice(item.impliedReportPrice)}
+                    {item.impliedReportPriceCurrency ? (
+                      <div className="mt-1 text-muted-foreground">
+                        {item.impliedReportPriceCurrency} filing value ÷ shares
+                      </div>
+                    ) : null}
                   </TableCell>
                   <TableCell className="text-right font-mono text-xs">{formatCurrency(item.valueUsd)}</TableCell>
                   <TableCell className="text-right font-mono text-xs">
-                    <div>{formatPrice(item.marketContext?.latestPrice)}</div>
-                    <div className="mt-1 text-muted-foreground">{item.marketContext?.latestPriceDate ?? 'No local quote'}</div>
+                    <div>
+                      {formatPrice(
+                        item.marketContext?.latestPrice,
+                        item.marketContext?.latestPriceCurrency ?? 'USD',
+                      )}
+                    </div>
+                    <div className="mt-1 text-muted-foreground">
+                      {item.marketContext?.latestPriceDate ?? 'No observation'} ·{' '}
+                      {item.marketContext?.latestPriceSource ?? 'source unavailable'} ·{' '}
+                      {titleizeCode(item.marketContext?.latestPriceFreshness ?? 'unavailable')}
+                    </div>
+                    {item.marketContext?.latestPriceReason ? (
+                      <div className="mt-1 font-sans text-amber-800">
+                        {titleizeCode(item.marketContext.latestPriceReason)}
+                      </div>
+                    ) : null}
                   </TableCell>
                   <TableCell
                     className={cn(
@@ -219,12 +242,26 @@ function HoldingsView({
                       typeof move === 'number' && move < 0 && 'text-rose-700',
                     )}
                   >
-                    {typeof move === 'number' ? `${move > 0 ? '+' : ''}${formatPercentPoints(move)}` : '—'}
+                    {typeof move === 'number' ? (
+                      `${move > 0 ? '+' : ''}${formatPercentPoints(move)}`
+                    ) : (
+                      <span className="font-sans font-normal text-muted-foreground">
+                        {item.marketContext?.changeSinceReportReason
+                          ? titleizeCode(item.marketContext.changeSinceReportReason)
+                          : '—'}
+                      </span>
+                    )}
                   </TableCell>
                   <TableCell className="text-right font-mono text-xs">
-                    {item.marketContext
-                      ? `${formatPrice(item.marketContext.week52Low)} – ${formatPrice(item.marketContext.week52High)}`
-                      : '—'}
+                    {item.marketContext && item.marketContext.week52Reason === null
+                      ? `${formatPrice(item.marketContext.week52Low, item.marketContext.latestPriceCurrency ?? 'USD')} – ${formatPrice(item.marketContext.week52High, item.marketContext.latestPriceCurrency ?? 'USD')}`
+                      : (
+                        <span className="font-sans text-muted-foreground">
+                          {item.marketContext?.week52Reason
+                            ? titleizeCode(item.marketContext.week52Reason)
+                            : '—'}
+                        </span>
+                      )}
                   </TableCell>
                   <TableCell>
                     {item.stockId !== null ? (

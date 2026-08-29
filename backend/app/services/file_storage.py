@@ -39,6 +39,28 @@ class FileStorageService:
         # which is absolute if UPLOAD_DIR is absolute, let's just return it.
         return Path(file_key)
 
+    def discard_unregistered_upload(self, file_path: Path) -> None:
+        """Delete only a just-created file inside managed upload storage.
+
+        This is intentionally narrower than general document deletion: it is
+        used only when the database record that would own a newly uploaded
+        blob could not be committed.
+        """
+        root = self.upload_dir.resolve()
+        candidate = Path(file_path)
+        if candidate.is_symlink():
+            raise ValueError("refusing to discard symlink upload path")
+        resolved = candidate.resolve(strict=False)
+        try:
+            resolved.relative_to(root)
+        except ValueError as exc:
+            raise ValueError(
+                "refusing to discard file outside managed upload storage"
+            ) from exc
+        if resolved == root:
+            raise ValueError("refusing to discard managed upload storage root")
+        resolved.unlink(missing_ok=True)
+
     def sha256_file(self, file_path: Path) -> str:
         digest = hashlib.sha256()
         with file_path.open("rb") as fh:

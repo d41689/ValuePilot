@@ -96,6 +96,34 @@ type Revision = {
   created_at: string;
 };
 
+type SecProvenance = {
+  source_accession: string | null;
+  filing_form: string | null;
+  filing_id: number | null;
+  artifact_id: number | null;
+  raw_fact_id: number | null;
+  parse_run_id: number | null;
+  parser_version: string | null;
+  mapping_version: string | null;
+  mapping_known_at: string | null;
+  knowledge_at: string | null;
+  period_start: string | null;
+  period_end: string | null;
+  context_id: string | null;
+  dimensions_policy: string | null;
+  dimensions: Record<string, unknown>;
+  unit_measure: string | null;
+  decimals: string | null;
+  scale: number | null;
+  value_basis: string | null;
+  locator: {
+    locator_type?: string | null;
+    element_id?: string | null;
+    nearby_text_snippet?: string | null;
+    nearby_text_sha256?: string | null;
+  } | null;
+};
+
 type Workspace = {
   as_of: string;
   case: {
@@ -143,8 +171,10 @@ type Workspace = {
     period_end_date: string | null;
     source_type: string;
     source_document_id: number | null;
+    source_ref_id: number | null;
     source_report_date: string | null;
     original_evidence_route: string | null;
+    sec_provenance: SecProvenance | null;
   }>;
   piotroski_f_score: Array<{
     fiscal_year: number | null;
@@ -305,6 +335,10 @@ function money(value: number | string | null | undefined): string {
 }
 
 function label(value: string | null | undefined): string {
+  if (value === 'target.price_18m.mid') return 'Value Line 18-month target midpoint';
+  if (value === 'target.price_18m.mid.manual_correction') {
+    return 'User-corrected Value Line 18-month target midpoint';
+  }
   return value ? value.replaceAll('_', ' ') : '—';
 }
 
@@ -612,7 +646,7 @@ export default function ResearchCaseWorkspacePage() {
           </Card>
 
           <Card>
-            <CardHeader><CardTitle>Current fundamentals & provenance</CardTitle><CardDescription>User-scoped current facts. Adding one records its fact ID; it does not copy another user&apos;s source.</CardDescription></CardHeader>
+            <CardHeader><CardTitle>Current fundamentals & provenance</CardTitle><CardDescription>Authorized canonical facts include user-owned evidence and approved public SEC actuals. Adding one records its fact ID; it does not copy protected source content.</CardDescription></CardHeader>
             <CardContent>
               {workspace.fundamentals.length === 0 ? <div className="py-8 text-center text-sm text-muted-foreground">No current fundamentals are available for this account.</div> : (
                 <Table>
@@ -622,7 +656,26 @@ export default function ResearchCaseWorkspacePage() {
                       <TableCell className="font-mono text-xs">{fact.metric_key}</TableCell>
                       <TableCell>{fact.value_numeric ?? fact.value_text ?? 'Unavailable'} {fact.unit ?? fact.currency ?? ''}</TableCell>
                       <TableCell>{fact.period_end_date ?? '—'}<div className="text-xs text-muted-foreground">{fact.period_type ?? '—'}</div></TableCell>
-                      <TableCell className="text-xs">{label(fact.source_type)}{fact.source_report_date ? ` · report ${fact.source_report_date}` : ''}{fact.original_evidence_route ? <div><Link href={fact.original_evidence_route} className="text-primary hover:underline">Review original evidence</Link></div> : null}</TableCell>
+                      <TableCell className="min-w-[18rem] text-xs">
+                        {label(fact.source_type)}
+                        {fact.source_report_date ? ` · report ${fact.source_report_date}` : ''}
+                        {fact.original_evidence_route ? <div><Link href={fact.original_evidence_route} className="text-primary hover:underline">Review original evidence</Link></div> : null}
+                        {fact.sec_provenance ? (
+                          <div className="mt-1 space-y-1 text-muted-foreground">
+                            <div>{fact.sec_provenance.filing_form ?? 'SEC filing'} · accession {fact.sec_provenance.source_accession ?? 'unavailable'}</div>
+                            <div>Known {fact.sec_provenance.knowledge_at ?? 'unavailable'} · {fact.sec_provenance.mapping_version ?? 'mapping unavailable'} · {fact.sec_provenance.parser_version ?? 'parser unavailable'}</div>
+                            <div>Artifact #{fact.sec_provenance.artifact_id ?? '—'} · raw fact #{fact.sec_provenance.raw_fact_id ?? '—'} · parse #{fact.sec_provenance.parse_run_id ?? '—'}</div>
+                            <div>Context {fact.sec_provenance.context_id ?? 'none'} · {fact.sec_provenance.dimensions_policy ?? 'dimension policy unavailable'}</div>
+                            {fact.sec_provenance.locator ? (
+                              <div>
+                                Locator {fact.sec_provenance.locator.locator_type ?? 'inline XBRL'}
+                                {fact.sec_provenance.locator.element_id ? ` · #${fact.sec_provenance.locator.element_id}` : ''}
+                                {fact.sec_provenance.locator.nearby_text_snippet ? <div className="mt-1 max-w-md break-words">“{fact.sec_provenance.locator.nearby_text_snippet}”</div> : null}
+                              </div>
+                            ) : <div>Source locator unavailable</div>}
+                          </div>
+                        ) : null}
+                      </TableCell>
                       <TableCell><Button type="button" size="sm" variant="outline" disabled={terminal} onClick={() => addEvidence({ source_type: 'metric_fact', source_id: fact.id, source_date: fact.period_end_date ?? undefined, label: fact.metric_key, claim: `Observed ${fact.metric_key} for ${fact.period_end_date ?? 'current period'}.` })}>Add</Button></TableCell>
                     </TableRow>
                   ))}</TableBody>

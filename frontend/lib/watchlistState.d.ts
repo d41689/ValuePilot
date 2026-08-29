@@ -13,6 +13,22 @@ export function formatValuationReferenceLabel(
   source: string | null | undefined
 ): string;
 
+export function normalizeCanonicalPriceState(row: {
+  price?: number | null;
+  price_date?: string | null;
+  price_currency?: string | null;
+  price_source?: string | null;
+  price_freshness?: string | null;
+  price_reason?: string | null;
+}): {
+  valueLabel: string;
+  dateLabel: string;
+  currencyLabel: string;
+  sourceLabel: string;
+  freshnessLabel: string;
+  reasonLabel: string | null;
+};
+
 export function hasFairValueEditChanges(
   current: Record<number, string>,
   next: Record<number, string>

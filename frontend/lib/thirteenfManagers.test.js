@@ -80,12 +80,19 @@ test('holdings normalizer preserves portfolio summary and explicitly dated local
         id: 9,
         stock: { id: 3, ticker: 'AAPL', company_name: 'Apple' },
         implied_report_price: 100,
+        implied_report_price_currency: 'USD',
         market_context: {
           latest_price: 120,
           latest_price_date: '2026-06-30',
+          latest_price_currency: 'USD',
+          latest_price_source: 'stooq',
+          latest_price_freshness: 'fresh',
+          latest_price_reason: null,
           change_since_report_pct: 20,
+          change_since_report_reason: null,
           week_52_low: 70,
           week_52_high: 125,
+          week_52_reason: null,
           source: 'test',
         },
       },
@@ -97,8 +104,41 @@ test('holdings normalizer preserves portfolio summary and explicitly dated local
   assert.equal(result.summary.commonPositionCount, 1);
   assert.equal(result.summary.reportedCommonValueUsd, 1000000);
   assert.equal(result.commonHoldings[0].impliedReportPrice, 100);
+  assert.equal(result.commonHoldings[0].impliedReportPriceCurrency, 'USD');
   assert.equal(result.commonHoldings[0].marketContext.latestPrice, 120);
   assert.equal(result.commonHoldings[0].marketContext.latestPriceDate, '2026-06-30');
+  assert.equal(result.commonHoldings[0].marketContext.latestPriceCurrency, 'USD');
+  assert.equal(result.commonHoldings[0].marketContext.latestPriceSource, 'stooq');
+  assert.equal(result.commonHoldings[0].marketContext.latestPriceFreshness, 'fresh');
+  assert.equal(result.commonHoldings[0].marketContext.latestPriceReason, null);
+});
+
+test('holdings normalizer preserves stale canonical-price metadata and reason', () => {
+  const result = managers.normalizeManagerHoldings({
+    status: 'available',
+    common_holdings: [
+      {
+        id: 10,
+        stock: { id: 4, ticker: 'STALE', company_name: 'Stale Quote' },
+        market_context: {
+          latest_price: null,
+          latest_price_date: '2026-06-29',
+          latest_price_currency: 'USD',
+          latest_price_source: 'stooq',
+          latest_price_freshness: 'stale',
+          latest_price_reason: 'price_stale',
+        },
+      },
+    ],
+  });
+
+  const context = result.commonHoldings[0].marketContext;
+  assert.equal(context.latestPrice, null);
+  assert.equal(context.latestPriceDate, '2026-06-29');
+  assert.equal(context.latestPriceCurrency, 'USD');
+  assert.equal(context.latestPriceSource, 'stooq');
+  assert.equal(context.latestPriceFreshness, 'stale');
+  assert.equal(context.latestPriceReason, 'price_stale');
 });
 
 test('changes sort by absolute portfolio-weight move before value fallback', () => {

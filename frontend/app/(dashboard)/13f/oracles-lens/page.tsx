@@ -491,7 +491,7 @@ export default function OraclesLensPage() {
               <div className="mt-1 font-medium">
                 {coverage?.price_context === 'historical_snapshot'
                   ? 'Historical snapshot'
-                  : 'Latest local price'}
+                  : 'Canonical EOD'}
               </div>
             </div>
             <div>
@@ -872,6 +872,16 @@ export default function OraclesLensPage() {
                         <div className="text-xs text-muted-foreground">
                           {row.valuation.priceContextLabel} · {row.valuation.currentPriceDateLabel}
                         </div>
+                        <div className="text-xs text-muted-foreground">
+                          {row.valuation.currentPriceCurrencyLabel} ·{' '}
+                          {row.valuation.currentPriceSourceLabel} ·{' '}
+                          {row.valuation.currentPriceFreshnessLabel}
+                        </div>
+                        {row.valuation.currentPriceReasonLabel ? (
+                          <div className="text-xs text-amber-800">
+                            {row.valuation.currentPriceReasonLabel}
+                          </div>
+                        ) : null}
                         <div className="text-xs text-muted-foreground">
                           Holder estimate {row.valuation.holderRangeLabel}
                         </div>

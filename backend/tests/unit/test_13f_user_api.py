@@ -595,7 +595,13 @@ def test_manager_holdings_returns_position_view_with_computed_common_weights(cli
     assert by_ticker["BRK"]["position_rank"] == 2
 
 
-def test_manager_holdings_exposes_portfolio_summary_and_local_market_context(client, db_session):
+def test_manager_holdings_exposes_portfolio_summary_and_local_market_context(
+    client, db_session, monkeypatch
+):
+    monkeypatch.setattr(
+        "app.services.thirteenf_user_api.compute_target_date",
+        lambda _now: date(2026, 6, 30),
+    )
     _clear_13f(db_session)
     manager = _manager(db_session)
     filing = _filing(db_session, manager, "0000000007-26-000001")
@@ -617,6 +623,7 @@ def test_manager_holdings_exposes_portfolio_summary_and_local_market_context(cli
                 low=70.0,
                 close=78.0,
                 source="test",
+                currency="USD",
             ),
             StockPrice(
                 stock_id=stock.id,
@@ -626,6 +633,7 @@ def test_manager_holdings_exposes_portfolio_summary_and_local_market_context(cli
                 low=115.0,
                 close=120.0,
                 source="test",
+                currency="USD",
             ),
         ]
     )
@@ -641,14 +649,76 @@ def test_manager_holdings_exposes_portfolio_summary_and_local_market_context(cli
     }
     position = payload["common_holdings"][0]
     assert position["implied_report_price"] == 100.0
+    assert position["implied_report_price_currency"] == "USD"
     assert position["market_context"] == {
         "latest_price": 120.0,
         "latest_price_date": "2026-06-30",
+        "latest_price_currency": "USD",
+        "latest_price_source": "test",
+        "latest_price_freshness": "fresh",
+        "latest_price_reason": None,
         "change_since_report_pct": 20.0,
+        "change_since_report_reason": None,
         "week_52_low": 70.0,
         "week_52_high": 125.0,
+        "week_52_reason": None,
         "source": "test",
     }
+
+
+def test_manager_holdings_does_not_compare_usd_report_value_with_other_currency(
+    client, db_session, monkeypatch
+):
+    monkeypatch.setattr(
+        "app.services.thirteenf_user_api.compute_target_date",
+        lambda _now: date(2026, 6, 30),
+    )
+    _clear_13f(db_session)
+    manager = _manager(db_session)
+    filing = _filing(db_session, manager, "0000000007-26-000002")
+    parse_run = _parse_run(db_session, filing)
+    stock = _stock(db_session, "CADPX")
+    holding = _holding(db_session, filing, parse_run, index=1, stock=stock)
+    holding.value_usd = 10_000
+    holding.ssh_prnamt = 100
+    holding.shares = 100
+    db_session.add_all(
+        [
+            StockPrice(
+                stock_id=stock.id,
+                price_date=date(2025, 9, 30),
+                open=85.0,
+                high=90.0,
+                low=80.0,
+                close=88.0,
+                source="test",
+                currency="EUR",
+            ),
+            StockPrice(
+                stock_id=stock.id,
+                price_date=date(2026, 6, 30),
+                open=145.0,
+                high=160.0,
+                low=140.0,
+                close=150.0,
+                source="test",
+                currency="CAD",
+            ),
+        ]
+    )
+    db_session.commit()
+
+    response = client.get(f"/api/v1/13f/managers/{manager.id}/holdings?quarter=2026-Q1")
+
+    assert response.status_code == 200
+    position = response.json()["common_holdings"][0]
+    assert position["implied_report_price"] == 100.0
+    assert position["implied_report_price_currency"] == "USD"
+    assert position["market_context"]["latest_price_currency"] == "CAD"
+    assert position["market_context"]["change_since_report_pct"] is None
+    assert position["market_context"]["change_since_report_reason"] == "currency_mismatch"
+    assert position["market_context"]["week_52_low"] == 140.0
+    assert position["market_context"]["week_52_high"] == 160.0
 
 
 def test_manager_history_returns_quarter_summaries_concentration_and_all_activity(client, db_session):

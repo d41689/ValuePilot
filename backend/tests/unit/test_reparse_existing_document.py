@@ -7,8 +7,35 @@ from app.models.stocks import Stock
 from app.models.artifacts import PdfDocument, DocumentPage
 from app.models.extractions import MetricExtraction
 from app.models.facts import MetricFact
+from app.services.active_report_resolver import resolve_active_reports
 from app.services.ingestion_service import IngestionService
 from unittest.mock import patch
+
+
+def _add_extraction(
+    db_session,
+    *,
+    user_id: int,
+    document_id: int,
+    field_key: str,
+    page_number: int = 1,
+    raw_value_text: str = "fixture",
+) -> MetricExtraction:
+    extraction = MetricExtraction(
+        user_id=user_id,
+        document_id=document_id,
+        page_number=page_number,
+        field_key=field_key,
+        raw_value_text=raw_value_text,
+        original_text_snippet=f"{field_key} {raw_value_text}",
+        parsed_value_json={"raw": raw_value_text},
+        confidence_score=1.0,
+        parser_version="v1",
+        parse_generation=1,
+    )
+    db_session.add(extraction)
+    db_session.flush()
+    return extraction
 
 
 def test_reparse_existing_document_deactivates_prior_parsed_facts(db_session):
@@ -44,7 +71,14 @@ def test_reparse_existing_document_deactivates_prior_parsed_facts(db_session):
     )
     db_session.commit()
 
-    # Simulate a previous parse for the same metric_key
+    # Simulate a previous, exactly linked parse for the same metric_key.
+    old_extraction = _add_extraction(
+        db_session,
+        user_id=user.id,
+        document_id=doc.id,
+        field_key="recent_price",
+        raw_value_text="68.11",
+    )
     old = MetricFact(
         user_id=user.id,
         stock_id=stock.id,
@@ -55,7 +89,9 @@ def test_reparse_existing_document_deactivates_prior_parsed_facts(db_session):
         period_type="AS_OF",
         period_end_date=date(2026, 1, 2),
         source_type="parsed",
-        source_ref_id=None,
+        source_document_id=doc.id,
+        source_ref_id=old_extraction.id,
+        parse_generation=1,
         is_current=True,
     )
     db_session.add(old)
@@ -221,6 +257,22 @@ def test_reparse_existing_document_multi_page_updates_all_pages(db_session):
     )
     db_session.commit()
 
+    extraction_one = _add_extraction(
+        db_session,
+        user_id=user.id,
+        document_id=doc.id,
+        field_key="recent_price",
+        page_number=1,
+        raw_value_text="5",
+    )
+    extraction_two = _add_extraction(
+        db_session,
+        user_id=user.id,
+        document_id=doc.id,
+        field_key="recent_price",
+        page_number=2,
+        raw_value_text="6",
+    )
     db_session.add_all(
         [
             MetricFact(
@@ -233,7 +285,9 @@ def test_reparse_existing_document_multi_page_updates_all_pages(db_session):
                 period_type="AS_OF",
                 period_end_date=date(2026, 1, 2),
                 source_type="parsed",
-                source_ref_id=None,
+                source_document_id=doc.id,
+                source_ref_id=extraction_one.id,
+                parse_generation=1,
                 is_current=True,
             ),
             MetricFact(
@@ -246,7 +300,9 @@ def test_reparse_existing_document_multi_page_updates_all_pages(db_session):
                 period_type="AS_OF",
                 period_end_date=date(2026, 1, 2),
                 source_type="parsed",
-                source_ref_id=None,
+                source_document_id=doc.id,
+                source_ref_id=extraction_two.id,
+                parse_generation=1,
                 is_current=True,
             ),
         ]
@@ -388,6 +444,13 @@ def test_reparse_existing_document_keeps_newer_document_current_for_same_metric_
             period_end_date=date(2024, 12, 31),
             source_type="parsed",
             source_document_id=new_doc.id,
+            source_ref_id=_add_extraction(
+                db_session,
+                user_id=user.id,
+                document_id=new_doc.id,
+                field_key="tables_time_series",
+            ).id,
+            parse_generation=1,
             is_current=True,
         )
     )
@@ -407,6 +470,7 @@ def test_reparse_existing_document_keeps_newer_document_current_for_same_metric_
                     "unit": "USD",
                     "period_type": "FY",
                     "period_end_date": date(2024, 12, 31),
+                        "source_extraction_field_key": "recent_price",
                 }
             ],
             set(),
@@ -489,6 +553,13 @@ def test_reparse_existing_document_promotes_newer_document_for_same_metric_perio
             period_end_date=date(2024, 12, 31),
             source_type="parsed",
             source_document_id=old_doc.id,
+            source_ref_id=_add_extraction(
+                db_session,
+                user_id=user.id,
+                document_id=old_doc.id,
+                field_key="tables_time_series",
+            ).id,
+            parse_generation=1,
             is_current=True,
         )
     )
@@ -508,6 +579,7 @@ def test_reparse_existing_document_promotes_newer_document_for_same_metric_perio
                     "unit": "USD",
                     "period_type": "FY",
                     "period_end_date": date(2024, 12, 31),
+                        "source_extraction_field_key": "recent_price",
                 }
             ],
             set(),
@@ -568,20 +640,12 @@ def test_reparse_existing_document_replaces_prior_document_snapshot_when_identit
             text_extraction_method="native_text",
         )
     )
-    db_session.add(
-        MetricExtraction(
-            user_id=user.id,
-            document_id=doc.id,
-            page_number=1,
-            field_key="recent_price",
-            raw_value_text="9",
-            original_text_snippet="RECENT PRICE 9",
-            parsed_value_json={"raw": "9"},
-            confidence_score=0.5,
-            bbox_json=None,
-            parser_template_id=None,
-            parser_version="v1",
-        )
+    old_extraction = _add_extraction(
+        db_session,
+        user_id=user.id,
+        document_id=doc.id,
+        field_key="recent_price",
+        raw_value_text="9",
     )
     db_session.add(
         MetricFact(
@@ -595,7 +659,8 @@ def test_reparse_existing_document_replaces_prior_document_snapshot_when_identit
             period_end_date=date(2026, 1, 2),
             source_type="parsed",
             source_document_id=doc.id,
-            source_ref_id=None,
+            source_ref_id=old_extraction.id,
+            parse_generation=1,
             is_current=True,
         )
     )
@@ -622,11 +687,26 @@ def test_reparse_existing_document_replaces_prior_document_snapshot_when_identit
         .all()
     )
 
-    assert facts
+    assert len(facts) >= 2
     assert doc.stock_id is not None
     assert doc.stock_id != old_stock.id
-    assert {fact.stock_id for fact in facts} == {doc.stock_id}
-    assert all(fact.is_current for fact in facts)
-    assert all(fact.stock_id != old_stock.id for fact in facts)
-    assert extractions
-    assert all(extraction.raw_value_text != "9" for extraction in extractions)
+    old_facts = [fact for fact in facts if fact.parse_generation == 1]
+    new_facts = [fact for fact in facts if fact.parse_generation == 2]
+    assert old_facts and new_facts
+    assert {fact.stock_id for fact in old_facts} == {old_stock.id}
+    assert all(fact.is_current is False for fact in old_facts)
+    assert {fact.stock_id for fact in new_facts} == {doc.stock_id}
+    assert all(fact.is_current for fact in new_facts)
+    assert {extraction.parse_generation for extraction in extractions} == {1, 2}
+    assert old_extraction.id in {extraction.id for extraction in extractions}
+    assert all(
+        fact.source_ref_id in {extraction.id for extraction in extractions}
+        for fact in new_facts
+    )
+    active_reports = resolve_active_reports(
+        db_session,
+        stock_ids=[old_stock.id, doc.stock_id],
+        current_user_id=user.id,
+    )
+    assert old_stock.id not in active_reports
+    assert active_reports[doc.stock_id].document_id == doc.id

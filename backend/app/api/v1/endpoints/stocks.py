@@ -8,7 +8,6 @@ from app.models.artifacts import PdfDocument
 from app.models.stocks import Stock
 from app.models.facts import MetricFact
 from app.services.valuation import USER_INTRINSIC_VALUE_KEY
-from app.models.users import User
 from app.services.active_report_resolver import ActiveReportSelection, resolve_active_reports
 from app.services.actual_conflict_service import detect_actual_conflicts
 from app.schemas.stock import ResearchValuationSave
@@ -20,6 +19,11 @@ from app.services.market_data_service import (
     MarketDataService,
     compute_target_date,
     read_canonical_eod_price,
+)
+from app.services.metric_fact_visibility import visible_metric_fact_predicate
+from app.services.analysis_method_gate import (
+    evaluate_analysis_method,
+    metric_fact_matches_method,
 )
 
 router = APIRouter()
@@ -351,6 +355,10 @@ def _build_piotroski_f_score_card(
             MetricFact.metric_key.in_(metric_keys),
             MetricFact.source_type == "calculated",
             MetricFact.is_current.is_(True),
+            visible_metric_fact_predicate(
+                MetricFact,
+                user_id=current_user_id,
+            ),
             MetricFact.period_type == "FY",
         )
         .order_by(MetricFact.period_end_date.desc(), MetricFact.created_at.desc())
@@ -522,19 +530,10 @@ def _resolve_normalized_dcf_inputs(
     return dcf_inputs_series_by_year.get(median_year)
 
 
-def _visible_fact_predicate(current_user_id: int, admin_user_ids: list[int]):
-    return or_(
-        and_(
-            MetricFact.source_type == "parsed",
-            or_(
-                MetricFact.user_id == current_user_id,
-                MetricFact.user_id.in_(admin_user_ids),
-            ),
-        ),
-        and_(
-            MetricFact.user_id == current_user_id,
-            MetricFact.source_type.in_(["manual", "calculated"]),
-        ),
+def _visible_fact_predicate(current_user_id: int):
+    return visible_metric_fact_predicate(
+        MetricFact,
+        user_id=current_user_id,
     )
 
 
@@ -543,7 +542,6 @@ def _select_stock_for_ticker(
     ticker_normalized: str,
     *,
     current_user_id: int,
-    admin_user_ids: list[int],
 ) -> Stock | None:
     stocks = session.scalars(
         select(Stock)
@@ -560,7 +558,6 @@ def _select_stock_for_ticker(
         session,
         stock_ids=stock_ids,
         current_user_id=current_user_id,
-        shared_parsed_user_ids=admin_user_ids,
     )
     fact_counts = dict(
         session.execute(
@@ -568,7 +565,7 @@ def _select_stock_for_ticker(
             .where(
                 MetricFact.stock_id.in_(stock_ids),
                 MetricFact.is_current.is_(True),
-                _visible_fact_predicate(current_user_id, admin_user_ids),
+                _visible_fact_predicate(current_user_id),
             )
             .group_by(MetricFact.stock_id)
         ).all()
@@ -598,12 +595,10 @@ def read_stock_by_ticker(
     Get stock overview by ticker (case-insensitive).
     """
     ticker_normalized = ticker.strip().lower()
-    admin_user_ids = list(session.scalars(select(User.id).where(User.role == "admin")).all())
     stock = _select_stock_for_ticker(
         session,
         ticker_normalized,
         current_user_id=current_user.id,
-        admin_user_ids=admin_user_ids,
     )
     if not stock:
         raise HTTPException(status_code=404, detail="Stock not found")
@@ -611,19 +606,28 @@ def read_stock_by_ticker(
         session,
         stock_ids=[stock.id],
         current_user_id=current_user.id,
-        shared_parsed_user_ids=admin_user_ids,
     ).get(stock.id)
 
     facts_stmt = select(MetricFact).where(
         MetricFact.stock_id == stock.id,
         MetricFact.is_current.is_(True),
-        _visible_fact_predicate(current_user.id, admin_user_ids),
+        _visible_fact_predicate(current_user.id),
         MetricFact.metric_key.in_(
             ["mkt.price", "val.pe", "owners_earnings_per_share_normalized"]
         ),
+    ).order_by(
+        MetricFact.metric_key.asc(),
+        MetricFact.period_end_date.desc().nulls_last(),
+        MetricFact.created_at.desc(),
+        MetricFact.id.desc(),
     )
     facts = session.scalars(facts_stmt).all()
-    facts_by_key = {fact.metric_key: fact for fact in facts}
+    facts_by_key: dict[str, MetricFact] = {}
+    for fact in facts:
+        # is_current is scoped per period, not globally per metric.  The stock
+        # overview is a latest-period projection, so preserve the first row
+        # from the explicit deterministic ordering above.
+        facts_by_key.setdefault(fact.metric_key, fact)
 
     now_et = datetime.now(timezone.utc).astimezone(ET)
     target_date = compute_target_date(now_et)
@@ -633,13 +637,33 @@ def read_stock_by_ticker(
         as_of=target_date,
         include_as_of_session=True,
     )
+    usable_current_price = (
+        latest_price.close if latest_price.freshness_state == "fresh" else None
+    )
+    valuation_method = evaluate_analysis_method(
+        session,
+        stock_id=stock.id,
+        analysis_kind="valuation",
+        cutoff=datetime.now(timezone.utc),
+    )
+    dcf_available = (
+        valuation_method.state == "eligible"
+        and valuation_method.conclusion_authorized
+    )
+    owner_earnings_method = evaluate_analysis_method(
+        session,
+        stock_id=stock.id,
+        analysis_kind="owner_earnings",
+        cutoff=datetime.now(timezone.utc),
+    )
+    owner_earnings_available = owner_earnings_method.state == "eligible"
 
     oeps_stmt = (
         select(MetricFact)
         .where(
             MetricFact.stock_id == stock.id,
             MetricFact.is_current.is_(True),
-            _visible_fact_predicate(current_user.id, admin_user_ids),
+            _visible_fact_predicate(current_user.id),
             MetricFact.metric_key == "owners_earnings_per_share",
             MetricFact.period_type == "FY",
         )
@@ -647,13 +671,26 @@ def read_stock_by_ticker(
         .limit(6)
     )
     oeps_facts = session.scalars(oeps_stmt).all()
+    oeps_facts = [
+        fact
+        for fact in oeps_facts
+        if metric_fact_matches_method(fact, owner_earnings_method)
+    ]
+    normalized_oeps_fact = facts_by_key.get(
+        "owners_earnings_per_share_normalized"
+    )
+    if normalized_oeps_fact is not None and not metric_fact_matches_method(
+        normalized_oeps_fact, owner_earnings_method
+    ):
+        normalized_oeps_fact = None
+    owner_earnings_available = bool(oeps_facts or normalized_oeps_fact)
 
     dcf_inputs_stmt = (
         select(MetricFact)
         .where(
             MetricFact.stock_id == stock.id,
             MetricFact.is_current.is_(True),
-            _visible_fact_predicate(current_user.id, admin_user_ids),
+            _visible_fact_predicate(current_user.id),
             MetricFact.period_type == "FY",
             MetricFact.metric_key.in_(list(DCF_INPUT_FACT_KEYS.values())),
         )
@@ -683,7 +720,7 @@ def read_stock_by_ticker(
         .where(
             MetricFact.stock_id == stock.id,
             MetricFact.is_current.is_(True),
-            _visible_fact_predicate(current_user.id, admin_user_ids),
+            _visible_fact_predicate(current_user.id),
             MetricFact.metric_key.in_(growth_metric_keys),
         )
         .order_by(MetricFact.metric_key.asc(), MetricFact.period_end_date.desc())
@@ -724,9 +761,7 @@ def read_stock_by_ticker(
             session.execute(
                 select(PdfDocument.id, PdfDocument.report_date).where(
                     PdfDocument.id.in_(source_document_ids),
-                    PdfDocument.user_id.in_(
-                        sorted(set([current_user.id, *admin_user_ids]))
-                    ),
+                    PdfDocument.user_id == current_user.id,
                 )
             ).all()
         )
@@ -749,10 +784,7 @@ def read_stock_by_ticker(
             }
         )
 
-    for fact in oeps_facts:
-        period_end = fact.period_end_date
-        if not period_end:
-            continue
+    for period_end in sorted(dcf_inputs_by_date, reverse=True)[:6]:
         entry = _build_dcf_inputs_entry(
             dcf_inputs_by_date.get(period_end, {}),
             active_report=active_report,
@@ -823,7 +855,6 @@ def read_stock_by_ticker(
         stock_id=stock.id,
         active_report=active_report,
         current_user_id=current_user.id,
-        shared_parsed_user_ids=admin_user_ids,
     )
 
     return {
@@ -835,13 +866,19 @@ def read_stock_by_ticker(
         "company_name": stock.company_name,
         "active_report_document_id": active_report.document_id if active_report else None,
         "active_report_date": active_report.report_date.isoformat() if active_report and active_report.report_date else None,
-        "price": facts_by_key.get("mkt.price").value_numeric if facts_by_key.get("mkt.price") else None,
-        "price_provenance": _fact_provenance(
+        "price": usable_current_price,
+        "price_provenance": None,
+        "report_price_reference": (
+            facts_by_key.get("mkt.price").value_numeric
+            if facts_by_key.get("mkt.price")
+            else None
+        ),
+        "report_price_reference_provenance": _fact_provenance(
             facts_by_key.get("mkt.price"),
             active_report=active_report,
             report_dates_by_doc=report_dates_by_doc,
         ),
-        "latest_price": latest_price.close,
+        "latest_price": usable_current_price,
         "latest_price_date": latest_price.price_date.isoformat() if latest_price.price_date else None,
         "latest_price_updated_at": latest_price.observed_at.isoformat() if latest_price.observed_at else None,
         "latest_price_currency": latest_price.currency,
@@ -855,16 +892,46 @@ def read_stock_by_ticker(
             report_dates_by_doc=report_dates_by_doc,
         ),
         "oeps_normalized": (
-            facts_by_key.get("owners_earnings_per_share_normalized").value_numeric
-            if facts_by_key.get("owners_earnings_per_share_normalized")
+            normalized_oeps_fact.value_numeric
+            if owner_earnings_available
+            and normalized_oeps_fact
             else None
         ),
         "oeps_normalized_provenance": _fact_provenance(
-            facts_by_key.get("owners_earnings_per_share_normalized"),
+            (
+                normalized_oeps_fact
+                if owner_earnings_available
+                else None
+            ),
             active_report=active_report,
             report_dates_by_doc=report_dates_by_doc,
         ),
         "oeps_series": oeps_series,
+        "owner_earnings_available": owner_earnings_available,
+        "owner_earnings_method": {
+            "state": owner_earnings_method.state,
+            "reason": owner_earnings_method.reason_code,
+            "policy_version": owner_earnings_method.policy_version,
+            "classification": owner_earnings_method.classification,
+            "classification_id": owner_earnings_method.classification_id,
+            "method_id": owner_earnings_method.method_id,
+            "required_evidence": list(owner_earnings_method.required_evidence),
+            "output_authorized": owner_earnings_method.output_authorized,
+        },
+        "dcf_available": dcf_available,
+        "valuation_method": {
+            "state": valuation_method.state,
+            "reason": valuation_method.reason_code,
+            "policy_version": valuation_method.policy_version,
+            "classification": valuation_method.classification,
+            "classification_id": valuation_method.classification_id,
+            "method_id": valuation_method.method_id,
+            "required_evidence": list(valuation_method.required_evidence),
+            "output_authorized": valuation_method.output_authorized,
+            "conclusion_authorized": valuation_method.conclusion_authorized,
+        },
+        # Inputs remain inspectable as source evidence. Calculation and publication
+        # are independently blocked by dcf_available and the write-side gate.
         "dcf_inputs": dcf_inputs,
         "dcf_inputs_series": dcf_inputs_series,
         "growth_rate_options": growth_rate_options,
@@ -913,13 +980,11 @@ def read_stock_facts(
     if not stock:
         raise HTTPException(status_code=404, detail="Stock not found")
 
-    admin_user_ids = list(session.scalars(select(User.id).where(User.role == "admin")).all())
-
     # Get current facts
     stmt = select(MetricFact).where(
         MetricFact.stock_id == stock_id,
         MetricFact.is_current.is_(True),
-        _visible_fact_predicate(current_user.id, admin_user_ids),
+        _visible_fact_predicate(current_user.id),
     )
     facts = session.scalars(stmt).all()
 
@@ -952,6 +1017,27 @@ def upsert_stock_fact(
         raise HTTPException(status_code=404, detail="Stock not found")
     if payload.metric_key != USER_INTRINSIC_VALUE_KEY:
         raise HTTPException(status_code=400, detail="Unsupported metric_key")
+    if payload.source == "dcf":
+        valuation_method = evaluate_analysis_method(
+            session,
+            stock_id=stock_id,
+            analysis_kind="valuation",
+            cutoff=datetime.now(timezone.utc),
+        )
+        if not (
+            valuation_method.state == "eligible"
+            and valuation_method.conclusion_authorized
+        ):
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "code": "analysis_method_unavailable",
+                    "analysis_kind": "valuation",
+                    "state": valuation_method.state,
+                    "reason": valuation_method.reason_code,
+                    "policy_version": valuation_method.policy_version,
+                },
+            )
 
     now_et = datetime.now(timezone.utc).astimezone(ET)
     try:

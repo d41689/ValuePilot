@@ -28,6 +28,10 @@ from app.ingestion.parsers.v1_value_line.page_json import (
 )
 from app.services.active_report_resolver import resolve_active_reports
 from app.services.document_dedupe_service import DocumentDedupeService
+from app.services.financial_truth_locks import (
+    acquire_active_account_mutation_lock,
+    acquire_user_stock_fact_lock,
+)
 from app.services.ingestion_service import IngestionService
 from app.services.api_rate_limits import RateLimitExceeded, consume_user_operation
 from app.services.calculated_metrics.value_line_ratios import ValueLineRatioCalculator
@@ -36,6 +40,38 @@ from app.models.artifacts import PdfDocument
 
 router = APIRouter()
 MAX_PDF_UPLOAD_BYTES = 10 * 1024 * 1024
+
+
+def _owned_available_document(
+    session: SessionDep,
+    *,
+    user_id: int,
+    document_id: int,
+    not_found_message: str = "Document not found",
+    require_active: bool = False,
+) -> PdfDocument:
+    document = session.get(PdfDocument, document_id)
+    if document is None or document.user_id != user_id:
+        raise HTTPException(status_code=404, detail=not_found_message)
+    if document.lifecycle_state == "erased":
+        raise HTTPException(
+            status_code=410,
+            detail={
+                "code": "source_unavailable",
+                "reason": "account_erasure",
+                "document_id": document_id,
+            },
+        )
+    if require_active and document.lifecycle_state != "active":
+        raise HTTPException(
+            status_code=410,
+            detail={
+                "code": "source_unavailable",
+                "reason": "document_archived",
+                "document_id": document_id,
+            },
+        )
+    return document
 VALUE_LINE_TAXONOMY_PATH = next(
     (
         parent / "docs" / "value_line_field_taxonomy.yml"
@@ -140,7 +176,10 @@ def list_documents(
 
     docs = session.scalars(
         select(PdfDocument)
-        .where(PdfDocument.user_id == user_id)
+        .where(
+            PdfDocument.user_id == user_id,
+            PdfDocument.lifecycle_state == "active",
+        )
         .order_by(PdfDocument.upload_time.desc())
     ).all()
     if not docs:
@@ -182,6 +221,7 @@ def list_documents(
         .where(
             MetricFact.source_document_id.in_(doc_ids),
             MetricFact.source_type == "parsed",
+            func.parsed_metric_fact_has_exact_authority(MetricFact.id).is_(True),
         )
         .distinct()
     ).all()
@@ -332,9 +372,9 @@ def reparse_document(
     """
     user_id = current_user.id
 
-    doc = session.get(PdfDocument, document_id)
-    if not doc or doc.user_id != user_id:
-        raise HTTPException(status_code=404, detail="Document not found")
+    doc = _owned_available_document(
+        session, user_id=user_id, document_id=document_id, require_active=True
+    )
 
     service = IngestionService(session)
     try:
@@ -367,9 +407,9 @@ def download_document(
     current_user: CurrentUser,
     document_id: int,
 ) -> FileResponse:
-    doc = session.get(PdfDocument, document_id)
-    if not doc or doc.user_id != current_user.id:
-        raise HTTPException(status_code=404, detail="Document not found")
+    doc = _owned_available_document(
+        session, user_id=current_user.id, document_id=document_id
+    )
 
     file_path = Path(doc.file_storage_key)
     if not file_path.is_file():
@@ -392,12 +432,18 @@ def compare_documents(
 ) -> Any:
     user_id = current_user.id
 
-    left_doc = session.get(PdfDocument, left_document_id)
-    right_doc = session.get(PdfDocument, right_document_id)
-    if not left_doc or left_doc.user_id != user_id:
-        raise HTTPException(status_code=404, detail="Left document not found")
-    if not right_doc or right_doc.user_id != user_id:
-        raise HTTPException(status_code=404, detail="Right document not found")
+    left_doc = _owned_available_document(
+        session,
+        user_id=user_id,
+        document_id=left_document_id,
+        not_found_message="Left document not found",
+    )
+    right_doc = _owned_available_document(
+        session,
+        user_id=user_id,
+        document_id=right_document_id,
+        not_found_message="Right document not found",
+    )
 
     left_stock_ids = _document_stock_ids(session, left_doc)
     right_stock_ids = _document_stock_ids(session, right_doc)
@@ -455,9 +501,9 @@ def read_document_raw_text(
     """
     user_id = current_user.id
 
-    doc = session.get(PdfDocument, document_id)
-    if not doc or doc.user_id != user_id:
-        raise HTTPException(status_code=404, detail="Document not found")
+    doc = _owned_available_document(
+        session, user_id=user_id, document_id=document_id
+    )
 
     raw_text = doc.raw_text
     if raw_text is None:
@@ -483,9 +529,9 @@ def read_document_evidence(
     """
     user_id = current_user.id
 
-    doc = session.get(PdfDocument, document_id)
-    if not doc or doc.user_id != user_id:
-        raise HTTPException(status_code=404, detail="Document not found")
+    doc = _owned_available_document(
+        session, user_id=user_id, document_id=document_id
+    )
 
     taxonomy = _load_value_line_taxonomy()
     evidence_reads = taxonomy.get("evidence_reads", {})
@@ -556,9 +602,9 @@ def read_document_review(
     """
     Return a Value Line report-oriented review payload for one document.
     """
-    doc = session.get(PdfDocument, document_id)
-    if not doc or doc.user_id != current_user.id:
-        raise HTTPException(status_code=404, detail="Document not found")
+    doc = _owned_available_document(
+        session, user_id=current_user.id, document_id=document_id
+    )
 
     facts = _document_review_selected_facts(session, doc)
     stock_ids = sorted({fact.stock_id for fact in facts if fact.stock_id is not None})
@@ -639,15 +685,31 @@ def correct_document_review_fact(
     """
     Insert a manual current fact for a reviewed document value.
     """
-    doc = session.get(PdfDocument, document_id)
-    if not doc or doc.user_id != current_user.id:
-        raise HTTPException(status_code=404, detail="Document not found")
+    if not acquire_active_account_mutation_lock(
+        session, user_id=current_user.id
+    ):
+        raise HTTPException(
+            status_code=403,
+            detail={
+                "code": "account_erased",
+                "message": "This account no longer accepts document corrections.",
+            },
+        )
+    doc = _owned_available_document(
+        session,
+        user_id=current_user.id,
+        document_id=document_id,
+        require_active=True,
+    )
 
     fact = session.get(MetricFact, fact_id)
     if not fact or fact.user_id != current_user.id:
         raise HTTPException(status_code=404, detail="Fact not found")
     if not _document_review_fact_belongs_to_document(session, doc, fact):
         raise HTTPException(status_code=404, detail="Fact not found")
+    acquire_user_stock_fact_lock(
+        session, user_id=current_user.id, stock_id=fact.stock_id
+    )
 
     raw_value = payload.get("value")
     if raw_value is None or str(raw_value).strip() == "":
@@ -676,9 +738,10 @@ def correct_document_review_fact(
             MetricFact.user_id == current_user.id,
             MetricFact.stock_id == fact.stock_id,
             MetricFact.metric_key == fact.metric_key,
-            MetricFact.period_type == fact.period_type,
-            MetricFact.period_end_date == fact.period_end_date,
-            MetricFact.as_of_date == fact.as_of_date,
+            MetricFact.period_type.is_not_distinct_from(fact.period_type),
+            MetricFact.period_end_date.is_not_distinct_from(fact.period_end_date),
+            MetricFact.as_of_date.is_not_distinct_from(fact.as_of_date),
+            MetricFact.source_type == "manual",
             MetricFact.is_current.is_(True),
         )
         .values(is_current=False)
@@ -818,6 +881,8 @@ def _document_review_selected_facts(
 
     selected: dict[tuple[Any, ...], MetricFact] = {}
     for fact in rows:
+        if not _document_review_fact_is_current_source(session, doc, fact):
+            continue
         identity = _document_review_fact_identity(fact)
         current = selected.get(identity)
         if current is None or _document_review_fact_rank(fact) >= _document_review_fact_rank(current):
@@ -859,42 +924,11 @@ def _document_review_lineage_by_fact_id(
         ).all()
         by_extraction_id = {extraction.id: extraction for extraction in extractions}
 
-    document_extractions = session.scalars(
-        select(MetricExtraction)
-        .where(
-            MetricExtraction.user_id == doc.user_id,
-            MetricExtraction.document_id == doc.id,
-        )
-        .order_by(MetricExtraction.id.desc())
-    ).all()
-
     lineage: dict[int, MetricExtraction] = {}
     for fact in facts:
         if fact.source_ref_id in by_extraction_id:
             lineage[fact.id] = by_extraction_id[fact.source_ref_id]
-            continue
-        fallback = _document_review_find_lineage_fallback(fact, document_extractions)
-        if fallback is not None:
-            lineage[fact.id] = fallback
     return lineage
-
-
-def _document_review_find_lineage_fallback(
-    fact: MetricFact,
-    extractions: list[MetricExtraction],
-) -> Optional[MetricExtraction]:
-    metric_leaf = (fact.metric_key or "").split(".")[-1]
-    for extraction in extractions:
-        if extraction.field_key not in {fact.metric_key, metric_leaf}:
-            continue
-        if fact.period_type and extraction.period_type and fact.period_type != extraction.period_type:
-            continue
-        if fact.period_end_date and extraction.period_end_date and fact.period_end_date != extraction.period_end_date:
-            continue
-        if fact.as_of_date and extraction.as_of_date and fact.as_of_date != extraction.as_of_date:
-            continue
-        return extraction
-    return None
 
 
 def _document_review_item(
@@ -1294,16 +1328,34 @@ def _document_review_fact_belongs_to_document(
     doc: PdfDocument,
     fact: MetricFact,
 ) -> bool:
-    if fact.source_document_id == doc.id:
-        return True
-    if fact.source_ref_id is None:
+    return _document_review_fact_is_current_source(session, doc, fact)
+
+
+def _document_review_fact_is_current_source(
+    session: SessionDep,
+    doc: PdfDocument,
+    fact: MetricFact,
+) -> bool:
+    if (
+        not fact.is_current
+        or fact.source_document_id != doc.id
+        or fact.source_ref_id is None
+        or (doc.stock_id is not None and fact.stock_id != doc.stock_id)
+        or fact.source_type not in {"parsed", "manual"}
+    ):
         return False
     extraction = session.get(MetricExtraction, fact.source_ref_id)
-    return bool(
+    exact_current_extraction = bool(
         extraction
         and extraction.user_id == doc.user_id
         and extraction.document_id == doc.id
+        and extraction.parse_generation == doc.current_parse_generation
     )
+    if not exact_current_extraction:
+        return False
+    if fact.source_type == "parsed":
+        return fact.parse_generation == doc.current_parse_generation
+    return True
 
 
 def _normalize_review_correction(
@@ -1351,6 +1403,9 @@ def _document_stock_ids(session: SessionDep, doc: PdfDocument) -> set[int]:
             .where(
                 MetricFact.source_document_id == doc.id,
                 MetricFact.source_type == "parsed",
+                func.parsed_metric_fact_has_exact_authority(MetricFact.id).is_(
+                    True
+                ),
             )
             .distinct()
         ).all()
@@ -1372,6 +1427,7 @@ def _document_compare_fact_entries(
             MetricFact.source_document_id == document_id,
             MetricFact.source_type == "parsed",
             MetricFact.stock_id.in_(stock_ids),
+            func.parsed_metric_fact_has_exact_authority(MetricFact.id).is_(True),
         )
         .order_by(MetricFact.id.asc())
     ).all()

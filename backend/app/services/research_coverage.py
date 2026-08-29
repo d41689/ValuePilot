@@ -5,11 +5,12 @@ from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 from typing import Any
 
-from sqlalchemy import func, text
+from sqlalchemy import exists, func, or_, select, text
 from sqlalchemy.orm import Session
 
 from app.models.artifacts import PdfDocument
 from app.models.coverage import ResearchCoverageRequirement
+from app.models.facts import MetricFact
 from app.models.oracles_lens import OraclesLensSignal
 from app.models.research import ResearchCase
 from app.models.stocks import PoolMembership, Stock
@@ -18,6 +19,10 @@ from app.services.market_data_service import (
     read_canonical_eod_price,
 )
 from app.services.oracles_lens.constants import SCORE_VERSION
+from app.services.analysis_method_gate import (
+    METHOD_POLICY_VERSION,
+    evaluate_analysis_method,
+)
 
 
 PRIORITY_POLICY_VERSION = "research-coverage-priority-v1.0"
@@ -241,21 +246,34 @@ def _value_line_requirement(
     stock: Stock,
     as_of: date,
 ) -> dict[str, Any]:
-    document = (
+    exact_fact_exists = exists(
+        select(MetricFact.id).where(
+            MetricFact.user_id == user_id,
+            MetricFact.stock_id == stock.id,
+            MetricFact.source_type == "parsed",
+            MetricFact.source_document_id == PdfDocument.id,
+            MetricFact.is_current.is_(True),
+            func.parsed_metric_fact_has_exact_authority(MetricFact.id).is_(True),
+        )
+    )
+    candidates = (
         session.query(PdfDocument)
         .filter(
             PdfDocument.user_id == user_id,
-            PdfDocument.stock_id == stock.id,
             PdfDocument.parse_status == "parsed",
-            func.lower(PdfDocument.source).like("%value%line%"),
+            PdfDocument.lifecycle_state == "active",
+            # A single-company document carries stock_id directly. A legal
+            # multi-company container is bound through its exact parsed fact.
+            or_(PdfDocument.stock_id == stock.id, exact_fact_exists),
         )
         .order_by(
             PdfDocument.report_date.desc().nullslast(),
             PdfDocument.upload_time.desc(),
             PdfDocument.id.desc(),
         )
-        .first()
     )
+    authorized_document = candidates.filter(exact_fact_exists).first()
+    document = authorized_document or candidates.first()
     if document is None:
         return {
             "state": "missing",
@@ -266,6 +284,29 @@ def _value_line_requirement(
             "evidence_json": {"max_age_days": VALUE_LINE_MAX_AGE_DAYS},
             "observed_at": None,
             "next_action": "upload_value_line_report",
+        }
+    if authorized_document is None:
+        return {
+            "state": "blocked",
+            "reason_code": "value_line_reparse_required",
+            "reason": (
+                "The retained report has no current fact with exact parser and "
+                "mapping authority. Reparse it before using it for research."
+            ),
+            "source_type": "pdf_document",
+            "source_ref_id": document.id,
+            "evidence_json": {
+                "report_date": (
+                    document.report_date.isoformat()
+                    if document.report_date
+                    else None
+                ),
+                "parse_status": document.parse_status,
+                "canonical_fact_authority": False,
+                "max_age_days": VALUE_LINE_MAX_AGE_DAYS,
+            },
+            "observed_at": document.upload_time,
+            "next_action": "reparse_value_line_report",
         }
     if document.report_date is None:
         state = "failed"
@@ -296,6 +337,7 @@ def _value_line_requirement(
                 document.report_date.isoformat() if document.report_date else None
             ),
             "parse_status": document.parse_status,
+            "canonical_fact_authority": True,
             "max_age_days": VALUE_LINE_MAX_AGE_DAYS,
         },
         "observed_at": document.upload_time,
@@ -356,6 +398,58 @@ def _upsert_requirement(
         else row.first_unmet_at or evaluated_at
     )
     row.is_current = True
+
+
+def _method_requirement(
+    session: Session,
+    *,
+    stock: Stock,
+    evaluated_at: datetime,
+) -> dict[str, Any]:
+    result = evaluate_analysis_method(
+        session,
+        stock_id=stock.id,
+        analysis_kind="owner_earnings",
+        cutoff=evaluated_at,
+    )
+    if result.state != "eligible":
+        state = "unsupported"
+        reason_code = result.reason_code
+        reason = (
+            "No approved method may publish owner economics for the current "
+            "reviewed classification."
+        )
+        next_action = "review_company_classification"
+    elif not result.output_authorized:
+        state = "blocked"
+        reason_code = "output_not_authorized"
+        reason = (
+            "The company is classified, but the current method does not yet "
+            "authorize an Owner Earnings output."
+        )
+        next_action = "complete_owner_earnings_method_requirements"
+    else:
+        state = "ready"
+        reason_code = None
+        reason = "A reviewed company classification has an authorized analysis output."
+        next_action = None
+    return {
+        "state": state,
+        "reason_code": reason_code,
+        "reason": reason,
+        "source_type": "company_analysis_classification",
+        "source_ref_id": result.classification_id,
+        "evidence_json": {
+            "classification": result.classification,
+            "method_id": result.method_id,
+            "method_policy_version": result.policy_version,
+            "required_evidence": list(result.required_evidence),
+            "output_authorized": result.output_authorized,
+            "conclusion_authorized": result.conclusion_authorized,
+        },
+        "observed_at": evaluated_at if result.classification_id else None,
+        "next_action": next_action,
+    }
 
 
 def evaluate_research_coverage(
@@ -420,6 +514,15 @@ def evaluate_research_coverage(
                     session, user_id=user_id, stock=stock, as_of=as_of
                 ),
             ),
+            (
+                "method_applicability",
+                METHOD_POLICY_VERSION,
+                _method_requirement(
+                    session,
+                    stock=stock,
+                    evaluated_at=evaluated_at,
+                ),
+            ),
         )
         for kind_offset, (kind, policy, evaluation) in enumerate(evaluations):
             _upsert_requirement(
@@ -445,6 +548,99 @@ def evaluate_research_coverage(
         "lens_evaluated_count": lens_evaluated_count,
         "lens_denominator": min(lens_limit, lens_eligible_count),
         "requirements_evaluated": requirements_evaluated,
+        "evaluated_at": evaluated_at.isoformat(),
+    }
+
+
+def materialize_case_coverage(
+    session: Session,
+    *,
+    user_id: int,
+    stock_id: int,
+    as_of: date,
+    commit: bool = False,
+) -> dict[str, Any]:
+    """Materialize only one owned active case without scanning Lens candidates.
+
+    Case creation uses this transaction-local path so readiness exists as soon
+    as the case does. It performs stored-data reads only: no provider refresh,
+    SEC acquisition, or 13F ingestion can be triggered here.
+    """
+    session.execute(
+        text("SELECT pg_advisory_xact_lock(hashtextextended(:key, 0))"),
+        {"key": f"coverage:{user_id}:{PRIORITY_POLICY_VERSION}"},
+    )
+    case = (
+        session.query(ResearchCase)
+        .filter(
+            ResearchCase.user_id == user_id,
+            ResearchCase.stock_id == stock_id,
+            ResearchCase.state.in_(["queued", "researching", "monitoring"]),
+        )
+        .one_or_none()
+    )
+    stock = session.get(Stock, stock_id)
+    if case is None or stock is None:
+        raise ValueError("active owned research case and stock are required")
+
+    if case.state == "monitoring" and case.decision == "own":
+        matched_rule, tier = "open_case_own", 1
+    elif case.state == "monitoring" and case.decision == "watch":
+        matched_rule, tier = "open_case_watch", 2
+    elif case.state == "researching":
+        matched_rule, tier = "open_case_researching", 3
+    else:
+        matched_rule, tier = "open_case_queued", 4
+    if case.next_review_on and case.next_review_on <= as_of and tier in {1, 2}:
+        matched_rule = f"{matched_rule}_overdue"
+    candidate = _Candidate(
+        stock_id=stock_id,
+        matched_rule=matched_rule,
+        tier=tier,
+    )
+    evaluated_at = datetime.now(timezone.utc)
+    evaluations = (
+        (
+            "eod_price",
+            PRICE_FRESHNESS_POLICY_VERSION,
+            _price_requirement(session, stock=stock, as_of=as_of),
+        ),
+        (
+            "value_line_current_report",
+            VALUE_LINE_FRESHNESS_POLICY_VERSION,
+            _value_line_requirement(
+                session, user_id=user_id, stock=stock, as_of=as_of
+            ),
+        ),
+        (
+            "method_applicability",
+            METHOD_POLICY_VERSION,
+            _method_requirement(
+                session,
+                stock=stock,
+                evaluated_at=evaluated_at,
+            ),
+        ),
+    )
+    for offset, (kind, policy, evaluation) in enumerate(evaluations):
+        _upsert_requirement(
+            session,
+            user_id=user_id,
+            stock_id=stock_id,
+            kind=kind,
+            priority_rank=tier * 10 + offset,
+            candidate=candidate,
+            freshness_policy_version=policy,
+            evaluated_at=evaluated_at,
+            evaluation=evaluation,
+        )
+    if commit:
+        session.commit()
+    else:
+        session.flush()
+    return {
+        "stock_id": stock_id,
+        "requirements_evaluated": len(evaluations),
         "evaluated_at": evaluated_at.isoformat(),
     }
 
