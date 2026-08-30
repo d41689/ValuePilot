@@ -2,6 +2,7 @@
 
     POST /v1/fetch     — fetch a URL via the upstream's rate limiter + cache
     GET  /v1/metrics   — per-upstream budget / cache snapshot
+    GET  /v1/identity  — authenticated persistent installation identity
     GET  /healthz      — liveness
 """
 from __future__ import annotations
@@ -9,6 +10,7 @@ from __future__ import annotations
 import base64
 import logging
 import os
+import uuid
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
@@ -18,6 +20,7 @@ from .auth import enforce_auth_config, is_authorized
 from .cache import ResponseCache
 from .config import build_upstreams
 from .gateway import Gateway, UpstreamError
+from .identity import load_or_create_instance_id
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
 
@@ -25,7 +28,10 @@ logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(messag
 # never silently boot an unauthenticated public proxy.
 enforce_auth_config()
 
-_cache = ResponseCache(os.environ.get("RATE_GUARD_CACHE_DIR", "/data/cache"))
+_cache_root = os.environ.get("RATE_GUARD_CACHE_DIR", "/data/cache")
+INSTANCE_ID = load_or_create_instance_id(_cache_root)
+PROCESS_ID = str(uuid.uuid4())
+_cache = ResponseCache(_cache_root)
 _gateway = Gateway(build_upstreams(), _cache)
 
 app = FastAPI(title="Rate Guard", version="0.1.0")
@@ -63,6 +69,17 @@ def healthz() -> dict:
     # Unauthenticated liveness probe — deliberately minimal. The upstream list
     # is capability-revealing, so it lives on the authenticated /v1/metrics.
     return {"status": "ok"}
+
+
+@app.get("/v1/identity")
+def identity() -> dict:
+    """Authenticated proof that two ingress URLs reach the same installation."""
+    return {
+        "service": "rate-guard",
+        "instance_id": INSTANCE_ID,
+        "process_id": PROCESS_ID,
+        "version": app.version,
+    }
 
 
 @app.post("/v1/fetch")

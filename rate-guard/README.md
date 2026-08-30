@@ -1,22 +1,25 @@
 # Rate Guard
 
 The single egress chokepoint for ValuePilot's rate-limited upstreams (SEC
-EDGAR, OpenFIGI, Dataroma). dev and prod run on the same host behind the same
-outbound IP, so a per-process limiter cannot bound the *combined* rate — one
-shared Rate Guard instance can.
+EDGAR, OpenFIGI, Dataroma). Development and production may run on different
+machines, but only the production host owns a Rate Guard process; every caller
+shares its combined rate budget and outbound identity.
 
 Design and rationale: `docs/architecture/` is the long-form home; the working
 design doc is `docs/tasks/2026-05-20_rate-guard-design.md`.
 
 ## Topology
 
-**One** Rate Guard container, shared by dev and prod, on the external
-`projects-shared` Docker network. It has its own compose file
-(`docker-compose.rateguard.yml`) on purpose — neither the dev nor the prod
-compose may define its own Rate Guard, or there would be two limiters.
+**One** Rate Guard container, owned by the production host and shared by dev
+and prod. It has its own compose file (`docker-compose.rateguard.yml`) on
+purpose — neither the dev nor the prod compose may define its own Rate Guard,
+and a remote development machine must not start this compose file.
 
-Internal callers reach it at `http://rate-guard:9000` over `projects-shared`.
-The host port (`/healthz`, `/v1/metrics` inspection only) defaults to `9099`.
+Production reaches it at `http://rate-guard:9000` over `projects-shared`.
+Development always uses `https://rate-guard.richmom.vip`; the production deploy
+proves that public route and the private route expose the same persistent
+instance identity before it starts the production API. The host port defaults
+to `9099` and is loopback-only.
 
 ## Deployment
 
@@ -51,21 +54,29 @@ prod — *not* in the repo). The deploy workflow copies it to `./.env`.
 
 ### `RATE_GUARD_URL` — for the ValuePilot app, not Rate Guard itself
 
-ValuePilot's `EdgarClient` / `OpenFigiClient` / `DataromaClient` will POST to
-Rate Guard when `RATE_GUARD_URL` is set. **Before Rate Guard PR 2/4 merges**,
-add to `~/.config/valuepilot/.env`:
+ValuePilot's `EdgarClient` / `OpenFigiClient` / `DataromaClient` POST to Rate
+Guard. Production Compose pins the private URL. Development Compose pins the
+authenticated public URL, so a copied `.env` cannot accidentally select a
+second local limiter.
+
+Every live API also requires the persistent identity returned by the central
+service:
 
 ```
-RATE_GUARD_URL=http://rate-guard:9000
+RATE_GUARD_EXPECTED_INSTANCE_ID=<UUID returned by /v1/identity>
 ```
 
-In `EDGAR_FETCH_MODE=live`, PR 2/4 makes a missing `RATE_GUARD_URL` a hard
-startup error — live external access without the guard is not allowed.
+The production deploy obtains and injects this value automatically after
+comparing private and public routes. A development machine records the same
+non-secret UUID in its local `.env`. Missing, unreachable, malformed, or
+mismatched identity is a hard live-mode startup failure. Replay mode remains
+available for tests and offline work.
 
 ## Endpoints
 
 - `POST /v1/fetch` — `{upstream, method, url, body?}` → the upstream response.
 - `GET /v1/metrics?upstream=<name>` — per-upstream rate/budget snapshot.
+- `GET /v1/identity` — authenticated persistent installation UUID.
 - `GET /healthz` — liveness.
 
 ## Public exposure (authenticated)
@@ -91,9 +102,10 @@ https://rate-guard.richmom.vip/v1/fetch  →  cloudflared  →  localhost:9099  
 - The host port (`9099`) binds to `127.0.0.1` only, so the key can't be
   bypassed by hitting `http://<host-public-ip>:9099/v1/fetch` directly — the
   authenticated tunnel is the sole public path.
-- The remote caller sets `RATE_GUARD_URL=https://rate-guard.richmom.vip` (must be
-  **https** — the client warns if a key is set on a non-https off-box URL) and the
-  same `RATE_GUARD_API_KEY`; `RateGuardClient` sends the header automatically.
+- Development Compose sets `RATE_GUARD_URL=https://rate-guard.richmom.vip`
+  (HTTPS is mandatory off-box). Its local `.env` holds its independently
+  revocable client key and the central `RATE_GUARD_EXPECTED_INSTANCE_ID`;
+  `RateGuardClient` sends the key automatically.
 - Give each caller its own labelled key (`RATE_GUARD_API_KEY_<LABEL>`) and rotate
   with a `RATE_GUARD_API_KEY_PREVIOUS` window. Full runbook, the live ingress/DNS manifest, and
   the **rollback order (tear down the tunnel before reverting code)** are in

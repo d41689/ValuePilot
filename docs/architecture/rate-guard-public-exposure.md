@@ -7,6 +7,12 @@ the version-controlled record of that exposure — the actual wiring lives on th
 host (Cloudflare Tunnel + DNS + a host secret) and would otherwise be invisible
 in the repo.
 
+The shared-instance claim is enforced at deployment: Rate Guard persists an
+installation UUID in its cache volume, `/v1/identity` returns it behind bearer
+authentication, and production deployment compares the private and public
+responses before starting the API. Every live API pins that UUID and refuses to
+start on a mismatch.
+
 Background: [`rate-guard/README.md`](../../rate-guard/README.md) ·
 first exposure [`docs/tasks/2026-07-07_rate-guard-public-auth.md`](../tasks/2026-07-07_rate-guard-public-auth.md) ·
 hardening [`docs/tasks/2026-07-08_rate-guard-auth-hardening.md`](../tasks/2026-07-08_rate-guard-auth-hardening.md)
@@ -68,8 +74,11 @@ prod + dev api); `RATE_GUARD_API_KEY_DEVELOPMENT` = the remote dev machine
 Fail-safe posture: with no key configured, auth is *disabled* (opt-in default,
 for CI / internal). `RATE_GUARD_REQUIRE_AUTH=1` flips that to fail-closed for the
 public deployment. Callers (`EdgarClient`/`OpenFigiClient`/`DataromaClient` via
-`RateGuardClient`) send the key automatically when `RATE_GUARD_API_KEY` is set;
-the remote box sets `RATE_GUARD_URL=https://rate-guard.richmom.vip` + the key.
+`RateGuardClient`) send the key automatically when `RATE_GUARD_API_KEY` is set.
+Development Compose pins `RATE_GUARD_URL=https://rate-guard.richmom.vip`; the
+remote box supplies its key and the non-secret `RATE_GUARD_EXPECTED_INSTANCE_ID`
+from that authenticated endpoint. Production Compose pins the internal URL and
+receives the same expected UUID from the deployment gate.
 
 ## Rollback runbook — tear down the public path FIRST
 

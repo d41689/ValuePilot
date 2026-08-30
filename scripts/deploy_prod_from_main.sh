@@ -23,7 +23,11 @@ fi
 
 set -a
 . "$REPO_ROOT/.env"
+rate_guard_deploy_api_key=${RATE_GUARD_API_KEY:-}
 . "$REPO_ROOT/.env.prod"
+# Rate Guard reads only .env. Keep its primary credential authoritative even if
+# a stale .env.prod happens to contain a variable with the same name.
+RATE_GUARD_API_KEY=$rate_guard_deploy_api_key
 set +a
 
 wait_for_url() {
@@ -44,6 +48,33 @@ wait_for_url() {
   return 1
 }
 
+rate_guard_identity() {
+  base_url=$1
+  if [ -z "${rate_guard_deploy_api_key:-}" ]; then
+    echo "RATE_GUARD_API_KEY is required to verify authenticated identity" >&2
+    return 1
+  fi
+  printf 'header = "Authorization: Bearer %s"\n' "$rate_guard_deploy_api_key" |
+    curl --fail --silent --show-error --max-time 10 --config - \
+      "${base_url}/v1/identity"
+}
+
+wait_for_public_rate_guard_identity() {
+  expected=$1
+  max_attempts=${2:-30}
+  attempt=1
+  while [ "$attempt" -le "$max_attempts" ]; do
+    actual=$(rate_guard_identity "https://rate-guard.richmom.vip" 2>/dev/null || true)
+    if [ "$actual" = "$expected" ]; then
+      return 0
+    fi
+    sleep 2
+    attempt=$((attempt + 1))
+  done
+  echo "Public and internal Rate Guard routes do not expose the same instance" >&2
+  return 1
+}
+
 # Rate Guard is the shared egress limiter for dev + prod. Bring it up first
 # and confirm it is healthy before the prod stack: once the api depends on it
 # (Rate Guard PR 2/4), a prod deploy must not proceed past a broken limiter.
@@ -54,6 +85,39 @@ rate_guard_port=${RATE_GUARD_HOST_PORT:-9099}
 docker compose -f docker-compose.rateguard.yml up -d --build
 wait_for_url "http://127.0.0.1:${rate_guard_port}/healthz"
 echo "Rate Guard healthy on port ${rate_guard_port}"
+
+internal_rate_guard_identity_document=$(
+  rate_guard_identity "http://127.0.0.1:${rate_guard_port}"
+)
+internal_rate_guard_identity=$(
+  printf '%s\n' "$internal_rate_guard_identity_document" |
+    sed -n 's/.*"instance_id":"\([^"]*\)".*/\1/p'
+)
+internal_rate_guard_process=$(
+  printf '%s\n' "$internal_rate_guard_identity_document" |
+    sed -n 's/.*"process_id":"\([^"]*\)".*/\1/p'
+)
+if ! printf '%s\n' "$internal_rate_guard_identity" |
+  grep -Eq '^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$'; then
+  echo "Internal Rate Guard returned an invalid instance identity" >&2
+  exit 1
+fi
+if ! printf '%s\n' "$internal_rate_guard_process" |
+  grep -Eq '^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$'; then
+  echo "Internal Rate Guard returned an invalid process identity" >&2
+  exit 1
+fi
+
+wait_for_public_rate_guard_identity "$internal_rate_guard_identity_document"
+public_rate_guard_identity_document=$(
+  rate_guard_identity "https://rate-guard.richmom.vip"
+)
+if [ "$public_rate_guard_identity_document" != "$internal_rate_guard_identity_document" ]; then
+  echo "Public and internal Rate Guard routes do not expose the same instance" >&2
+  exit 1
+fi
+export RATE_GUARD_EXPECTED_INSTANCE_ID=$internal_rate_guard_identity
+echo "Verified singleton Rate Guard instance ${internal_rate_guard_identity}, process ${internal_rate_guard_process}"
 
 docker compose -f docker-compose.prod.yml up -d --build
 docker compose -f docker-compose.prod.yml ps

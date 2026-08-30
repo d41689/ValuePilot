@@ -57,6 +57,7 @@ jobs:
           NEXT_PUBLIC_API_URL=/api/v1
           SECRET_KEY=valuepilot-ci-secret-key
           RATE_GUARD_URL=http://rate-guard.invalid
+          EDGAR_FETCH_MODE=replay
           EOF
 
       - name: Build and start services
@@ -82,6 +83,9 @@ jobs:
           cd rate-guard
           pip install -r requirements-dev.txt
           pytest -q
+
+      - name: Verify singleton Rate Guard topology
+        run: ./scripts/check_rate_guard_topology.sh
 
       - name: Print service logs on failure
         if: failure()

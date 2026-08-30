@@ -13,10 +13,18 @@ import httpx
 import pytest
 
 from app.edgar.client import EdgarClient
+from app.edgar import client as edgar_module
 from app.rate_guard import client as rg
 from app.rate_guard.client import RateGuardFetchError
 
 RATE_GUARD = "http://rate-guard:9000"
+
+
+@pytest.fixture(autouse=True)
+def _default_to_replay(monkeypatch):
+    # Wrapper routing tests use a one-response transport. Live identity behavior
+    # is covered explicitly below.
+    monkeypatch.setattr(edgar_module.settings, "EDGAR_FETCH_MODE", "replay")
 
 
 def _rg_http(handler) -> httpx.Client:
@@ -105,3 +113,27 @@ def test_edgar_fetch_carries_the_bearer_key_end_to_end(monkeypatch):
         assert client.get("https://www.sec.gov/x") == b"PAGE"
 
     assert seen["auth"] == "Bearer s3cret"
+
+
+def test_live_edgar_client_verifies_instance_before_it_can_fetch(monkeypatch):
+    expected = "11111111-1111-4111-8111-111111111111"
+    monkeypatch.setattr(edgar_module.settings, "EDGAR_FETCH_MODE", "live")
+    monkeypatch.setattr(rg.settings, "RATE_GUARD_URL", RATE_GUARD)
+    monkeypatch.setattr(rg.settings, "RATE_GUARD_EXPECTED_INSTANCE_ID", expected)
+    seen: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request.url.path)
+        return httpx.Response(
+            200,
+            json={
+                "service": "rate-guard",
+                "instance_id": expected,
+                "version": "0.1.0",
+            },
+        )
+
+    with EdgarClient(http_client=_rg_http(handler)):
+        pass
+
+    assert seen == ["/v1/identity"]

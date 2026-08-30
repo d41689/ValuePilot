@@ -50,6 +50,9 @@ class Settings(BaseSettings):
     # Rate Guard egress service. Required when EDGAR_FETCH_MODE=live (enforced
     # at startup) — EdgarClient routes every EDGAR fetch through it.
     RATE_GUARD_URL: Optional[str] = None
+    # Persistent identity returned by Rate Guard's authenticated /v1/identity.
+    # Live API startup fails unless the configured endpoint matches this value.
+    RATE_GUARD_EXPECTED_INSTANCE_ID: Optional[str] = None
     # Shared Bearer key for Rate Guard's public surface. When set, the client
     # sends `Authorization: Bearer <key>` on every fetch/metrics call and Rate
     # Guard rejects unauthenticated requests. Leave unset for internal-only

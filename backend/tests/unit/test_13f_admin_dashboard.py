@@ -994,6 +994,15 @@ def test_retry_manager_cik_search_with_edited_name_preserves_candidate_review(
         lambda client, company_name: [("Edited Capital Management LP", "0007654321")],
     )
 
+    class DummyEdgarClient:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+    monkeypatch.setattr(dashboard, "EdgarClient", DummyEdgarClient)
+
     response = client.post(
         f"/api/v1/admin/13f/managers/{manager.id}/retry-cik-search",
         headers=auth_headers(admin),

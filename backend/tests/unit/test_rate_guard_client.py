@@ -214,6 +214,90 @@ def _metrics_envelope(upstream_snaps: dict) -> httpx.Response:
     return httpx.Response(200, json={"upstreams": upstream_snaps})
 
 
+def _identity_envelope(
+    instance_id: str = "11111111-1111-4111-8111-111111111111",
+) -> httpx.Response:
+    return httpx.Response(
+        200,
+        json={
+            "service": "rate-guard",
+            "instance_id": instance_id,
+            "version": "0.1.0",
+        },
+    )
+
+
+def test_verify_identity_accepts_expected_instance_and_sends_auth(monkeypatch):
+    expected = "11111111-1111-4111-8111-111111111111"
+    monkeypatch.setattr(rg.settings, "RATE_GUARD_URL", RATE_GUARD)
+    monkeypatch.setattr(rg.settings, "RATE_GUARD_API_KEY", "s3cret")
+    monkeypatch.setattr(rg.settings, "RATE_GUARD_EXPECTED_INSTANCE_ID", expected)
+    seen: dict[str, str | None] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["url"] = str(request.url)
+        seen["auth"] = request.headers.get("Authorization")
+        return _identity_envelope(expected)
+
+    with RateGuardClient(http_client=_rg_http(handler)) as client:
+        actual = client.verify_identity()
+
+    assert actual == expected
+    assert seen == {
+        "url": "http://rate-guard:9000/v1/identity",
+        "auth": "Bearer s3cret",
+    }
+
+
+def test_verify_identity_rejects_missing_expected_identity(monkeypatch):
+    monkeypatch.setattr(rg.settings, "RATE_GUARD_URL", RATE_GUARD)
+    monkeypatch.setattr(rg.settings, "RATE_GUARD_EXPECTED_INSTANCE_ID", None)
+
+    with RateGuardClient(http_client=_rg_http(lambda request: _identity_envelope())) as client:
+        with pytest.raises(RateGuardFetchError, match="EXPECTED_INSTANCE_ID"):
+            client.verify_identity()
+
+
+def test_verify_identity_rejects_a_different_instance(monkeypatch):
+    monkeypatch.setattr(rg.settings, "RATE_GUARD_URL", RATE_GUARD)
+    monkeypatch.setattr(
+        rg.settings,
+        "RATE_GUARD_EXPECTED_INSTANCE_ID",
+        "11111111-1111-4111-8111-111111111111",
+    )
+
+    with RateGuardClient(
+        http_client=_rg_http(
+            lambda request: _identity_envelope(
+                "22222222-2222-4222-8222-222222222222"
+            )
+        )
+    ) as client:
+        with pytest.raises(RateGuardFetchError, match="unexpected instance"):
+            client.verify_identity()
+
+
+@pytest.mark.parametrize(
+    "response",
+    [
+        httpx.Response(401),
+        httpx.Response(200, content=b"not-json"),
+        httpx.Response(200, json={"service": "wrong", "instance_id": "x"}),
+    ],
+)
+def test_verify_identity_rejects_unverifiable_response(monkeypatch, response):
+    monkeypatch.setattr(rg.settings, "RATE_GUARD_URL", RATE_GUARD)
+    monkeypatch.setattr(
+        rg.settings,
+        "RATE_GUARD_EXPECTED_INSTANCE_ID",
+        "11111111-1111-4111-8111-111111111111",
+    )
+
+    with RateGuardClient(http_client=_rg_http(lambda request: response)) as client:
+        with pytest.raises(RateGuardFetchError, match="identity"):
+            client.verify_identity()
+
+
 def test_metrics_returns_a_single_upstream_snapshot(monkeypatch):
     monkeypatch.setattr(rg.settings, "RATE_GUARD_URL", RATE_GUARD)
     seen: dict = {}
