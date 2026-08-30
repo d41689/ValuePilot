@@ -1,25 +1,32 @@
 # Rate Guard
 
-The single egress chokepoint for ValuePilot's rate-limited upstreams (SEC
-EDGAR, OpenFIGI, Dataroma). Development and production may run on different
-machines, but only the production host owns a Rate Guard process; every caller
-shares its combined rate budget and outbound identity.
+The normal egress chokepoint for ValuePilot's rate-limited upstreams (SEC
+EDGAR, OpenFIGI, Dataroma). Production owns the central process. Development
+prefers it but has a private, low-rate emergency fallback when the production
+Mac or its public tunnel is offline.
 
 Design and rationale: `docs/architecture/` is the long-form home; the working
 design doc is `docs/tasks/2026-05-20_rate-guard-design.md`.
 
 ## Topology
 
-**One** Rate Guard container, owned by the production host and shared by dev
-and prod. It has its own compose file (`docker-compose.rateguard.yml`) on
-purpose — neither the dev nor the prod compose may define its own Rate Guard,
-and a remote development machine must not start this compose file.
+The central Rate Guard container is owned by the production host and shared by
+dev and prod. It has its own compose file (`docker-compose.rateguard.yml`) on
+purpose — neither dev nor prod Compose may define another *central* Rate Guard,
+and a remote development machine must not start that compose file.
 
 Production reaches it at `http://rate-guard:9000` over `projects-shared`.
 Development always uses `https://rate-guard.richmom.vip`; the production deploy
 proves that public route and the private route expose the same persistent
 instance identity before it starts the production API. The host port defaults
 to `9099` and is loopback-only.
+
+Development Compose also owns `rate-guard-local`, reachable only inside its
+private network. The API selects it only when the central identity origin has
+a transport/gateway-unavailable failure. Authentication failures, malformed
+identities, and pinned-identity mismatches fail closed. A background probe
+switches new clients back after recovery. Central SEC egress is pinned at 8
+requests/second and fallback at 1, keeping their worst-case aggregate at 9.
 
 ## Deployment
 
@@ -59,18 +66,30 @@ Guard. Production Compose pins the private URL. Development Compose pins the
 authenticated public URL, so a copied `.env` cannot accidentally select a
 second local limiter.
 
-Every live API also requires the persistent identity returned by the central
-service:
+Every production live API requires the persistent identity returned by the
+central service:
 
 ```
 RATE_GUARD_EXPECTED_INSTANCE_ID=<UUID returned by /v1/identity>
 ```
 
 The production deploy obtains and injects this value automatically after
-comparing private and public routes. A development machine records the same
-non-secret UUID in its local `.env`. Missing, unreachable, malformed, or
-mismatched identity is a hard live-mode startup failure. Replay mode remains
-available for tests and offline work.
+comparing private and public routes. A development machine may record the same
+non-secret UUID in its local `.env`; when present, it remains a hard pin.
+Without one, development accepts the structurally valid identity returned over
+the authenticated HTTPS route for that process lifetime. An unreachable origin
+selects the local fallback; malformed, unauthorized, or mismatched identity is
+a hard failure. Replay mode performs no probes.
+
+Development's adaptive settings are pinned by `docker-compose.yml`:
+
+```
+RATE_GUARD_ALLOW_LOCAL_FALLBACK=true
+RATE_GUARD_FALLBACK_URL=http://rate-guard-local:9000
+RATE_GUARD_PRIMARY_PROBE_INTERVAL_S=30
+```
+
+Never enable them in production.
 
 ## Endpoints
 

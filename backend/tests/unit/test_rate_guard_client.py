@@ -12,7 +12,12 @@ import httpx
 import pytest
 
 from app.rate_guard import client as rg
-from app.rate_guard.client import RateGuardClient, RateGuardFetchError
+from app.rate_guard.client import (
+    RateGuardClient,
+    RateGuardFetchError,
+    RateGuardIdentityUnavailable,
+)
+from app.rate_guard.route_state import RateGuardRoute, clear_active_route, set_active_route
 
 RATE_GUARD = "http://rate-guard:9000"
 
@@ -225,6 +230,88 @@ def _identity_envelope(
             "version": "0.1.0",
         },
     )
+
+
+def test_existing_client_tracks_atomically_replaced_active_route(monkeypatch):
+    monkeypatch.setattr(rg.settings, "RATE_GUARD_URL", "http://wrong:9000")
+    set_active_route(
+        RateGuardRoute(
+            base_url="https://primary.example",
+            expected_instance_id="11111111-1111-4111-8111-111111111111",
+            source="primary",
+        )
+    )
+    seen: dict[str, str] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["url"] = str(request.url)
+        return _envelope()
+
+    try:
+        with RateGuardClient(http_client=_rg_http(handler)) as client:
+            set_active_route(
+                RateGuardRoute(
+                    base_url="http://rate-guard-local:9000",
+                    expected_instance_id="22222222-2222-4222-8222-222222222222",
+                    source="fallback",
+                )
+            )
+            client.fetch(upstream="edgar", method="GET", url="https://www.sec.gov/x")
+    finally:
+        clear_active_route()
+
+    assert seen["url"] == "http://rate-guard-local:9000/v1/fetch"
+
+
+def test_discover_identity_accepts_valid_authenticated_endpoint(monkeypatch):
+    monkeypatch.setattr(rg.settings, "RATE_GUARD_API_KEY", "s3cret")
+    seen: dict[str, str | None] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["url"] = str(request.url)
+        seen["auth"] = request.headers.get("Authorization")
+        return _identity_envelope()
+
+    with RateGuardClient(
+        http_client=_rg_http(handler),
+        base_url="https://primary.example",
+        expected_instance_id=None,
+    ) as client:
+        actual = client.discover_identity()
+
+    assert actual == "11111111-1111-4111-8111-111111111111"
+    assert seen == {
+        "url": "https://primary.example/v1/identity",
+        "auth": "Bearer s3cret",
+    }
+
+
+@pytest.mark.parametrize("status", [502, 503, 504, 521, 522, 523, 524, 530])
+def test_identity_origin_unavailable_is_typed_for_failover(monkeypatch, status):
+    monkeypatch.setattr(rg.settings, "RATE_GUARD_API_KEY", "s3cret")
+    with RateGuardClient(
+        http_client=_rg_http(lambda _request: httpx.Response(status)),
+        base_url="https://primary.example",
+        expected_instance_id=None,
+    ) as client:
+        with pytest.raises(RateGuardIdentityUnavailable):
+            client.discover_identity()
+
+
+@pytest.mark.parametrize("status", [400, 401, 403, 404, 500])
+def test_identity_configuration_or_auth_failure_never_looks_offline(
+    monkeypatch, status
+):
+    monkeypatch.setattr(rg.settings, "RATE_GUARD_API_KEY", "s3cret")
+    with RateGuardClient(
+        http_client=_rg_http(lambda _request: httpx.Response(status)),
+        base_url="https://primary.example",
+        expected_instance_id=None,
+    ) as client:
+        with pytest.raises(RateGuardFetchError) as exc:
+            client.discover_identity()
+
+    assert not isinstance(exc.value, RateGuardIdentityUnavailable)
 
 
 def test_verify_identity_accepts_expected_instance_and_sends_auth(monkeypatch):

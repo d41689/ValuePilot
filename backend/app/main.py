@@ -1,37 +1,37 @@
+import asyncio
 import logging
 from contextlib import asynccontextmanager
+from contextlib import suppress
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.core.config import settings
 from app.api.v1.api import api_router
-from app.rate_guard.client import RateGuardClient, RateGuardFetchError
+from app.rate_guard.routing import (
+    reconcile_monitored_rate_guard_route,
+    verify_live_rate_guard,
+)
 
 logger = logging.getLogger(__name__)
 
 
-def verify_live_rate_guard() -> str | None:
-    """Fail startup unless live egress reaches the deployment-pinned singleton."""
-    if settings.EDGAR_FETCH_MODE != "live":
-        return None
-    if not (settings.RATE_GUARD_URL or "").strip():
-        raise RuntimeError(
-            "EDGAR_FETCH_MODE=live requires RATE_GUARD_URL — live EDGAR access "
-            "must go through Rate Guard. Set RATE_GUARD_URL, or use "
-            "EDGAR_FETCH_MODE=replay. See rate-guard/README.md."
-        )
-    if not (settings.RATE_GUARD_EXPECTED_INSTANCE_ID or "").strip():
-        raise RuntimeError(
-            "EDGAR_FETCH_MODE=live requires RATE_GUARD_EXPECTED_INSTANCE_ID"
-        )
-    try:
-        with RateGuardClient() as client:
-            instance_id = client.verify_identity()
-    except RateGuardFetchError as exc:
-        raise RuntimeError(f"Live Rate Guard verification failed: {exc}") from exc
-    logger.info("Verified live Rate Guard instance %s", instance_id)
-    return instance_id
+async def _monitor_rate_guard_route() -> None:
+    interval = max(1.0, settings.RATE_GUARD_PRIMARY_PROBE_INTERVAL_S)
+    while True:
+        await asyncio.sleep(interval)
+        try:
+            route = await asyncio.to_thread(reconcile_monitored_rate_guard_route)
+            logger.info(
+                "Rate Guard route monitor selected %s instance %s",
+                route.source,
+                route.expected_instance_id,
+            )
+        except Exception:
+            # Keep the last verified route. New EdgarClient construction still
+            # verifies that snapshot, so a stale/unreachable route cannot be
+            # used silently while the monitor waits for the next probe.
+            logger.exception("Rate Guard route reconciliation failed")
 
 
 @asynccontextmanager
@@ -41,6 +41,12 @@ async def lifespan(app: FastAPI):
     # limiter cannot bound the combined dev+prod egress rate and risks an
     # EDGAR IP ban. Use EDGAR_FETCH_MODE=replay for tests / offline runs.
     verify_live_rate_guard()
+    rate_guard_monitor = None
+    if (
+        settings.EDGAR_FETCH_MODE == "live"
+        and settings.RATE_GUARD_ALLOW_LOCAL_FALLBACK
+    ):
+        rate_guard_monitor = asyncio.create_task(_monitor_rate_guard_route())
 
     # Seed the curated manager universe BEFORE the scheduler or the job worker
     # can act on it: ingestion selects managers on `match_status == 'confirmed'`,
@@ -106,6 +112,10 @@ async def lifespan(app: FastAPI):
             except Exception:
                 logger.exception("Start-quarter reconcile failed; continuing startup")
     yield
+    if rate_guard_monitor is not None:
+        rate_guard_monitor.cancel()
+        with suppress(asyncio.CancelledError):
+            await rate_guard_monitor
     if job_worker is not None:
         job_worker.stop()
         logger.info("13F admin job worker stopped")
