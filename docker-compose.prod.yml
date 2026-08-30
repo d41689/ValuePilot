@@ -43,6 +43,12 @@ services:
       - "${HOST_API_PORT:-8101}:8000"
     environment:
       DATABASE_URL: postgresql://${VALUEPILOT_DB_USER:-valuepilot}:${VALUEPILOT_DB_PASSWORD:-valuepilot}@postgres:5432/${VALUEPILOT_PROD_DB:-valuepilot_prod}
+      # Production stays on the private Docker hop. deploy_prod_from_main.sh
+      # proves the public development ingress exposes this same instance, then
+      # exports the identity used here before Compose evaluates the file.
+      RATE_GUARD_URL: http://rate-guard:9000
+      RATE_GUARD_API_KEY: "${RATE_GUARD_API_KEY:-deploy-not-configured}"
+      RATE_GUARD_EXPECTED_INSTANCE_ID: "${RATE_GUARD_EXPECTED_INSTANCE_ID:-deploy-not-verified}"
     volumes:
       - ./docs:/code/docs:ro
       - ${VALUEPILOT_UPLOADS_DIR:-./storage/uploads}:/code/storage/uploads

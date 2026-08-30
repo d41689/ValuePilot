@@ -53,6 +53,10 @@ services:
       - "${DEV_HOST_API_PORT:-8001}:8000"
     environment:
       DATABASE_URL: postgresql://valuepilot:valuepilot@postgres:5432/valuepilot
+      # Every development stack, including one on the production host, enters
+      # through the authenticated public route. The deploy gate proves this URL
+      # terminates at production's one internal Rate Guard process.
+      RATE_GUARD_URL: https://rate-guard.richmom.vip
       THIRTEENF_SMART_RETRY_ENABLED: "${THIRTEENF_SMART_RETRY_ENABLED:-false}"
       THIRTEENF_JOB_WORKER_ENABLED: "${THIRTEENF_JOB_WORKER_ENABLED:-true}"
     volumes:
