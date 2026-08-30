@@ -58,6 +58,7 @@ jobs:
           SECRET_KEY=valuepilot-ci-secret-key
           RATE_GUARD_URL=http://rate-guard.invalid
           EDGAR_FETCH_MODE=replay
+          SEC_CONTACT_EMAIL=ci@example.com
           EOF
 
       - name: Build and start services

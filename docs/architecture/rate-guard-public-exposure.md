@@ -30,9 +30,15 @@ https://rate-guard.richmom.vip/v1/fetch
   → SEC / OpenFIGI / Dataroma
 ```
 
-One shared Rate Guard serves dev **and** prod (and now the remote box). The
+One central Rate Guard normally serves dev **and** prod (and now the remote box). The
 host port is bound to `127.0.0.1` so the only public path is the authenticated
 tunnel — hitting the host's public IP on `:9099` is not possible.
+
+Development has a private 1 request/second emergency fallback. It is selected
+only for central transport/origin-unavailable failures and is continuously
+reconciled back to the public central route. Production never falls back.
+Central is pinned to 8 SEC requests/second, so both processes remain below 10
+even when only the tunnel is down and production continues using central.
 
 ## Cloudflared ingress (secret-free copy of the live host config)
 

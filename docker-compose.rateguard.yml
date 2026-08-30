@@ -18,6 +18,9 @@ services:
       - .env
     environment:
       RATE_GUARD_CACHE_DIR: /data/cache
+      # Leave one request/second of aggregate headroom for a development
+      # emergency fallback when this host or its public tunnel is unreachable.
+      RATE_GUARD_EDGAR_RPS: "8.0"
     ports:
       # Host port for healthz / metrics inspection and the cloudflared tunnel;
       # internal callers use http://rate-guard:9000 on the shared network.

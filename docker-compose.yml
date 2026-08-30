@@ -42,6 +42,30 @@ services:
       api:
         condition: service_started
 
+  # Development-only emergency egress. It is never published to the host or
+  # attached to shared-infra, and the API selects it only after the central
+  # authenticated identity origin is genuinely unavailable. Its 1 req/s SEC
+  # budget keeps worst-case central (8) + fallback (1) below SEC's ceiling.
+  rate-guard-local:
+    build:
+      context: ./rate-guard
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      RATE_GUARD_CACHE_DIR: /data/cache
+      RATE_GUARD_EDGAR_RPS: "1.0"
+    volumes:
+      - rate_guard_fallback_cache:/data/cache
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:9000/healthz', timeout=2)"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    networks:
+      - default
+
   api:
     build:
       context: ./backend
@@ -57,6 +81,9 @@ services:
       # through the authenticated public route. The deploy gate proves this URL
       # terminates at production's one internal Rate Guard process.
       RATE_GUARD_URL: https://rate-guard.richmom.vip
+      RATE_GUARD_ALLOW_LOCAL_FALLBACK: "true"
+      RATE_GUARD_FALLBACK_URL: http://rate-guard-local:9000
+      RATE_GUARD_PRIMARY_PROBE_INTERVAL_S: "30"
       THIRTEENF_SMART_RETRY_ENABLED: "${THIRTEENF_SMART_RETRY_ENABLED:-false}"
       THIRTEENF_JOB_WORKER_ENABLED: "${THIRTEENF_JOB_WORKER_ENABLED:-true}"
     volumes:
@@ -64,6 +91,11 @@ services:
       - ./docs:/code/docs
       - ./storage/edgar_raw:/code/storage/edgar_raw
     command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]
+    depends_on:
+      rate-guard-local:
+        # Do not make central availability depend on fallback health. If the
+        # local process is still booting, API restart policy retries resolution.
+        condition: service_started
     networks:
       - default
       - shared-infra
@@ -72,3 +104,6 @@ networks:
   shared-infra:
     external: true
     name: projects-shared
+
+volumes:
+  rate_guard_fallback_cache:
