@@ -11,10 +11,12 @@ or raw fact values, and it never publishes ``metric_facts``.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import date, datetime, timezone
 from pathlib import Path
+import re
 
-from sqlalchemy import select
+from sqlalchemy import func, or_, select
 import typer
 import yaml
 
@@ -22,6 +24,7 @@ from app.acceptance.financial_truth_gold_set import validate_gold_set
 from app.core.config import settings
 from app.core.db import SessionLocal
 from app.edgar.client import EdgarClient
+from app.models.sec_financials import SecIssuerIdentity
 from app.models.stocks import Stock
 from app.services.sec_financial_ingestion import (
     ingest_latest_financial_filings,
@@ -32,6 +35,20 @@ from app.services.sec_financial_ingestion import (
 
 app = typer.Typer(add_completion=False, no_args_is_help=True)
 MANIFEST_PATH = Path("/code/docs/acceptance/financial_truth_beta_gold_set.yml")
+_TICKER_SEPARATOR_RE = re.compile(r"[./-]")
+_COMPANY_NAME_TOKEN_RE = re.compile(r"[^A-Z0-9]+")
+_GENERIC_LISTING_VALUES = {"", "UNKNOWN", "US"}
+_MIC_LISTING_ALIASES = {
+    "XNAS": {"XNAS", "NASDAQ", "NDQ", "NAS", "NMS", "NCM", "NGM", "NSDQ"},
+    "XNYS": {"XNYS", "NYSE"},
+}
+
+
+@dataclass(frozen=True)
+class _GoldCaseStockResolution:
+    stock: Stock
+    source: str
+    manifest_ticker: str
 
 
 def _gold_case(case_id: str) -> dict:
@@ -50,6 +67,139 @@ def _single_stock(db, ticker: str) -> Stock:
             f"ticker must resolve to exactly one reviewed stock row; found {len(rows)}"
         )
     return rows[0]
+
+
+def _ticker_aliases(case: dict) -> set[str]:
+    listing = case["primary_listing"]
+    ticker = str(listing["ticker"]).strip().upper()
+    if not str(listing["share_class"]).startswith("class_"):
+        return {ticker}
+    segments = _TICKER_SEPARATOR_RE.split(ticker)
+    if len(segments) == 1 or any(not segment for segment in segments):
+        return {ticker}
+    return {separator.join(segments) for separator in ("-", ".", "/")}
+
+
+def _normalized_company_name(value: str) -> str:
+    return " ".join(_COMPANY_NAME_TOKEN_RE.sub(" ", value.upper()).split())
+
+
+def _stock_matches_locked_case(stock: Stock, case: dict) -> bool:
+    listing = case["primary_listing"]
+    if not stock.is_active:
+        return False
+    if stock.ticker.strip().upper() not in _ticker_aliases(case):
+        return False
+    if _normalized_company_name(stock.company_name) != _normalized_company_name(
+        str(case["company_name"])
+    ):
+        return False
+
+    manifest_country = str(listing["country"]).strip().upper()
+    stock_country = (stock.market_country or "").strip().upper()
+    if stock_country not in {"", "UNKNOWN"} and stock_country != manifest_country:
+        return False
+
+    manifest_mic = str(listing["mic"]).strip().upper()
+    permitted_venues = _MIC_LISTING_ALIASES.get(manifest_mic, {manifest_mic})
+    canonical_venue = (stock.listing_exchange or "").strip().upper()
+    if canonical_venue not in _GENERIC_LISTING_VALUES:
+        return canonical_venue in permitted_venues
+
+    legacy_venues = {
+        str(value).strip().upper()
+        for value in (stock.raw_exchange, stock.exchange)
+        if value is not None
+    } - _GENERIC_LISTING_VALUES
+    return not legacy_venues or legacy_venues <= permitted_venues
+
+
+def _terminal_cik_decisions(db, *, cik: str, at: datetime) -> list[SecIssuerIdentity]:
+    stock_ids = set(
+        db.scalars(
+            select(SecIssuerIdentity.stock_id).where(
+                SecIssuerIdentity.cik == cik,
+                SecIssuerIdentity.known_at <= at,
+                SecIssuerIdentity.effective_from <= at.date(),
+                or_(
+                    SecIssuerIdentity.effective_to.is_(None),
+                    SecIssuerIdentity.effective_to >= at.date(),
+                ),
+            )
+        ).all()
+    )
+    decisions: list[SecIssuerIdentity] = []
+    for stock_id in sorted(stock_ids):
+        decision = db.scalar(
+            select(SecIssuerIdentity)
+            .where(
+                SecIssuerIdentity.stock_id == stock_id,
+                SecIssuerIdentity.known_at <= at,
+                SecIssuerIdentity.effective_from <= at.date(),
+                or_(
+                    SecIssuerIdentity.effective_to.is_(None),
+                    SecIssuerIdentity.effective_to >= at.date(),
+                ),
+            )
+            .order_by(SecIssuerIdentity.known_at.desc(), SecIssuerIdentity.id.desc())
+            .limit(1)
+        )
+        if decision is not None:
+            decisions.append(decision)
+    return decisions
+
+
+def _resolve_gold_case_stock(
+    db, case: dict, *, at: datetime
+) -> _GoldCaseStockResolution:
+    if at.tzinfo is None:
+        raise typer.BadParameter("gold-case identity cutoff must be timezone-aware")
+    case_id = str(case["case_id"])
+    cik = str(case["cik"])
+    manifest_ticker = str(case["primary_listing"]["ticker"]).strip().upper()
+    decisions = _terminal_cik_decisions(db, cik=cik, at=at)
+    if decisions:
+        reviewed = [
+            decision
+            for decision in decisions
+            if decision.status == "reviewed" and decision.cik == cik
+        ]
+        if len(decisions) != 1 or len(reviewed) != 1:
+            raise typer.BadParameter(
+                f"locked CIK must resolve to exactly one terminal reviewed stock identity; "
+                f"found {len(reviewed)} reviewed among {len(decisions)} terminal decisions"
+            )
+        stock = db.get(Stock, reviewed[0].stock_id)
+        if stock is None or not _stock_matches_locked_case(stock, case):
+            raise typer.BadParameter(
+                f"reviewed CIK identity conflicts with locked case {case_id}"
+            )
+        return _GoldCaseStockResolution(
+            stock=stock,
+            source="reviewed_cik",
+            manifest_ticker=manifest_ticker,
+        )
+
+    aliases = _ticker_aliases(case)
+    candidates = db.scalars(
+        select(Stock).where(
+            func.upper(Stock.ticker).in_(aliases),
+            Stock.is_active.is_(True),
+        )
+    ).all()
+    consistent = [
+        stock for stock in candidates if _stock_matches_locked_case(stock, case)
+    ]
+    if len(consistent) != 1:
+        raise typer.BadParameter(
+            "locked case bootstrap must resolve to exactly one consistent stock row; "
+            f"found {len(consistent)}"
+        )
+    return _GoldCaseStockResolution(
+        stock=consistent[0],
+        source="locked_manifest_bootstrap",
+        manifest_ticker=manifest_ticker,
+    )
 
 
 @app.command("ingest-gold-case")
@@ -74,19 +224,26 @@ def ingest_gold_case(
             raise typer.BadParameter(f"invalid as-of: {exc}") from exc
     db = SessionLocal()
     try:
-        stock = _single_stock(db, case["primary_listing"]["ticker"])
-        register_reviewed_sec_identity(
-            db,
-            stock_id=stock.id,
-            cik=case["cik"],
-            effective_from=date.fromisoformat(
-                str(case["expected_history"]["available_start_on"])
-            ),
-            known_at=now,
-            review_reason=(
-                f"Locked FT-00 case {case_id}; PO/reviewer approvals recorded in "
-                "financial_truth_beta_gold_set.yml."
-            ),
+        resolution = _resolve_gold_case_stock(db, case, at=now)
+        stock = resolution.stock
+        if resolution.source == "locked_manifest_bootstrap":
+            register_reviewed_sec_identity(
+                db,
+                stock_id=stock.id,
+                cik=case["cik"],
+                effective_from=date.fromisoformat(
+                    str(case["expected_history"]["available_start_on"])
+                ),
+                known_at=now,
+                review_reason=(
+                    f"Locked FT-00 case {case_id}; PO/reviewer approvals recorded in "
+                    "financial_truth_beta_gold_set.yml."
+                ),
+            )
+        typer.echo(
+            f"identity_resolution={resolution.source} case={case_id} "
+            f"manifest_ticker={resolution.manifest_ticker} stock_ticker={stock.ticker} "
+            f"stock_id={stock.id} cik={case['cik']}"
         )
         with EdgarClient() as client:
             report = ingest_latest_financial_filings(
