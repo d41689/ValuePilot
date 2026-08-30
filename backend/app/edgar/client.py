@@ -14,6 +14,7 @@ import httpx
 
 from app.core.config import settings
 from app.rate_guard.client import RateGuardClient
+from app.rate_guard.route_state import get_active_route
 
 
 class EdgarClient:
@@ -24,6 +25,16 @@ class EdgarClient:
     DATA_BASE = "https://data.sec.gov"
 
     def __init__(self, http_client: httpx.Client | None = None) -> None:
+        if (
+            settings.EDGAR_FETCH_MODE == "live"
+            and settings.RATE_GUARD_ALLOW_LOCAL_FALLBACK
+            and get_active_route() is None
+        ):
+            # Operator CLIs and one-off workers do not execute FastAPI's
+            # lifespan. Resolve the same adaptive route at this boundary too.
+            from app.rate_guard.routing import verify_live_rate_guard
+
+            verify_live_rate_guard()
         self._rate_guard = RateGuardClient(http_client)
         if settings.EDGAR_FETCH_MODE == "live":
             # API startup verifies early; this second boundary also protects

@@ -15,6 +15,7 @@ import uuid
 import httpx
 
 from app.core.config import settings
+from app.rate_guard.route_state import get_active_route
 
 logger = logging.getLogger(__name__)
 
@@ -25,7 +26,14 @@ _RATE_GUARD_IDENTITY_TIMEOUT_S = 10.0
 
 # Hosts where a plain-http Rate Guard URL is fine (traffic never leaves the box /
 # the Docker network). Anything else must be https when a key is configured.
-_INTERNAL_RATE_GUARD_HOSTS = {"rate-guard", "localhost", "127.0.0.1", "::1"}
+_INTERNAL_RATE_GUARD_HOSTS = {
+    "rate-guard",
+    "rate-guard-local",
+    "localhost",
+    "127.0.0.1",
+    "::1",
+}
+_IDENTITY_ORIGIN_UNAVAILABLE_STATUSES = {502, 503, 504, 521, 522, 523, 524, 530}
 # Warn at most once per misconfigured base URL, not per request.
 _insecure_key_url_warned: set[str] = set()
 
@@ -42,6 +50,15 @@ class RateGuardFetchError(RuntimeError):
     def __init__(self, message: str, *, status_code: int | None = None) -> None:
         super().__init__(message)
         self.status_code = status_code
+
+
+class RateGuardIdentityUnavailable(RateGuardFetchError):
+    """The configured identity origin cannot currently be reached.
+
+    Only this failure class is eligible for development fallback. Authentication,
+    malformed responses, and identity mismatches remain ordinary fail-closed
+    ``RateGuardFetchError`` failures.
+    """
 
 
 def _error_detail(resp: httpx.Response) -> dict:
@@ -61,11 +78,42 @@ class RateGuardClient:
     injectable so tests can drive it with an ``httpx.MockTransport``.
     """
 
-    def __init__(self, http_client: httpx.Client | None = None) -> None:
+    def __init__(
+        self,
+        http_client: httpx.Client | None = None,
+        *,
+        base_url: str | None = None,
+        expected_instance_id: str | None = None,
+    ) -> None:
         self._client = http_client or httpx.Client(timeout=_RATE_GUARD_TIMEOUT_S)
+        self._uses_active_route = base_url is None
+        active = get_active_route() if self._uses_active_route else None
+        self._configured_base_url = (
+            active.base_url if active is not None else base_url or settings.RATE_GUARD_URL
+        )
+        self._configured_expected_instance_id = (
+            active.expected_instance_id
+            if active is not None
+            else (
+                expected_instance_id
+                if base_url is not None
+                else settings.RATE_GUARD_EXPECTED_INSTANCE_ID
+            )
+        )
+
+    def _route_config(self) -> tuple[str | None, str | None]:
+        if self._uses_active_route:
+            active = get_active_route()
+            if active is not None:
+                return active.base_url, active.expected_instance_id
+        return self._configured_base_url, self._configured_expected_instance_id
 
     def _base_url(self) -> str:
-        base = (settings.RATE_GUARD_URL or "").strip()
+        base_url, _expected = self._route_config()
+        return self._validated_base_url(base_url)
+
+    def _validated_base_url(self, base_url: str | None) -> str:
+        base = (base_url or "").strip()
         if not base:
             raise RateGuardFetchError(
                 "RATE_GUARD_URL is not configured — external fetches must route "
@@ -171,21 +219,12 @@ class RateGuardClient:
                 f"Rate Guard returned an undecodable body for {url}: {exc}"
             ) from exc
 
-    def verify_identity(self) -> str:
-        """Prove the configured URL reaches the expected Rate Guard instance."""
-        expected = (settings.RATE_GUARD_EXPECTED_INSTANCE_ID or "").strip()
-        if not expected:
-            raise RateGuardFetchError(
-                "RATE_GUARD_EXPECTED_INSTANCE_ID is required for live external access"
-            )
-        try:
-            expected = str(uuid.UUID(expected))
-        except ValueError as exc:
-            raise RateGuardFetchError(
-                "RATE_GUARD_EXPECTED_INSTANCE_ID is not a valid UUID"
-            ) from exc
+    def discover_identity(self) -> str:
+        """Return a structurally validated identity without requiring a pin."""
+        return self._discover_identity_at(self._base_url())
 
-        url = f"{self._base_url()}/v1/identity"
+    def _discover_identity_at(self, base_url: str) -> str:
+        url = f"{base_url}/v1/identity"
         try:
             resp = self._client.request(
                 "GET",
@@ -194,9 +233,13 @@ class RateGuardClient:
                 timeout=_RATE_GUARD_IDENTITY_TIMEOUT_S,
             )
         except httpx.HTTPError as exc:
-            raise RateGuardFetchError(
+            raise RateGuardIdentityUnavailable(
                 f"Rate Guard identity endpoint is unreachable: {exc}"
             ) from exc
+        if resp.status_code in _IDENTITY_ORIGIN_UNAVAILABLE_STATUSES:
+            raise RateGuardIdentityUnavailable(
+                f"Rate Guard identity origin is unavailable (HTTP {resp.status_code})"
+            )
         if resp.status_code != 200:
             raise RateGuardFetchError(
                 f"Rate Guard identity endpoint returned HTTP {resp.status_code}"
@@ -222,6 +265,26 @@ class RateGuardClient:
             raise RateGuardFetchError(
                 "Rate Guard identity endpoint returned a malformed identity"
             )
+        return actual
+
+    def verify_identity(self) -> str:
+        """Prove the configured URL reaches the expected Rate Guard instance."""
+        base_url, expected_instance_id = self._route_config()
+        expected = (expected_instance_id or "").strip()
+        if not expected:
+            raise RateGuardFetchError(
+                "RATE_GUARD_EXPECTED_INSTANCE_ID is required for live external access"
+            )
+        try:
+            expected = str(uuid.UUID(expected))
+        except ValueError as exc:
+            raise RateGuardFetchError(
+                "RATE_GUARD_EXPECTED_INSTANCE_ID is not a valid UUID"
+            ) from exc
+
+        # Pin the same route snapshot for the request and comparison. The
+        # monitor may atomically replace the active route between operations.
+        actual = self._discover_identity_at(self._validated_base_url(base_url))
         if actual != expected:
             raise RateGuardFetchError(
                 f"Rate Guard URL reached unexpected instance {actual}; expected {expected}"

@@ -53,6 +53,12 @@ class Settings(BaseSettings):
     # Persistent identity returned by Rate Guard's authenticated /v1/identity.
     # Live API startup fails unless the configured endpoint matches this value.
     RATE_GUARD_EXPECTED_INSTANCE_ID: Optional[str] = None
+    # Development-only availability mode. It first probes RATE_GUARD_URL and
+    # may use the private Compose fallback only when that origin is unreachable.
+    # Production never enables this switch.
+    RATE_GUARD_ALLOW_LOCAL_FALLBACK: bool = False
+    RATE_GUARD_FALLBACK_URL: Optional[str] = None
+    RATE_GUARD_PRIMARY_PROBE_INTERVAL_S: float = 30.0
     # Shared Bearer key for Rate Guard's public surface. When set, the client
     # sends `Authorization: Bearer <key>` on every fetch/metrics call and Rate
     # Guard rejects unauthenticated requests. Leave unset for internal-only

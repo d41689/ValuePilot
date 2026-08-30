@@ -16,6 +16,7 @@ from app.edgar.client import EdgarClient
 from app.edgar import client as edgar_module
 from app.rate_guard import client as rg
 from app.rate_guard.client import RateGuardFetchError
+from app.rate_guard.route_state import RateGuardRoute, clear_active_route, set_active_route
 
 RATE_GUARD = "http://rate-guard:9000"
 
@@ -25,6 +26,12 @@ def _default_to_replay(monkeypatch):
     # Wrapper routing tests use a one-response transport. Live identity behavior
     # is covered explicitly below.
     monkeypatch.setattr(edgar_module.settings, "EDGAR_FETCH_MODE", "replay")
+    monkeypatch.setattr(
+        edgar_module.settings, "RATE_GUARD_ALLOW_LOCAL_FALLBACK", False
+    )
+    clear_active_route()
+    yield
+    clear_active_route()
 
 
 def _rg_http(handler) -> httpx.Client:
@@ -137,3 +144,35 @@ def test_live_edgar_client_verifies_instance_before_it_can_fetch(monkeypatch):
         pass
 
     assert seen == ["/v1/identity"]
+
+
+def test_live_cli_resolves_adaptive_route_without_fastapi_lifespan(monkeypatch):
+    from app.rate_guard import routing
+
+    expected = "22222222-2222-4222-8222-222222222222"
+    monkeypatch.setattr(edgar_module.settings, "EDGAR_FETCH_MODE", "live")
+    monkeypatch.setattr(edgar_module.settings, "RATE_GUARD_ALLOW_LOCAL_FALLBACK", True)
+    calls: list[str] = []
+
+    def resolve():
+        calls.append("resolve")
+        set_active_route(
+            RateGuardRoute(
+                "http://rate-guard-local:9000", expected, "fallback"
+            )
+        )
+        return expected
+
+    monkeypatch.setattr(routing, "verify_live_rate_guard", resolve)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert str(request.url) == "http://rate-guard-local:9000/v1/identity"
+        return httpx.Response(
+            200,
+            json={"service": "rate-guard", "instance_id": expected},
+        )
+
+    with EdgarClient(http_client=_rg_http(handler)):
+        pass
+
+    assert calls == ["resolve"]
