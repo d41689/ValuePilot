@@ -29,10 +29,12 @@ from app.services.sec_financial_ingestion import (
     _store_content_immutable,
     _fetch_bytes,
     _discover,
+    earliest_replayable_sec_financial_evidence_at,
     ingest_latest_financial_filings,
     register_reviewed_sec_identity,
     retire_sec_identity,
     select_sec_financial_evidence_as_of,
+    select_sec_financial_failures_as_of,
 )
 from app.rate_guard.client import RateGuardFetchError
 
@@ -524,7 +526,7 @@ def test_historical_discovery_has_request_budget(monkeypatch) -> None:
         client,
         CIK,
         max_filings=1,
-        as_of=datetime(2010, 1, 1, tzinfo=timezone.utc),
+        filing_selection_as_of=datetime(2010, 1, 1, tzinfo=timezone.utc),
     )
 
     assert len(client.calls) == 3
@@ -538,7 +540,7 @@ def test_historical_discovery_reports_unsafe_reference() -> None:
         client,
         CIK,
         max_filings=1,
-        as_of=datetime(2010, 1, 1, tzinfo=timezone.utc),
+        filing_selection_as_of=datetime(2010, 1, 1, tzinfo=timezone.utc),
     )
 
     assert client.calls == [SUBMISSIONS_URL]
@@ -569,7 +571,7 @@ def test_historical_discovery_reports_malformed_reference(
         client,
         CIK,
         max_filings=1,
-        as_of=datetime(2010, 1, 1, tzinfo=timezone.utc),
+        filing_selection_as_of=datetime(2010, 1, 1, tzinfo=timezone.utc),
     )
 
     assert client.calls == [SUBMISSIONS_URL]
@@ -603,6 +605,11 @@ def test_exact_failed_parse_replay_remains_a_failure(db_session, tmp_path: Path)
         now=datetime(2026, 8, 27, 12, 5, tzinfo=timezone.utc),
     )
     db_session.commit()
+    failed_replay = select_sec_financial_failures_as_of(
+        db_session,
+        stock_id=stock.id,
+        cutoff=datetime.now(timezone.utc) + timedelta(seconds=1),
+    )
     second = ingest_latest_financial_filings(
         db_session,
         stock_id=stock.id,
@@ -615,6 +622,109 @@ def test_exact_failed_parse_replay_remains_a_failure(db_session, tmp_path: Path)
 
     assert first.failures == (f"{ACCESSION}:no_inline_xbrl_facts",)
     assert second.failures == first.failures
+    assert [(item.accession_no, item.error_code) for item in failed_replay] == [
+        (ACCESSION, "no_inline_xbrl_facts")
+    ]
+
+
+def test_failed_evidence_replay_is_empty_without_eligible_filing_history(
+    db_session,
+) -> None:
+    stock = Stock(ticker="EMPTY", exchange="US", company_name="Empty Fixture")
+    db_session.add(stock)
+    db_session.flush()
+    register_reviewed_sec_identity(
+        db_session,
+        stock_id=stock.id,
+        cik="0000000088",
+        effective_from=date(1980, 1, 1),
+        known_at=datetime(2026, 8, 27, 12, 0, tzinfo=timezone.utc),
+        review_reason="Empty fixture.",
+    )
+    db_session.commit()
+
+    assert select_sec_financial_failures_as_of(
+        db_session,
+        stock_id=stock.id,
+        cutoff=datetime.now(timezone.utc) + timedelta(seconds=1),
+    ) == []
+
+
+def test_replay_keeps_success_and_terminal_failure_for_different_filings(
+    db_session,
+) -> None:
+    stock, identity, succeeded_filing, artifact = _database_lineage_fixture(
+        db_session, ticker="MIXED", cik="0000000087"
+    )
+    succeeded_run = SecFinancialParseRun(
+        filing_id=succeeded_filing.id,
+        parser_name="fixture",
+        parser_version="success",
+        input_manifest_hash="d" * 64,
+        status="succeeded",
+        started_at=datetime(2026, 8, 27, 12, 3, tzinfo=timezone.utc),
+        completed_at=datetime(2026, 8, 27, 12, 3, tzinfo=timezone.utc),
+        known_at=datetime(2026, 8, 27, 12, 3, tzinfo=timezone.utc),
+        fact_count=1,
+    )
+    db_session.add(succeeded_run)
+    db_session.flush()
+    db_session.add(
+        SecFinancialParseRunArtifact(
+            parse_run_id=succeeded_run.id,
+            artifact_id=artifact.id,
+            known_at=succeeded_run.known_at,
+        )
+    )
+    db_session.flush()
+    db_session.add(_raw_fact(succeeded_run.id, artifact.id))
+
+    failed_filing = SecFinancialFiling(
+        issuer_identity_id=identity.id,
+        accession_no="0000000087-26-000002",
+        form_type="10-Q",
+        is_amendment=False,
+        filed_on=date(2026, 8, 15),
+        report_date=date(2026, 7, 31),
+        accepted_at=datetime(2026, 8, 15, 16, 0, tzinfo=timezone.utc),
+        known_at=datetime(2026, 8, 27, 12, 4, tzinfo=timezone.utc),
+        primary_document="failed.htm",
+        index_url="https://www.sec.gov/failed/index.json",
+        source_url="https://www.sec.gov/failed/failed.htm",
+        submissions_source_url=(
+            "https://data.sec.gov/submissions/CIK0000000087.json"
+        ),
+        discovery_payload_sha256="e" * 64,
+    )
+    db_session.add(failed_filing)
+    db_session.flush()
+    failed_run = SecFinancialParseRun(
+        filing_id=failed_filing.id,
+        parser_name="fixture",
+        parser_version="failed",
+        input_manifest_hash="f" * 64,
+        status="failed",
+        started_at=datetime(2026, 8, 27, 12, 5, tzinfo=timezone.utc),
+        completed_at=datetime(2026, 8, 27, 12, 5, tzinfo=timezone.utc),
+        known_at=datetime(2026, 8, 27, 12, 5, tzinfo=timezone.utc),
+        fact_count=0,
+        error_code="required_artifact_unavailable",
+    )
+    db_session.add(failed_run)
+    db_session.commit()
+    cutoff = datetime.now(timezone.utc) + timedelta(seconds=1)
+
+    successes = select_sec_financial_evidence_as_of(
+        db_session, stock_id=stock.id, cutoff=cutoff
+    )
+    failures = select_sec_financial_failures_as_of(
+        db_session, stock_id=stock.id, cutoff=cutoff
+    )
+
+    assert [item.accession_no for item in successes] == [succeeded_filing.accession_no]
+    assert [(item.accession_no, item.error_code) for item in failures] == [
+        (failed_filing.accession_no, "required_artifact_unavailable")
+    ]
 
 
 def test_ingestion_is_idempotent_pit_safe_and_does_not_publish_metric_facts(
@@ -645,6 +755,9 @@ def test_ingestion_is_idempotent_pit_safe_and_does_not_publish_metric_facts(
         parser_version="inline-xbrl-v1",
     )
     db_session.commit()
+    replayable_after_first = earliest_replayable_sec_financial_evidence_at(
+        db_session, stock_id=stock.id
+    )
     second = ingest_latest_financial_filings(
         db_session,
         stock_id=stock.id,
@@ -662,6 +775,10 @@ def test_ingestion_is_idempotent_pit_safe_and_does_not_publish_metric_facts(
     assert first.raw_facts_created == 3
     assert second.parse_runs_created == 0
     assert second.raw_facts_created == 0
+    assert replayable_after_first is not None
+    assert earliest_replayable_sec_financial_evidence_at(
+        db_session, stock_id=stock.id
+    ) == replayable_after_first
     assert db_session.scalar(select(func.count()).select_from(SecFinancialFiling)) == 1
     assert db_session.scalar(select(func.count()).select_from(SecFilingArtifact)) == 5
     assert db_session.scalar(select(func.count()).select_from(SecFinancialParseRun)) == 1
@@ -966,6 +1083,17 @@ def test_unavailable_required_artifact_retries_without_mutating_lineage(
     assert first_run.status == "failed"
     assert first_run.error_code == "required_artifact_unavailable"
     assert first.raw_facts_created == 0
+    assert earliest_replayable_sec_financial_evidence_at(
+        db_session, stock_id=stock.id
+    ) is None
+    assert [
+        (item.accession_no, item.error_code)
+        for item in select_sec_financial_failures_as_of(
+            db_session,
+            stock_id=stock.id,
+            cutoff=datetime.now(timezone.utc) + timedelta(seconds=1),
+        )
+    ] == [(ACCESSION, "required_artifact_unavailable")]
     linked_artifact_id = db_session.scalar(
         select(SecFinancialParseRunArtifact.artifact_id).where(
             SecFinancialParseRunArtifact.parse_run_id == first_run.id
@@ -1004,6 +1132,25 @@ def test_unavailable_required_artifact_retries_without_mutating_lineage(
     assert [item.state for item in schema_observations] == ["unavailable", "retained"]
     assert second.artifacts_created == 1
     assert second.raw_facts_created == 3
+    replayable_at = earliest_replayable_sec_financial_evidence_at(
+        db_session, stock_id=stock.id
+    )
+    assert replayable_at is not None
+    assert select_sec_financial_evidence_as_of(
+        db_session,
+        stock_id=stock.id,
+        cutoff=replayable_at - timedelta(microseconds=1),
+    ) == []
+    assert select_sec_financial_evidence_as_of(
+        db_session,
+        stock_id=stock.id,
+        cutoff=replayable_at,
+    )
+    assert select_sec_financial_failures_as_of(
+        db_session,
+        stock_id=stock.id,
+        cutoff=datetime.now(timezone.utc) + timedelta(seconds=1),
+    ) == []
 
 
 def test_lineage_tables_reject_update_and_delete_at_database_boundary(

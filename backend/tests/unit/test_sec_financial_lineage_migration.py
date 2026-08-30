@@ -17,6 +17,7 @@ from test_support.database_isolation import (
 
 
 PARENT_REVISION = "20260826130000"
+PERIOD_PARENT_REVISION = "20260827120000"
 _configured_url = make_url(settings.SQLALCHEMY_DATABASE_URI)
 _BASE_DATABASE_URL = _configured_url.set(
     query={key: value for key, value in _configured_url.query.items() if key != "options"}
@@ -86,6 +87,11 @@ def test_sec_financial_lineage_migration_round_trip_and_triggers() -> None:
                 for item in inspector.get_check_constraints("sec_financial_parse_runs")
             }
             assert "ck_sec_financial_parse_runs_fact_count" in parse_checks
+            filing_checks = {
+                item["name"]
+                for item in inspector.get_check_constraints("sec_financial_filings")
+            }
+            assert "ck_sec_financial_filings_period_order" in filing_checks
             assert {
                 "concept_namespace_uri",
                 "unit_measure",
@@ -119,6 +125,30 @@ def test_sec_financial_lineage_migration_round_trip_and_triggers() -> None:
                 ),
                 {"identity_id": identity_id, "hash": "a" * 64},
             ).scalar_one()
+
+        try:
+            with engine.begin() as connection:
+                connection.execute(
+                    text(
+                        "INSERT INTO sec_financial_filings "
+                        "(issuer_identity_id, accession_no, form_type, is_amendment, "
+                        "filed_on, report_date, accepted_at, known_at, primary_document, "
+                        "index_url, source_url, submissions_source_url, "
+                        "discovery_payload_sha256) VALUES "
+                        "(:identity_id, '0000000099-26-000002', '10-Q', false, "
+                        "'2026-08-02', '2026-08-03', "
+                        "'2026-08-01T16:00:00+00:00', "
+                        "'2026-08-27T00:01:00+00:00', 'invalid.htm', "
+                        "'https://www.sec.gov/invalid/index.json', "
+                        "'https://www.sec.gov/invalid/invalid.htm', "
+                        "'https://data.sec.gov/submissions/CIK0000000099.json', :hash)"
+                    ),
+                    {"identity_id": identity_id, "hash": "9" * 64},
+                )
+        except Exception as exc:
+            assert "ck_sec_financial_filings_period_order" in str(exc)
+        else:
+            raise AssertionError("impossible SEC filing period metadata was accepted")
 
         try:
             with engine.begin() as connection:
@@ -337,6 +367,141 @@ def test_sec_financial_lineage_migration_round_trip_and_triggers() -> None:
         engine = create_engine(database_url, pool_pre_ping=True)
         with engine.connect() as connection:
             assert inspect(connection).has_table("sec_financial_parse_run_artifacts")
+    finally:
+        engine.dispose()
+        drop_test_schema(_BASE_DATABASE_URL, schema_name)
+
+
+def test_sec_financial_period_migration_fails_closed_on_existing_dirty_data() -> None:
+    backend_dir = Path(__file__).resolve().parents[2]
+    schema_name = new_test_schema_name()
+    database_url = build_isolated_database_url(_BASE_DATABASE_URL, schema_name)
+    create_test_schema(_BASE_DATABASE_URL, schema_name)
+    engine = create_engine(database_url, pool_pre_ping=True)
+    try:
+        _alembic(backend_dir, database_url, "upgrade", PERIOD_PARENT_REVISION)
+        with engine.begin() as connection:
+            stock_id = connection.execute(
+                text(
+                    "INSERT INTO stocks "
+                    "(ticker, exchange, market_country, company_name, is_active) "
+                    "VALUES ('DIRTYSEC', 'US', 'US', 'Dirty SEC Fixture', true) "
+                    "RETURNING id"
+                )
+            ).scalar_one()
+            identity_id = connection.execute(
+                text(
+                    "INSERT INTO sec_issuer_identities "
+                    "(stock_id, cik, status, review_reason, effective_from, known_at) "
+                    "VALUES (:stock_id, '0000000098', 'reviewed', 'dirty fixture', "
+                    "'2020-01-01', '2026-08-27T00:00:00+00:00') RETURNING id"
+                ),
+                {"stock_id": stock_id},
+            ).scalar_one()
+            connection.execute(
+                text(
+                    "INSERT INTO sec_financial_filings "
+                    "(issuer_identity_id, accession_no, form_type, is_amendment, "
+                    "filed_on, report_date, accepted_at, known_at, primary_document, "
+                    "index_url, source_url, submissions_source_url, "
+                    "discovery_payload_sha256) VALUES "
+                    "(:identity_id, '0000000098-26-000001', '10-Q', false, "
+                    "'2026-08-02', '2026-08-03', "
+                    "'2026-08-01T16:00:00+00:00', "
+                    "'2026-08-27T00:01:00+00:00', 'dirty.htm', "
+                    "'https://www.sec.gov/dirty/index.json', "
+                    "'https://www.sec.gov/dirty/dirty.htm', "
+                    "'https://data.sec.gov/submissions/CIK0000000098.json', :hash)"
+                ),
+                {"identity_id": identity_id, "hash": "8" * 64},
+            )
+        result = subprocess.run(
+            ["alembic", "upgrade", "head"],
+            cwd=backend_dir,
+            env={**os.environ, "DATABASE_URL": database_url},
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+        assert result.returncode != 0
+        assert "existing SEC financial filing period metadata is invalid" in (
+            result.stdout + result.stderr
+        )
+        with engine.connect() as connection:
+            assert connection.execute(text("SELECT version_num FROM alembic_version")).scalar_one() == PERIOD_PARENT_REVISION
+            checks = {
+                item["name"]
+                for item in inspect(connection).get_check_constraints(
+                    "sec_financial_filings"
+                )
+            }
+            assert "ck_sec_financial_filings_period_order" not in checks
+    finally:
+        engine.dispose()
+        drop_test_schema(_BASE_DATABASE_URL, schema_name)
+
+
+def test_sec_financial_period_migration_preserves_valid_after_hours_filing() -> None:
+    backend_dir = Path(__file__).resolve().parents[2]
+    schema_name = new_test_schema_name()
+    database_url = build_isolated_database_url(_BASE_DATABASE_URL, schema_name)
+    create_test_schema(_BASE_DATABASE_URL, schema_name)
+    engine = create_engine(database_url, pool_pre_ping=True)
+    try:
+        _alembic(backend_dir, database_url, "upgrade", PERIOD_PARENT_REVISION)
+        with engine.begin() as connection:
+            stock_id = connection.execute(
+                text(
+                    "INSERT INTO stocks "
+                    "(ticker, exchange, market_country, company_name, is_active) "
+                    "VALUES ('LATESEC', 'US', 'US', 'Late SEC Fixture', true) "
+                    "RETURNING id"
+                )
+            ).scalar_one()
+            identity_id = connection.execute(
+                text(
+                    "INSERT INTO sec_issuer_identities "
+                    "(stock_id, cik, status, review_reason, effective_from, known_at) "
+                    "VALUES (:stock_id, '0000000097', 'reviewed', 'late fixture', "
+                    "'2020-01-01', '2026-08-27T00:00:00+00:00') RETURNING id"
+                ),
+                {"stock_id": stock_id},
+            ).scalar_one()
+            connection.execute(
+                text(
+                    "INSERT INTO sec_financial_filings "
+                    "(issuer_identity_id, accession_no, form_type, is_amendment, "
+                    "filed_on, report_date, accepted_at, known_at, primary_document, "
+                    "index_url, source_url, submissions_source_url, "
+                    "discovery_payload_sha256) VALUES "
+                    "(:identity_id, '0000000097-26-000001', '10-Q', false, "
+                    "'2026-08-27', '2026-07-31', "
+                    "'2026-08-26T22:54:46+00:00', "
+                    "'2026-08-27T00:01:00+00:00', 'late.htm', "
+                    "'https://www.sec.gov/late/index.json', "
+                    "'https://www.sec.gov/late/late.htm', "
+                    "'https://data.sec.gov/submissions/CIK0000000097.json', :hash)"
+                ),
+                {"identity_id": identity_id, "hash": "7" * 64},
+            )
+
+        _alembic(backend_dir, database_url, "upgrade", "head")
+
+        with engine.connect() as connection:
+            assert connection.execute(
+                text(
+                    "SELECT count(*) FROM sec_financial_filings "
+                    "WHERE accession_no = '0000000097-26-000001'"
+                )
+            ).scalar_one() == 1
+            checks = {
+                item["name"]
+                for item in inspect(connection).get_check_constraints(
+                    "sec_financial_filings"
+                )
+            }
+            assert "ck_sec_financial_filings_period_order" in checks
     finally:
         engine.dispose()
         drop_test_schema(_BASE_DATABASE_URL, schema_name)

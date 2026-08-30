@@ -1,11 +1,24 @@
 from datetime import date, datetime, timezone
+from types import SimpleNamespace
 
 import pytest
 import typer
+from typer.testing import CliRunner
 
-from app.cli.sec_financials import _resolve_gold_case_stock
+from app.cli import sec_financials as financial_cli
+from app.cli.sec_financials import (
+    _gold_case,
+    _history_target_for_case,
+    _resolve_gold_case_stock,
+)
+from app.models.sec_financials import SecFinancialFiling
 from app.models.stocks import Stock
-from app.services.sec_financial_ingestion import register_reviewed_sec_identity
+from app.services.sec_financial_ingestion import (
+    FinancialIngestionReport,
+    SecFinancialEvidenceAsOf,
+    SecFinancialEvidenceFailureAsOf,
+    register_reviewed_sec_identity,
+)
 
 
 NOW = datetime(2026, 8, 30, 12, tzinfo=timezone.utc)
@@ -66,6 +79,353 @@ def test_gold_case_resolves_by_reviewed_cik_before_ticker_alias(db_session) -> N
     assert resolution.stock.id == reviewed_stock.id
     assert resolution.source == "reviewed_cik"
     assert resolution.manifest_ticker == "BRK-B"
+
+
+def test_locked_gold_case_builds_ten_year_history_target_at_cycle_cutoff() -> None:
+    locked = _gold_case("aapl-primary")
+
+    target = _history_target_for_case(
+        locked.case, filing_selection_as_of=locked.cutoff_at
+    )
+
+    assert locked.cutoff_at == datetime(
+        2026, 8, 26, 23, 59, 59, tzinfo=timezone.utc
+    )
+    assert target.filing_regime == "us_10k_10q"
+    assert target.fiscal_year_end_mmdd == "0926"
+    assert target.available_start_on == date(2015, 1, 1)
+    assert target.completed_fiscal_year_cap == 10
+    assert target.filing_selection_as_of == locked.cutoff_at
+
+
+@pytest.mark.parametrize(
+    ("arguments", "selection_as_of", "expected_years"),
+    [
+        (
+            ["ingest-gold-case", "--case-id", "aapl-primary"],
+            "2026-08-26T23:59:59+00:00",
+            "2025,2024,2023,2022,2021,2020,2019,2018,2017,2016",
+        ),
+        (
+            [
+                "ingest-gold-case",
+                "--case-id",
+                "aapl-primary",
+                "--as-of",
+                "2025-08-26T23:59:59Z",
+            ],
+            "2025-08-26T23:59:59+00:00",
+            "2024,2023,2022,2021,2020,2019,2018,2017,2016,2015",
+        ),
+    ],
+)
+def test_ingest_gold_case_prints_stable_selection_and_pit_semantics(
+    monkeypatch,
+    arguments: list[str],
+    selection_as_of: str,
+    expected_years: str,
+) -> None:
+    evidence_known_at = datetime(2026, 8, 30, 12, tzinfo=timezone.utc)
+    stock = SimpleNamespace(id=77, ticker="AAPL")
+    session = _SessionStub()
+    captured: dict = {}
+    monkeypatch.setattr(financial_cli, "_utc_now", lambda: evidence_known_at)
+    monkeypatch.setattr(financial_cli, "SessionLocal", lambda: session)
+    monkeypatch.setattr(
+        financial_cli,
+        "_resolve_gold_case_stock",
+        lambda db, case, at: SimpleNamespace(
+            stock=stock,
+            source="reviewed_cik",
+            manifest_ticker="AAPL",
+        ),
+    )
+    monkeypatch.setattr(financial_cli, "EdgarClient", _EdgarStub)
+    monkeypatch.setattr(
+        financial_cli,
+        "earliest_replayable_sec_financial_evidence_at",
+        lambda db, stock_id: evidence_known_at,
+    )
+
+    def fake_ingest(*args, **kwargs):
+        captured.update(kwargs)
+        return FinancialIngestionReport(
+            stock_id=stock.id,
+            cik="0000320193",
+            filings_discovered=10,
+            filings_created=10,
+            artifacts_created=10,
+            parse_runs_created=10,
+            raw_facts_created=10,
+            failures=(),
+        )
+
+    monkeypatch.setattr(financial_cli, "ingest_latest_financial_filings", fake_ingest)
+
+    result = CliRunner().invoke(financial_cli.app, arguments)
+
+    assert result.exit_code == 0, result.output
+    assert (
+        f"filing_selection_as_of={selection_as_of} regime=us_10k_10q "
+        f"fiscal_year_end_mmdd=0926 available_start_on=2015-01-01 "
+        f"expected_completed_fiscal_years={expected_years} "
+        "expected_completed_fiscal_year_count=10"
+    ) in result.output
+    assert (
+        "ingestion_attempted_at=2026-08-30T12:00:00+00:00"
+    ) in result.output
+    assert (
+        "earliest_replayable_evidence_at=2026-08-30T12:00:00+00:00 "
+        "pit_replay_before_earliest_evidence=unavailable"
+    ) in result.output
+    assert captured["filing_selection_as_of"].isoformat() == selection_as_of
+    assert captured["history_target"].filing_selection_as_of.isoformat() == selection_as_of
+
+
+def test_replay_before_acquired_evidence_known_at_is_typed_nonzero(
+    db_session,
+    monkeypatch,
+) -> None:
+    selection_cutoff = datetime(2026, 8, 26, 23, 59, 59, tzinfo=timezone.utc)
+    evidence_known_at = datetime(2026, 8, 30, 12, tzinfo=timezone.utc)
+    stock = _stock(
+        db_session,
+        ticker="PIT",
+        company_name="PIT Fixture Inc.",
+    )
+    identity = register_reviewed_sec_identity(
+        db_session,
+        stock_id=stock.id,
+        cik="0000000099",
+        effective_from=date(2015, 1, 1),
+        known_at=evidence_known_at,
+        review_reason="PIT fixture identity.",
+    )
+    db_session.add(
+        SecFinancialFiling(
+            issuer_identity_id=identity.id,
+            accession_no="0000000099-25-000001",
+            form_type="10-K",
+            is_amendment=False,
+            filed_on=date(2026, 2, 15),
+            report_date=date(2025, 12, 31),
+            accepted_at=datetime(2026, 2, 15, tzinfo=timezone.utc),
+            known_at=evidence_known_at,
+            primary_document="pit.htm",
+            index_url="https://www.sec.gov/pit/index.json",
+            source_url="https://www.sec.gov/pit/pit.htm",
+            submissions_source_url=(
+                "https://data.sec.gov/submissions/CIK0000000099.json"
+            ),
+            discovery_payload_sha256="a" * 64,
+        )
+    )
+    db_session.commit()
+    monkeypatch.setattr(
+        financial_cli,
+        "SessionLocal",
+        lambda: _SessionProxy(db_session),
+    )
+    monkeypatch.setattr(
+        financial_cli,
+        "earliest_replayable_sec_financial_evidence_at",
+        lambda db, stock_id: evidence_known_at,
+    )
+
+    result = CliRunner().invoke(
+        financial_cli.app,
+        [
+            "replay",
+            "--ticker",
+            "PIT",
+            "--cutoff",
+            selection_cutoff.isoformat(),
+        ],
+    )
+
+    assert result.exit_code == 2
+    assert "failure=pit_evidence_unavailable" in result.output
+    assert (
+        "earliest_replayable_evidence_at=2026-08-30T12:00:00+00:00"
+        in result.output
+    )
+
+
+@pytest.mark.parametrize(
+    "error_code",
+    ["required_artifact_unavailable", "no_inline_xbrl_facts"],
+)
+def test_replay_surfaces_terminal_failed_parse_as_typed_nonzero(
+    monkeypatch,
+    error_code: str,
+) -> None:
+    stock = SimpleNamespace(id=77, ticker="FAILED")
+    session = _SessionStub()
+    monkeypatch.setattr(financial_cli, "SessionLocal", lambda: session)
+    monkeypatch.setattr(financial_cli, "_single_stock", lambda db, ticker: stock)
+    monkeypatch.setattr(
+        financial_cli,
+        "select_sec_financial_evidence_as_of",
+        lambda db, stock_id, cutoff: [],
+    )
+    monkeypatch.setattr(
+        financial_cli,
+        "select_sec_financial_failures_as_of",
+        lambda db, stock_id, cutoff: [
+            SecFinancialEvidenceFailureAsOf(
+                filing_id=11,
+                accession_no="0000000077-26-000001",
+                parse_run_id=22,
+                error_code=error_code,
+            )
+        ],
+    )
+    monkeypatch.setattr(
+        financial_cli,
+        "earliest_replayable_sec_financial_evidence_at",
+        lambda db, stock_id: NOW.replace(day=31),
+    )
+
+    result = CliRunner().invoke(
+        financial_cli.app,
+        [
+            "replay",
+            "--ticker",
+            "FAILED",
+            "--cutoff",
+            "2026-08-30T12:00:00Z",
+        ],
+    )
+
+    assert result.exit_code == 2
+    assert "filings=0" in result.output
+    assert f"failure=0000000077-26-000001:{error_code}" in result.output
+    assert "pit_evidence_unavailable" not in result.output
+
+
+def test_replay_outputs_mixed_success_and_terminal_failure_then_exits_nonzero(
+    monkeypatch,
+) -> None:
+    stock = SimpleNamespace(id=77, ticker="MIXED")
+    session = _SessionStub()
+    monkeypatch.setattr(financial_cli, "SessionLocal", lambda: session)
+    monkeypatch.setattr(financial_cli, "_single_stock", lambda db, ticker: stock)
+    monkeypatch.setattr(
+        financial_cli,
+        "select_sec_financial_evidence_as_of",
+        lambda db, stock_id, cutoff: [
+            SecFinancialEvidenceAsOf(
+                filing_id=11,
+                accession_no="0000000077-26-000001",
+                form_type="10-Q",
+                accepted_at=NOW,
+                parse_run_id=21,
+                parser_version="inline-xbrl-v1",
+                input_manifest_hash="a" * 64,
+                fact_count=3,
+            )
+        ],
+    )
+    monkeypatch.setattr(
+        financial_cli,
+        "select_sec_financial_failures_as_of",
+        lambda db, stock_id, cutoff: [
+            SecFinancialEvidenceFailureAsOf(
+                filing_id=12,
+                accession_no="0000000077-26-000002",
+                parse_run_id=22,
+                error_code="required_artifact_unavailable",
+            )
+        ],
+    )
+
+    result = CliRunner().invoke(
+        financial_cli.app,
+        [
+            "replay",
+            "--ticker",
+            "MIXED",
+            "--cutoff",
+            "2026-08-30T12:00:00Z",
+        ],
+    )
+
+    assert result.exit_code == 2
+    assert "ticker=MIXED cutoff=2026-08-30T12:00:00+00:00 filings=1" in result.output
+    assert (
+        "accession=0000000077-26-000001 form=10-Q "
+        "parser=inline-xbrl-v1 facts=3"
+    ) in result.output
+    assert (
+        "failure=0000000077-26-000002:required_artifact_unavailable"
+        in result.output
+    )
+
+
+def test_replay_is_empty_success_only_when_no_eligible_run_history(monkeypatch) -> None:
+    stock = SimpleNamespace(id=77, ticker="EMPTY")
+    session = _SessionStub()
+    monkeypatch.setattr(financial_cli, "SessionLocal", lambda: session)
+    monkeypatch.setattr(financial_cli, "_single_stock", lambda db, ticker: stock)
+    monkeypatch.setattr(
+        financial_cli,
+        "select_sec_financial_evidence_as_of",
+        lambda db, stock_id, cutoff: [],
+    )
+    monkeypatch.setattr(
+        financial_cli,
+        "select_sec_financial_failures_as_of",
+        lambda db, stock_id, cutoff: [],
+    )
+    monkeypatch.setattr(
+        financial_cli,
+        "earliest_replayable_sec_financial_evidence_at",
+        lambda db, stock_id: None,
+    )
+
+    result = CliRunner().invoke(
+        financial_cli.app,
+        [
+            "replay",
+            "--ticker",
+            "EMPTY",
+            "--cutoff",
+            "2026-08-30T12:00:00Z",
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert "ticker=EMPTY cutoff=2026-08-30T12:00:00+00:00 filings=0" in result.output
+
+
+class _SessionStub:
+    def commit(self) -> None:
+        pass
+
+    def rollback(self) -> None:
+        pass
+
+    def close(self) -> None:
+        pass
+
+
+class _SessionProxy:
+    def __init__(self, session) -> None:
+        self._session = session
+
+    def __getattr__(self, name):
+        return getattr(self._session, name)
+
+    def close(self) -> None:
+        pass
+
+
+class _EdgarStub:
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args) -> None:
+        pass
 
 
 def test_gold_case_bootstraps_narrow_separator_alias(db_session) -> None:

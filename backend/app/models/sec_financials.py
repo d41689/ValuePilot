@@ -88,6 +88,12 @@ class SecFinancialFiling(Base):
             "is_amendment = (right(form_type, 2) = '/A')",
             name="ck_sec_financial_filings_amendment_flag",
         ),
+        CheckConstraint(
+            "(report_date IS NULL OR "
+            "(report_date <= filed_on AND "
+            "report_date <= (accepted_at AT TIME ZONE 'UTC')::date))",
+            name="ck_sec_financial_filings_period_order",
+        ),
         UniqueConstraint("accession_no", name="uq_sec_financial_filings_accession"),
     )
 

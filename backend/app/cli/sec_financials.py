@@ -2,7 +2,7 @@
 
 Examples, inside the API container:
 
-    python -m app.cli.sec_financials ingest-gold-case --case-id aapl-primary --max-filings 1
+    python -m app.cli.sec_financials ingest-gold-case --case-id aapl-primary
     python -m app.cli.sec_financials replay --ticker AAPL --cutoff 2026-08-27T23:59:59+00:00
 
 The CLI exposes counts and durable identities only. It never dumps filing bytes
@@ -27,9 +27,13 @@ from app.edgar.client import EdgarClient
 from app.models.sec_financials import SecIssuerIdentity
 from app.models.stocks import Stock
 from app.services.sec_financial_ingestion import (
+    FinancialHistoryTarget,
+    _expected_completed_fiscal_years,
+    earliest_replayable_sec_financial_evidence_at,
     ingest_latest_financial_filings,
     register_reviewed_sec_identity,
     select_sec_financial_evidence_as_of,
+    select_sec_financial_failures_as_of,
 )
 
 
@@ -51,13 +55,44 @@ class _GoldCaseStockResolution:
     manifest_ticker: str
 
 
-def _gold_case(case_id: str) -> dict:
+@dataclass(frozen=True)
+class _LockedGoldCase:
+    case: dict
+    cutoff_at: datetime
+
+
+def _gold_case(case_id: str) -> _LockedGoldCase:
     data = yaml.safe_load(MANIFEST_PATH.read_text(encoding="utf-8"))
     validate_gold_set(data)
     matches = [item for item in data["cases"] if item["case_id"] == case_id]
     if len(matches) != 1:
         raise typer.BadParameter("case-id is not present exactly once in the locked manifest")
-    return matches[0]
+    cutoff_at = datetime.fromisoformat(
+        str(data["cycle"]["cutoff_at"]).replace("Z", "+00:00")
+    )
+    if cutoff_at.tzinfo is None:
+        raise typer.BadParameter("locked gold-set cutoff must be timezone-aware")
+    return _LockedGoldCase(case=matches[0], cutoff_at=cutoff_at)
+
+
+def _utc_now() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def _history_target_for_case(
+    case: dict, *, filing_selection_as_of: datetime
+) -> FinancialHistoryTarget:
+    return FinancialHistoryTarget(
+        filing_regime=str(case["filing_regime"]),
+        fiscal_year_end_mmdd=str(case["fiscal_year_end_mmdd"]),
+        available_start_on=date.fromisoformat(
+            str(case["expected_history"]["available_start_on"])
+        ),
+        completed_fiscal_year_cap=int(
+            case["expected_history"]["completed_fiscal_year_cap"]
+        ),
+        filing_selection_as_of=filing_selection_as_of,
+    )
 
 
 def _single_stock(db, ticker: str) -> Stock:
@@ -205,26 +240,41 @@ def _resolve_gold_case_stock(
 @app.command("ingest-gold-case")
 def ingest_gold_case(
     case_id: str = typer.Option(..., help="Locked FT-00 case id."),
-    max_filings: int = typer.Option(1, min=1, max=200),
+    max_filings: int = typer.Option(50, min=1, max=200),
     parser_version: str = typer.Option("inline-xbrl-v1"),
     as_of: str | None = typer.Option(
-        None, help="Optional timezone-aware SEC acceptance cutoff."
+        None,
+        help=(
+            "Optional timezone-aware filing-selection acceptance cutoff; defaults "
+            "to the locked gold-set evaluation cutoff. This is not evidence "
+            "knowledge time."
+        ),
     ),
 ) -> None:
     """Register the locked identity and ingest a bounded SEC lineage slice."""
-    case = _gold_case(case_id)
-    now = datetime.now(timezone.utc)
-    parsed_as_of: datetime | None = None
+    locked_case = _gold_case(case_id)
+    case = locked_case.case
+    ingestion_attempted_at = _utc_now()
+    parsed_filing_selection_as_of: datetime | None = None
     if as_of is not None:
         try:
-            parsed_as_of = datetime.fromisoformat(as_of.replace("Z", "+00:00"))
-            if parsed_as_of.tzinfo is None:
+            parsed_filing_selection_as_of = datetime.fromisoformat(
+                as_of.replace("Z", "+00:00")
+            )
+            if parsed_filing_selection_as_of.tzinfo is None:
                 raise ValueError("timezone offset is required")
         except ValueError as exc:
             raise typer.BadParameter(f"invalid as-of: {exc}") from exc
+    filing_selection_as_of = (
+        parsed_filing_selection_as_of or locked_case.cutoff_at
+    )
+    history_target = _history_target_for_case(
+        case, filing_selection_as_of=filing_selection_as_of
+    )
+    expected_years = _expected_completed_fiscal_years(history_target)
     db = SessionLocal()
     try:
-        resolution = _resolve_gold_case_stock(db, case, at=now)
+        resolution = _resolve_gold_case_stock(db, case, at=ingestion_attempted_at)
         stock = resolution.stock
         if resolution.source == "locked_manifest_bootstrap":
             register_reviewed_sec_identity(
@@ -234,7 +284,7 @@ def ingest_gold_case(
                 effective_from=date.fromisoformat(
                     str(case["expected_history"]["available_start_on"])
                 ),
-                known_at=now,
+                known_at=ingestion_attempted_at,
                 review_reason=(
                     f"Locked FT-00 case {case_id}; PO/reviewer approvals recorded in "
                     "financial_truth_beta_gold_set.yml."
@@ -245,6 +295,16 @@ def ingest_gold_case(
             f"manifest_ticker={resolution.manifest_ticker} stock_ticker={stock.ticker} "
             f"stock_id={stock.id} cik={case['cik']}"
         )
+        typer.echo(
+            f"filing_selection_as_of={filing_selection_as_of.isoformat()} "
+            f"regime={history_target.filing_regime} "
+            f"fiscal_year_end_mmdd={history_target.fiscal_year_end_mmdd} "
+            f"available_start_on={history_target.available_start_on.isoformat()} "
+            "expected_completed_fiscal_years="
+            f"{','.join(str(year) for year in expected_years)} "
+            f"expected_completed_fiscal_year_count={len(expected_years)}"
+        )
+        typer.echo(f"ingestion_attempted_at={ingestion_attempted_at.isoformat()}")
         with EdgarClient() as client:
             report = ingest_latest_financial_filings(
                 db,
@@ -252,11 +312,22 @@ def ingest_gold_case(
                 client=client,
                 storage_root=Path(settings.EDGAR_RAW_STORAGE_DIR),
                 max_filings=max_filings,
-                now=now,
+                now=ingestion_attempted_at,
                 parser_version=parser_version,
-                as_of=parsed_as_of,
+                filing_selection_as_of=filing_selection_as_of,
+                history_target=history_target,
             )
         db.commit()
+        replayable_at = earliest_replayable_sec_financial_evidence_at(
+            db, stock_id=stock.id
+        )
+        if replayable_at is None:
+            typer.echo("pit_evidence_availability=unavailable")
+        else:
+            typer.echo(
+                f"earliest_replayable_evidence_at={replayable_at.isoformat()} "
+                "pit_replay_before_earliest_evidence=unavailable"
+            )
         typer.echo(
             f"case={case_id} stock_id={report.stock_id} cik={report.cik} "
             f"discovered={report.filings_discovered} filings_created={report.filings_created} "
@@ -296,13 +367,41 @@ def replay(
         rows = select_sec_financial_evidence_as_of(
             db, stock_id=stock.id, cutoff=parsed_cutoff
         )
+        failures = select_sec_financial_failures_as_of(
+            db, stock_id=stock.id, cutoff=parsed_cutoff
+        )
+        replayable_at = None
+        if not rows:
+            replayable_at = earliest_replayable_sec_financial_evidence_at(
+                db, stock_id=stock.id
+            )
         db.rollback()
+        if (
+            not rows
+            and not failures
+            and replayable_at is not None
+            and parsed_cutoff < replayable_at
+        ):
+            typer.echo(
+                f"ticker={stock.ticker} cutoff={parsed_cutoff.isoformat()} filings=0 "
+                "failure=pit_evidence_unavailable "
+                f"earliest_replayable_evidence_at={replayable_at.isoformat()}",
+                err=True,
+            )
+            raise typer.Exit(2)
         typer.echo(f"ticker={stock.ticker} cutoff={parsed_cutoff.isoformat()} filings={len(rows)}")
         for row in rows:
             typer.echo(
                 f"accession={row.accession_no} form={row.form_type} "
                 f"parser={row.parser_version} facts={row.fact_count}"
             )
+        for failure in failures:
+            typer.echo(
+                f"failure={failure.accession_no}:{failure.error_code}",
+                err=True,
+            )
+        if failures:
+            raise typer.Exit(2)
     finally:
         db.close()
 

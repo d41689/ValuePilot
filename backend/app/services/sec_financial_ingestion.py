@@ -37,11 +37,26 @@ ACCESSION_RE = re.compile(r"^[0-9]{10}-[0-9]{2}-[0-9]{6}$")
 MAX_ARTIFACT_BYTES = 20 * 1024 * 1024
 MAX_MANIFEST_ITEMS = 500
 MAX_HISTORICAL_SUBMISSION_FILES = 20
+MAX_DISCOVERY_IDENTITY_FAILURES = 50
 HISTORICAL_SUBMISSION_FILENAME_RE = re.compile(
     r"^CIK(?P<cik>[0-9]{10})-submissions-[0-9]+[.]json$"
 )
 PARSER_NAME = "valuepilot-inline-xbrl-lineage"
 ARTIFACT_RETENTION_POLICY_VERSION = "sec-financial-artifacts-v1"
+ANNUAL_FORMS_BY_REGIME = {
+    "us_10k_10q": frozenset({"10-K", "10-K/A"}),
+    "foreign_20f_6k": frozenset({"20-F", "20-F/A"}),
+}
+FINANCIAL_6K_DESCRIPTION_RE = re.compile(
+    r"\b(?:earnings (?:release|report|results)|financial (?:results|statements)|"
+    r"(?:annual|interim|quarterly) financial (?:report|results|statements)|"
+    r"(?:interim|quarterly) results)\b",
+    re.IGNORECASE,
+)
+NON_FINANCIAL_6K_DESCRIPTION_RE = re.compile(
+    r"\b(?:call|conference|announcement|notice)\b",
+    re.IGNORECASE,
+)
 
 
 class SecFinancialIngestionError(RuntimeError):
@@ -76,6 +91,15 @@ class FinancialIngestionReport:
 
 
 @dataclass(frozen=True)
+class FinancialHistoryTarget:
+    filing_regime: str
+    fiscal_year_end_mmdd: str
+    available_start_on: date
+    completed_fiscal_year_cap: int
+    filing_selection_as_of: datetime
+
+
+@dataclass(frozen=True)
 class SecFinancialEvidenceAsOf:
     filing_id: int
     accession_no: str
@@ -88,10 +112,213 @@ class SecFinancialEvidenceAsOf:
 
 
 @dataclass(frozen=True)
+class SecFinancialEvidenceFailureAsOf:
+    filing_id: int
+    accession_no: str
+    parse_run_id: int
+    error_code: str
+
+
+@dataclass(frozen=True)
 class _DiscoveryResult:
     filings: tuple[DiscoveredFinancialFiling, ...]
     source_payloads: dict[str, bytes]
     failures: tuple[str, ...]
+
+
+def _expected_completed_fiscal_years(
+    target: FinancialHistoryTarget,
+) -> tuple[int, ...]:
+    cutoff = _aware(target.filing_selection_as_of)
+    if target.filing_regime not in ANNUAL_FORMS_BY_REGIME:
+        raise SecFinancialIngestionError("unsupported financial filing regime")
+    if not re.fullmatch(r"[0-9]{4}", target.fiscal_year_end_mmdd):
+        raise SecFinancialIngestionError("fiscal_year_end_mmdd must be MMDD")
+    if target.fiscal_year_end_mmdd == "0229":
+        raise SecFinancialIngestionError(
+            "0229 is unsupported for a recurring fiscal year end"
+        )
+    month = int(target.fiscal_year_end_mmdd[:2])
+    day = int(target.fiscal_year_end_mmdd[2:])
+    if target.completed_fiscal_year_cap < 1 or target.completed_fiscal_year_cap > 10:
+        raise SecFinancialIngestionError(
+            "completed_fiscal_year_cap must be between 1 and 10"
+        )
+
+    years: list[int] = []
+    for year in range(cutoff.year, target.available_start_on.year - 2, -1):
+        try:
+            fiscal_year_end = date(year, month, day)
+        except ValueError as exc:
+            raise SecFinancialIngestionError(
+                "fiscal_year_end_mmdd must be a real month/day"
+            ) from exc
+        if fiscal_year_end > cutoff.date():
+            continue
+        if fiscal_year_end < target.available_start_on:
+            break
+        years.append(year)
+        if len(years) >= target.completed_fiscal_year_cap:
+            break
+    return tuple(years)
+
+
+def _annual_fiscal_years(
+    filings: list[DiscoveredFinancialFiling],
+    target: FinancialHistoryTarget,
+) -> set[int]:
+    annual_forms = ANNUAL_FORMS_BY_REGIME[target.filing_regime]
+    expected = set(_expected_completed_fiscal_years(target))
+    return {
+        filing.report_date.year
+        for filing in filings
+        if filing.form_type in annual_forms
+        and filing.report_date is not None
+        and filing.report_date.year in expected
+    }
+
+
+def _financially_useful_6k(filing: DiscoveredFinancialFiling) -> bool:
+    if filing.form_type != "6-K" or filing.primary_doc_description is None:
+        return False
+    if NON_FINANCIAL_6K_DESCRIPTION_RE.search(filing.primary_doc_description):
+        return False
+    return FINANCIAL_6K_DESCRIPTION_RE.search(filing.primary_doc_description) is not None
+
+
+def _filing_semantic_identity(filing: DiscoveredFinancialFiling) -> tuple[Any, ...]:
+    return (
+        filing.form_type,
+        filing.report_date,
+        filing.filed_on,
+        filing.accepted_at,
+        filing.primary_document,
+        filing.primary_doc_description,
+    )
+
+
+def _canonicalize_discovered_filings(
+    filings: list[DiscoveredFinancialFiling],
+) -> tuple[
+    list[DiscoveredFinancialFiling],
+    tuple[str, ...],
+    tuple[str, ...],
+    tuple[str, ...],
+]:
+    by_accession: dict[str, list[DiscoveredFinancialFiling]] = {}
+    invalid_accession_tokens: set[str] = set()
+    invalid_period_accessions: set[str] = set()
+    for filing in filings:
+        if not ACCESSION_RE.fullmatch(filing.accession_no):
+            invalid_accession_tokens.add(
+                hashlib.sha256(
+                    filing.accession_no.encode("utf-8", errors="backslashreplace")
+                ).hexdigest()[:16]
+            )
+            continue
+        accepted_on = filing.accepted_at.astimezone(timezone.utc).date()
+        if (
+            filing.report_date is not None
+            and (
+                filing.report_date > filing.filed_on
+                or filing.report_date > accepted_on
+            )
+        ):
+            invalid_period_accessions.add(filing.accession_no)
+            continue
+        by_accession.setdefault(filing.accession_no, []).append(filing)
+
+    canonical: list[DiscoveredFinancialFiling] = []
+    conflicts: list[str] = []
+    for accession_no in sorted(by_accession):
+        candidates = by_accession[accession_no]
+        semantic_identities = {
+            _filing_semantic_identity(candidate) for candidate in candidates
+        }
+        if len(semantic_identities) != 1:
+            conflicts.append(accession_no)
+            continue
+        canonical.append(
+            min(
+                candidates,
+                key=lambda item: (
+                    "-submissions-" in item.submissions_source_url,
+                    item.submissions_source_url,
+                    item.discovery_payload_sha256,
+                ),
+            )
+        )
+    return (
+        canonical,
+        tuple(conflicts),
+        tuple(sorted(invalid_accession_tokens)),
+        tuple(sorted(invalid_period_accessions)),
+    )
+
+
+def _select_history_filings(
+    filings: list[DiscoveredFinancialFiling],
+    *,
+    target: FinancialHistoryTarget,
+    max_filings: int,
+) -> tuple[list[DiscoveredFinancialFiling], tuple[int, ...]]:
+    expected_years = _expected_completed_fiscal_years(target)
+    annual_forms = ANNUAL_FORMS_BY_REGIME[target.filing_regime]
+    annual_by_year: dict[int, list[DiscoveredFinancialFiling]] = {
+        year: [] for year in expected_years
+    }
+    for filing in filings:
+        if (
+            filing.form_type in annual_forms
+            and filing.report_date is not None
+            and filing.report_date.year in annual_by_year
+        ):
+            annual_by_year[filing.report_date.year].append(filing)
+    for candidates in annual_by_year.values():
+        candidates.sort(
+            key=lambda item: (item.accepted_at, item.accession_no), reverse=True
+        )
+
+    selected: list[DiscoveredFinancialFiling] = []
+    selected_accessions: set[str] = set()
+    for year in expected_years:
+        candidates = annual_by_year[year]
+        if candidates and len(selected) < max_filings:
+            selected.append(candidates[0])
+            selected_accessions.add(candidates[0].accession_no)
+
+    companions = sorted(
+        (
+            filing
+            for candidates in annual_by_year.values()
+            for filing in candidates[1:]
+        ),
+        key=lambda item: (item.accepted_at, item.accession_no),
+        reverse=True,
+    )
+    if target.filing_regime == "us_10k_10q":
+        supplemental = [
+            filing for filing in filings if filing.form_type in {"10-Q", "10-Q/A"}
+        ]
+    else:
+        supplemental = [filing for filing in filings if _financially_useful_6k(filing)]
+    supplemental.sort(
+        key=lambda item: (item.accepted_at, item.accession_no), reverse=True
+    )
+
+    for filing in [*companions, *supplemental]:
+        if len(selected) >= max_filings:
+            break
+        if filing.accession_no not in selected_accessions:
+            selected.append(filing)
+            selected_accessions.add(filing.accession_no)
+
+    covered_years = _annual_fiscal_years(selected, target)
+    missing_years = tuple(year for year in expected_years if year not in covered_years)
+    selected.sort(
+        key=lambda item: (item.accepted_at, item.accession_no), reverse=True
+    )
+    return selected, missing_years
 
 
 def _fetch_bytes(client: EdgarLikeClient, url: str) -> bytes:
@@ -918,8 +1145,20 @@ def _discover(
     cik: str,
     *,
     max_filings: int,
-    as_of: datetime | None,
+    filing_selection_as_of: datetime | None,
+    history_target: FinancialHistoryTarget | None = None,
 ) -> _DiscoveryResult:
+    if filing_selection_as_of is not None:
+        filing_selection_as_of = _aware(filing_selection_as_of)
+    if history_target is not None:
+        target_cutoff = _aware(history_target.filing_selection_as_of)
+        if (
+            filing_selection_as_of is not None
+            and filing_selection_as_of != target_cutoff
+        ):
+            raise SecFinancialIngestionError(
+                "history target cutoff must match filing_selection_as_of"
+            )
     submissions_url = f"https://data.sec.gov/submissions/CIK{cik}.json"
     main_content = _fetch_bytes(client, submissions_url)
     main = parse_financial_submissions(main_content, source_url=submissions_url)
@@ -928,10 +1167,30 @@ def _discover(
     discovered = list(main.filings)
     source_payloads = {submissions_url: main_content}
     failures: list[str] = []
-    def eligible_count() -> int:
-        return sum(1 for item in discovered if as_of is None or item.accepted_at <= as_of)
+    selection_cutoff = filing_selection_as_of or (
+        history_target.filing_selection_as_of if history_target else None
+    )
 
-    if eligible_count() < max_filings:
+    def canonical_eligible() -> list[DiscoveredFinancialFiling]:
+        canonical, _, _, _ = _canonicalize_discovered_filings(discovered)
+        return [
+            item
+            for item in canonical
+            if selection_cutoff is None or item.accepted_at <= selection_cutoff
+        ]
+
+    def eligible_count() -> int:
+        return len(canonical_eligible())
+
+    def annual_coverage_complete() -> bool:
+        if history_target is None:
+            return eligible_count() >= max_filings
+        eligible = canonical_eligible()
+        return set(_expected_completed_fiscal_years(history_target)) <= _annual_fiscal_years(
+            eligible, history_target
+        )
+
+    if not annual_coverage_complete():
         safe_historical_files: list[str] = []
         unsafe_historical_files: list[str] = []
         for reference in main.historical_submission_references:
@@ -965,22 +1224,65 @@ def _discover(
             content = _fetch_bytes(client, url)
             source_payloads[url] = content
             discovered.extend(parse_historical_financial_submissions(content, source_url=url))
-            if eligible_count() >= max_filings:
+            if annual_coverage_complete():
                 break
         if (
-            eligible_count() < max_filings
+            not annual_coverage_complete()
             and len(safe_historical_files) > MAX_HISTORICAL_SUBMISSION_FILES
         ):
             failures.append("history_scan_limit_exceeded")
-    by_accession = {item.accession_no: item for item in discovered}
+    (
+        canonical,
+        conflicting_accessions,
+        invalid_accession_tokens,
+        invalid_period_accessions,
+    ) = _canonicalize_discovered_filings(discovered)
+    failures.extend(
+        "invalid_filing_accession:sha256=" + token
+        for token in invalid_accession_tokens[:MAX_DISCOVERY_IDENTITY_FAILURES]
+    )
+    if len(invalid_accession_tokens) > MAX_DISCOVERY_IDENTITY_FAILURES:
+        failures.append(
+            "invalid_filing_accession_additional:"
+            f"{len(invalid_accession_tokens) - MAX_DISCOVERY_IDENTITY_FAILURES}"
+        )
+    failures.extend(
+        "invalid_filing_period_metadata:" + accession_no
+        for accession_no in invalid_period_accessions[:MAX_DISCOVERY_IDENTITY_FAILURES]
+    )
+    if len(invalid_period_accessions) > MAX_DISCOVERY_IDENTITY_FAILURES:
+        failures.append(
+            "invalid_filing_period_metadata_additional:"
+            f"{len(invalid_period_accessions) - MAX_DISCOVERY_IDENTITY_FAILURES}"
+        )
+    failures.extend(
+        "conflicting_filing_metadata:" + accession_no
+        for accession_no in conflicting_accessions[:MAX_DISCOVERY_IDENTITY_FAILURES]
+    )
+    if len(conflicting_accessions) > MAX_DISCOVERY_IDENTITY_FAILURES:
+        failures.append(
+            "conflicting_filing_metadata_additional:"
+            f"{len(conflicting_accessions) - MAX_DISCOVERY_IDENTITY_FAILURES}"
+        )
     eligible = [
         item
-        for item in by_accession.values()
-        if as_of is None or item.accepted_at <= as_of
+        for item in canonical
+        if selection_cutoff is None or item.accepted_at <= selection_cutoff
     ]
-    selected = sorted(
-        eligible, key=lambda item: (item.accepted_at, item.accession_no), reverse=True
-    )[:max_filings]
+    if history_target is None:
+        selected = sorted(
+            eligible, key=lambda item: (item.accepted_at, item.accession_no), reverse=True
+        )[:max_filings]
+    else:
+        selected, missing_years = _select_history_filings(
+            eligible,
+            target=history_target,
+            max_filings=max_filings,
+        )
+        if missing_years:
+            failures.append(
+                "annual_coverage_gap:" + ",".join(str(year) for year in missing_years)
+            )
     return _DiscoveryResult(
         filings=tuple(selected),
         source_payloads=source_payloads,
@@ -997,10 +1299,15 @@ def ingest_latest_financial_filings(
     max_filings: int,
     now: datetime | None = None,
     parser_version: str = "inline-xbrl-v1",
-    as_of: datetime | None = None,
+    filing_selection_as_of: datetime | None = None,
+    history_target: FinancialHistoryTarget | None = None,
 ) -> FinancialIngestionReport:
     now = _aware(now or datetime.now(timezone.utc))
-    as_of = _aware(as_of) if as_of is not None else None
+    filing_selection_as_of = (
+        _aware(filing_selection_as_of)
+        if filing_selection_as_of is not None
+        else None
+    )
     if max_filings < 1 or max_filings > 200:
         raise SecFinancialIngestionError("max_filings must be between 1 and 200")
     if not parser_version.strip():
@@ -1008,7 +1315,11 @@ def ingest_latest_financial_filings(
     _lock_keys(db, f"sec-identity-stock:{stock_id}")
     identity = _reviewed_identity(db, stock_id, now)
     discovery = _discover(
-        client, identity.cik, max_filings=max_filings, as_of=as_of
+        client,
+        identity.cik,
+        max_filings=max_filings,
+        filing_selection_as_of=filing_selection_as_of,
+        history_target=history_target,
     )
     discovered = discovery.filings
     created_filings = 0
@@ -1227,3 +1538,173 @@ def select_sec_financial_evidence_as_of(
             ),
         )
     return list(latest_by_filing.values())
+
+
+def select_sec_financial_failures_as_of(
+    db: Session,
+    *,
+    stock_id: int,
+    cutoff: datetime,
+) -> list[SecFinancialEvidenceFailureAsOf]:
+    """Return cutoff-visible terminal parse failures for identity-valid filings."""
+    cutoff = _aware(cutoff)
+    current_identity = aliased(SecIssuerIdentity)
+    superseding_identity = aliased(SecIssuerIdentity)
+    current_reviewed_identity_exists = exists(
+        select(current_identity.id).where(
+            current_identity.stock_id == stock_id,
+            current_identity.cik == SecIssuerIdentity.cik,
+            current_identity.status == "reviewed",
+            current_identity.known_at <= cutoff,
+            current_identity.created_at <= cutoff,
+            current_identity.effective_from
+            <= func.coalesce(SecFinancialFiling.report_date, SecFinancialFiling.filed_on),
+            or_(
+                current_identity.effective_to.is_(None),
+                current_identity.effective_to
+                >= func.coalesce(
+                    SecFinancialFiling.report_date, SecFinancialFiling.filed_on
+                ),
+            ),
+            ~exists(
+                select(superseding_identity.id).where(
+                    superseding_identity.supersedes_identity_id == current_identity.id,
+                    superseding_identity.known_at <= cutoff,
+                    superseding_identity.created_at <= cutoff,
+                )
+            ),
+        )
+    )
+    late_linked_input_exists = exists(
+        select(SecFinancialParseRunArtifact.id)
+        .join(
+            SecFilingArtifact,
+            SecFilingArtifact.id == SecFinancialParseRunArtifact.artifact_id,
+        )
+        .where(
+            SecFinancialParseRunArtifact.parse_run_id == SecFinancialParseRun.id,
+            or_(
+                SecFinancialParseRunArtifact.known_at > cutoff,
+                SecFinancialParseRunArtifact.created_at > cutoff,
+                SecFilingArtifact.known_at > cutoff,
+                SecFilingArtifact.created_at > cutoff,
+            ),
+        )
+    )
+    rows = db.execute(
+        select(SecFinancialFiling, SecFinancialParseRun)
+        .join(
+            SecIssuerIdentity,
+            SecIssuerIdentity.id == SecFinancialFiling.issuer_identity_id,
+        )
+        .join(
+            SecFinancialParseRun,
+            SecFinancialParseRun.filing_id == SecFinancialFiling.id,
+        )
+        .where(
+            SecIssuerIdentity.stock_id == stock_id,
+            SecIssuerIdentity.status == "reviewed",
+            SecIssuerIdentity.known_at <= cutoff,
+            SecIssuerIdentity.created_at <= cutoff,
+            current_reviewed_identity_exists,
+            SecFinancialFiling.accepted_at <= cutoff,
+            SecFinancialFiling.known_at <= cutoff,
+            SecFinancialFiling.created_at <= cutoff,
+            SecFinancialParseRun.completed_at <= cutoff,
+            SecFinancialParseRun.known_at <= cutoff,
+            SecFinancialParseRun.created_at <= cutoff,
+            ~late_linked_input_exists,
+        )
+        .order_by(
+            SecFinancialFiling.accepted_at.desc(),
+            SecFinancialFiling.id.desc(),
+            SecFinancialParseRun.known_at.desc(),
+            SecFinancialParseRun.id.desc(),
+        )
+    ).all()
+    terminal_by_filing: dict[int, SecFinancialEvidenceFailureAsOf | None] = {}
+    for filing, run in rows:
+        if filing.id in terminal_by_filing:
+            continue
+        if run.status == "failed":
+            error_code = run.error_code or "parse_failed"
+            if re.fullmatch(r"[a-z0-9_]{1,80}", error_code) is None:
+                error_code = "parse_failed"
+            terminal_by_filing[filing.id] = SecFinancialEvidenceFailureAsOf(
+                filing_id=filing.id,
+                accession_no=filing.accession_no,
+                parse_run_id=run.id,
+                error_code=error_code,
+            )
+        else:
+            terminal_by_filing[filing.id] = None
+    return [item for item in terminal_by_filing.values() if item is not None]
+
+
+def earliest_replayable_sec_financial_evidence_at(
+    db: Session,
+    *,
+    stock_id: int,
+) -> datetime | None:
+    """Return the first cutoff with one complete, PIT-eligible evidence set."""
+    candidates = db.execute(
+        select(SecFinancialParseRun, SecFinancialFiling, SecIssuerIdentity)
+        .join(
+            SecFinancialFiling,
+            SecFinancialFiling.id == SecFinancialParseRun.filing_id,
+        )
+        .join(
+            SecIssuerIdentity,
+            SecIssuerIdentity.id == SecFinancialFiling.issuer_identity_id,
+        )
+        .where(
+            SecIssuerIdentity.stock_id == stock_id,
+            SecIssuerIdentity.status == "reviewed",
+            SecFinancialParseRun.status == "succeeded",
+            SecFinancialParseRun.fact_count > 0,
+        )
+        .order_by(SecFinancialParseRun.id.asc())
+    ).all()
+    replayable_boundaries: list[datetime] = []
+    for run, filing, identity in candidates:
+        linked_inputs = db.execute(
+            select(SecFinancialParseRunArtifact, SecFilingArtifact)
+            .join(
+                SecFilingArtifact,
+                SecFilingArtifact.id == SecFinancialParseRunArtifact.artifact_id,
+            )
+            .where(SecFinancialParseRunArtifact.parse_run_id == run.id)
+            .order_by(SecFinancialParseRunArtifact.id.asc())
+        ).all()
+        if not linked_inputs or any(
+            artifact.state != "retained" for _, artifact in linked_inputs
+        ):
+            continue
+        boundary_values = [
+            identity.known_at,
+            filing.accepted_at,
+            filing.known_at,
+            run.completed_at,
+            run.known_at,
+            run.created_at,
+        ]
+        for link, artifact in linked_inputs:
+            boundary_values.extend(
+                [
+                    link.known_at,
+                    link.created_at,
+                    artifact.known_at,
+                    artifact.created_at,
+                ]
+            )
+            if artifact.fetched_at is not None:
+                boundary_values.append(artifact.fetched_at)
+        boundary = max(boundary_values)
+        eligible = select_sec_financial_evidence_as_of(
+            db,
+            stock_id=stock_id,
+            cutoff=boundary,
+        )
+        if any(item.parse_run_id == run.id for item in eligible):
+            replayable_boundaries.append(boundary)
+    return min(replayable_boundaries) if replayable_boundaries else None
