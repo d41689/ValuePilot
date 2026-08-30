@@ -85,3 +85,6 @@ one central Rate Guard process and therefore one shared `edgar` rate-limit bucke
   was not changed. The ordinary shared-schema migration command is unavailable
   from `main` because the shared database already contains PR #128's unmerged
   revision `20260828500000`.
+- 2026-08-29: First PR CI run exposed that GitHub's Ubuntu image does not have
+  `rg`; replaced runtime/deploy shell checks with portable `grep -E`. Application,
+  frontend, and Rate Guard tests in that run had already passed.

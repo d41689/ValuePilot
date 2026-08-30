@@ -98,12 +98,12 @@ internal_rate_guard_process=$(
     sed -n 's/.*"process_id":"\([^"]*\)".*/\1/p'
 )
 if ! printf '%s\n' "$internal_rate_guard_identity" |
-  rg -q '^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$'; then
+  grep -Eq '^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$'; then
   echo "Internal Rate Guard returned an invalid instance identity" >&2
   exit 1
 fi
 if ! printf '%s\n' "$internal_rate_guard_process" |
-  rg -q '^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$'; then
+  grep -Eq '^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$'; then
   echo "Internal Rate Guard returned an invalid process identity" >&2
   exit 1
 fi
