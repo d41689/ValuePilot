@@ -28,6 +28,7 @@ from test_support.database_isolation import (
 
 PARENT_REVISION = "20260826130000"
 PERIOD_PARENT_REVISION = "20260827120000"
+HEAD_REVISION = "20260830140000"
 _configured_url = make_url(settings.SQLALCHEMY_DATABASE_URI)
 _BASE_DATABASE_URL = _configured_url.set(
     query={key: value for key, value in _configured_url.query.items() if key != "options"}
@@ -1094,7 +1095,7 @@ def test_submission_snapshot_downgrade_refuses_nonempty_table() -> None:
         with engine.connect() as connection:
             assert connection.execute(
                 text("SELECT version_num FROM alembic_version")
-            ).scalar_one() == "20260830130000"
+            ).scalar_one() == HEAD_REVISION
             assert "sec_submission_snapshots" in inspect(connection).get_table_names()
             assert connection.execute(
                 text("SELECT count(*) FROM sec_submission_snapshots")
@@ -1174,7 +1175,7 @@ def test_submission_snapshot_downgrade_locks_before_nonempty_preflight() -> None
         with engine.connect() as verify:
             assert verify.execute(
                 text("SELECT version_num FROM alembic_version")
-            ).scalar_one() == "20260830130000"
+            ).scalar_one() == HEAD_REVISION
             assert inspect(verify).has_table("sec_submission_snapshots")
             assert verify.execute(
                 text("SELECT count(*) FROM sec_submission_snapshots")
@@ -1384,12 +1385,14 @@ def test_lineage_visibility_requires_post_commit_availability_marker(
             text(
                 "INSERT INTO sec_financial_ingestion_operations "
                 "(id, issuer_identity_id, attempted_at, created_txid, created_at) VALUES "
-                "(:operation_id, :identity_id, '2026-08-27T00:01:00+00:00', "
+                "(:operation_id, :identity_id, '2000-01-01T00:00:00+00:00', "
                 "1, '2000-01-01T00:00:00+00:00') "
-                "RETURNING created_txid, created_at"
+                "RETURNING attempted_at, created_txid, created_at"
             ),
             {"operation_id": operation_id, "identity_id": identity_id},
         ).mappings().one()
+        assert operation_stamp["attempted_at"].year != 2000
+        assert operation_stamp["attempted_at"] == operation_stamp["created_at"]
         assert operation_stamp["created_txid"] != 1
         assert operation_stamp["created_at"].year != 2000
         snapshot_id = connection_a.execute(

@@ -1,4 +1,5 @@
 from datetime import date, datetime, timedelta, timezone
+import json
 from types import SimpleNamespace
 
 import pytest
@@ -14,6 +15,7 @@ from app.cli.sec_financials import (
 from app.models.sec_financials import SecFinancialFiling
 from app.models.stocks import Stock
 from app.services.sec_financial_ingestion import (
+    FinancialFilingSelection,
     FinancialIngestionReport,
     SecFinancialEvidenceAsOf,
     SecFinancialEvidenceFailureAsOf,
@@ -169,6 +171,15 @@ def test_ingest_gold_case_prints_stable_selection_and_pit_semantics(
             parse_runs_created=10,
             raw_facts_created=10,
             failures=(),
+            selected_filings=(
+                FinancialFilingSelection(
+                    accession_no="0000320193-26-000079",
+                    form_type="10-Q",
+                    accepted_at=datetime(
+                        2026, 7, 31, 20, 5, 28, tzinfo=timezone.utc
+                    ),
+                ),
+            ),
         )
 
     monkeypatch.setattr(financial_cli, "ingest_latest_financial_filings", fake_ingest)
@@ -185,6 +196,8 @@ def test_ingest_gold_case_prints_stable_selection_and_pit_semantics(
     assert (
         "ingestion_attempted_at=2026-08-30T12:00:00+00:00"
     ) in result.output
+    assert "operation_attempted_at=2026-08-30T12:00:00+00:00" in result.output
+    assert "selected_forms=10-Q selected_filing_count=1" in result.output
     assert (
         "earliest_replayable_evidence_at=2026-08-30T12:00:00+00:00 "
         "pit_replay_before_earliest_evidence=unavailable"
@@ -259,6 +272,200 @@ def test_ingest_gold_case_finalizes_terminal_acquisition_failure_before_exit(
     assert f"lineage_operation_id={operation_id} lineage_availability=pending" in result.output
     assert f"lineage_operation_id={operation_id} lineage_available_at=" in result.output
     assert "failure=main_submissions:sec_temporarily_unavailable" in result.output
+
+
+def test_ingest_gold_case_writes_stable_acceptance_report(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    stock = SimpleNamespace(id=77, ticker="AAPL")
+    session = _SessionStub()
+    operation_id = "11111111-1111-4111-8111-111111111111"
+    report_path = tmp_path / "reports" / "aapl-primary.json"
+    monkeypatch.setattr(financial_cli, "_utc_now", lambda: NOW)
+    monkeypatch.setattr(financial_cli, "SessionLocal", lambda: session)
+    monkeypatch.setattr(financial_cli.settings, "EDGAR_RAW_STORAGE_DIR", str(tmp_path))
+    monkeypatch.setattr(
+        financial_cli,
+        "_resolve_gold_case_stock",
+        lambda db, case, at: SimpleNamespace(
+            stock=stock,
+            source="reviewed_cik",
+            manifest_ticker="AAPL",
+        ),
+    )
+    monkeypatch.setattr(financial_cli, "EdgarClient", _EdgarStub)
+    monkeypatch.setattr(
+        financial_cli,
+        "preflight_configured_acceptance_runtime",
+        lambda run_id: SimpleNamespace(reports_root=tmp_path / "reports"),
+    )
+    monkeypatch.setattr(
+        financial_cli,
+        "finalize_pending_sec_financial_ingestion_operations",
+        lambda db, stock_id: (),
+    )
+    monkeypatch.setattr(
+        financial_cli,
+        "earliest_replayable_sec_financial_evidence_at",
+        lambda db, stock_id, storage_root: NOW,
+    )
+    monkeypatch.setattr(
+        financial_cli,
+        "finalize_sec_financial_ingestion_operation",
+        lambda db, operation_id: NOW + timedelta(seconds=2),
+    )
+    monkeypatch.setattr(
+        financial_cli,
+        "ingest_latest_financial_filings",
+        lambda *args, **kwargs: FinancialIngestionReport(
+            operation_id=operation_id,
+            stock_id=stock.id,
+            cik="0000320193",
+            filings_discovered=1,
+            filings_created=1,
+            artifacts_created=3,
+            parse_runs_created=1,
+            raw_facts_created=3,
+            failures=("annual_coverage_gap:2016",),
+            selected_filings=(
+                FinancialFilingSelection(
+                    accession_no="0000320193-26-000079",
+                    form_type="10-Q",
+                    accepted_at=datetime(
+                        2026, 7, 31, 20, 5, 28, tzinfo=timezone.utc
+                    ),
+                ),
+            ),
+        ),
+    )
+
+    result = CliRunner().invoke(
+        financial_cli.app,
+        [
+            "ingest-gold-case",
+            "--case-id",
+            "aapl-primary",
+            "--acceptance-run-id",
+            "step-c-fake",
+            "--report-json",
+            str(report_path),
+        ],
+    )
+
+    assert result.exit_code == 2, result.output
+    payload = json.loads(report_path.read_text(encoding="utf-8"))
+    assert payload["run_id"] == "step-c-fake"
+    assert payload["filing_selection_as_of"] == "2026-08-26T23:59:59+00:00"
+    assert payload["operation_attempted_at"] == "2026-08-30T12:00:00+00:00"
+    assert payload["evidence_available_at"] == "2026-08-30T12:00:02+00:00"
+    assert payload["selected_forms"] == ["10-Q"]
+    assert payload["typed_gaps"] == ["annual_coverage_gap:2016"]
+    assert payload["typed_failures"] == []
+    assert payload["metric_facts_published"] == 0
+    assert "typed_gap=annual_coverage_gap:2016" in result.output
+    assert f"acceptance_report_json={report_path}" in result.output
+
+
+@pytest.mark.parametrize(
+    "preflight_error",
+    (
+        "acceptance mode is required",
+        "configured database is not the derived acceptance database",
+        "acceptance storage is not the derived storage root",
+        "acceptance storage must not use symlinks",
+    ),
+)
+def test_ingest_gold_case_acceptance_preflight_fails_before_session_or_report(
+    monkeypatch,
+    tmp_path,
+    preflight_error: str,
+) -> None:
+    report_path = tmp_path / "reports" / "aapl-primary.json"
+    session_started = False
+
+    def fail_session():
+        nonlocal session_started
+        session_started = True
+        raise AssertionError("SessionLocal must not run after preflight failure")
+
+    def fail_preflight(*args, **kwargs):
+        raise ValueError(preflight_error)
+
+    monkeypatch.setattr(financial_cli, "SessionLocal", fail_session)
+    monkeypatch.setattr(
+        financial_cli,
+        "preflight_configured_acceptance_runtime",
+        fail_preflight,
+    )
+
+    result = CliRunner().invoke(
+        financial_cli.app,
+        [
+            "ingest-gold-case",
+            "--case-id",
+            "aapl-primary",
+            "--acceptance-run-id",
+            "step-c-fake",
+            "--report-json",
+            str(report_path),
+        ],
+    )
+
+    assert result.exit_code == 1
+    assert f"acceptance preflight failed: {preflight_error}" in result.output
+    assert session_started is False
+    assert not report_path.exists()
+
+
+def test_ingest_gold_case_acceptance_options_reject_standard_api_environment(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    report_path = tmp_path / "reports" / "aapl-primary.json"
+    session_started = False
+
+    def fail_session():
+        nonlocal session_started
+        session_started = True
+        raise AssertionError("standard API must not open an acceptance session")
+
+    monkeypatch.setattr(financial_cli, "SessionLocal", fail_session)
+    monkeypatch.setattr(
+        financial_cli.settings,
+        "SQLALCHEMY_DATABASE_URI",
+        "postgresql://valuepilot:valuepilot@postgres:5432/valuepilot",
+    )
+    monkeypatch.setattr(financial_cli.settings, "VALUEPILOT_ACCEPTANCE_MODE", False)
+    monkeypatch.setattr(
+        financial_cli.settings, "VALUEPILOT_ACCEPTANCE_RUN_ID", None
+    )
+    monkeypatch.setattr(
+        financial_cli.settings, "VALUEPILOT_ACCEPTANCE_DATABASE", None
+    )
+    monkeypatch.setattr(
+        financial_cli.settings, "VALUEPILOT_ACCEPTANCE_STORAGE", None
+    )
+
+    result = CliRunner().invoke(
+        financial_cli.app,
+        [
+            "ingest-gold-case",
+            "--case-id",
+            "aapl-primary",
+            "--acceptance-run-id",
+            "step-c-fake",
+            "--report-json",
+            str(report_path),
+        ],
+    )
+
+    assert result.exit_code == 1
+    assert "acceptance preflight failed: explicit acceptance mode is required" in (
+        result.output
+    )
+    assert session_started is False
+    assert not report_path.exists()
 
 
 def test_replay_before_acquired_evidence_known_at_is_typed_nonzero(
@@ -588,6 +795,9 @@ class _SessionStub:
 
     def scalar(self, *args, **kwargs):
         return False
+
+    def get(self, *args, **kwargs):
+        return SimpleNamespace(attempted_at=NOW)
 
     def commit(self) -> None:
         self.commit_count += 1

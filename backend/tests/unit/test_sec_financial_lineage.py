@@ -17,6 +17,7 @@ from sqlalchemy.orm import Session
 
 from app.edgar.parsers.financial_submissions import parse_financial_submissions
 from app.edgar.parsers.inline_xbrl import parse_inline_xbrl
+from app.acceptance.sec_gold_report import build_case_report
 from app.models.facts import MetricFact
 from app.models.sec_financials import (
     SecFilingArtifact,
@@ -3017,7 +3018,7 @@ def test_ingestion_is_idempotent_pit_safe_and_does_not_publish_metric_facts(
         now=datetime(2026, 8, 27, 12, 5, tzinfo=timezone.utc),
         parser_version="inline-xbrl-v1",
     )
-    _commit_and_finalize(db_session, first)
+    first_available_at = _commit_and_finalize(db_session, first)
     replayable_after_first = earliest_replayable_sec_financial_evidence_at(
         db_session, stock_id=stock.id, storage_root=tmp_path
     )
@@ -3034,10 +3035,54 @@ def test_ingestion_is_idempotent_pit_safe_and_does_not_publish_metric_facts(
 
     assert identity.status == "reviewed"
     assert first.filings_discovered == 1
+    assert [
+        (item.accession_no, item.form_type, item.accepted_at.isoformat())
+        for item in first.selected_filings
+    ] == [
+        (
+            ACCESSION,
+            "10-Q",
+            "2026-07-31T16:05:28-04:00",
+        )
+    ]
     assert first.parse_runs_created == 1
     assert first.raw_facts_created == 3
     assert second.parse_runs_created == 0
     assert second.raw_facts_created == 0
+    assert select_sec_financial_evidence_as_of(
+        db_session,
+        stock_id=stock.id,
+        cutoff=first_available_at - timedelta(microseconds=1),
+        storage_root=tmp_path,
+    ) == []
+    assert len(select_sec_financial_evidence_as_of(
+        db_session,
+        stock_id=stock.id,
+        cutoff=first_available_at,
+        storage_root=tmp_path,
+    )) == 1
+    assert len(select_sec_financial_evidence_as_of(
+        db_session,
+        stock_id=stock.id,
+        cutoff=first_available_at + timedelta(microseconds=1),
+        storage_root=tmp_path,
+    )) == 1
+    acceptance_report = build_case_report(
+        db_session,
+        run_id="step-c-fake",
+        case_id="aapl-primary",
+        filing_selection_as_of=datetime(
+            2026, 8, 26, 23, 59, 59, tzinfo=timezone.utc
+        ),
+        expected_completed_fiscal_years=(2025, 2024),
+        ingestion_report=first,
+        evidence_available_at=first_available_at,
+    )
+    assert acceptance_report.operation_attempted_at > datetime(
+        2026, 8, 27, 12, 5, tzinfo=timezone.utc
+    )
+    assert acceptance_report.evidence_available_at == first_available_at
+    assert acceptance_report.metric_facts_published == 0
     assert replayable_after_first is not None
     assert earliest_replayable_sec_financial_evidence_at(
         db_session, stock_id=stock.id, storage_root=tmp_path

@@ -21,10 +21,22 @@ import typer
 import yaml
 
 from app.acceptance.financial_truth_gold_set import validate_gold_set
+from app.acceptance.sec_gold_environment import (
+    preflight_configured_acceptance_runtime,
+    validate_acceptance_run_id,
+)
+from app.acceptance.sec_gold_report import (
+    build_case_report,
+    render_human_case_summary,
+    write_case_report,
+)
 from app.core.config import settings
 from app.core.db import SessionLocal
 from app.edgar.client import EdgarClient
-from app.models.sec_financials import SecIssuerIdentity
+from app.models.sec_financials import (
+    SecFinancialIngestionOperation,
+    SecIssuerIdentity,
+)
 from app.models.stocks import Stock
 from app.services.sec_financial_ingestion import (
     FinancialHistoryTarget,
@@ -253,8 +265,39 @@ def ingest_gold_case(
             "knowledge time."
         ),
     ),
+    acceptance_run_id: str | None = typer.Option(
+        None,
+        help="Validated isolated acceptance run ID; requires --report-json.",
+    ),
+    report_json: Path | None = typer.Option(
+        None,
+        help="Write the stable per-case acceptance JSON inside isolated storage.",
+    ),
 ) -> None:
     """Register the locked identity and ingest a bounded SEC lineage slice."""
+    if (acceptance_run_id is None) != (report_json is None):
+        raise typer.BadParameter(
+            "--acceptance-run-id and --report-json must be supplied together"
+        )
+    if acceptance_run_id is not None:
+        try:
+            validate_acceptance_run_id(acceptance_run_id)
+        except ValueError as exc:
+            raise typer.BadParameter(str(exc)) from exc
+        try:
+            acceptance_environment = preflight_configured_acceptance_runtime(
+                acceptance_run_id
+            )
+            expected_report = (
+                acceptance_environment.reports_root / f"{case_id}.json"
+            )
+            if report_json is None or report_json.absolute() != expected_report:
+                raise ValueError(
+                    "acceptance report path must be the exact run-derived case path"
+                )
+        except Exception as exc:
+            typer.echo(f"acceptance preflight failed: {exc}", err=True)
+            raise typer.Exit(1) from exc
     locked_case = _gold_case(case_id)
     case = locked_case.case
     ingestion_attempted_at = _utc_now()
@@ -343,6 +386,22 @@ def ingest_gold_case(
             f"lineage_operation_id={report.operation_id} "
             f"lineage_available_at={available_at.isoformat()}"
         )
+        operation = db.get(SecFinancialIngestionOperation, report.operation_id)
+        if operation is None:
+            raise RuntimeError("persisted SEC ingestion operation is unavailable")
+        selected_forms = sorted(
+            {item.form_type for item in report.selected_filings}
+        )
+        typer.echo(
+            f"operation_attempted_at={operation.attempted_at.isoformat()} "
+            f"evidence_finalized_at={available_at.isoformat()} "
+            f"evidence_available_at={available_at.isoformat()}"
+        )
+        typer.echo(
+            "selected_forms="
+            f"{','.join(selected_forms) if selected_forms else 'none'} "
+            f"selected_filing_count={len(report.selected_filings)}"
+        )
         replayable_at = earliest_replayable_sec_financial_evidence_at(
             db,
             stock_id=stock.id,
@@ -362,6 +421,23 @@ def ingest_gold_case(
             f"parse_runs_created={report.parse_runs_created} "
             f"raw_facts_created={report.raw_facts_created} failures={len(report.failures)}"
         )
+        if acceptance_run_id is not None and report_json is not None:
+            acceptance_report = build_case_report(
+                db,
+                run_id=acceptance_run_id,
+                case_id=case_id,
+                filing_selection_as_of=filing_selection_as_of,
+                expected_completed_fiscal_years=expected_years,
+                ingestion_report=report,
+                evidence_available_at=available_at,
+            )
+            write_case_report(
+                acceptance_report,
+                destination=report_json,
+                storage_root=Path(settings.EDGAR_RAW_STORAGE_DIR),
+            )
+            typer.echo(render_human_case_summary(acceptance_report))
+            typer.echo(f"acceptance_report_json={report_json.resolve()}")
         for failure in report.failures:
             typer.echo(f"failure={failure}", err=True)
         if report.failures:

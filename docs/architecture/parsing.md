@@ -150,3 +150,28 @@ Docker. Do NOT use OS-level `diff` for JSON comparisons.
 - Raw XBRL is never canonical financial truth. Only an approved FT-04 mapping
   may publish it into `metric_facts`; product consumers must not query the raw
   lineage tables.
+
+## SEC financial gold-set acceptance isolation
+
+The locked gold set runs in a disposable `valuepilot_acceptance_<run-id>`
+database on the existing shared PostgreSQL instance, never in the shared
+development `valuepilot` database and never in a project-local PostgreSQL
+service. Its content and reports use the exact run-derived
+`storage/sec_gold_acceptance/<run-id>` directory. See
+`docs/acceptance/sec-gold-environment.md` for the safe Docker lifecycle.
+An authoritative runtime preflight derives the exact database URL and storage
+path from the run ID, requires explicit acceptance mode and matching configured
+and live database identities, rejects missing/wrong/symlink storage, and
+forbids every Rate Guard fallback. It runs before Alembic, tests, ingestion,
+finalization, or report writes. Acceptance CLI flags alone never grant this
+runtime authority in the normal API environment.
+
+Acceptance distinguishes historical selection from knowledge time.
+`filing_selection_as_of` controls which filings are eligible. PostgreSQL stamps
+the ingestion operation's `attempted_at` at insert and stamps the separately
+committed availability marker. Callers cannot backdate newly acquired evidence
+to the selection cutoff. The stable case report exposes the selection cutoff,
+operation attempt, finalization/availability boundary, expected completed
+fiscal years, selected forms/accessions, typed gaps/failures, and lineage counts.
+PIT replay remains empty immediately before availability and becomes eligible
+at that boundary, subject to all retained-input integrity checks.

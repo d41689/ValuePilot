@@ -95,6 +95,13 @@ class EdgarLikeClient(Protocol):
 
 
 @dataclass(frozen=True)
+class FinancialFilingSelection:
+    accession_no: str
+    form_type: str
+    accepted_at: datetime
+
+
+@dataclass(frozen=True)
 class FinancialIngestionReport:
     operation_id: str
     stock_id: int
@@ -105,6 +112,7 @@ class FinancialIngestionReport:
     parse_runs_created: int
     raw_facts_created: int
     failures: tuple[str, ...]
+    selected_filings: tuple[FinancialFilingSelection, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -166,6 +174,19 @@ class _DiscoveryResolution:
     snapshot_source_url: str
     resource_role: str
     resource_key: str
+
+
+def _selected_filing_summaries(
+    filings: tuple[DiscoveredFinancialFiling, ...],
+) -> tuple[FinancialFilingSelection, ...]:
+    return tuple(
+        FinancialFilingSelection(
+            accession_no=item.accession_no,
+            form_type=item.form_type,
+            accepted_at=item.accepted_at,
+        )
+        for item in filings
+    )
 
 
 def _expected_completed_fiscal_years(
@@ -2089,6 +2110,7 @@ def ingest_latest_financial_filings(
             parse_runs_created=0,
             raw_facts_created=0,
             failures=discovery.failures,
+            selected_filings=_selected_filing_summaries(discovery.filings),
         )
     operation_id = str(uuid.uuid4())
     db.add(
@@ -2484,6 +2506,7 @@ def ingest_latest_financial_filings(
         parse_runs_created=created_runs,
         raw_facts_created=created_facts,
         failures=tuple(failures),
+        selected_filings=_selected_filing_summaries(discovered),
     )
 
 

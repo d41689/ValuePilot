@@ -1138,6 +1138,34 @@ historical-submissions references are never fetched and appear as bounded
 `unsafe_historical_submission_reference` failures, making the CLI exit with
 the same incomplete-result status as other typed failures.
 
+### H.8 Gold-set acceptance isolation and reporting
+
+The locked FT-00 gold set MUST run in a clean, disposable acceptance database
+on the authorized shared PostgreSQL instance and in isolated run-derived
+content storage. It MUST NOT migrate, stamp, read acceptance state from, or
+clean the shared development `valuepilot` database. The environment starts from
+an empty database, upgrades to the single Alembic head, uses the normal single
+Rate Guard SEC path, and supports exact retry-safe teardown.
+Before any migration, test, ingestion, finalization, report, or destructive
+cleanup step, one shared preflight MUST derive the exact acceptance database URL
+and storage path from the validated run ID. It MUST reject absent acceptance
+mode, any run/database/URL/`current_database()` disagreement, missing/wrong/
+escaped/symlink storage, and every Rate Guard fallback. Acceptance CLI options
+in a normal API environment MUST fail before opening an application session or
+writing a report.
+
+`filing_selection_as_of` is the historical filing-eligibility cutoff and MUST
+remain separate from evidence knowledge time. PostgreSQL stamps the operation
+attempt at insert and the separately committed availability marker; neither may
+be caller-backdated to the selection cutoff. Newly fetched evidence is absent
+from PIT replay immediately before availability and eligible at/after it.
+
+Each case produces stable JSON plus a human summary containing the selection
+cutoff, operation attempted/finalized/available times, expected completed fiscal
+years, selected forms/accessions, bounded typed gaps/failures, and lineage
+counts. The report explicitly records the number of `metric_facts` rows; FT-03
+acceptance requires that count to remain zero.
+
 ---
 
 ## Appendix A: Metric Keys & Mapping Contracts (V1)

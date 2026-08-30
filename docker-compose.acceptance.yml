@@ -1,0 +1,18 @@
+services:
+  api:
+    environment:
+      DATABASE_URL: >-
+        postgresql://valuepilot:valuepilot@postgres:5432/${VALUEPILOT_ACCEPTANCE_DATABASE:?set by scripts/sec_gold_acceptance.sh}
+      EDGAR_RAW_STORAGE_DIR: /code/storage/sec_gold_acceptance/${VALUEPILOT_ACCEPTANCE_RUN_ID:?set by scripts/sec_gold_acceptance.sh}
+      VALUEPILOT_ACCEPTANCE_MODE: "true"
+      VALUEPILOT_ACCEPTANCE_RUN_ID: ${VALUEPILOT_ACCEPTANCE_RUN_ID:?set by scripts/sec_gold_acceptance.sh}
+      VALUEPILOT_ACCEPTANCE_DATABASE: ${VALUEPILOT_ACCEPTANCE_DATABASE:?set by scripts/sec_gold_acceptance.sh}
+      VALUEPILOT_ACCEPTANCE_STORAGE: /code/storage/sec_gold_acceptance/${VALUEPILOT_ACCEPTANCE_RUN_ID:?set by scripts/sec_gold_acceptance.sh}
+      RATE_GUARD_URL: ${VALUEPILOT_ACCEPTANCE_RATE_GUARD_URL:-https://rate-guard.richmom.vip}
+      RATE_GUARD_ALLOW_LOCAL_FALLBACK: "false"
+      RATE_GUARD_FALLBACK_URL: null
+      EDGAR_SCHEDULER_ENABLED: "false"
+      THIRTEENF_JOB_WORKER_ENABLED: "false"
+      MANAGER_SEED_ON_STARTUP: "false"
+    volumes:
+      - ${VALUEPILOT_ACCEPTANCE_STORAGE:?set by scripts/sec_gold_acceptance.sh}:/code/storage/sec_gold_acceptance/${VALUEPILOT_ACCEPTANCE_RUN_ID:?set by scripts/sec_gold_acceptance.sh}
