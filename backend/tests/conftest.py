@@ -8,6 +8,10 @@ from pathlib import Path
 # is left at its default ("live") so fetch_and_store still uses the injected
 # fake clients rather than the replay-from-DB path.
 os.environ.setdefault("RATE_GUARD_URL", "http://rate-guard.invalid")
+os.environ["EDGAR_FETCH_MODE"] = "live"
+os.environ.setdefault(
+    "RATE_GUARD_EXPECTED_INSTANCE_ID", "11111111-1111-4111-8111-111111111111"
+)
 
 # The canonical compose command runs inside the normal API container, whose
 # DATABASE_URL intentionally points at the shared development database. Derive
@@ -121,7 +125,7 @@ def db_session():
         connection.close()
 
 @pytest.fixture(scope="function")
-def client(db_session):
+def client(db_session, monkeypatch):
     """
     FastAPI TestClient with overridden dependency.
     """
@@ -132,6 +136,12 @@ def client(db_session):
             pass # Session is closed in the db_session fixture
 
     app.dependency_overrides[get_db] = override_get_db
+    # App tests never contact external infrastructure. The dedicated Rate Guard
+    # startup tests exercise the real fail-closed verifier with a fake transport.
+    monkeypatch.setattr(
+        "app.main.verify_live_rate_guard",
+        lambda: "11111111-1111-4111-8111-111111111111",
+    )
     with TestClient(app) as c:
         yield c
     app.dependency_overrides.clear()

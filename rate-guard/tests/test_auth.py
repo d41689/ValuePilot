@@ -153,6 +153,23 @@ def test_metrics_requires_key_when_set(monkeypatch, client):
     assert ok.status_code == 200
 
 
+def test_identity_requires_key_and_reports_persistent_instance(monkeypatch, client):
+    monkeypatch.setenv("RATE_GUARD_API_KEY", "s3cret")
+    assert client.get("/v1/identity").status_code == 401
+
+    ok = client.get(
+        "/v1/identity", headers={"Authorization": "Bearer s3cret"}
+    )
+
+    assert ok.status_code == 200
+    assert ok.json() == {
+        "service": "rate-guard",
+        "instance_id": main.INSTANCE_ID,
+        "process_id": main.PROCESS_ID,
+        "version": main.app.version,
+    }
+
+
 def test_fetch_rejected_before_any_upstream_call(monkeypatch, client):
     """No auth → 401 from the middleware, short-circuiting before the gateway
     would touch the network."""

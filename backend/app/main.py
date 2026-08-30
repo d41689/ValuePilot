@@ -6,8 +6,32 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.core.config import settings
 from app.api.v1.api import api_router
+from app.rate_guard.client import RateGuardClient, RateGuardFetchError
 
 logger = logging.getLogger(__name__)
+
+
+def verify_live_rate_guard() -> str | None:
+    """Fail startup unless live egress reaches the deployment-pinned singleton."""
+    if settings.EDGAR_FETCH_MODE != "live":
+        return None
+    if not (settings.RATE_GUARD_URL or "").strip():
+        raise RuntimeError(
+            "EDGAR_FETCH_MODE=live requires RATE_GUARD_URL — live EDGAR access "
+            "must go through Rate Guard. Set RATE_GUARD_URL, or use "
+            "EDGAR_FETCH_MODE=replay. See rate-guard/README.md."
+        )
+    if not (settings.RATE_GUARD_EXPECTED_INSTANCE_ID or "").strip():
+        raise RuntimeError(
+            "EDGAR_FETCH_MODE=live requires RATE_GUARD_EXPECTED_INSTANCE_ID"
+        )
+    try:
+        with RateGuardClient() as client:
+            instance_id = client.verify_identity()
+    except RateGuardFetchError as exc:
+        raise RuntimeError(f"Live Rate Guard verification failed: {exc}") from exc
+    logger.info("Verified live Rate Guard instance %s", instance_id)
+    return instance_id
 
 
 @asynccontextmanager
@@ -16,12 +40,7 @@ async def lifespan(app: FastAPI):
     # limiter). Refuse to start a live-mode api without it — a per-process
     # limiter cannot bound the combined dev+prod egress rate and risks an
     # EDGAR IP ban. Use EDGAR_FETCH_MODE=replay for tests / offline runs.
-    if settings.EDGAR_FETCH_MODE == "live" and not (settings.RATE_GUARD_URL or "").strip():
-        raise RuntimeError(
-            "EDGAR_FETCH_MODE=live requires RATE_GUARD_URL — live EDGAR access "
-            "must go through Rate Guard. Set RATE_GUARD_URL, or use "
-            "EDGAR_FETCH_MODE=replay. See rate-guard/README.md."
-        )
+    verify_live_rate_guard()
 
     # Seed the curated manager universe BEFORE the scheduler or the job worker
     # can act on it: ingestion selects managers on `match_status == 'confirmed'`,

@@ -10,6 +10,7 @@ and surface every failure as a typed ``RateGuardFetchError``.
 import base64
 import logging
 from urllib.parse import urlparse
+import uuid
 
 import httpx
 
@@ -20,6 +21,7 @@ logger = logging.getLogger(__name__)
 # A single /v1/fetch can block while Rate Guard works through its own retry +
 # 429/503 global pause; the client timeout must comfortably exceed that.
 _RATE_GUARD_TIMEOUT_S = 1800.0
+_RATE_GUARD_IDENTITY_TIMEOUT_S = 10.0
 
 # Hosts where a plain-http Rate Guard URL is fine (traffic never leaves the box /
 # the Docker network). Anything else must be https when a key is configured.
@@ -168,6 +170,63 @@ class RateGuardClient:
             raise RateGuardFetchError(
                 f"Rate Guard returned an undecodable body for {url}: {exc}"
             ) from exc
+
+    def verify_identity(self) -> str:
+        """Prove the configured URL reaches the expected Rate Guard instance."""
+        expected = (settings.RATE_GUARD_EXPECTED_INSTANCE_ID or "").strip()
+        if not expected:
+            raise RateGuardFetchError(
+                "RATE_GUARD_EXPECTED_INSTANCE_ID is required for live external access"
+            )
+        try:
+            expected = str(uuid.UUID(expected))
+        except ValueError as exc:
+            raise RateGuardFetchError(
+                "RATE_GUARD_EXPECTED_INSTANCE_ID is not a valid UUID"
+            ) from exc
+
+        url = f"{self._base_url()}/v1/identity"
+        try:
+            resp = self._client.request(
+                "GET",
+                url,
+                headers=self._auth_headers(),
+                timeout=_RATE_GUARD_IDENTITY_TIMEOUT_S,
+            )
+        except httpx.HTTPError as exc:
+            raise RateGuardFetchError(
+                f"Rate Guard identity endpoint is unreachable: {exc}"
+            ) from exc
+        if resp.status_code != 200:
+            raise RateGuardFetchError(
+                f"Rate Guard identity endpoint returned HTTP {resp.status_code}"
+            )
+        try:
+            body = resp.json()
+        except ValueError as exc:
+            raise RateGuardFetchError(
+                "Rate Guard identity endpoint returned malformed JSON"
+            ) from exc
+        if not isinstance(body, dict) or body.get("service") != "rate-guard":
+            raise RateGuardFetchError(
+                "Rate Guard identity endpoint returned a malformed identity"
+            )
+        actual_raw = body.get("instance_id")
+        try:
+            actual = str(uuid.UUID(actual_raw))
+        except (ValueError, TypeError, AttributeError) as exc:
+            raise RateGuardFetchError(
+                "Rate Guard identity endpoint returned a malformed identity"
+            ) from exc
+        if actual_raw != actual:
+            raise RateGuardFetchError(
+                "Rate Guard identity endpoint returned a malformed identity"
+            )
+        if actual != expected:
+            raise RateGuardFetchError(
+                f"Rate Guard URL reached unexpected instance {actual}; expected {expected}"
+            )
+        return actual
 
     def metrics(self, upstream: str | None = None) -> dict:
         """GET Rate Guard's per-upstream metrics snapshot.

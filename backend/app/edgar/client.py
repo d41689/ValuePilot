@@ -12,6 +12,7 @@ raises ``RateGuardFetchError`` (from ``app.rate_guard.client``).
 """
 import httpx
 
+from app.core.config import settings
 from app.rate_guard.client import RateGuardClient
 
 
@@ -24,6 +25,14 @@ class EdgarClient:
 
     def __init__(self, http_client: httpx.Client | None = None) -> None:
         self._rate_guard = RateGuardClient(http_client)
+        if settings.EDGAR_FETCH_MODE == "live":
+            # API startup verifies early; this second boundary also protects
+            # operator CLIs and one-off workers that do not run FastAPI lifespan.
+            try:
+                self._rate_guard.verify_identity()
+            except BaseException:
+                self._rate_guard.close()
+                raise
 
     def get(self, url: str) -> bytes:
         """Fetch URL body via Rate Guard. Raises RateGuardFetchError on any non-200."""
