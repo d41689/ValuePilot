@@ -114,6 +114,15 @@ wastes rate-limit budget. Rate Guard keeps a per-upstream response cache:
   volume so it survives restarts); a small in-memory index. A cache hit skips
   the upstream call *and* the token bucket entirely.
 - Only `200` responses are cached; never errors.
+- An authenticated caller may narrow cache reuse with `max_cache_age_s` in the
+  bounded range 0–3600 seconds. Zero forces an upstream revalidation through the
+  same allowlist, token bucket, retry and global-pause path; a successful 200
+  refreshes the shared cache. The override can never lengthen the configured
+  upstream TTL.
+- Rate Guard and its authenticated backend callers are trusted infrastructure.
+  A forced SEC financial revalidation returns the normal response envelope; the
+  caller verifies the actual returned byte size and SHA-256 for its own content
+  identity. Signed receipts and transport keyrings are outside this boundary.
 - `/v1/metrics` reports cache hit/miss counts per upstream.
 
 ## 6. Topology — one instance, shared by dev + prod

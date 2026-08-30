@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import base64
 import logging
+import math
 import time
 from urllib.parse import urlparse
 
@@ -20,6 +21,7 @@ from .metrics import UpstreamMetrics
 logger = logging.getLogger("rate_guard.gateway")
 
 _MAX_PAUSE_WAIT = 120.0
+_MAX_CACHE_AGE_OVERRIDE_S = 3600.0
 
 
 class UpstreamError(Exception):
@@ -56,12 +58,18 @@ class Gateway:
 
     # -- request path -------------------------------------------------------
 
-    def fetch(self, upstream: str, method: str, url: str, body: bytes = b"") -> dict:
+    def fetch(
+        self,
+        upstream: str,
+        method: str,
+        url: str,
+        body: bytes = b"",
+        max_cache_age_s: float | None = None,
+    ) -> dict:
         if upstream not in self._upstreams:
             raise UpstreamError(None, f"unknown upstream: {upstream!r}")
         u = self._upstreams[upstream]
         method = method.upper()
-
         parsed = urlparse(url)
         if parsed.scheme.lower() != "https":
             raise UpstreamError(
@@ -74,8 +82,20 @@ class Gateway:
                 None, f"host {host!r} is not allowed for upstream {upstream!r}"
             )
 
-        ttl = self._cache_ttl(u, url)
-        cacheable = ttl > 0 and method in ("GET", "POST")
+        configured_ttl = self._cache_ttl(u, url)
+        ttl = configured_ttl
+        if max_cache_age_s is not None:
+            if (
+                not math.isfinite(max_cache_age_s)
+                or max_cache_age_s < 0
+                or max_cache_age_s > _MAX_CACHE_AGE_OVERRIDE_S
+            ):
+                raise UpstreamError(
+                    None,
+                    "max_cache_age_s must be between 0 and 3600 seconds",
+                )
+            ttl = min(ttl, max_cache_age_s)
+        cacheable = configured_ttl > 0 and method in ("GET", "POST")
         key = ResponseCache.key(upstream, method, url, body)
         if cacheable:
             cached = self._cache.get(key, ttl)

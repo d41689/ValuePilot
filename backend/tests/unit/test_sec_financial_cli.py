@@ -1,4 +1,4 @@
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from types import SimpleNamespace
 
 import pytest
@@ -143,13 +143,24 @@ def test_ingest_gold_case_prints_stable_selection_and_pit_semantics(
     monkeypatch.setattr(financial_cli, "EdgarClient", _EdgarStub)
     monkeypatch.setattr(
         financial_cli,
+        "finalize_pending_sec_financial_ingestion_operations",
+        lambda db, stock_id: (),
+    )
+    monkeypatch.setattr(
+        financial_cli,
         "earliest_replayable_sec_financial_evidence_at",
-        lambda db, stock_id: evidence_known_at,
+        lambda db, stock_id, storage_root: evidence_known_at,
+    )
+    monkeypatch.setattr(
+        financial_cli,
+        "finalize_sec_financial_ingestion_operation",
+        lambda db, operation_id: evidence_known_at,
     )
 
     def fake_ingest(*args, **kwargs):
         captured.update(kwargs)
         return FinancialIngestionReport(
+            operation_id="11111111-1111-4111-8111-111111111111",
             stock_id=stock.id,
             cik="0000320193",
             filings_discovered=10,
@@ -180,6 +191,74 @@ def test_ingest_gold_case_prints_stable_selection_and_pit_semantics(
     ) in result.output
     assert captured["filing_selection_as_of"].isoformat() == selection_as_of
     assert captured["history_target"].filing_selection_as_of.isoformat() == selection_as_of
+
+
+def test_ingest_gold_case_finalizes_terminal_acquisition_failure_before_exit(
+    monkeypatch,
+) -> None:
+    stock = SimpleNamespace(id=77, ticker="AAPL")
+    session = _SessionStub()
+    finalized: list[str] = []
+    operation_id = "11111111-1111-4111-8111-111111111111"
+    monkeypatch.setattr(financial_cli, "_utc_now", lambda: NOW)
+    monkeypatch.setattr(financial_cli, "SessionLocal", lambda: session)
+    monkeypatch.setattr(
+        financial_cli,
+        "_resolve_gold_case_stock",
+        lambda db, case, at: SimpleNamespace(
+            stock=stock,
+            source="reviewed_cik",
+            manifest_ticker="AAPL",
+        ),
+    )
+    monkeypatch.setattr(financial_cli, "EdgarClient", _EdgarStub)
+    monkeypatch.setattr(
+        financial_cli,
+        "finalize_pending_sec_financial_ingestion_operations",
+        lambda db, stock_id: (),
+    )
+    monkeypatch.setattr(
+        financial_cli,
+        "earliest_replayable_sec_financial_evidence_at",
+        lambda db, stock_id, storage_root: NOW,
+    )
+
+    def fake_finalize(db, *, operation_id: str):
+        finalized.append(operation_id)
+        return NOW
+
+    monkeypatch.setattr(
+        financial_cli,
+        "finalize_sec_financial_ingestion_operation",
+        fake_finalize,
+    )
+    monkeypatch.setattr(
+        financial_cli,
+        "ingest_latest_financial_filings",
+        lambda *args, **kwargs: FinancialIngestionReport(
+            operation_id=operation_id,
+            stock_id=stock.id,
+            cik="0000320193",
+            filings_discovered=0,
+            filings_created=0,
+            artifacts_created=0,
+            parse_runs_created=0,
+            raw_facts_created=0,
+            failures=("main_submissions:sec_temporarily_unavailable",),
+        ),
+    )
+
+    result = CliRunner().invoke(
+        financial_cli.app,
+        ["ingest-gold-case", "--case-id", "aapl-primary"],
+    )
+
+    assert result.exit_code == 2, result.output
+    assert finalized == [operation_id]
+    assert session.commit_count == 2
+    assert f"lineage_operation_id={operation_id} lineage_availability=pending" in result.output
+    assert f"lineage_operation_id={operation_id} lineage_available_at=" in result.output
+    assert "failure=main_submissions:sec_temporarily_unavailable" in result.output
 
 
 def test_replay_before_acquired_evidence_known_at_is_typed_nonzero(
@@ -229,7 +308,7 @@ def test_replay_before_acquired_evidence_known_at_is_typed_nonzero(
     monkeypatch.setattr(
         financial_cli,
         "earliest_replayable_sec_financial_evidence_at",
-        lambda db, stock_id: evidence_known_at,
+        lambda db, stock_id, storage_root: evidence_known_at,
     )
 
     result = CliRunner().invoke(
@@ -266,12 +345,12 @@ def test_replay_surfaces_terminal_failed_parse_as_typed_nonzero(
     monkeypatch.setattr(
         financial_cli,
         "select_sec_financial_evidence_as_of",
-        lambda db, stock_id, cutoff: [],
+        lambda db, stock_id, cutoff, storage_root: [],
     )
     monkeypatch.setattr(
         financial_cli,
         "select_sec_financial_failures_as_of",
-        lambda db, stock_id, cutoff: [
+        lambda db, stock_id, cutoff, storage_root: [
             SecFinancialEvidenceFailureAsOf(
                 filing_id=11,
                 accession_no="0000000077-26-000001",
@@ -283,7 +362,7 @@ def test_replay_surfaces_terminal_failed_parse_as_typed_nonzero(
     monkeypatch.setattr(
         financial_cli,
         "earliest_replayable_sec_financial_evidence_at",
-        lambda db, stock_id: NOW.replace(day=31),
+        lambda db, stock_id, storage_root: NOW.replace(day=31),
     )
 
     result = CliRunner().invoke(
@@ -313,7 +392,7 @@ def test_replay_outputs_mixed_success_and_terminal_failure_then_exits_nonzero(
     monkeypatch.setattr(
         financial_cli,
         "select_sec_financial_evidence_as_of",
-        lambda db, stock_id, cutoff: [
+        lambda db, stock_id, cutoff, storage_root: [
             SecFinancialEvidenceAsOf(
                 filing_id=11,
                 accession_no="0000000077-26-000001",
@@ -329,7 +408,7 @@ def test_replay_outputs_mixed_success_and_terminal_failure_then_exits_nonzero(
     monkeypatch.setattr(
         financial_cli,
         "select_sec_financial_failures_as_of",
-        lambda db, stock_id, cutoff: [
+        lambda db, stock_id, cutoff, storage_root: [
             SecFinancialEvidenceFailureAsOf(
                 filing_id=12,
                 accession_no="0000000077-26-000002",
@@ -370,17 +449,17 @@ def test_replay_is_empty_success_only_when_no_eligible_run_history(monkeypatch) 
     monkeypatch.setattr(
         financial_cli,
         "select_sec_financial_evidence_as_of",
-        lambda db, stock_id, cutoff: [],
+        lambda db, stock_id, cutoff, storage_root: [],
     )
     monkeypatch.setattr(
         financial_cli,
         "select_sec_financial_failures_as_of",
-        lambda db, stock_id, cutoff: [],
+        lambda db, stock_id, cutoff, storage_root: [],
     )
     monkeypatch.setattr(
         financial_cli,
         "earliest_replayable_sec_financial_evidence_at",
-        lambda db, stock_id: None,
+        lambda db, stock_id, storage_root: None,
     )
 
     result = CliRunner().invoke(
@@ -398,9 +477,120 @@ def test_replay_is_empty_success_only_when_no_eligible_run_history(monkeypatch) 
     assert "ticker=EMPTY cutoff=2026-08-30T12:00:00+00:00 filings=0" in result.output
 
 
+def test_replay_switches_from_pit_unavailable_at_exact_lineage_boundary(
+    monkeypatch,
+) -> None:
+    stock = SimpleNamespace(id=77, ticker="BOUNDARY")
+    session = _SessionStub()
+    boundary = datetime(2026, 8, 30, 12, 0, 2, tzinfo=timezone.utc)
+    row = SecFinancialEvidenceAsOf(
+        filing_id=11,
+        accession_no="0000000077-26-000001",
+        form_type="10-Q",
+        accepted_at=NOW,
+        parse_run_id=22,
+        parser_version="inline-xbrl-v1",
+        input_manifest_hash="a" * 64,
+        fact_count=3,
+    )
+    monkeypatch.setattr(financial_cli, "SessionLocal", lambda: session)
+    monkeypatch.setattr(financial_cli, "_single_stock", lambda db, ticker: stock)
+    monkeypatch.setattr(
+        financial_cli,
+        "select_sec_financial_evidence_as_of",
+        lambda db, stock_id, cutoff, storage_root: [row] if cutoff >= boundary else [],
+    )
+    monkeypatch.setattr(
+        financial_cli,
+        "select_sec_financial_failures_as_of",
+        lambda db, stock_id, cutoff, storage_root: [],
+    )
+    monkeypatch.setattr(
+        financial_cli,
+        "earliest_replayable_sec_financial_evidence_at",
+        lambda db, stock_id, storage_root: boundary,
+    )
+
+    before = CliRunner().invoke(
+        financial_cli.app,
+        [
+            "replay",
+            "--ticker",
+            "BOUNDARY",
+            "--cutoff",
+            (boundary - timedelta(microseconds=1)).isoformat(),
+        ],
+    )
+    exact = CliRunner().invoke(
+        financial_cli.app,
+        [
+            "replay",
+            "--ticker",
+            "BOUNDARY",
+            "--cutoff",
+            boundary.isoformat(),
+        ],
+    )
+
+    assert before.exit_code == 2
+    assert "failure=pit_evidence_unavailable" in before.output
+    assert exact.exit_code == 0
+    assert "filings=1" in exact.output
+
+
+def test_replay_fails_closed_while_committed_lineage_awaits_finalize(
+    monkeypatch,
+) -> None:
+    stock = SimpleNamespace(id=77, ticker="PENDING")
+    session = _SessionStub()
+    monkeypatch.setattr(financial_cli, "SessionLocal", lambda: session)
+    monkeypatch.setattr(financial_cli, "_single_stock", lambda db, ticker: stock)
+    monkeypatch.setattr(
+        financial_cli,
+        "select_sec_financial_evidence_as_of",
+        lambda db, stock_id, cutoff, storage_root: [],
+    )
+    monkeypatch.setattr(
+        financial_cli,
+        "select_sec_financial_failures_as_of",
+        lambda db, stock_id, cutoff, storage_root: [],
+    )
+    monkeypatch.setattr(
+        financial_cli,
+        "earliest_replayable_sec_financial_evidence_at",
+        lambda db, stock_id, storage_root: None,
+    )
+    monkeypatch.setattr(
+        financial_cli,
+        "has_pending_sec_financial_lineage",
+        lambda db, stock_id: True,
+    )
+
+    result = CliRunner().invoke(
+        financial_cli.app,
+        [
+            "replay",
+            "--ticker",
+            "PENDING",
+            "--cutoff",
+            "2026-08-30T12:00:00Z",
+        ],
+    )
+
+    assert result.exit_code == 2
+    assert "failure=pit_evidence_unavailable" in result.output
+    assert "reason=lineage_pending_finalize" in result.output
+
+
 class _SessionStub:
+    def __init__(self) -> None:
+        self.commit_count = 0
+
+    def scalar(self, *args, **kwargs):
+        return False
+
     def commit(self) -> None:
-        pass
+        self.commit_count += 1
 
     def rollback(self) -> None:
         pass

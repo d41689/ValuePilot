@@ -14,7 +14,7 @@ import uuid
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from .auth import enforce_auth_config, is_authorized
 from .cache import ResponseCache
@@ -62,6 +62,7 @@ class FetchRequest(BaseModel):
     url: str
     method: str = "GET"
     body_b64: str | None = None
+    max_cache_age_s: float | None = Field(default=None, ge=0.0, le=3600.0)
 
 
 @app.get("/healthz")
@@ -89,7 +90,13 @@ def fetch(req: FetchRequest) -> dict:
     except (ValueError, TypeError):
         raise HTTPException(status_code=400, detail="body_b64 is not valid base64")
     try:
-        return _gateway.fetch(req.upstream, req.method, req.url, body)
+        return _gateway.fetch(
+            req.upstream,
+            req.method,
+            req.url,
+            body,
+            max_cache_age_s=req.max_cache_age_s,
+        )
     except UpstreamError as exc:
         # 502: Rate Guard reached (or refused to reach) the upstream and could
         # not return a usable response.

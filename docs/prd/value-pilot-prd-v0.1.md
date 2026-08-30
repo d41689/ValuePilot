@@ -909,6 +909,68 @@ amendment does not mutate or delete the original filing.
 
 ### H.4 Artifact manifest and immutable storage
 
+`sec_submission_snapshots` records issuer-wide discovery payloads independently
+from any one accession. Each immutable row records the reviewed issuer identity,
+source URL, SHA-256, byte size, content-addressed storage key, fetch/knowledge
+time and creation time. Unique issuer/source/content identity makes an identical
+snapshot idempotent while allowing a changed submissions payload to append a new
+auditable observation. These snapshots establish discovery lineage; they are
+not members of a filing parse run's exact input manifest and their SHA or row ID
+MUST NOT change an unchanged accession's artifact or parse identity.
+Every successfully fetched main or historical submissions payload is retained,
+including malformed payloads. Decode, parse, downstream historical-fetch or
+accession-index acquisition failure appends a bounded typed acquisition-failure
+audit tied to a snapshot explicitly linked to that operation and publishes no
+unsupported filing parse lineage or `metric_facts`. A later operation may link
+a byte-identical snapshot created earlier; ownership is the exact operation-to-
+snapshot link plus reviewed identity, not the snapshot's creation operation.
+Failure visibility is never cleared merely because another issuer operation
+finalized. Each failure stores an immutable normalized resource role/key. A
+later finalized operation resolves only the exact validated submissions source,
+or an accession acquisition after that same accession reaches a terminal parse;
+a terminal parse failure replaces the acquisition failure but remains visible
+as failed-parse evidence. Different accessions, historical source URLs,
+no-eligible-filing results, and unrelated operations do not resolve the failure.
+PIT projection additionally requires the failure's reviewed identity to remain
+the terminal effective identity at the requested cutoff.
+If the initial canonical main-submissions request fails before returning bytes,
+the system MUST commit a bounded `submissions_fetch` acquisition failure against
+an explicit operation-owned no-bytes main-resource anchor. That anchor is not a
+snapshot and MUST NOT support a `no_eligible_filings` terminal. The failure is
+pending until a separate finalize commit, produces no filing/artifact/parse/raw
+fact/`metric_facts` lineage, remains idempotent across the same typed outage,
+and is resolved only when a later finalized operation validates the exact same
+canonical main resource.
+The backend application, PostgreSQL application/admin roles, Rate Guard,
+deployment host/admins, and authorized developers are trusted infrastructure.
+The product MUST fail closed for malformed or identity-conflicting SEC payloads,
+limits/outages/partial fetches, stale cache, normal corrections and duplicates,
+concurrency/crash/finalize behavior, small clock skew, coverage gaps, PIT and
+supersession, and missing or corrupt retained files. Defending against arbitrary
+trusted-database writes, arbitrary backend code execution, malicious admins,
+internal key theft, or signature forgery is outside this product contract.
+Transport receipts, backend signing authorities, keyrings, and cryptographic
+replay gates therefore are not required.
+
+A `resource_validated` resolution MUST remain operation/snapshot scoped and may
+be written only after ordinary deterministic validation rereads the retained
+content-addressed bytes, verifies recorded SHA-256/size, parses successfully,
+checks canonical main/historical role and URL plus reviewed CIK, and, for a
+historical payload, verifies the exact reference in the retained main payload.
+Selectors repeat the controlled-storage integrity and semantic checks before a
+resolution can suppress earlier failure evidence.
+Every accession resolution MUST reference an immutable attempt owned by that
+operation. The attempt is database-stamped and records the reviewed filing and
+accession, index resource and content hash, parse-input manifest, terminal
+outcome, and exact retained artifact links. A current parse belongs to the same
+operation; idempotent prior-run reuse is valid only when the attempt explicitly
+verifies the same content/input lineage. Finalizing an empty operation around an
+old run is not evidence. A resolution recorded before a later failure cannot
+resolve it merely because its operation finalizes afterward. Filing-artifact
+failure claims must identify the same unavailable/rejected observation and
+matching typed reason; retained artifacts and mismatched source-less filename keys
+fail closed.
+
 `sec_filing_artifacts` records the complete artifact list returned by the SEC
 accession index and the fetch state for each item:
 
@@ -933,7 +995,26 @@ When the SEC manifest supplies a byte size, the downloaded response MUST match
 it exactly. A mismatch appends a `rejected` artifact observation with typed
 `declared_size_mismatch` evidence and the response MUST NOT become a parse
 input. A previously retained observation is reusable only after its stored
-bytes, recorded byte size and SHA-256 all verify.
+bytes, recorded byte size and SHA-256 all verify and after the corresponding
+upstream input is revalidated through Rate Guard. The actual revalidated SHA-256
+and byte size participate in manifest identity. Changed retained bytes append a
+new artifact group and parse run even when the accession index bytes and
+declared size are unchanged; identical bytes remain idempotent.
+
+Forced revalidation uses Rate Guard's normal fetch contract with
+`max_cache_age_s=0`; it never bypasses Rate Guard's SEC allowlist, aggregate
+limiter, retries, or global pause. ValuePilot hashes and sizes the actual
+returned bytes and persists exact attempt/input ownership. Success/failure
+replay, suppression, earliest replay boundaries, and operator replay reread all
+controlled retained inputs and verify file existence, recorded byte size,
+SEC-declared size when present, and SHA-256. Missing, truncated, or same-size
+corrupted inputs fail closed, remain visible as
+`retained_artifact_integrity_failure`, and cannot silently fall back to an older
+run for that filing. Every non-NULL filing-artifact URL is also an exact
+reconstruction from reviewed CIK integer form, dashless accession and strict
+safe filename (with `index.json` for the synthetic index observation); host,
+userinfo, port, query, fragment, case, encoding, and traversal variants are not
+equivalent.
 
 The retained first vertical slice includes the primary inline-XBRL/HTML document
 and SEC index-declared XBRL instance/schema/calculation/definition/label/
@@ -952,13 +1033,26 @@ run and never deletes an earlier run/fact.
 `sec_financial_parse_run_artifacts` is the append-only exact input manifest:
 each row links one parse run to one retained artifact, unique per pair. The
 manifest hash is a checksum, not a substitute for these durable identities. A
-link records both `known_at` and its database-created timestamp. The run, all
-input links and all raw facts are committed atomically; an input relationship
-may not be appended in a later transaction. A PIT read is eligible only when
-every linked artifact was retained and both the artifact and relationship were
-known and created by the cutoff. The database rejects cross-filing links,
-artifacts learned after the parse run and relationships created after the run;
-raw facts have a composite foreign key to one of these exact input links.
+filing's exact manifest includes its accession index and retained filing
+artifacts, never an issuer submissions snapshot. A link records both `known_at`
+and its database-created timestamp. The run, all input links and all raw facts
+are committed atomically; an input relationship may not be appended in a later
+transaction. A PIT read is eligible only when every linked artifact was retained
+and both the artifact and relationship were known and created by the cutoff. The
+database rejects cross-filing links, artifacts learned after the parse run and
+relationships created after the run; raw facts have a composite foreign key to
+one of these exact input links.
+New lineage belongs to an immutable ingestion operation. Absence of a separate
+`sec_financial_lineage_availabilities` row means the operation is pending and
+all of its success or failure evidence is excluded from PIT selectors. After the
+ingest transaction commits, an operator path inserts the availability marker in
+a second transaction; PostgreSQL stamps `available_at` with wall-clock time.
+Reads before that boundary fail closed. Finalization and crash recovery are
+idempotent, and operator reruns first recover any committed pending operation.
+Every new parse run requires an operation. NULL-operation runs are replayable
+only when their IDs were captured in the immutable legacy allowlist during the
+schema upgrade; arbitrary or newly inserted NULL rows are rejected or excluded.
+
 For the atomic group, the database unconditionally stamps `created_at` and a
 64-bit creation-transaction identity on every run, input link and raw fact;
 caller-supplied values are overwritten. Each link and fact must carry the same

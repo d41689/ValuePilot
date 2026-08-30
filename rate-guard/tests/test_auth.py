@@ -195,8 +195,16 @@ def test_fetch_with_correct_key_passes_auth_and_reaches_gateway(monkeypatch, cli
     monkeypatch.setenv("RATE_GUARD_API_KEY", "s3cret")
     seen = {}
 
-    def _stub(upstream, method, url, body):
+    def _stub(
+        upstream,
+        method,
+        url,
+        body,
+        *,
+        max_cache_age_s=None,
+    ):
         seen["args"] = (upstream, method, url)
+        seen["max_cache_age_s"] = max_cache_age_s
         return {"status": 200, "headers": {}, "body_b64": "", "cache": "miss"}
 
     monkeypatch.setattr(main._gateway, "fetch", _stub)
@@ -207,6 +215,7 @@ def test_fetch_with_correct_key_passes_auth_and_reaches_gateway(monkeypatch, cli
     )
     assert resp.status_code == 200
     assert seen["args"] == ("edgar", "GET", "https://www.sec.gov/x")
+    assert seen["max_cache_age_s"] is None
 
 
 def test_endpoints_open_when_no_key(client):

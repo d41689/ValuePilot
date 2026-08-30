@@ -11,6 +11,7 @@ import json
 import httpx
 import pytest
 
+from app.edgar.client import EdgarClient
 from app.rate_guard import client as rg
 from app.rate_guard.client import (
     RateGuardClient,
@@ -60,6 +61,48 @@ def test_get_routes_payload_through_rate_guard(monkeypatch):
         "url": "https://www.dataroma.com/x",
     }
     assert "body_b64" not in seen["payload"]  # no body for a GET
+
+
+def test_fetch_can_request_bounded_cache_revalidation(monkeypatch):
+    monkeypatch.setattr(rg.settings, "RATE_GUARD_URL", RATE_GUARD)
+    seen: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["payload"] = json.loads(request.content)
+        return _envelope(b"FRESH")
+
+    with RateGuardClient(http_client=_rg_http(handler)) as client:
+        body = client.fetch(
+            upstream="edgar",
+            method="GET",
+            url="https://www.sec.gov/Archives/fixture.htm",
+            max_cache_age_s=0.0,
+        )
+
+    assert body == b"FRESH"
+    assert seen["payload"]["max_cache_age_s"] == 0.0
+
+
+def test_edgar_revalidated_get_stays_on_rate_guard_path():
+    calls: list[dict] = []
+
+    class FakeRateGuard:
+        def fetch(self, **kwargs):
+            calls.append(kwargs)
+            return b"FRESH"
+
+    client = object.__new__(EdgarClient)
+    client._rate_guard = FakeRateGuard()
+
+    assert client.get_revalidated("https://www.sec.gov/Archives/fixture.htm") == b"FRESH"
+    assert calls == [
+        {
+            "upstream": "edgar",
+            "method": "GET",
+            "url": "https://www.sec.gov/Archives/fixture.htm",
+            "max_cache_age_s": 0.0,
+        }
+    ]
 
 
 def test_post_body_is_base64_encoded(monkeypatch):

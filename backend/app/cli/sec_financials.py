@@ -30,6 +30,9 @@ from app.services.sec_financial_ingestion import (
     FinancialHistoryTarget,
     _expected_completed_fiscal_years,
     earliest_replayable_sec_financial_evidence_at,
+    finalize_sec_financial_ingestion_operation,
+    finalize_pending_sec_financial_ingestion_operations,
+    has_pending_sec_financial_lineage,
     ingest_latest_financial_filings,
     register_reviewed_sec_identity,
     select_sec_financial_evidence_as_of,
@@ -295,6 +298,16 @@ def ingest_gold_case(
             f"manifest_ticker={resolution.manifest_ticker} stock_ticker={stock.ticker} "
             f"stock_id={stock.id} cik={case['cik']}"
         )
+        recovered_operations = finalize_pending_sec_financial_ingestion_operations(
+            db, stock_id=stock.id
+        )
+        if recovered_operations:
+            db.commit()
+            for operation_id, available_at in recovered_operations:
+                typer.echo(
+                    f"recovered_lineage_operation_id={operation_id} "
+                    f"lineage_available_at={available_at.isoformat()}"
+                )
         typer.echo(
             f"filing_selection_as_of={filing_selection_as_of.isoformat()} "
             f"regime={history_target.filing_regime} "
@@ -318,8 +331,22 @@ def ingest_gold_case(
                 history_target=history_target,
             )
         db.commit()
+        typer.echo(
+            f"lineage_operation_id={report.operation_id} "
+            "lineage_availability=pending"
+        )
+        available_at = finalize_sec_financial_ingestion_operation(
+            db, operation_id=report.operation_id
+        )
+        db.commit()
+        typer.echo(
+            f"lineage_operation_id={report.operation_id} "
+            f"lineage_available_at={available_at.isoformat()}"
+        )
         replayable_at = earliest_replayable_sec_financial_evidence_at(
-            db, stock_id=stock.id
+            db,
+            stock_id=stock.id,
+            storage_root=Path(settings.EDGAR_RAW_STORAGE_DIR),
         )
         if replayable_at is None:
             typer.echo("pit_evidence_availability=unavailable")
@@ -365,20 +392,32 @@ def replay(
     try:
         stock = _single_stock(db, ticker)
         rows = select_sec_financial_evidence_as_of(
-            db, stock_id=stock.id, cutoff=parsed_cutoff
+            db,
+            stock_id=stock.id,
+            cutoff=parsed_cutoff,
+            storage_root=Path(settings.EDGAR_RAW_STORAGE_DIR),
         )
         failures = select_sec_financial_failures_as_of(
-            db, stock_id=stock.id, cutoff=parsed_cutoff
+            db,
+            stock_id=stock.id,
+            cutoff=parsed_cutoff,
+            storage_root=Path(settings.EDGAR_RAW_STORAGE_DIR),
+        )
+        pending_lineage = has_pending_sec_financial_lineage(
+            db, stock_id=stock.id
         )
         replayable_at = None
         if not rows:
             replayable_at = earliest_replayable_sec_financial_evidence_at(
-                db, stock_id=stock.id
+                db,
+                stock_id=stock.id,
+                storage_root=Path(settings.EDGAR_RAW_STORAGE_DIR),
             )
         db.rollback()
         if (
             not rows
             and not failures
+            and not pending_lineage
             and replayable_at is not None
             and parsed_cutoff < replayable_at
         ):
@@ -386,6 +425,14 @@ def replay(
                 f"ticker={stock.ticker} cutoff={parsed_cutoff.isoformat()} filings=0 "
                 "failure=pit_evidence_unavailable "
                 f"earliest_replayable_evidence_at={replayable_at.isoformat()}",
+                err=True,
+            )
+            raise typer.Exit(2)
+        if pending_lineage:
+            typer.echo(
+                f"ticker={stock.ticker} cutoff={parsed_cutoff.isoformat()} "
+                f"filings={len(rows)} "
+                "failure=pit_evidence_unavailable reason=lineage_pending_finalize",
                 err=True,
             )
             raise typer.Exit(2)
@@ -402,6 +449,29 @@ def replay(
             )
         if failures:
             raise typer.Exit(2)
+    finally:
+        db.close()
+
+
+@app.command("finalize-operation")
+def finalize_operation(
+    operation_id: str = typer.Option(..., help="Committed SEC ingestion operation UUID."),
+) -> None:
+    """Idempotently recover a committed operation left pending after a crash."""
+    db = SessionLocal()
+    try:
+        available_at = finalize_sec_financial_ingestion_operation(
+            db, operation_id=operation_id
+        )
+        db.commit()
+        typer.echo(
+            f"lineage_operation_id={operation_id} "
+            f"lineage_available_at={available_at.isoformat()}"
+        )
+    except Exception as exc:
+        db.rollback()
+        typer.echo(f"Error: {type(exc).__name__}: {exc}", err=True)
+        raise typer.Exit(1)
     finally:
         db.close()
 

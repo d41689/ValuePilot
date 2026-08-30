@@ -9,8 +9,9 @@ and surface every failure as a typed ``RateGuardFetchError``.
 """
 import base64
 import logging
-from urllib.parse import urlparse
+import math
 import uuid
+from urllib.parse import urlparse
 
 import httpx
 
@@ -23,6 +24,7 @@ logger = logging.getLogger(__name__)
 # 429/503 global pause; the client timeout must comfortably exceed that.
 _RATE_GUARD_TIMEOUT_S = 1800.0
 _RATE_GUARD_IDENTITY_TIMEOUT_S = 10.0
+_MAX_CACHE_AGE_OVERRIDE_S = 3600.0
 
 # Hosts where a plain-http Rate Guard URL is fine (traffic never leaves the box /
 # the Docker network). Anything else must be https when a key is configured.
@@ -154,7 +156,13 @@ class RateGuardClient:
         return {"Authorization": f"Bearer {key}"} if key else {}
 
     def fetch(
-        self, *, upstream: str, method: str, url: str, body: bytes = b""
+        self,
+        *,
+        upstream: str,
+        method: str,
+        url: str,
+        body: bytes = b"",
+        max_cache_age_s: float | None = None,
     ) -> bytes:
         """Fetch ``url`` for ``upstream`` via Rate Guard; return the upstream body.
 
@@ -163,6 +171,16 @@ class RateGuardClient:
         """
         endpoint = f"{self._base_url()}/v1/fetch"
         payload: dict = {"upstream": upstream, "method": method, "url": url}
+        if max_cache_age_s is not None:
+            if (
+                not math.isfinite(max_cache_age_s)
+                or max_cache_age_s < 0
+                or max_cache_age_s > _MAX_CACHE_AGE_OVERRIDE_S
+            ):
+                raise RateGuardFetchError(
+                    "max_cache_age_s must be between 0 and 3600 seconds"
+                )
+            payload["max_cache_age_s"] = max_cache_age_s
         if body:
             payload["body_b64"] = base64.b64encode(body).decode("ascii")
         try:
@@ -213,11 +231,12 @@ class RateGuardClient:
                 status_code=upstream_status,
             )
         try:
-            return base64.b64decode(envelope.get("body_b64") or "")
+            decoded = base64.b64decode(envelope.get("body_b64") or "")
         except (ValueError, TypeError) as exc:
             raise RateGuardFetchError(
                 f"Rate Guard returned an undecodable body for {url}: {exc}"
             ) from exc
+        return decoded
 
     def discover_identity(self) -> str:
         """Return a structurally validated identity without requiring a pin."""

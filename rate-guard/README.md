@@ -59,6 +59,10 @@ prod — *not* in the repo). The deploy workflow copies it to `./.env`.
 | `RATE_GUARD_REQUIRE_AUTH` | no | Set to `1` on any **publicly-exposed** instance: a missing/blank key becomes a hard startup failure (fail-closed) instead of a silently-open proxy. |
 | `RATE_GUARD_EDGAR_RPS` / `RATE_GUARD_OPENFIGI_RPS` / `RATE_GUARD_DATAROMA_RPS` | no | Per-upstream rate overrides. |
 
+An authenticated `GET` fetch with `max_cache_age_s=0` bypasses stale cache reuse
+through the normal Rate Guard allowlist, rate limit, retry, and pause path. SEC
+financial ingestion uses this bounded override before reusing retained inputs.
+
 ### `RATE_GUARD_URL` — for the ValuePilot app, not Rate Guard itself
 
 ValuePilot's `EdgarClient` / `OpenFigiClient` / `DataromaClient` POST to Rate
