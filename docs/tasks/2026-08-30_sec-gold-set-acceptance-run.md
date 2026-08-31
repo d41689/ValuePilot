@@ -1,7 +1,8 @@
 # SEC financial gold-set acceptance run
 
-Status: Step D implementation and acceptance complete; hold commit, database,
-and reports for Terra review
+Status: Step D implementation and acceptance complete; Step E isolated-test
+supporting fix ready for Terra review, with gates 4-7 paused; hold isolated
+databases and reports
 
 Owner: Product / Engineering
 
@@ -183,3 +184,58 @@ publish SEC raw facts into canonical `metric_facts`.
   made no SEC request, re-counted 24 typed-incomplete reports, and correctly
   exited 2. Wrong run, case, or pass identities fail closed in CLI regressions.
   No real acquisition rerun is required for this follow-up.
+
+## Step E isolated closing-gate evidence
+
+- The closing gate did not use or migrate shared `valuepilot`, and it did not
+  modify the retained Step D database or storage. The repository-external
+  Compose override is
+  `/tmp/valuepilot-step-e-closing-gate-20260831/docker-compose.closing-gate.yml`;
+  the corrected resolved config is
+  `/tmp/valuepilot-step-e-closing-gate-20260831/resolved-compose-retry.yml`.
+  It pins the API to
+  `valuepilot_test_closing_gate_step_e_20260831`, mounts only the exact
+  `/tmp/valuepilot-step-e-closing-gate-20260831/edgar_raw` storage directory,
+  selects replay mode, disables Rate Guard fallback, and disables all ingestion
+  schedulers/workers/seeds. `RATE_GUARD_URL` resolves only to the project-local
+  Rate Guard.
+- Before Compose startup, PostgreSQL reported
+  `current_database() = valuepilot_test_closing_gate_step_e_20260831` and zero
+  `public` tables. The exact canonical `docker compose up -d --build` command
+  passed, followed by the exact `docker compose exec -T api alembic upgrade
+  head` command. The latter applied the complete migration chain from base to
+  `20260830140000` without interruption.
+- An initial environment attempt used the otherwise isolated empty database
+  `valuepilot_closing_gate_step_e_20260831`. Its build and zero-to-head migration
+  passed, but pytest correctly rejected that name during collection because the
+  existing isolation helper permits only `valuepilot`, `valuepilot_test*`, or a
+  strictly named acceptance database. No tests or application requests ran in
+  that attempt. The guard was not loosened; the failed database remains retained
+  as evidence.
+- With the corrected fresh `valuepilot_test*` database, the exact canonical
+  `docker compose exec -T api pytest -q` command completed with **1,687 passed,
+  1 failed, 1 warning in 208.65 seconds**. The sole failure was
+  `test_operational_audit_transaction_rejects_database_writes`, a pre-existing
+  quant-trading test from before the SEC lineage work. It calls
+  `begin_read_only_development_audit()` against the real test connection and
+  asserts the database name is exactly shared `valuepilot`; the required
+  isolated closing-gate database therefore fails its deliberate production
+  guard before the test can exercise read-only behavior.
+- This was an environment-coupled, non-SEC test incompatibility, not a Step3
+  regression. Resolving it by pointing the gate at shared `valuepilot` would
+  violate the Step E isolation requirement. The Step E follow-up authorized a
+  minimal supporting fix: the quant audit runtime now permits only exact
+  `valuepilot` or a full-string, PostgreSQL-length-safe
+  `valuepilot_test_<lowercase-safe-slug>` name. It still rejects production,
+  acceptance, missing/bare suffix, uppercase, punctuation, repeated/trailing
+  underscore, and similar prefix/suffix names; there is no environment-variable
+  bypass. The operational path still executes `SET TRANSACTION READ ONLY`, and
+  its test now compares the validated name to PostgreSQL's actual
+  `current_database()` instead of hard-coding shared `valuepilot`.
+- Test-first evidence: the focused file was red with 16 failures and 21 passes
+  before implementation, including both newly allowed test names and the real
+  isolated operational connection. It is green after the minimal change with
+  **37 passed, 1 warning in 1.10 seconds**. Per Terra's review boundary,
+  frontend tests, lint, build, canonical `git diff --check`, and the full
+  closing-gate rerun remain paused. No external SEC request or direct SEC path
+  was used. Both closing-gate databases and the Step D evidence remain intact.
