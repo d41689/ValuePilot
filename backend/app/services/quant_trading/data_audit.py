@@ -27,6 +27,7 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass
 from datetime import date, datetime, time, timedelta, timezone
 import math
+import re
 from statistics import NormalDist, median
 from typing import Any
 
@@ -232,18 +233,29 @@ def filing_lag_days(period_end: date, filed_at: date) -> int:
     return lag
 
 
-def validate_audit_database_name(database_name: str | None) -> str:
-    """Fail closed unless the CLI is pointed at the canonical dev database."""
+_ISOLATED_TEST_DATABASE_PATTERN = re.compile(
+    r"valuepilot_test_[a-z0-9]+(?:_[a-z0-9]+)*"
+)
 
-    if database_name != "valuepilot":
+
+def validate_audit_database_name(database_name: str | None) -> str:
+    """Allow only canonical dev or a strictly named isolated test database."""
+
+    is_isolated_test = (
+        database_name is not None
+        and len(database_name) <= 63
+        and _ISOLATED_TEST_DATABASE_PATTERN.fullmatch(database_name) is not None
+    )
+    if database_name != "valuepilot" and not is_isolated_test:
         raise RuntimeError(
-            "quant data audit may run only against the development database 'valuepilot'"
+            "quant data audit may run only against the development or isolated "
+            "test database"
         )
     return database_name
 
 
 def begin_read_only_development_audit(session: Session) -> str:
-    """Pin the operational audit to dev and make PostgreSQL reject writes."""
+    """Pin the audit to dev/test and make PostgreSQL reject writes."""
 
     bind = session.get_bind()
     url = getattr(bind, "url", None)

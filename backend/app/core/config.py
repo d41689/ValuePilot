@@ -58,6 +58,13 @@ class Settings(BaseSettings):
     # Production never enables this switch.
     RATE_GUARD_ALLOW_LOCAL_FALLBACK: bool = False
     RATE_GUARD_FALLBACK_URL: Optional[str] = None
+    # Explicit, fail-closed SEC gold-set acceptance runtime identity. These are
+    # inert in the normal API environment and validated again before any
+    # acceptance CLI opens an application session.
+    VALUEPILOT_ACCEPTANCE_MODE: bool = False
+    VALUEPILOT_ACCEPTANCE_RUN_ID: Optional[str] = None
+    VALUEPILOT_ACCEPTANCE_DATABASE: Optional[str] = None
+    VALUEPILOT_ACCEPTANCE_STORAGE: Optional[str] = None
     RATE_GUARD_PRIMARY_PROBE_INTERVAL_S: float = 30.0
     # Shared Bearer key for Rate Guard's public surface. When set, the client
     # sends `Authorization: Bearer <key>` on every fetch/metrics call and Rate

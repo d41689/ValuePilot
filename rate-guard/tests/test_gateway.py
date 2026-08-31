@@ -67,6 +67,45 @@ def test_cache_hit_skips_the_second_upstream_call(tmp_path):
     assert base64.b64decode(second["body_b64"]) == b"cached-body"
 
 
+def test_zero_max_cache_age_revalidates_through_rate_limited_upstream(tmp_path):
+    bodies = [b"original", b"corrected"]
+    calls = []
+
+    def handler(request):
+        calls.append(str(request.url))
+        return httpx.Response(200, content=bodies.pop(0))
+
+    gw = _gateway(tmp_path, handler, {"test": _upstream(cache_ttl_s=3600.0)})
+    first = gw.fetch("test", "GET", "https://example.com/x")
+    second = gw.fetch(
+        "test",
+        "GET",
+        "https://example.com/x",
+        max_cache_age_s=0.0,
+    )
+
+    assert base64.b64decode(first["body_b64"]) == b"original"
+    assert base64.b64decode(second["body_b64"]) == b"corrected"
+    assert second["cache"] == "miss"
+    assert len(calls) == 2
+    third = gw.fetch("test", "GET", "https://example.com/x")
+    assert base64.b64decode(third["body_b64"]) == b"corrected"
+    assert third["cache"] == "hit"
+    assert len(calls) == 2
+
+
+def test_revalidation_cache_age_override_is_bounded(tmp_path):
+    gw = _gateway(tmp_path, lambda r: httpx.Response(200, content=b"body"))
+
+    with pytest.raises(UpstreamError, match="max_cache_age_s"):
+        gw.fetch(
+            "test",
+            "GET",
+            "https://example.com/x",
+            max_cache_age_s=3600.1,
+        )
+
+
 def test_403_raises_immediately_without_retry(tmp_path):
     calls = []
 
@@ -175,3 +214,23 @@ def test_metrics_count_requests_and_cache(tmp_path):
     assert m["recent_request_count"] == 1
     assert m["cache_hits"] == 1
     assert m["cache_misses"] == 1
+    assert m["total_request_count"] == 1
+    assert m["total_403_count"] == 0
+    assert m["total_429_count"] == 0
+
+
+def test_metrics_retain_exact_status_totals_beyond_rolling_window(tmp_path):
+    statuses = [429, 200]
+    gw = _gateway(
+        tmp_path,
+        lambda request: httpx.Response(statuses.pop(0), content=b"ok"),
+        {"test": _upstream(backoff_s=(0.0,), pause_s=0.0)},
+    )
+
+    gw.fetch("test", "GET", "https://example.com/a")
+    metrics = gw.metrics("test")
+
+    assert metrics["total_request_count"] == 2
+    assert metrics["total_403_count"] == 0
+    assert metrics["total_429_count"] == 1
+    assert metrics["total_503_count"] == 0

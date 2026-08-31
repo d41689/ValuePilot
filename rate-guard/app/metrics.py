@@ -20,10 +20,17 @@ class UpstreamMetrics:
         self._global_pause_until: float | None = None
         self._cache_hits = 0
         self._cache_misses = 0
+        self._total_request_count = 0
+        self._total_status_counts: dict[int, int] = {}
 
     def record(self, status: int) -> None:
         with self._lock:
-            self._events.append((time.time(), int(status)))
+            normalized_status = int(status)
+            self._events.append((time.time(), normalized_status))
+            self._total_request_count += 1
+            self._total_status_counts[normalized_status] = (
+                self._total_status_counts.get(normalized_status, 0) + 1
+            )
 
     def cache_hit(self) -> None:
         with self._lock:
@@ -51,6 +58,8 @@ class UpstreamMetrics:
             recent = [s for (t, s) in self._events if t >= cutoff]
             pause = self._global_pause_until
             hits, misses = self._cache_hits, self._cache_misses
+            total_requests = self._total_request_count
+            total_statuses = dict(self._total_status_counts)
         return {
             "window_seconds": self._window,
             "recent_request_count": len(recent),
@@ -58,6 +67,10 @@ class UpstreamMetrics:
             "recent_429_count": sum(1 for s in recent if s == 429),
             "cache_hits": hits,
             "cache_misses": misses,
+            "total_request_count": total_requests,
+            "total_403_count": total_statuses.get(403, 0),
+            "total_429_count": total_statuses.get(429, 0),
+            "total_503_count": total_statuses.get(503, 0),
             "global_pause_until": (
                 datetime.fromtimestamp(pause, tz=timezone.utc).isoformat()
                 if pause and pause > now

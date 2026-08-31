@@ -10,6 +10,9 @@ from sqlalchemy.engine import make_url
 
 
 _TEST_SCHEMA_PATTERN = re.compile(r"^valuepilot_pytest_[0-9a-f]{12}$")
+_ACCEPTANCE_DATABASE_PATTERN = re.compile(
+    r"^valuepilot_acceptance_[a-z0-9_]{2,32}$"
+)
 
 
 def new_test_schema_name() -> str:
@@ -38,10 +41,14 @@ def build_isolated_database_url(base_url: str, schema_name: str) -> str:
         raise RuntimeError("pytest database isolation requires PostgreSQL")
 
     database = url.database or ""
-    if database != "valuepilot" and not database.startswith("valuepilot_test"):
+    if (
+        database != "valuepilot"
+        and not database.startswith("valuepilot_test")
+        and not _ACCEPTANCE_DATABASE_PATTERN.fullmatch(database)
+    ):
         raise RuntimeError(
-            "pytest may only use the valuepilot dev database or a "
-            "valuepilot_test* database"
+            "pytest may only use the valuepilot dev database, a "
+            "valuepilot_test* database, or a strictly named acceptance database"
         )
     if "options" in url.query:
         raise RuntimeError(

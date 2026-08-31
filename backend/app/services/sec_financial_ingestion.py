@@ -12,7 +12,7 @@ from typing import Any, Protocol
 from urllib.parse import quote
 import uuid
 
-from sqlalchemy import exists, func, or_, select, text
+from sqlalchemy import Date, and_, cast, exists, func, or_, select, text
 from sqlalchemy.orm import Session, aliased
 
 from app.edgar.parsers.financial_submissions import (
@@ -23,25 +23,53 @@ from app.edgar.parsers.financial_submissions import (
 from app.edgar.parsers.inline_xbrl import parse_inline_xbrl
 from app.models.sec_financials import (
     SecFilingArtifact,
+    SecFinancialAccessionAttempt,
+    SecFinancialAccessionAttemptArtifact,
+    SecFinancialAcquisitionFailure,
+    SecFinancialAcquisitionResolution,
     SecFinancialFiling,
+    SecFinancialIngestionOperation,
+    SecFinancialLegacyParseRun,
+    SecFinancialLineageAvailability,
+    SecFinancialOperationResult,
+    SecFinancialOperationSnapshot,
     SecFinancialParseRun,
     SecFinancialParseRunArtifact,
+    SecFinancialResourceAnchor,
     SecIssuerIdentity,
     SecRawXbrlFact,
+    SecSubmissionSnapshot,
 )
 from app.rate_guard.client import RateGuardFetchError
+from app.services.sec_financial_validation import validate_submission_source
 
 
 CIK_RE = re.compile(r"^[0-9]{10}$")
 ACCESSION_RE = re.compile(r"^[0-9]{10}-[0-9]{2}-[0-9]{6}$")
+SAFE_SEC_ARTIFACT_FILENAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,254}$")
 MAX_ARTIFACT_BYTES = 20 * 1024 * 1024
 MAX_MANIFEST_ITEMS = 500
 MAX_HISTORICAL_SUBMISSION_FILES = 20
+MAX_DISCOVERY_IDENTITY_FAILURES = 50
 HISTORICAL_SUBMISSION_FILENAME_RE = re.compile(
     r"^CIK(?P<cik>[0-9]{10})-submissions-[0-9]+[.]json$"
 )
 PARSER_NAME = "valuepilot-inline-xbrl-lineage"
 ARTIFACT_RETENTION_POLICY_VERSION = "sec-financial-artifacts-v1"
+ANNUAL_FORMS_BY_REGIME = {
+    "us_10k_10q": frozenset({"10-K", "10-K/A"}),
+    "foreign_20f_6k": frozenset({"20-F", "20-F/A"}),
+}
+FINANCIAL_6K_DESCRIPTION_RE = re.compile(
+    r"\b(?:earnings (?:release|report|results)|financial (?:results|statements)|"
+    r"(?:annual|interim|quarterly) financial (?:report|results|statements)|"
+    r"(?:interim|quarterly) results)\b",
+    re.IGNORECASE,
+)
+NON_FINANCIAL_6K_DESCRIPTION_RE = re.compile(
+    r"\b(?:call|conference|announcement|notice)\b",
+    re.IGNORECASE,
+)
 
 
 class SecFinancialIngestionError(RuntimeError):
@@ -62,9 +90,21 @@ class EdgarLikeClient(Protocol):
     def get(self, url: str) -> bytes:
         ...
 
+    def get_revalidated(self, url: str) -> bytes:
+        ...
+
+
+@dataclass(frozen=True)
+class FinancialFilingSelection:
+    accession_no: str
+    form_type: str
+    accepted_at: datetime
+    report_date: date | None = None
+
 
 @dataclass(frozen=True)
 class FinancialIngestionReport:
+    operation_id: str
     stock_id: int
     cik: str
     filings_discovered: int
@@ -73,6 +113,16 @@ class FinancialIngestionReport:
     parse_runs_created: int
     raw_facts_created: int
     failures: tuple[str, ...]
+    selected_filings: tuple[FinancialFilingSelection, ...] = ()
+
+
+@dataclass(frozen=True)
+class FinancialHistoryTarget:
+    filing_regime: str
+    fiscal_year_end_mmdd: str
+    available_start_on: date
+    completed_fiscal_year_cap: int
+    filing_selection_as_of: datetime
 
 
 @dataclass(frozen=True)
@@ -88,14 +138,271 @@ class SecFinancialEvidenceAsOf:
 
 
 @dataclass(frozen=True)
+class SecFinancialEvidenceFailureAsOf:
+    filing_id: int | None
+    accession_no: str
+    parse_run_id: int | None
+    error_code: str
+
+
+@dataclass(frozen=True)
+class _AttemptEligibility:
+    eligible: bool
+    replayable_at: datetime | None = None
+
+
+@dataclass(frozen=True)
 class _DiscoveryResult:
     filings: tuple[DiscoveredFinancialFiling, ...]
     source_payloads: dict[str, bytes]
     failures: tuple[str, ...]
+    audit_failures: tuple["_DiscoveryFailure", ...] = ()
+    resolutions: tuple["_DiscoveryResolution", ...] = ()
 
 
-def _fetch_bytes(client: EdgarLikeClient, url: str) -> bytes:
+@dataclass(frozen=True)
+class _DiscoveryFailure:
+    snapshot_source_url: str
+    stage: str
+    error_code: str
+    resource_role: str
+    resource_key: str
+    accession_no: str | None = None
+
+
+@dataclass(frozen=True)
+class _DiscoveryResolution:
+    snapshot_source_url: str
+    resource_role: str
+    resource_key: str
+
+
+def _selected_filing_summaries(
+    filings: tuple[DiscoveredFinancialFiling, ...],
+) -> tuple[FinancialFilingSelection, ...]:
+    return tuple(
+        FinancialFilingSelection(
+            accession_no=item.accession_no,
+            form_type=item.form_type,
+            accepted_at=item.accepted_at,
+            report_date=item.report_date,
+        )
+        for item in filings
+    )
+
+
+def _expected_completed_fiscal_years(
+    target: FinancialHistoryTarget,
+) -> tuple[int, ...]:
+    cutoff = _aware(target.filing_selection_as_of)
+    if target.filing_regime not in ANNUAL_FORMS_BY_REGIME:
+        raise SecFinancialIngestionError("unsupported financial filing regime")
+    if not re.fullmatch(r"[0-9]{4}", target.fiscal_year_end_mmdd):
+        raise SecFinancialIngestionError("fiscal_year_end_mmdd must be MMDD")
+    if target.fiscal_year_end_mmdd == "0229":
+        raise SecFinancialIngestionError(
+            "0229 is unsupported for a recurring fiscal year end"
+        )
+    month = int(target.fiscal_year_end_mmdd[:2])
+    day = int(target.fiscal_year_end_mmdd[2:])
+    if target.completed_fiscal_year_cap < 1 or target.completed_fiscal_year_cap > 10:
+        raise SecFinancialIngestionError(
+            "completed_fiscal_year_cap must be between 1 and 10"
+        )
+
+    years: list[int] = []
+    for year in range(cutoff.year, target.available_start_on.year - 2, -1):
+        try:
+            fiscal_year_end = date(year, month, day)
+        except ValueError as exc:
+            raise SecFinancialIngestionError(
+                "fiscal_year_end_mmdd must be a real month/day"
+            ) from exc
+        if fiscal_year_end > cutoff.date():
+            continue
+        if fiscal_year_end < target.available_start_on:
+            break
+        years.append(year)
+        if len(years) >= target.completed_fiscal_year_cap:
+            break
+    return tuple(years)
+
+
+def _annual_fiscal_years(
+    filings: list[DiscoveredFinancialFiling],
+    target: FinancialHistoryTarget,
+) -> set[int]:
+    annual_forms = ANNUAL_FORMS_BY_REGIME[target.filing_regime]
+    expected = set(_expected_completed_fiscal_years(target))
+    return {
+        filing.report_date.year
+        for filing in filings
+        if filing.form_type in annual_forms
+        and filing.report_date is not None
+        and filing.report_date.year in expected
+    }
+
+
+def _financially_useful_6k(filing: DiscoveredFinancialFiling) -> bool:
+    if filing.form_type != "6-K" or filing.primary_doc_description is None:
+        return False
+    if NON_FINANCIAL_6K_DESCRIPTION_RE.search(filing.primary_doc_description):
+        return False
+    return FINANCIAL_6K_DESCRIPTION_RE.search(filing.primary_doc_description) is not None
+
+
+def _filing_semantic_identity(filing: DiscoveredFinancialFiling) -> tuple[Any, ...]:
+    return (
+        filing.form_type,
+        filing.report_date,
+        filing.filed_on,
+        filing.accepted_at,
+        filing.primary_document,
+        filing.primary_doc_description,
+    )
+
+
+def _canonicalize_discovered_filings(
+    filings: list[DiscoveredFinancialFiling],
+) -> tuple[
+    list[DiscoveredFinancialFiling],
+    tuple[str, ...],
+    tuple[str, ...],
+    tuple[str, ...],
+]:
+    by_accession: dict[str, list[DiscoveredFinancialFiling]] = {}
+    invalid_accession_tokens: set[str] = set()
+    invalid_period_accessions: set[str] = set()
+    for filing in filings:
+        if not ACCESSION_RE.fullmatch(filing.accession_no):
+            invalid_accession_tokens.add(
+                hashlib.sha256(
+                    filing.accession_no.encode("utf-8", errors="backslashreplace")
+                ).hexdigest()[:16]
+            )
+            continue
+        accepted_on = filing.accepted_at.astimezone(timezone.utc).date()
+        if (
+            filing.report_date is not None
+            and (
+                filing.report_date > filing.filed_on
+                or filing.report_date > accepted_on
+            )
+        ):
+            invalid_period_accessions.add(filing.accession_no)
+            continue
+        by_accession.setdefault(filing.accession_no, []).append(filing)
+
+    canonical: list[DiscoveredFinancialFiling] = []
+    conflicts: list[str] = []
+    for accession_no in sorted(by_accession):
+        candidates = by_accession[accession_no]
+        semantic_identities = {
+            _filing_semantic_identity(candidate) for candidate in candidates
+        }
+        if len(semantic_identities) != 1:
+            conflicts.append(accession_no)
+            continue
+        canonical.append(
+            min(
+                candidates,
+                key=lambda item: (
+                    "-submissions-" in item.submissions_source_url,
+                    item.submissions_source_url,
+                    item.discovery_payload_sha256,
+                ),
+            )
+        )
+    return (
+        canonical,
+        tuple(conflicts),
+        tuple(sorted(invalid_accession_tokens)),
+        tuple(sorted(invalid_period_accessions)),
+    )
+
+
+def _select_history_filings(
+    filings: list[DiscoveredFinancialFiling],
+    *,
+    target: FinancialHistoryTarget,
+    max_filings: int,
+) -> tuple[list[DiscoveredFinancialFiling], tuple[int, ...]]:
+    expected_years = _expected_completed_fiscal_years(target)
+    annual_forms = ANNUAL_FORMS_BY_REGIME[target.filing_regime]
+    annual_by_year: dict[int, list[DiscoveredFinancialFiling]] = {
+        year: [] for year in expected_years
+    }
+    for filing in filings:
+        if (
+            filing.form_type in annual_forms
+            and filing.report_date is not None
+            and filing.report_date.year in annual_by_year
+        ):
+            annual_by_year[filing.report_date.year].append(filing)
+    for candidates in annual_by_year.values():
+        candidates.sort(
+            key=lambda item: (item.accepted_at, item.accession_no), reverse=True
+        )
+
+    selected: list[DiscoveredFinancialFiling] = []
+    selected_accessions: set[str] = set()
+    for year in expected_years:
+        candidates = annual_by_year[year]
+        if candidates and len(selected) < max_filings:
+            selected.append(candidates[0])
+            selected_accessions.add(candidates[0].accession_no)
+
+    companions = sorted(
+        (
+            filing
+            for candidates in annual_by_year.values()
+            for filing in candidates[1:]
+        ),
+        key=lambda item: (item.accepted_at, item.accession_no),
+        reverse=True,
+    )
+    if target.filing_regime == "us_10k_10q":
+        supplemental = [
+            filing
+            for filing in filings
+            if filing.form_type in {"10-Q", "10-Q/A"}
+            and (filing.report_date or filing.filed_on) >= target.available_start_on
+        ]
+    else:
+        supplemental = [
+            filing
+            for filing in filings
+            if _financially_useful_6k(filing)
+            and (filing.report_date or filing.filed_on) >= target.available_start_on
+        ]
+    supplemental.sort(
+        key=lambda item: (item.accepted_at, item.accession_no), reverse=True
+    )
+
+    for filing in [*companions, *supplemental]:
+        if len(selected) >= max_filings:
+            break
+        if filing.accession_no not in selected_accessions:
+            selected.append(filing)
+            selected_accessions.add(filing.accession_no)
+
+    covered_years = _annual_fiscal_years(selected, target)
+    missing_years = tuple(year for year in expected_years if year not in covered_years)
+    selected.sort(
+        key=lambda item: (item.accepted_at, item.accession_no), reverse=True
+    )
+    return selected, missing_years
+
+
+def _fetch_bytes(
+    client: EdgarLikeClient,
+    url: str,
+    *,
+    revalidate: bool = False,
+) -> bytes:
     try:
+        if revalidate:
+            return client.get_revalidated(url)
         return client.get(url)
     except RateGuardFetchError as exc:
         if exc.status_code == 403:
@@ -130,18 +437,39 @@ def _overlaps(
 
 def _lock_keys(db: Session, *names: str) -> None:
     """Serialize idempotent identity/acquisition writes on PostgreSQL."""
-    keys = sorted(
-        {
-            int.from_bytes(
-                hashlib.sha256(name.encode("utf-8")).digest()[:8],
-                byteorder="big",
-                signed=True,
+    for name in sorted(set(names)):
+        db.execute(
+            text(
+                "SELECT pg_advisory_xact_lock(hashtextextended(:name, 0))"
+            ),
+            {"name": name},
+        )
+
+
+def _assert_identity_transition_not_backdated(
+    db: Session,
+    *,
+    identity_id: int,
+    known_at: datetime,
+) -> None:
+    has_invalidated_lineage = db.scalar(
+        select(
+            or_(
+                exists().where(
+                    SecSubmissionSnapshot.issuer_identity_id == identity_id,
+                    SecSubmissionSnapshot.known_at >= known_at,
+                ),
+                exists().where(
+                    SecFinancialFiling.issuer_identity_id == identity_id,
+                    SecFinancialFiling.known_at >= known_at,
+                ),
             )
-            for name in names
-        }
+        )
     )
-    for key in keys:
-        db.execute(text("SELECT pg_advisory_xact_lock(:key)"), {"key": key})
+    if has_invalidated_lineage:
+        raise SecFinancialIngestionError(
+            "identity transition predates persisted SEC lineage"
+        )
 
 
 def register_reviewed_sec_identity(
@@ -165,7 +493,7 @@ def register_reviewed_sec_identity(
     if effective_to is not None and effective_to < effective_from:
         raise SecFinancialIngestionError("effective_to precedes effective_from")
 
-    _lock_keys(db, f"sec-identity-stock:{stock_id}", f"sec-identity-cik:{cik}")
+    _lock_keys(db, f"sec-issuer-stock:{stock_id}", f"sec-issuer-cik:{cik}")
 
     existing = db.scalars(
         select(SecIssuerIdentity)
@@ -194,6 +522,11 @@ def register_reviewed_sec_identity(
             or known_at <= superseded.known_at
         ):
             raise SecFinancialIngestionError("invalid or stale identity supersession")
+        _assert_identity_transition_not_backdated(
+            db,
+            identity_id=superseded.id,
+            known_at=known_at,
+        )
 
     for row in terminal:
         if (
@@ -273,6 +606,18 @@ def retire_sec_identity(
     current = db.get(SecIssuerIdentity, identity_id)
     if current is None or current.status != "reviewed":
         raise SecFinancialIngestionError("reviewed identity to retire was not found")
+    _lock_keys(
+        db,
+        f"sec-issuer-stock:{current.stock_id}",
+        f"sec-issuer-cik:{current.cik}",
+    )
+    current = db.scalar(
+        select(SecIssuerIdentity)
+        .where(SecIssuerIdentity.id == identity_id)
+        .with_for_update()
+    )
+    if current is None or current.status != "reviewed":
+        raise SecFinancialIngestionError("reviewed identity to retire was not found")
     existing_child = db.scalar(
         select(SecIssuerIdentity.id).where(
             SecIssuerIdentity.supersedes_identity_id == identity_id
@@ -284,6 +629,11 @@ def retire_sec_identity(
         )
     if not review_reason.strip():
         raise SecFinancialIngestionError("review_reason is required")
+    _assert_identity_transition_not_backdated(
+        db,
+        identity_id=current.id,
+        known_at=known_at,
+    )
     retired = SecIssuerIdentity(
         stock_id=current.stock_id,
         cik=current.cik,
@@ -353,7 +703,12 @@ def _retain_item(item: dict[str, Any], primary_document: str) -> bool:
 
 
 def _safe_artifact_url(cik: str, accession_no: str, filename: str) -> str:
-    if not filename or PurePosixPath(filename).name != filename or filename in {".", ".."}:
+    if (
+        not filename
+        or PurePosixPath(filename).name != filename
+        or SAFE_SEC_ARTIFACT_FILENAME_RE.fullmatch(filename) is None
+        or ".." in filename
+    ):
         raise SecFinancialIngestionError("unsafe SEC artifact filename")
     if not ACCESSION_RE.fullmatch(accession_no):
         raise SecFinancialIngestionError("malformed SEC accession number")
@@ -361,7 +716,7 @@ def _safe_artifact_url(cik: str, accession_no: str, filename: str) -> str:
         f"https://www.sec.gov/Archives/edgar/data/{int(cik)}/"
         f"{accession_no.replace('-', '')}"
     )
-    return f"{base}/{quote(filename, safe='._-')}"
+    return f"{base}/{filename}"
 
 
 def _store_content_immutable(storage_root: Path, content: bytes) -> tuple[str, str]:
@@ -422,6 +777,365 @@ def _verify_retained_artifact(storage_root: Path, artifact: SecFilingArtifact) -
         raise SecFinancialIntegrityError("retained artifact hash mismatch")
 
 
+def _verify_submission_snapshot(
+    storage_root: Path,
+    snapshot: SecSubmissionSnapshot,
+) -> None:
+    relative = PurePosixPath(snapshot.storage_key)
+    if relative.is_absolute() or ".." in relative.parts:
+        raise SecFinancialIntegrityError("submission snapshot storage key is unsafe")
+    root = storage_root.resolve()
+    target = (root / Path(*relative.parts)).resolve()
+    if not target.is_relative_to(root) or not target.is_file():
+        raise SecFinancialIntegrityError("submission snapshot file is unavailable")
+    content = target.read_bytes()
+    if len(content) != snapshot.byte_size:
+        raise SecFinancialIntegrityError("submission snapshot byte size mismatch")
+    if hashlib.sha256(content).hexdigest() != snapshot.sha256:
+        raise SecFinancialIntegrityError("submission snapshot hash mismatch")
+
+
+def _read_verified_submission_snapshot(
+    storage_root: Path,
+    snapshot: SecSubmissionSnapshot,
+) -> bytes:
+    _verify_submission_snapshot(storage_root, snapshot)
+    relative = PurePosixPath(snapshot.storage_key)
+    return (storage_root.resolve() / Path(*relative.parts)).read_bytes()
+
+
+def _persist_submission_snapshots(
+    db: Session,
+    *,
+    issuer_identity_id: int,
+    source_payloads: dict[str, bytes],
+    storage_root: Path,
+    now: datetime,
+    operation_id: str,
+) -> dict[str, SecSubmissionSnapshot]:
+    snapshots: dict[str, SecSubmissionSnapshot] = {}
+    for source_url, content in sorted(source_payloads.items()):
+        if len(content) > MAX_ARTIFACT_BYTES:
+            raise SecFinancialIngestionError(
+                "SEC submissions snapshot exceeds byte limit"
+            )
+        sha256 = hashlib.sha256(content).hexdigest()
+        existing = db.scalar(
+            select(SecSubmissionSnapshot).where(
+                SecSubmissionSnapshot.issuer_identity_id == issuer_identity_id,
+                SecSubmissionSnapshot.source_url == source_url,
+                SecSubmissionSnapshot.sha256 == sha256,
+            )
+        )
+        if existing is not None:
+            _verify_submission_snapshot(storage_root, existing)
+            snapshots[source_url] = existing
+            db.add(
+                SecFinancialOperationSnapshot(
+                    operation_id=operation_id,
+                    snapshot_id=existing.id,
+                )
+            )
+            continue
+        storage_key, stored_sha256 = _store_content_immutable(storage_root, content)
+        if stored_sha256 != sha256:
+            raise SecFinancialIntegrityError(
+                "submission snapshot content-address mismatch"
+            )
+        snapshot = SecSubmissionSnapshot(
+                issuer_identity_id=issuer_identity_id,
+                operation_id=operation_id,
+                source_url=source_url,
+                sha256=sha256,
+                byte_size=len(content),
+                storage_key=storage_key,
+                fetched_at=now,
+                known_at=now,
+            )
+        db.add(snapshot)
+        db.flush()
+        snapshots[source_url] = snapshot
+        db.add(
+            SecFinancialOperationSnapshot(
+                operation_id=operation_id,
+                snapshot_id=snapshot.id,
+            )
+        )
+    db.flush()
+    return snapshots
+
+
+def _reusable_acquisition_failure_operation(
+    db: Session,
+    *,
+    issuer_identity_id: int,
+    discovery: _DiscoveryResult,
+    storage_root: Path,
+) -> str | None:
+    """Reuse an exact, already-audited failed discovery without cross-owning rows."""
+    if not discovery.audit_failures:
+        return None
+    snapshots_by_url: dict[str, SecSubmissionSnapshot] = {}
+    for source_url, content in sorted(discovery.source_payloads.items()):
+        snapshot = db.scalar(
+            select(SecSubmissionSnapshot).where(
+                SecSubmissionSnapshot.issuer_identity_id == issuer_identity_id,
+                SecSubmissionSnapshot.source_url == source_url,
+                SecSubmissionSnapshot.sha256
+                == hashlib.sha256(content).hexdigest(),
+            )
+        )
+        if snapshot is None:
+            return None
+        _verify_submission_snapshot(storage_root, snapshot)
+        snapshots_by_url[source_url] = snapshot
+    candidate_operation_ids: set[str] | None = None
+    matching_failure_ids_by_operation: dict[str, set[int]] = {}
+    for failure in discovery.audit_failures:
+        snapshot = snapshots_by_url.get(failure.snapshot_source_url)
+        if snapshot is None:
+            return None
+        audits = db.scalars(
+            select(SecFinancialAcquisitionFailure).where(
+                SecFinancialAcquisitionFailure.submission_snapshot_id == snapshot.id,
+                SecFinancialAcquisitionFailure.stage == failure.stage,
+                SecFinancialAcquisitionFailure.error_code == failure.error_code,
+                SecFinancialAcquisitionFailure.resource_role
+                == failure.resource_role,
+                SecFinancialAcquisitionFailure.resource_key == failure.resource_key,
+                SecFinancialAcquisitionFailure.accession_no
+                == failure.accession_no,
+            )
+        ).all()
+        matching_operation_ids = {audit.operation_id for audit in audits}
+        if not matching_operation_ids:
+            return None
+        for audit in audits:
+            matching_failure_ids_by_operation.setdefault(
+                audit.operation_id, set()
+            ).add(audit.id)
+        candidate_operation_ids = (
+            matching_operation_ids
+            if candidate_operation_ids is None
+            else candidate_operation_ids & matching_operation_ids
+        )
+        if not candidate_operation_ids:
+            return None
+    expected_snapshot_ids = {
+        snapshot.id for snapshot in snapshots_by_url.values()
+    }
+    expected_resolutions = {
+        (
+            resolution.resource_role,
+            resolution.resource_key,
+            snapshots_by_url[resolution.snapshot_source_url].id,
+        )
+        for resolution in discovery.resolutions
+    }
+    for operation_id in sorted(candidate_operation_ids or ()):
+        operation = db.get(SecFinancialIngestionOperation, operation_id)
+        if operation is None or operation.issuer_identity_id != issuer_identity_id:
+            continue
+        result = db.get(SecFinancialOperationResult, operation_id)
+        if (
+            result is None
+            or result.result_kind != "acquisition_failure"
+            or result.acquisition_failure_id
+            not in matching_failure_ids_by_operation.get(operation_id, set())
+        ):
+            continue
+        linked_snapshot_ids = set(
+            db.scalars(
+                select(SecFinancialOperationSnapshot.snapshot_id).where(
+                    SecFinancialOperationSnapshot.operation_id == operation_id
+                )
+            ).all()
+        )
+        actual_resolutions = {
+            (row.resource_role, row.resource_key, row.submission_snapshot_id)
+            for row in db.scalars(
+                select(SecFinancialAcquisitionResolution).where(
+                    SecFinancialAcquisitionResolution.operation_id == operation_id,
+                    SecFinancialAcquisitionResolution.resolution_kind
+                    == "resource_validated",
+                )
+            ).all()
+        }
+        if (
+            expected_snapshot_ids == linked_snapshot_ids
+            and expected_resolutions == actual_resolutions
+        ):
+            return operation_id
+    return None
+
+
+def _reusable_initial_main_failure_operation(
+    db: Session,
+    *,
+    issuer_identity_id: int,
+    resource_key: str,
+    error_code: str,
+) -> str | None:
+    rows = db.execute(
+        select(
+            SecFinancialAcquisitionFailure,
+            SecFinancialResourceAnchor,
+            SecFinancialOperationResult,
+        )
+        .join(
+            SecFinancialResourceAnchor,
+            SecFinancialResourceAnchor.id
+            == SecFinancialAcquisitionFailure.resource_anchor_id,
+        )
+        .join(
+            SecFinancialIngestionOperation,
+            SecFinancialIngestionOperation.id
+            == SecFinancialAcquisitionFailure.operation_id,
+        )
+        .join(
+            SecFinancialOperationResult,
+            SecFinancialOperationResult.operation_id
+            == SecFinancialAcquisitionFailure.operation_id,
+        )
+        .where(
+            SecFinancialIngestionOperation.issuer_identity_id
+            == issuer_identity_id,
+            SecFinancialAcquisitionFailure.stage == "submissions_fetch",
+            SecFinancialAcquisitionFailure.error_code == error_code,
+            SecFinancialAcquisitionFailure.resource_role == "main_submissions",
+            SecFinancialAcquisitionFailure.resource_key == resource_key,
+            SecFinancialResourceAnchor.operation_id
+            == SecFinancialAcquisitionFailure.operation_id,
+            SecFinancialResourceAnchor.resource_role == "main_submissions",
+            SecFinancialResourceAnchor.resource_key == resource_key,
+            SecFinancialOperationResult.result_kind == "acquisition_failure",
+            SecFinancialOperationResult.acquisition_failure_id
+            == SecFinancialAcquisitionFailure.id,
+        )
+        .order_by(SecFinancialAcquisitionFailure.id.desc())
+    ).all()
+    for failure, _anchor, _result in rows:
+        failure_availability = db.get(
+            SecFinancialLineageAvailability, failure.operation_id
+        )
+        if failure_availability is None:
+            return failure.operation_id
+        resolver_operation = aliased(SecFinancialIngestionOperation)
+        resolver_availability = aliased(SecFinancialLineageAvailability)
+        resolved = db.scalar(
+            select(
+                exists(
+                    select(SecFinancialAcquisitionResolution.id)
+                    .join(
+                        resolver_operation,
+                        resolver_operation.id
+                        == SecFinancialAcquisitionResolution.operation_id,
+                    )
+                    .join(
+                        resolver_availability,
+                        resolver_availability.operation_id
+                        == SecFinancialAcquisitionResolution.operation_id,
+                    )
+                    .where(
+                        resolver_operation.issuer_identity_id
+                        == issuer_identity_id,
+                        resolver_availability.available_at
+                        > failure_availability.available_at,
+                        SecFinancialAcquisitionResolution.created_at
+                        >= failure.created_at,
+                        SecFinancialAcquisitionResolution.resource_role
+                        == "main_submissions",
+                        SecFinancialAcquisitionResolution.resource_key
+                        == resource_key,
+                        SecFinancialAcquisitionResolution.resolution_kind
+                        == "resource_validated",
+                    )
+                )
+            )
+        )
+        if not resolved:
+            return failure.operation_id
+    return None
+
+
+def _record_initial_main_fetch_failure(
+    db: Session,
+    *,
+    stock_id: int,
+    identity: SecIssuerIdentity,
+    now: datetime,
+    error_code: str,
+) -> FinancialIngestionReport:
+    resource_key = f"https://data.sec.gov/submissions/CIK{identity.cik}.json"
+    existing_operation_id = _reusable_initial_main_failure_operation(
+        db,
+        issuer_identity_id=identity.id,
+        resource_key=resource_key,
+        error_code=error_code,
+    )
+    failure_summary = (f"main_submissions:{error_code}",)
+    if existing_operation_id is not None:
+        return FinancialIngestionReport(
+            operation_id=existing_operation_id,
+            stock_id=stock_id,
+            cik=identity.cik,
+            filings_discovered=0,
+            filings_created=0,
+            artifacts_created=0,
+            parse_runs_created=0,
+            raw_facts_created=0,
+            failures=failure_summary,
+        )
+
+    operation_id = str(uuid.uuid4())
+    db.add(
+        SecFinancialIngestionOperation(
+            id=operation_id,
+            issuer_identity_id=identity.id,
+            attempted_at=now,
+        )
+    )
+    db.flush()
+    anchor = SecFinancialResourceAnchor(
+        operation_id=operation_id,
+        resource_role="main_submissions",
+        resource_key=resource_key,
+    )
+    db.add(anchor)
+    db.flush()
+    failure = SecFinancialAcquisitionFailure(
+        operation_id=operation_id,
+        submission_snapshot_id=None,
+        resource_anchor_id=anchor.id,
+        stage="submissions_fetch",
+        error_code=error_code,
+        accession_no=None,
+        resource_role="main_submissions",
+        resource_key=resource_key,
+    )
+    db.add(failure)
+    db.flush()
+    db.add(
+        SecFinancialOperationResult(
+            operation_id=operation_id,
+            result_kind="acquisition_failure",
+            acquisition_failure_id=failure.id,
+        )
+    )
+    db.flush()
+    return FinancialIngestionReport(
+        operation_id=operation_id,
+        stock_id=stock_id,
+        cik=identity.cik,
+        filings_discovered=0,
+        filings_created=0,
+        artifacts_created=0,
+        parse_runs_created=0,
+        raw_facts_created=0,
+        failures=failure_summary,
+    )
+
+
 def _existing_artifacts(
     db: Session, filing_id: int, manifest_hash: str
 ) -> list[SecFilingArtifact]:
@@ -433,6 +1147,125 @@ def _existing_artifacts(
         )
         .order_by(SecFilingArtifact.sequence, SecFilingArtifact.id)
     ).all()
+
+
+def _legacy_compatible_artifacts(
+    db: Session,
+    *,
+    filing: SecFinancialFiling,
+    cik: str,
+    index_content: bytes,
+    items: list[dict[str, Any]],
+    item_observations: dict[str, dict[str, Any]],
+    storage_root: Path,
+) -> list[SecFilingArtifact]:
+    """Reuse complete v1 manifests whose only obsolete input is submissions."""
+    if ARTIFACT_RETENTION_POLICY_VERSION != "sec-financial-artifacts-v1":
+        return []
+    index_sha256 = hashlib.sha256(index_content).hexdigest()
+    index_candidates = db.scalars(
+        select(SecFilingArtifact)
+        .where(
+            SecFilingArtifact.filing_id == filing.id,
+            SecFilingArtifact.filename == "__accession_index__.json",
+            SecFilingArtifact.state == "retained",
+            SecFilingArtifact.sha256 == index_sha256,
+        )
+        .order_by(SecFilingArtifact.id.desc())
+    ).all()
+    expected_names = {"__submissions__.json", "__accession_index__.json"} | {
+        item["name"] for item in items
+    }
+    for index_artifact in index_candidates:
+        group = _existing_artifacts(db, filing.id, index_artifact.manifest_hash)
+        by_name: dict[str, SecFilingArtifact] = {}
+        for artifact in sorted(group, key=lambda row: row.id, reverse=True):
+            by_name.setdefault(artifact.filename, artifact)
+        if set(by_name) != expected_names:
+            continue
+        submissions = by_name["__submissions__.json"]
+        index = by_name["__accession_index__.json"]
+        expected_manifest_hash = hashlib.sha256(
+            json.dumps(
+                {
+                    "retention_policy_version": ARTIFACT_RETENTION_POLICY_VERSION,
+                    "submissions_sha256": submissions.sha256,
+                    "index_sha256": index_sha256,
+                    "items": items,
+                },
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode()
+        ).hexdigest()
+        if (
+            index_artifact.manifest_hash != expected_manifest_hash
+            or submissions.sequence != -1
+            or submissions.description != "SEC submissions discovery payload"
+            or submissions.sec_type != "SEC-DISCOVERY-MANIFEST"
+            or submissions.declared_size != submissions.byte_size
+            or submissions.source_url not in {None, filing.submissions_source_url}
+            or submissions.state != "retained"
+            or submissions.content_mime != "application/json"
+            or submissions.sha256 != filing.discovery_payload_sha256
+            or index.sequence != 0
+            or index.description != "SEC accession artifact index"
+            or index.sec_type != "SEC-DISCOVERY-MANIFEST"
+            or index.declared_size != len(index_content)
+            or index.source_url != filing.index_url
+            or index.content_mime != "application/json"
+            or index.byte_size != len(index_content)
+        ):
+            continue
+        compatible = True
+        for item in items:
+            artifact = by_name[item["name"]]
+            try:
+                expected_source_url = _safe_artifact_url(
+                    cik,
+                    filing.accession_no,
+                    item["name"],
+                )
+            except SecFinancialIngestionError:
+                compatible = False
+                break
+            expected_state = (
+                "retained"
+                if _retain_item(item, filing.primary_document)
+                else "manifest_only"
+            )
+            if (
+                artifact.sequence != item["sequence"]
+                or artifact.description != item["description"]
+                or artifact.sec_type != item["type"]
+                or artifact.declared_size != item["size"]
+                or artifact.source_url != expected_source_url
+                or artifact.state != expected_state
+                or (
+                    expected_state == "retained"
+                    and (
+                        item_observations[item["name"]]["state"] != "retained"
+                        or artifact.sha256
+                        != item_observations[item["name"]]["sha256"]
+                        or artifact.byte_size
+                        != item_observations[item["name"]]["byte_size"]
+                    )
+                )
+            ):
+                compatible = False
+                break
+        if not compatible:
+            continue
+        _verify_retained_artifact(storage_root, submissions)
+        filtered = [
+            artifact
+            for name, artifact in by_name.items()
+            if name != "__submissions__.json"
+        ]
+        for artifact in filtered:
+            if artifact.state == "retained":
+                _verify_retained_artifact(storage_root, artifact)
+        return sorted(filtered, key=lambda row: (row.sequence, row.id))
+    return []
 
 
 def _artifact_input_hash(artifacts: list[SecFilingArtifact]) -> str:
@@ -452,23 +1285,154 @@ def _create_artifacts(
     filing: SecFinancialFiling,
     cik: str,
     index_content: bytes,
-    submissions_content: bytes,
     storage_root: Path,
     now: datetime,
-) -> tuple[list[SecFilingArtifact], int, list[str]]:
-    if len(index_content) > MAX_ARTIFACT_BYTES or len(submissions_content) > MAX_ARTIFACT_BYTES:
-        raise SecFinancialIngestionError("SEC discovery manifest exceeds byte limit")
+) -> tuple[
+    list[SecFilingArtifact],
+    int,
+    list[str],
+    bool,
+]:
+    if len(index_content) > MAX_ARTIFACT_BYTES:
+        raise SecFinancialIngestionError("SEC accession manifest exceeds byte limit")
     items = _manifest_items(index_content)
+    item_observations: dict[str, dict[str, Any]] = {}
+    for item in items:
+        filename = item["name"]
+        try:
+            source_url = _safe_artifact_url(cik, filing.accession_no, filename)
+        except SecFinancialIngestionError:
+            item_observations[filename] = {
+                "state": "rejected",
+                "reason_code": "unsafe_filename",
+                "source_url": None,
+                "content": None,
+                "sha256": None,
+                "byte_size": None,
+                "failure": f"{filing.accession_no}:{filename}:unsafe_filename",
+            }
+            continue
+
+        if not _retain_item(item, filing.primary_document):
+            item_observations[filename] = {
+                "state": "manifest_only",
+                "reason_code": "artifact_type_not_in_ft03_retention_scope",
+                "source_url": source_url,
+                "content": None,
+                "sha256": None,
+                "byte_size": None,
+                "failure": None,
+            }
+            continue
+        if item["size"] is not None and item["size"] > MAX_ARTIFACT_BYTES:
+            item_observations[filename] = {
+                "state": "rejected",
+                "reason_code": "artifact_exceeds_byte_limit",
+                "source_url": source_url,
+                "content": None,
+                "sha256": None,
+                "byte_size": None,
+                "failure": (
+                    f"{filing.accession_no}:{filename}:artifact_exceeds_byte_limit"
+                ),
+            }
+            continue
+        try:
+            content = _fetch_bytes(client, source_url, revalidate=True)
+            if len(content) > MAX_ARTIFACT_BYTES:
+                raise SecFinancialIngestionError("artifact exceeds byte limit")
+            if item["size"] is not None and len(content) != item["size"]:
+                item_observations[filename] = {
+                    "state": "rejected",
+                    "reason_code": "declared_size_mismatch",
+                    "source_url": source_url,
+                    "content": None,
+                    "sha256": None,
+                    "byte_size": None,
+                    "failure": (
+                        f"{filing.accession_no}:{filename}:declared_size_mismatch"
+                    ),
+                }
+                continue
+            item_observations[filename] = {
+                "state": "retained",
+                "reason_code": None,
+                "source_url": source_url,
+                "content": content,
+                "sha256": hashlib.sha256(content).hexdigest(),
+                "byte_size": len(content),
+                "failure": None,
+            }
+        except SecFinancialIntegrityError:
+            raise
+        except SecFinancialFetchError as exc:
+            item_observations[filename] = {
+                "state": "unavailable",
+                "reason_code": exc.reason_code,
+                "source_url": source_url,
+                "content": None,
+                "sha256": None,
+                "byte_size": None,
+                "failure": f"{filing.accession_no}:{filename}:{exc.reason_code}",
+            }
+        except SecFinancialIngestionError as exc:
+            item_observations[filename] = {
+                "state": "rejected",
+                "reason_code": "artifact_policy_rejected",
+                "source_url": source_url,
+                "content": None,
+                "sha256": None,
+                "byte_size": None,
+                "failure": (
+                    f"{filing.accession_no}:{filename}:"
+                    f"artifact_policy_rejected:{type(exc).__name__}"
+                ),
+            }
+        except Exception as exc:
+            item_observations[filename] = {
+                "state": "unavailable",
+                "reason_code": "fetch_failed",
+                "source_url": source_url,
+                "content": None,
+                "sha256": None,
+                "byte_size": None,
+                "failure": (
+                    f"{filing.accession_no}:{filename}:"
+                    f"fetch_failed:{type(exc).__name__}"
+                ),
+            }
+
     manifest_material = {
         "retention_policy_version": ARTIFACT_RETENTION_POLICY_VERSION,
-        "submissions_sha256": hashlib.sha256(submissions_content).hexdigest(),
         "index_sha256": hashlib.sha256(index_content).hexdigest(),
         "items": items,
+        "item_content_observations": [
+            {
+                "name": item["name"],
+                "state": item_observations[item["name"]]["state"],
+                "reason_code": item_observations[item["name"]]["reason_code"],
+                "sha256": item_observations[item["name"]]["sha256"],
+                "byte_size": item_observations[item["name"]]["byte_size"],
+            }
+            for item in items
+        ],
     }
     manifest_hash = hashlib.sha256(
         json.dumps(manifest_material, sort_keys=True, separators=(",", ":")).encode()
     ).hexdigest()
     existing = _existing_artifacts(db, filing.id, manifest_hash)
+    if not existing:
+        legacy = _legacy_compatible_artifacts(
+            db,
+            filing=filing,
+            cik=cik,
+            index_content=index_content,
+            items=items,
+            item_observations=item_observations,
+            storage_root=storage_root,
+        )
+        if legacy:
+            return legacy, 0, [], True
     existing_by_name: dict[str, SecFilingArtifact] = {}
     for artifact in sorted(existing, key=lambda row: row.id, reverse=True):
         existing_by_name.setdefault(artifact.filename, artifact)
@@ -476,22 +1440,13 @@ def _create_artifacts(
     artifacts: list[SecFilingArtifact] = []
     failures: list[str] = []
     created_count = 0
-    for sequence, filename, description, source_url, content in (
-        (
-            -1,
-            "__submissions__.json",
-            "SEC submissions discovery payload",
-            filing.submissions_source_url,
-            submissions_content,
-        ),
-        (
-            0,
-            "__accession_index__.json",
-            "SEC accession artifact index",
-            filing.index_url,
-            index_content,
-        ),
-    ):
+    for sequence, filename, description, source_url, content in ((
+        0,
+        "__accession_index__.json",
+        "SEC accession artifact index",
+        filing.index_url,
+        index_content,
+    ),):
         if existing_artifact := existing_by_name.get(filename):
             if existing_artifact.state == "retained":
                 _verify_retained_artifact(storage_root, existing_artifact)
@@ -520,114 +1475,39 @@ def _create_artifacts(
         created_count += 1
     for item in items:
         filename = item["name"]
-        existing_artifact = existing_by_name.get(filename)
-        if existing_artifact is not None and existing_artifact.state != "unavailable":
+        observation = item_observations[filename]
+        stored_filename = (
+            filename[:255]
+            if observation["reason_code"] == "unsafe_filename"
+            else filename
+        )
+        existing_artifact = existing_by_name.get(stored_filename)
+        if existing_artifact is not None:
             if existing_artifact.state == "retained":
                 _verify_retained_artifact(storage_root, existing_artifact)
             artifacts.append(existing_artifact)
+            if observation["failure"] is not None:
+                failures.append(observation["failure"])
             continue
-        try:
-            source_url = _safe_artifact_url(cik, filing.accession_no, filename)
-        except SecFinancialIngestionError:
-            if existing_artifact is not None:
-                artifacts.append(existing_artifact)
-                failures.append(f"{filing.accession_no}:{filename}:unsafe_filename")
-                continue
-            artifact = SecFilingArtifact(
-                filing_id=filing.id,
-                sequence=item["sequence"],
-                filename=filename[:255],
-                description=item["description"],
-                sec_type=item["type"],
-                declared_size=item["size"],
-                source_url=None,
-                manifest_hash=manifest_hash,
-                state="rejected",
-                reason_code="unsafe_filename",
-                known_at=now,
-            )
-            db.add(artifact)
-            artifacts.append(artifact)
-            created_count += 1
-            failures.append(f"{filing.accession_no}:{filename}:unsafe_filename")
-            continue
-
-        if not _retain_item(item, filing.primary_document):
-            if existing_artifact is not None:
-                artifacts.append(existing_artifact)
-                continue
-            artifact = SecFilingArtifact(
-                filing_id=filing.id,
-                sequence=item["sequence"],
-                filename=filename,
-                description=item["description"],
-                sec_type=item["type"],
-                declared_size=item["size"],
-                source_url=source_url,
-                manifest_hash=manifest_hash,
-                state="manifest_only",
-                reason_code="artifact_type_not_in_ft03_retention_scope",
-                known_at=now,
-            )
-            db.add(artifact)
-            artifacts.append(artifact)
-            created_count += 1
-            continue
-
-        if item["size"] is not None and item["size"] > MAX_ARTIFACT_BYTES:
-            artifact = SecFilingArtifact(
-                filing_id=filing.id,
-                sequence=item["sequence"],
-                filename=filename,
-                description=item["description"],
-                sec_type=item["type"],
-                declared_size=item["size"],
-                source_url=source_url,
-                manifest_hash=manifest_hash,
-                state="rejected",
-                reason_code="artifact_exceeds_byte_limit",
-                known_at=now,
-            )
-            db.add(artifact)
-            artifacts.append(artifact)
-            created_count += 1
-            failures.append(f"{filing.accession_no}:{filename}:artifact_exceeds_byte_limit")
-            continue
-
-        try:
-            content = _fetch_bytes(client, source_url)
-            if len(content) > MAX_ARTIFACT_BYTES:
-                raise SecFinancialIngestionError("artifact exceeds byte limit")
-            if item["size"] is not None and len(content) != item["size"]:
-                artifact = SecFilingArtifact(
-                    filing_id=filing.id,
-                    sequence=item["sequence"],
-                    filename=filename,
-                    description=item["description"],
-                    sec_type=item["type"],
-                    declared_size=item["size"],
-                    source_url=source_url,
-                    manifest_hash=manifest_hash,
-                    state="rejected",
-                    reason_code="declared_size_mismatch",
-                    known_at=now,
+        if observation["state"] == "retained":
+            content = observation["content"]
+            if not isinstance(content, bytes):
+                raise SecFinancialIntegrityError(
+                    "retained artifact observation has no content"
                 )
-                db.add(artifact)
-                artifacts.append(artifact)
-                created_count += 1
-                failures.append(
-                    f"{filing.accession_no}:{filename}:declared_size_mismatch"
-                )
-                continue
             storage_key, sha256 = _store_content_immutable(storage_root, content)
+            if sha256 != observation["sha256"]:
+                raise SecFinancialIntegrityError(
+                    "retained artifact content identity changed during storage"
+                )
             artifact = SecFilingArtifact(
                 filing_id=filing.id,
                 sequence=item["sequence"],
-                filename=filename,
+                filename=stored_filename,
                 description=item["description"],
                 sec_type=item["type"],
                 declared_size=item["size"],
-                source_url=source_url,
+                source_url=observation["source_url"],
                 manifest_hash=manifest_hash,
                 state="retained",
                 reason_code=None,
@@ -638,76 +1518,32 @@ def _create_artifacts(
                 fetched_at=now,
                 known_at=now,
             )
-        except SecFinancialIntegrityError:
-            raise
-        except SecFinancialIngestionError as exc:
-            if existing_artifact is not None:
-                artifacts.append(existing_artifact)
-                failures.append(
-                    f"{filing.accession_no}:{filename}:artifact_policy_rejected"
-                )
-                continue
+        else:
             artifact = SecFilingArtifact(
                 filing_id=filing.id,
                 sequence=item["sequence"],
-                filename=filename,
+                filename=stored_filename,
                 description=item["description"],
                 sec_type=item["type"],
                 declared_size=item["size"],
-                source_url=source_url,
+                source_url=observation["source_url"],
                 manifest_hash=manifest_hash,
-                state="rejected",
-                reason_code="artifact_policy_rejected",
+                state=observation["state"],
+                reason_code=observation["reason_code"],
                 known_at=now,
             )
-            failures.append(
-                f"{filing.accession_no}:{filename}:artifact_policy_rejected:{type(exc).__name__}"
-            )
-        except SecFinancialFetchError as exc:
-            if existing_artifact is not None:
-                artifacts.append(existing_artifact)
-                failures.append(f"{filing.accession_no}:{filename}:{exc.reason_code}")
-                continue
-            artifact = SecFilingArtifact(
-                filing_id=filing.id,
-                sequence=item["sequence"],
-                filename=filename,
-                description=item["description"],
-                sec_type=item["type"],
-                declared_size=item["size"],
-                source_url=source_url,
-                manifest_hash=manifest_hash,
-                state="unavailable",
-                reason_code=exc.reason_code,
-                known_at=now,
-            )
-            failures.append(f"{filing.accession_no}:{filename}:{exc.reason_code}")
-        except Exception as exc:
-            if existing_artifact is not None:
-                artifacts.append(existing_artifact)
-                failures.append(
-                    f"{filing.accession_no}:{filename}:fetch_failed:{type(exc).__name__}"
-                )
-                continue
-            artifact = SecFilingArtifact(
-                filing_id=filing.id,
-                sequence=item["sequence"],
-                filename=filename,
-                description=item["description"],
-                sec_type=item["type"],
-                declared_size=item["size"],
-                source_url=source_url,
-                manifest_hash=manifest_hash,
-                state="unavailable",
-                reason_code="fetch_failed",
-                known_at=now,
-            )
-            failures.append(f"{filing.accession_no}:{filename}:fetch_failed:{type(exc).__name__}")
+        if observation["failure"] is not None:
+            failures.append(observation["failure"])
         db.add(artifact)
         artifacts.append(artifact)
         created_count += 1
     db.flush()
-    return sorted(artifacts, key=lambda row: (row.sequence, row.id)), created_count, failures
+    return (
+        sorted(artifacts, key=lambda row: (row.sequence, row.id)),
+        created_count,
+        failures,
+        False,
+    )
 
 
 def _parse_primary_artifact(
@@ -718,7 +1554,9 @@ def _parse_primary_artifact(
     storage_root: Path,
     parser_version: str,
     now: datetime,
-) -> tuple[int, int, list[str]]:
+    allow_legacy_run_reuse: bool,
+    operation_id: str,
+) -> tuple[int, int, list[str], int]:
     input_hash = _artifact_input_hash(artifacts)
     existing = db.scalar(
         select(SecFinancialParseRun).where(
@@ -727,12 +1565,53 @@ def _parse_primary_artifact(
             SecFinancialParseRun.input_manifest_hash == input_hash,
         )
     )
+    if existing is None and allow_legacy_run_reuse:
+        retained_artifact_ids = {
+            artifact.id for artifact in artifacts if artifact.state == "retained"
+        }
+        candidate_runs = db.scalars(
+            select(SecFinancialParseRun)
+            .where(
+                SecFinancialParseRun.filing_id == filing.id,
+                SecFinancialParseRun.parser_version == parser_version,
+            )
+            .order_by(SecFinancialParseRun.known_at.desc(), SecFinancialParseRun.id.desc())
+        ).all()
+        for candidate in candidate_runs:
+            linked = db.scalars(
+                select(SecFilingArtifact)
+                .join(
+                    SecFinancialParseRunArtifact,
+                    SecFinancialParseRunArtifact.artifact_id == SecFilingArtifact.id,
+                )
+                .where(SecFinancialParseRunArtifact.parse_run_id == candidate.id)
+            ).all()
+            legacy_submission_inputs = [
+                artifact
+                for artifact in linked
+                if artifact.filename == "__submissions__.json"
+            ]
+            linked_filing_input_ids = {
+                artifact.id
+                for artifact in linked
+                if artifact.filename != "__submissions__.json"
+            }
+            if (
+                len(legacy_submission_inputs) == 1
+                and legacy_submission_inputs[0].state == "retained"
+                and linked_filing_input_ids == retained_artifact_ids
+            ):
+                existing = candidate
+                break
     if existing is not None:
         if existing.status == "failed":
-            return 0, 0, [
-                f"{filing.accession_no}:{existing.error_code or 'parse_failed'}"
-            ]
-        return 0, 0, []
+            return (
+                0,
+                0,
+                [f"{filing.accession_no}:{existing.error_code or 'parse_failed'}"],
+                existing.id,
+            )
+        return 0, 0, [], existing.id
 
     primary = next(
         (
@@ -750,6 +1629,7 @@ def _parse_primary_artifact(
     if incomplete_required:
         run = SecFinancialParseRun(
             filing_id=filing.id,
+            operation_id=operation_id,
             parser_name=PARSER_NAME,
             parser_version=parser_version,
             input_manifest_hash=input_hash,
@@ -774,10 +1654,11 @@ def _parse_primary_artifact(
                     known_at=now,
                 )
             )
-        return 1, 0, [f"{filing.accession_no}:required_artifact_unavailable"]
+        return 1, 0, [f"{filing.accession_no}:required_artifact_unavailable"], run.id
     if primary is None or not primary.storage_key:
         run = SecFinancialParseRun(
             filing_id=filing.id,
+            operation_id=operation_id,
             parser_name=PARSER_NAME,
             parser_version=parser_version,
             input_manifest_hash=input_hash,
@@ -799,7 +1680,7 @@ def _parse_primary_artifact(
                     known_at=now,
                 )
             )
-        return 1, 0, [f"{filing.accession_no}:primary_artifact_unavailable"]
+        return 1, 0, [f"{filing.accession_no}:primary_artifact_unavailable"], run.id
 
     try:
         content = (storage_root / primary.storage_key).read_bytes()
@@ -809,6 +1690,7 @@ def _parse_primary_artifact(
         if not parsed:
             run = SecFinancialParseRun(
                 filing_id=filing.id,
+                operation_id=operation_id,
                 parser_name=PARSER_NAME,
                 parser_version=parser_version,
                 input_manifest_hash=input_hash,
@@ -830,9 +1712,10 @@ def _parse_primary_artifact(
                         known_at=now,
                     )
                 )
-            return 1, 0, [f"{filing.accession_no}:no_inline_xbrl_facts"]
+            return 1, 0, [f"{filing.accession_no}:no_inline_xbrl_facts"], run.id
         run = SecFinancialParseRun(
             filing_id=filing.id,
+            operation_id=operation_id,
             parser_name=PARSER_NAME,
             parser_version=parser_version,
             input_manifest_hash=input_hash,
@@ -883,12 +1766,13 @@ def _parse_primary_artifact(
                 )
             )
         db.flush()
-        return 1, len(parsed), []
+        return 1, len(parsed), [], run.id
     except SecFinancialIntegrityError:
         raise
     except Exception as exc:
         run = SecFinancialParseRun(
             filing_id=filing.id,
+            operation_id=operation_id,
             parser_name=PARSER_NAME,
             parser_version=parser_version,
             input_manifest_hash=input_hash,
@@ -910,7 +1794,12 @@ def _parse_primary_artifact(
                     known_at=now,
                 )
             )
-        return 1, 0, [f"{filing.accession_no}:parse_failed:{type(exc).__name__}"]
+        return (
+            1,
+            0,
+            [f"{filing.accession_no}:parse_failed:{type(exc).__name__}"],
+            run.id,
+        )
 
 
 def _discover(
@@ -918,20 +1807,89 @@ def _discover(
     cik: str,
     *,
     max_filings: int,
-    as_of: datetime | None,
+    filing_selection_as_of: datetime | None,
+    history_target: FinancialHistoryTarget | None = None,
 ) -> _DiscoveryResult:
+    if filing_selection_as_of is not None:
+        filing_selection_as_of = _aware(filing_selection_as_of)
+    if history_target is not None:
+        target_cutoff = _aware(history_target.filing_selection_as_of)
+        if (
+            filing_selection_as_of is not None
+            and filing_selection_as_of != target_cutoff
+        ):
+            raise SecFinancialIngestionError(
+                "history target cutoff must match filing_selection_as_of"
+            )
     submissions_url = f"https://data.sec.gov/submissions/CIK{cik}.json"
     main_content = _fetch_bytes(client, submissions_url)
-    main = parse_financial_submissions(main_content, source_url=submissions_url)
-    if main.issuer.cik != cik:
-        raise SecFinancialIngestionError("SEC submissions CIK does not match reviewed identity")
-    discovered = list(main.filings)
     source_payloads = {submissions_url: main_content}
+    try:
+        main = parse_financial_submissions(main_content, source_url=submissions_url)
+    except Exception:
+        return _DiscoveryResult(
+            filings=(),
+            source_payloads=source_payloads,
+            failures=("invalid_main_submissions_payload",),
+            audit_failures=(
+                _DiscoveryFailure(
+                    snapshot_source_url=submissions_url,
+                    stage="submissions_parse",
+                    error_code="invalid_main_submissions_payload",
+                    resource_role="main_submissions",
+                    resource_key=submissions_url,
+                ),
+            ),
+        )
+    if main.issuer.cik != cik:
+        return _DiscoveryResult(
+            filings=(),
+            source_payloads=source_payloads,
+            failures=("main_submissions_cik_mismatch",),
+            audit_failures=(
+                _DiscoveryFailure(
+                    snapshot_source_url=submissions_url,
+                    stage="submissions_identity",
+                    error_code="main_submissions_cik_mismatch",
+                    resource_role="main_submissions",
+                    resource_key=submissions_url,
+                ),
+            ),
+        )
+    discovered = list(main.filings)
     failures: list[str] = []
-    def eligible_count() -> int:
-        return sum(1 for item in discovered if as_of is None or item.accepted_at <= as_of)
+    audit_failures: list[_DiscoveryFailure] = []
+    resolutions: list[_DiscoveryResolution] = [
+        _DiscoveryResolution(
+            snapshot_source_url=submissions_url,
+            resource_role="main_submissions",
+            resource_key=submissions_url,
+        )
+    ]
+    selection_cutoff = filing_selection_as_of or (
+        history_target.filing_selection_as_of if history_target else None
+    )
 
-    if eligible_count() < max_filings:
+    def canonical_eligible() -> list[DiscoveredFinancialFiling]:
+        canonical, _, _, _ = _canonicalize_discovered_filings(discovered)
+        return [
+            item
+            for item in canonical
+            if selection_cutoff is None or item.accepted_at <= selection_cutoff
+        ]
+
+    def eligible_count() -> int:
+        return len(canonical_eligible())
+
+    def annual_coverage_complete() -> bool:
+        if history_target is None:
+            return eligible_count() >= max_filings
+        eligible = canonical_eligible()
+        return set(_expected_completed_fiscal_years(history_target)) <= _annual_fiscal_years(
+            eligible, history_target
+        )
+
+    if not annual_coverage_complete():
         safe_historical_files: list[str] = []
         unsafe_historical_files: list[str] = []
         for reference in main.historical_submission_references:
@@ -962,29 +1920,124 @@ def _discover(
             )
         for filename in safe_historical_files[:MAX_HISTORICAL_SUBMISSION_FILES]:
             url = f"https://data.sec.gov/submissions/{quote(filename, safe='._-')}"
-            content = _fetch_bytes(client, url)
+            try:
+                content = _fetch_bytes(client, url)
+            except SecFinancialFetchError as exc:
+                error_code = f"historical_submissions_{exc.reason_code}"
+                failures.append(error_code)
+                audit_failures.append(
+                    _DiscoveryFailure(
+                        snapshot_source_url=submissions_url,
+                        stage="historical_submissions_fetch",
+                        error_code=error_code,
+                        resource_role="historical_submissions",
+                        resource_key=url,
+                    )
+                )
+                continue
+            except Exception:
+                error_code = "historical_submissions_fetch_failed"
+                failures.append(error_code)
+                audit_failures.append(
+                    _DiscoveryFailure(
+                        snapshot_source_url=submissions_url,
+                        stage="historical_submissions_fetch",
+                        error_code=error_code,
+                        resource_role="historical_submissions",
+                        resource_key=url,
+                    )
+                )
+                continue
             source_payloads[url] = content
-            discovered.extend(parse_historical_financial_submissions(content, source_url=url))
-            if eligible_count() >= max_filings:
+            try:
+                historical = parse_historical_financial_submissions(
+                    content, source_url=url
+                )
+            except Exception:
+                failures.append("invalid_historical_submissions_payload")
+                audit_failures.append(
+                    _DiscoveryFailure(
+                        snapshot_source_url=url,
+                        stage="historical_submissions_parse",
+                        error_code="invalid_historical_submissions_payload",
+                        resource_role="historical_submissions",
+                        resource_key=url,
+                    )
+                )
+                continue
+            resolutions.append(
+                _DiscoveryResolution(
+                    snapshot_source_url=url,
+                    resource_role="historical_submissions",
+                    resource_key=url,
+                )
+            )
+            discovered.extend(historical)
+            if annual_coverage_complete():
                 break
         if (
-            eligible_count() < max_filings
+            not annual_coverage_complete()
             and len(safe_historical_files) > MAX_HISTORICAL_SUBMISSION_FILES
         ):
             failures.append("history_scan_limit_exceeded")
-    by_accession = {item.accession_no: item for item in discovered}
+    (
+        canonical,
+        conflicting_accessions,
+        invalid_accession_tokens,
+        invalid_period_accessions,
+    ) = _canonicalize_discovered_filings(discovered)
+    failures.extend(
+        "invalid_filing_accession:sha256=" + token
+        for token in invalid_accession_tokens[:MAX_DISCOVERY_IDENTITY_FAILURES]
+    )
+    if len(invalid_accession_tokens) > MAX_DISCOVERY_IDENTITY_FAILURES:
+        failures.append(
+            "invalid_filing_accession_additional:"
+            f"{len(invalid_accession_tokens) - MAX_DISCOVERY_IDENTITY_FAILURES}"
+        )
+    failures.extend(
+        "invalid_filing_period_metadata:" + accession_no
+        for accession_no in invalid_period_accessions[:MAX_DISCOVERY_IDENTITY_FAILURES]
+    )
+    if len(invalid_period_accessions) > MAX_DISCOVERY_IDENTITY_FAILURES:
+        failures.append(
+            "invalid_filing_period_metadata_additional:"
+            f"{len(invalid_period_accessions) - MAX_DISCOVERY_IDENTITY_FAILURES}"
+        )
+    failures.extend(
+        "conflicting_filing_metadata:" + accession_no
+        for accession_no in conflicting_accessions[:MAX_DISCOVERY_IDENTITY_FAILURES]
+    )
+    if len(conflicting_accessions) > MAX_DISCOVERY_IDENTITY_FAILURES:
+        failures.append(
+            "conflicting_filing_metadata_additional:"
+            f"{len(conflicting_accessions) - MAX_DISCOVERY_IDENTITY_FAILURES}"
+        )
     eligible = [
         item
-        for item in by_accession.values()
-        if as_of is None or item.accepted_at <= as_of
+        for item in canonical
+        if selection_cutoff is None or item.accepted_at <= selection_cutoff
     ]
-    selected = sorted(
-        eligible, key=lambda item: (item.accepted_at, item.accession_no), reverse=True
-    )[:max_filings]
+    if history_target is None:
+        selected = sorted(
+            eligible, key=lambda item: (item.accepted_at, item.accession_no), reverse=True
+        )[:max_filings]
+    else:
+        selected, missing_years = _select_history_filings(
+            eligible,
+            target=history_target,
+            max_filings=max_filings,
+        )
+        if missing_years:
+            failures.append(
+                "annual_coverage_gap:" + ",".join(str(year) for year in missing_years)
+            )
     return _DiscoveryResult(
         filings=tuple(selected),
         source_payloads=source_payloads,
         failures=tuple(failures),
+        audit_failures=tuple(audit_failures),
+        resolutions=tuple(resolutions),
     )
 
 
@@ -997,24 +2050,223 @@ def ingest_latest_financial_filings(
     max_filings: int,
     now: datetime | None = None,
     parser_version: str = "inline-xbrl-v1",
-    as_of: datetime | None = None,
+    filing_selection_as_of: datetime | None = None,
+    history_target: FinancialHistoryTarget | None = None,
 ) -> FinancialIngestionReport:
     now = _aware(now or datetime.now(timezone.utc))
-    as_of = _aware(as_of) if as_of is not None else None
+    filing_selection_as_of = (
+        _aware(filing_selection_as_of)
+        if filing_selection_as_of is not None
+        else None
+    )
     if max_filings < 1 or max_filings > 200:
         raise SecFinancialIngestionError("max_filings must be between 1 and 200")
     if not parser_version.strip():
         raise SecFinancialIngestionError("parser_version is required")
-    _lock_keys(db, f"sec-identity-stock:{stock_id}")
-    identity = _reviewed_identity(db, stock_id, now)
-    discovery = _discover(
-        client, identity.cik, max_filings=max_filings, as_of=as_of
+    candidate_identity = _reviewed_identity(db, stock_id, now)
+    _lock_keys(
+        db,
+        f"sec-issuer-stock:{stock_id}",
+        f"sec-issuer-cik:{candidate_identity.cik}",
     )
+    identity = _reviewed_identity(db, stock_id, now)
+    if identity.id != candidate_identity.id:
+        raise SecFinancialIngestionError(
+            "reviewed SEC issuer identity changed during acquisition"
+        )
+    try:
+        discovery = _discover(
+            client,
+            identity.cik,
+            max_filings=max_filings,
+            filing_selection_as_of=filing_selection_as_of,
+            history_target=history_target,
+        )
+    except SecFinancialFetchError as exc:
+        return _record_initial_main_fetch_failure(
+            db,
+            stock_id=stock_id,
+            identity=identity,
+            now=now,
+            error_code=exc.reason_code,
+        )
+    for item in discovery.filings:
+        existing_filing_identity_id = db.scalar(
+            select(SecFinancialFiling.issuer_identity_id).where(
+                SecFinancialFiling.accession_no == item.accession_no
+            )
+        )
+        if (
+            existing_filing_identity_id is not None
+            and existing_filing_identity_id != identity.id
+        ):
+            raise SecFinancialIngestionError(
+                "accession already belongs to a different reviewed issuer identity"
+            )
+    reusable_failed_operation_id = _reusable_acquisition_failure_operation(
+        db,
+        issuer_identity_id=identity.id,
+        discovery=discovery,
+        storage_root=storage_root,
+    )
+    if reusable_failed_operation_id is not None:
+        return FinancialIngestionReport(
+            operation_id=reusable_failed_operation_id,
+            stock_id=stock_id,
+            cik=identity.cik,
+            filings_discovered=len(discovery.filings),
+            filings_created=0,
+            artifacts_created=0,
+            parse_runs_created=0,
+            raw_facts_created=0,
+            failures=discovery.failures,
+            selected_filings=_selected_filing_summaries(discovery.filings),
+        )
+    operation_id = str(uuid.uuid4())
+    db.add(
+        SecFinancialIngestionOperation(
+            id=operation_id,
+            issuer_identity_id=identity.id,
+            attempted_at=now,
+        )
+    )
+    db.flush()
+    snapshots = _persist_submission_snapshots(
+        db,
+        issuer_identity_id=identity.id,
+        source_payloads=discovery.source_payloads,
+        storage_root=storage_root,
+        now=now,
+        operation_id=operation_id,
+    )
+    acquisition_failure_ids: list[int] = []
+    recorded_acquisition_failures: dict[
+        tuple[str, str, str, str, str | None],
+        SecFinancialAcquisitionFailure,
+    ] = {}
+    def record_acquisition_failure(
+        failure: _DiscoveryFailure,
+    ) -> SecFinancialAcquisitionFailure:
+        snapshot = snapshots.get(failure.snapshot_source_url)
+        if snapshot is None:
+            raise SecFinancialIntegrityError(
+                "acquisition failure has no retained submissions snapshot"
+            )
+        identity = (
+            failure.resource_role,
+            failure.resource_key,
+            failure.stage,
+            failure.error_code,
+            failure.accession_no,
+        )
+        if identity in recorded_acquisition_failures:
+            return recorded_acquisition_failures[identity]
+        audit_failure = SecFinancialAcquisitionFailure(
+            operation_id=operation_id,
+            submission_snapshot_id=snapshot.id,
+            stage=failure.stage,
+            error_code=failure.error_code,
+            accession_no=failure.accession_no,
+            resource_role=failure.resource_role,
+            resource_key=failure.resource_key,
+        )
+        db.add(audit_failure)
+        db.flush()
+        acquisition_failure_ids.append(audit_failure.id)
+        recorded_acquisition_failures[identity] = audit_failure
+        return audit_failure
+
+    for failure in discovery.audit_failures:
+        record_acquisition_failure(failure)
+    for resolution in discovery.resolutions:
+        snapshot = snapshots.get(resolution.snapshot_source_url)
+        if snapshot is None:
+            raise SecFinancialIntegrityError(
+                "acquisition resolution has no retained submissions snapshot"
+            )
+        try:
+            snapshot_content = _read_verified_submission_snapshot(
+                storage_root, snapshot
+            )
+            main_url = (
+                f"https://data.sec.gov/submissions/CIK{identity.cik}.json"
+            )
+            main_snapshot = snapshots.get(main_url)
+            main_snapshot_content = (
+                _read_verified_submission_snapshot(storage_root, main_snapshot)
+                if main_snapshot is not None
+                else None
+            )
+            validate_submission_source(
+                resource_role=resolution.resource_role,
+                normalized_url=resolution.resource_key,
+                snapshot_content=snapshot_content,
+                snapshot_sha256=snapshot.sha256,
+                snapshot_size=snapshot.byte_size,
+                expected_cik=identity.cik,
+                main_snapshot_content=main_snapshot_content,
+            )
+        except ValueError as exc:
+            raise SecFinancialIntegrityError(str(exc)) from exc
+        db.add(
+            SecFinancialAcquisitionResolution(
+                operation_id=operation_id,
+                resource_role=resolution.resource_role,
+                resource_key=resolution.resource_key,
+                resolution_kind="resource_validated",
+                submission_snapshot_id=snapshot.id,
+            )
+        )
+    db.flush()
+
+    def record_accession_attempt(
+        *,
+        filing: SecFinancialFiling,
+        outcome: str,
+        index_content: bytes | None = None,
+        artifacts: tuple[SecFilingArtifact, ...] | list[SecFilingArtifact] = (),
+        parse_run: SecFinancialParseRun | None = None,
+        acquisition_failure: SecFinancialAcquisitionFailure | None = None,
+    ) -> SecFinancialAccessionAttempt:
+        attempt = SecFinancialAccessionAttempt(
+            operation_id=operation_id,
+            filing_id=filing.id,
+            accession_no=filing.accession_no,
+            index_resource_key=filing.index_url,
+            outcome=outcome,
+            index_sha256=(
+                hashlib.sha256(index_content).hexdigest()
+                if index_content is not None
+                else None
+            ),
+            input_manifest_hash=(
+                _artifact_input_hash(artifacts) if parse_run is not None else None
+            ),
+            parse_run_id=parse_run.id if parse_run is not None else None,
+            acquisition_failure_id=(
+                acquisition_failure.id
+                if acquisition_failure is not None
+                else None
+            ),
+        )
+        db.add(attempt)
+        db.flush()
+        for artifact in artifacts:
+            if artifact.state == "retained":
+                db.add(
+                    SecFinancialAccessionAttemptArtifact(
+                        attempt_id=attempt.id,
+                        artifact_id=artifact.id,
+                    )
+                )
+        db.flush()
+        return attempt
     discovered = discovery.filings
     created_filings = 0
     created_artifacts = 0
     created_runs = 0
     created_facts = 0
+    terminal_parse_run_id: int | None = None
     failures: list[str] = list(discovery.failures)
 
     for item in reversed(discovered):
@@ -1067,28 +2319,23 @@ def ingest_latest_financial_filings(
             db.flush()
             created_filings += 1
         elif filing.issuer_identity_id != identity.id:
-            filing_identity = db.get(SecIssuerIdentity, filing.issuer_identity_id)
-            if (
-                filing_identity is None
-                or filing_identity.stock_id != identity.stock_id
-                or filing_identity.cik != identity.cik
-            ):
-                raise SecFinancialIngestionError(
-                    "accession already belongs to another reviewed issuer identity"
-                )
+            raise SecFinancialIngestionError(
+                "accession identity changed during acquisition"
+            )
 
         try:
-            index_content = _fetch_bytes(client, filing.index_url)
-            submissions_content = discovery.source_payloads.get(filing.submissions_source_url)
-            if submissions_content is None:
-                submissions_content = _fetch_bytes(client, filing.submissions_source_url)
-            artifacts, artifact_count, artifact_failures = _create_artifacts(
+            index_content = _fetch_bytes(client, filing.index_url, revalidate=True)
+            (
+                artifacts,
+                artifact_count,
+                artifact_failures,
+                used_legacy_artifacts,
+            ) = _create_artifacts(
                 db,
                 client=client,
                 filing=filing,
                 cik=identity.cik,
                 index_content=index_content,
-                submissions_content=submissions_content,
                 storage_root=storage_root,
                 now=now,
             )
@@ -1098,24 +2345,169 @@ def ingest_latest_financial_filings(
             raise
         except SecFinancialFetchError as exc:
             failures.append(f"{filing.accession_no}:manifest:{exc.reason_code}")
+            acquisition_failure = record_acquisition_failure(
+                _DiscoveryFailure(
+                    snapshot_source_url=item.submissions_source_url,
+                    stage="accession_index_fetch",
+                    error_code=exc.reason_code,
+                    resource_role="accession_index",
+                    resource_key=filing.index_url,
+                    accession_no=filing.accession_no,
+                )
+            )
+            record_accession_attempt(
+                filing=filing,
+                outcome="acquisition_failed",
+                acquisition_failure=acquisition_failure,
+            )
             continue
-        except Exception as exc:
-            failures.append(f"{filing.accession_no}:manifest_failed:{type(exc).__name__}")
+        except Exception:
+            failures.append(f"{filing.accession_no}:manifest_failed")
+            acquisition_failure = record_acquisition_failure(
+                _DiscoveryFailure(
+                    snapshot_source_url=item.submissions_source_url,
+                    stage="accession_index_fetch",
+                    error_code="accession_index_failed",
+                    resource_role="accession_index",
+                    resource_key=filing.index_url,
+                    accession_no=filing.accession_no,
+                )
+            )
+            record_accession_attempt(
+                filing=filing,
+                outcome="acquisition_failed",
+                acquisition_failure=acquisition_failure,
+            )
             continue
 
-        runs, facts, parse_failures = _parse_primary_artifact(
+        for artifact in artifacts:
+            if artifact.state not in {"rejected", "unavailable"}:
+                continue
+            error_code = artifact.reason_code or "artifact_acquisition_failed"
+            if re.fullmatch(r"[a-z0-9_]{1,80}", error_code) is None:
+                error_code = "artifact_acquisition_failed"
+            resource_key = artifact.source_url
+            if resource_key is None:
+                safe_filename_token = hashlib.sha256(
+                    artifact.filename.encode("utf-8", "backslashreplace")
+                ).hexdigest()
+                resource_key = (
+                    "urn:valuepilot:sec-filing-artifact:"
+                    f"{filing.accession_no}:sha256:{safe_filename_token}"
+                )
+            record_acquisition_failure(
+                _DiscoveryFailure(
+                    snapshot_source_url=item.submissions_source_url,
+                    stage="filing_artifact_acquisition",
+                    error_code=error_code,
+                    resource_role="filing_artifact",
+                    resource_key=resource_key,
+                    accession_no=filing.accession_no,
+                )
+            )
+
+        runs, facts, parse_failures, parse_run_id = _parse_primary_artifact(
             db,
             filing=filing,
             artifacts=artifacts,
             storage_root=storage_root,
             parser_version=parser_version.strip(),
             now=now,
+            allow_legacy_run_reuse=used_legacy_artifacts,
+            operation_id=operation_id,
         )
         created_runs += runs
         created_facts += facts
         failures.extend(parse_failures)
+        terminal_parse_run_id = parse_run_id
+        parse_run = db.get(SecFinancialParseRun, parse_run_id)
+        if parse_run is None or parse_run.status not in {"succeeded", "failed"}:
+            raise SecFinancialIntegrityError(
+                "accession acquisition did not produce terminal parse lineage"
+            )
+        reused = parse_run.operation_id != operation_id
+        if (
+            reused
+            and parse_run.operation_id is not None
+            and db.get(
+                SecFinancialLineageAvailability,
+                parse_run.operation_id,
+            )
+            is None
+        ):
+            raise SecFinancialIngestionError(
+                "prior SEC financial lineage is pending finalization"
+            )
+        attempt = record_accession_attempt(
+            filing=filing,
+            outcome=(
+                f"parse_reused_{parse_run.status}"
+                if reused
+                else f"parse_{parse_run.status}"
+            ),
+            index_content=index_content,
+            artifacts=artifacts,
+            parse_run=parse_run,
+        )
+        db.add(
+            SecFinancialAcquisitionResolution(
+                operation_id=operation_id,
+                resource_role="accession_terminal",
+                resource_key=filing.accession_no,
+                resolution_kind=(
+                    "parse_succeeded"
+                    if parse_run.status == "succeeded"
+                    else "parse_failed"
+                ),
+                parse_run_id=parse_run.id,
+                accession_attempt_id=attempt.id,
+                accession_no=filing.accession_no,
+            )
+        )
+        db.flush()
+
+    if acquisition_failure_ids:
+        operation_result = SecFinancialOperationResult(
+            operation_id=operation_id,
+            result_kind="acquisition_failure",
+            acquisition_failure_id=acquisition_failure_ids[0],
+        )
+    elif terminal_parse_run_id is not None:
+        terminal_run_operation_id = db.scalar(
+            select(SecFinancialParseRun.operation_id).where(
+                SecFinancialParseRun.id == terminal_parse_run_id
+            )
+        )
+        if (
+            terminal_run_operation_id is not None
+            and terminal_run_operation_id != operation_id
+            and db.get(
+                SecFinancialLineageAvailability,
+                terminal_run_operation_id,
+            )
+            is None
+        ):
+            raise SecFinancialIngestionError(
+                "prior SEC financial lineage is pending finalization"
+            )
+        operation_result = SecFinancialOperationResult(
+            operation_id=operation_id,
+            result_kind="parse_run",
+            parse_run_id=terminal_parse_run_id,
+        )
+    elif not discovered:
+        operation_result = SecFinancialOperationResult(
+            operation_id=operation_id,
+            result_kind="no_eligible_filings",
+        )
+    else:
+        operation_result = None
+    if operation_result is not None:
+        db.add(operation_result)
+        db.flush()
 
     return FinancialIngestionReport(
+        operation_id=operation_id,
         stock_id=stock_id,
         cik=identity.cik,
         filings_discovered=len(discovered),
@@ -1124,6 +2516,159 @@ def ingest_latest_financial_filings(
         parse_runs_created=created_runs,
         raw_facts_created=created_facts,
         failures=tuple(failures),
+        selected_filings=_selected_filing_summaries(discovered),
+    )
+
+
+def finalize_sec_financial_ingestion_operation(
+    db: Session,
+    *,
+    operation_id: str,
+) -> datetime:
+    """Make committed lineage visible using a separately committed DB marker."""
+    operation = db.scalar(
+        select(SecFinancialIngestionOperation)
+        .where(SecFinancialIngestionOperation.id == operation_id)
+        .with_for_update()
+    )
+    if operation is None:
+        raise SecFinancialIngestionError("SEC financial ingestion operation not found")
+    availability = db.get(SecFinancialLineageAvailability, operation_id)
+    if availability is None:
+        current_txid = int(db.scalar(select(func.txid_current())))
+        if current_txid == operation.created_txid:
+            raise SecFinancialIngestionError(
+                "availability requires the ingestion transaction to commit first"
+            )
+        snapshot_count = int(
+            db.scalar(
+                select(func.count())
+                .select_from(SecFinancialOperationSnapshot)
+                .where(SecFinancialOperationSnapshot.operation_id == operation_id)
+            )
+            or 0
+        )
+        anchor_count = int(
+            db.scalar(
+                select(func.count())
+                .select_from(SecFinancialResourceAnchor)
+                .where(SecFinancialResourceAnchor.operation_id == operation_id)
+            )
+            or 0
+        )
+        result = db.get(SecFinancialOperationResult, operation_id)
+        if snapshot_count < 1 and anchor_count < 1:
+            raise SecFinancialIngestionError(
+                "availability requires retained submissions snapshot or no-bytes resource anchor"
+            )
+        if result is None:
+            raise SecFinancialIngestionError(
+                "availability requires terminal operation result"
+            )
+        if anchor_count and (
+            snapshot_count
+            or anchor_count != 1
+            or result.result_kind != "acquisition_failure"
+        ):
+            raise SecFinancialIngestionError(
+                "no-bytes resource anchor requires acquisition failure terminal"
+            )
+        availability = SecFinancialLineageAvailability(operation_id=operation_id)
+        db.add(availability)
+        db.flush()
+        db.refresh(availability)
+    return _aware(availability.available_at)
+
+
+def finalize_pending_sec_financial_ingestion_operations(
+    db: Session,
+    *,
+    stock_id: int,
+) -> tuple[tuple[str, datetime], ...]:
+    """Recover committed pending lineage under an explicit operator rerun."""
+    operation_ids = db.scalars(
+        select(SecFinancialIngestionOperation.id)
+        .join(
+            SecIssuerIdentity,
+            SecIssuerIdentity.id
+            == SecFinancialIngestionOperation.issuer_identity_id,
+        )
+        .where(
+            SecIssuerIdentity.stock_id == stock_id,
+            ~exists(
+                select(SecFinancialLineageAvailability.operation_id).where(
+                    SecFinancialLineageAvailability.operation_id
+                    == SecFinancialIngestionOperation.id
+                )
+            ),
+        )
+        .order_by(SecFinancialIngestionOperation.created_at, SecFinancialIngestionOperation.id)
+        .with_for_update(of=SecFinancialIngestionOperation)
+    ).all()
+    return tuple(
+        (
+            operation_id,
+            finalize_sec_financial_ingestion_operation(
+                db, operation_id=operation_id
+            ),
+        )
+        for operation_id in operation_ids
+    )
+
+
+def has_pending_sec_financial_lineage(
+    db: Session,
+    *,
+    stock_id: int,
+) -> bool:
+    return bool(
+        db.scalar(
+            select(
+                exists(
+                    select(SecFinancialIngestionOperation.id)
+                    .join(
+                        SecIssuerIdentity,
+                        SecIssuerIdentity.id
+                        == SecFinancialIngestionOperation.issuer_identity_id,
+                    )
+                    .where(
+                        SecIssuerIdentity.stock_id == stock_id,
+                        ~exists(
+                            select(
+                                SecFinancialLineageAvailability.operation_id
+                            ).where(
+                                SecFinancialLineageAvailability.operation_id
+                                == SecFinancialIngestionOperation.id
+                            )
+                        ),
+                    )
+                )
+            )
+        )
+    )
+
+
+def _operation_available_as_of(
+    operation_id_column: Any,
+    parse_run_id_column: Any,
+    cutoff: datetime,
+) -> Any:
+    return or_(
+        and_(
+            operation_id_column.is_(None),
+            exists(
+                select(SecFinancialLegacyParseRun.parse_run_id).where(
+                    SecFinancialLegacyParseRun.parse_run_id == parse_run_id_column
+                )
+            ),
+        ),
+        exists(
+            select(SecFinancialLineageAvailability.operation_id).where(
+                SecFinancialLineageAvailability.operation_id
+                == operation_id_column,
+                SecFinancialLineageAvailability.available_at <= cutoff,
+            )
+        ),
     )
 
 
@@ -1132,6 +2677,7 @@ def select_sec_financial_evidence_as_of(
     *,
     stock_id: int,
     cutoff: datetime,
+    storage_root: Path,
 ) -> list[SecFinancialEvidenceAsOf]:
     cutoff = _aware(cutoff)
     current_identity = aliased(SecIssuerIdentity)
@@ -1201,6 +2747,11 @@ def select_sec_financial_evidence_as_of(
             SecFinancialParseRun.fact_count > 0,
             SecFinancialParseRun.completed_at <= cutoff,
             SecFinancialParseRun.known_at <= cutoff,
+            _operation_available_as_of(
+                SecFinancialParseRun.operation_id,
+                SecFinancialParseRun.id,
+                cutoff,
+            ),
             linked_artifact_exists,
             ~late_linked_artifact_exists,
         )
@@ -1211,19 +2762,697 @@ def select_sec_financial_evidence_as_of(
             SecFinancialParseRun.id.desc(),
         )
     ).all()
-    latest_by_filing: dict[int, SecFinancialEvidenceAsOf] = {}
+    latest_by_filing: dict[int, SecFinancialEvidenceAsOf | None] = {}
     for filing, run in rows:
-        latest_by_filing.setdefault(
-            filing.id,
-            SecFinancialEvidenceAsOf(
-                filing_id=filing.id,
-                accession_no=filing.accession_no,
-                form_type=filing.form_type,
-                accepted_at=filing.accepted_at,
-                parse_run_id=run.id,
-                parser_version=run.parser_version,
-                input_manifest_hash=run.input_manifest_hash,
-                fact_count=run.fact_count,
+        if filing.id in latest_by_filing:
+            continue
+        if not _parse_run_attempt_eligibility(
+            db, run=run, cutoff=cutoff, storage_root=storage_root
+        ).eligible:
+            if _run_has_retained_storage_integrity_failure(
+                db, run=run, storage_root=storage_root
+            ):
+                latest_by_filing[filing.id] = None
+            continue
+        latest_by_filing[filing.id] = SecFinancialEvidenceAsOf(
+            filing_id=filing.id,
+            accession_no=filing.accession_no,
+            form_type=filing.form_type,
+            accepted_at=filing.accepted_at,
+            parse_run_id=run.id,
+            parser_version=run.parser_version,
+            input_manifest_hash=run.input_manifest_hash,
+            fact_count=run.fact_count,
+        )
+    return [item for item in latest_by_filing.values() if item is not None]
+
+
+def _run_input_links(
+    db: Session, run_id: int
+) -> list[tuple[SecFinancialParseRunArtifact, SecFilingArtifact]]:
+    return db.execute(
+        select(SecFinancialParseRunArtifact, SecFilingArtifact)
+        .join(
+            SecFilingArtifact,
+            SecFilingArtifact.id == SecFinancialParseRunArtifact.artifact_id,
+        )
+        .where(SecFinancialParseRunArtifact.parse_run_id == run_id)
+        .order_by(SecFilingArtifact.sequence, SecFilingArtifact.id)
+    ).all()
+
+
+def _run_has_retained_storage_integrity_failure(
+    db: Session,
+    *,
+    run: SecFinancialParseRun,
+    storage_root: Path,
+) -> bool:
+    links = _run_input_links(db, run.id)
+    if not links:
+        return False
+    try:
+        for _link, artifact in links:
+            if artifact.state == "retained":
+                _verify_retained_artifact(storage_root, artifact)
+    except SecFinancialIntegrityError:
+        return True
+    return False
+
+
+def _verified_run_inputs_as_of(
+    db: Session,
+    *,
+    run: SecFinancialParseRun,
+    cutoff: datetime,
+    storage_root: Path,
+) -> tuple[list[tuple[SecFinancialParseRunArtifact, SecFilingArtifact]], list[datetime]] | None:
+    links = _run_input_links(db, run.id)
+    if not links:
+        return None
+    boundaries: list[datetime] = []
+    try:
+        for link, artifact in links:
+            if (
+                artifact.state != "retained"
+                or link.known_at > cutoff
+                or link.created_at > cutoff
+                or artifact.known_at > cutoff
+                or artifact.created_at > cutoff
+            ):
+                return None
+            _verify_retained_artifact(storage_root, artifact)
+            boundaries.extend(
+                (link.known_at, link.created_at, artifact.known_at, artifact.created_at)
+            )
+            if artifact.fetched_at is not None:
+                boundaries.append(artifact.fetched_at)
+    except SecFinancialIntegrityError:
+        return None
+    return links, boundaries
+
+
+def _current_operation_attempt_eligibility(
+    db: Session,
+    *,
+    attempt_id: int,
+    cutoff: datetime,
+    storage_root: Path,
+) -> _AttemptEligibility:
+    """Validate operation ownership, exact inputs, PIT, and retained bytes."""
+    cutoff = _aware(cutoff)
+    attempt = db.get(SecFinancialAccessionAttempt, attempt_id)
+    if attempt is None:
+        return _AttemptEligibility(False)
+    filing = db.get(SecFinancialFiling, attempt.filing_id)
+    run = db.get(SecFinancialParseRun, attempt.parse_run_id) if attempt.parse_run_id else None
+    operation = db.get(SecFinancialIngestionOperation, attempt.operation_id)
+    availability = db.get(SecFinancialLineageAvailability, attempt.operation_id)
+    resolution = db.scalar(
+        select(SecFinancialAcquisitionResolution).where(
+            SecFinancialAcquisitionResolution.operation_id == attempt.operation_id,
+            SecFinancialAcquisitionResolution.accession_attempt_id == attempt.id,
+            SecFinancialAcquisitionResolution.parse_run_id == attempt.parse_run_id,
+            SecFinancialAcquisitionResolution.accession_no == attempt.accession_no,
+            SecFinancialAcquisitionResolution.resource_role == "accession_terminal",
+            SecFinancialAcquisitionResolution.resource_key == attempt.accession_no,
+        )
+    )
+    attempt_links = db.execute(
+        select(SecFinancialAccessionAttemptArtifact, SecFilingArtifact)
+        .join(
+            SecFilingArtifact,
+            SecFilingArtifact.id == SecFinancialAccessionAttemptArtifact.artifact_id,
+        )
+        .where(SecFinancialAccessionAttemptArtifact.attempt_id == attempt_id)
+        .order_by(SecFilingArtifact.sequence, SecFilingArtifact.id)
+    ).all()
+    if (
+        filing is None
+        or run is None
+        or operation is None
+        or availability is None
+        or resolution is None
+        or not attempt_links
+        or operation.issuer_identity_id != filing.issuer_identity_id
+        or run.filing_id != filing.id
+        or attempt.accession_no != filing.accession_no
+        or attempt.index_resource_key != filing.index_url
+        or resolution.resolution_kind != f"parse_{run.status}"
+        or attempt.outcome not in {f"parse_{run.status}", f"parse_reused_{run.status}"}
+    ):
+        return _AttemptEligibility(False)
+    owned_run = run.operation_id == attempt.operation_id
+    if owned_run == attempt.outcome.startswith("parse_reused_"):
+        return _AttemptEligibility(False)
+    legacy = run.operation_id is None
+    if legacy:
+        if db.get(SecFinancialLegacyParseRun, run.id) is None:
+            return _AttemptEligibility(False)
+    elif run.operation_id != attempt.operation_id:
+        prior = db.get(SecFinancialLineageAvailability, run.operation_id)
+        if prior is None or prior.available_at > cutoff:
+            return _AttemptEligibility(False)
+
+    verified = _verified_run_inputs_as_of(
+        db, run=run, cutoff=cutoff, storage_root=storage_root
+    )
+    if verified is None:
+        return _AttemptEligibility(False)
+    run_links, input_boundaries = verified
+    attempted_ids = {artifact.id for _link, artifact in attempt_links}
+    run_ids = {artifact.id for _link, artifact in run_links}
+    if legacy and attempt.input_manifest_hash != run.input_manifest_hash:
+        obsolete = {
+            artifact.id
+            for _link, artifact in run_links
+            if artifact.filename == "__submissions__.json"
+        }
+        if len(obsolete) != 1 or attempted_ids != run_ids - obsolete:
+            return _AttemptEligibility(False)
+    elif attempt.input_manifest_hash != run.input_manifest_hash or attempted_ids != run_ids:
+        return _AttemptEligibility(False)
+
+    index_inputs = [
+        artifact for _link, artifact in attempt_links if artifact.source_url == filing.index_url
+    ]
+    if (
+        attempt.index_sha256 is None
+        or len(index_inputs) != 1
+        or index_inputs[0].sha256 != attempt.index_sha256
+    ):
+        return _AttemptEligibility(False)
+    cutoff_values = [
+        operation.attempted_at,
+        operation.created_at,
+        availability.available_at,
+        attempt.attempted_at,
+        attempt.created_at,
+        resolution.created_at,
+        filing.accepted_at,
+        filing.known_at,
+        run.completed_at,
+        run.known_at,
+        run.created_at,
+        *input_boundaries,
+    ]
+    try:
+        for link, artifact in attempt_links:
+            if link.created_at > cutoff or artifact.state != "retained":
+                return _AttemptEligibility(False)
+            _verify_retained_artifact(storage_root, artifact)
+            cutoff_values.extend((link.created_at, artifact.known_at, artifact.created_at))
+            if artifact.fetched_at is not None:
+                cutoff_values.append(artifact.fetched_at)
+    except SecFinancialIntegrityError:
+        return _AttemptEligibility(False)
+    if any(_aware(value) > cutoff for value in cutoff_values):
+        return _AttemptEligibility(False)
+    return _AttemptEligibility(True, max(_aware(value) for value in cutoff_values))
+
+
+def _parse_run_attempt_eligibility(
+    db: Session,
+    *,
+    run: SecFinancialParseRun,
+    cutoff: datetime,
+    storage_root: Path,
+) -> _AttemptEligibility:
+    cutoff = _aware(cutoff)
+    if run.operation_id is None:
+        if db.get(SecFinancialLegacyParseRun, run.id) is None:
+            return _AttemptEligibility(False)
+        verified = _verified_run_inputs_as_of(
+            db, run=run, cutoff=cutoff, storage_root=storage_root
+        )
+        if verified is None:
+            return _AttemptEligibility(False)
+        _links, boundaries = verified
+        return _AttemptEligibility(True, max(boundaries) if boundaries else None)
+    attempt_id = db.scalar(
+        select(SecFinancialAccessionAttempt.id).where(
+            SecFinancialAccessionAttempt.operation_id == run.operation_id,
+            SecFinancialAccessionAttempt.parse_run_id == run.id,
+            SecFinancialAccessionAttempt.filing_id == run.filing_id,
+        )
+    )
+    if attempt_id is None:
+        return _AttemptEligibility(False)
+    return _current_operation_attempt_eligibility(
+        db, attempt_id=attempt_id, cutoff=cutoff, storage_root=storage_root
+    )
+
+
+def select_sec_financial_failures_as_of(
+    db: Session,
+    *,
+    stock_id: int,
+    cutoff: datetime,
+    storage_root: Path,
+) -> list[SecFinancialEvidenceFailureAsOf]:
+    """Return cutoff-visible terminal parse failures for identity-valid filings."""
+    cutoff = _aware(cutoff)
+    current_identity = aliased(SecIssuerIdentity)
+    superseding_identity = aliased(SecIssuerIdentity)
+    current_reviewed_identity_exists = exists(
+        select(current_identity.id).where(
+            current_identity.stock_id == stock_id,
+            current_identity.cik == SecIssuerIdentity.cik,
+            current_identity.status == "reviewed",
+            current_identity.known_at <= cutoff,
+            current_identity.created_at <= cutoff,
+            current_identity.effective_from
+            <= func.coalesce(SecFinancialFiling.report_date, SecFinancialFiling.filed_on),
+            or_(
+                current_identity.effective_to.is_(None),
+                current_identity.effective_to
+                >= func.coalesce(
+                    SecFinancialFiling.report_date, SecFinancialFiling.filed_on
+                ),
+            ),
+            ~exists(
+                select(superseding_identity.id).where(
+                    superseding_identity.supersedes_identity_id == current_identity.id,
+                    superseding_identity.known_at <= cutoff,
+                    superseding_identity.created_at <= cutoff,
+                )
             ),
         )
-    return list(latest_by_filing.values())
+    )
+    late_linked_input_exists = exists(
+        select(SecFinancialParseRunArtifact.id)
+        .join(
+            SecFilingArtifact,
+            SecFilingArtifact.id == SecFinancialParseRunArtifact.artifact_id,
+        )
+        .where(
+            SecFinancialParseRunArtifact.parse_run_id == SecFinancialParseRun.id,
+            or_(
+                SecFinancialParseRunArtifact.known_at > cutoff,
+                SecFinancialParseRunArtifact.created_at > cutoff,
+                SecFilingArtifact.known_at > cutoff,
+                SecFilingArtifact.created_at > cutoff,
+            ),
+        )
+    )
+    rows = db.execute(
+        select(SecFinancialFiling, SecFinancialParseRun)
+        .join(
+            SecIssuerIdentity,
+            SecIssuerIdentity.id == SecFinancialFiling.issuer_identity_id,
+        )
+        .join(
+            SecFinancialParseRun,
+            SecFinancialParseRun.filing_id == SecFinancialFiling.id,
+        )
+        .where(
+            SecIssuerIdentity.stock_id == stock_id,
+            SecIssuerIdentity.status == "reviewed",
+            SecIssuerIdentity.known_at <= cutoff,
+            SecIssuerIdentity.created_at <= cutoff,
+            current_reviewed_identity_exists,
+            SecFinancialFiling.accepted_at <= cutoff,
+            SecFinancialFiling.known_at <= cutoff,
+            SecFinancialFiling.created_at <= cutoff,
+            SecFinancialParseRun.completed_at <= cutoff,
+            SecFinancialParseRun.known_at <= cutoff,
+            SecFinancialParseRun.created_at <= cutoff,
+            _operation_available_as_of(
+                SecFinancialParseRun.operation_id,
+                SecFinancialParseRun.id,
+                cutoff,
+            ),
+            ~late_linked_input_exists,
+        )
+        .order_by(
+            SecFinancialFiling.accepted_at.desc(),
+            SecFinancialFiling.id.desc(),
+            SecFinancialParseRun.known_at.desc(),
+            SecFinancialParseRun.id.desc(),
+        )
+    ).all()
+    terminal_by_filing: dict[int, SecFinancialEvidenceFailureAsOf | None] = {}
+    for filing, run in rows:
+        if filing.id in terminal_by_filing:
+            continue
+        if not _parse_run_attempt_eligibility(
+            db, run=run, cutoff=cutoff, storage_root=storage_root
+        ).eligible:
+            if _run_has_retained_storage_integrity_failure(
+                db, run=run, storage_root=storage_root
+            ):
+                terminal_by_filing[filing.id] = SecFinancialEvidenceFailureAsOf(
+                    filing_id=filing.id,
+                    accession_no=filing.accession_no,
+                    parse_run_id=run.id,
+                    error_code="retained_artifact_integrity_failure",
+                )
+            continue
+        if run.status == "failed":
+            error_code = run.error_code or "parse_failed"
+            if re.fullmatch(r"[a-z0-9_]{1,80}", error_code) is None:
+                error_code = "parse_failed"
+            terminal_by_filing[filing.id] = SecFinancialEvidenceFailureAsOf(
+                filing_id=filing.id,
+                accession_no=filing.accession_no,
+                parse_run_id=run.id,
+                error_code=error_code,
+            )
+        else:
+            terminal_by_filing[filing.id] = None
+    failures = [item for item in terminal_by_filing.values() if item is not None]
+    failure_identity = aliased(SecIssuerIdentity)
+    failure_current_identity = aliased(SecIssuerIdentity)
+    failure_superseding_identity = aliased(SecIssuerIdentity)
+    failure_has_terminal_reviewed_identity = exists(
+        select(failure_current_identity.id).where(
+            failure_current_identity.stock_id == stock_id,
+            failure_current_identity.cik == failure_identity.cik,
+            failure_current_identity.status == "reviewed",
+            failure_current_identity.known_at <= cutoff,
+            failure_current_identity.created_at <= cutoff,
+            failure_current_identity.effective_from
+            <= cast(SecFinancialIngestionOperation.attempted_at, Date),
+            or_(
+                failure_current_identity.effective_to.is_(None),
+                failure_current_identity.effective_to
+                >= cast(SecFinancialIngestionOperation.attempted_at, Date),
+            ),
+            ~exists(
+                select(failure_superseding_identity.id).where(
+                    failure_superseding_identity.supersedes_identity_id
+                    == failure_current_identity.id,
+                    failure_superseding_identity.known_at <= cutoff,
+                    failure_superseding_identity.created_at <= cutoff,
+                )
+            ),
+        )
+    )
+    acquisition_failure_rows = db.execute(
+        select(
+            SecFinancialAcquisitionFailure,
+            SecFinancialIngestionOperation.issuer_identity_id,
+            SecFinancialLineageAvailability.available_at,
+        )
+        .join(
+            SecFinancialIngestionOperation,
+            SecFinancialIngestionOperation.id
+            == SecFinancialAcquisitionFailure.operation_id,
+        )
+        .join(
+            failure_identity,
+            failure_identity.id
+            == SecFinancialIngestionOperation.issuer_identity_id,
+        )
+        .join(
+            SecFinancialLineageAvailability,
+            SecFinancialLineageAvailability.operation_id
+            == SecFinancialAcquisitionFailure.operation_id,
+        )
+        .where(
+            failure_identity.stock_id == stock_id,
+            failure_identity.status == "reviewed",
+            failure_identity.known_at <= cutoff,
+            failure_identity.created_at <= cutoff,
+            SecFinancialIngestionOperation.attempted_at <= cutoff,
+            failure_has_terminal_reviewed_identity,
+            SecFinancialLineageAvailability.available_at <= cutoff,
+            SecFinancialAcquisitionFailure.created_at <= cutoff,
+        )
+        .order_by(
+            SecFinancialLineageAvailability.available_at.desc(),
+            SecFinancialAcquisitionFailure.id.desc(),
+        )
+    ).all()
+    acquisition_failures = []
+    seen_failure_scopes: set[tuple[int, str | None, str, str, str]] = set()
+    for item, issuer_identity_id, failure_available_at in acquisition_failure_rows:
+        scope = (
+            issuer_identity_id,
+            item.accession_no,
+            item.resource_role,
+            item.resource_key,
+            item.stage,
+        )
+        if scope in seen_failure_scopes:
+            continue
+        seen_failure_scopes.add(scope)
+        resolver_operation = aliased(SecFinancialIngestionOperation)
+        resolver_availability = aliased(SecFinancialLineageAvailability)
+        resolution_predicate = (
+            and_(
+                SecFinancialAcquisitionResolution.resource_role
+                == "accession_terminal",
+                SecFinancialAcquisitionResolution.accession_no
+                == item.accession_no,
+                SecFinancialAcquisitionResolution.resource_key
+                == item.accession_no,
+                SecFinancialAcquisitionResolution.resolution_kind.in_(
+                    ("parse_succeeded", "parse_failed")
+                ),
+            )
+            if item.accession_no is not None
+            else and_(
+                SecFinancialAcquisitionResolution.resource_role
+                == item.resource_role,
+                SecFinancialAcquisitionResolution.resource_key
+                == item.resource_key,
+                SecFinancialAcquisitionResolution.resolution_kind
+                == "resource_validated",
+            )
+        )
+        resolution_rows = db.execute(
+            select(SecFinancialAcquisitionResolution, SecSubmissionSnapshot)
+            .join(
+                resolver_operation,
+                resolver_operation.id
+                == SecFinancialAcquisitionResolution.operation_id,
+            )
+            .join(
+                resolver_availability,
+                resolver_availability.operation_id
+                == SecFinancialAcquisitionResolution.operation_id,
+            )
+            .outerjoin(
+                SecSubmissionSnapshot,
+                SecSubmissionSnapshot.id
+                == SecFinancialAcquisitionResolution.submission_snapshot_id,
+            )
+            .where(
+                resolver_operation.issuer_identity_id == issuer_identity_id,
+                or_(
+                    resolver_availability.available_at > failure_available_at,
+                    and_(
+                        SecFinancialAcquisitionResolution.operation_id
+                        == item.operation_id,
+                        SecFinancialAcquisitionResolution.created_at
+                        >= item.created_at,
+                    ),
+                ),
+                resolver_availability.available_at <= cutoff,
+                SecFinancialAcquisitionResolution.created_at <= cutoff,
+                SecFinancialAcquisitionResolution.created_at >= item.created_at,
+                or_(
+                    SecFinancialAcquisitionResolution.resource_role
+                    != "accession_terminal",
+                    exists(
+                        select(SecFinancialAccessionAttempt.id).where(
+                            SecFinancialAccessionAttempt.id
+                            == SecFinancialAcquisitionResolution.accession_attempt_id,
+                            SecFinancialAccessionAttempt.attempted_at
+                            >= item.created_at,
+                        )
+                    ),
+                ),
+                resolution_predicate,
+            )
+        ).all()
+        resolved = False
+        for resolution, snapshot in resolution_rows:
+            if resolution.resource_role == "accession_terminal":
+                if (
+                    resolution.accession_attempt_id is not None
+                    and _current_operation_attempt_eligibility(
+                        db,
+                        attempt_id=resolution.accession_attempt_id,
+                        cutoff=cutoff,
+                        storage_root=storage_root,
+                    ).eligible
+                ):
+                    resolved = True
+                    break
+                continue
+            expected_cik = db.scalar(
+                select(SecIssuerIdentity.cik)
+                .join(
+                    SecFinancialIngestionOperation,
+                    SecFinancialIngestionOperation.issuer_identity_id
+                    == SecIssuerIdentity.id,
+                )
+                .where(SecFinancialIngestionOperation.id == resolution.operation_id)
+            )
+            if snapshot is None or expected_cik is None:
+                continue
+            main_url = f"https://data.sec.gov/submissions/CIK{expected_cik}.json"
+            main_snapshot = db.scalar(
+                select(SecSubmissionSnapshot)
+                .join(
+                    SecFinancialOperationSnapshot,
+                    SecFinancialOperationSnapshot.snapshot_id == SecSubmissionSnapshot.id,
+                )
+                .where(
+                    SecFinancialOperationSnapshot.operation_id == resolution.operation_id,
+                    SecSubmissionSnapshot.source_url == main_url,
+                )
+            )
+            try:
+                snapshot_content = _read_verified_submission_snapshot(
+                    storage_root, snapshot
+                )
+                main_content = (
+                    _read_verified_submission_snapshot(storage_root, main_snapshot)
+                    if main_snapshot is not None
+                    else None
+                )
+                validate_submission_source(
+                    resource_role=resolution.resource_role,
+                    normalized_url=resolution.resource_key,
+                    snapshot_content=snapshot_content,
+                    snapshot_sha256=snapshot.sha256,
+                    snapshot_size=snapshot.byte_size,
+                    expected_cik=expected_cik,
+                    main_snapshot_content=main_content,
+                )
+            except (SecFinancialIntegrityError, ValueError):
+                continue
+            else:
+                resolved = True
+                break
+        if not resolved:
+            acquisition_failures.append(item)
+    failures.extend(
+        SecFinancialEvidenceFailureAsOf(
+            filing_id=None,
+            accession_no=item.accession_no or "submissions",
+            parse_run_id=None,
+            error_code=item.error_code,
+        )
+        for item in acquisition_failures
+    )
+    return failures
+
+
+def earliest_replayable_sec_financial_evidence_at(
+    db: Session,
+    *,
+    stock_id: int,
+    storage_root: Path,
+) -> datetime | None:
+    """Return the first cutoff with one complete, PIT-eligible evidence set."""
+    candidates = db.execute(
+        select(SecFinancialParseRun, SecFinancialFiling, SecIssuerIdentity)
+        .join(
+            SecFinancialFiling,
+            SecFinancialFiling.id == SecFinancialParseRun.filing_id,
+        )
+        .join(
+            SecIssuerIdentity,
+            SecIssuerIdentity.id == SecFinancialFiling.issuer_identity_id,
+        )
+        .where(
+            SecIssuerIdentity.stock_id == stock_id,
+            SecIssuerIdentity.status == "reviewed",
+            SecFinancialParseRun.status == "succeeded",
+            SecFinancialParseRun.fact_count > 0,
+        )
+        .order_by(SecFinancialParseRun.id.asc())
+    ).all()
+    latest_finalized_by_filing: dict[
+        int, tuple[SecFinancialParseRun, SecFinancialFiling]
+    ] = {}
+    for run, filing, _identity in candidates:
+        if run.operation_id is not None:
+            if db.get(SecFinancialLineageAvailability, run.operation_id) is None:
+                continue
+        elif db.get(SecFinancialLegacyParseRun, run.id) is None:
+            continue
+        current = latest_finalized_by_filing.get(filing.id)
+        if current is None or (
+            _aware(run.known_at), run.id
+        ) > (
+            _aware(current[0].known_at), current[0].id
+        ):
+            latest_finalized_by_filing[filing.id] = (run, filing)
+    storage_blocked_filings = {
+        filing_id
+        for filing_id, (run, _filing) in latest_finalized_by_filing.items()
+        if _run_has_retained_storage_integrity_failure(
+            db, run=run, storage_root=storage_root
+        )
+    }
+    replayable_boundaries: list[datetime] = []
+    for run, filing, identity in candidates:
+        if filing.id in storage_blocked_filings:
+            continue
+        availability = None
+        if run.operation_id is not None:
+            availability = db.get(
+                SecFinancialLineageAvailability, run.operation_id
+            )
+            if availability is None:
+                continue
+        elif db.get(SecFinancialLegacyParseRun, run.id) is None:
+            continue
+        attempt_eligibility = _parse_run_attempt_eligibility(
+            db,
+            run=run,
+            cutoff=datetime.max.replace(tzinfo=timezone.utc),
+            storage_root=storage_root,
+        )
+        if not attempt_eligibility.eligible:
+            continue
+        linked_inputs = db.execute(
+            select(SecFinancialParseRunArtifact, SecFilingArtifact)
+            .join(
+                SecFilingArtifact,
+                SecFilingArtifact.id == SecFinancialParseRunArtifact.artifact_id,
+            )
+            .where(SecFinancialParseRunArtifact.parse_run_id == run.id)
+            .order_by(SecFinancialParseRunArtifact.id.asc())
+        ).all()
+        if not linked_inputs or any(
+            artifact.state != "retained" for _, artifact in linked_inputs
+        ):
+            continue
+        boundary_values = [
+            identity.known_at,
+            filing.accepted_at,
+            filing.known_at,
+            run.completed_at,
+            run.known_at,
+            run.created_at,
+        ]
+        if availability is not None:
+            boundary_values.append(availability.available_at)
+        if attempt_eligibility.replayable_at is not None:
+            boundary_values.append(attempt_eligibility.replayable_at)
+        for link, artifact in linked_inputs:
+            boundary_values.extend(
+                [
+                    link.known_at,
+                    link.created_at,
+                    artifact.known_at,
+                    artifact.created_at,
+                ]
+            )
+            if artifact.fetched_at is not None:
+                boundary_values.append(artifact.fetched_at)
+        boundary = max(boundary_values)
+        eligible = select_sec_financial_evidence_as_of(
+            db,
+            stock_id=stock_id,
+            cutoff=boundary,
+            storage_root=storage_root,
+        )
+        if any(item.parse_run_id == run.id for item in eligible):
+            replayable_boundaries.append(boundary)
+    return min(replayable_boundaries) if replayable_boundaries else None

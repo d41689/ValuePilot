@@ -49,6 +49,15 @@ class EdgarClient:
         """Fetch URL body via Rate Guard. Raises RateGuardFetchError on any non-200."""
         return self._rate_guard.fetch(upstream="edgar", method="GET", url=url)
 
+    def get_revalidated(self, url: str) -> bytes:
+        """Fetch through Rate Guard while requiring an upstream revalidation."""
+        return self._rate_guard.fetch(
+            upstream="edgar",
+            method="GET",
+            url=url,
+            max_cache_age_s=0.0,
+        )
+
     def head(self, url: str) -> None:
         """Probe URL existence via Rate Guard. Raises on any non-200 (e.g. 404)."""
         self._rate_guard.fetch(upstream="edgar", method="HEAD", url=url)

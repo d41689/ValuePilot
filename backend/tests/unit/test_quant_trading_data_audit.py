@@ -67,14 +67,43 @@ def test_filing_lag_uses_publication_date_and_rejects_time_travel() -> None:
         filing_lag_days(date(2026, 3, 31), date(2026, 3, 30))
 
 
-def test_audit_database_guard_rejects_non_development_database() -> None:
-    assert validate_audit_database_name("valuepilot") == "valuepilot"
+@pytest.mark.parametrize(
+    "database_name",
+    [
+        "valuepilot",
+        "valuepilot_test_a",
+        "valuepilot_test_closing_gate_step_e_20260831",
+    ],
+)
+def test_audit_database_guard_allows_dev_and_strict_test_database_names(
+    database_name: str,
+) -> None:
+    assert validate_audit_database_name(database_name) == database_name
 
-    with pytest.raises(RuntimeError, match="development database"):
-        validate_audit_database_name("valuepilot_prod")
 
-    with pytest.raises(RuntimeError, match="development database"):
-        validate_audit_database_name(None)
+@pytest.mark.parametrize(
+    "database_name",
+    [
+        None,
+        "",
+        "valuepilot_prod",
+        "valuepilot_test",
+        "valuepilot_test_",
+        "valuepilot_test__audit",
+        "valuepilot_test_audit_",
+        "valuepilot_test_AUDIT",
+        "valuepilot_test-audit",
+        "prefix_valuepilot_test_audit",
+        "valuepilot_test_audit.suffix",
+        f"valuepilot_test_{'a' * 48}",
+        "valuepilot_acceptance_step_d_gold_20260830",
+    ],
+)
+def test_audit_database_guard_rejects_non_development_or_unsafe_test_database(
+    database_name: str | None,
+) -> None:
+    with pytest.raises(RuntimeError, match="development or isolated test database"):
+        validate_audit_database_name(database_name)
 
 
 def test_authorized_source_state_requires_durable_evidence_reference() -> None:
@@ -88,7 +117,9 @@ def test_authorized_source_state_requires_durable_evidence_reference() -> None:
 def test_operational_audit_transaction_rejects_database_writes() -> None:
     session = SessionLocal()
     try:
-        assert begin_read_only_development_audit(session) == "valuepilot"
+        validated_database = begin_read_only_development_audit(session)
+        connected_database = session.execute(text("SELECT current_database()"))
+        assert validated_database == connected_database.scalar_one()
         session.add(User(email="quant-audit-read-only@example.com"))
         with pytest.raises(DBAPIError, match="read-only transaction"):
             session.flush()

@@ -103,6 +103,11 @@ def test_manifest_rejects_cross_cutting_shortfall() -> None:
     ("path", "value", "message"),
     [
         (("fiscal_year_end_mmdd",), "0231", "real month/day"),
+        (
+            ("fiscal_year_end_mmdd",),
+            "0229",
+            "0229 is unsupported for a recurring fiscal year end",
+        ),
         (("primary_listing", "mic"), "nasdaq", "mic is malformed"),
         (("primary_listing", "country"), "USA", "country is malformed"),
         (("primary_listing", "instrument_type"), "mystery", "unsupported"),

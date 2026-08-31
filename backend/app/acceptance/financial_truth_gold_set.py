@@ -181,6 +181,11 @@ def validate_gold_set(data: dict[str, Any]) -> GoldSetValidationReport:
         fye = str(case.get("fiscal_year_end_mmdd") or "")
         if not FISCAL_YEAR_END_RE.fullmatch(fye):
             errors.append(f"{path}.fiscal_year_end_mmdd must be MMDD")
+        elif fye == "0229":
+            errors.append(
+                f"{path}.fiscal_year_end_mmdd 0229 is unsupported for a "
+                "recurring fiscal year end"
+            )
         else:
             try:
                 date(2000, int(fye[:2]), int(fye[2:]))
