@@ -257,6 +257,16 @@ case "$action" in
         database_exists || { echo "acceptance database does not exist" >&2; exit 1; }
         [ -d "$storage_root" ] || { echo "acceptance storage does not exist" >&2; exit 1; }
         runtime_preflight
+        status=0
+        acceptance_run python -m app.cli.sec_financials acceptance-pass-report-status \
+            --acceptance-run-id "$run_id" \
+            --acceptance-pass "$pass_number" \
+            --allow-missing || status=$?
+        case "$status" in
+            0) ;;
+            2) echo "existing acceptance reports include typed incomplete evidence" >&2 ;;
+            *) echo "existing acceptance report validation failed: status=$status" >&2; exit "$status" ;;
+        esac
         acceptance_run python -m app.cli.sec_financials acceptance-bootstrap-stocks \
             --acceptance-run-id "$run_id"
         case_ids=$(acceptance_run python -c \

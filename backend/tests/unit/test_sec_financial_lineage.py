@@ -18,7 +18,10 @@ from sqlalchemy.orm import Session
 from app.edgar.parsers.financial_submissions import parse_financial_submissions
 from app.edgar.parsers.inline_xbrl import parse_inline_xbrl
 from app.acceptance.sec_gold_report import build_case_report
-from app.acceptance.sec_gold_audit import build_case_database_audit
+from app.acceptance.sec_gold_audit import (
+    audit_case_report_operation,
+    build_case_database_audit,
+)
 from app.models.facts import MetricFact
 from app.models.sec_financials import (
     SecFilingArtifact,
@@ -1615,6 +1618,37 @@ def test_acceptance_audit_rejects_reported_zero_for_operation_owned_snapshot(
             pass_two=pass_two,
             storage_root=tmp_path,
         )
+
+    correct = audit_case_report_operation(
+        db_session,
+        expected_run_id="step-d-audit-test",
+        case={
+            "case_id": "audit-primary",
+            "cik": CIK,
+            "primary_listing": {"ticker": "AUDIT"},
+        },
+        report=pass_one,
+        acceptance_pass=1,
+    )
+    assert correct["operation_id"] == first.operation_id
+
+    for field, invalid_value, message in (
+        ("cik", "0000000001", "issuer identity mismatch"),
+        ("stock_id", stock.id + 1, "issuer identity mismatch"),
+        ("operation_id", second.operation_id, "operation attempt mismatch"),
+    ):
+        with pytest.raises(ValueError, match=message):
+            audit_case_report_operation(
+                db_session,
+                expected_run_id="step-d-audit-test",
+                case={
+                    "case_id": "audit-primary",
+                    "cik": CIK,
+                    "primary_listing": {"ticker": "AUDIT"},
+                },
+                report={**pass_one, field: invalid_value},
+                acceptance_pass=1,
+            )
 
 
 def test_finalize_serializes_against_concurrent_operation_write(

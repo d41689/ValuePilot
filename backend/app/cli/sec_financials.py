@@ -16,7 +16,7 @@ from datetime import date, datetime, timezone
 from pathlib import Path
 import re
 
-from sqlalchemy import func, or_, select
+from sqlalchemy import func, or_, select, text
 import typer
 import yaml
 
@@ -26,13 +26,14 @@ from app.acceptance.sec_gold_environment import (
     validate_acceptance_run_id,
 )
 from app.acceptance.sec_gold_audit import (
+    audit_case_report_operation,
     build_aggregate_payload,
     build_case_database_audit,
     build_runtime_snapshot,
     load_stable_json,
     render_human_aggregate_summary,
     validate_aggregate_payload,
-    validate_case_report_identity,
+    validate_case_report_structure,
     write_stable_json,
     write_stable_text,
 )
@@ -604,6 +605,10 @@ def acceptance_snapshot(
 def acceptance_pass_report_status(
     acceptance_run_id: str = typer.Option(...),
     acceptance_pass: int = typer.Option(...),
+    allow_missing: bool = typer.Option(
+        False,
+        help="Validate only reports already present during crash-resume preflight.",
+    ),
 ) -> None:
     """Derive one pass terminal status from every locked stable report."""
     if acceptance_pass not in {1, 2}:
@@ -614,26 +619,40 @@ def acceptance_pass_report_status(
     except Exception as exc:
         typer.echo(f"acceptance preflight failed: {exc}", err=True)
         raise typer.Exit(1) from exc
+    db = SessionLocal()
     try:
+        db.execute(text("SET TRANSACTION READ ONLY"))
         manifest = yaml.safe_load(MANIFEST_PATH.read_text(encoding="utf-8"))
         validate_gold_set(manifest)
         incomplete = 0
         completed = 0
         for case in manifest["cases"]:
             case_id = str(case["case_id"])
-            payload = load_stable_json(
+            report_path = (
                 environment.reports_root
                 / f"pass-{acceptance_pass}"
                 / f"{case_id}.json"
             )
-            if validate_case_report_identity(
+            if allow_missing and not report_path.is_file():
+                continue
+            payload = load_stable_json(report_path)
+            is_incomplete = validate_case_report_structure(
                 payload,
                 expected_run_id=acceptance_run_id,
                 expected_case_id=case_id,
                 expected_pass=acceptance_pass,
-            ):
+            )
+            audit_case_report_operation(
+                db,
+                expected_run_id=acceptance_run_id,
+                case=case,
+                report=payload,
+                acceptance_pass=acceptance_pass,
+            )
+            if is_incomplete:
                 incomplete += 1
             completed += 1
+        db.rollback()
         typer.echo(
             f"acceptance_pass_status pass={acceptance_pass} "
             f"completed={completed}/{len(manifest['cases'])} "
@@ -642,10 +661,14 @@ def acceptance_pass_report_status(
         if incomplete:
             raise typer.Exit(2)
     except typer.Exit:
+        db.rollback()
         raise
     except Exception as exc:
+        db.rollback()
         typer.echo(f"Error: {type(exc).__name__}: {exc}", err=True)
         raise typer.Exit(1) from exc
+    finally:
+        db.close()
 
 
 @app.command("acceptance-audit")

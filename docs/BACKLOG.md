@@ -9,6 +9,28 @@ long — escalate to the user. **medium / low** = ordinary follow-up.
 
 ## Open
 
+### Development hot reload repeatedly creates quarantined 13F reparses
+- **Found:** 2026-08-31, PR #131 post-review closing-gate run
+- **Severity:** medium (audit-table growth and misleading repeated work; current
+  13F projections remained unchanged)
+- **Problem:** the default development API starts the 13F worker while Uvicorn
+  watches the mounted source tree. During one review/edit cycle, reloads and a
+  default Compose restart repeatedly processed two pending reparses, appending
+  11 quarantined non-current parse runs and 480 holdings to shared `valuepilot`.
+- **Acceptance criteria:**
+  - A pending controlled reparse is claimed and reaches one durable terminal
+    disposition; reload, restart, and concurrent-worker tests cannot append a
+    second candidate for the same pending work.
+  - Development hot reload does not run mutation-capable background jobs unless
+    explicitly enabled, while production retains its intended worker behavior.
+  - Operator surfaces distinguish a terminal quarantine from retryable work and
+    do not enqueue or claim it again.
+- **Context:** `backend/app/main.py`;
+  `backend/app/services/thirteenf_job_worker.py`;
+  `backend/app/services/thirteenf_controlled_reparse.py`;
+  `docs/tasks/2026-08-30_sec-gold-set-acceptance-run.md`
+- **Issue:** —
+
 ### Financial Truth & Decision Loop Beta — product exit gate
 - **Found:** 2026-08-27, PO user-value acceptance of the local product
 - **Severity:** high (the current product discovers ideas but cannot yet be

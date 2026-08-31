@@ -68,9 +68,12 @@ otherwise empty acceptance database, is resumable from already written case
 reports, and runs cases sequentially. Exit 2 is a durable typed incomplete case
 and does not stop later locked cases; any operational exit stops the batch. Each
 pass writes case JSON and text under `reports/pass-1/` or `reports/pass-2/`.
-After all cases, `run-pass` re-reads all 24 pass reports, validates each report's
-run/case/pass identity, and derives the terminal exit from their typed gaps and
-failures. Resuming from existing incomplete reports therefore still exits 2;
+Before skipping any existing report, `run-pass` validates every report already
+present against its finalized database operation in a read-only transaction.
+After all cases, it re-reads all 24 pass reports and repeats the database-backed
+run/case/pass, issuer, stock, operation, timestamp, accession, counter, and
+transaction-ownership checks before deriving the terminal exit from typed gaps
+and failures. Resuming from existing incomplete reports therefore still exits 2;
 missing, malformed, or identity-conflicting reports fail closed. The application
 still obtains every SEC byte only through the pinned Rate Guard.
 

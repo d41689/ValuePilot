@@ -137,7 +137,7 @@ publish SEC raw facts into canonical `metric_facts`.
   429, or 503 responses. Its final policy remained one request/second, five
   retries, no active global pause, the pinned instance identity, and no
   fallback/direct SEC path.
-- Twenty-one cases covered every manifest-expected completed fiscal year. AVGO
+- Twenty-two cases covered every manifest-expected completed fiscal year. AVGO
   covered its locked 8/8 expectation. JPM covered 3/10 and GS 5/10; both expose
   `history_scan_limit_exceeded` and the exact missing fiscal years rather than
   silently claiming coverage. Legitimate historical `no_inline_xbrl_facts`,
@@ -295,3 +295,45 @@ publish SEC raw facts into canonical `metric_facts`.
   database, temporary Compose evidence, containers, and Step D database/storage
   remain intact for final review. No commit or push was performed for this
   task-document update.
+
+## PR #131 independent-review remediation
+
+- The independent review's P2 was valid: crash-resume status formerly checked
+  only the stable JSON run/case/pass shape before treating an existing report as
+  completed. It did not independently prove that the CIK, stock, operation,
+  database-stamped timestamps, selected accessions, creation counters, and
+  transaction ownership still matched one finalized database operation.
+- Resume now performs that same database-backed operation audit in an explicit
+  PostgreSQL read-only transaction twice: once over every report already present
+  before the script skips any case, and again over all 24 reports before the
+  terminal exit is derived. Missing reports are allowed only during the first
+  partial-resume preflight; malformed or identity-conflicting reports fail with
+  an operational exit. The former shallow helper was renamed from
+  `validate_case_report_identity` to `validate_case_report_structure` so callers
+  cannot mistake JSON shape validation for database identity proof.
+- Regression tests cover wrong CIK, stock, and operation IDs against real
+  PostgreSQL lineage, plus partial resume, malformed JSON, wrong run/case/pass,
+  typed-incomplete reports, and the CLI's database-audit call boundary. The SEC
+  acceptance/CLI/lineage/migration/source/egress/client suite passed **203
+  tests**. A read-only resume against the retained pass-two evidence validated
+  24/24 reports before skipping, skipped all cases without a SEC request, and
+  correctly exited 2 with `typed_incomplete=24`. Database counts were identical
+  before and after: 48 operations, 893 filings, 89 submission snapshots, 98,837
+  artifacts, 890 parse runs, 1,339,476 raw facts, and zero `metric_facts`.
+- The independent review's P3 was also valid. The aggregate has exactly two
+  cases with annual gaps—JPM 3/10 and GS 5/10—while AVGO legitimately covers its
+  locked 8/8 interval. This record now says **22/24**, matching the immutable
+  aggregate and all pass reports; retained evidence was not rewritten.
+- The post-fix isolated closing gate passed: backend **1,707 passed** with the
+  existing FastAPI warning; frontend **216 passed**; lint had no warnings or
+  errors; production build generated all 27 pages with only the existing stale
+  Browserslist advisory; migration-to-head and `git diff --check` passed.
+- Operational caveat: the first post-fix build command unintentionally targeted
+  the already-running default development Compose project before the isolated
+  override was restored. No migration or pytest ran against shared `valuepilot`,
+  whose revision/table fingerprint stayed `20260828500000`/68. However, hot
+  reload plus the enabled development 13F worker appended parse runs 7834–7844
+  between 03:41 and 03:50 UTC: 11 quarantined `is_current=false` runs and 480
+  associated holdings for two pending reparses. No current run was replaced.
+  The rows were not deleted or rewritten; the underlying repeat-work defect is
+  recorded in `docs/BACKLOG.md` for a separate, reviewed fix.

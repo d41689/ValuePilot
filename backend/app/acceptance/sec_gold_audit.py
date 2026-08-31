@@ -86,7 +86,7 @@ def build_idempotency_delta(
     }
 
 
-def validate_case_report_identity(
+def validate_case_report_structure(
     payload: dict[str, Any],
     *,
     expected_run_id: str,
@@ -129,6 +129,26 @@ def _report_datetime(payload: dict[str, Any], field: str, case_id: str) -> datet
     return parsed
 
 
+def _case_database_identity(
+    db: Session,
+    *,
+    case: dict[str, Any],
+) -> tuple[SecIssuerIdentity, Stock]:
+    cik = str(case["cik"])
+    identity = db.scalar(
+        select(SecIssuerIdentity)
+        .where(SecIssuerIdentity.cik == cik)
+        .order_by(SecIssuerIdentity.known_at.desc(), SecIssuerIdentity.id.desc())
+        .limit(1)
+    )
+    if identity is None:
+        raise ValueError(f"case has no retained SEC identity: {case['case_id']}")
+    stock = db.get(Stock, identity.stock_id)
+    if stock is None:
+        raise ValueError(f"case SEC identity has no stock: {case['case_id']}")
+    return identity, stock
+
+
 def _operation_database_audit(
     db: Session,
     *,
@@ -139,7 +159,7 @@ def _operation_database_audit(
     identity: SecIssuerIdentity,
     stock: Stock,
 ) -> dict[str, Any]:
-    validate_case_report_identity(
+    validate_case_report_structure(
         report,
         expected_run_id=expected_run_id,
         expected_case_id=case_id,
@@ -395,6 +415,28 @@ def _operation_database_audit(
     }
 
 
+def audit_case_report_operation(
+    db: Session,
+    *,
+    expected_run_id: str,
+    case: dict[str, Any],
+    report: dict[str, Any],
+    acceptance_pass: int,
+) -> dict[str, Any]:
+    """Validate one stable case report against its finalized DB operation."""
+
+    identity, stock = _case_database_identity(db, case=case)
+    return _operation_database_audit(
+        db,
+        report=report,
+        acceptance_pass=acceptance_pass,
+        expected_run_id=expected_run_id,
+        case_id=str(case["case_id"]),
+        identity=identity,
+        stock=stock,
+    )
+
+
 def _counter_delta(before: dict[str, Any], after: dict[str, Any], key: str) -> int:
     value = int(after.get(key, 0)) - int(before.get(key, 0))
     if value < 0:
@@ -624,17 +666,7 @@ def build_case_database_audit(
     storage_root: Path,
 ) -> dict[str, Any]:
     cik = str(case["cik"])
-    identity = db.scalar(
-        select(SecIssuerIdentity)
-        .where(SecIssuerIdentity.cik == cik)
-        .order_by(SecIssuerIdentity.known_at.desc(), SecIssuerIdentity.id.desc())
-        .limit(1)
-    )
-    if identity is None:
-        raise ValueError(f"case has no retained SEC identity: {case['case_id']}")
-    stock = db.get(Stock, identity.stock_id)
-    if stock is None:
-        raise ValueError(f"case SEC identity has no stock: {case['case_id']}")
+    identity, stock = _case_database_identity(db, case=case)
     case_id = str(case["case_id"])
     pass_one_operation = _operation_database_audit(
         db,

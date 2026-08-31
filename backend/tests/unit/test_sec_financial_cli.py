@@ -51,13 +51,15 @@ def _write_acceptance_pass_reports(
     )
     destination = reports_root / f"pass-{acceptance_pass}"
     destination.mkdir(parents=True)
-    for case in manifest["cases"]:
+    for stock_id, case in enumerate(manifest["cases"], start=1):
         case_id = str(case["case_id"])
         payload = {
             "schema_version": 1,
             "acceptance_pass": acceptance_pass,
             "run_id": run_id,
             "case_id": case_id,
+            "cik": str(case["cik"]),
+            "stock_id": stock_id,
             "operation_id": str(uuid.uuid4()),
             "typed_gaps": (
                 ["annual_coverage_gap:2022,2021"]
@@ -74,6 +76,26 @@ def _write_acceptance_pass_reports(
             json.dumps(payload), encoding="utf-8"
         )
     return manifest["cases"]
+
+
+def _stub_acceptance_report_database_audit(monkeypatch, *, validator=None):
+    session = SimpleNamespace(
+        execute=lambda *_args, **_kwargs: None,
+        rollback=lambda: None,
+        close=lambda: None,
+    )
+    audited: list[str] = []
+
+    def audit(db, *, case, report, **_kwargs):
+        assert db is session
+        if validator is not None:
+            validator(case, report)
+        audited.append(str(case["case_id"]))
+        return {"operation_id": report["operation_id"]}
+
+    monkeypatch.setattr(financial_cli, "SessionLocal", lambda: session)
+    monkeypatch.setattr(financial_cli, "audit_case_report_operation", audit)
+    return audited
 
 
 def _stock(
@@ -1035,6 +1057,7 @@ def test_acceptance_pass_report_status_preserves_resumed_typed_incomplete_exit(
             storage_root=tmp_path,
         ),
     )
+    audited = _stub_acceptance_report_database_audit(monkeypatch)
 
     result = CliRunner().invoke(
         financial_cli.app,
@@ -1050,6 +1073,44 @@ def test_acceptance_pass_report_status_preserves_resumed_typed_incomplete_exit(
     assert result.exit_code == 2
     assert "completed=24/24" in result.output
     assert "typed_incomplete=2" in result.output
+    assert len(audited) == 24
+
+
+def test_acceptance_pass_report_status_audits_existing_reports_before_resume(
+    monkeypatch, tmp_path
+) -> None:
+    reports_root = tmp_path / "reports"
+    cases = _write_acceptance_pass_reports(reports_root)
+    first_case_id = str(cases[0]["case_id"])
+    for case in cases[1:]:
+        (reports_root / "pass-2" / f"{case['case_id']}.json").unlink()
+    monkeypatch.setattr(
+        financial_cli,
+        "preflight_configured_acceptance_runtime",
+        lambda run_id: SimpleNamespace(
+            run_id=run_id,
+            reports_root=reports_root,
+            storage_root=tmp_path,
+        ),
+    )
+    audited = _stub_acceptance_report_database_audit(monkeypatch)
+
+    result = CliRunner().invoke(
+        financial_cli.app,
+        [
+            "acceptance-pass-report-status",
+            "--acceptance-run-id",
+            "step-d-resume-test",
+            "--acceptance-pass",
+            "2",
+            "--allow-missing",
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert "completed=1/24" in result.output
+    assert "typed_incomplete=0" in result.output
+    assert audited == [first_case_id]
 
 
 @pytest.mark.parametrize(
@@ -1079,6 +1140,7 @@ def test_acceptance_pass_report_status_rejects_wrong_report_identity(
             storage_root=tmp_path,
         ),
     )
+    _stub_acceptance_report_database_audit(monkeypatch)
 
     result = CliRunner().invoke(
         financial_cli.app,
@@ -1093,6 +1155,65 @@ def test_acceptance_pass_report_status_rejects_wrong_report_identity(
 
     assert result.exit_code == 1
     assert f"acceptance report identity mismatch: {first_case_id}" in result.output
+
+
+@pytest.mark.parametrize(
+    ("field", "invalid_value"),
+    (
+        ("cik", "0000000001"),
+        ("stock_id", 999999),
+        ("operation_id", "11111111-1111-4111-8111-111111111111"),
+    ),
+)
+def test_acceptance_pass_report_status_rejects_database_identity_conflict(
+    monkeypatch, tmp_path, field, invalid_value
+) -> None:
+    reports_root = tmp_path / "reports"
+    cases = _write_acceptance_pass_reports(reports_root)
+    first_case_id = str(cases[0]["case_id"])
+    report_path = reports_root / "pass-2" / f"{first_case_id}.json"
+    payload = json.loads(report_path.read_text(encoding="utf-8"))
+    expected_operation_id = payload["operation_id"]
+    payload[field] = invalid_value
+    report_path.write_text(json.dumps(payload), encoding="utf-8")
+    monkeypatch.setattr(
+        financial_cli,
+        "preflight_configured_acceptance_runtime",
+        lambda run_id: SimpleNamespace(
+            run_id=run_id,
+            reports_root=reports_root,
+            storage_root=tmp_path,
+        ),
+    )
+
+    def validate_database_identity(case, report):
+        if (
+            str(report.get("cik")) != str(case["cik"])
+            or int(report.get("stock_id", -1)) != 1
+            or report.get("operation_id") != expected_operation_id
+        ):
+            raise ValueError(
+                f"acceptance report database identity mismatch: {case['case_id']}"
+            )
+
+    audited = _stub_acceptance_report_database_audit(
+        monkeypatch, validator=validate_database_identity
+    )
+
+    result = CliRunner().invoke(
+        financial_cli.app,
+        [
+            "acceptance-pass-report-status",
+            "--acceptance-run-id",
+            "step-d-resume-test",
+            "--acceptance-pass",
+            "2",
+        ],
+    )
+
+    assert result.exit_code == 1
+    assert f"acceptance report database identity mismatch: {first_case_id}" in result.output
+    assert audited == []
 
 
 def test_acceptance_pass_report_status_rejects_malformed_existing_report(
@@ -1112,6 +1233,7 @@ def test_acceptance_pass_report_status_rejects_malformed_existing_report(
             storage_root=tmp_path,
         ),
     )
+    _stub_acceptance_report_database_audit(monkeypatch)
 
     result = CliRunner().invoke(
         financial_cli.app,
