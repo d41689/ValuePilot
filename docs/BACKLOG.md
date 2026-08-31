@@ -126,6 +126,18 @@ long — escalate to the user. **medium / low** = ordinary follow-up.
   current-policy artifact observations, and extracted 860 raw facts with zero
   `metric_facts` publication; an exact rerun created zero rows. FT-03 remains
   open for the complete locked form/history/issuer scope and evidence package.
+- **Progress (2026-08-31):** the locked 24-case run finalized two idempotent
+  passes with verified retained lineage and zero `metric_facts`. Twenty-two
+  cases cover their expected annual denominator; JPM is 3/10 and GS 5/10.
+  Contract review found that another bounded operation currently restarts at
+  the first 20 historical-submissions references rather than advancing through
+  a retained-manifest cursor. It also found that early annual filings frequently
+  have standalone XBRL instance documents rather than inline XBRL; the current
+  retention/parser path does not preserve/parse those instances, leaving many
+  pre-inline years as typed `no_inline_xbrl_facts`. Publication-grade FT-03
+  therefore still requires a validated resumable cursor plus immutable
+  standalone-instance retention and a new append-only parser version. The
+  existing typed failures and Step-D evidence must not be rewritten.
 - **Acceptance criteria:**
   - Before acquisition expands, `coverage-source-policy.md` records permitted
     SEC financial forms, retention, automation, rate limits, and visibility.
@@ -150,6 +162,16 @@ long — escalate to the user. **medium / low** = ordinary follow-up.
 - **Problem:** raw filing facts require explicit, versioned conversion into the
   existing financial-fact contract before any product use.
 - **Outcome:** publish permitted SEC actuals through `metric_facts` only.
+- **Progress (2026-08-31):** the `sec-us-gaap-v1` metric contract, PRD
+  publication boundary, and source-policy authorization are approved. They
+  define strict namespace-URI/local-name authority, semantically distinct cash,
+  equity and debt concepts, generic revenue, source-reported ISO currency
+  without FX, form-first period classification, ordered exact parse-authority
+  sets, compatible exact derived-quarter inputs, slot-level amendments, shared
+  SEC ownership, exact NUMERIC publication, PIT, SEC-only per-period current
+  slots, provenance and fail-closed consumer behavior before FT-06. No
+  publication migration, service, API, gold-set fact, or production activation
+  is implemented yet; this item remains open.
 - **Acceptance criteria:**
   - Metric keys, units, normalization, period semantics, source roles, and
     mapping rules are approved in `metric_facts_mapping_spec.yml`; schema, APIs,
