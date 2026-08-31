@@ -303,7 +303,7 @@ def _bootstrap_gold_case_stocks(db, manifest: dict) -> int:
 def acceptance_bootstrap_stocks(
     acceptance_run_id: str = typer.Option(...),
 ) -> None:
-    """Seed only the 24 locked stock rows into a preflighted acceptance DB."""
+    """Seed only the 24 locked stock rows into a validated acceptance DB."""
     try:
         preflight_configured_acceptance_runtime(acceptance_run_id)
     except Exception as exc:
@@ -331,7 +331,8 @@ def acceptance_bootstrap_stocks(
 def ingest_gold_case(
     case_id: str = typer.Option(..., help="Locked FT-00 case id."),
     max_filings: int = typer.Option(50, min=1, max=200),
-    parser_version: str = typer.Option("inline-xbrl-v1"),
+    parser_version: str = typer.Option("xbrl-lineage-v2"),
+    history_cursor: str | None = typer.Option(None, help="Validated cursor emitted by a prior bounded history operation."),
     as_of: str | None = typer.Option(
         None,
         help=(
@@ -455,6 +456,7 @@ def ingest_gold_case(
                 parser_version=parser_version,
                 filing_selection_as_of=filing_selection_as_of,
                 history_target=history_target,
+                history_cursor=history_cursor,
             )
         db.commit()
         typer.echo(
@@ -504,6 +506,7 @@ def ingest_gold_case(
             f"parse_runs_created={report.parse_runs_created} "
             f"raw_facts_created={report.raw_facts_created} failures={len(report.failures)}"
         )
+        typer.echo(f"next_history_cursor={report.next_history_cursor or 'exhausted'}")
         if acceptance_run_id is not None and report_json is not None:
             acceptance_report = build_case_report(
                 db,

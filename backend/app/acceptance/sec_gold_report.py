@@ -53,6 +53,7 @@ class SecGoldAcceptanceCaseReport:
     raw_facts_created: int
     metric_facts_published: int
     submission_snapshots_created: int = 0
+    next_history_cursor: str | None = None
 
     def __post_init__(self) -> None:
         timestamps = (
@@ -164,6 +165,7 @@ def build_case_report(
         raw_facts_created=ingestion_report.raw_facts_created,
         metric_facts_published=metric_facts_published,
         submission_snapshots_created=submission_snapshots_created,
+        next_history_cursor=ingestion_report.next_history_cursor,
     )
 
 
@@ -172,6 +174,7 @@ def render_human_case_summary(report: SecGoldAcceptanceCaseReport) -> str:
     lines = [
         f"acceptance_run_id={report.run_id} case={report.case_id} cik={report.cik}",
         f"acceptance_pass={report.acceptance_pass}",
+        f"next_history_cursor={report.next_history_cursor or 'exhausted'}",
         f"filing_selection_as_of={report.filing_selection_as_of.isoformat()}",
         f"operation_attempted_at={report.operation_attempted_at.isoformat()}",
         f"evidence_finalized_at={report.evidence_finalized_at.isoformat()}",

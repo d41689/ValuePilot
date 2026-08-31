@@ -16,7 +16,7 @@ from sqlalchemy.exc import DBAPIError
 from sqlalchemy.orm import Session
 
 from app.edgar.parsers.financial_submissions import parse_financial_submissions
-from app.edgar.parsers.inline_xbrl import parse_inline_xbrl
+from app.edgar.parsers.inline_xbrl import parse_inline_xbrl, parse_standalone_xbrl, safe_xml_root_name
 from app.acceptance.sec_gold_report import build_case_report
 from app.acceptance.sec_gold_audit import (
     audit_case_report_operation,
@@ -31,6 +31,7 @@ from app.models.sec_financials import (
     SecFinancialAcquisitionResolution,
     SecFinancialFiling,
     SecFinancialIngestionOperation,
+    SecFinancialHistoryContinuation,
     SecFinancialLineageAvailability,
     SecFinancialOperationResult,
     SecFinancialOperationSnapshot,
@@ -44,6 +45,7 @@ from app.models.sec_financials import (
 from app.models.stocks import Stock
 from app.core.config import settings
 from app.services.sec_financial_ingestion import (
+    FinancialHistoryTarget,
     SecFinancialFetchError,
     SecFinancialIntegrityError,
     SecFinancialIngestionError,
@@ -129,12 +131,12 @@ def committed_db_session():
         drop_test_schema(base_url, schema_name)
 
 
-INLINE_XBRL = b"""<!doctype html>
-<html xmlns:ix="http://www.xbrl.org/2013/inlineXBRL"
+INLINE_XBRL = b"""<html xmlns:ix="http://www.xbrl.org/2013/inlineXBRL"
       xmlns:xbrli="http://www.xbrl.org/2003/instance"
       xmlns:xbrldi="http://xbrl.org/2006/xbrldi"
       xmlns:us-gaap="http://fasb.org/us-gaap/2025"
       xmlns:dei="http://xbrl.sec.gov/dei/2025"
+      xmlns:aapl="http://www.apple.com/20250628"
       xmlns:iso4217="http://www.xbrl.org/2003/iso4217">
 <body>
   <xbrli:context id="D2026Q3">
@@ -603,6 +605,285 @@ def test_inline_xbrl_parser_preserves_context_unit_dimensions_and_locator() -> N
     assert facts[1].language == "en-US"
     assert facts[1].continued_at == "name-continuation"
     assert facts[2].unit_measure == "iso4217:USD/xbrli:shares"
+    assert facts[2].unit_numerator == ({
+        "namespace_uri": "http://www.xbrl.org/2003/iso4217",
+        "local_name": "USD",
+        "prefix": "iso4217",
+    },)
+    assert facts[2].unit_denominator == ({
+        "namespace_uri": "http://www.xbrl.org/2003/instance",
+        "local_name": "shares",
+        "prefix": "xbrli",
+    },)
+
+
+def test_standalone_xbrl_parser_uses_namespace_authority_and_xml_locator() -> None:
+    content = b'''<?xml version="1.0"?>
+    <xbrli:xbrl xmlns:xbrli="http://www.xbrl.org/2003/instance"
+      xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+      xmlns:us-gaap="http://fasb.org/us-gaap/2011-01-31"
+      xmlns:iso4217="http://www.xbrl.org/2003/iso4217">
+      <xbrli:context id="I"><xbrli:entity><xbrli:identifier scheme="sec">42</xbrli:identifier></xbrli:entity>
+        <xbrli:period><xbrli:instant>2011-12-31</xbrli:instant></xbrli:period></xbrli:context>
+      <xbrli:unit id="USD"><xbrli:measure>iso4217:USD</xbrli:measure></xbrli:unit>
+      <us-gaap:Assets contextRef="I" unitRef="USD" decimals="-6">123000000</us-gaap:Assets>
+      <us-gaap:Liabilities contextRef="I" unitRef="USD" xsi:nil="true"/>
+    </xbrli:xbrl>'''
+    facts = parse_standalone_xbrl(content, artifact_id=88)
+    assert len(facts) == 2
+    assert facts[0].concept == "us-gaap:Assets"
+    assert facts[0].concept_namespace_uri == "http://fasb.org/us-gaap/2011-01-31"
+    assert facts[0].unit_numerator[0]["namespace_uri"] == "http://www.xbrl.org/2003/iso4217"
+    assert facts[0].period_instant == date(2011, 12, 31)
+    assert facts[0].locator["locator_type"] == "standalone_xbrl_xml"
+    assert facts[1].is_nil is True
+
+
+@pytest.mark.parametrize(
+    ("body", "error"),
+    [
+        (
+            '<xbrli:context id="C"/><xbrli:context id="C"/>',
+            "duplicate_xbrl_context_id",
+        ),
+        (
+            '<xbrli:context id="C"/><xbrli:unit id="U"><xbrli:measure>bad:USD</xbrli:measure></xbrli:unit>',
+            "undeclared_unit_qname_prefix",
+        ),
+        (
+            '<xbrli:context id="C"/><xbrli:unit id="U"><xbrli:divide><xbrli:unitNumerator><xbrli:measure>iso4217:USD</xbrli:measure></xbrli:unitNumerator></xbrli:divide></xbrli:unit>',
+            "invalid_xbrl_divide_unit",
+        ),
+        (
+            '<us-gaap:Assets contextRef="missing" unitRef="missing">1</us-gaap:Assets>',
+            "unknown_xbrl_context_ref",
+        ),
+    ],
+)
+def test_standalone_xbrl_parser_fails_closed_on_ambiguous_authority(
+    body: str, error: str
+) -> None:
+    content = f'''<xbrli:xbrl
+      xmlns:xbrli="http://www.xbrl.org/2003/instance"
+      xmlns:us-gaap="http://fasb.org/us-gaap/2025"
+      xmlns:iso4217="http://www.xbrl.org/2003/iso4217">{body}</xbrli:xbrl>'''.encode()
+    with pytest.raises(ValueError, match=error):
+        parse_standalone_xbrl(content, artifact_id=1)
+
+
+def test_standalone_xbrl_qname_uses_element_in_scope_prefix_rebinding() -> None:
+    content = b'''<xbrli:xbrl xmlns:xbrli="http://www.xbrl.org/2003/instance"
+      xmlns:u="urn:outer" xmlns:gaap="urn:gaap">
+      <xbrli:context id="C"><xbrli:entity><xbrli:identifier>1</xbrli:identifier></xbrli:entity>
+        <xbrli:period><xbrli:instant>2020-01-01</xbrli:instant></xbrli:period></xbrli:context>
+      <xbrli:unit id="A"><xbrli:measure>u:outer</xbrli:measure></xbrli:unit>
+      <xbrli:unit id="B" xmlns:u="urn:inner"><xbrli:measure>u:inner</xbrli:measure></xbrli:unit>
+      <gaap:A contextRef="C" unitRef="A">1</gaap:A>
+      <gaap:B contextRef="C" unitRef="B">2</gaap:B>
+    </xbrli:xbrl>'''
+    facts = parse_standalone_xbrl(content, artifact_id=1)
+    assert facts[0].unit_numerator[0]["namespace_uri"] == "urn:outer"
+    assert facts[1].unit_numerator[0]["namespace_uri"] == "urn:inner"
+
+
+def test_typed_dimensions_preserve_structure_not_only_text() -> None:
+    def parsed(fragment: str):
+        return parse_standalone_xbrl(f'''<xbrli:xbrl xmlns:xbrli="http://www.xbrl.org/2003/instance"
+          xmlns:xbrldi="http://xbrl.org/2006/xbrldi" xmlns:d="urn:dimension" xmlns:t="urn:typed" xmlns:g="urn:gaap">
+          <xbrli:context id="C"><xbrli:entity><xbrli:identifier>1</xbrli:identifier>
+          <xbrli:segment><xbrldi:typedMember dimension="d:Axis">{fragment}</xbrldi:typedMember></xbrli:segment></xbrli:entity>
+          <xbrli:period><xbrli:instant>2020-01-01</xbrli:instant></xbrli:period></xbrli:context>
+          <g:Fact contextRef="C">1</g:Fact></xbrli:xbrl>'''.encode(), artifact_id=1)[0].dimensions_structured[0]
+
+    attribute = parsed('<t:Value code="A"><t:Part>same</t:Part></t:Value>')
+    nesting = parsed('<t:Value code="B"><t:Wrapper><t:Part>same</t:Part></t:Wrapper></t:Value>')
+    assert attribute["typed_content_sha256"] != nesting["typed_content_sha256"]
+    assert attribute["typed_structure"]["attributes"][0]["value"] == "A"
+    assert nesting["typed_structure"]["children"][0]["name"]["local_name"] == "Wrapper"
+    assert json.loads(attribute["typed_canonical"]) == attribute["typed_structure"]
+
+
+def test_typed_dimension_structure_is_bounded() -> None:
+    nested = "<t:N>" * 34 + "x" + "</t:N>" * 34
+    content = f'''<xbrli:xbrl xmlns:xbrli="http://www.xbrl.org/2003/instance"
+      xmlns:xbrldi="http://xbrl.org/2006/xbrldi" xmlns:d="urn:d" xmlns:t="urn:t" xmlns:g="urn:g">
+      <xbrli:context id="C"><xbrli:entity><xbrli:identifier>1</xbrli:identifier><xbrli:segment>
+      <xbrldi:typedMember dimension="d:A"><t:Root>{nested}</t:Root></xbrldi:typedMember></xbrli:segment></xbrli:entity>
+      <xbrli:period><xbrli:instant>2020-01-01</xbrli:instant></xbrli:period></xbrli:context>
+      <g:F contextRef="C">1</g:F></xbrli:xbrl>'''.encode()
+    with pytest.raises(ValueError, match="typed_dimension_resource_limit"):
+        parse_standalone_xbrl(content, artifact_id=1)
+
+
+def test_inline_v2_typed_dimension_uses_raw_xml_authority() -> None:
+    content = b'''<html xmlns="http://www.w3.org/1999/xhtml" xmlns:ix="http://www.xbrl.org/2013/inlineXBRL"
+      xmlns:xbrli="http://www.xbrl.org/2003/instance" xmlns:xbrldi="http://xbrl.org/2006/xbrldi"
+      xmlns:d="urn:axis" xmlns:t="urn:outer" xmlns:g="urn:gaap" xmlns:a="urn:attribute">
+      <body><xbrli:context id="CustomerContext"><xbrli:entity><xbrli:identifier>1</xbrli:identifier>
+      <xbrli:segment><xbrldi:typedMember dimension="d:CustomerID"><t:CustomerID a:Code="X">pre<t:Nested xmlns:t="urn:inner">child</t:Nested>tail</t:CustomerID></xbrldi:typedMember></xbrli:segment>
+      </xbrli:entity><xbrli:period><xbrli:instant>2020-01-01</xbrli:instant></xbrli:period></xbrli:context>
+      <ix:nonNumeric id="Fact" name="g:CustomerName" contextRef="CustomerContext">Acme</ix:nonNumeric></body></html>'''
+    dimension = parse_inline_xbrl(content, artifact_id=1, strict=True)[0].dimensions_structured[0]
+    structure = dimension["typed_structure"]
+    assert dimension["axis"]["local_name"] == "CustomerID"
+    assert structure["name"]["local_name"] == "CustomerID"
+    assert structure["attributes"][0]["name"]["namespace_uri"] == "urn:attribute"
+    assert structure["text"] == "pre"
+    assert structure["children"][0]["name"]["local_name"] == "Nested"
+    assert structure["children"][0]["name"]["namespace_uri"] == "urn:inner"
+    assert structure["children"][0]["tail"] == "tail"
+
+
+def test_inline_v2_typed_dimension_malformed_xhtml_fails_closed_but_v1_is_tolerant() -> None:
+    malformed = b'''<html xmlns:xbrli="http://www.xbrl.org/2003/instance" xmlns:xbrldi="http://xbrl.org/2006/xbrldi"
+      xmlns:d="urn:d" xmlns:t="urn:t" xmlns:ix="http://www.xbrl.org/2013/inlineXBRL" xmlns:g="urn:g"><body>
+      <xbrli:context id="C"><xbrli:entity><xbrli:identifier>1</xbrli:identifier><xbrli:segment>
+      <xbrldi:typedMember dimension="d:A"><t:CustomerID>value</xbrldi:typedMember></xbrli:segment></xbrli:entity>
+      <xbrli:period><xbrli:instant>2020-01-01</xbrli:instant></xbrli:period></xbrli:context>
+      <ix:nonNumeric name="g:F" contextRef="C">1</ix:nonNumeric></body></html>'''
+    with pytest.raises(ValueError, match="xml_parse_failed"):
+        parse_inline_xbrl(malformed, artifact_id=1, strict=True)
+    assert parse_inline_xbrl(malformed, artifact_id=1, strict=False)
+
+
+@pytest.mark.parametrize(
+    "mutated",
+    [
+        INLINE_XBRL.replace(b'<xbrli:context id="D2026Q3">', b'<fake:context xmlns:fake="urn:fake" id="D2026Q3">').replace(b'</xbrli:context>', b'</fake:context>'),
+        INLINE_XBRL.replace(b'<xbrli:unit id="USD">', b'<fake:unit xmlns:fake="urn:fake" id="USD">').replace(b'</xbrli:unit>', b'</fake:unit>', 1),
+        INLINE_XBRL.replace(b'<ix:nonFraction id="fact-revenue"', b'<fake:nonFraction xmlns:fake="urn:fake" id="fact-revenue"', 1).replace(b'</ix:nonFraction>', b'</fake:nonFraction>', 1),
+    ],
+)
+def test_inline_v2_rejects_fake_namespace_structural_locals(mutated: bytes) -> None:
+    with pytest.raises(ValueError, match="structural_namespace"):
+        parse_inline_xbrl(mutated, artifact_id=1, strict=True)
+
+
+def test_inline_v2_accepts_authorized_2020_ix_namespace_and_custom_concept() -> None:
+    content = INLINE_XBRL.replace(
+        b"http://www.xbrl.org/2013/inlineXBRL",
+        b"http://www.xbrl.org/2020/inlineXBRL",
+    ).replace(b"xmlns:aapl=", b'xmlns:custom="urn:custom" xmlns:aapl=').replace(
+        b"name=\"dei:EntityRegistrantName\"", b"name=\"custom:MixedConcept\""
+    )
+    facts = parse_inline_xbrl(content, artifact_id=1, strict=True)
+    assert facts[1].concept == "custom:MixedConcept"
+    assert facts[1].concept_namespace_uri == "urn:custom"
+
+
+@pytest.mark.parametrize("declaration", [
+    b'<!DOCTYPE html>',
+    b'<!   DOCTYPE html [<!ENTITY x "boom">]>',
+    b'<!ENTITY x SYSTEM "file:///etc/passwd">',
+])
+def test_inline_v2_rejects_dtd_and_entity_declarations(declaration: bytes) -> None:
+    with pytest.raises(ValueError, match="unsafe_xml_declaration|xml_parse_failed"):
+        parse_inline_xbrl(declaration + INLINE_XBRL, artifact_id=1, strict=True)
+
+
+def test_inline_v2_full_document_depth_budget_fails_early() -> None:
+    content = b'<html xmlns="http://www.w3.org/1999/xhtml">' + b"<div>" * 130 + b"x" + b"</div>" * 130 + b"</html>"
+    with pytest.raises(ValueError, match="xml_resource_limit"):
+        parse_inline_xbrl(content, artifact_id=1, strict=True)
+
+
+@pytest.mark.parametrize("local", [
+    "context", "unit", "entity", "segment", "scenario", "period", "forever",
+    "startDate", "endDate", "instant", "identifier", "measure", "divide",
+    "unitNumerator", "unitDenominator", "explicitMember", "typedMember",
+    "nonFraction", "nonNumeric", "continuation", "hidden", "references",
+])
+def test_inline_v2_rejects_every_protected_local_in_foreign_namespace(local: str) -> None:
+    content = f'<html xmlns="http://www.w3.org/1999/xhtml" xmlns:fake="urn:fake"><body><fake:{local}/></body></html>'.encode()
+    with pytest.raises(ValueError, match="structural_namespace"):
+        parse_inline_xbrl(content, artifact_id=1, strict=True)
+
+
+@pytest.mark.parametrize("member", ["explicitMember", "typedMember"])
+def test_standalone_rejects_fake_xbrldi_dimension_members(member: str) -> None:
+    content = f'''<xbrli:xbrl xmlns:xbrli="http://www.xbrl.org/2003/instance" xmlns:fake="urn:fake" xmlns:d="urn:d" xmlns:g="urn:g">
+      <xbrli:context id="C"><xbrli:entity><xbrli:identifier>1</xbrli:identifier><xbrli:segment>
+      <fake:{member} dimension="d:A">d:M</fake:{member}></xbrli:segment></xbrli:entity>
+      <xbrli:period><xbrli:instant>2020-01-01</xbrli:instant></xbrli:period></xbrli:context>
+      <g:F contextRef="C">1</g:F></xbrli:xbrl>'''.encode()
+    with pytest.raises(ValueError, match="invalid_xbrldi_structural_namespace"):
+        parse_standalone_xbrl(content, artifact_id=1)
+
+
+@pytest.mark.parametrize("declaration", [
+    '<!DOCTYPE xbrli:xbrl [<!ENTITY bomb "ha">]>',
+    '<!DOCTYPE xbrli:xbrl [<!ENTITY ext SYSTEM "file:///etc/passwd">]>',
+])
+def test_standalone_rejects_entities_before_xml_parsing(declaration: str) -> None:
+    content = (declaration + '<xbrli:xbrl xmlns:xbrli="http://www.xbrl.org/2003/instance"/>').encode()
+    with pytest.raises(ValueError, match="unsafe_xml_declaration"):
+        parse_standalone_xbrl(content, artifact_id=1)
+
+
+@pytest.mark.parametrize("wrapper", [
+    lambda text: f"<!-- {text} -->",
+    lambda text: f"<![CDATA[{text}]]>",
+    lambda text: f"<?safe value='{text}'?>",
+])
+def test_safe_xml_preflight_does_not_confuse_lexical_text_with_declarations(wrapper) -> None:
+    content = f'<root>{wrapper("<!DOCTYPE x [<!ENTITY y z>]")}</root>'.encode()
+    assert safe_xml_root_name(content) == ("", "root")
+
+
+@pytest.mark.parametrize("encoding", ["utf-8", "utf-16", "utf-32"])
+def test_safe_xml_preflight_rejects_real_doctype_in_supported_encodings(encoding: str) -> None:
+    content = '<!DOCTYPE root [<!ENTITY x "boom">]><root>&x;</root>'.encode(encoding)
+    with pytest.raises(ValueError, match="unsafe_xml_declaration"):
+        safe_xml_root_name(content)
+
+
+@pytest.mark.parametrize("encoding, declaration", [
+    ("utf-8", "UTF-8"), ("utf-16", "UTF-16"), ("utf-32", "UTF-32"),
+])
+def test_safe_xml_preflight_and_standalone_accept_legal_declared_encodings(
+    encoding: str, declaration: str
+) -> None:
+    lexical = f'''<?xml version="1.0" encoding="{declaration}"?>
+      <xbrli:xbrl xmlns:xbrli="http://www.xbrl.org/2003/instance" xmlns:g="urn:g">
+      <xbrli:context id="C"><xbrli:entity><xbrli:identifier>1</xbrli:identifier></xbrli:entity>
+      <xbrli:period><xbrli:instant>2020-01-01</xbrli:instant></xbrli:period></xbrli:context>
+      <g:F contextRef="C">1</g:F></xbrli:xbrl>'''
+    content = lexical.encode(encoding)
+    assert safe_xml_root_name(content) == ("http://www.xbrl.org/2003/instance", "xbrl")
+    assert parse_standalone_xbrl(content, artifact_id=1)[0].raw_value == "1"
+
+
+def test_safe_xml_preflight_rejects_bom_encoding_direction_mismatch() -> None:
+    content = '<?xml version="1.0" encoding="UTF-16BE"?><root/>'.encode("utf-16le")
+    content = b"\xff\xfe" + content
+    with pytest.raises(ValueError, match="xml_encoding_bom_mismatch"):
+        safe_xml_root_name(content)
+
+
+def test_standalone_parser_has_no_caller_controlled_preflight_bypass() -> None:
+    unsafe = b'<!DOCTYPE xbrli:xbrl [<!ENTITY x "boom">]><xbrli:xbrl xmlns:xbrli="http://www.xbrl.org/2003/instance">&x;</xbrli:xbrl>'
+    bypass_keyword = "preflight" + "ed"
+    with pytest.raises(TypeError, match="unexpected keyword"):
+        parse_standalone_xbrl(unsafe, artifact_id=1, **{bypass_keyword: True})  # type: ignore[arg-type]
+    with pytest.raises(ValueError, match="unsafe_xml_declaration"):
+        parse_standalone_xbrl(unsafe, artifact_id=1)
+
+
+def test_standalone_parser_cannot_bypass_whole_document_resource_budget() -> None:
+    content = (b'<xbrli:xbrl xmlns:xbrli="http://www.xbrl.org/2003/instance">'
+               + b"<xbrli:scenario>" * 130 + b"x" + b"</xbrli:scenario>" * 130
+               + b"</xbrli:xbrl>")
+    with pytest.raises(ValueError, match="xml_resource_limit"):
+        parse_standalone_xbrl(content, artifact_id=1)
+
+
+@pytest.mark.parametrize("encoding, declaration", [
+    ("utf-8", "UTF-8"), ("utf-16", "UTF-16"), ("utf-32", "UTF-32"),
+])
+def test_inline_v2_accepts_legal_declared_encodings(encoding: str, declaration: str) -> None:
+    lexical = f'<?xml version="1.0" encoding="{declaration}"?>' + INLINE_XBRL.decode()
+    facts = parse_inline_xbrl(lexical.encode(encoding), artifact_id=1, strict=True)
+    assert facts[0].concept_namespace_uri == "http://fasb.org/us-gaap/2025"
 
 
 def test_artifact_paths_fail_closed_on_traversal_and_storage_corruption(
@@ -1831,6 +2112,391 @@ def test_malformed_fetched_submissions_are_retained_and_audited_before_failure(
         expected_snapshot_count
     )
 
+
+def test_parser_v2_structured_evidence_blocks_destructive_downgrade(
+    committed_db_session, tmp_path: Path
+) -> None:
+    db_session = committed_db_session
+    stock = Stock(ticker="V2DOWN", exchange="US", company_name="V2 Downgrade")
+    db_session.add(stock)
+    db_session.flush()
+    register_reviewed_sec_identity(
+        db_session,
+        stock_id=stock.id,
+        cik=CIK,
+        effective_from=date(1980, 1, 1),
+        known_at=datetime(2026, 8, 27, tzinfo=timezone.utc),
+        review_reason="Parser v2 downgrade fixture.",
+    )
+    db_session.commit()
+    report = ingest_latest_financial_filings(
+        db_session,
+        stock_id=stock.id,
+        client=FakeEdgarClient(),
+        storage_root=tmp_path,
+        max_filings=1,
+        parser_version="xbrl-lineage-v2",
+        now=datetime(2026, 8, 27, 1, tzinfo=timezone.utc),
+    )
+    assert report.raw_facts_created > 0
+    db_session.commit()
+    before = db_session.execute(
+        text(
+            "SELECT unit_numerator_json FROM sec_raw_xbrl_facts "
+            "WHERE unit_numerator_json IS NOT NULL ORDER BY id LIMIT 1"
+        )
+    ).scalar_one()
+    backend_dir = Path(__file__).resolve().parents[2]
+    result = subprocess.run(
+        ["alembic", "downgrade", "20260830140000"],
+        cwd=backend_dir,
+        env={
+            **os.environ,
+            "DATABASE_URL": db_session.bind.url.render_as_string(
+                hide_password=False
+            ),
+        },
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode != 0
+    assert "cannot downgrade with retained SEC parser-v2 structured QName evidence" in (
+        result.stdout + result.stderr
+    )
+    db_session.expire_all()
+    after = db_session.execute(
+        text(
+            "SELECT unit_numerator_json FROM sec_raw_xbrl_facts "
+            "WHERE unit_numerator_json IS NOT NULL ORDER BY id LIMIT 1"
+        )
+    ).scalar_one()
+    assert after == before
+
+
+def test_history_continuation_is_random_persisted_and_uses_retained_main_snapshot(
+    committed_db_session, tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.setattr(
+        "app.services.sec_financial_ingestion.MAX_HISTORICAL_SUBMISSION_FILES", 1
+    )
+    db_session = committed_db_session
+    stock = Stock(ticker="CURSOR", exchange="US", company_name="Cursor Fixture")
+    db_session.add(stock)
+    db_session.flush()
+    register_reviewed_sec_identity(
+        db_session,
+        stock_id=stock.id,
+        cik=CIK,
+        effective_from=date(1980, 1, 1),
+        known_at=datetime(2026, 8, 27, tzinfo=timezone.utc),
+        review_reason="Continuation fixture.",
+    )
+    db_session.commit()
+
+    def arrays(year: int, sequence: int) -> dict[str, list[str]]:
+        return {
+            "accessionNumber": [f"{CIK}-{year % 100:02d}-{sequence:06d}"],
+            "filingDate": [f"{year + 1}-02-15"],
+            "reportDate": [f"{year}-12-31"],
+            "acceptanceDateTime": [f"{year + 1}-02-15T12:00:00Z"],
+            "form": ["10-K"],
+            "primaryDocument": [f"filing-{year}.htm"],
+            "primaryDocDescription": ["10-K"],
+        }
+
+    main = json.dumps(
+        {
+            "cik": str(int(CIK)),
+            "name": "Cursor Fixture",
+            "fiscalYearEnd": "1231",
+            "filings": {
+                "recent": arrays(2025, 1),
+                "files": [
+                    {"name": f"CIK{CIK}-submissions-000.json"},
+                    {"name": f"CIK{CIK}-submissions-001.json"},
+                ],
+            },
+        }
+    ).encode()
+    main_url = f"https://data.sec.gov/submissions/CIK{CIK}.json"
+    history_urls = [
+        f"https://data.sec.gov/submissions/CIK{CIK}-submissions-{index:03d}.json"
+        for index in range(2)
+    ]
+
+    class CursorClient:
+        def __init__(self, main_bytes: bytes) -> None:
+            self.calls: list[str] = []
+            self.responses = {
+                main_url: main_bytes,
+                history_urls[0]: json.dumps(arrays(2024, 2)).encode(),
+                history_urls[1]: json.dumps(arrays(2023, 3)).encode(),
+            }
+
+        def get(self, url: str) -> bytes:
+            self.calls.append(url)
+            return self.responses[url]
+
+        get_revalidated = get
+
+    target = FinancialHistoryTarget(
+        filing_regime="us_10k_10q",
+        fiscal_year_end_mmdd="1231",
+        available_start_on=date(2023, 1, 1),
+        completed_fiscal_year_cap=3,
+        filing_selection_as_of=datetime(2026, 8, 26, tzinfo=timezone.utc),
+    )
+    first_client = CursorClient(main)
+    first = ingest_latest_financial_filings(
+        db_session,
+        stock_id=stock.id,
+        client=first_client,
+        storage_root=tmp_path,
+        max_filings=3,
+        filing_selection_as_of=target.filing_selection_as_of,
+        history_target=target,
+    )
+    db_session.commit()
+    assert first.next_history_cursor is not None
+    uuid.UUID(first.next_history_cursor)
+    authority = db_session.get(
+        SecFinancialHistoryContinuation, first.next_history_cursor
+    )
+    assert authority is not None and authority.next_index == 1
+    attack_operation_id = str(uuid.uuid4())
+    db_session.add(
+        SecFinancialIngestionOperation(
+            id=attack_operation_id,
+            issuer_identity_id=authority.issuer_identity_id,
+            attempted_at=datetime.now(timezone.utc),
+        )
+    )
+    db_session.commit()
+
+    def insert_attack_child(
+        operation_id: str, next_index: int, *, executor=db_session, child_id=None
+    ) -> str:
+        child_id = child_id or str(uuid.uuid4())
+        executor.execute(
+            text(
+                "INSERT INTO sec_financial_history_continuations "
+                "(id, issuer_identity_id, main_snapshot_id, source_operation_id, parent_id, "
+                "main_sha256, manifest_identity, validated_references_json, "
+                "filing_selection_as_of, history_target_json, next_index) VALUES "
+                "(:id, :identity_id, :snapshot_id, :operation_id, :parent_id, :sha, "
+                ":manifest, CAST(:refs AS jsonb), :cutoff, CAST(:target AS jsonb), :next_index)"
+            ),
+            {
+                "id": child_id,
+                "identity_id": authority.issuer_identity_id,
+                "snapshot_id": authority.main_snapshot_id,
+                "operation_id": operation_id,
+                "parent_id": authority.id,
+                "sha": authority.main_sha256,
+                "manifest": authority.manifest_identity,
+                "refs": json.dumps(authority.validated_references_json),
+                "cutoff": authority.filing_selection_as_of,
+                "target": json.dumps(authority.history_target_json),
+                "next_index": next_index,
+            },
+        )
+        return child_id
+
+    nested = db_session.begin_nested()
+    with pytest.raises(DBAPIError, match="consumption claim"):
+        insert_attack_child(attack_operation_id, 2)
+        db_session.flush()
+    nested.rollback()
+
+    bad_claim_operation_id = str(uuid.uuid4())
+    db_session.add(
+        SecFinancialIngestionOperation(
+            id=bad_claim_operation_id,
+            issuer_identity_id=authority.issuer_identity_id,
+            attempted_at=datetime.now(timezone.utc),
+        )
+    )
+    db_session.flush()
+    nested = db_session.begin_nested()
+    with pytest.raises(DBAPIError, match="consumption claim authority"):
+        db_session.execute(text(
+            "INSERT INTO sec_financial_history_consumption_claims "
+            "(operation_id, parent_id, main_snapshot_id, manifest_identity, start_index, "
+            "end_index, attempted_references_json, terminal_outcomes_json) VALUES "
+            "(:operation_id, :parent_id, :snapshot_id, :manifest, 0, 2, "
+            "'[\"forged-a\",\"forged-b\"]'::jsonb, '[{},{}]'::jsonb)"
+        ), {
+            "operation_id": bad_claim_operation_id,
+            "parent_id": authority.id,
+            "snapshot_id": authority.main_snapshot_id,
+            "manifest": authority.manifest_identity,
+        })
+    nested.rollback()
+    db_session.rollback()
+    finalize_sec_financial_ingestion_operation(
+        db_session, operation_id=first.operation_id
+    )
+    db_session.commit()
+    nested = db_session.begin_nested()
+    with pytest.raises(DBAPIError, match="invalid SEC history continuation authority"):
+        insert_attack_child(first.operation_id, 2)
+        db_session.flush()
+    nested.rollback()
+
+    mismatch_operation_id = str(uuid.uuid4())
+    db_session.add(
+        SecFinancialIngestionOperation(
+            id=mismatch_operation_id,
+            issuer_identity_id=authority.issuer_identity_id,
+            attempted_at=datetime.now(timezone.utc),
+        )
+    )
+    db_session.flush()
+    nested = db_session.begin_nested()
+    with pytest.raises(DBAPIError, match="consumption claim authority"):
+        db_session.execute(text(
+            "INSERT INTO sec_financial_history_consumption_claims "
+            "(operation_id, parent_id, main_snapshot_id, manifest_identity, start_index, "
+            "end_index, attempted_references_json, terminal_outcomes_json) VALUES "
+            "(:operation_id, :parent_id, :snapshot_id, :manifest, 0, 1, "
+            "CAST(:refs AS jsonb), '[{}]'::jsonb)"
+        ), {
+            "operation_id": mismatch_operation_id,
+            "parent_id": authority.id,
+            "snapshot_id": authority.main_snapshot_id,
+            "manifest": authority.manifest_identity,
+            "refs": json.dumps(authority.validated_references_json[:1]),
+        })
+    nested.rollback()
+    db_session.rollback()
+
+    second_client = CursorClient(b"changed current SEC main must not be read")
+    second = ingest_latest_financial_filings(
+        db_session,
+        stock_id=stock.id,
+        client=second_client,
+        storage_root=tmp_path,
+        max_filings=3,
+        filing_selection_as_of=target.filing_selection_as_of,
+        history_target=target,
+        history_cursor=first.next_history_cursor,
+    )
+    db_session.commit()
+    assert main_url not in second_client.calls
+    assert history_urls[1] in second_client.calls
+    assert second.next_history_cursor is None
+
+    retry_client = CursorClient(b"retry must still use retained main")
+    retry = ingest_latest_financial_filings(
+        db_session, stock_id=stock.id, client=retry_client, storage_root=tmp_path,
+        max_filings=3, filing_selection_as_of=target.filing_selection_as_of,
+        history_target=target, history_cursor=first.next_history_cursor,
+    )
+    db_session.commit()
+    assert retry.next_history_cursor is None
+    assert main_url not in retry_client.calls
+
+    nested = db_session.begin_nested()
+    with pytest.raises(DBAPIError, match="continuation advance"):
+        insert_attack_child(second.operation_id, 1)
+    nested.rollback()
+    db_session.commit()
+    engine = db_session.get_bind()
+    connection_a = engine.connect()
+    transaction_a = connection_a.begin()
+    winner_id = str(uuid.uuid4())
+    insert_attack_child(
+        second.operation_id, 2, executor=connection_a, child_id=winner_id
+    )
+    contender_result: list[str] = []
+
+    def insert_contender() -> None:
+        connection_b = engine.connect()
+        transaction_b = connection_b.begin()
+        try:
+            insert_attack_child(second.operation_id, 2, executor=connection_b)
+            transaction_b.commit()
+            contender_result.append("committed")
+        except DBAPIError:
+            transaction_b.rollback()
+            contender_result.append("rejected")
+        finally:
+            connection_b.close()
+
+    thread = threading.Thread(target=insert_contender, daemon=True)
+    thread.start()
+    thread.join(timeout=0.5)
+    assert thread.is_alive(), "second child did not wait on the parent uniqueness slot"
+    transaction_a.commit()
+    connection_a.close()
+    thread.join(timeout=5)
+    assert not thread.is_alive()
+    assert contender_result == ["rejected"]
+    assert db_session.scalar(
+        select(func.count()).select_from(SecFinancialHistoryContinuation).where(
+            SecFinancialHistoryContinuation.parent_id == authority.id
+        )
+    ) == 1
+    assert db_session.get(SecFinancialHistoryContinuation, winner_id).id == winner_id
+
+    invalid = ingest_latest_financial_filings(
+        db_session,
+        stock_id=stock.id,
+        client=second_client,
+        storage_root=tmp_path,
+        max_filings=3,
+        filing_selection_as_of=target.filing_selection_as_of,
+        history_target=target,
+        history_cursor=str(uuid.uuid4()),
+    )
+    db_session.commit()
+    assert invalid.failures == ("history_cursor_mismatch",)
+    invalid_result = db_session.get(SecFinancialOperationResult, invalid.operation_id)
+    assert invalid_result is not None
+    assert invalid_result.result_kind == "history_continuation_failure"
+    assert db_session.scalar(
+        select(func.count()).select_from(SecFinancialResourceAnchor).where(
+            SecFinancialResourceAnchor.operation_id == invalid.operation_id
+        )
+    ) == 0
+    db_session.commit()
+    finalize_sec_financial_ingestion_operation(
+        db_session, operation_id=invalid.operation_id
+    )
+
+    guarded_operation_id = str(uuid.uuid4())
+    foreign_operation_id = str(uuid.uuid4())
+    db_session.add_all([
+        SecFinancialIngestionOperation(id=guarded_operation_id, issuer_identity_id=authority.issuer_identity_id, attempted_at=datetime.now(timezone.utc)),
+        SecFinancialIngestionOperation(id=foreign_operation_id, issuer_identity_id=authority.issuer_identity_id, attempted_at=datetime.now(timezone.utc)),
+    ])
+    db_session.flush()
+    guarded_failure = db_session.execute(text(
+        "INSERT INTO sec_financial_history_continuation_failures "
+        "(operation_id, issuer_identity_id, cursor_id, reason_code, main_snapshot_id, request_contract_json, created_at, created_txid) "
+        "VALUES (:operation_id, :identity_id, :cursor_id, 'invalid_history_cursor', NULL, '{}'::jsonb, "
+        "'2000-01-01T00:00:00Z', 1) RETURNING id, created_at, created_txid"
+    ), {"operation_id": guarded_operation_id, "identity_id": authority.issuer_identity_id, "cursor_id": str(uuid.uuid4())}).one()
+    assert guarded_failure.created_at.year != 2000
+    assert guarded_failure.created_txid == db_session.scalar(text("SELECT txid_current()"))
+    nested = db_session.begin_nested()
+    with pytest.raises(DBAPIError, match="reciprocal history continuation failure"):
+        db_session.execute(text(
+            "INSERT INTO sec_financial_operation_results "
+            "(operation_id, result_kind, history_continuation_failure_id) "
+            "VALUES (:operation_id, 'history_continuation_failure', :failure_id)"
+        ), {"operation_id": foreign_operation_id, "failure_id": guarded_failure.id})
+    nested.rollback()
+    nested = db_session.begin_nested()
+    with pytest.raises(DBAPIError):
+        db_session.execute(text(
+            "INSERT INTO sec_financial_operation_results "
+            "(operation_id, result_kind, history_continuation_failure_id) "
+            "VALUES (:operation_id, 'history_continuation_failure', 9223372036854775807)"
+        ), {"operation_id": guarded_operation_id})
+    nested.rollback()
+    db_session.rollback()
 
 def test_exact_main_submissions_validation_resolves_prior_failure(
     committed_db_session,

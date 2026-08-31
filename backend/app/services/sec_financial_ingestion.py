@@ -20,7 +20,7 @@ from app.edgar.parsers.financial_submissions import (
     parse_financial_submissions,
     parse_historical_financial_submissions,
 )
-from app.edgar.parsers.inline_xbrl import parse_inline_xbrl
+from app.edgar.parsers.inline_xbrl import parse_inline_xbrl, parse_standalone_xbrl, safe_xml_preflight
 from app.models.sec_financials import (
     SecFilingArtifact,
     SecFinancialAccessionAttempt,
@@ -29,6 +29,9 @@ from app.models.sec_financials import (
     SecFinancialAcquisitionResolution,
     SecFinancialFiling,
     SecFinancialIngestionOperation,
+    SecFinancialHistoryContinuation,
+    SecFinancialHistoryConsumptionClaim,
+    SecFinancialHistoryContinuationFailure,
     SecFinancialLegacyParseRun,
     SecFinancialLineageAvailability,
     SecFinancialOperationResult,
@@ -55,6 +58,7 @@ HISTORICAL_SUBMISSION_FILENAME_RE = re.compile(
     r"^CIK(?P<cik>[0-9]{10})-submissions-[0-9]+[.]json$"
 )
 PARSER_NAME = "valuepilot-inline-xbrl-lineage"
+PARSER_V2 = "xbrl-lineage-v2"
 ARTIFACT_RETENTION_POLICY_VERSION = "sec-financial-artifacts-v1"
 ANNUAL_FORMS_BY_REGIME = {
     "us_10k_10q": frozenset({"10-K", "10-K/A"}),
@@ -114,6 +118,7 @@ class FinancialIngestionReport:
     raw_facts_created: int
     failures: tuple[str, ...]
     selected_filings: tuple[FinancialFilingSelection, ...] = ()
+    next_history_cursor: str | None = None
 
 
 @dataclass(frozen=True)
@@ -158,6 +163,42 @@ class _DiscoveryResult:
     failures: tuple[str, ...]
     audit_failures: tuple["_DiscoveryFailure", ...] = ()
     resolutions: tuple["_DiscoveryResolution", ...] = ()
+    next_history_cursor: str | None = None
+    continuation_references: tuple[str, ...] = ()
+    continuation_next_index: int | None = None
+    continuation_start_index: int | None = None
+    continuation_end_index: int | None = None
+    main_sha256: str | None = None
+
+
+def _history_manifest_identity(cik: str, main_sha256: str, names: list[str]) -> str:
+    material = json.dumps(
+        {"cik": cik, "main_sha256": main_sha256, "names": names},
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    return hashlib.sha256(material.encode()).hexdigest()
+
+
+def _history_target_payload(target: FinancialHistoryTarget | None) -> dict[str, Any]:
+    if target is None:
+        return {}
+    return {
+        "filing_regime": target.filing_regime,
+        "fiscal_year_end_mmdd": target.fiscal_year_end_mmdd,
+        "available_start_on": target.available_start_on.isoformat(),
+        "completed_fiscal_year_cap": target.completed_fiscal_year_cap,
+        "filing_selection_as_of": _aware(target.filing_selection_as_of).isoformat(),
+    }
+
+
+@dataclass(frozen=True)
+class _ContinuationAuthority:
+    id: str
+    main_content: bytes
+    main_sha256: str
+    references: tuple[str, ...]
+    next_index: int
 
 
 @dataclass(frozen=True)
@@ -702,6 +743,39 @@ def _retain_item(item: dict[str, Any], primary_document: str) -> bool:
     )
 
 
+@dataclass(frozen=True)
+class _VerifiedStandaloneInstance:
+    artifact: SecFilingArtifact
+    raw_content: bytes
+    content: bytes
+    root_name: tuple[str, str]
+
+
+def _standalone_instance_artifact(
+    artifacts: list[SecFilingArtifact], *, primary_document: str, storage_root: Path
+) -> _VerifiedStandaloneInstance | None:
+    excluded_suffixes = ("_cal.xml", "_def.xml", "_lab.xml", "_pre.xml", "_htm.xml")
+    candidates = []
+    for artifact in artifacts:
+        name = artifact.filename.lower()
+        if artifact.state != "retained" or artifact.filename == primary_document:
+            continue
+        if not name.endswith(".xml") or name.endswith(excluded_suffixes) or name.endswith(".xsd"):
+            continue
+        if str(artifact.sec_type or "").upper() not in {"EX-101.INS", "XML"}:
+            continue
+        raw_content = _read_verified_artifact(storage_root, artifact)
+        try:
+            root_name, content = safe_xml_preflight(raw_content)
+        except ValueError:
+            continue
+        if root_name == ("http://www.xbrl.org/2003/instance", "xbrl"):
+            candidates.append(_VerifiedStandaloneInstance(artifact, raw_content, content, root_name))
+    if len(candidates) > 1:
+        raise SecFinancialIngestionError("ambiguous standalone XBRL instance documents")
+    return candidates[0] if candidates else None
+
+
 def _safe_artifact_url(cik: str, accession_no: str, filename: str) -> str:
     if (
         not filename
@@ -753,7 +827,7 @@ def _store_content_immutable(storage_root: Path, content: bytes) -> tuple[str, s
     return relative.as_posix(), sha256
 
 
-def _verify_retained_artifact(storage_root: Path, artifact: SecFilingArtifact) -> None:
+def _read_verified_artifact(storage_root: Path, artifact: SecFilingArtifact) -> bytes:
     if (
         artifact.state != "retained"
         or not artifact.storage_key
@@ -775,6 +849,11 @@ def _verify_retained_artifact(storage_root: Path, artifact: SecFilingArtifact) -
         raise SecFinancialIntegrityError("retained artifact differs from SEC declared size")
     if hashlib.sha256(content).hexdigest() != artifact.sha256:
         raise SecFinancialIntegrityError("retained artifact hash mismatch")
+    return content
+
+
+def _verify_retained_artifact(storage_root: Path, artifact: SecFilingArtifact) -> None:
+    _read_verified_artifact(storage_root, artifact)
 
 
 def _verify_submission_snapshot(
@@ -1073,7 +1152,12 @@ def _record_initial_main_fetch_failure(
         resource_key=resource_key,
         error_code=error_code,
     )
-    failure_summary = (f"main_submissions:{error_code}",)
+    failure_summary = (
+        (error_code,)
+        if error_code.startswith("history_cursor")
+        or error_code == "invalid_history_cursor"
+        else (f"main_submissions:{error_code}",)
+    )
     if existing_operation_id is not None:
         return FinancialIngestionReport(
             operation_id=existing_operation_id,
@@ -1133,6 +1217,63 @@ def _record_initial_main_fetch_failure(
         parse_runs_created=0,
         raw_facts_created=0,
         failures=failure_summary,
+    )
+
+
+def _record_history_continuation_failure(
+    db: Session,
+    *,
+    stock_id: int,
+    identity: SecIssuerIdentity,
+    cursor_id: str,
+    reason_code: str,
+    now: datetime,
+    filing_selection_as_of: datetime | None,
+    history_target: FinancialHistoryTarget | None,
+    main_snapshot_id: int | None = None,
+) -> FinancialIngestionReport:
+    operation_id = str(uuid.uuid4())
+    db.add(
+        SecFinancialIngestionOperation(
+            id=operation_id, issuer_identity_id=identity.id, attempted_at=now
+        )
+    )
+    db.flush()
+    failure = SecFinancialHistoryContinuationFailure(
+        operation_id=operation_id,
+        issuer_identity_id=identity.id,
+        cursor_id=cursor_id,
+        reason_code=reason_code,
+        main_snapshot_id=main_snapshot_id,
+        request_contract_json={
+            "filing_selection_as_of": (
+                filing_selection_as_of.isoformat()
+                if filing_selection_as_of is not None
+                else None
+            ),
+            "history_target": _history_target_payload(history_target),
+        },
+    )
+    db.add(failure)
+    db.flush()
+    db.add(
+        SecFinancialOperationResult(
+            operation_id=operation_id,
+            result_kind="history_continuation_failure",
+            history_continuation_failure_id=failure.id,
+        )
+    )
+    db.flush()
+    return FinancialIngestionReport(
+        operation_id=operation_id,
+        stock_id=stock_id,
+        cik=identity.cik,
+        filings_discovered=0,
+        filings_created=0,
+        artifacts_created=0,
+        parse_runs_created=0,
+        raw_facts_created=0,
+        failures=(reason_code,),
     )
 
 
@@ -1621,6 +1762,14 @@ def _parse_primary_artifact(
         ),
         None,
     )
+    parse_artifact = primary
+    standalone_authority: _VerifiedStandaloneInstance | None = None
+    if parser_version == PARSER_V2:
+        if primary is None:
+            standalone_authority = _standalone_instance_artifact(
+                artifacts, primary_document=filing.primary_document, storage_root=storage_root
+            )
+            parse_artifact = standalone_authority.artifact if standalone_authority else None
     started_at = now
     retained_inputs = [item for item in artifacts if item.state == "retained"]
     incomplete_required = [
@@ -1655,7 +1804,7 @@ def _parse_primary_artifact(
                 )
             )
         return 1, 0, [f"{filing.accession_no}:required_artifact_unavailable"], run.id
-    if primary is None or not primary.storage_key:
+    if parse_artifact is None or not parse_artifact.storage_key:
         run = SecFinancialParseRun(
             filing_id=filing.id,
             operation_id=operation_id,
@@ -1683,10 +1832,38 @@ def _parse_primary_artifact(
         return 1, 0, [f"{filing.accession_no}:primary_artifact_unavailable"], run.id
 
     try:
-        content = (storage_root / primary.storage_key).read_bytes()
-        if hashlib.sha256(content).hexdigest() != primary.sha256:
-            raise SecFinancialIntegrityError("stored primary artifact hash mismatch")
-        parsed = parse_inline_xbrl(content, artifact_id=primary.id)
+        if standalone_authority is not None and standalone_authority.artifact.id == parse_artifact.id:
+            content = standalone_authority.content
+            raw_content = standalone_authority.raw_content
+            root_name = standalone_authority.root_name
+        else:
+            raw_content = _read_verified_artifact(storage_root, parse_artifact)
+            try:
+                root_name, content = safe_xml_preflight(raw_content)
+            except ValueError:
+                if parser_version == PARSER_V2:
+                    raise
+                content = raw_content
+                root_name = None
+        if root_name == ("http://www.xbrl.org/2003/instance", "xbrl"):
+            parsed = parse_standalone_xbrl(content, artifact_id=parse_artifact.id)
+        else:
+            parsed = parse_inline_xbrl(
+                content,
+                artifact_id=parse_artifact.id,
+                strict=parser_version == PARSER_V2,
+            )
+        if not parsed and parser_version == PARSER_V2:
+            standalone = _standalone_instance_artifact(
+                artifacts, primary_document=filing.primary_document, storage_root=storage_root
+            )
+            if standalone is not None:
+                parse_artifact = standalone.artifact
+                content = standalone.content
+                raw_content = standalone.raw_content
+                parsed = parse_standalone_xbrl(content, artifact_id=parse_artifact.id)
+        if _read_verified_artifact(storage_root, parse_artifact) != raw_content:
+            raise SecFinancialIntegrityError("retained parse authority changed after verification")
         if not parsed:
             run = SecFinancialParseRun(
                 filing_id=filing.id,
@@ -1699,8 +1876,16 @@ def _parse_primary_artifact(
                 completed_at=now,
                 known_at=now,
                 fact_count=0,
-                error_code="no_inline_xbrl_facts",
-                error_detail="The retained primary document contained no inline-XBRL facts.",
+                error_code=(
+                    "no_xbrl_facts"
+                    if parser_version == PARSER_V2
+                    else "no_inline_xbrl_facts"
+                ),
+                error_detail=(
+                    "The retained parse authority contained no XBRL facts."
+                    if parser_version == PARSER_V2
+                    else "The retained primary document contained no inline-XBRL facts."
+                ),
             )
             db.add(run)
             db.flush()
@@ -1712,7 +1897,12 @@ def _parse_primary_artifact(
                         known_at=now,
                     )
                 )
-            return 1, 0, [f"{filing.accession_no}:no_inline_xbrl_facts"], run.id
+            no_facts_code = (
+                "no_xbrl_facts"
+                if parser_version == PARSER_V2
+                else "no_inline_xbrl_facts"
+            )
+            return 1, 0, [f"{filing.accession_no}:{no_facts_code}"], run.id
         run = SecFinancialParseRun(
             filing_id=filing.id,
             operation_id=operation_id,
@@ -1742,13 +1932,23 @@ def _parse_primary_artifact(
             db.add(
                 SecRawXbrlFact(
                     parse_run_id=run.id,
-                    artifact_id=primary.id,
+                    artifact_id=parse_artifact.id,
                     ordinal=ordinal,
                     concept=item.concept,
                     concept_namespace_uri=item.concept_namespace_uri,
                     context_id=item.context_id,
                     unit_id=item.unit_id,
                     unit_measure=item.unit_measure,
+                    unit_numerator_json=(
+                        list(item.unit_numerator)
+                        if parser_version == PARSER_V2
+                        else None
+                    ),
+                    unit_denominator_json=(
+                        list(item.unit_denominator)
+                        if parser_version == PARSER_V2
+                        else None
+                    ),
                     raw_value=item.raw_value,
                     transformation_format=item.transformation_format,
                     language=item.language,
@@ -1762,6 +1962,11 @@ def _parse_primary_artifact(
                     period_end=item.period_end,
                     entity_identifier=item.entity_identifier,
                     dimensions_json=item.dimensions,
+                    dimensions_structured_json=(
+                        list(item.dimensions_structured)
+                        if parser_version == PARSER_V2
+                        else None
+                    ),
                     locator_json=item.locator,
                 )
             )
@@ -1809,6 +2014,7 @@ def _discover(
     max_filings: int,
     filing_selection_as_of: datetime | None,
     history_target: FinancialHistoryTarget | None = None,
+    continuation: _ContinuationAuthority | None = None,
 ) -> _DiscoveryResult:
     if filing_selection_as_of is not None:
         filing_selection_as_of = _aware(filing_selection_as_of)
@@ -1822,7 +2028,11 @@ def _discover(
                 "history target cutoff must match filing_selection_as_of"
             )
     submissions_url = f"https://data.sec.gov/submissions/CIK{cik}.json"
-    main_content = _fetch_bytes(client, submissions_url)
+    main_content = (
+        continuation.main_content
+        if continuation is not None
+        else _fetch_bytes(client, submissions_url)
+    )
     source_payloads = {submissions_url: main_content}
     try:
         main = parse_financial_submissions(main_content, source_url=submissions_url)
@@ -1889,8 +2099,9 @@ def _discover(
             eligible, history_target
         )
 
-    if not annual_coverage_complete():
-        safe_historical_files: list[str] = []
+    safe_historical_files: list[str] = []
+    next_index: int | None = None
+    if not annual_coverage_complete() or continuation is not None:
         unsafe_historical_files: list[str] = []
         for reference in main.historical_submission_references:
             if reference.error_code is not None or reference.name is None:
@@ -1918,7 +2129,21 @@ def _discover(
                 "unsafe_historical_submission_reference_additional:"
                 f"{len(unsafe_historical_files) - MAX_HISTORICAL_SUBMISSION_FILES}"
             )
-        for filename in safe_historical_files[:MAX_HISTORICAL_SUBMISSION_FILES]:
+        cursor_start = 0
+        if continuation is not None:
+            if (
+                continuation.main_sha256
+                != hashlib.sha256(main_content).hexdigest()
+                or continuation.references != tuple(safe_historical_files)
+                or continuation.next_index > len(safe_historical_files)
+            ):
+                raise SecFinancialIntegrityError("history continuation authority mismatch")
+            cursor_start = continuation.next_index
+        scanned = 0
+        for filename in safe_historical_files[
+            cursor_start : cursor_start + MAX_HISTORICAL_SUBMISSION_FILES
+        ]:
+            scanned += 1
             url = f"https://data.sec.gov/submissions/{quote(filename, safe='._-')}"
             try:
                 content = _fetch_bytes(client, url)
@@ -1975,11 +2200,13 @@ def _discover(
             discovered.extend(historical)
             if annual_coverage_complete():
                 break
-        if (
-            not annual_coverage_complete()
-            and len(safe_historical_files) > MAX_HISTORICAL_SUBMISSION_FILES
-        ):
+        next_index = cursor_start + scanned
+        next_history_cursor = None
+        if not annual_coverage_complete() and next_index < len(safe_historical_files):
             failures.append("history_scan_limit_exceeded")
+            next_history_cursor = "pending"
+    else:
+        next_history_cursor = None
     (
         canonical,
         conflicting_accessions,
@@ -2038,6 +2265,12 @@ def _discover(
         failures=tuple(failures),
         audit_failures=tuple(audit_failures),
         resolutions=tuple(resolutions),
+        next_history_cursor=next_history_cursor,
+        continuation_references=tuple(safe_historical_files),
+        continuation_next_index=(next_index if next_history_cursor else None),
+        continuation_start_index=(cursor_start if next_index is not None else None),
+        continuation_end_index=next_index,
+        main_sha256=hashlib.sha256(main_content).hexdigest(),
     )
 
 
@@ -2052,6 +2285,7 @@ def ingest_latest_financial_filings(
     parser_version: str = "inline-xbrl-v1",
     filing_selection_as_of: datetime | None = None,
     history_target: FinancialHistoryTarget | None = None,
+    history_cursor: str | None = None,
 ) -> FinancialIngestionReport:
     now = _aware(now or datetime.now(timezone.utc))
     filing_selection_as_of = (
@@ -2074,6 +2308,78 @@ def ingest_latest_financial_filings(
         raise SecFinancialIngestionError(
             "reviewed SEC issuer identity changed during acquisition"
         )
+    continuation_authority: _ContinuationAuthority | None = None
+    continuation_row: SecFinancialHistoryContinuation | None = None
+    def continuation_failure(
+        reason_code: str, *, snapshot_id: int | None = None
+    ) -> FinancialIngestionReport:
+        return _record_history_continuation_failure(
+            db,
+            stock_id=stock_id,
+            identity=identity,
+            cursor_id=history_cursor or "invalid",
+            reason_code=reason_code,
+            now=now,
+            filing_selection_as_of=filing_selection_as_of,
+            history_target=history_target,
+            main_snapshot_id=snapshot_id,
+        )
+    if history_cursor is not None:
+        try:
+            uuid.UUID(history_cursor)
+        except ValueError:
+            return continuation_failure("invalid_history_cursor")
+        continuation_row = db.get(SecFinancialHistoryContinuation, history_cursor)
+        continuation_available = (
+            continuation_row is not None
+            and db.get(
+                SecFinancialLineageAvailability,
+                continuation_row.source_operation_id,
+            )
+            is not None
+        )
+        if (
+            continuation_row is None
+            or not continuation_available
+            or continuation_row.issuer_identity_id != identity.id
+            or continuation_row.filing_selection_as_of != filing_selection_as_of
+            or continuation_row.history_target_json != _history_target_payload(history_target)
+        ):
+            return continuation_failure(
+                    "history_cursor_not_available"
+                    if continuation_row is not None and not continuation_available
+                    else "history_cursor_mismatch"
+            )
+        snapshot = db.get(SecSubmissionSnapshot, continuation_row.main_snapshot_id)
+        if (
+            snapshot is None
+            or snapshot.issuer_identity_id != identity.id
+            or snapshot.sha256 != continuation_row.main_sha256
+        ):
+            return continuation_failure(
+                "history_cursor_integrity_failure",
+                snapshot_id=(snapshot.id if snapshot is not None else None),
+            )
+        try:
+            main_content = _read_verified_submission_snapshot(storage_root, snapshot)
+        except SecFinancialIntegrityError:
+            return continuation_failure(
+                "history_cursor_integrity_failure", snapshot_id=snapshot.id
+            )
+        references = tuple(continuation_row.validated_references_json)
+        if continuation_row.manifest_identity != _history_manifest_identity(
+            identity.cik, continuation_row.main_sha256, list(references)
+        ):
+            return continuation_failure(
+                "history_cursor_integrity_failure", snapshot_id=snapshot.id
+            )
+        continuation_authority = _ContinuationAuthority(
+            id=continuation_row.id,
+            main_content=main_content,
+            main_sha256=continuation_row.main_sha256,
+            references=references,
+            next_index=continuation_row.next_index,
+        )
     try:
         discovery = _discover(
             client,
@@ -2081,6 +2387,7 @@ def ingest_latest_financial_filings(
             max_filings=max_filings,
             filing_selection_as_of=filing_selection_as_of,
             history_target=history_target,
+            continuation=continuation_authority,
         )
     except SecFinancialFetchError as exc:
         return _record_initial_main_fetch_failure(
@@ -2103,11 +2410,15 @@ def ingest_latest_financial_filings(
             raise SecFinancialIngestionError(
                 "accession already belongs to a different reviewed issuer identity"
             )
-    reusable_failed_operation_id = _reusable_acquisition_failure_operation(
-        db,
-        issuer_identity_id=identity.id,
-        discovery=discovery,
-        storage_root=storage_root,
+    reusable_failed_operation_id = (
+        None
+        if discovery.continuation_next_index is not None
+        else _reusable_acquisition_failure_operation(
+            db,
+            issuer_identity_id=identity.id,
+            discovery=discovery,
+            storage_root=storage_root,
+        )
     )
     if reusable_failed_operation_id is not None:
         return FinancialIngestionReport(
@@ -2121,6 +2432,7 @@ def ingest_latest_financial_filings(
             raw_facts_created=0,
             failures=discovery.failures,
             selected_filings=_selected_filing_summaries(discovery.filings),
+            next_history_cursor=discovery.next_history_cursor,
         )
     operation_id = str(uuid.uuid4())
     db.add(
@@ -2139,6 +2451,55 @@ def ingest_latest_financial_filings(
         now=now,
         operation_id=operation_id,
     )
+    continuation_token: str | None = None
+    continuation_claim_payload: dict[str, Any] | None = None
+    if (
+        discovery.continuation_end_index is not None
+        and discovery.continuation_end_index
+        > (discovery.continuation_start_index or 0)
+    ):
+        main_url = f"https://data.sec.gov/submissions/CIK{identity.cik}.json"
+        main_snapshot = snapshots.get(main_url)
+        if main_snapshot is None or main_snapshot.sha256 != discovery.main_sha256:
+            raise SecFinancialIntegrityError(
+                "history continuation requires exact retained main snapshot"
+            )
+        manifest_identity = _history_manifest_identity(
+            identity.cik,
+            main_snapshot.sha256,
+            list(discovery.continuation_references),
+        )
+        start_index = discovery.continuation_start_index or 0
+        attempted_references = list(discovery.continuation_references)[
+            start_index : discovery.continuation_end_index
+        ]
+        failure_keys = {
+            item.resource_key: item.error_code for item in discovery.audit_failures
+        }
+        continuation_claim_payload = {
+                "operation_id": operation_id,
+                "issuer_identity_id": identity.id,
+                "parent_id": (continuation_row.id if continuation_row else None),
+                "main_snapshot_id": main_snapshot.id,
+                "manifest_identity": manifest_identity,
+                "filing_selection_as_of": filing_selection_as_of,
+                "history_target_json": _history_target_payload(history_target),
+                "start_index": start_index,
+                "end_index": discovery.continuation_end_index,
+                "attempted_references_json": attempted_references,
+                "terminal_outcomes_json": [
+                    {
+                        "reference": reference,
+                        "outcome": failure_keys.get(
+                            f"https://data.sec.gov/submissions/{reference}",
+                            "retained_and_parsed",
+                        ),
+                    }
+                    for reference in attempted_references
+                ],
+                "main_snapshot": main_snapshot,
+                "manifest_references": list(discovery.continuation_references),
+        }
     acquisition_failure_ids: list[int] = []
     recorded_acquisition_failures: dict[
         tuple[str, str, str, str, str | None],
@@ -2218,6 +2579,35 @@ def ingest_latest_financial_filings(
             )
         )
     db.flush()
+    if continuation_claim_payload is not None:
+        child_payload = dict(continuation_claim_payload)
+        main_snapshot = child_payload.pop("main_snapshot")
+        manifest_references = child_payload.pop("manifest_references")
+        db.add(SecFinancialHistoryConsumptionClaim(**child_payload))
+        db.flush()
+        existing_child = None
+        if continuation_row is not None:
+            existing_child = db.scalar(select(SecFinancialHistoryContinuation).where(
+                SecFinancialHistoryContinuation.parent_id == continuation_row.id
+            ))
+        if discovery.continuation_next_index is None:
+            continuation_token = None
+        elif existing_child is not None:
+            continuation_token = existing_child.id
+        else:
+            continuation_token = str(uuid.uuid4())
+            db.add(SecFinancialHistoryContinuation(
+                id=continuation_token, issuer_identity_id=identity.id,
+                main_snapshot_id=main_snapshot.id, source_operation_id=operation_id,
+                parent_id=(continuation_row.id if continuation_row else None),
+                main_sha256=main_snapshot.sha256,
+                manifest_identity=child_payload["manifest_identity"],
+                validated_references_json=manifest_references,
+                filing_selection_as_of=filing_selection_as_of,
+                history_target_json=_history_target_payload(history_target),
+                next_index=discovery.continuation_next_index,
+            ))
+            db.flush()
 
     def record_accession_attempt(
         *,
@@ -2517,6 +2907,7 @@ def ingest_latest_financial_filings(
         raw_facts_created=created_facts,
         failures=tuple(failures),
         selected_filings=_selected_filing_summaries(discovered),
+        next_history_cursor=continuation_token,
     )
 
 
@@ -2557,7 +2948,14 @@ def finalize_sec_financial_ingestion_operation(
             or 0
         )
         result = db.get(SecFinancialOperationResult, operation_id)
-        if snapshot_count < 1 and anchor_count < 1:
+        if (
+            snapshot_count < 1
+            and anchor_count < 1
+            and (
+                result is None
+                or result.result_kind != "history_continuation_failure"
+            )
+        ):
             raise SecFinancialIngestionError(
                 "availability requires retained submissions snapshot or no-bytes resource anchor"
             )
@@ -2568,7 +2966,8 @@ def finalize_sec_financial_ingestion_operation(
         if anchor_count and (
             snapshot_count
             or anchor_count != 1
-            or result.result_kind != "acquisition_failure"
+            or result.result_kind
+            not in {"acquisition_failure", "history_continuation_failure"}
         ):
             raise SecFinancialIngestionError(
                 "no-bytes resource anchor requires acquisition failure terminal"

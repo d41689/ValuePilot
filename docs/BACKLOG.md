@@ -138,6 +138,34 @@ long — escalate to the user. **medium / low** = ordinary follow-up.
   therefore still requires a validated resumable cursor plus immutable
   standalone-instance retention and a new append-only parser version. The
   existing typed failures and Step-D evidence must not be rewritten.
+- **Progress (2026-08-31, Step 2):** bounded continuation and parser-v2 are now
+  implemented. Random persisted continuation authorities bind the retained main
+  snapshot, identity, cutoff, full target and ordered validated references;
+  each advance is backed by an immutable operation consumption claim and cursor
+  validation failures have a separate durable terminal audit;
+  the database now proves every ordered consumption outcome from same-operation
+  retained snapshots/failures and reciprocally guards continuation failures and
+  terminal results rather than trusting caller JSON or timestamps;
+  standalone instance XML is retained through
+  the existing artifact policy and parsed with namespace/local-name and
+  structured unit QName lineage. Typed dimensions retain a bounded canonical
+  namespace-aware structure with a database-verified digest; inline parser-v2
+  obtains that authority from retained XHTML XML events rather than tolerant
+  HTML normalization and fails closed when XML/context correspondence is not
+  provable. Exact URI/local structural selection and expanded taxonomy-QName
+  fact signatures prevent tolerant HTML or fake-namespace nodes from entering
+  parser v2. The safe streaming authority rejects DTD/entities and clears
+  completed nodes; the same expanded-root preflight is mandatory for service
+  dispatch and standalone parsing, whose dimension structures now require exact
+  XBRLDI identity. Standalone candidates carry frozen verified bytes through
+  parsing and are storage-reverified before run creation. Token-aware Expat
+  declaration handlers reject real DTD/entities without rejecting lexical text
+  in comments, CDATA or processing instructions. Preflight returns the exact
+  downstream bytes: UTF-8/16 stays original, while UTF-32 normalization changes
+  only the XML declaration token and rejects BOM/declaration conflicts. Global parser and database resource budgets bound the retained
+  structure. Standalone parsing exposes no caller-controlled preflight bypass;
+  every direct or service invocation revalidates its downstream bytes. A fresh isolated acceptance acquisition remains
+  required before FT-03 can be closed.
 - **Acceptance criteria:**
   - Before acquisition expands, `coverage-source-policy.md` records permitted
     SEC financial forms, retention, automation, rate limits, and visibility.

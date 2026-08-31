@@ -222,6 +222,136 @@ Run the canonical commands verbatim and in order:
 
 ## Sign-off trail
 
+- 2026-08-31: delivery step 2 implemented test-first. Historical traversal now
+  emits a random UUID backed by append-only database authority bound to the
+  retained main-submissions snapshot/SHA, reviewed identity/CIK, cutoff, full
+  history target, exact validated reference ordering and next index. Continuation
+  rereads and integrity-verifies retained bytes rather than trusting a changed
+  current SEC main payload; random, mismatched and corrupt cursor authority is a
+  typed acquisition failure and never `no_eligible_filings`. Parser
+  `xbrl-lineage-v2` retains the existing exact-input atomic lineage while adding
+  standalone XBRL instance parsing and structured numerator/denominator QName
+  authority. Existing v1 runs/failures remain append-only. Focused Docker and
+  migration round-trip verification passed: the migration suite was 11 passed;
+  the focused lineage/history/CLI/gold/contract suite was 179 passed; and
+  `git diff --check` passed. The only warning was the pre-existing Starlette
+  `httpx` deprecation.
+- 2026-08-31: first implementation review findings were accepted. The lossy
+  downgrade now refuses retained parser-v2 QName evidence; continuation and raw
+  structured-unit authority have insert/append-only/no-TRUNCATE database guards;
+  primary standalone instances and non-primary instances share parser-v2's
+  generic `no_xbrl_facts` failure; standalone XML parsing uses element in-scope
+  namespaces and rejects duplicate/unknown/malformed context, unit, QName,
+  divide and dimension authority.
+- 2026-08-31: post-review focused Docker suites passed 196 tests, including the
+  isolated migration round trip, retained-v2-evidence downgrade refusal/value
+  preservation, persisted continuation/no-current-main-read behavior, XML
+  namespace rebinding and malformed-authority traps. `git diff --check` passed;
+  the only warning remained the pre-existing Starlette `httpx` deprecation.
+- 2026-08-31: second implementation review hardened the same step further.
+  Downgrade now locks both evidence tables before observing them; cursor
+  validation has its own durable terminal failure/result rather than a main-
+  submissions outage; every scanned page records an immutable operation-owned
+  consumption claim used by the database to authorize child continuation;
+  inline v2 QName resolution is element-scope aware; and structured explicit/
+  typed dimensions are persisted with QName authority and typed-content hash.
+- 2026-08-31: second-review focused Docker verification passed 197 tests plus
+  the isolated 12-test migration suite; `git diff --check` passed. The only
+  warning remained the pre-existing Starlette `httpx` deprecation.
+- 2026-08-31: downgrade race verification now uses a real pending writer on an
+  independent isolated-database connection and a concurrent Alembic process;
+  downgrade waits, observes the committed claim, refuses, and preserves both
+  head and evidence. Raw-SQL child-without-claim and forged claim/reference
+  attacks are also rejected by the database continuation guard.
+- 2026-08-31: final continuation attack coverage proves that a finalized
+  foreign operation cannot authorize a child, a child's index cannot differ
+  from its immutable claim end, and two independent transactions racing to
+  advance the same parent serialize so exactly one commits. The winning child
+  remains addressable by its stable random authority ID for exact replay. The
+  final SEC financial focused Docker suite passed 155 tests, the explicit
+  continuation attack test passed independently, and `git diff --check`
+  passed; the only warning was the pre-existing Starlette `httpx` deprecation.
+- 2026-08-31: third review replaced free claim assertions with database-
+  verified evidence. Claims are database-stamped, operation-transaction owned,
+  parent/cutoff/target bounded, and each ordered reference/outcome must resolve
+  to that operation's retained historical snapshot or acquisition failure.
+  Continuation failures and their operation results are reciprocal and
+  transaction/identity/cursor guarded. Typed dimensions now retain a bounded
+  namespace-aware element/attribute/text/tail tree plus canonical serialization
+  and a database-recomputed SHA-256; strict JSON shapes and duplicate axes fail
+  closed. Focused Docker verification passed 157 tests before the final raw-SQL
+  reciprocal-result additions; those targeted continuation/typed-dimension
+  tests subsequently passed 3 tests. Exact retry of the same parent cursor now
+  proves its attempt from the operation-to-snapshot junction (including reused
+  immutable content) and remains idempotent; the retry plus real downgrade race
+  passed together in a final 2-test run and `git diff --check` passed.
+- 2026-08-31: fourth review removed BeautifulSoup as typed-dimension authority
+  for parser v2 inline filings. Typed contexts are now parsed from the retained
+  XHTML bytes with namespace-aware XML events and rejoined to tolerant HTML
+  facts by exact context ID; malformed or ambiguous XHTML fails closed while
+  parser v1 remains tolerant. The canonical tree preserves case, namespaced
+  attributes, local prefix rebinding, and mixed text/child/tail order. Parser
+  construction enforces global node/attribute/text/depth budgets, and the DB
+  checks the whole JSONB storage size and recursive object count before its
+  strict recursive validator. The final focused Docker suite passed 159 tests,
+  including the 13 isolated migration/real-race tests; `git diff --check`
+  passed and only the pre-existing Starlette warning remained.
+- 2026-08-31: fifth review made the raw XML event stream the complete parser-v2
+  structural selector. Protected XBRLI, XBRLDI and authorized 2013/2020 inline
+  elements require exact namespace URI plus local name; facts are reconciled to
+  HTML locators by ordered ID, expanded taxonomy QName, context and unit
+  signature, so a tolerant HTML-only or fake-namespace fact cannot enter v2.
+  Custom taxonomy concepts retain their raw lexical name and namespace for
+  later unresolved publication handling. DTD/DOCTYPE/entity declarations are
+  rejected before parsing. The full XML event loop applies element, namespace,
+  attribute, text, depth and byte budgets immediately, clears completed nodes,
+  and retains only bounded typed-member subtrees. Focused Docker verification
+  passed 167 tests, including isolated migration and the real downgrade race;
+  `git diff --check` passed with only the existing Starlette warning.
+- 2026-08-31: sixth review removed every service `ET.fromstring` dispatch and
+  introduced one shared safe expanded-root detector. It rejects encoding-aware
+  DTD/DOCTYPE/entity declarations before XML parsing, then enforces whole-file
+  byte/event/namespace/attribute/text/depth budgets while clearing completed
+  elements. Service primary/candidate dispatch and direct standalone parsing
+  now use this preflight; a bounded second standalone pass is permitted only
+  after it succeeds. Standalone dimensions require exact XBRLDI URI/local
+  identity. Inline strict protection now systematically covers scenario,
+  segment, forever, all period/unit/divide members, XBRLDI dimensions and IX
+  structures, with a parameterized foreign-URI trap for every protected local.
+  Focused Docker verification passed 193 tests, including isolated migration
+  and the real downgrade race; `git diff --check` passed with only the existing
+  Starlette warning.
+- 2026-08-31: seventh review bound standalone selection to a frozen verified
+  artifact/content/root authority. Candidate and primary parsing consume those
+  exact bytes, and a final storage-integrity read before run creation rejects
+  replacement or corruption without publishing a run or facts. XML declaration
+  rejection now uses Expat token callbacks rather than lexical regex: actual
+  doctype, internal/external entity declarations and external references abort
+  before expansion, while identical text in comments, CDATA and processing
+  instructions remains legal. UTF-8/16/32 BOM inputs are covered. The focused
+  suite reached 198 passing tests before one expected typed error-name assertion
+  was updated; that assertion and the real race then passed together, and
+  `git diff --check` passed. The only warning remained Starlette's existing
+  httpx deprecation.
+- 2026-08-31: eighth review made safe XML preflight return both the expanded
+  root and the exact bytes all downstream authority parsers must consume.
+  UTF-8 and UTF-16 LE/BE remain original; UTF-32 LE/BE is strictly decoded and
+  only the XML-declaration token's encoding value is normalized before UTF-8
+  parsing, without rewriting comments or processing instructions. BOM,
+  directional encoding and declaration contradictions fail closed. Legal root,
+  standalone XBRL and inline XHTML fixtures cover UTF-8/16/32 declarations.
+  The full focused run reached 201 passes with five stale expected error-name
+  assertions; after updating those assertions, all 12 affected encoding/safety
+  tests and the real pending-writer race passed, and `git diff --check` passed.
+- 2026-08-31: ninth review removed the public standalone preflight-skip flag
+  and every caller-controlled bypass. Direct, primary and fallback standalone
+  parsing now always executes safe XML preflight again on its downstream bytes;
+  normalized UTF-32 and original UTF-8/16 remain valid while DTD/entity and
+  whole-document resource attacks cannot opt out. Repository backend search
+  contains no former skip-token reference. The complete focused Docker suite,
+  including isolated migration and the real race, passed 208 tests with the
+  single pre-existing Starlette warning; `git diff --check` passed.
+
 - 2026-08-31: contract step approved. Production implementation, migrations,
   live acquisition, and publication remain incomplete.
 - 2026-08-31: initial focused read-only contract suites passed before

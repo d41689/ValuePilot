@@ -28,7 +28,135 @@ from test_support.database_isolation import (
 
 PARENT_REVISION = "20260826130000"
 PERIOD_PARENT_REVISION = "20260827120000"
-HEAD_REVISION = "20260830140000"
+HEAD_REVISION = "20260831120000"
+
+
+def test_parser_v2_downgrade_locks_all_evidence_before_counting() -> None:
+    migration = (
+        Path(__file__).resolve().parents[2]
+        / "alembic/versions/20260831120000-sec-parser-v2-units.py"
+    ).read_text()
+    lock = migration.index("LOCK TABLE sec_raw_xbrl_facts")
+    first_count = migration.index("SELECT count(*) FROM sec_raw_xbrl_facts")
+    assert lock < first_count
+
+
+def test_parser_v2_downgrade_waits_for_pending_writer_then_refuses() -> None:
+    backend_dir = Path(__file__).resolve().parents[2]
+    schema_name = new_test_schema_name()
+    database_url = build_isolated_database_url(_BASE_DATABASE_URL, schema_name)
+    create_test_schema(_BASE_DATABASE_URL, schema_name)
+    engine = create_engine(database_url, pool_pre_ping=True)
+    writer = None
+    process = None
+    try:
+        _alembic(backend_dir, database_url, "upgrade", "head")
+        with engine.begin() as connection:
+            stock_id = connection.execute(
+                text(
+                    "INSERT INTO stocks (ticker, exchange, market_country, company_name, is_active) "
+                    "VALUES ('RACEV2', 'US', 'US', 'Race V2', true) RETURNING id"
+                )
+            ).scalar_one()
+            identity_id = connection.execute(
+                text(
+                    "INSERT INTO sec_issuer_identities "
+                    "(stock_id, cik, status, review_reason, effective_from, known_at) "
+                    "VALUES (:stock_id, '0000000088', 'reviewed', 'race test', "
+                    "'2020-01-01', '2026-08-31T00:00:00+00:00') RETURNING id"
+                ),
+                {"stock_id": stock_id},
+            ).scalar_one()
+            operation_id = _insert_ingestion_operation(connection, identity_id)
+            snapshot_id = connection.execute(
+                text(
+                    "INSERT INTO sec_submission_snapshots "
+                    "(issuer_identity_id, operation_id, source_url, sha256, byte_size, storage_key, fetched_at, known_at) "
+                    "VALUES (:identity_id, :operation_id, "
+                    "'https://data.sec.gov/submissions/CIK0000000088.json', :sha, 2, :key, "
+                    "clock_timestamp(), clock_timestamp()) RETURNING id"
+                ),
+                {
+                    "identity_id": identity_id,
+                    "operation_id": operation_id,
+                    "sha": "8" * 64,
+                    "key": "financial/88/" + "8" * 64,
+                },
+            ).scalar_one()
+
+        writer = engine.connect()
+        transaction = writer.begin()
+        operation_id = _insert_ingestion_operation(writer, identity_id)
+        history_snapshot_id = writer.execute(
+            text(
+                "INSERT INTO sec_submission_snapshots "
+                "(issuer_identity_id, operation_id, source_url, sha256, byte_size, storage_key, fetched_at, known_at) "
+                "VALUES (:identity_id, :operation_id, "
+                "'https://data.sec.gov/submissions/CIK0000000088-submissions-001.json', :sha, 2, :key, "
+                "clock_timestamp(), clock_timestamp()) RETURNING id"
+            ),
+            {"identity_id": identity_id, "operation_id": operation_id, "sha": "7" * 64, "key": "financial/77/" + "7" * 64},
+        ).scalar_one()
+        writer.execute(text(
+            "INSERT INTO sec_financial_operation_snapshots (operation_id, snapshot_id) VALUES (:operation_id, :snapshot_id)"
+        ), {"operation_id": operation_id, "snapshot_id": history_snapshot_id})
+        writer.execute(
+            text(
+                "INSERT INTO sec_financial_history_consumption_claims "
+                "(operation_id, issuer_identity_id, parent_id, main_snapshot_id, manifest_identity, filing_selection_as_of, history_target_json, start_index, end_index, "
+                "attempted_references_json, terminal_outcomes_json) VALUES "
+                "(:operation_id, :identity_id, NULL, :snapshot_id, :manifest, NULL, '{}'::jsonb, 0, 1, "
+                "'[\"CIK0000000088-submissions-001.json\"]'::jsonb, "
+                "'[{\"reference\":\"CIK0000000088-submissions-001.json\",\"outcome\":\"retained_and_parsed\"}]'::jsonb)"
+            ),
+            {
+                "operation_id": operation_id,
+                "identity_id": identity_id,
+                "snapshot_id": snapshot_id,
+                "manifest": "9" * 64,
+            },
+        )
+        process = subprocess.Popen(
+            ["alembic", "downgrade", "20260830140000"],
+            cwd=backend_dir,
+            env={**os.environ, "DATABASE_URL": database_url},
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        try:
+            process.communicate(timeout=1.5)
+        except subprocess.TimeoutExpired:
+            pass
+        else:
+            raise AssertionError("downgrade did not wait for pending evidence writer")
+        transaction.commit()
+        stdout, stderr = process.communicate(timeout=20)
+        assert process.returncode != 0
+        assert "cannot downgrade with retained SEC history continuations" in (
+            stdout + stderr
+        )
+        with engine.connect() as connection:
+            assert connection.execute(
+                text("SELECT version_num FROM alembic_version")
+            ).scalar_one() == HEAD_REVISION
+            assert connection.execute(
+                text(
+                    "SELECT attempted_references_json FROM sec_financial_history_consumption_claims "
+                    "WHERE operation_id = :operation_id"
+                ),
+                {"operation_id": operation_id},
+            ).scalar_one() == ["CIK0000000088-submissions-001.json"]
+    finally:
+        if process is not None and process.poll() is None:
+            process.kill()
+            process.communicate(timeout=5)
+        if writer is not None:
+            writer.close()
+        engine.dispose()
+        drop_test_schema(_BASE_DATABASE_URL, schema_name)
+
+
 _configured_url = make_url(settings.SQLALCHEMY_DATABASE_URI)
 _BASE_DATABASE_URL = _configured_url.set(
     query={key: value for key, value in _configured_url.query.items() if key != "options"}
@@ -211,6 +339,8 @@ def test_sec_financial_lineage_migration_round_trip_and_triggers() -> None:
             assert {
                 "concept_namespace_uri",
                 "unit_measure",
+                "unit_numerator_json",
+                "unit_denominator_json",
                 "transformation_format",
                 "language",
                 "continued_at",
