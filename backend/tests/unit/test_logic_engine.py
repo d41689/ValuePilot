@@ -61,7 +61,7 @@ def test_run_formula_integration(db_session):
     run = engine.run_formula(formula.id, stock.id, user.id)
     
     assert run is not None
-    assert run.result_value_json["value"] == 400.0
+    assert run.result_value_json["value"] == "400.000000000000"
     
     # Verify authoritative fact created
     output_fact = db_session.query(MetricFact).filter_by(stock_id=stock.id, metric_key="gross_profit").first()

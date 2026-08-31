@@ -1,5 +1,6 @@
 from typing import List, Dict, Any, Callable
 from sqlalchemy.orm import Session, aliased
+from decimal import Decimal
 from sqlalchemy import select, and_, or_
 from app.models.stocks import Stock
 from app.models.facts import MetricFact
@@ -56,7 +57,7 @@ class ScreenerService:
     @staticmethod
     def _extract_value(fact: MetricFact) -> Any:
         if fact.value_numeric is not None:
-            return fact.value_numeric
+            return float(fact.value_numeric)
         if fact.value_text is not None:
             return fact.value_text
         if fact.value_json is None:
@@ -184,7 +185,7 @@ class ScreenerService:
         for cond in conditions:
             metric_key = self._canonical_metric_key(cond["metric"])
             operator = cond["operator"]
-            target_value = cond["value"]
+            target_value = Decimal(str(cond["value"]))
             
             # Create an alias for MetricFact for this specific condition
             fact_alias = aliased(MetricFact)

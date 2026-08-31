@@ -2,6 +2,7 @@ from typing import Any
 from fastapi import APIRouter, HTTPException, Body, Query
 from sqlalchemy import select, func, and_, or_
 from datetime import date, datetime, timezone
+from decimal import Decimal
 from zoneinfo import ZoneInfo
 from app.api.deps import SessionDep, CurrentUser
 from app.models.artifacts import PdfDocument
@@ -213,7 +214,7 @@ def _score_value(fact: MetricFact | None) -> int | float | None:
     raw_value = fact.value_numeric
     if raw_value is None:
         raw_value = value_json.get("partial_score")
-    if not isinstance(raw_value, (int, float)):
+    if not isinstance(raw_value, (int, float, Decimal)):
         return None
     value = float(raw_value)
     return int(value) if value.is_integer() else value
@@ -977,7 +978,7 @@ def upsert_stock_fact(
         "id": fact.id,
         "stock_id": fact.stock_id,
         "metric_key": fact.metric_key,
-        "value_numeric": fact.value_numeric,
+        "value_numeric": float(fact.value_numeric),
         "unit": fact.unit,
         "period_type": fact.period_type,
         "period_end_date": fact.period_end_date,

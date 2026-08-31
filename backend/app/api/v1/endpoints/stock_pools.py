@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import date, datetime, timedelta, timezone
+from decimal import Decimal
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Body
@@ -105,7 +106,7 @@ def _piotroski_compare_display_score(fact: MetricFact | None) -> str:
     if fact is None:
         return "—"
     value_json = fact.value_json if isinstance(fact.value_json, dict) else {}
-    if isinstance(fact.value_numeric, (int, float)):
+    if isinstance(fact.value_numeric, (int, float, Decimal)):
         return f"{float(fact.value_numeric):.0f}"
     partial_score = value_json.get("partial_score")
     max_available_score = value_json.get("max_available_score")
@@ -118,7 +119,7 @@ def _serialize_piotroski_compare_cell(year: int, fact: MetricFact | None) -> dic
     value_json = fact.value_json if fact and isinstance(fact.value_json, dict) else {}
     return {
         "fiscal_year": year,
-        "score": fact.value_numeric if fact and isinstance(fact.value_numeric, (int, float)) else None,
+        "score": float(fact.value_numeric) if fact and isinstance(fact.value_numeric, (int, float, Decimal)) else None,
         "display_score": _piotroski_compare_display_score(fact),
         "fact_nature": _piotroski_compare_fact_nature(fact) if fact else None,
         "status": value_json.get("status") if fact else None,

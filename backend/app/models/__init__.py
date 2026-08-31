@@ -19,3 +19,4 @@ from app.models import notifications  # noqa: F401
 from app.models import portfolios  # noqa: F401
 from app.models import api_security  # noqa: F401
 from app.models import sec_financials  # noqa: F401
+from app.models import sec_publication  # noqa: F401

@@ -2,12 +2,14 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import date
+from decimal import Decimal
 from typing import Any, Iterable, Optional
 
 from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
 from app.models.facts import MetricFact
+from app.services.numeric_persistence import persist_numeric_38_12
 
 
 CALCULATION_VERSION = "piotroski_value_line_v1"
@@ -17,7 +19,7 @@ CALCULATION_VERSION = "piotroski_value_line_v1"
 class FactSnapshot:
     id: Optional[int]
     metric_key: str
-    value_numeric: Optional[float]
+    value_numeric: Optional[Decimal]
     value_json: dict[str, Any]
     period_type: Optional[str]
     period_end_date: date
@@ -81,7 +83,7 @@ def build_value_line_ratio_facts(facts: Iterable[Any]) -> list[dict[str, Any]]:
             derived.append(
                 _ratio_fact(
                     metric_key="ins.premium_turnover",
-                    value=float(premium.value_numeric) / float(assets.value_numeric),
+                    value=premium.value_numeric / assets.value_numeric,
                     period_end=period_end,
                     inputs=[premium, assets],
                     method="insurance_premiums_to_assets",
@@ -167,7 +169,7 @@ def _build_ratio(
     return [
         _ratio_fact(
             metric_key=metric_key,
-            value=float(numerator.value_numeric) / float(denominator.value_numeric),
+            value=numerator.value_numeric / denominator.value_numeric,
             period_end=period_end,
             inputs=[numerator, denominator],
             method=method,
@@ -183,13 +185,13 @@ def _build_long_term_debt_to_capital(
     equity = source.get(("bs.total_equity", period_end))
     if not debt or not equity:
         return []
-    denominator = float(debt.value_numeric) + float(equity.value_numeric)
+    denominator = debt.value_numeric + equity.value_numeric
     if not _is_positive(denominator):
         return []
     return [
         _ratio_fact(
             metric_key="leverage.long_term_debt_to_capital",
-            value=float(debt.value_numeric) / denominator,
+            value=debt.value_numeric / denominator,
             period_end=period_end,
             inputs=[debt, equity],
             method="long_term_debt_to_total_capital",
@@ -210,13 +212,13 @@ def _build_capital_turnover(
     equity = source.get(("bs.total_equity", period_end))
     if not sales or not debt or not equity:
         return []
-    denominator = float(debt.value_numeric) + float(equity.value_numeric)
+    denominator = debt.value_numeric + equity.value_numeric
     if not _is_positive(denominator):
         return []
     return [
         _ratio_fact(
             metric_key="efficiency.capital_turnover",
-            value=float(sales.value_numeric) / denominator,
+            value=sales.value_numeric / denominator,
             period_end=period_end,
             inputs=[sales, equity, debt],
             method="sales_to_total_capital",
@@ -231,12 +233,13 @@ def _build_capital_turnover(
 def _ratio_fact(
     *,
     metric_key: str,
-    value: float,
+    value: Decimal,
     period_end: date,
     inputs: list[FactSnapshot],
     method: str,
     extra: Optional[dict[str, Any]] = None,
 ) -> dict[str, Any]:
+    persisted_value = persist_numeric_38_12(value)
     value_json = {
         "status": "calculated",
         "method": method,
@@ -248,7 +251,7 @@ def _ratio_fact(
         value_json.update(extra)
     return {
         "metric_key": metric_key,
-        "value_numeric": value,
+        "value_numeric": persisted_value,
         "value_text": None,
         "value_json": value_json,
         "unit": "ratio",
@@ -282,7 +285,7 @@ def _snapshot(raw: Any) -> Optional[FactSnapshot]:
     return FactSnapshot(
         id=_get(raw, "id"),
         metric_key=metric_key,
-        value_numeric=float(value_numeric) if isinstance(value_numeric, (int, float)) else None,
+        value_numeric=Decimal(str(value_numeric)) if isinstance(value_numeric, (int, float, Decimal)) else None,
         value_json=value_json,
         period_type=_get(raw, "period_type"),
         period_end_date=period_end,
@@ -320,13 +323,13 @@ def _lineage_item(fact: FactSnapshot) -> dict[str, Any]:
         "metric_key": fact.metric_key,
         "period_end_date": fact.period_end_date.isoformat(),
         "fact_id": fact.id,
-        "value_numeric": fact.value_numeric,
+        "value_numeric": format(fact.value_numeric, "f") if fact.value_numeric is not None else None,
         "fact_nature": fact.value_json.get("fact_nature"),
     }
 
 
 def _is_positive(value: Optional[float]) -> bool:
-    return isinstance(value, (int, float)) and float(value) > 0
+    return isinstance(value, (int, float, Decimal)) and Decimal(str(value)) > 0
 
 
 def _get(raw: Any, key: str) -> Any:

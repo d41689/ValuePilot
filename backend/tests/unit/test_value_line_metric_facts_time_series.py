@@ -1,5 +1,6 @@
 import json
 from datetime import date
+from decimal import Decimal
 from pathlib import Path
 from unittest.mock import patch
 
@@ -159,7 +160,7 @@ def test_quarterly_series_full_year_facts_are_written(client, db_session, user_f
         period_end_date=date(2024, 12, 31),
         period_type="FY",
     )
-    assert eps_fact.value_numeric == eps_2024
+    assert eps_fact.value_numeric == Decimal(str(eps_2024))
     assert eps_fact.period_type == "FY"
 
     q1_fact = _fact(
@@ -228,7 +229,7 @@ def test_insurance_percent_facts_are_normalized_once_to_base_ratios(
         period_end_date=date(2015, 12, 31),
         period_type="FY",
     )
-    assert loss_ratio.value_numeric == pytest.approx(0.59)
+    assert loss_ratio.value_numeric == Decimal("0.59")
     assert loss_ratio.unit == "ratio"
 
     tax_rate = _fact(
@@ -239,7 +240,7 @@ def test_insurance_percent_facts_are_normalized_once_to_base_ratios(
         period_end_date=date(2015, 12, 31),
         period_type="FY",
     )
-    assert tax_rate.value_numeric == pytest.approx(0.014)
+    assert tax_rate.value_numeric == Decimal("0.014")
     assert tax_rate.unit == "ratio"
 
 

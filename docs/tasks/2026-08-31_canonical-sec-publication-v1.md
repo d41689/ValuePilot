@@ -1,6 +1,6 @@
 # Canonical Financial Truth — SEC Publication V1
 
-Status: contract approved; implementation not started
+Status: contract approved; delivery steps 1–3 complete; step 4 next
 
 Owner: Product / Engineering
 
@@ -374,3 +374,94 @@ Run the canonical commands verbatim and in order:
   and pinned the ordered gold-set currency list plus canonical digest. The
   revised Docker suites passed 20 tests and `git diff --check` passed; the same
   pre-existing Starlette warning remains. Implementation remains unstarted.
+- 2026-09-01: delivery step 3 adds schema authority only: immutable mapping
+  version/namespace/currency/rule registries, atomic publication run/source/
+  decision/input/availability relations, the SEC `metric_facts` ownership and
+  per-period-current bridge, and reviewed economic-class/risk/method-policy
+  gates. It deliberately does not load mapping data, publish facts, implement
+  the mapper/publication service, expose an API, or invent formulas. Three
+  consecutive migrations extend the prior unique head and fail closed when a
+  downgrade would discard retained or precision-sensitive authority.
+- 2026-09-01: first Step 3 adversarial review removed application-writer
+  self-approval. The exact V1 mapping registry (spec digest, 24 namespace URIs,
+  four ordered currencies, and 21 rule identities) and the V1 method gate are
+  migration-owned immutable seeds. All four system methods default to typed
+  unsupported for every reviewed economic class; raw actual publication and
+  user-authored valuation remain outside that analytical gate. Runtime SQL may
+  create drafts only. Publication runs now require a complete approved mapping
+  and reviewed PIT-valid issuer identity for the same stock. Classification
+  and risk corrections use a single, later-known supersession chain; unrelated
+  risk attributes remain orthogonal and independently stackable.
+- 2026-09-01: second Step 3 review pinned both migration-owned V1 parent
+  authorities to the contract knowledge boundary `2026-08-31T00:00:00Z`,
+  independent of deployment clock. Runtime drafts still receive DB-stamped
+  knowledge/creation boundaries and runtime approved inserts remain forbidden.
+  Authority children carry creation audit only; PIT authority is explicitly
+  owned by the immutable parent. Tests prove the mapping and method policy are
+  invisible one microsecond before the boundary and visible exactly at it, and
+  publication-run mapping selection follows the same cutoff rule.
+- 2026-09-01: third Step 3 review made publication arithmetic structural.
+  Every input now has a non-null sign and an exact role/ordinal pairing:
+  direct is the sole `+1` input, while both approved difference derivations
+  have exactly ordered left `+1` and right `-1` operands. Decisions persist an
+  explicit derivation kind; deferred validation rejects null signs, extra or
+  duplicated roles, wrong signs/kinds, missing operands, and unresolved
+  decisions carrying numeric operands. A published zero remains valid only
+  when its exact retained operand is explicitly numeric zero.
+- 2026-09-01: fourth Step 3 review removed caller-copied operand values from
+  publication lineage. A direct decision now has one mutually exclusive raw
+  fact input; a derived decision has two mutually exclusive references to
+  canonical direct decisions in the same run. Derived arithmetic reads those
+  source decision values relationally. The DB compares mapping/rule, stock,
+  metric, normalized unit/currency, context, dimension digest and fiscal-year
+  authority, then enforces the approved adjacent-YTD Q2/Q3 and FY-minus-9M Q4
+  period truth tables. Direct lineage additionally proves exact parse source,
+  concept namespace/local authority, context, period, dimensions and structured
+  unit shape. Unresolved/rejected decisions have zero lineage inputs.
+- 2026-09-01: fifth Step 3 review added immutable raw numeric normalization
+  authority and removed direct-decision trust in a caller-provided normalized
+  number. PostgreSQL recomputes exact `NUMERIC(38,12)` from the retained raw
+  lexical value plus transformation/sign/scale and structured unit evidence,
+  records a semantic digest and DB transaction boundary, and rejects mismatch,
+  rounding, overflow, nil, empty, nonnumeric and unsupported transformations.
+  V1 deliberately allowlists standalone canonical XML numerics and the exact
+  retained lexical iXBRL tokens for dot/comma decimal and fixed-zero/zero-dash;
+  the `ixt` prefix is not treated as general namespace authority and no other
+  prefix or format is accepted. Direct inputs must reference the exact
+  raw/rule/version normalization and equal its value; derived arithmetic still
+  reads canonical source decisions. Mapping-engine creation remains Step 4.
+- 2026-09-01: sixth Step 3 review bounded DB numeric work before regex or
+  arbitrary-precision operations: raw lexical input is capped at 256 bytes and
+  characters, transformation identity at 120, sign at one byte and scale at
+  ±30. After bounded cleanup, integer/fraction digit budgets are computed before
+  cast/power and must fit 26 integer plus 12 fractional places after scale.
+  Scientific notation is explicitly unsupported in V1. Tests cover the exact
+  `NUMERIC(38,12)` boundary plus oversized text, excessive digits/fraction,
+  extreme scale and scientific syntax under a strict statement timeout.
+- 2026-09-01: pre-submit precision review restored the canonical ORM contract:
+  `MetricFact.value_numeric` now loads as `Decimal` from `NUMERIC(38,12)` with
+  no `asdecimal=False` escape. Formula constants are constructed from AST
+  source lexicals (never an intermediate float), and restricted arithmetic and
+  single comparisons run in a bounded high-precision Decimal context.
+  Screener SQL thresholds bind Decimal values; Piotroski and Value Line ratio
+  calculations retain Decimal internally. Existing API/UI JSON number shapes
+  convert once at their explicit presentation boundary and are never written
+  back as canonical SEC truth.
+- 2026-09-01: clean precision review removed the remaining float copies from
+  persisted calculation audit JSON. Formula run results and Piotroski/ratio
+  lineage input values now use canonical non-scientific Decimal strings;
+  `MetricFact.value_numeric` remains the exact numeric authority. API display
+  adapters continue to emit the existing JSON number shape without writing
+  those presentation floats back to facts or lineage.
+- 2026-09-01: final clean precision review introduced one shared
+  `NUMERIC(38,12)` persistence boundary. High-precision formula evaluation is
+  quantized exactly once with PostgreSQL-compatible `ROUND_HALF_UP`; finite and
+  26-integer-digit limits are checked after rounding. Formula run audit,
+  formula fact JSON and the numeric column all use that identical Decimal.
+  Ratio and Piotroski writes use the same helper. Tests compare positive and
+  negative ties, thirds, shorter scales and 26/27-digit boundaries directly
+  against an isolated PostgreSQL cast, including exact audit/column reload.
+- 2026-09-01: Step 3 final Terra review PASS; Decimal supplemental review PASS.
+  Main-agent verification passed 74 focused tests with the single pre-existing
+  Starlette warning, confirmed migration head `20260901140000` as the unique
+  head, and passed `git diff --check`.
