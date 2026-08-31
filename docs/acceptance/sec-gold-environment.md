@@ -43,15 +43,36 @@ non-symlink directory. Any Rate Guard fallback setting is forbidden. A standard
 API container therefore cannot be turned into an acceptance writer merely by
 passing a syntactically valid `--acceptance-run-id`.
 
-Step D may run one locked case through the normal operator path:
+Step D pins one verified Rate Guard identity for the entire run and captures
+stable before/after runtime snapshots. The local Rate Guard configuration used
+when the central service is operationally unavailable remains a single explicit
+route: fallback settings stay disabled, EDGAR remains at 1 request/second, and
+the same retry/global-pause policy applies. A central-service failure is recorded
+in the source-path proof before selecting that route; operators must not probe
+for alternate SEC paths.
+
+Run one case or the complete locked manifest through the normal operator path:
 
 ```sh
-scripts/sec_gold_acceptance.sh run-case step-d-20260830 aapl-primary
+scripts/sec_gold_acceptance.sh snapshot step-d-20260830 before
+scripts/sec_gold_acceptance.sh run-case step-d-20260830 aapl-primary 1
+scripts/sec_gold_acceptance.sh run-pass step-d-20260830 1
+scripts/sec_gold_acceptance.sh run-pass step-d-20260830 2
+scripts/sec_gold_acceptance.sh snapshot step-d-20260830 after
+scripts/sec_gold_acceptance.sh audit step-d-20260830
 ```
 
-That command is the only lifecycle action that requests SEC data. It must not be
-used during Step C. It writes the case JSON under the exact run's `reports/`
-directory. The application still obtains SEC bytes only through Rate Guard.
+Only `run-case` and `run-pass` request SEC data. They must not be used during
+Step C. The batch command bootstraps only the 24 locked Stock rows into the
+otherwise empty acceptance database, is resumable from already written case
+reports, and runs cases sequentially. Exit 2 is a durable typed incomplete case
+and does not stop later locked cases; any operational exit stops the batch. Each
+pass writes case JSON and text under `reports/pass-1/` or `reports/pass-2/`.
+After all cases, `run-pass` re-reads all 24 pass reports, validates each report's
+run/case/pass identity, and derives the terminal exit from their typed gaps and
+failures. Resuming from existing incomplete reports therefore still exits 2;
+missing, malformed, or identity-conflicting reports fail closed. The application
+still obtains every SEC byte only through the pinned Rate Guard.
 
 Cleanup is exact and retry-safe:
 
@@ -86,7 +107,7 @@ Each stable JSON report includes:
 - schema, run, case, stock, CIK, and operation identifiers;
 - selection cutoff and operation attempted/finalized/available timestamps;
 - expected completed fiscal years;
-- selected accessions, accepted timestamps, and forms;
+- selected accessions, report dates, accepted timestamps, and forms;
 - bounded typed coverage gaps and other failures;
 - filing, artifact, parse-run, raw-fact, and `metric_facts` counts.
 
@@ -94,3 +115,21 @@ The CLI prints the same fields as a compact human summary. A typed gap or failur
 still produces the existing incomplete exit status after the report is written.
 `metric_facts_published` must remain zero until a separately approved FT-04
 mapping exists.
+
+The aggregate JSON/text additionally verifies every retained submissions and
+filing object by current local existence, byte size, and SHA-256; reports fiscal
+year coverage, parser outcomes and raw-fact counts; compares pass-two creation
+deltas; checks filing/artifact/parse-run/raw-fact duplicate identities; and
+records exact cumulative Rate Guard request/403/429/503 counters. Aggregate
+validation does not trust report creation counters: for each pass it resolves
+the exact finalized operation and issuer, verifies selected accessions against
+operation-owned attempts, counts snapshots and parse runs by direct ownership,
+counts raw facts through owned parse runs, and counts append-only filings and
+artifacts within the attempt scope using PostgreSQL creation transaction identity
+(`xmin`) against the operation's stored `created_txid`. Snapshot/artifact link,
+attempt, parse-run, and terminal-result transaction ownership is also checked.
+The DB-recomputed counts must match every report field before pass-two
+idempotency can pass. Validation also fails on retained integrity, duplicate
+lineage, route identity, rate policy, or the zero-`metric_facts` contract. The
+acceptance database and storage remain intact until review explicitly authorizes
+the exact cleanup.

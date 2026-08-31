@@ -99,6 +99,7 @@ class FinancialFilingSelection:
     accession_no: str
     form_type: str
     accepted_at: datetime
+    report_date: date | None = None
 
 
 @dataclass(frozen=True)
@@ -184,6 +185,7 @@ def _selected_filing_summaries(
             accession_no=item.accession_no,
             form_type=item.form_type,
             accepted_at=item.accepted_at,
+            report_date=item.report_date,
         )
         for item in filings
     )
@@ -361,10 +363,18 @@ def _select_history_filings(
     )
     if target.filing_regime == "us_10k_10q":
         supplemental = [
-            filing for filing in filings if filing.form_type in {"10-Q", "10-Q/A"}
+            filing
+            for filing in filings
+            if filing.form_type in {"10-Q", "10-Q/A"}
+            and (filing.report_date or filing.filed_on) >= target.available_start_on
         ]
     else:
-        supplemental = [filing for filing in filings if _financially_useful_6k(filing)]
+        supplemental = [
+            filing
+            for filing in filings
+            if _financially_useful_6k(filing)
+            and (filing.report_date or filing.filed_on) >= target.available_start_on
+        ]
     supplemental.sort(
         key=lambda item: (item.accepted_at, item.accession_no), reverse=True
     )

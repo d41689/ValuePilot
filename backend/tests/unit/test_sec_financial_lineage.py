@@ -18,6 +18,7 @@ from sqlalchemy.orm import Session
 from app.edgar.parsers.financial_submissions import parse_financial_submissions
 from app.edgar.parsers.inline_xbrl import parse_inline_xbrl
 from app.acceptance.sec_gold_report import build_case_report
+from app.acceptance.sec_gold_audit import build_case_database_audit
 from app.models.facts import MetricFact
 from app.models.sec_financials import (
     SecFilingArtifact,
@@ -301,6 +302,13 @@ class EmptyMainSubmissionsClient(MalformedMainSubmissionsClient):
             "primaryDocDescription",
         ):
             payload["filings"]["recent"][key] = []
+        return json.dumps(payload).encode()
+
+
+class CorrectedEmptyMainSubmissionsClient(EmptyMainSubmissionsClient):
+    def get(self, url: str) -> bytes:
+        payload = json.loads(super().get(url))
+        payload["name"] = "Apple Inc. corrected"
         return json.dumps(payload).encode()
 
 
@@ -1516,6 +1524,97 @@ def test_valid_no_eligible_filings_finalizes_and_seals_later_writes(
     with pytest.raises(DBAPIError, match="matching unsealed SEC operation"):
         db_session.commit()
     db_session.rollback()
+
+
+def test_acceptance_audit_rejects_reported_zero_for_operation_owned_snapshot(
+    committed_db_session, tmp_path: Path
+) -> None:
+    db_session = committed_db_session
+    stock = Stock(ticker="AUDIT", exchange="US", company_name="Audit Fixture")
+    db_session.add(stock)
+    db_session.flush()
+    register_reviewed_sec_identity(
+        db_session,
+        stock_id=stock.id,
+        cik=CIK,
+        effective_from=date(1980, 12, 12),
+        known_at=datetime(2026, 8, 27, 12, 0, tzinfo=timezone.utc),
+        review_reason="Acceptance audit operation-ownership fixture.",
+    )
+    db_session.commit()
+
+    first = ingest_latest_financial_filings(
+        db_session,
+        stock_id=stock.id,
+        client=EmptyMainSubmissionsClient(),
+        storage_root=tmp_path,
+        max_filings=1,
+        now=datetime(2026, 8, 27, 12, 5, tzinfo=timezone.utc),
+    )
+    db_session.commit()
+    first_available = finalize_sec_financial_ingestion_operation(
+        db_session, operation_id=first.operation_id
+    )
+    db_session.commit()
+    second = ingest_latest_financial_filings(
+        db_session,
+        stock_id=stock.id,
+        client=CorrectedEmptyMainSubmissionsClient(),
+        storage_root=tmp_path,
+        max_filings=1,
+        now=datetime(2026, 8, 27, 12, 10, tzinfo=timezone.utc),
+    )
+    db_session.commit()
+    second_available = finalize_sec_financial_ingestion_operation(
+        db_session, operation_id=second.operation_id
+    )
+    db_session.commit()
+
+    def payload(report, available_at, acceptance_pass, snapshot_count):
+        operation = db_session.get(
+            SecFinancialIngestionOperation, report.operation_id
+        )
+        return {
+            "schema_version": 1,
+            "acceptance_pass": acceptance_pass,
+            "run_id": "step-d-audit-test",
+            "case_id": "audit-primary",
+            "stock_id": stock.id,
+            "cik": CIK,
+            "filing_selection_as_of": "2026-08-26T23:59:59+00:00",
+            "operation_id": report.operation_id,
+            "operation_attempted_at": operation.attempted_at.isoformat(),
+            "evidence_finalized_at": available_at.isoformat(),
+            "evidence_available_at": available_at.isoformat(),
+            "expected_completed_fiscal_years": [],
+            "selected_filings": [],
+            "selected_forms": [],
+            "typed_gaps": [],
+            "typed_failures": [],
+            "filings_discovered": 0,
+            "filings_created": 0,
+            "submission_snapshots_created": snapshot_count,
+            "artifacts_created": 0,
+            "parse_runs_created": 0,
+            "raw_facts_created": 0,
+            "metric_facts_published": 0,
+        }
+
+    pass_one = payload(first, first_available, 1, 1)
+    pass_two = payload(second, second_available, 2, 0)
+    with pytest.raises(ValueError, match="created counters.*pass 2"):
+        build_case_database_audit(
+            db_session,
+            expected_run_id="step-d-audit-test",
+            case={
+                "case_id": "audit-primary",
+                "cik": CIK,
+                "primary_listing": {"ticker": "AUDIT"},
+            },
+            pass_one=pass_one,
+            pass_two=pass_two,
+            storage_root=tmp_path,
+        )
 
 
 def test_finalize_serializes_against_concurrent_operation_write(

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
-from datetime import datetime
+from datetime import date, datetime
 import json
 from pathlib import Path
 from typing import Any, TYPE_CHECKING
@@ -12,7 +12,10 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.models.facts import MetricFact
-from app.models.sec_financials import SecFinancialIngestionOperation
+from app.models.sec_financials import (
+    SecFinancialIngestionOperation,
+    SecSubmissionSnapshot,
+)
 
 if TYPE_CHECKING:
     from app.services.sec_financial_ingestion import FinancialIngestionReport
@@ -23,11 +26,13 @@ class SecGoldSelectedFiling:
     accession_no: str
     form_type: str
     accepted_at: datetime
+    report_date: date | None = None
 
 
 @dataclass(frozen=True)
 class SecGoldAcceptanceCaseReport:
     schema_version: int
+    acceptance_pass: int
     run_id: str
     case_id: str
     stock_id: int
@@ -47,6 +52,7 @@ class SecGoldAcceptanceCaseReport:
     parse_runs_created: int
     raw_facts_created: int
     metric_facts_published: int
+    submission_snapshots_created: int = 0
 
     def __post_init__(self) -> None:
         timestamps = (
@@ -65,10 +71,12 @@ class SecGoldAcceptanceCaseReport:
             raise ValueError("availability cannot precede finalization")
         if self.metric_facts_published < 0:
             raise ValueError("metric_facts publication count cannot be negative")
+        if self.acceptance_pass not in {1, 2}:
+            raise ValueError("acceptance pass must be 1 or 2")
 
 
 def _json_value(value: Any) -> Any:
-    if isinstance(value, datetime):
+    if isinstance(value, (date, datetime)):
         return value.isoformat()
     if isinstance(value, tuple):
         return [_json_value(item) for item in value]
@@ -96,6 +104,7 @@ def build_case_report(
     expected_completed_fiscal_years: tuple[int, ...],
     ingestion_report: "FinancialIngestionReport",
     evidence_available_at: datetime,
+    acceptance_pass: int = 1,
 ) -> SecGoldAcceptanceCaseReport:
     operation = db.get(
         SecFinancialIngestionOperation, ingestion_report.operation_id
@@ -113,8 +122,20 @@ def build_case_report(
     metric_facts_published = int(
         db.scalar(select(func.count()).select_from(MetricFact)) or 0
     )
+    submission_snapshots_created = int(
+        db.scalar(
+            select(func.count())
+            .select_from(SecSubmissionSnapshot)
+            .where(
+                SecSubmissionSnapshot.operation_id
+                == ingestion_report.operation_id
+            )
+        )
+        or 0
+    )
     return SecGoldAcceptanceCaseReport(
         schema_version=1,
+        acceptance_pass=acceptance_pass,
         run_id=run_id,
         case_id=case_id,
         stock_id=ingestion_report.stock_id,
@@ -130,6 +151,7 @@ def build_case_report(
                 accession_no=item.accession_no,
                 form_type=item.form_type,
                 accepted_at=item.accepted_at,
+                report_date=item.report_date,
             )
             for item in ingestion_report.selected_filings
         ),
@@ -141,6 +163,7 @@ def build_case_report(
         parse_runs_created=ingestion_report.parse_runs_created,
         raw_facts_created=ingestion_report.raw_facts_created,
         metric_facts_published=metric_facts_published,
+        submission_snapshots_created=submission_snapshots_created,
     )
 
 
@@ -148,6 +171,7 @@ def render_human_case_summary(report: SecGoldAcceptanceCaseReport) -> str:
     selected_forms = sorted({item.form_type for item in report.selected_filings})
     lines = [
         f"acceptance_run_id={report.run_id} case={report.case_id} cik={report.cik}",
+        f"acceptance_pass={report.acceptance_pass}",
         f"filing_selection_as_of={report.filing_selection_as_of.isoformat()}",
         f"operation_attempted_at={report.operation_attempted_at.isoformat()}",
         f"evidence_finalized_at={report.evidence_finalized_at.isoformat()}",

@@ -270,6 +270,33 @@ def test_us_history_scans_for_ten_annuals_before_recent_quarters_consume_limit()
     )
 
 
+def test_history_supplemental_filings_do_not_predate_available_start() -> None:
+    annual = _filing(
+        sequence=100,
+        form="10-K",
+        report_date="2025-12-31",
+        accepted_at="2026-02-15T12:00:00Z",
+    )
+    stale_quarter = _filing(
+        sequence=101,
+        form="10-Q",
+        report_date="2013-03-31",
+        accepted_at="2013-04-18T12:00:00Z",
+    )
+
+    result = _discover(
+        HistoryClient(recent=[annual, stale_quarter], historical=[]),
+        CIK,
+        max_filings=2,
+        filing_selection_as_of=CUTOFF,
+        history_target=_target(cap=1, available_start_on=date(2015, 1, 1)),
+    )
+
+    assert [item.accession_no for item in result.filings] == [
+        annual["accessionNumber"]
+    ]
+
+
 def test_foreign_history_keeps_annuals_and_only_financially_useful_6k() -> None:
     recent = [
         _filing(

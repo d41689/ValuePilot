@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+import hashlib
 import json
 from pathlib import Path
 
@@ -20,6 +21,14 @@ from app.acceptance.sec_gold_report import (
     SecGoldSelectedFiling,
     render_human_case_summary,
     write_case_report,
+)
+from app.acceptance.sec_gold_audit import (
+    audit_retained_file,
+    build_aggregate_payload,
+    build_idempotency_delta,
+    render_human_aggregate_summary,
+    validate_aggregate_payload,
+    write_stable_json,
 )
 from test_support.database_isolation import build_isolated_database_url
 
@@ -285,6 +294,7 @@ def _case_report() -> SecGoldAcceptanceCaseReport:
     available_at = attempted_at + timedelta(seconds=2)
     return SecGoldAcceptanceCaseReport(
         schema_version=1,
+        acceptance_pass=1,
         run_id="step-c-20260830",
         case_id="aapl-primary",
         stock_id=77,
@@ -304,6 +314,7 @@ def _case_report() -> SecGoldAcceptanceCaseReport:
                 accepted_at=datetime(
                     2026, 7, 31, 16, 5, 28, tzinfo=timezone.utc
                 ),
+                report_date=datetime(2026, 6, 27).date(),
             ),
         ),
         typed_gaps=("annual_coverage_gap:2024,2023",),
@@ -328,10 +339,12 @@ def test_acceptance_report_is_stable_machine_and_human_output(
     human = render_human_case_summary(report)
 
     assert payload["filing_selection_as_of"] == "2026-08-26T23:59:59+00:00"
+    assert payload["acceptance_pass"] == 1
     assert payload["operation_attempted_at"] == "2026-08-30T12:00:00+00:00"
     assert payload["evidence_finalized_at"] == "2026-08-30T12:00:02+00:00"
     assert payload["evidence_available_at"] == "2026-08-30T12:00:02+00:00"
     assert payload["selected_forms"] == ["10-Q"]
+    assert payload["selected_filings"][0]["report_date"] == "2026-06-27"
     assert payload["typed_gaps"] == ["annual_coverage_gap:2024,2023"]
     assert payload["typed_failures"] == [
         "historical_submissions_sec_temporarily_unavailable"
@@ -364,5 +377,215 @@ def test_acceptance_report_rejects_backdated_or_external_destination(
         write_case_report(
             report,
             destination=tmp_path.parent / "escaped.json",
+            storage_root=tmp_path,
+        )
+
+
+def test_retained_file_audit_checks_existence_size_and_sha(tmp_path: Path) -> None:
+    content = b"retained SEC bytes"
+    digest = hashlib.sha256(content).hexdigest()
+    retained = tmp_path / "financial" / digest[:2] / digest
+    retained.parent.mkdir(parents=True)
+    retained.write_bytes(content)
+
+    valid = audit_retained_file(
+        storage_root=tmp_path,
+        storage_key=f"financial/{digest[:2]}/{digest}",
+        expected_size=len(content),
+        expected_sha256=digest,
+    )
+    assert valid["integrity_ok"] is True
+    assert valid["actual_size"] == len(content)
+    assert valid["actual_sha256"] == digest
+
+    retained.write_bytes(b"X" * len(content))
+    corrupt = audit_retained_file(
+        storage_root=tmp_path,
+        storage_key=f"financial/{digest[:2]}/{digest}",
+        expected_size=len(content),
+        expected_sha256=digest,
+    )
+    assert corrupt["integrity_ok"] is False
+    assert corrupt["exists"] is True
+    assert corrupt["sha256_ok"] is False
+
+    retained.unlink()
+    missing = audit_retained_file(
+        storage_root=tmp_path,
+        storage_key=f"financial/{digest[:2]}/{digest}",
+        expected_size=len(content),
+        expected_sha256=digest,
+    )
+    assert missing == {
+        "actual_sha256": None,
+        "actual_size": None,
+        "exists": False,
+        "integrity_ok": False,
+        "sha256_ok": False,
+        "size_ok": False,
+    }
+
+
+def test_idempotency_delta_uses_database_owned_second_pass_lineage() -> None:
+    database_created = {
+        "filings_created": 0,
+        "artifacts_created": 0,
+        "parse_runs_created": 0,
+        "raw_facts_created": 0,
+        "submission_snapshots_created": 0,
+    }
+
+    assert build_idempotency_delta(database_created) == {
+        "artifacts_created": 0,
+        "filings_created": 0,
+        "idempotent": True,
+        "parse_runs_created": 0,
+        "raw_facts_created": 0,
+        "submission_snapshots_created": 0,
+    }
+
+    database_created["parse_runs_created"] = 1
+    assert build_idempotency_delta(database_created)["idempotent"] is False
+
+
+def test_acceptance_aggregate_payload_is_stable_and_validates() -> None:
+    before = {
+        "metric_facts": 0,
+        "rate_guard": {
+            "instance_id": "11111111-1111-4111-8111-111111111111",
+            "url": "http://rate-guard-local:9000",
+            "metrics": {
+                "rate_per_sec": 1.0,
+                "total_request_count": 0,
+                "total_403_count": 0,
+                "total_429_count": 0,
+                "total_503_count": 0,
+            },
+        },
+    }
+    after = {
+        "metric_facts": 0,
+        "rate_guard": {
+            "instance_id": "11111111-1111-4111-8111-111111111111",
+            "url": "http://rate-guard-local:9000",
+            "metrics": {
+                "rate_per_sec": 1.0,
+                "total_request_count": 17,
+                "total_403_count": 0,
+                "total_429_count": 1,
+                "total_503_count": 2,
+            },
+        },
+    }
+    cases = [
+        {
+            "case_id": "aapl-primary",
+            "ticker": "AAPL",
+            "cik": "0000320193",
+            "expected_completed_fiscal_years": [2025],
+            "covered_completed_fiscal_years": [2025],
+            "pass_1": {"typed_gaps": [], "typed_failures": []},
+            "pass_2": {"typed_gaps": [], "typed_failures": []},
+            "idempotency_delta": {"idempotent": True},
+            "retained_integrity": {"checked": 2, "failed": 0, "bytes": 40},
+            "duplicates": {
+                "filings": 0,
+                "artifacts": 0,
+                "parse_runs": 0,
+                "raw_facts": 0,
+            },
+        }
+    ]
+
+    payload = build_aggregate_payload(
+        run_id="step-d-test",
+        expected_case_ids=("aapl-primary",),
+        before=before,
+        after=after,
+        cases=cases,
+        source_path_proof={
+            "configured_route": "http://rate-guard-local:9000",
+            "direct_sec_path": False,
+            "fallback_enabled": False,
+        },
+    )
+
+    validate_aggregate_payload(payload)
+    assert payload["rate_guard_delta"]["requests"] == 17
+    assert payload["rate_guard_delta"]["429"] == 1
+    assert payload["retained_integrity"]["checked"] == 2
+    assert payload["idempotent_case_count"] == 1
+    assert "cases=1/1" in render_human_aggregate_summary(payload)
+
+
+def test_acceptance_aggregate_validator_rejects_integrity_or_publication() -> None:
+    payload = {
+        "schema_version": 1,
+        "run_id": "step-d-test",
+        "expected_case_ids": ["aapl-primary"],
+        "cases": [{"case_id": "aapl-primary"}],
+        "case_count": 1,
+        "metric_facts_before": 0,
+        "metric_facts_after": 1,
+        "retained_integrity": {"checked": 1, "failed": 1, "bytes": 4},
+        "duplicate_totals": {
+            "filings": 0,
+            "artifacts": 0,
+            "parse_runs": 0,
+            "raw_facts": 0,
+        },
+        "rate_guard_before": {"instance_id": "same"},
+        "rate_guard_after": {"instance_id": "same"},
+        "rate_guard_delta": {"requests": 0, "403": 0, "429": 0, "503": 0},
+        "source_path_proof": {
+            "direct_sec_path": False,
+            "fallback_enabled": False,
+        },
+    }
+    with pytest.raises(ValueError, match="metric_facts"):
+        validate_aggregate_payload(payload)
+
+
+def test_acceptance_aggregate_validator_rejects_non_idempotent_second_pass() -> None:
+    payload = {
+        "schema_version": 1,
+        "run_id": "step-d-test",
+        "expected_case_ids": ["aapl-primary"],
+        "cases": [{"case_id": "aapl-primary"}],
+        "case_count": 1,
+        "idempotent_case_count": 0,
+        "metric_facts_before": 0,
+        "metric_facts_after": 0,
+        "retained_integrity": {"checked": 1, "failed": 0, "bytes": 4},
+        "duplicate_totals": {
+            "filings": 0,
+            "artifacts": 0,
+            "parse_runs": 0,
+            "raw_facts": 0,
+        },
+        "rate_guard_before": {"instance_id": "same"},
+        "rate_guard_after": {
+            "instance_id": "same",
+            "metrics": {"rate_per_sec": 1.0},
+        },
+        "source_path_proof": {
+            "direct_sec_path": False,
+            "fallback_enabled": False,
+        },
+    }
+
+    with pytest.raises(ValueError, match="idempotent"):
+        validate_aggregate_payload(payload)
+
+
+def test_acceptance_stable_json_writer_rejects_external_target(tmp_path: Path) -> None:
+    destination = tmp_path / "reports" / "aggregate.json"
+    write_stable_json({"ok": True}, destination=destination, storage_root=tmp_path)
+    assert destination.read_text(encoding="utf-8") == '{\n  "ok": true\n}\n'
+
+    with pytest.raises(ValueError, match="isolated storage"):
+        write_stable_json(
+            {"ok": False},
+            destination=tmp_path.parent / "outside.json",
             storage_root=tmp_path,
         )

@@ -9,7 +9,7 @@ ADMIN_USER=${VALUEPILOT_INFRA_ADMIN_USER:-infra_admin}
 DOCKER_BIN=${DOCKER_BIN:-docker}
 
 usage() {
-    echo "usage: $0 {create|verify|roundtrip|test|run-case|destroy|fingerprint-shared} <run-id> [case-id]" >&2
+    echo "usage: $0 {create|verify|roundtrip|test|snapshot|run-case|run-pass|audit|destroy|fingerprint-shared} <run-id> [arguments]" >&2
     exit 64
 }
 
@@ -212,10 +212,15 @@ case "$action" in
             tests/unit/test_edgar_client.py
         ;;
     run-case)
-        [ "$#" -eq 3 ] || usage
+        [ "$#" -eq 4 ] || usage
         case_id=$3
+        pass_number=$4
         case "$case_id" in
             *[!a-z0-9-]* | "") echo "invalid gold-set case ID" >&2; exit 64 ;;
+        esac
+        case "$pass_number" in
+            1 | 2) ;;
+            *) echo "acceptance pass must be 1 or 2" >&2; exit 64 ;;
         esac
         database_exists || {
             echo "acceptance database does not exist" >&2
@@ -229,7 +234,74 @@ case "$action" in
         acceptance_run python -m app.cli.sec_financials ingest-gold-case \
             --case-id "$case_id" \
             --acceptance-run-id "$run_id" \
-            --report-json "/code/storage/sec_gold_acceptance/$run_id/reports/$case_id.json"
+            --acceptance-pass "$pass_number" \
+            --report-json "/code/storage/sec_gold_acceptance/$run_id/reports/pass-$pass_number/$case_id.json"
+        ;;
+    snapshot)
+        [ "$#" -ge 3 ] && [ "$#" -le 4 ] || usage
+        phase=$3
+        central_status=${4:-not_attempted}
+        case "$phase" in before | after) ;; *) usage ;; esac
+        database_exists || { echo "acceptance database does not exist" >&2; exit 1; }
+        [ -d "$storage_root" ] || { echo "acceptance storage does not exist" >&2; exit 1; }
+        runtime_preflight
+        acceptance_run python -m app.cli.sec_financials acceptance-snapshot \
+            --acceptance-run-id "$run_id" \
+            --phase "$phase" \
+            --central-preflight-status "$central_status"
+        ;;
+    run-pass)
+        [ "$#" -eq 3 ] || usage
+        pass_number=$3
+        case "$pass_number" in 1 | 2) ;; *) usage ;; esac
+        database_exists || { echo "acceptance database does not exist" >&2; exit 1; }
+        [ -d "$storage_root" ] || { echo "acceptance storage does not exist" >&2; exit 1; }
+        runtime_preflight
+        acceptance_run python -m app.cli.sec_financials acceptance-bootstrap-stocks \
+            --acceptance-run-id "$run_id"
+        case_ids=$(acceptance_run python -c \
+            'import yaml; data=yaml.safe_load(open("/code/docs/acceptance/financial_truth_beta_gold_set.yml", encoding="utf-8")); print(" ".join(item["case_id"] for item in data["cases"]))')
+        completed=0
+        observed_incomplete=0
+        for case_id in $case_ids; do
+            if [ -f "$storage_root/reports/pass-$pass_number/$case_id.json" ]; then
+                completed=$((completed + 1))
+                echo "acceptance_progress pass=$pass_number completed=$completed/24 resumed_existing=$case_id"
+                continue
+            fi
+            echo "acceptance_progress pass=$pass_number completed=$completed/24 next=$case_id"
+            status=0
+            acceptance_run python -m app.cli.sec_financials ingest-gold-case \
+                --case-id "$case_id" \
+                --acceptance-run-id "$run_id" \
+                --acceptance-pass "$pass_number" \
+                --report-json "/code/storage/sec_gold_acceptance/$run_id/reports/pass-$pass_number/$case_id.json" || status=$?
+            case "$status" in
+                0) ;;
+                2) observed_incomplete=$((observed_incomplete + 1)) ;;
+                *) echo "acceptance stopped on operational failure: case=$case_id status=$status" >&2; exit "$status" ;;
+            esac
+            completed=$((completed + 1))
+            echo "acceptance_progress pass=$pass_number completed=$completed/24 typed_incomplete_observed=$observed_incomplete"
+        done
+        [ "$completed" -eq 24 ] || { echo "locked manifest did not yield 24 cases" >&2; exit 1; }
+        status=0
+        acceptance_run python -m app.cli.sec_financials acceptance-pass-report-status \
+            --acceptance-run-id "$run_id" \
+            --acceptance-pass "$pass_number" || status=$?
+        case "$status" in
+            0) ;;
+            2) echo "acceptance pass completed with typed incomplete reports" >&2; exit 2 ;;
+            *) echo "acceptance pass report validation failed: status=$status" >&2; exit "$status" ;;
+        esac
+        ;;
+    audit)
+        [ "$#" -eq 2 ] || usage
+        database_exists || { echo "acceptance database does not exist" >&2; exit 1; }
+        [ -d "$storage_root" ] || { echo "acceptance storage does not exist" >&2; exit 1; }
+        runtime_preflight
+        acceptance_run python -m app.cli.sec_financials acceptance-audit \
+            --acceptance-run-id "$run_id"
         ;;
     destroy)
         [ "$#" -eq 2 ] || usage

@@ -1,5 +1,6 @@
 from datetime import date, datetime, timedelta, timezone
 import json
+import uuid
 from types import SimpleNamespace
 
 import pytest
@@ -8,6 +9,7 @@ from typer.testing import CliRunner
 
 from app.cli import sec_financials as financial_cli
 from app.cli.sec_financials import (
+    _bootstrap_gold_case_stocks,
     _gold_case,
     _history_target_for_case,
     _resolve_gold_case_stock,
@@ -36,6 +38,42 @@ BRKB_CASE = {
         "share_class": "class_b",
     },
 }
+
+
+def _write_acceptance_pass_reports(
+    reports_root,
+    *,
+    run_id: str = "step-d-resume-test",
+    acceptance_pass: int = 2,
+) -> list[dict]:
+    manifest = financial_cli.yaml.safe_load(
+        financial_cli.MANIFEST_PATH.read_text(encoding="utf-8")
+    )
+    destination = reports_root / f"pass-{acceptance_pass}"
+    destination.mkdir(parents=True)
+    for case in manifest["cases"]:
+        case_id = str(case["case_id"])
+        payload = {
+            "schema_version": 1,
+            "acceptance_pass": acceptance_pass,
+            "run_id": run_id,
+            "case_id": case_id,
+            "operation_id": str(uuid.uuid4()),
+            "typed_gaps": (
+                ["annual_coverage_gap:2022,2021"]
+                if case_id == "jpm-primary"
+                else []
+            ),
+            "typed_failures": (
+                ["history_scan_limit_exceeded"]
+                if case_id == "gs-primary"
+                else []
+            ),
+        }
+        (destination / f"{case_id}.json").write_text(
+            json.dumps(payload), encoding="utf-8"
+        )
+    return manifest["cases"]
 
 
 def _stock(
@@ -98,6 +136,34 @@ def test_locked_gold_case_builds_ten_year_history_target_at_cycle_cutoff() -> No
     assert target.available_start_on == date(2015, 1, 1)
     assert target.completed_fiscal_year_cap == 10
     assert target.filing_selection_as_of == locked.cutoff_at
+
+
+def test_acceptance_bootstrap_stocks_is_locked_and_idempotent(db_session) -> None:
+    manifest = {
+        "cases": [
+            BRKB_CASE,
+            {
+                "case_id": "aapl-primary",
+                "company_name": "Apple Inc.",
+                "cik": "0000320193",
+                "primary_listing": {
+                    "ticker": "AAPL",
+                    "mic": "XNAS",
+                    "country": "US",
+                    "instrument_type": "common_stock",
+                    "share_class": "common",
+                },
+            },
+        ]
+    }
+
+    assert _bootstrap_gold_case_stocks(db_session, manifest) == 2
+    assert _bootstrap_gold_case_stocks(db_session, manifest) == 0
+    rows = db_session.query(Stock).order_by(Stock.ticker).all()
+    assert [(row.ticker, row.listing_exchange) for row in rows] == [
+        ("AAPL", "XNAS"),
+        ("BRK-B", "XNYS"),
+    ]
 
 
 @pytest.mark.parametrize(
@@ -274,14 +340,18 @@ def test_ingest_gold_case_finalizes_terminal_acquisition_failure_before_exit(
     assert "failure=main_submissions:sec_temporarily_unavailable" in result.output
 
 
+@pytest.mark.parametrize("acceptance_pass", (1, 2))
 def test_ingest_gold_case_writes_stable_acceptance_report(
     monkeypatch,
     tmp_path,
+    acceptance_pass: int,
 ) -> None:
     stock = SimpleNamespace(id=77, ticker="AAPL")
     session = _SessionStub()
     operation_id = "11111111-1111-4111-8111-111111111111"
-    report_path = tmp_path / "reports" / "aapl-primary.json"
+    report_path = (
+        tmp_path / "reports" / f"pass-{acceptance_pass}" / "aapl-primary.json"
+    )
     monkeypatch.setattr(financial_cli, "_utc_now", lambda: NOW)
     monkeypatch.setattr(financial_cli, "SessionLocal", lambda: session)
     monkeypatch.setattr(financial_cli.settings, "EDGAR_RAW_STORAGE_DIR", str(tmp_path))
@@ -348,6 +418,8 @@ def test_ingest_gold_case_writes_stable_acceptance_report(
             "aapl-primary",
             "--acceptance-run-id",
             "step-c-fake",
+            "--acceptance-pass",
+            str(acceptance_pass),
             "--report-json",
             str(report_path),
         ],
@@ -356,6 +428,7 @@ def test_ingest_gold_case_writes_stable_acceptance_report(
     assert result.exit_code == 2, result.output
     payload = json.loads(report_path.read_text(encoding="utf-8"))
     assert payload["run_id"] == "step-c-fake"
+    assert payload["acceptance_pass"] == acceptance_pass
     assert payload["filing_selection_as_of"] == "2026-08-26T23:59:59+00:00"
     assert payload["operation_attempted_at"] == "2026-08-30T12:00:00+00:00"
     assert payload["evidence_available_at"] == "2026-08-30T12:00:02+00:00"
@@ -946,3 +1019,110 @@ def test_gold_case_inactive_reviewed_stock_never_falls_back_to_active_alias(
         match="reviewed CIK identity conflicts with locked case brkb-primary",
     ):
         _resolve_gold_case_stock(db_session, BRKB_CASE, at=NOW)
+
+
+def test_acceptance_pass_report_status_preserves_resumed_typed_incomplete_exit(
+    monkeypatch, tmp_path
+) -> None:
+    reports_root = tmp_path / "reports"
+    _write_acceptance_pass_reports(reports_root)
+    monkeypatch.setattr(
+        financial_cli,
+        "preflight_configured_acceptance_runtime",
+        lambda run_id: SimpleNamespace(
+            run_id=run_id,
+            reports_root=reports_root,
+            storage_root=tmp_path,
+        ),
+    )
+
+    result = CliRunner().invoke(
+        financial_cli.app,
+        [
+            "acceptance-pass-report-status",
+            "--acceptance-run-id",
+            "step-d-resume-test",
+            "--acceptance-pass",
+            "2",
+        ],
+    )
+
+    assert result.exit_code == 2
+    assert "completed=24/24" in result.output
+    assert "typed_incomplete=2" in result.output
+
+
+@pytest.mark.parametrize(
+    ("field", "invalid_value"),
+    (
+        ("run_id", "wrong-run"),
+        ("case_id", "wrong-case"),
+        ("acceptance_pass", 1),
+    ),
+)
+def test_acceptance_pass_report_status_rejects_wrong_report_identity(
+    monkeypatch, tmp_path, field, invalid_value
+) -> None:
+    reports_root = tmp_path / "reports"
+    cases = _write_acceptance_pass_reports(reports_root)
+    first_case_id = str(cases[0]["case_id"])
+    report_path = reports_root / "pass-2" / f"{first_case_id}.json"
+    payload = json.loads(report_path.read_text(encoding="utf-8"))
+    payload[field] = invalid_value
+    report_path.write_text(json.dumps(payload), encoding="utf-8")
+    monkeypatch.setattr(
+        financial_cli,
+        "preflight_configured_acceptance_runtime",
+        lambda run_id: SimpleNamespace(
+            run_id=run_id,
+            reports_root=reports_root,
+            storage_root=tmp_path,
+        ),
+    )
+
+    result = CliRunner().invoke(
+        financial_cli.app,
+        [
+            "acceptance-pass-report-status",
+            "--acceptance-run-id",
+            "step-d-resume-test",
+            "--acceptance-pass",
+            "2",
+        ],
+    )
+
+    assert result.exit_code == 1
+    assert f"acceptance report identity mismatch: {first_case_id}" in result.output
+
+
+def test_acceptance_pass_report_status_rejects_malformed_existing_report(
+    monkeypatch, tmp_path
+) -> None:
+    reports_root = tmp_path / "reports"
+    cases = _write_acceptance_pass_reports(reports_root)
+    first_case_id = str(cases[0]["case_id"])
+    report_path = reports_root / "pass-2" / f"{first_case_id}.json"
+    report_path.write_text('{"broken":', encoding="utf-8")
+    monkeypatch.setattr(
+        financial_cli,
+        "preflight_configured_acceptance_runtime",
+        lambda run_id: SimpleNamespace(
+            run_id=run_id,
+            reports_root=reports_root,
+            storage_root=tmp_path,
+        ),
+    )
+
+    result = CliRunner().invoke(
+        financial_cli.app,
+        [
+            "acceptance-pass-report-status",
+            "--acceptance-run-id",
+            "step-d-resume-test",
+            "--acceptance-pass",
+            "2",
+        ],
+    )
+
+    assert result.exit_code == 1
+    assert "JSONDecodeError" in result.output

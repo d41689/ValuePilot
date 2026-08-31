@@ -214,3 +214,23 @@ def test_metrics_count_requests_and_cache(tmp_path):
     assert m["recent_request_count"] == 1
     assert m["cache_hits"] == 1
     assert m["cache_misses"] == 1
+    assert m["total_request_count"] == 1
+    assert m["total_403_count"] == 0
+    assert m["total_429_count"] == 0
+
+
+def test_metrics_retain_exact_status_totals_beyond_rolling_window(tmp_path):
+    statuses = [429, 200]
+    gw = _gateway(
+        tmp_path,
+        lambda request: httpx.Response(statuses.pop(0), content=b"ok"),
+        {"test": _upstream(backoff_s=(0.0,), pause_s=0.0)},
+    )
+
+    gw.fetch("test", "GET", "https://example.com/a")
+    metrics = gw.metrics("test")
+
+    assert metrics["total_request_count"] == 2
+    assert metrics["total_403_count"] == 0
+    assert metrics["total_429_count"] == 1
+    assert metrics["total_503_count"] == 0

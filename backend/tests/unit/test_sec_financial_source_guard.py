@@ -8,6 +8,9 @@ SANCTIONED = {
     APP_ROOT / "models" / "sec_financials.py",
     APP_ROOT / "services" / "sec_financial_ingestion.py",
     APP_ROOT / "cli" / "sec_financials.py",
+    # Step D acceptance audits lineage counts and duplicate identities only;
+    # it does not read fact values or expose a product query path.
+    APP_ROOT / "acceptance" / "sec_gold_audit.py",
 }
 RAW_TOKENS = ("SecRawXbrlFact", "sec_raw_xbrl_facts")
 

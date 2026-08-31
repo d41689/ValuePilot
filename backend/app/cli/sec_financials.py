@@ -25,6 +25,17 @@ from app.acceptance.sec_gold_environment import (
     preflight_configured_acceptance_runtime,
     validate_acceptance_run_id,
 )
+from app.acceptance.sec_gold_audit import (
+    build_aggregate_payload,
+    build_case_database_audit,
+    build_runtime_snapshot,
+    load_stable_json,
+    render_human_aggregate_summary,
+    validate_aggregate_payload,
+    validate_case_report_identity,
+    write_stable_json,
+    write_stable_text,
+)
 from app.acceptance.sec_gold_report import (
     build_case_report,
     render_human_case_summary,
@@ -38,6 +49,7 @@ from app.models.sec_financials import (
     SecIssuerIdentity,
 )
 from app.models.stocks import Stock
+from app.rate_guard.client import RateGuardClient
 from app.services.sec_financial_ingestion import (
     FinancialHistoryTarget,
     _expected_completed_fiscal_years,
@@ -252,6 +264,68 @@ def _resolve_gold_case_stock(
     )
 
 
+def _bootstrap_gold_case_stocks(db, manifest: dict) -> int:
+    """Insert only missing locked-manifest stock identities in acceptance DB."""
+    created = 0
+    for case in manifest["cases"]:
+        aliases = _ticker_aliases(case)
+        candidates = db.scalars(
+            select(Stock).where(func.upper(Stock.ticker).in_(aliases))
+        ).all()
+        consistent = [
+            stock for stock in candidates if _stock_matches_locked_case(stock, case)
+        ]
+        if len(consistent) == 1 and len(candidates) == 1:
+            continue
+        if candidates:
+            raise ValueError(
+                f"locked acceptance stock conflicts with existing rows: {case['case_id']}"
+            )
+        listing = case["primary_listing"]
+        db.add(
+            Stock(
+                ticker=str(listing["ticker"]).strip().upper(),
+                exchange=str(listing["mic"]).strip().upper(),
+                market_country=str(listing["country"]).strip().upper(),
+                listing_exchange=str(listing["mic"]).strip().upper(),
+                raw_exchange=str(listing["mic"]).strip().upper(),
+                company_name=str(case["company_name"]),
+                is_active=True,
+            )
+        )
+        db.flush()
+        created += 1
+    return created
+
+
+@app.command("acceptance-bootstrap-stocks")
+def acceptance_bootstrap_stocks(
+    acceptance_run_id: str = typer.Option(...),
+) -> None:
+    """Seed only the 24 locked stock rows into a preflighted acceptance DB."""
+    try:
+        preflight_configured_acceptance_runtime(acceptance_run_id)
+    except Exception as exc:
+        typer.echo(f"acceptance preflight failed: {exc}", err=True)
+        raise typer.Exit(1) from exc
+    db = SessionLocal()
+    try:
+        manifest = yaml.safe_load(MANIFEST_PATH.read_text(encoding="utf-8"))
+        validate_gold_set(manifest)
+        created = _bootstrap_gold_case_stocks(db, manifest)
+        db.commit()
+        typer.echo(
+            f"acceptance_run_id={acceptance_run_id} "
+            f"locked_stocks_created={created} locked_stock_count={len(manifest['cases'])}"
+        )
+    except Exception as exc:
+        db.rollback()
+        typer.echo(f"Error: {type(exc).__name__}: {exc}", err=True)
+        raise typer.Exit(1) from exc
+    finally:
+        db.close()
+
+
 @app.command("ingest-gold-case")
 def ingest_gold_case(
     case_id: str = typer.Option(..., help="Locked FT-00 case id."),
@@ -268,6 +342,12 @@ def ingest_gold_case(
     acceptance_run_id: str | None = typer.Option(
         None,
         help="Validated isolated acceptance run ID; requires --report-json.",
+    ),
+    acceptance_pass: int = typer.Option(
+        1,
+        min=1,
+        max=2,
+        help="Gold-set acceptance pass number for pass-specific reporting.",
     ),
     report_json: Path | None = typer.Option(
         None,
@@ -289,7 +369,9 @@ def ingest_gold_case(
                 acceptance_run_id
             )
             expected_report = (
-                acceptance_environment.reports_root / f"{case_id}.json"
+                acceptance_environment.reports_root
+                / f"pass-{acceptance_pass}"
+                / f"{case_id}.json"
             )
             if report_json is None or report_json.absolute() != expected_report:
                 raise ValueError(
@@ -430,13 +512,20 @@ def ingest_gold_case(
                 expected_completed_fiscal_years=expected_years,
                 ingestion_report=report,
                 evidence_available_at=available_at,
+                acceptance_pass=acceptance_pass,
             )
             write_case_report(
                 acceptance_report,
                 destination=report_json,
                 storage_root=Path(settings.EDGAR_RAW_STORAGE_DIR),
             )
-            typer.echo(render_human_case_summary(acceptance_report))
+            human_summary = render_human_case_summary(acceptance_report)
+            write_stable_text(
+                human_summary,
+                destination=report_json.with_suffix(".txt"),
+                storage_root=Path(settings.EDGAR_RAW_STORAGE_DIR),
+            )
+            typer.echo(human_summary)
             typer.echo(f"acceptance_report_json={report_json.resolve()}")
         for failure in report.failures:
             typer.echo(f"failure={failure}", err=True)
@@ -448,6 +537,193 @@ def ingest_gold_case(
         db.rollback()
         typer.echo(f"Error: {type(exc).__name__}: {exc}", err=True)
         raise typer.Exit(1)
+    finally:
+        db.close()
+
+
+@app.command("acceptance-snapshot")
+def acceptance_snapshot(
+    acceptance_run_id: str = typer.Option(...),
+    phase: str = typer.Option(..., help="Snapshot phase: before or after."),
+    central_preflight_status: str = typer.Option("not_attempted"),
+) -> None:
+    """Capture a stable isolated DB/storage/Rate Guard acceptance snapshot."""
+    if phase not in {"before", "after"}:
+        raise typer.BadParameter("phase must be before or after")
+    try:
+        environment = preflight_configured_acceptance_runtime(acceptance_run_id)
+    except Exception as exc:
+        typer.echo(f"acceptance preflight failed: {exc}", err=True)
+        raise typer.Exit(1) from exc
+    db = SessionLocal()
+    try:
+        with RateGuardClient() as client:
+            instance_id = client.verify_identity()
+            metrics = client.metrics("edgar")
+        source_path_proof = {
+            "configured_route": str(settings.RATE_GUARD_URL or "").rstrip("/"),
+            "configured_instance_id": str(
+                settings.RATE_GUARD_EXPECTED_INSTANCE_ID or ""
+            ),
+            "central_preflight_status": central_preflight_status,
+            "direct_sec_path": False,
+            "fallback_enabled": bool(settings.RATE_GUARD_ALLOW_LOCAL_FALLBACK),
+            "fetch_mode": settings.EDGAR_FETCH_MODE,
+        }
+        payload = build_runtime_snapshot(
+            db,
+            run_id=acceptance_run_id,
+            captured_at=_utc_now(),
+            database_name=environment.database_name,
+            storage_root=Path(settings.EDGAR_RAW_STORAGE_DIR),
+            rate_guard_url=str(settings.RATE_GUARD_URL or ""),
+            rate_guard_instance_id=instance_id,
+            rate_guard_metrics=metrics,
+            source_path_proof=source_path_proof,
+        )
+        db.rollback()
+        destination = environment.reports_root / f"runtime-{phase}.json"
+        write_stable_json(
+            payload,
+            destination=destination,
+            storage_root=environment.storage_root,
+        )
+        typer.echo(
+            f"acceptance_snapshot={destination} database={environment.database_name} "
+            f"rate_guard_instance_id={instance_id}"
+        )
+    except Exception as exc:
+        db.rollback()
+        typer.echo(f"Error: {type(exc).__name__}: {exc}", err=True)
+        raise typer.Exit(1) from exc
+    finally:
+        db.close()
+
+
+@app.command("acceptance-pass-report-status")
+def acceptance_pass_report_status(
+    acceptance_run_id: str = typer.Option(...),
+    acceptance_pass: int = typer.Option(...),
+) -> None:
+    """Derive one pass terminal status from every locked stable report."""
+    if acceptance_pass not in {1, 2}:
+        typer.echo("Error: acceptance pass must be 1 or 2", err=True)
+        raise typer.Exit(1)
+    try:
+        environment = preflight_configured_acceptance_runtime(acceptance_run_id)
+    except Exception as exc:
+        typer.echo(f"acceptance preflight failed: {exc}", err=True)
+        raise typer.Exit(1) from exc
+    try:
+        manifest = yaml.safe_load(MANIFEST_PATH.read_text(encoding="utf-8"))
+        validate_gold_set(manifest)
+        incomplete = 0
+        completed = 0
+        for case in manifest["cases"]:
+            case_id = str(case["case_id"])
+            payload = load_stable_json(
+                environment.reports_root
+                / f"pass-{acceptance_pass}"
+                / f"{case_id}.json"
+            )
+            if validate_case_report_identity(
+                payload,
+                expected_run_id=acceptance_run_id,
+                expected_case_id=case_id,
+                expected_pass=acceptance_pass,
+            ):
+                incomplete += 1
+            completed += 1
+        typer.echo(
+            f"acceptance_pass_status pass={acceptance_pass} "
+            f"completed={completed}/{len(manifest['cases'])} "
+            f"typed_incomplete={incomplete}"
+        )
+        if incomplete:
+            raise typer.Exit(2)
+    except typer.Exit:
+        raise
+    except Exception as exc:
+        typer.echo(f"Error: {type(exc).__name__}: {exc}", err=True)
+        raise typer.Exit(1) from exc
+
+
+@app.command("acceptance-audit")
+def acceptance_audit(
+    acceptance_run_id: str = typer.Option(...),
+) -> None:
+    """Build and validate the two-pass SEC gold-set aggregate report."""
+    try:
+        environment = preflight_configured_acceptance_runtime(acceptance_run_id)
+    except Exception as exc:
+        typer.echo(f"acceptance preflight failed: {exc}", err=True)
+        raise typer.Exit(1) from exc
+    db = SessionLocal()
+    validation_error: ValueError | None = None
+    try:
+        manifest = yaml.safe_load(MANIFEST_PATH.read_text(encoding="utf-8"))
+        validate_gold_set(manifest)
+        expected_case_ids = tuple(str(item["case_id"]) for item in manifest["cases"])
+        before = load_stable_json(environment.reports_root / "runtime-before.json")
+        after = load_stable_json(environment.reports_root / "runtime-after.json")
+        cases = []
+        for case in manifest["cases"]:
+            case_id = str(case["case_id"])
+            pass_one = load_stable_json(
+                environment.reports_root / "pass-1" / f"{case_id}.json"
+            )
+            pass_two = load_stable_json(
+                environment.reports_root / "pass-2" / f"{case_id}.json"
+            )
+            if pass_one.get("acceptance_pass") != 1 or pass_two.get(
+                "acceptance_pass"
+            ) != 2:
+                raise ValueError(f"case pass identity mismatch: {case_id}")
+            cases.append(
+                build_case_database_audit(
+                    db,
+                    expected_run_id=acceptance_run_id,
+                    case=case,
+                    pass_one=pass_one,
+                    pass_two=pass_two,
+                    storage_root=environment.storage_root,
+                )
+            )
+        db.rollback()
+        payload = build_aggregate_payload(
+            run_id=acceptance_run_id,
+            expected_case_ids=expected_case_ids,
+            before=before,
+            after=after,
+            cases=cases,
+            source_path_proof=dict(before["source_path_proof"]),
+        )
+        human = render_human_aggregate_summary(payload)
+        write_stable_json(
+            payload,
+            destination=environment.reports_root / "aggregate.json",
+            storage_root=environment.storage_root,
+        )
+        write_stable_text(
+            human,
+            destination=environment.reports_root / "aggregate.txt",
+            storage_root=environment.storage_root,
+        )
+        try:
+            validate_aggregate_payload(payload)
+        except ValueError as exc:
+            validation_error = exc
+        typer.echo(human)
+        typer.echo(f"acceptance_aggregate_json={environment.reports_root / 'aggregate.json'}")
+        if validation_error is not None:
+            typer.echo(f"acceptance_validation_failure={validation_error}", err=True)
+            raise typer.Exit(2)
+    except typer.Exit:
+        raise
+    except Exception as exc:
+        db.rollback()
+        typer.echo(f"Error: {type(exc).__name__}: {exc}", err=True)
+        raise typer.Exit(1) from exc
     finally:
         db.close()
 
