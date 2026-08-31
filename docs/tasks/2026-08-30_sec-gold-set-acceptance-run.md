@@ -1,8 +1,7 @@
 # SEC financial gold-set acceptance run
 
-Status: Step D implementation and acceptance complete; Step E isolated-test
-supporting fix ready for Terra review, with gates 4-7 paused; hold isolated
-databases and reports
+Status: Step D implementation and acceptance complete; Step E canonical closing
+gate passed on final HEAD; hold isolated databases and reports
 
 Owner: Product / Engineering
 
@@ -239,3 +238,60 @@ publish SEC raw facts into canonical `metric_facts`.
   frontend tests, lint, build, canonical `git diff --check`, and the full
   closing-gate rerun remain paused. No external SEC request or direct SEC path
   was used. Both closing-gate databases and the Step D evidence remain intact.
+
+## Final Step E canonical closing gate
+
+- Terra passed the isolated quant-audit supporting fix, committed by the root
+  agent as `3129deb002343f20bfba68da3d279dc2e807ed83`. The final gate used a
+  third, never-before-used database,
+  `valuepilot_test_step_e_final_20260831`, rather than either prior diagnostic
+  database. Before any migration, PostgreSQL returned that exact
+  `current_database()` and zero `public` tables.
+- The fixed Compose project was `valuepilot-step-e-final-20260831`. Its
+  repository-external override, resolved config, and isolated storage are:
+  `/tmp/valuepilot-step-e-final-20260831.ljXxTA/docker-compose.closing-gate.yml`,
+  `/tmp/valuepilot-step-e-final-20260831.ljXxTA/resolved-compose.yml`, and
+  `/tmp/valuepilot-step-e-final-20260831.ljXxTA/edgar_raw`. The resolved API
+  configuration names only the final test database, selects replay mode, uses
+  the project-local Rate Guard with fallback disabled, and disables SEC/13F,
+  research-notification, manager-seed, and CUSIP-seed background work.
+- With `COMPOSE_FILE`, `COMPOSE_PROJECT_NAME`, and the non-conflicting host ports
+  exported once for that fixed environment, the seven canonical commands ran
+  verbatim, in the required order, and each exited zero:
+
+  1. `docker compose up -d --build` — passed; API, web, placeholder DB, and
+     local Rate Guard images built and containers started.
+  2. `docker compose exec -T api alembic upgrade head` — passed; the empty
+     database upgraded from base through `20260830140000`.
+  3. `docker compose exec -T api pytest -q` — **1,703 passed, 1 warning in
+     198.20 seconds**. The warning is the pre-existing FastAPI test-client
+     compatibility deprecation notice; there were no failures.
+  4. `docker compose exec -T web sh -lc 'node --test lib/*.test.js'` — **216
+     passed, 0 failed** in 200.79725 milliseconds.
+  5. `docker compose exec -T web npm run lint` — passed with no ESLint warnings
+     or errors.
+  6. `docker compose exec -T web sh -lc 'NODE_ENV=production npm run build'` —
+     passed; optimized compilation, type/lint validation, and all 27 static
+     pages completed. The only notice was the pre-existing stale Browserslist
+     data item already recorded in `docs/BACKLOG.md`.
+  7. `git diff --check` — passed with no output.
+- `alembic heads` and `alembic current` both report the sole head
+  `20260830140000`. After the gate, the final database has 75 migrated public
+  tables and zero rows in `metric_facts`, `sec_raw_xbrl_facts`, SEC financial
+  ingestion operations, retained SEC artifacts, and SEC parse runs. Thus no
+  SEC raw fact was published to `metric_facts`.
+- The focused source/egress/Rate Guard client proof also passed **48 tests**
+  with the same pre-existing test-client warning. The authenticated local Rate
+  Guard metrics remained at zero total requests, zero cache hits/misses, zero
+  403/429/503 responses, and no global pause. Its configured EDGAR policy stayed
+  at one request/second and five retries. No direct SEC path or real SEC request
+  ran during Step E.
+- A final read-only fingerprint of shared `valuepilot` remained at revision
+  `20260828500000` with 68 public tables. The retained Step D database still has
+  its 48 operations, and its 5,908,011-byte aggregate report remains present at
+  `storage/sec_gold_acceptance/step-d-gold-20260830/reports/aggregate.json`.
+  Neither shared development state nor Step D evidence was modified or cleaned.
+- No new unrecorded deferred finding was discovered. The isolated final
+  database, temporary Compose evidence, containers, and Step D database/storage
+  remain intact for final review. No commit or push was performed for this
+  task-document update.
