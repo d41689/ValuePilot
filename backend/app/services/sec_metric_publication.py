@@ -15,13 +15,15 @@ from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from app.services.sec_financial_mapping import (
-    ConceptRule, MappingResult, MappingRule, MappingRunAuthority, MappingSnapshot,
+    ConceptRule, FilingCycleSourceAuthority, MappingResult, MappingRule,
+    MappingRunAuthority, MappingSnapshot,
     RawFactSnapshot, TypedDisposition,
     map_sec_financial_snapshot, validate_sec_mapping_snapshot,
 )
 from app.services.sec_statement_authority import (
     StatementAuthoritySnapshot, authoritative_raw_fact_snapshot,
 )
+from app.services.sec_financial_locking import acquire_sec_financial_stock_lock
 
 
 @dataclass(frozen=True)
@@ -58,6 +60,173 @@ class PublicationReceipt:
 
 class SecPublicationError(RuntimeError):
     pass
+
+
+SEC_PUBLICATION_V1_PARSER_VERSION = "xbrl-lineage-v2"
+
+
+@dataclass(frozen=True)
+class _ResolvedLatestKnownV1Authority:
+    sources: tuple[VerifiedPublicationSource, ...]
+    filing_cycles: tuple[FilingCycleSourceAuthority, ...]
+
+
+def _resolve_latest_known_v1_authority(
+    db: Session,
+    *,
+    stock_id: int,
+    issuer_identity_id: int,
+    requested_cutoff: datetime,
+) -> _ResolvedLatestKnownV1Authority:
+    """Resolve the complete V1 parse authority from durable filing lineage."""
+
+    if requested_cutoff.tzinfo is None or requested_cutoff.utcoffset() is None:
+        raise SecPublicationError("publication cutoff must be timezone-aware")
+    rows = db.execute(
+        text(
+            """SELECT pr.id AS parse_run_id,pr.filing_id,pr.parser_version,
+                      pr.input_manifest_hash,pr.status,pr.known_at AS parse_known_at,
+                      pr.completed_at,f.accession_no,f.form_type,f.is_amendment,
+                      f.report_date,f.accepted_at,f.known_at AS filing_known_at,
+                      a.available_at
+               FROM sec_financial_parse_runs pr
+               JOIN sec_financial_filings f ON f.id=pr.filing_id
+               JOIN sec_issuer_identities i ON i.id=f.issuer_identity_id
+               JOIN sec_financial_lineage_availabilities a
+                 ON a.operation_id=pr.operation_id
+               WHERE f.issuer_identity_id=:issuer AND i.stock_id=:stock
+                 AND f.report_date IS NOT NULL
+                 AND f.accepted_at<=:cutoff AND f.known_at<=:cutoff
+                 AND pr.completed_at<=:cutoff AND pr.known_at<=:cutoff
+                 AND a.available_at<=:cutoff
+                 AND pr.parser_version=:parser
+                 AND (
+                   pr.status='succeeded'
+                   OR (
+                     pr.status='failed' AND f.is_amendment
+                     AND right(f.form_type,2)='/A' AND pr.fact_count=0
+                     AND EXISTS (
+                       SELECT 1 FROM sec_financial_accession_attempts attempt
+                       WHERE attempt.parse_run_id=pr.id AND attempt.filing_id=f.id
+                         AND attempt.outcome IN ('parse_failed','parse_reused_failed')
+                     )
+                     AND EXISTS (
+                       SELECT 1 FROM sec_financial_acquisition_resolutions resolution
+                       WHERE resolution.parse_run_id=pr.id
+                         AND resolution.accession_no=f.accession_no
+                         AND resolution.resolution_kind='parse_failed'
+                     )
+                   )
+                 )
+               ORDER BY f.id,pr.known_at,pr.completed_at,a.available_at,
+                        pr.input_manifest_hash"""
+        ),
+        {
+            "issuer": issuer_identity_id,
+            "stock": stock_id,
+            "cutoff": requested_cutoff,
+            "parser": SEC_PUBLICATION_V1_PARSER_VERSION,
+        },
+    ).mappings().all()
+
+    latest_by_filing: dict[int, object] = {}
+    for row in rows:
+        prior = latest_by_filing.get(row.filing_id)
+        if prior is not None:
+            prior_boundary = (
+                prior.parse_known_at,
+                prior.completed_at,
+                prior.available_at,
+            )
+            row_boundary = (row.parse_known_at, row.completed_at, row.available_at)
+            if row_boundary == prior_boundary:
+                raise SecPublicationError(
+                    "ambiguous latest parser authority for one filing"
+                )
+        latest_by_filing[row.filing_id] = row
+
+    cycles: dict[tuple[str, date], list[object]] = {}
+    for row in latest_by_filing.values():
+        cycles.setdefault(
+            (str(row.form_type).removesuffix("/A"), row.report_date), []
+        ).append(row)
+
+    selected = []
+    for cycle in sorted(cycles, key=lambda item: (item[1], item[0])):
+        members = cycles[cycle]
+        originals = [row for row in members if not row.is_amendment]
+        amendments = [row for row in members if row.is_amendment]
+        filing_order = lambda row: (
+            row.accepted_at,
+            row.filing_known_at,
+            row.available_at,
+            row.accession_no,
+            row.parse_known_at,
+            row.input_manifest_hash,
+        )
+        if originals:
+            selected.append(max(originals, key=filing_order))
+        # Each amendment accession is independent retained authority.  A later
+        # successful amendment can affect only the slots it proves; it cannot
+        # classify the unknown scope of an earlier failed accession.  A later
+        # successful parse of that same filing is selected above and replaces
+        # its earlier failed parse authority.
+        selected.extend(sorted(amendments, key=filing_order))
+
+    selected.sort(
+        key=lambda row: (
+            row.report_date,
+            str(row.form_type).removesuffix("/A"),
+            bool(row.is_amendment),
+            row.accepted_at,
+            row.filing_known_at,
+            row.available_at,
+            row.accession_no,
+            row.parse_known_at,
+            row.input_manifest_hash,
+        )
+    )
+    sources = tuple(
+        VerifiedPublicationSource(
+            int(row.parse_run_id),
+            int(row.filing_id),
+            str(row.accession_no),
+            str(row.parser_version),
+            str(row.input_manifest_hash),
+            row.available_at,
+        )
+        for row in selected
+    )
+    filing_cycles = tuple(
+        FilingCycleSourceAuthority(
+            filing_authority_id=str(row.accession_no),
+            parse_run_id=int(row.parse_run_id),
+            base_form=str(row.form_type).removesuffix("/A"),
+            report_date=row.report_date,
+            accepted_at=row.accepted_at,
+            is_amendment=bool(row.is_amendment),
+            parse_status=str(row.status),
+        )
+        for row in selected
+    )
+    return _ResolvedLatestKnownV1Authority(sources, filing_cycles)
+
+
+def resolve_latest_known_v1_sources(
+    db: Session,
+    *,
+    stock_id: int,
+    issuer_identity_id: int,
+    requested_cutoff: datetime,
+) -> tuple[VerifiedPublicationSource, ...]:
+    """Return the complete canonical V1 source order for operator assertions."""
+
+    return _resolve_latest_known_v1_authority(
+        db,
+        stock_id=stock_id,
+        issuer_identity_id=issuer_identity_id,
+        requested_cutoff=requested_cutoff,
+    ).sources
 
 
 def _load_mapping_snapshot(db: Session, mapping_version_id: str) -> MappingSnapshot:
@@ -144,6 +313,18 @@ def _rebuild_mapping_result(db: Session, request: PublicationRequest) -> Mapping
     mapping = _load_mapping_snapshot(db, request.mapping_version_id)
     if mapping.known_at > request.requested_cutoff or mapping.effective_at > request.requested_cutoff:
         raise SecPublicationError("mapping version is unavailable at publication cutoff")
+    if request.amendment_policy != "latest-known-v1":
+        raise SecPublicationError("unsupported amendment policy")
+    resolved = _resolve_latest_known_v1_authority(
+        db,
+        stock_id=request.stock_id,
+        issuer_identity_id=request.issuer_identity_id,
+        requested_cutoff=request.requested_cutoff,
+    )
+    if request.sources != resolved.sources:
+        raise SecPublicationError(
+            "complete ordered source authority differs from finalized exact request sources"
+        )
     source_ids = tuple(source.parse_run_id for source in request.sources)
     selected_filing_ids = []
     failed_amendment_ids: list[int] = []
@@ -241,17 +422,31 @@ def _rebuild_mapping_result(db: Session, request: PublicationRequest) -> Mapping
             row.fiscal_year_start, row.report_ordinal, row.occurrence_ordinal,
         ) for row in by_raw[raw_id])
         facts.append(authoritative_raw_fact_snapshot(base, authorities))
-    authority = MappingRunAuthority(request.requested_cutoff, tuple(selected_filing_ids), request.amendment_policy)
+    authority = MappingRunAuthority(
+        request.requested_cutoff,
+        tuple(selected_filing_ids),
+        request.amendment_policy,
+        resolved.filing_cycles,
+    )
     mapped = map_sec_financial_snapshot(mapping, facts, authority)
     if failed_amendment_ids:
         # No caller may invent affected slots for a raw-less failed amendment.
         # Without exact occurrence authority the only defensible result is a
         # run-level, slotless typed audit which cannot demote canonical truth.
-        failed = TypedDisposition(
-            "unresolved_amendment_parse_failure", (), None,
-            detail="selected_failed_amendment_parse_runs=" + ",".join(map(str, failed_amendment_ids)),
+        failed = tuple(
+            TypedDisposition(
+                "unresolved_amendment_parse_failure",
+                (),
+                None,
+                detail="selected_failed_amendment_parse_run=" + str(parse_run_id),
+            )
+            for parse_run_id in failed_amendment_ids
         )
-        mapped = MappingResult(mapped.candidates, mapped.dispositions + (failed,), mapped.truncated_decision_count)
+        mapped = MappingResult(
+            mapped.candidates,
+            mapped.dispositions + failed,
+            mapped.truncated_decision_count,
+        )
     return mapped
 
 
@@ -259,6 +454,10 @@ def publish_sec_mapping_result(db: Session, request: PublicationRequest) -> Publ
     """Rebuild and write canonical truth atomically; finalize visibility later."""
     if not request.sources or request.requested_cutoff.tzinfo is None:
         raise SecPublicationError("explicit ordered sources and aware cutoff are required")
+    # Authority resolution, exact replay identity, and current-slot writes must
+    # observe one serial stock snapshot.  Lineage availability finalization
+    # takes this identical transaction lock before exposing a new source.
+    acquire_sec_financial_stock_lock(db, stock_id=request.stock_id)
     outcome = _rebuild_mapping_result(db, request)
     if request.outcome is not None and request.outcome != outcome:
         raise SecPublicationError("expected mapping result differs from database authority")
@@ -360,8 +559,6 @@ def publish_sec_mapping_result(db: Session, request: PublicationRequest) -> Publ
                     raise SecPublicationError("unavailable slot unit outside exact raw authority")
             if raw_parse_ids != set(slot.parse_run_ids):
                 raise SecPublicationError("unavailable slot parse set outside exact raw authority")
-    # One stable stock-scoped lock orders replay checks and current-slot changes.
-    db.execute(text("SELECT pg_advisory_xact_lock(:key)"), {"key": request.stock_id})
     existing = db.execute(text("SELECT status FROM sec_metric_publication_runs WHERE id=:id FOR UPDATE"), {"id": run_id}).scalar_one_or_none()
     if existing is not None:
         if existing != "succeeded":

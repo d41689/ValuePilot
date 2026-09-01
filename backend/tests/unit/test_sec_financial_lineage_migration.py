@@ -28,7 +28,7 @@ from test_support.database_isolation import (
 
 PARENT_REVISION = "20260826130000"
 PERIOD_PARENT_REVISION = "20260827120000"
-HEAD_REVISION = "20260901160000"
+HEAD_REVISION = "20260901170000"
 
 
 def test_parser_v2_downgrade_locks_all_evidence_before_counting() -> None:

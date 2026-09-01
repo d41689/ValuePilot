@@ -337,19 +337,7 @@ def active_sec_run_unresolved_states(
                   ON later_available.publication_run_id=later_run.id
                 JOIN sec_financial_parse_runs later_parse
                   ON later_parse.id=later_source.parse_run_id
-                JOIN sec_financial_filings later_filing
-                  ON later_filing.id=later_source.filing_id
-                WHERE (
-                    later_source.filing_id=failed_source.filing_id
-                    OR (
-                        later_filing.is_amendment
-                        AND later_filing.issuer_identity_id=failed_filing.issuer_identity_id
-                        AND later_filing.report_date=failed_filing.report_date
-                        AND replace(later_filing.form_type, '/A', '')=
-                            replace(failed_filing.form_type, '/A', '')
-                        AND later_filing.accepted_at>=failed_filing.accepted_at
-                    )
-                  )
+                WHERE later_source.filing_id=failed_source.filing_id
                   AND later_parse.status='succeeded'
                   AND later_run.status='succeeded'
                   AND later_run.requested_cutoff>=r.requested_cutoff

@@ -64,6 +64,7 @@ from app.services.sec_statement_authority import (
     parse_statement_header_date,
 )
 from app.services.sec_financial_mapping import DEI_URIS
+from app.services.sec_financial_locking import acquire_sec_financial_stock_lock
 
 
 CIK_RE = re.compile(r"^[0-9]{10}$")
@@ -3093,6 +3094,21 @@ def finalize_sec_financial_ingestion_operation(
     operation_id: str,
 ) -> datetime:
     """Make committed lineage visible using a separately committed DB marker."""
+    operation_stock = db.execute(
+        select(
+            SecFinancialIngestionOperation.id,
+            SecIssuerIdentity.stock_id,
+        )
+        .join(
+            SecIssuerIdentity,
+            SecIssuerIdentity.id
+            == SecFinancialIngestionOperation.issuer_identity_id,
+        )
+        .where(SecFinancialIngestionOperation.id == operation_id)
+    ).one_or_none()
+    if operation_stock is None:
+        raise SecFinancialIngestionError("SEC financial ingestion operation not found")
+    acquire_sec_financial_stock_lock(db, stock_id=int(operation_stock.stock_id))
     operation = db.scalar(
         select(SecFinancialIngestionOperation)
         .where(SecFinancialIngestionOperation.id == operation_id)
@@ -3161,6 +3177,7 @@ def finalize_pending_sec_financial_ingestion_operations(
     stock_id: int,
 ) -> tuple[tuple[str, datetime], ...]:
     """Recover committed pending lineage under an explicit operator rerun."""
+    acquire_sec_financial_stock_lock(db, stock_id=stock_id)
     operation_ids = db.scalars(
         select(SecFinancialIngestionOperation.id)
         .join(

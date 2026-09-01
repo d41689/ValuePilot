@@ -129,6 +129,7 @@ class CanonicalSlotAuthority:
     raw_fact_ids: tuple[int, ...]
     publication_cutoff: datetime
     occurrence_authorities: tuple[Mapping[str, object], ...] = ()
+    filing_authority_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -152,6 +153,20 @@ class MappingRunAuthority:
     publication_cutoff: datetime
     selected_filing_authority_ids: tuple[str, ...]
     amendment_policy_id: str
+    filing_cycle_sources: tuple["FilingCycleSourceAuthority", ...] = ()
+
+
+@dataclass(frozen=True)
+class FilingCycleSourceAuthority:
+    """Database-selected filing-cycle order consumed by the pure mapper."""
+
+    filing_authority_id: str
+    parse_run_id: int
+    base_form: str
+    report_date: date
+    accepted_at: datetime
+    is_amendment: bool
+    parse_status: str = "succeeded"
 
 
 _RULE_DATA = (
@@ -216,6 +231,7 @@ def map_sec_financial_snapshot(mapping: MappingSnapshot, facts: Sequence[RawFact
     candidates: list[CanonicalCandidate] = []
     matched_ids: set[int] = set()
     rejected: set[int] = set()
+    _validate_filing_cycle_authority(facts, authority)
     mapping_late = mapping.known_at > authority.publication_cutoff or mapping.effective_at > authority.publication_cutoff
     for fact in facts:
         if mapping_late or fact.known_at > authority.publication_cutoff:
@@ -277,6 +293,14 @@ def map_sec_financial_snapshot(mapping: MappingSnapshot, facts: Sequence[RawFact
     for fact in sorted(facts, key=lambda item: item.raw_fact_id):
         if fact.raw_fact_id not in matched_ids and fact.raw_fact_id not in rejected:
             dispositions.append(TypedDisposition("unresolved_custom_concept", (fact.raw_fact_id,)))
+    if authority.filing_cycle_sources:
+        candidates, dispositions = _apply_amendment_slot_authority(
+            mapping,
+            candidates,
+            dispositions,
+            facts,
+            authority.filing_cycle_sources,
+        )
     derived, derived_dispositions = _derive_quarters(candidates)
     candidates.extend(derived)
     dispositions.extend(derived_dispositions)
@@ -291,7 +315,130 @@ def _raw_priority_slot(fact):
         fact.stock_id, fact.period_start, fact.period_end, fact.statement_period_end,
         fact.fiscal_year, fact.fiscal_quarter_ordinal, fact.fiscal_year_start,
         fact.form, fact.fiscal_cycle, fact.publication_cutoff,
+        fact.filing_authority_id,
     )
+
+
+def _validate_filing_cycle_authority(facts, authority):
+    if not authority.filing_cycle_sources:
+        return
+    source_ids = tuple(item.filing_authority_id for item in authority.filing_cycle_sources)
+    if source_ids != authority.selected_filing_authority_ids or len(source_ids) != len(set(source_ids)):
+        raise ValueError("filing cycle authority does not match selected source order")
+    by_filing = {item.filing_authority_id: item for item in authority.filing_cycle_sources}
+    if len({item.parse_run_id for item in authority.filing_cycle_sources}) != len(by_filing):
+        raise ValueError("filing cycle authority parse identity is not unique")
+    for source in authority.filing_cycle_sources:
+        if source.base_form not in ("10-K", "10-Q", "20-F", "6-K"):
+            raise ValueError("filing cycle authority has unsupported base form")
+        if source.accepted_at.tzinfo is None or source.accepted_at.utcoffset() is None:
+            raise ValueError("filing cycle authority acceptance must be timezone-aware")
+        if source.parse_status not in ("succeeded", "failed"):
+            raise ValueError("filing cycle authority parse status is invalid")
+    for fact in facts:
+        source = by_filing.get(fact.filing_authority_id)
+        if source is None or source.parse_run_id != fact.parse_run_id:
+            raise ValueError("raw fact is outside filing cycle authority")
+        expected_form = source.base_form + ("/A" if source.is_amendment else "")
+        if fact.form != expected_form:
+            raise ValueError("raw fact form differs from filing cycle authority")
+
+
+def _apply_amendment_slot_authority(mapping, candidates, dispositions, facts, sources):
+    """Select a filing-cycle effect independently for each canonical slot.
+
+    Omission is not an effect.  Within one ``(base form, report date)`` cycle,
+    the latest amendment that actually carries a candidate or a slot-aware
+    typed decision supersedes the earlier effect for only that slot.
+    """
+
+    source_by_filing = {item.filing_authority_id: item for item in sources}
+    slotless = [item for item in dispositions if item.slot is None]
+    slot_dispositions = [item for item in dispositions if item.slot is not None]
+
+    effects: dict[tuple[object, ...], list[tuple[FilingCycleSourceAuthority, str, object]]] = {}
+    for candidate in candidates:
+        source = source_by_filing[candidate.filing_authority_id]
+        key = (
+            source.base_form,
+            source.report_date,
+            candidate.stock_id,
+            candidate.metric_key,
+            candidate.period_type,
+            candidate.period_end,
+        )
+        effects.setdefault(key, []).append((source, "candidate", candidate))
+    for disposition in slot_dispositions:
+        source = source_by_filing[disposition.slot.filing_authority_id]
+        key = (
+            source.base_form,
+            source.report_date,
+            disposition.slot.stock_id,
+            disposition.slot.metric_key,
+            disposition.slot.period_type,
+            disposition.slot.period_end,
+        )
+        effects.setdefault(key, []).append((source, "disposition", disposition))
+
+    selected_candidates = []
+    selected_dispositions = list(slotless)
+    for grouped in effects.values():
+        winning_source = max(
+            (item[0] for item in grouped),
+            key=lambda item: (
+                item.is_amendment,
+                item.accepted_at,
+                item.filing_authority_id,
+            ),
+        )
+        for source, effect_kind, effect in grouped:
+            if source != winning_source:
+                continue
+            if effect_kind == "candidate":
+                selected_candidates.append(effect)
+            else:
+                selected_dispositions.append(effect)
+
+    registered_raw_ids = {
+        fact.raw_fact_id
+        for fact in facts
+        if any(
+            fact.local_name == concept.local_name
+            and fact.namespace_uri in mapping.namespaces[concept.authority]
+            for rule in mapping.rules
+            for concept in rule.concepts
+        )
+    }
+    mapped_filing_ids = {
+        candidate.filing_authority_id for candidate in candidates
+    } | {
+        item.slot.filing_authority_id
+        for item in slot_dispositions
+        if item.slot is not None
+    } | {
+        fact.filing_authority_id
+        for fact in facts
+        if fact.raw_fact_id in registered_raw_ids
+        and any(
+            disposition.mapping_rule_id is not None
+            and fact.raw_fact_id in disposition.raw_fact_ids
+            for disposition in dispositions
+        )
+    }
+    for source in sources:
+        if (
+            source.is_amendment
+            and source.parse_status == "succeeded"
+            and source.filing_authority_id not in mapped_filing_ids
+        ):
+            selected_dispositions.append(
+                TypedDisposition(
+                    "nonfinancial_amendment_no_slot_effect",
+                    (),
+                    detail="filing_authority_id=" + source.filing_authority_id,
+                )
+            )
+    return selected_candidates, selected_dispositions
 
 
 def _validate_fact(mapping, rule, concept, fact):
@@ -358,7 +505,8 @@ def _slot_from_item(rule, item):
     return CanonicalSlotAuthority(fact.stock_id, rule.metric_key, rule.rule_id, period_type, fact.period_start, fact.period_end,
                                   "instant" if fact.period_start is None else "duration", fact.fiscal_year,
                                   fact.fiscal_quarter_ordinal, fact.context_id, fact.dimensions, (fact.parse_run_id,),
-                                  (fact.raw_fact_id,), fact.publication_cutoff, fact.occurrence_authorities)
+                                  (fact.raw_fact_id,), fact.publication_cutoff, fact.occurrence_authorities,
+                                  fact.filing_authority_id)
 
 
 def _slot_from_raw(rule, fact, period_type):
@@ -367,7 +515,7 @@ def _slot_from_raw(rule, fact, period_type):
         fact.period_start, fact.period_end, rule.period_basis, fact.fiscal_year,
         fact.fiscal_quarter_ordinal, fact.context_id, fact.dimensions,
         (fact.parse_run_id,), (fact.raw_fact_id,), fact.publication_cutoff,
-        fact.occurrence_authorities,
+        fact.occurrence_authorities, fact.filing_authority_id,
     )
 
 
@@ -424,6 +572,7 @@ def _derived_output_slot(left, right, ordinal):
         left.period_end, "duration", left.fiscal_year, ordinal, left.context_id,
         left.dimensions, left.parse_run_ids, left.raw_fact_ids,
         left.publication_cutoff, left.occurrence_authorities + right.occurrence_authorities,
+        left.filing_authority_id,
     )
 
 
