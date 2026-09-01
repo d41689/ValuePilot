@@ -436,7 +436,7 @@ def test_ingest_gold_case_finalizes_terminal_acquisition_failure_before_exit(
     assert "failure=main_submissions:sec_temporarily_unavailable" in result.output
 
 
-def test_ingest_gold_case_writes_stable_acceptance_report(
+def test_ingest_gold_case_recovers_same_run_after_durable_before_and_writes_report(
     monkeypatch,
     tmp_path,
 ) -> None:
@@ -444,6 +444,7 @@ def test_ingest_gold_case_writes_stable_acceptance_report(
     stock = SimpleNamespace(id=77, ticker="AAPL")
     session = _SessionStub()
     operation_id = "11111111-1111-4111-8111-111111111111"
+    durable_before_captured_at = NOW - timedelta(microseconds=1)
     report_path = (
         tmp_path / "reports" / f"pass-{acceptance_pass}" / "aapl-primary.json"
     )
@@ -468,14 +469,21 @@ def test_ingest_gold_case_writes_stable_acceptance_report(
 
     session.scalar = scalar
     monkeypatch.setattr(financial_cli.settings, "EDGAR_RAW_STORAGE_DIR", str(tmp_path))
-    monkeypatch.setattr(
-        financial_cli,
-        "_resolve_gold_case_stock",
-        lambda db, case, at: SimpleNamespace(
+    resolution_calls = 0
+
+    def resolve_after_one_crash(db, case, at):
+        nonlocal resolution_calls
+        resolution_calls += 1
+        if resolution_calls == 1:
+            raise RuntimeError("simulated crash after durable before checkpoint")
+        return SimpleNamespace(
             stock=stock,
             source="reviewed_cik",
             manifest_ticker="AAPL",
-        ),
+        )
+
+    monkeypatch.setattr(
+        financial_cli, "_resolve_gold_case_stock", resolve_after_one_crash
     )
     monkeypatch.setattr(financial_cli, "EdgarClient", _EdgarStub)
     monkeypatch.setattr(
@@ -523,18 +531,31 @@ def test_ingest_gold_case_writes_stable_acceptance_report(
         ),
     )
     checkpoint_phases = []
+    before_authority_attempts = []
 
     def record_checkpoint(_db, **kwargs):
-        checkpoint_phases.append((kwargs["phase"], kwargs.get("operation_id")))
+        checkpoint_phases.append(
+            (kwargs["phase"], kwargs["attempt_id"], kwargs.get("operation_id"))
+        )
+        if kwargs["phase"] == "before":
+            before_authority_attempts.append(41)
+            return {
+                "attempt_id": 41,
+                "captured_at": durable_before_captured_at,
+            }
         return {}
 
     monkeypatch.setattr(
         financial_cli, "record_acceptance_evidence_checkpoint", record_checkpoint
     )
+    attempt_ids = iter((41, 42))
+
+    def begin_attempt(db, **kwargs):
+        attempt_id = next(attempt_ids)
+        return {"id": attempt_id, "attempt_ordinal": attempt_id - 40}
+
     monkeypatch.setattr(
-        financial_cli,
-        "begin_acceptance_case_attempt",
-        lambda db, **kwargs: {"id": 41, "attempt_ordinal": 1},
+        financial_cli, "begin_acceptance_case_attempt", begin_attempt
     )
     monkeypatch.setattr(
         financial_cli, "link_acceptance_operation", lambda db, **kwargs: 51
@@ -577,20 +598,24 @@ def test_ingest_gold_case_writes_stable_acceptance_report(
 
     monkeypatch.setattr(financial_cli, "build_case_report", build_report)
 
-    result = CliRunner().invoke(
-        financial_cli.app,
-        [
-            "ingest-gold-case",
-            "--case-id",
-            "aapl-primary",
-            "--acceptance-run-id",
-            "step-c-fake",
-            "--acceptance-pass",
-            str(acceptance_pass),
-            "--report-json",
-            str(report_path),
-        ],
-    )
+    arguments = [
+        "ingest-gold-case",
+        "--case-id",
+        "aapl-primary",
+        "--acceptance-run-id",
+        "step-c-fake",
+        "--acceptance-pass",
+        str(acceptance_pass),
+        "--report-json",
+        str(report_path),
+    ]
+    failed = CliRunner().invoke(financial_cli.app, arguments)
+
+    assert failed.exit_code == 1
+    assert "simulated crash after durable before checkpoint" in failed.output
+    assert not report_path.exists()
+
+    result = CliRunner().invoke(financial_cli.app, arguments)
 
     assert result.exit_code == 2, result.output
     payload = json.loads(report_path.read_text(encoding="utf-8"))
@@ -603,7 +628,12 @@ def test_ingest_gold_case_writes_stable_acceptance_report(
     assert payload["typed_gaps"] == ["annual_coverage_gap:2016"]
     assert payload["typed_failures"] == []
     assert payload["metric_facts_published"] == 0
-    assert checkpoint_phases == [("before", None), ("after", operation_id)]
+    assert checkpoint_phases == [
+        ("before", 41, None),
+        ("before", 42, None),
+        ("after", 42, operation_id),
+    ]
+    assert before_authority_attempts == [41, 41]
     assert "typed_gap=annual_coverage_gap:2016" in result.output
     assert f"acceptance_report_json={report_path}" in result.output
 

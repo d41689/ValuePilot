@@ -1,6 +1,6 @@
 # Canonical Financial Truth — SEC Publication V1
 
-Status: contract approved; delivery steps 1–6 complete; Step 6 Terra approved; Step 7A complete and Terra approved; Step 7B real locked 24-case execution next; retained statement authority Terra PASS
+Status: contract approved; delivery steps 1–6 complete; Step 6 Terra approved; Step 7A complete and Terra approved; Step 7B live-run CLI remediation implemented pending Terra quick review, then real locked 24-case retry; retained statement authority Terra PASS
 
 Owner: Product / Engineering
 
@@ -222,6 +222,22 @@ Run the canonical commands verbatim and in order:
 7. `git diff --check`
 
 ## Sign-off trail
+
+- 2026-09-01: Step 7B's first real pass-1 attempt stopped on `aapl-primary`
+  before any SEC request because the durable-before timestamp branch used
+  `timedelta` without importing it. The minimal remediation imports the
+  standard-library symbol. A CLI regression now invokes `ingest-gold-case`
+  through that exact captured-checkpoint cutoff branch, injects a later crash,
+  and invokes the command again with the same acceptance run. It proves the
+  original durable before checkpoint remains authoritative, the retry receives
+  a new attempt identity, and acquisition, publication and stable report
+  generation resume without deleting the before authority or rebuilding the
+  database. The complete focused CLI and gold-acceptance files passed `94`
+  tests in-container with only the pre-existing Starlette deprecation warning.
+  Python syntax and `git diff --check` passed. No network, shared development
+  database or retained storage was used during remediation. The live-run
+  remediation remains pending Terra quick review before the real locked
+  24-case retry.
 
 - 2026-09-01: Delivery Step 7A Terra round-8 PASS; Step 7A is complete and
   approved, with Step 7B real locked 24-case execution next. Across rounds

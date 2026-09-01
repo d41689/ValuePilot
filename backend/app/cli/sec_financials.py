@@ -12,7 +12,7 @@ or raw fact values, and it never publishes ``metric_facts``.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 import hashlib
 import json
 from pathlib import Path
