@@ -8,7 +8,7 @@ import mimetypes
 import os
 from pathlib import Path, PurePosixPath
 import re
-from typing import Any, Protocol
+from typing import Any, Callable, Protocol
 from urllib.parse import quote
 import uuid
 
@@ -78,7 +78,8 @@ HISTORICAL_SUBMISSION_FILENAME_RE = re.compile(
     r"^CIK(?P<cik>[0-9]{10})-submissions-[0-9]+[.]json$"
 )
 PARSER_NAME = "valuepilot-inline-xbrl-lineage"
-PARSER_V2 = "xbrl-lineage-v2"
+PARSER_V2_LEGACY = "xbrl-lineage-v2"
+PARSER_V2 = "xbrl-lineage-v2.1"
 ARTIFACT_RETENTION_POLICY_VERSION = "sec-financial-artifacts-v1"
 ANNUAL_FORMS_BY_REGIME = {
     "us_10k_10q": frozenset({"10-K", "10-K/A"}),
@@ -116,6 +117,96 @@ class EdgarLikeClient(Protocol):
 
     def get_revalidated(self, url: str) -> bytes:
         ...
+
+
+class RetainedFinancialReplayClient:
+    """Serve committed SEC evidence locally and narrowly fetch missing instances."""
+
+    def __init__(
+        self,
+        *,
+        retained: dict[str, bytes],
+        missing_instances: dict[str, int | None],
+        upstream_factory: Callable[[], EdgarLikeClient] | None,
+    ) -> None:
+        self._retained = dict(retained)
+        self._missing_instances = dict(missing_instances)
+        self._upstream_factory = upstream_factory
+        self._upstream: EdgarLikeClient | None = None
+        self._upstream_context: Any | None = None
+        self.external_requests: list[str] = []
+
+    def __enter__(self) -> RetainedFinancialReplayClient:
+        return self
+
+    def __exit__(self, exc_type: Any, exc: Any, traceback: Any) -> None:
+        if self._upstream_context is not None:
+            self._upstream_context.__exit__(exc_type, exc, traceback)
+
+    def _external(self) -> EdgarLikeClient:
+        if self._upstream is not None:
+            return self._upstream
+        if self._upstream_factory is None:
+            raise SecFinancialFetchError(
+                "retained_recovery_resource_missing",
+                "required standalone instance is not retained",
+            )
+        candidate = self._upstream_factory()
+        enter = getattr(candidate, "__enter__", None)
+        if callable(enter):
+            self._upstream_context = candidate
+            candidate = enter()
+        self._upstream = candidate
+        return candidate
+
+    def _read(self, url: str, *, revalidate: bool) -> bytes:
+        retained = self._retained.get(url)
+        if retained is not None:
+            return retained
+        if url not in self._missing_instances:
+            raise SecFinancialIntegrityError(
+                "retained recovery attempted an unapproved SEC resource"
+            )
+        expected_size = _validated_recovery_instance_size(
+            self._missing_instances[url]
+        )
+        upstream = self._external()
+        content = (
+            upstream.get_revalidated(url)
+            if revalidate
+            else upstream.get(url)
+        )
+        if len(content) != expected_size:
+            raise SecFinancialIntegrityError(
+                "recovered standalone instance declared size mismatch"
+            )
+        try:
+            root_name, _ = safe_xml_preflight(_unwrap_sec_document(content))
+        except ValueError as exc:
+            raise SecFinancialIntegrityError(
+                "recovered standalone instance is not bounded XML"
+            ) from exc
+        if root_name != ("http://www.xbrl.org/2003/instance", "xbrl"):
+            raise SecFinancialIntegrityError(
+                "recovered artifact is not an XBRL instance document"
+            )
+        self.external_requests.append(url)
+        self._retained[url] = content
+        return content
+
+    def get(self, url: str) -> bytes:
+        return self._read(url, revalidate=False)
+
+    def get_revalidated(self, url: str) -> bytes:
+        return self._read(url, revalidate=True)
+
+
+def _validated_recovery_instance_size(value: Any) -> int:
+    if type(value) is not int or value <= 0 or value > MAX_ARTIFACT_BYTES:
+        raise SecFinancialIntegrityError(
+            "retained recovery instance has invalid declared size"
+        )
+    return value
 
 
 @dataclass(frozen=True)
@@ -761,9 +852,71 @@ def _retain_item(item: dict[str, Any], primary_document: str, referenced_stateme
         or name.endswith("_htm.xml")
         or name.endswith("_lab.xml")
         or name.endswith("_pre.xml")
+        or _is_standalone_instance_filename(name, primary_document)
         or name == "filingsummary.xml"
         or re.fullmatch(r"r[0-9]{1,3}[.](?:xml|html?|htm)", name) is not None
     )
+
+
+def _is_parser_v2(parser_version: str) -> bool:
+    return parser_version in {PARSER_V2_LEGACY, PARSER_V2}
+
+
+def _is_standalone_instance_filename(
+    filename: str, primary_document: str | None = None
+) -> bool:
+    """Identify bounded instance candidates without trusting SEC index MIME/type."""
+
+    name = filename.lower()
+    if not name.endswith(".xml"):
+        return False
+    if name == "filingsummary.xml" or re.fullmatch(r"r[0-9]{1,3}[.]xml", name):
+        return False
+    if name.endswith(("_cal.xml", "_def.xml", "_lab.xml", "_pre.xml", "_htm.xml")):
+        return False
+    if primary_document is None:
+        return True
+    return PurePosixPath(name).stem == PurePosixPath(primary_document.lower()).stem
+
+
+_SEC_DOCUMENT_OPEN_RE = re.compile(
+    br"(?is)^[\x09\x0a\x0d\x20]*<DOCUMENT>[\x09\x0a\x0d\x20]*"
+)
+_SEC_DOCUMENT_ANY_RE = re.compile(br"(?is)<DOCUMENT>")
+_SEC_TEXT_OPEN_RE = re.compile(br"(?is)<TEXT>[\x09\x0a\x0d\x20]*")
+_SEC_TEXT_CLOSE_RE = re.compile(br"(?is)[\x09\x0a\x0d\x20]*</TEXT>")
+_SEC_DOCUMENT_CLOSE_RE = re.compile(
+    br"(?is)[\x09\x0a\x0d\x20]*</DOCUMENT>[\x09\x0a\x0d\x20]*$"
+)
+
+
+def _unwrap_sec_document(content: bytes) -> bytes:
+    """Return one SEC SGML document's TEXT bytes without rewriting the payload."""
+
+    if len(content) > MAX_ARTIFACT_BYTES:
+        raise SecFinancialIngestionError("SEC document exceeds byte limit")
+    opened = _SEC_DOCUMENT_OPEN_RE.match(content)
+    if opened is None:
+        return content
+    document_closed = _SEC_DOCUMENT_CLOSE_RE.search(content, opened.end())
+    if document_closed is None:
+        raise SecFinancialIngestionError("malformed SEC SGML document envelope")
+    body = content[opened.end() : document_closed.start()]
+    text_opened = _SEC_TEXT_OPEN_RE.search(body)
+    if text_opened is None:
+        raise SecFinancialIngestionError("SEC SGML document has no TEXT payload")
+    text_closed = _SEC_TEXT_CLOSE_RE.search(body, text_opened.end())
+    if (
+        text_closed is None
+        or _SEC_TEXT_CLOSE_RE.search(body, text_closed.end()) is not None
+    ):
+        raise SecFinancialIngestionError("SEC SGML document has ambiguous TEXT payload")
+    if body[text_closed.end() :].strip():
+        raise SecFinancialIngestionError("malformed SEC SGML document envelope")
+    payload = body[text_opened.end() : text_closed.start()]
+    if _SEC_DOCUMENT_ANY_RE.search(payload) is not None:
+        raise SecFinancialIngestionError("nested SEC SGML document envelope")
+    return payload
 
 
 @dataclass(frozen=True)
@@ -775,7 +928,11 @@ class _VerifiedStandaloneInstance:
 
 
 def _standalone_instance_artifact(
-    artifacts: list[SecFilingArtifact], *, primary_document: str, storage_root: Path
+    artifacts: list[SecFilingArtifact],
+    *,
+    primary_document: str,
+    storage_root: Path,
+    require_declared_instance_type: bool = False,
 ) -> _VerifiedStandaloneInstance | None:
     excluded_suffixes = ("_cal.xml", "_def.xml", "_lab.xml", "_pre.xml", "_htm.xml")
     candidates = []
@@ -785,11 +942,14 @@ def _standalone_instance_artifact(
             continue
         if not name.endswith(".xml") or name.endswith(excluded_suffixes) or name.endswith(".xsd"):
             continue
-        if str(artifact.sec_type or "").upper() not in {"EX-101.INS", "XML"}:
+        if require_declared_instance_type and str(
+            artifact.sec_type or ""
+        ).upper() not in {"EX-101.INS", "XML"}:
             continue
         raw_content = _read_verified_artifact(storage_root, artifact)
         try:
-            root_name, content = safe_xml_preflight(raw_content)
+            content = _unwrap_sec_document(raw_content)
+            root_name, content = safe_xml_preflight(content)
         except ValueError:
             continue
         if root_name == ("http://www.xbrl.org/2003/instance", "xbrl"):
@@ -895,6 +1055,187 @@ def _verify_submission_snapshot(
         raise SecFinancialIntegrityError("submission snapshot byte size mismatch")
     if hashlib.sha256(content).hexdigest() != snapshot.sha256:
         raise SecFinancialIntegrityError("submission snapshot hash mismatch")
+
+
+def build_retained_financial_replay_client(
+    db: Session,
+    *,
+    stock_id: int,
+    operation_ids: tuple[str, ...],
+    storage_root: Path,
+    upstream_factory: Callable[[], EdgarLikeClient] | None,
+) -> RetainedFinancialReplayClient:
+    """Build a fail-closed replay client from committed issuer evidence."""
+
+    if not operation_ids:
+        raise SecFinancialIntegrityError("retained recovery operations are unavailable")
+    identity_ids = set(
+        db.scalars(
+            select(SecFinancialIngestionOperation.issuer_identity_id)
+            .join(
+                SecIssuerIdentity,
+                SecIssuerIdentity.id
+                == SecFinancialIngestionOperation.issuer_identity_id,
+            )
+            .where(
+                SecFinancialIngestionOperation.id.in_(operation_ids),
+                SecIssuerIdentity.stock_id == stock_id,
+            )
+        ).all()
+    )
+    if len(identity_ids) != 1:
+        raise SecFinancialIntegrityError("retained recovery issuer authority mismatch")
+    retained: dict[str, bytes] = {}
+
+    def add_retained(url: str | None, content: bytes) -> None:
+        if url is None:
+            return
+        existing = retained.get(url)
+        if existing is not None and existing != content:
+            raise SecFinancialIntegrityError(
+                "retained recovery resource has conflicting content identities"
+            )
+        retained[url] = content
+
+    snapshots = db.scalars(
+        select(SecSubmissionSnapshot)
+        .join(
+            SecFinancialOperationSnapshot,
+            SecFinancialOperationSnapshot.snapshot_id == SecSubmissionSnapshot.id,
+        )
+        .where(SecFinancialOperationSnapshot.operation_id.in_(operation_ids))
+        .order_by(SecSubmissionSnapshot.id)
+    ).all()
+    for snapshot in snapshots:
+        add_retained(
+            snapshot.source_url,
+            _read_verified_submission_snapshot(storage_root, snapshot),
+        )
+
+    accession_attempts = db.scalars(
+        select(SecFinancialAccessionAttempt)
+        .where(
+            SecFinancialAccessionAttempt.operation_id.in_(operation_ids),
+            SecFinancialAccessionAttempt.parse_run_id.is_not(None),
+        )
+        .order_by(SecFinancialAccessionAttempt.id)
+    ).all()
+    if not accession_attempts:
+        raise SecFinancialIntegrityError("retained recovery filings are unavailable")
+    artifacts: list[SecFilingArtifact] = []
+    primary_by_artifact_id: dict[int, str] = {}
+    seen_artifact_ids: set[int] = set()
+    for attempt in accession_attempts:
+        filing = db.get(SecFinancialFiling, attempt.filing_id)
+        if filing is None or filing.issuer_identity_id not in identity_ids:
+            raise SecFinancialIntegrityError(
+                "retained recovery accession issuer mismatch"
+            )
+        linked = db.scalars(
+            select(SecFilingArtifact)
+            .join(
+                SecFinancialAccessionAttemptArtifact,
+                SecFinancialAccessionAttemptArtifact.artifact_id
+                == SecFilingArtifact.id,
+            )
+            .where(SecFinancialAccessionAttemptArtifact.attempt_id == attempt.id)
+            .order_by(SecFilingArtifact.sequence, SecFilingArtifact.id)
+        ).all()
+        manifest_hashes = {artifact.manifest_hash for artifact in linked}
+        if (
+            not linked
+            or any(artifact.state != "retained" for artifact in linked)
+            or len(manifest_hashes) != 1
+            or attempt.input_manifest_hash != _artifact_input_hash(linked)
+        ):
+            raise SecFinancialIntegrityError(
+                "retained recovery accession manifest authority mismatch"
+            )
+        manifest_hash = next(iter(manifest_hashes))
+        group = db.scalars(
+            select(SecFilingArtifact)
+            .where(
+                SecFilingArtifact.filing_id == filing.id,
+                SecFilingArtifact.manifest_hash == manifest_hash,
+            )
+            .order_by(SecFilingArtifact.sequence, SecFilingArtifact.id)
+        ).all()
+        indexes = [
+            artifact
+            for artifact in group
+            if artifact.filename == "__accession_index__.json"
+            and artifact.state == "retained"
+        ]
+        group_identities = {
+            (artifact.filename, artifact.state) for artifact in group
+        }
+        if (
+            len(indexes) != 1
+            or indexes[0].sha256 != attempt.index_sha256
+            or indexes[0].source_url != attempt.index_resource_key
+            or len(group_identities) != len(group)
+        ):
+            raise SecFinancialIntegrityError(
+                "retained recovery manifest group is ambiguous"
+            )
+        linked_ids = {artifact.id for artifact in linked}
+        for artifact in group:
+            # Retained bytes are operation-owned only through the immutable
+            # accession-attempt link.  Non-retained observations are read from
+            # the exact linked manifest group solely to identify a bounded
+            # missing-instance continuation.
+            if artifact.state == "retained" and artifact.id not in linked_ids:
+                continue
+            if artifact.id in seen_artifact_ids:
+                continue
+            seen_artifact_ids.add(artifact.id)
+            artifacts.append(artifact)
+            primary_by_artifact_id[artifact.id] = filing.primary_document
+    retained_urls = {
+        artifact.source_url
+        for artifact in artifacts
+        if artifact.state == "retained" and artifact.source_url is not None
+    }
+    source_url_counts: dict[str, int] = {}
+    for artifact in artifacts:
+        if artifact.source_url is not None:
+            source_url_counts[artifact.source_url] = (
+                source_url_counts.get(artifact.source_url, 0) + 1
+            )
+    missing_instances: dict[str, int] = {}
+    for artifact in artifacts:
+        if artifact.state == "retained":
+            add_retained(
+                artifact.source_url,
+                _read_verified_artifact(storage_root, artifact),
+            )
+        elif (
+            artifact.state == "manifest_only"
+            and artifact.source_url is not None
+            and _is_standalone_instance_filename(
+                artifact.filename, primary_by_artifact_id[artifact.id]
+            )
+        ):
+            if (
+                source_url_counts.get(artifact.source_url) != 1
+                or artifact.source_url in retained_urls
+            ):
+                raise SecFinancialIntegrityError(
+                    "missing instance manifest authority is ambiguous"
+                )
+            declared_size = _validated_recovery_instance_size(
+                artifact.declared_size
+            )
+            if artifact.source_url in missing_instances:
+                raise SecFinancialIntegrityError(
+                    "missing instance manifest authority is ambiguous"
+                )
+            missing_instances[artifact.source_url] = declared_size
+    return RetainedFinancialReplayClient(
+        retained=retained,
+        missing_instances=missing_instances,
+        upstream_factory=upstream_factory,
+    )
 
 
 def _read_verified_submission_snapshot(
@@ -1808,11 +2149,36 @@ def _parse_primary_artifact(
     parse_artifact = primary
     standalone_authority: _VerifiedStandaloneInstance | None = None
     if parser_version == PARSER_V2:
-        if primary is None:
-            standalone_authority = _standalone_instance_artifact(
-                artifacts, primary_document=filing.primary_document, storage_root=storage_root
-            )
-            parse_artifact = standalone_authority.artifact if standalone_authority else None
+        standalone_authority = _standalone_instance_artifact(
+            artifacts, primary_document=filing.primary_document, storage_root=storage_root
+        )
+        inline_instance = next(
+            (
+                item
+                for item in artifacts
+                if item.state == "retained"
+                and item.filename.lower().endswith("_htm.xml")
+            ),
+            None,
+        )
+        # SEC's index ``type`` is not content authority.  Prefer a verified
+        # standalone instance, then the filing's explicit inline instance
+        # artifact, and use the primary document only as the final candidate.
+        parse_artifact = (
+            standalone_authority.artifact
+            if standalone_authority is not None
+            else inline_instance or primary
+        )
+    elif parser_version == PARSER_V2_LEGACY and primary is None:
+        standalone_authority = _standalone_instance_artifact(
+            artifacts,
+            primary_document=filing.primary_document,
+            storage_root=storage_root,
+            require_declared_instance_type=True,
+        )
+        parse_artifact = (
+            standalone_authority.artifact if standalone_authority is not None else None
+        )
     started_at = now
     retained_inputs = [item for item in artifacts if item.state == "retained"]
     incomplete_required = [
@@ -1882,11 +2248,16 @@ def _parse_primary_artifact(
         else:
             raw_content = _read_verified_artifact(storage_root, parse_artifact)
             try:
-                root_name, content = safe_xml_preflight(raw_content)
+                unwrapped_content = (
+                    _unwrap_sec_document(raw_content)
+                    if parser_version == PARSER_V2
+                    else raw_content
+                )
+                root_name, content = safe_xml_preflight(unwrapped_content)
             except ValueError:
-                if parser_version == PARSER_V2:
+                if _is_parser_v2(parser_version):
                     raise
-                content = raw_content
+                content = unwrapped_content
                 root_name = None
         if root_name == ("http://www.xbrl.org/2003/instance", "xbrl"):
             parsed = parse_standalone_xbrl(content, artifact_id=parse_artifact.id)
@@ -1894,11 +2265,16 @@ def _parse_primary_artifact(
             parsed = parse_inline_xbrl(
                 content,
                 artifact_id=parse_artifact.id,
-                strict=parser_version == PARSER_V2,
+                strict=_is_parser_v2(parser_version),
             )
-        if not parsed and parser_version == PARSER_V2:
+        if not parsed and _is_parser_v2(parser_version):
             standalone = _standalone_instance_artifact(
-                artifacts, primary_document=filing.primary_document, storage_root=storage_root
+                artifacts,
+                primary_document=filing.primary_document,
+                storage_root=storage_root,
+                require_declared_instance_type=(
+                    parser_version == PARSER_V2_LEGACY
+                ),
             )
             if standalone is not None:
                 parse_artifact = standalone.artifact
@@ -1921,12 +2297,12 @@ def _parse_primary_artifact(
                 fact_count=0,
                 error_code=(
                     "no_xbrl_facts"
-                    if parser_version == PARSER_V2
+                    if _is_parser_v2(parser_version)
                     else "no_inline_xbrl_facts"
                 ),
                 error_detail=(
                     "The retained parse authority contained no XBRL facts."
-                    if parser_version == PARSER_V2
+                    if _is_parser_v2(parser_version)
                     else "The retained primary document contained no inline-XBRL facts."
                 ),
             )
@@ -1942,16 +2318,21 @@ def _parse_primary_artifact(
                 )
             no_facts_code = (
                 "no_xbrl_facts"
-                if parser_version == PARSER_V2
+                if _is_parser_v2(parser_version)
                 else "no_inline_xbrl_facts"
             )
             return 1, 0, [f"{filing.accession_no}:{no_facts_code}"], run.id
         statement_evidence = []
-        if parser_version == PARSER_V2:
+        if _is_parser_v2(parser_version):
             summary = next((item for item in retained_inputs if item.filename.lower() == "filingsummary.xml"), None)
             if summary is None:
                 raise StatementAuthorityParseError("missing_retained_filing_summary")
-            summary_content = _read_verified_artifact(storage_root, summary)
+            summary_raw_content = _read_verified_artifact(storage_root, summary)
+            summary_content = (
+                _unwrap_sec_document(summary_raw_content)
+                if parser_version == PARSER_V2
+                else summary_raw_content
+            )
             references = discover_statement_reports(summary_content)
             retained_by_name = {item.filename.lower(): item for item in retained_inputs}
             for reference in references:
@@ -1959,18 +2340,45 @@ def _parse_primary_artifact(
                 if report_artifact is None:
                     raise StatementAuthorityParseError(f"missing_retained_statement_report:{reference.filename}")
                 try:
+                    report_raw_content = _read_verified_artifact(
+                        storage_root, report_artifact
+                    )
+                    report_parse_content = (
+                        _unwrap_sec_document(report_raw_content)
+                        if parser_version == PARSER_V2
+                        else report_raw_content
+                    )
                     occurrences = parse_statement_occurrences(
-                        _read_verified_artifact(storage_root, report_artifact), filename=report_artifact.filename)
+                        report_parse_content,
+                        filename=report_artifact.filename,
+                    )
                 except Exception:
                     fallback = retained_by_name.get((reference.fallback_filename or "").lower())
                     if fallback is None:
                         raise
                     report_artifact = fallback
                     reference = replace(reference, filename=fallback.filename, fallback_filename=None)
+                    report_raw_content = _read_verified_artifact(
+                        storage_root, report_artifact
+                    )
+                    report_parse_content = (
+                        _unwrap_sec_document(report_raw_content)
+                        if parser_version == PARSER_V2
+                        else report_raw_content
+                    )
                     occurrences = parse_statement_occurrences(
-                        _read_verified_artifact(storage_root, report_artifact), filename=report_artifact.filename)
+                        report_parse_content,
+                        filename=report_artifact.filename,
+                    )
                 if not report_artifact.filename.lower().endswith(".xml"):
                     raise StatementAuthorityParseError("html_statement_authority_diagnostic_only")
+                if (
+                    summary_content != summary_raw_content
+                    or report_parse_content != report_raw_content
+                ):
+                    raise StatementAuthorityParseError(
+                        "sgml_statement_authority_has_no_exact_xml_identity"
+                    )
                 statement_evidence.extend((reference, report_artifact, occurrence) for occurrence in occurrences)
 
             if filing.report_date is None:
@@ -2031,12 +2439,12 @@ def _parse_primary_artifact(
                     unit_measure=item.unit_measure,
                     unit_numerator_json=(
                         list(item.unit_numerator)
-                        if parser_version == PARSER_V2
+                        if _is_parser_v2(parser_version)
                         else None
                     ),
                     unit_denominator_json=(
                         list(item.unit_denominator)
-                        if parser_version == PARSER_V2
+                        if _is_parser_v2(parser_version)
                         else None
                     ),
                     raw_value=item.raw_value,
@@ -2054,7 +2462,7 @@ def _parse_primary_artifact(
                     dimensions_json=item.dimensions,
                     dimensions_structured_json=(
                         list(item.dimensions_structured)
-                        if parser_version == PARSER_V2
+                        if _is_parser_v2(parser_version)
                         else None
                     ),
                     locator_json=item.locator,

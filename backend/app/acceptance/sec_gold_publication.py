@@ -27,13 +27,14 @@ from app.services.sec_metric_publication import (
 from app.services.sec_financial_ingestion import (
     FinancialFilingSelection,
     FinancialIngestionReport,
+    PARSER_V2,
 )
 
 
 ACCEPTANCE_MAPPING_VERSION_ID = "sec-us-gaap-v1"
 ACCEPTANCE_METHOD_POLICY_VERSION_ID = "sec-method-gate-v1"
 ACCEPTANCE_AMENDMENT_POLICY_ID = "latest-known-v1"
-ACCEPTANCE_PARSER_VERSION = "xbrl-lineage-v2"
+ACCEPTANCE_PARSER_VERSION = PARSER_V2
 V1_METRIC_DENOMINATOR = 21
 
 
@@ -313,6 +314,105 @@ def recoverable_bound_acceptance_attempt(
         "operation_id": str(rows[0].operation_id),
         "publication_run_id": str(rows[0].publication_run_id),
         "requested_cutoff": rows[0].requested_cutoff,
+    }
+
+
+def recoverable_finalized_acceptance_acquisition(
+    db: Session, *, run_id: str, case_id: str, acceptance_pass: int
+) -> dict[str, Any] | None:
+    """Return committed acquisition authority that has not reached publication."""
+
+    rows = list(
+        db.execute(
+            text(
+                """SELECT link.operation_id,attempt.attempt_ordinal,
+                          link.operation_ordinal,result.result_kind,
+                          available.available_at
+                   FROM sec_acceptance_case_attempts attempt
+                   JOIN sec_acceptance_operation_links link
+                     ON link.attempt_id=attempt.id
+                    AND link.operation_role<>'recovered'
+                   LEFT JOIN sec_financial_operation_results result
+                     ON result.operation_id=link.operation_id
+                   LEFT JOIN sec_financial_lineage_availabilities available
+                     ON available.operation_id=link.operation_id
+                   WHERE attempt.run_id=:run AND attempt.case_id=:case
+                     AND attempt.acceptance_pass=:pass
+                   ORDER BY attempt.attempt_ordinal,link.operation_ordinal"""
+            ),
+            {"run": run_id, "case": case_id, "pass": acceptance_pass},
+        ).mappings()
+    )
+    if not rows or any(
+        row.result_kind is None or row.available_at is None for row in rows
+    ):
+        return None
+    if db.execute(
+        text(
+            """SELECT count(*)
+               FROM sec_acceptance_publication_bindings binding
+               JOIN sec_acceptance_case_attempts attempt
+                 ON attempt.id=binding.attempt_id
+               WHERE attempt.run_id=:run AND attempt.case_id=:case
+                 AND attempt.acceptance_pass=:pass"""
+        ),
+        {"run": run_id, "case": case_id, "pass": acceptance_pass},
+    ).scalar_one():
+        return None
+    final_operation_id = str(rows[-1].operation_id)
+    open_cursors = list(
+        db.execute(
+            text(
+                """SELECT continuation.id
+                   FROM sec_financial_history_continuations continuation
+                   WHERE continuation.source_operation_id=:operation
+                     AND NOT EXISTS (
+                       SELECT 1 FROM sec_financial_history_consumption_claims claim
+                       WHERE claim.parent_id=continuation.id)
+                   ORDER BY continuation.created_at,continuation.id"""
+            ),
+            {"operation": final_operation_id},
+        ).scalars()
+    )
+    if len(open_cursors) > 1:
+        raise ValueError(
+            "acceptance_recovery_authority_incomplete: multiple open history cursors"
+        )
+    return {
+        "operations": tuple(
+            {
+                "operation_id": str(row.operation_id),
+                "available_at": row.available_at,
+                "result_kind": str(row.result_kind),
+            }
+            for row in rows
+        ),
+        "next_history_cursor": str(open_cursors[0]) if open_cursors else None,
+        "requires_reparse": not bool(
+            db.execute(
+                text(
+                    """SELECT 1
+                       FROM sec_acceptance_case_attempts attempt
+                       JOIN sec_acceptance_operation_links link
+                         ON link.attempt_id=attempt.id
+                        AND link.operation_role<>'recovered'
+                       JOIN sec_financial_accession_attempts accession
+                         ON accession.operation_id=link.operation_id
+                       JOIN sec_financial_parse_runs parse
+                         ON parse.id=accession.parse_run_id
+                       WHERE attempt.run_id=:run AND attempt.case_id=:case
+                         AND attempt.acceptance_pass=:pass
+                         AND parse.parser_version=:parser
+                       LIMIT 1"""
+                ),
+                {
+                    "run": run_id,
+                    "case": case_id,
+                    "pass": acceptance_pass,
+                    "parser": ACCEPTANCE_PARSER_VERSION,
+                },
+            ).first()
+        ),
     }
 
 

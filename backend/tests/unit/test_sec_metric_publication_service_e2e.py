@@ -127,7 +127,7 @@ def _request(
     stock=Stock(ticker=ticker,exchange="US",company_name="Apple Inc."); db.add(stock); db.flush()
     identity=register_reviewed_sec_identity(db,stock_id=stock.id,cik=CIK,effective_from=date(1980,12,12),known_at=known,review_reason="publication fixture reviewed identity")
     db.commit()
-    report=ingest_latest_financial_filings(db,stock_id=stock.id,client=StatementAuthorityClient(),storage_root=tmp_path,max_filings=1,now=known+timedelta(minutes=5),parser_version="xbrl-lineage-v2")
+    report=ingest_latest_financial_filings(db,stock_id=stock.id,client=StatementAuthorityClient(),storage_root=tmp_path,max_filings=1,now=known+timedelta(minutes=5),parser_version="xbrl-lineage-v2.1")
     if acceptance_attempt is not None:
         link_acceptance_operation(
             db,
@@ -239,7 +239,7 @@ def test_failed_amendment_state_is_bounded_to_its_filing_cycle(db, tmp_path):
         storage_root=tmp_path,
         max_filings=1,
         now=datetime(2026, 8, 28, 17, tzinfo=timezone.utc),
-        parser_version="xbrl-lineage-v2",
+        parser_version="xbrl-lineage-v2.1",
     )
     db.commit()
     finalize_sec_financial_ingestion_operation(db, operation_id=report.operation_id)
@@ -306,7 +306,7 @@ def test_failed_amendment_state_is_bounded_to_its_filing_cycle(db, tmp_path):
         storage_root=tmp_path,
         max_filings=1,
         now=datetime(2026, 8, 29, 17, tzinfo=timezone.utc),
-        parser_version="xbrl-lineage-v2",
+        parser_version="xbrl-lineage-v2.1",
     )
     db.commit()
     finalize_sec_financial_ingestion_operation(db, operation_id=restored_report.operation_id)
@@ -474,7 +474,7 @@ def test_gold_acceptance_executes_real_publication_and_exact_zero_growth_replay(
         storage_root=tmp_path,
         max_filings=1,
         now=datetime(2026, 8, 30, 1, tzinfo=timezone.utc),
-        parser_version="xbrl-lineage-v2",
+        parser_version="xbrl-lineage-v2.1",
     )
     link_acceptance_operation(
         db,
@@ -818,7 +818,7 @@ def test_gold_acceptance_report_is_rebuilt_and_verified_against_isolated_databas
         storage_root=tmp_path,
         max_filings=1,
         now=datetime(2026, 8, 30, 1, tzinfo=timezone.utc),
-        parser_version="xbrl-lineage-v2",
+        parser_version="xbrl-lineage-v2.1",
     )
     link_acceptance_operation(
         db,
@@ -1303,7 +1303,7 @@ def test_gold_evidence_checkpoints_are_database_computed_and_append_only(db, tmp
         storage_root=tmp_path,
         max_filings=1,
         now=datetime(2026, 8, 28, 1, tzinfo=timezone.utc),
-        parser_version="xbrl-lineage-v2",
+        parser_version="xbrl-lineage-v2.1",
     )
     link_acceptance_operation(
         db,
@@ -1348,7 +1348,7 @@ def test_gold_evidence_checkpoints_are_database_computed_and_append_only(db, tmp
         storage_root=tmp_path,
         max_filings=1,
         now=datetime(2026, 8, 28, 2, tzinfo=timezone.utc),
-        parser_version="xbrl-lineage-v2",
+        parser_version="xbrl-lineage-v2.1",
     )
     link_acceptance_operation(
         db,
@@ -1392,7 +1392,7 @@ def test_gold_evidence_checkpoints_are_database_computed_and_append_only(db, tmp
         storage_root=tmp_path,
         max_filings=1,
         now=datetime(2026, 8, 28, 2, 30, tzinfo=timezone.utc),
-        parser_version="xbrl-lineage-v2",
+        parser_version="xbrl-lineage-v2.1",
     )
     link_acceptance_operation(
         db,
@@ -1484,7 +1484,7 @@ def test_gold_evidence_checkpoints_are_database_computed_and_append_only(db, tmp
         storage_root=tmp_path,
         max_filings=1,
         now=datetime(2026, 8, 28, 3, tzinfo=timezone.utc),
-        parser_version="xbrl-lineage-v2",
+        parser_version="xbrl-lineage-v2.1",
     )
     link_acceptance_operation(
         db,
@@ -1523,6 +1523,284 @@ def test_gold_evidence_checkpoints_are_database_computed_and_append_only(db, tmp
         )
     db.rollback()
 
+
+def test_cli_recovers_finalized_failed_parse_without_sec_refetch(
+    db, tmp_path, monkeypatch
+):
+    run_id = "gold-failed-parse-recovery"
+    case_id = "aapl-primary"
+    instance = "11111111-1111-4111-8111-111111111111"
+    reports_root = tmp_path / "reports"
+    reports_root.mkdir()
+    persist_rate_guard_snapshot(
+        db,
+        run_id=run_id,
+        phase="before",
+        configured_route="https://rate-guard.example.test",
+        expected_instance_id=instance,
+        observed_instance_id=instance,
+        fetch_mode="rate_guard",
+        fallback_enabled=False,
+        fallback_url=None,
+        metrics={"rate_per_sec": 1.0},
+        manifest_digest="e" * 64,
+        database_name="valuepilot_acceptance_gold_failed_parse_recovery",
+        storage_root=tmp_path,
+    )
+    first_attempt = begin_acceptance_case_attempt(
+        db, run_id=run_id, case_id=case_id, acceptance_pass=1
+    )
+    record_acceptance_evidence_checkpoint(
+        db,
+        run_id=run_id,
+        case_id=case_id,
+        acceptance_pass=1,
+        phase="before",
+        attempt_id=first_attempt["id"],
+    )
+    operation_attempt = begin_acceptance_case_attempt(
+        db, run_id=run_id, case_id=case_id, acceptance_pass=1
+    )
+    resumed_before = record_acceptance_evidence_checkpoint(
+        db,
+        run_id=run_id,
+        case_id=case_id,
+        acceptance_pass=1,
+        phase="before",
+        attempt_id=operation_attempt["id"],
+    )
+    assert resumed_before["attempt_id"] == first_attempt["id"]
+
+    stock = Stock(ticker="AAPL", exchange="US", company_name="Apple Inc.")
+    db.add(stock)
+    db.flush()
+    register_reviewed_sec_identity(
+        db,
+        stock_id=stock.id,
+        cik=CIK,
+        effective_from=date(2015, 1, 1),
+        known_at=datetime(2026, 8, 28, tzinfo=timezone.utc),
+        review_reason="failed parse acceptance recovery fixture",
+    )
+    db.commit()
+
+    class SgmlPrimaryClient(StatementAuthorityClient):
+        def __init__(self):
+            super().__init__()
+            primary_url = next(
+                url for url in self.responses if url.endswith("aapl-20260627.htm")
+            )
+            wrapped = (
+                b"<DOCUMENT><TYPE>10-Q\n<SEQUENCE>1\n"
+                b"<FILENAME>aapl-20260627.htm\n<TEXT>"
+                + self.responses[primary_url]
+                + b"</TEXT></DOCUMENT>"
+            )
+            self.responses[primary_url] = wrapped
+            index_url = next(url for url in self.responses if url.endswith("/index.json"))
+            index = json.loads(self.responses[index_url])
+            for item in index["directory"]["item"]:
+                if item["name"] == "aapl-20260627.htm":
+                    item["size"] = len(wrapped)
+            self.responses[index_url] = json.dumps(index).encode()
+
+    failed_report = ingest_latest_financial_filings(
+        db,
+        stock_id=stock.id,
+        client=SgmlPrimaryClient(),
+        storage_root=tmp_path,
+        max_filings=1,
+        now=datetime(2026, 8, 28, 1, tzinfo=timezone.utc),
+        parser_version="xbrl-lineage-v2",
+    )
+    link_acceptance_operation(
+        db,
+        attempt_id=operation_attempt["id"],
+        operation_id=failed_report.operation_id,
+        operation_ordinal=1,
+        operation_role="main",
+    )
+    db.commit()
+    finalize_sec_financial_ingestion_operation(
+        db, operation_id=failed_report.operation_id
+    )
+    db.commit()
+    assert db.execute(
+        text(
+            "SELECT result_kind FROM sec_financial_operation_results "
+            "WHERE operation_id=:operation"
+        ),
+        {"operation": failed_report.operation_id},
+    ).scalar_one() == "parse_run"
+    assert db.execute(
+        text(
+            "SELECT count(*) FROM sec_financial_parse_runs "
+            "WHERE operation_id=:operation AND status='failed'"
+        ),
+        {"operation": failed_report.operation_id},
+    ).scalar_one() == 1
+    assert db.execute(
+        text("SELECT count(*) FROM sec_metric_publication_runs")
+    ).scalar_one() == 0
+
+    class LaterCollidingManifestClient(SgmlPrimaryClient):
+        def __init__(self):
+            super().__init__()
+            primary_url = next(
+                url for url in self.responses if url.endswith("aapl-20260627.htm")
+            )
+            self.responses[primary_url] = self.responses[primary_url].replace(
+                b"</TEXT>", b"\n</TEXT>"
+            )
+            index_url = next(
+                url for url in self.responses if url.endswith("/index.json")
+            )
+            index = json.loads(self.responses[index_url])
+            for item in index["directory"]["item"]:
+                if item["name"] == "aapl-20260627.htm":
+                    item["size"] = len(self.responses[primary_url])
+            self.responses[index_url] = json.dumps(index).encode()
+
+    later_report = ingest_latest_financial_filings(
+        db,
+        stock_id=stock.id,
+        client=LaterCollidingManifestClient(),
+        storage_root=tmp_path,
+        max_filings=1,
+        now=datetime(2026, 8, 28, 1, 30, tzinfo=timezone.utc),
+        parser_version="collision-parser-v1",
+    )
+    db.commit()
+    finalize_sec_financial_ingestion_operation(
+        db, operation_id=later_report.operation_id
+    )
+    db.commit()
+    assert later_report.operation_id != failed_report.operation_id
+    original_manifest = db.execute(
+        text(
+            "SELECT DISTINCT artifact.manifest_hash "
+            "FROM sec_financial_accession_attempts attempt "
+            "JOIN sec_financial_accession_attempt_artifacts link "
+            "ON link.attempt_id=attempt.id "
+            "JOIN sec_filing_artifacts artifact ON artifact.id=link.artifact_id "
+            "WHERE attempt.operation_id=:operation"
+        ),
+        {"operation": failed_report.operation_id},
+    ).scalar_one()
+    later_manifest = db.execute(
+        text(
+            "SELECT DISTINCT artifact.manifest_hash "
+            "FROM sec_financial_accession_attempts attempt "
+            "JOIN sec_financial_accession_attempt_artifacts link "
+            "ON link.attempt_id=attempt.id "
+            "JOIN sec_filing_artifacts artifact ON artifact.id=link.artifact_id "
+            "WHERE attempt.operation_id=:operation"
+        ),
+        {"operation": later_report.operation_id},
+    ).scalar_one()
+    assert later_manifest != original_manifest
+
+    session_factory = sessionmaker(bind=db.get_bind())
+    monkeypatch.setattr(financial_cli, "SessionLocal", session_factory)
+    monkeypatch.setattr(
+        financial_cli,
+        "preflight_configured_acceptance_runtime",
+        lambda _run: SimpleNamespace(
+            run_id=run_id,
+            reports_root=reports_root,
+            storage_root=tmp_path,
+        ),
+    )
+    monkeypatch.setattr(financial_cli.settings, "EDGAR_RAW_STORAGE_DIR", str(tmp_path))
+    monkeypatch.setattr(
+        financial_cli,
+        "_utc_now",
+        lambda: datetime(2026, 8, 28, 2, tzinfo=timezone.utc),
+    )
+
+    class ForbiddenEdgarClient:
+        def __init__(self, *_args, **_kwargs):
+            pytest.fail("finalized failed parse recovery performed an SEC fetch")
+
+    monkeypatch.setattr(financial_cli, "EdgarClient", ForbiddenEdgarClient)
+    report_path = reports_root / "pass-1" / f"{case_id}.json"
+    result = CliRunner().invoke(
+        financial_cli.app,
+        [
+            "ingest-gold-case",
+            "--case-id",
+            case_id,
+            "--acceptance-run-id",
+            run_id,
+            "--acceptance-pass",
+            "1",
+            "--report-json",
+            str(report_path),
+        ],
+    )
+
+    assert result.exit_code == 2, result.output
+    payload = json.loads(report_path.read_text(encoding="utf-8"))
+    assert payload["publication_run_id"]
+    attempts = db.execute(
+        text(
+            "SELECT attempt_ordinal FROM sec_acceptance_case_attempts "
+            "WHERE run_id=:run AND case_id=:case AND acceptance_pass=1 "
+            "ORDER BY attempt_ordinal"
+        ),
+        {"run": run_id, "case": case_id},
+    ).scalars().all()
+    assert attempts == [1, 2, 3]
+    links = db.execute(
+        text(
+            "SELECT link.operation_id,link.operation_role "
+            "FROM sec_acceptance_operation_links link "
+            "JOIN sec_acceptance_case_attempts attempt ON attempt.id=link.attempt_id "
+            "WHERE attempt.run_id=:run AND attempt.case_id=:case "
+            "ORDER BY attempt.attempt_ordinal,link.operation_ordinal"
+        ),
+        {"run": run_id, "case": case_id},
+    ).all()
+    assert links[0] == (failed_report.operation_id, "main")
+    assert links[1] == (failed_report.operation_id, "recovered")
+    assert links[2][1] == "continuation"
+    assert links[2][0] not in {
+        failed_report.operation_id,
+        later_report.operation_id,
+    }
+    assert db.execute(
+        text("SELECT count(*) FROM sec_financial_ingestion_operations")
+    ).scalar_one() == 3
+    assert db.execute(
+        text("SELECT count(*) FROM sec_metric_publication_runs")
+    ).scalar_one() == 1
+    assert db.execute(
+        text(
+            "SELECT parser_version,status FROM sec_financial_parse_runs "
+            "WHERE parser_version IN ('xbrl-lineage-v2','xbrl-lineage-v2.1') "
+            "ORDER BY id"
+        )
+    ).all() == [
+        ("xbrl-lineage-v2", "failed"),
+        ("xbrl-lineage-v2.1", "succeeded"),
+    ]
+    recovered_manifests = set(
+        db.execute(
+            text(
+                "SELECT DISTINCT artifact.manifest_hash "
+                "FROM sec_financial_parse_runs parse "
+                "JOIN sec_financial_parse_run_artifacts link "
+                "ON link.parse_run_id=parse.id "
+                "JOIN sec_filing_artifacts artifact ON artifact.id=link.artifact_id "
+                "WHERE parse.parser_version='xbrl-lineage-v2.1'"
+            )
+        ).scalars()
+    )
+    assert recovered_manifests == {original_manifest}
+    assert later_manifest not in recovered_manifests
+    assert db.execute(
+        text("SELECT count(*) FROM sec_acceptance_report_readiness")
+    ).scalar_one() == 0
 
 @pytest.mark.parametrize(
     ("wrong_case", "wrong_pass"),
@@ -1614,7 +1892,7 @@ def test_failed_operation_is_atomically_classified_by_database_terminal_result(
         storage_root=tmp_path,
         max_filings=1,
         now=datetime(2026, 8, 28, 1, tzinfo=timezone.utc),
-        parser_version="xbrl-lineage-v2",
+        parser_version="xbrl-lineage-v2.1",
     )
     link_acceptance_operation(
         db,
@@ -1658,7 +1936,7 @@ def test_acquisition_audit_rejects_finalized_unlinked_operation_in_case_window(
         storage_root=tmp_path,
         max_filings=1,
         now=datetime(2026, 8, 28, 4, tzinfo=timezone.utc),
-        parser_version="xbrl-lineage-v2",
+        parser_version="xbrl-lineage-v2.1",
     )
     db.commit()
     finalize_sec_financial_ingestion_operation(db, operation_id=unlinked.operation_id)
@@ -1790,7 +2068,7 @@ def _complete_24x2_runtime_authority(db, tmp_path):
                 max_filings=1,
                 now=datetime(2026, 8, 28, tzinfo=timezone.utc)
                 + timedelta(minutes=acceptance_pass * 100 + case_index),
-                parser_version="xbrl-lineage-v2",
+                parser_version="xbrl-lineage-v2.1",
             )
             link_acceptance_operation(
                 db,

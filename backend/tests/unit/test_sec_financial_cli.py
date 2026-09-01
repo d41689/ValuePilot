@@ -146,6 +146,11 @@ def _stub_acceptance_report_database_audit(monkeypatch, *, validator=None):
         "recoverable_bound_acceptance_attempt",
         lambda *_args, **_kwargs: None,
     )
+    monkeypatch.setattr(
+        financial_cli,
+        "recoverable_finalized_acceptance_acquisition",
+        lambda *_args, **_kwargs: None,
+    )
     monkeypatch.setattr(financial_cli, "audit_case_report_operation", audit)
     monkeypatch.setattr(
         financial_cli,
@@ -458,6 +463,11 @@ def test_ingest_gold_case_recovers_same_run_after_durable_before_and_writes_repo
     monkeypatch.setattr(
         financial_cli,
         "recoverable_bound_acceptance_attempt",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        financial_cli,
+        "recoverable_finalized_acceptance_acquisition",
         lambda *_args, **_kwargs: None,
     )
     scalar_calls = 0

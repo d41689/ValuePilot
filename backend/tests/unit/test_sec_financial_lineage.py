@@ -50,14 +50,19 @@ from app.models.stocks import Stock
 from app.core.config import settings
 from app.services.sec_financial_ingestion import (
     FinancialHistoryTarget,
+    MAX_ARTIFACT_BYTES,
+    RetainedFinancialReplayClient,
     SecFinancialFetchError,
     SecFinancialIntegrityError,
     SecFinancialIngestionError,
     _artifact_input_hash,
     _discover,
     _fetch_bytes,
+    _manifest_items,
+    _retain_item,
     _safe_artifact_url,
     _store_content_immutable,
+    _unwrap_sec_document,
     earliest_replayable_sec_financial_evidence_at,
     finalize_sec_financial_ingestion_operation,
     finalize_pending_sec_financial_ingestion_operations,
@@ -87,6 +92,125 @@ INDEX_URL = (
 PRIMARY_URL = (
     f"https://www.sec.gov/Archives/edgar/data/320193/{ACCESSION_RAW}/aapl-20260627.htm"
 )
+
+
+def test_sec_sgml_document_unwrap_is_bounded_and_preserves_text_payload() -> None:
+    payload = b'<?xml version="1.0"?><xbrli:xbrl xmlns:xbrli="http://www.xbrl.org/2003/instance"/>'
+    wrapped = (
+        b"<DOCUMENT><TYPE>XML\n<SEQUENCE>12\n<FILENAME>aapl-20150627.xml\n"
+        b"<DESCRIPTION>XBRL INSTANCE DOCUMENT\n<TEXT>" + payload + b"</TEXT></DOCUMENT>"
+    )
+
+    assert _unwrap_sec_document(wrapped) == payload
+    assert _unwrap_sec_document(payload) == payload
+    with pytest.raises(SecFinancialIngestionError, match="ambiguous TEXT"):
+        _unwrap_sec_document(
+            b"<DOCUMENT><TEXT><x/></TEXT><TEXT><y/></TEXT></DOCUMENT>"
+        )
+
+
+def test_retention_recognizes_generic_instance_filename_despite_sec_type() -> None:
+    assert _retain_item(
+        {
+            "name": "aapl-20150627.xml",
+            "type": "text.gif",
+            "size": 1_658_267,
+        },
+        "aapl-20150627.htm",
+    )
+
+
+def test_retained_replay_fetches_only_missing_manifest_instance() -> None:
+    retained_index = b'{"directory":{"item":[]}}'
+    instance = b'<xbrli:xbrl xmlns:xbrli="http://www.xbrl.org/2003/instance"/>'
+    wrapped = b"<DOCUMENT><TYPE>XML\n<TEXT>" + instance + b"</TEXT></DOCUMENT>"
+    index_url = "https://www.sec.gov/Archives/edgar/data/320193/old/index.json"
+    sibling_url = "https://www.sec.gov/Archives/edgar/data/320193/old/R1.htm"
+    instance_url = (
+        "https://www.sec.gov/Archives/edgar/data/320193/old/aapl-20150627.xml"
+    )
+
+    class Upstream:
+        def __init__(self) -> None:
+            self.calls: list[str] = []
+
+        def get(self, url: str) -> bytes:
+            self.calls.append(url)
+            return wrapped
+
+        def get_revalidated(self, url: str) -> bytes:
+            return self.get(url)
+
+    upstream = Upstream()
+    client = RetainedFinancialReplayClient(
+        retained={index_url: retained_index, sibling_url: b"retained-report"},
+        missing_instances={instance_url: len(wrapped)},
+        upstream_factory=lambda: upstream,
+    )
+
+    assert client.get_revalidated(index_url) == retained_index
+    assert client.get_revalidated(sibling_url) == b"retained-report"
+    assert client.get_revalidated(instance_url) == wrapped
+    assert client.get_revalidated(instance_url) == wrapped
+    assert upstream.calls == [instance_url]
+    assert client.external_requests == [instance_url]
+
+
+@pytest.mark.parametrize(
+    "declared_size",
+    (None, 0, -1, MAX_ARTIFACT_BYTES + 1, True, "12"),
+)
+def test_retained_replay_rejects_invalid_instance_size_before_upstream(
+    declared_size,
+) -> None:
+    instance_url = (
+        "https://www.sec.gov/Archives/edgar/data/320193/old/aapl-20150627.xml"
+    )
+    constructed = 0
+
+    def upstream_factory():
+        nonlocal constructed
+        constructed += 1
+        raise AssertionError("invalid recovery authority reached upstream")
+
+    client = RetainedFinancialReplayClient(
+        retained={},
+        missing_instances={instance_url: declared_size},  # type: ignore[dict-item]
+        upstream_factory=upstream_factory,
+    )
+    with pytest.raises(
+        SecFinancialIntegrityError, match="invalid declared size"
+    ):
+        client.get_revalidated(instance_url)
+    assert constructed == 0
+    assert client.external_requests == []
+
+
+def test_nonnumeric_manifest_size_cannot_authorize_recovery_request() -> None:
+    payload = json.dumps(
+        {
+            "directory": {
+                "item": [
+                    {
+                        "name": "aapl-20150627.xml",
+                        "type": "text.gif",
+                        "size": "not-a-number",
+                    }
+                ]
+            }
+        }
+    ).encode()
+    item = _manifest_items(payload)[0]
+    assert item["size"] is None
+    client = RetainedFinancialReplayClient(
+        retained={},
+        missing_instances={"https://sec.example/aapl-20150627.xml": item["size"]},
+        upstream_factory=lambda: pytest.fail("malformed size reached upstream"),
+    )
+    with pytest.raises(
+        SecFinancialIntegrityError, match="invalid declared size"
+    ):
+        client.get("https://sec.example/aapl-20150627.xml")
 
 
 def _canonical_artifact_url(cik: str, accession: str, filename: str) -> str:

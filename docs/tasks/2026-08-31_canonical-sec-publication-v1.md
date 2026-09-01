@@ -1,6 +1,6 @@
 # Canonical Financial Truth — SEC Publication V1
 
-Status: contract approved; delivery steps 1–6 complete; Step 6 Terra approved; Step 7A complete and Terra approved; Step 7B live-run CLI remediation implemented pending Terra quick review, then real locked 24-case retry; retained statement authority Terra PASS
+Status: contract approved; delivery steps 1–6 complete; Step 6 Terra approved; Step 7A complete and Terra approved; Step 7B live-run retained-evidence recovery remediation implemented pending Terra review, then real locked 24-case retry; retained statement authority Terra PASS
 
 Owner: Product / Engineering
 
@@ -222,6 +222,59 @@ Run the canonical commands verbatim and in order:
 7. `git diff --check`
 
 ## Sign-off trail
+
+- 2026-09-01: Step 7B retained-recovery Terra round-1 remediation is
+  implemented pending reround. Recovery no longer loads every artifact ever
+  observed for a filing. For each target operation it reconstructs the exact
+  accession attempt, verifies its retained attempt-artifact set against the
+  attempt input-manifest digest, requires one manifest hash and one exact
+  retained accession-index identity, and loads manifest-only candidates only
+  from that same manifest group. A later operation with the same filing and
+  colliding source URL but a different manifest remains outside both replay
+  content and the v2.1 parse-run artifact set. Missing-instance authority must
+  also be unique inside the operation-owned groups and carry a true positive
+  integer SEC declared size no larger than the existing artifact byte limit.
+  The bound is checked while constructing the allowlist and again before lazy
+  upstream construction, so null, zero, negative, oversized, boolean, string,
+  and nonnumeric-manifest-derived values fail with typed retained-recovery
+  integrity errors and zero client calls. Focused lineage, publication E2E,
+  publication migration, and lineage migration verification passed `233`
+  tests with only the existing Starlette deprecation warning. Alembic retained
+  the unique `20260901190000` head, Python compilation and `git diff --check`
+  passed. No network, shared development database, or retained live-run
+  storage was accessed or mutated.
+
+- 2026-09-01: Step 7B's resumed `aapl-primary` pass exposed two related
+  retained-evidence defects. A finalized operation held 44 append-only failed
+  parser-v2 runs but no publication binding or report readiness; the prior
+  retry path did not recognize that state and restarted full SEC discovery.
+  The retained accession manifests also proved that 14 older standalone XBRL
+  instances were classified as `text.gif` by the SEC index and left
+  manifest-only, while later `_htm.xml` instance artifacts were retained but
+  not preferred over wrapped primary documents. Recovery now links the prior
+  finalized operation to a new append-only attempt, replays submissions,
+  accession indexes, and retained sibling artifacts from verified local
+  content, and permits external acquisition only for an exact manifest-owned
+  generic instance filename whose declared size and unwrapped XBRL root are
+  validated. Thus each affected older accession can request only its missing
+  instance; retained siblings cannot fall through to SEC. SEC SGML
+  `<DOCUMENT>/<TEXT>` envelopes are unwrapped with bounded deterministic rules
+  before instance classification and parsing, and the parser prefers verified
+  standalone authority, then retained `_htm.xml`, then the primary document.
+  Parser revision `xbrl-lineage-v2.1` creates new parse runs and leaves all 44
+  failed v2 runs intact; migration `20260901190000` applies the existing
+  structured-unit and statement-authority database guards to both revisions.
+  Generated `R*.htm` tables that lack context/fact identity remain unsupported
+  statement authority; recovery does not convert them into successful
+  provenance or an accepted case.
+  Focused verification passed the 134-test lineage file, 62-test publication
+  E2E file, 37-test CLI file, 106-test gold/amendment/canonical/CLI group, and
+  30 migration tests. Three narrow SGML/retention/request tests and the real
+  CliRunner failed-parse recovery regression pass. Alembic reports the unique
+  `20260901190000` head, Python compilation and `git diff --check` pass. No
+  network, shared development database, or retained live-run storage was
+  mutated during remediation. Terra review remains pending before resuming the
+  live run.
 
 - 2026-09-01: Step 7B's first real pass-1 attempt stopped on `aapl-primary`
   before any SEC request because the durable-before timestamp branch used

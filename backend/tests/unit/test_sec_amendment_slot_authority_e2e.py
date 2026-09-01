@@ -171,7 +171,7 @@ def _ingest_changed_amendment(db, tmp_path, original):
         storage_root=tmp_path,
         max_filings=1,
         now=datetime(2026, 8, 29, 17, tzinfo=timezone.utc),
-        parser_version="xbrl-lineage-v2",
+        parser_version="xbrl-lineage-v2.1",
     )
     db.commit()
     finalize_sec_financial_ingestion_operation(db, operation_id=report.operation_id)
@@ -246,7 +246,7 @@ def _ingest_client(db, tmp_path, original, client, *, now):
         storage_root=tmp_path,
         max_filings=1,
         now=now,
-        parser_version="xbrl-lineage-v2",
+        parser_version="xbrl-lineage-v2.1",
     )
     db.commit()
     finalize_sec_financial_ingestion_operation(db, operation_id=report.operation_id)
@@ -414,7 +414,7 @@ def test_successful_nonfinancial_amendment_is_typed_and_preserves_original_slots
         storage_root=tmp_path,
         max_filings=1,
         now=datetime(2026, 8, 30, 17, tzinfo=timezone.utc),
-        parser_version="xbrl-lineage-v2",
+        parser_version="xbrl-lineage-v2.1",
     )
     db.commit()
     finalize_sec_financial_ingestion_operation(db, operation_id=report.operation_id)
@@ -630,7 +630,7 @@ def test_publication_waits_for_uncommitted_availability_then_rejects_stale_sourc
             storage_root=tmp_path,
             max_filings=1,
             now=datetime(2026, 8, 29, 17, tzinfo=timezone.utc),
-            parser_version="xbrl-lineage-v2",
+            parser_version="xbrl-lineage-v2.1",
         )
         setup.commit()
 

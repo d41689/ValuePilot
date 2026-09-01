@@ -24,6 +24,7 @@ from app.services.sec_statement_authority import (
     StatementAuthoritySnapshot, authoritative_raw_fact_snapshot,
 )
 from app.services.sec_financial_locking import acquire_sec_financial_stock_lock
+from app.services.sec_financial_ingestion import PARSER_V2
 
 
 @dataclass(frozen=True)
@@ -62,7 +63,7 @@ class SecPublicationError(RuntimeError):
     pass
 
 
-SEC_PUBLICATION_V1_PARSER_VERSION = "xbrl-lineage-v2"
+SEC_PUBLICATION_V1_PARSER_VERSION = PARSER_V2
 
 
 @dataclass(frozen=True)

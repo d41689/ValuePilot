@@ -66,6 +66,7 @@ from app.acceptance.sec_gold_publication import (
     mark_acceptance_report_ready,
     record_acceptance_evidence_checkpoint,
     recoverable_bound_acceptance_attempt,
+    recoverable_finalized_acceptance_acquisition,
 )
 from app.core.config import settings
 from app.core.db import SessionLocal
@@ -79,6 +80,7 @@ from app.rate_guard.client import RateGuardClient
 from app.services.sec_financial_ingestion import (
     FinancialHistoryTarget,
     _expected_completed_fiscal_years,
+    build_retained_financial_replay_client,
     earliest_replayable_sec_financial_evidence_at,
     finalize_sec_financial_ingestion_operation,
     finalize_pending_sec_financial_ingestion_operations,
@@ -506,7 +508,7 @@ def _recover_completed_gold_case_report(
 def ingest_gold_case(
     case_id: str = typer.Option(..., help="Locked FT-00 case id."),
     max_filings: int = typer.Option(50, min=1, max=200),
-    parser_version: str = typer.Option("xbrl-lineage-v2"),
+    parser_version: str = typer.Option(ACCEPTANCE_PARSER_VERSION),
     history_cursor: str | None = typer.Option(None, help="Validated cursor emitted by a prior bounded history operation."),
     as_of: str | None = typer.Option(
         None,
@@ -763,24 +765,45 @@ def ingest_gold_case(
         recovered_operations = finalize_pending_sec_financial_ingestion_operations(
             db, stock_id=stock.id
         )
-        if recovered_operations:
+        finalized_acquisition = (
+            recoverable_finalized_acceptance_acquisition(
+                db,
+                run_id=acceptance_run_id,
+                case_id=case_id,
+                acceptance_pass=acceptance_pass,
+            )
+            if acceptance_run_id is not None
+            else None
+        )
+        recovery_operations = (
+            tuple(finalized_acquisition["operations"])
+            if finalized_acquisition is not None
+            else tuple(
+                {
+                    "operation_id": operation_id,
+                    "available_at": available_at,
+                }
+                for operation_id, available_at in recovered_operations
+            )
+        )
+        if recovery_operations:
             if acceptance_run_id is not None:
                 if acceptance_attempt is None:
                     raise RuntimeError("acceptance recovery requires attempt authority")
-                for operation_id, _available_at in recovered_operations:
+                for item in recovery_operations:
                     operation_ordinal += 1
                     link_acceptance_operation(
                         db,
                         attempt_id=int(acceptance_attempt["id"]),
-                        operation_id=operation_id,
+                        operation_id=str(item["operation_id"]),
                         operation_ordinal=operation_ordinal,
                         operation_role="recovered",
                     )
             db.commit()
-            for operation_id, available_at in recovered_operations:
+            for item in recovery_operations:
                 typer.echo(
-                    f"recovered_lineage_operation_id={operation_id} "
-                    f"lineage_available_at={available_at.isoformat()}"
+                    f"recovered_lineage_operation_id={item['operation_id']} "
+                    f"lineage_available_at={item['available_at'].isoformat()}"
                 )
         typer.echo(
             f"filing_selection_as_of={filing_selection_as_of.isoformat()} "
@@ -795,71 +818,122 @@ def ingest_gold_case(
         if acceptance_run_id is not None:
             if parser_version != ACCEPTANCE_PARSER_VERSION:
                 raise typer.BadParameter(
-                    "acceptance parser version is locked to xbrl-lineage-v2"
+                    f"acceptance parser version is locked to {ACCEPTANCE_PARSER_VERSION}"
                 )
             if as_of is not None or history_cursor is not None:
                 raise typer.BadParameter(
                     "acceptance filing cutoff and history continuation are manifest-owned"
                 )
-        reports = []
-        available_times: dict[str, datetime] = {}
-        cursor = history_cursor
+        reports = (
+            list(
+                linked_acceptance_ingestion_reports(
+                    db,
+                    run_id=acceptance_run_id,
+                    case_id=case_id,
+                    acceptance_pass=acceptance_pass,
+                    current_reports=(),
+                )
+            )
+            if finalized_acquisition is not None
+            else []
+        )
+        available_times: dict[str, datetime] = {
+            str(item["operation_id"]): item["available_at"]
+            for item in recovery_operations
+        }
+        cursor = (
+            finalized_acquisition["next_history_cursor"]
+            if finalized_acquisition is not None
+            else history_cursor
+        )
         seen_cursors: set[str] = set()
-        with EdgarClient() as client:
-            for continuation_ordinal in range(1, 34):
-                report = ingest_latest_financial_filings(
+        should_ingest = (
+            finalized_acquisition is None
+            or cursor is not None
+            or bool(finalized_acquisition.get("requires_reparse"))
+        )
+        if should_ingest:
+            client_context = (
+                EdgarClient()
+                if finalized_acquisition is None
+                else build_retained_financial_replay_client(
                     db,
                     stock_id=stock.id,
-                    client=client,
-                    storage_root=Path(settings.EDGAR_RAW_STORAGE_DIR),
-                    max_filings=max_filings,
-                    now=(ingestion_attempted_at if continuation_ordinal == 1 else _utc_now()),
-                    parser_version=(
-                        ACCEPTANCE_PARSER_VERSION
-                        if acceptance_run_id is not None
-                        else parser_version
+                    operation_ids=tuple(
+                        str(item["operation_id"])
+                        for item in finalized_acquisition["operations"]
                     ),
-                    filing_selection_as_of=filing_selection_as_of,
-                    history_target=history_target,
-                    history_cursor=cursor,
+                    storage_root=Path(settings.EDGAR_RAW_STORAGE_DIR),
+                    upstream_factory=EdgarClient,
                 )
-                if acceptance_run_id is not None:
-                    if acceptance_attempt is None:
-                        raise RuntimeError("acceptance ingestion requires attempt authority")
-                    operation_ordinal += 1
-                    link_acceptance_operation(
+            )
+            with client_context as client:
+                for continuation_ordinal in range(1, 34):
+                    report = ingest_latest_financial_filings(
                         db,
-                        attempt_id=int(acceptance_attempt["id"]),
-                        operation_id=report.operation_id,
-                        operation_ordinal=operation_ordinal,
-                        operation_role=(
-                            "main" if continuation_ordinal == 1 else "continuation"
+                        stock_id=stock.id,
+                        client=client,
+                        storage_root=Path(settings.EDGAR_RAW_STORAGE_DIR),
+                        max_filings=max_filings,
+                        now=(
+                            ingestion_attempted_at
+                            if continuation_ordinal == 1
+                            else _utc_now()
                         ),
+                        parser_version=(
+                            ACCEPTANCE_PARSER_VERSION
+                            if acceptance_run_id is not None
+                            else parser_version
+                        ),
+                        filing_selection_as_of=filing_selection_as_of,
+                        history_target=history_target,
+                        history_cursor=cursor,
                     )
-                db.commit()
-                typer.echo(
-                    f"lineage_operation_id={report.operation_id} "
-                    "lineage_availability=pending"
-                )
-                available_at = finalize_sec_financial_ingestion_operation(
-                    db, operation_id=report.operation_id
-                )
-                db.commit()
-                typer.echo(
-                    f"lineage_operation_id={report.operation_id} "
-                    f"lineage_available_at={available_at.isoformat()}"
-                )
-                reports.append(report)
-                available_times[report.operation_id] = available_at
-                next_cursor = report.next_history_cursor
-                if acceptance_run_id is None or next_cursor is None:
-                    break
-                if next_cursor in seen_cursors:
-                    raise RuntimeError("bounded history continuation repeated a cursor")
-                seen_cursors.add(next_cursor)
-                cursor = next_cursor
-            else:
-                raise RuntimeError("bounded history continuation exceeded 33 operations")
+                    if acceptance_run_id is not None:
+                        if acceptance_attempt is None:
+                            raise RuntimeError(
+                                "acceptance ingestion requires attempt authority"
+                            )
+                        operation_ordinal += 1
+                        link_acceptance_operation(
+                            db,
+                            attempt_id=int(acceptance_attempt["id"]),
+                            operation_id=report.operation_id,
+                            operation_ordinal=operation_ordinal,
+                            operation_role=(
+                                "main"
+                                if not reports and continuation_ordinal == 1
+                                else "continuation"
+                            ),
+                        )
+                    db.commit()
+                    typer.echo(
+                        f"lineage_operation_id={report.operation_id} "
+                        "lineage_availability=pending"
+                    )
+                    available_at = finalize_sec_financial_ingestion_operation(
+                        db, operation_id=report.operation_id
+                    )
+                    db.commit()
+                    typer.echo(
+                        f"lineage_operation_id={report.operation_id} "
+                        f"lineage_available_at={available_at.isoformat()}"
+                    )
+                    reports.append(report)
+                    available_times[report.operation_id] = available_at
+                    next_cursor = report.next_history_cursor
+                    if acceptance_run_id is None or next_cursor is None:
+                        break
+                    if next_cursor in seen_cursors:
+                        raise RuntimeError(
+                            "bounded history continuation repeated a cursor"
+                        )
+                    seen_cursors.add(next_cursor)
+                    cursor = next_cursor
+                else:
+                    raise RuntimeError(
+                        "bounded history continuation exceeded 33 operations"
+                    )
 
         if acceptance_run_id is not None:
             reports = list(

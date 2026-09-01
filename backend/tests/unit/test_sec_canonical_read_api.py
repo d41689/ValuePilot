@@ -140,7 +140,7 @@ def test_authenticated_reads_share_sec_but_keep_private_facts_private(
     assert payload["filings"][0]["accession"]
     assert payload["filings"][0]["form"] in {"10-Q", "10-K"}
     assert payload["filings"][0]["accepted_at"]
-    assert payload["filings"][0]["parser_version"] == "xbrl-lineage-v2"
+    assert payload["filings"][0]["parser_version"] == "xbrl-lineage-v2.1"
     assert payload["context_id"]
     assert payload["period"]["end"]
     assert payload["fact_nature"] in {"actual", "derived_actual"}
