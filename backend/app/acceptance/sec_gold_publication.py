@@ -223,6 +223,115 @@ _PERSISTENT_DELTA_FIELDS = (
 )
 
 
+def initialize_acceptance_case_attempt(
+    lease: AcceptanceCompletionClaimLease,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Atomically stamp a fresh attempt, its owner claim, and evidence baseline."""
+
+    if lease._closed:
+        raise ValueError("acceptance completion lease is closed")
+    if lease.attempt_id is not None or lease.claim_id is not None:
+        raise ValueError("acceptance completion lease already owns an attempt")
+    connection = lease._connection
+    try:
+        connection.execute(
+            text(
+                "SELECT pg_advisory_xact_lock("
+                "sec_acceptance_completion_lock_namespace(),"
+                "sec_acceptance_completion_lock_local("
+                ":run,:case,CAST(:pass AS smallint)))"
+            ),
+            {
+                "run": lease.run_id,
+                "case": lease.case_id,
+                "pass": lease.acceptance_pass,
+            },
+        )
+        attempt = connection.execute(
+            text(
+                """INSERT INTO sec_acceptance_case_attempts
+                     (run_id,case_id,acceptance_pass,attempt_ordinal,
+                      attempted_at,created_at,created_txid)
+                   VALUES (:run,:case,:pass,1,
+                           clock_timestamp(),clock_timestamp(),txid_current())
+                   RETURNING id,attempt_ordinal,attempted_at,created_at,created_txid"""
+            ),
+            {
+                "run": lease.run_id,
+                "case": lease.case_id,
+                "pass": lease.acceptance_pass,
+            },
+        ).mappings().one()
+        claim = connection.execute(
+            text(
+                """INSERT INTO sec_acceptance_case_completion_claims
+                     (run_id,case_id,acceptance_pass,attempt_id,generation,
+                      claimed_at,created_at,created_txid)
+                   VALUES (:run,:case,:pass,:attempt,1,
+                           clock_timestamp(),clock_timestamp(),txid_current())
+                   RETURNING id,generation,claimed_at,created_at,created_txid"""
+            ),
+            {
+                "run": lease.run_id,
+                "case": lease.case_id,
+                "pass": lease.acceptance_pass,
+                "attempt": attempt.id,
+            },
+        ).mappings().one()
+        checkpoint = connection.execute(
+            text(
+                """INSERT INTO sec_acceptance_evidence_checkpoints
+                     (run_id,case_id,acceptance_pass,phase,attempt_id,operation_id,
+                      evidence_counts,captured_at,created_at,created_txid)
+                   VALUES (:run,:case,:pass,'before',:attempt,NULL,'{}'::jsonb,
+                           clock_timestamp(),clock_timestamp(),txid_current())
+                   RETURNING evidence_counts,captured_at,created_at,created_txid,
+                             attempt_id,operation_id"""
+            ),
+            {
+                "run": lease.run_id,
+                "case": lease.case_id,
+                "pass": lease.acceptance_pass,
+                "attempt": attempt.id,
+            },
+        ).mappings().one()
+        counts = dict(checkpoint.evidence_counts)
+        if (
+            int(attempt.created_txid) != int(claim.created_txid)
+            or int(claim.created_txid) != int(checkpoint.created_txid)
+            or attempt.created_at != attempt.attempted_at
+            or claim.created_at != claim.claimed_at
+            or checkpoint.created_at != checkpoint.captured_at
+            or set(counts) != set(_PERSISTENT_DELTA_FIELDS)
+            or any(
+                isinstance(value, bool) or not isinstance(value, int) or value < 0
+                for value in counts.values()
+            )
+        ):
+            raise ValueError("fresh acceptance completion authority mismatch")
+        connection.commit()
+    except BaseException:
+        connection.rollback()
+        raise
+    lease.claim_id = int(claim.id)
+    lease.attempt_id = int(attempt.id)
+    lease.generation = int(claim.generation)
+    return (
+        {
+            "id": int(attempt.id),
+            "attempt_ordinal": int(attempt.attempt_ordinal),
+            "attempted_at": attempt.attempted_at,
+            "created_txid": int(attempt.created_txid),
+        },
+        {
+            "evidence_counts": {key: int(value) for key, value in counts.items()},
+            "captured_at": checkpoint.captured_at,
+            "operation_id": None,
+            "attempt_id": int(attempt.id),
+        },
+    )
+
+
 def publication_idempotency_delta(
     database_delta: Mapping[str, Any],
 ) -> dict[str, Any]:

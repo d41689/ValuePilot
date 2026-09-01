@@ -62,6 +62,7 @@ from app.acceptance.sec_gold_publication import (
     begin_acceptance_case_attempt,
     completed_acceptance_checkpoint,
     execute_acceptance_publication,
+    initialize_acceptance_case_attempt,
     linked_acceptance_ingestion_reports,
     link_acceptance_operation,
     load_acceptance_evidence_delta,
@@ -778,15 +779,8 @@ def ingest_gold_case(
             if completion_claim is None:
                 raise RuntimeError("acceptance completion lease is unavailable")
             if completion_claim.attempt_id is None:
-                acceptance_attempt = begin_acceptance_case_attempt(
-                    db,
-                    run_id=acceptance_run_id,
-                    case_id=case_id,
-                    acceptance_pass=acceptance_pass,
-                )
-                completion_claim = append_acceptance_completion_claim(
-                    completion_claim,
-                    attempt_id=int(acceptance_attempt["id"]),
+                acceptance_attempt, before_checkpoint = (
+                    initialize_acceptance_case_attempt(completion_claim)
                 )
             else:
                 attempt_row = db.execute(
@@ -818,14 +812,14 @@ def ingest_gold_case(
                         {"attempt": completion_claim.attempt_id},
                     ).scalar_one()
                 )
-            before_checkpoint = record_acceptance_evidence_checkpoint(
-                db,
-                run_id=acceptance_run_id,
-                case_id=case_id,
-                acceptance_pass=acceptance_pass,
-                phase="before",
-                attempt_id=int(acceptance_attempt["id"]),
-            )
+                before_checkpoint = record_acceptance_evidence_checkpoint(
+                    db,
+                    run_id=acceptance_run_id,
+                    case_id=case_id,
+                    acceptance_pass=acceptance_pass,
+                    phase="before",
+                    attempt_id=int(acceptance_attempt["id"]),
+                )
             captured_at = before_checkpoint.get("captured_at")
             if isinstance(captured_at, datetime):
                 ingestion_attempted_at = max(

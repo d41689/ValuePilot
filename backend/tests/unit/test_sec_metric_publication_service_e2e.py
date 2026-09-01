@@ -25,6 +25,7 @@ from app.acceptance.sec_gold_publication import (
     append_acceptance_completion_claim,
     acceptance_operation_authority,
     begin_acceptance_case_attempt,
+    initialize_acceptance_case_attempt,
     execute_acceptance_publication,
     link_acceptance_operation,
     load_completed_acceptance_publication,
@@ -3482,6 +3483,262 @@ def test_acceptance_completion_claim_is_nonblocking_append_only_and_crash_recove
         db.rollback()
     finally:
         successor.release()
+
+
+def test_fresh_completion_attempt_claim_and_before_are_one_transaction(
+    db, tmp_path
+):
+    run_id = "gold-fresh-completion"
+    case_id = "aapl-primary"
+    instance = "11111111-1111-4111-8111-111111111111"
+    persist_rate_guard_snapshot(
+        db,
+        run_id=run_id,
+        phase="before",
+        configured_route="https://rate-guard.example.test",
+        expected_instance_id=instance,
+        observed_instance_id=instance,
+        fetch_mode="rate_guard",
+        fallback_enabled=False,
+        fallback_url=None,
+        metrics={"rate_per_sec": 1.0},
+        manifest_digest="e" * 64,
+        database_name="valuepilot_acceptance_gold_fresh_completion",
+        storage_root=tmp_path,
+    )
+    db.rollback()
+    owner = acquire_acceptance_completion_lease(
+        db, run_id=run_id, case_id=case_id, acceptance_pass=1
+    )
+    assert owner is not None
+    try:
+        attempt, before = initialize_acceptance_case_attempt(owner)
+        rows = db.execute(
+            text(
+                """SELECT attempt.created_txid AS attempt_txid,
+                          claim.created_txid AS claim_txid,
+                          checkpoint.created_txid AS checkpoint_txid,
+                          attempt.attempted_at,claim.claimed_at,checkpoint.captured_at
+                   FROM sec_acceptance_case_attempts attempt
+                   JOIN sec_acceptance_case_completion_claims claim
+                     ON claim.attempt_id=attempt.id
+                   JOIN sec_acceptance_evidence_checkpoints checkpoint
+                     ON checkpoint.attempt_id=attempt.id AND checkpoint.phase='before'
+                   WHERE attempt.id=:attempt"""
+            ),
+            {"attempt": attempt["id"]},
+        ).mappings().one()
+        assert rows.attempt_txid == rows.claim_txid == rows.checkpoint_txid
+        assert rows.attempted_at <= rows.claimed_at <= rows.captured_at
+        assert before["attempt_id"] == attempt["id"] == owner.attempt_id
+        assert before["operation_id"] is None
+    finally:
+        owner.release()
+
+    recovered = acquire_acceptance_completion_lease(
+        db, run_id=run_id, case_id=case_id, acceptance_pass=1
+    )
+    assert recovered is not None
+    try:
+        assert recovered.attempt_id == attempt["id"]
+        assert db.execute(
+            text(
+                "SELECT count(*) FROM sec_acceptance_case_attempts "
+                "WHERE run_id=:run AND case_id=:case"
+            ),
+            {"run": run_id, "case": case_id},
+        ).scalar_one() == 1
+        assert db.execute(
+            text(
+                "SELECT count(*) FROM sec_acceptance_evidence_checkpoints "
+                "WHERE run_id=:run AND case_id=:case AND phase='before'"
+            ),
+            {"run": run_id, "case": case_id},
+        ).scalar_one() == 1
+    finally:
+        recovered.release()
+
+
+def test_fresh_completion_bootstrap_failure_rolls_back_all_authority(db, tmp_path):
+    run_id = "gold-fresh-rollback"
+    case_id = "aapl-primary"
+    instance = "11111111-1111-4111-8111-111111111111"
+    persist_rate_guard_snapshot(
+        db,
+        run_id=run_id,
+        phase="before",
+        configured_route="https://rate-guard.example.test",
+        expected_instance_id=instance,
+        observed_instance_id=instance,
+        fetch_mode="rate_guard",
+        fallback_enabled=False,
+        fallback_url=None,
+        metrics={"rate_per_sec": 1.0},
+        manifest_digest="f" * 64,
+        database_name="valuepilot_acceptance_gold_fresh_rollback",
+        storage_root=tmp_path,
+    )
+    db.rollback()
+    db.execute(
+        text(
+            """CREATE FUNCTION fail_fresh_before_for_test()
+               RETURNS trigger LANGUAGE plpgsql AS $$
+               BEGIN RAISE EXCEPTION 'fresh before test failure'; END $$;
+               CREATE TRIGGER fail_fresh_before_for_test
+               BEFORE INSERT ON sec_acceptance_evidence_checkpoints
+               FOR EACH ROW EXECUTE FUNCTION fail_fresh_before_for_test()"""
+        )
+    )
+    db.commit()
+    owner = acquire_acceptance_completion_lease(
+        db, run_id=run_id, case_id=case_id, acceptance_pass=1
+    )
+    assert owner is not None
+    try:
+        with pytest.raises(DBAPIError, match="fresh before test failure"):
+            initialize_acceptance_case_attempt(owner)
+        assert owner.attempt_id is None
+        counts = db.execute(
+            text(
+                """SELECT
+                     (SELECT count(*) FROM sec_acceptance_case_attempts
+                       WHERE run_id=:run) AS attempts,
+                     (SELECT count(*) FROM sec_acceptance_case_completion_claims
+                       WHERE run_id=:run) AS claims,
+                     (SELECT count(*) FROM sec_acceptance_evidence_checkpoints
+                       WHERE run_id=:run) AS checkpoints"""
+            ),
+            {"run": run_id},
+        ).one()
+        assert tuple(counts) == (0, 0, 0)
+    finally:
+        owner.release()
+
+
+def test_cli_fresh_case_atomically_stamps_completion_before_any_operation(
+    db, tmp_path, isolated_engine, monkeypatch
+):
+    run_id = "gold-fresh-cli"
+    case_id = "aapl-primary"
+    instance = "11111111-1111-4111-8111-111111111111"
+    reports_root = tmp_path / "reports"
+    report_path = reports_root / "pass-1" / f"{case_id}.json"
+    report_path.parent.mkdir(parents=True)
+    persist_rate_guard_snapshot(
+        db,
+        run_id=run_id,
+        phase="before",
+        configured_route="https://rate-guard.example.test",
+        expected_instance_id=instance,
+        observed_instance_id=instance,
+        fetch_mode="rate_guard",
+        fallback_enabled=False,
+        fallback_url=None,
+        metrics={"rate_per_sec": 1.0},
+        manifest_digest="a" * 64,
+        database_name="valuepilot_acceptance_gold_fresh_cli",
+        storage_root=tmp_path,
+    )
+    db.rollback()
+    monkeypatch.setattr(
+        financial_cli, "SessionLocal", sessionmaker(bind=isolated_engine)
+    )
+    monkeypatch.setattr(
+        financial_cli,
+        "preflight_configured_acceptance_runtime",
+        lambda _run: SimpleNamespace(
+            run_id=run_id,
+            reports_root=reports_root,
+            storage_root=tmp_path,
+        ),
+    )
+    monkeypatch.setattr(
+        financial_cli.settings, "EDGAR_RAW_STORAGE_DIR", str(tmp_path)
+    )
+    monkeypatch.setattr(
+        financial_cli,
+        "_recover_completed_gold_case_report",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        financial_cli,
+        "recoverable_bound_acceptance_attempt",
+        lambda *_args, **_kwargs: None,
+    )
+
+    def fail_after_durable_before(*_args, **_kwargs):
+        raise RuntimeError("stop after durable fresh completion bootstrap")
+
+    monkeypatch.setattr(
+        financial_cli, "_resolve_gold_case_stock", fail_after_durable_before
+    )
+
+    class ForbiddenEdgarClient:
+        def __init__(self, *_args, **_kwargs):
+            pytest.fail("fresh completion bootstrap reached SEC client construction")
+
+    monkeypatch.setattr(financial_cli, "EdgarClient", ForbiddenEdgarClient)
+    arguments = [
+        "ingest-gold-case",
+        "--case-id",
+        case_id,
+        "--acceptance-run-id",
+        run_id,
+        "--acceptance-pass",
+        "1",
+        "--report-json",
+        str(report_path),
+    ]
+    first = CliRunner().invoke(financial_cli.app, arguments)
+    assert first.exit_code == 1
+    assert "stop after durable fresh completion bootstrap" in first.output
+    authority = db.execute(
+        text(
+            """SELECT attempt.id,attempt.created_txid AS attempt_txid,
+                      claim.created_txid AS claim_txid,
+                      checkpoint.created_txid AS checkpoint_txid
+               FROM sec_acceptance_case_attempts attempt
+               JOIN sec_acceptance_case_completion_claims claim
+                 ON claim.attempt_id=attempt.id
+               JOIN sec_acceptance_evidence_checkpoints checkpoint
+                 ON checkpoint.attempt_id=attempt.id AND checkpoint.phase='before'
+               WHERE attempt.run_id=:run AND attempt.case_id=:case"""
+        ),
+        {"run": run_id, "case": case_id},
+    ).mappings().one()
+    assert authority.attempt_txid == authority.claim_txid == authority.checkpoint_txid
+    assert db.execute(
+        text("SELECT count(*) FROM sec_financial_ingestion_operations")
+    ).scalar_one() == 0
+    db.rollback()
+
+    second = CliRunner().invoke(financial_cli.app, arguments)
+    assert second.exit_code == 1
+    assert "stop after durable fresh completion bootstrap" in second.output
+    assert db.execute(
+        text(
+            "SELECT count(*) FROM sec_acceptance_case_attempts "
+            "WHERE run_id=:run AND case_id=:case"
+        ),
+        {"run": run_id, "case": case_id},
+    ).scalar_one() == 1
+    assert db.execute(
+        text(
+            "SELECT count(*) FROM sec_acceptance_case_completion_claims "
+            "WHERE run_id=:run AND case_id=:case"
+        ),
+        {"run": run_id, "case": case_id},
+    ).scalar_one() == 2
+    assert db.execute(
+        text(
+            "SELECT count(*) FROM sec_acceptance_evidence_checkpoints "
+            "WHERE run_id=:run AND case_id=:case AND phase='before'"
+        ),
+        {"run": run_id, "case": case_id},
+    ).scalar_one() == 1
+    assert db.execute(
+        text("SELECT count(*) FROM sec_financial_ingestion_operations")
+    ).scalar_one() == 0
 
 
 def test_acceptance_completion_lock_key_is_canonical_for_utf8_case_and_pass(db):

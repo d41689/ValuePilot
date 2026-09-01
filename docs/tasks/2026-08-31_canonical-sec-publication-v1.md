@@ -223,6 +223,40 @@ Run the canonical commands verbatim and in order:
 
 ## Sign-off trail
 
+- 2026-09-01: Live Step 7B fresh-case bootstrap remediation is implemented
+  pending Terra review. The failed clean `-b` run exposed two distinct facts.
+  First, its operator invocation omitted the required run-level durable
+  `snapshot before`: the isolated database contains the 24 bootstrap stocks but
+  no Rate Guard snapshot, case attempt, completion claim, operation, retained
+  SEC evidence, case checkpoint or request. That is a lifecycle-ordering error,
+  not authority that may be reconstructed after the fact. The global clean-
+  baseline trigger remains unchanged; the exact empty run/storage must be
+  destroyed and recreated, then executed as `snapshot before` followed by pass
+  1. No timestamp or baseline is synthesized for the interrupted run.
+
+  Independently, the valid fresh-case path previously committed its attempt,
+  completion claim and case evidence-before checkpoint in three transactions.
+  It now acquires the canonical case/pass session lease first and inserts all
+  three database-stamped rows under the canonical transaction lock in one
+  transaction. The attempt, claim and checkpoint therefore share one creation
+  transaction identity; failure before commit leaves none of them, while a
+  crash after commit leaves the complete append-only baseline for a later
+  claim generation to recover. Ingestion operation creation remains strictly
+  later. The run-level Rate Guard window must already exist, and the 180000
+  clean-baseline, after-window and legacy-upgrade guards are unchanged.
+
+  New isolated-PostgreSQL tests prove the shared transaction identity and
+  database timestamp ordering, injected checkpoint failure with zero partial
+  authority, and a real CliRunner fresh-case path that creates no ingestion
+  operation or Edgar client before the complete baseline. Its retry preserves
+  the single attempt and before checkpoint, appends only the crash-recovery
+  claim generation, and still creates no operation. The complete publication
+  E2E file passed `77` tests and the complete CLI plus lineage-migration files
+  passed `51` tests, with only the existing Starlette deprecation warning. No
+  network, shared development database, retained live-run storage, commit or
+  push was used. In-container compilation passed, Alembic reports the unique
+  `20260901200000` head, and `git diff --check` passes.
+
 - 2026-09-01: Step 7B concurrent recovery remediation is implemented pending
   Terra reround. Recovery now acquires the canonical namespaced per-stock SEC
   transaction lock before finalizing pending lineage, rebuilding the complete

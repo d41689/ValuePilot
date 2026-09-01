@@ -558,15 +558,6 @@ def test_ingest_gold_case_recovers_same_run_after_durable_before_and_writes_repo
     monkeypatch.setattr(
         financial_cli, "record_acceptance_evidence_checkpoint", record_checkpoint
     )
-    attempt_ids = iter((41, 42))
-
-    def begin_attempt(db, **kwargs):
-        attempt_id = next(attempt_ids)
-        return {"id": attempt_id, "attempt_ordinal": attempt_id - 40}
-
-    monkeypatch.setattr(
-        financial_cli, "begin_acceptance_case_attempt", begin_attempt
-    )
     class CompletionLease:
         attempt_id = None
 
@@ -578,11 +569,18 @@ def test_ingest_gold_case_recovers_same_run_after_durable_before_and_writes_repo
         "acquire_acceptance_completion_lease",
         lambda *_args, **_kwargs: CompletionLease(),
     )
-    def append_claim(lease, *, attempt_id):
-        lease.attempt_id = attempt_id
-        return lease
+
+    def initialize_attempt(lease):
+        lease.attempt_id = 41
+        checkpoint_phases.append(("before", 41, None))
+        before_authority_attempts.append(41)
+        return (
+            {"id": 41, "attempt_ordinal": 1},
+            {"attempt_id": 41, "captured_at": durable_before_captured_at},
+        )
+
     monkeypatch.setattr(
-        financial_cli, "append_acceptance_completion_claim", append_claim
+        financial_cli, "initialize_acceptance_case_attempt", initialize_attempt
     )
     monkeypatch.setattr(
         financial_cli, "link_acceptance_operation", lambda db, **kwargs: 51
@@ -657,8 +655,8 @@ def test_ingest_gold_case_recovers_same_run_after_durable_before_and_writes_repo
     assert payload["metric_facts_published"] == 0
     assert checkpoint_phases == [
         ("before", 41, None),
-        ("before", 42, None),
-        ("after", 42, operation_id),
+        ("before", 41, None),
+        ("after", 41, operation_id),
     ]
     assert before_authority_attempts == [41, 41]
     assert "typed_gap=annual_coverage_gap:2016" in result.output
