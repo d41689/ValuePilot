@@ -6,7 +6,7 @@ network, retention, publication, or runtime-current-state reads.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 from types import MappingProxyType
@@ -84,6 +84,7 @@ class RawFactSnapshot:
     amendment_policy_id: str
     known_at: datetime
     is_nil: bool
+    occurrence_authorities: tuple[Mapping[str, object], ...] = ()
 
 
 @dataclass(frozen=True)
@@ -108,6 +109,26 @@ class CanonicalCandidate:
     raw_fact_ids: tuple[int, ...]
     normalization_ids: tuple[int, ...]
     derivation_kind: str
+    occurrence_authorities: tuple[Mapping[str, object], ...] = ()
+
+
+@dataclass(frozen=True)
+class CanonicalSlotAuthority:
+    stock_id: int
+    metric_key: str
+    mapping_rule_id: str
+    period_type: str
+    period_start: date | None
+    period_end: date
+    period_basis: str
+    fiscal_year: int
+    fiscal_quarter_ordinal: int | None
+    context_id: str
+    dimensions: tuple[object, ...]
+    parse_run_ids: tuple[int, ...]
+    raw_fact_ids: tuple[int, ...]
+    publication_cutoff: datetime
+    occurrence_authorities: tuple[Mapping[str, object], ...] = ()
 
 
 @dataclass(frozen=True)
@@ -116,6 +137,7 @@ class TypedDisposition:
     raw_fact_ids: tuple[int, ...]
     mapping_rule_id: str | None = None
     detail: str | None = None
+    slot: CanonicalSlotAuthority | None = None
 
 
 @dataclass(frozen=True)
@@ -168,10 +190,26 @@ def canonical_sec_mapping_v1() -> MappingSnapshot:
     )
 
 
-def map_sec_financial_snapshot(mapping: MappingSnapshot, facts: Sequence[RawFactSnapshot], authority: MappingRunAuthority, *, max_decisions: int = 512) -> MappingResult:
-    approved = canonical_sec_mapping_v1()
-    if mapping != approved:
+def validate_sec_mapping_snapshot(mapping: MappingSnapshot) -> None:
+    """Validate the immutable V1 contract without selecting runtime authority."""
+    if mapping.mapping_version_id != "sec-us-gaap-v1" or mapping.spec_sha256 != "01b828534060e04439103c935842c1a9cf42d3f5a2311934c99bef81bdcc073d":
         raise ValueError("unsupported mapping snapshot")
+    if set(mapping.namespaces) != {"us_gaap","dei"} or any(not values for values in mapping.namespaces.values()):
+        raise ValueError("unsupported mapping snapshot")
+    if mapping.currency_codes != ("DKK","EUR","TWD","USD") or len(mapping.rules) != 21:
+        raise ValueError("unsupported mapping snapshot")
+    identities=set()
+    for rule in mapping.rules:
+        if not rule.rule_id or not rule.metric_key or not rule.concepts or [c.priority for c in rule.concepts] != list(range(1,len(rule.concepts)+1)):
+            raise ValueError("unsupported mapping snapshot")
+        if any(c.authority not in mapping.namespaces or not c.local_name for c in rule.concepts):
+            raise ValueError("unsupported mapping snapshot")
+        identities.add((rule.rule_id,rule.metric_key))
+    if len(identities) != len(mapping.rules): raise ValueError("unsupported mapping snapshot")
+
+
+def map_sec_financial_snapshot(mapping: MappingSnapshot, facts: Sequence[RawFactSnapshot], authority: MappingRunAuthority, *, max_decisions: int = 512) -> MappingResult:
+    validate_sec_mapping_snapshot(mapping)
     if max_decisions < 0 or len(facts) > 10_000:
         raise ValueError("mapping input exceeds bounded contract")
     dispositions: list[TypedDisposition] = []
@@ -201,7 +239,17 @@ def map_sec_financial_snapshot(mapping: MappingSnapshot, facts: Sequence[RawFact
                 tested = []
                 for fact, concept in sorted((item for item in raw_items if item[1].priority == priority), key=lambda item: item[0].raw_fact_id):
                     reason, unit, currency, period_type, persisted_value = _validate_fact(mapping, rule, concept, fact)
-                    if reason: dispositions.append(TypedDisposition(reason, (fact.raw_fact_id,), rule.rule_id))
+                    if reason:
+                        # A bad value/unit is allowed to affect canonical truth only
+                        # after the exact concept and presentation period independently
+                        # establish a slot.  Structural/raw audit failures remain
+                        # deliberately slotless.
+                        slot = None
+                        if reason in ("unresolved_value", "unresolved_unit", "unresolved_currency"):
+                            proved_period, period_reason = _period(rule.period_basis, fact)
+                            if period_reason is None and fact.namespace_uri in mapping.namespaces[concept.authority] and not fact.dimensions and fact.context_id:
+                                slot = _slot_from_raw(rule, fact, proved_period)
+                        dispositions.append(TypedDisposition(reason, (fact.raw_fact_id,), rule.rule_id, slot=slot))
                     else: tested.append((fact, concept, unit, currency, period_type, persisted_value))
                 if tested:
                     chosen_priority, group = priority, tested
@@ -211,7 +259,10 @@ def map_sec_financial_snapshot(mapping: MappingSnapshot, facts: Sequence[RawFact
             lower = [item for item in raw_items if item[1].priority > chosen_priority]
             distinct_values = {(item[5], item[2], item[3]) for item in group}
             if len(distinct_values) > 1:
-                dispositions.append(TypedDisposition("unresolved_conflicting_candidates", tuple(sorted(item[0].raw_fact_id for item in group)), rule.rule_id))
+                ordered_group = sorted(group, key=lambda item: item[0].raw_fact_id)
+                slot = _slot_from_item(rule, ordered_group[0])
+                slot = replace(slot, raw_fact_ids=tuple(item[0].raw_fact_id for item in ordered_group), parse_run_ids=tuple(item[0].parse_run_id for item in ordered_group), occurrence_authorities=tuple(authority for item in ordered_group for authority in item[0].occurrence_authorities))
+                dispositions.append(TypedDisposition("unresolved_conflicting_candidates", slot.raw_fact_ids, rule.rule_id, slot=slot))
             else:
                 selected = min(group, key=lambda item: item[0].raw_fact_id)
                 try:
@@ -299,7 +350,25 @@ def _period(basis, fact):
 
 def _candidate(rule, item):
     fact, _, unit, currency, period_type, persisted_value = item
-    return CanonicalCandidate(rule.rule_id, rule.metric_key, persisted_value, unit, currency, period_type, fact.period_start, fact.period_end, fact.fiscal_year, fact.fiscal_quarter_ordinal, fact.context_id, fact.dimensions, fact.stock_id, fact.fiscal_year_start, fact.filing_authority_id, fact.publication_cutoff, (fact.parse_run_id,), (fact.raw_fact_id,), (fact.normalization_id,), "direct")
+    return CanonicalCandidate(rule.rule_id, rule.metric_key, persisted_value, unit, currency, period_type, fact.period_start, fact.period_end, fact.fiscal_year, fact.fiscal_quarter_ordinal, fact.context_id, fact.dimensions, fact.stock_id, fact.fiscal_year_start, fact.filing_authority_id, fact.publication_cutoff, (fact.parse_run_id,), (fact.raw_fact_id,), (fact.normalization_id,), "direct", fact.occurrence_authorities)
+
+
+def _slot_from_item(rule, item):
+    fact, _, _, _, period_type, _ = item
+    return CanonicalSlotAuthority(fact.stock_id, rule.metric_key, rule.rule_id, period_type, fact.period_start, fact.period_end,
+                                  "instant" if fact.period_start is None else "duration", fact.fiscal_year,
+                                  fact.fiscal_quarter_ordinal, fact.context_id, fact.dimensions, (fact.parse_run_id,),
+                                  (fact.raw_fact_id,), fact.publication_cutoff, fact.occurrence_authorities)
+
+
+def _slot_from_raw(rule, fact, period_type):
+    return CanonicalSlotAuthority(
+        fact.stock_id, rule.metric_key, rule.rule_id, period_type,
+        fact.period_start, fact.period_end, rule.period_basis, fact.fiscal_year,
+        fact.fiscal_quarter_ordinal, fact.context_id, fact.dimensions,
+        (fact.parse_run_id,), (fact.raw_fact_id,), fact.publication_cutoff,
+        fact.occurrence_authorities,
+    )
 
 
 def _derive_quarters(candidates):
@@ -335,14 +404,27 @@ def _derive_each(lefts, rights, ordinal, kind, derived, dispositions):
                 "unresolved_derived_period_identity": 6,
             }
             right = min(ordered, key=lambda item: (mismatch_order[_operand_mismatch(left, item)], item.raw_fact_ids))
-            dispositions.append(TypedDisposition(_operand_mismatch(left, right), left.raw_fact_ids + right.raw_fact_ids, left.mapping_rule_id))
+            output_slot = _derived_output_slot(left, right, ordinal)
+            dispositions.append(TypedDisposition(_operand_mismatch(left, right), left.raw_fact_ids + right.raw_fact_ids, left.mapping_rule_id, slot=output_slot))
             continue
         right = compatible[0]
+        output_slot = _derived_output_slot(left, right, ordinal)
         if not 70 <= (left.period_end - right.period_end).days <= 110:
-            dispositions.append(TypedDisposition("unresolved_derived_period_identity", left.raw_fact_ids + right.raw_fact_ids, left.mapping_rule_id))
+            dispositions.append(TypedDisposition("unresolved_derived_period_identity", left.raw_fact_ids + right.raw_fact_ids, left.mapping_rule_id, slot=output_slot))
             continue
         try: derived.append(_derived(left, right, ordinal, kind))
-        except (ArithmeticError, ValueError): dispositions.append(TypedDisposition("unresolved_value", left.raw_fact_ids + right.raw_fact_ids, left.mapping_rule_id))
+        except (ArithmeticError, ValueError): dispositions.append(TypedDisposition("unresolved_value", left.raw_fact_ids + right.raw_fact_ids, left.mapping_rule_id, slot=output_slot))
+
+
+def _derived_output_slot(left, right, ordinal):
+    # Both presentation periods uniquely establish the derived output slot,
+    # independently of the later compatibility/arithmetic decision.
+    return CanonicalSlotAuthority(
+        left.stock_id, left.metric_key, left.mapping_rule_id, "Q", right.period_end + timedelta(days=1),
+        left.period_end, "duration", left.fiscal_year, ordinal, left.context_id,
+        left.dimensions, left.parse_run_ids, left.raw_fact_ids,
+        left.publication_cutoff, left.occurrence_authorities + right.occurrence_authorities,
+    )
 
 
 def _operand_mismatch(left, right):
@@ -357,7 +439,7 @@ def _operand_mismatch(left, right):
 
 
 def _derived(left, right, ordinal, kind):
-    return CanonicalCandidate(left.mapping_rule_id, left.metric_key, persist_numeric_38_12(left.value-right.value), left.unit, left.currency, "Q", right.period_end+timedelta(days=1), left.period_end, left.fiscal_year, ordinal, left.context_id, left.dimensions, left.stock_id, left.fiscal_year_start, left.filing_authority_id, left.publication_cutoff, left.parse_run_ids+right.parse_run_ids, left.raw_fact_ids+right.raw_fact_ids, left.normalization_ids+right.normalization_ids, kind)
+    return CanonicalCandidate(left.mapping_rule_id, left.metric_key, persist_numeric_38_12(left.value-right.value), left.unit, left.currency, "Q", right.period_end+timedelta(days=1), left.period_end, left.fiscal_year, ordinal, left.context_id, left.dimensions, left.stock_id, left.fiscal_year_start, left.filing_authority_id, left.publication_cutoff, left.parse_run_ids+right.parse_run_ids, left.raw_fact_ids+right.raw_fact_ids, left.normalization_ids+right.normalization_ids, kind, left.occurrence_authorities+right.occurrence_authorities)
 
 
 def _apply_direct_precedence(candidates):

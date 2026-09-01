@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import date, datetime, timezone
 import hashlib
 import json
@@ -41,10 +41,29 @@ from app.models.sec_financials import (
     SecFinancialResourceAnchor,
     SecIssuerIdentity,
     SecRawXbrlFact,
+    SecStatementFactAuthority,
+    SecStatementReportReference,
+    SecStatementOccurrenceEvidence,
     SecSubmissionSnapshot,
 )
 from app.rate_guard.client import RateGuardFetchError
 from app.services.sec_financial_validation import validate_submission_source
+from app.services.sec_statement_authority import (
+    ExplicitFiscalFocus,
+    DeiFocusEvidence,
+    PresentedPeriodEvidence,
+    RawOccurrenceIdentity,
+    StatementAuthorityParseError,
+    classify_statement_occurrence,
+    discover_statement_reports,
+    match_statement_occurrence,
+    build_explicit_fiscal_focus,
+    parse_statement_occurrences,
+    statement_reference_digest,
+    statement_occurrence_digest,
+    parse_statement_header_date,
+)
+from app.services.sec_financial_mapping import DEI_URIS
 
 
 CIK_RE = re.compile(r"^[0-9]{10}$")
@@ -728,11 +747,12 @@ def _manifest_items(content: bytes) -> list[dict[str, Any]]:
     return items
 
 
-def _retain_item(item: dict[str, Any], primary_document: str) -> bool:
+def _retain_item(item: dict[str, Any], primary_document: str, referenced_statement_names: set[str] | None = None) -> bool:
     sec_type = str(item.get("type") or "").upper()
     name = str(item.get("name") or "").lower()
     return (
         item.get("name") == primary_document
+        or str(item.get("name") or "").lower() in (referenced_statement_names or set())
         or sec_type.startswith("EX-101")
         or name.endswith(".xsd")
         or name.endswith("_cal.xml")
@@ -740,6 +760,8 @@ def _retain_item(item: dict[str, Any], primary_document: str) -> bool:
         or name.endswith("_htm.xml")
         or name.endswith("_lab.xml")
         or name.endswith("_pre.xml")
+        or name == "filingsummary.xml"
+        or re.fullmatch(r"r[0-9]{1,3}[.](?:xml|html?|htm)", name) is not None
     )
 
 
@@ -1438,6 +1460,24 @@ def _create_artifacts(
         raise SecFinancialIngestionError("SEC accession manifest exceeds byte limit")
     items = _manifest_items(index_content)
     item_observations: dict[str, dict[str, Any]] = {}
+    referenced_statement_names: set[str] = set()
+    prefetched: dict[str, bytes] = {}
+    summary_item = next((item for item in items if item["name"].lower() == "filingsummary.xml"), None)
+    if summary_item is not None:
+        try:
+            summary_url = _safe_artifact_url(cik, filing.accession_no, summary_item["name"])
+            summary_content = _fetch_bytes(client, summary_url, revalidate=True)
+            if len(summary_content) > MAX_ARTIFACT_BYTES or (summary_item["size"] is not None and len(summary_content) != summary_item["size"]):
+                raise SecFinancialIngestionError("FilingSummary content size mismatch")
+            references = discover_statement_reports(summary_content)
+            manifest_names = {item["name"].lower() for item in items}
+            referenced_statement_names = {name.lower() for reference in references for name in (reference.filename, reference.fallback_filename) if name}
+            if not referenced_statement_names.issubset(manifest_names):
+                raise SecFinancialIngestionError("FilingSummary references artifact outside accession manifest")
+            prefetched[summary_item["name"]] = summary_content
+        except Exception:
+            # The ordinary observation path records the exact typed acquisition/parse failure.
+            referenced_statement_names = set()
     for item in items:
         filename = item["name"]
         try:
@@ -1454,7 +1494,7 @@ def _create_artifacts(
             }
             continue
 
-        if not _retain_item(item, filing.primary_document):
+        if not _retain_item(item, filing.primary_document, referenced_statement_names):
             item_observations[filename] = {
                 "state": "manifest_only",
                 "reason_code": "artifact_type_not_in_ft03_retention_scope",
@@ -1479,7 +1519,9 @@ def _create_artifacts(
             }
             continue
         try:
-            content = _fetch_bytes(client, source_url, revalidate=True)
+            content = prefetched.pop(filename, None)
+            if content is None:
+                content = _fetch_bytes(client, source_url, revalidate=True)
             if len(content) > MAX_ARTIFACT_BYTES:
                 raise SecFinancialIngestionError("artifact exceeds byte limit")
             if item["size"] is not None and len(content) != item["size"]:
@@ -1903,6 +1945,53 @@ def _parse_primary_artifact(
                 else "no_inline_xbrl_facts"
             )
             return 1, 0, [f"{filing.accession_no}:{no_facts_code}"], run.id
+        statement_evidence = []
+        if parser_version == PARSER_V2:
+            summary = next((item for item in retained_inputs if item.filename.lower() == "filingsummary.xml"), None)
+            if summary is None:
+                raise StatementAuthorityParseError("missing_retained_filing_summary")
+            summary_content = _read_verified_artifact(storage_root, summary)
+            references = discover_statement_reports(summary_content)
+            retained_by_name = {item.filename.lower(): item for item in retained_inputs}
+            for reference in references:
+                report_artifact = retained_by_name.get(reference.filename.lower())
+                if report_artifact is None:
+                    raise StatementAuthorityParseError(f"missing_retained_statement_report:{reference.filename}")
+                try:
+                    occurrences = parse_statement_occurrences(
+                        _read_verified_artifact(storage_root, report_artifact), filename=report_artifact.filename)
+                except Exception:
+                    fallback = retained_by_name.get((reference.fallback_filename or "").lower())
+                    if fallback is None:
+                        raise
+                    report_artifact = fallback
+                    reference = replace(reference, filename=fallback.filename, fallback_filename=None)
+                    occurrences = parse_statement_occurrences(
+                        _read_verified_artifact(storage_root, report_artifact), filename=report_artifact.filename)
+                if not report_artifact.filename.lower().endswith(".xml"):
+                    raise StatementAuthorityParseError("html_statement_authority_diagnostic_only")
+                statement_evidence.extend((reference, report_artifact, occurrence) for occurrence in occurrences)
+
+            if filing.report_date is None:
+                raise StatementAuthorityParseError("missing_statement_period_end")
+            parsed_identities = [RawOccurrenceIdentity(index, item.context_id or "", item.concept,
+                item.raw_value or "", item.unit_id, item.locator.get("element_id"))
+                for index, item in enumerate(parsed, start=1)]
+            presented_periods = []
+            for _, evidence_artifact, occurrence in statement_evidence:
+                parsed_index = match_statement_occurrence(occurrence, parsed_identities)
+                item = parsed[parsed_index - 1]
+                end = item.period_end or item.period_instant
+                if end is None: raise StatementAuthorityParseError("statement_occurrence_has_no_period")
+                presented_periods.append(PresentedPeriodEvidence(
+                    occurrence.column_header, item.period_start, end,
+                    str(evidence_artifact.id), int(occurrence.locator.get("row", 0)),
+                    occurrence.concept, int(occurrence.locator.get("column", 0))))
+            focus = build_explicit_fiscal_focus(
+                dei_facts=[DeiFocusEvidence(item.concept_namespace_uri, item.concept.rsplit(":", 1)[-1],
+                    item.raw_value or "", tuple(item.dimensions_structured)) for item in parsed],
+                presented_periods=presented_periods, form=filing.form_type,
+                statement_period_end=filing.report_date, approved_dei_namespaces=DEI_URIS)
         run = SecFinancialParseRun(
             filing_id=filing.id,
             operation_id=operation_id,
@@ -1928,9 +2017,9 @@ def _parse_primary_artifact(
                 )
             )
         db.flush()
+        raw_rows = []
         for ordinal, item in enumerate(parsed, start=1):
-            db.add(
-                SecRawXbrlFact(
+            raw_row = SecRawXbrlFact(
                     parse_run_id=run.id,
                     artifact_id=parse_artifact.id,
                     ordinal=ordinal,
@@ -1969,12 +2058,99 @@ def _parse_primary_artifact(
                     ),
                     locator_json=item.locator,
                 )
-            )
+            db.add(raw_row)
+            raw_rows.append(raw_row)
         db.flush()
+        references_by_key = {}
+        occurrence_rows = []
+        for reference, report_artifact, occurrence in statement_evidence:
+            reference_key = (reference.report_ordinal, report_artifact.id)
+            reference_row = references_by_key.get(reference_key)
+            if reference_row is None:
+                reference_row = SecStatementReportReference(
+                    parse_run_id=run.id, filing_summary_artifact_id=summary.id,
+                    filing_summary_sha256=summary.sha256, filing_summary_byte_size=summary.byte_size,
+                    filing_summary_content=summary_content,
+                    report_artifact_id=report_artifact.id, report_sha256=report_artifact.sha256,
+                    report_byte_size=report_artifact.byte_size,
+                    report_content=_read_verified_artifact(storage_root, report_artifact), filename=report_artifact.filename,
+                    report_ordinal=reference.report_ordinal, statement_role=reference.statement_role,
+                    statement_type=reference.statement_type, report_name=reference.report_name, known_at=now)
+                reference_row.reference_semantic_sha256 = statement_reference_digest(summary.sha256, reference)
+                db.add(reference_row); db.flush(); references_by_key[reference_key] = reference_row
+            raw_id = match_statement_occurrence(occurrence, [RawOccurrenceIdentity(
+                row.id, row.context_id or "", row.concept, row.raw_value or "", row.unit_id,
+                row.locator_json.get("element_id")) for row in raw_rows])
+            raw_row = next(row for row in raw_rows if row.id == raw_id)
+            if raw_row.period_end is None and raw_row.period_instant is None:
+                raise StatementAuthorityParseError("statement_occurrence_has_no_period")
+            header_date = parse_statement_header_date(occurrence.column_header)
+            occurrence_row = SecStatementOccurrenceEvidence(
+                statement_report_reference_id=reference_row.id, parse_run_id=run.id,
+                raw_fact_id=raw_row.id, report_sha256=report_artifact.sha256,
+                report_ordinal=reference.report_ordinal,
+                row_ordinal=int(occurrence.locator.get("row", 0)),
+                column_ordinal=int(occurrence.locator.get("column", 0)),
+                occurrence_ordinal=occurrence.occurrence_ordinal, fact_id=occurrence.fact_id,
+                context_id=occurrence.context_id, concept=occurrence.concept,
+                raw_value=" ".join(occurrence.raw_value.split()), unit_id=occurrence.unit_id,
+                header_raw=occurrence.column_header,
+                header_normalized=" ".join(occurrence.column_header.split()),
+                header_date=header_date, locator_json=occurrence.locator,
+                semantic_sha256=statement_occurrence_digest(
+                    report_artifact.sha256, reference.report_ordinal, occurrence, header_date), known_at=now)
+            db.add(occurrence_row); db.flush()
+            occurrence_rows.append((reference, report_artifact, occurrence, raw_row, occurrence_row))
+        for reference, report_artifact, occurrence, raw_row, occurrence_row in occurrence_rows:
+            classified = classify_statement_occurrence(occurrence, statement_type=reference.statement_type,
+                period_start=raw_row.period_start, period_end=raw_row.period_end or raw_row.period_instant, focus=focus)
+            same_anchor_identity = [item for item in occurrence_rows
+                if item[4].statement_report_reference_id == occurrence_row.statement_report_reference_id
+                and item[4].row_ordinal == occurrence_row.row_ordinal and item[4].concept == occurrence_row.concept]
+            current_anchors = [item for item in same_anchor_identity if item[3].period_start == focus.fiscal_year_start
+                and (item[3].period_end or item[3].period_instant) == focus.statement_period_end]
+            if len(current_anchors) != 1:
+                raise StatementAuthorityParseError("missing_unique_current_cycle_anchor")
+            current_anchor = current_anchors[0][4]
+            prior_anchor = None
+            if classified.presentation_class != "current_period":
+                prior_anchors = [item for item in same_anchor_identity if item[3].period_start == focus.prior_fiscal_year_start
+                    and (item[3].period_end or item[3].period_instant) != focus.statement_period_end]
+                if len(prior_anchors) != 1:
+                    raise StatementAuthorityParseError("missing_unique_prior_cycle_anchor")
+                prior_anchor = prior_anchors[0][4]
+            authority_digest = hashlib.sha256(chr(31).join((occurrence_row.semantic_sha256,
+                classified.presentation_class, str(current_anchor.id), str(prior_anchor.id if prior_anchor else ""))).encode()).hexdigest()
+            db.add(SecStatementFactAuthority(
+                raw_fact_id=raw_row.id, parse_run_id=run.id,
+                statement_report_reference_id=occurrence_row.statement_report_reference_id,
+                statement_occurrence_id=occurrence_row.id,
+                current_anchor_occurrence_id=current_anchor.id,
+                prior_anchor_occurrence_id=prior_anchor.id if prior_anchor else None,
+                statement_artifact_id=report_artifact.id,
+                statement_sha256=report_artifact.sha256,
+                statement_byte_size=report_artifact.byte_size,
+                statement_role=reference.statement_role,
+                statement_type=reference.statement_type,
+                report_ordinal=reference.report_ordinal,
+                report_name=reference.report_name,
+                occurrence_ordinal=occurrence.occurrence_ordinal,
+                occurrence_fact_id=occurrence.fact_id,
+                occurrence_semantic_sha256=authority_digest,
+                context_id=occurrence.context_id,
+                presentation_class=classified.presentation_class,
+                statement_period_end=classified.statement_period_end,
+                fiscal_year=classified.fiscal_year,
+                fiscal_quarter_ordinal=classified.fiscal_quarter_ordinal,
+                fiscal_year_start=classified.fiscal_year_start,
+                locator_json=occurrence.locator,
+                known_at=now,
+            ))
         return 1, len(parsed), [], run.id
     except SecFinancialIntegrityError:
         raise
     except Exception as exc:
+        error_code = exc.reason_code if isinstance(exc, StatementAuthorityParseError) else "parse_failed"
         run = SecFinancialParseRun(
             filing_id=filing.id,
             operation_id=operation_id,
@@ -1986,7 +2162,7 @@ def _parse_primary_artifact(
             completed_at=now,
             known_at=now,
             fact_count=0,
-            error_code="parse_failed",
+            error_code=error_code,
             error_detail=f"{type(exc).__name__}: {str(exc)[:500]}",
         )
         db.add(run)
@@ -2002,7 +2178,7 @@ def _parse_primary_artifact(
         return (
             1,
             0,
-            [f"{filing.accession_no}:parse_failed:{type(exc).__name__}"],
+            [f"{filing.accession_no}:{error_code}:{type(exc).__name__}"],
             run.id,
         )
 

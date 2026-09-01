@@ -1,6 +1,6 @@
 # Canonical Financial Truth — SEC Publication V1
 
-Status: contract approved; delivery steps 1–4 complete; step 5 next
+Status: contract approved; delivery steps 1–5 complete; Step 6 next; retained statement authority Terra PASS
 
 Owner: Product / Engineering
 
@@ -221,6 +221,83 @@ Run the canonical commands verbatim and in order:
 7. `git diff --check`
 
 ## Sign-off trail
+
+- 2026-08-31: Step 5 Terra single-truth round 2 accepted two P1 findings.
+  Slot-aware raw-backed unresolved outcomes now retain ordered exact statement
+  occurrence provenance; conflicts and derived incompatibilities retain every
+  authoritative input while slotless audits remain locator-free and cannot
+  demote. Migration 160000 adds an append-only normalized unresolved-input
+  relation binding each decision to its run source, raw fact, statement
+  authority and optional normalization. Deferred database guards validate the
+  complete direct locator against retained occurrence/reference/artifact
+  authority, derived left/right locator order and signs against source
+  decisions, unresolved locator order against normalized evidence rows, and
+  canonical metric-fact source role/locator reciprocity. Focused remediation
+  tests are green; Terra round 3 remains pending.
+
+- 2026-08-31: Step 5 Terra single-truth round 1 accepted two P1 findings
+  and one P2 finding. Publication now loads the complete approved mapping
+  snapshot from immutable database registries (version timing/status/digest,
+  ordered namespace allowlists, pinned currency serialization/digest, and all
+  ordered rule metadata) before mapping; runtime constants cannot select
+  publication authority. Exact retained statement occurrence authority now
+  flows through direct and derived candidates into approved source roles,
+  decision locators/audits, canonical fact JSON, and ordered derived input
+  provenance. A nonzero bounded-decision truncation count fails before replay,
+  lock, or any publication write. Focused isolated-PostgreSQL remediation tests
+  are green; Terra round 2 remains pending.
+
+- 2026-08-31: Step 5 single-truth publication implemented pending Terra review.
+  Publication now accepts only an exact request and ordered selected source
+  authority, verifies finalized parse/filing/PIT identities in PostgreSQL,
+  reconstructs raw snapshots through retained statement occurrence authority,
+  and invokes the approved pure mapper internally. An optional expected result
+  is assertion-only and any mismatch is rejected before the stock lock or a
+  write. Slot-aware published/unresolved outcomes remain canonical publication
+  decisions; slotless bounded mapper outcomes are durable in a separate
+  append-only run-audit authority and are included in replay identity,
+  terminal counts, and availability recovery. Raw-less failed amendments can
+  produce only a run-level typed audit unless database authority proves scope;
+  callers cannot supply affected slots. Focused isolated-PostgreSQL publication
+  and migration tests are green; adversarial Terra review remains pending.
+
+- 2026-08-31: statement-authority Terra round 2 accepted and fixed the fiscal
+  cycle and redundant-reference findings. All `min(raw period_start)` inference
+  is removed. Fiscal focus now accepts only approved exact DEI namespace/local
+  names, dimensionless verified FY/period values, and an explicit same-report
+  FY or YTD presentation occurrence with the required duration/header/context.
+  Q2/Q3 discrete-only evidence, mismatched YTD cadence, custom-DEI collisions,
+  or prior-FY instant evidence without an explicit prior-cycle start fail typed
+  rather than guessing calendar cadence; 52/53-week starts remain the disclosed
+  start. The fact-authority insert guard now compares every retained duplicate
+  report field to its reference row (artifact, SHA, bytes, role, type, name and
+  ordinal), with a field-by-field isolated-Postgres forgery matrix.
+
+- 2026-08-31: statement-authority Terra round 1 accepted four P1 findings and
+  remediated them test-first. Production no longer consumes test-only
+  `data-presentation-*` attributes. Bounded parsing now prefers standard SEC
+  FilingSummary `XmlFileName`, supports standard report XML columns/labels,
+  rows/cells and bounded iXBRL HTML occurrences, and requires the report
+  header, exact XBRL context occurrence, raw fact identity and explicit DEI
+  fiscal focus together. Missing summary/report/header/focus or ambiguous
+  occurrence identity is a terminal typed parse failure rather than a
+  successful run with zero authority. A new append-only report-reference layer
+  persists both artifact identities and the exact bounded FilingSummary bytes;
+  its database guard reparses the XML claim and rejects primary, instance or
+  unreferenced artifact substitution. Fact authority now carries exact fact ID
+  and semantic digest, with database comparison to raw locator/context/concept/
+  value/unit. Both authority layers reject UPDATE, DELETE and TRUNCATE.
+
+- 2026-08-31: retained SEC statement presentation authority implemented pending
+  Terra review. Parser v2 can retain bounded `FilingSummary.xml` and its safe
+  same-directory statement report references as content-addressed exact parse
+  inputs, parse only explicit context occurrences, and append per-occurrence
+  authority in the parse transaction. The database binds raw fact, parse run,
+  retained artifact identity, context, PIT and transaction and rejects later
+  mutation. A pure adapter restores mapper fiscal/presentation fields, selects
+  identical multi-statement evidence deterministically, and fails closed on
+  absent or conflicting authority. No legacy rows are backfilled and no date by
+  itself proves presentation. The migration chain is linear at 160000.
 
 - 2026-08-31: delivery step 2 implemented test-first. Historical traversal now
   emits a random UUID backed by append-only database authority bound to the
@@ -533,3 +610,254 @@ Run the canonical commands verbatim and in order:
 - 2026-09-01: Step 4 round 8 Terra review PASS. Main-agent focused
   verification passed 46 tests with the single pre-existing Starlette warning,
   and `git diff --check` passed.
+- 2026-09-01: Step 5 added the PIT-safe canonical publication transaction.
+  Exact request identity binds stock/issuer, cutoff, mapping, amendment policy,
+  ordered verified parse sources and immutable mapping outcome. A stable
+  stock-scoped advisory lock serializes replay checks and SEC current-slot
+  reconciliation; direct and derived facts, decisions and exact inputs are
+  inserted in one caller-owned transaction, with availability finalized in the
+  required later committed transaction. Exact replay creates no new evidence,
+  while an unavailable succeeded run remains safely recoverable.
+- 2026-09-01: Step 5's minimal linear migration corrected the existing
+  unresolved-decision guard without weakening published unit enforcement.
+  Step 4 dispositions now distinguish raw-only audit outcomes from canonical
+  slot outcomes carrying exact period, context, cutoff and parse/raw lineage.
+  Only the latter can demote an affected stale SEC slot and become a durable
+  typed unresolved decision; no placeholder date or period is manufactured.
+- 2026-09-01: Step 5 also corrected the deferred derived-input truth table in
+  that new migration: Q2 uses Q2 YTD minus discrete Q1, Q3 uses Q3 YTD minus
+  Q2 YTD, and Q4 retains FY minus nine-month YTD. Other arithmetic, period,
+  unit, currency, context and reciprocal fact checks remain deferred and
+  strict. Explicit parse-unavailable slots are accepted only when their stock,
+  metric/rule, cutoff and parse-run lineage belong to the request's exact
+  selected source authority; callers cannot demote an unrelated slot.
+- 2026-09-01: Step 5 real-service PostgreSQL verification added a committed,
+  random-schema-isolated publication fixture exercising the actual finalized
+  parse/artifact/raw-normalization lineage, atomic constraint rollback, exact
+  replay, and post-commit availability recovery. It exposed and fixed two
+  integration defects hidden by static/unit coverage: publication decisions
+  lacked their required `mapping_rule_id` column, and normalization SHA-256
+  used unavailable `pgcrypto.digest` under the isolated search path. The
+  migration now uses PostgreSQL's built-in `sha256(bytea)` authority, failed or
+  partial runs cannot be replayed/finalized as success, and exact replay tests
+  also bind amendment policy and manifest identity. The focused service,
+  mapping, contract, and migration suite passed 50 tests (one pre-existing
+  Starlette deprecation warning); the unique Alembic head and diff whitespace
+  checks passed.
+- 2026-09-01: Step 5 service-level adversarial matrix now runs exclusively
+  against a migrated random PostgreSQL schema. Two independent sessions prove
+  the stock advisory lock serializes same-request/same-slot publishers into one
+  fact plus an exact replay while another stock completes independently.
+  Amendment/PIT coverage proves nonfinancial zero-slot behavior, exact
+  conflict/unavailable demotion, unrelated-slot rejection with zero writes,
+  and rejection of post-cutoff availability without changing the old current
+  fact. Real raw/normalization/decision FK chains publish Q2, Q3 and Q4 derived
+  quarters with exact reciprocal inputs; arithmetic, ordinal and discontinuous
+  period shapes fail at deferred commit and roll back the whole transaction.
+  That matrix exposed a missing output-continuity check, repaired only in the
+  linear 150000 migration by requiring the derived start to be the day after
+  the right operand end. Deferred-lineage failure is retryable with the same
+  valid request, pending/partial runs are never replay success, and committed
+  missing availability remains availability-only recovery.
+  The final focused publication service/E2E, mapping engine, publication
+  contracts and isolated migration suite passed 61 tests with only the
+  pre-existing Starlette deprecation warning; Alembic remained a single head,
+  old 120000/130000 migration diffs stayed clean, and `git diff --check` passed.
+- 2026-09-01: Step 5 Terra round-1 findings were independently reproduced and
+  fixed at the publication boundary. Current-slot reconciliation now exactly
+  matches the database SEC uniqueness key and demotes a prior currency before
+  publishing a corrected currency into the same stock/metric/period slot.
+  Raw-backed unavailable decisions require non-empty raw evidence and validate
+  every raw fact against the selected parse set, issuer stock, exact period,
+  context, registered rule concept/namespace and mapping version before any
+  lock, run insert or demotion. Parse failures with no raw fact use the distinct
+  `SelectedAffectedSourceSlot` authority, binding the expected slot to one
+  explicit selected parse/filing pair; empty raw evidence can no longer pose as
+  a normal conflict. Spoofed raw, parse and unrelated evidence leave both runs
+  and current facts unchanged.
+- 2026-09-01: Replay identity now uses canonical sorted JSON over the complete
+  request dataclass tree, including ordered sources, every candidate field,
+  dispositions, details, exact slots and all ordered parse/raw/normalization
+  lineage. It contains no `repr`; mutation coverage proves every material
+  candidate and disposition field changes identity. Authority validation runs
+  before the replay lookup, and any candidate or slot disposition referencing
+  a rule outside the selected mapping version fails closed rather than becoming
+  a silently filtered zero-decision success.
+  Round-1 focused publication service/E2E, mapping, contract and isolated
+  migration verification passed 69 tests with only the pre-existing Starlette
+  warning; Alembic retained one head, old 120000/130000 migrations remained
+  byte-for-byte clean, and `git diff --check` passed.
+- 2026-09-01: Step 5 Terra round-2 tightened the two unavailable-evidence
+  authorities. A raw-less amendment parse failure must now bind exactly one
+  selected parse/filing pair, and the database must prove a zero-fact failed
+  parse for an `/A` filing plus matching terminal `parse_failed` attempt and
+  acquisition resolution, issuer stock and cutoff. The 150000 source guard
+  permits only that narrowly evidenced failed-amendment source in addition to
+  the existing succeeded source; a succeeded parse or original filing cannot
+  impersonate parse failure. No new disposition or product behavior was added.
+- 2026-09-01: Raw-backed unavailable evidence now proves the disposition and
+  slot carry the same non-empty raw IDs and exact parse set, then derives and
+  compares stock, mapping rule/version and concept namespace, cutoff, context,
+  period bounds/basis/type, annual or quarterly form shape, fiscal year/quarter
+  shape, dimensions, and approved unit/currency grammar from retained database
+  lineage. FY-as-Q, dimension, raw and parse spoof tests leave the old current
+  fact untouched and append no run.
+- 2026-09-01: Canonical replay timestamps now reject naive datetimes and render
+  every aware datetime as one fixed microsecond UTC `Z` representation. Equal
+  instants expressed with different offsets produce the same run and source
+  digest and replay with zero fact growth; a different instant remains a
+  different identity.
+  Round-2 focused publication service/E2E, mapping, contract and isolated
+  migration verification passed 73 tests with only the pre-existing Starlette
+  warning; Alembic retained one head, old 120000/130000 migrations stayed
+  clean, and `git diff --check` passed.
+- 2026-09-01: Step 5 Terra round-3 made raw-backed unit validation
+  reason-sensitive without weakening common slot authority. An
+  `unresolved_unit` decision is accepted only when the retained structured
+  numerator/denominator or namespace shape actually violates the selected
+  rule; `unresolved_currency` requires an otherwise recognizable monetary or
+  per-share shape whose code is absent from the pinned mapping registry. Other
+  reasons still require a publishable approved unit/currency shape. Isolated
+  PostgreSQL tests prove malformed measures and unapproved currency append the
+  exact typed decision and demote only its stale slot, while a false unit reason
+  over normal raw evidence appends nothing and leaves current unchanged.
+- 2026-09-01: Raw-backed period validation now retains the Step-4 form-first
+  quarterly instant distinction: a 10-Q instant at its report cycle is Q,
+  while an explicitly retained earlier fiscal-year comparative instant targets
+  an FY slot. The common authority still proves form, raw instant/date,
+  context, rule and source; a prior-FY instant relabeled as Q is rejected before
+  any write or demotion. This closes the simplified-classifier drift without
+  changing the published path or adding a disposition.
+  Round-3 focused publication service/E2E, mapping, contract and isolated
+  migration verification passed 78 tests with only the pre-existing Starlette
+  warning; Alembic retained one head, old 120000/130000 migrations stayed
+  clean, and `git diff --check` passed.
+- 2026-09-01: Retained statement-authority Terra round-3 replaced range-based
+  fiscal anchoring with an explicit comparative-pair contract. Current and
+  prior anchors must come from the same retained report reference and stable
+  statement row/concept, their parsed column dates must exactly equal their raw
+  context ends, and their disclosed FY/YTD starts are preserved without
+  calendar arithmetic. Header-date mismatch, wrong-row/wrong-cycle, discrete-
+  only, namespace-collision, and unrelated duration evidence fail typed and
+  cannot authorize a slot.
+- 2026-09-01: The linear 150000 migration now retains append-only exact XML
+  occurrence evidence between report reference and raw fact. PostgreSQL
+  reparses the retained report bytes and verifies row, column, header, fact ID,
+  context, concept, value, unit, locator and expanded semantic digest before
+  insert; update/delete/truncate are rejected. Fact authority references the
+  validated occurrence plus its current/prior anchors, and its guard derives
+  and checks presentation, period, FY/FQ, fiscal start and locator. HTML-only
+  statement evidence remains diagnostic and raises the existing typed
+  statement-authority parse failure instead of affecting a slot. Implementation
+  is complete pending Terra review.
+- 2026-09-01: Retained statement-authority Terra round-4 removed the remaining
+  assumption that a DEI fiscal-year label is the calendar year printed in a
+  statement column header. Non-calendar FY 2026 evidence ending in December
+  2025, including Q1 comparative columns and an explicit 53-week annual cycle,
+  is now accepted from the retained context starts/ends. Authority still
+  requires exact header date equals context end, exact DEI fiscal-period focus,
+  compatible form/duration bounds, and a same-reference/row/concept comparative
+  pair; header/context mismatch remains typed fail-closed. No fiscal start is
+  inferred from a date or fiscal-year label. Implementation is complete pending
+  Terra review.
+- 2026-09-01: Retained statement-authority Terra round-5 makes a prior fiscal
+  anchor the immediately following eligible comparative column in the retained
+  presentation order, not merely any older same-row duration. It must share the
+  validated reference/report/row/concept and DEI cadence, have an explicit
+  context end 350–380 days before current, and have a disclosed duration length
+  within 14 days of current. An intervening same-cadence column, reversed column
+  order, or a current-plus-two-years-prior gap raises the typed
+  `unproven_prior_fiscal_cycle_anchor`; current/prior/two-years-prior selects the
+  immediate prior deterministically. The interval validates comparison only;
+  both starts remain the retained explicit context starts. PostgreSQL repeats
+  the cadence, order, interval, duration, and no-intervening-column checks for
+  persisted anchor IDs. Non-calendar and 53-week fixtures remain positive.
+  Implementation is complete pending Terra review.
+- 2026-09-01: Retained statement-authority Terra round-6 removes PostgreSQL's
+  last DEI `max` winner. The 150000 authority guard now requires exactly one
+  canonical distinct dimensionless value for each required DEI FY/FP local
+  name in an approved namespace and the selected parse. It reads the exact
+  retained filing form: 10-Q permits only Q1–Q3 with the same authority ordinal,
+  10-K/20-F permits only FY with a NULL quarter, and 6-K cannot create V1
+  statement authority. Current authority FY must exactly equal the unique DEI
+  fiscal-year label. Missing/conflicting FY or FP, 10-Q+FY, 10-K+Q3, and 6-K
+  fail closed; application fixtures assert the same typed parser behavior.
+  Implementation is complete pending Terra review.
+- 2026-09-01: Retained statement-authority Terra round-7 review passed. The
+  reviewer-focused statement-authority verification completed with 25 tests
+  passed. The implementation-focused parser, ingestion, adapter/mapping,
+  contract, and migration verification completed with 85 tests passed and only
+  the pre-existing Starlette deprecation warning. Alembic retained the unique
+  `20260901160000` head, historical 120000–140000 migrations remained clean,
+  and `git diff --check` passed. Retained statement authority is Terra PASS;
+  Step 5 publication remains in progress.
+- 2026-09-01: Step 5 publication Terra round-3 strengthens normalized
+  unresolved evidence at both insertion and deferred-commit boundaries. Each
+  evidence row must belong to the decision's exact run and ordered selected
+  parse, be cutoff-eligible, match the run issuer/stock, selected mapping
+  rule/version namespace registry, raw and statement context/period/FY/FQ, and
+  the exact retained occurrence locator. Eligible numeric normalization is
+  mandatory and exact when present (and for unit, currency, and conflict
+  reasons). The deferred MetricFact reciprocal guard now also compares the
+  canonical publication run and decision IDs in `value_json`, in addition to
+  source role and locator. Implementation is complete pending Terra review.
+- 2026-09-01: Step 5 publication Terra round-4 makes occurrence provenance a
+  closed, ordered contract. Direct and unresolved occurrence objects require
+  the exact canonical material key set and NULL-safe value equality; derived
+  locators require their exact two-key shape. Unresolved evidence ordinals must
+  be gapless from one through the row count, and locator array length and each
+  ordinal must agree. The audit raw-fact, parse-run, normalization, and
+  statement-authority arrays are now generated from the ordered normalized
+  evidence and deferred-compared to database aggregates, preventing missing,
+  duplicated, reordered, or independently forged audit identities.
+  Implementation is complete pending Terra review.
+- 2026-09-01: Step 5 publication Terra round-5 confirms the service writes all
+  unresolved audit identity arrays from `slot.occurrence_authorities` in the
+  same order used for locator occurrences and normalized evidence rows. Raw
+  fact, parse run, normalization, and statement-authority IDs therefore remain
+  positionally aligned; absent normalization is retained as JSON null rather
+  than dropping an array element. The normalize-false isolated PostgreSQL
+  fixture asserts the exact persisted arrays and successful unresolved-value
+  commit. Implementation is complete pending Terra review.
+- 2026-09-01: Step 5 publication Terra round-6 closes JSON scalar coercion in
+  canonical occurrence locators. Direct and unresolved evidence now require
+  positive integral JSON numbers for every ID and ordinal (numeric strings,
+  booleans, fractions, nulls, and negative values fail), strings for retained
+  hashes, string-or-null fact IDs, number-or-null normalization IDs, and JSON
+  objects for both retained locator objects before NULL-safe database equality
+  is evaluated. Derived evidence remains recursively bound to its already
+  validated ordered source-decision locators. Implementation is complete
+  pending Terra review.
+- 2026-09-01: Step 5 publication Terra round-7 adds real isolated-PostgreSQL
+  adversarial coverage for locator scalar types. The publication service is
+  exercised end to end while each canonical numeric ID/ordinal is serialized
+  in turn as a numeric string, boolean, fractional JSON number, null, or
+  negative integer; retained hashes/fact identity and locator objects are also
+  replaced with wrong scalar/container types. Deferred commit must fail and
+  the complete publication transaction must roll back. A separate unresolved
+  test proves that changing the authoritative DB-null normalization identity
+  to a JSON number is likewise rejected, complementing the successful exact
+  JSON-null fixture. Implementation is complete pending Terra review.
+- 2026-09-01: Step 5 publication Terra round-8 applies the adversarial JSON
+  matrix to slot-aware unresolved evidence itself. Every required numeric ID
+  and ordinal inside `ordered_input_occurrences[0]` is independently replaced
+  by a numeric string, boolean, fractional number, null, or negative integer;
+  hash, semantic identity, fact identity, and both locator objects receive
+  malformed scalar/container variants. Separate cases replace the authoritative
+  null normalization identity with string, fractional, negative, and boolean
+  values. Each real deferred commit fails, rolls the whole run back, and leaves
+  current SEC facts unchanged, while the exact JSON-null positive fixture
+  continues to commit. Implementation is complete pending Terra review.
+- 2026-09-01: Step 5 publication Terra round-9 extends both real direct and
+  unresolved malformed-type matrices to the retained FilingSummary and report
+  SHA-256 fields, including JSON null and numeric values. Every adversarial
+  case now records the pre-transaction current SEC-fact count and proves that
+  deferred rejection and full rollback preserve it, including every
+  normalization-nullability variant. Implementation is complete pending Terra
+  review.
+- 2026-09-01: Step 5 publication single-truth Terra round-10 PASS. Review found
+  no new P0–P3 issues. The main agent's exact focused command completed with
+  259 tests passed in 190.18 seconds and one existing Starlette deprecation
+  warning. Alembic retained the unique `20260901160000` head, historical
+  migrations 120000–140000 remained clean, and `git diff --check` passed.
+  Delivery Step 5 is complete; Step 6 is next.

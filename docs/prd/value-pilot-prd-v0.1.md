@@ -1324,6 +1324,13 @@ fall through. Every raw candidate in lower groups still receives one bounded
 `lower_priority_concept_not_selected` audit decision. Thus a higher valid
 concept wins over a lower concept whether their values agree or differ.
 
+Disposition slot authority is presentation-aware. Invalid unit, currency,
+value or nil evidence may carry a canonical slot only when the applicable rule
+and an exact retained statement occurrence independently prove that slot's
+presentation period. Dimensioned, custom, lower-priority, duplicate and
+unclassifiable-period evidence remains slotless audit evidence and cannot
+demote a current SEC fact. This restriction adds no new disposition type.
+
 Period classification is deterministic and form-first. A duration in a
 `10-K`/`10-K/A` or `20-F`/`20-F/A` is FY only within 300–380 elapsed days. A
 `10-Q`/`10-Q/A` duration is discrete Q only within 70–110 days, six-month YTD

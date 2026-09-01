@@ -40,6 +40,9 @@ from app.models.sec_financials import (
     SecFinancialResourceAnchor,
     SecIssuerIdentity,
     SecRawXbrlFact,
+    SecStatementFactAuthority,
+    SecStatementOccurrenceEvidence,
+    SecStatementReportReference,
     SecSubmissionSnapshot,
 )
 from app.models.stocks import Stock
@@ -234,6 +237,24 @@ class FakeEdgarClient:
     def get_revalidated(self, url: str) -> bytes:
         self.revalidated_calls.append(url)
         return self.get(url)
+
+
+class StatementAuthorityClient(FakeEdgarClient):
+    def __init__(self) -> None:
+        super().__init__()
+        summary = b"""<FilingSummary><MyReports><Report><Position>1</Position><ShortName>Statements of Operations</ShortName><Role>role/IncomeStatement</Role><XmlFileName>FinancialStatements.xml</XmlFileName></Report></MyReports></FilingSummary>"""
+        report = b'''<Report><Columns><Column><Labels><Label Label="Three Months Ended June 27, 2026"/></Labels></Column><Column><Labels><Label Label="Nine Months Ended June 27, 2026"/></Labels></Column></Columns><Rows><Row><ElementName>us-gaap_RevenueFromContractWithCustomerExcludingAssessedTax</ElementName><Cells><Cell contextRef="D2026Q3" factId="fact-revenue" unitRef="USD"><NumericAmount>94,000</NumericAmount></Cell><Cell contextRef="FY2026YTD" factId="fact-revenue-ytd" unitRef="USD"><NumericAmount>250,000</NumericAmount></Cell></Cells></Row></Rows></Report>'''
+        primary = INLINE_XBRL.replace(b"</body>", b'''<xbrli:context id="FY2026YTD"><xbrli:entity><xbrli:identifier scheme="http://www.sec.gov/CIK">0000320193</xbrli:identifier></xbrli:entity><xbrli:period><xbrli:startDate>2025-09-28</xbrli:startDate><xbrli:endDate>2026-06-27</xbrli:endDate></xbrli:period></xbrli:context><ix:nonFraction id="fact-revenue-ytd" name="us-gaap:RevenueFromContractWithCustomerExcludingAssessedTax" contextRef="FY2026YTD" unitRef="USD" format="ixt:num-dot-decimal">250,000</ix:nonFraction><ix:nonNumeric id="fy-focus" name="dei:DocumentFiscalYearFocus" contextRef="FY2026YTD">2026</ix:nonNumeric><ix:nonNumeric id="fp-focus" name="dei:DocumentFiscalPeriodFocus" contextRef="FY2026YTD">Q3</ix:nonNumeric></body>''')
+        payload = json.loads(_index_payload())
+        payload["directory"]["item"][0]["size"] = len(primary)
+        payload["directory"]["item"].extend([
+            {"name": "FilingSummary.xml", "type": "XML", "size": len(summary), "description": "Filing Summary"},
+            {"name": "FinancialStatements.xml", "type": "XML", "size": len(report), "description": "Statement"},
+        ])
+        self.responses[INDEX_URL] = json.dumps(payload).encode()
+        self.responses[PRIMARY_URL] = primary
+        self.responses[_canonical_artifact_url(CIK, ACCESSION, "FilingSummary.xml")] = summary
+        self.responses[_canonical_artifact_url(CIK, ACCESSION, "FinancialStatements.xml")] = report
 
 
 class FlakyEdgarClient(FakeEdgarClient):
@@ -2132,7 +2153,7 @@ def test_parser_v2_structured_evidence_blocks_destructive_downgrade(
     report = ingest_latest_financial_filings(
         db_session,
         stock_id=stock.id,
-        client=FakeEdgarClient(),
+        client=StatementAuthorityClient(),
         storage_root=tmp_path,
         max_filings=1,
         parser_version="xbrl-lineage-v2",
@@ -2161,8 +2182,10 @@ def test_parser_v2_structured_evidence_blocks_destructive_downgrade(
         check=False,
     )
     assert result.returncode != 0
-    assert "cannot downgrade with retained SEC parser-v2 structured QName evidence" in (
-        result.stdout + result.stderr
+    downgrade_output = result.stdout + result.stderr
+    assert (
+        "cannot downgrade with retained SEC parser-v2 structured QName evidence" in downgrade_output
+        or "downgrade refused: retained SEC statement authority exists" in downgrade_output
     )
     db_session.expire_all()
     after = db_session.execute(
@@ -3787,6 +3810,121 @@ def test_replay_keeps_success_and_terminal_failure_for_different_filings(
     assert [(item.accession_no, item.error_code) for item in failures] == [
         (failed_filing.accession_no, "required_artifact_unavailable")
     ]
+
+
+def test_parser_v2_writes_exact_statement_authority_in_parse_transaction(
+    committed_db_session, tmp_path: Path
+) -> None:
+    db_session = committed_db_session
+    stock = Stock(ticker="AAPL", exchange="US", company_name="Apple Inc.")
+    db_session.add(stock); db_session.flush()
+    register_reviewed_sec_identity(db_session, stock_id=stock.id, cik=CIK,
+        effective_from=date(1980, 12, 12), known_at=datetime(2026, 8, 27, 12, 0, tzinfo=timezone.utc),
+        review_reason="fixture reviewed identity")
+    db_session.commit()
+    report = ingest_latest_financial_filings(db_session, stock_id=stock.id,
+        client=StatementAuthorityClient(), storage_root=tmp_path, max_filings=1,
+        now=datetime(2026, 8, 27, 12, 5, tzinfo=timezone.utc), parser_version="xbrl-lineage-v2")
+    authority = db_session.scalar(select(SecStatementFactAuthority))
+    raw_fact = db_session.get(SecRawXbrlFact, authority.raw_fact_id)
+    parse_run = db_session.get(SecFinancialParseRun, authority.parse_run_id)
+    assert report.parse_runs_created == 1
+    assert authority.context_id == raw_fact.context_id == "D2026Q3"
+    assert authority.statement_sha256 == db_session.get(SecFilingArtifact, authority.statement_artifact_id).sha256
+    assert authority.created_txid == raw_fact.created_txid == parse_run.created_txid
+    assert authority.presentation_class == "current_period"
+    reference = db_session.get(SecStatementReportReference, authority.statement_report_reference_id)
+    occurrence = db_session.get(SecStatementOccurrenceEvidence, authority.statement_occurrence_id)
+    assert reference.filename == "FinancialStatements.xml"
+    assert reference.report_artifact_id == authority.statement_artifact_id
+    assert occurrence.statement_report_reference_id == reference.id
+    assert occurrence.header_date == raw_fact.period_end
+    db_session.commit()
+    for statement in (
+        "UPDATE sec_statement_fact_authorities SET report_name='forged'",
+        "DELETE FROM sec_statement_fact_authorities",
+        "TRUNCATE sec_statement_fact_authorities",
+        "UPDATE sec_statement_report_references SET filename='forged.xml'",
+        "DELETE FROM sec_statement_report_references",
+        "TRUNCATE sec_statement_report_references",
+        "UPDATE sec_statement_occurrence_evidence SET header_raw='forged'",
+        "DELETE FROM sec_statement_occurrence_evidence",
+        "TRUNCATE sec_statement_occurrence_evidence",
+    ):
+        with pytest.raises(DBAPIError), db_session.begin_nested():
+            db_session.execute(text(statement))
+    primary_artifact = db_session.scalar(select(SecFilingArtifact).where(SecFilingArtifact.filename == "aapl-20260627.htm"))
+    forged_material = chr(31).join((reference.filing_summary_sha256, primary_artifact.filename, "1",
+        reference.statement_role, reference.statement_type, reference.report_name))
+    with pytest.raises(DBAPIError, match="not an exact FilingSummary reference"), db_session.begin_nested():
+        db_session.execute(text("""INSERT INTO sec_statement_report_references
+          (parse_run_id,filing_summary_artifact_id,filing_summary_sha256,filing_summary_byte_size,filing_summary_content,
+           report_artifact_id,report_sha256,report_byte_size,filename,report_ordinal,statement_role,statement_type,report_name,
+           reference_semantic_sha256,known_at)
+          VALUES (:run,:summary,:summary_sha,:summary_bytes,:summary_content,:report,:report_sha,:report_bytes,:filename,1,
+                  :role,:type,:name,:claim,:known_at)"""), {
+            "run": authority.parse_run_id, "summary": reference.filing_summary_artifact_id,
+            "summary_sha": reference.filing_summary_sha256, "summary_bytes": reference.filing_summary_byte_size,
+            "summary_content": reference.filing_summary_content, "report": primary_artifact.id,
+            "report_sha": primary_artifact.sha256, "report_bytes": primary_artifact.byte_size,
+            "filename": primary_artifact.filename, "role": reference.statement_role, "type": reference.statement_type,
+            "name": reference.report_name, "claim": hashlib.sha256(forged_material.encode()).hexdigest(),
+            "known_at": reference.known_at})
+    base_authority = {
+        "raw": authority.raw_fact_id, "run": authority.parse_run_id, "reference": authority.statement_report_reference_id,
+        "artifact": authority.statement_artifact_id, "sha": authority.statement_sha256, "bytes": authority.statement_byte_size,
+        "role": authority.statement_role, "type": authority.statement_type, "report_ordinal": authority.report_ordinal,
+        "name": authority.report_name, "fact_id": authority.occurrence_fact_id,
+        "semantic": authority.occurrence_semantic_sha256, "context": authority.context_id,
+        "presentation": authority.presentation_class, "period_end": authority.statement_period_end,
+        "fy": authority.fiscal_year, "fq": authority.fiscal_quarter_ordinal, "fy_start": authority.fiscal_year_start,
+        "locator": json.dumps(authority.locator_json), "known_at": authority.known_at,
+        "statement_occurrence": authority.statement_occurrence_id,
+        "current_anchor": authority.current_anchor_occurrence_id,
+        "prior_anchor": authority.prior_anchor_occurrence_id,
+    }
+    for offset, changes in enumerate((
+        {"role": "forged-role"}, {"type": "balance_sheet"}, {"name": "forged-name"},
+        {"sha": "f" * 64}, {"bytes": authority.statement_byte_size + 1},
+        {"report_ordinal": authority.report_ordinal + 1}, {"artifact": primary_artifact.id}, {"reference": 999999999},
+        {"presentation": "prior_same_fiscal_quarter"},
+        {"period_end": authority.statement_period_end - timedelta(days=1)},
+        {"fy": authority.fiscal_year - 1}, {"fq": 2},
+        {"fy_start": authority.fiscal_year_start + timedelta(days=1)},
+        {"locator": json.dumps({**authority.locator_json, "column": 99})},
+        {"occurrence": authority.occurrence_ordinal + 99},
+    ), start=100):
+        params = {**base_authority, **changes, "occurrence": offset}
+        with pytest.raises(DBAPIError), db_session.begin_nested():
+            db_session.execute(text("""INSERT INTO sec_statement_fact_authorities
+              (raw_fact_id,statement_report_reference_id,parse_run_id,statement_artifact_id,statement_sha256,
+               statement_byte_size,statement_role,statement_type,report_ordinal,report_name,occurrence_ordinal,
+               occurrence_fact_id,occurrence_semantic_sha256,context_id,presentation_class,statement_period_end,
+               fiscal_year,fiscal_quarter_ordinal,fiscal_year_start,locator_json,known_at,
+               statement_occurrence_id,current_anchor_occurrence_id,prior_anchor_occurrence_id)
+              VALUES (:raw,:reference,:run,:artifact,:sha,:bytes,:role,:type,:report_ordinal,:name,:occurrence,
+                      :fact_id,:semantic,:context,:presentation,:period_end,:fy,:fq,:fy_start,CAST(:locator AS jsonb),:known_at,
+                      :statement_occurrence,:current_anchor,:prior_anchor)"""), params)
+
+
+def test_parser_v2_missing_filing_summary_is_typed_terminal_parse_failure(
+    committed_db_session, tmp_path: Path
+) -> None:
+    db_session = committed_db_session
+    stock = Stock(ticker="MISSFS", exchange="US", company_name="Missing Summary")
+    db_session.add(stock); db_session.flush()
+    register_reviewed_sec_identity(db_session, stock_id=stock.id, cik=CIK,
+        effective_from=date(1980, 12, 12), known_at=datetime(2026, 8, 27, 12, 0, tzinfo=timezone.utc),
+        review_reason="fixture reviewed identity")
+    db_session.commit()
+    report = ingest_latest_financial_filings(db_session, stock_id=stock.id, client=FakeEdgarClient(),
+        storage_root=tmp_path, max_filings=1, now=datetime(2026, 8, 27, 12, 5, tzinfo=timezone.utc),
+        parser_version="xbrl-lineage-v2")
+    run = db_session.get(SecFinancialParseRun, db_session.scalar(select(SecFinancialParseRun.id)))
+    assert run.status == "failed" and run.error_code == "statement_authority_parse_failed"
+    assert "missing_retained_filing_summary" in run.error_detail
+    assert any("statement_authority_parse_failed:StatementAuthorityParseError" in item for item in report.failures)
+    assert db_session.scalar(select(func.count()).select_from(SecStatementReportReference)) == 0
 
 
 def test_ingestion_is_idempotent_pit_safe_and_does_not_publish_metric_facts(

@@ -48,6 +48,18 @@ class SecMetricMappingRule(Base):
     created_txid: Mapped[int] = mapped_column(BigInteger)
 
 
+class SecMetricMappingRuleConcept(Base):
+    __tablename__ = "sec_metric_mapping_rule_concepts"
+    id: Mapped[int] = mapped_column(BigInteger,primary_key=True)
+    mapping_rule_id: Mapped[int] = mapped_column(BigInteger,ForeignKey("sec_metric_mapping_rules.id"))
+    concept_ordinal: Mapped[int] = mapped_column(Integer)
+    namespace_authority: Mapped[str] = mapped_column(String(32))
+    local_name: Mapped[str] = mapped_column(String)
+    spec_sha256: Mapped[str] = mapped_column(String(64))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    created_txid: Mapped[int] = mapped_column(BigInteger)
+
+
 class SecMetricPublicationRun(Base):
     __tablename__ = "sec_metric_publication_runs"
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
@@ -61,6 +73,22 @@ class SecMetricPublicationRun(Base):
     published_count: Mapped[int] = mapped_column(Integer)
     unresolved_count: Mapped[int] = mapped_column(Integer)
     rejected_count: Mapped[int] = mapped_column(Integer)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    created_txid: Mapped[int] = mapped_column(BigInteger)
+
+
+class SecMetricPublicationRunSource(Base):
+    __tablename__ = "sec_metric_publication_run_sources"
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    publication_run_id: Mapped[str] = mapped_column(ForeignKey("sec_metric_publication_runs.id"))
+    mapping_rule_id: Mapped[int] = mapped_column(ForeignKey("sec_metric_mapping_rules.id"))
+    source_ordinal: Mapped[int] = mapped_column(Integer)
+    parse_run_id: Mapped[int] = mapped_column(ForeignKey("sec_financial_parse_runs.id"))
+    filing_id: Mapped[int] = mapped_column(ForeignKey("sec_financial_filings.id"))
+    accession_no: Mapped[str] = mapped_column(String(20))
+    parser_version: Mapped[str] = mapped_column(String(80))
+    input_manifest_hash: Mapped[str] = mapped_column(String(64))
+    source_available_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     created_txid: Mapped[int] = mapped_column(BigInteger)
 
@@ -86,6 +114,7 @@ class SecMetricPublication(Base):
     currency: Mapped[str | None] = mapped_column(String(3))
     source_role: Mapped[str] = mapped_column(String(40))
     fact_nature: Mapped[str] = mapped_column(String(24))
+    derivation_kind: Mapped[str] = mapped_column(String(40))
     context_id: Mapped[str | None] = mapped_column(Text)
     dimensions_policy: Mapped[str] = mapped_column(String(40))
     dimensions_sha256: Mapped[str] = mapped_column(String(64))
@@ -95,6 +124,57 @@ class SecMetricPublication(Base):
     known_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     created_txid: Mapped[int] = mapped_column(BigInteger)
+
+
+class SecMetricPublicationInput(Base):
+    __tablename__ = "sec_metric_publication_inputs"
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    publication_id: Mapped[int] = mapped_column(ForeignKey("sec_metric_publications.id"))
+    input_ordinal: Mapped[int] = mapped_column(Integer)
+    input_role: Mapped[str] = mapped_column(String(24))
+    run_source_id: Mapped[int | None] = mapped_column(ForeignKey("sec_metric_publication_run_sources.id"))
+    raw_fact_id: Mapped[int | None] = mapped_column(ForeignKey("sec_raw_xbrl_facts.id"))
+    source_publication_id: Mapped[int | None] = mapped_column(ForeignKey("sec_metric_publications.id"))
+    normalization_id: Mapped[int | None] = mapped_column(ForeignKey("sec_raw_numeric_normalizations.id"))
+    arithmetic_sign: Mapped[int] = mapped_column(SmallInteger)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    created_txid: Mapped[int] = mapped_column(BigInteger)
+
+
+class SecMetricPublicationAudit(Base):
+    """Append-only raw mapping outcome that did not prove a canonical slot."""
+
+    __tablename__ = "sec_metric_publication_audits"
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    publication_run_id: Mapped[str] = mapped_column(ForeignKey("sec_metric_publication_runs.id"))
+    mapping_rule_id: Mapped[int | None] = mapped_column(BigInteger, ForeignKey("sec_metric_mapping_rules.id"))
+    audit_ordinal: Mapped[int] = mapped_column(Integer)
+    reason_code: Mapped[str] = mapped_column(String(80))
+    raw_fact_ids_json: Mapped[list[int]] = mapped_column(JSONB)
+    detail: Mapped[str | None] = mapped_column(Text)
+    known_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    created_txid: Mapped[int] = mapped_column(BigInteger)
+
+
+class SecMetricPublicationUnresolvedInput(Base):
+    __tablename__ = "sec_metric_publication_unresolved_inputs"
+    id: Mapped[int] = mapped_column(BigInteger,primary_key=True)
+    publication_id: Mapped[int] = mapped_column(BigInteger,ForeignKey("sec_metric_publications.id"))
+    input_ordinal: Mapped[int] = mapped_column(Integer)
+    run_source_id: Mapped[int] = mapped_column(BigInteger,ForeignKey("sec_metric_publication_run_sources.id"))
+    raw_fact_id: Mapped[int] = mapped_column(BigInteger,ForeignKey("sec_raw_xbrl_facts.id"))
+    statement_authority_id: Mapped[int] = mapped_column(BigInteger,ForeignKey("sec_statement_fact_authorities.id"))
+    normalization_id: Mapped[int | None] = mapped_column(BigInteger,ForeignKey("sec_raw_numeric_normalizations.id"))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    created_txid: Mapped[int] = mapped_column(BigInteger)
+
+
+class SecMetricPublicationAvailability(Base):
+    __tablename__ = "sec_metric_publication_availabilities"
+    publication_run_id: Mapped[str] = mapped_column(ForeignKey("sec_metric_publication_runs.id"), primary_key=True)
+    available_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    finalized_txid: Mapped[int] = mapped_column(BigInteger)
 
 
 class SecRawNumericNormalization(Base):

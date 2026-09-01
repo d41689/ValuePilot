@@ -66,6 +66,21 @@ def test_priority_pipeline_selects_lowest_id_and_never_falls_through_conflict():
     assert not conflict.candidates
     assert conflict.dispositions[0].reason == "unresolved_conflicting_candidates"
     assert conflict.dispositions[0].raw_fact_ids == (1, 2)
+    assert conflict.dispositions[0].slot is not None
+    assert conflict.dispositions[0].slot.period_end == date(2026, 3, 31)
+    assert conflict.dispositions[0].slot.parse_run_ids == (10, 10)
+
+
+def test_slot_aware_dispositions_preserve_ordered_occurrence_authority():
+    mapping=canonical_sec_mapping_v1()
+    evidence1={"statement_authority_id":11,"raw_fact_id":1,"report_ordinal":1,"occurrence_ordinal":1}
+    evidence2={"statement_authority_id":22,"raw_fact_id":2,"report_ordinal":1,"occurrence_ordinal":2}
+    conflict=run(mapping,[raw(1,value="10",occurrence_authorities=(evidence1,)),raw(2,value="11",occurrence_authorities=(evidence2,))])
+    decision=next(item for item in conflict.dispositions if item.reason=="unresolved_conflicting_candidates")
+    assert decision.slot is not None and decision.slot.occurrence_authorities==(evidence1,evidence2)
+    invalid=run(mapping,[raw(1,is_nil=True,normalized_value=None,occurrence_authorities=(evidence1,))])
+    value=next(item for item in invalid.dispositions if item.reason=="unresolved_value")
+    assert value.slot is not None and value.slot.occurrence_authorities==(evidence1,)
 
 
 def test_typed_fail_closed_units_currency_dimensions_namespace_period_and_form():
@@ -97,6 +112,16 @@ def test_period_classification_and_strict_derived_quarter_truth_tables():
     assert by_period[("Q", 2)].derivation_kind == "current_ytd_minus_prior_ytd"
     assert by_period[("Q", 2)].raw_fact_ids == (2, 1)
 
+
+def test_derived_candidate_preserves_ordered_occurrence_provenance():
+    mapping = canonical_sec_mapping_v1()
+    q1 = raw(1, value="40", occurrence_authorities=({"statement_authority_id": 11, "locator_json": {"row": 1}},))
+    q2_ytd = raw(2, value="100", period_end=date(2026, 6, 30), statement_period_end=date(2026, 6, 30),
+                 fiscal_quarter_ordinal=2, occurrence_authorities=({"statement_authority_id": 22, "locator_json": {"row": 2}},))
+    result = run(mapping, [q1, q2_ytd])
+    derived = next(item for item in result.candidates if item.derivation_kind == "current_ytd_minus_prior_ytd")
+    assert [item["statement_authority_id"] for item in derived.occurrence_authorities] == [22, 11]
+
     direct_q2 = raw(3, value="61", period_start=date(2026, 4, 1), period_end=date(2026, 6, 30), statement_period_end=date(2026, 6, 30), fiscal_quarter_ordinal=2)
     precedence = run(mapping, [q1, q2_ytd, direct_q2])
     q2_candidates = [item for item in precedence.candidates if item.period_type == "Q" and item.fiscal_quarter_ordinal == 2]
@@ -125,6 +150,15 @@ def test_mapping_output_and_decision_trail_are_bounded():
     result = run(mapping, facts, max_decisions=32)
     assert len(result.dispositions) == 32
     assert result.truncated_decision_count == 367
+
+
+def test_513_slotless_raw_audits_report_nonzero_truncation():
+    mapping = canonical_sec_mapping_v1()
+    facts = [raw(index, namespace_uri="urn:custom", concept=f"IssuerCustomConcept{index}") for index in range(1, 514)]
+    result = run(mapping, facts)
+    assert not result.candidates and len(result.dispositions) == 512
+    assert result.truncated_decision_count == 1
+    assert all(item.slot is None and item.reason == "unresolved_custom_concept" for item in result.dispositions)
 
 
 def test_elapsed_day_contract_boundaries_are_inclusive_calendar_days():

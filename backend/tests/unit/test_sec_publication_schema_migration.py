@@ -31,7 +31,33 @@ BASE = make_url(settings.SQLALCHEMY_DATABASE_URI).set(
 ).render_as_string(hide_password=False)
 BACKEND = Path(__file__).resolve().parents[2]
 PARENT = "20260831120000"
-HEAD = "20260901140000"
+HEAD = "20260901160000"
+
+
+def test_unresolved_guard_keeps_published_unit_strict() -> None:
+    migration = (BACKEND / "alembic/versions/20260901160000-sec-unresolved-publication-guard.py").read_text()
+    assert "NEW.status='published' AND NEW.unit=rule.target_unit" in migration
+    assert "NEW.status<>'published' AND NEW.unit IS NULL AND NEW.currency IS NULL" in migration
+    assert "cannot downgrade unresolved SEC publication evidence" in migration
+    assert "NEW.fiscal_quarter_ordinal=2 AND right_decision.period_type='Q'" in migration
+    assert "NEW.fiscal_quarter_ordinal=3 AND right_decision.period_type='YTD'" in migration
+    assert "s.publication_run_id<>p.publication_run_id" in migration
+    assert "issuer.stock_id<>pub.stock_id" in migration
+    assert "n.mapping_rule_id=p.mapping_rule_id AND n.mapping_version_id=pub.mapping_version_id" in migration
+    assert "p.reason_code IN ('unresolved_unit','unresolved_currency','unresolved_conflicting_candidates')" in migration
+    assert "fact.value_json::jsonb->>'publication_run_id'" in migration
+    assert "fact.value_json::jsonb->>'decision_id'" in migration
+    assert "min_ordinal<>1 OR max_ordinal<>evidence_count OR distinct_ordinals<>evidence_count" in migration
+    assert "jsonb_agg(raw_fact_id ORDER BY input_ordinal)" in migration
+    assert "p.audit_json->'raw_fact_ids' IS DISTINCT FROM evidence_raw_ids" in migration
+    assert "p.audit_json->'parse_run_ids' IS DISTINCT FROM evidence_parse_ids" in migration
+    assert "jsonb_object_keys(p.locator_json" in migration
+    assert "->>'normalization_id')::bigint IS DISTINCT FROM ui.normalization_id" in migration
+    assert "jsonb_typeof(p.locator_json->key) IS DISTINCT FROM 'number'" in migration
+    assert "~ '^[1-9][0-9]*$'" in migration
+    assert "jsonb_typeof(p.locator_json->'normalization_id') NOT IN ('number','null')" in migration
+    assert "jsonb_typeof(p.locator_json->'locator_json') IS DISTINCT FROM 'object'" in migration
+    assert "jsonb_typeof(p.locator_json->'ordered_input_occurrences'->(ui.input_ordinal-1)->key) IS DISTINCT FROM 'number'" in migration
 
 
 def test_publication_arithmetic_uses_source_decisions_not_caller_operands() -> None:
@@ -79,6 +105,8 @@ def test_publication_schema_empty_upgrade_downgrade_upgrade(isolated) -> None:
         assert str(columns["value_numeric"]["type"]) == "NUMERIC(38, 12)"
         assert columns["user_id"]["nullable"] is True
         input_columns = {c["name"]: c for c in inspect(connection).get_columns("sec_metric_publication_inputs")}
+        decision_columns = {c["name"]: c for c in inspect(connection).get_columns("sec_metric_publications")}
+        assert decision_columns["mapping_rule_id"]["nullable"] is False
         assert input_columns["arithmetic_sign"]["nullable"] is False
         assert "operand_value_numeric" not in input_columns
         assert input_columns["raw_fact_id"]["nullable"] is True

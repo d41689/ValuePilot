@@ -13,6 +13,7 @@ from sqlalchemy import (
     ForeignKey,
     ForeignKeyConstraint,
     Integer,
+    LargeBinary,
     Numeric,
     String,
     Text,
@@ -844,3 +845,110 @@ class SecRawXbrlFact(Base):
     created_txid: Mapped[int] = mapped_column(
         BigInteger, server_default=func.txid_current(), nullable=False
     )
+
+
+class SecStatementReportReference(Base):
+    __tablename__ = "sec_statement_report_references"
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    parse_run_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("sec_financial_parse_runs.id", ondelete="RESTRICT"), nullable=False)
+    filing_summary_artifact_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("sec_filing_artifacts.id", ondelete="RESTRICT"), nullable=False)
+    filing_summary_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    filing_summary_byte_size: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    filing_summary_content: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
+    report_artifact_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("sec_filing_artifacts.id", ondelete="RESTRICT"), nullable=False)
+    report_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    report_byte_size: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    report_content: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
+    filename: Mapped[str] = mapped_column(String(255), nullable=False)
+    report_ordinal: Mapped[int] = mapped_column(Integer, nullable=False)
+    statement_role: Mapped[str] = mapped_column(Text, nullable=False)
+    statement_type: Mapped[str] = mapped_column(String(32), nullable=False)
+    report_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    reference_semantic_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    known_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.clock_timestamp(), nullable=False)
+    created_txid: Mapped[int] = mapped_column(BigInteger, server_default=func.txid_current(), nullable=False)
+
+
+class SecStatementFactAuthority(Base):
+    """An explicit occurrence of a raw fact in a retained SEC statement report."""
+
+    __tablename__ = "sec_statement_fact_authorities"
+    __table_args__ = (
+        UniqueConstraint(
+            "raw_fact_id", "statement_artifact_id", "report_ordinal", "occurrence_ordinal",
+            name="uq_sec_statement_fact_authority_occurrence",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    raw_fact_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("sec_raw_xbrl_facts.id", ondelete="RESTRICT"), nullable=False
+    )
+    statement_occurrence_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("sec_statement_occurrence_evidence.id", ondelete="RESTRICT"), nullable=False
+    )
+    current_anchor_occurrence_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("sec_statement_occurrence_evidence.id", ondelete="RESTRICT"), nullable=False
+    )
+    prior_anchor_occurrence_id: Mapped[int | None] = mapped_column(
+        BigInteger, ForeignKey("sec_statement_occurrence_evidence.id", ondelete="RESTRICT"), nullable=True
+    )
+    statement_report_reference_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("sec_statement_report_references.id", ondelete="RESTRICT"), nullable=False
+    )
+    parse_run_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("sec_financial_parse_runs.id", ondelete="RESTRICT"), nullable=False
+    )
+    statement_artifact_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("sec_filing_artifacts.id", ondelete="RESTRICT"), nullable=False
+    )
+    statement_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    statement_byte_size: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    statement_role: Mapped[str] = mapped_column(Text, nullable=False)
+    statement_type: Mapped[str] = mapped_column(String(32), nullable=False)
+    report_ordinal: Mapped[int] = mapped_column(Integer, nullable=False)
+    report_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    occurrence_ordinal: Mapped[int] = mapped_column(Integer, nullable=False)
+    occurrence_fact_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    occurrence_semantic_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    context_id: Mapped[str] = mapped_column(Text, nullable=False)
+    presentation_class: Mapped[str] = mapped_column(String(64), nullable=False)
+    statement_period_end: Mapped[date] = mapped_column(Date, nullable=False)
+    fiscal_year: Mapped[int] = mapped_column(Integer, nullable=False)
+    fiscal_quarter_ordinal: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    fiscal_year_start: Mapped[date] = mapped_column(Date, nullable=False)
+    locator_json: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    known_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.clock_timestamp(), nullable=False
+    )
+    created_txid: Mapped[int] = mapped_column(
+        BigInteger, server_default=func.txid_current(), nullable=False
+    )
+
+
+class SecStatementOccurrenceEvidence(Base):
+    __tablename__ = "sec_statement_occurrence_evidence"
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    statement_report_reference_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("sec_statement_report_references.id", ondelete="RESTRICT"), nullable=False)
+    parse_run_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("sec_financial_parse_runs.id", ondelete="RESTRICT"), nullable=False)
+    raw_fact_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("sec_raw_xbrl_facts.id", ondelete="RESTRICT"), nullable=False)
+    report_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    report_ordinal: Mapped[int] = mapped_column(Integer, nullable=False)
+    row_ordinal: Mapped[int] = mapped_column(Integer, nullable=False)
+    column_ordinal: Mapped[int] = mapped_column(Integer, nullable=False)
+    occurrence_ordinal: Mapped[int] = mapped_column(Integer, nullable=False)
+    fact_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    context_id: Mapped[str] = mapped_column(Text, nullable=False)
+    concept: Mapped[str] = mapped_column(Text, nullable=False)
+    raw_value: Mapped[str] = mapped_column(Text, nullable=False)
+    unit_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    header_raw: Mapped[str] = mapped_column(Text, nullable=False)
+    header_normalized: Mapped[str] = mapped_column(Text, nullable=False)
+    header_date: Mapped[date] = mapped_column(Date, nullable=False)
+    locator_json: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    semantic_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    known_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.clock_timestamp(), nullable=False)
+    created_txid: Mapped[int] = mapped_column(BigInteger, server_default=func.txid_current(), nullable=False)
