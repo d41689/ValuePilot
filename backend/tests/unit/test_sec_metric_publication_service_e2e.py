@@ -169,7 +169,7 @@ def _request(
     stock=Stock(ticker=ticker,exchange="US",company_name="Apple Inc."); db.add(stock); db.flush()
     identity=register_reviewed_sec_identity(db,stock_id=stock.id,cik=CIK,effective_from=date(1980,12,12),known_at=known,review_reason="publication fixture reviewed identity")
     db.commit()
-    report=ingest_latest_financial_filings(db,stock_id=stock.id,client=client or StatementAuthorityClient(),storage_root=tmp_path,max_filings=1,now=known+timedelta(minutes=5),parser_version="xbrl-lineage-v2.2")
+    report=ingest_latest_financial_filings(db,stock_id=stock.id,client=client or StatementAuthorityClient(),storage_root=tmp_path,max_filings=1,now=known+timedelta(minutes=5),parser_version=financial_ingestion.PARSER_V2)
     if acceptance_attempt is not None:
         link_acceptance_operation(
             db,
@@ -366,7 +366,7 @@ def test_failed_amendment_state_is_bounded_to_its_filing_cycle(db, tmp_path):
         storage_root=tmp_path,
         max_filings=1,
         now=datetime(2026, 8, 28, 17, tzinfo=timezone.utc),
-        parser_version="xbrl-lineage-v2.2",
+        parser_version=financial_ingestion.PARSER_V2,
     )
     db.commit()
     finalize_sec_financial_ingestion_operation(db, operation_id=report.operation_id)
@@ -433,7 +433,7 @@ def test_failed_amendment_state_is_bounded_to_its_filing_cycle(db, tmp_path):
         storage_root=tmp_path,
         max_filings=1,
         now=datetime(2026, 8, 29, 17, tzinfo=timezone.utc),
-        parser_version="xbrl-lineage-v2.2",
+        parser_version=financial_ingestion.PARSER_V2,
     )
     db.commit()
     finalize_sec_financial_ingestion_operation(db, operation_id=restored_report.operation_id)
@@ -608,7 +608,7 @@ def test_gold_acceptance_executes_real_publication_and_exact_zero_growth_replay(
         storage_root=tmp_path,
         max_filings=1,
         now=datetime(2026, 8, 30, 1, tzinfo=timezone.utc),
-        parser_version="xbrl-lineage-v2.2",
+        parser_version=financial_ingestion.PARSER_V2,
     )
     link_acceptance_operation(
         db,
@@ -958,7 +958,7 @@ def test_gold_acceptance_report_is_rebuilt_and_verified_against_isolated_databas
         storage_root=tmp_path,
         max_filings=1,
         now=datetime(2026, 8, 30, 1, tzinfo=timezone.utc),
-        parser_version="xbrl-lineage-v2.2",
+        parser_version=financial_ingestion.PARSER_V2,
     )
     link_acceptance_operation(
         db,
@@ -1450,7 +1450,7 @@ def test_gold_evidence_checkpoints_are_database_computed_and_append_only(db, tmp
         storage_root=tmp_path,
         max_filings=1,
         now=datetime(2026, 8, 28, 1, tzinfo=timezone.utc),
-        parser_version="xbrl-lineage-v2.2",
+        parser_version=financial_ingestion.PARSER_V2,
     )
     link_acceptance_operation(
         db,
@@ -1482,7 +1482,7 @@ def test_gold_evidence_checkpoints_are_database_computed_and_append_only(db, tmp
         storage_root=tmp_path,
         max_filings=1,
         now=datetime(2026, 8, 28, 2, tzinfo=timezone.utc),
-        parser_version="xbrl-lineage-v2.2",
+        parser_version=financial_ingestion.PARSER_V2,
     )
     link_acceptance_operation(
         db,
@@ -1513,7 +1513,7 @@ def test_gold_evidence_checkpoints_are_database_computed_and_append_only(db, tmp
         storage_root=tmp_path,
         max_filings=1,
         now=datetime(2026, 8, 28, 2, 30, tzinfo=timezone.utc),
-        parser_version="xbrl-lineage-v2.2",
+        parser_version=financial_ingestion.PARSER_V2,
     )
     link_acceptance_operation(
         db,
@@ -1610,7 +1610,7 @@ def test_gold_evidence_checkpoints_are_database_computed_and_append_only(db, tmp
         storage_root=tmp_path,
         max_filings=1,
         now=datetime(2026, 8, 28, 3, tzinfo=timezone.utc),
-        parser_version="xbrl-lineage-v2.2",
+        parser_version=financial_ingestion.PARSER_V2,
     )
     link_acceptance_operation(
         db,
@@ -2091,7 +2091,7 @@ def test_cli_recovers_finalized_failed_parse_without_sec_refetch(
             financial_cli.ingest_gold_case(
                 case_id=case_id,
                 max_filings=50,
-                parser_version="xbrl-lineage-v2.2",
+                parser_version=financial_ingestion.PARSER_V2,
                 history_cursor=None,
                 as_of=None,
                 acceptance_run_id=run_id,
@@ -2222,13 +2222,13 @@ def test_cli_recovers_finalized_failed_parse_without_sec_refetch(
         text(
             "SELECT parser_version,status FROM sec_financial_parse_runs "
             "WHERE parser_version IN "
-            "('xbrl-lineage-v2','xbrl-lineage-v2.1','xbrl-lineage-v2.2') "
+            "('xbrl-lineage-v2','xbrl-lineage-v2.1','xbrl-lineage-v2.3') "
             "ORDER BY id"
         )
     ).all() == [
         ("xbrl-lineage-v2", "failed"),
         ("xbrl-lineage-v2.1", "failed"),
-        ("xbrl-lineage-v2.2", "succeeded"),
+        ("xbrl-lineage-v2.3", "succeeded"),
     ]
     recovered_manifests = set(
         db.execute(
@@ -2238,7 +2238,7 @@ def test_cli_recovers_finalized_failed_parse_without_sec_refetch(
                 "JOIN sec_financial_parse_run_artifacts link "
                 "ON link.parse_run_id=parse.id "
                 "JOIN sec_filing_artifacts artifact ON artifact.id=link.artifact_id "
-                "WHERE parse.parser_version='xbrl-lineage-v2.2' "
+                "WHERE parse.parser_version='xbrl-lineage-v2.3' "
                 "AND parse.status='succeeded'"
             )
         ).scalars()
@@ -2265,7 +2265,7 @@ def test_cli_recovers_finalized_failed_parse_without_sec_refetch(
             "JOIN sec_financial_parse_run_artifacts link "
             "ON link.parse_run_id=parse.id "
             "JOIN sec_filing_artifacts artifact ON artifact.id=link.artifact_id "
-            "WHERE parse.parser_version='xbrl-lineage-v2.2' "
+            "WHERE parse.parser_version='xbrl-lineage-v2.3' "
             "AND artifact.filename='aapl-20150627.xml' "
             "AND artifact.state='retained'"
         )
@@ -2411,7 +2411,7 @@ def test_cli_failed_current_parser_without_provenance_delta_is_idempotent(
             storage_root=tmp_path,
             max_filings=1,
             now=datetime(2026, 8, 28, 1, 30, tzinfo=timezone.utc),
-            parser_version="xbrl-lineage-v2.2",
+            parser_version=financial_ingestion.PARSER_V2,
         )
     link_acceptance_operation(
         db,
@@ -2509,6 +2509,202 @@ def test_cli_failed_current_parser_without_provenance_delta_is_idempotent(
         ),
         {"run": run_id},
     ).scalar_one() == 2
+
+
+def test_cli_appends_v23_after_failed_v22_from_retained_inputs_without_sec_fetch(
+    db, tmp_path, monkeypatch
+):
+    run_id = "gold-v23-retained-recovery"
+    case_id = "aapl-primary"
+    instance = "11111111-1111-4111-8111-111111111111"
+    reports_root = tmp_path / "reports"
+    reports_root.mkdir()
+    persist_rate_guard_snapshot(
+        db,
+        run_id=run_id,
+        phase="before",
+        configured_route="https://rate-guard.example.test",
+        expected_instance_id=instance,
+        observed_instance_id=instance,
+        fetch_mode="rate_guard",
+        fallback_enabled=False,
+        fallback_url=None,
+        metrics={"rate_per_sec": 1.0},
+        manifest_digest="e" * 64,
+        database_name="valuepilot_acceptance_gold_v23_retained_recovery",
+        storage_root=tmp_path,
+    )
+    attempt = begin_acceptance_case_attempt(
+        db, run_id=run_id, case_id=case_id, acceptance_pass=1
+    )
+    _claim_acceptance_attempt(
+        db,
+        run_id=run_id,
+        case_id=case_id,
+        acceptance_pass=1,
+        attempt_id=attempt["id"],
+    )
+    record_acceptance_evidence_checkpoint(
+        db,
+        run_id=run_id,
+        case_id=case_id,
+        acceptance_pass=1,
+        phase="before",
+        attempt_id=attempt["id"],
+    )
+    stock = Stock(ticker="AAPL", exchange="US", company_name="Apple Inc.")
+    db.add(stock)
+    db.flush()
+    register_reviewed_sec_identity(
+        db,
+        stock_id=stock.id,
+        cik=CIK,
+        effective_from=date(2015, 1, 1),
+        known_at=datetime(2026, 8, 28, tzinfo=timezone.utc),
+        review_reason="failed v2.2 retained recovery fixture",
+    )
+    db.commit()
+
+    canonical_resolver = financial_ingestion.parse_generated_statement_occurrences
+
+    def reject_v22(*_args, **_kwargs):
+        raise financial_ingestion.StatementAuthorityParseError(
+            "ambiguous_label_resource"
+        )
+
+    monkeypatch.setattr(
+        financial_ingestion, "parse_generated_statement_occurrences", reject_v22
+    )
+    failed_report = ingest_latest_financial_filings(
+        db,
+        stock_id=stock.id,
+        client=GeneratedStatementAuthorityClient(),
+        storage_root=tmp_path,
+        max_filings=1,
+        now=datetime(2026, 8, 28, 1, tzinfo=timezone.utc),
+        parser_version="xbrl-lineage-v2.2",
+    )
+    link_acceptance_operation(
+        db,
+        attempt_id=attempt["id"],
+        operation_id=failed_report.operation_id,
+        operation_ordinal=1,
+        operation_role="main",
+    )
+    db.commit()
+    finalize_sec_financial_ingestion_operation(
+        db, operation_id=failed_report.operation_id
+    )
+    db.commit()
+    failed_run = db.execute(
+        text(
+            "SELECT id,input_manifest_hash,status,error_detail "
+            "FROM sec_financial_parse_runs WHERE operation_id=:operation"
+        ),
+        {"operation": failed_report.operation_id},
+    ).one()
+    assert failed_run.status == "failed"
+    assert "ambiguous_label_resource" in failed_run.error_detail
+
+    monkeypatch.setattr(
+        financial_ingestion,
+        "parse_generated_statement_occurrences",
+        canonical_resolver,
+    )
+    _release_test_completion_leases(db)
+    monkeypatch.setattr(
+        financial_cli, "SessionLocal", sessionmaker(bind=db.get_bind())
+    )
+    monkeypatch.setattr(
+        financial_cli,
+        "preflight_configured_acceptance_runtime",
+        lambda _run: SimpleNamespace(
+            run_id=run_id,
+            reports_root=reports_root,
+            storage_root=tmp_path,
+        ),
+    )
+    monkeypatch.setattr(
+        financial_cli.settings, "EDGAR_RAW_STORAGE_DIR", str(tmp_path)
+    )
+    monkeypatch.setattr(
+        financial_cli,
+        "_utc_now",
+        lambda: datetime(2026, 8, 28, 2, tzinfo=timezone.utc),
+    )
+
+    class ForbiddenUpstream:
+        constructions = 0
+
+        def __init__(self):
+            type(self).constructions += 1
+            pytest.fail("retained v2.3 recovery constructed an SEC client")
+
+    monkeypatch.setattr(financial_cli, "EdgarClient", ForbiddenUpstream)
+    report_path = reports_root / "pass-1" / f"{case_id}.json"
+    arguments = [
+        "ingest-gold-case",
+        "--case-id",
+        case_id,
+        "--acceptance-run-id",
+        run_id,
+        "--acceptance-pass",
+        "1",
+        "--report-json",
+        str(report_path),
+    ]
+    result = CliRunner().invoke(financial_cli.app, arguments)
+
+    assert result.exit_code == 2, result.output
+    assert report_path.exists()
+    payload = json.loads(report_path.read_text(encoding="utf-8"))
+    assert payload["publication_run_id"]
+    assert ForbiddenUpstream.constructions == 0
+    runs = db.execute(
+        text(
+            "SELECT id,parser_version,status,input_manifest_hash,error_detail "
+            "FROM sec_financial_parse_runs ORDER BY id"
+        )
+    ).all()
+    assert [
+        (run.parser_version, run.status, run.input_manifest_hash) for run in runs
+    ] == [
+        ("xbrl-lineage-v2.2", "failed", failed_run.input_manifest_hash),
+        ("xbrl-lineage-v2.3", "succeeded", failed_run.input_manifest_hash),
+    ]
+    assert runs[0].id == failed_run.id
+    assert runs[0].error_detail == failed_run.error_detail
+    assert db.execute(
+        text("SELECT count(*) FROM sec_financial_ingestion_operations")
+    ).scalar_one() == 2
+    assert db.execute(
+        text("SELECT count(*) FROM sec_metric_publication_runs")
+    ).scalar_one() == 1
+    assert db.execute(
+        text(
+            "SELECT count(*) FROM sec_acceptance_operation_links "
+            "WHERE attempt_id=:attempt"
+        ),
+        {"attempt": attempt["id"]},
+    ).scalar_one() == 2
+
+    successful_operation_id = db.execute(
+        text(
+            "SELECT operation_id FROM sec_financial_parse_runs "
+            "WHERE parser_version='xbrl-lineage-v2.3' AND status='succeeded'"
+        )
+    ).scalar_one()
+    completed_replay = financial_ingestion.build_retained_financial_replay_client(
+        db,
+        stock_id=stock.id,
+        operation_ids=(successful_operation_id,),
+        storage_root=tmp_path,
+        upstream_factory=ForbiddenUpstream,
+        target_parser_version=financial_ingestion.PARSER_V2,
+    )
+    assert completed_replay.has_reparse_provenance_delta is False
+    assert completed_replay.external_requests == []
+    assert ForbiddenUpstream.constructions == 0
 
 @pytest.mark.parametrize(
     ("wrong_case", "wrong_pass"),
@@ -2614,7 +2810,7 @@ def test_failed_operation_is_atomically_classified_by_database_terminal_result(
         storage_root=tmp_path,
         max_filings=1,
         now=datetime(2026, 8, 28, 1, tzinfo=timezone.utc),
-        parser_version="xbrl-lineage-v2.2",
+        parser_version=financial_ingestion.PARSER_V2,
     )
     link_acceptance_operation(
         db,
@@ -2658,7 +2854,7 @@ def test_acquisition_audit_rejects_finalized_unlinked_operation_in_case_window(
         storage_root=tmp_path,
         max_filings=1,
         now=datetime(2026, 8, 28, 4, tzinfo=timezone.utc),
-        parser_version="xbrl-lineage-v2.2",
+        parser_version=financial_ingestion.PARSER_V2,
     )
     db.commit()
     finalize_sec_financial_ingestion_operation(db, operation_id=unlinked.operation_id)
@@ -2797,7 +2993,7 @@ def _complete_24x2_runtime_authority(db, tmp_path):
                 max_filings=1,
                 now=datetime(2026, 8, 28, tzinfo=timezone.utc)
                 + timedelta(minutes=acceptance_pass * 100 + case_index),
-                parser_version="xbrl-lineage-v2.2",
+                parser_version=financial_ingestion.PARSER_V2,
             )
             link_acceptance_operation(
                 db,

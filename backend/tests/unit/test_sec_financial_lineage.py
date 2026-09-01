@@ -5009,6 +5009,122 @@ def test_retained_recovery_treats_parser_v22_as_append_only_provenance_delta_wit
     assert constructed == 0
 
 
+def test_parser_v23_appends_after_failed_v22_exact_retained_replay_without_fetch(
+    committed_db_session, tmp_path: Path, monkeypatch
+) -> None:
+    from app.services import sec_financial_ingestion as financial_ingestion
+
+    db_session = committed_db_session
+    stock = Stock(ticker="V23RETRY", exchange="US", company_name="V2.3 Retry")
+    db_session.add(stock)
+    db_session.flush()
+    register_reviewed_sec_identity(
+        db_session,
+        stock_id=stock.id,
+        cik=CIK,
+        effective_from=date(1980, 12, 12),
+        known_at=datetime(2026, 8, 27, 12, tzinfo=timezone.utc),
+        review_reason="append-only parser revision fixture",
+    )
+    db_session.commit()
+
+    canonical_resolver = financial_ingestion.parse_generated_statement_occurrences
+
+    def reject_v22(*_args, **_kwargs):
+        raise financial_ingestion.StatementAuthorityParseError(
+            "ambiguous_label_resource"
+        )
+
+    monkeypatch.setattr(
+        financial_ingestion, "parse_generated_statement_occurrences", reject_v22
+    )
+    failed_report = ingest_latest_financial_filings(
+        db_session,
+        stock_id=stock.id,
+        client=GeneratedStatementAuthorityClient(),
+        storage_root=tmp_path,
+        max_filings=1,
+        now=datetime(2026, 8, 27, 12, 5, tzinfo=timezone.utc),
+        parser_version="xbrl-lineage-v2.2",
+    )
+    _commit_and_finalize(db_session, failed_report)
+    failed_run = db_session.scalar(
+        select(SecFinancialParseRun).where(
+            SecFinancialParseRun.operation_id == failed_report.operation_id
+        )
+    )
+    assert failed_run.status == "failed"
+    assert failed_run.fact_count == 0
+    assert "ambiguous_label_resource" in failed_run.error_detail
+
+    monkeypatch.setattr(
+        financial_ingestion,
+        "parse_generated_statement_occurrences",
+        canonical_resolver,
+    )
+    upstream_constructions = 0
+
+    def forbidden_upstream():
+        nonlocal upstream_constructions
+        upstream_constructions += 1
+        raise AssertionError("fully retained v2.3 replay reached upstream")
+
+    replay = build_retained_financial_replay_client(
+        db_session,
+        stock_id=stock.id,
+        operation_ids=(failed_report.operation_id,),
+        storage_root=tmp_path,
+        upstream_factory=forbidden_upstream,
+        target_parser_version="xbrl-lineage-v2.3",
+    )
+    assert replay.has_reparse_provenance_delta is True
+    with replay:
+        succeeded_report = ingest_latest_financial_filings(
+            db_session,
+            stock_id=stock.id,
+            client=replay,
+            storage_root=tmp_path,
+            max_filings=1,
+            now=datetime(2026, 8, 27, 12, 10, tzinfo=timezone.utc),
+            parser_version="xbrl-lineage-v2.3",
+        )
+    _commit_and_finalize(db_session, succeeded_report)
+
+    runs = db_session.scalars(
+        select(SecFinancialParseRun).order_by(SecFinancialParseRun.id)
+    ).all()
+    assert [
+        (run.parser_version, run.status, run.input_manifest_hash) for run in runs
+    ] == [
+        ("xbrl-lineage-v2.2", "failed", failed_run.input_manifest_hash),
+        ("xbrl-lineage-v2.3", "succeeded", failed_run.input_manifest_hash),
+    ]
+    assert db_session.get(SecFinancialParseRun, failed_run.id).error_detail == (
+        failed_run.error_detail
+    )
+    assert replay.external_requests == []
+    assert upstream_constructions == 0
+
+    current_replay = build_retained_financial_replay_client(
+        db_session,
+        stock_id=stock.id,
+        operation_ids=(succeeded_report.operation_id,),
+        storage_root=tmp_path,
+        upstream_factory=forbidden_upstream,
+        target_parser_version="xbrl-lineage-v2.3",
+    )
+    assert current_replay.has_reparse_provenance_delta is False
+    selected = select_sec_financial_evidence_as_of(
+        db_session,
+        stock_id=stock.id,
+        cutoff=datetime.now(timezone.utc) + timedelta(seconds=1),
+        storage_root=tmp_path,
+    )
+    assert [(item.parse_run_id, item.parser_version) for item in selected] == [
+        (runs[1].id, "xbrl-lineage-v2.3")
+    ]
+
+
 def test_parser_v2_missing_filing_summary_is_typed_terminal_parse_failure(
     committed_db_session, tmp_path: Path
 ) -> None:

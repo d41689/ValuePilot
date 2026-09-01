@@ -868,7 +868,7 @@ def test_ft04_publication_acceptance_authorities_are_not_caller_configurable() -
     assert ACCEPTANCE_MAPPING_VERSION_ID == "sec-us-gaap-v1"
     assert ACCEPTANCE_METHOD_POLICY_VERSION_ID == "sec-method-gate-v1"
     assert ACCEPTANCE_AMENDMENT_POLICY_ID == "latest-known-v1"
-    assert ACCEPTANCE_PARSER_VERSION == "xbrl-lineage-v2.2"
+    assert ACCEPTANCE_PARSER_VERSION == "xbrl-lineage-v2.3"
     assert V1_METRIC_DENOMINATOR == 21
 
 

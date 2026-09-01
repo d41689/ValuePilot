@@ -1,6 +1,6 @@
 # Canonical Financial Truth — SEC Publication V1
 
-Status: contract approved; delivery steps 1–6 complete; Step 6 Terra approved; Step 7A complete and Terra approved; Step 7B generated-statement parser v2.2 remediation implemented pending Terra review, then real locked 24-case retry; retained statement authority Terra PASS
+Status: contract approved; delivery steps 1–6 complete; Step 6 Terra approved; Step 7A complete and Terra approved; Step 7B append-only parser v2.3 retained recovery implemented pending Terra review, then real locked 24-case retry; retained statement authority Terra PASS
 
 Owner: Product / Engineering
 
@@ -222,6 +222,44 @@ Run the canonical commands verbatim and in order:
 7. `git diff --check`
 
 ## Sign-off trail
+
+- 2026-09-01: Step 7B append-only parser revision v2.3 retained recovery is
+  implemented pending Terra review. PRD H.5 makes an exact
+  `(filing_id, parser_version, input_manifest_hash)` replay idempotent and
+  requires corrected parser logic to append under a newer parser identity.
+  The 44 terminal v2.2 failures therefore remain immutable; the implementation
+  does not weaken that unique key or create a second same-version parse run.
+  `xbrl-lineage-v2.3` explicitly inherits the reviewed v2.2 generated-
+  statement, SGML, hidden-fact, role/language, label-link and occurrence-
+  identity semantics. Migration `20260901220000` extends the exact database
+  guards to v2.3 while leaving the v2, v2.1 and v2.2 branches unchanged, and
+  its empty downgrade/re-upgrade regression proves the historical guard
+  definitions round-trip exactly. The acceptance and publication parser
+  constants now select v2.3.
+
+  A retained replay whose newest exact run is failed v2.2 now has a
+  deterministic parser-version provenance delta. It appends one v2.3 run from
+  the same operation-owned retained input manifest, preserves the old typed
+  error and zero fact count, and selects only the new succeeded positive
+  authority for PIT publication. A current failed v2.3 exact replay still has
+  no delta and remains typed terminal, so a succeeded current run is not
+  reparsed. The isolated service regression proves the v2.2 and v2.3 input
+  manifest hashes are identical, no upstream factory is constructed, and PIT
+  selects v2.3. A real CliRunner acceptance recovery regression starts from a
+  finalized v2.2 `ambiguous_label_resource` run with no publication binding,
+  recovers the existing operation, appends exactly one v2.3 continuation,
+  publishes the canonical run/report, and performs zero SEC fetches. Existing
+  completion ownership and stock-lock concurrency guards continue to prevent
+  duplicate continuation claims.
+
+  Complete in-container verification passed `236` statement-authority and
+  financial-lineage tests, `81` publication E2E tests, `17` lineage-migration
+  tests, `57` gold-acceptance tests, `52` SEC CLI/publication service/contract
+  tests, and `17` publication-schema migration tests, with only the existing
+  Starlette deprecation warning. No network, shared development database,
+  retained acceptance storage, live 24-case execution, commit, or push was
+  used. The exact live run can retain its prior v2.2 failures and resume after
+  its isolated database is upgraded to the new head, subject to Terra review.
 
 - 2026-09-01: Step 7B generated-statement authority follow-up is implemented
   pending Terra reround. Label-link authority now rejects blank locator,

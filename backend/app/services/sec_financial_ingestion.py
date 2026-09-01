@@ -82,7 +82,8 @@ HISTORICAL_SUBMISSION_FILENAME_RE = re.compile(
 PARSER_NAME = "valuepilot-inline-xbrl-lineage"
 PARSER_V2_LEGACY = "xbrl-lineage-v2"
 PARSER_V2_1 = "xbrl-lineage-v2.1"
-PARSER_V2 = "xbrl-lineage-v2.2"
+PARSER_V2_2 = "xbrl-lineage-v2.2"
+PARSER_V2 = "xbrl-lineage-v2.3"
 ARTIFACT_RETENTION_POLICY_VERSION = "sec-financial-artifacts-v1"
 ANNUAL_FORMS_BY_REGIME = {
     "us_10k_10q": frozenset({"10-K", "10-K/A"}),
@@ -894,11 +895,20 @@ def _retain_item(item: dict[str, Any], primary_document: str, referenced_stateme
 
 
 def _is_parser_v2(parser_version: str) -> bool:
-    return parser_version in {PARSER_V2_LEGACY, PARSER_V2_1, PARSER_V2}
+    return parser_version in {
+        PARSER_V2_LEGACY,
+        PARSER_V2_1,
+        PARSER_V2_2,
+        PARSER_V2,
+    }
 
 
 def _is_sgml_instance_parser(parser_version: str) -> bool:
-    return parser_version in {PARSER_V2_1, PARSER_V2}
+    return parser_version in {PARSER_V2_1, PARSER_V2_2, PARSER_V2}
+
+
+def _is_generated_statement_parser(parser_version: str) -> bool:
+    return parser_version in {PARSER_V2_2, PARSER_V2}
 
 
 def _is_standalone_instance_filename(filename: str) -> bool:
@@ -2460,7 +2470,7 @@ def _parse_primary_artifact(
             presentation_content = None
             label_content = None
             rejected_generated_concepts: set[str] = set()
-            if parser_version == PARSER_V2 and any(
+            if _is_generated_statement_parser(parser_version) and any(
                 not reference.filename.lower().endswith(".xml")
                 for reference in references
             ):
@@ -2497,7 +2507,7 @@ def _parse_primary_artifact(
                         if _is_sgml_instance_parser(parser_version)
                         else report_raw_content
                     )
-                    if parser_version == PARSER_V2 and not report_artifact.filename.lower().endswith(".xml"):
+                    if _is_generated_statement_parser(parser_version) and not report_artifact.filename.lower().endswith(".xml"):
                         assert presentation_artifact is not None and label_artifact is not None
                         assert presentation_content is not None and label_content is not None
                         resolution = parse_generated_statement_occurrences(
@@ -2536,7 +2546,7 @@ def _parse_primary_artifact(
                         if _is_sgml_instance_parser(parser_version)
                         else report_raw_content
                     )
-                    if parser_version == PARSER_V2 and not report_artifact.filename.lower().endswith(".xml"):
+                    if _is_generated_statement_parser(parser_version) and not report_artifact.filename.lower().endswith(".xml"):
                         assert presentation_artifact is not None and label_artifact is not None
                         assert presentation_content is not None and label_content is not None
                         resolution = parse_generated_statement_occurrences(
@@ -2561,10 +2571,10 @@ def _parse_primary_artifact(
                             report_parse_content,
                             filename=report_artifact.filename,
                         )
-                if parser_version != PARSER_V2 and not report_artifact.filename.lower().endswith(".xml"):
+                if not _is_generated_statement_parser(parser_version) and not report_artifact.filename.lower().endswith(".xml"):
                     raise StatementAuthorityParseError("html_statement_authority_diagnostic_only")
                 if (
-                    parser_version != PARSER_V2
+                    not _is_generated_statement_parser(parser_version)
                     and (
                         summary_content != summary_raw_content
                         or report_parse_content != report_raw_content
@@ -2582,7 +2592,7 @@ def _parse_primary_artifact(
                     if item[2].concept not in rejected_generated_concepts
                 ]
 
-            if parser_version == PARSER_V2 and not statement_evidence:
+            if _is_generated_statement_parser(parser_version) and not statement_evidence:
                 raise StatementAuthorityParseError(
                     "no_unique_generated_statement_occurrence_authority"
                 )
@@ -2753,7 +2763,7 @@ def _parse_primary_artifact(
                 )
             except StatementAuthorityParseError as exc:
                 if (
-                    parser_version == PARSER_V2
+                    _is_generated_statement_parser(parser_version)
                     and str(exc) == "unproven_statement_presentation_class"
                 ):
                     # Comparative YTD columns are retained as exact occurrence
@@ -2762,7 +2772,7 @@ def _parse_primary_artifact(
                     continue
                 raise
             if (
-                parser_version == PARSER_V2
+                _is_generated_statement_parser(parser_version)
                 and classified.presentation_class
                 == "prior_fiscal_year_balance_sheet"
             ):
