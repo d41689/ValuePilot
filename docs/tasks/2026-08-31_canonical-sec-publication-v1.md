@@ -223,6 +223,59 @@ Run the canonical commands verbatim and in order:
 
 ## Sign-off trail
 
+- 2026-09-01: Step 7B retained-recovery Terra round-2 remediation is
+  implemented pending reround. Standalone-instance filename classification is
+  now one canonical predicate shared by retained-content selection and the
+  exact manifest-group missing-instance selector. It excludes FilingSummary,
+  schemas, `_htm.xml`, known calculation/definition/label/presentation
+  linkbases, and case-insensitive generated report names matching the complete
+  ASCII form `R<digits>.xml`, with no digit-count limit. This closes the prior
+  `R1000.xml`/`R0001.xml` boundary without changing unique generic-instance,
+  operation ownership, manifest identity, declared-size, URL, SGML, or XBRL
+  root checks. Isolated builder/replay regressions prove these generated report
+  objects remain manifest-only, are neither accession-attempt nor parse-run
+  inputs, cannot enter the missing-instance request allowlist, and are rejected
+  with zero upstream construction or requests. Retained-selector regressions
+  independently prove forbidden filenames cannot become instance authority
+  even when their bytes have an `xbrli:xbrl` root. The complete lineage file
+  passed `155` tests and the complete publication E2E file passed `62` tests,
+  each with only the existing Starlette deprecation warning. No network,
+  shared development database, retained live-run storage, commit, or push was
+  used.
+
+- 2026-09-01: Step 7B live retry remediation after migration `190000` is
+  implemented pending Terra review. The resumed live operation proved that
+  older SEC primary and instance filenames need not share a stem
+  (`d927922d10q.htm` versus `aapl-20150627.xml`). Recovery now identifies a
+  generic instance candidate only inside the exact operation-owned accession
+  manifest group by excluding FilingSummary, generated `R*.xml`, XSD schemas,
+  `_htm.xml`, and the known calculation/definition/label/presentation
+  linkbases. It requires a unique manifest-only candidate, the canonical SEC
+  accession URL, and the existing positive bounded declared-size authority;
+  multiple candidates fail before client construction or any request. The
+  fetched bytes still must match declared size and, after bounded SGML unwrap,
+  have the exact `xbrli:xbrl` root. A real-shaped isolated regression proves
+  the mismatched-stem case makes exactly one instance request, performs a
+  successful v2.1 reparse/publication, and links the newly retained instance to
+  both the continuation accession attempt and parse run. A two-generic-instance
+  fixture proves ambiguity produces zero requests.
+
+  A separate read-only audit of the live isolated acceptance database found
+  that all 30 inline-era `no_explicit_statement_occurrences` failures include
+  one retained `_htm.xml` input. In the parser, that typed failure is reachable
+  only after the selected instance produced a nonempty in-memory parsed fact
+  set; otherwise the run would have returned `no_xbrl_facts`. Raw rows are
+  intentionally inserted only after statement occurrence/fiscal authority is
+  complete, so the failed transaction persists zero raw facts. The remaining
+  blocker is therefore explicit statement provenance in retained generated
+  reports, not inline instance selection; no statement-authority rule was
+  weakened. Focused lineage, publication E2E, publication migration, and
+  lineage migration verification passed `234` tests with only the existing
+  Starlette deprecation warning. Alembic remains at the unique
+  `20260901190000` head; compilation and `git diff --check` pass. No network,
+  shared development database, retained storage mutation, commit, or push was
+  performed.
+
 - 2026-09-01: Step 7B retained-recovery Terra round-1 remediation is
   implemented pending reround. Recovery no longer loads every artifact ever
   observed for a filing. For each target operation it reconstructs the exact

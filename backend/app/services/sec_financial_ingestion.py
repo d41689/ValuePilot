@@ -209,6 +209,34 @@ def _validated_recovery_instance_size(value: Any) -> int:
     return value
 
 
+def _unique_missing_instance_candidate(
+    artifacts: list[SecFilingArtifact],
+    *,
+    cik: str,
+    accession_no: str,
+) -> SecFilingArtifact | None:
+    candidates = [
+        artifact
+        for artifact in artifacts
+        if artifact.state == "manifest_only"
+        and _is_standalone_instance_filename(artifact.filename)
+    ]
+    if len(candidates) > 1:
+        raise SecFinancialIntegrityError(
+            "missing instance manifest authority is ambiguous"
+        )
+    if not candidates:
+        return None
+    candidate = candidates[0]
+    expected_url = _safe_artifact_url(cik, accession_no, candidate.filename)
+    if candidate.source_url != expected_url:
+        raise SecFinancialIntegrityError(
+            "missing instance resource identity mismatch"
+        )
+    _validated_recovery_instance_size(candidate.declared_size)
+    return candidate
+
+
 @dataclass(frozen=True)
 class FinancialFilingSelection:
     accession_no: str
@@ -852,7 +880,7 @@ def _retain_item(item: dict[str, Any], primary_document: str, referenced_stateme
         or name.endswith("_htm.xml")
         or name.endswith("_lab.xml")
         or name.endswith("_pre.xml")
-        or _is_standalone_instance_filename(name, primary_document)
+        or _is_standalone_instance_filename(name)
         or name == "filingsummary.xml"
         or re.fullmatch(r"r[0-9]{1,3}[.](?:xml|html?|htm)", name) is not None
     )
@@ -862,21 +890,19 @@ def _is_parser_v2(parser_version: str) -> bool:
     return parser_version in {PARSER_V2_LEGACY, PARSER_V2}
 
 
-def _is_standalone_instance_filename(
-    filename: str, primary_document: str | None = None
-) -> bool:
+def _is_standalone_instance_filename(filename: str) -> bool:
     """Identify bounded instance candidates without trusting SEC index MIME/type."""
 
     name = filename.lower()
     if not name.endswith(".xml"):
         return False
-    if name == "filingsummary.xml" or re.fullmatch(r"r[0-9]{1,3}[.]xml", name):
+    if name == "filingsummary.xml" or re.fullmatch(
+        r"r[0-9]+[.]xml", name, flags=re.ASCII
+    ):
         return False
     if name.endswith(("_cal.xml", "_def.xml", "_lab.xml", "_pre.xml", "_htm.xml")):
         return False
-    if primary_document is None:
-        return True
-    return PurePosixPath(name).stem == PurePosixPath(primary_document.lower()).stem
+    return True
 
 
 _SEC_DOCUMENT_OPEN_RE = re.compile(
@@ -934,13 +960,11 @@ def _standalone_instance_artifact(
     storage_root: Path,
     require_declared_instance_type: bool = False,
 ) -> _VerifiedStandaloneInstance | None:
-    excluded_suffixes = ("_cal.xml", "_def.xml", "_lab.xml", "_pre.xml", "_htm.xml")
     candidates = []
     for artifact in artifacts:
-        name = artifact.filename.lower()
         if artifact.state != "retained" or artifact.filename == primary_document:
             continue
-        if not name.endswith(".xml") or name.endswith(excluded_suffixes) or name.endswith(".xsd"):
+        if not _is_standalone_instance_filename(artifact.filename):
             continue
         if require_declared_instance_type and str(
             artifact.sec_type or ""
@@ -1085,6 +1109,9 @@ def build_retained_financial_replay_client(
     )
     if len(identity_ids) != 1:
         raise SecFinancialIntegrityError("retained recovery issuer authority mismatch")
+    identity = db.get(SecIssuerIdentity, next(iter(identity_ids)))
+    if identity is None:
+        raise SecFinancialIntegrityError("retained recovery issuer is unavailable")
     retained: dict[str, bytes] = {}
 
     def add_retained(url: str | None, content: bytes) -> None:
@@ -1123,7 +1150,7 @@ def build_retained_financial_replay_client(
     if not accession_attempts:
         raise SecFinancialIntegrityError("retained recovery filings are unavailable")
     artifacts: list[SecFilingArtifact] = []
-    primary_by_artifact_id: dict[int, str] = {}
+    authorized_missing_instance_ids: set[int] = set()
     seen_artifact_ids: set[int] = set()
     for attempt in accession_attempts:
         filing = db.get(SecFinancialFiling, attempt.filing_id)
@@ -1178,6 +1205,13 @@ def build_retained_financial_replay_client(
             raise SecFinancialIntegrityError(
                 "retained recovery manifest group is ambiguous"
             )
+        candidate = _unique_missing_instance_candidate(
+            group,
+            cik=identity.cik,
+            accession_no=filing.accession_no,
+        )
+        if candidate is not None:
+            authorized_missing_instance_ids.add(candidate.id)
         linked_ids = {artifact.id for artifact in linked}
         for artifact in group:
             # Retained bytes are operation-owned only through the immutable
@@ -1190,7 +1224,6 @@ def build_retained_financial_replay_client(
                 continue
             seen_artifact_ids.add(artifact.id)
             artifacts.append(artifact)
-            primary_by_artifact_id[artifact.id] = filing.primary_document
     retained_urls = {
         artifact.source_url
         for artifact in artifacts
@@ -1212,9 +1245,7 @@ def build_retained_financial_replay_client(
         elif (
             artifact.state == "manifest_only"
             and artifact.source_url is not None
-            and _is_standalone_instance_filename(
-                artifact.filename, primary_by_artifact_id[artifact.id]
-            )
+            and artifact.id in authorized_missing_instance_ids
         ):
             if (
                 source_url_counts.get(artifact.source_url) != 1

@@ -16,6 +16,7 @@ from app.core.config import settings
 from app.models.stocks import Stock
 from app.models.facts import MetricFact
 from app.services.sec_financial_ingestion import finalize_sec_financial_ingestion_operation, ingest_latest_financial_filings, register_reviewed_sec_identity
+from app.services import sec_financial_ingestion as financial_ingestion
 from app.services.sec_metric_publication import PublicationRequest, SecPublicationError, VerifiedPublicationSource, finalize_sec_publication, publish_sec_mapping_result, resolve_latest_known_v1_sources
 from app.services.sec_financial_locking import acquire_sec_financial_stock_lock
 from app.acceptance.sec_gold_publication import (
@@ -1587,31 +1588,84 @@ def test_cli_recovers_finalized_failed_parse_without_sec_refetch(
     class SgmlPrimaryClient(StatementAuthorityClient):
         def __init__(self):
             super().__init__()
-            primary_url = next(
+            old_primary_url = next(
                 url for url in self.responses if url.endswith("aapl-20260627.htm")
             )
+            primary_filename = "d927922d10q.htm"
+            primary_url = old_primary_url.rsplit("/", 1)[0] + "/" + primary_filename
             wrapped = (
                 b"<DOCUMENT><TYPE>10-Q\n<SEQUENCE>1\n"
-                b"<FILENAME>aapl-20260627.htm\n<TEXT>"
-                + self.responses[primary_url]
+                b"<FILENAME>d927922d10q.htm\n<TEXT>"
+                + self.responses.pop(old_primary_url)
                 + b"</TEXT></DOCUMENT>"
             )
             self.responses[primary_url] = wrapped
+            instance = b'''<xbrli:xbrl xmlns:xbrli="http://www.xbrl.org/2003/instance"
+              xmlns:xbrldi="http://xbrl.org/2006/xbrldi"
+              xmlns:us-gaap="http://fasb.org/us-gaap/2025"
+              xmlns:dei="http://xbrl.sec.gov/dei/2025"
+              xmlns:aapl="http://www.apple.com/20250628"
+              xmlns:iso4217="http://www.xbrl.org/2003/iso4217">
+              <xbrli:context id="D2026Q3"><xbrli:entity><xbrli:identifier scheme="http://www.sec.gov/CIK">0000320193</xbrli:identifier><xbrli:segment><xbrldi:explicitMember dimension="us-gaap:StatementBusinessSegmentsAxis">aapl:ProductsMember</xbrldi:explicitMember></xbrli:segment></xbrli:entity><xbrli:period><xbrli:startDate>2026-03-29</xbrli:startDate><xbrli:endDate>2026-06-27</xbrli:endDate></xbrli:period></xbrli:context>
+              <xbrli:context id="FY2026YTD"><xbrli:entity><xbrli:identifier scheme="http://www.sec.gov/CIK">0000320193</xbrli:identifier></xbrli:entity><xbrli:period><xbrli:startDate>2025-09-28</xbrli:startDate><xbrli:endDate>2026-06-27</xbrli:endDate></xbrli:period></xbrli:context>
+              <xbrli:unit id="USD"><xbrli:measure>iso4217:USD</xbrli:measure></xbrli:unit>
+              <us-gaap:RevenueFromContractWithCustomerExcludingAssessedTax id="fact-revenue" contextRef="D2026Q3" unitRef="USD" decimals="-6">94,000</us-gaap:RevenueFromContractWithCustomerExcludingAssessedTax>
+              <us-gaap:RevenueFromContractWithCustomerExcludingAssessedTax id="fact-revenue-ytd" contextRef="FY2026YTD" unitRef="USD" decimals="-6">250,000</us-gaap:RevenueFromContractWithCustomerExcludingAssessedTax>
+              <dei:DocumentFiscalYearFocus id="fy-focus" contextRef="FY2026YTD">2026</dei:DocumentFiscalYearFocus>
+              <dei:DocumentFiscalPeriodFocus id="fp-focus" contextRef="FY2026YTD">Q3</dei:DocumentFiscalPeriodFocus>
+            </xbrli:xbrl>'''
+            self.instance_filename = "aapl-20150627.xml"
+            self.instance_url = primary_url.rsplit("/", 1)[0] + "/" + self.instance_filename
+            self.instance_content = (
+                b"<DOCUMENT><TYPE>XML\n<SEQUENCE>12\n"
+                b"<FILENAME>aapl-20150627.xml\n<TEXT>"
+                + instance
+                + b"</TEXT></DOCUMENT>"
+            )
+            self.responses[self.instance_url] = self.instance_content
+            submissions = json.loads(self.responses[SUBMISSIONS_URL])
+            submissions["filings"]["recent"]["primaryDocument"][0] = primary_filename
+            self.responses[SUBMISSIONS_URL] = json.dumps(submissions).encode()
             index_url = next(url for url in self.responses if url.endswith("/index.json"))
             index = json.loads(self.responses[index_url])
             for item in index["directory"]["item"]:
                 if item["name"] == "aapl-20260627.htm":
+                    item["name"] = primary_filename
                     item["size"] = len(wrapped)
+            index["directory"]["item"].append(
+                {
+                    "name": self.instance_filename,
+                    "type": "text.gif",
+                    "size": len(self.instance_content),
+                    "description": "XBRL INSTANCE DOCUMENT",
+                }
+            )
             self.responses[index_url] = json.dumps(index).encode()
 
+    original_retain_item = financial_ingestion._retain_item
+    monkeypatch.setattr(
+        financial_ingestion,
+        "_retain_item",
+        lambda item, primary_document, referenced_statement_names=None: (
+            False
+            if item.get("name") == "aapl-20150627.xml"
+            else original_retain_item(
+                item, primary_document, referenced_statement_names
+            )
+        ),
+    )
+    initial_client = SgmlPrimaryClient()
     failed_report = ingest_latest_financial_filings(
         db,
         stock_id=stock.id,
-        client=SgmlPrimaryClient(),
+        client=initial_client,
         storage_root=tmp_path,
         max_filings=1,
         now=datetime(2026, 8, 28, 1, tzinfo=timezone.utc),
         parser_version="xbrl-lineage-v2",
+    )
+    monkeypatch.setattr(
+        financial_ingestion, "_retain_item", original_retain_item
     )
     link_acceptance_operation(
         db,
@@ -1647,7 +1701,7 @@ def test_cli_recovers_finalized_failed_parse_without_sec_refetch(
         def __init__(self):
             super().__init__()
             primary_url = next(
-                url for url in self.responses if url.endswith("aapl-20260627.htm")
+                url for url in self.responses if url.endswith("d927922d10q.htm")
             )
             self.responses[primary_url] = self.responses[primary_url].replace(
                 b"</TEXT>", b"\n</TEXT>"
@@ -1657,7 +1711,7 @@ def test_cli_recovers_finalized_failed_parse_without_sec_refetch(
             )
             index = json.loads(self.responses[index_url])
             for item in index["directory"]["item"]:
-                if item["name"] == "aapl-20260627.htm":
+                if item["name"] == "d927922d10q.htm":
                     item["size"] = len(self.responses[primary_url])
             self.responses[index_url] = json.dumps(index).encode()
 
@@ -1718,11 +1772,27 @@ def test_cli_recovers_finalized_failed_parse_without_sec_refetch(
         lambda: datetime(2026, 8, 28, 2, tzinfo=timezone.utc),
     )
 
-    class ForbiddenEdgarClient:
-        def __init__(self, *_args, **_kwargs):
-            pytest.fail("finalized failed parse recovery performed an SEC fetch")
+    class NarrowInstanceEdgarClient:
+        calls: list[str] = []
 
-    monkeypatch.setattr(financial_cli, "EdgarClient", ForbiddenEdgarClient)
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+        def get(self, url: str) -> bytes:
+            type(self).calls.append(url)
+            if url != initial_client.instance_url:
+                pytest.fail(f"recovery fetched non-instance SEC resource: {url}")
+            return initial_client.instance_content
+
+        def get_revalidated(self, url: str) -> bytes:
+            return self.get(url)
+
+    monkeypatch.setattr(
+        financial_cli, "EdgarClient", NarrowInstanceEdgarClient
+    )
     report_path = reports_root / "pass-1" / f"{case_id}.json"
     result = CliRunner().invoke(
         financial_cli.app,
@@ -1742,6 +1812,7 @@ def test_cli_recovers_finalized_failed_parse_without_sec_refetch(
     assert result.exit_code == 2, result.output
     payload = json.loads(report_path.read_text(encoding="utf-8"))
     assert payload["publication_run_id"]
+    assert NarrowInstanceEdgarClient.calls == [initial_client.instance_url]
     attempts = db.execute(
         text(
             "SELECT attempt_ordinal FROM sec_acceptance_case_attempts "
@@ -1768,6 +1839,18 @@ def test_cli_recovers_finalized_failed_parse_without_sec_refetch(
         failed_report.operation_id,
         later_report.operation_id,
     }
+    assert db.execute(
+        text(
+            "SELECT count(*) FROM sec_financial_accession_attempts attempt "
+            "JOIN sec_financial_accession_attempt_artifacts link "
+            "ON link.attempt_id=attempt.id "
+            "JOIN sec_filing_artifacts artifact ON artifact.id=link.artifact_id "
+            "WHERE attempt.operation_id=:operation "
+            "AND artifact.filename='aapl-20150627.xml' "
+            "AND artifact.state='retained'"
+        ),
+        {"operation": links[2][0]},
+    ).scalar_one() == 1
     assert db.execute(
         text("SELECT count(*) FROM sec_financial_ingestion_operations")
     ).scalar_one() == 3
@@ -1796,8 +1879,20 @@ def test_cli_recovers_finalized_failed_parse_without_sec_refetch(
             )
         ).scalars()
     )
-    assert recovered_manifests == {original_manifest}
+    assert len(recovered_manifests) == 1
+    assert original_manifest not in recovered_manifests
     assert later_manifest not in recovered_manifests
+    assert db.execute(
+        text(
+            "SELECT count(*) FROM sec_financial_parse_runs parse "
+            "JOIN sec_financial_parse_run_artifacts link "
+            "ON link.parse_run_id=parse.id "
+            "JOIN sec_filing_artifacts artifact ON artifact.id=link.artifact_id "
+            "WHERE parse.parser_version='xbrl-lineage-v2.1' "
+            "AND artifact.filename='aapl-20150627.xml' "
+            "AND artifact.state='retained'"
+        )
+    ).scalar_one() == 1
     assert db.execute(
         text("SELECT count(*) FROM sec_acceptance_report_readiness")
     ).scalar_one() == 0

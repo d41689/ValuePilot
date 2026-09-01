@@ -61,8 +61,11 @@ from app.services.sec_financial_ingestion import (
     _manifest_items,
     _retain_item,
     _safe_artifact_url,
+    _standalone_instance_artifact,
     _store_content_immutable,
     _unwrap_sec_document,
+    _unique_missing_instance_candidate,
+    build_retained_financial_replay_client,
     earliest_replayable_sec_financial_evidence_at,
     finalize_sec_financial_ingestion_operation,
     finalize_pending_sec_financial_ingestion_operations,
@@ -116,7 +119,7 @@ def test_retention_recognizes_generic_instance_filename_despite_sec_type() -> No
             "type": "text.gif",
             "size": 1_658_267,
         },
-        "aapl-20150627.htm",
+        "d927922d10q.htm",
     )
 
 
@@ -211,6 +214,85 @@ def test_nonnumeric_manifest_size_cannot_authorize_recovery_request() -> None:
         SecFinancialIntegrityError, match="invalid declared size"
     ):
         client.get("https://sec.example/aapl-20150627.xml")
+
+
+def test_ambiguous_generic_instance_manifest_fails_before_any_request() -> None:
+    requests: list[str] = []
+    candidates = [
+        SecFilingArtifact(
+            filing_id=1,
+            sequence=ordinal,
+            filename=filename,
+            sec_type="text.gif",
+            declared_size=100,
+            source_url=_canonical_artifact_url(CIK, ACCESSION, filename),
+            manifest_hash="a" * 64,
+            state="manifest_only",
+            known_at=datetime(2026, 8, 28, tzinfo=timezone.utc),
+        )
+        for ordinal, filename in enumerate(
+            ("aapl-20150627.xml", "second-instance.xml"), start=1
+        )
+    ]
+
+    with pytest.raises(
+        SecFinancialIntegrityError, match="manifest authority is ambiguous"
+    ):
+        _unique_missing_instance_candidate(
+            candidates,
+            cik=CIK,
+            accession_no=ACCESSION,
+        )
+    assert requests == []
+
+
+@pytest.mark.parametrize(
+    "filename",
+    (
+        "FilingSummary.xml",
+        "R1000.xml",
+        "R0001.XML",
+        "r42.xml",
+        "aapl_cal.xml",
+        "aapl_def.xml",
+        "aapl_lab.xml",
+        "aapl_pre.xml",
+        "aapl_htm.xml",
+        "aapl.xsd",
+    ),
+)
+def test_retained_instance_selector_ignores_forbidden_xml_filenames_even_with_xbrl_root(
+    tmp_path: Path,
+    filename: str,
+) -> None:
+    content = (
+        b'<xbrli:xbrl xmlns:xbrli="http://www.xbrl.org/2003/instance"/>'
+    )
+    storage_key, sha256 = _store_content_immutable(tmp_path, content)
+    artifact = SecFilingArtifact(
+        id=99,
+        filing_id=1,
+        sequence=1,
+        filename=filename,
+        sec_type="XML",
+        declared_size=len(content),
+        source_url=_canonical_artifact_url(CIK, ACCESSION, filename),
+        manifest_hash="a" * 64,
+        state="retained",
+        storage_key=storage_key,
+        sha256=sha256,
+        byte_size=len(content),
+        known_at=datetime(2026, 8, 28, tzinfo=timezone.utc),
+    )
+
+    assert (
+        _standalone_instance_artifact(
+            [artifact],
+            primary_document="d927922d10q.htm",
+            storage_root=tmp_path,
+        )
+        is None
+    )
 
 
 def _canonical_artifact_url(cik: str, accession: str, filename: str) -> str:
@@ -362,6 +444,25 @@ class FakeEdgarClient:
     def get_revalidated(self, url: str) -> bytes:
         self.revalidated_calls.append(url)
         return self.get(url)
+
+
+class GeneratedReportXmlClient(FakeEdgarClient):
+    def __init__(self, filename: str) -> None:
+        super().__init__()
+        report = (
+            b'<xbrli:xbrl xmlns:xbrli="http://www.xbrl.org/2003/instance"/>'
+        )
+        payload = json.loads(_index_payload())
+        payload["directory"]["item"].append(
+            {
+                "name": filename,
+                "type": "XML",
+                "size": len(report),
+                "description": "Generated report XML",
+            }
+        )
+        self.responses[INDEX_URL] = json.dumps(payload).encode()
+        self.responses[_canonical_artifact_url(CIK, ACCESSION, filename)] = report
 
 
 class StatementAuthorityClient(FakeEdgarClient):
@@ -4089,6 +4190,73 @@ def test_parser_v2_missing_filing_summary_is_typed_terminal_parse_failure(
     assert "missing_retained_filing_summary" in run.error_detail
     assert any("statement_authority_parse_failed:StatementAuthorityParseError" in item for item in report.failures)
     assert db_session.scalar(select(func.count()).select_from(SecStatementReportReference)) == 0
+
+
+@pytest.mark.parametrize("filename", ("R1000.xml", "R0001.xml", "r1000.XML"))
+def test_generated_report_xml_is_never_retained_linked_or_authorized_for_replay(
+    db_session,
+    tmp_path: Path,
+    filename: str,
+) -> None:
+    stock = Stock(ticker="RXML", exchange="US", company_name="Report XML Fixture")
+    db_session.add(stock)
+    db_session.flush()
+    register_reviewed_sec_identity(
+        db_session,
+        stock_id=stock.id,
+        cik=CIK,
+        effective_from=date(1980, 12, 12),
+        known_at=datetime(2026, 8, 27, 12, 0, tzinfo=timezone.utc),
+        review_reason="fixture reviewed identity",
+    )
+    client = GeneratedReportXmlClient(filename)
+    report = ingest_latest_financial_filings(
+        db_session,
+        stock_id=stock.id,
+        client=client,
+        storage_root=tmp_path,
+        max_filings=1,
+        now=datetime(2026, 8, 27, 12, 5, tzinfo=timezone.utc),
+        parser_version="inline-xbrl-v1",
+    )
+    report_url = _canonical_artifact_url(CIK, ACCESSION, filename)
+    artifact = db_session.scalar(
+        select(SecFilingArtifact).where(SecFilingArtifact.filename == filename)
+    )
+
+    assert artifact is not None
+    assert artifact.state == "manifest_only"
+    assert report_url not in client.calls
+    assert report_url not in client.revalidated_calls
+    assert db_session.scalar(
+        select(func.count())
+        .select_from(SecFinancialAccessionAttemptArtifact)
+        .where(SecFinancialAccessionAttemptArtifact.artifact_id == artifact.id)
+    ) == 0
+    assert db_session.scalar(
+        select(func.count())
+        .select_from(SecFinancialParseRunArtifact)
+        .where(SecFinancialParseRunArtifact.artifact_id == artifact.id)
+    ) == 0
+
+    upstream_factory_calls = 0
+
+    def upstream_factory():
+        nonlocal upstream_factory_calls
+        upstream_factory_calls += 1
+        raise AssertionError("generated report reached recovery upstream")
+
+    replay = build_retained_financial_replay_client(
+        db_session,
+        stock_id=stock.id,
+        operation_ids=(report.operation_id,),
+        storage_root=tmp_path,
+        upstream_factory=upstream_factory,
+    )
+    with pytest.raises(SecFinancialIntegrityError, match="unapproved SEC resource"):
+        replay.get_revalidated(report_url)
+    assert upstream_factory_calls == 0
+    assert replay.external_requests == []
 
 
 def test_ingestion_is_idempotent_pit_safe_and_does_not_publish_metric_facts(
