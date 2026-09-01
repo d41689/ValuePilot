@@ -43,7 +43,7 @@ async def lifespan(app: FastAPI):
     verify_live_rate_guard()
     rate_guard_monitor = None
     if (
-        settings.EDGAR_FETCH_MODE == "live"
+        settings.EDGAR_FETCH_MODE in {"live", "rate_guard"}
         and settings.RATE_GUARD_ALLOW_LOCAL_FALLBACK
     ):
         rate_guard_monitor = asyncio.create_task(_monitor_rate_guard_route())

@@ -1,6 +1,6 @@
 # Canonical Financial Truth — SEC Publication V1
 
-Status: contract approved; delivery steps 1–6 complete; Step 6 Terra approved; Step 7 next; retained statement authority Terra PASS
+Status: contract approved; delivery steps 1–6 complete; Step 6 Terra approved; Step 7A complete and Terra approved; Step 7B real locked 24-case execution next; retained statement authority Terra PASS
 
 Owner: Product / Engineering
 
@@ -206,7 +206,8 @@ valid issue remains before proceeding.
   publication pass 1, and an immediate pass 2.
 - Report issuer/year/metric outcomes, raw and publication lineage counts,
   current-slot duplicates, mapping/method versions, PIT boundaries, typed gaps,
-  retained-file integrity, request counters, and zero second-pass deltas.
+  retained-file integrity, request counters, expected second-pass control audit
+  rows, and zero second-pass evidence/publication deltas.
 
 ### Closing gate
 
@@ -221,6 +222,370 @@ Run the canonical commands verbatim and in order:
 7. `git diff --check`
 
 ## Sign-off trail
+
+- 2026-09-01: Delivery Step 7A Terra round-8 PASS; Step 7A is complete and
+  approved, with Step 7B real locked 24-case execution next. Across rounds
+  1–8, adversarial review established that the acceptance audit reconstructs
+  locked years, filing selection, accessions and denominators from the
+  validated manifest plus database authority; distinguishes expected
+  pass-scoped control rows from zero pass-2 evidence/publication growth; and
+  binds durable Rate Guard, database, retained-storage, attempt/operation and
+  publication authority before trusting exported reports. Crash recovery
+  follows durable attempt, operation, checkpoint and publication bindings
+  without creating a new acquisition or publication, while report and runtime
+  artifacts remain inside descriptor-relative, no-follow object-identity
+  boundaries. Descriptor-based publication and cleanup preserve replacement
+  objects, retained files are re-read through held regular-file descriptors,
+  and aggregate signing performs one final complete durable-after database and
+  storage audit after all case audits and before rollback or output writes.
+  Round 8 found no new P0–P3 issue. The main agent independently verified the
+  complete focused 14-file acceptance/CLI/lineage/publication/migration/Rate
+  Guard/source-guard suite with `402` tests passed, shell lifecycle passed,
+  Alembic retained the single `20260901180000` head, and `git diff --check`
+  passed. No Step 7A review gate remains.
+
+- 2026-09-01: Delivery Step 7A Terra round-7 remediation implemented pending
+  Terra round-8 review. After all 24 case database and artifact audits finish,
+  but before the read-only audit session is rolled back or any aggregate
+  payload is built, acceptance now re-runs the complete durable `after`
+  runtime audit with `verify_current=True`. This single final-signing gate
+  re-compares every control, evidence, publication, fact and migration-owned
+  registry count through `sec_acceptance_runtime_counts()`, and re-enumerates
+  retained storage against the durable file count, byte count and manifest
+  digest. It replaces the narrower final retained-only scan and requires the
+  reloaded durable authority to equal the authority audited before the case
+  loop. An isolated PostgreSQL CLI regression inserts an unrelated stock from
+  a second committed connection during the final case audit and proves exit 1
+  occurs before aggregate publication; a pre-existing aggregate remains byte-
+  for-byte unchanged. Companion parameterizations prove retained mutation is
+  rejected at the same gate and no-mutation signing succeeds. Focused CLI,
+  aggregate, runtime and storage coverage passed `37` tests, the complete gold
+  acceptance and CLI files passed `94` tests, and the isolated final-signing
+  E2E passed all `3` parameterizations; only the pre-existing Starlette
+  deprecation warning was emitted. Shell lifecycle, the single
+  `20260901180000` Alembic head, Python syntax and `git diff --check` passed.
+  No network, real 24-case run, shared development database or existing
+  retained storage was used. Implementation remains pending Terra round-8
+  review.
+
+- 2026-09-01: Delivery Step 7A Terra round-6 remediation implemented pending
+  Terra round-7 review. Named-temporary fallback cleanup is now authorized by
+  the held regular-file descriptor's complete stable object identity. Before
+  unlinking, cleanup performs a descriptor-relative, no-follow `lstat` of the
+  exact temporary directory entry and requires its device, inode, mode, size,
+  modification time and change time to equal the still-open descriptor. A
+  missing name is already clean; a replacement symlink, regular file or other
+  object is never removed. The former name-only finalizer and
+  `temporary_created` cleanup path are removed. Focused regression coverage
+  proves replacement directory entries remain present while no destination is
+  published, and that a normal failed descriptor publication still removes
+  the writer's own matching temporary object. The complete focused gold
+  acceptance and CLI files passed `94` tests, the real isolated aggregate-
+  audit E2E passed `2` parameterizations, and the atomic-writer subset passed
+  `6` tests in-container; only the pre-existing Starlette deprecation warning
+  was emitted. Shell lifecycle, the single `20260901180000` Alembic head,
+  Python syntax and `git diff --check` passed. No network, real 24-case run,
+  shared development database or existing retained storage was used.
+  Implementation remains pending Terra round-7 review.
+
+- 2026-09-01: Delivery Step 7A Terra round-5 remediation implemented pending
+  Terra round-6 review. Per-artifact retained-integrity audit now reads the
+  storage-root-relative key through the same descriptor boundary as the full
+  retained manifest: every component is opened with `O_NOFOLLOW`, only an
+  already-held regular-file descriptor is read, and file/parent/root object
+  identity is checked before and after the read. Regular-object replacement,
+  external-symlink replacement and parent replacement therefore fail closed.
+  After every one of the 24 case database/artifact audits completes and before
+  aggregate authority files are created, `acceptance-audit` performs a second
+  full retained-storage enumeration and requires its file count, byte count
+  and canonical manifest digest to equal the durable `after` checkpoint. A
+  mutation injected after the durable scan and during the final case audit is
+  rejected before aggregate publication.
+
+  Stable authority writes no longer publish a replaceable temporary pathname.
+  They prefer an anonymous `O_TMPFILE` descriptor and atomically link that
+  descriptor with `linkat(AT_EMPTY_PATH)`. Filesystems that do not support that
+  path use a named `O_EXCL` temporary only while its descriptor remains open,
+  and publish the held object through `/proc/self/fd/<fd>` plus descriptor-
+  relative `linkat(AT_SYMLINK_FOLLOW)`. Unsupported descriptor publication
+  fails closed; no rename-path fallback exists. The destination is no-replace,
+  its device/inode identity must equal the held descriptor, and file plus
+  parent directory are fsynced. Replacement of the named temporary by a
+  symlink or regular file cannot publish the replacement; destination races
+  and non-identical existing files are not overwritten, writer-owned temporary
+  objects are cleaned, and a post-link failure removes only the writer-owned
+  destination.
+  The final focused storage/audit/CLI/lineage/migration/publication E2E command
+  passed `314` tests in-container, and the focused replacement/publication
+  race subset passed `8` tests; only the pre-existing Starlette deprecation
+  warning was emitted. Shell lifecycle, the single Alembic head, syntax checks
+  and `git diff --check` passed. No network, real 24-case run, shared
+  development database or existing retained storage was used.
+
+- 2026-09-01: Delivery Step 7A Terra round-4 remediation implemented pending
+  Terra round-5 review. Migration `20260901180000` now owns an append-only,
+  one-row-per-attempt publication binding containing the database-stamped
+  publication knowledge cutoff, complete ordered source identities and digest,
+  migration-owned mapping and amendment policy, expected replay run and actual
+  run. Its insert guard rebuilds those fields from publication authority,
+  verifies the linked attempt issuer, and requires pass 2 to be the exact
+  pass-1 run/cutoff/source/policy replay. The initial binding commits in the
+  publication transaction before finalization. A retry first reads its attempt
+  binding; publish-commit/finalize and finalize/after-checkpoint crash windows
+  therefore finish the existing run and report without selecting a new cutoff
+  or source set. Completed report recovery now follows checkpoint → attempt →
+  binding → run and remains deterministic when another successful run exists
+  for the same issuer. Isolated PostgreSQL coverage exercises both crash
+  windows, repeated recovery, pass-2 exact replay and zero unexpected
+  publication/fact growth; the CLI recovery test proves there is no new
+  attempt or source access. Final case audit independently derives the final
+  attempt from operation-link authority and requires its binding to reproduce
+  the reported run, cutoff, ordered source set, digest, mapping and policy.
+
+  Acceptance JSON, runtime JSON and human summaries are now read and created
+  relative to an opened storage-root descriptor. Every directory and file is
+  opened with `O_NOFOLLOW`; regular-file reads compare descriptor and parent
+  entry identity before/after and parse/digest the same bytes. Stable writes
+  use a parent descriptor, unique `O_EXCL` temporary file, fsync and an atomic
+  no-replace rename/link boundary, rejecting existing symlinks or non-identical
+  authority instead of overwriting it. Tests cover normal deterministic I/O,
+  report/runtime symlinks and mutation during read with neutral storage
+  identity diagnostics.
+
+  The create lifecycle now invokes the container filesystem preparer before
+  `createdb` or the run bind mount. The preparer starts from a trusted
+  repository-root descriptor, opens or creates each fixed component without
+  following links, requires the exact run to be absent, and creates only that
+  run and its reports directory. Failure cleanup removes only the validated
+  run target. Temporary-fixture and shell lifecycle tests cover normal create,
+  unsafe intermediate components, unchanged external symlink targets and
+  prepare-before-database ordering. No network, real 24-case run, shared
+  development database, or existing retained storage was used.
+
+  The final 12-file acceptance/CLI/lineage/publication/migration/Rate Guard/
+  source-guard suite passed `376` tests in-container. The three companion Rate
+  Guard startup, history-selection and mapping-engine files passed `64` tests;
+  both runs emitted only the pre-existing Starlette deprecation warning. The
+  shell lifecycle passed, Alembic reported the single `20260901180000` head,
+  Python/shell syntax checks and `git diff --check` passed.
+
+- 2026-09-01: Delivery Step 7A Terra round-3 remediation implemented pending
+  Terra round-4 review. Before a case/pass can create a new attempt or enter
+  acquisition, `ingest-gold-case` now checks the durable after checkpoint in a
+  read-only transaction. If publication and acquisition already committed but
+  the stable report is absent, it reconstructs the complete acquisition chain,
+  final attempt/operation, publication run/sources/decisions, PIT boundaries,
+  metric matrix and evidence delta from DB authority, runs the same case audit,
+  and atomically writes only missing JSON and human-summary files. A present
+  malformed or stale JSON/human report is rejected rather than overwritten;
+  incomplete after-checkpoint authority returns the typed operational reason
+  `acceptance_recovery_authority_incomplete`. The append-only attempt trigger
+  independently rejects any new same-case/pass attempt after durable `after`,
+  closing the check/insert race. Pass 1, pass 2 exact replay, repeated recovery,
+  malformed report, incomplete authority and zero new attempt/operation/
+  lineage/publication counts are covered. The existing sequential `run-pass`
+  lifecycle sends a missing report through this DB-only recovery path and its
+  final pass-status audit remains the only readiness signer.
+
+  Retained financial storage enumeration no longer resolves paths and then
+  reopens them. It opens the configured root directory once, traverses every
+  content-addressed component relative to directory descriptors with
+  `O_NOFOLLOW`, reads only already-opened regular-file descriptors, and compares
+  `fstat` device/inode/mode/size/mtime/ctime identities before and after reads
+  and against each parent entry. Symlinks, special files, malformed content-
+  addressed paths, digest mismatches, file mutation, component replacement and
+  directory/root replacement fail with neutral `storage identity race`
+  diagnostics. Reports remain outside the retained-financial manifest. Tests
+  deterministically cover normal-tree ordering, regular-file to external-
+  symlink replacement, directory-component swap and mutation during read,
+  using only temporary isolated storage. The combined focused acceptance/CLI/
+  runtime/migration command passed `169` tests in-container, and the focused
+  lineage acceptance audit passed `2` tests; both emitted only the pre-existing
+  Starlette deprecation warning. The final secure-storage subset passed `4`
+  tests after normalizing special/unsafe component rejection. The shell lifecycle test passed, Alembic
+  retained the single `20260901180000` head, and `git diff --check` passed. No
+  network, real 24-case run, shared development database, or existing retained
+  storage was used.
+
+- 2026-09-01: Delivery Step 7A Terra round-2 remediation implemented pending
+  Terra round-3 review. Migration `20260901180000` now DB-stamps each case/pass
+  attempt before acquisition and requires every newly created main,
+  continuation, or failed ingestion operation to acquire its exact
+  run/case/pass/attempt/ordinal/role link in the operation's creation
+  transaction. A later resume records a new attempt and may link a finalized
+  prior operation only as `recovered` when the same run/case/pass already owns
+  its creation link. The report operation chain and the entire checkpoint
+  window are rebuilt from this append-only authority, so multiple resumes,
+  unlinked operations, duplicate ownership, and cross-case/pass recovery fail
+  closed. Report readiness is no longer written by ingestion: the pass-status
+  command first performs the complete read-only DB audit, rolls back that
+  transaction, and only then persists the exact report digest/attempt/operation
+  readiness authority. Durable `after` remains unavailable until all 24 cases
+  in both passes have before/after evidence checkpoints and audited report-
+  readiness rows later than those checkpoints.
+
+  The same append-only before/after authority now DB-stamps the complete
+  acceptance runtime count set, SEC/manual/other/user-owned fact counts,
+  migration registry counts, database identity, and a bounded canonical
+  retained-financial-storage file count/byte count/manifest digest. `before`
+  requires a clean data/evidence baseline, JSON is an exact export of the DB
+  row, and final audit recomputes current DB and retained-storage authority so
+  post-snapshot mutations fail. Manifest parsing and its digest use one byte
+  read. A real isolated-PostgreSQL CLI test reaches aggregate write and final
+  validation, alongside crash/resume, wrong-scope, unlinked-operation,
+  dirty-before, early-after, JSON tamper, and post-after DB/storage mutation
+  coverage.
+
+  Rate Guard totals are reported only as
+  `shared_observed_window_delta`: they are monotonic observations across the
+  durable before/after window of the one pinned singleton and may include
+  other legitimate traffic. They are not attributed to this acceptance run;
+  403/429/503 deltas remain conservatively visible. Exact run-scoped Rate
+  Guard request attribution would require new telemetry and is intentionally
+  out of scope for this locked delivery. No network, real 24-case run, shared
+  development database, or existing retained storage was used. The exact
+  14-file acceptance/CLI/lineage/publication/migration/Rate Guard/source-guard
+  command passed `413` tests in-container with only the pre-existing Starlette
+  deprecation warning; the shell lifecycle test passed, Alembic retained the
+  single `20260901180000` head, and `git diff --check` passed.
+
+- 2026-09-01: Delivery Step 7A Terra round-1 remediation implemented pending
+  Terra round-2 review. Acceptance audit now validates the locked manifest
+  itself, reconstructs each case's exact history target with the production
+  completed-fiscal-year function, and requires both pass reports to retain the
+  manifest-owned `filing_selection_as_of`. The separate publication knowledge
+  cutoff remains the later database-authoritative boundary recorded by pass 1
+  and reused only for exact publication replay in pass 2. Each pass's complete
+  continuation operation chain, accession attempts, selected accession/form/
+  acceptance/report dates, expected years, and 21-metric matrix are rebuilt
+  from manifest and operation-owned database rows; aggregate coverage no
+  longer derives from editable case JSON.
+
+  Migration `20260901180000` adds append-only, database-stamped acceptance
+  evidence checkpoints and Rate Guard snapshots. The checkpoints distinguish
+  expected control audit rows (new operation, terminal result, availability,
+  attempts, and operation-owned links) from a zero evidence/publication delta
+  on pass 2. Database triggers compute the complete evidence plane, including
+  filing/snapshot/artifact/parse/raw/statement authority/normalization and all
+  publication/source/decision/input/audit/availability/SEC fact tables; the
+  audit does not accept a reported idempotency boolean or omitted counter.
+  Rate Guard snapshots require the pinned route and instance, `rate_guard`
+  fetch mode, disabled fallback, bounded counters, and configuration/manifest
+  digests. Snapshot creation performs live identity and metrics verification
+  before persistence, JSON is only an exact export of the durable row, and the
+  final audit revalidates the live route identity and non-regressing counters.
+  Tests cover locked-year/cutoff and selected-filing tampering, zero denominator,
+  omitted/non-zero evidence deltas, append-only mutation attempts, unsafe Rate
+  Guard route/mode/fallback/instance, editable JSON, and counter regression.
+  The lifecycle wording and behavior are now “expected control audit rows +
+  zero evidence/publication delta.” No network, real 24-case run, shared
+  development database, or retained acceptance storage is used for this
+  remediation. The complete focused acceptance/CLI/lineage/publication/
+  migration/Rate Guard/source-guard set passed `384` tests in-container; the
+  shell lifecycle test passed, Alembic has the single `20260901180000` head,
+  and `git diff --check` passed.
+
+- 2026-09-01: Delivery Step 7A publication-aware gold acceptance implemented
+  pending Terra review. The fresh isolated runner now performs bounded
+  historical acquisition and parser-v2 finalization before invoking the real
+  publication service with only the migration-owned approved mapping and
+  method-policy authorities. Acceptance does not implement a second amendment
+  precedence selector: it calls the production `latest-known-v1` resolver from
+  amendment remediation commit `c5ef8411` and asserts that every resolved
+  original, eligible successful amendment, and still-authoritative failed
+  amendment accession remains inside the locked filing-selection boundary.
+  The immutable manifest `cycle.cutoff_at` is recorded as
+  `filing_selection_as_of`; it is not backfilled or reused as publication
+  knowledge time. After database-owned numeric normalization is durable, the
+  runner records a later real PostgreSQL `clock_timestamp()` as
+  `publication_requested_cutoff`; immediate pass two reuses that exact cutoff
+  and publication run while retaining a new acquisition operation and report
+  identity.
+
+  Schema-v2 case JSON, human summaries and the aggregate report account for
+  the fixed 21-metric denominator across every expected issuer/year/metric,
+  distinguish published coverage from typed and missing outcomes, and retain
+  acquisition operations, accessions, PIT boundaries, mapping/method/amendment
+  versions, raw/statement/publication lineage counts, publication source and
+  decision IDs, retained-object integrity, current SEC-slot uniqueness, Rate
+  Guard counters, and the complete pass-two persistent evidence delta. Read-
+  only DB audits verify every report identity and timestamp, ownerless SEC-only
+  metric facts, reciprocal publication references, exact ordered sources and
+  inputs, availability, terminal counts and report/DB equality. Existing
+  reports are validated read-only before crash-resume skip; all workers,
+  schedulers, seeds, notification delivery and Rate Guard fallback are rejected
+  by runtime preflight. The lifecycle script remains sequential and deletes
+  only its exact run-derived database/storage target.
+
+  Focused in-container verification passed 206 acceptance, CLI and complete
+  lineage tests, plus 56 publication service, real random-schema E2E and
+  publication-contract tests, and 68 lineage-migration, source/egress guard,
+  Rate Guard client and EDGAR client tests. The production-amendment acceptance assertion
+  proves the resolver returns the complete original + failed accession + later
+  successful amendment tuple; the gold E2E proves real pass-one publication,
+  exact pass-two replay and zero growth across publication runs, sources,
+  decisions, inputs, unresolved inputs, audits, availabilities, SEC facts and
+  numeric normalizations. The shell lifecycle test passed. No network, real
+  24-case run, shared development database, or retained acceptance storage was
+  used. Alembic retained the unique `20260901170000` head and
+  `git diff --check` passed. Terra adversarial review remains required before
+  running the locked package.
+
+- 2026-09-01: Step 5 amendment-slot authority Terra round 1 remediation
+  implemented pending Terra round 2. Publication now acquires one shared,
+  stock-scoped PostgreSQL transaction advisory lock before rebuilding or
+  resolving `latest-known-v1` authority and before reading issuer identity.
+  Ingestion finalization resolves the operation's stock, acquires the exact
+  same namespaced lock, then locks and re-reads the operation before inserting
+  or stamping availability; pending-operation recovery follows the same lock
+  order. A two-session barrier test proves publication cannot commit an old
+  authority universe while an amendment availability row is uncommitted, and
+  must reject the stale request after serialization. A separate-stock test
+  proves the lock does not create cross-stock blocking. Amendment mapped-source
+  detection and the `170000` nonfinancial audit guard now require an exact
+  mapping-registry namespace URI and local concept match. A custom namespace
+  reusing a registered local name therefore preserves original slot authority
+  and records `unresolved_custom_concept` plus
+  `nonfinancial_amendment_no_slot_effect`; registered exact-URI concepts remain
+  mapped. The focused mapper, publication, lineage and migration set passed 62
+  tests with 128 deselected, and the compatible existing publication E2E set
+  passed 40 tests with the Gold-owned Step 7 report assertion deselected. Both
+  runs emitted only the pre-existing Starlette deprecation warning. No shared
+  database, network, or retained acceptance storage was used. Terra round 2
+  review remains pending.
+
+- 2026-09-01: Step 5 amendment-slot authority remediation implemented pending
+  Terra review. For `latest-known-v1`, the publication service now derives the
+  complete eligible authority universe from retained PostgreSQL lineage for the
+  requested stock, reviewed issuer identity and publication cutoff: finalized
+  `xbrl-lineage-v2` filing/parse authorities whose acceptance, filing/parse
+  knowledge, completion and availability boundaries are no later than the
+  cutoff. The request's source tuple is an exact assertion and must equal that
+  database-derived set in canonical filing-cycle order; caller omission,
+  addition or reordering cannot change authority. Within each `(base form,
+  report date)` cycle, the pure mapper applies successful financial amendments
+  per canonical metric period slot. Only a mapped candidate or slot-aware typed
+  decision replaces the original or earlier amendment for that slot; omitted
+  metrics and typed nonfinancial amendments preserve prior slot authority.
+  Later eligible amendments win only the slots they prove, independently of raw
+  fact IDs and input order. Derived quarters consume the already selected
+  direct/YTD/FY slot inputs, retaining exact source and occurrence lineage.
+  Raw-less failed amendment accessions remain run-level typed unavailable; a
+  successful reparse of that same filing replaces its failed parse authority,
+  while a separate later amendment does not classify the earlier unknown
+  scope. The authority universe is intentionally the complete eligible lineage
+  present in the clean publication database at `requested_cutoff`. Gold filing
+  selection occurs earlier at ingestion and is reported separately; if a
+  database contains an additional filing eligible by the later publication
+  cutoff, a request omitting it cannot claim exact historical selection.
+  Focused pure-mapper, real random-schema PostgreSQL service/E2E and migration
+  verification passed 55 tests; the compatible existing publication E2E set
+  passed 40 tests with one in-progress Step 7 gold-report assertion deselected.
+  Both runs emitted only the pre-existing Starlette deprecation warning.
+  Alembic retains the unique `20260901170000` head, historical publication
+  migrations 120000–160000 are byte-for-byte unchanged, and
+  `git diff --check` passes. No shared database, network, or retained acceptance
+  storage was used. Terra review remains pending.
 
 - 2026-08-31: Step 5 Terra single-truth round 2 accepted two P1 findings.
   Slot-aware raw-backed unresolved outcomes now retain ordered exact statement

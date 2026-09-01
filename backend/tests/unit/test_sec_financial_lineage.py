@@ -19,6 +19,7 @@ from app.edgar.parsers.financial_submissions import parse_financial_submissions
 from app.edgar.parsers.inline_xbrl import parse_inline_xbrl, parse_standalone_xbrl, safe_xml_root_name
 from app.acceptance.sec_gold_report import build_case_report
 from app.acceptance.sec_gold_audit import (
+    _operation_database_audit,
     audit_case_report_operation,
     build_case_database_audit,
 )
@@ -1838,7 +1839,7 @@ def test_acceptance_audit_rejects_reported_zero_for_operation_owned_snapshot(
     stock = Stock(ticker="AUDIT", exchange="US", company_name="Audit Fixture")
     db_session.add(stock)
     db_session.flush()
-    register_reviewed_sec_identity(
+    identity = register_reviewed_sec_identity(
         db_session,
         stock_id=stock.id,
         cik=CIK,
@@ -1880,7 +1881,7 @@ def test_acceptance_audit_rejects_reported_zero_for_operation_owned_snapshot(
             SecFinancialIngestionOperation, report.operation_id
         )
         return {
-            "schema_version": 1,
+            "schema_version": 2,
             "acceptance_pass": acceptance_pass,
             "run_id": "step-d-audit-test",
             "case_id": "audit-primary",
@@ -1903,34 +1904,67 @@ def test_acceptance_audit_rejects_reported_zero_for_operation_owned_snapshot(
             "parse_runs_created": 0,
             "raw_facts_created": 0,
             "metric_facts_published": 0,
+            "acquisition_operations": [
+                {
+                    "operation_id": report.operation_id,
+                    "attempted_at": operation.attempted_at.isoformat(),
+                    "finalized_at": available_at.isoformat(),
+                    "available_at": available_at.isoformat(),
+                    "accessions": [],
+                    "filings_created": 0,
+                    "submission_snapshots_created": snapshot_count,
+                    "artifacts_created": 0,
+                    "parse_runs_created": 0,
+                    "raw_facts_created": 0,
+                }
+            ],
+            "publication_run_id": "00000000-0000-4000-8000-000000000001",
+            "publication_replayed": acceptance_pass == 2,
+            "publication_requested_cutoff": "2026-09-01T12:00:00+00:00",
+            "publication_attempted_at": "2026-09-01T12:00:00+00:00",
+            "publication_finalized_at": "2026-09-01T12:00:01+00:00",
+            "publication_available_at": "2026-09-01T12:00:01+00:00",
+            "publication_run_source_ids": [1],
+            "publication_source_parse_run_ids": [1],
+            "publication_source_accessions": ["fixture-accession"],
+            "publication_decision_ids": [1],
+            "mapping_version_id": "sec-us-gaap-v1",
+            "method_policy_version_id": "sec-method-gate-v1",
+            "amendment_policy_id": "latest-known-v1",
+            "metric_outcomes": {
+                "metric_denominator": 21,
+                "issuer_year_metric_denominator": 0,
+                "published_count": 0,
+                "typed_gap_count": 0,
+                "missing_count": 0,
+                "coverage_count": 0,
+                "outcomes": [],
+            },
+            "lineage_counts": {},
+            "persistent_delta": {"idempotent": acceptance_pass == 2},
         }
 
     pass_one = payload(first, first_available, 1, 1)
     pass_two = payload(second, second_available, 2, 0)
     with pytest.raises(ValueError, match="created counters.*pass 2"):
-        build_case_database_audit(
+        _operation_database_audit(
             db_session,
+            report=pass_two,
+            acceptance_pass=2,
             expected_run_id="step-d-audit-test",
-            case={
-                "case_id": "audit-primary",
-                "cik": CIK,
-                "primary_listing": {"ticker": "AUDIT"},
-            },
-            pass_one=pass_one,
-            pass_two=pass_two,
-            storage_root=tmp_path,
+            case_id="audit-primary",
+            identity=identity,
+            stock=stock,
         )
 
-    correct = audit_case_report_operation(
+    correct = _operation_database_audit(
         db_session,
-        expected_run_id="step-d-audit-test",
-        case={
-            "case_id": "audit-primary",
-            "cik": CIK,
-            "primary_listing": {"ticker": "AUDIT"},
-        },
         report=pass_one,
         acceptance_pass=1,
+        expected_run_id="step-d-audit-test",
+        case_id="audit-primary",
+        identity=identity,
+        stock=stock,
     )
     assert correct["operation_id"] == first.operation_id
 
@@ -1939,17 +1973,23 @@ def test_acceptance_audit_rejects_reported_zero_for_operation_owned_snapshot(
         ("stock_id", stock.id + 1, "issuer identity mismatch"),
         ("operation_id", second.operation_id, "operation attempt mismatch"),
     ):
+        malformed = {**pass_one, field: invalid_value}
+        if field == "operation_id":
+            malformed["acquisition_operations"] = [
+                {
+                    **pass_one["acquisition_operations"][0],
+                    "operation_id": invalid_value,
+                }
+            ]
         with pytest.raises(ValueError, match=message):
-            audit_case_report_operation(
+            _operation_database_audit(
                 db_session,
-                expected_run_id="step-d-audit-test",
-                case={
-                    "case_id": "audit-primary",
-                    "cik": CIK,
-                    "primary_listing": {"ticker": "AUDIT"},
-                },
-                report={**pass_one, field: invalid_value},
+                report=malformed,
                 acceptance_pass=1,
+                expected_run_id="step-d-audit-test",
+                case_id="audit-primary",
+                identity=identity,
+                stock=stock,
             )
 
 

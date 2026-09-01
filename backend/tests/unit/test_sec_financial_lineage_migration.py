@@ -28,7 +28,7 @@ from test_support.database_isolation import (
 
 PARENT_REVISION = "20260826130000"
 PERIOD_PARENT_REVISION = "20260827120000"
-HEAD_REVISION = "20260901170000"
+HEAD_REVISION = "20260901180000"
 
 
 def test_parser_v2_downgrade_locks_all_evidence_before_counting() -> None:
@@ -227,6 +227,12 @@ def test_sec_financial_lineage_migration_round_trip_and_triggers() -> None:
                 "sec_financial_accession_attempt_artifacts",
                 "sec_financial_acquisition_resolutions",
                 "sec_financial_legacy_parse_runs",
+                "sec_acceptance_rate_guard_snapshots",
+                "sec_acceptance_evidence_checkpoints",
+                "sec_acceptance_case_attempts",
+                "sec_acceptance_operation_links",
+                "sec_acceptance_report_readiness",
+                "sec_acceptance_publication_bindings",
             }
             assert expected <= set(inspector.get_table_names())
             raw_columns = {

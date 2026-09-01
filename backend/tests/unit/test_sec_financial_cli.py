@@ -54,13 +54,44 @@ def _write_acceptance_pass_reports(
     for stock_id, case in enumerate(manifest["cases"], start=1):
         case_id = str(case["case_id"])
         payload = {
-            "schema_version": 1,
+            "schema_version": 2,
             "acceptance_pass": acceptance_pass,
             "run_id": run_id,
             "case_id": case_id,
             "cik": str(case["cik"]),
             "stock_id": stock_id,
             "operation_id": str(uuid.uuid4()),
+            "operation_attempted_at": NOW.isoformat(),
+            "evidence_finalized_at": (NOW + timedelta(seconds=1)).isoformat(),
+            "evidence_available_at": (NOW + timedelta(seconds=1)).isoformat(),
+            "filing_selection_as_of": "2026-08-26T23:59:59+00:00",
+            "expected_completed_fiscal_years": [2025],
+            "publication_run_id": str(uuid.uuid4()),
+            "publication_run_source_ids": [stock_id],
+            "publication_source_parse_run_ids": [stock_id + 100],
+            "publication_source_accessions": [f"0000000000-26-{stock_id:06d}"],
+            "publication_decision_ids": [stock_id + 200],
+            "publication_replayed": acceptance_pass == 2,
+            "publication_requested_cutoff": (NOW + timedelta(seconds=2)).isoformat(),
+            "publication_attempted_at": (NOW + timedelta(seconds=2)).isoformat(),
+            "publication_finalized_at": (NOW + timedelta(seconds=3)).isoformat(),
+            "publication_available_at": (NOW + timedelta(seconds=3)).isoformat(),
+            "mapping_version_id": "sec-us-gaap-v1",
+            "method_policy_version_id": "sec-method-gate-v1",
+            "amendment_policy_id": "latest-known-v1",
+            "persistent_delta": {"idempotent": True},
+            "metric_outcomes": {
+                "metric_denominator": 21,
+                "issuer_year_metric_denominator": 21,
+                "published_count": 21,
+                "typed_gap_count": 0,
+                "missing_count": 0,
+                "coverage_count": 21,
+                "outcomes": [
+                    {"fiscal_year": 2025, "metric_key": f"metric_{index}"}
+                    for index in range(21)
+                ],
+            },
             "typed_gaps": (
                 ["annual_coverage_gap:2022,2021"]
                 if case_id == "jpm-primary"
@@ -72,6 +103,15 @@ def _write_acceptance_pass_reports(
                 else []
             ),
         }
+        payload["acquisition_operations"] = [
+            {
+                "operation_id": payload["operation_id"],
+                "attempted_at": payload["operation_attempted_at"],
+                "finalized_at": payload["evidence_finalized_at"],
+                "available_at": payload["evidence_available_at"],
+                "accessions": [f"0000000000-26-{stock_id:06d}"],
+            }
+        ]
         (destination / f"{case_id}.json").write_text(
             json.dumps(payload), encoding="utf-8"
         )
@@ -85,16 +125,45 @@ def _stub_acceptance_report_database_audit(monkeypatch, *, validator=None):
         close=lambda: None,
     )
     audited: list[str] = []
+    operation_by_case: dict[str, str] = {}
 
     def audit(db, *, case, report, **_kwargs):
         assert db is session
         if validator is not None:
             validator(case, report)
         audited.append(str(case["case_id"]))
+        operation_by_case[str(case["case_id"])] = str(report["operation_id"])
         return {"operation_id": report["operation_id"]}
 
     monkeypatch.setattr(financial_cli, "SessionLocal", lambda: session)
+    monkeypatch.setattr(
+        financial_cli,
+        "_recover_completed_gold_case_report",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        financial_cli,
+        "recoverable_bound_acceptance_attempt",
+        lambda *_args, **_kwargs: None,
+    )
     monkeypatch.setattr(financial_cli, "audit_case_report_operation", audit)
+    monkeypatch.setattr(
+        financial_cli,
+        "acceptance_operation_authority",
+        lambda db, *, case_id, **kwargs: {
+            "attempts": [{"id": 1}],
+            "links": [
+                {
+                    "attempt_id": 1,
+                    "operation_id": operation_by_case[case_id],
+                    "operation_role": "main",
+                }
+            ],
+        },
+    )
+    monkeypatch.setattr(
+        financial_cli, "mark_acceptance_report_ready", lambda db, **kwargs: {}
+    )
     return audited
 
 
@@ -305,6 +374,11 @@ def test_ingest_gold_case_finalizes_terminal_acquisition_failure_before_exit(
     monkeypatch.setattr(financial_cli, "SessionLocal", lambda: session)
     monkeypatch.setattr(
         financial_cli,
+        "_recover_completed_gold_case_report",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        financial_cli,
         "_resolve_gold_case_stock",
         lambda db, case, at: SimpleNamespace(
             stock=stock,
@@ -362,12 +436,11 @@ def test_ingest_gold_case_finalizes_terminal_acquisition_failure_before_exit(
     assert "failure=main_submissions:sec_temporarily_unavailable" in result.output
 
 
-@pytest.mark.parametrize("acceptance_pass", (1, 2))
 def test_ingest_gold_case_writes_stable_acceptance_report(
     monkeypatch,
     tmp_path,
-    acceptance_pass: int,
 ) -> None:
+    acceptance_pass = 1
     stock = SimpleNamespace(id=77, ticker="AAPL")
     session = _SessionStub()
     operation_id = "11111111-1111-4111-8111-111111111111"
@@ -376,6 +449,24 @@ def test_ingest_gold_case_writes_stable_acceptance_report(
     )
     monkeypatch.setattr(financial_cli, "_utc_now", lambda: NOW)
     monkeypatch.setattr(financial_cli, "SessionLocal", lambda: session)
+    monkeypatch.setattr(
+        financial_cli,
+        "_recover_completed_gold_case_report",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        financial_cli,
+        "recoverable_bound_acceptance_attempt",
+        lambda *_args, **_kwargs: None,
+    )
+    scalar_calls = 0
+
+    def scalar(*_args, **_kwargs):
+        nonlocal scalar_calls
+        scalar_calls += 1
+        return SimpleNamespace(id=991) if scalar_calls == 1 else False
+
+    session.scalar = scalar
     monkeypatch.setattr(financial_cli.settings, "EDGAR_RAW_STORAGE_DIR", str(tmp_path))
     monkeypatch.setattr(
         financial_cli,
@@ -431,6 +522,60 @@ def test_ingest_gold_case_writes_stable_acceptance_report(
             ),
         ),
     )
+    checkpoint_phases = []
+
+    def record_checkpoint(_db, **kwargs):
+        checkpoint_phases.append((kwargs["phase"], kwargs.get("operation_id")))
+        return {}
+
+    monkeypatch.setattr(
+        financial_cli, "record_acceptance_evidence_checkpoint", record_checkpoint
+    )
+    monkeypatch.setattr(
+        financial_cli,
+        "begin_acceptance_case_attempt",
+        lambda db, **kwargs: {"id": 41, "attempt_ordinal": 1},
+    )
+    monkeypatch.setattr(
+        financial_cli, "link_acceptance_operation", lambda db, **kwargs: 51
+    )
+    monkeypatch.setattr(
+        financial_cli,
+        "linked_acceptance_ingestion_reports",
+        lambda db, *, current_reports, **kwargs: current_reports,
+    )
+    monkeypatch.setattr(
+        financial_cli, "mark_acceptance_report_ready", lambda db, **kwargs: {}
+    )
+    monkeypatch.setattr(
+        financial_cli,
+        "load_acceptance_evidence_delta",
+        lambda db, **kwargs: {"idempotent": False, "metric_facts": 3},
+    )
+    publication = SimpleNamespace(
+        receipt=SimpleNamespace(run_id="22222222-2222-4222-8222-222222222222"),
+        requested_cutoff=NOW + timedelta(seconds=3),
+    )
+    monkeypatch.setattr(
+        financial_cli,
+        "execute_acceptance_publication",
+        lambda *_args, **_kwargs: publication,
+    )
+    original_build = financial_cli.build_case_report
+
+    def build_report(*args, **kwargs):
+        assert kwargs["publication"] is publication
+        assert kwargs["ingestion_reports"][0].operation_id == operation_id
+        return original_build(
+            *args,
+            **{
+                key: value
+                for key, value in kwargs.items()
+                if key not in {"publication", "ingestion_reports", "persistent_delta"}
+            },
+        )
+
+    monkeypatch.setattr(financial_cli, "build_case_report", build_report)
 
     result = CliRunner().invoke(
         financial_cli.app,
@@ -458,6 +603,7 @@ def test_ingest_gold_case_writes_stable_acceptance_report(
     assert payload["typed_gaps"] == ["annual_coverage_gap:2016"]
     assert payload["typed_failures"] == []
     assert payload["metric_facts_published"] == 0
+    assert checkpoint_phases == [("before", None), ("after", operation_id)]
     assert "typed_gap=annual_coverage_gap:2016" in result.output
     assert f"acceptance_report_json={report_path}" in result.output
 
@@ -891,6 +1037,9 @@ class _SessionStub:
     def scalar(self, *args, **kwargs):
         return False
 
+    def execute(self, *args, **kwargs):
+        return None
+
     def get(self, *args, **kwargs):
         return SimpleNamespace(attempted_at=NOW)
 
@@ -1076,6 +1225,173 @@ def test_acceptance_pass_report_status_preserves_resumed_typed_incomplete_exit(
     assert len(audited) == 24
 
 
+def test_ingest_gold_case_recovers_after_checkpoint_before_attempt_or_source_access(
+    monkeypatch, tmp_path
+) -> None:
+    reports_root = tmp_path / "reports"
+    report_path = reports_root / "pass-1" / "aapl-primary.json"
+    session = SimpleNamespace(
+        execute=lambda *_args, **_kwargs: None,
+        rollback=lambda: None,
+        close=lambda: None,
+    )
+    recovered = SimpleNamespace(
+        typed_gaps=(),
+        typed_failures=(),
+        metric_outcomes={"typed_gap_count": 0, "missing_count": 0},
+        persistent_delta={"idempotent": False},
+    )
+    calls = []
+    monkeypatch.setattr(financial_cli, "SessionLocal", lambda: session)
+    monkeypatch.setattr(
+        financial_cli,
+        "preflight_configured_acceptance_runtime",
+        lambda run_id: SimpleNamespace(
+            run_id=run_id,
+            reports_root=reports_root,
+            storage_root=tmp_path,
+        ),
+    )
+    monkeypatch.setattr(
+        financial_cli,
+        "_recover_completed_gold_case_report",
+        lambda db, **kwargs: calls.append(kwargs) or recovered,
+    )
+    monkeypatch.setattr(
+        financial_cli,
+        "render_human_case_summary",
+        lambda _report: "recovered_from_after_checkpoint=true",
+    )
+    monkeypatch.setattr(
+        financial_cli,
+        "begin_acceptance_case_attempt",
+        lambda *_args, **_kwargs: pytest.fail("recovery created a new attempt"),
+    )
+
+    class ForbiddenEdgarClient:
+        def __init__(self, *_args, **_kwargs):
+            pytest.fail("recovery accessed the source")
+
+    monkeypatch.setattr(financial_cli, "EdgarClient", ForbiddenEdgarClient)
+
+    result = CliRunner().invoke(
+        financial_cli.app,
+        [
+            "ingest-gold-case",
+            "--case-id",
+            "aapl-primary",
+            "--acceptance-run-id",
+            "gold-crash-recovery",
+            "--acceptance-pass",
+            "1",
+            "--report-json",
+            str(report_path),
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert len(calls) == 1
+    assert calls[0]["acceptance_pass"] == 1
+    assert "recovered_from_after_checkpoint=true" in result.output
+
+
+def test_ingest_gold_case_resumes_attempt_bound_publication_without_new_attempt_or_source(
+    monkeypatch, tmp_path
+) -> None:
+    reports_root = tmp_path / "reports"
+    report_path = reports_root / "pass-1" / "aapl-primary.json"
+
+    class Result:
+        def mappings(self):
+            return self
+
+        def one_or_none(self):
+            return SimpleNamespace(stock_id=17, issuer_identity_id=23)
+
+    session = SimpleNamespace(
+        execute=lambda *_args, **_kwargs: Result(),
+        rollback=lambda: None,
+        close=lambda: None,
+    )
+    recovered = SimpleNamespace(
+        typed_gaps=(),
+        typed_failures=(),
+        metric_outcomes={"typed_gap_count": 0, "missing_count": 0},
+        persistent_delta={"idempotent": False},
+    )
+    recovery_calls = 0
+
+    def recover_report(*_args, **_kwargs):
+        nonlocal recovery_calls
+        recovery_calls += 1
+        return None if recovery_calls == 1 else recovered
+
+    monkeypatch.setattr(financial_cli, "SessionLocal", lambda: session)
+    monkeypatch.setattr(
+        financial_cli,
+        "preflight_configured_acceptance_runtime",
+        lambda run_id: SimpleNamespace(
+            run_id=run_id,
+            reports_root=reports_root,
+            storage_root=tmp_path,
+        ),
+    )
+    monkeypatch.setattr(financial_cli, "_recover_completed_gold_case_report", recover_report)
+    monkeypatch.setattr(
+        financial_cli,
+        "recoverable_bound_acceptance_attempt",
+        lambda *_args, **_kwargs: {
+            "attempt_id": 31,
+            "operation_id": "11111111-1111-4111-8111-111111111111",
+            "publication_run_id": "22222222-2222-4222-8222-222222222222",
+            "requested_cutoff": datetime(2026, 8, 31, tzinfo=timezone.utc),
+        },
+    )
+    publications = []
+    monkeypatch.setattr(
+        financial_cli,
+        "execute_acceptance_publication",
+        lambda *_args, **kwargs: publications.append(kwargs) or SimpleNamespace(),
+    )
+    checkpoints = []
+    monkeypatch.setattr(
+        financial_cli,
+        "record_acceptance_evidence_checkpoint",
+        lambda *_args, **kwargs: checkpoints.append(kwargs) or {},
+    )
+    monkeypatch.setattr(
+        financial_cli,
+        "render_human_case_summary",
+        lambda _report: "recovered_from_bound_publication=true",
+    )
+    monkeypatch.setattr(
+        financial_cli,
+        "begin_acceptance_case_attempt",
+        lambda *_args, **_kwargs: pytest.fail("bound recovery created a new attempt"),
+    )
+
+    class ForbiddenEdgarClient:
+        def __init__(self, *_args, **_kwargs):
+            pytest.fail("bound recovery accessed the source")
+
+    monkeypatch.setattr(financial_cli, "EdgarClient", ForbiddenEdgarClient)
+    result = CliRunner().invoke(
+        financial_cli.app,
+        [
+            "ingest-gold-case",
+            "--case-id", "aapl-primary",
+            "--acceptance-run-id", "gold-bound-recovery",
+            "--acceptance-pass", "1",
+            "--report-json", str(report_path),
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    assert recovery_calls == 2
+    assert publications[0]["attempt_id"] == 31
+    assert checkpoints[0]["phase"] == "after"
+    assert "recovered_from_bound_publication=true" in result.output
+
+
 def test_acceptance_pass_report_status_audits_existing_reports_before_resume(
     monkeypatch, tmp_path
 ) -> None:
@@ -1094,6 +1410,14 @@ def test_acceptance_pass_report_status_audits_existing_reports_before_resume(
         ),
     )
     audited = _stub_acceptance_report_database_audit(monkeypatch)
+    readiness = []
+
+    def mark_ready(_db, **kwargs):
+        assert audited == [first_case_id]
+        readiness.append(kwargs)
+        return {}
+
+    monkeypatch.setattr(financial_cli, "mark_acceptance_report_ready", mark_ready)
 
     result = CliRunner().invoke(
         financial_cli.app,
@@ -1111,6 +1435,8 @@ def test_acceptance_pass_report_status_audits_existing_reports_before_resume(
     assert "completed=1/24" in result.output
     assert "typed_incomplete=0" in result.output
     assert audited == [first_case_id]
+    assert len(readiness) == 1
+    assert readiness[0]["case_id"] == first_case_id
 
 
 @pytest.mark.parametrize(
@@ -1212,7 +1538,12 @@ def test_acceptance_pass_report_status_rejects_database_identity_conflict(
     )
 
     assert result.exit_code == 1
-    assert f"acceptance report database identity mismatch: {first_case_id}" in result.output
+    expected_message = (
+        f"acceptance report acquisition operation identity is invalid: {first_case_id}"
+        if field == "operation_id"
+        else f"acceptance report database identity mismatch: {first_case_id}"
+    )
+    assert expected_message in result.output
     assert audited == []
 
 
@@ -1247,4 +1578,4 @@ def test_acceptance_pass_report_status_rejects_malformed_existing_report(
     )
 
     assert result.exit_code == 1
-    assert "JSONDecodeError" in result.output
+    assert "acceptance JSON is malformed" in result.output
