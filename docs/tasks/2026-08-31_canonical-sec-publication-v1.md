@@ -1,6 +1,6 @@
 # Canonical Financial Truth — SEC Publication V1
 
-Status: contract approved; delivery steps 1–3 complete; step 4 next
+Status: contract approved; delivery steps 1–4 complete; step 5 next
 
 Owner: Product / Engineering
 
@@ -465,3 +465,71 @@ Run the canonical commands verbatim and in order:
   Main-agent verification passed 74 focused tests with the single pre-existing
   Starlette warning, confirmed migration head `20260901140000` as the unique
   head, and passed `git diff --check`.
+- 2026-09-01: Step 4 implemented the side-effect-free parser-v2 mapping engine.
+  It consumes an explicit exact V1 authority snapshot, recognizes the 21
+  approved namespace-URI/local-name rules, validates structured unit/currency,
+  form, fiscal period and dimension contracts, and returns immutable canonical
+  candidates or bounded typed dispositions with raw/normalization/parse-run
+  lineage. Priority conflicts fail closed; identical facts select the lowest
+  raw fact id. Approved adjacent-YTD Q2/Q3 and FY-minus-9M Q4 derivations retain
+  exact operands, while a compatible direct quarter takes precedence. This
+  step does not create publication runs or write `metric_facts`.
+- 2026-09-01: Step 4 review round 1 verified that duration bounds use inclusive
+  calendar days (`end - start + 1`) and added every adjacent contract boundary.
+  Immutable input facts now carry explicit stock, fiscal-cycle, filing-authority
+  and publication-cutoff identity; form-first classification accepts only the
+  approved current/comparative cycles, including a prior-FY balance sheet in a
+  10-Q. Missing or incompatible derived operands emit the existing approved
+  typed outcomes instead of disappearing, and derived lineage preserves the
+  fiscal-year start, cutoff, filing and parse authorities. Direct-quarter
+  precedence is scoped to the full compatible identity. Non-finite, overflow
+  and arithmetic failures become `unresolved_value` without aborting unrelated
+  facts. No new disposition vocabulary was introduced.
+- 2026-09-01: Step 4 review round 2 added an explicit immutable mapping-run
+  authority containing cutoff, selected filing authorities and amendment
+  policy. Mapping effective/known time and raw-fact known/source eligibility
+  are checked before mapping. Derived operand discovery now starts from the
+  target metric/stock/fiscal-year identity, so currency, unit, context and
+  fiscal-cycle incompatibilities retain their existing specific dispositions
+  rather than appearing missing. Dimensioned facts still fail earlier under
+  the V1 `unresolved_dimensions` contract. Q4 overflow is isolated as the
+  existing `unresolved_value` outcome and does not abort other candidates.
+- 2026-09-01: Step 4 review round 3 removed ordinal-wide direct-quarter
+  suppression. Direct precedence is now applied only after derivation and only
+  to the complete compatible identity, so a EUR direct Q2 cannot suppress a
+  valid USD Q2 derivation. Period operands are retained as ordered candidate
+  sets rather than a last-write-wins dictionary. Each left operand first picks
+  the lowest-lineage fully compatible right; only when none exists does the
+  engine emit the contract's stable, specifically ranked mismatch outcome.
+- 2026-09-01: Step 4 review round 4 made priority slots carry the complete raw
+  semantic period identity, including stock, fiscal-year start/cycle, context,
+  structured unit and cutoff, so separate fiscal cycles cannot collapse based
+  on raw-id order. Priority evaluation now advances one concept group at a
+  time. Once a group contains a valid candidate, every lower-priority raw fact
+  receives exactly one `lower_priority_concept_not_selected` outcome without
+  being independently reclassified for dimensions, units or other validity.
+- 2026-09-01: Step 4 review round 5 corrected the boundary between canonical
+  priority identity and raw validation evidence. Priority slots retain stock,
+  fiscal period/year-start/cycle, form and cutoff identity, but no longer split
+  on raw context or unit QNames. Consequently a lower-priority concept cannot
+  bypass an already-valid higher group by reporting another currency or
+  consolidated context; it receives exactly one lower-priority outcome. Raw
+  context, dimensions and structured units remain group validation/conflict
+  evidence, while distinct fiscal cycles remain separate slots.
+- 2026-09-01: Step 4 review round 6 made same-priority equality compare the
+  persisted Decimal together with canonical unit and currency, so equal
+  numerics reported in USD and EUR conflict independently of raw-id order.
+  Exact `NUMERIC(38,12)` persistence validation now occurs during priority-group
+  validity and its single persisted Decimal is carried into the candidate.
+  Thus an overflowing high-priority fact receives `unresolved_value` and an
+  otherwise valid lower group may be selected without duplicate outcomes or
+  a second quantization.
+- 2026-09-01: Step 4 review round 7 made duration fiscal-cycle identity
+  explicit: a duration classified as YTD or FY must begin exactly at the
+  declared fiscal-year start or receive
+  `unresolved_period_filing_cycle_mismatch`. Discrete-quarter durations retain
+  their natural later start. Incorrect-start Q2/Q3 YTD and annual facts cannot
+  enter derivation.
+- 2026-09-01: Step 4 round 8 Terra review PASS. Main-agent focused
+  verification passed 46 tests with the single pre-existing Starlette warning,
+  and `git diff --check` passed.
