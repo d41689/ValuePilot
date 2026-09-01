@@ -28,7 +28,7 @@ from test_support.database_isolation import (
 
 PARENT_REVISION = "20260826130000"
 PERIOD_PARENT_REVISION = "20260827120000"
-HEAD_REVISION = "20260901190000"
+HEAD_REVISION = "20260901200000"
 
 
 def test_parser_v2_downgrade_locks_all_evidence_before_counting() -> None:
@@ -188,6 +188,134 @@ def _insert_ingestion_operation(connection, identity_id: int) -> str:
     return operation_id
 
 
+def test_completion_claim_upgrade_rejects_cross_attempt_legacy_checkpoints() -> None:
+    backend_dir = Path(__file__).resolve().parents[2]
+    schema_name = new_test_schema_name()
+    database_url = build_isolated_database_url(_BASE_DATABASE_URL, schema_name)
+    create_test_schema(_BASE_DATABASE_URL, schema_name)
+    engine = create_engine(database_url, pool_pre_ping=True)
+    try:
+        _alembic(backend_dir, database_url, "upgrade", "20260901190000")
+        with engine.begin() as connection:
+            connection.execute(
+                text(
+                    """INSERT INTO sec_acceptance_rate_guard_snapshots
+                         (run_id,phase,configured_route,expected_instance_id,
+                          observed_instance_id,fetch_mode,fallback_enabled,fallback_url,
+                          rate_per_sec,total_request_count,total_403_count,total_429_count,
+                          total_503_count,cache_hits,cache_misses,config_digest,
+                          manifest_digest,database_name,runtime_counts,
+                          retained_file_count,retained_bytes,retained_manifest_digest,
+                          captured_at,created_at,created_txid)
+                       VALUES ('legacy-cross-attempt','before','https://guard.test',
+                         '11111111-1111-4111-8111-111111111111',
+                         '11111111-1111-4111-8111-111111111111','rate_guard',false,NULL,
+                         1,0,0,0,0,0,0,:digest,:digest,
+                         'valuepilot_acceptance_legacy_cross','{}'::jsonb,0,0,:digest,
+                         clock_timestamp(),clock_timestamp(),txid_current())"""
+                ),
+                {"digest": "a" * 64},
+            )
+            attempt_a = connection.execute(
+                text(
+                    """INSERT INTO sec_acceptance_case_attempts
+                         (run_id,case_id,acceptance_pass,attempt_ordinal,
+                          attempted_at,created_at,created_txid)
+                       VALUES ('legacy-cross-attempt','aapl-primary',1,1,
+                               clock_timestamp(),clock_timestamp(),txid_current())
+                       RETURNING id"""
+                )
+            ).scalar_one()
+            attempt_b = connection.execute(
+                text(
+                    """INSERT INTO sec_acceptance_case_attempts
+                         (run_id,case_id,acceptance_pass,attempt_ordinal,
+                          attempted_at,created_at,created_txid)
+                       VALUES ('legacy-cross-attempt','aapl-primary',1,2,
+                               clock_timestamp(),clock_timestamp(),txid_current())
+                       RETURNING id"""
+                )
+            ).scalar_one()
+            connection.execute(
+                text(
+                    """INSERT INTO sec_acceptance_evidence_checkpoints
+                         (run_id,case_id,acceptance_pass,phase,attempt_id,operation_id,
+                          evidence_counts,captured_at,created_at,created_txid)
+                       VALUES ('legacy-cross-attempt','aapl-primary',1,'before',
+                               :attempt,NULL,'{}'::jsonb,clock_timestamp(),
+                               clock_timestamp(),txid_current())"""
+                ),
+                {"attempt": attempt_a},
+            )
+            stock_id = connection.execute(
+                text(
+                    "INSERT INTO stocks (ticker,exchange,market_country,company_name,is_active) "
+                    "VALUES ('LEGACYX','US','US','Legacy Cross Attempt',true) RETURNING id"
+                )
+            ).scalar_one()
+            identity_id = connection.execute(
+                text(
+                    """INSERT INTO sec_issuer_identities
+                         (stock_id,cik,status,review_reason,effective_from,known_at)
+                       VALUES (:stock,'0000000991','reviewed','legacy migration fixture',
+                               '2020-01-01',clock_timestamp()) RETURNING id"""
+                ),
+                {"stock": stock_id},
+            ).scalar_one()
+            operation_id = _insert_ingestion_operation(connection, identity_id)
+            connection.execute(
+                text(
+                    """INSERT INTO sec_acceptance_operation_links
+                         (attempt_id,operation_id,operation_ordinal,operation_role,
+                          linked_at,created_at,created_txid)
+                       VALUES (:attempt,:operation,1,'main',clock_timestamp(),
+                               clock_timestamp(),txid_current())"""
+                ),
+                {"attempt": attempt_b, "operation": operation_id},
+            )
+            connection.execute(
+                text(
+                    """INSERT INTO sec_acceptance_evidence_checkpoints
+                         (run_id,case_id,acceptance_pass,phase,attempt_id,operation_id,
+                          evidence_counts,captured_at,created_at,created_txid)
+                       VALUES ('legacy-cross-attempt','aapl-primary',1,'after',
+                               :attempt,:operation,'{}'::jsonb,clock_timestamp(),
+                               clock_timestamp(),txid_current())"""
+                ),
+                {"attempt": attempt_b, "operation": operation_id},
+            )
+
+        result = subprocess.run(
+            ["alembic", "upgrade", "head"],
+            cwd=backend_dir,
+            env={**os.environ, "DATABASE_URL": database_url},
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert result.returncode != 0
+        assert "legacy acceptance authority crosses completion attempts" in (
+            result.stdout + result.stderr
+        )
+        with engine.connect() as connection:
+            assert connection.execute(
+                text("SELECT version_num FROM alembic_version")
+            ).scalar_one() == "20260901190000"
+            assert "sec_acceptance_case_completion_claims" not in inspect(
+                connection
+            ).get_table_names()
+            rows = connection.execute(
+                text(
+                    """SELECT phase,attempt_id FROM sec_acceptance_evidence_checkpoints
+                       WHERE run_id='legacy-cross-attempt' ORDER BY phase"""
+                )
+            ).all()
+            assert {row.attempt_id for row in rows} == {attempt_a, attempt_b}
+    finally:
+        engine.dispose()
+        drop_test_schema(_BASE_DATABASE_URL, schema_name)
+
+
 def test_sec_financial_lineage_migration_round_trip_and_triggers() -> None:
     backend_dir = Path(__file__).resolve().parents[2]
     schema_name = new_test_schema_name()
@@ -233,8 +361,20 @@ def test_sec_financial_lineage_migration_round_trip_and_triggers() -> None:
                 "sec_acceptance_operation_links",
                 "sec_acceptance_report_readiness",
                 "sec_acceptance_publication_bindings",
+                "sec_acceptance_case_completion_claims",
             }
             assert expected <= set(inspector.get_table_names())
+            claim_columns = {
+                item["name"]
+                for item in inspector.get_columns(
+                    "sec_acceptance_case_completion_claims"
+                )
+            }
+            assert {
+                "owner_backend_pid",
+                "owner_backend_start",
+                "owner_session_token_hash",
+            } <= claim_columns
             raw_columns = {
                 item["name"]
                 for item in inspector.get_columns("sec_raw_xbrl_facts")

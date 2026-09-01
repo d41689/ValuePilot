@@ -6,6 +6,7 @@ from pathlib import Path
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 import pytest
+import typer
 from sqlalchemy import create_engine, text
 from sqlalchemy.engine import make_url
 from sqlalchemy.exc import DBAPIError
@@ -20,6 +21,8 @@ from app.services import sec_financial_ingestion as financial_ingestion
 from app.services.sec_metric_publication import PublicationRequest, SecPublicationError, VerifiedPublicationSource, finalize_sec_publication, publish_sec_mapping_result, resolve_latest_known_v1_sources
 from app.services.sec_financial_locking import acquire_sec_financial_stock_lock
 from app.acceptance.sec_gold_publication import (
+    acquire_acceptance_completion_lease,
+    append_acceptance_completion_claim,
     acceptance_operation_authority,
     begin_acceptance_case_attempt,
     execute_acceptance_publication,
@@ -51,6 +54,7 @@ from app.services.sec_financial_ingestion import (
 )
 from test_sec_financial_lineage import (
     CIK,
+    FakeEdgarClient,
     StatementAuthorityClient,
     SUBMISSIONS_URL,
     ToggleInitialMainOutageClient,
@@ -68,6 +72,27 @@ from test_support.database_isolation import build_isolated_database_url, create_
 BACKEND=Path(__file__).resolve().parents[2]
 BASE=make_url(settings.SQLALCHEMY_DATABASE_URI).set(query={k:v for k,v in make_url(settings.SQLALCHEMY_DATABASE_URI).query.items() if k!="options"}).render_as_string(hide_password=False)
 
+
+def _release_test_completion_leases(db):
+    for lease in reversed(db.info.pop("acceptance_completion_leases", [])):
+        lease.release()
+
+
+def _claim_acceptance_attempt(db, *, run_id, case_id, acceptance_pass, attempt_id):
+    _release_test_completion_leases(db)
+    lease = acquire_acceptance_completion_lease(
+        db,
+        run_id=run_id,
+        case_id=case_id,
+        acceptance_pass=acceptance_pass,
+    )
+    assert lease is not None
+    if lease.attempt_id is None:
+        append_acceptance_completion_claim(lease, attempt_id=attempt_id)
+    else:
+        assert lease.attempt_id == attempt_id
+    db.info.setdefault("acceptance_completion_leases", []).append(lease)
+
 @pytest.fixture
 def isolated_engine():
     schema=new_test_schema_name(); url=build_isolated_database_url(BASE,schema); create_test_schema(BASE,schema)
@@ -81,7 +106,9 @@ def isolated_engine():
 def db(isolated_engine):
     session=sessionmaker(bind=isolated_engine)()
     try: yield session
-    finally: session.close()
+    finally:
+        _release_test_completion_leases(session)
+        session.close()
 
 def _request(
     db,
@@ -116,6 +143,13 @@ def _request(
             run_id=run_id,
             case_id=case_id,
             acceptance_pass=acceptance_pass,
+        )
+        _claim_acceptance_attempt(
+            db,
+            run_id=run_id,
+            case_id=case_id,
+            acceptance_pass=acceptance_pass,
+            attempt_id=acceptance_attempt["id"],
         )
         record_acceptance_evidence_checkpoint(
             db,
@@ -460,6 +494,13 @@ def test_gold_acceptance_executes_real_publication_and_exact_zero_growth_replay(
         case_id="gold-publication-primary",
         acceptance_pass=2,
     )
+    _claim_acceptance_attempt(
+        db,
+        run_id="gold-publication-test",
+        case_id="gold-publication-primary",
+        acceptance_pass=2,
+        attempt_id=second_attempt["id"],
+    )
     record_acceptance_evidence_checkpoint(
         db,
         run_id="gold-publication-test",
@@ -747,7 +788,6 @@ def test_gold_acceptance_report_is_rebuilt_and_verified_against_isolated_databas
         "cik": CIK,
         "primary_listing": {"ticker": "GOLDREPORT"},
     }
-
     audited = audit_case_report_operation(
         db,
         expected_run_id="gold-report-test",
@@ -803,6 +843,13 @@ def test_gold_acceptance_report_is_rebuilt_and_verified_against_isolated_databas
         run_id="gold-report-test",
         case_id="aapl-primary",
         acceptance_pass=2,
+    )
+    _claim_acceptance_attempt(
+        db,
+        run_id="gold-report-test",
+        case_id="aapl-primary",
+        acceptance_pass=2,
+        attempt_id=pass_two_attempt["id"],
     )
     record_acceptance_evidence_checkpoint(
         db,
@@ -1274,6 +1321,13 @@ def test_gold_evidence_checkpoints_are_database_computed_and_append_only(db, tmp
         case_id="checkpoint-primary",
         acceptance_pass=1,
     )
+    _claim_acceptance_attempt(
+        db,
+        run_id="gold-checkpoint",
+        case_id="checkpoint-primary",
+        acceptance_pass=1,
+        attempt_id=first_attempt["id"],
+    )
     before = record_acceptance_evidence_checkpoint(
         db,
         run_id="gold-checkpoint",
@@ -1319,12 +1373,7 @@ def test_gold_evidence_checkpoints_are_database_computed_and_append_only(db, tmp
     )
     db.commit()
 
-    resumed_attempt = begin_acceptance_case_attempt(
-        db,
-        run_id="gold-checkpoint",
-        case_id="checkpoint-primary",
-        acceptance_pass=1,
-    )
+    resumed_attempt = first_attempt
     resumed_before = record_acceptance_evidence_checkpoint(
         db,
         run_id="gold-checkpoint",
@@ -1334,14 +1383,6 @@ def test_gold_evidence_checkpoints_are_database_computed_and_append_only(db, tmp
         attempt_id=resumed_attempt["id"],
     )
     assert resumed_before["attempt_id"] == first_attempt["id"]
-    link_acceptance_operation(
-        db,
-        attempt_id=resumed_attempt["id"],
-        operation_id=first_report.operation_id,
-        operation_ordinal=1,
-        operation_role="recovered",
-    )
-    db.commit()
     resumed_report = ingest_latest_financial_filings(
         db,
         stock_id=stock.id,
@@ -1363,12 +1404,7 @@ def test_gold_evidence_checkpoints_are_database_computed_and_append_only(db, tmp
         db, operation_id=resumed_report.operation_id
     )
     db.commit()
-    second_resume_attempt = begin_acceptance_case_attempt(
-        db,
-        run_id="gold-checkpoint",
-        case_id="checkpoint-primary",
-        acceptance_pass=1,
-    )
+    second_resume_attempt = first_attempt
     second_resumed_before = record_acceptance_evidence_checkpoint(
         db,
         run_id="gold-checkpoint",
@@ -1378,14 +1414,6 @@ def test_gold_evidence_checkpoints_are_database_computed_and_append_only(db, tmp
         attempt_id=second_resume_attempt["id"],
     )
     assert second_resumed_before["attempt_id"] == first_attempt["id"]
-    link_acceptance_operation(
-        db,
-        attempt_id=second_resume_attempt["id"],
-        operation_id=resumed_report.operation_id,
-        operation_ordinal=1,
-        operation_role="recovered",
-    )
-    db.commit()
     second_resumed_report = ingest_latest_financial_filings(
         db,
         stock_id=stock.id,
@@ -1399,7 +1427,7 @@ def test_gold_evidence_checkpoints_are_database_computed_and_append_only(db, tmp
         db,
         attempt_id=second_resume_attempt["id"],
         operation_id=second_resumed_report.operation_id,
-        operation_ordinal=2,
+        operation_ordinal=3,
         operation_role="main",
     )
     db.commit()
@@ -1447,9 +1475,7 @@ def test_gold_evidence_checkpoints_are_database_computed_and_append_only(db, tmp
     ]
     assert [item["operation_role"] for item in authority["links"]] == [
         "main",
-        "recovered",
         "main",
-        "recovered",
         "main",
     ]
     control = _control_plane_counts(
@@ -1469,6 +1495,13 @@ def test_gold_evidence_checkpoints_are_database_computed_and_append_only(db, tmp
         run_id="gold-checkpoint",
         case_id="checkpoint-primary",
         acceptance_pass=2,
+    )
+    _claim_acceptance_attempt(
+        db,
+        run_id="gold-checkpoint",
+        case_id="checkpoint-primary",
+        acceptance_pass=2,
+        attempt_id=replay_attempt["id"],
     )
     record_acceptance_evidence_checkpoint(
         db,
@@ -1515,6 +1548,51 @@ def test_gold_evidence_checkpoints_are_database_computed_and_append_only(db, tmp
         acceptance_pass=2,
     )["idempotent"] is True
 
+    db.execute(text("ALTER TABLE sec_acceptance_case_attempts DISABLE TRIGGER USER"))
+    try:
+        forged_attempt = db.execute(
+            text(
+                """INSERT INTO sec_acceptance_case_attempts
+                     (run_id,case_id,acceptance_pass,attempt_ordinal,
+                      attempted_at,created_at,created_txid)
+                   VALUES ('gold-checkpoint','checkpoint-primary',1,99,
+                           clock_timestamp(),clock_timestamp(),txid_current())
+                   RETURNING id"""
+            )
+        ).scalar_one()
+        db.commit()
+    finally:
+        db.execute(
+            text("ALTER TABLE sec_acceptance_case_attempts ENABLE TRIGGER USER")
+        )
+        db.commit()
+    db.execute(
+        text("ALTER TABLE sec_acceptance_evidence_checkpoints DISABLE TRIGGER USER")
+    )
+    try:
+        db.execute(
+            text(
+                """UPDATE sec_acceptance_evidence_checkpoints
+                   SET attempt_id=:attempt
+                   WHERE run_id='gold-checkpoint' AND case_id='checkpoint-primary'
+                     AND acceptance_pass=1 AND phase='after'"""
+            ),
+            {"attempt": forged_attempt},
+        )
+        db.commit()
+    finally:
+        db.execute(
+            text("ALTER TABLE sec_acceptance_evidence_checkpoints ENABLE TRIGGER USER")
+        )
+        db.commit()
+    with pytest.raises(ValueError, match="checkpoint owner authority mismatch"):
+        load_acceptance_evidence_delta(
+            db,
+            run_id="gold-checkpoint",
+            case_id="checkpoint-primary",
+            acceptance_pass=1,
+        )
+
     with pytest.raises(DBAPIError, match="append-only"):
         db.execute(
             text(
@@ -1551,6 +1629,13 @@ def test_cli_recovers_finalized_failed_parse_without_sec_refetch(
     first_attempt = begin_acceptance_case_attempt(
         db, run_id=run_id, case_id=case_id, acceptance_pass=1
     )
+    _claim_acceptance_attempt(
+        db,
+        run_id=run_id,
+        case_id=case_id,
+        acceptance_pass=1,
+        attempt_id=first_attempt["id"],
+    )
     record_acceptance_evidence_checkpoint(
         db,
         run_id=run_id,
@@ -1559,9 +1644,7 @@ def test_cli_recovers_finalized_failed_parse_without_sec_refetch(
         phase="before",
         attempt_id=first_attempt["id"],
     )
-    operation_attempt = begin_acceptance_case_attempt(
-        db, run_id=run_id, case_id=case_id, acceptance_pass=1
-    )
+    operation_attempt = first_attempt
     resumed_before = record_acceptance_evidence_checkpoint(
         db,
         run_id=run_id,
@@ -1696,6 +1779,97 @@ def test_cli_recovers_finalized_failed_parse_without_sec_refetch(
     assert db.execute(
         text("SELECT count(*) FROM sec_metric_publication_runs")
     ).scalar_one() == 0
+    assert db.execute(
+        text("SELECT count(*) FROM sec_acceptance_publication_bindings")
+    ).scalar_one() == 0
+
+    old_selector_attempt = first_attempt
+    db.rollback()
+    _release_test_completion_leases(db)
+    crashed_owner = acquire_acceptance_completion_lease(
+        db, run_id=run_id, case_id=case_id, acceptance_pass=1
+    )
+    assert crashed_owner is not None
+    assert crashed_owner.attempt_id == old_selector_attempt["id"]
+    canonical_instance_predicate = (
+        financial_ingestion._is_standalone_instance_filename
+    )
+    canonical_inline_parser = financial_ingestion.parse_inline_xbrl
+    monkeypatch.setattr(
+        financial_ingestion,
+        "_is_standalone_instance_filename",
+        lambda filename: canonical_instance_predicate(filename)
+        and Path(filename.lower()).stem == Path("d927922d10q.htm").stem,
+    )
+    monkeypatch.setattr(
+        financial_ingestion,
+        "parse_inline_xbrl",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            ValueError("xml_parse_failed")
+        ),
+    )
+    old_replay = financial_ingestion.build_retained_financial_replay_client(
+        db,
+        stock_id=stock.id,
+        operation_ids=(failed_report.operation_id,),
+        storage_root=tmp_path,
+        upstream_factory=lambda: pytest.fail(
+            "old selector recovery unexpectedly constructed an upstream client"
+        ),
+    )
+    with old_replay:
+        old_v21_report = ingest_latest_financial_filings(
+            db,
+            stock_id=stock.id,
+            client=old_replay,
+            storage_root=tmp_path,
+            max_filings=1,
+            now=datetime(2026, 8, 28, 1, 15, tzinfo=timezone.utc),
+            parser_version="xbrl-lineage-v2.1",
+        )
+    monkeypatch.setattr(
+        financial_ingestion,
+        "_is_standalone_instance_filename",
+        canonical_instance_predicate,
+    )
+    monkeypatch.setattr(
+        financial_ingestion, "parse_inline_xbrl", canonical_inline_parser
+    )
+    link_acceptance_operation(
+        db,
+        attempt_id=old_selector_attempt["id"],
+        operation_id=old_v21_report.operation_id,
+        operation_ordinal=2,
+        operation_role="continuation",
+    )
+    db.commit()
+    finalize_sec_financial_ingestion_operation(
+        db, operation_id=old_v21_report.operation_id
+    )
+    db.commit()
+    crashed_owner.abandon_for_test()
+    assert old_replay.external_requests == []
+    assert db.execute(
+        text(
+            "SELECT status FROM sec_financial_parse_runs "
+            "WHERE operation_id=:operation AND parser_version='xbrl-lineage-v2.1'"
+        ),
+        {"operation": old_v21_report.operation_id},
+    ).scalar_one() == "failed"
+    assert db.execute(
+        text(
+            "SELECT count(*) FROM sec_financial_parse_runs parse "
+            "JOIN sec_financial_parse_run_artifacts link "
+            "ON link.parse_run_id=parse.id "
+            "JOIN sec_filing_artifacts artifact ON artifact.id=link.artifact_id "
+            "WHERE parse.operation_id=:operation "
+            "AND artifact.filename=:filename"
+        ),
+        {
+            "operation": old_v21_report.operation_id,
+            "filename": initial_client.instance_filename,
+        },
+    ).scalar_one() == 0
 
     class LaterCollidingManifestClient(SgmlPrimaryClient):
         def __init__(self):
@@ -1774,6 +1948,10 @@ def test_cli_recovers_finalized_failed_parse_without_sec_refetch(
 
     class NarrowInstanceEdgarClient:
         calls: list[str] = []
+        constructions = 0
+
+        def __init__(self):
+            type(self).constructions += 1
 
         def __enter__(self):
             return self
@@ -1794,25 +1972,91 @@ def test_cli_recovers_finalized_failed_parse_without_sec_refetch(
         financial_cli, "EdgarClient", NarrowInstanceEdgarClient
     )
     report_path = reports_root / "pass-1" / f"{case_id}.json"
-    result = CliRunner().invoke(
-        financial_cli.app,
-        [
-            "ingest-gold-case",
-            "--case-id",
-            case_id,
-            "--acceptance-run-id",
-            run_id,
-            "--acceptance-pass",
-            "1",
-            "--report-json",
-            str(report_path),
-        ],
-    )
+    canonical_finalize = financial_cli.finalize_sec_financial_ingestion_operation
+    continuation_committed = threading.Event()
+    allow_owner_to_publish = threading.Event()
 
-    assert result.exit_code == 2, result.output
+    def pause_after_continuation_commit(session, *, operation_id):
+        if operation_id not in {
+            failed_report.operation_id,
+            old_v21_report.operation_id,
+            later_report.operation_id,
+        }:
+            continuation_committed.set()
+            assert allow_owner_to_publish.wait(timeout=20)
+        return canonical_finalize(session, operation_id=operation_id)
+
+    monkeypatch.setattr(
+        financial_cli,
+        "finalize_sec_financial_ingestion_operation",
+        pause_after_continuation_commit,
+    )
+    outcomes: list[int] = []
+    errors: list[BaseException] = []
+
+    def concurrent_retry() -> None:
+        try:
+            financial_cli.ingest_gold_case(
+                case_id=case_id,
+                max_filings=50,
+                parser_version="xbrl-lineage-v2.1",
+                history_cursor=None,
+                as_of=None,
+                acceptance_run_id=run_id,
+                acceptance_pass=1,
+                report_json=report_path,
+            )
+            outcomes.append(0)
+        except typer.Exit as exc:
+            outcomes.append(int(exc.exit_code))
+        except BaseException as exc:
+            errors.append(exc)
+
+    owner = threading.Thread(target=concurrent_retry)
+    owner.start()
+    assert continuation_committed.wait(timeout=20)
+
+    late_join = threading.Thread(target=concurrent_retry)
+    late_join.start()
+    late_join.join(timeout=10)
+    assert not late_join.is_alive()
+    assert outcomes == [1]
+    assert db.execute(
+        text("SELECT count(*) FROM sec_metric_publication_runs")
+    ).scalar_one() == 0
+    assert db.execute(
+        text(
+            "SELECT count(*) FROM sec_acceptance_case_attempts "
+            "WHERE run_id=:run AND case_id=:case AND acceptance_pass=1"
+        ),
+        {"run": run_id, "case": case_id},
+    ).scalar_one() == 1
+    assert db.execute(
+        text("SELECT count(*) FROM sec_acceptance_publication_bindings")
+    ).scalar_one() == 0
+    assert db.execute(
+        text(
+            "SELECT count(*) FROM sec_acceptance_operation_links link "
+            "JOIN sec_acceptance_case_attempts attempt ON attempt.id=link.attempt_id "
+            "WHERE attempt.run_id=:run AND attempt.case_id=:case "
+            "AND attempt.acceptance_pass=1"
+        ),
+        {"run": run_id, "case": case_id},
+    ).scalar_one() == 3
+    assert NarrowInstanceEdgarClient.calls == [initial_client.instance_url]
+    assert NarrowInstanceEdgarClient.constructions == 1
+
+    allow_owner_to_publish.set()
+    owner.join(timeout=30)
+    threads = [owner, late_join]
+
+    assert all(not thread.is_alive() for thread in threads)
+    assert errors == []
+    assert sorted(outcomes) == [1, 2]
     payload = json.loads(report_path.read_text(encoding="utf-8"))
     assert payload["publication_run_id"]
     assert NarrowInstanceEdgarClient.calls == [initial_client.instance_url]
+    assert NarrowInstanceEdgarClient.constructions == 1
     attempts = db.execute(
         text(
             "SELECT attempt_ordinal FROM sec_acceptance_case_attempts "
@@ -1821,7 +2065,24 @@ def test_cli_recovers_finalized_failed_parse_without_sec_refetch(
         ),
         {"run": run_id, "case": case_id},
     ).scalars().all()
-    assert attempts == [1, 2, 3]
+    assert attempts == [1]
+    claims = db.execute(
+        text(
+            "SELECT claim.generation,attempt.attempt_ordinal,claim.previous_claim_id "
+            "FROM sec_acceptance_case_completion_claims claim "
+            "JOIN sec_acceptance_case_attempts attempt ON attempt.id=claim.attempt_id "
+            "WHERE claim.run_id=:run AND claim.case_id=:case "
+            "AND claim.acceptance_pass=1 ORDER BY claim.generation"
+        ),
+        {"run": run_id, "case": case_id},
+    ).all()
+    assert [(row.generation, row.attempt_ordinal) for row in claims] == [
+        (1, 1),
+        (2, 1),
+        (3, 1),
+    ]
+    assert claims[0].previous_claim_id is None
+    assert all(row.previous_claim_id is not None for row in claims[1:])
     links = db.execute(
         text(
             "SELECT link.operation_id,link.operation_role "
@@ -1833,10 +2094,11 @@ def test_cli_recovers_finalized_failed_parse_without_sec_refetch(
         {"run": run_id, "case": case_id},
     ).all()
     assert links[0] == (failed_report.operation_id, "main")
-    assert links[1] == (failed_report.operation_id, "recovered")
+    assert links[1] == (old_v21_report.operation_id, "continuation")
     assert links[2][1] == "continuation"
     assert links[2][0] not in {
         failed_report.operation_id,
+        old_v21_report.operation_id,
         later_report.operation_id,
     }
     assert db.execute(
@@ -1853,9 +2115,16 @@ def test_cli_recovers_finalized_failed_parse_without_sec_refetch(
     ).scalar_one() == 1
     assert db.execute(
         text("SELECT count(*) FROM sec_financial_ingestion_operations")
-    ).scalar_one() == 3
+    ).scalar_one() == 4
     assert db.execute(
         text("SELECT count(*) FROM sec_metric_publication_runs")
+    ).scalar_one() == 1
+    assert db.execute(
+        text(
+            "SELECT attempt.attempt_ordinal "
+            "FROM sec_acceptance_publication_bindings binding "
+            "JOIN sec_acceptance_case_attempts attempt ON attempt.id=binding.attempt_id"
+        )
     ).scalar_one() == 1
     assert db.execute(
         text(
@@ -1865,6 +2134,7 @@ def test_cli_recovers_finalized_failed_parse_without_sec_refetch(
         )
     ).all() == [
         ("xbrl-lineage-v2", "failed"),
+        ("xbrl-lineage-v2.1", "failed"),
         ("xbrl-lineage-v2.1", "succeeded"),
     ]
     recovered_manifests = set(
@@ -1875,13 +2145,27 @@ def test_cli_recovers_finalized_failed_parse_without_sec_refetch(
                 "JOIN sec_financial_parse_run_artifacts link "
                 "ON link.parse_run_id=parse.id "
                 "JOIN sec_filing_artifacts artifact ON artifact.id=link.artifact_id "
-                "WHERE parse.parser_version='xbrl-lineage-v2.1'"
+                "WHERE parse.parser_version='xbrl-lineage-v2.1' "
+                "AND parse.status='succeeded'"
             )
         ).scalars()
     )
     assert len(recovered_manifests) == 1
     assert original_manifest not in recovered_manifests
     assert later_manifest not in recovered_manifests
+    assert db.execute(
+        text(
+            "SELECT input_manifest_hash FROM sec_financial_parse_runs "
+            "WHERE operation_id=:old_operation"
+        ),
+        {"old_operation": old_v21_report.operation_id},
+    ).scalar_one() != db.execute(
+        text(
+            "SELECT input_manifest_hash FROM sec_financial_parse_runs "
+            "WHERE operation_id=:new_operation"
+        ),
+        {"new_operation": links[2][0]},
+    ).scalar_one()
     assert db.execute(
         text(
             "SELECT count(*) FROM sec_financial_parse_runs parse "
@@ -1896,6 +2180,242 @@ def test_cli_recovers_finalized_failed_parse_without_sec_refetch(
     assert db.execute(
         text("SELECT count(*) FROM sec_acceptance_report_readiness")
     ).scalar_one() == 0
+
+
+def test_cli_failed_current_parser_without_provenance_delta_is_idempotent(
+    db, tmp_path, monkeypatch
+):
+    run_id = "gold-failed-no-provenance-delta"
+    case_id = "aapl-primary"
+    instance = "11111111-1111-4111-8111-111111111111"
+    reports_root = tmp_path / "reports"
+    reports_root.mkdir()
+    persist_rate_guard_snapshot(
+        db,
+        run_id=run_id,
+        phase="before",
+        configured_route="https://rate-guard.example.test",
+        expected_instance_id=instance,
+        observed_instance_id=instance,
+        fetch_mode="rate_guard",
+        fallback_enabled=False,
+        fallback_url=None,
+        metrics={"rate_per_sec": 1.0},
+        manifest_digest="e" * 64,
+        database_name="valuepilot_acceptance_gold_failed_no_delta",
+        storage_root=tmp_path,
+    )
+    attempt = begin_acceptance_case_attempt(
+        db, run_id=run_id, case_id=case_id, acceptance_pass=1
+    )
+    _claim_acceptance_attempt(
+        db,
+        run_id=run_id,
+        case_id=case_id,
+        acceptance_pass=1,
+        attempt_id=attempt["id"],
+    )
+    record_acceptance_evidence_checkpoint(
+        db,
+        run_id=run_id,
+        case_id=case_id,
+        acceptance_pass=1,
+        phase="before",
+        attempt_id=attempt["id"],
+    )
+    stock = Stock(ticker="AAPL", exchange="US", company_name="Apple Inc.")
+    db.add(stock)
+    db.flush()
+    register_reviewed_sec_identity(
+        db,
+        stock_id=stock.id,
+        cik=CIK,
+        effective_from=date(2015, 1, 1),
+        known_at=datetime(2026, 8, 28, tzinfo=timezone.utc),
+        review_reason="failed no-delta acceptance recovery fixture",
+    )
+    class MissingStatementInstanceClient(FakeEdgarClient):
+        def __init__(self):
+            super().__init__()
+            self.instance_filename = "aapl-20150627.xml"
+            self.instance_url = _canonical_artifact_url(
+                CIK, "0000320193-26-000079", self.instance_filename
+            )
+            self.instance_content = (
+                b'<xbrli:xbrl xmlns:xbrli="http://www.xbrl.org/2003/instance" '
+                b'xmlns:dei="http://xbrl.sec.gov/dei/2025">'
+                b'<xbrli:context id="I"><xbrli:entity><xbrli:identifier '
+                b'scheme="http://www.sec.gov/CIK">0000320193</xbrli:identifier>'
+                b'</xbrli:entity><xbrli:period><xbrli:instant>2026-06-27</xbrli:instant>'
+                b'</xbrli:period></xbrli:context><dei:DocumentFiscalYearFocus '
+                b'contextRef="I">2026</dei:DocumentFiscalYearFocus></xbrli:xbrl>'
+            )
+            index_url = next(
+                url for url in self.responses if url.endswith("/index.json")
+            )
+            payload = json.loads(self.responses[index_url])
+            payload["directory"]["item"].append(
+                {
+                    "name": self.instance_filename,
+                    "type": "text.gif",
+                    "size": len(self.instance_content),
+                    "description": "XBRL INSTANCE DOCUMENT",
+                }
+            )
+            self.responses[index_url] = json.dumps(payload).encode()
+            self.responses[self.instance_url] = self.instance_content
+
+    source_client = MissingStatementInstanceClient()
+    original_retain_item = financial_ingestion._retain_item
+    monkeypatch.setattr(
+        financial_ingestion,
+        "_retain_item",
+        lambda item, primary_document, referenced_statement_names=None: (
+            False
+            if item.get("name") == source_client.instance_filename
+            else original_retain_item(
+                item, primary_document, referenced_statement_names
+            )
+        ),
+    )
+    old_report = ingest_latest_financial_filings(
+        db,
+        stock_id=stock.id,
+        client=source_client,
+        storage_root=tmp_path,
+        max_filings=1,
+        now=datetime(2026, 8, 28, 1, tzinfo=timezone.utc),
+        parser_version="xbrl-lineage-v2",
+    )
+    monkeypatch.setattr(
+        financial_ingestion, "_retain_item", original_retain_item
+    )
+    link_acceptance_operation(
+        db,
+        attempt_id=attempt["id"],
+        operation_id=old_report.operation_id,
+        operation_ordinal=1,
+        operation_role="main",
+    )
+    db.commit()
+    finalize_sec_financial_ingestion_operation(
+        db, operation_id=old_report.operation_id
+    )
+    db.commit()
+    current_attempt = attempt
+    replay = financial_ingestion.build_retained_financial_replay_client(
+        db,
+        stock_id=stock.id,
+        operation_ids=(old_report.operation_id,),
+        storage_root=tmp_path,
+        upstream_factory=lambda: source_client,
+    )
+    with replay:
+        report = ingest_latest_financial_filings(
+            db,
+            stock_id=stock.id,
+            client=replay,
+            storage_root=tmp_path,
+            max_filings=1,
+            now=datetime(2026, 8, 28, 1, 30, tzinfo=timezone.utc),
+            parser_version="xbrl-lineage-v2.1",
+        )
+    link_acceptance_operation(
+        db,
+        attempt_id=current_attempt["id"],
+        operation_id=report.operation_id,
+        operation_ordinal=2,
+        operation_role="continuation",
+    )
+    db.commit()
+    finalize_sec_financial_ingestion_operation(db, operation_id=report.operation_id)
+    db.commit()
+    assert replay.external_requests == [source_client.instance_url]
+    assert db.execute(
+        text(
+            "SELECT status FROM sec_financial_parse_runs "
+            "WHERE operation_id=:operation"
+        ),
+        {"operation": report.operation_id},
+    ).scalar_one() == "failed"
+    assert db.execute(
+        text(
+            "SELECT count(*) FROM sec_financial_parse_runs parse "
+            "JOIN sec_financial_parse_run_artifacts link ON link.parse_run_id=parse.id "
+            "JOIN sec_filing_artifacts artifact ON artifact.id=link.artifact_id "
+            "WHERE parse.operation_id=:operation AND artifact.filename=:filename"
+        ),
+        {
+            "operation": report.operation_id,
+            "filename": source_client.instance_filename,
+        },
+    ).scalar_one() == 1
+
+    _release_test_completion_leases(db)
+    session_factory = sessionmaker(bind=db.get_bind())
+    monkeypatch.setattr(financial_cli, "SessionLocal", session_factory)
+    monkeypatch.setattr(
+        financial_cli,
+        "preflight_configured_acceptance_runtime",
+        lambda _run: SimpleNamespace(
+            run_id=run_id,
+            reports_root=reports_root,
+            storage_root=tmp_path,
+        ),
+    )
+    monkeypatch.setattr(financial_cli.settings, "EDGAR_RAW_STORAGE_DIR", str(tmp_path))
+    monkeypatch.setattr(
+        financial_cli,
+        "_utc_now",
+        lambda: datetime(2026, 8, 28, 2, tzinfo=timezone.utc),
+    )
+
+    class ForbiddenUpstream:
+        constructions = 0
+
+        def __init__(self):
+            type(self).constructions += 1
+            pytest.fail("no-delta recovery constructed an upstream client")
+
+    monkeypatch.setattr(financial_cli, "EdgarClient", ForbiddenUpstream)
+    arguments = [
+        "ingest-gold-case",
+        "--case-id",
+        case_id,
+        "--acceptance-run-id",
+        run_id,
+        "--acceptance-pass",
+        "1",
+        "--report-json",
+        str(reports_root / "pass-1" / f"{case_id}.json"),
+    ]
+    operation_count = db.execute(
+        text("SELECT count(*) FROM sec_financial_ingestion_operations")
+    ).scalar_one()
+    parse_count = db.execute(
+        text("SELECT count(*) FROM sec_financial_parse_runs")
+    ).scalar_one()
+    first = CliRunner().invoke(financial_cli.app, arguments)
+    second = CliRunner().invoke(financial_cli.app, arguments)
+
+    assert first.exit_code == second.exit_code == 1
+    assert "retained_recovery_no_provenance_delta" in first.output
+    assert "retained_recovery_no_provenance_delta" in second.output
+    assert ForbiddenUpstream.constructions == 0
+    assert db.execute(
+        text("SELECT count(*) FROM sec_financial_ingestion_operations")
+    ).scalar_one() == operation_count
+    assert db.execute(
+        text("SELECT count(*) FROM sec_financial_parse_runs")
+    ).scalar_one() == parse_count
+    assert db.execute(
+        text(
+            "SELECT count(*) FROM sec_acceptance_operation_links link "
+            "JOIN sec_acceptance_case_attempts attempt ON attempt.id=link.attempt_id "
+            "WHERE attempt.run_id=:run AND link.operation_role<>'recovered'"
+        ),
+        {"run": run_id},
+    ).scalar_one() == 2
 
 @pytest.mark.parametrize(
     ("wrong_case", "wrong_pass"),
@@ -1921,6 +2441,13 @@ def test_recovered_operation_link_rejects_cross_case_or_pass_authority(
         run_id="gold-wrong-scope",
         case_id=wrong_case,
         acceptance_pass=wrong_pass,
+    )
+    _claim_acceptance_attempt(
+        db,
+        run_id="gold-wrong-scope",
+        case_id=wrong_case,
+        acceptance_pass=wrong_pass,
+        attempt_id=wrong_attempt["id"],
     )
 
     with pytest.raises(DBAPIError, match="same-case creation authority"):
@@ -1959,6 +2486,13 @@ def test_failed_operation_is_atomically_classified_by_database_terminal_result(
         run_id="gold-failed-link",
         case_id="failed-primary",
         acceptance_pass=1,
+    )
+    _claim_acceptance_attempt(
+        db,
+        run_id="gold-failed-link",
+        case_id="failed-primary",
+        acceptance_pass=1,
+        attempt_id=attempt["id"],
     )
     record_acceptance_evidence_checkpoint(
         db,
@@ -2146,6 +2680,13 @@ def _complete_24x2_runtime_authority(db, tmp_path):
                 run_id=common["run_id"],
                 case_id=case_id,
                 acceptance_pass=acceptance_pass,
+            )
+            _claim_acceptance_attempt(
+                db,
+                run_id=common["run_id"],
+                case_id=case_id,
+                acceptance_pass=acceptance_pass,
+                attempt_id=attempt["id"],
             )
             record_acceptance_evidence_checkpoint(
                 db,
@@ -2756,3 +3297,734 @@ def test_stock_lock_serializes_exact_replay(isolated_engine,tmp_path):
     [thread.start() for thread in threads]; barrier.wait(timeout=5); blocker.commit()
     [thread.join(timeout=15) for thread in threads]; blocker.close()
     assert not errors and sorted(item.replayed for item in receipts)==[False,True]
+
+
+def test_sec_recovery_stock_lock_rollback_releases_and_different_stock_proceeds(
+    isolated_engine,
+):
+    Session = sessionmaker(bind=isolated_engine)
+    blocker = Session()
+    acquire_sec_financial_stock_lock(blocker, stock_id=91_001)
+    same_acquired = threading.Event()
+    other_acquired = threading.Event()
+    errors: list[BaseException] = []
+
+    def acquire(stock_id: int, acquired: threading.Event) -> None:
+        session = Session()
+        try:
+            acquire_sec_financial_stock_lock(session, stock_id=stock_id)
+            acquired.set()
+            session.rollback()
+        except BaseException as exc:
+            errors.append(exc)
+        finally:
+            session.close()
+
+    same = threading.Thread(target=acquire, args=(91_001, same_acquired))
+    other = threading.Thread(target=acquire, args=(91_002, other_acquired))
+    same.start()
+    other.start()
+    other.join(timeout=5)
+
+    assert other_acquired.is_set()
+    assert not same_acquired.is_set()
+    blocker.rollback()
+    blocker.close()
+    same.join(timeout=5)
+    assert same_acquired.is_set()
+    assert errors == []
+
+
+@pytest.mark.parametrize("owner_end", ["release", "disconnect"])
+def test_acceptance_completion_claim_is_nonblocking_append_only_and_crash_recoverable(
+    db, tmp_path, isolated_engine, owner_end
+):
+    run_id = "gold-completion-claim"
+    case_id = "aapl-primary"
+    instance = "11111111-1111-4111-8111-111111111111"
+    persist_rate_guard_snapshot(
+        db,
+        run_id=run_id,
+        phase="before",
+        configured_route="https://rate-guard.example.test",
+        expected_instance_id=instance,
+        observed_instance_id=instance,
+        fetch_mode="rate_guard",
+        fallback_enabled=False,
+        fallback_url=None,
+        metrics={"rate_per_sec": 1.0},
+        manifest_digest="e" * 64,
+        database_name="valuepilot_acceptance_gold_completion_claim",
+        storage_root=tmp_path,
+    )
+    first_attempt = begin_acceptance_case_attempt(
+        db, run_id=run_id, case_id=case_id, acceptance_pass=1
+    )
+    owner = acquire_acceptance_completion_lease(
+        db, run_id=run_id, case_id=case_id, acceptance_pass=1
+    )
+    assert owner is not None
+    append_acceptance_completion_claim(owner, attempt_id=first_attempt["id"])
+
+    Session = sessionmaker(bind=isolated_engine)
+    contender_session = Session()
+    try:
+        assert acquire_acceptance_completion_lease(
+            contender_session, run_id=run_id, case_id=case_id, acceptance_pass=1
+        ) is None
+    finally:
+        contender_session.close()
+    other_session = Session()
+    try:
+        other_case = acquire_acceptance_completion_lease(
+            other_session,
+            run_id=run_id,
+            case_id="msft-primary",
+            acceptance_pass=1,
+        )
+        assert other_case is not None
+        other_case.release()
+    finally:
+        other_session.close()
+
+    second_attempt = begin_acceptance_case_attempt(
+        db, run_id=run_id, case_id=case_id, acceptance_pass=1
+    )
+    successor_started = threading.Event()
+    successor_committed = threading.Event()
+    successor_errors: list[BaseException] = []
+
+    def direct_successor_insert() -> None:
+        connection = isolated_engine.connect()
+        try:
+            successor_started.set()
+            connection.execute(
+                text(
+                    "INSERT INTO sec_acceptance_case_completion_claims "
+                    "(run_id,case_id,acceptance_pass,attempt_id,generation,"
+                    "claimed_at,created_at,created_txid) VALUES "
+                    "(:run,:case,1,:attempt,1,clock_timestamp(),"
+                    "clock_timestamp(),txid_current())"
+                ),
+                {
+                    "run": run_id,
+                    "case": case_id,
+                    "attempt": second_attempt["id"],
+                },
+            )
+            connection.commit()
+            successor_committed.set()
+        except BaseException as exc:
+            connection.rollback()
+            successor_errors.append(exc)
+        finally:
+            connection.close()
+
+    direct_successor = threading.Thread(target=direct_successor_insert)
+    direct_successor.start()
+    assert successor_started.wait(timeout=5)
+    direct_successor.join(timeout=10)
+    assert not direct_successor.is_alive()
+    assert len(successor_errors) == 1
+    assert "active session lease" in str(successor_errors[0])
+    assert not successor_committed.is_set()
+
+    if owner_end == "release":
+        owner.release()
+    else:
+        owner.abandon_for_test()
+    successor = acquire_acceptance_completion_lease(
+        db, run_id=run_id, case_id=case_id, acceptance_pass=1
+    )
+    assert successor is not None
+    assert successor.attempt_id == first_attempt["id"]
+    try:
+        claims = db.execute(
+            text(
+                "SELECT generation,attempt_id,previous_claim_id "
+                "FROM sec_acceptance_case_completion_claims "
+                "WHERE run_id=:run AND case_id=:case ORDER BY generation"
+            ),
+            {"run": run_id, "case": case_id},
+        ).all()
+        assert [(row.generation, row.attempt_id) for row in claims] == [
+            (1, first_attempt["id"]),
+            (2, first_attempt["id"]),
+        ]
+        assert claims[0].previous_claim_id is None
+        assert claims[1].previous_claim_id is not None
+
+        with pytest.raises(DBAPIError, match="active completion owner"):
+            db.execute(
+                text(
+                    "INSERT INTO sec_acceptance_evidence_checkpoints "
+                    "(run_id,case_id,acceptance_pass,phase,attempt_id,operation_id,"
+                    "evidence_counts,captured_at,created_at,created_txid) VALUES "
+                    "(:run,:case,1,'after',:attempt,:operation,'{}'::jsonb,"
+                    "clock_timestamp(),clock_timestamp(),txid_current())"
+                ),
+                {
+                    "run": run_id,
+                    "case": case_id,
+                    "attempt": second_attempt["id"],
+                    "operation": "11111111-1111-4111-8111-111111111111",
+                },
+            )
+        db.rollback()
+        with pytest.raises(DBAPIError, match="append-only"):
+            db.execute(
+                text(
+                    "UPDATE sec_acceptance_case_completion_claims "
+                    "SET generation=generation+1 WHERE id=:id"
+                ),
+                {"id": successor.claim_id},
+            )
+        db.rollback()
+    finally:
+        successor.release()
+
+
+def test_acceptance_completion_lock_key_is_canonical_for_utf8_case_and_pass(db):
+    row = db.execute(
+        text(
+            "SELECT sec_acceptance_completion_lock_namespace() AS namespace,"
+            "sec_acceptance_completion_lock_local(:run,:case,1::smallint) AS exact_key,"
+            "sec_acceptance_completion_lock_local(:run,:case,1::smallint) AS replay_key,"
+            "sec_acceptance_completion_lock_local(:lower_run,:case,1::smallint) AS case_key,"
+            "sec_acceptance_completion_lock_local(:run,:case,2::smallint) AS pass_key"
+        ),
+        {
+            "run": "FT04-Δ-雪",
+            "lower_run": "ft04-δ-雪",
+            "case": "AAPL-É-primary",
+        },
+    ).mappings().one()
+    assert row.namespace == 1448296515
+    assert row.exact_key == row.replay_key
+    assert row.exact_key != row.case_key
+    assert row.exact_key != row.pass_key
+
+
+def test_completion_claim_owner_identity_is_database_stamped(db, tmp_path):
+    run_id = "gold-owner-stamp"
+    case_id = "aapl-primary"
+    instance = "11111111-1111-4111-8111-111111111111"
+    persist_rate_guard_snapshot(
+        db,
+        run_id=run_id,
+        phase="before",
+        configured_route="https://rate-guard.example.test",
+        expected_instance_id=instance,
+        observed_instance_id=instance,
+        fetch_mode="rate_guard",
+        fallback_enabled=False,
+        fallback_url=None,
+        metrics={"rate_per_sec": 1.0},
+        manifest_digest="e" * 64,
+        database_name="valuepilot_acceptance_gold_owner_stamp",
+        storage_root=tmp_path,
+    )
+    attempt = begin_acceptance_case_attempt(
+        db, run_id=run_id, case_id=case_id, acceptance_pass=1
+    )
+    owner = acquire_acceptance_completion_lease(
+        db, run_id=run_id, case_id=case_id, acceptance_pass=1
+    )
+    assert owner is not None
+    try:
+        with pytest.raises(DBAPIError, match="database stamped"):
+            owner._connection.execute(
+                text(
+                    """INSERT INTO sec_acceptance_case_completion_claims
+                         (run_id,case_id,acceptance_pass,attempt_id,generation,
+                          owner_backend_pid,owner_backend_start,
+                          owner_session_token_hash,claimed_at,created_at,created_txid)
+                       VALUES (:run,:case,1,:attempt,1,1,'2000-01-01Z',:hash,
+                               clock_timestamp(),clock_timestamp(),txid_current())"""
+                ),
+                {
+                    "run": run_id,
+                    "case": case_id,
+                    "attempt": attempt["id"],
+                    "hash": "0" * 32,
+                },
+            )
+        owner._connection.rollback()
+        append_acceptance_completion_claim(owner, attempt_id=attempt["id"])
+        stamped = owner._connection.execute(
+            text(
+                """SELECT owner_backend_pid,owner_backend_start,
+                          owner_session_token_hash,pg_backend_pid() AS current_pid,
+                          current_setting(
+                            'valuepilot.sec_acceptance_completion_owner_token',true
+                          ) AS session_token
+                   FROM sec_acceptance_case_completion_claims WHERE id=:claim"""
+            ),
+            {"claim": owner.claim_id},
+        ).mappings().one()
+        assert stamped.owner_backend_pid == stamped.current_pid
+        assert stamped.owner_backend_start is not None
+        assert stamped.session_token
+        assert stamped.owner_session_token_hash != "0" * 32
+        assert owner._connection.execute(
+            text("SELECT md5(:token)"), {"token": stamped.session_token}
+        ).scalar_one() == stamped.owner_session_token_hash
+    finally:
+        owner.release()
+
+
+def test_acceptance_authority_writes_require_a_completion_claim(db, tmp_path):
+    run_id = "gold-no-completion-claim"
+    case_id = "aapl-primary"
+    instance = "11111111-1111-4111-8111-111111111111"
+    persist_rate_guard_snapshot(
+        db,
+        run_id=run_id,
+        phase="before",
+        configured_route="https://rate-guard.example.test",
+        expected_instance_id=instance,
+        observed_instance_id=instance,
+        fetch_mode="rate_guard",
+        fallback_enabled=False,
+        fallback_url=None,
+        metrics={"rate_per_sec": 1.0},
+        manifest_digest="e" * 64,
+        database_name="valuepilot_acceptance_gold_no_claim",
+        storage_root=tmp_path,
+    )
+    attempt = begin_acceptance_case_attempt(
+        db, run_id=run_id, case_id=case_id, acceptance_pass=1
+    )
+
+    statements = (
+        (
+            "sec_acceptance_operation_links",
+            """INSERT INTO sec_acceptance_operation_links
+                 (attempt_id,operation_id,operation_ordinal,operation_role,
+                  linked_at,created_at,created_txid)
+               VALUES (:attempt,'11111111-1111-4111-8111-111111111111',1,'main',
+                       clock_timestamp(),clock_timestamp(),txid_current())""",
+        ),
+        (
+            "sec_acceptance_publication_bindings",
+            """INSERT INTO sec_acceptance_publication_bindings
+                 (attempt_id,requested_cutoff,source_set_sha256,
+                  ordered_source_identities,mapping_version_id,amendment_policy,
+                  expected_publication_run_id,publication_run_id,bound_at,
+                  created_at,created_txid)
+               VALUES (:attempt,clock_timestamp(),:digest,'[]'::jsonb,'missing',
+                       'latest-known-v1',NULL,
+                       '11111111-1111-4111-8111-111111111111',clock_timestamp(),
+                       clock_timestamp(),txid_current())""",
+        ),
+        (
+            "sec_acceptance_evidence_checkpoints",
+            """INSERT INTO sec_acceptance_evidence_checkpoints
+                 (run_id,case_id,acceptance_pass,phase,attempt_id,operation_id,
+                  evidence_counts,captured_at,created_at,created_txid)
+               VALUES (:run,:case,1,'before',:attempt,NULL,'{}'::jsonb,
+                       clock_timestamp(),clock_timestamp(),txid_current())""",
+        ),
+        (
+            "sec_acceptance_evidence_checkpoints",
+            """INSERT INTO sec_acceptance_evidence_checkpoints
+                 (run_id,case_id,acceptance_pass,phase,attempt_id,operation_id,
+                  evidence_counts,captured_at,created_at,created_txid)
+               VALUES (:run,:case,1,'after',:attempt,
+                       '11111111-1111-4111-8111-111111111111','{}'::jsonb,
+                       clock_timestamp(),clock_timestamp(),txid_current())""",
+        ),
+    )
+    for _table, statement in statements:
+        with pytest.raises(DBAPIError, match="active completion owner"):
+            db.execute(
+                text(statement),
+                {
+                    "run": run_id,
+                    "case": case_id,
+                    "attempt": attempt["id"],
+                    "digest": "a" * 64,
+                },
+            )
+        db.rollback()
+
+    assert db.execute(
+        text(
+            "SELECT (SELECT count(*) FROM sec_acceptance_operation_links),"
+            "(SELECT count(*) FROM sec_acceptance_publication_bindings),"
+            "(SELECT count(*) FROM sec_acceptance_evidence_checkpoints)"
+        )
+    ).one() == (0, 0, 0)
+
+
+@pytest.mark.parametrize("owner_end", ["release", "disconnect"])
+def test_inactive_completion_claim_cannot_authorize_direct_writes(
+    db, tmp_path, isolated_engine, owner_end
+):
+    run_id = "gold-disconnected-owner"
+    case_id = "aapl-primary"
+    instance = "11111111-1111-4111-8111-111111111111"
+    persist_rate_guard_snapshot(
+        db,
+        run_id=run_id,
+        phase="before",
+        configured_route="https://rate-guard.example.test",
+        expected_instance_id=instance,
+        observed_instance_id=instance,
+        fetch_mode="rate_guard",
+        fallback_enabled=False,
+        fallback_url=None,
+        metrics={"rate_per_sec": 1.0},
+        manifest_digest="e" * 64,
+        database_name="valuepilot_acceptance_gold_disconnected_owner",
+        storage_root=tmp_path,
+    )
+    attempt = begin_acceptance_case_attempt(
+        db, run_id=run_id, case_id=case_id, acceptance_pass=1
+    )
+    owner = acquire_acceptance_completion_lease(
+        db, run_id=run_id, case_id=case_id, acceptance_pass=1
+    )
+    assert owner is not None
+    append_acceptance_completion_claim(owner, attempt_id=attempt["id"])
+    if owner_end == "release":
+        owner.release()
+    else:
+        owner.abandon_for_test()
+
+    statements = (
+        """INSERT INTO sec_acceptance_evidence_checkpoints
+             (run_id,case_id,acceptance_pass,phase,attempt_id,operation_id,
+              evidence_counts,captured_at,created_at,created_txid)
+           VALUES (:run,:case,1,'before',:attempt,NULL,'{}'::jsonb,
+                   clock_timestamp(),clock_timestamp(),txid_current())""",
+        """INSERT INTO sec_acceptance_evidence_checkpoints
+             (run_id,case_id,acceptance_pass,phase,attempt_id,operation_id,
+              evidence_counts,captured_at,created_at,created_txid)
+           VALUES (:run,:case,1,'after',:attempt,
+                   '11111111-1111-4111-8111-111111111111','{}'::jsonb,
+                   clock_timestamp(),clock_timestamp(),txid_current())""",
+        """INSERT INTO sec_acceptance_operation_links
+             (attempt_id,operation_id,operation_ordinal,operation_role,
+              linked_at,created_at,created_txid)
+           VALUES (:attempt,'11111111-1111-4111-8111-111111111111',1,'main',
+                   clock_timestamp(),clock_timestamp(),txid_current())""",
+        """INSERT INTO sec_acceptance_publication_bindings
+             (attempt_id,requested_cutoff,source_set_sha256,
+              ordered_source_identities,mapping_version_id,amendment_policy,
+              expected_publication_run_id,publication_run_id,bound_at,
+              created_at,created_txid)
+           VALUES (:attempt,clock_timestamp(),:digest,'[]'::jsonb,'missing',
+                   'latest-known-v1',NULL,
+                   '11111111-1111-4111-8111-111111111111',clock_timestamp(),
+                   clock_timestamp(),txid_current())""",
+    )
+    for statement in statements:
+        connection = isolated_engine.connect()
+        try:
+            with pytest.raises(DBAPIError, match="active completion owner"):
+                connection.execute(
+                    text(statement),
+                    {
+                        "run": run_id,
+                        "case": case_id,
+                        "attempt": attempt["id"],
+                        "digest": "a" * 64,
+                    },
+                )
+            connection.rollback()
+        finally:
+            connection.close()
+
+    assert db.execute(
+        text(
+            "SELECT (SELECT count(*) FROM sec_acceptance_operation_links),"
+            "(SELECT count(*) FROM sec_acceptance_publication_bindings),"
+            "(SELECT count(*) FROM sec_acceptance_evidence_checkpoints)"
+        )
+    ).one() == (0, 0, 0)
+
+
+def test_direct_before_checkpoint_cannot_preempt_live_completion_owner(
+    db, tmp_path, isolated_engine
+):
+    run_id = "gold-before-owner-race"
+    case_id = "aapl-primary"
+    instance = "11111111-1111-4111-8111-111111111111"
+    persist_rate_guard_snapshot(
+        db,
+        run_id=run_id,
+        phase="before",
+        configured_route="https://rate-guard.example.test",
+        expected_instance_id=instance,
+        observed_instance_id=instance,
+        fetch_mode="rate_guard",
+        fallback_enabled=False,
+        fallback_url=None,
+        metrics={"rate_per_sec": 1.0},
+        manifest_digest="e" * 64,
+        database_name="valuepilot_acceptance_gold_before_race",
+        storage_root=tmp_path,
+    )
+    owner_attempt = begin_acceptance_case_attempt(
+        db, run_id=run_id, case_id=case_id, acceptance_pass=1
+    )
+    contender_attempt = begin_acceptance_case_attempt(
+        db, run_id=run_id, case_id=case_id, acceptance_pass=1
+    )
+    owner = acquire_acceptance_completion_lease(
+        db, run_id=run_id, case_id=case_id, acceptance_pass=1
+    )
+    assert owner is not None
+    append_acceptance_completion_claim(owner, attempt_id=owner_attempt["id"])
+
+    started = threading.Event()
+    finished = threading.Event()
+    errors: list[BaseException] = []
+
+    def direct_before_insert() -> None:
+        connection = isolated_engine.connect()
+        try:
+            started.set()
+            connection.execute(
+                text(
+                    """INSERT INTO sec_acceptance_evidence_checkpoints
+                         (run_id,case_id,acceptance_pass,phase,attempt_id,operation_id,
+                          evidence_counts,captured_at,created_at,created_txid)
+                       VALUES (:run,:case,1,'before',:attempt,NULL,'{}'::jsonb,
+                               clock_timestamp(),clock_timestamp(),txid_current())"""
+                ),
+                {
+                    "run": run_id,
+                    "case": case_id,
+                    "attempt": contender_attempt["id"],
+                },
+            )
+            connection.commit()
+        except BaseException as exc:
+            connection.rollback()
+            errors.append(exc)
+        finally:
+            finished.set()
+            connection.close()
+
+    contender = threading.Thread(target=direct_before_insert)
+    contender.start()
+    assert started.wait(timeout=5)
+    assert not finished.wait(timeout=0.5)
+    checkpoint = record_acceptance_evidence_checkpoint(
+        db,
+        run_id=run_id,
+        case_id=case_id,
+        acceptance_pass=1,
+        phase="before",
+        attempt_id=owner_attempt["id"],
+    )
+    assert checkpoint["attempt_id"] == owner_attempt["id"]
+    owner.release()
+    contender.join(timeout=10)
+    assert not contender.is_alive()
+    assert len(errors) == 1
+    assert "active completion owner" in str(errors[0])
+    assert db.execute(
+        text(
+            "SELECT attempt_id FROM sec_acceptance_evidence_checkpoints "
+            "WHERE run_id=:run AND case_id=:case AND phase='before'"
+        ),
+        {"run": run_id, "case": case_id},
+    ).scalar_one() == owner_attempt["id"]
+
+
+def test_checkpoint_exact_replay_rejects_forged_existing_authority(db, tmp_path):
+    run_id = "gold-forged-before"
+    case_id = "aapl-primary"
+    instance = "11111111-1111-4111-8111-111111111111"
+    persist_rate_guard_snapshot(
+        db,
+        run_id=run_id,
+        phase="before",
+        configured_route="https://rate-guard.example.test",
+        expected_instance_id=instance,
+        observed_instance_id=instance,
+        fetch_mode="rate_guard",
+        fallback_enabled=False,
+        fallback_url=None,
+        metrics={"rate_per_sec": 1.0},
+        manifest_digest="e" * 64,
+        database_name="valuepilot_acceptance_gold_forged_before",
+        storage_root=tmp_path,
+    )
+    attempt = begin_acceptance_case_attempt(
+        db, run_id=run_id, case_id=case_id, acceptance_pass=1
+    )
+    _claim_acceptance_attempt(
+        db,
+        run_id=run_id,
+        case_id=case_id,
+        acceptance_pass=1,
+        attempt_id=attempt["id"],
+    )
+    db.execute(text("ALTER TABLE sec_acceptance_evidence_checkpoints DISABLE TRIGGER USER"))
+    try:
+        db.execute(
+            text(
+                """INSERT INTO sec_acceptance_evidence_checkpoints
+                     (run_id,case_id,acceptance_pass,phase,attempt_id,operation_id,
+                      evidence_counts,captured_at,created_at,created_txid)
+                   VALUES (:run,:case,1,'before',:attempt,NULL,'{}'::jsonb,
+                           clock_timestamp(),clock_timestamp(),txid_current())"""
+            ),
+            {"run": run_id, "case": case_id, "attempt": attempt["id"]},
+        )
+        db.commit()
+    finally:
+        db.execute(
+            text("ALTER TABLE sec_acceptance_evidence_checkpoints ENABLE TRIGGER USER")
+        )
+        db.commit()
+
+    with pytest.raises(
+        ValueError, match="checkpoint existing authority mismatch"
+    ):
+        record_acceptance_evidence_checkpoint(
+            db,
+            run_id=run_id,
+            case_id=case_id,
+            acceptance_pass=1,
+            phase="before",
+            attempt_id=attempt["id"],
+        )
+
+
+def test_direct_successor_rechecks_completed_status_after_live_owner_releases(
+    db, tmp_path, isolated_engine
+):
+    run_id = "gold-claim-status-recheck"
+    case_id = "aapl-primary"
+    instance = "11111111-1111-4111-8111-111111111111"
+    persist_rate_guard_snapshot(
+        db,
+        run_id=run_id,
+        phase="before",
+        configured_route="https://rate-guard.example.test",
+        expected_instance_id=instance,
+        observed_instance_id=instance,
+        fetch_mode="rate_guard",
+        fallback_enabled=False,
+        fallback_url=None,
+        metrics={"rate_per_sec": 1.0},
+        manifest_digest="e" * 64,
+        database_name="valuepilot_acceptance_gold_claim_status_recheck",
+        storage_root=tmp_path,
+    )
+    owner_attempt = begin_acceptance_case_attempt(
+        db, run_id=run_id, case_id=case_id, acceptance_pass=1
+    )
+    owner = acquire_acceptance_completion_lease(
+        db, run_id=run_id, case_id=case_id, acceptance_pass=1
+    )
+    assert owner is not None
+    append_acceptance_completion_claim(owner, attempt_id=owner_attempt["id"])
+
+    stock = Stock(ticker="CLAIMSTATUS", exchange="US", company_name="Claim Status")
+    db.add(stock)
+    db.flush()
+    identity = register_reviewed_sec_identity(
+        db,
+        stock_id=stock.id,
+        cik="0000000199",
+        effective_from=date(2020, 1, 1),
+        known_at=datetime(2026, 9, 1, tzinfo=timezone.utc),
+        review_reason="completion claim status recheck fixture",
+    )
+    db.commit()
+    operation_id = "11111111-1111-4111-8111-111111111199"
+    db.execute(
+        text(
+            "INSERT INTO sec_financial_ingestion_operations "
+            "(id,issuer_identity_id,attempted_at) "
+            "VALUES (:operation,:identity,clock_timestamp())"
+        ),
+        {"operation": operation_id, "identity": identity.id},
+    )
+    link_acceptance_operation(
+        db,
+        attempt_id=owner_attempt["id"],
+        operation_id=operation_id,
+        operation_ordinal=1,
+        operation_role="main",
+    )
+    db.commit()
+    successor_attempt = begin_acceptance_case_attempt(
+        db, run_id=run_id, case_id=case_id, acceptance_pass=1
+    )
+    unleased = isolated_engine.connect()
+    try:
+        with pytest.raises(DBAPIError, match="active session lease"):
+            unleased.execute(
+                text(
+                    "INSERT INTO sec_acceptance_case_completion_claims "
+                    "(run_id,case_id,acceptance_pass,attempt_id,generation,"
+                    "claimed_at,created_at,created_txid) VALUES "
+                    "(:run,:case,1,:attempt,1,clock_timestamp(),"
+                    "clock_timestamp(),txid_current())"
+                ),
+                {
+                    "run": run_id,
+                    "case": case_id,
+                    "attempt": successor_attempt["id"],
+                },
+            )
+        unleased.rollback()
+    finally:
+        unleased.close()
+
+    record_acceptance_evidence_checkpoint(
+        db,
+        run_id=run_id,
+        case_id=case_id,
+        acceptance_pass=1,
+        phase="after",
+        attempt_id=owner_attempt["id"],
+        operation_id=operation_id,
+    )
+    owner.release()
+
+    leased_successor = isolated_engine.connect()
+    try:
+        leased_successor.execute(
+            text(
+                "SELECT pg_advisory_lock("
+                "sec_acceptance_completion_lock_namespace(),"
+                "sec_acceptance_completion_lock_local("
+                ":run,:case,CAST(1 AS smallint)))"
+            ),
+            {"run": run_id, "case": case_id},
+        )
+        with pytest.raises(
+            DBAPIError, match="completion takeover must retain durable attempt authority"
+        ):
+            leased_successor.execute(
+                text(
+                    "INSERT INTO sec_acceptance_case_completion_claims "
+                    "(run_id,case_id,acceptance_pass,attempt_id,generation,"
+                    "claimed_at,created_at,created_txid) VALUES "
+                    "(:run,:case,1,:attempt,1,clock_timestamp(),"
+                    "clock_timestamp(),txid_current())"
+                ),
+                {
+                    "run": run_id,
+                    "case": case_id,
+                    "attempt": successor_attempt["id"],
+                },
+            )
+        leased_successor.rollback()
+    finally:
+        leased_successor.close()
+    assert db.execute(
+        text(
+            "SELECT count(*) FROM sec_acceptance_case_completion_claims "
+            "WHERE run_id=:run AND case_id=:case"
+        ),
+        {"run": run_id, "case": case_id},
+    ).scalar_one() == 1

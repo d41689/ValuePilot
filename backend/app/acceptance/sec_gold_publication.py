@@ -13,6 +13,7 @@ from datetime import datetime
 from typing import Any
 
 from sqlalchemy import text
+from sqlalchemy.engine import Connection, Engine
 from sqlalchemy.exc import DBAPIError
 from sqlalchemy.orm import Session
 
@@ -47,6 +48,156 @@ class AcceptancePublicationExecution:
     amendment_policy_id: str
     sources: tuple[VerifiedPublicationSource, ...]
     normalizations_created: int
+
+
+@dataclass
+class AcceptanceCompletionClaimLease:
+    """Nonblocking DB-session liveness for one case/pass completion owner."""
+
+    run_id: str
+    case_id: str
+    acceptance_pass: int
+    claim_id: int | None
+    attempt_id: int | None
+    generation: int | None
+    _connection: Connection
+    _engine: Engine
+    _session: Session
+    _closed: bool = False
+
+    def release(self) -> None:
+        if self._closed:
+            return
+        try:
+            if self._session.in_transaction():
+                self._session.rollback()
+            self._connection.execute(
+                text(
+                    "SELECT set_config("
+                    "'valuepilot.sec_acceptance_completion_owner_token','',false)"
+                )
+            )
+            self._connection.execute(
+                text(
+                    "SELECT pg_advisory_unlock("
+                    "sec_acceptance_completion_lock_namespace(),"
+                    "sec_acceptance_completion_lock_local("
+                    ":run,:case,CAST(:pass AS smallint)))"
+                ),
+                {
+                    "run": self.run_id,
+                    "case": self.case_id,
+                    "pass": self.acceptance_pass,
+                },
+            )
+            self._connection.commit()
+        finally:
+            self._session.bind = self._engine
+            self._connection.close()
+            self._closed = True
+
+    def abandon_for_test(self) -> None:
+        """Model a dead owner by terminating its physical DB connection."""
+
+        if self._closed:
+            return
+        self._connection.invalidate()
+        self._connection.close()
+        self._session.bind = self._engine
+        self._closed = True
+
+
+def acquire_acceptance_completion_lease(
+    db: Session,
+    *,
+    run_id: str,
+    case_id: str,
+    acceptance_pass: int,
+) -> AcceptanceCompletionClaimLease | None:
+    """Try to own a case/pass completion without writing or blocking waiters."""
+
+    bind = db.get_bind()
+    engine = bind.engine if isinstance(bind, Connection) else bind
+    connection = engine.connect()
+    acquired = bool(
+        connection.execute(
+            text(
+                "SELECT pg_try_advisory_lock("
+                "sec_acceptance_completion_lock_namespace(),"
+                "sec_acceptance_completion_lock_local("
+                ":run,:case,CAST(:pass AS smallint)))"
+            ),
+            {"run": run_id, "case": case_id, "pass": acceptance_pass},
+        ).scalar_one()
+    )
+    if not acquired:
+        connection.close()
+        return None
+    row = connection.execute(
+        text(
+            """SELECT id,attempt_id,generation
+               FROM sec_acceptance_case_completion_claims
+               WHERE run_id=:run AND case_id=:case AND acceptance_pass=:pass
+               ORDER BY generation DESC LIMIT 1"""
+        ),
+        {"run": run_id, "case": case_id, "pass": acceptance_pass},
+    ).mappings().one_or_none()
+    connection.commit()
+    db.bind = connection
+    lease = AcceptanceCompletionClaimLease(
+        run_id=run_id,
+        case_id=case_id,
+        acceptance_pass=acceptance_pass,
+        claim_id=int(row.id) if row is not None else None,
+        attempt_id=int(row.attempt_id) if row is not None else None,
+        generation=int(row.generation) if row is not None else None,
+        _connection=connection,
+        _engine=engine,
+        _session=db,
+    )
+    if row is not None:
+        try:
+            return append_acceptance_completion_claim(
+                lease, attempt_id=int(row.attempt_id)
+            )
+        except BaseException:
+            lease.release()
+            raise
+    return lease
+
+
+def append_acceptance_completion_claim(
+    lease: AcceptanceCompletionClaimLease, *, attempt_id: int
+) -> AcceptanceCompletionClaimLease:
+    """Append a crash-recoverable ownership generation under a held lease."""
+
+    if lease._closed:
+        raise ValueError("acceptance completion lease is closed")
+    try:
+        row = lease._connection.execute(
+            text(
+                """INSERT INTO sec_acceptance_case_completion_claims
+                     (run_id,case_id,acceptance_pass,attempt_id,generation,
+                      claimed_at,created_at,created_txid)
+                   VALUES (:run,:case,:pass,:attempt,1,
+                           clock_timestamp(),clock_timestamp(),txid_current())
+                   RETURNING id,generation"""
+            ),
+            {
+                "run": lease.run_id,
+                "case": lease.case_id,
+                "pass": lease.acceptance_pass,
+                "attempt": attempt_id,
+            },
+        ).mappings().one()
+        lease._connection.commit()
+    except BaseException:
+        lease._connection.rollback()
+        raise
+    lease.claim_id = int(row.id)
+    lease.attempt_id = attempt_id
+    lease.generation = int(row.generation)
+    return lease
 
 
 _PERSISTENT_DELTA_FIELDS = (
@@ -124,19 +275,44 @@ def record_acceptance_evidence_checkpoint(
     db.commit()
     row = db.execute(
         text(
-            """SELECT evidence_counts,captured_at,attempt_id,operation_id
+            """SELECT run_id,case_id,acceptance_pass,phase,evidence_counts,
+                      captured_at,created_at,created_txid,attempt_id,operation_id
                FROM sec_acceptance_evidence_checkpoints
                WHERE run_id=:run AND case_id=:case
                  AND acceptance_pass=:pass AND phase=:phase"""
         ),
         {"run": run_id, "case": case_id, "pass": acceptance_pass, "phase": phase},
     ).mappings().one()
-    if phase == "after" and str(row.operation_id) != str(operation_id):
-        raise ValueError("acceptance after checkpoint operation identity mismatch")
-    if phase == "after" and int(row.attempt_id) != int(attempt_id):
-        raise ValueError("acceptance after checkpoint attempt identity mismatch")
+    counts = dict(row.evidence_counts)
+    owner_attempt_id = db.execute(
+        text(
+            """SELECT attempt_id FROM sec_acceptance_case_completion_claims
+               WHERE run_id=:run AND case_id=:case AND acceptance_pass=:pass
+               ORDER BY generation DESC LIMIT 1"""
+        ),
+        {"run": run_id, "case": case_id, "pass": acceptance_pass},
+    ).scalar_one_or_none()
+    expected_operation_id = None if phase == "before" else operation_id
+    if (
+        row.run_id != run_id
+        or row.case_id != case_id
+        or int(row.acceptance_pass) != acceptance_pass
+        or row.phase != phase
+        or int(row.attempt_id) != int(attempt_id)
+        or row.operation_id != expected_operation_id
+        or owner_attempt_id is None
+        or int(owner_attempt_id) != int(attempt_id)
+        or row.captured_at != row.created_at
+        or int(row.created_txid) <= 0
+        or set(counts) != set(_PERSISTENT_DELTA_FIELDS)
+        or any(
+            isinstance(value, bool) or not isinstance(value, int) or value < 0
+            for value in counts.values()
+        )
+    ):
+        raise ValueError("acceptance checkpoint existing authority mismatch")
     return {
-        "evidence_counts": {key: int(value) for key, value in row.evidence_counts.items()},
+        "evidence_counts": {key: int(value) for key, value in counts.items()},
         "captured_at": row.captured_at,
         "operation_id": str(row.operation_id) if row.operation_id is not None else None,
         "attempt_id": int(row.attempt_id),
@@ -152,6 +328,15 @@ def begin_acceptance_case_attempt(
 ) -> dict[str, Any]:
     """DB-stamp a new crash/resume attempt before any ingestion work."""
 
+    db.execute(
+        text("SELECT pg_advisory_xact_lock(hashtextextended(:key, 0))"),
+        {
+            "key": (
+                "sec-acceptance-case-attempt:"
+                f"{run_id}:{case_id}:{acceptance_pass}"
+            )
+        },
+    )
     row = db.execute(
         text(
             """INSERT INTO sec_acceptance_case_attempts
@@ -325,13 +510,16 @@ def recoverable_finalized_acceptance_acquisition(
     rows = list(
         db.execute(
             text(
-                """SELECT link.operation_id,attempt.attempt_ordinal,
+                """SELECT link.operation_id,operation.created_at AS operation_created_at,
+                          attempt.attempt_ordinal,
                           link.operation_ordinal,result.result_kind,
                           available.available_at
                    FROM sec_acceptance_case_attempts attempt
                    JOIN sec_acceptance_operation_links link
                      ON link.attempt_id=attempt.id
                     AND link.operation_role<>'recovered'
+                   JOIN sec_financial_ingestion_operations operation
+                     ON operation.id=link.operation_id
                    LEFT JOIN sec_financial_operation_results result
                      ON result.operation_id=link.operation_id
                    LEFT JOIN sec_financial_lineage_availabilities available
@@ -378,6 +566,30 @@ def recoverable_finalized_acceptance_acquisition(
         raise ValueError(
             "acceptance_recovery_authority_incomplete: multiple open history cursors"
         )
+    current_parser_rows = list(
+        db.execute(
+            text(
+                """SELECT parse.status,parse.fact_count
+                   FROM sec_acceptance_case_attempts attempt
+                   JOIN sec_acceptance_operation_links link
+                     ON link.attempt_id=attempt.id
+                    AND link.operation_role<>'recovered'
+                   JOIN sec_financial_accession_attempts accession
+                     ON accession.operation_id=link.operation_id
+                   JOIN sec_financial_parse_runs parse
+                     ON parse.id=accession.parse_run_id
+                   WHERE attempt.run_id=:run AND attempt.case_id=:case
+                     AND attempt.acceptance_pass=:pass
+                     AND parse.parser_version=:parser"""
+            ),
+            {
+                "run": run_id,
+                "case": case_id,
+                "pass": acceptance_pass,
+                "parser": ACCEPTANCE_PARSER_VERSION,
+            },
+        ).mappings()
+    )
     return {
         "operations": tuple(
             {
@@ -388,30 +600,11 @@ def recoverable_finalized_acceptance_acquisition(
             for row in rows
         ),
         "next_history_cursor": str(open_cursors[0]) if open_cursors else None,
-        "requires_reparse": not bool(
-            db.execute(
-                text(
-                    """SELECT 1
-                       FROM sec_acceptance_case_attempts attempt
-                       JOIN sec_acceptance_operation_links link
-                         ON link.attempt_id=attempt.id
-                        AND link.operation_role<>'recovered'
-                       JOIN sec_financial_accession_attempts accession
-                         ON accession.operation_id=link.operation_id
-                       JOIN sec_financial_parse_runs parse
-                         ON parse.id=accession.parse_run_id
-                       WHERE attempt.run_id=:run AND attempt.case_id=:case
-                         AND attempt.acceptance_pass=:pass
-                         AND parse.parser_version=:parser
-                       LIMIT 1"""
-                ),
-                {
-                    "run": run_id,
-                    "case": case_id,
-                    "pass": acceptance_pass,
-                    "parser": ACCEPTANCE_PARSER_VERSION,
-                },
-            ).first()
+        "latest_operation_created_at": rows[-1].operation_created_at,
+        "requires_reparse": not bool(current_parser_rows),
+        "has_succeeded_parse": any(
+            str(row.status) == "succeeded" and int(row.fact_count) > 0
+            for row in current_parser_rows
         ),
     }
 
@@ -676,15 +869,48 @@ def load_acceptance_evidence_delta(
 ) -> dict[str, Any]:
     rows = db.execute(
         text(
-            """SELECT phase,evidence_counts FROM sec_acceptance_evidence_checkpoints
-               WHERE run_id=:run AND case_id=:case AND acceptance_pass=:pass"""
+            """SELECT checkpoint.run_id,checkpoint.case_id,
+                      checkpoint.acceptance_pass,checkpoint.phase,
+                      checkpoint.evidence_counts,checkpoint.attempt_id,
+                      checkpoint.operation_id,owner.attempt_id AS owner_attempt_id
+               FROM sec_acceptance_evidence_checkpoints checkpoint
+               LEFT JOIN LATERAL (
+                 SELECT claim.attempt_id
+                 FROM sec_acceptance_case_completion_claims claim
+                 WHERE claim.run_id=checkpoint.run_id
+                   AND claim.case_id=checkpoint.case_id
+                   AND claim.acceptance_pass=checkpoint.acceptance_pass
+                 ORDER BY claim.generation DESC LIMIT 1
+               ) owner ON true
+               WHERE checkpoint.run_id=:run AND checkpoint.case_id=:case
+                 AND checkpoint.acceptance_pass=:pass"""
         ),
         {"run": run_id, "case": case_id, "pass": acceptance_pass},
     ).mappings().all()
-    by_phase = {str(row.phase): dict(row.evidence_counts) for row in rows}
+    by_phase = {str(row.phase): row for row in rows}
     if set(by_phase) != {"before", "after"}:
         raise ValueError("acceptance evidence checkpoint pair is incomplete")
-    return persistent_evidence_delta(by_phase["before"], by_phase["after"])
+    before = by_phase["before"]
+    after = by_phase["after"]
+    if (
+        before.run_id != run_id
+        or after.run_id != run_id
+        or before.case_id != case_id
+        or after.case_id != case_id
+        or int(before.acceptance_pass) != acceptance_pass
+        or int(after.acceptance_pass) != acceptance_pass
+        or before.owner_attempt_id is None
+        or after.owner_attempt_id is None
+        or int(before.owner_attempt_id) != int(after.owner_attempt_id)
+        or int(before.attempt_id) != int(after.attempt_id)
+        or int(before.attempt_id) != int(before.owner_attempt_id)
+        or before.operation_id is not None
+        or after.operation_id is None
+    ):
+        raise ValueError("acceptance evidence checkpoint owner authority mismatch")
+    return persistent_evidence_delta(
+        dict(before.evidence_counts), dict(after.evidence_counts)
+    )
 
 
 def persistent_evidence_delta(

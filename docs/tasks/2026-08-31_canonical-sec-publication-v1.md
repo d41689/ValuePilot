@@ -223,6 +223,62 @@ Run the canonical commands verbatim and in order:
 
 ## Sign-off trail
 
+- 2026-09-01: Step 7B concurrent recovery remediation is implemented pending
+  Terra reround. Recovery now acquires the canonical namespaced per-stock SEC
+  transaction lock before finalizing pending lineage, rebuilding the complete
+  linked acquisition chain, validating the latest exact manifest/input
+  provenance, and deciding or creating a continuation. The recovered-operation
+  link transaction no longer commits between that state reconstruction and
+  continuation creation. Ingestion, identity registration/retirement,
+  finalization, and publication use the same stock lock first; issuer locks
+  follow it in one order, and same-session ingestion safely reenters the
+  transaction lock. A narrow per-case/pass control lock serializes DB-stamped
+  attempt ordinals before the stock boundary, preventing concurrent append-only
+  attempt inserts from selecting the same ordinal.
+
+  A real two-session barrier regression starts both retries from the same
+  finalized v2 plus old-selector v2.1 failure chain. It proves exactly one new
+  continuation creation link, one upstream construction, one instance request,
+  and one new parse/publication path. The waiter rebuilds state only after the
+  winner's continuation commit and returns typed
+  `retained_recovery_state_advanced` without a duplicate operation, link, or
+  request. A separate PostgreSQL concurrency regression proves rollback
+  releases the transaction lock and another stock proceeds while the first
+  stock remains locked. The focused publication E2E, lineage, CLI, and
+  lineage-migration files passed `269` tests in 388.07 seconds with only the
+  existing Starlette deprecation warning. No network, shared development
+  database, retained live-run storage, commit, or push was used.
+
+- 2026-09-01: Step 7B live recovery-state remediation after commit `448` is
+  implemented pending Terra review. The live chain contained a finalized v2
+  failure followed by a finalized v2.1 failure created under the prior
+  filename selector; the latter had no standalone-instance input. Recovery no
+  longer treats the mere presence of a v2.1 parse run as terminal. For each
+  filing it evaluates only the latest operation-owned accession attempt and
+  its exact manifest group, and continues when a unique bounded missing
+  instance or a newly retained verified standalone instance is absent from the
+  current parse inputs. Older manifest-only candidates remain append-only
+  audit evidence but cannot regain request authority after a newer attempt has
+  retained the instance. The retry still links every prior finalized operation
+  as recovered, then creates one continuation operation whose newly retained
+  instance is bound to both its accession attempt and parse run; its changed
+  input-manifest digest prevents reuse of the old failure. If the current v2.1
+  authority has failed and no such provenance delta remains, recovery exits
+  with typed `retained_recovery_no_provenance_delta` before constructing an
+  upstream client. Repeated retries add no ingestion operation, parse run, or
+  request.
+
+  A three-stage isolated CliRunner E2E regression reproduces the live v2
+  failure, old-selector v2.1 failure, and corrected narrow instance recovery;
+  it verifies append-only attempt/operation roles, the single instance request,
+  new input digest, parse-run instance link, publication, and report. A second
+  E2E regression fetches and links the instance into a v2.1 run that remains a
+  typed statement-authority failure, then proves two retries are no-delta and
+  idempotent. The focused publication E2E, lineage, CLI, and lineage-migration
+  files passed `268` tests with only the existing Starlette deprecation
+  warning. `git diff --check` passes. No network, shared development database,
+  retained live-run storage, commit, or push was used.
+
 - 2026-09-01: Step 7B retained-recovery Terra round-2 remediation is
   implemented pending reround. Standalone-instance filename classification is
   now one canonical predicate shared by retained-content selection and the
@@ -652,6 +708,156 @@ Run the canonical commands verbatim and in order:
   used. Alembic retained the unique `20260901170000` head and
   `git diff --check` passed. Terra adversarial review remains required before
   running the locked package.
+
+- 2026-09-01: Live Step 7B retained-recovery late-join remediation is
+  implemented pending Terra reround. A short, nonblocking PostgreSQL session
+  lease now establishes one active completion owner for each exact acceptance
+  run/case/pass before any new attempt is stamped. A concurrent late join does
+  not wait across source access or parsing and does not insert an observer
+  attempt, operation link, publication binding, or publication run; it returns
+  the typed `acceptance_case_completion_in_progress` result. Migration
+  `20260901200000` records append-only completion generations bound to exact
+  attempts, links each takeover to the prior claim, includes the authority in
+  durable runtime counts, and uses one transaction advisory namespace to
+  serialize claim, operation-link, publication-binding, and final-checkpoint
+  guards. If the owner process loses its database session, the lease is
+  released by PostgreSQL; a retry appends a new generation, recovers the prior
+  operation-owned lineage, and remains the only attempt permitted to bind the
+  publication. A publication already bound before a crash remains owned by its
+  original attempt and is finished by exact replay under the reacquired lease.
+  No stock lock is held across external access or long parsing.
+
+  The real isolated-PostgreSQL regression models the live chain (failed v2,
+  failed old-selector v2.1, owner-session loss, retained manifest provenance
+  delta), pauses A after its continuation/link commit and before finalization or
+  publication, then starts B in a second session. B produces zero new attempts,
+  links, bindings, publications, or upstream requests; A alone performs the
+  single narrow instance request, appends the successful parse authority and
+  creates the sole attempt-owned publication binding. The complete publication
+  E2E file passed 65 tests. The focused CLI, gold acceptance, financial
+  lineage, source-guard and migration set passed 263 tests; the narrower
+  CLI/gold/migration set passed 107 tests. All emitted only the existing
+  Starlette deprecation warning. In-container `compileall`, Alembic's unique
+  `20260901200000` head, and `git diff --check` passed. No network, shared
+  development database, live 24-case execution, or retained acceptance storage
+  was used. Terra reround remains pending.
+
+- 2026-09-01: Live Step 7B completion-claim Terra P1 remediation is
+  implemented pending reround. The session lease and every migration claim,
+  link, binding and after-checkpoint guard now use the same migration-owned
+  two-integer PostgreSQL advisory key. A single SQL helper owns the fixed
+  namespace and hashes the exact UTF-8 bytes of run/case plus the validated
+  pass into the local key; Python does not copy either the namespace string or
+  hash algorithm. The acceptance Session is bound to the same physical
+  connection that holds the session lease, so its transaction locks are
+  reentrant while an unrelated direct writer must wait. On normal release or
+  physical disconnect, a waiting successor re-runs the generation and
+  completion checks under the transaction lock; a case completed while it
+  waited rejects the stale insertion rather than transferring ownership.
+
+  Two real raw-connection tests cover waiting through normal release and owner
+  disconnect, permitted generation takeover, live-owner operation-link writes,
+  completion during the wait, and rejection of the stale successor. A separate
+  key test fixes deterministic UTF-8, case-sensitive run/case and pass
+  separation. The live-shaped continuation/link/publication regression remains
+  green with one binding and no owner self-deadlock. The complete publication
+  E2E file passed 68 tests; the complete focused CLI and lineage-migration files
+  passed 50 tests. Migration upgrade/downgrade/upgrade tests passed, with only
+  the existing Starlette deprecation warning. No network, shared development
+  database, live 24-case execution, or retained acceptance storage was used.
+  Terra reround remains pending.
+
+- 2026-09-01: Live Step 7B completion-owner checkpoint remediation is
+  implemented pending Terra reround. Migration `20260901200000` now applies
+  the same canonical run/case/pass completion lock and latest-claim check to
+  every evidence checkpoint phase, including `before`; a missing claim and a
+  mismatched claim both fail closed. Operation links and publication bindings
+  use the same non-null current-owner rule. This round intended to backfill a
+  pre-migration durable `before` to its checkpoint attempt. The later active-
+  owner review below found that legacy cross-attempt links make the known live
+  run ineligible for such automatic authority; current migration behavior is
+  the stricter fail-closed audit documented there. Once a valid durable
+  `before` exists, takeover retains that same append-only attempt authority.
+
+  Checkpoint insertion remains database-computed. An exact replay now verifies
+  run/case/pass/phase, attempt, operation, database timestamps/transaction
+  identity, and the complete nonnegative integral evidence-count shape after
+  `ON CONFLICT`; a pre-existing forged row is rejected rather than silently
+  accepted. Evidence delta loading likewise requires `before` and `after` to
+  belong to the same latest claimed attempt, with a null before operation and
+  non-null after operation. Real two-connection tests prove a direct `before`
+  insert blocks behind the live owner and, after release, is rejected without
+  taking the unique row; direct operation-link, publication-binding, before,
+  and after writes without any claim all fail with no authority residue. The
+  retained-recovery fixtures now keep one completion-owned attempt across
+  continuation, publication, and checkpoints; operation recency within that
+  same owner is no longer mistaken for an outside state advance. Focused
+  verification passed all `71` publication E2E tests and all `266` remaining
+  CLI, financial-lineage, lineage-migration, gold-acceptance, and publication
+  service tests, with only the existing Starlette deprecation warning.
+  In-container compilation passed, Alembic reports the unique
+  `20260901200000` head, and `git diff --check` passes. No network, shared
+  development database, retained live-run storage, commit, or push was used.
+
+- 2026-09-01: Live Step 7B active-owner and legacy-upgrade remediation is
+  implemented pending Terra reround. A persisted attempt identity alone no
+  longer authorizes acceptance writes after its owner disconnects or returns
+  a pooled connection. Each completion generation is now database-stamped with
+  the owning backend PID, that backend's start timestamp, and a hash of a
+  database-generated random session nonce whose plaintext exists only in the
+  active backend session. Operation-link, publication-binding, report-readiness
+  and both checkpoint guards require the latest claim's exact attempt,
+  PID/start/nonce identity and the canonical session advisory lease. Normal
+  release clears the nonce before unlocking; disconnect destroys both session
+  state and lock. Reacquisition on a new physical connection appends a new
+  generation for the same durable attempt before recovery writes. Caller-
+  supplied owner fields are rejected instead of normalized. This closes stale
+  claim authorization across disconnect, PID reuse, and connection-pool return
+  without holding the stock lock across external access or parsing.
+
+  The claim trigger checks that the current application session already holds
+  the canonical session lease before it obtains the matching transaction lock;
+  it then takes the transaction lock and re-reads attempt scope, latest
+  generation and completion status inside that boundary. Thus the trigger's
+  own transaction lock cannot satisfy its prerequisite. Per the PRD and parsing
+  architecture, PostgreSQL application/admin roles and authorized developers
+  are trusted infrastructure. These guards address normal application
+  concurrency, crash recovery and stale pooled backends; they do not claim to
+  defend against deliberate arbitrary SQL by a trusted role, and add no role,
+  grant, revoke or security-definer boundary.
+
+  Migration `20260901200000` now audits legacy `190000` authority before
+  backfilling any claim. For each scope, before/after checkpoints, operation
+  links, publication bindings and report readiness must all use the same
+  attempt; before must have no operation and after must have one. Orphan or
+  cross-attempt authority raises and rolls the migration back, preserving the
+  immutable rows and leaving the database at `190000`. Therefore the known
+  interrupted live database whose before checkpoint belongs to attempt 1 but
+  later links belong to another attempt is intentionally not eligible for
+  automatic upgrade or resume; an operator must choose a new clean acceptance
+  run rather than have migration invent ownership. Valid legacy before rows
+  backfill as inactive claims and become writable only after a fresh session
+  takeover generation. Delta loading joins both checkpoints to the latest
+  claim and revalidates exact scope, shared attempt, and null/non-null operation
+  boundary.
+
+  Real isolated-PostgreSQL tests cover release and physical disconnect, four
+  stale direct-write classes, caller owner-field forgery, session nonce/hash
+  stamping, nonblocking takeover generations, pool cleanup, late join and
+  unique publication binding. They also prove that a normal application
+  connection cannot insert a claim before acquiring the session lease, that a
+  leased connection can do so, and that the trigger's transaction lock cannot
+  satisfy the lease prerequisite. A real `190000`
+  A-before/B-link+B-after fixture proves upgrade failure, schema rollback and
+  unchanged evidence; an adversarial recovery fixture proves cross-attempt
+  checkpoint delta rejection.
+  The complete publication E2E file passed `74` tests. The complete CLI and
+  lineage-migration files passed `51` tests, and the remaining financial-
+  lineage, gold-acceptance and publication-service files passed `216` tests,
+  all with only the existing Starlette deprecation warning. In-container
+  compilation passed, Alembic reports the unique `20260901200000` head, and
+  `git diff --check` passes. No network, shared development database, retained
+  live-run storage, commit or push was used.
 
 - 2026-09-01: Step 5 amendment-slot authority Terra round 1 remediation
   implemented pending Terra round 2. Publication now acquires one shared,

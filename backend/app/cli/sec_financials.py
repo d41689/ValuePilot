@@ -55,6 +55,9 @@ from app.acceptance.sec_gold_storage import (
 )
 from app.acceptance.sec_gold_publication import (
     ACCEPTANCE_PARSER_VERSION,
+    AcceptanceCompletionClaimLease,
+    acquire_acceptance_completion_lease,
+    append_acceptance_completion_claim,
     acceptance_operation_authority,
     begin_acceptance_case_attempt,
     completed_acceptance_checkpoint,
@@ -79,6 +82,7 @@ from app.models.stocks import Stock
 from app.rate_guard.client import RateGuardClient
 from app.services.sec_financial_ingestion import (
     FinancialHistoryTarget,
+    SecFinancialIngestionError,
     _expected_completed_fiscal_years,
     build_retained_financial_replay_client,
     earliest_replayable_sec_financial_evidence_at,
@@ -90,6 +94,7 @@ from app.services.sec_financial_ingestion import (
     select_sec_financial_evidence_as_of,
     select_sec_financial_failures_as_of,
 )
+from app.services.sec_financial_locking import acquire_sec_financial_stock_lock
 
 
 app = typer.Typer(add_completion=False, no_args_is_help=True)
@@ -614,8 +619,51 @@ def ingest_gold_case(
             validation_db.rollback()
             validation_db.close()
     db = SessionLocal()
+    completion_claim: AcceptanceCompletionClaimLease | None = None
     try:
         if acceptance_run_id is not None:
+            db.execute(text("SET TRANSACTION READ ONLY"))
+            recovered_report = _recover_completed_gold_case_report(
+                db,
+                acceptance_run_id=acceptance_run_id,
+                acceptance_pass=acceptance_pass,
+                case=case,
+                filing_selection_as_of=filing_selection_as_of,
+                expected_years=expected_years,
+                report_json=report_json,
+                storage_root=Path(settings.EDGAR_RAW_STORAGE_DIR),
+            )
+            db.rollback()
+            if recovered_report is not None:
+                human_summary = render_human_case_summary(recovered_report)
+                typer.echo(human_summary)
+                typer.echo(f"acceptance_report_json={report_json.resolve()}")
+                if (
+                    recovered_report.typed_gaps
+                    or recovered_report.typed_failures
+                    or recovered_report.metric_outcomes.get("typed_gap_count", 0)
+                    or recovered_report.metric_outcomes.get("missing_count", 0)
+                    or (
+                        acceptance_pass == 2
+                        and not recovered_report.persistent_delta.get(
+                            "idempotent", False
+                        )
+                    )
+                ):
+                    raise typer.Exit(2)
+                return
+            completion_claim = acquire_acceptance_completion_lease(
+                db,
+                run_id=acceptance_run_id,
+                case_id=case_id,
+                acceptance_pass=acceptance_pass,
+            )
+            if completion_claim is None:
+                raise SecFinancialIngestionError(
+                    "acceptance_case_completion_in_progress"
+                )
+            # The state may have advanced between the initial read and the
+            # nonblocking ownership lease.  Rebuild it while ownership is held.
             db.execute(text("SET TRANSACTION READ ONLY"))
             recovered_report = _recover_completed_gold_case_report(
                 db,
@@ -654,6 +702,13 @@ def ingest_gold_case(
             )
             db.rollback()
             if pending_publication is not None:
+                if completion_claim.attempt_id != int(
+                    pending_publication["attempt_id"]
+                ):
+                    raise ValueError(
+                        "acceptance_recovery_authority_incomplete: "
+                        "bound publication is not owned by the completion claim"
+                    )
                 publication_identity = db.execute(
                     text(
                         """SELECT stock_id,issuer_identity_id
@@ -720,12 +775,49 @@ def ingest_gold_case(
         acceptance_attempt = None
         operation_ordinal = 0
         if acceptance_run_id is not None:
-            acceptance_attempt = begin_acceptance_case_attempt(
-                db,
-                run_id=acceptance_run_id,
-                case_id=case_id,
-                acceptance_pass=acceptance_pass,
-            )
+            if completion_claim is None:
+                raise RuntimeError("acceptance completion lease is unavailable")
+            if completion_claim.attempt_id is None:
+                acceptance_attempt = begin_acceptance_case_attempt(
+                    db,
+                    run_id=acceptance_run_id,
+                    case_id=case_id,
+                    acceptance_pass=acceptance_pass,
+                )
+                completion_claim = append_acceptance_completion_claim(
+                    completion_claim,
+                    attempt_id=int(acceptance_attempt["id"]),
+                )
+            else:
+                attempt_row = db.execute(
+                    text(
+                        """SELECT id,attempt_ordinal,attempted_at,created_txid
+                           FROM sec_acceptance_case_attempts
+                           WHERE id=:attempt AND run_id=:run AND case_id=:case
+                             AND acceptance_pass=:pass"""
+                    ),
+                    {
+                        "attempt": completion_claim.attempt_id,
+                        "run": acceptance_run_id,
+                        "case": case_id,
+                        "pass": acceptance_pass,
+                    },
+                ).mappings().one_or_none()
+                if attempt_row is None:
+                    raise ValueError(
+                        "acceptance completion claim attempt identity mismatch"
+                    )
+                acceptance_attempt = dict(attempt_row)
+                operation_ordinal = int(
+                    db.execute(
+                        text(
+                            "SELECT COALESCE(max(operation_ordinal),0) "
+                            "FROM sec_acceptance_operation_links "
+                            "WHERE attempt_id=:attempt"
+                        ),
+                        {"attempt": completion_claim.attempt_id},
+                    ).scalar_one()
+                )
             before_checkpoint = record_acceptance_evidence_checkpoint(
                 db,
                 run_id=acceptance_run_id,
@@ -743,6 +835,7 @@ def ingest_gold_case(
                 ingestion_attempted_at = _utc_now()
         resolution = _resolve_gold_case_stock(db, case, at=ingestion_attempted_at)
         stock = resolution.stock
+        acquire_sec_financial_stock_lock(db, stock_id=stock.id)
         if resolution.source == "locked_manifest_bootstrap":
             register_reviewed_sec_identity(
                 db,
@@ -757,6 +850,49 @@ def ingest_gold_case(
                     "financial_truth_beta_gold_set.yml."
                 ),
             )
+        if acceptance_run_id is not None:
+            concurrently_completed = _recover_completed_gold_case_report(
+                db,
+                acceptance_run_id=acceptance_run_id,
+                acceptance_pass=acceptance_pass,
+                case=case,
+                filing_selection_as_of=filing_selection_as_of,
+                expected_years=expected_years,
+                report_json=report_json,
+                storage_root=Path(settings.EDGAR_RAW_STORAGE_DIR),
+            )
+            if concurrently_completed is not None:
+                db.rollback()
+                human_summary = render_human_case_summary(concurrently_completed)
+                typer.echo(human_summary)
+                typer.echo(f"acceptance_report_json={report_json.resolve()}")
+                if (
+                    concurrently_completed.typed_gaps
+                    or concurrently_completed.typed_failures
+                    or concurrently_completed.metric_outcomes.get(
+                        "typed_gap_count", 0
+                    )
+                    or concurrently_completed.metric_outcomes.get(
+                        "missing_count", 0
+                    )
+                    or (
+                        acceptance_pass == 2
+                        and not concurrently_completed.persistent_delta.get(
+                            "idempotent", False
+                        )
+                    )
+                ):
+                    raise typer.Exit(2)
+                return
+            if recoverable_bound_acceptance_attempt(
+                db,
+                run_id=acceptance_run_id,
+                case_id=case_id,
+                acceptance_pass=acceptance_pass,
+            ) is not None:
+                raise SecFinancialIngestionError(
+                    "acceptance_recovery_publication_state_advanced"
+                )
         typer.echo(
             f"identity_resolution={resolution.source} case={case_id} "
             f"manifest_ticker={resolution.manifest_ticker} stock_ticker={stock.ticker} "
@@ -791,6 +927,18 @@ def ingest_gold_case(
                 if acceptance_attempt is None:
                     raise RuntimeError("acceptance recovery requires attempt authority")
                 for item in recovery_operations:
+                    already_linked = db.execute(
+                        text(
+                            """SELECT 1 FROM sec_acceptance_operation_links
+                               WHERE attempt_id=:attempt AND operation_id=:operation"""
+                        ),
+                        {
+                            "attempt": int(acceptance_attempt["id"]),
+                            "operation": str(item["operation_id"]),
+                        },
+                    ).scalar_one_or_none()
+                    if already_linked is not None:
+                        continue
                     operation_ordinal += 1
                     link_acceptance_operation(
                         db,
@@ -799,7 +947,6 @@ def ingest_gold_case(
                         operation_ordinal=operation_ordinal,
                         operation_role="recovered",
                     )
-            db.commit()
             for item in recovery_operations:
                 typer.echo(
                     f"recovered_lineage_operation_id={item['operation_id']} "
@@ -847,26 +994,45 @@ def ingest_gold_case(
             else history_cursor
         )
         seen_cursors: set[str] = set()
+        retained_replay = (
+            None
+            if finalized_acquisition is None
+            else build_retained_financial_replay_client(
+                db,
+                stock_id=stock.id,
+                operation_ids=tuple(
+                    str(item["operation_id"])
+                    for item in finalized_acquisition["operations"]
+                ),
+                storage_root=Path(settings.EDGAR_RAW_STORAGE_DIR),
+                upstream_factory=EdgarClient,
+            )
+        )
         should_ingest = (
             finalized_acquisition is None
             or cursor is not None
             or bool(finalized_acquisition.get("requires_reparse"))
+            or bool(
+                retained_replay is not None
+                and retained_replay.has_reparse_provenance_delta
+            )
         )
+        if (
+            finalized_acquisition is not None
+            and not should_ingest
+            and not bool(finalized_acquisition.get("has_succeeded_parse"))
+        ):
+            raise SecFinancialIngestionError(
+                "retained_recovery_no_provenance_delta"
+            )
         if should_ingest:
             client_context = (
                 EdgarClient()
                 if finalized_acquisition is None
-                else build_retained_financial_replay_client(
-                    db,
-                    stock_id=stock.id,
-                    operation_ids=tuple(
-                        str(item["operation_id"])
-                        for item in finalized_acquisition["operations"]
-                    ),
-                    storage_root=Path(settings.EDGAR_RAW_STORAGE_DIR),
-                    upstream_factory=EdgarClient,
-                )
+                else retained_replay
             )
+            if client_context is None:
+                raise RuntimeError("retained recovery client is unavailable")
             with client_context as client:
                 for continuation_ordinal in range(1, 34):
                     report = ingest_latest_financial_filings(
@@ -1072,6 +1238,8 @@ def ingest_gold_case(
         typer.echo(f"Error: {type(exc).__name__}: {exc}", err=True)
         raise typer.Exit(1)
     finally:
+        if completion_claim is not None:
+            completion_claim.release()
         db.close()
 
 

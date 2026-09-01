@@ -128,6 +128,7 @@ class RetainedFinancialReplayClient:
         retained: dict[str, bytes],
         missing_instances: dict[str, int | None],
         upstream_factory: Callable[[], EdgarLikeClient] | None,
+        has_reparse_provenance_delta: bool = False,
     ) -> None:
         self._retained = dict(retained)
         self._missing_instances = dict(missing_instances)
@@ -135,6 +136,7 @@ class RetainedFinancialReplayClient:
         self._upstream: EdgarLikeClient | None = None
         self._upstream_context: Any | None = None
         self.external_requests: list[str] = []
+        self.has_reparse_provenance_delta = has_reparse_provenance_delta
 
     def __enter__(self) -> RetainedFinancialReplayClient:
         return self
@@ -673,6 +675,7 @@ def register_reviewed_sec_identity(
     if effective_to is not None and effective_to < effective_from:
         raise SecFinancialIngestionError("effective_to precedes effective_from")
 
+    acquire_sec_financial_stock_lock(db, stock_id=stock_id)
     _lock_keys(db, f"sec-issuer-stock:{stock_id}", f"sec-issuer-cik:{cik}")
 
     existing = db.scalars(
@@ -786,6 +789,7 @@ def retire_sec_identity(
     current = db.get(SecIssuerIdentity, identity_id)
     if current is None or current.status != "reviewed":
         raise SecFinancialIngestionError("reviewed identity to retire was not found")
+    acquire_sec_financial_stock_lock(db, stock_id=current.stock_id)
     _lock_keys(
         db,
         f"sec-issuer-stock:{current.stock_id}",
@@ -1149,8 +1153,21 @@ def build_retained_financial_replay_client(
     ).all()
     if not accession_attempts:
         raise SecFinancialIntegrityError("retained recovery filings are unavailable")
+    operation_rank = {
+        operation_id: ordinal for ordinal, operation_id in enumerate(operation_ids)
+    }
+    latest_attempt_by_filing: dict[int, SecFinancialAccessionAttempt] = {}
+    for attempt in accession_attempts:
+        current = latest_attempt_by_filing.get(attempt.filing_id)
+        if current is None or (
+            operation_rank.get(attempt.operation_id, -1), attempt.id
+        ) > (
+            operation_rank.get(current.operation_id, -1), current.id
+        ):
+            latest_attempt_by_filing[attempt.filing_id] = attempt
     artifacts: list[SecFilingArtifact] = []
     authorized_missing_instance_ids: set[int] = set()
+    has_reparse_provenance_delta = False
     seen_artifact_ids: set[int] = set()
     for attempt in accession_attempts:
         filing = db.get(SecFinancialFiling, attempt.filing_id)
@@ -1210,8 +1227,27 @@ def build_retained_financial_replay_client(
             cik=identity.cik,
             accession_no=filing.accession_no,
         )
-        if candidate is not None:
-            authorized_missing_instance_ids.add(candidate.id)
+        if latest_attempt_by_filing[filing.id].id == attempt.id:
+            if candidate is not None:
+                authorized_missing_instance_ids.add(candidate.id)
+            current_parse_input_ids = set(
+                db.scalars(
+                    select(SecFinancialParseRunArtifact.artifact_id).where(
+                        SecFinancialParseRunArtifact.parse_run_id
+                        == attempt.parse_run_id
+                    )
+                ).all()
+            )
+            retained_instance = _standalone_instance_artifact(
+                linked,
+                primary_document=filing.primary_document,
+                storage_root=storage_root,
+            )
+            if candidate is not None or (
+                retained_instance is not None
+                and retained_instance.artifact.id not in current_parse_input_ids
+            ):
+                has_reparse_provenance_delta = True
         linked_ids = {artifact.id for artifact in linked}
         for artifact in group:
             # Retained bytes are operation-owned only through the immutable
@@ -1266,6 +1302,7 @@ def build_retained_financial_replay_client(
         retained=retained,
         missing_instances=missing_instances,
         upstream_factory=upstream_factory,
+        has_reparse_provenance_delta=has_reparse_provenance_delta,
     )
 
 
@@ -2913,6 +2950,7 @@ def ingest_latest_financial_filings(
         raise SecFinancialIngestionError("max_filings must be between 1 and 200")
     if not parser_version.strip():
         raise SecFinancialIngestionError("parser_version is required")
+    acquire_sec_financial_stock_lock(db, stock_id=stock_id)
     candidate_identity = _reviewed_identity(db, stock_id, now)
     _lock_keys(
         db,

@@ -567,6 +567,23 @@ def test_ingest_gold_case_recovers_same_run_after_durable_before_and_writes_repo
     monkeypatch.setattr(
         financial_cli, "begin_acceptance_case_attempt", begin_attempt
     )
+    class CompletionLease:
+        attempt_id = None
+
+        def release(self):
+            return None
+
+    monkeypatch.setattr(
+        financial_cli,
+        "acquire_acceptance_completion_lease",
+        lambda *_args, **_kwargs: CompletionLease(),
+    )
+    def append_claim(lease, *, attempt_id):
+        lease.attempt_id = attempt_id
+        return lease
+    monkeypatch.setattr(
+        financial_cli, "append_acceptance_completion_claim", append_claim
+    )
     monkeypatch.setattr(
         financial_cli, "link_acceptance_operation", lambda db, **kwargs: 51
     )
@@ -1364,7 +1381,7 @@ def test_ingest_gold_case_resumes_attempt_bound_publication_without_new_attempt_
     def recover_report(*_args, **_kwargs):
         nonlocal recovery_calls
         recovery_calls += 1
-        return None if recovery_calls == 1 else recovered
+        return None if recovery_calls <= 2 else recovered
 
     monkeypatch.setattr(financial_cli, "SessionLocal", lambda: session)
     monkeypatch.setattr(
@@ -1409,6 +1426,14 @@ def test_ingest_gold_case_resumes_attempt_bound_publication_without_new_attempt_
         "begin_acceptance_case_attempt",
         lambda *_args, **_kwargs: pytest.fail("bound recovery created a new attempt"),
     )
+    monkeypatch.setattr(
+        financial_cli,
+        "acquire_acceptance_completion_lease",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            attempt_id=31,
+            release=lambda: None,
+        ),
+    )
 
     class ForbiddenEdgarClient:
         def __init__(self, *_args, **_kwargs):
@@ -1426,7 +1451,7 @@ def test_ingest_gold_case_resumes_attempt_bound_publication_without_new_attempt_
         ],
     )
     assert result.exit_code == 0, result.output
-    assert recovery_calls == 2
+    assert recovery_calls == 3
     assert publications[0]["attempt_id"] == 31
     assert checkpoints[0]["phase"] == "after"
     assert "recovered_from_bound_publication=true" in result.output
