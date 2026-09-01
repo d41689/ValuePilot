@@ -792,6 +792,82 @@ class GeneratedDuplicateOnclickClient(GeneratedStatementAuthorityClient):
         self.responses[INDEX_URL] = json.dumps(payload).encode()
 
 
+class GeneratedDimensionMemberAnchorClient(GeneratedStatementAuthorityClient):
+    def __init__(self) -> None:
+        super().__init__()
+        report_url = next(url for url in self.responses if url.endswith("R2.htm"))
+        report = self.responses[report_url].replace(
+            b"</table>",
+            b'''<tr><td><a onclick="top.Show.showAR( this, 'defref_srt_ProductOrServiceAxis=us-gaap_ProductMember', window );">Products</a></td><td>-</td></tr>
+            <tr><td><a onclick="top.Show.showAR( this, 'defref_srt_ProductOrServiceAxis=us-gaap_ServiceMember', window );">Services</a></td><td>-</td></tr></table>''',
+        )
+        self.responses[report_url] = report
+        payload = json.loads(self.responses[INDEX_URL])
+        next(
+            item for item in payload["directory"]["item"]
+            if item["name"] == "R2.htm"
+        )["size"] = len(report)
+        self.responses[INDEX_URL] = json.dumps(payload).encode()
+
+
+class GeneratedIncompleteCycleAnchorClient(GeneratedStatementAuthorityClient):
+    def __init__(self) -> None:
+        super().__init__()
+        report_url = next(url for url in self.responses if url.endswith("R2.htm"))
+        pre_url = next(url for url in self.responses if url.endswith("_pre.xml"))
+        lab_url = next(url for url in self.responses if url.endswith("_lab.xml"))
+        self.responses[report_url] = self.responses[report_url].replace(
+            b"</table>",
+            b'''<tr><td><a onclick="Show.showAR(this, 'defref_us-gaap_GrossProfit', window)">Gross profit</a></td>
+            <td>$ 40,000</td><td>-</td><td>-</td><td>-</td></tr></table>''',
+        )
+        self.responses[pre_url] = self.responses[pre_url].replace(
+            b"</link:presentationLink>",
+            b'''<link:loc xlink:label="gross" xlink:href="aapl.xsd#us-gaap_GrossProfit"/>
+            <link:presentationArc xlink:from="parent" xlink:to="gross" order="2" preferredLabel="http://www.xbrl.org/2003/role/terseLabel"/>
+            </link:presentationLink>''',
+        )
+        self.responses[lab_url] = self.responses[lab_url].replace(
+            b"</link:labelLink>",
+            b'''<link:loc xlink:label="gross" xlink:href="aapl.xsd#us-gaap_GrossProfit"/>
+            <link:label xlink:label="gross-label" xlink:role="http://www.xbrl.org/2003/role/terseLabel" xml:lang="en-US">Gross profit</link:label>
+            <link:labelArc xlink:from="gross" xlink:to="gross-label"/></link:labelLink>''',
+        )
+        self.responses[PRIMARY_URL] = self.responses[PRIMARY_URL].replace(
+            b"</body>",
+            b'''<ix:nonFraction scale="6" id="gross-current" name="us-gaap:GrossProfit" contextRef="D2026Q3" unitRef="USD" format="ixt:num-dot-decimal">40,000</ix:nonFraction></body>''',
+        )
+        payload = json.loads(self.responses[INDEX_URL])
+        changed = {
+            "aapl-20260627.htm": self.responses[PRIMARY_URL],
+            "R2.htm": self.responses[report_url],
+            "aapl-20260627_pre.xml": self.responses[pre_url],
+            "aapl-20260627_lab.xml": self.responses[lab_url],
+        }
+        for item in payload["directory"]["item"]:
+            if item["name"] in changed:
+                item["size"] = len(changed[item["name"]])
+        self.responses[INDEX_URL] = json.dumps(payload).encode()
+
+
+class GeneratedRepeatedConceptAnchorClient(GeneratedStatementAuthorityClient):
+    def __init__(self) -> None:
+        super().__init__()
+        report_url = next(url for url in self.responses if url.endswith("R2.htm"))
+        report = self.responses[report_url].replace(
+            b"</table>",
+            b'''<tr><td><a onclick="Show.showAR( this, 'defref_us-gaap_RevenueFromContractWithCustomerExcludingAssessedTax', window );">Net sales</a></td>
+            <td>-</td><td>-</td><td>-</td><td>-</td></tr></table>''',
+        )
+        self.responses[report_url] = report
+        payload = json.loads(self.responses[INDEX_URL])
+        next(
+            item for item in payload["directory"]["item"]
+            if item["name"] == "R2.htm"
+        )["size"] = len(report)
+        self.responses[INDEX_URL] = json.dumps(payload).encode()
+
+
 class FlakyEdgarClient(FakeEdgarClient):
     def __init__(self) -> None:
         super().__init__()
@@ -5123,6 +5199,170 @@ def test_parser_v23_appends_after_failed_v22_exact_retained_replay_without_fetch
     assert [(item.parse_run_id, item.parser_version) for item in selected] == [
         (runs[1].id, "xbrl-lineage-v2.3")
     ]
+
+
+def test_parser_v24_appends_after_v23_dimension_anchor_failure_without_fetch(
+    committed_db_session, tmp_path: Path
+) -> None:
+    db_session = committed_db_session
+    stock = Stock(ticker="V24CLICK", exchange="US", company_name="V2.4 Click")
+    db_session.add(stock)
+    db_session.flush()
+    register_reviewed_sec_identity(
+        db_session,
+        stock_id=stock.id,
+        cik=CIK,
+        effective_from=date(1980, 12, 12),
+        known_at=datetime(2026, 8, 27, 12, tzinfo=timezone.utc),
+        review_reason="append-only parser v2.4 dimension anchor fixture",
+    )
+    db_session.commit()
+
+    failed_report = ingest_latest_financial_filings(
+        db_session,
+        stock_id=stock.id,
+        client=GeneratedDimensionMemberAnchorClient(),
+        storage_root=tmp_path,
+        max_filings=1,
+        now=datetime(2026, 8, 27, 12, 5, tzinfo=timezone.utc),
+        parser_version="xbrl-lineage-v2.3",
+    )
+    _commit_and_finalize(db_session, failed_report)
+    failed_run = db_session.scalar(
+        select(SecFinancialParseRun).where(
+            SecFinancialParseRun.operation_id == failed_report.operation_id
+        )
+    )
+    assert failed_run.status == "failed"
+    assert "ambiguous_generated_statement_onclick" in failed_run.error_detail
+
+    upstream_constructions = 0
+
+    def forbidden_upstream():
+        nonlocal upstream_constructions
+        upstream_constructions += 1
+        raise AssertionError("fully retained v2.4 replay reached upstream")
+
+    replay = build_retained_financial_replay_client(
+        db_session,
+        stock_id=stock.id,
+        operation_ids=(failed_report.operation_id,),
+        storage_root=tmp_path,
+        upstream_factory=forbidden_upstream,
+        target_parser_version="xbrl-lineage-v2.4",
+    )
+    with replay:
+        succeeded_report = ingest_latest_financial_filings(
+            db_session,
+            stock_id=stock.id,
+            client=replay,
+            storage_root=tmp_path,
+            max_filings=1,
+            now=datetime(2026, 8, 27, 12, 10, tzinfo=timezone.utc),
+            parser_version="xbrl-lineage-v2.4",
+        )
+    _commit_and_finalize(db_session, succeeded_report)
+
+    runs = db_session.scalars(
+        select(SecFinancialParseRun).order_by(SecFinancialParseRun.id)
+    ).all()
+    assert [(run.parser_version, run.status) for run in runs] == [
+        ("xbrl-lineage-v2.3", "failed"),
+        ("xbrl-lineage-v2.4", "succeeded"),
+    ]
+    assert runs[0].error_detail == failed_run.error_detail
+    assert replay.external_requests == []
+    assert upstream_constructions == 0
+
+
+def test_parser_v24_retains_incomplete_cycle_occurrence_without_authorizing_it(
+    committed_db_session, tmp_path: Path
+) -> None:
+    db_session = committed_db_session
+    stock = Stock(ticker="V24ANCH", exchange="US", company_name="V2.4 Anchor")
+    db_session.add(stock)
+    db_session.flush()
+    register_reviewed_sec_identity(
+        db_session,
+        stock_id=stock.id,
+        cik=CIK,
+        effective_from=date(1980, 12, 12),
+        known_at=datetime(2026, 8, 27, 12, tzinfo=timezone.utc),
+        review_reason="v2.4 incomplete cycle anchor fixture",
+    )
+    db_session.commit()
+
+    report = ingest_latest_financial_filings(
+        db_session,
+        stock_id=stock.id,
+        client=GeneratedIncompleteCycleAnchorClient(),
+        storage_root=tmp_path,
+        max_filings=1,
+        now=datetime(2026, 8, 27, 12, 5, tzinfo=timezone.utc),
+        parser_version="xbrl-lineage-v2.4",
+    )
+    run = db_session.scalar(select(SecFinancialParseRun))
+    assert report.failures == (), run.error_detail
+    assert run.status == "succeeded"
+    assert db_session.scalar(
+        select(func.count()).select_from(SecStatementOccurrenceEvidence).where(
+            SecStatementOccurrenceEvidence.concept == "us-gaap:GrossProfit"
+        )
+    ) == 1
+    assert db_session.scalar(
+        select(func.count()).select_from(SecStatementFactAuthority).where(
+            SecStatementFactAuthority.context_id == "D2026Q3",
+            SecStatementFactAuthority.raw_fact_id.in_(
+                select(SecRawXbrlFact.id).where(
+                    SecRawXbrlFact.concept == "us-gaap:GrossProfit"
+                )
+            ),
+        )
+    ) == 0
+    assert db_session.scalar(
+        select(func.count()).select_from(SecStatementFactAuthority)
+    ) > 0
+
+
+def test_parser_v24_db_guard_accepts_exact_repeated_concept_anchor_count(
+    committed_db_session, tmp_path: Path
+) -> None:
+    db_session = committed_db_session
+    stock = Stock(ticker="V24REPT", exchange="US", company_name="V2.4 Repeat")
+    db_session.add(stock)
+    db_session.flush()
+    register_reviewed_sec_identity(
+        db_session,
+        stock_id=stock.id,
+        cik=CIK,
+        effective_from=date(1980, 12, 12),
+        known_at=datetime(2026, 8, 27, 12, tzinfo=timezone.utc),
+        review_reason="v2.4 repeated generated anchor fixture",
+    )
+    db_session.commit()
+
+    report = ingest_latest_financial_filings(
+        db_session,
+        stock_id=stock.id,
+        client=GeneratedRepeatedConceptAnchorClient(),
+        storage_root=tmp_path,
+        max_filings=1,
+        now=datetime(2026, 8, 27, 12, 5, tzinfo=timezone.utc),
+        parser_version="xbrl-lineage-v2.4",
+    )
+    run = db_session.scalar(select(SecFinancialParseRun))
+    assert report.failures == (), run.error_detail
+    assert run.status == "succeeded"
+    occurrences = db_session.scalars(
+        select(SecStatementOccurrenceEvidence).order_by(
+            SecStatementOccurrenceEvidence.id
+        )
+    ).all()
+    assert occurrences
+    assert {
+        row.locator_json["anchor_start_tag_occurrence_count"]
+        for row in occurrences
+    } == {2}
 
 
 def test_parser_v2_missing_filing_summary_is_typed_terminal_parse_failure(

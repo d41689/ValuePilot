@@ -207,7 +207,16 @@ def test_derived_diagnoses_currency_context_and_dimensions_before_missing():
         (raw(3, value="40", context_id="C2"), "unresolved_derived_context_mismatch"),
     ):
         result = run(mapping, [q2, right])
-        assert any(item.reason == reason for item in result.dispositions)
+        disposition = next(
+            item for item in result.dispositions if item.reason == reason
+        )
+        assert disposition.raw_fact_ids == (q2.raw_fact_id, right.raw_fact_id)
+        assert disposition.slot is not None
+        assert disposition.slot.raw_fact_ids == disposition.raw_fact_ids
+        assert disposition.slot.parse_run_ids == (
+            q2.parse_run_id,
+            right.parse_run_id,
+        )
     dimensioned = run(mapping, [q2, raw(4, dimensions=({"axis": "x"},))])
     assert any(item.reason == "unresolved_dimensions" for item in dimensioned.dispositions)
 

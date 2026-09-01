@@ -83,7 +83,8 @@ PARSER_NAME = "valuepilot-inline-xbrl-lineage"
 PARSER_V2_LEGACY = "xbrl-lineage-v2"
 PARSER_V2_1 = "xbrl-lineage-v2.1"
 PARSER_V2_2 = "xbrl-lineage-v2.2"
-PARSER_V2 = "xbrl-lineage-v2.3"
+PARSER_V2_3 = "xbrl-lineage-v2.3"
+PARSER_V2 = "xbrl-lineage-v2.4"
 ARTIFACT_RETENTION_POLICY_VERSION = "sec-financial-artifacts-v1"
 ANNUAL_FORMS_BY_REGIME = {
     "us_10k_10q": frozenset({"10-K", "10-K/A"}),
@@ -899,16 +900,21 @@ def _is_parser_v2(parser_version: str) -> bool:
         PARSER_V2_LEGACY,
         PARSER_V2_1,
         PARSER_V2_2,
+        PARSER_V2_3,
         PARSER_V2,
     }
 
 
 def _is_sgml_instance_parser(parser_version: str) -> bool:
-    return parser_version in {PARSER_V2_1, PARSER_V2_2, PARSER_V2}
+    return parser_version in {PARSER_V2_1, PARSER_V2_2, PARSER_V2_3, PARSER_V2}
 
 
 def _is_generated_statement_parser(parser_version: str) -> bool:
-    return parser_version in {PARSER_V2_2, PARSER_V2}
+    return parser_version in {PARSER_V2_2, PARSER_V2_3, PARSER_V2}
+
+
+def _is_parser_v24(parser_version: str) -> bool:
+    return parser_version == PARSER_V2
 
 
 def _is_standalone_instance_filename(filename: str) -> bool:
@@ -2522,6 +2528,9 @@ def _parse_primary_artifact(
                             label_artifact_id=label_artifact.id,
                             label_sha256=label_artifact.sha256,
                             allow_partial=True,
+                            allow_dimension_member_anchors=_is_parser_v24(
+                                parser_version
+                            ),
                         )
                         occurrences = resolution.occurrences
                         rejected_generated_concepts.update(
@@ -2561,6 +2570,9 @@ def _parse_primary_artifact(
                             label_artifact_id=label_artifact.id,
                             label_sha256=label_artifact.sha256,
                             allow_partial=True,
+                            allow_dimension_member_anchors=_is_parser_v24(
+                                parser_version
+                            ),
                         )
                         occurrences = resolution.occurrences
                         rejected_generated_concepts.update(
@@ -2752,6 +2764,7 @@ def _parse_primary_artifact(
                     report_artifact.sha256, reference.report_ordinal, occurrence, header_date), known_at=now)
             db.add(occurrence_row); db.flush()
             occurrence_rows.append((reference, report_artifact, occurrence, raw_row, occurrence_row))
+        fact_authority_count = 0
         for reference, report_artifact, occurrence, raw_row, occurrence_row in occurrence_rows:
             try:
                 classified = classify_statement_occurrence(
@@ -2780,6 +2793,16 @@ def _parse_primary_artifact(
                 # start.  Keep its occurrence evidence, but do not invent an
                 # authority row from a presentation date alone.
                 continue
+            if (
+                _is_parser_v24(parser_version)
+                and classified.presentation_class
+                == "prior_fiscal_year_comparative"
+                and raw_row.period_start != focus.prior_fiscal_year_start
+            ):
+                # A generated annual table may retain a third or older fiscal
+                # year.  It is exact occurrence evidence, but it is not the
+                # immediately-prior cycle authorized by this parse run.
+                continue
             same_anchor_identity = [item for item in occurrence_rows
                 if item[4].statement_report_reference_id == occurrence_row.statement_report_reference_id
                 and item[4].row_ordinal == occurrence_row.row_ordinal and item[4].concept == occurrence_row.concept]
@@ -2790,6 +2813,10 @@ def _parse_primary_artifact(
                     or (raw_row.period_start is None and item[3].period_start is None)
                 )]
             if len(current_anchors) != 1:
+                if _is_parser_v24(parser_version):
+                    # Keep the exact occurrence row as typed audit evidence;
+                    # an incomplete row cannot claim presentation authority.
+                    continue
                 raise StatementAuthorityParseError("missing_unique_current_cycle_anchor")
             current_anchor = current_anchors[0][4]
             prior_anchor = None
@@ -2797,6 +2824,8 @@ def _parse_primary_artifact(
                 prior_anchors = [item for item in same_anchor_identity if item[3].period_start == focus.prior_fiscal_year_start
                     and (item[3].period_end or item[3].period_instant) != focus.statement_period_end]
                 if len(prior_anchors) != 1:
+                    if _is_parser_v24(parser_version):
+                        continue
                     raise StatementAuthorityParseError("missing_unique_prior_cycle_anchor")
                 prior_anchor = prior_anchors[0][4]
             authority_digest = hashlib.sha256(chr(31).join((occurrence_row.semantic_sha256,
@@ -2826,6 +2855,11 @@ def _parse_primary_artifact(
                 locator_json=occurrence.locator,
                 known_at=now,
             ))
+            fact_authority_count += 1
+        if _is_parser_v24(parser_version) and fact_authority_count == 0:
+            raise StatementAuthorityParseError(
+                "no_unique_statement_occurrence_authority"
+            )
         db.flush()
         parse_savepoint.commit()
         return 1, len(parsed), [], run.id

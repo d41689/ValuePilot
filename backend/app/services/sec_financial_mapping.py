@@ -570,7 +570,8 @@ def _derived_output_slot(left, right, ordinal):
     return CanonicalSlotAuthority(
         left.stock_id, left.metric_key, left.mapping_rule_id, "Q", right.period_end + timedelta(days=1),
         left.period_end, "duration", left.fiscal_year, ordinal, left.context_id,
-        left.dimensions, left.parse_run_ids, left.raw_fact_ids,
+        left.dimensions, left.parse_run_ids + right.parse_run_ids,
+        left.raw_fact_ids + right.raw_fact_ids,
         left.publication_cutoff, left.occurrence_authorities + right.occurrence_authorities,
         left.filing_authority_id,
     )

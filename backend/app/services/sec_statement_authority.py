@@ -1,6 +1,7 @@
 """Bounded, non-networking retained SEC statement presentation authority."""
 from __future__ import annotations
 
+from collections import Counter
 from dataclasses import dataclass, replace
 from datetime import date
 from decimal import Decimal, InvalidOperation
@@ -31,6 +32,14 @@ _DEFREF = re.compile(
     r"\A\s*(?:top\.)?Show\.showAR\(\s*this\s*,\s*"
     r"(?P<quote>['\"])defref_(?P<target>[A-Za-z0-9_-]+)(?P=quote)"
     r"\s*,\s*window\s*\)\s*;?\s*\Z",
+    re.I,
+)
+_DIMENSION_MEMBER_DEFREF = re.compile(
+    r"\A\s*(?:top\.)?Show\.showAR\(\s*this\s*,\s*"
+    r"(?P<quote>['\"])defref_"
+    r"(?P<axis>[A-Za-z][A-Za-z0-9.-]*_[A-Za-z_][A-Za-z0-9._-]*Axis)="
+    r"(?P<member>[A-Za-z][A-Za-z0-9.-]*_[A-Za-z_][A-Za-z0-9._-]*Member)"
+    r"(?P=quote)\s*,\s*window\s*\)\s*;?\s*\Z",
     re.I,
 )
 _RAW_ONCLICK_ATTRIBUTE = re.compile(
@@ -221,6 +230,10 @@ def statement_occurrence_digest(report_sha256: str, report_ordinal: int,
             "onclick_sha256", "onclick_attribute", "onclick_attribute_sha256",
             "anchor_start_tag", "anchor_start_tag_sha256",
         ))
+        if "anchor_start_tag_occurrence_count" in occurrence.locator:
+            fields.append(
+                str(occurrence.locator["anchor_start_tag_occurrence_count"])
+            )
     return hashlib.sha256(chr(31).join(fields).encode()).hexdigest()
 
 def _xml_occurrences(content: bytes) -> list[StatementOccurrence]:
@@ -541,6 +554,7 @@ def parse_generated_statement_occurrences(
     label_artifact_id: int,
     label_sha256: str,
     allow_partial: bool = False,
+    allow_dimension_member_anchors: bool = False,
 ) -> GeneratedStatementResolution:
     """Resolve SEC generated statement cells to one exact retained instance fact.
 
@@ -569,6 +583,9 @@ def parse_generated_statement_occurrences(
         id(anchor): raw
         for anchor, raw in zip(parsed_anchors, raw_anchor_parser.anchors, strict=True)
     }
+    anchor_start_tag_counts = Counter(
+        item.start_tag for item in raw_anchor_parser.anchors
+    )
     arcs, arc_rejections = _presentation_arcs(presentation_linkbase, statement_role)
     labels, label_rejections = _label_authorities(label_linkbase)
     items: list[StatementOccurrence] = []
@@ -617,6 +634,15 @@ def parse_generated_statement_occurrences(
                     continue
                 match = _DEFREF.fullmatch(onclick)
                 if match is None:
+                    if (
+                        allow_dimension_member_anchors
+                        and _DIMENSION_MEMBER_DEFREF.fullmatch(onclick) is not None
+                    ):
+                        # SEC generated statements use an exact Axis=Member
+                        # ShowAR target for dimensional label rows.  It is not
+                        # a fact concept and therefore contributes no numeric
+                        # occurrence authority.
+                        continue
                     raise StatementAuthorityParseError("ambiguous_generated_statement_onclick")
                 identities.append((
                     _concept_from_fragment(match.group("target")),
@@ -732,6 +758,10 @@ def parse_generated_statement_occurrences(
                         anchor_start_tag.encode()
                     ).hexdigest(),
                 }
+                if allow_dimension_member_anchors:
+                    locator["anchor_start_tag_occurrence_count"] = (
+                        anchor_start_tag_counts[anchor_start_tag]
+                    )
                 raw = " ".join(candidate.raw_value.split())
                 items.append(StatementOccurrence(
                     candidate.context_id, concept, len(items) + 1, locator,

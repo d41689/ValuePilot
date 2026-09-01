@@ -70,6 +70,7 @@ from app.services.canonical_financials import (
     guard_sec_run_availability,
     sec_fact_filing_cycles,
 )
+from app.services.sec_financial_mapping import CanonicalSlotAuthority
 from types import SimpleNamespace
 from test_support.database_isolation import build_isolated_database_url, create_test_schema, drop_test_schema, new_test_schema_name
 
@@ -199,6 +200,72 @@ def _request(
     db.commit()
     source=VerifiedPublicationSource(parse.id,parse.filing_id,parse.accession_no,parse.parser_version,parse.input_manifest_hash,parse.available_at)
     return PublicationRequest(stock.id,identity.id,"sec-us-gaap-v1",parse.available_at+timedelta(seconds=1),"latest-known-v1",(source,))
+
+
+class _GeneratedQ2StatementAuthorityClient(GeneratedStatementAuthorityClient):
+    """A second retained filing with exact six-month/YTD source authority."""
+
+    accession = "0000320193-26-000050"
+
+    def __init__(self):
+        super().__init__()
+        old_prefix = (
+            "https://www.sec.gov/Archives/edgar/data/320193/"
+            "000032019326000079/"
+        )
+        new_prefix = (
+            "https://www.sec.gov/Archives/edgar/data/320193/"
+            "000032019326000050/"
+        )
+
+        def transform(content: bytes) -> bytes:
+            replacements = (
+                (b"2026-03-29", b"2025-12-28"),
+                (b"2025-03-30", b"2024-12-29"),
+                (b"2026-06-27", b"2026-03-28"),
+                (b"2025-06-28", b"2025-03-29"),
+                (b"Jun. 27, 2026", b"Mar. 28, 2026"),
+                (b"Jun. 28, 2025", b"Mar. 29, 2025"),
+                (b"9 Months Ended", b"6 Months Ended"),
+                (b"FY2026YTD", b"FY2026Q2YTD"),
+                (b"FY2025YTD", b"FY2025Q2YTD"),
+                (b"D2026Q3", b"D2026Q2"),
+                (b"D2025Q3", b"D2025Q2"),
+                (b">Q3</ix:nonNumeric>", b">Q2</ix:nonNumeric>"),
+                (b"aapl-20260627", b"aapl-20260328"),
+            )
+            for old, new in replacements:
+                content = content.replace(old, new)
+            return content
+
+        transformed: dict[str, bytes] = {}
+        for url, content in self.responses.items():
+            if url == SUBMISSIONS_URL:
+                continue
+            new_url = url
+            if url.startswith(old_prefix):
+                new_url = new_prefix + url.removeprefix(old_prefix)
+                new_url = new_url.replace("aapl-20260627", "aapl-20260328")
+            transformed[new_url] = transform(content)
+        submissions = json.loads(self.responses[SUBMISSIONS_URL])
+        recent = submissions["filings"]["recent"]
+        recent["accessionNumber"][0] = self.accession
+        recent["filingDate"][0] = "2026-04-30"
+        recent["reportDate"][0] = "2026-03-28"
+        recent["acceptanceDateTime"][0] = "20260430160528"
+        recent["primaryDocument"][0] = "aapl-20260328.htm"
+        transformed[SUBMISSIONS_URL] = json.dumps(submissions).encode()
+        index_url = new_prefix + "index.json"
+        index = json.loads(transformed[index_url])
+        for item in index["directory"]["item"]:
+            item["name"] = item["name"].replace(
+                "aapl-20260627", "aapl-20260328"
+            )
+            artifact_url = new_prefix + item["name"]
+            if artifact_url in transformed:
+                item["size"] = len(transformed[artifact_url])
+        transformed[index_url] = json.dumps(index).encode()
+        self.responses = transformed
 
 
 def test_publication_never_uses_partially_resolved_rejected_concept(db, tmp_path):
@@ -515,6 +582,194 @@ def test_failed_amendment_state_is_bounded_to_its_filing_cycle(db, tmp_path):
         guard_sec_run_availability(
             db, stock_id=original.stock_id, facts=[same_cycle_sec]
         )
+
+def test_derived_unavailable_slot_requires_complete_two_operand_authority():
+    import app.services.sec_metric_publication as service
+
+    cutoff = datetime(2026, 8, 30, tzinfo=timezone.utc)
+    occurrence_authorities = (
+        {"raw_fact_id": 11, "parse_run_id": 101},
+        {"raw_fact_id": 12, "parse_run_id": 102},
+    )
+    slot = CanonicalSlotAuthority(
+        1,
+        "is.revenue",
+        "sec.revenue",
+        "Q",
+        date(2026, 3, 29),
+        date(2026, 6, 27),
+        "duration",
+        2026,
+        3,
+        "current-ytd",
+        (),
+        (101, 102),
+        (11, 12),
+        cutoff,
+        occurrence_authorities,
+        "filing-1",
+    )
+    raw_authorities = (
+        SimpleNamespace(
+            raw_fact_id=11,
+            parse_run_id=101,
+            period_instant=None,
+            period_end=date(2026, 6, 27),
+        ),
+        SimpleNamespace(
+            raw_fact_id=12,
+            parse_run_id=102,
+            period_instant=None,
+            period_end=date(2026, 3, 28),
+        ),
+    )
+
+    service._validate_derived_unavailable_slot(slot, raw_authorities)
+    with pytest.raises(SecPublicationError, match="evidence shape mismatch"):
+        service._validate_derived_unavailable_slot(
+            slot,
+            (raw_authorities[0], raw_authorities[0]),
+        )
+    with pytest.raises(SecPublicationError, match="evidence shape mismatch"):
+        service._validate_derived_unavailable_slot(
+            slot,
+            (
+                raw_authorities[0],
+                SimpleNamespace(
+                    raw_fact_id=12,
+                    parse_run_id=102,
+                    period_instant=None,
+                    period_end=date(2026, 3, 27),
+                ),
+            ),
+        )
+
+
+def test_derived_context_gap_persists_both_exact_operands_without_fact(
+    db, tmp_path
+):
+    import app.services.sec_metric_publication as service
+
+    q3_request = _request(
+        db,
+        tmp_path,
+        ticker="DERIVEDGAP",
+        client=GeneratedStatementAuthorityClient(),
+    )
+    q2_report = ingest_latest_financial_filings(
+        db,
+        stock_id=q3_request.stock_id,
+        client=_GeneratedQ2StatementAuthorityClient(),
+        storage_root=tmp_path,
+        max_filings=1,
+        now=datetime(2026, 8, 28, tzinfo=timezone.utc),
+        parser_version=financial_ingestion.PARSER_V2,
+    )
+    db.commit()
+    finalize_sec_financial_ingestion_operation(
+        db, operation_id=q2_report.operation_id
+    )
+    db.commit()
+    q2_parse = db.execute(
+        text(
+            "SELECT pr.id,a.available_at FROM sec_financial_parse_runs pr "
+            "JOIN sec_financial_lineage_availabilities a "
+            "ON a.operation_id=pr.operation_id "
+            "WHERE pr.operation_id=:operation AND pr.status='succeeded'"
+        ),
+        {"operation": q2_report.operation_id},
+    ).one()
+    rule_id = db.execute(
+        text(
+            "SELECT id FROM sec_metric_mapping_rules "
+            "WHERE mapping_version_id='sec-us-gaap-v1' "
+            "AND rule_id='sec.revenue'"
+        )
+    ).scalar_one()
+    q2_raws = db.execute(
+        text(
+            "SELECT DISTINCT raw.id,raw.raw_value,raw.scale,raw.sign "
+            "FROM sec_raw_xbrl_facts raw "
+            "JOIN sec_statement_fact_authorities authority "
+            "ON authority.raw_fact_id=raw.id "
+            "WHERE raw.parse_run_id=:parse "
+            "AND raw.concept LIKE '%RevenueFromContract%'"
+        ),
+        {"parse": q2_parse.id},
+    ).all()
+    assert q2_raws
+    for raw_id, raw_value, scale, sign in q2_raws:
+        normalized = Decimal(raw_value.replace(",", "")) * (
+            Decimal(10) ** (scale or 0)
+        )
+        if sign == "-":
+            normalized = -normalized
+        db.execute(
+            text(
+                "INSERT INTO sec_raw_numeric_normalizations "
+                "(raw_fact_id,mapping_rule_id,mapping_version_id,"
+                "normalization_version,normalized_value,raw_semantic_sha256,"
+                "transformation_identity) VALUES "
+                "(:raw,:rule,'sec-us-gaap-v1','sec_numeric_v1',:value,:sha,"
+                "'fixture-exact-decimal')"
+            ),
+            {
+                "raw": raw_id,
+                "rule": rule_id,
+                "value": normalized,
+                "sha": hashlib.sha256(
+                    f"{raw_id}:{raw_value}".encode()
+                ).hexdigest(),
+            },
+        )
+    db.commit()
+    cutoff = q2_parse.available_at + timedelta(seconds=1)
+    request = PublicationRequest(
+        q3_request.stock_id,
+        q3_request.issuer_identity_id,
+        q3_request.mapping_version_id,
+        cutoff,
+        q3_request.amendment_policy,
+        resolve_latest_known_v1_sources(
+            db,
+            stock_id=q3_request.stock_id,
+            issuer_identity_id=q3_request.issuer_identity_id,
+            requested_cutoff=cutoff,
+        ),
+    )
+    outcome = service._rebuild_mapping_result(db, request)
+    gap = next(
+        item
+        for item in outcome.dispositions
+        if item.reason == "unresolved_derived_context_mismatch"
+        and item.slot is not None
+        and item.slot.fiscal_quarter_ordinal == 3
+    )
+    assert len(gap.raw_fact_ids) == 2
+    assert gap.slot.raw_fact_ids == gap.raw_fact_ids
+    assert len(gap.slot.parse_run_ids) == 2
+
+    receipt = publish_sec_mapping_result(db, request)
+    db.commit()
+    decision = db.execute(
+        text(
+            "SELECT id,metric_fact_id FROM sec_metric_publications "
+            "WHERE publication_run_id=:run "
+            "AND reason_code='unresolved_derived_context_mismatch' "
+            "AND fiscal_quarter_ordinal=3"
+        ),
+        {"run": receipt.run_id},
+    ).one()
+    assert decision.metric_fact_id is None
+    persisted = db.execute(
+        text(
+            "SELECT raw_fact_id FROM sec_metric_publication_unresolved_inputs "
+            "WHERE publication_id=:decision ORDER BY input_ordinal"
+        ),
+        {"decision": decision.id},
+    ).scalars().all()
+    assert tuple(persisted) == gap.raw_fact_ids
+
 
 def test_database_rebuild_publish_replay_audits_and_availability(db,tmp_path):
     request=_request(db,tmp_path); first=publish_sec_mapping_result(db,request); db.commit()
@@ -2222,13 +2477,13 @@ def test_cli_recovers_finalized_failed_parse_without_sec_refetch(
         text(
             "SELECT parser_version,status FROM sec_financial_parse_runs "
             "WHERE parser_version IN "
-            "('xbrl-lineage-v2','xbrl-lineage-v2.1','xbrl-lineage-v2.3') "
+            "('xbrl-lineage-v2','xbrl-lineage-v2.1','xbrl-lineage-v2.4') "
             "ORDER BY id"
         )
     ).all() == [
         ("xbrl-lineage-v2", "failed"),
         ("xbrl-lineage-v2.1", "failed"),
-        ("xbrl-lineage-v2.3", "succeeded"),
+        ("xbrl-lineage-v2.4", "succeeded"),
     ]
     recovered_manifests = set(
         db.execute(
@@ -2238,7 +2493,7 @@ def test_cli_recovers_finalized_failed_parse_without_sec_refetch(
                 "JOIN sec_financial_parse_run_artifacts link "
                 "ON link.parse_run_id=parse.id "
                 "JOIN sec_filing_artifacts artifact ON artifact.id=link.artifact_id "
-                "WHERE parse.parser_version='xbrl-lineage-v2.3' "
+                "WHERE parse.parser_version='xbrl-lineage-v2.4' "
                 "AND parse.status='succeeded'"
             )
         ).scalars()
@@ -2265,7 +2520,7 @@ def test_cli_recovers_finalized_failed_parse_without_sec_refetch(
             "JOIN sec_financial_parse_run_artifacts link "
             "ON link.parse_run_id=parse.id "
             "JOIN sec_filing_artifacts artifact ON artifact.id=link.artifact_id "
-            "WHERE parse.parser_version='xbrl-lineage-v2.3' "
+            "WHERE parse.parser_version='xbrl-lineage-v2.4' "
             "AND artifact.filename='aapl-20150627.xml' "
             "AND artifact.state='retained'"
         )
@@ -2511,10 +2766,10 @@ def test_cli_failed_current_parser_without_provenance_delta_is_idempotent(
     ).scalar_one() == 2
 
 
-def test_cli_appends_v23_after_failed_v22_from_retained_inputs_without_sec_fetch(
+def test_cli_appends_v24_after_failed_v23_from_retained_inputs_without_sec_fetch(
     db, tmp_path, monkeypatch
 ):
-    run_id = "gold-v23-retained-recovery"
+    run_id = "gold-v24-retained-recovery"
     case_id = "aapl-primary"
     instance = "11111111-1111-4111-8111-111111111111"
     reports_root = tmp_path / "reports"
@@ -2531,7 +2786,7 @@ def test_cli_appends_v23_after_failed_v22_from_retained_inputs_without_sec_fetch
         fallback_url=None,
         metrics={"rate_per_sec": 1.0},
         manifest_digest="e" * 64,
-        database_name="valuepilot_acceptance_gold_v23_retained_recovery",
+        database_name="valuepilot_acceptance_gold_v24_retained_recovery",
         storage_root=tmp_path,
     )
     attempt = begin_acceptance_case_attempt(
@@ -2561,19 +2816,19 @@ def test_cli_appends_v23_after_failed_v22_from_retained_inputs_without_sec_fetch
         cik=CIK,
         effective_from=date(2015, 1, 1),
         known_at=datetime(2026, 8, 28, tzinfo=timezone.utc),
-        review_reason="failed v2.2 retained recovery fixture",
+        review_reason="failed v2.3 retained recovery fixture",
     )
     db.commit()
 
     canonical_resolver = financial_ingestion.parse_generated_statement_occurrences
 
-    def reject_v22(*_args, **_kwargs):
+    def reject_v23(*_args, **_kwargs):
         raise financial_ingestion.StatementAuthorityParseError(
             "ambiguous_label_resource"
         )
 
     monkeypatch.setattr(
-        financial_ingestion, "parse_generated_statement_occurrences", reject_v22
+        financial_ingestion, "parse_generated_statement_occurrences", reject_v23
     )
     failed_report = ingest_latest_financial_filings(
         db,
@@ -2582,7 +2837,7 @@ def test_cli_appends_v23_after_failed_v22_from_retained_inputs_without_sec_fetch
         storage_root=tmp_path,
         max_filings=1,
         now=datetime(2026, 8, 28, 1, tzinfo=timezone.utc),
-        parser_version="xbrl-lineage-v2.2",
+        parser_version="xbrl-lineage-v2.3",
     )
     link_acceptance_operation(
         db,
@@ -2638,7 +2893,7 @@ def test_cli_appends_v23_after_failed_v22_from_retained_inputs_without_sec_fetch
 
         def __init__(self):
             type(self).constructions += 1
-            pytest.fail("retained v2.3 recovery constructed an SEC client")
+            pytest.fail("retained v2.4 recovery constructed an SEC client")
 
     monkeypatch.setattr(financial_cli, "EdgarClient", ForbiddenUpstream)
     report_path = reports_root / "pass-1" / f"{case_id}.json"
@@ -2669,8 +2924,8 @@ def test_cli_appends_v23_after_failed_v22_from_retained_inputs_without_sec_fetch
     assert [
         (run.parser_version, run.status, run.input_manifest_hash) for run in runs
     ] == [
-        ("xbrl-lineage-v2.2", "failed", failed_run.input_manifest_hash),
-        ("xbrl-lineage-v2.3", "succeeded", failed_run.input_manifest_hash),
+        ("xbrl-lineage-v2.3", "failed", failed_run.input_manifest_hash),
+        ("xbrl-lineage-v2.4", "succeeded", failed_run.input_manifest_hash),
     ]
     assert runs[0].id == failed_run.id
     assert runs[0].error_detail == failed_run.error_detail
@@ -2691,7 +2946,7 @@ def test_cli_appends_v23_after_failed_v22_from_retained_inputs_without_sec_fetch
     successful_operation_id = db.execute(
         text(
             "SELECT operation_id FROM sec_financial_parse_runs "
-            "WHERE parser_version='xbrl-lineage-v2.3' AND status='succeeded'"
+            "WHERE parser_version='xbrl-lineage-v2.4' AND status='succeeded'"
         )
     ).scalar_one()
     completed_replay = financial_ingestion.build_retained_financial_replay_client(

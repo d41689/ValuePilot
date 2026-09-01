@@ -368,6 +368,74 @@ def test_generated_statement_rejects_noncanonical_or_multiple_onclick_targets(on
         )
 
 
+def test_generated_statement_v24_ignores_exact_dimension_member_showar_rows():
+    dimension = (
+        b"<tr><td><a onclick=\"top.Show.showAR( this, "
+        b"'defref_srt_ProductOrServiceAxis=us-gaap_ProductMember', window );\">"
+        b"Products</a></td><td>-</td></tr>"
+    )
+    html = _generated_statement_html().replace(b"</table>", dimension + b"</table>")
+
+    with pytest.raises(
+        StatementAuthorityParseError,
+        match="ambiguous_generated_statement_onclick",
+    ):
+        parse_generated_statement_occurrences(
+            html, filename="R2.htm",
+            statement_role="http://www.apple.com/role/Operations",
+            presentation_linkbase=_presentation_linkbase(),
+            label_linkbase=_label_linkbase(), candidates=[_generated_raw()],
+            presentation_artifact_id=21, presentation_sha256="1" * 64,
+            label_artifact_id=22, label_sha256="2" * 64,
+        )
+
+    resolution = parse_generated_statement_occurrences(
+        html, filename="R2.htm",
+        statement_role="http://www.apple.com/role/Operations",
+        presentation_linkbase=_presentation_linkbase(),
+        label_linkbase=_label_linkbase(), candidates=[_generated_raw()],
+        presentation_artifact_id=21, presentation_sha256="1" * 64,
+        label_artifact_id=22, label_sha256="2" * 64,
+        allow_dimension_member_anchors=True,
+    )
+    assert [item.concept for item in resolution.occurrences] == [
+        "us-gaap:RevenueFromContractWithCustomerExcludingAssessedTax"
+    ]
+
+
+@pytest.mark.parametrize(
+    "target",
+    [
+        "srt_ProductOrServiceAxis=us-gaap_ProductMember=us-gaap_ServiceMember",
+        "srt_ProductOrServiceAxis=us-gaap_RevenueFromContractWithCustomerExcludingAssessedTax",
+        "srt_ProductOrServiceMember=us-gaap_ProductMember",
+        "srt_ProductOrServiceAxis=us-gaap_ProductMember); alert(1",
+    ],
+)
+def test_generated_statement_v24_rejects_noncanonical_dimension_showar(target):
+    html = _generated_statement_html().replace(
+        b"</table>",
+        (
+            "<tr><td><a onclick=\"Show.showAR(this, 'defref_"
+            + target
+            + "', window)\">dimension</a></td><td>-</td></tr></table>"
+        ).encode(),
+    )
+    with pytest.raises(
+        StatementAuthorityParseError,
+        match="ambiguous_generated_statement_onclick",
+    ):
+        parse_generated_statement_occurrences(
+            html, filename="R2.htm",
+            statement_role="http://www.apple.com/role/Operations",
+            presentation_linkbase=_presentation_linkbase(),
+            label_linkbase=_label_linkbase(), candidates=[_generated_raw()],
+            presentation_artifact_id=21, presentation_sha256="1" * 64,
+            label_artifact_id=22, label_sha256="2" * 64,
+            allow_dimension_member_anchors=True,
+        )
+
+
 def test_generated_statement_requires_nonempty_exact_presentation_link_role():
     without_role = _presentation_linkbase().replace(
         b' xlink:role="http://www.apple.com/role/Operations"', b""

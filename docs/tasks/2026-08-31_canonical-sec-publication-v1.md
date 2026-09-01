@@ -1132,6 +1132,48 @@ Run the canonical commands verbatim and in order:
   `git diff --check` passes. No network, shared development database, retained
   live-run storage, commit or push was used.
 
+- 2026-09-01: Live Step 7B parser-v2.4 remediation is implemented pending
+  Terra review. Read-only inspection of the exact retained AAPL run established
+  that the terminal v2.3 operation contained 31 generated statements whose
+  only non-concept `Show.showAR` targets were the two exact SEC
+  `Axis=Member` forms for product and service rows, four older comparative
+  tables with incomplete current/prior cycle anchors, and two annual tables
+  whose third displayed year was not the immediately-prior fiscal cycle.
+  Parser `xbrl-lineage-v2.4` is therefore a distinct append-only revision:
+  migration `20260901230000` preserves every v2/v2.1/v2.2/v2.3 guard while
+  admitting only the strict single-target `Axis=Member` grammar as a
+  non-fact row, retaining incomplete or stale presentation cells as occurrence
+  audit without fact authority, and requiring at least one exact fact authority
+  before a parse run can succeed. Repeated identical concept start tags carry
+  an exact retained-source occurrence count in both the Python semantic digest
+  and the database-recomputed guard; malformed, multi-target, unknown-axis, or
+  ambiguous targets remain typed failures.
+
+  A disposable isolated-PostgreSQL replay used the exact 44 live filing/input
+  identities and read-only retained bytes with a client that forbids external
+  requests. It produced exactly 44 v2.4 runs, all succeeded and none failed;
+  the schema and temporary output were then removed. No live acceptance row or
+  retained object was changed. Publication keeps derived context/value
+  conflicts unavailable: the derived slot now contains both ordered operand
+  raw-fact, parse-run, and statement-occurrence identities, and the publication
+  service requires that complete two-operand period/provenance shape before it
+  persists the unresolved decision and its two input rows. The v2.4 migration
+  applies the same derived-output/ordered-input distinction in both the
+  immediate unresolved-input guard and deferred provenance recheck while
+  leaving the single-input/direct guard unchanged. It does not create a metric
+  fact or count the typed gap as coverage.
+
+  Focused parser, mapping, lineage, migration, publication E2E and gold
+  acceptance verification is green at `424` tests; the complete SEC financial
+  CLI and publication-service files add `41` passes. Both runs emitted only the
+  existing Starlette deprecation warning. The v2.3-to-v2.4 retained recovery regression
+  proves zero upstream-client construction, append-only preservation of the
+  failed v2.3 run, a distinct successful v2.4 run, and publication/report
+  continuation. In-container compilation, the unique `20260901230000` Alembic
+  head, and `git diff --check` pass. No network, shared development database,
+  live acceptance mutation, retained-storage mutation, commit, or push was
+  used. Terra review remains pending before another live acceptance recovery.
+
 - 2026-09-01: Step 5 amendment-slot authority Terra round 1 remediation
   implemented pending Terra round 2. Publication now acquires one shared,
   stock-scoped PostgreSQL transaction advisory lock before rebuilding or

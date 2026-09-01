@@ -7,7 +7,7 @@ import json
 import uuid
 from collections.abc import Mapping
 from dataclasses import dataclass, fields, is_dataclass
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 from types import MappingProxyType
 
@@ -64,6 +64,34 @@ class SecPublicationError(RuntimeError):
 
 
 SEC_PUBLICATION_V1_PARSER_VERSION = PARSER_V2
+
+
+def _validate_derived_unavailable_slot(slot, raw_authorities) -> None:
+    """Require the complete ordered two-input authority for a derived gap."""
+
+    if (
+        len(slot.raw_fact_ids) != 2
+        or len(set(slot.raw_fact_ids)) != 2
+        or len(slot.parse_run_ids) != 2
+        or slot.period_type != "Q"
+        or slot.period_basis != "duration"
+        or slot.fiscal_quarter_ordinal not in {2, 3, 4}
+        or slot.period_start is None
+        or not 70 <= (slot.period_end - slot.period_start).days + 1 <= 110
+        or len(raw_authorities) != 2
+        or any(row.period_instant is not None for row in raw_authorities)
+        or raw_authorities[0].period_end != slot.period_end
+        or raw_authorities[1].period_end != slot.period_start - timedelta(days=1)
+        or tuple(
+            int(item["raw_fact_id"]) for item in slot.occurrence_authorities
+        )
+        != slot.raw_fact_ids
+        or tuple(row.raw_fact_id for row in raw_authorities)
+        != slot.raw_fact_ids
+        or tuple(row.parse_run_id for row in raw_authorities)
+        != slot.parse_run_ids
+    ):
+        raise SecPublicationError("derived unavailable slot evidence shape mismatch")
 
 
 @dataclass(frozen=True)
@@ -492,9 +520,17 @@ def publish_sec_mapping_result(db: Session, request: PublicationRequest) -> Publ
         if True:
             if not slot.raw_fact_ids or item.raw_fact_ids != slot.raw_fact_ids:
                 raise SecPublicationError("raw-backed unavailable slot requires exact raw evidence")
+            derived_unavailable = (
+                len(slot.raw_fact_ids) == 2
+                and (
+                    item.reason.startswith("unresolved_derived_")
+                    or item.reason == "unresolved_value"
+                )
+            )
             raw_parse_ids: set[int] = set()
+            ordered_raw_authority = []
             for raw_id in slot.raw_fact_ids:
-                raw_authority = db.execute(text("""SELECT raw.parse_run_id,raw.period_start,
+                raw_authority = db.execute(text("""SELECT raw.id AS raw_fact_id,raw.parse_run_id,raw.period_start,
                     coalesce(raw.period_end,raw.period_instant) AS period_end,raw.period_instant,
                     raw.context_id,raw.dimensions_structured_json,raw.unit_numerator_json,raw.unit_denominator_json,
                     f.form_type,f.report_date
@@ -504,9 +540,10 @@ def publish_sec_mapping_result(db: Session, request: PublicationRequest) -> Publ
                   JOIN sec_issuer_identities i ON i.id=f.issuer_identity_id
                   WHERE raw.id=:raw AND raw.parse_run_id=ANY(:parses) AND i.stock_id=:stock
                     AND pr.known_at<=:cutoff AND f.known_at<=:cutoff
-                    AND raw.context_id IS NOT DISTINCT FROM :context
-                    AND raw.period_start IS NOT DISTINCT FROM :pstart
-                    AND coalesce(raw.period_end,raw.period_instant)=:pend
+                    AND (:derived OR (
+                      raw.context_id IS NOT DISTINCT FROM :context
+                      AND raw.period_start IS NOT DISTINCT FROM :pstart
+                      AND coalesce(raw.period_end,raw.period_instant)=:pend))
                     AND EXISTS (SELECT 1 FROM sec_metric_mapping_rules rule
                       JOIN sec_metric_mapping_version_namespaces ns ON ns.mapping_version_id=rule.mapping_version_id
                        AND ns.authority=rule.concept_namespace_authority AND ns.namespace_uri=raw.concept_namespace_uri
@@ -514,10 +551,14 @@ def publish_sec_mapping_result(db: Session, request: PublicationRequest) -> Publ
                        AND rule.metadata_json->'ordered_concepts' ? CASE WHEN strpos(raw.concept,':')>0 THEN split_part(raw.concept,':',2) ELSE raw.concept END)"""),
                   {"raw": raw_id, "parses": list(selected_parse_ids), "stock": request.stock_id, "context": slot.context_id,
                    "pstart": slot.period_start, "pend": slot.period_end, "rule": rule.id, "mapping": request.mapping_version_id,
-                   "cutoff": request.requested_cutoff}).mappings().one_or_none()
+                   "cutoff": request.requested_cutoff,
+                   "derived": derived_unavailable}).mappings().one_or_none()
                 if raw_authority is None:
                     raise SecPublicationError("unavailable slot raw evidence outside selected authority")
                 raw_parse_ids.add(raw_authority.parse_run_id)
+                ordered_raw_authority.append(raw_authority)
+                if derived_unavailable:
+                    continue
                 raw_dimensions = raw_authority.dimensions_structured_json or []
                 if _canonical(raw_dimensions) != _canonical(slot.dimensions):
                     raise SecPublicationError("unavailable slot dimensions outside exact raw authority")
@@ -558,6 +599,10 @@ def publish_sec_mapping_result(db: Session, request: PublicationRequest) -> Publ
                     reason_matches_unit = unit_shape_ok and currency_ok
                 if not reason_matches_unit:
                     raise SecPublicationError("unavailable slot unit outside exact raw authority")
+            if derived_unavailable:
+                _validate_derived_unavailable_slot(
+                    slot, tuple(ordered_raw_authority)
+                )
             if raw_parse_ids != set(slot.parse_run_ids):
                 raise SecPublicationError("unavailable slot parse set outside exact raw authority")
     existing = db.execute(text("SELECT status FROM sec_metric_publication_runs WHERE id=:id FOR UPDATE"), {"id": run_id}).scalar_one_or_none()
