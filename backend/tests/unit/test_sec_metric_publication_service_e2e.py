@@ -56,7 +56,9 @@ from app.services.sec_financial_ingestion import (
 from test_sec_financial_lineage import (
     CIK,
     FakeEdgarClient,
+    GeneratedInheritedFrenchRevenueLabelClient,
     GeneratedMixedConceptAuthorityClient,
+    GeneratedStatementAuthorityClient,
     StatementAuthorityClient,
     SUBMISSIONS_URL,
     ToggleInitialMainOutageClient,
@@ -236,6 +238,52 @@ def test_publication_never_uses_partially_resolved_rejected_concept(db, tmp_path
         ),
         {"run": receipt.run_id},
     ).scalar_one() == 0
+
+
+def test_publication_accepts_real_sec_shared_label_resource_roles(db, tmp_path):
+    request = _request(
+        db,
+        tmp_path,
+        ticker="SHAREDLABEL",
+        client=GeneratedStatementAuthorityClient(),
+    )
+
+    receipt = publish_sec_mapping_result(db, request)
+    db.commit()
+    finalize_sec_publication(db, receipt.run_id)
+    db.commit()
+
+    assert db.execute(text(
+        "SELECT count(*) FROM metric_facts WHERE stock_id=:stock "
+        "AND source_type='sec' AND metric_key='is.revenue'"
+    ), {"stock": request.stock_id}).scalar_one() > 0
+    assert db.execute(text(
+        "SELECT count(*) FROM sec_metric_publications "
+        "WHERE publication_run_id=:run AND metric_key='is.revenue' "
+        "AND status='published'"
+    ), {"run": receipt.run_id}).scalar_one() > 0
+
+
+def test_publication_excludes_ancestor_french_label_authority(db, tmp_path):
+    request = _request(
+        db,
+        tmp_path,
+        ticker="FRENLABEL",
+        client=GeneratedInheritedFrenchRevenueLabelClient(),
+        concept_like="%GrossProfit",
+        rule_id="sec.gross_profit",
+    )
+    receipt = publish_sec_mapping_result(db, request)
+    db.commit()
+    finalize_sec_publication(db, receipt.run_id)
+    db.commit()
+
+    metrics = set(db.execute(text(
+        "SELECT metric_key FROM metric_facts WHERE stock_id=:stock "
+        "AND source_type='sec'"
+    ), {"stock": request.stock_id}).scalars())
+    assert "is.gross_profit" in metrics
+    assert "is.revenue" not in metrics
 
 
 class _FailedAmendmentClient(StatementAuthorityClient):

@@ -591,8 +591,14 @@ class GeneratedStatementAuthorityClient(FakeEdgarClient):
         labels = f"""<link:linkbase xmlns:link="http://www.xbrl.org/2003/linkbase"
           xmlns:xlink="http://www.w3.org/1999/xlink"><link:labelLink>
           <link:loc xlink:label="revenue" xlink:href="aapl.xsd#{concept}"/>
+          <link:label xlink:label="label" xlink:role="http://www.xbrl.org/2003/role/documentation"
+          xml:lang="en-US">Revenue recognized from customer contracts.</link:label>
+          <link:label xlink:label="label" xlink:role="http://www.xbrl.org/2003/role/label"
+          xml:lang="en-US">Net sales</link:label>
           <link:label xlink:label="label" xlink:role="http://www.xbrl.org/2003/role/terseLabel"
           xml:lang="en-US">Net sales</link:label>
+          <link:label xlink:label="label" xlink:role="http://www.xbrl.org/2003/role/terseLabel"
+          xml:lang="fr">Ventes nettes</link:label>
           <link:labelArc xlink:from="revenue" xlink:to="label" order="1"/>
           </link:labelLink></link:linkbase>""".encode()
         primary = INLINE_XBRL.replace(
@@ -673,6 +679,35 @@ class GeneratedMixedConceptAuthorityClient(GeneratedStatementAuthorityClient):
         for item in payload["directory"]["item"]:
             if item["name"] in changed:
                 item["size"] = len(changed[item["name"]])
+        self.responses[INDEX_URL] = json.dumps(payload).encode()
+
+
+class GeneratedInheritedFrenchRevenueLabelClient(
+    GeneratedMixedConceptAuthorityClient
+):
+    """Revenue inherits French while GrossProfit declares English directly."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        lab_url = next(url for url in self.responses if url.endswith("_lab.xml"))
+        labels = self.responses[lab_url].replace(
+            b"<link:linkbase ", b'<link:linkbase xml:lang="fr" ', 1
+        )
+        labels = labels.replace(
+            b'''<link:label xlink:label="label" xlink:role="http://www.xbrl.org/2003/role/terseLabel"
+          xml:lang="fr">Ventes nettes</link:label>''',
+            b"",
+        )
+        labels = labels.replace(
+            b' xml:lang="en-US">Revenue recognized from customer contracts.',
+            b">Revenue recognized from customer contracts.",
+        ).replace(b' xml:lang="en-US">Net sales', b">Net sales")
+        self.responses[lab_url] = labels
+        payload = json.loads(self.responses[INDEX_URL])
+        next(
+            item for item in payload["directory"]["item"]
+            if item["name"].endswith("_lab.xml")
+        )["size"] = len(labels)
         self.responses[INDEX_URL] = json.dumps(payload).encode()
 
 
@@ -4852,6 +4887,37 @@ def test_parser_v22_withdraws_every_occurrence_for_rejected_concept_only(
         select(func.count()).select_from(SecStatementOccurrenceEvidence)
         .where(SecStatementOccurrenceEvidence.concept.like("%Revenue%"))
     ) == 0
+
+
+def test_parser_v22_excludes_ancestor_french_label_but_keeps_explicit_english(
+    committed_db_session, tmp_path: Path
+) -> None:
+    db_session = committed_db_session
+    stock = Stock(ticker="LANGLINK", exchange="US", company_name="Language Link")
+    db_session.add(stock); db_session.flush()
+    register_reviewed_sec_identity(
+        db_session, stock_id=stock.id, cik=CIK,
+        effective_from=date(1980, 12, 12),
+        known_at=datetime(2026, 8, 27, 12, tzinfo=timezone.utc),
+        review_reason="inherited label language fixture")
+    db_session.commit()
+
+    report = ingest_latest_financial_filings(
+        db_session, stock_id=stock.id,
+        client=GeneratedInheritedFrenchRevenueLabelClient(),
+        storage_root=tmp_path, max_filings=1,
+        now=datetime(2026, 8, 27, 12, 5, tzinfo=timezone.utc),
+        parser_version="xbrl-lineage-v2.2")
+
+    run = db_session.scalar(select(SecFinancialParseRun))
+    assert report.failures == (), run.error_detail
+    concepts = set(db_session.scalars(
+        select(SecRawXbrlFact.concept).join(
+            SecStatementFactAuthority,
+            SecStatementFactAuthority.raw_fact_id == SecRawXbrlFact.id,
+        )
+    ))
+    assert concepts == {"us-gaap:GrossProfit"}
 
 
 def test_parser_v22_hidden_generated_fact_rejects_entire_concept(

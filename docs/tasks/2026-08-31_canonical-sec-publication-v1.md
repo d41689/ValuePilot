@@ -276,6 +276,40 @@ Run the canonical commands verbatim and in order:
   acceptance storage, live 24-case execution, commit, or push was used. Terra
   reround remains required before resuming the live run.
 
+- 2026-09-01: Live AAPL label-link remediation is implemented pending Terra
+  reround. Read-only inspection of the authorized retained 2015, 2019, and
+  2026 `_lab.xml` objects showed the same legitimate XBRL shape: one
+  `labelLink` may contain several label resources with a shared `xlink:label`,
+  distinguished by `xlink:role` (documentation, standard, terse) and language,
+  with one label arc targeting that shared identifier. The parser previously
+  treated `xlink:label` alone as the resource key, causing every one of the 44
+  retained filings to fail as `ambiguous_label_resource`.
+
+  Resource authority is now unique within the exact `labelLink` by the tuple
+  `(xlink:label, normalized xml:lang, xlink:role)`. Distinct roles and
+  languages are expanded through the arc and remain independently scoped;
+  only the supported English label authorities participate in presentation
+  matching. Empty identity, duplicate tuple, dangling arc, duplicate arc, and
+  conflicting English text remain fail closed. Real-shaped resolver and full
+  ingestion fixtures exercise the shared documentation/standard/terse and
+  non-English resources, while an isolated publication E2E proves the exact
+  terse English occurrence reaches a canonical SEC Revenue fact. Complete
+  read-only parser smoke checks over the exact retained 2015, 2019, and 2026
+  label artifacts produced respectively 1,178, 1,328, and 970 unambiguous
+  role-scoped label authorities with zero rejected concepts. Complete
+  XML language authority now uses the effective `xml:lang` inherited through
+  every ancestor from root to label. An absent declaration inherits the nearest
+  ancestor; an explicit empty declaration resets to no language and does not
+  authorize a label. Only normalized `en` and `en-us` participate, including
+  case/outer-whitespace variants. Pure tests cover inherited French, nested
+  English override, and explicit-empty reset. Full mixed-concept ingestion and
+  publication prove inherited-French Revenue produces no authority or fact
+  while explicitly English GrossProfit remains publishable.
+
+  Complete statement-authority/lineage verification passed `235` tests and
+  complete publication E2E passed `80` tests. The live acceptance database and retained
+  storage were read-only; no network, commit, or push was used.
+
 - 2026-09-01: Step 7B generated-statement authority follow-up remediation is
   implemented pending Terra reround. Label-linkbase parsing now rejects an
   empty locator label and any duplicate locator label inside the same

@@ -163,6 +163,25 @@ def _label_linkbase(*, concept: str = "us-gaap_RevenueFromContractWithCustomerEx
     </link:linkbase>""".encode()
 
 
+def _real_sec_shared_label_resource_linkbase() -> bytes:
+    concept = "us-gaap_RevenueFromContractWithCustomerExcludingAssessedTax"
+    return f"""<link:linkbase xmlns:link="http://www.xbrl.org/2003/linkbase"
+      xmlns:xlink="http://www.w3.org/1999/xlink">
+      <link:labelLink xlink:role="http://www.xbrl.org/2003/role/link">
+        <link:loc xlink:label="loc-revenue" xlink:href="aapl.xsd#{concept}"/>
+        <link:label xlink:label="lab-revenue" xlink:role="http://www.xbrl.org/2003/role/documentation"
+          xml:lang="en-US">Revenue recognized from customer contracts.</link:label>
+        <link:label xlink:label="lab-revenue" xlink:role="http://www.xbrl.org/2003/role/label"
+          xml:lang="en-US">Net sales</link:label>
+        <link:label xlink:label="lab-revenue" xlink:role="http://www.xbrl.org/2003/role/terseLabel"
+          xml:lang="en-US">Net sales</link:label>
+        <link:label xlink:label="lab-revenue" xlink:role="http://www.xbrl.org/2003/role/terseLabel"
+          xml:lang="fr">Ventes nettes</link:label>
+        <link:labelArc xlink:from="loc-revenue" xlink:to="lab-revenue"/>
+      </link:labelLink>
+    </link:linkbase>""".encode()
+
+
 def _generated_raw(**changes):
     values = dict(
         raw_fact_id=11,
@@ -308,7 +327,7 @@ def test_generated_statement_rejects_entire_ambiguous_concept_but_keeps_clean_co
       </link:presentationLink></link:linkbase>""".encode()
     labels = f"""<link:linkbase xmlns:link="http://www.xbrl.org/2003/linkbase" xmlns:xlink="http://www.w3.org/1999/xlink"><link:labelLink>
       <link:loc xlink:label="r" xlink:href="a.xsd#{revenue}"/><link:loc xlink:label="g" xlink:href="a.xsd#{gross}"/>
-      <link:label xlink:label="rl">Net sales</link:label><link:label xlink:label="gl">Gross profit</link:label>
+      <link:label xlink:label="rl" xml:lang="en-US">Net sales</link:label><link:label xlink:label="gl" xml:lang="en-US">Gross profit</link:label>
       <link:labelArc xlink:from="r" xlink:to="rl"/><link:labelArc xlink:from="g" xlink:to="gl"/>
       </link:labelLink></link:linkbase>""".encode()
     candidates = [
@@ -396,6 +415,88 @@ def test_generated_statement_rejects_empty_label_locator_identity():
         b'xlink:label="revenue"', b'xlink:label=""', 1
     )
     with pytest.raises(StatementAuthorityParseError, match="ambiguous_label_locator"):
+        parse_generated_statement_occurrences(
+            _generated_statement_html(), filename="R2.htm",
+            statement_role="http://www.apple.com/role/Operations",
+            presentation_linkbase=_presentation_linkbase(), label_linkbase=labels,
+            candidates=[_generated_raw()], presentation_artifact_id=21,
+            presentation_sha256="1" * 64, label_artifact_id=22,
+            label_sha256="2" * 64,
+        )
+
+
+def test_generated_statement_accepts_real_sec_shared_label_resource_roles():
+    resolution = parse_generated_statement_occurrences(
+        _generated_statement_html(), filename="R2.htm",
+        statement_role="http://www.apple.com/role/Operations",
+        presentation_linkbase=_presentation_linkbase(),
+        label_linkbase=_real_sec_shared_label_resource_linkbase(),
+        candidates=[_generated_raw()], presentation_artifact_id=21,
+        presentation_sha256="1" * 64, label_artifact_id=22,
+        label_sha256="2" * 64,
+    )
+
+    assert len(resolution.occurrences) == 1
+    assert resolution.occurrences[0].locator["row_label"] == "Net sales"
+    assert resolution.occurrences[0].locator["preferred_label_role"].endswith(
+        "/terseLabel"
+    )
+
+
+def test_generated_statement_uses_inherited_effective_label_language():
+    inherited_french = _label_linkbase().replace(
+        b"<link:linkbase ", b'<link:linkbase xml:lang="fr" ', 1
+    ).replace(b' xml:lang="en-US"', b"", 1)
+    rejected = parse_generated_statement_occurrences(
+        _generated_statement_html(), filename="R2.htm",
+        statement_role="http://www.apple.com/role/Operations",
+        presentation_linkbase=_presentation_linkbase(),
+        label_linkbase=inherited_french, candidates=[_generated_raw()],
+        presentation_artifact_id=21, presentation_sha256="1" * 64,
+        label_artifact_id=22, label_sha256="2" * 64, allow_partial=True,
+    )
+    assert rejected.occurrences == ()
+    assert rejected.rejected_concepts == {
+        "us-gaap:RevenueFromContractWithCustomerExcludingAssessedTax"
+    }
+
+    nested_english = inherited_french.replace(
+        b"<link:labelLink>", b'<link:labelLink xml:lang=" EN-uS ">', 1
+    )
+    accepted = parse_generated_statement_occurrences(
+        _generated_statement_html(), filename="R2.htm",
+        statement_role="http://www.apple.com/role/Operations",
+        presentation_linkbase=_presentation_linkbase(),
+        label_linkbase=nested_english, candidates=[_generated_raw()],
+        presentation_artifact_id=21, presentation_sha256="1" * 64,
+        label_artifact_id=22, label_sha256="2" * 64,
+    )
+    assert len(accepted.occurrences) == 1
+
+
+def test_generated_statement_explicit_empty_language_resets_english_ancestor():
+    reset = _label_linkbase().replace(
+        b'xml:lang="en-US">Net sales', b'xml:lang="">Net sales', 1
+    ).replace(b"<link:linkbase ", b'<link:linkbase xml:lang="en-US" ', 1)
+    resolution = parse_generated_statement_occurrences(
+        _generated_statement_html(), filename="R2.htm",
+        statement_role="http://www.apple.com/role/Operations",
+        presentation_linkbase=_presentation_linkbase(), label_linkbase=reset,
+        candidates=[_generated_raw()], presentation_artifact_id=21,
+        presentation_sha256="1" * 64, label_artifact_id=22,
+        label_sha256="2" * 64, allow_partial=True,
+    )
+    assert resolution.occurrences == ()
+
+
+def test_generated_statement_rejects_duplicate_label_resource_role_language_identity():
+    labels = _real_sec_shared_label_resource_linkbase().replace(
+        b"</link:labelLink>",
+        b'''<link:label xlink:label="lab-revenue"
+          xlink:role="http://www.xbrl.org/2003/role/terseLabel"
+          xml:lang="en-US">Conflicting sales label</link:label></link:labelLink>''',
+    )
+    with pytest.raises(StatementAuthorityParseError, match="ambiguous_label_resource"):
         parse_generated_statement_occurrences(
             _generated_statement_html(), filename="R2.htm",
             statement_role="http://www.apple.com/role/Operations",

@@ -338,6 +338,19 @@ def _label_authorities(content: bytes) -> tuple[dict[tuple[str, str], str], dict
         root = ET.fromstring(content)
     except ET.ParseError as exc:
         raise StatementAuthorityParseError("malformed_label_linkbase") from exc
+    xml_language = "{http://www.w3.org/XML/1998/namespace}lang"
+    effective_languages: dict[ET.Element, str | None] = {}
+
+    def record_effective_language(
+        node: ET.Element, inherited: str | None
+    ) -> None:
+        declared = node.get(xml_language)
+        effective = inherited if declared is None else declared.strip().lower()
+        effective_languages[node] = effective
+        for child in node:
+            record_effective_language(child, effective)
+
+    record_effective_language(root, None)
     values: dict[tuple[str, str], list[str]] = {}
     for link in (node for node in root.iter() if _local(node.tag) == "labellink"):
         locators: dict[str, str] = {}
@@ -350,17 +363,20 @@ def _label_authorities(content: bytes) -> tuple[dict[tuple[str, str], str], dict
             locators[label] = _concept_from_fragment(
                 node.get(f"{_XLINK}href") or ""
             )
-        resources: dict[str, tuple[str, str, str]] = {}
+        resources: dict[str, list[tuple[str | None, str, str]]] = {}
+        resource_identities: set[tuple[str, str | None, str]] = set()
         for node in link:
             if _local(node.tag) != "label":
                 continue
             resource_label = (node.get(f"{_XLINK}label") or "").strip()
-            if not resource_label or resource_label in resources:
+            language = effective_languages[node]
+            role = (node.get(f"{_XLINK}role") or _STANDARD_LABEL_ROLE).strip()
+            identity = (resource_label, language, role)
+            if not resource_label or not role or identity in resource_identities:
                 raise StatementAuthorityParseError("ambiguous_label_resource")
-            resources[resource_label] = (
-                (node.get("{http://www.w3.org/XML/1998/namespace}lang") or "").lower(),
-                node.get(f"{_XLINK}role") or _STANDARD_LABEL_ROLE,
-                " ".join(node.itertext()).strip(),
+            resource_identities.add(identity)
+            resources.setdefault(resource_label, []).append(
+                (language, role, " ".join(node.itertext()).strip())
             )
         arc_identities: set[tuple[str, str]] = set()
         for arc in (node for node in link if _local(node.tag) == "labelarc"):
@@ -376,12 +392,12 @@ def _label_authorities(content: bytes) -> tuple[dict[tuple[str, str], str], dict
             ):
                 raise StatementAuthorityParseError("invalid_label_arc")
             arc_identities.add(identity)
-            language, role, text = resources[target]
-            if language not in {"", "en", "en-us"}:
-                continue
-            if not text:
-                raise StatementAuthorityParseError("invalid_label_arc")
-            values.setdefault((locators[source], role), []).append(text)
+            for language, role, label_text in resources[target]:
+                if language not in {"en", "en-us"}:
+                    continue
+                if not label_text:
+                    raise StatementAuthorityParseError("invalid_label_arc")
+                values.setdefault((locators[source], role), []).append(label_text)
     result = {}
     rejected = {}
     for identity, labels in values.items():
