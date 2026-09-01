@@ -24,6 +24,7 @@ from app.api.deps import OptionalCurrentUser, get_db
 from app.schemas.stocks_13f_snapshot import (
     AvailableStockDetail,
     AvailableStockSnapshot,
+    CanonicalSourceStatus,
     QualityOverlay,
     StockDetailCaveatFlag,
     StockDetailResponse,
@@ -73,14 +74,25 @@ def _m3_panel_for_stock(
     post-MVP8-A2 sweep). Return is a typed ``QualityOverlay`` Pydantic
     model so the API contract is enforced at this boundary (D1).
     """
-    by_key = _m3_facts_by_stock(
+    facts_by_stock, canonical_statuses = _m3_facts_by_stock(
         db,
         [stock_id],
         _M3_METRIC_KEYS,
         user_id=user_id,
-    ).get(stock_id, {})
-    if not by_key:
-        return QualityOverlay(has_value_line=False)
+    )
+    by_key = facts_by_stock.get(stock_id, {})
+    canonical_status = canonical_statuses.get(stock_id, {"status": "available"})
+    panel_status = CanonicalSourceStatus(
+        status=canonical_status.get("status", "unavailable"),
+        reason_code=canonical_status.get("reason_code"),
+        source_types=canonical_status.get("source_types") or [],
+        source_type=canonical_status.get("source_type"),
+    )
+    if panel_status.status != "available" or not by_key:
+        return QualityOverlay(
+            has_value_line=False,
+            canonical_source_status=panel_status,
+        )
 
     # Piotroski is stored in value_json (value_numeric is null for most rows).
     # PR #33 Backend B2: defensive coercion. The docstring promises this
@@ -128,6 +140,7 @@ def _m3_panel_for_stock(
 
     return QualityOverlay(
         has_value_line=True,
+        canonical_source_status=panel_status,
         piotroski_score=piotroski_score,
         piotroski_max=piotroski_max,
         piotroski_status=piotroski_status,

@@ -1,6 +1,10 @@
 from datetime import date
 from decimal import Decimal
 
+import pytest
+
+from app.models.facts import MetricFact
+from app.services.canonical_financials import CanonicalSourceConflictError
 from app.services.calculated_metrics.value_line_ratios import build_value_line_ratio_facts
 
 
@@ -73,3 +77,30 @@ def test_build_value_line_ratio_facts_calculates_insurance_premium_turnover():
     assert by_key["ins.premium_turnover"]["value_numeric"] == Decimal("0.5")
     assert by_key["ins.premium_turnover"]["value_json"]["revenue_equivalent_metric"] == "is.net_premiums_earned"
     assert by_key["ins.premium_turnover"]["value_json"]["method"] == "insurance_premiums_to_assets"
+
+
+def test_ratio_does_not_reclassify_a_document_manual_correction_as_parsed():
+    period_end = date(2024, 12, 31)
+    parsed = MetricFact(
+        id=1,
+        metric_key="is.net_income",
+        value_numeric=100,
+        value_json={"fact_nature": "actual"},
+        period_type="FY",
+        period_end_date=period_end,
+        source_type="parsed",
+        source_document_id=41,
+    )
+    correction = MetricFact(
+        id=2,
+        metric_key="bs.total_assets",
+        value_numeric=1000,
+        value_json={"fact_nature": "actual", "correction": True},
+        period_type="FY",
+        period_end_date=period_end,
+        source_type="manual",
+        source_document_id=41,
+    )
+
+    with pytest.raises(CanonicalSourceConflictError):
+        build_value_line_ratio_facts([parsed, correction])

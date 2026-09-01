@@ -6,6 +6,11 @@ from sqlalchemy.orm import Session
 from sqlalchemy import select
 from app.models.facts import MetricFact, Formula, CalculatedRun
 from app.services.numeric_persistence import persist_numeric_38_12
+from app.services.canonical_financials import (
+    guard_sec_run_availability,
+    guard_source_selection,
+    visible_metric_fact_predicate,
+)
 
 # Safe operators for formula evaluation
 SAFE_OPERATORS = {
@@ -90,7 +95,14 @@ class FormulaEngine:
         else:
             raise ValueError(f"Unsupported node type: {type(node)}")
 
-    def run_formula(self, formula_id: int, stock_id: int, user_id: int) -> Optional[CalculatedRun]:
+    def run_formula(
+        self,
+        formula_id: int,
+        stock_id: int,
+        user_id: int,
+        *,
+        selected_source_type: str | None = None,
+    ) -> Optional[CalculatedRun]:
         """
         Executes a specific formula for a stock.
         1. Fetch formula
@@ -99,7 +111,7 @@ class FormulaEngine:
         4. Save CalculatedRun & MetricFact
         """
         formula = self.db.get(Formula, formula_id)
-        if not formula:
+        if not formula or formula.user_id != user_id:
             raise ValueError("Formula not found")
         
         # Fetch dependencies
@@ -111,10 +123,16 @@ class FormulaEngine:
             select(MetricFact).where(
                 MetricFact.stock_id == stock_id,
                 MetricFact.metric_key.in_(formula.dependencies_json),
-                MetricFact.is_current.is_(True)
+                MetricFact.is_current.is_(True),
+                visible_metric_fact_predicate(MetricFact, user_id=user_id),
             )
         ).all()
-        
+        facts = guard_source_selection(
+            facts,
+            consumer="formula",
+            selected_source_type=selected_source_type,
+        )
+        facts = guard_sec_run_availability(self.db, stock_id=stock_id, facts=facts)
         context = {f.metric_key: f.value_numeric for f in facts if f.value_numeric is not None}
         
         # Check if we have all dependencies
@@ -157,7 +175,12 @@ class FormulaEngine:
                 user_id=user_id,
                 stock_id=stock_id,
                 metric_key=output_key,
-                value_json={"value": format(persisted_result, "f"), "formula_id": formula.id},
+                value_json={
+                    "value": format(persisted_result, "f"),
+                    "formula_id": formula.id,
+                    "source_types": sorted({f.source_type for f in facts}),
+                    "user_authored_formula": True,
+                },
                 value_numeric=persisted_result,
                 source_type="calculated",
                 source_ref_id=run.id,

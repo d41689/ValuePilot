@@ -231,7 +231,12 @@ def test_lookup_stock_by_ticker_returns_summary(client, db_session, auth_headers
                 user_id=user.id,
                 stock_id=stock.id,
                 metric_key="owners_earnings_per_share_normalized",
-                value_json={"raw": "5.1", "normalized": 5.1, "unit": "USD"},
+                value_json={
+                    "raw": "5.1",
+                    "normalized": 5.1,
+                    "unit": "USD",
+                    "user_authored_formula": True,
+                },
                 value_numeric=5.1,
                 unit="USD",
                 period_type="AS_OF",
@@ -244,7 +249,12 @@ def test_lookup_stock_by_ticker_returns_summary(client, db_session, auth_headers
                 user_id=user.id,
                 stock_id=stock.id,
                 metric_key="owners_earnings_per_share",
-                value_json={"raw": "5.5", "normalized": 5.5, "unit": "USD"},
+                value_json={
+                    "raw": "5.5",
+                    "normalized": 5.5,
+                    "unit": "USD",
+                    "user_authored_formula": True,
+                },
                 value_numeric=5.5,
                 unit="USD",
                 period_type="FY",
@@ -257,7 +267,12 @@ def test_lookup_stock_by_ticker_returns_summary(client, db_session, auth_headers
                 user_id=user.id,
                 stock_id=stock.id,
                 metric_key="owners_earnings_per_share",
-                value_json={"raw": "5.3", "normalized": 5.3, "unit": "USD"},
+                value_json={
+                    "raw": "5.3",
+                    "normalized": 5.3,
+                    "unit": "USD",
+                    "user_authored_formula": True,
+                },
                 value_numeric=5.3,
                 unit="USD",
                 period_type="FY",
@@ -270,7 +285,12 @@ def test_lookup_stock_by_ticker_returns_summary(client, db_session, auth_headers
                 user_id=user.id,
                 stock_id=stock.id,
                 metric_key="owners_earnings_per_share",
-                value_json={"raw": "5.1", "normalized": 5.1, "unit": "USD"},
+                value_json={
+                    "raw": "5.1",
+                    "normalized": 5.1,
+                    "unit": "USD",
+                    "user_authored_formula": True,
+                },
                 value_numeric=5.1,
                 unit="USD",
                 period_type="FY",
@@ -283,7 +303,12 @@ def test_lookup_stock_by_ticker_returns_summary(client, db_session, auth_headers
                 user_id=user.id,
                 stock_id=stock.id,
                 metric_key="owners_earnings_per_share",
-                value_json={"raw": "4.9", "normalized": 4.9, "unit": "USD"},
+                value_json={
+                    "raw": "4.9",
+                    "normalized": 4.9,
+                    "unit": "USD",
+                    "user_authored_formula": True,
+                },
                 value_numeric=4.9,
                 unit="USD",
                 period_type="FY",
@@ -296,7 +321,12 @@ def test_lookup_stock_by_ticker_returns_summary(client, db_session, auth_headers
                 user_id=user.id,
                 stock_id=stock.id,
                 metric_key="owners_earnings_per_share",
-                value_json={"raw": "4.7", "normalized": 4.7, "unit": "USD"},
+                value_json={
+                    "raw": "4.7",
+                    "normalized": 4.7,
+                    "unit": "USD",
+                    "user_authored_formula": True,
+                },
                 value_numeric=4.7,
                 unit="USD",
                 period_type="FY",
@@ -309,7 +339,12 @@ def test_lookup_stock_by_ticker_returns_summary(client, db_session, auth_headers
                 user_id=user.id,
                 stock_id=stock.id,
                 metric_key="owners_earnings_per_share",
-                value_json={"raw": "4.5", "normalized": 4.5, "unit": "USD"},
+                value_json={
+                    "raw": "4.5",
+                    "normalized": 4.5,
+                    "unit": "USD",
+                    "user_authored_formula": True,
+                },
                 value_numeric=4.5,
                 unit="USD",
                 period_type="FY",
@@ -707,11 +742,14 @@ def test_lookup_stock_by_ticker_returns_summary(client, db_session, auth_headers
     assert payload["exchange"] == "NDQ"
     assert payload["company_name"] == "VITA COCO"
     assert payload["price"] == 54.52
+    assert isinstance(payload["price"], (int, float))
     assert payload["latest_price"] == 55.25
+    assert isinstance(payload["latest_price"], (int, float))
     assert payload["latest_price_date"] == "2026-01-10"
     assert payload["active_report_document_id"] == doc.id
     assert payload["active_report_date"] == "2026-01-09"
     assert payload["pe"] == 43.3
+    assert isinstance(payload["pe"], (int, float))
     assert payload["price_provenance"] == {
         "source_type": "parsed",
         "source_document_id": doc.id,
@@ -727,6 +765,7 @@ def test_lookup_stock_by_ticker_returns_summary(client, db_session, auth_headers
         "is_active_report": True,
     }
     assert payload["oeps_normalized"] == 5.1
+    assert isinstance(payload["oeps_normalized"], (int, float))
     assert payload["oeps_normalized_provenance"] == {
         "source_type": "parsed",
         "source_document_id": doc.id,
@@ -802,6 +841,10 @@ def test_lookup_stock_by_ticker_returns_summary(client, db_session, auth_headers
             },
         },
     ]
+    assert all(
+        isinstance(entry["value"], (int, float))
+        for entry in payload["oeps_series"]
+    )
     assert payload["dcf_inputs"] == {
         "net_profit_per_share": {
             "value": 4.8,
@@ -1621,3 +1664,94 @@ def test_lookup_stock_by_ticker_never_exposes_another_users_private_facts(
     assert payload["oeps_series"] == []
     assert payload["piotroski_f_score_card"]["years"] == []
     assert payload["active_report_document_id"] is None
+
+
+def test_lookup_stock_by_ticker_returns_typed_source_conflict_before_summary_aggregation(
+    client, db_session, auth_headers
+):
+    user = User(email="ticker-source-conflict@example.com")
+    stock = Stock(
+        ticker="SUMMARY_CONFLICT",
+        exchange="NYSE",
+        company_name="SUMMARY CONFLICT INC",
+        is_active=True,
+    )
+    db_session.add_all([user, stock])
+    db_session.flush()
+    db_session.add_all(
+        [
+            MetricFact(
+                user_id=user.id,
+                stock_id=stock.id,
+                metric_key="mkt.price",
+                value_numeric=10,
+                period_type="AS_OF",
+                period_end_date=date(2026, 8, 31),
+                source_type="parsed",
+                is_current=True,
+            ),
+            MetricFact(
+                user_id=user.id,
+                stock_id=stock.id,
+                metric_key="mkt.price",
+                value_numeric=11,
+                period_type="AS_OF",
+                period_end_date=date(2026, 8, 31),
+                source_type="manual",
+                is_current=True,
+            ),
+        ]
+    )
+    db_session.commit()
+
+    response = client.get(
+        "/api/v1/stocks/by_ticker/SUMMARY_CONFLICT",
+        headers=auth_headers(user),
+    )
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == {
+        "code": "source_conflict",
+        "message": (
+            "stock_summary requires an explicit source selection; "
+            "available sources: manual, parsed"
+        ),
+        "source_types": ["manual", "parsed"],
+    }
+
+
+def test_lookup_stock_by_ticker_returns_typed_source_conflict_before_growth_aggregation(
+    client, db_session, auth_headers
+):
+    user = User(email="ticker-growth-conflict@example.com")
+    stock = Stock(
+        ticker="GROWTH_CONFLICT",
+        exchange="NYSE",
+        company_name="GROWTH CONFLICT INC",
+        is_active=True,
+    )
+    db_session.add_all([user, stock])
+    db_session.flush()
+    for source_type, value in (("parsed", 0.05), ("manual", 0.06)):
+        db_session.add(
+            MetricFact(
+                user_id=user.id,
+                stock_id=stock.id,
+                metric_key="rates.sales.cagr_est",
+                value_numeric=value,
+                period_type="PROJECTION_RANGE",
+                period_end_date=date(2026, 8, 31),
+                source_type=source_type,
+                is_current=True,
+            )
+        )
+    db_session.commit()
+
+    response = client.get(
+        "/api/v1/stocks/by_ticker/GROWTH_CONFLICT",
+        headers=auth_headers(user),
+    )
+
+    assert response.status_code == 409
+    assert response.json()["detail"]["code"] == "source_conflict"
+    assert response.json()["detail"]["source_types"] == ["manual", "parsed"]

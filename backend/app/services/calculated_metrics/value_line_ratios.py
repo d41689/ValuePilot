@@ -5,10 +5,11 @@ from datetime import date
 from decimal import Decimal
 from typing import Any, Iterable, Optional
 
-from sqlalchemy import select, update
+from sqlalchemy import and_, or_, select, update
 from sqlalchemy.orm import Session
 
 from app.models.facts import MetricFact
+from app.services.canonical_financials import guard_sec_run_availability, guard_source_selection
 from app.services.numeric_persistence import persist_numeric_38_12
 
 
@@ -23,10 +24,11 @@ class FactSnapshot:
     value_json: dict[str, Any]
     period_type: Optional[str]
     period_end_date: date
+    source_type: Optional[str]
 
 
 def build_value_line_ratio_facts(facts: Iterable[Any]) -> list[dict[str, Any]]:
-    source = _group_facts(facts)
+    source = _group_facts(guard_source_selection(facts, consumer="ratio"))
     period_dates = sorted({period_end for _, period_end in source})
     derived: list[dict[str, Any]] = []
 
@@ -101,12 +103,18 @@ class ValueLineRatioCalculator:
     def calculate_for_stock(self, *, user_id: int, stock_id: int) -> list[MetricFact]:
         source_facts = self.db.scalars(
             select(MetricFact).where(
-                MetricFact.user_id == user_id,
                 MetricFact.stock_id == stock_id,
                 MetricFact.is_current.is_(True),
-                MetricFact.source_type.in_(["parsed", "manual"]),
+                or_(
+                    and_(MetricFact.user_id == user_id, MetricFact.source_type.in_(["parsed", "manual"])),
+                    and_(MetricFact.user_id.is_(None), MetricFact.source_type == "sec"),
+                ),
             )
         ).all()
+        source_facts = guard_source_selection(source_facts, consumer="ratio")
+        source_facts = guard_sec_run_availability(
+            self.db, stock_id=stock_id, facts=source_facts
+        )
         derived = build_value_line_ratio_facts(source_facts)
         return [
             self._insert_calculated_fact(user_id=user_id, stock_id=stock_id, payload=payload)
@@ -245,6 +253,7 @@ def _ratio_fact(
         "method": method,
         "calculation_version": CALCULATION_VERSION,
         "fact_nature": _fact_nature(inputs),
+        "source_types": sorted({fact.source_type for fact in inputs if fact.source_type}),
         "inputs": [_lineage_item(fact) for fact in inputs],
     }
     if extra:
@@ -289,6 +298,7 @@ def _snapshot(raw: Any) -> Optional[FactSnapshot]:
         value_json=value_json,
         period_type=_get(raw, "period_type"),
         period_end_date=period_end,
+        source_type=_get(raw, "source_type"),
     )
 
 
@@ -325,6 +335,7 @@ def _lineage_item(fact: FactSnapshot) -> dict[str, Any]:
         "fact_id": fact.id,
         "value_numeric": format(fact.value_numeric, "f") if fact.value_numeric is not None else None,
         "fact_nature": fact.value_json.get("fact_nature"),
+        "source_type": fact.source_type,
     }
 
 

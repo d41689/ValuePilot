@@ -69,6 +69,7 @@ def read_valuation_context(
         user_id=user_id,
         stock_id=stock_id,
         metric_key=VALUE_LINE_TARGET_REFERENCE_KEY,
+        source_type="parsed",
     )
 
     if manual is None:
@@ -139,6 +140,11 @@ def read_valuation_facts_by_stock(
         if (
             fact.metric_key == USER_INTRINSIC_VALUE_KEY
             and fact.source_type != "manual"
+        ):
+            continue
+        if (
+            fact.metric_key == VALUE_LINE_TARGET_REFERENCE_KEY
+            and fact.source_type != "parsed"
         ):
             continue
         result[fact.stock_id].setdefault(fact.metric_key, fact)

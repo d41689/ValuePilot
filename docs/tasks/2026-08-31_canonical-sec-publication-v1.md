@@ -1,6 +1,6 @@
 # Canonical Financial Truth — SEC Publication V1
 
-Status: contract approved; delivery steps 1–5 complete; Step 6 next; retained statement authority Terra PASS
+Status: contract approved; delivery steps 1–6 complete; Step 6 Terra approved; Step 7 next; retained statement authority Terra PASS
 
 Owner: Product / Engineering
 
@@ -861,3 +861,98 @@ Run the canonical commands verbatim and in order:
   warning. Alembic retained the unique `20260901160000` head, historical
   migrations 120000–140000 remained clean, and `git diff --check` passed.
   Delivery Step 5 is complete; Step 6 is next.
+- 2026-09-01: Delivery Step 6 implemented pending Terra review. Authenticated
+  canonical reads now share only ownerless SEC facts while retaining tenant
+  ownership for Value Line, manual and calculated facts. A bounded evidence
+  resolver exposes filing/accession, form, accepted/known time, parser/mapping,
+  context/period/unit/currency/fact nature, direct or derived input metadata and
+  statement coordinates without raw values, raw XML, retained locator payloads,
+  storage keys/paths or private URLs. Current slot-aware unresolved decisions
+  are returned as typed canonical states. Formula, screener, ratio, Piotroski
+  and valuation-input paths use one source-selection guard and return typed
+  `source_conflict` instead of implicit precedence. The migration-owned reviewed
+  method policy/classification tables now gate Owner Earnings, ROIC, per-share
+  trend and system-valuation outputs; raw facts and explicitly user-authored
+  formulas/valuations remain distinct and unblocked. Production ingestion no
+  longer authors unsupported Owner Earnings facts. Contract scans prove product
+  consumers do not query raw XBRL or retained storage. Focused isolated-schema
+  verification passed 50 tests with only the existing Starlette deprecation
+  warning; Alembic has the unique `20260901160000` head and `git diff --check`
+  passes. Terra adversarial review remains required before Step 7.
+- 2026-09-01: Delivery Step 6 Terra round-1 remediation implemented pending
+  Terra review. Shared source selection now reads only each fact's canonical
+  `source_type`: document-bound manual corrections remain `manual`, and
+  calculated lineage metadata cannot make a calculated fact selectable as
+  SEC. Formula, screener, ratio, Piotroski and valuation-input paths apply
+  explicit source selection before consulting SEC availability. Raw-less
+  amendment parse states are bounded to the filing cycle proven by the
+  selected run source's filing form and report date; unrelated historical SEC
+  periods and selected private sources remain available, the matching SEC
+  cycle returns typed unavailable, and a later successfully published
+  amendment for the same filing cycle restores availability. Oracle's Lens now
+  applies the existing reviewed Owner Earnings method policy/classification
+  gate to its legacy quality overlay and returns a typed unsupported method
+  status instead of silently publishing the derived yield. Isolated PostgreSQL
+  publication coverage exercises the failed-amendment and recovery lifecycle;
+  real ratio, Piotroski, formula, and Oracle's Lens behavior tests cover the
+  consumer boundaries. Implementation remains pending Terra round-2 review.
+- 2026-09-01: Delivery Step 6 Terra round-2 remediation implemented pending
+  Terra round-3 review. Amendment availability now resolves each selected SEC
+  fact through its canonical publication decision and recursively through all
+  real direct/derived publication inputs to the exact run-source filing cycle.
+  Matching uses normalized base form plus filing report date, so a same-date
+  10-K and failed 10-Q/A remain independent while same-cycle 10-Q facts fail
+  closed; SEC facts without provable publication/input lineage remain typed
+  unavailable without affecting selected non-SEC facts. Later successful same-
+  cycle amendment publication still restores availability. The stock summary,
+  growth aggregation and Oracle's Lens quality overlay now apply the shared
+  source guard before choosing a row. Stock routes return the established 409
+  `source_conflict` payload, while Oracle overlays carry an explicit typed
+  canonical source status. Oracle's Lens distinguishes existing
+  `user_authored_formula` provenance from legacy system Owner Earnings before
+  applying the reviewed method gate, preventing query order from authorizing
+  an unsupported system output or hiding an authorized user-defined result.
+  Implementation remains pending Terra round-3 review.
+- 2026-09-01: Delivery Step 6 Terra round-3 compatibility remediation
+  implemented pending review. The existing 13F drawer M3 panel now unpacks the
+  shared guarded fact helper's `(facts_by_stock, canonical_statuses)` result.
+  Normal facts retain the prior value/provenance behavior. Empty facts, typed
+  canonical source conflicts, and typed SEC unavailable states map to the
+  panel's established non-throwing `has_value_line=false` state while a new
+  bounded `canonical_source_status` field preserves status, reason, and safe
+  canonical source roles through the detail API; no 13F
+  selection, ranking, scoring, or caveat logic changed. Real panel tests cover
+  empty, populated, Piotroski-only, cross-source conflict, and typed unavailable
+  paths, with route-level assertions for conflict and amendment-unavailable
+  serialization. Implementation remains pending Terra review.
+- 2026-09-01: Delivery Step 6 Terra round-4 presentation remediation
+  implemented pending Terra round-5 review. The existing `/stocks/by_ticker`
+  wire boundary now converts only its explicit non-null Decimal-backed price,
+  P/E, normalized Owner Earnings and Owner Earnings series value slots to the
+  established JSON-number presentation. Canonical facts, calculation lineage,
+  evidence responses and global Decimal encoding remain unchanged. Route-level
+  assertions pin JSON numeric types for price, latest price, P/E, normalized
+  Owner Earnings and each Owner Earnings series value. The same regression test
+  also confirms raw DCF input facts remain available independently of the
+  unsupported system per-share-trend output classification; the reviewed-method
+  decision remains separately observable and no formula or valuation decision
+  behavior changed. The remediation was accepted in Terra round 5.
+- 2026-09-01: Delivery Step 6 Terra round-5 PASS; Step 6 is complete and
+  approved, with Step 7 next. Across rounds 1–5, review established and
+  verified: source selection uses only canonical fact `source_type` and occurs
+  before SEC availability checks; amendment unavailability is bounded through
+  existing publication lineage to the exact normalized base-form/report-date
+  filing cycle, including derived inputs and later successful recovery; stock
+  summary, growth, formula, screener, ratio, Piotroski, valuation and Oracle's
+  Lens consumers fail closed on unresolved source authority without row-order
+  precedence; reviewed system-method outputs remain distinct from raw actuals
+  and explicitly user-authored outputs; and the 13F M3 compatibility layer
+  preserves bounded typed canonical status without changing 13F scoring.
+  Round 4 additionally restored the established `/stocks/by_ticker` JSON-number
+  presentation at explicit Decimal wire slots while retaining exact canonical
+  persistence and raw DCF input availability. Round 5 found no new P0–P3 issue
+  and passed 95 reviewer tests. Main-agent verification also passed 137 focused
+  Step 6 tests, the complete 10-test stock-lookup file, and the 36-test M3
+  panel/snapshot/detail set; Alembic retained the unique `20260901160000` head
+  and `git diff --check` passed. No Step 6 review gate remains; Delivery Step 7
+  is next.

@@ -12,9 +12,22 @@ from sqlalchemy.exc import DBAPIError
 from sqlalchemy.orm import sessionmaker
 from app.core.config import settings
 from app.models.stocks import Stock
+from app.models.facts import MetricFact
 from app.services.sec_financial_ingestion import finalize_sec_financial_ingestion_operation, ingest_latest_financial_filings, register_reviewed_sec_identity
 from app.services.sec_metric_publication import PublicationRequest, SecPublicationError, VerifiedPublicationSource, finalize_sec_publication, publish_sec_mapping_result
-from test_sec_financial_lineage import CIK, StatementAuthorityClient
+from test_sec_financial_lineage import (
+    CIK,
+    StatementAuthorityClient,
+    SUBMISSIONS_URL,
+    _canonical_artifact_url,
+)
+from app.services.canonical_financials import (
+    CanonicalUnavailableError,
+    active_sec_run_unresolved_states,
+    guard_sec_run_availability,
+    sec_fact_filing_cycles,
+)
+from types import SimpleNamespace
 from test_support.database_isolation import build_isolated_database_url, create_test_schema, drop_test_schema, new_test_schema_name
 
 BACKEND=Path(__file__).resolve().parents[2]
@@ -61,6 +74,221 @@ def _request(db,tmp_path,*,ticker="PUB",normalize=True):
     db.commit()
     source=VerifiedPublicationSource(parse.id,parse.filing_id,parse.accession_no,parse.parser_version,parse.input_manifest_hash,parse.available_at)
     return PublicationRequest(stock.id,identity.id,"sec-us-gaap-v1",parse.available_at+timedelta(seconds=1),"latest-known-v1",(source,))
+
+
+class _FailedAmendmentClient(StatementAuthorityClient):
+    accession = "0000320193-26-000080"
+    primary = "aapl-20260627a.htm"
+
+    def __init__(self):
+        super().__init__()
+        submissions = json.loads(self.responses[SUBMISSIONS_URL])
+        recent = submissions["filings"]["recent"]
+        values = {
+            "accessionNumber": self.accession,
+            "filingDate": "2026-08-28",
+            "reportDate": "2026-06-27",
+            "acceptanceDateTime": "20260828160528",
+            "form": "10-Q/A",
+            "primaryDocument": self.primary,
+            "primaryDocDescription": "10-Q/A",
+        }
+        for key, value in values.items():
+            recent[key].insert(0, value)
+        self.responses[SUBMISSIONS_URL] = json.dumps(submissions).encode()
+        index_url = _canonical_artifact_url(CIK, self.accession, "index.json")
+        primary_url = _canonical_artifact_url(CIK, self.accession, self.primary)
+        no_facts = b"<html><body>amendment content unavailable for classification</body></html>"
+        self.responses[index_url] = json.dumps(
+            {
+                "directory": {
+                    "item": [
+                        {
+                            "name": self.primary,
+                            "type": "10-Q/A",
+                            "size": len(no_facts),
+                            "description": "10-Q/A",
+                        }
+                    ]
+                }
+            }
+        ).encode()
+        self.responses[primary_url] = no_facts
+
+
+class _SuccessfulLaterAmendmentClient(StatementAuthorityClient):
+    accession = "0000320193-26-000081"
+
+    def __init__(self):
+        super().__init__()
+        submissions = json.loads(self.responses[SUBMISSIONS_URL])
+        recent = submissions["filings"]["recent"]
+        values = {
+            "accessionNumber": self.accession,
+            "filingDate": "2026-08-29",
+            "reportDate": "2026-06-27",
+            "acceptanceDateTime": "20260829160528",
+            "form": "10-Q/A",
+            "primaryDocument": "aapl-20260627.htm",
+            "primaryDocDescription": "10-Q/A",
+        }
+        for key, value in values.items():
+            recent[key].insert(0, value)
+        self.responses[SUBMISSIONS_URL] = json.dumps(submissions).encode()
+        original_prefix = "https://www.sec.gov/Archives/edgar/data/320193/000032019326000079/"
+        later_prefix = _canonical_artifact_url(CIK, self.accession, "")
+        for url, content in list(self.responses.items()):
+            if url.startswith(original_prefix):
+                self.responses[later_prefix + url.removeprefix(original_prefix)] = content
+
+
+def test_failed_amendment_state_is_bounded_to_its_filing_cycle(db, tmp_path):
+    original = _request(db, tmp_path, ticker="AMENDCYCLE")
+    initial = publish_sec_mapping_result(db, original)
+    db.commit()
+    finalize_sec_publication(db, initial.run_id)
+    db.commit()
+
+    report = ingest_latest_financial_filings(
+        db,
+        stock_id=original.stock_id,
+        client=_FailedAmendmentClient(),
+        storage_root=tmp_path,
+        max_filings=1,
+        now=datetime(2026, 8, 28, 17, tzinfo=timezone.utc),
+        parser_version="xbrl-lineage-v2",
+    )
+    db.commit()
+    finalize_sec_financial_ingestion_operation(db, operation_id=report.operation_id)
+    db.commit()
+    failed = db.execute(text("""
+      SELECT pr.id,pr.filing_id,pr.parser_version,pr.input_manifest_hash,
+             f.accession_no,a.available_at
+      FROM sec_financial_parse_runs pr
+      JOIN sec_financial_filings f ON f.id=pr.filing_id
+      JOIN sec_financial_lineage_availabilities a ON a.operation_id=pr.operation_id
+      WHERE f.accession_no=:accession AND pr.status='failed'
+      ORDER BY pr.id DESC LIMIT 1
+    """), {"accession": _FailedAmendmentClient.accession}).mappings().one()
+    failed_source = VerifiedPublicationSource(
+        failed.id,
+        failed.filing_id,
+        failed.accession_no,
+        failed.parser_version,
+        failed.input_manifest_hash,
+        failed.available_at,
+    )
+    request = PublicationRequest(
+        original.stock_id,
+        original.issuer_identity_id,
+        original.mapping_version_id,
+        failed.available_at + timedelta(seconds=1),
+        original.amendment_policy,
+        original.sources + (failed_source,),
+    )
+    receipt = publish_sec_mapping_result(db, request)
+    db.commit()
+    finalize_sec_publication(db, receipt.run_id)
+    db.commit()
+
+    states = active_sec_run_unresolved_states(db, stock_id=original.stock_id)
+    assert len(states) == 1
+    assert states[0]["period_end_date"] == date(2026, 6, 27)
+    assert states[0]["filing"]["form"] == "10-Q/A"
+    same_cycle_sec = db.query(MetricFact).filter_by(
+        stock_id=original.stock_id,
+        source_type="sec",
+        is_current=True,
+    ).first()
+    assert sec_fact_filing_cycles(db, facts=[same_cycle_sec]) == {
+        same_cycle_sec.source_ref_id: {("10-Q", date(2026, 6, 27))}
+    }
+    unproven_sec = SimpleNamespace(
+        source_type="sec",
+        source_ref_id=None,
+        period_end_date=date(2022, 12, 31),
+    )
+    parsed = SimpleNamespace(source_type="parsed", period_end_date=date(2026, 6, 27))
+    manual = SimpleNamespace(source_type="manual", period_end_date=date(2026, 6, 27))
+    assert guard_sec_run_availability(db, stock_id=original.stock_id, facts=[parsed, manual]) == [parsed, manual]
+    with pytest.raises(CanonicalUnavailableError):
+        guard_sec_run_availability(db, stock_id=original.stock_id, facts=[same_cycle_sec])
+    with pytest.raises(CanonicalUnavailableError):
+        guard_sec_run_availability(db, stock_id=original.stock_id, facts=[unproven_sec])
+
+    restored_report = ingest_latest_financial_filings(
+        db,
+        stock_id=original.stock_id,
+        client=_SuccessfulLaterAmendmentClient(),
+        storage_root=tmp_path,
+        max_filings=1,
+        now=datetime(2026, 8, 29, 17, tzinfo=timezone.utc),
+        parser_version="xbrl-lineage-v2",
+    )
+    db.commit()
+    finalize_sec_financial_ingestion_operation(db, operation_id=restored_report.operation_id)
+    db.commit()
+    restored = db.execute(text("""
+      SELECT pr.id,pr.filing_id,pr.parser_version,pr.input_manifest_hash,
+             f.accession_no,a.available_at
+      FROM sec_financial_parse_runs pr
+      JOIN sec_financial_filings f ON f.id=pr.filing_id
+      JOIN sec_financial_lineage_availabilities a ON a.operation_id=pr.operation_id
+      WHERE f.accession_no=:accession AND pr.status='succeeded'
+      ORDER BY pr.id DESC LIMIT 1
+    """), {"accession": _SuccessfulLaterAmendmentClient.accession}).mappings().one()
+    rule = db.execute(text(
+        "SELECT id FROM sec_metric_mapping_rules "
+        "WHERE mapping_version_id='sec-us-gaap-v1' AND rule_id='sec.revenue'"
+    )).scalar_one()
+    raws = db.execute(text("""
+      SELECT DISTINCT raw.id,raw.raw_value,raw.scale,raw.sign
+      FROM sec_raw_xbrl_facts raw
+      JOIN sec_statement_fact_authorities a ON a.raw_fact_id=raw.id
+      WHERE raw.parse_run_id=:parse AND raw.concept LIKE '%RevenueFromContract%'
+        AND (raw.transformation_format IS NOT NULL OR raw.raw_value NOT LIKE '%,%')
+    """), {"parse": restored.id}).all()
+    for raw_id, raw_value, scale, sign in raws:
+        normalized = Decimal(raw_value.replace(",", "")) * (Decimal(10) ** (scale or 0))
+        if sign == "-":
+            normalized = -normalized
+        db.execute(text("""
+          INSERT INTO sec_raw_numeric_normalizations
+            (raw_fact_id,mapping_rule_id,mapping_version_id,normalization_version,
+             normalized_value,raw_semantic_sha256,transformation_identity)
+          VALUES (:raw,:rule,'sec-us-gaap-v1','sec_numeric_v1',:value,:sha,
+                  'fixture-exact-decimal')
+        """), {
+            "raw": raw_id,
+            "rule": rule,
+            "value": normalized,
+            "sha": hashlib.sha256(f"{raw_id}:{raw_value}".encode()).hexdigest(),
+        })
+    db.commit()
+    restored_source = VerifiedPublicationSource(
+        restored.id,
+        restored.filing_id,
+        restored.accession_no,
+        restored.parser_version,
+        restored.input_manifest_hash,
+        restored.available_at,
+    )
+    restored_request = PublicationRequest(
+        original.stock_id,
+        original.issuer_identity_id,
+        original.mapping_version_id,
+        restored.available_at + timedelta(seconds=1),
+        original.amendment_policy,
+        (restored_source,),
+    )
+    restored_receipt = publish_sec_mapping_result(db, restored_request)
+    db.commit()
+    finalize_sec_publication(db, restored_receipt.run_id)
+    db.commit()
+    assert active_sec_run_unresolved_states(db, stock_id=original.stock_id) == []
+    assert guard_sec_run_availability(
+        db, stock_id=original.stock_id, facts=[same_cycle_sec]
+    ) == [same_cycle_sec]
 
 def test_database_rebuild_publish_replay_audits_and_availability(db,tmp_path):
     request=_request(db,tmp_path); first=publish_sec_mapping_result(db,request); db.commit()

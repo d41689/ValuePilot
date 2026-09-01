@@ -5,10 +5,11 @@ from datetime import date
 from decimal import Decimal
 from typing import Any, Callable, Iterable, Optional
 
-from sqlalchemy import select, update
+from sqlalchemy import and_, or_, select, update
 from sqlalchemy.orm import Session
 
 from app.models.facts import MetricFact
+from app.services.canonical_financials import guard_sec_run_availability, guard_source_selection
 from app.services.numeric_persistence import persist_numeric_38_12
 
 
@@ -35,6 +36,7 @@ class FactSnapshot:
     value_json: dict[str, Any]
     period_type: Optional[str]
     period_end_date: date
+    source_type: Optional[str]
 
 
 @dataclass(frozen=True)
@@ -51,7 +53,7 @@ class ComponentResult:
 class FactIndex:
     def __init__(self, facts: Iterable[Any]):
         self.facts: dict[tuple[str, date], FactSnapshot] = {}
-        for raw in facts:
+        for raw in guard_source_selection(facts, consumer="piotroski"):
             fact = _snapshot(raw)
             if fact is None or fact.value_numeric is None:
                 continue
@@ -114,11 +116,18 @@ class PiotroskiFScoreCalculator:
     def calculate_for_stock(self, *, user_id: int, stock_id: int) -> list[MetricFact]:
         source_facts = self.db.scalars(
             select(MetricFact).where(
-                MetricFact.user_id == user_id,
                 MetricFact.stock_id == stock_id,
                 MetricFact.is_current.is_(True),
+                or_(
+                    and_(MetricFact.user_id == user_id, MetricFact.source_type.in_(["parsed", "manual"])),
+                    and_(MetricFact.user_id.is_(None), MetricFact.source_type == "sec"),
+                ),
             )
         ).all()
+        source_facts = guard_source_selection(source_facts, consumer="piotroski")
+        source_facts = guard_sec_run_availability(
+            self.db, stock_id=stock_id, facts=source_facts
+        )
         derived = build_piotroski_f_score_facts(source_facts)
         return [
             self._insert_calculated_fact(user_id=user_id, stock_id=stock_id, payload=payload)
@@ -474,6 +483,7 @@ def _component_fact(result: ComponentResult, period_end: date) -> dict[str, Any]
             "calculation_version": CALCULATION_VERSION,
             "standard_metric": result.standard_metric,
             "fact_nature": _fact_nature(result.inputs),
+            "source_types": sorted({fact.source_type for fact in result.inputs if fact.source_type}),
             "formula": result.formula,
             "fiscal_year": period_end.year,
             "inputs": [_lineage_item(fact) for fact in result.inputs],
@@ -499,6 +509,9 @@ def _total_fact(
         "variant": variant,
         "calculation_version": CALCULATION_VERSION,
         "fact_nature": _fact_nature([fact for result in results for fact in result.inputs]),
+        "source_types": sorted(
+            {fact.source_type for result in results for fact in result.inputs if fact.source_type}
+        ),
         "fiscal_year": period_end.year,
         "inputs": [
             {"metric_key": result.metric_key, "value_numeric": float(result.value), "method": result.method}
@@ -557,6 +570,7 @@ def _snapshot(raw: Any) -> Optional[FactSnapshot]:
         value_json=value_json,
         period_type=period_type,
         period_end_date=period_end,
+        source_type=_get(raw, "source_type"),
     )
 
 
@@ -578,6 +592,7 @@ def _lineage_item(fact: FactSnapshot) -> dict[str, Any]:
         "fact_id": fact.id,
         "value_numeric": format(fact.value_numeric, "f") if fact.value_numeric is not None else None,
         "fact_nature": fact.value_json.get("fact_nature"),
+        "source_type": fact.source_type,
     }
 
 
