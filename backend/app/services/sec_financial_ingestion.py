@@ -56,8 +56,10 @@ from app.services.sec_statement_authority import (
     StatementAuthorityParseError,
     classify_statement_occurrence,
     discover_statement_reports,
+    generated_occurrence_candidate_ordinals,
     match_statement_occurrence,
     build_explicit_fiscal_focus,
+    parse_generated_statement_occurrences,
     parse_statement_occurrences,
     statement_reference_digest,
     statement_occurrence_digest,
@@ -79,7 +81,8 @@ HISTORICAL_SUBMISSION_FILENAME_RE = re.compile(
 )
 PARSER_NAME = "valuepilot-inline-xbrl-lineage"
 PARSER_V2_LEGACY = "xbrl-lineage-v2"
-PARSER_V2 = "xbrl-lineage-v2.1"
+PARSER_V2_1 = "xbrl-lineage-v2.1"
+PARSER_V2 = "xbrl-lineage-v2.2"
 ARTIFACT_RETENTION_POLICY_VERSION = "sec-financial-artifacts-v1"
 ANNUAL_FORMS_BY_REGIME = {
     "us_10k_10q": frozenset({"10-K", "10-K/A"}),
@@ -891,7 +894,11 @@ def _retain_item(item: dict[str, Any], primary_document: str, referenced_stateme
 
 
 def _is_parser_v2(parser_version: str) -> bool:
-    return parser_version in {PARSER_V2_LEGACY, PARSER_V2}
+    return parser_version in {PARSER_V2_LEGACY, PARSER_V2_1, PARSER_V2}
+
+
+def _is_sgml_instance_parser(parser_version: str) -> bool:
+    return parser_version in {PARSER_V2_1, PARSER_V2}
 
 
 def _is_standalone_instance_filename(filename: str) -> bool:
@@ -913,11 +920,15 @@ _SEC_DOCUMENT_OPEN_RE = re.compile(
     br"(?is)^[\x09\x0a\x0d\x20]*<DOCUMENT>[\x09\x0a\x0d\x20]*"
 )
 _SEC_DOCUMENT_ANY_RE = re.compile(br"(?is)<DOCUMENT>")
+_SEC_DOCUMENT_CLOSE_ANY_RE = re.compile(br"(?is)</DOCUMENT>")
+_SEC_TEXT_ANY_RE = re.compile(br"(?is)<TEXT>")
+_SEC_TEXT_CLOSE_ANY_RE = re.compile(br"(?is)</TEXT>")
 _SEC_TEXT_OPEN_RE = re.compile(br"(?is)<TEXT>[\x09\x0a\x0d\x20]*")
 _SEC_TEXT_CLOSE_RE = re.compile(br"(?is)[\x09\x0a\x0d\x20]*</TEXT>")
 _SEC_DOCUMENT_CLOSE_RE = re.compile(
     br"(?is)[\x09\x0a\x0d\x20]*</DOCUMENT>[\x09\x0a\x0d\x20]*$"
 )
+_SEC_SGML_WHITESPACE = b"\x09\x0a\x0d\x20"
 
 
 def _unwrap_sec_document(content: bytes) -> bytes:
@@ -928,6 +939,16 @@ def _unwrap_sec_document(content: bytes) -> bytes:
     opened = _SEC_DOCUMENT_OPEN_RE.match(content)
     if opened is None:
         return content
+    if (
+        len(_SEC_DOCUMENT_ANY_RE.findall(content)) != 1
+        or len(_SEC_DOCUMENT_CLOSE_ANY_RE.findall(content)) != 1
+    ):
+        raise SecFinancialIngestionError("malformed SEC SGML document envelope")
+    if (
+        len(_SEC_TEXT_ANY_RE.findall(content)) != 1
+        or len(_SEC_TEXT_CLOSE_ANY_RE.findall(content)) != 1
+    ):
+        raise SecFinancialIngestionError("SEC SGML document has ambiguous TEXT payload")
     document_closed = _SEC_DOCUMENT_CLOSE_RE.search(content, opened.end())
     if document_closed is None:
         raise SecFinancialIngestionError("malformed SEC SGML document envelope")
@@ -941,7 +962,7 @@ def _unwrap_sec_document(content: bytes) -> bytes:
         or _SEC_TEXT_CLOSE_RE.search(body, text_closed.end()) is not None
     ):
         raise SecFinancialIngestionError("SEC SGML document has ambiguous TEXT payload")
-    if body[text_closed.end() :].strip():
+    if body[text_closed.end() :].strip(_SEC_SGML_WHITESPACE):
         raise SecFinancialIngestionError("malformed SEC SGML document envelope")
     payload = body[text_opened.end() : text_closed.start()]
     if _SEC_DOCUMENT_ANY_RE.search(payload) is not None:
@@ -1092,6 +1113,7 @@ def build_retained_financial_replay_client(
     operation_ids: tuple[str, ...],
     storage_root: Path,
     upstream_factory: Callable[[], EdgarLikeClient] | None,
+    target_parser_version: str = PARSER_V2,
 ) -> RetainedFinancialReplayClient:
     """Build a fail-closed replay client from committed issuer evidence."""
 
@@ -1238,14 +1260,25 @@ def build_retained_financial_replay_client(
                     )
                 ).all()
             )
+            current_parse_run = db.get(
+                SecFinancialParseRun, attempt.parse_run_id
+            )
+            if current_parse_run is None:
+                raise SecFinancialIntegrityError(
+                    "retained recovery parse authority is unavailable"
+                )
             retained_instance = _standalone_instance_artifact(
                 linked,
                 primary_document=filing.primary_document,
                 storage_root=storage_root,
             )
-            if candidate is not None or (
+            if (
+                current_parse_run.parser_version != target_parser_version
+                or candidate is not None
+                or (
                 retained_instance is not None
                 and retained_instance.artifact.id not in current_parse_input_ids
+                )
             ):
                 has_reparse_provenance_delta = True
         linked_ids = {artifact.id for artifact in linked}
@@ -2216,7 +2249,7 @@ def _parse_primary_artifact(
     )
     parse_artifact = primary
     standalone_authority: _VerifiedStandaloneInstance | None = None
-    if parser_version == PARSER_V2:
+    if _is_sgml_instance_parser(parser_version):
         standalone_authority = _standalone_instance_artifact(
             artifacts, primary_document=filing.primary_document, storage_root=storage_root
         )
@@ -2308,6 +2341,7 @@ def _parse_primary_artifact(
             )
         return 1, 0, [f"{filing.accession_no}:primary_artifact_unavailable"], run.id
 
+    parse_savepoint = None
     try:
         if standalone_authority is not None and standalone_authority.artifact.id == parse_artifact.id:
             content = standalone_authority.content
@@ -2318,7 +2352,7 @@ def _parse_primary_artifact(
             try:
                 unwrapped_content = (
                     _unwrap_sec_document(raw_content)
-                    if parser_version == PARSER_V2
+                    if _is_sgml_instance_parser(parser_version)
                     else raw_content
                 )
                 root_name, content = safe_xml_preflight(unwrapped_content)
@@ -2398,11 +2432,58 @@ def _parse_primary_artifact(
             summary_raw_content = _read_verified_artifact(storage_root, summary)
             summary_content = (
                 _unwrap_sec_document(summary_raw_content)
-                if parser_version == PARSER_V2
+                if _is_sgml_instance_parser(parser_version)
                 else summary_raw_content
             )
             references = discover_statement_reports(summary_content)
             retained_by_name = {item.filename.lower(): item for item in retained_inputs}
+            parsed_identities = [RawOccurrenceIdentity(
+                index,
+                item.context_id or "",
+                item.concept,
+                item.raw_value or "",
+                item.unit_id,
+                item.locator.get("element_id"),
+                period_start=item.period_start,
+                period_end=item.period_end or item.period_instant,
+                dimensions=tuple(item.dimensions_structured),
+                unit_numerator=tuple(item.unit_numerator),
+                unit_denominator=tuple(item.unit_denominator),
+                decimals=item.decimals,
+                scale=item.scale,
+                sign=item.sign,
+                is_nil=item.is_nil,
+                is_hidden=bool(item.locator.get("is_hidden", False)),
+            ) for index, item in enumerate(parsed, start=1)]
+            presentation_artifact = None
+            label_artifact = None
+            presentation_content = None
+            label_content = None
+            rejected_generated_concepts: set[str] = set()
+            if parser_version == PARSER_V2 and any(
+                not reference.filename.lower().endswith(".xml")
+                for reference in references
+            ):
+                presentation_candidates = [
+                    item for item in retained_inputs
+                    if item.filename.lower().endswith("_pre.xml")
+                ]
+                label_candidates = [
+                    item for item in retained_inputs
+                    if item.filename.lower().endswith("_lab.xml")
+                ]
+                if len(presentation_candidates) != 1 or len(label_candidates) != 1:
+                    raise StatementAuthorityParseError(
+                        "missing_unique_retained_presentation_label_linkbase"
+                    )
+                presentation_artifact = presentation_candidates[0]
+                label_artifact = label_candidates[0]
+                presentation_content = _unwrap_sec_document(
+                    _read_verified_artifact(storage_root, presentation_artifact)
+                )
+                label_content = _unwrap_sec_document(
+                    _read_verified_artifact(storage_root, label_artifact)
+                )
             for reference in references:
                 report_artifact = retained_by_name.get(reference.filename.lower())
                 if report_artifact is None:
@@ -2413,13 +2494,34 @@ def _parse_primary_artifact(
                     )
                     report_parse_content = (
                         _unwrap_sec_document(report_raw_content)
-                        if parser_version == PARSER_V2
+                        if _is_sgml_instance_parser(parser_version)
                         else report_raw_content
                     )
-                    occurrences = parse_statement_occurrences(
-                        report_parse_content,
-                        filename=report_artifact.filename,
-                    )
+                    if parser_version == PARSER_V2 and not report_artifact.filename.lower().endswith(".xml"):
+                        assert presentation_artifact is not None and label_artifact is not None
+                        assert presentation_content is not None and label_content is not None
+                        resolution = parse_generated_statement_occurrences(
+                            report_parse_content,
+                            filename=report_artifact.filename,
+                            statement_role=reference.statement_role,
+                            presentation_linkbase=presentation_content,
+                            label_linkbase=label_content,
+                            candidates=parsed_identities,
+                            presentation_artifact_id=presentation_artifact.id,
+                            presentation_sha256=presentation_artifact.sha256,
+                            label_artifact_id=label_artifact.id,
+                            label_sha256=label_artifact.sha256,
+                            allow_partial=True,
+                        )
+                        occurrences = resolution.occurrences
+                        rejected_generated_concepts.update(
+                            resolution.rejected_concepts
+                        )
+                    else:
+                        occurrences = parse_statement_occurrences(
+                            report_parse_content,
+                            filename=report_artifact.filename,
+                        )
                 except Exception:
                     fallback = retained_by_name.get((reference.fallback_filename or "").lower())
                     if fallback is None:
@@ -2431,32 +2533,72 @@ def _parse_primary_artifact(
                     )
                     report_parse_content = (
                         _unwrap_sec_document(report_raw_content)
-                        if parser_version == PARSER_V2
+                        if _is_sgml_instance_parser(parser_version)
                         else report_raw_content
                     )
-                    occurrences = parse_statement_occurrences(
-                        report_parse_content,
-                        filename=report_artifact.filename,
-                    )
-                if not report_artifact.filename.lower().endswith(".xml"):
+                    if parser_version == PARSER_V2 and not report_artifact.filename.lower().endswith(".xml"):
+                        assert presentation_artifact is not None and label_artifact is not None
+                        assert presentation_content is not None and label_content is not None
+                        resolution = parse_generated_statement_occurrences(
+                            report_parse_content,
+                            filename=report_artifact.filename,
+                            statement_role=reference.statement_role,
+                            presentation_linkbase=presentation_content,
+                            label_linkbase=label_content,
+                            candidates=parsed_identities,
+                            presentation_artifact_id=presentation_artifact.id,
+                            presentation_sha256=presentation_artifact.sha256,
+                            label_artifact_id=label_artifact.id,
+                            label_sha256=label_artifact.sha256,
+                            allow_partial=True,
+                        )
+                        occurrences = resolution.occurrences
+                        rejected_generated_concepts.update(
+                            resolution.rejected_concepts
+                        )
+                    else:
+                        occurrences = parse_statement_occurrences(
+                            report_parse_content,
+                            filename=report_artifact.filename,
+                        )
+                if parser_version != PARSER_V2 and not report_artifact.filename.lower().endswith(".xml"):
                     raise StatementAuthorityParseError("html_statement_authority_diagnostic_only")
                 if (
-                    summary_content != summary_raw_content
-                    or report_parse_content != report_raw_content
+                    parser_version != PARSER_V2
+                    and (
+                        summary_content != summary_raw_content
+                        or report_parse_content != report_raw_content
+                    )
                 ):
                     raise StatementAuthorityParseError(
                         "sgml_statement_authority_has_no_exact_xml_identity"
                     )
                 statement_evidence.extend((reference, report_artifact, occurrence) for occurrence in occurrences)
 
+            if rejected_generated_concepts:
+                statement_evidence = [
+                    item
+                    for item in statement_evidence
+                    if item[2].concept not in rejected_generated_concepts
+                ]
+
+            if parser_version == PARSER_V2 and not statement_evidence:
+                raise StatementAuthorityParseError(
+                    "no_unique_generated_statement_occurrence_authority"
+                )
+
             if filing.report_date is None:
                 raise StatementAuthorityParseError("missing_statement_period_end")
-            parsed_identities = [RawOccurrenceIdentity(index, item.context_id or "", item.concept,
-                item.raw_value or "", item.unit_id, item.locator.get("element_id"))
-                for index, item in enumerate(parsed, start=1)]
             presented_periods = []
             for _, evidence_artifact, occurrence in statement_evidence:
-                parsed_index = match_statement_occurrence(occurrence, parsed_identities)
+                if occurrence.locator.get("kind") == "sec_generated_statement_html_v2":
+                    parsed_index = generated_occurrence_candidate_ordinals(
+                        occurrence, parsed_identities
+                    )[0]
+                else:
+                    parsed_index = match_statement_occurrence(
+                        occurrence, parsed_identities
+                    )
                 item = parsed[parsed_index - 1]
                 end = item.period_end or item.period_instant
                 if end is None: raise StatementAuthorityParseError("statement_occurrence_has_no_period")
@@ -2469,6 +2611,7 @@ def _parse_primary_artifact(
                     item.raw_value or "", tuple(item.dimensions_structured)) for item in parsed],
                 presented_periods=presented_periods, form=filing.form_type,
                 statement_period_end=filing.report_date, approved_dei_namespaces=DEI_URIS)
+        parse_savepoint = db.begin_nested()
         run = SecFinancialParseRun(
             filing_id=filing.id,
             operation_id=operation_id,
@@ -2541,13 +2684,27 @@ def _parse_primary_artifact(
         references_by_key = {}
         occurrence_rows = []
         for reference, report_artifact, occurrence in statement_evidence:
+            generated_ordinals = None
+            if occurrence.locator.get("kind") == "sec_generated_statement_html_v2":
+                generated_ordinals = generated_occurrence_candidate_ordinals(
+                    occurrence, parsed_identities
+                )
+                occurrence = replace(
+                    occurrence,
+                    locator={
+                        **occurrence.locator,
+                        "equivalent_raw_fact_ids": [
+                            raw_rows[item - 1].id for item in generated_ordinals
+                        ],
+                    },
+                )
             reference_key = (reference.report_ordinal, report_artifact.id)
             reference_row = references_by_key.get(reference_key)
             if reference_row is None:
                 reference_row = SecStatementReportReference(
                     parse_run_id=run.id, filing_summary_artifact_id=summary.id,
                     filing_summary_sha256=summary.sha256, filing_summary_byte_size=summary.byte_size,
-                    filing_summary_content=summary_content,
+                    filing_summary_content=summary_raw_content,
                     report_artifact_id=report_artifact.id, report_sha256=report_artifact.sha256,
                     report_byte_size=report_artifact.byte_size,
                     report_content=_read_verified_artifact(storage_root, report_artifact), filename=report_artifact.filename,
@@ -2555,10 +2712,17 @@ def _parse_primary_artifact(
                     statement_type=reference.statement_type, report_name=reference.report_name, known_at=now)
                 reference_row.reference_semantic_sha256 = statement_reference_digest(summary.sha256, reference)
                 db.add(reference_row); db.flush(); references_by_key[reference_key] = reference_row
-            raw_id = match_statement_occurrence(occurrence, [RawOccurrenceIdentity(
-                row.id, row.context_id or "", row.concept, row.raw_value or "", row.unit_id,
-                row.locator_json.get("element_id")) for row in raw_rows])
-            raw_row = next(row for row in raw_rows if row.id == raw_id)
+            if generated_ordinals is not None:
+                raw_row = raw_rows[generated_ordinals[0] - 1]
+                if occurrence.locator["equivalent_raw_fact_ids"][0] != raw_row.id:
+                    raise StatementAuthorityParseError(
+                        "invalid_generated_canonical_raw_fact_identity"
+                    )
+            else:
+                raw_id = match_statement_occurrence(occurrence, [RawOccurrenceIdentity(
+                    row.id, row.context_id or "", row.concept, row.raw_value or "", row.unit_id,
+                    row.locator_json.get("element_id")) for row in raw_rows])
+                raw_row = next(row for row in raw_rows if row.id == raw_id)
             if raw_row.period_end is None and raw_row.period_instant is None:
                 raise StatementAuthorityParseError("statement_occurrence_has_no_period")
             header_date = parse_statement_header_date(occurrence.column_header)
@@ -2579,13 +2743,42 @@ def _parse_primary_artifact(
             db.add(occurrence_row); db.flush()
             occurrence_rows.append((reference, report_artifact, occurrence, raw_row, occurrence_row))
         for reference, report_artifact, occurrence, raw_row, occurrence_row in occurrence_rows:
-            classified = classify_statement_occurrence(occurrence, statement_type=reference.statement_type,
-                period_start=raw_row.period_start, period_end=raw_row.period_end or raw_row.period_instant, focus=focus)
+            try:
+                classified = classify_statement_occurrence(
+                    occurrence,
+                    statement_type=reference.statement_type,
+                    period_start=raw_row.period_start,
+                    period_end=raw_row.period_end or raw_row.period_instant,
+                    focus=focus,
+                )
+            except StatementAuthorityParseError as exc:
+                if (
+                    parser_version == PARSER_V2
+                    and str(exc) == "unproven_statement_presentation_class"
+                ):
+                    # Comparative YTD columns are retained as exact occurrence
+                    # anchors, but cannot independently claim a supported
+                    # canonical presentation class.
+                    continue
+                raise
+            if (
+                parser_version == PARSER_V2
+                and classified.presentation_class
+                == "prior_fiscal_year_balance_sheet"
+            ):
+                # An instant comparative does not prove the prior fiscal-year
+                # start.  Keep its occurrence evidence, but do not invent an
+                # authority row from a presentation date alone.
+                continue
             same_anchor_identity = [item for item in occurrence_rows
                 if item[4].statement_report_reference_id == occurrence_row.statement_report_reference_id
                 and item[4].row_ordinal == occurrence_row.row_ordinal and item[4].concept == occurrence_row.concept]
-            current_anchors = [item for item in same_anchor_identity if item[3].period_start == focus.fiscal_year_start
-                and (item[3].period_end or item[3].period_instant) == focus.statement_period_end]
+            current_anchors = [item for item in same_anchor_identity
+                if (item[3].period_end or item[3].period_instant) == focus.statement_period_end
+                and (
+                    item[3].period_start == focus.fiscal_year_start
+                    or (raw_row.period_start is None and item[3].period_start is None)
+                )]
             if len(current_anchors) != 1:
                 raise StatementAuthorityParseError("missing_unique_current_cycle_anchor")
             current_anchor = current_anchors[0][4]
@@ -2623,10 +2816,16 @@ def _parse_primary_artifact(
                 locator_json=occurrence.locator,
                 known_at=now,
             ))
+        db.flush()
+        parse_savepoint.commit()
         return 1, len(parsed), [], run.id
     except SecFinancialIntegrityError:
+        if parse_savepoint is not None:
+            parse_savepoint.rollback()
         raise
     except Exception as exc:
+        if parse_savepoint is not None:
+            parse_savepoint.rollback()
         error_code = exc.reason_code if isinstance(exc, StatementAuthorityParseError) else "parse_failed"
         run = SecFinancialParseRun(
             filing_id=filing.id,

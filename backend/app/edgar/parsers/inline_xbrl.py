@@ -547,6 +547,10 @@ def parse_inline_xbrl(
             scale = None
         nil_raw = (_attr(fact, "xsi:nil") or _attr(fact, "nil") or "").lower()
         element_id = _attr(fact, "id")
+        is_hidden = fact.find_parent(
+            lambda item: isinstance(item, Tag)
+            and _local_name(item) == "hidden"
+        ) is not None
         locator = {
             "artifact_id": artifact_id,
             "element_id": element_id,
@@ -554,6 +558,7 @@ def parse_inline_xbrl(
             "locator_type": "inline_xbrl_html",
             "nearby_text_snippet": nearby,
             "nearby_text_sha256": hashlib.sha256(nearby.encode("utf-8")).hexdigest(),
+            "is_hidden": is_hidden,
         }
         results.append(
             ParsedInlineXbrlFact(

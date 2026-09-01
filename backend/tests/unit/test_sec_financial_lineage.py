@@ -10,7 +10,7 @@ import threading
 import uuid
 
 import pytest
-from sqlalchemy import create_engine, func, select, text
+from sqlalchemy import create_engine, func, inspect, select, text
 from sqlalchemy.engine import make_url
 from sqlalchemy.exc import DBAPIError
 from sqlalchemy.orm import Session
@@ -106,10 +106,34 @@ def test_sec_sgml_document_unwrap_is_bounded_and_preserves_text_payload() -> Non
 
     assert _unwrap_sec_document(wrapped) == payload
     assert _unwrap_sec_document(payload) == payload
+    mixed_case = wrapped.replace(b"<DOCUMENT>", b"<dOcUmEnT>").replace(
+        b"</DOCUMENT>", b"</DoCuMeNt>"
+    ).replace(b"<TEXT>", b"<tExT>").replace(b"</TEXT>", b"</TeXt>")
+    assert _unwrap_sec_document(mixed_case) == payload
     with pytest.raises(SecFinancialIngestionError, match="ambiguous TEXT"):
         _unwrap_sec_document(
             b"<DOCUMENT><TEXT><x/></TEXT><TEXT><y/></TEXT></DOCUMENT>"
         )
+    for extra_literal in (
+        b"<!-- </DOCUMENT> -->",
+        b"<!-- <DOCUMENT> -->",
+        b"<!-- </TEXT> -->",
+        b"<!-- <TEXT> -->",
+    ):
+        candidate = wrapped.replace(payload, payload + extra_literal)
+        with pytest.raises(SecFinancialIngestionError):
+            _unwrap_sec_document(candidate)
+    for disallowed in (b"\x0b", b"\x0c"):
+        with pytest.raises(SecFinancialIngestionError, match="malformed SEC SGML"):
+            _unwrap_sec_document(
+                b"<DOCUMENT><TEXT><x/></TEXT>"
+                + disallowed
+                + b"</DOCUMENT>"
+            )
+        with pytest.raises(SecFinancialIngestionError, match="malformed SEC SGML"):
+            _unwrap_sec_document(wrapped + disallowed)
+        leading = disallowed + wrapped
+        assert _unwrap_sec_document(leading) == leading
 
 
 def test_retention_recognizes_generic_instance_filename_despite_sec_type() -> None:
@@ -483,6 +507,256 @@ class StatementAuthorityClient(FakeEdgarClient):
         self.responses[_canonical_artifact_url(CIK, ACCESSION, "FinancialStatements.xml")] = report
 
 
+class WrappedXmlStatementAuthorityClient(StatementAuthorityClient):
+    def __init__(self) -> None:
+        super().__init__()
+        payload = json.loads(self.responses[INDEX_URL])
+        for filename in ("FilingSummary.xml", "FinancialStatements.xml"):
+            url = _canonical_artifact_url(CIK, ACCESSION, filename)
+            wrapped = (
+                b" \t\r\n<DOCUMENT><TYPE>XML\n<SEQUENCE>1\n<FILENAME>"
+                + filename.encode()
+                + b"\n<TEXT>"
+                + self.responses[url]
+                + b"</TEXT></DOCUMENT>\n\r\t "
+            )
+            self.responses[url] = wrapped
+            next(
+                item for item in payload["directory"]["item"]
+                if item["name"] == filename
+            )["size"] = len(wrapped)
+        self.responses[INDEX_URL] = json.dumps(payload).encode()
+
+
+class NumericHeaderStatementAuthorityClient(StatementAuthorityClient):
+    def __init__(self) -> None:
+        super().__init__()
+        report_url = next(
+            url for url in self.responses if url.endswith("FinancialStatements.xml")
+        )
+        report = b'''<Report><Columns>
+          <Column><Labels><Label Label="3 Months Ended June 27, 2026"/></Labels></Column>
+          <Column><Labels><Label Label="3 Months Ended June 28, 2025"/></Labels></Column>
+          </Columns><Rows><Row><ElementName>us-gaap_RevenueFromContractWithCustomerExcludingAssessedTax</ElementName><Cells>
+          <Cell contextRef="D2026Q3" factId="fact-revenue" unitRef="USD"><NumericAmount>94,000</NumericAmount></Cell>
+          <Cell contextRef="D2025Q3" factId="fact-prior" unitRef="USD"><NumericAmount>90,000</NumericAmount></Cell>
+          </Cells></Row></Rows></Report>'''
+        self.responses[report_url] = report
+        primary = self.responses[PRIMARY_URL].replace(
+            b"</body>",
+            b'''<xbrli:context id="D2025Q3"><xbrli:entity><xbrli:identifier scheme="http://www.sec.gov/CIK">0000320193</xbrli:identifier></xbrli:entity><xbrli:period><xbrli:startDate>2025-03-30</xbrli:startDate><xbrli:endDate>2025-06-28</xbrli:endDate></xbrli:period></xbrli:context>
+            <ix:nonFraction id="fact-prior" name="us-gaap:RevenueFromContractWithCustomerExcludingAssessedTax" contextRef="D2025Q3" unitRef="USD" format="ixt:num-dot-decimal">90,000</ix:nonFraction></body>''',
+        )
+        primary = primary.replace(
+            b">Q3</ix:nonNumeric>", b">Q1</ix:nonNumeric>"
+        )
+        self.responses[PRIMARY_URL] = primary
+        payload = json.loads(self.responses[INDEX_URL])
+        for item in payload["directory"]["item"]:
+            if item["name"] == "FinancialStatements.xml":
+                item["size"] = len(report)
+            elif item["name"] == "aapl-20260627.htm":
+                item["size"] = len(primary)
+        self.responses[INDEX_URL] = json.dumps(payload).encode()
+
+
+class GeneratedStatementAuthorityClient(FakeEdgarClient):
+    """Real SEC FilingSummary/R*.htm + pre/lab shape with retained instance facts."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        role = "http://www.apple.com/role/Operations"
+        concept = "us-gaap_RevenueFromContractWithCustomerExcludingAssessedTax"
+        summary = f"""<FilingSummary><MyReports><Report><Position>2</Position>
+          <ShortName>CONDENSED CONSOLIDATED STATEMENTS OF OPERATIONS (Unaudited)</ShortName>
+          <Role>{role}</Role><HtmlFileName>R2.htm</HtmlFileName>
+        </Report></MyReports></FilingSummary>""".encode()
+        report = f"""<DOCUMENT><TYPE>XML\n<SEQUENCE>13\n<FILENAME>R2.htm
+          <DESCRIPTION>IDEA: XBRL DOCUMENT\n<TEXT><html><body><table>
+          <tr><th rowspan="2">CONDENSED CONSOLIDATED STATEMENTS OF OPERATIONS
+          - USD ($)<br/>shares in Thousands, $ in Millions</th>
+          <th colspan="2">3 Months Ended</th><th colspan="2">9 Months Ended</th></tr>
+          <tr><th>Jun. 27, 2026</th><th>Jun. 28, 2025</th>
+          <th>Jun. 27, 2026</th><th>Jun. 28, 2025</th></tr>
+          <tr><td><a onclick="Show.showAR( this, 'defref_{concept}', window );">Net sales</a></td>
+          <td>$ 94,000</td><td>$ 90,000</td><td>$ 250,000</td><td>$ 240,000</td></tr>
+          </table></body></html></TEXT></DOCUMENT>""".encode()
+        presentation = f"""<link:linkbase xmlns:link="http://www.xbrl.org/2003/linkbase"
+          xmlns:xlink="http://www.w3.org/1999/xlink"><link:presentationLink xlink:role="{role}">
+          <link:loc xlink:label="parent" xlink:href="aapl.xsd#us-gaap_StatementLineItems"/>
+          <link:loc xlink:label="revenue" xlink:href="aapl.xsd#{concept}"/>
+          <link:presentationArc xlink:from="parent" xlink:to="revenue" order="1"
+          preferredLabel="http://www.xbrl.org/2003/role/terseLabel"/>
+          </link:presentationLink></link:linkbase>""".encode()
+        labels = f"""<link:linkbase xmlns:link="http://www.xbrl.org/2003/linkbase"
+          xmlns:xlink="http://www.w3.org/1999/xlink"><link:labelLink>
+          <link:loc xlink:label="revenue" xlink:href="aapl.xsd#{concept}"/>
+          <link:label xlink:label="label" xlink:role="http://www.xbrl.org/2003/role/terseLabel"
+          xml:lang="en-US">Net sales</link:label>
+          <link:labelArc xlink:from="revenue" xlink:to="label" order="1"/>
+          </link:labelLink></link:linkbase>""".encode()
+        primary = INLINE_XBRL.replace(
+            b'<ix:nonFraction id="fact-revenue-ytd"',
+            b'<ix:nonFraction scale="6" id="fact-revenue-ytd"',
+        )
+        # StatementAuthorityClient's YTD/DEI facts are required for Q3 cycle
+        # authority; preserve them while using the generated SEC report shape.
+        primary = primary.replace(
+            b"</body>",
+            b'''<xbrli:context id="FY2026YTD"><xbrli:entity><xbrli:identifier scheme="http://www.sec.gov/CIK">0000320193</xbrli:identifier></xbrli:entity><xbrli:period><xbrli:startDate>2025-09-28</xbrli:startDate><xbrli:endDate>2026-06-27</xbrli:endDate></xbrli:period></xbrli:context>
+            <xbrli:context id="D2025Q3"><xbrli:entity><xbrli:identifier scheme="http://www.sec.gov/CIK">0000320193</xbrli:identifier></xbrli:entity><xbrli:period><xbrli:startDate>2025-03-30</xbrli:startDate><xbrli:endDate>2025-06-28</xbrli:endDate></xbrli:period></xbrli:context>
+            <xbrli:context id="FY2025YTD"><xbrli:entity><xbrli:identifier scheme="http://www.sec.gov/CIK">0000320193</xbrli:identifier></xbrli:entity><xbrli:period><xbrli:startDate>2024-09-29</xbrli:startDate><xbrli:endDate>2025-06-28</xbrli:endDate></xbrli:period></xbrli:context>
+            <ix:nonFraction scale="6" id="fact-revenue-prior-quarter" name="us-gaap:RevenueFromContractWithCustomerExcludingAssessedTax" contextRef="D2025Q3" unitRef="USD" format="ixt:num-dot-decimal">90,000</ix:nonFraction>
+            <ix:nonFraction scale="6" id="fact-revenue-ytd" name="us-gaap:RevenueFromContractWithCustomerExcludingAssessedTax" contextRef="FY2026YTD" unitRef="USD" format="ixt:num-dot-decimal">250,000</ix:nonFraction>
+            <ix:nonFraction scale="6" id="fact-revenue-prior-ytd" name="us-gaap:RevenueFromContractWithCustomerExcludingAssessedTax" contextRef="FY2025YTD" unitRef="USD" format="ixt:num-dot-decimal">240,000</ix:nonFraction>
+            <ix:nonNumeric id="fy-focus" name="dei:DocumentFiscalYearFocus" contextRef="FY2026YTD">2026</ix:nonNumeric><ix:nonNumeric id="fp-focus" name="dei:DocumentFiscalPeriodFocus" contextRef="FY2026YTD">Q3</ix:nonNumeric></body>''',
+        )
+        payload = json.loads(_index_payload())
+        payload["directory"]["item"][0]["size"] = len(primary)
+        for filename, content, sec_type in (
+            ("FilingSummary.xml", summary, "XML"),
+            ("R2.htm", report, "XML"),
+            ("aapl-20260627_pre.xml", presentation, "EX-101.PRE"),
+            ("aapl-20260627_lab.xml", labels, "EX-101.LAB"),
+        ):
+            payload["directory"]["item"].append(
+                {"name": filename, "type": sec_type, "size": len(content), "description": filename}
+            )
+            self.responses[_canonical_artifact_url(CIK, ACCESSION, filename)] = content
+        self.responses[INDEX_URL] = json.dumps(payload).encode()
+        self.responses[PRIMARY_URL] = primary
+
+
+class GeneratedMixedConceptAuthorityClient(GeneratedStatementAuthorityClient):
+    """One rejected Revenue cell plus a separately clean GrossProfit concept."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        report_url = next(url for url in self.responses if url.endswith("R2.htm"))
+        pre_url = next(url for url in self.responses if url.endswith("_pre.xml"))
+        lab_url = next(url for url in self.responses if url.endswith("_lab.xml"))
+        gross_fragment = "us-gaap_GrossProfit"
+        self.responses[report_url] = self.responses[report_url].replace(
+            b"</table>",
+            f"""<tr><td><a onclick="Show.showAR(this, 'defref_{gross_fragment}', window)">Gross profit</a></td>
+            <td>$ 40,000</td><td>$ 38,000</td><td>$ 110,000</td><td>$ 105,000</td></tr></table>""".encode(),
+        )
+        self.responses[pre_url] = self.responses[pre_url].replace(
+            b"</link:presentationLink>",
+            f"""<link:loc xlink:label="gross" xlink:href="aapl.xsd#{gross_fragment}"/>
+            <link:presentationArc xlink:from="parent" xlink:to="gross" order="2"
+            preferredLabel="http://www.xbrl.org/2003/role/terseLabel"/>
+            </link:presentationLink>""".encode(),
+        )
+        self.responses[lab_url] = self.responses[lab_url].replace(
+            b"</link:labelLink>",
+            f"""<link:loc xlink:label="gross" xlink:href="aapl.xsd#{gross_fragment}"/>
+            <link:label xlink:label="gross-label" xlink:role="http://www.xbrl.org/2003/role/terseLabel" xml:lang="en-US">Gross profit</link:label>
+            <link:labelArc xlink:from="gross" xlink:to="gross-label"/></link:labelLink>""".encode(),
+        )
+        additions = b'''<xbrli:context id="D2025Q3Segment"><xbrli:entity><xbrli:identifier scheme="http://www.sec.gov/CIK">0000320193</xbrli:identifier><xbrli:segment><xbrldi:explicitMember dimension="us-gaap:StatementBusinessSegmentsAxis">aapl:ProductsMember</xbrldi:explicitMember></xbrli:segment></xbrli:entity><xbrli:period><xbrli:startDate>2025-03-30</xbrli:startDate><xbrli:endDate>2025-06-28</xbrli:endDate></xbrli:period></xbrli:context>
+          <ix:nonFraction scale="6" id="fact-revenue-prior-segment" name="us-gaap:RevenueFromContractWithCustomerExcludingAssessedTax" contextRef="D2025Q3Segment" unitRef="USD" format="ixt:num-dot-decimal">90,000</ix:nonFraction>
+          <ix:nonFraction scale="6" id="gross-current" name="us-gaap:GrossProfit" contextRef="D2026Q3" unitRef="USD" format="ixt:num-dot-decimal">40,000</ix:nonFraction>
+          <ix:nonFraction scale="6" id="gross-prior" name="us-gaap:GrossProfit" contextRef="D2025Q3" unitRef="USD" format="ixt:num-dot-decimal">38,000</ix:nonFraction>
+          <ix:nonFraction scale="6" id="gross-ytd" name="us-gaap:GrossProfit" contextRef="FY2026YTD" unitRef="USD" format="ixt:num-dot-decimal">110,000</ix:nonFraction>
+          <ix:nonFraction scale="6" id="gross-prior-ytd" name="us-gaap:GrossProfit" contextRef="FY2025YTD" unitRef="USD" format="ixt:num-dot-decimal">105,000</ix:nonFraction>'''
+        self.responses[PRIMARY_URL] = self.responses[PRIMARY_URL].replace(
+            b"</body>", additions + b"</body>"
+        )
+        payload = json.loads(self.responses[INDEX_URL])
+        changed = {
+            "aapl-20260627.htm": self.responses[PRIMARY_URL],
+            "R2.htm": self.responses[report_url],
+            "aapl-20260627_pre.xml": self.responses[pre_url],
+            "aapl-20260627_lab.xml": self.responses[lab_url],
+        }
+        for item in payload["directory"]["item"]:
+            if item["name"] in changed:
+                item["size"] = len(changed[item["name"]])
+        self.responses[INDEX_URL] = json.dumps(payload).encode()
+
+
+class GeneratedHiddenAuthorityClient(GeneratedStatementAuthorityClient):
+    def __init__(self) -> None:
+        super().__init__()
+        primary = self.responses[PRIMARY_URL].replace(
+            b'<ix:nonFraction id="fact-revenue"',
+            b'<ix:hidden><ix:nonFraction id="fact-revenue"',
+        ).replace(
+            b"</ix:nonFraction>\n  <ix:nonNumeric id=\"fact-name\"",
+            b"</ix:nonFraction></ix:hidden>\n  <ix:nonNumeric id=\"fact-name\"",
+            1,
+        )
+        self.responses[PRIMARY_URL] = primary
+        payload = json.loads(self.responses[INDEX_URL])
+        payload["directory"]["item"][0]["size"] = len(primary)
+        self.responses[INDEX_URL] = json.dumps(payload).encode()
+
+
+class GeneratedVisibleAndHiddenDuplicateClient(GeneratedStatementAuthorityClient):
+    def __init__(self) -> None:
+        super().__init__()
+        hidden = b'''<ix:hidden><ix:nonFraction name="us-gaap:RevenueFromContractWithCustomerExcludingAssessedTax" contextRef="D2026Q3" unitRef="USD" decimals="-6" scale="6" format="ixt:num-dot-decimal">94,000</ix:nonFraction></ix:hidden>'''
+        primary = self.responses[PRIMARY_URL].replace(
+            b"</body>", hidden + b"</body>", 1
+        )
+        self.responses[PRIMARY_URL] = primary
+        payload = json.loads(self.responses[INDEX_URL])
+        payload["directory"]["item"][0]["size"] = len(primary)
+        self.responses[INDEX_URL] = json.dumps(payload).encode()
+
+
+class GeneratedDuplicateWithoutElementIdClient(GeneratedStatementAuthorityClient):
+    def __init__(self) -> None:
+        super().__init__()
+        primary = self.responses[PRIMARY_URL].replace(
+            b'id="fact-revenue" ', b"", 1
+        )
+        fact = b'''<ix:nonFraction name="us-gaap:RevenueFromContractWithCustomerExcludingAssessedTax" contextRef="D2026Q3" unitRef="USD" decimals="-6" scale="6" format="ixt:num-dot-decimal">94,000</ix:nonFraction>'''
+        primary = primary.replace(b"</body>", fact + b"</body>")
+        self.responses[PRIMARY_URL] = primary
+        payload = json.loads(self.responses[INDEX_URL])
+        payload["directory"]["item"][0]["size"] = len(primary)
+        self.responses[INDEX_URL] = json.dumps(payload).encode()
+
+
+class GeneratedDuplicateLabelLocatorClient(GeneratedStatementAuthorityClient):
+    def __init__(self) -> None:
+        super().__init__()
+        lab_url = next(url for url in self.responses if url.endswith("_lab.xml"))
+        labels = self.responses[lab_url].replace(
+            b'<link:loc xlink:label="revenue"',
+            b'<link:loc xlink:label="revenue" xlink:href="aapl.xsd#us-gaap_GrossProfit"/>'
+            b'<link:loc xlink:label="revenue"',
+            1,
+        )
+        self.responses[lab_url] = labels
+        payload = json.loads(self.responses[INDEX_URL])
+        next(
+            item for item in payload["directory"]["item"]
+            if item["name"].endswith("_lab.xml")
+        )["size"] = len(labels)
+        self.responses[INDEX_URL] = json.dumps(payload).encode()
+
+
+class GeneratedDuplicateOnclickClient(GeneratedStatementAuthorityClient):
+    def __init__(self) -> None:
+        super().__init__()
+        report_url = next(url for url in self.responses if url.endswith("R2.htm"))
+        report = self.responses[report_url].replace(
+            b'<a onclick="Show.showAR(',
+            b'<a onclick="alert(1)" onclick="Show.showAR(',
+            1,
+        )
+        self.responses[report_url] = report
+        payload = json.loads(self.responses[INDEX_URL])
+        next(
+            item for item in payload["directory"]["item"]
+            if item["name"] == "R2.htm"
+        )["size"] = len(report)
+        self.responses[INDEX_URL] = json.dumps(payload).encode()
+
+
 class FlakyEdgarClient(FakeEdgarClient):
     def __init__(self) -> None:
         super().__init__()
@@ -848,6 +1122,7 @@ def test_inline_xbrl_parser_preserves_context_unit_dimensions_and_locator() -> N
     assert revenue.scale == 6
     assert revenue.locator["artifact_id"] == 77
     assert revenue.locator["element_id"] == "fact-revenue"
+    assert revenue.locator["is_hidden"] is False
     assert revenue.locator["nearby_text_sha256"]
     assert facts[1].language == "en-US"
     assert facts[1].continued_at == "name-continuation"
@@ -862,6 +1137,22 @@ def test_inline_xbrl_parser_preserves_context_unit_dimensions_and_locator() -> N
         "local_name": "shares",
         "prefix": "xbrli",
     },)
+
+
+@pytest.mark.parametrize("hidden_tag", ["ix:hidden", "ix:Hidden"])
+def test_strict_inline_parser_persists_hidden_ancestor_identity(hidden_tag) -> None:
+    opening = b'<ix:nonFraction id="fact-revenue"'
+    content = INLINE_XBRL.replace(
+        opening,
+        f"<{hidden_tag}>".encode() + opening,
+    ).replace(
+        b"</ix:nonFraction>\n  <ix:nonNumeric id=\"fact-name\"",
+        f"</ix:nonFraction></{hidden_tag}>\n  <ix:nonNumeric id=\"fact-name\"".encode(),
+        1,
+    )
+    facts = parse_inline_xbrl(content, artifact_id=77, strict=True)
+    assert facts[0].locator["is_hidden"] is True
+    assert all(item.locator["is_hidden"] is False for item in facts[1:])
 
 
 def test_standalone_xbrl_parser_uses_namespace_authority_and_xml_locator() -> None:
@@ -4170,6 +4461,486 @@ def test_parser_v2_writes_exact_statement_authority_in_parse_transaction(
               VALUES (:raw,:reference,:run,:artifact,:sha,:bytes,:role,:type,:report_ordinal,:name,:occurrence,
                       :fact_id,:semantic,:context,:presentation,:period_end,:fy,:fq,:fy_start,CAST(:locator AS jsonb),:known_at,
                       :statement_occurrence,:current_anchor,:prior_anchor)"""), params)
+
+
+def test_parser_v22_joins_generated_sec_statement_to_unique_instance_authority(
+    committed_db_session, tmp_path: Path
+) -> None:
+    db_session = committed_db_session
+    stock = Stock(ticker="AAPL", exchange="US", company_name="Apple Inc.")
+    db_session.add(stock); db_session.flush()
+    register_reviewed_sec_identity(
+        db_session, stock_id=stock.id, cik=CIK,
+        effective_from=date(1980, 12, 12),
+        known_at=datetime(2026, 8, 27, 12, 0, tzinfo=timezone.utc),
+        review_reason="fixture reviewed identity")
+    db_session.commit()
+
+    report = ingest_latest_financial_filings(
+        db_session, stock_id=stock.id,
+        client=GeneratedStatementAuthorityClient(), storage_root=tmp_path,
+        max_filings=1, now=datetime(2026, 8, 27, 12, 5, tzinfo=timezone.utc),
+        parser_version="xbrl-lineage-v2.2")
+
+    run = db_session.scalar(select(SecFinancialParseRun))
+    assert report.failures == (), run.error_detail
+    assert run.parser_version == "xbrl-lineage-v2.2"
+    assert run.status == "succeeded"
+    occurrences = db_session.scalars(
+        select(SecStatementOccurrenceEvidence).order_by(SecStatementOccurrenceEvidence.column_ordinal)
+    ).all()
+    assert [(row.context_id, row.raw_value, row.locator_json["scale_multiplier"]) for row in occurrences] == [
+        ("D2026Q3", "94,000", "1000000"),
+        ("D2025Q3", "90,000", "1000000"),
+        ("FY2026YTD", "250,000", "1000000"),
+        ("FY2025YTD", "240,000", "1000000"),
+    ]
+    assert all(row.locator_json["kind"] == "sec_generated_statement_html_v2" for row in occurrences)
+    linked_names = set(db_session.scalars(
+        select(SecFilingArtifact.filename)
+        .join(SecFinancialParseRunArtifact, SecFinancialParseRunArtifact.artifact_id == SecFilingArtifact.id)
+        .where(SecFinancialParseRunArtifact.parse_run_id == run.id)
+    ))
+    assert {"R2.htm", "aapl-20260627_pre.xml", "aapl-20260627_lab.xml"} <= linked_names
+    authorities = db_session.scalars(
+        select(SecStatementFactAuthority).order_by(
+            SecStatementFactAuthority.statement_period_end.desc(),
+            SecStatementFactAuthority.id,
+        )
+    ).all()
+    assert [(row.context_id, row.presentation_class) for row in authorities] == [
+        ("D2026Q3", "current_period"),
+        ("FY2026YTD", "current_period"),
+        ("D2025Q3", "prior_same_fiscal_quarter"),
+    ]
+
+
+def test_parser_v22_rejects_duplicate_label_locator_without_statement_authority(
+    committed_db_session, tmp_path: Path
+) -> None:
+    db_session = committed_db_session
+    stock = Stock(ticker="LABDUP", exchange="US", company_name="Duplicate Label")
+    db_session.add(stock); db_session.flush()
+    register_reviewed_sec_identity(
+        db_session, stock_id=stock.id, cik=CIK,
+        effective_from=date(1980, 12, 12),
+        known_at=datetime(2026, 8, 27, 12, 0, tzinfo=timezone.utc),
+        review_reason="duplicate label locator fixture")
+    db_session.commit()
+
+    report = ingest_latest_financial_filings(
+        db_session, stock_id=stock.id,
+        client=GeneratedDuplicateLabelLocatorClient(), storage_root=tmp_path,
+        max_filings=1, now=datetime(2026, 8, 27, 12, 5, tzinfo=timezone.utc),
+        parser_version="xbrl-lineage-v2.2")
+
+    run = db_session.scalar(select(SecFinancialParseRun))
+    assert run.status == "failed"
+    assert "ambiguous_label_locator" in run.error_detail
+    assert report.raw_facts_created == 0
+    assert db_session.scalar(
+        select(func.count()).select_from(SecStatementFactAuthority)
+    ) == 0
+
+
+def test_parser_v22_rejects_duplicate_raw_onclick_without_statement_authority(
+    committed_db_session, tmp_path: Path
+) -> None:
+    db_session = committed_db_session
+    stock = Stock(ticker="CLICKDUP", exchange="US", company_name="Duplicate Onclick")
+    db_session.add(stock); db_session.flush()
+    register_reviewed_sec_identity(
+        db_session, stock_id=stock.id, cik=CIK,
+        effective_from=date(1980, 12, 12),
+        known_at=datetime(2026, 8, 27, 12, 0, tzinfo=timezone.utc),
+        review_reason="duplicate onclick fixture")
+    db_session.commit()
+
+    report = ingest_latest_financial_filings(
+        db_session, stock_id=stock.id,
+        client=GeneratedDuplicateOnclickClient(), storage_root=tmp_path,
+        max_filings=1, now=datetime(2026, 8, 27, 12, 5, tzinfo=timezone.utc),
+        parser_version="xbrl-lineage-v2.2")
+
+    run = db_session.scalar(select(SecFinancialParseRun))
+    assert run.status == "failed"
+    assert "ambiguous_generated_statement_onclick" in run.error_detail
+    assert report.raw_facts_created == 0
+    assert db_session.scalar(
+        select(func.count()).select_from(SecStatementFactAuthority)
+    ) == 0
+
+
+def test_parser_v22_excludes_hidden_fact_from_visible_equivalent_identity(
+    committed_db_session, tmp_path: Path
+) -> None:
+    db_session = committed_db_session
+    stock = Stock(ticker="VISHID", exchange="US", company_name="Visible Hidden")
+    db_session.add(stock); db_session.flush()
+    register_reviewed_sec_identity(
+        db_session, stock_id=stock.id, cik=CIK,
+        effective_from=date(1980, 12, 12),
+        known_at=datetime(2026, 8, 27, 12, 0, tzinfo=timezone.utc),
+        review_reason="visible hidden duplicate fixture")
+    db_session.commit()
+
+    report = ingest_latest_financial_filings(
+        db_session, stock_id=stock.id,
+        client=GeneratedVisibleAndHiddenDuplicateClient(), storage_root=tmp_path,
+        max_filings=1, now=datetime(2026, 8, 27, 12, 5, tzinfo=timezone.utc),
+        parser_version="xbrl-lineage-v2.2")
+
+    run = db_session.scalar(select(SecFinancialParseRun))
+    assert report.failures == (), run.error_detail
+    occurrence = db_session.scalar(
+        select(SecStatementOccurrenceEvidence)
+        .where(SecStatementOccurrenceEvidence.context_id == "D2026Q3")
+    )
+    hidden_ids = set(db_session.scalars(
+        select(SecRawXbrlFact.id).where(
+            SecRawXbrlFact.parse_run_id == run.id,
+            SecRawXbrlFact.locator_json["is_hidden"].as_boolean().is_(True),
+        )
+    ))
+    assert hidden_ids
+    assert not hidden_ids.intersection(
+        occurrence.locator_json["equivalent_raw_fact_ids"]
+    )
+
+
+def test_generated_occurrence_database_guard_rejects_role_onclick_and_multi_date_mutation(
+    committed_db_session, tmp_path: Path
+) -> None:
+    db_session = committed_db_session
+    stock = Stock(ticker="GENDB", exchange="US", company_name="Generated DB Guard")
+    db_session.add(stock); db_session.flush()
+    register_reviewed_sec_identity(
+        db_session, stock_id=stock.id, cik=CIK, effective_from=date(1980, 12, 12),
+        known_at=datetime(2026, 8, 27, 12, tzinfo=timezone.utc),
+        review_reason="generated occurrence database guard fixture")
+    db_session.commit()
+    report = ingest_latest_financial_filings(
+        db_session, stock_id=stock.id, client=GeneratedStatementAuthorityClient(),
+        storage_root=tmp_path, max_filings=1,
+        now=datetime(2026, 8, 27, 12, 5, tzinfo=timezone.utc),
+        parser_version="xbrl-lineage-v2.2")
+    assert report.failures == ()
+    row = db_session.execute(text(
+        "SELECT * FROM sec_statement_occurrence_evidence ORDER BY id LIMIT 1"
+    )).mappings().one()
+    mutations = []
+    blank_role = dict(row.locator_json)
+    blank_role["statement_role"] = ""
+    mutations.append((blank_role, row.header_raw))
+    double_onclick = dict(row.locator_json)
+    double_onclick["onclick"] += "; Show.showAR(this, 'defref_us-gaap_GrossProfit', window)"
+    double_onclick["onclick_sha256"] = hashlib.sha256(
+        double_onclick["onclick"].encode()
+    ).hexdigest()
+    mutations.append((double_onclick, row.header_raw))
+    duplicate_anchor_attribute = dict(row.locator_json)
+    duplicate_anchor_attribute["anchor_start_tag"] = duplicate_anchor_attribute[
+        "anchor_start_tag"
+    ].replace(
+        duplicate_anchor_attribute["onclick_attribute"],
+        f'onclick="alert(1)" {duplicate_anchor_attribute["onclick_attribute"]}',
+        1,
+    )
+    duplicate_anchor_attribute["anchor_start_tag_sha256"] = hashlib.sha256(
+        duplicate_anchor_attribute["anchor_start_tag"].encode()
+    ).hexdigest()
+    mutations.append((duplicate_anchor_attribute, row.header_raw))
+    mutations.append((dict(row.locator_json), row.header_raw + " and Jun. 28, 2025"))
+    for locator, header in mutations:
+        with pytest.raises(DBAPIError, match="generated statement occurrence"), db_session.begin_nested():
+            db_session.execute(text("""INSERT INTO sec_statement_occurrence_evidence
+              (statement_report_reference_id,parse_run_id,raw_fact_id,report_sha256,
+               report_ordinal,row_ordinal,column_ordinal,occurrence_ordinal,fact_id,
+               context_id,concept,raw_value,unit_id,header_raw,header_normalized,
+               header_date,locator_json,semantic_sha256,known_at)
+              VALUES (:reference,:run,:raw,:report_sha,:report_ordinal,:row,:column,
+               :occurrence,:fact_id,:context,:concept,:raw_value,:unit_id,:header,
+               :header,:header_date,CAST(:locator AS jsonb),:semantic,:known_at)"""), {
+                "reference": row.statement_report_reference_id,
+                "run": row.parse_run_id,
+                "raw": row.raw_fact_id,
+                "report_sha": row.report_sha256,
+                "report_ordinal": row.report_ordinal,
+                "row": row.row_ordinal,
+                "column": row.column_ordinal,
+                "occurrence": row.occurrence_ordinal,
+                "fact_id": row.fact_id,
+                "context": row.context_id,
+                "concept": row.concept,
+                "raw_value": row.raw_value,
+                "unit_id": row.unit_id,
+                "header": header,
+                "header_date": row.header_date,
+                "locator": json.dumps(locator),
+                "semantic": row.semantic_sha256,
+                "known_at": row.known_at,
+            })
+
+    reference = db_session.get(
+        SecStatementReportReference, row.statement_report_reference_id
+    )
+    alternate_artifact_id = db_session.scalar(
+        select(SecFilingArtifact.id).where(
+            SecFilingArtifact.filename.like("%_lab.xml")
+        )
+    )
+    with pytest.raises(
+        DBAPIError, match="duplicate parser-v2.2 statement report ordinal"
+    ), db_session.begin_nested():
+        db_session.execute(text("""INSERT INTO sec_statement_report_references
+          (parse_run_id,filing_summary_artifact_id,filing_summary_sha256,
+           filing_summary_byte_size,filing_summary_content,report_artifact_id,
+           report_sha256,report_byte_size,report_content,filename,report_ordinal,
+           statement_role,statement_type,report_name,reference_semantic_sha256,
+           known_at)
+          VALUES (:run,:summary,:summary_sha,:summary_bytes,:summary_content,
+           :artifact,:report_sha,:report_bytes,:report_content,:filename,
+           :ordinal,:role,:type,:name,:semantic,:known_at)"""), {
+            "run": reference.parse_run_id,
+            "summary": reference.filing_summary_artifact_id,
+            "summary_sha": reference.filing_summary_sha256,
+            "summary_bytes": reference.filing_summary_byte_size,
+            "summary_content": reference.filing_summary_content,
+            "artifact": alternate_artifact_id,
+            "report_sha": reference.report_sha256,
+            "report_bytes": reference.report_byte_size,
+            "report_content": reference.report_content,
+            "filename": "other-report.htm",
+            "ordinal": reference.report_ordinal,
+            "role": reference.statement_role,
+            "type": reference.statement_type,
+            "name": reference.report_name,
+            "semantic": reference.reference_semantic_sha256,
+            "known_at": reference.known_at,
+        })
+
+
+def test_parser_v22_persists_wrapped_xml_statement_authority(
+    committed_db_session, tmp_path: Path
+) -> None:
+    db_session = committed_db_session
+    stock = Stock(ticker="WRAPXML", exchange="US", company_name="Wrapped XML")
+    db_session.add(stock); db_session.flush()
+    register_reviewed_sec_identity(
+        db_session, stock_id=stock.id, cik=CIK,
+        effective_from=date(1980, 12, 12),
+        known_at=datetime(2026, 8, 27, 12, 0, tzinfo=timezone.utc),
+        review_reason="wrapped XML statement fixture")
+    db_session.commit()
+
+    report = ingest_latest_financial_filings(
+        db_session, stock_id=stock.id,
+        client=WrappedXmlStatementAuthorityClient(), storage_root=tmp_path,
+        max_filings=1, now=datetime(2026, 8, 27, 12, 5, tzinfo=timezone.utc),
+        parser_version="xbrl-lineage-v2.2")
+
+    run = db_session.scalar(select(SecFinancialParseRun))
+    reference = db_session.scalar(select(SecStatementReportReference))
+    assert report.failures == (), run.error_detail
+    assert run.status == "succeeded"
+    assert reference.report_content.startswith(b" \t\r\n<DOCUMENT>")
+    assert reference.report_content.endswith(b"</DOCUMENT>\n\r\t ")
+    assert reference.filing_summary_content.startswith(b" \t\r\n<DOCUMENT>")
+    assert reference.filing_summary_content.endswith(b"</DOCUMENT>\n\r\t ")
+    assert db_session.scalar(
+        select(func.count()).select_from(SecStatementFactAuthority)
+    ) > 0
+
+
+def test_parser_v22_database_rejection_persists_typed_failed_run(
+    committed_db_session, tmp_path: Path, monkeypatch
+) -> None:
+    db_session = committed_db_session
+    stock = Stock(ticker="DBREJECT", exchange="US", company_name="DB Reject")
+    db_session.add(stock); db_session.flush()
+    register_reviewed_sec_identity(
+        db_session, stock_id=stock.id, cik=CIK,
+        effective_from=date(1980, 12, 12),
+        known_at=datetime(2026, 8, 27, 12, 0, tzinfo=timezone.utc),
+        review_reason="database rejection terminal fixture")
+    db_session.commit()
+    monkeypatch.setattr(
+        "app.services.sec_financial_ingestion.statement_occurrence_digest",
+        lambda *args, **kwargs: "0" * 64,
+    )
+
+    report = ingest_latest_financial_filings(
+        db_session, stock_id=stock.id, client=StatementAuthorityClient(),
+        storage_root=tmp_path, max_filings=1,
+        now=datetime(2026, 8, 27, 12, 5, tzinfo=timezone.utc),
+        parser_version="xbrl-lineage-v2.2")
+
+    runs = db_session.scalars(select(SecFinancialParseRun)).all()
+    assert len(runs) == 1
+    assert runs[0].status == "failed"
+    assert runs[0].error_code == "parse_failed"
+    assert report.raw_facts_created == 0
+    assert db_session.scalar(select(func.count()).select_from(SecRawXbrlFact)) == 0
+    assert db_session.scalar(
+        select(func.count()).select_from(SecStatementFactAuthority)
+    ) == 0
+
+    constraints = {
+        item["name"] for item in inspect(db_session.get_bind()).get_unique_constraints(
+            "sec_statement_report_references"
+        )
+    }
+    assert "uq_sec_statement_report_reference_parse_run_ordinal" not in constraints
+
+
+def test_migration_numeric_duration_headers_are_not_backported_to_v21_xml(
+    committed_db_session, tmp_path: Path
+) -> None:
+    db_session = committed_db_session
+    stock = Stock(ticker="V21NUM", exchange="US", company_name="V21 Numeric")
+    db_session.add(stock); db_session.flush()
+    register_reviewed_sec_identity(
+        db_session, stock_id=stock.id, cik=CIK, effective_from=date(1980, 12, 12),
+        known_at=datetime(2026, 8, 27, 12, tzinfo=timezone.utc),
+        review_reason="v2.1 numeric header migration boundary")
+    db_session.commit()
+    report = ingest_latest_financial_filings(
+        db_session, stock_id=stock.id,
+        client=NumericHeaderStatementAuthorityClient(),
+        storage_root=tmp_path, max_filings=1,
+        now=datetime(2026, 8, 27, 12, 5, tzinfo=timezone.utc),
+        parser_version="xbrl-lineage-v2.1")
+
+    run = db_session.scalar(select(SecFinancialParseRun))
+    assert run.status == "failed"
+    assert run.error_code == "parse_failed"
+    assert "statement presentation authority mismatch" in run.error_detail
+    assert report.raw_facts_created == 0
+    assert db_session.scalar(
+        select(func.count()).select_from(SecStatementFactAuthority)
+    ) == 0
+
+
+def test_parser_v22_withdraws_every_occurrence_for_rejected_concept_only(
+    committed_db_session, tmp_path: Path
+) -> None:
+    db_session = committed_db_session
+    stock = Stock(ticker="MIXED", exchange="US", company_name="Mixed Authority")
+    db_session.add(stock); db_session.flush()
+    register_reviewed_sec_identity(
+        db_session, stock_id=stock.id, cik=CIK, effective_from=date(1980, 12, 12),
+        known_at=datetime(2026, 8, 27, 12, tzinfo=timezone.utc),
+        review_reason="mixed generated authority fixture")
+    db_session.commit()
+    report = ingest_latest_financial_filings(
+        db_session, stock_id=stock.id, client=GeneratedMixedConceptAuthorityClient(),
+        storage_root=tmp_path, max_filings=1,
+        now=datetime(2026, 8, 27, 12, 5, tzinfo=timezone.utc),
+        parser_version="xbrl-lineage-v2.2")
+    run = db_session.scalar(select(SecFinancialParseRun))
+    assert report.failures == (), run.error_detail
+    authorities = db_session.scalars(select(SecStatementFactAuthority)).all()
+    assert {row.context_id for row in authorities} == {
+        "D2026Q3", "FY2026YTD", "D2025Q3"
+    }
+    authority_concepts = set(db_session.scalars(
+        select(SecRawXbrlFact.concept)
+        .join(SecStatementFactAuthority, SecStatementFactAuthority.raw_fact_id == SecRawXbrlFact.id)
+    ))
+    assert authority_concepts == {"us-gaap:GrossProfit"}
+    assert db_session.scalar(
+        select(func.count()).select_from(SecStatementOccurrenceEvidence)
+        .where(SecStatementOccurrenceEvidence.concept.like("%Revenue%"))
+    ) == 0
+
+
+def test_parser_v22_hidden_generated_fact_rejects_entire_concept(
+    committed_db_session, tmp_path: Path
+) -> None:
+    db_session = committed_db_session
+    stock = Stock(ticker="HIDDEN", exchange="US", company_name="Hidden Authority")
+    db_session.add(stock); db_session.flush()
+    register_reviewed_sec_identity(
+        db_session, stock_id=stock.id, cik=CIK, effective_from=date(1980, 12, 12),
+        known_at=datetime(2026, 8, 27, 12, tzinfo=timezone.utc),
+        review_reason="hidden generated authority fixture")
+    db_session.commit()
+    report = ingest_latest_financial_filings(
+        db_session, stock_id=stock.id, client=GeneratedHiddenAuthorityClient(),
+        storage_root=tmp_path, max_filings=1,
+        now=datetime(2026, 8, 27, 12, 5, tzinfo=timezone.utc),
+        parser_version="xbrl-lineage-v2.2")
+    run = db_session.scalar(select(SecFinancialParseRun))
+    assert run.status == "failed"
+    assert "no_unique_generated_statement_occurrence_authority" in run.error_detail
+    assert report.raw_facts_created == 0
+    assert db_session.scalar(select(func.count()).select_from(SecStatementFactAuthority)) == 0
+
+
+def test_parser_v22_uses_resolver_duplicate_ordinals_without_element_ids(
+    committed_db_session, tmp_path: Path
+) -> None:
+    db_session = committed_db_session
+    stock = Stock(ticker="DUPNOID", exchange="US", company_name="Duplicate No ID")
+    db_session.add(stock); db_session.flush()
+    register_reviewed_sec_identity(
+        db_session, stock_id=stock.id, cik=CIK, effective_from=date(1980, 12, 12),
+        known_at=datetime(2026, 8, 27, 12, tzinfo=timezone.utc),
+        review_reason="exact duplicate without element ID fixture")
+    db_session.commit()
+    report = ingest_latest_financial_filings(
+        db_session, stock_id=stock.id,
+        client=GeneratedDuplicateWithoutElementIdClient(), storage_root=tmp_path,
+        max_filings=1, now=datetime(2026, 8, 27, 12, 5, tzinfo=timezone.utc),
+        parser_version="xbrl-lineage-v2.2")
+    run = db_session.scalar(select(SecFinancialParseRun))
+    assert report.failures == (), run.error_detail
+    occurrence = db_session.scalar(
+        select(SecStatementOccurrenceEvidence)
+        .where(SecStatementOccurrenceEvidence.context_id == "D2026Q3")
+    )
+    equivalent = occurrence.locator_json["equivalent_raw_fact_ids"]
+    assert len(equivalent) == 2
+    assert equivalent == sorted(equivalent)
+    assert occurrence.raw_fact_id == equivalent[0]
+    assert occurrence.fact_id is None
+
+
+def test_retained_recovery_treats_parser_v22_as_append_only_provenance_delta_without_fetch(
+    committed_db_session, tmp_path: Path
+) -> None:
+    db_session = committed_db_session
+    stock = Stock(ticker="AAPL", exchange="US", company_name="Apple Inc.")
+    db_session.add(stock); db_session.flush()
+    register_reviewed_sec_identity(
+        db_session, stock_id=stock.id, cik=CIK,
+        effective_from=date(1980, 12, 12),
+        known_at=datetime(2026, 8, 27, 12, 0, tzinfo=timezone.utc),
+        review_reason="fixture reviewed identity")
+    db_session.commit()
+    report = ingest_latest_financial_filings(
+        db_session, stock_id=stock.id, client=StatementAuthorityClient(),
+        storage_root=tmp_path, max_filings=1,
+        now=datetime(2026, 8, 27, 12, 5, tzinfo=timezone.utc),
+        parser_version="xbrl-lineage-v2.1")
+    assert report.failures == ()
+    db_session.commit()
+    constructed = 0
+
+    def upstream_factory():
+        nonlocal constructed
+        constructed += 1
+        raise AssertionError("fully retained parser revision reached upstream")
+
+    replay = build_retained_financial_replay_client(
+        db_session, stock_id=stock.id, operation_ids=(report.operation_id,),
+        storage_root=tmp_path, upstream_factory=upstream_factory,
+        target_parser_version="xbrl-lineage-v2.2")
+    assert replay.has_reparse_provenance_delta is True
+    for url in (SUBMISSIONS_URL, INDEX_URL, PRIMARY_URL):
+        assert replay.get_revalidated(url)
+    assert replay.external_requests == []
+    assert constructed == 0
 
 
 def test_parser_v2_missing_filing_summary_is_typed_terminal_parse_failure(

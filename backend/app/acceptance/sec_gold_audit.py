@@ -649,17 +649,16 @@ def _schema_v2_publication_audit(
            JOIN sec_acceptance_case_attempts attempt ON attempt.id=binding.attempt_id
            WHERE binding.attempt_id=:attempt"""
     ), {"attempt": expected_attempt_id}).mappings().one_or_none()
-    ordered_source_identities = [
-        {
-            "parse_run_id": item.parse_run_id,
-            "filing_id": item.filing_id,
-            "accession_no": item.accession_no,
-            "parser_version": item.parser_version,
-            "input_manifest_hash": item.input_manifest_hash,
-            "available_at": item.source_available_at.isoformat(),
-        }
-        for item in sources
-    ]
+    ordered_source_identities = db.execute(text(
+        """SELECT coalesce(jsonb_agg(jsonb_build_object(
+                 'parse_run_id',source.parse_run_id,'filing_id',source.filing_id,
+                 'accession_no',source.accession_no,'parser_version',source.parser_version,
+                 'input_manifest_hash',source.input_manifest_hash,
+                 'available_at',source.source_available_at)
+               ORDER BY source.source_ordinal),'[]'::jsonb)
+           FROM sec_metric_publication_run_sources source
+           WHERE source.publication_run_id=:run"""
+    ), {"run": run_id}).scalar_one()
     if (
         binding is None
         or int(binding.acceptance_pass) != expected_acceptance_pass
@@ -668,7 +667,7 @@ def _schema_v2_publication_audit(
         or str(binding.source_set_sha256) != run.source_set_sha256
         or binding.mapping_version_id != run.mapping_version_id
         or binding.amendment_policy != run.amendment_policy
-        or list(binding.ordered_source_identities) != ordered_source_identities
+        or list(binding.ordered_source_identities) != list(ordered_source_identities)
         or (
             expected_acceptance_pass == 1
             and binding.expected_publication_run_id is not None

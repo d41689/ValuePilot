@@ -9,8 +9,10 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+import pytest
 from sqlalchemy import create_engine, inspect, text
 from sqlalchemy.engine import make_url
+from sqlalchemy.exc import DBAPIError
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
@@ -28,7 +30,75 @@ from test_support.database_isolation import (
 
 PARENT_REVISION = "20260826130000"
 PERIOD_PARENT_REVISION = "20260827120000"
-HEAD_REVISION = "20260901200000"
+HEAD_REVISION = "20260901210000"
+
+
+def test_statement_report_xml_helper_matches_ascii_whitespace_sgml_boundary() -> None:
+    backend_dir = Path(__file__).resolve().parents[2]
+    schema_name = new_test_schema_name()
+    database_url = build_isolated_database_url(_BASE_DATABASE_URL, schema_name)
+    create_test_schema(_BASE_DATABASE_URL, schema_name)
+    engine = create_engine(database_url, pool_pre_ping=True)
+    payload = b"<Report><Rows/></Report>"
+    wrapped = (
+        b" \t\r\n<DOCUMENT><TYPE>XML\n<TEXT>\t\r\n"
+        + payload
+        + b" \t\r\n</TEXT></DOCUMENT>\n\r\t "
+    )
+    try:
+        _alembic(backend_dir, database_url, "upgrade", HEAD_REVISION)
+        with engine.connect() as connection:
+            assert connection.execute(
+                text("SELECT sec_statement_report_xml_text(:content)"),
+                {"content": wrapped},
+            ).scalar_one() == payload.decode()
+            mixed_case = wrapped.replace(b"<DOCUMENT>", b"<dOcUmEnT>").replace(
+                b"</DOCUMENT>", b"</DoCuMeNt>"
+            ).replace(b"<TEXT>", b"<tExT>").replace(b"</TEXT>", b"</TeXt>")
+            assert connection.execute(
+                text("SELECT sec_statement_report_xml_text(:content)"),
+                {"content": mixed_case},
+            ).scalar_one() == payload.decode()
+            non_wrapper = b"\x0b<DOCUMENT><TEXT><Report/></TEXT></DOCUMENT>"
+            assert connection.execute(
+                text("SELECT sec_statement_report_xml_text(:content)"),
+                {"content": non_wrapper},
+            ).scalar_one() == non_wrapper.decode()
+        for disallowed in (b"\x0b", b"\x0c"):
+            leading = disallowed + wrapped
+            with engine.connect() as connection:
+                assert connection.execute(
+                    text("SELECT sec_statement_report_xml_text(:content)"),
+                    {"content": leading},
+                ).scalar_one() == leading.decode()
+            for invalid in (
+                b"<DOCUMENT><TEXT><Report/></TEXT>"
+                + disallowed
+                + b"</DOCUMENT>",
+                wrapped + disallowed,
+            ):
+                with engine.connect() as connection:
+                    with pytest.raises(DBAPIError, match="malformed SEC SGML"):
+                        connection.execute(
+                            text("SELECT sec_statement_report_xml_text(:content)"),
+                            {"content": invalid},
+                        ).scalar_one()
+        for extra_literal in (
+            b"<!-- </DOCUMENT> -->",
+            b"<!-- <DOCUMENT> -->",
+            b"<!-- </TEXT> -->",
+            b"<!-- <TEXT> -->",
+        ):
+            invalid = wrapped.replace(payload, payload + extra_literal)
+            with engine.connect() as connection:
+                with pytest.raises(DBAPIError, match="malformed SEC SGML"):
+                    connection.execute(
+                        text("SELECT sec_statement_report_xml_text(:content)"),
+                        {"content": invalid},
+                    ).scalar_one()
+    finally:
+        engine.dispose()
+        drop_test_schema(_BASE_DATABASE_URL, schema_name)
 
 
 def test_parser_v2_downgrade_locks_all_evidence_before_counting() -> None:
@@ -311,6 +381,145 @@ def test_completion_claim_upgrade_rejects_cross_attempt_legacy_checkpoints() -> 
                 )
             ).all()
             assert {row.attempt_id for row in rows} == {attempt_a, attempt_b}
+    finally:
+        engine.dispose()
+        drop_test_schema(_BASE_DATABASE_URL, schema_name)
+
+
+def test_generated_authority_upgrade_preserves_v21_duplicate_report_ordinals() -> None:
+    backend_dir = Path(__file__).resolve().parents[2]
+    schema_name = new_test_schema_name()
+    database_url = build_isolated_database_url(_BASE_DATABASE_URL, schema_name)
+    create_test_schema(_BASE_DATABASE_URL, schema_name)
+    engine = create_engine(database_url, pool_pre_ping=True)
+    summary = b"""<FilingSummary><MyReports>
+      <Report><Position>7</Position><ShortName>Legacy Income A</ShortName>
+        <Role>role/IncomeStatement</Role><XmlFileName>R7a.xml</XmlFileName></Report>
+      <Report><Position>7</Position><ShortName>Legacy Income B</ShortName>
+        <Role>role/IncomeStatement</Role><XmlFileName>R7b.xml</XmlFileName></Report>
+      </MyReports></FilingSummary>"""
+    report = b"<Report/>"
+    summary_sha = hashlib.sha256(summary).hexdigest()
+    report_sha = hashlib.sha256(report).hexdigest()
+    try:
+        _alembic(backend_dir, database_url, "upgrade", "20260901200000")
+        with engine.begin() as connection:
+            stock_id = connection.execute(text(
+                "INSERT INTO stocks (ticker,exchange,market_country,company_name,is_active) "
+                "VALUES ('V21ORD','US','US','Legacy V21 Ordinal',true) RETURNING id"
+            )).scalar_one()
+            identity_id = connection.execute(text(
+                "INSERT INTO sec_issuer_identities "
+                "(stock_id,cik,status,review_reason,effective_from,known_at) VALUES "
+                "(:stock,'0000000777','reviewed','legacy ordinal fixture',"
+                "'2020-01-01','2026-08-27T00:00:00+00:00') RETURNING id"
+            ), {"stock": stock_id}).scalar_one()
+            operation_id = _insert_ingestion_operation(connection, identity_id)
+            filing_id = connection.execute(text(
+                "INSERT INTO sec_financial_filings "
+                "(issuer_identity_id,accession_no,form_type,is_amendment,filed_on,"
+                "report_date,accepted_at,known_at,primary_document,index_url,source_url,"
+                "submissions_source_url,discovery_payload_sha256) VALUES "
+                "(:identity,'0000000777-26-000001','10-Q',false,'2026-07-31',"
+                "'2026-06-30','2026-07-31T16:00:00+00:00',"
+                "'2026-08-27T00:01:00+00:00','fixture.htm',"
+                "'https://www.sec.gov/Archives/edgar/data/777/000000077726000001/index.json',"
+                "'https://www.sec.gov/Archives/edgar/data/777/000000077726000001/fixture.htm',"
+                "'https://data.sec.gov/submissions/CIK0000000777.json',:digest) RETURNING id"
+            ), {"identity": identity_id, "digest": "a" * 64}).scalar_one()
+            artifacts: dict[str, int] = {}
+            for sequence, filename, content, digest in (
+                (1, "FilingSummary.xml", summary, summary_sha),
+                (2, "R7a.xml", report, report_sha),
+                (3, "R7b.xml", report, report_sha),
+            ):
+                artifacts[filename] = connection.execute(text(
+                    "INSERT INTO sec_filing_artifacts "
+                    "(filing_id,sequence,filename,description,sec_type,declared_size,"
+                    "source_url,manifest_hash,state,content_mime,sha256,byte_size,"
+                    "storage_key,fetched_at,known_at) VALUES "
+                    "(:filing,:sequence,:filename,:filename,'XML',:size,:url,:manifest,"
+                    "'retained','application/xml',:sha,:size,:storage,"
+                    "'2026-08-27T00:02:00+00:00','2026-08-27T00:02:00+00:00') RETURNING id"
+                ), {
+                    "filing": filing_id, "sequence": sequence,
+                    "filename": filename, "size": len(content),
+                    "url": (
+                        "https://www.sec.gov/Archives/edgar/data/777/"
+                        f"000000077726000001/{filename}"
+                    ),
+                    "manifest": "b" * 64, "sha": digest,
+                    "storage": f"financial/{digest[:2]}/{digest}",
+                }).scalar_one()
+            run_id = connection.execute(text(
+                "INSERT INTO sec_financial_parse_runs "
+                "(filing_id,operation_id,parser_name,parser_version,input_manifest_hash,"
+                "status,started_at,completed_at,known_at,fact_count) VALUES "
+                "(:filing,:operation,'fixture','xbrl-lineage-v2.1',:manifest,'succeeded',"
+                "'2026-08-27T00:03:00+00:00','2026-08-27T00:03:00+00:00',"
+                "'2026-08-27T00:03:00+00:00',1) RETURNING id"
+            ), {"filing": filing_id, "operation": operation_id,
+                "manifest": "c" * 64}).scalar_one()
+            for artifact_id in artifacts.values():
+                connection.execute(text(
+                    "INSERT INTO sec_financial_parse_run_artifacts "
+                    "(parse_run_id,artifact_id,known_at) VALUES "
+                    "(:run,:artifact,'2026-08-27T00:03:00+00:00')"
+                ), {"run": run_id, "artifact": artifact_id})
+            connection.execute(text(
+                "INSERT INTO sec_raw_xbrl_facts "
+                "(parse_run_id,artifact_id,ordinal,concept,unit_numerator_json,"
+                "unit_denominator_json,dimensions_json,dimensions_structured_json,"
+                "locator_json) VALUES "
+                "(:run,:artifact,1,'us-gaap:Assets','[]'::jsonb,'[]'::jsonb,"
+                "'{}'::jsonb,'[]'::jsonb,'{}'::jsonb)"
+            ), {"run": run_id, "artifact": artifacts["R7a.xml"]})
+            for filename, report_name in (
+                ("R7a.xml", "Legacy Income A"),
+                ("R7b.xml", "Legacy Income B"),
+            ):
+                semantic = hashlib.sha256(chr(31).join((
+                    summary_sha, filename, "7", "role/IncomeStatement",
+                    "income_statement", report_name,
+                )).encode()).hexdigest()
+                connection.execute(text(
+                    "INSERT INTO sec_statement_report_references "
+                    "(parse_run_id,filing_summary_artifact_id,filing_summary_sha256,"
+                    "filing_summary_byte_size,filing_summary_content,report_artifact_id,"
+                    "report_sha256,report_byte_size,report_content,filename,report_ordinal,"
+                    "statement_role,statement_type,report_name,reference_semantic_sha256,"
+                    "known_at) VALUES (:run,:summary_artifact,:summary_sha,:summary_size,"
+                    ":summary,:report_artifact,:report_sha,:report_size,:report,:filename,7,"
+                    "'role/IncomeStatement','income_statement',:name,:semantic,"
+                    "'2026-08-27T00:03:00+00:00')"
+                ), {
+                    "run": run_id,
+                    "summary_artifact": artifacts["FilingSummary.xml"],
+                    "summary_sha": summary_sha, "summary_size": len(summary),
+                    "summary": summary,
+                    "report_artifact": artifacts[filename],
+                    "report_sha": report_sha, "report_size": len(report),
+                    "report": report, "filename": filename,
+                    "name": report_name, "semantic": semantic,
+                })
+
+        engine.dispose()
+        _alembic(backend_dir, database_url, "upgrade", "head")
+        engine = create_engine(database_url, pool_pre_ping=True)
+        with engine.connect() as connection:
+            assert connection.execute(text(
+                "SELECT count(*) FROM sec_statement_report_references "
+                "WHERE parse_run_id=:run AND report_ordinal=7"
+            ), {"run": run_id}).scalar_one() == 2
+            assert connection.execute(text(
+                "SELECT status FROM sec_financial_parse_runs WHERE id=:run"
+            ), {"run": run_id}).scalar_one() == "succeeded"
+            constraints = {
+                item["name"] for item in inspect(connection).get_unique_constraints(
+                    "sec_statement_report_references"
+                )
+            }
+            assert "uq_sec_statement_report_reference_parse_run_ordinal" not in constraints
     finally:
         engine.dispose()
         drop_test_schema(_BASE_DATABASE_URL, schema_name)

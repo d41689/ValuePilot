@@ -56,6 +56,7 @@ from app.services.sec_financial_ingestion import (
 from test_sec_financial_lineage import (
     CIK,
     FakeEdgarClient,
+    GeneratedMixedConceptAuthorityClient,
     StatementAuthorityClient,
     SUBMISSIONS_URL,
     ToggleInitialMainOutageClient,
@@ -118,6 +119,9 @@ def _request(
     ticker="PUB",
     normalize=True,
     acceptance_scope: tuple[str, str, int] | None = None,
+    client=None,
+    concept_like="%RevenueFromContract%",
+    rule_id="sec.revenue",
 ):
     known=datetime(2026,8,27,12,tzinfo=timezone.utc)
     acceptance_attempt = None
@@ -163,7 +167,7 @@ def _request(
     stock=Stock(ticker=ticker,exchange="US",company_name="Apple Inc."); db.add(stock); db.flush()
     identity=register_reviewed_sec_identity(db,stock_id=stock.id,cik=CIK,effective_from=date(1980,12,12),known_at=known,review_reason="publication fixture reviewed identity")
     db.commit()
-    report=ingest_latest_financial_filings(db,stock_id=stock.id,client=StatementAuthorityClient(),storage_root=tmp_path,max_filings=1,now=known+timedelta(minutes=5),parser_version="xbrl-lineage-v2.1")
+    report=ingest_latest_financial_filings(db,stock_id=stock.id,client=client or StatementAuthorityClient(),storage_root=tmp_path,max_filings=1,now=known+timedelta(minutes=5),parser_version="xbrl-lineage-v2.2")
     if acceptance_attempt is not None:
         link_acceptance_operation(
             db,
@@ -178,10 +182,10 @@ def _request(
       FROM sec_financial_parse_runs pr JOIN sec_financial_filings f ON f.id=pr.filing_id
       JOIN sec_financial_lineage_availabilities a ON a.operation_id=pr.operation_id
       WHERE pr.status='succeeded' ORDER BY pr.id DESC LIMIT 1""")).mappings().one()
-    rule=db.execute(text("SELECT id FROM sec_metric_mapping_rules WHERE mapping_version_id='sec-us-gaap-v1' AND rule_id='sec.revenue'")).scalar_one()
+    rule=db.execute(text("SELECT id FROM sec_metric_mapping_rules WHERE mapping_version_id='sec-us-gaap-v1' AND rule_id=:rule"), {"rule": rule_id}).scalar_one()
     raws=db.execute(text("""SELECT DISTINCT raw.id,raw.raw_value,raw.scale,raw.sign FROM sec_raw_xbrl_facts raw JOIN sec_statement_fact_authorities a ON a.raw_fact_id=raw.id
-      WHERE raw.parse_run_id=:parse AND raw.concept LIKE '%RevenueFromContract%'
-        AND (raw.transformation_format IS NOT NULL OR raw.raw_value NOT LIKE '%,%') ORDER BY raw.id"""),{"parse":parse.id}).all()
+      WHERE raw.parse_run_id=:parse AND raw.concept LIKE :concept
+        AND (raw.transformation_format IS NOT NULL OR raw.raw_value NOT LIKE '%,%') ORDER BY raw.id"""),{"parse":parse.id,"concept":concept_like}).all()
     assert raws
     for raw_id,raw_value,scale,sign in (raws if normalize else ()):
         normalized=Decimal(raw_value.replace(",",""))*(Decimal(10)**(scale or 0))
@@ -193,6 +197,45 @@ def _request(
     db.commit()
     source=VerifiedPublicationSource(parse.id,parse.filing_id,parse.accession_no,parse.parser_version,parse.input_manifest_hash,parse.available_at)
     return PublicationRequest(stock.id,identity.id,"sec-us-gaap-v1",parse.available_at+timedelta(seconds=1),"latest-known-v1",(source,))
+
+
+def test_publication_never_uses_partially_resolved_rejected_concept(db, tmp_path):
+    request = _request(
+        db,
+        tmp_path,
+        ticker="MIXEDPUB",
+        client=GeneratedMixedConceptAuthorityClient(),
+        concept_like="%GrossProfit",
+        rule_id="sec.gross_profit",
+    )
+    receipt = publish_sec_mapping_result(db, request)
+    db.commit()
+    finalize_sec_publication(db, receipt.run_id)
+    db.commit()
+    facts = db.execute(
+        text(
+            "SELECT metric_key FROM metric_facts WHERE stock_id=:stock "
+            "AND source_type='sec' AND is_current=true ORDER BY metric_key"
+        ),
+        {"stock": request.stock_id},
+    ).scalars().all()
+    assert "is.gross_profit" in facts
+    assert "is.revenue" not in facts
+    assert db.execute(
+        text(
+            "SELECT count(*) FROM sec_statement_fact_authorities authority "
+            "JOIN sec_raw_xbrl_facts raw ON raw.id=authority.raw_fact_id "
+            "WHERE raw.concept LIKE '%Revenue%'"
+        )
+    ).scalar_one() == 0
+    assert db.execute(
+        text(
+            "SELECT count(*) FROM sec_metric_publications "
+            "WHERE publication_run_id=:run AND metric_key='is.revenue' "
+            "AND status='published'"
+        ),
+        {"run": receipt.run_id},
+    ).scalar_one() == 0
 
 
 class _FailedAmendmentClient(StatementAuthorityClient):
@@ -275,7 +318,7 @@ def test_failed_amendment_state_is_bounded_to_its_filing_cycle(db, tmp_path):
         storage_root=tmp_path,
         max_filings=1,
         now=datetime(2026, 8, 28, 17, tzinfo=timezone.utc),
-        parser_version="xbrl-lineage-v2.1",
+        parser_version="xbrl-lineage-v2.2",
     )
     db.commit()
     finalize_sec_financial_ingestion_operation(db, operation_id=report.operation_id)
@@ -342,7 +385,7 @@ def test_failed_amendment_state_is_bounded_to_its_filing_cycle(db, tmp_path):
         storage_root=tmp_path,
         max_filings=1,
         now=datetime(2026, 8, 29, 17, tzinfo=timezone.utc),
-        parser_version="xbrl-lineage-v2.1",
+        parser_version="xbrl-lineage-v2.2",
     )
     db.commit()
     finalize_sec_financial_ingestion_operation(db, operation_id=restored_report.operation_id)
@@ -517,7 +560,7 @@ def test_gold_acceptance_executes_real_publication_and_exact_zero_growth_replay(
         storage_root=tmp_path,
         max_filings=1,
         now=datetime(2026, 8, 30, 1, tzinfo=timezone.utc),
-        parser_version="xbrl-lineage-v2.1",
+        parser_version="xbrl-lineage-v2.2",
     )
     link_acceptance_operation(
         db,
@@ -867,7 +910,7 @@ def test_gold_acceptance_report_is_rebuilt_and_verified_against_isolated_databas
         storage_root=tmp_path,
         max_filings=1,
         now=datetime(2026, 8, 30, 1, tzinfo=timezone.utc),
-        parser_version="xbrl-lineage-v2.1",
+        parser_version="xbrl-lineage-v2.2",
     )
     link_acceptance_operation(
         db,
@@ -1359,7 +1402,7 @@ def test_gold_evidence_checkpoints_are_database_computed_and_append_only(db, tmp
         storage_root=tmp_path,
         max_filings=1,
         now=datetime(2026, 8, 28, 1, tzinfo=timezone.utc),
-        parser_version="xbrl-lineage-v2.1",
+        parser_version="xbrl-lineage-v2.2",
     )
     link_acceptance_operation(
         db,
@@ -1391,7 +1434,7 @@ def test_gold_evidence_checkpoints_are_database_computed_and_append_only(db, tmp
         storage_root=tmp_path,
         max_filings=1,
         now=datetime(2026, 8, 28, 2, tzinfo=timezone.utc),
-        parser_version="xbrl-lineage-v2.1",
+        parser_version="xbrl-lineage-v2.2",
     )
     link_acceptance_operation(
         db,
@@ -1422,7 +1465,7 @@ def test_gold_evidence_checkpoints_are_database_computed_and_append_only(db, tmp
         storage_root=tmp_path,
         max_filings=1,
         now=datetime(2026, 8, 28, 2, 30, tzinfo=timezone.utc),
-        parser_version="xbrl-lineage-v2.1",
+        parser_version="xbrl-lineage-v2.2",
     )
     link_acceptance_operation(
         db,
@@ -1519,7 +1562,7 @@ def test_gold_evidence_checkpoints_are_database_computed_and_append_only(db, tmp
         storage_root=tmp_path,
         max_filings=1,
         now=datetime(2026, 8, 28, 3, tzinfo=timezone.utc),
-        parser_version="xbrl-lineage-v2.1",
+        parser_version="xbrl-lineage-v2.2",
     )
     link_acceptance_operation(
         db,
@@ -2000,7 +2043,7 @@ def test_cli_recovers_finalized_failed_parse_without_sec_refetch(
             financial_cli.ingest_gold_case(
                 case_id=case_id,
                 max_filings=50,
-                parser_version="xbrl-lineage-v2.1",
+                parser_version="xbrl-lineage-v2.2",
                 history_cursor=None,
                 as_of=None,
                 acceptance_run_id=run_id,
@@ -2130,13 +2173,14 @@ def test_cli_recovers_finalized_failed_parse_without_sec_refetch(
     assert db.execute(
         text(
             "SELECT parser_version,status FROM sec_financial_parse_runs "
-            "WHERE parser_version IN ('xbrl-lineage-v2','xbrl-lineage-v2.1') "
+            "WHERE parser_version IN "
+            "('xbrl-lineage-v2','xbrl-lineage-v2.1','xbrl-lineage-v2.2') "
             "ORDER BY id"
         )
     ).all() == [
         ("xbrl-lineage-v2", "failed"),
         ("xbrl-lineage-v2.1", "failed"),
-        ("xbrl-lineage-v2.1", "succeeded"),
+        ("xbrl-lineage-v2.2", "succeeded"),
     ]
     recovered_manifests = set(
         db.execute(
@@ -2146,7 +2190,7 @@ def test_cli_recovers_finalized_failed_parse_without_sec_refetch(
                 "JOIN sec_financial_parse_run_artifacts link "
                 "ON link.parse_run_id=parse.id "
                 "JOIN sec_filing_artifacts artifact ON artifact.id=link.artifact_id "
-                "WHERE parse.parser_version='xbrl-lineage-v2.1' "
+                "WHERE parse.parser_version='xbrl-lineage-v2.2' "
                 "AND parse.status='succeeded'"
             )
         ).scalars()
@@ -2173,7 +2217,7 @@ def test_cli_recovers_finalized_failed_parse_without_sec_refetch(
             "JOIN sec_financial_parse_run_artifacts link "
             "ON link.parse_run_id=parse.id "
             "JOIN sec_filing_artifacts artifact ON artifact.id=link.artifact_id "
-            "WHERE parse.parser_version='xbrl-lineage-v2.1' "
+            "WHERE parse.parser_version='xbrl-lineage-v2.2' "
             "AND artifact.filename='aapl-20150627.xml' "
             "AND artifact.state='retained'"
         )
@@ -2319,7 +2363,7 @@ def test_cli_failed_current_parser_without_provenance_delta_is_idempotent(
             storage_root=tmp_path,
             max_filings=1,
             now=datetime(2026, 8, 28, 1, 30, tzinfo=timezone.utc),
-            parser_version="xbrl-lineage-v2.1",
+            parser_version="xbrl-lineage-v2.2",
         )
     link_acceptance_operation(
         db,
@@ -2522,7 +2566,7 @@ def test_failed_operation_is_atomically_classified_by_database_terminal_result(
         storage_root=tmp_path,
         max_filings=1,
         now=datetime(2026, 8, 28, 1, tzinfo=timezone.utc),
-        parser_version="xbrl-lineage-v2.1",
+        parser_version="xbrl-lineage-v2.2",
     )
     link_acceptance_operation(
         db,
@@ -2566,7 +2610,7 @@ def test_acquisition_audit_rejects_finalized_unlinked_operation_in_case_window(
         storage_root=tmp_path,
         max_filings=1,
         now=datetime(2026, 8, 28, 4, tzinfo=timezone.utc),
-        parser_version="xbrl-lineage-v2.1",
+        parser_version="xbrl-lineage-v2.2",
     )
     db.commit()
     finalize_sec_financial_ingestion_operation(db, operation_id=unlinked.operation_id)
@@ -2705,7 +2749,7 @@ def _complete_24x2_runtime_authority(db, tmp_path):
                 max_filings=1,
                 now=datetime(2026, 8, 28, tzinfo=timezone.utc)
                 + timedelta(minutes=acceptance_pass * 100 + case_index),
-                parser_version="xbrl-lineage-v2.1",
+                parser_version="xbrl-lineage-v2.2",
             )
             link_acceptance_operation(
                 db,

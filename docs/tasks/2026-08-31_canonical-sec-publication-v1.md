@@ -1,6 +1,6 @@
 # Canonical Financial Truth — SEC Publication V1
 
-Status: contract approved; delivery steps 1–6 complete; Step 6 Terra approved; Step 7A complete and Terra approved; Step 7B live-run retained-evidence recovery remediation implemented pending Terra review, then real locked 24-case retry; retained statement authority Terra PASS
+Status: contract approved; delivery steps 1–6 complete; Step 6 Terra approved; Step 7A complete and Terra approved; Step 7B generated-statement parser v2.2 remediation implemented pending Terra review, then real locked 24-case retry; retained statement authority Terra PASS
 
 Owner: Product / Engineering
 
@@ -222,6 +222,173 @@ Run the canonical commands verbatim and in order:
 7. `git diff --check`
 
 ## Sign-off trail
+
+- 2026-09-01: Step 7B generated-statement authority follow-up is implemented
+  pending Terra reround. Label-link authority now rejects blank locator,
+  resource, and arc endpoint identities, duplicate locator/resource labels,
+  dangling endpoints, and duplicate arcs inside the exact `labelLink` scope.
+  FilingSummary continues to reject duplicate authority-bearing Report
+  children. Generated HTML parsing preserves each raw anchor start tag before
+  BeautifulSoup normalization and requires exactly one strictly formed
+  `onclick` attribute and one exact `Show.showAR` target; duplicate attributes
+  in either order fail closed. The raw attribute and anchor tag, plus their
+  SHA-256 identities, are part of the Python occurrence digest and the exact
+  migration-owned SQL digest/retained-report guard.
+
+  Parser v2.2 and migration `20260901210000` now apply the same bounded SEC
+  SGML `DOCUMENT/TEXT` unwrap to XML statement evidence while retaining the
+  original artifact bytes and hashes. Successful parse persistence runs in a
+  savepoint, so a database evidence-guard rejection rolls back partial raw,
+  reference, occurrence, and authority rows before an append-only typed failed
+  parse run is recorded; no failed SQL session is reused. A real wrapped-XML
+  integration succeeds, and a deliberately mismatched semantic digest proves
+  the terminal failed lineage. Historical v2.1 numeric month headers remain
+  rejected by the unchanged word-form authority branch and now produce the
+  same typed failed terminal record rather than an unhandled database error.
+  Publication binding audit rebuilds its ordered source identity JSON with the
+  same PostgreSQL expression as the binding trigger, preserving exact database
+  comparison without treating equivalent timestamp text precision as a source
+  mismatch.
+
+  The SGML helper's wrapper discriminator and full-envelope expression now use
+  the exact Python ASCII whitespace set (`space`, tab, CR, LF) at both
+  boundaries. Leading and trailing whitespace is neither missed by SQL nor
+  broadened to additional character classes. An end-to-end fixture wraps both
+  FilingSummary and the XML statement with all four characters, preserves the
+  original retained bytes, and succeeds; a direct migration-helper regression
+  also proves a vertical-tab prefix remains a non-wrapper exactly as it does in
+  Python.
+  Python's post-`TEXT` residue check also uses that explicit four-byte set
+  rather than the broader default `bytes.strip()` behavior. Paired Python/SQL
+  cases prove VT and FF before the wrapper remain non-wrapper content, while
+  VT/FF between `TEXT` and `DOCUMENT` closes or after the document close are
+  rejected by both implementations.
+  Python now also performs the migration helper's same case-insensitive,
+  full-source exact count for each literal `DOCUMENT`/`TEXT` opener and closer
+  before unwrapping. Mixed-case single tags remain valid; an additional tag in
+  a comment or payload, including any extra opener or closer, is rejected by
+  both Python and PostgreSQL rather than producing divergent evidence bytes.
+
+  Complete in-container verification passed `230` statement-authority and
+  financial-lineage tests, `16` lineage-migration tests, `78` publication E2E
+  tests, and `57` gold-acceptance tests, with only the existing Starlette
+  deprecation warning. No network, shared development database, retained
+  acceptance storage, live 24-case execution, commit, or push was used. Terra
+  reround remains required before resuming the live run.
+
+- 2026-09-01: Step 7B generated-statement authority follow-up remediation is
+  implemented pending Terra reround. Label-linkbase parsing now rejects an
+  empty locator label and any duplicate locator label inside the same
+  `labelLink`, including identical and conflicting hrefs, rather than applying
+  dictionary last-write-wins. FilingSummary parsing likewise rejects duplicate
+  authority-bearing Report children across the complete supported field set:
+  Position, Role, XML/HTML filename, short/long name, and menu category. Pure
+  resolver coverage and an isolated ingestion regression prove conflicting
+  label locators create no statement authority.
+
+  The migration no longer adds a global `(parse_run_id, report_ordinal)` unique
+  constraint that would retroactively change v2/v2.1 authority. Parser v2.2
+  enforces ordinal uniqueness inside its report-reference insert trigger under
+  a parse-run-scoped transaction advisory lock; an isolated pre-210000 upgrade
+  preserves two accepted v2.1 references with the same ordinal. The generated
+  occurrence database guard now excludes inline facts whose immutable locator
+  marks them hidden when rebuilding the exact equivalent-ID set. A complete
+  visible-plus-hidden duplicate ingestion fixture succeeds using only the
+  visible identity and proves the hidden raw-fact ID is absent from the
+  persisted equivalent set. The complete statement-authority/lineage group
+  passed `221` tests and the complete lineage-migration file passed `15` tests;
+  container compilation, the unique `20260901210000` Alembic head, and
+  `git diff --check` passed. No network, shared development database, retained
+  live-run storage mutation, commit, or push was used.
+
+- 2026-09-01: Step 7B generated-statement authority Terra remediation is
+  implemented pending reround. Partial v2.2 resolution now returns an explicit
+  rejected-concept set with bounded reasons. Any numeric cell whose exact raw
+  identity, period, unit, dimensions, displayed value/scale, presentation
+  label, or anchor cannot be uniquely resolved withdraws every occurrence for
+  that concept across every generated statement report in the filing. A clean
+  concept in the same filing remains independently publishable; nonnumeric and
+  abstract rows do not create a rejection. Real ingestion/publication coverage
+  proves an ambiguous Revenue prior comparison yields zero Revenue authority or
+  publication while exact GrossProfit remains canonical, and an all-rejected
+  report remains a typed failed parse.
+
+  Generated duplicate authority no longer falls back to the weaker XML
+  occurrence matcher. The resolver-owned bounded, sorted exact-equivalence
+  ordinals are revalidated against complete semantic identity and translated
+  directly to raw-fact database IDs; the lowest ordinal is canonical. A real
+  no-element-ID duplicate fixture persists both equivalent IDs and succeeds,
+  while distinct context/unit/dimension identities remain rejected. Inline
+  parsing now records an immutable `is_hidden` locator flag from any namespaced
+  `ix:hidden` ancestor. Generated resolution rejects hidden facts and the DB
+  guard independently requires an inline raw fact's hidden flag to be a false
+  JSON boolean.
+
+  FilingSummary statement authority now requires a nonempty recognized Role,
+  and valid statement Positions are globally unique. Presentation authority
+  requires the same nonempty exact `presentationLink` role. Generated anchors
+  accept one complete canonical `Show.showAR` wrapper only: multiple calls,
+  malformed quotes, or trailing executable/text content fail closed. The exact
+  onclick value and digest are included in occurrence semantic identity and
+  revalidated against the retained report by migration `210000`. Generated
+  headers must contain exactly one date. DB mutation tests reject blank role,
+  multiple onclick targets, and multi-date headers. Parser-v2.2 report ordinal
+  uniqueness is enforced by the migration-owned insert guard without changing
+  historical v2/v2.1 rows.
+
+  Finally, numeric `3/6/9/12 Months Ended` cadence support is scoped inside the
+  v2.2 generated locator branch of the migration-owned fact-authority guard.
+  A real v2.1 XML current/prior fixture reaches the historical cadence branch
+  and is rejected, while the v2.1 word-form fixture and v2.2 generated numeric
+  fixture retain their intended behavior. Complete focused verification passed
+  209 statement-authority/lineage tests and 186 migration/publication/gold/CLI
+  tests, with only the existing Starlette deprecation warning. No network,
+  shared development database, retained storage mutation, commit, or push was
+  used.
+
+- 2026-09-01: Step 7B generated-statement authority parser revision v2.2 is
+  implemented pending Terra review. The clean live `aapl-primary` operation
+  retained 44 filings and 3,480 artifacts but correctly published nothing:
+  all v2.1 parse runs failed because SEC-generated `R*.htm` statement cells do
+  not carry `contextRef` or `factId`, even though the retained standalone or
+  inline instance contains raw XBRL facts. Read-only inspection of retained old
+  SGML, early-inline, and recent-inline AAPL shapes established the minimum
+  deterministic authority chain: FilingSummary fixes the ordered statement
+  report and role; the presentation and label linkbases fix concept, order,
+  preferred-label role, and label; the generated cell fixes its concept token,
+  label, period header, and displayed value; and the instance fixes context,
+  unit, period, dimensions, decimals, scale/sign, and raw value. Parser v2.2
+  creates an occurrence only when those identities resolve to one exact
+  semantic fact. Equivalent duplicate instance elements are retained as an
+  ordered identity set with a database-checked lowest-ID canonical rule;
+  distinct contexts, units, periods, dimensions, values, nil/hidden facts, or
+  unresolved cells remain typed gaps. Presentation row position and
+  approximate value matching are not authority.
+
+  The generated HTML grid is bounded and handles SEC rowspan/colspan period
+  headers, word or numeric duration captions, abbreviated month names, and
+  declared currency/share scales. Current discrete and YTD columns and a
+  same-row prior-discrete column can obtain exact statement authority; a prior
+  YTD column remains an occurrence anchor, and a comparative balance instant
+  remains occurrence-only because its fiscal-year start is not proven. Pure
+  XML statement reports retain their existing explicit occurrence path and do
+  not require presentation/label linkbases. Migration `20260901210000`
+  authorizes v2.2 append-only rows and independently revalidates report,
+  presentation, label, raw-fact, period/unit/dimension/value, duplicate-set,
+  and semantic-digest identity. The 44 failed live v2.1 rows remain immutable.
+
+  Acceptance recovery now treats the parser revision itself as a deterministic
+  provenance delta, reuses the operation-owned retained artifact set, and
+  appends a v2.2 continuation rather than refetching retained submissions,
+  indexes, primary documents, linkbases, reports, or instances. A retained
+  recovery regression proves zero upstream construction/request for this
+  revision-only continuation. Publication and pass-2 fixtures now use the
+  locked v2.2 parser while preserving the historical v2 to failed-v2.1 chain.
+  Focused verification passed the complete 77-test publication E2E file, a
+  206-test statement-authority, lineage, and migration group, and the complete
+  94-test SEC CLI/gold-acceptance group, with only the existing Starlette
+  deprecation warning. No network, shared development
+  database, retained live-run storage mutation, commit, or push was used.
 
 - 2026-09-01: Live Step 7B fresh-case bootstrap remediation is implemented
   pending Terra review. The failed clean `-b` run exposed two distinct facts.

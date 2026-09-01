@@ -1000,6 +1000,7 @@ def ingest_gold_case(
                 ),
                 storage_root=Path(settings.EDGAR_RAW_STORAGE_DIR),
                 upstream_factory=EdgarClient,
+                target_parser_version=ACCEPTANCE_PARSER_VERSION,
             )
         )
         should_ingest = (
