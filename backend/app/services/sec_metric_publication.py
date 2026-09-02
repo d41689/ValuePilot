@@ -16,7 +16,8 @@ from sqlalchemy.orm import Session
 
 from app.services.sec_financial_mapping import (
     ConceptRule, FilingCycleSourceAuthority, MappingResult, MappingRule,
-    MappingRunAuthority, MappingSnapshot,
+    MappingRunAuthority, MappingSnapshot, MAX_MAPPING_DECISIONS,
+    MAX_MAPPING_FACTS,
     RawFactSnapshot, TypedDisposition,
     map_sec_financial_snapshot, validate_sec_mapping_snapshot,
 )
@@ -64,6 +65,17 @@ class SecPublicationError(RuntimeError):
 
 
 SEC_PUBLICATION_V1_PARSER_VERSION = PARSER_V2
+MAX_PUBLICATION_SOURCES = MAX_MAPPING_FACTS
+MAX_PUBLICATION_DECISIONS = MAX_MAPPING_DECISIONS + MAX_PUBLICATION_SOURCES
+
+
+def _validate_publication_request_bounds(request: PublicationRequest) -> None:
+    parse_ids = tuple(source.parse_run_id for source in request.sources)
+    filing_ids = tuple(source.filing_id for source in request.sources)
+    if len(request.sources) > MAX_PUBLICATION_SOURCES:
+        raise SecPublicationError("publication source set exceeds bounded contract")
+    if len(parse_ids) != len(set(parse_ids)) or len(filing_ids) != len(set(filing_ids)):
+        raise SecPublicationError("publication source set contains duplicate authority")
 
 
 def _validate_derived_unavailable_slot(slot, raw_authorities) -> None:
@@ -339,6 +351,7 @@ def _identity(request: PublicationRequest) -> tuple[str, str]:
 
 
 def _rebuild_mapping_result(db: Session, request: PublicationRequest) -> MappingResult:
+    _validate_publication_request_bounds(request)
     mapping = _load_mapping_snapshot(db, request.mapping_version_id)
     if mapping.known_at > request.requested_cutoff or mapping.effective_at > request.requested_cutoff:
         raise SecPublicationError("mapping version is unavailable at publication cutoff")
@@ -476,6 +489,8 @@ def _rebuild_mapping_result(db: Session, request: PublicationRequest) -> Mapping
             mapped.dispositions + failed,
             mapped.truncated_decision_count,
         )
+    if len(mapped.candidates) + len(mapped.dispositions) > MAX_PUBLICATION_DECISIONS:
+        raise SecPublicationError("mapping decision audit exceeds bounded contract")
     return mapped
 
 

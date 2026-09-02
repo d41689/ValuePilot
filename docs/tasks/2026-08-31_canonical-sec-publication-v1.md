@@ -1174,6 +1174,51 @@ Run the canonical commands verbatim and in order:
   live acceptance mutation, retained-storage mutation, commit, or push was
   used. Terra review remains pending before another live acceptance recovery.
 
+- 2026-09-01: Live Step 7B publication decision-bound remediation is
+  implemented pending Terra review. Operation
+  `8f73d2b9-041c-4a6e-8f13-2174bda2ff8b` appended 44/44 successful v2.4 runs,
+  43,253 raw facts, no typed parse failures and no external fetch. Publication
+  then correctly rolled its whole transaction back because the mapping result
+  reported truncated audit lineage; the live database retained zero
+  publication runs. A read-only rebuild of the exact ordered 44-source set
+  produced 627 candidates and 2,109 dispositions: 1,776 unique per-raw custom-
+  concept audits, 156 unique dimensioned audits, 171 slot-aware derived-context
+  gaps and six missing-derived-input audits. There were no duplicate sources,
+  candidates, slots or raw audit identities to remove. Aggregation or dedup
+  would therefore discard the one-audit-per-raw evidence required by H.9.
+
+  The old generic default retained only 512 dispositions and reported 1,597
+  truncated decisions. Its replacement is not an empirical larger magic
+  number: the existing mapping input ceiling remains 10,000 raw facts, the
+  approved V1 registry now explicitly rejects cross-rule local-name membership
+  (the mapper's exact pre-namespace dispatch identity),
+  each fact can create at most one base decision, and each selected base
+  candidate can be the left operand of at most one Q2, Q3 or Q4 derived
+  decision. The complete mapping audit therefore has a proved `2*N` ceiling of
+  20,000. Caller-supplied smaller caps still report exact truncation, values
+  above the proved ceiling fail closed, and publication separately bounds and
+  deduplicates its exact source authority. The mapping registry, precedence,
+  typed outcomes, decision identity and persisted schema are unchanged; this
+  corrects an operational completeness ceiling that had prevented any live
+  run from committing, so no new mapping version or migration is required.
+
+  Verification includes an AAPL-shaped 627-candidate/2,109-unique-audit pure
+  mapping regression, explicit small-cap truncation, input/source overflow and
+  duplicate-source negatives, publication truncation rejection, and the
+  focused SEC mapping/publication/acceptance suites. No network, live database
+  write, retained-storage write, commit or push was used. The first expanded
+  nine-file gate exposed eight v2.4 fixture-maintenance omissions (242 passed,
+  eight failed): current-amendment E2E helpers still created v2.1 parse runs
+  even though production publication authority is intentionally pinned to
+  `PARSER_V2`, and the publication migration roundtrip still named 220000 as
+  head after the append-only v2.4 migration added 230000. Tests now use the
+  production current-parser constant for new amendment authority while leaving
+  explicit legacy-parser coverage unchanged, expect the exact duplicate-source
+  preflight where applicable, and roundtrip through head 230000. The eight
+  targeted regressions pass, and the same complete nine-file gate passes 250
+  tests (one third-party deprecation warning) in 211.35 seconds. Terra review
+  remains pending.
+
 - 2026-09-01: Step 5 amendment-slot authority Terra round 1 remediation
   implemented pending Terra round 2. Publication now acquires one shared,
   stock-scoped PostgreSQL transaction advisory lock before rebuilding or

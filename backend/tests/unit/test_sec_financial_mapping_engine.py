@@ -1,8 +1,12 @@
 from dataclasses import replace
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 
+import pytest
+
 from app.services.sec_financial_mapping import (
+    MAX_MAPPING_DECISIONS,
+    MAX_MAPPING_FACTS,
     MappingRunAuthority,
     RawFactSnapshot,
     canonical_sec_mapping_v1,
@@ -53,6 +57,19 @@ def test_v1_snapshot_contains_all_approved_rules_and_is_immutable():
         assert str(exc) == "unsupported mapping snapshot"
     else:
         raise AssertionError("forged approved snapshot was accepted")
+    overlapping_rules = list(mapping.rules)
+    overlapping_rules[1] = replace(
+        overlapping_rules[1], concepts=(mapping.rules[0].concepts[0],)
+    )
+    with pytest.raises(ValueError, match="unsupported mapping snapshot"):
+        run(replace(mapping, rules=tuple(overlapping_rules)), [])
+    cross_authority_overlap = list(mapping.rules)
+    cross_authority_overlap[1] = replace(
+        cross_authority_overlap[1],
+        concepts=(replace(mapping.rules[0].concepts[0], authority="dei"),),
+    )
+    with pytest.raises(ValueError, match="unsupported mapping snapshot"):
+        run(replace(mapping, rules=tuple(cross_authority_overlap)), [])
 
 
 def test_priority_pipeline_selects_lowest_id_and_never_falls_through_conflict():
@@ -152,13 +169,58 @@ def test_mapping_output_and_decision_trail_are_bounded():
     assert result.truncated_decision_count == 367
 
 
-def test_513_slotless_raw_audits_report_nonzero_truncation():
+def test_explicit_small_decision_cap_reports_nonzero_truncation():
     mapping = canonical_sec_mapping_v1()
     facts = [raw(index, namespace_uri="urn:custom", concept=f"IssuerCustomConcept{index}") for index in range(1, 514)]
-    result = run(mapping, facts)
+    result = run(mapping, facts, max_decisions=512)
     assert not result.candidates and len(result.dispositions) == 512
     assert result.truncated_decision_count == 1
     assert all(item.slot is None and item.reason == "unresolved_custom_concept" for item in result.dispositions)
+
+
+def test_aapl_scale_audit_decisions_fit_the_evidence_derived_default_bound():
+    mapping = canonical_sec_mapping_v1()
+    # Exact live AAPL v2.4 publication diagnosis produced 627 candidates and
+    # 2,109 dispositions: 2,736 durable decisions.  Preserve that split and use
+    # unique raw audit identities so this cannot pass through aggregation or
+    # deduplication.
+    candidates = [
+        raw(
+            index,
+            concept="Assets",
+            period_start=None,
+            period_end=date(2024, 1, 1) + timedelta(days=index),
+            statement_period_end=date(2024, 1, 1) + timedelta(days=index),
+            fiscal_year=(date(2024, 1, 1) + timedelta(days=index)).year,
+        )
+        for index in range(1, 628)
+    ]
+    audits = [
+        raw(
+            index,
+            namespace_uri="urn:custom",
+            concept=f"IssuerCustomConcept{index}",
+        )
+        for index in range(628, 2737)
+    ]
+    result = run(mapping, candidates + audits)
+    assert len(result.candidates) == 627
+    assert len(result.dispositions) == 2109
+    assert result.truncated_decision_count == 0
+    assert len({item.raw_fact_ids for item in result.dispositions}) == 2109
+    assert MAX_MAPPING_DECISIONS == 2 * MAX_MAPPING_FACTS
+
+
+def test_mapping_fact_input_bound_fails_closed_before_decision_construction():
+    mapping = canonical_sec_mapping_v1()
+    facts = [
+        raw(index, namespace_uri="urn:custom", concept=f"Custom{index}")
+        for index in range(1, MAX_MAPPING_FACTS + 2)
+    ]
+    with pytest.raises(ValueError, match="mapping input exceeds bounded contract"):
+        run(mapping, facts)
+    with pytest.raises(ValueError, match="mapping input exceeds bounded contract"):
+        run(mapping, (), max_decisions=MAX_MAPPING_DECISIONS + 1)
 
 
 def test_elapsed_day_contract_boundaries_are_inclusive_calendar_days():

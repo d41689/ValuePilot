@@ -30,6 +30,14 @@ DEI_URIS = (
 ISO4217_URI = "http://www.xbrl.org/2003/iso4217"
 XBRLI_URI = "http://www.xbrl.org/2003/instance"
 
+# A raw fact can produce at most one base mapping decision because the approved
+# V1 concept registry has no cross-rule concept membership.  Each selected base
+# candidate can then be the left operand of at most one Q2, Q3, or Q4 derived
+# decision.  The complete, per-raw audit therefore has a proven 2*N ceiling;
+# truncating below it would discard required H.9 lineage rather than bound work.
+MAX_MAPPING_FACTS = 10_000
+MAX_MAPPING_DECISIONS = 2 * MAX_MAPPING_FACTS
+
 
 @dataclass(frozen=True)
 class ConceptRule:
@@ -214,18 +222,31 @@ def validate_sec_mapping_snapshot(mapping: MappingSnapshot) -> None:
     if mapping.currency_codes != ("DKK","EUR","TWD","USD") or len(mapping.rules) != 21:
         raise ValueError("unsupported mapping snapshot")
     identities=set()
+    concept_local_names=set()
     for rule in mapping.rules:
         if not rule.rule_id or not rule.metric_key or not rule.concepts or [c.priority for c in rule.concepts] != list(range(1,len(rule.concepts)+1)):
             raise ValueError("unsupported mapping snapshot")
         if any(c.authority not in mapping.namespaces or not c.local_name for c in rule.concepts):
             raise ValueError("unsupported mapping snapshot")
+        for concept in rule.concepts:
+            # Rule dispatch is deliberately by local name before the namespace
+            # authority check, so the bounded one-base-decision proof requires
+            # local names themselves (not only authority/name pairs) to be
+            # unique across the approved registry.
+            if concept.local_name in concept_local_names:
+                raise ValueError("unsupported mapping snapshot")
+            concept_local_names.add(concept.local_name)
         identities.add((rule.rule_id,rule.metric_key))
     if len(identities) != len(mapping.rules): raise ValueError("unsupported mapping snapshot")
 
 
-def map_sec_financial_snapshot(mapping: MappingSnapshot, facts: Sequence[RawFactSnapshot], authority: MappingRunAuthority, *, max_decisions: int = 512) -> MappingResult:
+def map_sec_financial_snapshot(mapping: MappingSnapshot, facts: Sequence[RawFactSnapshot], authority: MappingRunAuthority, *, max_decisions: int = MAX_MAPPING_DECISIONS) -> MappingResult:
     validate_sec_mapping_snapshot(mapping)
-    if max_decisions < 0 or len(facts) > 10_000:
+    if (
+        max_decisions < 0
+        or max_decisions > MAX_MAPPING_DECISIONS
+        or len(facts) > MAX_MAPPING_FACTS
+    ):
         raise ValueError("mapping input exceeds bounded contract")
     dispositions: list[TypedDisposition] = []
     candidates: list[CanonicalCandidate] = []

@@ -6,9 +6,12 @@ import pytest
 
 from app.services.sec_financial_mapping import CanonicalCandidate, CanonicalSlotAuthority, MappingResult, TypedDisposition
 from app.services.sec_metric_publication import (
+    MAX_PUBLICATION_SOURCES,
     PublicationRequest,
+    SecPublicationError,
     VerifiedPublicationSource,
     _identity,
+    _validate_publication_request_bounds,
 )
 
 
@@ -36,6 +39,20 @@ def test_publication_replay_identity_is_exact_and_order_sensitive():
     assert _identity(replace(base, amendment_policy="original-only-v1"))[0] != run_id
     second = replace(base.sources[0], parse_run_id=13, filing_id=14, accession_no="0000000000-26-000002")
     assert _identity(replace(base, sources=(base.sources[0], second)))[0] != _identity(replace(base, sources=(second, base.sources[0])))[0]
+
+
+def test_publication_source_bound_and_duplicate_authority_fail_closed():
+    base = request()
+    with pytest.raises(SecPublicationError, match="duplicate authority"):
+        _validate_publication_request_bounds(
+            replace(base, sources=(base.sources[0], base.sources[0]))
+        )
+    sources = tuple(
+        replace(base.sources[0], parse_run_id=index, filing_id=index)
+        for index in range(1, MAX_PUBLICATION_SOURCES + 2)
+    )
+    with pytest.raises(SecPublicationError, match="exceeds bounded contract"):
+        _validate_publication_request_bounds(replace(base, sources=sources))
 
 
 def _rich_request():

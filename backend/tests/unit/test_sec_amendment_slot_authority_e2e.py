@@ -19,6 +19,7 @@ from sqlalchemy.orm import sessionmaker
 from app.core.config import settings
 from app.models.stocks import Stock
 from app.services.sec_financial_ingestion import (
+    PARSER_V2,
     finalize_sec_financial_ingestion_operation,
     ingest_latest_financial_filings,
 )
@@ -171,7 +172,7 @@ def _ingest_changed_amendment(db, tmp_path, original):
         storage_root=tmp_path,
         max_filings=1,
         now=datetime(2026, 8, 29, 17, tzinfo=timezone.utc),
-        parser_version="xbrl-lineage-v2.1",
+        parser_version=PARSER_V2,
     )
     db.commit()
     finalize_sec_financial_ingestion_operation(db, operation_id=report.operation_id)
@@ -246,7 +247,7 @@ def _ingest_client(db, tmp_path, original, client, *, now):
         storage_root=tmp_path,
         max_filings=1,
         now=now,
-        parser_version="xbrl-lineage-v2.1",
+        parser_version=PARSER_V2,
     )
     db.commit()
     finalize_sec_financial_ingestion_operation(db, operation_id=report.operation_id)
@@ -286,11 +287,14 @@ def test_database_resolves_complete_ordered_sources_and_rejects_caller_variants(
         _ChangedSuccessfulAmendmentClient.accession,
     ]
 
-    extra = exact + (original.sources[0],)
-    for supplied in (exact[:1], exact[1:], tuple(reversed(exact)), extra):
+    for supplied in (exact[:1], exact[1:], tuple(reversed(exact))):
         with pytest.raises(SecPublicationError, match="complete ordered source authority"):
             publish_sec_mapping_result(db, _request_with_sources(original, cutoff, supplied))
         db.rollback()
+    extra = exact + (original.sources[0],)
+    with pytest.raises(SecPublicationError, match="duplicate authority"):
+        publish_sec_mapping_result(db, _request_with_sources(original, cutoff, extra))
+    db.rollback()
     assert db.execute(text("SELECT count(*) FROM sec_metric_publication_runs")).scalar_one() == 0
 
 
@@ -414,7 +418,7 @@ def test_successful_nonfinancial_amendment_is_typed_and_preserves_original_slots
         storage_root=tmp_path,
         max_filings=1,
         now=datetime(2026, 8, 30, 17, tzinfo=timezone.utc),
-        parser_version="xbrl-lineage-v2.1",
+        parser_version=PARSER_V2,
     )
     db.commit()
     finalize_sec_financial_ingestion_operation(db, operation_id=report.operation_id)
@@ -630,7 +634,7 @@ def test_publication_waits_for_uncommitted_availability_then_rejects_stale_sourc
             storage_root=tmp_path,
             max_filings=1,
             now=datetime(2026, 8, 29, 17, tzinfo=timezone.utc),
-            parser_version="xbrl-lineage-v2.1",
+            parser_version=PARSER_V2,
         )
         setup.commit()
 
