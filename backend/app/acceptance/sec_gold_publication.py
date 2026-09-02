@@ -113,8 +113,9 @@ def acquire_acceptance_completion_lease(
     run_id: str,
     case_id: str,
     acceptance_pass: int,
+    append_existing_claim: bool = True,
 ) -> AcceptanceCompletionClaimLease | None:
-    """Try to own a case/pass completion without writing or blocking waiters."""
+    """Bind a case/pass lease, optionally taking over its existing attempt."""
 
     bind = db.get_bind()
     engine = bind.engine if isinstance(bind, Connection) else bind
@@ -155,7 +156,7 @@ def acquire_acceptance_completion_lease(
         _engine=engine,
         _session=db,
     )
-    if row is not None:
+    if row is not None and append_existing_claim:
         try:
             return append_acceptance_completion_claim(
                 lease, attempt_id=int(row.attempt_id)
@@ -932,6 +933,20 @@ def mark_acceptance_report_ready(
     operation_id: str,
     report_sha256: str,
 ) -> dict[str, Any]:
+    existing = load_acceptance_report_readiness(
+        db,
+        run_id=run_id,
+        case_id=case_id,
+        acceptance_pass=acceptance_pass,
+    )
+    if existing is not None:
+        validate_acceptance_report_readiness_replay(
+            existing,
+            attempt_id=attempt_id,
+            operation_id=operation_id,
+            report_sha256=report_sha256,
+        )
+        return existing
     db.execute(
         text(
             """INSERT INTO sec_acceptance_report_readiness
@@ -959,18 +974,61 @@ def mark_acceptance_report_ready(
         ),
         {"run": run_id, "case": case_id, "pass": acceptance_pass},
     ).mappings().one()
-    if (
-        int(row.attempt_id) != attempt_id
-        or str(row.operation_id) != operation_id
-        or str(row.report_sha256).strip() != report_sha256
-    ):
-        raise ValueError("acceptance report readiness exact replay mismatch")
+    result = {
+        "attempt_id": int(row.attempt_id),
+        "operation_id": str(row.operation_id),
+        "report_sha256": str(row.report_sha256).strip(),
+        "report_ready_at": row.report_ready_at,
+    }
+    validate_acceptance_report_readiness_replay(
+        result,
+        attempt_id=attempt_id,
+        operation_id=operation_id,
+        report_sha256=report_sha256,
+    )
+    return result
+
+
+def load_acceptance_report_readiness(
+    db: Session,
+    *,
+    run_id: str,
+    case_id: str,
+    acceptance_pass: int,
+) -> dict[str, Any] | None:
+    """Read existing report readiness without attempting an owner-guarded write."""
+
+    row = db.execute(
+        text(
+            """SELECT attempt_id,operation_id,report_sha256,report_ready_at
+               FROM sec_acceptance_report_readiness
+               WHERE run_id=:run AND case_id=:case AND acceptance_pass=:pass"""
+        ),
+        {"run": run_id, "case": case_id, "pass": acceptance_pass},
+    ).mappings().one_or_none()
+    if row is None:
+        return None
     return {
         "attempt_id": int(row.attempt_id),
         "operation_id": str(row.operation_id),
         "report_sha256": str(row.report_sha256).strip(),
         "report_ready_at": row.report_ready_at,
     }
+
+
+def validate_acceptance_report_readiness_replay(
+    readiness: Mapping[str, Any],
+    *,
+    attempt_id: int,
+    operation_id: str,
+    report_sha256: str,
+) -> None:
+    if (
+        int(readiness["attempt_id"]) != attempt_id
+        or str(readiness["operation_id"]) != operation_id
+        or str(readiness["report_sha256"]).strip() != report_sha256
+    ):
+        raise ValueError("acceptance report readiness exact replay mismatch")
 
 
 def load_acceptance_evidence_delta(

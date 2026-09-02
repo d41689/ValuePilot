@@ -1034,12 +1034,12 @@ def test_gold_acceptance_publication_binding_recovers_publish_finalize_crashes(
 
 
 def test_gold_acceptance_report_is_rebuilt_and_verified_against_isolated_database(
-    db, tmp_path
+    db, tmp_path, isolated_engine, monkeypatch
 ):
     request = _request(
         db,
         tmp_path,
-        ticker="GOLDREPORT",
+        ticker="AAPL",
         acceptance_scope=("gold-report-test", "aapl-primary", 1),
     )
     publication = execute_acceptance_publication(
@@ -1130,11 +1130,12 @@ def test_gold_acceptance_report_is_rebuilt_and_verified_against_isolated_databas
         persistent_delta={"idempotent": False},
     )
     payload = case_report_payload(report)
-    case = {
-        "case_id": "aapl-primary",
-        "cik": CIK,
-        "primary_listing": {"ticker": "GOLDREPORT"},
-    }
+    manifest = financial_cli.yaml.safe_load(
+        financial_cli.MANIFEST_PATH.read_text(encoding="utf-8")
+    )
+    case = next(
+        item for item in manifest["cases"] if item["case_id"] == "aapl-primary"
+    )
     audited = audit_case_report_operation(
         db,
         expected_run_id="gold-report-test",
@@ -1176,6 +1177,99 @@ def test_gold_acceptance_report_is_rebuilt_and_verified_against_isolated_databas
     assert repeated is not None
     assert recovered_path.read_bytes() == first_bytes
     assert db.execute(text("SELECT sec_acceptance_runtime_counts()" )).scalar_one() == recovery_counts
+
+    # Model a new CLI process after the report was atomically published but
+    # before readiness was stamped: the original physical owner session is
+    # gone, and no SEC access or new evidence/publication row is permitted.
+    _release_test_completion_leases(db)
+    monkeypatch.setattr(
+        financial_cli, "SessionLocal", sessionmaker(bind=isolated_engine)
+    )
+    monkeypatch.setattr(
+        financial_cli,
+        "preflight_configured_acceptance_runtime",
+        lambda _run: SimpleNamespace(
+            run_id="gold-report-test",
+            reports_root=tmp_path / "reports",
+            storage_root=tmp_path,
+        ),
+    )
+    monkeypatch.setattr(
+        financial_cli,
+        "locked_case_contract",
+        lambda _manifest, _case: (
+            datetime(2026, 8, 30, tzinfo=timezone.utc),
+            (2026,),
+        ),
+    )
+
+    class ForbiddenEdgarClient:
+        def __init__(self, *_args, **_kwargs):
+            pytest.fail("report readiness recovery accessed SEC")
+
+    monkeypatch.setattr(financial_cli, "EdgarClient", ForbiddenEdgarClient)
+    evidence_counts = db.execute(
+        text(
+            "SELECT "
+            "(SELECT count(*) FROM sec_financial_ingestion_operations),"
+            "(SELECT count(*) FROM sec_financial_parse_runs),"
+            "(SELECT count(*) FROM sec_raw_xbrl_facts),"
+            "(SELECT count(*) FROM sec_metric_publication_runs),"
+            "(SELECT count(*) FROM metric_facts)"
+        )
+    ).one()
+    db.rollback()
+    status_args = [
+        "acceptance-pass-report-status",
+        "--acceptance-run-id", "gold-report-test",
+        "--acceptance-pass", "1",
+        "--allow-missing",
+    ]
+    first_status = CliRunner().invoke(financial_cli.app, status_args)
+    assert first_status.exit_code == 2, first_status.output
+    assert "completed=1/24" in first_status.output
+    readiness = db.execute(
+        text(
+            "SELECT attempt_id,operation_id,report_sha256 "
+            "FROM sec_acceptance_report_readiness "
+            "WHERE run_id='gold-report-test' AND case_id='aapl-primary' "
+            "AND acceptance_pass=1"
+        )
+    ).one()
+    assert readiness.attempt_id == attempt_id
+    assert str(readiness.operation_id) == str(operation_id)
+    assert readiness.report_sha256.strip() == hashlib.sha256(first_bytes).hexdigest()
+    assert db.execute(
+        text(
+            "SELECT generation,attempt_id "
+            "FROM sec_acceptance_case_completion_claims "
+            "WHERE run_id='gold-report-test' AND case_id='aapl-primary' "
+            "AND acceptance_pass=1 ORDER BY generation"
+        )
+    ).all() == [(1, attempt_id), (2, attempt_id)]
+    assert db.execute(
+        text(
+            "SELECT "
+            "(SELECT count(*) FROM sec_financial_ingestion_operations),"
+            "(SELECT count(*) FROM sec_financial_parse_runs),"
+            "(SELECT count(*) FROM sec_raw_xbrl_facts),"
+            "(SELECT count(*) FROM sec_metric_publication_runs),"
+            "(SELECT count(*) FROM metric_facts)"
+        )
+    ).one() == evidence_counts
+    db.rollback()
+
+    repeated_status = CliRunner().invoke(financial_cli.app, status_args)
+    assert repeated_status.exit_code == 2, repeated_status.output
+    assert db.execute(
+        text(
+            "SELECT count(*) FROM sec_acceptance_case_completion_claims "
+            "WHERE run_id='gold-report-test' AND case_id='aapl-primary' "
+            "AND acceptance_pass=1"
+        )
+    ).scalar_one() == 2
+    db.rollback()
+
     with pytest.raises(DBAPIError, match="durable case after checkpoint"):
         begin_acceptance_case_attempt(
             db,
@@ -1265,6 +1359,71 @@ def test_gold_acceptance_report_is_rebuilt_and_verified_against_isolated_databas
     assert pass_two_recovered.publication_replayed is True
     assert pass_two_recovered.persistent_delta["idempotent"] is True
     assert db.execute(text("SELECT sec_acceptance_runtime_counts()" )).scalar_one() == pass_two_counts
+
+    # Deterministic TOCTOU schedule: status A has already observed no readiness
+    # when it reaches lease acquisition; live owner B then stamps readiness and
+    # releases before A actually binds the physical advisory lease.  A must
+    # re-read under that lease and accept B's exact row without generation 2.
+    canonical_acquire = financial_cli.acquire_acceptance_completion_lease
+    b_completed = False
+
+    def acquire_after_b_completes(status_db, **kwargs):
+        nonlocal b_completed
+        assert not b_completed
+        assert kwargs == {
+            "run_id": "gold-report-test",
+            "case_id": "aapl-primary",
+            "acceptance_pass": 2,
+            "append_existing_claim": False,
+        }
+        mark_acceptance_report_ready(
+            db,
+            run_id="gold-report-test",
+            case_id="aapl-primary",
+            acceptance_pass=2,
+            attempt_id=pass_two_attempt["id"],
+            operation_id=pass_two_ingestion.operation_id,
+            report_sha256=hashlib.sha256(pass_two_path.read_bytes()).hexdigest(),
+        )
+        _release_test_completion_leases(db)
+        b_completed = True
+        return canonical_acquire(status_db, **kwargs)
+
+    monkeypatch.setattr(
+        financial_cli,
+        "acquire_acceptance_completion_lease",
+        acquire_after_b_completes,
+    )
+    pass_two_status = CliRunner().invoke(
+        financial_cli.app,
+        [
+            "acceptance-pass-report-status",
+            "--acceptance-run-id", "gold-report-test",
+            "--acceptance-pass", "2",
+            "--allow-missing",
+        ],
+    )
+    assert pass_two_status.exit_code in {0, 2}, pass_two_status.output
+    assert b_completed is True
+    assert db.execute(
+        text(
+            "SELECT generation,attempt_id "
+            "FROM sec_acceptance_case_completion_claims "
+            "WHERE run_id='gold-report-test' AND case_id='aapl-primary' "
+            "AND acceptance_pass=2 ORDER BY generation"
+        )
+    ).all() == [(1, pass_two_attempt["id"])]
+    assert db.execute(
+        text(
+            "SELECT count(*) FROM sec_acceptance_report_readiness "
+            "WHERE run_id='gold-report-test' AND case_id='aapl-primary' "
+            "AND acceptance_pass=2"
+        )
+    ).scalar_one() == 1
+    pass_two_counts = db.execute(
+        text("SELECT sec_acceptance_runtime_counts()")
+    ).scalar_one()
+    db.rollback()
 
     malformed_bytes = b'{"malformed":true}\n'
     pass_two_path.write_bytes(malformed_bytes)

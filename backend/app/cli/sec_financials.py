@@ -66,11 +66,13 @@ from app.acceptance.sec_gold_publication import (
     linked_acceptance_ingestion_reports,
     link_acceptance_operation,
     load_acceptance_evidence_delta,
+    load_acceptance_report_readiness,
     load_completed_acceptance_publication,
     mark_acceptance_report_ready,
     record_acceptance_evidence_checkpoint,
     recoverable_bound_acceptance_attempt,
     recoverable_finalized_acceptance_acquisition,
+    validate_acceptance_report_readiness_replay,
 )
 from app.core.config import settings
 from app.core.db import SessionLocal
@@ -1300,6 +1302,81 @@ def acceptance_snapshot(
         db.close()
 
 
+@dataclass(frozen=True)
+class _AcceptanceReportReadinessCandidate:
+    case_id: str
+    attempt_id: int
+    operation_id: str
+    report_sha256: str
+    is_incomplete: bool
+
+
+def _audit_acceptance_report_readiness_candidate(
+    db,
+    *,
+    environment,
+    manifest,
+    case,
+    acceptance_run_id: str,
+    acceptance_pass: int,
+) -> _AcceptanceReportReadinessCandidate:
+    """Rebuild one report's exact readiness identity from file and database."""
+
+    case_id = str(case["case_id"])
+    report_path = (
+        environment.reports_root / f"pass-{acceptance_pass}" / f"{case_id}.json"
+    )
+    report_bytes = secure_read_bytes(
+        storage_root=environment.storage_root, source=report_path
+    )
+    assert report_bytes is not None
+    try:
+        payload = json.loads(report_bytes.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ValueError(f"acceptance JSON is malformed: {report_path}") from exc
+    if not isinstance(payload, dict):
+        raise ValueError(f"acceptance JSON must be an object: {report_path}")
+    is_incomplete = validate_case_report_structure(
+        payload,
+        expected_run_id=acceptance_run_id,
+        expected_case_id=case_id,
+        expected_pass=acceptance_pass,
+    )
+    locked_cutoff, locked_years = locked_case_contract(manifest, case)
+    audit_case_report_operation(
+        db,
+        expected_run_id=acceptance_run_id,
+        case=case,
+        report=payload,
+        acceptance_pass=acceptance_pass,
+        expected_filing_selection_as_of=locked_cutoff,
+        expected_completed_fiscal_years=locked_years,
+    )
+    authority = acceptance_operation_authority(
+        db,
+        run_id=acceptance_run_id,
+        case_id=case_id,
+        acceptance_pass=acceptance_pass,
+    )
+    final_links = [
+        item
+        for item in authority["links"]
+        if item["operation_role"] != "recovered"
+        and str(item["operation_id"]) == str(payload["operation_id"])
+    ]
+    if len(final_links) != 1:
+        raise ValueError(
+            f"acceptance report final operation attempt authority mismatch: {case_id}"
+        )
+    return _AcceptanceReportReadinessCandidate(
+        case_id=case_id,
+        attempt_id=int(final_links[0]["attempt_id"]),
+        operation_id=str(payload["operation_id"]),
+        report_sha256=hashlib.sha256(report_bytes).hexdigest(),
+        is_incomplete=is_incomplete,
+    )
+
+
 @app.command("acceptance-pass-report-status")
 def acceptance_pass_report_status(
     acceptance_run_id: str = typer.Option(...),
@@ -1320,13 +1397,11 @@ def acceptance_pass_report_status(
         raise typer.Exit(1) from exc
     db = SessionLocal()
     try:
-        db.execute(text("SET TRANSACTION READ ONLY"))
         manifest_bytes = MANIFEST_PATH.read_bytes()
         manifest = yaml.safe_load(manifest_bytes)
         validate_gold_set(manifest)
         incomplete = 0
         completed = 0
-        readiness: list[tuple[str, int, str, str]] = []
         for case in manifest["cases"]:
             case_id = str(case["case_id"])
             report_path = (
@@ -1338,70 +1413,102 @@ def acceptance_pass_report_status(
                 storage_root=environment.storage_root, source=report_path
             ):
                 continue
-            report_bytes = secure_read_bytes(
-                storage_root=environment.storage_root, source=report_path
-            )
-            assert report_bytes is not None
-            try:
-                payload = json.loads(report_bytes.decode("utf-8"))
-            except (UnicodeDecodeError, json.JSONDecodeError) as exc:
-                raise ValueError(f"acceptance JSON is malformed: {report_path}") from exc
-            if not isinstance(payload, dict):
-                raise ValueError(f"acceptance JSON must be an object: {report_path}")
-            is_incomplete = validate_case_report_structure(
-                payload,
-                expected_run_id=acceptance_run_id,
-                expected_case_id=case_id,
-                expected_pass=acceptance_pass,
-            )
-            locked_cutoff, locked_years = locked_case_contract(manifest, case)
-            audit_case_report_operation(
+            db.execute(text("SET TRANSACTION READ ONLY"))
+            candidate = _audit_acceptance_report_readiness_candidate(
                 db,
-                expected_run_id=acceptance_run_id,
+                environment=environment,
+                manifest=manifest,
                 case=case,
-                report=payload,
+                acceptance_run_id=acceptance_run_id,
                 acceptance_pass=acceptance_pass,
-                expected_filing_selection_as_of=locked_cutoff,
-                expected_completed_fiscal_years=locked_years,
             )
-            authority = acceptance_operation_authority(
+            existing = load_acceptance_report_readiness(
                 db,
                 run_id=acceptance_run_id,
                 case_id=case_id,
                 acceptance_pass=acceptance_pass,
             )
-            final_links = [
-                item
-                for item in authority["links"]
-                if item["operation_role"] != "recovered"
-                and str(item["operation_id"]) == str(payload["operation_id"])
-            ]
-            if len(final_links) != 1:
-                raise ValueError(
-                    f"acceptance report final operation attempt authority mismatch: {case_id}"
+            db.rollback()
+            if existing is not None:
+                validate_acceptance_report_readiness_replay(
+                    existing,
+                    attempt_id=candidate.attempt_id,
+                    operation_id=candidate.operation_id,
+                    report_sha256=candidate.report_sha256,
                 )
-            readiness.append(
-                (
-                    case_id,
-                    int(final_links[0]["attempt_id"]),
-                    str(payload["operation_id"]),
-                    hashlib.sha256(report_bytes).hexdigest(),
+            else:
+                completion_claim = acquire_acceptance_completion_lease(
+                    db,
+                    run_id=acceptance_run_id,
+                    case_id=case_id,
+                    acceptance_pass=acceptance_pass,
+                    append_existing_claim=False,
                 )
-            )
-            if is_incomplete:
+                if completion_claim is None:
+                    raise SecFinancialIngestionError(
+                        "acceptance_case_completion_in_progress"
+                    )
+                try:
+                    if completion_claim.attempt_id != candidate.attempt_id:
+                        raise ValueError(
+                            "acceptance report completion claim attempt mismatch"
+                        )
+                    # A different owner may have finished after the preflight
+                    # read but before this physical lease was acquired.  Read
+                    # readiness under the lease before appending any successor
+                    # claim, because completed authority is terminal.
+                    db.execute(text("SET TRANSACTION READ ONLY"))
+                    locked_readiness = load_acceptance_report_readiness(
+                        db,
+                        run_id=acceptance_run_id,
+                        case_id=case_id,
+                        acceptance_pass=acceptance_pass,
+                    )
+                    db.rollback()
+                    if locked_readiness is not None:
+                        validate_acceptance_report_readiness_replay(
+                            locked_readiness,
+                            attempt_id=candidate.attempt_id,
+                            operation_id=candidate.operation_id,
+                            report_sha256=candidate.report_sha256,
+                        )
+                    else:
+                        append_acceptance_completion_claim(
+                            completion_claim, attempt_id=candidate.attempt_id
+                        )
+                        # The preflight audit proved that the report was
+                        # eligible to request ownership.  Repeat the complete
+                        # file/DB audit after the successor claim and before the
+                        # only write.
+                        db.execute(text("SET TRANSACTION READ ONLY"))
+                        owned_candidate = _audit_acceptance_report_readiness_candidate(
+                            db,
+                            environment=environment,
+                            manifest=manifest,
+                            case=case,
+                            acceptance_run_id=acceptance_run_id,
+                            acceptance_pass=acceptance_pass,
+                        )
+                        db.rollback()
+                        if owned_candidate != candidate:
+                            raise ValueError(
+                                "acceptance report identity changed during readiness recovery"
+                            )
+                        mark_acceptance_report_ready(
+                            db,
+                            run_id=acceptance_run_id,
+                            case_id=case_id,
+                            acceptance_pass=acceptance_pass,
+                            attempt_id=owned_candidate.attempt_id,
+                            operation_id=owned_candidate.operation_id,
+                            report_sha256=owned_candidate.report_sha256,
+                        )
+                        candidate = owned_candidate
+                finally:
+                    completion_claim.release()
+            if candidate.is_incomplete:
                 incomplete += 1
             completed += 1
-        db.rollback()
-        for case_id, attempt_id, operation_id, report_digest in readiness:
-            mark_acceptance_report_ready(
-                db,
-                run_id=acceptance_run_id,
-                case_id=case_id,
-                acceptance_pass=acceptance_pass,
-                attempt_id=attempt_id,
-                operation_id=operation_id,
-                report_sha256=report_digest,
-            )
         typer.echo(
             f"acceptance_pass_status pass={acceptance_pass} "
             f"completed={completed}/{len(manifest['cases'])} "

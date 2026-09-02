@@ -1219,6 +1219,47 @@ Run the canonical commands verbatim and in order:
   tests (one third-party deprecation warning) in 211.35 seconds. Terra review
   remains pending.
 
+- 2026-09-02: Live Step 7B report-readiness crash-resume remediation is
+  implemented pending review. The interrupted `ft04-gold-20260901-b` run had a
+  stable, fully auditable `aapl-primary` report but no readiness row after disk
+  exhaustion and Docker restart. `acceptance-pass-report-status` correctly
+  audited the report and operation authority in a read-only transaction, then
+  incorrectly attempted the readiness insert on an ordinary replacement
+  Session. The 200000 active-owner trigger rejected that stale-backend write;
+  `ON CONFLICT DO NOTHING` could not help because PostgreSQL executes the
+  owner guard before uniqueness conflict handling.
+
+  Pass-status now treats existing readiness as a pure read and validates its
+  exact attempt, final operation and report digest without issuing an insert.
+  When readiness is absent, it first performs the complete read-only report/DB
+  audit and obtains the same nonblocking run/case/pass completion lease without
+  automatically appending a successor claim. Under that physical lease it
+  first re-reads readiness. If another owner completed between the initial read
+  and lease acquisition, the exact row is validated and the lease is released
+  with no new claim. Only while readiness remains absent does pass-status append
+  a database-stamped successor claim retaining the report's original attempt,
+  then repeat the complete descriptor-safe report read and database audit on
+  the lease-holding connection. Only an identical second result may insert the
+  unique readiness row; the lease is always released. The database owner
+  trigger, append-only authority, PIT boundaries and report digest rules are
+  unchanged. A competing live owner remains a typed operational failure, and
+  the path performs no ingestion, publication or SEC access.
+
+  A real isolated-PostgreSQL CliRunner regression models report publication
+  followed by loss of the original physical owner before readiness. A fresh
+  CLI process appends exactly one takeover generation for the same attempt,
+  writes one readiness row, preserves acquisition/parse/raw/publication/fact
+  counts, and constructs no Edgar client; exact repeated status is read-only
+  and appends no further claim. The red test reproduced the live active-owner
+  trigger error, then passed after remediation. A deterministic A/B interleave
+  also pauses A after its null readiness read, lets B write and release, and
+  proves A's lock-held re-read returns normally without a second claim. The CLI
+  plus targeted interleave set passes 38 tests;
+  the complete publication E2E, gold acceptance and lineage-migration set
+  passes 158 tests, with only the existing third-party deprecation warning. No
+  network, live acceptance database or retained-storage mutation, migration,
+  commit or push was used.
+
 - 2026-09-01: Step 5 amendment-slot authority Terra round 1 remediation
   implemented pending Terra round 2. Publication now acquires one shared,
   stock-scoped PostgreSQL transaction advisory lock before rebuilding or

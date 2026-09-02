@@ -169,6 +169,23 @@ def _stub_acceptance_report_database_audit(monkeypatch, *, validator=None):
     monkeypatch.setattr(
         financial_cli, "mark_acceptance_report_ready", lambda db, **kwargs: {}
     )
+    # Most CLI structure tests model a report whose readiness already exists;
+    # the isolated PostgreSQL E2E covers missing-readiness owner recovery.
+    monkeypatch.setattr(
+        financial_cli,
+        "load_acceptance_report_readiness",
+        lambda *_args, **_kwargs: {
+            "attempt_id": 1,
+            "operation_id": "already-audited",
+            "report_sha256": "0" * 64,
+            "report_ready_at": NOW,
+        },
+    )
+    monkeypatch.setattr(
+        financial_cli,
+        "validate_acceptance_report_readiness_replay",
+        lambda *_args, **_kwargs: None,
+    )
     return audited
 
 
@@ -1476,11 +1493,29 @@ def test_acceptance_pass_report_status_audits_existing_reports_before_resume(
     readiness = []
 
     def mark_ready(_db, **kwargs):
-        assert audited == [first_case_id]
+        assert audited == [first_case_id, first_case_id]
         readiness.append(kwargs)
         return {}
 
     monkeypatch.setattr(financial_cli, "mark_acceptance_report_ready", mark_ready)
+    monkeypatch.setattr(
+        financial_cli, "load_acceptance_report_readiness", lambda *_args, **_kwargs: None
+    )
+    released = []
+    monkeypatch.setattr(
+        financial_cli,
+        "acquire_acceptance_completion_lease",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            attempt_id=1,
+            release=lambda: released.append(True),
+        ),
+    )
+    claims = []
+    monkeypatch.setattr(
+        financial_cli,
+        "append_acceptance_completion_claim",
+        lambda _lease, *, attempt_id: claims.append(attempt_id),
+    )
 
     result = CliRunner().invoke(
         financial_cli.app,
@@ -1497,9 +1532,11 @@ def test_acceptance_pass_report_status_audits_existing_reports_before_resume(
     assert result.exit_code == 0
     assert "completed=1/24" in result.output
     assert "typed_incomplete=0" in result.output
-    assert audited == [first_case_id]
+    assert audited == [first_case_id, first_case_id]
     assert len(readiness) == 1
     assert readiness[0]["case_id"] == first_case_id
+    assert released == [True]
+    assert claims == [1]
 
 
 @pytest.mark.parametrize(
