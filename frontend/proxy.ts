@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { resolveAuthRedirect } from '@/lib/authRoutes';
 
-export function middleware(request: NextRequest) {
+export function proxy(request: NextRequest) {
   const { pathname } = request.nextUrl;
   const token = request.cookies.get('vp_access_token')?.value;
   const role = request.cookies.get('vp_role')?.value;
