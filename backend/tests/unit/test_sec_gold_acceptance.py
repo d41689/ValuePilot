@@ -41,8 +41,10 @@ from app.acceptance.sec_gold_publication import (
     ACCEPTANCE_MAPPING_VERSION_ID,
     ACCEPTANCE_METHOD_POLICY_VERSION_ID,
     ACCEPTANCE_PARSER_VERSION,
+    MetricGapEvidence,
     V1_METRIC_DENOMINATOR,
     build_metric_outcome_matrix,
+    classify_metric_gap_evidence,
     publication_idempotency_delta,
 )
 from test_support.database_isolation import build_isolated_database_url
@@ -868,7 +870,7 @@ def test_ft04_publication_acceptance_authorities_are_not_caller_configurable() -
     assert ACCEPTANCE_MAPPING_VERSION_ID == "sec-us-gaap-v1"
     assert ACCEPTANCE_METHOD_POLICY_VERSION_ID == "sec-method-gate-v1"
     assert ACCEPTANCE_AMENDMENT_POLICY_ID == "latest-known-v1"
-    assert ACCEPTANCE_PARSER_VERSION == "xbrl-lineage-v2.4"
+    assert ACCEPTANCE_PARSER_VERSION == "xbrl-lineage-v2.7"
     assert V1_METRIC_DENOMINATOR == 21
 
 
@@ -926,6 +928,49 @@ def test_metric_outcome_matrix_never_hides_absent_locked_metric() -> None:
             "typed_reasons": ["missing_canonical_outcome"],
         }
     ]
+
+
+@pytest.mark.parametrize(
+    ("evidence", "reason"),
+    [
+        (
+            MetricGapEvidence(),
+            "unresolved_annual_filing_authority_unavailable",
+        ),
+        (
+            MetricGapEvidence(failed_parse_codes=("statement_authority_parse_failed",)),
+            "unresolved_annual_filing_parse_failed:statement_authority_parse_failed",
+        ),
+        (
+            MetricGapEvidence(annual_source_ids=(11,)),
+            "unresolved_mapped_raw_absent",
+        ),
+        (
+            MetricGapEvidence(annual_source_ids=(11,), mapped_raw_ids=(21,)),
+            "unresolved_statement_authority",
+        ),
+    ],
+)
+def test_metric_gap_evidence_uses_most_specific_bounded_stage(
+    evidence: MetricGapEvidence,
+    reason: str,
+) -> None:
+    assert classify_metric_gap_evidence(evidence) == (reason,)
+
+
+def test_metric_gap_evidence_rejects_complete_candidate_without_decision() -> None:
+    evidence = MetricGapEvidence(
+        annual_source_ids=(11,),
+        mapped_raw_ids=(21,),
+        statement_authority_ids=(31,),
+        normalization_ids=(41,),
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="canonical publication decision missing despite complete authority",
+    ):
+        classify_metric_gap_evidence(evidence)
 
 
 def test_metric_outcome_matrix_preserves_gap_when_same_pair_also_published() -> None:

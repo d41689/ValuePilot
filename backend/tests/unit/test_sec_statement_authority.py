@@ -8,6 +8,7 @@ from app.services.sec_statement_authority import (
     MAX_FILING_SUMMARY_BYTES,
     StatementAuthorityParseError,
     StatementAuthoritySnapshot,
+    StatementOccurrence,
     ExplicitFiscalFocus,
     DeiFocusEvidence,
     PresentedPeriodEvidence,
@@ -47,6 +48,65 @@ def test_filing_summary_discovers_only_safe_financial_statements_in_order():
     reports = discover_statement_reports(content)
     assert [(item.report_ordinal, item.filename, item.statement_type) for item in reports] == [
         (2, "R1.htm", "balance_sheet"), (3, "R3.xml", "income_statement")]
+
+
+def test_filing_summary_classifies_real_compact_cash_flow_and_named_balance_reports():
+    content = b"""<FilingSummary><MyReports>
+      <Report><Position>4</Position>
+        <LongName>9952153 - Statement - CONDENSED CONSOLIDATED BALANCE SHEETS (Unaudited)</LongName>
+        <Role>http://www.apple.com/role/CONDENSEDCONSOLIDATEDBALANCESHEETSUnaudited</Role>
+        <ShortName>CONDENSED CONSOLIDATED BALANCE SHEETS (Unaudited)</ShortName>
+        <HtmlFileName>R4.htm</HtmlFileName></Report>
+      <Report><Position>7</Position>
+        <LongName>9952156 - Statement - CONDENSED CONSOLIDATED STATEMENTS OF CASH FLOWS (Unaudited)</LongName>
+        <Role>http://www.apple.com/role/CONDENSEDCONSOLIDATEDSTATEMENTSOFCASHFLOWSUnaudited</Role>
+        <ShortName>CONDENSED CONSOLIDATED STATEMENTS OF CASH FLOWS (Unaudited)</ShortName>
+        <HtmlFileName>R7.htm</HtmlFileName></Report>
+    </MyReports></FilingSummary>"""
+
+    reports = discover_statement_reports(
+        content,
+        allow_compact_statement_names=True,
+    )
+
+    assert [(item.filename, item.statement_type) for item in reports] == [
+        ("R4.htm", "balance_sheet"),
+        ("R7.htm", "cash_flow"),
+    ]
+
+
+def test_v26_filing_summary_requires_recognized_compact_role_and_consistent_name():
+    valid = b"""<FilingSummary><Report><Position>4</Position>
+      <Role>http://www.apple.com/taxonomy/role/StatementOfFinancialPositionClassified</Role>
+      <ShortName>CONDENSED CONSOLIDATED BALANCE SHEETS</ShortName>
+      <HtmlFileName>R4.htm</HtmlFileName></Report></FilingSummary>"""
+    reports = discover_statement_reports(
+        valid,
+        allow_compact_statement_names=True,
+        require_recognized_statement_role=True,
+    )
+    assert reports[0].statement_type == "balance_sheet"
+
+    unknown_role = valid.replace(
+        b"StatementOfFinancialPositionClassified", b"UnrecognizedStatement"
+    )
+    with pytest.raises(StatementAuthorityParseError, match="no_statement_reports"):
+        discover_statement_reports(
+            unknown_role,
+            allow_compact_statement_names=True,
+            require_recognized_statement_role=True,
+        )
+
+    conflicting_name = valid.replace(
+        b"CONDENSED CONSOLIDATED BALANCE SHEETS",
+        b"CONSOLIDATED STATEMENTS OF OPERATIONS",
+    )
+    with pytest.raises(StatementAuthorityParseError, match="conflicting_statement_role_name"):
+        discover_statement_reports(
+            conflicting_name,
+            allow_compact_statement_names=True,
+            require_recognized_statement_role=True,
+        )
 
 
 @pytest.mark.parametrize("role", [None, "", "role/UnrecognizedStatement"])
@@ -117,6 +177,43 @@ def test_statement_report_requires_explicit_context_occurrence_and_metadata():
     assert classified.presentation_class == "prior_fiscal_year_balance_sheet"
     with pytest.raises(StatementAuthorityParseError, match="no_explicit_statement_occurrences"):
         parse_statement_occurrences(b"<td>an earlier date</td>", filename="R1.htm")
+
+
+def test_date_only_instant_requires_proven_balance_sheet_statement():
+    occurrence = StatementOccurrence(
+        "c-current",
+        "us-gaap:Assets",
+        1,
+        {"kind": "sec_generated_statement_html_v2", "row": 2, "column": 2},
+        "assets-current",
+        "100000000",
+        "usd",
+        "Jun. 27, 2026",
+        "digest",
+    )
+    focus = ExplicitFiscalFocus(
+        date(2026, 6, 27), 2026, 3, date(2025, 9, 28), date(2024, 9, 29)
+    )
+
+    classified = classify_statement_occurrence(
+        occurrence,
+        statement_type="balance_sheet",
+        period_start=None,
+        period_end=date(2026, 6, 27),
+        focus=focus,
+        allow_balance_sheet_date_only_instant=True,
+    )
+
+    assert classified.presentation_class == "current_period"
+    with pytest.raises(StatementAuthorityParseError, match="unproven_statement_period_class"):
+        classify_statement_occurrence(
+            occurrence,
+            statement_type="cash_flow",
+            period_start=None,
+            period_end=date(2026, 6, 27),
+            focus=focus,
+            allow_balance_sheet_date_only_instant=True,
+        )
 
 
 def _generated_statement_html(
@@ -205,6 +302,75 @@ def _generated_raw(**changes):
     return RawOccurrenceIdentity(**values)
 
 
+def test_generated_balance_sheet_resolves_exact_date_only_instant():
+    concept = "us-gaap_Assets"
+    role = "http://www.apple.com/role/CONDENSEDCONSOLIDATEDBALANCESHEETSUnaudited"
+    html = f"""<html><body><table>
+      <tr><th>CONDENSED CONSOLIDATED BALANCE SHEETS - USD ($), $ in Millions</th>
+          <th>Jun. 27, 2026</th></tr>
+      <tr><td><a onclick="Show.showAR(this, 'defref_{concept}', window)">Total assets</a></td>
+          <td>100</td></tr>
+    </table></body></html>""".encode()
+    candidate = _generated_raw(
+        concept="us-gaap:Assets",
+        raw_value="100000000",
+        element_id="assets-current",
+        period_start=None,
+    )
+
+    resolution = parse_generated_statement_occurrences(
+        html,
+        filename="R4.htm",
+        statement_role=role,
+        statement_type="balance_sheet",
+        presentation_linkbase=_presentation_linkbase(concept=concept).replace(
+            b"http://www.apple.com/role/Operations", role.encode()
+        ),
+        label_linkbase=_label_linkbase(concept=concept, label="Total assets"),
+        candidates=[candidate],
+        presentation_artifact_id=21,
+        presentation_sha256="1" * 64,
+        label_artifact_id=22,
+        label_sha256="2" * 64,
+        allow_balance_sheet_date_only_instant=True,
+    )
+
+    assert len(resolution.occurrences) == 1
+    assert resolution.occurrences[0].context_id == "c-18"
+
+
+def test_generated_date_only_instant_is_not_accepted_outside_balance_sheet():
+    concept = "us-gaap_Assets"
+    role = "http://www.apple.com/role/StatementOfCashFlows"
+    html = f"""<html><body><table><tr><th>USD ($), $ in Millions</th>
+      <th>Jun. 27, 2026</th></tr><tr><td><a
+      onclick="Show.showAR(this, 'defref_{concept}', window)">Total assets</a></td>
+      <td>100</td></tr></table></body></html>""".encode()
+    resolution = parse_generated_statement_occurrences(
+        html,
+        filename="R7.htm",
+        statement_role=role,
+        statement_type="cash_flow",
+        presentation_linkbase=_presentation_linkbase(concept=concept).replace(
+            b"http://www.apple.com/role/Operations", role.encode()
+        ),
+        label_linkbase=_label_linkbase(concept=concept, label="Total assets"),
+        candidates=[_generated_raw(
+            concept="us-gaap:Assets", raw_value="100000000",
+            element_id="assets-current", period_start=None,
+        )],
+        presentation_artifact_id=21,
+        presentation_sha256="1" * 64,
+        label_artifact_id=22,
+        label_sha256="2" * 64,
+        allow_partial=True,
+        allow_balance_sheet_date_only_instant=True,
+    )
+
+    assert resolution.occurrences == ()
+    assert resolution.rejected_concepts == {"us-gaap:Assets"}
+
+
 @pytest.mark.parametrize("onclick_prefix", ["", "top."])
 def test_generated_statement_resolves_real_old_early_and_recent_shapes_by_exact_authority(onclick_prefix):
     html = _generated_statement_html().replace(b"Show.showAR", f"{onclick_prefix}Show.showAR".encode())
@@ -259,6 +425,102 @@ def test_generated_statement_resolves_real_old_early_and_recent_shapes_by_exact_
             current_quarter.locator["anchor_start_tag"].encode()
         ).hexdigest(),
     }
+
+
+@pytest.mark.parametrize(
+    ("raw_label", "decoded_label"),
+    [
+        ("Total shareholders&rsquo; equity", "Total shareholders’ equity"),
+        ("Total shareholders&#8217; equity", "Total shareholders’ equity"),
+        ("<span>Total</span> shareholders&rsquo; equity", "Total shareholders’ equity"),
+    ],
+)
+def test_v26_generated_statement_binds_decoded_label_to_exact_raw_anchor_fragment(
+    raw_label, decoded_label
+):
+    concept = "us-gaap_StockholdersEquity"
+    html = _generated_statement_html(
+        concept=concept,
+        label=raw_label,
+        displayed="$ 100",
+    )
+    resolution = parse_generated_statement_occurrences(
+        html,
+        filename="R5.htm",
+        statement_role="http://www.apple.com/role/CONSOLIDATEDBALANCESHEETS",
+        statement_type="balance_sheet",
+        presentation_linkbase=_presentation_linkbase(concept=concept).replace(
+            b"http://www.apple.com/role/Operations",
+            b"http://www.apple.com/role/CONSOLIDATEDBALANCESHEETS",
+        ),
+        label_linkbase=_label_linkbase(
+            concept=concept,
+            label=decoded_label,
+        ),
+        candidates=[
+            _generated_raw(
+                concept="us-gaap:StockholdersEquity",
+                raw_value="100000000",
+                element_id="equity-current",
+                period_start=None,
+            )
+        ],
+        presentation_artifact_id=21,
+        presentation_sha256="1" * 64,
+        label_artifact_id=22,
+        label_sha256="2" * 64,
+        allow_balance_sheet_date_only_instant=True,
+        require_exact_raw_label_fragment=True,
+    )
+
+    locator = resolution.occurrences[0].locator
+    assert locator["row_label"] == decoded_label
+    assert locator["row_label_source_html"] == raw_label
+    assert locator["anchor_source_html"].startswith(locator["anchor_start_tag"])
+    assert locator["anchor_source_html"].endswith("</a>")
+    assert locator["anchor_source_start"] < locator["anchor_source_end"]
+    assert locator["anchor_source_html_occurrence_count"] == 1
+    assert locator["anchor_source_html_sha256"] == hashlib.sha256(
+        locator["anchor_source_html"].encode()
+    ).hexdigest()
+
+
+def test_v26_generated_statement_rejects_oversized_raw_label_fragment():
+    concept = "us-gaap_StockholdersEquity"
+    label = "A" * 8_193
+    with pytest.raises(
+        StatementAuthorityParseError,
+        match="unproven_generated_statement_raw_label_fragment",
+    ):
+        parse_generated_statement_occurrences(
+            _generated_statement_html(
+                concept=concept,
+                label=label,
+                displayed="$ 100",
+            ),
+            filename="R5.htm",
+            statement_role="http://www.apple.com/role/CONSOLIDATEDBALANCESHEETS",
+            statement_type="balance_sheet",
+            presentation_linkbase=_presentation_linkbase(concept=concept).replace(
+                b"http://www.apple.com/role/Operations",
+                b"http://www.apple.com/role/CONSOLIDATEDBALANCESHEETS",
+            ),
+            label_linkbase=_label_linkbase(concept=concept, label=label),
+            candidates=[
+                _generated_raw(
+                    concept="us-gaap:StockholdersEquity",
+                    raw_value="100000000",
+                    element_id="equity-current",
+                    period_start=None,
+                )
+            ],
+            presentation_artifact_id=21,
+            presentation_sha256="1" * 64,
+            label_artifact_id=22,
+            label_sha256="2" * 64,
+            allow_balance_sheet_date_only_instant=True,
+            require_exact_raw_label_fragment=True,
+        )
 
 
 @pytest.mark.parametrize("candidate", [

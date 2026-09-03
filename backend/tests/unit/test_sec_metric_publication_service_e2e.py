@@ -25,8 +25,12 @@ from app.acceptance.sec_gold_publication import (
     append_acceptance_completion_claim,
     acceptance_operation_authority,
     begin_acceptance_case_attempt,
+    build_metric_outcome_matrix,
     initialize_acceptance_case_attempt,
     execute_acceptance_publication,
+    ensure_database_numeric_normalizations,
+    classify_metric_gap_evidence,
+    load_metric_gap_evidence,
     link_acceptance_operation,
     load_completed_acceptance_publication,
     load_acceptance_evidence_delta,
@@ -184,7 +188,11 @@ def _request(
     parse=db.execute(text("""SELECT pr.id,pr.filing_id,pr.parser_version,pr.input_manifest_hash,f.accession_no,a.available_at
       FROM sec_financial_parse_runs pr JOIN sec_financial_filings f ON f.id=pr.filing_id
       JOIN sec_financial_lineage_availabilities a ON a.operation_id=pr.operation_id
-      WHERE pr.status='succeeded' ORDER BY pr.id DESC LIMIT 1""")).mappings().one()
+      WHERE pr.status='succeeded' ORDER BY pr.id DESC LIMIT 1""")).mappings().one_or_none()
+    assert parse is not None, db.execute(text(
+        "SELECT parser_version,status,error_code,error_detail "
+        "FROM sec_financial_parse_runs ORDER BY id"
+    )).all()
     rule=db.execute(text("SELECT id FROM sec_metric_mapping_rules WHERE mapping_version_id='sec-us-gaap-v1' AND rule_id=:rule"), {"rule": rule_id}).scalar_one()
     raws=db.execute(text("""SELECT DISTINCT raw.id,raw.raw_value,raw.scale,raw.sign FROM sec_raw_xbrl_facts raw JOIN sec_statement_fact_authorities a ON a.raw_fact_id=raw.id
       WHERE raw.parse_run_id=:parse AND raw.concept LIKE :concept
@@ -200,6 +208,71 @@ def _request(
     db.commit()
     source=VerifiedPublicationSource(parse.id,parse.filing_id,parse.accession_no,parse.parser_version,parse.input_manifest_hash,parse.available_at)
     return PublicationRequest(stock.id,identity.id,"sec-us-gaap-v1",parse.available_at+timedelta(seconds=1),"latest-known-v1",(source,))
+
+
+class _AnnualGeneratedStatementClient(GeneratedStatementAuthorityClient):
+    def __init__(
+        self,
+        *,
+        accession: str,
+        report_date: str,
+        accepted_at: str,
+        comparative_authority: bool = False,
+    ) -> None:
+        super().__init__()
+        submissions = json.loads(self.responses[SUBMISSIONS_URL])
+        recent = submissions["filings"]["recent"]
+        prior_accession = recent["accessionNumber"][0]
+        prior_raw = prior_accession.replace("-", "")
+        new_raw = accession.replace("-", "")
+        recent["accessionNumber"][0] = accession
+        recent["form"][0] = "10-K"
+        recent["filingDate"][0] = (
+            accepted_at[:4] + "-" + accepted_at[4:6] + "-" + accepted_at[6:8]
+        )
+        recent["reportDate"][0] = report_date
+        recent["acceptanceDateTime"][0] = accepted_at
+        transformed = {
+            url.replace(prior_raw, new_raw): content
+            for url, content in self.responses.items()
+            if url != SUBMISSIONS_URL
+        }
+        if comparative_authority:
+            transformed = {
+                url: content.replace(
+                    b'<th colspan="2">3 Months Ended</th><th colspan="2">9 Months Ended</th>',
+                    b'<th colspan="2">12 Months Ended</th>',
+                ).replace(
+                    b'<th>Jun. 27, 2026</th><th>Jun. 28, 2025</th>\n          <th>Jun. 27, 2026</th><th>Jun. 28, 2025</th>',
+                    b'<th>Jun. 27, 2026</th><th>Jun. 28, 2025</th>',
+                ).replace(
+                    b'<td>$ 94,000</td><td>$ 90,000</td><td>$ 250,000</td><td>$ 240,000</td>',
+                    b'<td>$ 94,000</td><td>$ 90,000</td>',
+                )
+                for url, content in transformed.items()
+            }
+            replacements = (
+                (b"3 Months Ended", b"12 Months Ended"),
+                (b"2026-03-29", b"2025-06-28"),
+                (b"2025-03-30", b"2024-06-29"),
+                (b"2025-09-28", b"2025-06-28"),
+                (b"2024-09-29", b"2024-06-29"),
+                (b">Q3</ix:nonNumeric>", b">FY</ix:nonNumeric>"),
+            )
+            for url, content in list(transformed.items()):
+                for old, new in replacements:
+                    content = content.replace(old, new)
+                transformed[url] = content
+            for url, content in list(transformed.items()):
+                if url.endswith("/index.json"):
+                    index = json.loads(content)
+                    for item in index["directory"]["item"]:
+                        artifact_url = url.removesuffix("index.json") + item["name"]
+                        if artifact_url in transformed:
+                            item["size"] = len(transformed[artifact_url])
+                    transformed[url] = json.dumps(index).encode()
+        transformed[SUBMISSIONS_URL] = json.dumps(submissions).encode()
+        self.responses = transformed
 
 
 class _GeneratedQ2StatementAuthorityClient(GeneratedStatementAuthorityClient):
@@ -266,6 +339,277 @@ class _GeneratedQ2StatementAuthorityClient(GeneratedStatementAuthorityClient):
                 item["size"] = len(transformed[artifact_url])
         transformed[index_url] = json.dumps(index).encode()
         self.responses = transformed
+
+
+def test_gap_evidence_uses_comparative_authority_from_later_annual_filing(
+    db, tmp_path
+):
+    request = _request(
+        db,
+        tmp_path,
+        ticker="COMPARATIVEGAP",
+        client=_AnnualGeneratedStatementClient(
+            accession="0000320193-26-900001",
+            report_date="2026-06-27",
+            accepted_at="20260820160528",
+            comparative_authority=True,
+        ),
+    )
+    receipt = publish_sec_mapping_result(db, request)
+    db.commit()
+    finalize_sec_publication(db, receipt.run_id)
+    db.commit()
+    metric_keys = tuple(
+        db.execute(text(
+            "SELECT metric_key FROM sec_metric_mapping_rules "
+            "WHERE mapping_version_id='sec-us-gaap-v1' ORDER BY id"
+        )).scalars()
+    )
+
+    evidence = load_metric_gap_evidence(
+        db,
+        publication_run_id=receipt.run_id,
+        expected_fiscal_years=(2025,),
+        metric_keys=metric_keys,
+    )[(2025, "is.revenue")]
+
+    assert db.execute(text(
+        "SELECT count(*) FROM sec_statement_fact_authorities authority "
+        "JOIN sec_financial_parse_runs parse ON parse.id=authority.parse_run_id "
+        "JOIN sec_financial_filings filing ON filing.id=parse.filing_id "
+        "WHERE authority.parse_run_id=:parse AND authority.fiscal_year=2025 "
+        "AND filing.report_date='2026-06-27'"
+    ), {"parse": request.sources[0].parse_run_id}).scalar_one() > 0
+    assert evidence.annual_source_ids == (request.sources[0].parse_run_id,)
+    assert classify_metric_gap_evidence(evidence) != (
+        "unresolved_annual_filing_authority_unavailable",
+    )
+
+
+def test_gap_evidence_rebuilds_failed_annual_outside_source_set_at_pit_cutoff(
+    db, tmp_path, monkeypatch
+):
+    request = _request(db, tmp_path, ticker="BACSHAPED")
+
+    def fail_with(code: str):
+        def reject(*_args, **_kwargs):
+            raise financial_ingestion.StatementAuthorityParseError(code)
+
+        return reject
+
+    monkeypatch.setattr(
+        financial_ingestion,
+        "parse_generated_statement_occurrences",
+        fail_with("xml_resource_limit"),
+    )
+    failed = ingest_latest_financial_filings(
+        db,
+        stock_id=request.stock_id,
+        client=_AnnualGeneratedStatementClient(
+            accession="0000320193-25-900001",
+            report_date="2025-09-27",
+            accepted_at="20251030160528",
+        ),
+        storage_root=tmp_path,
+        max_filings=1,
+        now=datetime(2026, 8, 27, 12, 10, tzinfo=timezone.utc),
+        parser_version=financial_ingestion.PARSER_V2,
+    )
+    db.commit()
+    finalize_sec_financial_ingestion_operation(db, operation_id=failed.operation_id)
+    db.commit()
+    failed_run = db.execute(
+        text(
+            "SELECT id FROM sec_financial_parse_runs "
+            "WHERE operation_id=:operation AND status='failed'"
+        ),
+        {"operation": failed.operation_id},
+    ).scalar_one()
+    cutoff = max(
+        request.requested_cutoff,
+        db.execute(
+            text(
+                "SELECT available_at FROM sec_financial_lineage_availabilities "
+                "WHERE operation_id=:operation"
+            ),
+            {"operation": failed.operation_id},
+        ).scalar_one()
+        + timedelta(seconds=1),
+    )
+    sources = resolve_latest_known_v1_sources(
+        db,
+        stock_id=request.stock_id,
+        issuer_identity_id=request.issuer_identity_id,
+        requested_cutoff=cutoff,
+    )
+    assert failed_run not in {source.parse_run_id for source in sources}
+    publication_request = PublicationRequest(
+        request.stock_id,
+        request.issuer_identity_id,
+        request.mapping_version_id,
+        cutoff,
+        request.amendment_policy,
+        sources,
+    )
+    receipt = publish_sec_mapping_result(db, publication_request)
+    db.commit()
+    finalize_sec_publication(db, receipt.run_id)
+    db.commit()
+
+    monkeypatch.setattr(
+        financial_ingestion,
+        "parse_generated_statement_occurrences",
+        fail_with("required_artifact_unavailable"),
+    )
+    after_cutoff = ingest_latest_financial_filings(
+        db,
+        stock_id=request.stock_id,
+        client=_AnnualGeneratedStatementClient(
+            accession="0000320193-25-900002",
+            report_date="2025-09-27",
+            accepted_at="20251101160528",
+        ),
+        storage_root=tmp_path,
+        max_filings=1,
+        now=cutoff + timedelta(days=1),
+        parser_version=financial_ingestion.PARSER_V2,
+    )
+    db.commit()
+    finalize_sec_financial_ingestion_operation(
+        db, operation_id=after_cutoff.operation_id
+    )
+    db.commit()
+    metric_keys = tuple(
+        db.execute(text(
+            "SELECT metric_key FROM sec_metric_mapping_rules "
+            "WHERE mapping_version_id='sec-us-gaap-v1' ORDER BY id"
+        )).scalars()
+    )
+
+    evidence = load_metric_gap_evidence(
+        db,
+        publication_run_id=receipt.run_id,
+        expected_fiscal_years=(2025,),
+        metric_keys=metric_keys,
+    )[(2025, "bs.total_assets")]
+
+    assert evidence.annual_source_ids == ()
+    assert evidence.failed_parse_codes == ("xml_resource_limit",)
+    assert classify_metric_gap_evidence(evidence) == (
+        "unresolved_annual_filing_parse_failed:xml_resource_limit",
+    )
+
+    assert db.execute(
+        text(
+            "SELECT array_agg(DISTINCT parse.parser_version) "
+            "FROM sec_metric_publication_run_sources source "
+            "JOIN sec_financial_parse_runs parse ON parse.id=source.parse_run_id "
+            "WHERE source.publication_run_id=:run"
+        ),
+        {"run": receipt.run_id},
+    ).scalar_one() == [financial_ingestion.PARSER_V2]
+    monkeypatch.setattr(
+        gold_publication,
+        "ACCEPTANCE_PARSER_VERSION",
+        "xbrl-lineage-v2.8",
+    )
+    replayed_evidence = load_metric_gap_evidence(
+        db,
+        publication_run_id=receipt.run_id,
+        expected_fiscal_years=(2025,),
+        metric_keys=metric_keys,
+    )[(2025, "bs.total_assets")]
+    assert replayed_evidence == evidence
+    assert classify_metric_gap_evidence(replayed_evidence) == (
+        "unresolved_annual_filing_parse_failed:xml_resource_limit",
+    )
+
+
+def test_gap_evidence_ignores_numeric_normalization_created_after_run_cutoff(
+    db, tmp_path
+):
+    request = _request(
+        db,
+        tmp_path,
+        ticker="POSTCUTOFFNORM",
+        normalize=False,
+        client=_AnnualGeneratedStatementClient(
+            accession="0000320193-26-900003",
+            report_date="2026-06-27",
+            accepted_at="20260820160528",
+            comparative_authority=True,
+        ),
+    )
+    request = PublicationRequest(
+        request.stock_id,
+        request.issuer_identity_id,
+        request.mapping_version_id,
+        request.sources[0].available_at,
+        request.amendment_policy,
+        request.sources,
+    )
+    receipt = publish_sec_mapping_result(db, request)
+    db.commit()
+    finalize_sec_publication(db, receipt.run_id)
+    db.commit()
+    metric_keys = tuple(
+        db.execute(
+            text(
+                "SELECT metric_key FROM sec_metric_mapping_rules "
+                "WHERE mapping_version_id='sec-us-gaap-v1' ORDER BY id"
+            )
+        ).scalars()
+    )
+    decisions = list(
+        db.execute(
+            text(
+                "SELECT id,metric_key,fiscal_year,period_type,status,reason_code,"
+                "metric_fact_id FROM sec_metric_publications "
+                "WHERE publication_run_id=:run ORDER BY decision_ordinal"
+            ),
+            {"run": receipt.run_id},
+        ).mappings()
+    )
+    before_evidence = load_metric_gap_evidence(
+        db,
+        publication_run_id=receipt.run_id,
+        expected_fiscal_years=(2025,),
+        metric_keys=metric_keys,
+    )
+    before_outcomes = build_metric_outcome_matrix(
+        expected_fiscal_years=(2025,),
+        metric_keys=metric_keys,
+        decisions=decisions,
+        gap_evidence=before_evidence,
+    )
+    assert classify_metric_gap_evidence(
+        before_evidence[(2025, "is.revenue")]
+    ) == ("unresolved_numeric_normalization",)
+
+    assert ensure_database_numeric_normalizations(db, sources=request.sources) > 0
+    db.commit()
+    assert db.execute(
+        text(
+            "SELECT min(created_at)>:cutoff FROM sec_raw_numeric_normalizations "
+            "WHERE raw_fact_id IN (SELECT raw_fact_id FROM "
+            "sec_statement_fact_authorities WHERE parse_run_id=:parse)"
+        ),
+        {"cutoff": request.requested_cutoff, "parse": request.sources[0].parse_run_id},
+    ).scalar_one() is True
+
+    after_evidence = load_metric_gap_evidence(
+        db,
+        publication_run_id=receipt.run_id,
+        expected_fiscal_years=(2025,),
+        metric_keys=metric_keys,
+    )
+    assert after_evidence == before_evidence
+    assert build_metric_outcome_matrix(
+        expected_fiscal_years=(2025,),
+        metric_keys=metric_keys,
+        decisions=decisions,
+        gap_evidence=after_evidence,
+    ) == before_outcomes
 
 
 def test_publication_never_uses_partially_resolved_rejected_concept(db, tmp_path):
@@ -1130,6 +1474,13 @@ def test_gold_acceptance_report_is_rebuilt_and_verified_against_isolated_databas
         persistent_delta={"idempotent": False},
     )
     payload = case_report_payload(report)
+    assert payload["metric_outcomes"]["published_count"] == 0
+    assert payload["metric_outcomes"]["typed_gap_count"] == 21
+    assert payload["metric_outcomes"]["missing_count"] == 0
+    assert all(
+        outcome["typed_reasons"] != ["missing_canonical_outcome"]
+        for outcome in payload["metric_outcomes"]["outcomes"]
+    )
     manifest = financial_cli.yaml.safe_load(
         financial_cli.MANIFEST_PATH.read_text(encoding="utf-8")
     )
@@ -1573,6 +1924,30 @@ def test_retained_storage_descriptor_walk_is_deterministic_and_excludes_reports(
     assert retained_storage_authority(tmp_path) == authority
     assert authority["file_count"] == 2
     assert authority["bytes"] == first.stat().st_size + second.stat().st_size
+
+
+def test_retained_storage_entry_bound_accepts_limit_and_rejects_limit_plus_one(
+    tmp_path, monkeypatch
+):
+    by_prefix = {}
+    pair = None
+    for ordinal in range(1_000):
+        content = f"bounded retained object {ordinal}".encode()
+        prefix = hashlib.sha256(content).hexdigest()[:2]
+        prior = by_prefix.get(prefix)
+        if prior is not None:
+            pair = (prior, content)
+            break
+        by_prefix[prefix] = content
+    assert pair is not None
+    monkeypatch.setattr(gold_audit, "MAX_RETAINED_STORAGE_ENTRIES", 2)
+
+    _write_content_addressed(tmp_path, pair[0])
+    assert retained_storage_authority(tmp_path)["file_count"] == 1
+
+    _write_content_addressed(tmp_path, pair[1])
+    with pytest.raises(ValueError, match="enumeration exceeded bounded entries"):
+        retained_storage_authority(tmp_path)
 
 
 def _pause_first_descriptor_read(monkeypatch, mutate):
@@ -2636,13 +3011,14 @@ def test_cli_recovers_finalized_failed_parse_without_sec_refetch(
         text(
             "SELECT parser_version,status FROM sec_financial_parse_runs "
             "WHERE parser_version IN "
-            "('xbrl-lineage-v2','xbrl-lineage-v2.1','xbrl-lineage-v2.4') "
+            "('xbrl-lineage-v2','xbrl-lineage-v2.1',:current) "
             "ORDER BY id"
-        )
+        ),
+        {"current": financial_ingestion.PARSER_V2},
     ).all() == [
         ("xbrl-lineage-v2", "failed"),
         ("xbrl-lineage-v2.1", "failed"),
-        ("xbrl-lineage-v2.4", "succeeded"),
+        (financial_ingestion.PARSER_V2, "succeeded"),
     ]
     recovered_manifests = set(
         db.execute(
@@ -2652,9 +3028,10 @@ def test_cli_recovers_finalized_failed_parse_without_sec_refetch(
                 "JOIN sec_financial_parse_run_artifacts link "
                 "ON link.parse_run_id=parse.id "
                 "JOIN sec_filing_artifacts artifact ON artifact.id=link.artifact_id "
-                "WHERE parse.parser_version='xbrl-lineage-v2.4' "
+                "WHERE parse.parser_version=:current "
                 "AND parse.status='succeeded'"
-            )
+            ),
+            {"current": financial_ingestion.PARSER_V2},
         ).scalars()
     )
     assert len(recovered_manifests) == 1
@@ -2679,10 +3056,11 @@ def test_cli_recovers_finalized_failed_parse_without_sec_refetch(
             "JOIN sec_financial_parse_run_artifacts link "
             "ON link.parse_run_id=parse.id "
             "JOIN sec_filing_artifacts artifact ON artifact.id=link.artifact_id "
-            "WHERE parse.parser_version='xbrl-lineage-v2.4' "
+            "WHERE parse.parser_version=:current "
             "AND artifact.filename='aapl-20150627.xml' "
             "AND artifact.state='retained'"
-        )
+        ),
+        {"current": financial_ingestion.PARSER_V2},
     ).scalar_one() == 1
     assert db.execute(
         text("SELECT count(*) FROM sec_acceptance_report_readiness")
@@ -2925,10 +3303,10 @@ def test_cli_failed_current_parser_without_provenance_delta_is_idempotent(
     ).scalar_one() == 2
 
 
-def test_cli_appends_v24_after_failed_v23_from_retained_inputs_without_sec_fetch(
+def test_cli_appends_current_parser_after_failed_v23_without_sec_fetch(
     db, tmp_path, monkeypatch
 ):
-    run_id = "gold-v24-retained-recovery"
+    run_id = "gold-v25-retained-recovery"
     case_id = "aapl-primary"
     instance = "11111111-1111-4111-8111-111111111111"
     reports_root = tmp_path / "reports"
@@ -2945,7 +3323,7 @@ def test_cli_appends_v24_after_failed_v23_from_retained_inputs_without_sec_fetch
         fallback_url=None,
         metrics={"rate_per_sec": 1.0},
         manifest_digest="e" * 64,
-        database_name="valuepilot_acceptance_gold_v24_retained_recovery",
+        database_name="valuepilot_acceptance_gold_v25_retained_recovery",
         storage_root=tmp_path,
     )
     attempt = begin_acceptance_case_attempt(
@@ -3052,7 +3430,7 @@ def test_cli_appends_v24_after_failed_v23_from_retained_inputs_without_sec_fetch
 
         def __init__(self):
             type(self).constructions += 1
-            pytest.fail("retained v2.4 recovery constructed an SEC client")
+            pytest.fail("retained current-parser recovery constructed an SEC client")
 
     monkeypatch.setattr(financial_cli, "EdgarClient", ForbiddenUpstream)
     report_path = reports_root / "pass-1" / f"{case_id}.json"
@@ -3084,7 +3462,11 @@ def test_cli_appends_v24_after_failed_v23_from_retained_inputs_without_sec_fetch
         (run.parser_version, run.status, run.input_manifest_hash) for run in runs
     ] == [
         ("xbrl-lineage-v2.3", "failed", failed_run.input_manifest_hash),
-        ("xbrl-lineage-v2.4", "succeeded", failed_run.input_manifest_hash),
+        (
+            financial_ingestion.PARSER_V2,
+            "succeeded",
+            failed_run.input_manifest_hash,
+        ),
     ]
     assert runs[0].id == failed_run.id
     assert runs[0].error_detail == failed_run.error_detail
@@ -3105,8 +3487,9 @@ def test_cli_appends_v24_after_failed_v23_from_retained_inputs_without_sec_fetch
     successful_operation_id = db.execute(
         text(
             "SELECT operation_id FROM sec_financial_parse_runs "
-            "WHERE parser_version='xbrl-lineage-v2.4' AND status='succeeded'"
-        )
+            "WHERE parser_version=:current AND status='succeeded'"
+        ),
+        {"current": financial_ingestion.PARSER_V2},
     ).scalar_one()
     completed_replay = financial_ingestion.build_retained_financial_replay_client(
         db,

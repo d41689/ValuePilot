@@ -50,6 +50,7 @@ from app.acceptance.sec_gold_publication import (
     build_metric_outcome_matrix,
     acceptance_operation_authority,
     load_acceptance_evidence_delta,
+    load_metric_gap_evidence,
 )
 from app.acceptance.sec_gold_storage import (
     secure_atomic_write_bytes,
@@ -62,6 +63,9 @@ from app.services.sec_financial_ingestion import (
     FinancialHistoryTarget,
     _expected_completed_fiscal_years,
 )
+
+
+MAX_RETAINED_STORAGE_ENTRIES = 200_000
 
 
 _IDEMPOTENCY_FIELDS = (
@@ -808,6 +812,12 @@ def _schema_v2_publication_audit(
         expected_fiscal_years=expected_completed_fiscal_years,
         metric_keys=metric_keys,
         decisions=decisions,
+        gap_evidence=load_metric_gap_evidence(
+            db,
+            publication_run_id=run_id,
+            expected_fiscal_years=expected_completed_fiscal_years,
+            metric_keys=metric_keys,
+        ),
     )
     if rebuilt != report["metric_outcomes"]:
         raise ValueError(f"acceptance metric outcomes do not match database: {case_id}")
@@ -1621,7 +1631,7 @@ def retained_storage_authority(storage_root: Path) -> dict[str, Any]:
             raise ValueError("retained storage identity race: directory changed") from exc
         for name in names:
             visited += 1
-            if visited > 20_000:
+            if visited > MAX_RETAINED_STORAGE_ENTRIES:
                 raise ValueError("retained storage enumeration exceeded bounded entries")
             try:
                 child_fd = os.open(name, entry_flags, dir_fd=directory_fd)

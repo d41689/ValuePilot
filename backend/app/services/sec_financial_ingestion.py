@@ -84,8 +84,12 @@ PARSER_V2_LEGACY = "xbrl-lineage-v2"
 PARSER_V2_1 = "xbrl-lineage-v2.1"
 PARSER_V2_2 = "xbrl-lineage-v2.2"
 PARSER_V2_3 = "xbrl-lineage-v2.3"
-PARSER_V2 = "xbrl-lineage-v2.4"
-ARTIFACT_RETENTION_POLICY_VERSION = "sec-financial-artifacts-v1"
+PARSER_V2_4 = "xbrl-lineage-v2.4"
+PARSER_V2_5 = "xbrl-lineage-v2.5"
+PARSER_V2_6 = "xbrl-lineage-v2.6"
+PARSER_V2 = "xbrl-lineage-v2.7"
+ARTIFACT_RETENTION_POLICY_V1 = "sec-financial-artifacts-v1"
+ARTIFACT_RETENTION_POLICY_VERSION = "sec-financial-artifacts-v2"
 ANNUAL_FORMS_BY_REGIME = {
     "us_10k_10q": frozenset({"10-K", "10-K/A"}),
     "foreign_20f_6k": frozenset({"20-F", "20-F/A"}),
@@ -901,20 +905,46 @@ def _is_parser_v2(parser_version: str) -> bool:
         PARSER_V2_1,
         PARSER_V2_2,
         PARSER_V2_3,
+        PARSER_V2_4,
+        PARSER_V2_5,
+        PARSER_V2_6,
         PARSER_V2,
     }
 
 
 def _is_sgml_instance_parser(parser_version: str) -> bool:
-    return parser_version in {PARSER_V2_1, PARSER_V2_2, PARSER_V2_3, PARSER_V2}
+    return parser_version in {
+        PARSER_V2_1, PARSER_V2_2, PARSER_V2_3, PARSER_V2_4, PARSER_V2_5,
+        PARSER_V2_6,
+        PARSER_V2,
+    }
 
 
 def _is_generated_statement_parser(parser_version: str) -> bool:
-    return parser_version in {PARSER_V2_2, PARSER_V2_3, PARSER_V2}
+    return parser_version in {
+        PARSER_V2_2, PARSER_V2_3, PARSER_V2_4, PARSER_V2_5, PARSER_V2_6,
+        PARSER_V2
+    }
 
 
 def _is_parser_v24(parser_version: str) -> bool:
-    return parser_version == PARSER_V2
+    return parser_version in {PARSER_V2_4, PARSER_V2_5, PARSER_V2_6, PARSER_V2}
+
+
+def _is_parser_v25(parser_version: str) -> bool:
+    return parser_version in {PARSER_V2_5, PARSER_V2_6, PARSER_V2}
+
+
+def _is_parser_v26(parser_version: str) -> bool:
+    return parser_version in {PARSER_V2_6, PARSER_V2}
+
+
+def _artifact_retention_policy_version(parser_version: str) -> str:
+    return (
+        ARTIFACT_RETENTION_POLICY_VERSION
+        if _is_parser_v25(parser_version)
+        else ARTIFACT_RETENTION_POLICY_V1
+    )
 
 
 def _is_standalone_instance_filename(filename: str) -> bool:
@@ -1780,9 +1810,10 @@ def _legacy_compatible_artifacts(
     items: list[dict[str, Any]],
     item_observations: dict[str, dict[str, Any]],
     storage_root: Path,
+    retention_policy_version: str,
 ) -> list[SecFilingArtifact]:
     """Reuse complete v1 manifests whose only obsolete input is submissions."""
-    if ARTIFACT_RETENTION_POLICY_VERSION != "sec-financial-artifacts-v1":
+    if retention_policy_version != ARTIFACT_RETENTION_POLICY_V1:
         return []
     index_sha256 = hashlib.sha256(index_content).hexdigest()
     index_candidates = db.scalars(
@@ -1810,7 +1841,7 @@ def _legacy_compatible_artifacts(
         expected_manifest_hash = hashlib.sha256(
             json.dumps(
                 {
-                    "retention_policy_version": ARTIFACT_RETENTION_POLICY_VERSION,
+                    "retention_policy_version": retention_policy_version,
                     "submissions_sha256": submissions.sha256,
                     "index_sha256": index_sha256,
                     "items": items,
@@ -1909,6 +1940,7 @@ def _create_artifacts(
     index_content: bytes,
     storage_root: Path,
     now: datetime,
+    parser_version: str,
 ) -> tuple[
     list[SecFilingArtifact],
     int,
@@ -1928,7 +1960,11 @@ def _create_artifacts(
             summary_content = _fetch_bytes(client, summary_url, revalidate=True)
             if len(summary_content) > MAX_ARTIFACT_BYTES or (summary_item["size"] is not None and len(summary_content) != summary_item["size"]):
                 raise SecFinancialIngestionError("FilingSummary content size mismatch")
-            references = discover_statement_reports(summary_content)
+            references = discover_statement_reports(
+                summary_content,
+                allow_compact_statement_names=_is_parser_v25(parser_version),
+                require_recognized_statement_role=_is_parser_v26(parser_version),
+            )
             manifest_names = {item["name"].lower() for item in items}
             referenced_statement_names = {name.lower() for reference in references for name in (reference.filename, reference.fallback_filename) if name}
             if not referenced_statement_names.issubset(manifest_names):
@@ -2044,8 +2080,9 @@ def _create_artifacts(
                 ),
             }
 
+    retention_policy_version = _artifact_retention_policy_version(parser_version)
     manifest_material = {
-        "retention_policy_version": ARTIFACT_RETENTION_POLICY_VERSION,
+        "retention_policy_version": retention_policy_version,
         "index_sha256": hashlib.sha256(index_content).hexdigest(),
         "items": items,
         "item_content_observations": [
@@ -2072,6 +2109,7 @@ def _create_artifacts(
             items=items,
             item_observations=item_observations,
             storage_root=storage_root,
+            retention_policy_version=retention_policy_version,
         )
         if legacy:
             return legacy, 0, [], True
@@ -2451,7 +2489,11 @@ def _parse_primary_artifact(
                 if _is_sgml_instance_parser(parser_version)
                 else summary_raw_content
             )
-            references = discover_statement_reports(summary_content)
+            references = discover_statement_reports(
+                summary_content,
+                allow_compact_statement_names=_is_parser_v25(parser_version),
+                require_recognized_statement_role=_is_parser_v26(parser_version),
+            )
             retained_by_name = {item.filename.lower(): item for item in retained_inputs}
             parsed_identities = [RawOccurrenceIdentity(
                 index,
@@ -2520,6 +2562,7 @@ def _parse_primary_artifact(
                             report_parse_content,
                             filename=report_artifact.filename,
                             statement_role=reference.statement_role,
+                            statement_type=reference.statement_type,
                             presentation_linkbase=presentation_content,
                             label_linkbase=label_content,
                             candidates=parsed_identities,
@@ -2529,6 +2572,12 @@ def _parse_primary_artifact(
                             label_sha256=label_artifact.sha256,
                             allow_partial=True,
                             allow_dimension_member_anchors=_is_parser_v24(
+                                parser_version
+                            ),
+                            allow_balance_sheet_date_only_instant=_is_parser_v25(
+                                parser_version
+                            ),
+                            require_exact_raw_label_fragment=_is_parser_v26(
                                 parser_version
                             ),
                         )
@@ -2562,6 +2611,7 @@ def _parse_primary_artifact(
                             report_parse_content,
                             filename=report_artifact.filename,
                             statement_role=reference.statement_role,
+                            statement_type=reference.statement_type,
                             presentation_linkbase=presentation_content,
                             label_linkbase=label_content,
                             candidates=parsed_identities,
@@ -2571,6 +2621,12 @@ def _parse_primary_artifact(
                             label_sha256=label_artifact.sha256,
                             allow_partial=True,
                             allow_dimension_member_anchors=_is_parser_v24(
+                                parser_version
+                            ),
+                            allow_balance_sheet_date_only_instant=_is_parser_v25(
+                                parser_version
+                            ),
+                            require_exact_raw_label_fragment=_is_parser_v26(
                                 parser_version
                             ),
                         )
@@ -2773,6 +2829,9 @@ def _parse_primary_artifact(
                     period_start=raw_row.period_start,
                     period_end=raw_row.period_end or raw_row.period_instant,
                     focus=focus,
+                    allow_balance_sheet_date_only_instant=_is_parser_v25(
+                        parser_version
+                    ),
                 )
             except StatementAuthorityParseError as exc:
                 if (
@@ -3625,6 +3684,7 @@ def ingest_latest_financial_filings(
                 index_content=index_content,
                 storage_root=storage_root,
                 now=now,
+                parser_version=parser_version,
             )
             created_artifacts += artifact_count
             failures.extend(artifact_failures)

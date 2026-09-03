@@ -30,7 +30,7 @@ from test_support.database_isolation import (
 
 PARENT_REVISION = "20260826130000"
 PERIOD_PARENT_REVISION = "20260827120000"
-HEAD_REVISION = "20260901230000"
+HEAD_REVISION = "20260901270000"
 
 
 def test_parser_v23_guard_migration_is_reversible_without_rewriting_v22() -> None:
@@ -126,6 +126,154 @@ def test_parser_v24_guard_migration_is_reversible_without_rewriting_v23() -> Non
 
         _alembic(backend_dir, database_url, "downgrade", "20260901220000")
         assert definitions() == v23_definitions
+        _alembic(backend_dir, database_url, "upgrade", HEAD_REVISION)
+    finally:
+        engine.dispose()
+        drop_test_schema(_BASE_DATABASE_URL, schema_name)
+
+
+def test_parser_v25_guard_migration_is_reversible_without_rewriting_v24() -> None:
+    backend_dir = Path(__file__).resolve().parents[2]
+    schema_name = new_test_schema_name()
+    database_url = build_isolated_database_url(_BASE_DATABASE_URL, schema_name)
+    create_test_schema(_BASE_DATABASE_URL, schema_name)
+    engine = create_engine(database_url, pool_pre_ping=True)
+    functions = (
+        "validate_sec_parser_v2_structured_unit",
+        "guard_sec_statement_report_reference_insert",
+        "guard_sec_statement_fact_authority_insert",
+        "guard_sec_statement_occurrence_insert",
+    )
+
+    def definitions() -> dict[str, str]:
+        with engine.connect() as connection:
+            return {
+                name: connection.execute(
+                    text(
+                        "SELECT pg_get_functiondef(p.oid) FROM pg_proc p "
+                        "JOIN pg_namespace n ON n.oid=p.pronamespace "
+                        "WHERE n.nspname=current_schema() AND p.proname=:name"
+                    ),
+                    {"name": name},
+                ).scalar_one()
+                for name in functions
+            }
+
+    try:
+        _alembic(backend_dir, database_url, "upgrade", "20260901230000")
+        v24_definitions = definitions()
+        assert all("xbrl-lineage-v2.5" not in source for source in v24_definitions.values())
+
+        _alembic(backend_dir, database_url, "upgrade", HEAD_REVISION)
+        v25_definitions = definitions()
+        assert all("xbrl-lineage-v2.5" in source for source in v25_definitions.values())
+        assert all("xbrl-lineage-v2.4" in source for source in v25_definitions.values())
+
+        _alembic(backend_dir, database_url, "downgrade", "20260901230000")
+        assert definitions() == v24_definitions
+        _alembic(backend_dir, database_url, "upgrade", HEAD_REVISION)
+    finally:
+        engine.dispose()
+        drop_test_schema(_BASE_DATABASE_URL, schema_name)
+
+
+def test_parser_v26_guard_migration_is_reversible_without_rewriting_v25() -> None:
+    backend_dir = Path(__file__).resolve().parents[2]
+    schema_name = new_test_schema_name()
+    database_url = build_isolated_database_url(_BASE_DATABASE_URL, schema_name)
+    create_test_schema(_BASE_DATABASE_URL, schema_name)
+    engine = create_engine(database_url, pool_pre_ping=True)
+    functions = (
+        "validate_sec_parser_v2_structured_unit",
+        "guard_sec_statement_report_reference_insert",
+        "guard_sec_statement_fact_authority_insert",
+        "guard_sec_statement_occurrence_insert",
+    )
+
+    def definitions() -> dict[str, str]:
+        with engine.connect() as connection:
+            return {
+                name: connection.execute(
+                    text(
+                        "SELECT pg_get_functiondef(p.oid) FROM pg_proc p "
+                        "JOIN pg_namespace n ON n.oid=p.pronamespace "
+                        "WHERE n.nspname=current_schema() AND p.proname=:name"
+                    ),
+                    {"name": name},
+                ).scalar_one()
+                for name in functions
+            }
+
+    try:
+        _alembic(backend_dir, database_url, "upgrade", "20260901240000")
+        v25_definitions = definitions()
+        assert all("xbrl-lineage-v2.6" not in source for source in v25_definitions.values())
+
+        _alembic(backend_dir, database_url, "upgrade", HEAD_REVISION)
+        v26_definitions = definitions()
+        assert all("xbrl-lineage-v2.6" in source for source in v26_definitions.values())
+        assert all("xbrl-lineage-v2.5" in source for source in v26_definitions.values())
+        with engine.connect() as connection:
+            assert connection.execute(text(
+                "SELECT sec_statement_type_v26(:role)"
+            ), {"role": "http://issuer/role/StatementOfFinancialPositionClassified"}).scalar_one() == "balance_sheet"
+            assert connection.execute(text(
+                "SELECT sec_statement_type_v26(:role)"
+            ), {"role": "http://issuer/role/StatementsOfCashFlows"}).scalar_one() == "cash_flow"
+            assert connection.execute(text(
+                "SELECT sec_statement_type_v26(:role)"
+            ), {"role": "http://issuer/role/UnrecognizedStatement"}).scalar_one_or_none() is None
+
+        _alembic(backend_dir, database_url, "downgrade", "20260901240000")
+        assert definitions() == v25_definitions
+        _alembic(backend_dir, database_url, "upgrade", HEAD_REVISION)
+    finally:
+        engine.dispose()
+        drop_test_schema(_BASE_DATABASE_URL, schema_name)
+
+
+def test_parser_v27_guard_migration_preserves_v26_and_is_reversible() -> None:
+    backend_dir = Path(__file__).resolve().parents[2]
+    schema_name = new_test_schema_name()
+    database_url = build_isolated_database_url(_BASE_DATABASE_URL, schema_name)
+    create_test_schema(_BASE_DATABASE_URL, schema_name)
+    engine = create_engine(database_url, pool_pre_ping=True)
+    functions = (
+        "validate_sec_parser_v2_structured_unit",
+        "guard_sec_statement_report_reference_insert",
+        "guard_sec_statement_fact_authority_insert",
+        "guard_sec_statement_occurrence_insert",
+    )
+
+    def definitions() -> dict[str, str]:
+        with engine.connect() as connection:
+            return {
+                name: connection.execute(
+                    text(
+                        "SELECT pg_get_functiondef(p.oid) FROM pg_proc p "
+                        "JOIN pg_namespace n ON n.oid=p.pronamespace "
+                        "WHERE n.nspname=current_schema() AND p.proname=:name"
+                    ),
+                    {"name": name},
+                ).scalar_one()
+                for name in functions
+            }
+
+    try:
+        _alembic(backend_dir, database_url, "upgrade", "20260901250000")
+        v26_definitions = definitions()
+        assert all("xbrl-lineage-v2.7" not in source for source in v26_definitions.values())
+
+        _alembic(backend_dir, database_url, "upgrade", HEAD_REVISION)
+        v27_definitions = definitions()
+        assert all("xbrl-lineage-v2.7" in source for source in v27_definitions.values())
+        occurrence_guard = v27_definitions["guard_sec_statement_occurrence_insert"]
+        assert "anchor_start_tag_occurrence_count" in occurrence_guard
+        assert "xbrl-lineage-v2.7" in occurrence_guard
+        assert "xbrl-lineage-v2.6" in occurrence_guard
+
+        _alembic(backend_dir, database_url, "downgrade", "20260901250000")
+        assert definitions() == v26_definitions
         _alembic(backend_dir, database_url, "upgrade", HEAD_REVISION)
     finally:
         engine.dispose()

@@ -17,6 +17,7 @@ MAX_FILING_SUMMARY_BYTES = 1_000_000
 MAX_STATEMENT_REPORTS = 64
 MAX_STATEMENT_REPORT_BYTES = 5_000_000
 MAX_OCCURRENCES_PER_REPORT = 20_000
+MAX_RAW_ANCHOR_FRAGMENT_BYTES = 8_192
 _SAFE_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,254}$")
 _MONTH_NAMES = ("January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December")
 _MONTH = {name.lower(): index for index, name in enumerate(_MONTH_NAMES, 1)}
@@ -61,26 +62,63 @@ class StatementAuthorityParseError(ValueError): reason_code = "statement_authori
 class _RawAnchorAuthority:
     onclick_values: tuple[str, ...]
     start_tag: str
+    source_html: str | None = None
+    inner_html: str | None = None
+    end_tag: str | None = None
+    source_start: int | None = None
+    source_end: int | None = None
 
 
 class _RawAnchorParser(HTMLParser):
     """Keep duplicate anchor attributes before an HTML tree can collapse them."""
 
-    def __init__(self) -> None:
+    def __init__(self, source: str) -> None:
         super().__init__(convert_charrefs=True)
+        self._source = source
+        self._line_offsets = [0]
+        for match in re.finditer(r"\n", source):
+            self._line_offsets.append(match.end())
+        self._open_anchors: list[tuple[int, int, int]] = []
         self.anchors: list[_RawAnchorAuthority] = []
+
+    def _offset(self) -> int:
+        line, column = self.getpos()
+        if line <= 0 or line > len(self._line_offsets):
+            raise StatementAuthorityParseError("malformed_statement_report")
+        return self._line_offsets[line - 1] + column
 
     def handle_starttag(self, tag: str, attrs) -> None:
         if tag.lower() != "a":
             return
+        start = self._offset()
+        start_tag = self.get_starttag_text()
         self.anchors.append(_RawAnchorAuthority(
             tuple(
                 value or ""
                 for name, value in attrs
                 if name.lower() == "onclick"
             ),
-            self.get_starttag_text(),
+            start_tag,
         ))
+        self._open_anchors.append((len(self.anchors) - 1, start, start + len(start_tag)))
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag.lower() != "a" or not self._open_anchors:
+            return
+        index, source_start, inner_start = self._open_anchors.pop()
+        end_start = self._offset()
+        closing = re.match(r"</\s*a\s*>", self._source[end_start:], re.I)
+        if closing is None:
+            return
+        source_end = end_start + closing.end()
+        self.anchors[index] = replace(
+            self.anchors[index],
+            source_html=self._source[source_start:source_end],
+            inner_html=self._source[inner_start:end_start],
+            end_tag=closing.group(0),
+            source_start=source_start,
+            source_end=source_end,
+        )
 
 @dataclass(frozen=True)
 class StatementReportReference:
@@ -146,16 +184,76 @@ def _safe_filename(value: str) -> str:
     name = value.strip()
     if not name or PurePosixPath(name).name != name or ".." in name or _SAFE_NAME.fullmatch(name) is None or PurePosixPath(name).suffix.lower() not in {".xml", ".htm", ".html"}: raise StatementAuthorityParseError("unsafe_statement_report_reference")
     return name
-def _statement_type(role: str, name: str) -> str | None:
-    value = f"{role} {name}".lower()
+def _statement_type(
+    role: str,
+    name: str,
+    *,
+    allow_compact_statement_names: bool = False,
+) -> str | None:
+    role_value = " ".join(role.lower().split())
+    name_value = " ".join(name.lower().split())
+    value = (
+        f"{role_value} {name_value}"
+        if allow_compact_statement_names
+        else role_value
+    )
+    compact_role = re.sub(r"[^a-z0-9]", "", role_value)
+    compact_name = re.sub(r"[^a-z0-9]", "", name_value)
     if "balance" in value or "financial position" in value: return "balance_sheet"
-    if "cash flow" in value: return "cash_flow"
+    if (
+        "cash flow" in value
+        or (
+            allow_compact_statement_names
+            and (
+                "statementofcashflows" in compact_role
+                or "statementsofcashflows" in compact_role
+                or "statementofcashflows" in compact_name
+                or "statementsofcashflows" in compact_name
+            )
+        )
+    ):
+        return "cash_flow"
     if "comprehensive" in value: return "comprehensive_income"
     if "income" in value or "operations" in value or "earnings" in value: return "income_statement"
     if "equity" in value or "stockholder" in value: return "equity"
     return None
 
-def discover_statement_reports(content: bytes) -> tuple[StatementReportReference, ...]:
+
+def _recognized_statement_type(value: str) -> str | None:
+    """Classify one nonempty SEC statement role without relying on its name."""
+
+    normalized = " ".join(value.lower().split())
+    if not normalized:
+        return None
+    compact = re.sub(r"[^a-z0-9]", "", normalized)
+    if (
+        "balance" in normalized
+        or "financial position" in normalized
+        or "balancesheet" in compact
+        or "statementoffinancialposition" in compact
+        or "statementsoffinancialposition" in compact
+    ):
+        return "balance_sheet"
+    if (
+        "cash flow" in normalized
+        or "statementofcashflows" in compact
+        or "statementsofcashflows" in compact
+    ):
+        return "cash_flow"
+    if "comprehensive" in normalized:
+        return "comprehensive_income"
+    if any(token in normalized for token in ("income", "operations", "earnings")):
+        return "income_statement"
+    if "equity" in normalized or "stockholder" in normalized:
+        return "equity"
+    return None
+
+def discover_statement_reports(
+    content: bytes,
+    *,
+    allow_compact_statement_names: bool = False,
+    require_recognized_statement_role: bool = False,
+) -> tuple[StatementReportReference, ...]:
     if len(content) > MAX_FILING_SUMMARY_BYTES: raise StatementAuthorityParseError("filing_summary_exceeds_byte_limit")
     _reject_declarations(content)
     try: root = ET.fromstring(content)
@@ -179,7 +277,21 @@ def discover_statement_reports(content: bytes) -> tuple[StatementReportReference
         if not filename: continue
         role = fields.get("role", "").strip()
         name = fields.get("shortname") or fields.get("longname") or filename
-        kind = _statement_type(role, "")
+        if not role:
+            continue
+        if require_recognized_statement_role:
+            kind = _recognized_statement_type(role)
+            name_kind = _recognized_statement_type(name)
+            if kind is not None and name_kind is not None and name_kind != kind:
+                raise StatementAuthorityParseError(
+                    "conflicting_statement_role_name"
+                )
+        else:
+            kind = _statement_type(
+                role,
+                name,
+                allow_compact_statement_names=allow_compact_statement_names,
+            )
         if kind is None: continue
         position = fields.get("position")
         if not position or not position.isdigit() or int(position) <= 0: raise StatementAuthorityParseError("missing_statement_report_position")
@@ -233,6 +345,24 @@ def statement_occurrence_digest(report_sha256: str, report_ordinal: int,
         if "anchor_start_tag_occurrence_count" in occurrence.locator:
             fields.append(
                 str(occurrence.locator["anchor_start_tag_occurrence_count"])
+            )
+        if "anchor_source_html" in occurrence.locator:
+            fields.extend(
+                str(
+                    occurrence.locator.get(key)
+                    if occurrence.locator.get(key) is not None
+                    else ""
+                )
+                for key in (
+                    "row_label_source_html",
+                    "row_label_source_html_sha256",
+                    "anchor_source_html",
+                    "anchor_source_html_sha256",
+                    "anchor_end_tag",
+                    "anchor_source_start",
+                    "anchor_source_end",
+                    "anchor_source_html_occurrence_count",
+                )
             )
     return hashlib.sha256(chr(31).join(fields).encode()).hexdigest()
 
@@ -521,7 +651,13 @@ def _candidate_numeric(candidate: RawOccurrenceIdentity) -> Decimal | None:
     return number
 
 
-def _period_matches(header: str, candidate: RawOccurrenceIdentity) -> bool:
+def _period_matches(
+    header: str,
+    candidate: RawOccurrenceIdentity,
+    *,
+    statement_type: str | None = None,
+    allow_balance_sheet_date_only_instant: bool = False,
+) -> bool:
     try:
         header_end = parse_statement_header_date(header)
     except StatementAuthorityParseError:
@@ -529,10 +665,10 @@ def _period_matches(header: str, candidate: RawOccurrenceIdentity) -> bool:
     if candidate.period_end != header_end:
         return False
     lowered = header.lower()
-    if "as of" in lowered:
-        return candidate.period_start is None
     if candidate.period_start is None:
-        return False
+        if allow_balance_sheet_date_only_instant:
+            return statement_type == "balance_sheet"
+        return "as of" in lowered
     days = (candidate.period_end - candidate.period_start).days + 1
     if "3 months ended" in lowered or "three months ended" in lowered: return 70 <= days <= 110
     if "6 months ended" in lowered or "six months ended" in lowered: return 150 <= days <= 210
@@ -546,6 +682,7 @@ def parse_generated_statement_occurrences(
     *,
     filename: str,
     statement_role: str,
+    statement_type: str | None = None,
     presentation_linkbase: bytes,
     label_linkbase: bytes,
     candidates: Sequence[RawOccurrenceIdentity],
@@ -555,6 +692,8 @@ def parse_generated_statement_occurrences(
     label_sha256: str,
     allow_partial: bool = False,
     allow_dimension_member_anchors: bool = False,
+    allow_balance_sheet_date_only_instant: bool = False,
+    require_exact_raw_label_fragment: bool = False,
 ) -> GeneratedStatementResolution:
     """Resolve SEC generated statement cells to one exact retained instance fact.
 
@@ -570,7 +709,7 @@ def parse_generated_statement_occurrences(
         raise StatementAuthorityParseError("statement_report_exceeds_byte_limit")
     try:
         report_text = content.decode("utf-8")
-        raw_anchor_parser = _RawAnchorParser()
+        raw_anchor_parser = _RawAnchorParser(report_text)
         raw_anchor_parser.feed(report_text)
         raw_anchor_parser.close()
         soup = BeautifulSoup(report_text, "html.parser")
@@ -585,6 +724,11 @@ def parse_generated_statement_occurrences(
     }
     anchor_start_tag_counts = Counter(
         item.start_tag for item in raw_anchor_parser.anchors
+    )
+    anchor_source_html_counts = Counter(
+        item.source_html
+        for item in raw_anchor_parser.anchors
+        if item.source_html is not None
     )
     arcs, arc_rejections = _presentation_arcs(presentation_linkbase, statement_role)
     labels, label_rejections = _label_authorities(label_linkbase)
@@ -644,17 +788,52 @@ def parse_generated_statement_occurrences(
                         # occurrence authority.
                         continue
                     raise StatementAuthorityParseError("ambiguous_generated_statement_onclick")
+                if require_exact_raw_label_fragment:
+                    if (
+                        raw_anchor.source_html is None
+                        or raw_anchor.inner_html is None
+                        or raw_anchor.source_start is None
+                        or raw_anchor.source_end is None
+                        or raw_anchor.end_tag is None
+                        or not raw_anchor.inner_html
+                        or len(raw_anchor.inner_html.encode("utf-8"))
+                        > MAX_RAW_ANCHOR_FRAGMENT_BYTES
+                        or len(raw_anchor.source_html.encode("utf-8"))
+                        > MAX_RAW_ANCHOR_FRAGMENT_BYTES
+                    ):
+                        raise StatementAuthorityParseError(
+                            "unproven_generated_statement_raw_label_fragment"
+                        )
+                    fragment_label = " ".join(
+                        BeautifulSoup(
+                            raw_anchor.inner_html, "html.parser"
+                        ).get_text(" ", strip=True).split()
+                    )
+                    if fragment_label != " ".join(
+                        anchor.get_text(" ", strip=True).split()
+                    ):
+                        raise StatementAuthorityParseError(
+                            "unproven_generated_statement_raw_label_fragment"
+                        )
                 identities.append((
                     _concept_from_fragment(match.group("target")),
                     " ".join(anchor.get_text(" ", strip=True).split()),
                     onclick,
                     raw_matches[0].group("attribute"),
                     raw_anchor.start_tag,
+                    raw_anchor,
                 ))
             if not identities: continue
             if len(identities) != 1:
                 raise StatementAuthorityParseError("ambiguous_generated_statement_concept")
-            concept, row_label, onclick, onclick_attribute, anchor_start_tag = identities[0]
+            (
+                concept,
+                row_label,
+                onclick,
+                onclick_attribute,
+                anchor_start_tag,
+                raw_anchor,
+            ) = identities[0]
             arc = arcs.get(concept)
             numeric_cells = [
                 (column_index, cell)
@@ -684,7 +863,15 @@ def parse_generated_statement_occurrences(
                 header = " ".join(header_parts)
                 matching = []
                 for candidate in candidates:
-                    if candidate.concept != concept or not _period_matches(header, candidate): continue
+                    if candidate.concept != concept or not _period_matches(
+                        header,
+                        candidate,
+                        statement_type=statement_type,
+                        allow_balance_sheet_date_only_instant=(
+                            allow_balance_sheet_date_only_instant
+                        ),
+                    ):
+                        continue
                     numeric = _candidate_numeric(candidate)
                     multiplier = _declared_multiplier(table_title, candidate)
                     if numeric is not None and display * multiplier == numeric:
@@ -762,6 +949,28 @@ def parse_generated_statement_occurrences(
                     locator["anchor_start_tag_occurrence_count"] = (
                         anchor_start_tag_counts[anchor_start_tag]
                     )
+                if require_exact_raw_label_fragment:
+                    assert raw_anchor.inner_html is not None
+                    assert raw_anchor.source_html is not None
+                    assert raw_anchor.source_start is not None
+                    assert raw_anchor.source_end is not None
+                    assert raw_anchor.end_tag is not None
+                    locator.update({
+                        "row_label_source_html": raw_anchor.inner_html,
+                        "row_label_source_html_sha256": hashlib.sha256(
+                            raw_anchor.inner_html.encode()
+                        ).hexdigest(),
+                        "anchor_source_html": raw_anchor.source_html,
+                        "anchor_source_html_sha256": hashlib.sha256(
+                            raw_anchor.source_html.encode()
+                        ).hexdigest(),
+                        "anchor_end_tag": raw_anchor.end_tag,
+                        "anchor_source_start": raw_anchor.source_start,
+                        "anchor_source_end": raw_anchor.source_end,
+                        "anchor_source_html_occurrence_count": (
+                            anchor_source_html_counts[raw_anchor.source_html]
+                        ),
+                    })
                 raw = " ".join(candidate.raw_value.split())
                 items.append(StatementOccurrence(
                     candidate.context_id, concept, len(items) + 1, locator,
@@ -902,10 +1111,25 @@ def build_explicit_fiscal_focus(*, dei_facts: Sequence[DeiFocusEvidence],
     prior_start = next(iter(prior_starts)) if prior_starts else None
     return ExplicitFiscalFocus(statement_period_end, fiscal_year, quarter, current_start, prior_start)
 
-def classify_statement_occurrence(occurrence: StatementOccurrence, *, statement_type: str, period_start: date | None, period_end: date, focus: ExplicitFiscalFocus) -> ClassifiedPresentation:
+def classify_statement_occurrence(
+    occurrence: StatementOccurrence,
+    *,
+    statement_type: str,
+    period_start: date | None,
+    period_end: date,
+    focus: ExplicitFiscalFocus,
+    allow_balance_sheet_date_only_instant: bool = False,
+) -> ClassifiedPresentation:
     header_end = parse_statement_header_date(occurrence.column_header)
     if header_end != period_end: raise StatementAuthorityParseError("statement_context_header_mismatch")
-    label = occurrence.column_header.lower(); is_instant = "as of" in label; is_quarter = "three months ended" in label or "3 months ended" in label; is_annual = "year ended" in label or "twelve months ended" in label or "12 months ended" in label
+    label = occurrence.column_header.lower()
+    is_instant = "as of" in label or (
+        allow_balance_sheet_date_only_instant
+        and statement_type == "balance_sheet"
+        and period_start is None
+    )
+    is_quarter = "three months ended" in label or "3 months ended" in label
+    is_annual = "year ended" in label or "twelve months ended" in label or "12 months ended" in label
     if period_start is None and not is_instant: raise StatementAuthorityParseError("unproven_statement_period_class")
     if period_start is not None and not (is_quarter or is_annual or "months ended" in label): raise StatementAuthorityParseError("unproven_statement_period_class")
     if period_end == focus.statement_period_end: return ClassifiedPresentation("current_period", period_end, focus.fiscal_year, focus.fiscal_quarter_ordinal, focus.fiscal_year_start)

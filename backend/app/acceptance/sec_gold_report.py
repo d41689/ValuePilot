@@ -27,6 +27,7 @@ from app.models.sec_publication import (
 from app.acceptance.sec_gold_publication import (
     AcceptancePublicationExecution,
     build_metric_outcome_matrix,
+    load_metric_gap_evidence,
     validate_migration_owned_acceptance_authorities,
 )
 from app.acceptance.sec_gold_storage import secure_atomic_write_bytes
@@ -281,6 +282,12 @@ def build_case_report(
             expected_fiscal_years=expected_completed_fiscal_years,
             metric_keys=metric_keys,
             decisions=decisions,
+            gap_evidence=load_metric_gap_evidence(
+                db,
+                publication_run_id=publication.receipt.run_id,
+                expected_fiscal_years=expected_completed_fiscal_years,
+                metric_keys=metric_keys,
+            ),
         )
         run_sources = list(
             db.execute(

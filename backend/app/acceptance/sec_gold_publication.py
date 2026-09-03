@@ -50,6 +50,50 @@ class AcceptancePublicationExecution:
     normalizations_created: int
 
 
+@dataclass(frozen=True)
+class MetricGapEvidence:
+    """Bounded DB-rebuilt stages for one absent annual canonical slot."""
+
+    annual_source_ids: tuple[int, ...] = ()
+    failed_parse_codes: tuple[str, ...] = ()
+    mapped_raw_ids: tuple[int, ...] = ()
+    statement_authority_ids: tuple[int, ...] = ()
+    normalization_ids: tuple[int, ...] = ()
+    publication_audit_reasons: tuple[str, ...] = ()
+
+
+def classify_metric_gap_evidence(evidence: MetricGapEvidence) -> tuple[str, ...]:
+    """Return the earliest exact missing stage; complete authority must decide."""
+
+    if not evidence.annual_source_ids:
+        parse_codes = tuple(sorted(set(evidence.failed_parse_codes)))
+        if parse_codes:
+            if any(
+                not code
+                or len(code) > 80
+                or any(character not in "abcdefghijklmnopqrstuvwxyz0123456789_" for character in code)
+                for code in parse_codes
+            ):
+                raise ValueError("annual filing parse failure code is not bounded")
+            return tuple(
+                f"unresolved_annual_filing_parse_failed:{code}"
+                for code in parse_codes
+            )
+        return ("unresolved_annual_filing_authority_unavailable",)
+    if not evidence.mapped_raw_ids:
+        return ("unresolved_mapped_raw_absent",)
+    if not evidence.statement_authority_ids:
+        return ("unresolved_statement_authority",)
+    audit_reasons = tuple(sorted(set(evidence.publication_audit_reasons)))
+    if audit_reasons:
+        return audit_reasons
+    if not evidence.normalization_ids:
+        return ("unresolved_numeric_normalization",)
+    raise ValueError(
+        "canonical publication decision missing despite complete authority"
+    )
+
+
 @dataclass
 class AcceptanceCompletionClaimLease:
     """Nonblocking DB-session liveness for one case/pass completion owner."""
@@ -1095,6 +1139,7 @@ def build_metric_outcome_matrix(
     expected_fiscal_years: Sequence[int],
     metric_keys: Sequence[str],
     decisions: Iterable[Mapping[str, Any]],
+    gap_evidence: Mapping[tuple[int, str], MetricGapEvidence] | None = None,
 ) -> dict[str, Any]:
     """Account for every locked issuer/year/metric without treating gaps as coverage."""
 
@@ -1128,6 +1173,15 @@ def build_metric_outcome_matrix(
                 outcome = "published"
                 published_count += 1
                 reasons = []
+            elif gap_evidence is not None:
+                evidence = gap_evidence.get((year, metric_key))
+                if evidence is None:
+                    raise ValueError(
+                        "canonical metric gap evidence matrix is incomplete"
+                    )
+                outcome = "typed_gap"
+                typed_gap_count += 1
+                reasons = list(classify_metric_gap_evidence(evidence))
             else:
                 outcome = "missing"
                 missing_count += 1
@@ -1156,6 +1210,287 @@ def build_metric_outcome_matrix(
         "coverage_count": published_count,
         "outcomes": outcomes,
     }
+
+
+def load_metric_gap_evidence(
+    db: Session,
+    *,
+    publication_run_id: str,
+    expected_fiscal_years: Sequence[int],
+    metric_keys: Sequence[str],
+) -> dict[tuple[int, str], MetricGapEvidence]:
+    """Rebuild absent-slot stages only from the finalized publication source set."""
+
+    run = db.execute(
+        text(
+            """SELECT stock_id,issuer_identity_id,mapping_version_id,
+                      requested_cutoff,status
+               FROM sec_metric_publication_runs WHERE id=:run"""
+        ),
+        {"run": publication_run_id},
+    ).mappings().one_or_none()
+    if run is None or run.status != "succeeded":
+        raise ValueError("canonical metric gap evidence requires a succeeded run")
+    years = tuple(int(year) for year in expected_fiscal_years)
+    metrics = tuple(str(metric) for metric in metric_keys)
+    if not years or len(years) != len(set(years)):
+        raise ValueError("canonical metric gap evidence requires distinct fiscal years")
+    if not metrics or len(metrics) != len(set(metrics)):
+        raise ValueError("canonical metric gap evidence requires distinct metric keys")
+
+    rule_rows = db.execute(
+        text(
+            """SELECT id,metric_key FROM sec_metric_mapping_rules
+               WHERE mapping_version_id=:mapping ORDER BY id"""
+        ),
+        {"mapping": run.mapping_version_id},
+    ).mappings().all()
+    if tuple(str(row.metric_key) for row in rule_rows) != metrics:
+        raise ValueError("canonical metric gap mapping authority mismatch")
+    rule_by_metric = {str(row.metric_key): int(row.id) for row in rule_rows}
+
+    source_rows = db.execute(
+        text(
+            """SELECT source.parse_run_id,source.filing_id,parse.status,
+                      parse.error_code,parse.parser_version,filing.form_type,
+                      filing.report_date,filing.amends_filing_id
+               FROM sec_metric_publication_run_sources source
+               JOIN sec_financial_parse_runs parse ON parse.id=source.parse_run_id
+               JOIN sec_financial_filings filing ON filing.id=source.filing_id
+               WHERE source.publication_run_id=:run
+               ORDER BY source.source_ordinal"""
+        ),
+        {"run": publication_run_id},
+    ).mappings().all()
+    parse_ids = tuple(int(row.parse_run_id) for row in source_rows)
+    if not parse_ids:
+        raise ValueError("canonical metric gap source authority is empty")
+    source_parser_versions = {str(row.parser_version) for row in source_rows}
+    if (
+        any(
+            row.parser_version is None or not str(row.parser_version)
+            for row in source_rows
+        )
+        or len(source_parser_versions) != 1
+    ):
+        raise ValueError("canonical metric gap parser authority mismatch")
+    source_parser_version = next(iter(source_parser_versions))
+    annual_forms = {"10-K", "10-K/A", "20-F", "20-F/A"}
+    annual_succeeded = {
+        int(row.parse_run_id): row
+        for row in source_rows
+        if row.form_type in annual_forms and row.status == "succeeded"
+    }
+
+    annual_authority_rows = db.execute(
+        text(
+            """SELECT parse_run_id,fiscal_year
+               FROM sec_statement_fact_authorities
+               WHERE parse_run_id=ANY(:ids)
+                 AND fiscal_quarter_ordinal IS NULL
+               GROUP BY parse_run_id,fiscal_year
+               ORDER BY parse_run_id,fiscal_year"""
+        ),
+        {"ids": list(annual_succeeded) or [-1]},
+    ).mappings().all()
+    annual_by_year: dict[int, set[int]] = {year: set() for year in years}
+    for parse_id, row in annual_succeeded.items():
+        if row.report_date is not None and row.report_date.year in annual_by_year:
+            annual_by_year[row.report_date.year].add(parse_id)
+    for row in annual_authority_rows:
+        fiscal_year = int(row.fiscal_year)
+        if fiscal_year in annual_by_year:
+            annual_by_year[fiscal_year].add(int(row.parse_run_id))
+
+    eligible_parse_rows = db.execute(
+        text(
+            """SELECT parse.id AS parse_run_id,parse.filing_id,parse.status,
+                      parse.error_code,parse.error_detail,parse.known_at,
+                      parse.completed_at,filing.form_type,filing.report_date,
+                      filing.accepted_at,filing.known_at AS filing_known_at,
+                      availability.available_at
+               FROM sec_financial_parse_runs parse
+               JOIN sec_financial_filings filing ON filing.id=parse.filing_id
+               JOIN sec_financial_lineage_availabilities availability
+                 ON availability.operation_id=parse.operation_id
+               WHERE filing.issuer_identity_id=:issuer
+                 AND parse.parser_version=:parser
+                 AND filing.form_type=ANY(:forms)
+                 AND filing.accepted_at<=:cutoff
+                 AND filing.known_at<=:cutoff
+                 AND parse.completed_at<=:cutoff
+                 AND parse.known_at<=:cutoff
+                 AND availability.available_at<=:cutoff
+               ORDER BY parse.filing_id,parse.known_at,parse.completed_at,
+                        availability.available_at,parse.input_manifest_hash"""
+        ),
+        {
+            "issuer": int(run.issuer_identity_id),
+            "parser": source_parser_version,
+            "forms": sorted(annual_forms),
+            "cutoff": run.requested_cutoff,
+        },
+    ).mappings().all()
+    latest_by_filing: dict[int, Mapping[str, Any]] = {}
+    for row in eligible_parse_rows:
+        filing_id = int(row.filing_id)
+        prior = latest_by_filing.get(filing_id)
+        if prior is not None:
+            prior_boundary = (
+                prior["known_at"],
+                prior["completed_at"],
+                prior["available_at"],
+            )
+            row_boundary = (row.known_at, row.completed_at, row.available_at)
+            if prior_boundary == row_boundary:
+                raise ValueError("annual filing latest parse authority is ambiguous")
+        latest_by_filing[filing_id] = row
+
+    def bounded_parse_failure_code(row: Mapping[str, Any]) -> str | None:
+        error_code = str(row["error_code"] or "").strip().lower()
+        detail = str(row["error_detail"] or "")
+        detail_code = ""
+        marker = "StatementAuthorityParseError:"
+        if marker in detail:
+            detail_code = detail.split(marker, 1)[1].strip().split()[0].rstrip(".,:;")
+        code = detail_code or error_code
+        if (
+            not code
+            or len(code) > 80
+            or any(
+                character not in "abcdefghijklmnopqrstuvwxyz0123456789_"
+                for character in code
+            )
+        ):
+            return error_code or None
+        return code
+
+    failed_by_year: dict[int, set[str]] = {year: set() for year in years}
+    for row in latest_by_filing.values():
+        if (
+            row["status"] != "failed"
+            or row["report_date"] is None
+            or row["report_date"].year not in failed_by_year
+        ):
+            continue
+        failure_code = bounded_parse_failure_code(row)
+        if failure_code:
+            failed_by_year[row["report_date"].year].add(failure_code)
+
+    mapped_rows = db.execute(
+        text(
+            """SELECT raw.id AS raw_fact_id,raw.parse_run_id,
+                      rule.id AS mapping_rule_id,rule.metric_key
+               FROM sec_raw_xbrl_facts raw
+               JOIN sec_metric_mapping_rule_concepts concept
+                 ON concept.local_name=CASE WHEN strpos(raw.concept,':')>0
+                   THEN split_part(raw.concept,':',2) ELSE raw.concept END
+               JOIN sec_metric_mapping_rules rule
+                 ON rule.id=concept.mapping_rule_id
+                AND rule.mapping_version_id=:mapping
+               JOIN sec_metric_mapping_version_namespaces namespace
+                 ON namespace.mapping_version_id=rule.mapping_version_id
+                AND namespace.authority=concept.namespace_authority
+                AND namespace.namespace_uri=raw.concept_namespace_uri
+               WHERE raw.parse_run_id=ANY(:ids)
+               ORDER BY raw.id,rule.id"""
+        ),
+        {"mapping": run.mapping_version_id, "ids": list(parse_ids)},
+    ).mappings().all()
+    raw_by_parse_rule: dict[tuple[int, int], set[int]] = {}
+    for row in mapped_rows:
+        raw_by_parse_rule.setdefault(
+            (int(row.parse_run_id), int(row.mapping_rule_id)), set()
+        ).add(int(row.raw_fact_id))
+
+    mapped_raw_ids = sorted({int(row.raw_fact_id) for row in mapped_rows})
+    authority_rows = db.execute(
+        text(
+            """SELECT authority.id,authority.raw_fact_id,authority.parse_run_id,
+                      authority.fiscal_year
+               FROM sec_statement_fact_authorities authority
+               WHERE authority.raw_fact_id=ANY(:raws)
+               ORDER BY authority.id"""
+        ),
+        {"raws": mapped_raw_ids or [-1]},
+    ).mappings().all()
+    authority_by_raw_year: dict[tuple[int, int], set[int]] = {}
+    for row in authority_rows:
+        authority_by_raw_year.setdefault(
+            (int(row.raw_fact_id), int(row.fiscal_year)), set()
+        ).add(int(row.id))
+
+    normalization_rows = db.execute(
+        text(
+            """SELECT id,raw_fact_id,mapping_rule_id
+               FROM sec_raw_numeric_normalizations
+               WHERE mapping_version_id=:mapping AND raw_fact_id=ANY(:raws)
+                 AND created_at<=:cutoff
+               ORDER BY id"""
+        ),
+        {
+            "mapping": run.mapping_version_id,
+            "raws": mapped_raw_ids or [-1],
+            "cutoff": run.requested_cutoff,
+        },
+    ).mappings().all()
+    normalizations_by_raw_rule: dict[tuple[int, int], set[int]] = {}
+    for row in normalization_rows:
+        normalizations_by_raw_rule.setdefault(
+            (int(row.raw_fact_id), int(row.mapping_rule_id)), set()
+        ).add(int(row.id))
+
+    audit_rows = db.execute(
+        text(
+            """SELECT mapping_rule_id,reason_code,raw_fact_ids_json
+               FROM sec_metric_publication_audits
+               WHERE publication_run_id=:run AND mapping_rule_id IS NOT NULL
+               ORDER BY audit_ordinal"""
+        ),
+        {"run": publication_run_id},
+    ).mappings().all()
+
+    result: dict[tuple[int, str], MetricGapEvidence] = {}
+    for year in years:
+        annual_parse_ids = annual_by_year[year]
+        for metric_key in metrics:
+            rule_id = rule_by_metric[metric_key]
+            raw_ids = set().union(
+                *(
+                    raw_by_parse_rule.get((parse_id, rule_id), set())
+                    for parse_id in annual_parse_ids
+                )
+            ) if annual_parse_ids else set()
+            authority_ids: set[int] = set()
+            authoritative_raw_ids: set[int] = set()
+            for raw_id in raw_ids:
+                matched = authority_by_raw_year.get((raw_id, year), set())
+                if matched:
+                    authoritative_raw_ids.add(raw_id)
+                    authority_ids.update(matched)
+            normalization_ids = set().union(
+                *(
+                    normalizations_by_raw_rule.get((raw_id, rule_id), set())
+                    for raw_id in authoritative_raw_ids
+                )
+            ) if authoritative_raw_ids else set()
+            audit_reasons = {
+                str(row.reason_code)
+                for row in audit_rows
+                if int(row.mapping_rule_id) == rule_id
+                and authoritative_raw_ids.intersection(
+                    int(raw_id) for raw_id in (row.raw_fact_ids_json or ())
+                )
+            }
+            result[(year, metric_key)] = MetricGapEvidence(
+                annual_source_ids=tuple(sorted(annual_parse_ids)),
+                failed_parse_codes=tuple(sorted(failed_by_year[year])),
+                mapped_raw_ids=tuple(sorted(raw_ids)),
+                statement_authority_ids=tuple(sorted(authority_ids)),
+                normalization_ids=tuple(sorted(normalization_ids)),
+                publication_audit_reasons=tuple(sorted(audit_reasons)),
+            )
+    return result
 
 
 def validate_migration_owned_acceptance_authorities(db: Session) -> tuple[str, ...]:
