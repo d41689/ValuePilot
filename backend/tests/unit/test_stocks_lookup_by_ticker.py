@@ -741,16 +741,16 @@ def test_lookup_stock_by_ticker_returns_summary(client, db_session, auth_headers
     assert payload["ticker"] == "COCO_TEST"
     assert payload["exchange"] == "NDQ"
     assert payload["company_name"] == "VITA COCO"
-    assert payload["price"] == 54.52
-    assert isinstance(payload["price"], (int, float))
-    assert payload["latest_price"] == 55.25
-    assert isinstance(payload["latest_price"], (int, float))
-    assert payload["latest_price_date"] == "2026-01-10"
+    assert payload["report_price_reference"]["value"] == 54.52
+    assert payload["report_price_reference"]["as_of_date"] == "2026-01-09"
+    assert payload["report_price_reference"]["label"] == "report_reference"
+    assert payload["current_price"]["status"] == "unavailable"
+    assert payload["current_price"]["value"] is None
     assert payload["active_report_document_id"] == doc.id
     assert payload["active_report_date"] == "2026-01-09"
     assert payload["pe"] == 43.3
     assert isinstance(payload["pe"], (int, float))
-    assert payload["price_provenance"] == {
+    assert payload["report_price_reference"]["provenance"] == {
         "source_type": "parsed",
         "source_document_id": doc.id,
         "source_report_date": "2026-01-09",
@@ -1348,7 +1348,7 @@ def test_lookup_stock_by_ticker_prefers_duplicate_with_active_report(
     payload = response.json()
     assert payload["id"] == active_stock.id
     assert payload["exchange"] == "NDQ"
-    assert payload["price"] == 429.99
+    assert payload["report_price_reference"]["value"] == 429.99
     assert payload["active_report_document_id"] == doc.id
 
 

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 
 import pytest
@@ -292,8 +292,15 @@ def test_workspace_exposes_overdue_review_calendar_and_recorded_vs_current_thesi
 
 
 def test_workspace_never_calculates_unknown_or_mismatched_currency(
-    db_session, user_factory
+    db_session, user_factory, monkeypatch
 ):
+    from app.services import market_data_service
+    from app.services.market_data_service import ET, compute_target_date
+
+    monkeypatch.setattr(market_data_service.settings, "MARKET_DATA_PRIMARY", "yfinance")
+    monkeypatch.setattr(
+        market_data_service.settings, "MARKET_DATA_ALLOW_DEVELOPMENT_PROVIDER", True
+    )
     user = user_factory("portfolio-currency@example.com")
     usd_stock = _stock(db_session, "USD1")
     mismatch_stock = _stock(db_session, "CAD1")
@@ -315,11 +322,12 @@ def test_workspace_never_calculates_unknown_or_mismatched_currency(
                 ),
             )
         )
+    target_date = compute_target_date(datetime.now(timezone.utc).astimezone(ET))
     db_session.add_all(
         [
-            StockPrice(stock_id=usd_stock.id, price_date=date(2026, 7, 17), open=75, high=75, low=75, close=75, currency="USD", source="fixture"),
-            StockPrice(stock_id=mismatch_stock.id, price_date=date(2026, 7, 17), open=75, high=75, low=75, close=75, currency="CAD", source="fixture"),
-            StockPrice(stock_id=unknown_stock.id, price_date=date(2026, 7, 17), open=75, high=75, low=75, close=75, currency=None, source="fixture"),
+            StockPrice(stock_id=usd_stock.id, price_date=target_date, open=75, high=75, low=75, close=75, currency="USD", source="yfinance"),
+            StockPrice(stock_id=mismatch_stock.id, price_date=target_date, open=75, high=75, low=75, close=75, currency="CAD", source="yfinance"),
+            StockPrice(stock_id=unknown_stock.id, price_date=target_date, open=75, high=75, low=75, close=75, currency=None, source="yfinance"),
         ]
     )
     db_session.commit()

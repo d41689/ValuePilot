@@ -3,11 +3,23 @@ from __future__ import annotations
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 
+import pytest
+
 from app.models.artifacts import PdfDocument
 from app.models.coverage import ResearchCoverageRequirement
 from app.models.oracles_lens import OraclesLensSignal
 from app.models.stocks import PoolMembership, Stock, StockPool, StockPrice
 from app.services.oracles_lens.constants import SCORE_VERSION
+
+
+@pytest.fixture(autouse=True)
+def _authorized_twelvedata(monkeypatch):
+    from app.services import market_data_service
+
+    monkeypatch.setattr(market_data_service.settings, "MARKET_DATA_PRIMARY", "twelvedata")
+    monkeypatch.setattr(market_data_service.settings, "MARKET_DATA_SECONDARY", "none")
+    monkeypatch.setattr(market_data_service.settings, "TWELVE_DATA_API_KEY", "test-key")
+    monkeypatch.setattr(market_data_service.settings, "MARKET_DATA_COMMERCIAL_ENABLED", True)
 
 
 def _stock(db_session, ticker: str) -> Stock:
@@ -297,7 +309,7 @@ def test_coverage_price_refresh_is_batched_observable_and_re_evaluates(
     from app.services.research_coverage import evaluate_research_coverage
 
     class Provider:
-        name = "licensed_fixture"
+        name = "twelvedata"
 
         def __init__(self):
             self.calls = []

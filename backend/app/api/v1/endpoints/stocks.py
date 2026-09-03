@@ -30,8 +30,8 @@ from app.services.research_cases import (
 )
 from app.services.market_data_service import (
     MarketDataService,
-    compute_target_date,
-    read_canonical_eod_price,
+    read_current_eod_price,
+    serialize_canonical_eod_price,
 )
 
 router = APIRouter()
@@ -173,6 +173,16 @@ def _stock_summary_wire_number(
     """Preserve the established JSON-number shape at the by-ticker boundary."""
 
     return float(value) if isinstance(value, Decimal) else value
+
+
+def _stock_summary_currency(fact: MetricFact | None) -> str | None:
+    if fact is None:
+        return None
+    for candidate in (fact.currency, fact.unit):
+        normalized = str(candidate or "").strip().upper()
+        if len(normalized) == 3 and normalized.isalpha():
+            return normalized
+    return None
 
 
 def _dcf_value(value: float, source: str, provenance: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -635,14 +645,7 @@ def read_stock_by_ticker(
     )
     facts = session.scalars(facts_stmt).all()
 
-    now_et = datetime.now(timezone.utc).astimezone(ET)
-    target_date = compute_target_date(now_et)
-    latest_price = read_canonical_eod_price(
-        session,
-        stock=stock,
-        as_of=target_date,
-        include_as_of_session=True,
-    )
+    current_price = read_current_eod_price(session, stock=stock)
 
     oeps_stmt = (
         select(MetricFact)
@@ -917,6 +920,19 @@ def read_stock_by_ticker(
         shared_parsed_user_ids=admin_user_ids,
     )
 
+    report_price_fact = facts_by_key.get("mkt.price")
+    report_price_provenance = _fact_provenance(
+        report_price_fact,
+        active_report=active_report,
+        report_dates_by_doc=report_dates_by_doc,
+    )
+    report_price_as_of = (
+        report_price_provenance.get("source_report_date")
+        or report_price_provenance.get("period_end_date")
+        if report_price_provenance
+        else None
+    )
+
     return {
         "id": stock.id,
         "ticker": stock.ticker,
@@ -926,23 +942,16 @@ def read_stock_by_ticker(
         "company_name": stock.company_name,
         "active_report_document_id": active_report.document_id if active_report else None,
         "active_report_date": active_report.report_date.isoformat() if active_report and active_report.report_date else None,
-        "price": _stock_summary_wire_number(
-            facts_by_key.get("mkt.price").value_numeric
-            if facts_by_key.get("mkt.price")
-            else None
-        ),
-        "price_provenance": _fact_provenance(
-            facts_by_key.get("mkt.price"),
-            active_report=active_report,
-            report_dates_by_doc=report_dates_by_doc,
-        ),
-        "latest_price": _stock_summary_wire_number(latest_price.close),
-        "latest_price_date": latest_price.price_date.isoformat() if latest_price.price_date else None,
-        "latest_price_updated_at": latest_price.observed_at.isoformat() if latest_price.observed_at else None,
-        "latest_price_currency": latest_price.currency,
-        "latest_price_source": latest_price.source,
-        "latest_price_freshness": latest_price.freshness_state,
-        "latest_price_reason": latest_price.reason_code,
+        "current_price": serialize_canonical_eod_price(current_price),
+        "report_price_reference": {
+            "label": "report_reference",
+            "value": _stock_summary_wire_number(
+                report_price_fact.value_numeric if report_price_fact else None
+            ),
+            "as_of_date": report_price_as_of,
+            "currency": _stock_summary_currency(report_price_fact),
+            "provenance": report_price_provenance,
+        },
         "pe": _stock_summary_wire_number(
             facts_by_key.get("val.pe").value_numeric
             if facts_by_key.get("val.pe")

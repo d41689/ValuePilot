@@ -23,6 +23,13 @@ from app.models.notifications import (
     NotificationPriceAlertState,
     NotificationSubscription,
 )
+
+
+@pytest.fixture(autouse=True)
+def _authorized_test_price_source(monkeypatch):
+    monkeypatch.setattr(settings, "MARKET_DATA_PRIMARY", "yfinance")
+    monkeypatch.setattr(settings, "MARKET_DATA_SECONDARY", "none")
+    monkeypatch.setattr(settings, "MARKET_DATA_ALLOW_DEVELOPMENT_PROVIDER", True)
 from app.models.stocks import StockPrice
 from app.services.research_notifications import (
     NotificationError,
@@ -558,7 +565,7 @@ def test_intrinsic_value_change_reinitializes_alert_without_false_crossing(
         high=90,
         low=90,
         close=90,
-        source="licensed_fixture",
+        source="yfinance",
         currency="USD",
     )
     db_session.add(first_price)
@@ -598,7 +605,7 @@ def test_intrinsic_value_change_reinitializes_alert_without_false_crossing(
         high=90,
         low=90,
         close=90,
-        source="licensed_fixture",
+        source="yfinance",
         currency="USD",
     )
     db_session.add(second_price)
@@ -625,7 +632,7 @@ def test_intrinsic_value_change_reinitializes_alert_without_false_crossing(
         high=130,
         low=130,
         close=130,
-        source="licensed_fixture",
+        source="yfinance",
         currency="USD",
     )
     db_session.add(third_price)
@@ -711,7 +718,7 @@ def test_new_monitoring_revision_reinitializes_alert_after_research_pause(
             high=90,
             low=90,
             close=90,
-            source="licensed_fixture",
+            source="yfinance",
             currency="USD",
         )
     )
@@ -735,7 +742,7 @@ def test_new_monitoring_revision_reinitializes_alert_after_research_pause(
             high=70,
             low=70,
             close=70,
-            source="licensed_fixture",
+            source="yfinance",
             currency="USD",
         )
     )
@@ -830,7 +837,7 @@ def test_intrinsic_value_policy_change_reinitializes_without_false_crossing(
             high=90,
             low=90,
             close=90,
-            source="licensed_fixture",
+            source="yfinance",
             currency="USD",
         )
     )
@@ -861,7 +868,7 @@ def test_intrinsic_value_policy_change_reinitializes_without_false_crossing(
         high=90,
         low=90,
         close=90,
-        source="licensed_fixture",
+        source="yfinance",
         currency="USD",
     )
     db_session.add(changed_policy_price)
@@ -935,7 +942,7 @@ def test_intrinsic_value_alert_ignores_currency_mismatch_and_stale_close(
                 high=70,
                 low=70,
                 close=70,
-                source="licensed_fixture",
+                source="yfinance",
                 currency=currency,
             )
         )

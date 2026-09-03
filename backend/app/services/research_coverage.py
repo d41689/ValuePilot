@@ -193,12 +193,14 @@ def _price_requirement(
         as_of=as_of,
         include_as_of_session=include_as_of_session,
     )
-    state = {
-        "fresh": "ready",
-        "stale": "stale",
-        "missing": "missing",
-        "unknown_freshness": "blocked",
-    }[result.freshness_state]
+    if result.status == "available":
+        state = "ready"
+    elif result.reason_code == "price_older_than_expected_session":
+        state = "stale"
+    elif result.reason_code == "price_missing":
+        state = "missing"
+    else:
+        state = "blocked"
     return {
         "state": state,
         "reason_code": result.reason_code,
@@ -220,6 +222,7 @@ def _price_requirement(
             "close": str(result.close) if result.close is not None else None,
             "currency": result.currency,
             "source": result.source,
+            "source_authorization_state": result.source_authorization_state,
             "calendar_code": result.calendar_code,
         },
         "observed_at": result.observed_at,

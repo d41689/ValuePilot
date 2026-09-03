@@ -319,10 +319,30 @@ def test_pool_members_include_price_and_fair_value(client, db_session, monkeypat
 
     target_date = date(2026, 2, 3)
     prev_date = date(2026, 2, 2)
+    from app.services.market_data_service import (
+        read_canonical_eod_price,
+        read_current_eod_price,
+    )
+
     monkeypatch.setattr(
         stock_pools_endpoint,
-        "compute_target_date",
-        lambda now_et, **kwargs: target_date,
+        "read_current_eod_price",
+        lambda session, *, stock: read_current_eod_price(
+            session,
+            stock=stock,
+            evaluated_at=datetime(2026, 2, 4, 17, tzinfo=timezone.utc),
+            source_priority=("seed",),
+        ),
+    )
+    monkeypatch.setattr(
+        stock_pools_endpoint,
+        "read_canonical_eod_price",
+        lambda session, *, stock, as_of: read_canonical_eod_price(
+            session,
+            stock=stock,
+            as_of=as_of,
+            source_priority=("seed",),
+        ),
     )
 
     db_session.add_all(
@@ -336,6 +356,7 @@ def test_pool_members_include_price_and_fair_value(client, db_session, monkeypat
                 close=100.0,
                 volume=1_000,
                 source="seed",
+                currency="USD",
                 created_at=datetime(2026, 2, 3, 21, 0, tzinfo=timezone.utc),
             ),
             StockPrice(
@@ -347,6 +368,7 @@ def test_pool_members_include_price_and_fair_value(client, db_session, monkeypat
                 close=98.0,
                 volume=1_000,
                 source="seed",
+                currency="USD",
                 created_at=datetime(2026, 2, 2, 21, 0, tzinfo=timezone.utc),
             ),
             StockPrice(
@@ -358,6 +380,7 @@ def test_pool_members_include_price_and_fair_value(client, db_session, monkeypat
                 close=50.0,
                 volume=1_000,
                 source="seed",
+                currency="USD",
                 created_at=datetime(2026, 2, 3, 21, 0, tzinfo=timezone.utc),
             ),
             StockPrice(
@@ -369,6 +392,7 @@ def test_pool_members_include_price_and_fair_value(client, db_session, monkeypat
                 close=55.0,
                 volume=1_000,
                 source="seed",
+                currency="USD",
                 created_at=datetime(2026, 2, 2, 21, 0, tzinfo=timezone.utc),
             ),
         ]
@@ -502,7 +526,8 @@ def test_pool_members_include_price_and_fair_value(client, db_session, monkeypat
     assert len(rows) == 2
 
     row_a = next(row for row in rows if row["ticker"] == "AOS")
-    assert row_a["price"] == pytest.approx(100.0)
+    assert row_a["current_price"]["value"] == pytest.approx(100.0)
+    assert row_a["current_price"]["price_date"] == target_date.isoformat()
     assert row_a["delta_today"] == pytest.approx(2.0)
     assert row_a["fair_value"] == pytest.approx(200.0)
     assert row_a["fair_value_source"] == "manual"
@@ -547,7 +572,7 @@ def test_pool_members_include_price_and_fair_value(client, db_session, monkeypat
     ]
 
     row_b = next(row for row in rows if row["ticker"] == "MSFT")
-    assert row_b["price"] == pytest.approx(50.0)
+    assert row_b["current_price"]["value"] == pytest.approx(50.0)
     assert row_b["delta_today"] == pytest.approx(-5.0)
     assert row_b["fair_value"] is None
     assert row_b["fair_value_source"] is None

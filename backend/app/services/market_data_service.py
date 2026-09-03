@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 import json
+import math
 import re
 import time
 import urllib.parse
 import urllib.request
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import date, datetime, time as dt_time, timedelta, timezone
 from typing import Dict, List, Optional, Protocol, Iterable, Any
 from zoneinfo import ZoneInfo
@@ -20,6 +21,7 @@ from app.models.stocks import Stock, StockPrice
 ET = ZoneInfo("America/New_York")
 PRICE_FRESHNESS_POLICY_VERSION = "eod-freshness-v1.0"
 MARKET_CALENDAR_POLICY_VERSION = "us-equity-calendar-v1.0"
+PRICE_SOURCE_POLICY_VERSION = "eod-source-authorization-v1.0"
 DEFAULT_PRICE_SOURCE_PRIORITY = (
     "twelvedata",
     "licensed_fixture",
@@ -64,8 +66,18 @@ class CanonicalEodPrice:
     reason_code: str | None
     expected_session_date: date | None
     calendar_code: str | None
+    status: str
+    source_authorization_state: str
+    as_of_date: date
+    as_of_mode: str
     freshness_policy_version: str = PRICE_FRESHNESS_POLICY_VERSION
     calendar_policy_version: str = MARKET_CALENDAR_POLICY_VERSION
+    source_policy_version: str = PRICE_SOURCE_POLICY_VERSION
+
+    @property
+    def current_value(self) -> float | None:
+        """The comparison-safe current value, never merely a stored close."""
+        return self.close if self.status == "available" else None
 
 
 class MarketDataProvider(Protocol):
@@ -426,11 +438,72 @@ def _currency(value: Any) -> str | None:
 
 
 def _source_rank(source: str, priorities: tuple[str, ...]) -> int:
-    normalized = str(source or "").lower()
+    normalized = _normalized_source(source)
     try:
         return priorities.index(normalized)
     except ValueError:
         return len(priorities)
+
+
+def _normalized_source(source: Any) -> str:
+    normalized = str(source or "").strip().lower()
+    return {
+        "yahoo": "yfinance",
+        "twelve_data": "twelvedata",
+        "12data": "twelvedata",
+    }.get(normalized, normalized)
+
+
+def configured_price_source_priority() -> tuple[str, ...]:
+    """Return only providers explicitly enabled by the deployment.
+
+    A stored row does not retain display authority after the corresponding
+    provider permission is removed. Credentials alone are also insufficient:
+    the existing activation flags remain the operator's fail-closed decision.
+    """
+    configured: list[str] = []
+    for raw_kind in (settings.MARKET_DATA_PRIMARY, settings.MARKET_DATA_SECONDARY):
+        source = _normalized_source(raw_kind)
+        if source == "twelvedata":
+            permitted = bool(
+                settings.MARKET_DATA_COMMERCIAL_ENABLED
+                and str(settings.TWELVE_DATA_API_KEY or "").strip()
+            )
+        elif source == "yfinance":
+            permitted = bool(settings.MARKET_DATA_ALLOW_DEVELOPMENT_PROVIDER)
+        else:
+            permitted = False
+        if permitted and source not in configured:
+            configured.append(source)
+    return tuple(configured)
+
+
+def serialize_canonical_eod_price(price: CanonicalEodPrice) -> dict[str, Any]:
+    """One wire contract for every current-price product surface."""
+    return {
+        "status": price.status,
+        "value": price.current_value,
+        "observation_value": price.close,
+        "price_id": price.price_id,
+        "price_date": price.price_date.isoformat() if price.price_date else None,
+        "currency": price.currency,
+        "source": price.source,
+        "observed_at": price.observed_at.isoformat() if price.observed_at else None,
+        "freshness_state": price.freshness_state,
+        "source_authorization_state": price.source_authorization_state,
+        "reason_code": price.reason_code,
+        "as_of_date": price.as_of_date.isoformat(),
+        "as_of_mode": price.as_of_mode,
+        "expected_session_date": (
+            price.expected_session_date.isoformat()
+            if price.expected_session_date
+            else None
+        ),
+        "calendar_code": price.calendar_code,
+        "freshness_policy_version": price.freshness_policy_version,
+        "calendar_policy_version": price.calendar_policy_version,
+        "source_policy_version": price.source_policy_version,
+    }
 
 
 def stock_price_evidence_matches(
@@ -449,7 +522,7 @@ def read_canonical_eod_price(
     stock: Stock,
     as_of: date,
     include_as_of_session: bool = False,
-    source_priority: tuple[str, ...] = DEFAULT_PRICE_SOURCE_PRIORITY,
+    source_priority: tuple[str, ...] | None = None,
 ) -> CanonicalEodPrice:
     """Read one deterministic, freshness-classified EOD observation.
 
@@ -457,6 +530,22 @@ def read_canonical_eod_price(
     own close is not yet knowable. Callers refreshing after close already know
     the explicit target session and do not use this ambiguity-prone shortcut.
     """
+    authorized_sources = tuple(
+        dict.fromkeys(
+            _normalized_source(source)
+            for source in (
+                source_priority
+                if source_priority is not None
+                else configured_price_source_priority()
+            )
+            if _normalized_source(source)
+        )
+    )
+    selection_priority = authorized_sources + tuple(
+        source
+        for source in DEFAULT_PRICE_SOURCE_PRIORITY
+        if source not in authorized_sources
+    )
     exchange = stock.listing_exchange or stock.exchange
     calendar = expected_session_on_or_before(
         exchange,
@@ -486,6 +575,10 @@ def read_canonical_eod_price(
             reason_code=calendar.reason_code or "price_missing",
             expected_session_date=calendar.session_date,
             calendar_code=calendar.calendar_code,
+            status="unavailable",
+            source_authorization_state="unavailable",
+            as_of_date=as_of,
+            as_of_mode=("through_session" if include_as_of_session else "start_of_day"),
         )
 
     latest_date = max(row.price_date for row in rows)
@@ -493,28 +586,51 @@ def read_canonical_eod_price(
     selected = min(
         same_date,
         key=lambda row: (
-            _source_rank(row.source, source_priority),
+            _source_rank(row.source, selection_priority),
             -int((_ensure_utc(row.created_at).timestamp()) if row.created_at else 0),
             -int(row.id),
         ),
     )
     currency = _currency(selected.currency)
+    normalized_source = _normalized_source(selected.source)
+    source_authorization_state = (
+        "authorized" if normalized_source in authorized_sources else "unauthorized"
+    )
     if calendar.session_date is None:
         state = "unknown_freshness"
-        reason = calendar.reason_code
     elif currency is None:
         state = "unknown_freshness"
-        reason = "price_currency_unavailable"
     elif selected.price_date == calendar.session_date:
         state = "fresh"
-        reason = None
     else:
         state = "stale"
+
+    close = float(selected.close)
+    if not stock.is_active:
+        status = "unavailable"
+        reason = "stock_inactive"
+    elif source_authorization_state != "authorized":
+        status = "unavailable"
+        reason = "source_unavailable"
+    elif not math.isfinite(close) or close <= 0:
+        status = "unavailable"
+        reason = "price_value_invalid"
+    elif currency is None:
+        status = "unavailable"
+        reason = "price_currency_unavailable"
+    elif calendar.session_date is None:
+        status = "unavailable"
+        reason = calendar.reason_code
+    elif state == "fresh":
+        status = "available"
+        reason = None
+    else:
+        status = "unavailable"
         reason = "price_older_than_expected_session"
     return CanonicalEodPrice(
         stock_id=stock.id,
         price_id=selected.id,
-        close=float(selected.close),
+        close=close,
         price_date=selected.price_date,
         currency=currency,
         source=selected.source,
@@ -523,6 +639,35 @@ def read_canonical_eod_price(
         reason_code=reason,
         expected_session_date=calendar.session_date,
         calendar_code=calendar.calendar_code,
+        status=status,
+        source_authorization_state=source_authorization_state,
+        as_of_date=as_of,
+        as_of_mode=("through_session" if include_as_of_session else "start_of_day"),
+    )
+
+
+def read_current_eod_price(
+    session: Session,
+    *,
+    stock: Stock,
+    evaluated_at: datetime | None = None,
+    source_priority: tuple[str, ...] | None = None,
+) -> CanonicalEodPrice:
+    """Read the latest exchange session whose close should now be complete."""
+    now_utc = _ensure_utc(evaluated_at or datetime.now(timezone.utc))
+    now_et = now_utc.astimezone(ET)
+    target_date = compute_target_date(now_et)
+    result = read_canonical_eod_price(
+        session,
+        stock=stock,
+        as_of=target_date,
+        include_as_of_session=True,
+        source_priority=source_priority,
+    )
+    return replace(
+        result,
+        as_of_date=now_et.date(),
+        as_of_mode="latest_completed_session",
     )
 
 

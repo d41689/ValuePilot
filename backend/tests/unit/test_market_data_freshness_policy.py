@@ -93,7 +93,10 @@ def test_unknown_exchange_never_claims_freshness(db_session):
     )
 
     result = read_canonical_eod_price(
-        db_session, stock=stock, as_of=date(2026, 7, 20)
+        db_session,
+        stock=stock,
+        as_of=date(2026, 7, 20),
+        source_priority=("licensed_fixture",),
     )
 
     assert result.freshness_state == "unknown_freshness"
@@ -126,7 +129,10 @@ def test_canonical_read_prefers_source_priority_for_same_session(db_session):
     )
 
     result = read_canonical_eod_price(
-        db_session, stock=stock, as_of=date(2026, 7, 20)
+        db_session,
+        stock=stock,
+        as_of=date(2026, 7, 20),
+        source_priority=("twelvedata", "yfinance"),
     )
 
     assert result.price_id == preferred.id
@@ -151,7 +157,10 @@ def test_missing_currency_is_typed_and_never_fresh(db_session):
     )
 
     result = read_canonical_eod_price(
-        db_session, stock=stock, as_of=date(2026, 7, 20)
+        db_session,
+        stock=stock,
+        as_of=date(2026, 7, 20),
+        source_priority=("legacy",),
     )
 
     assert result.freshness_state == "unknown_freshness"

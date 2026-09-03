@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import date, datetime, timedelta, timezone
+from datetime import date
 from decimal import Decimal
 from typing import Any
 
@@ -8,12 +8,12 @@ from fastapi import APIRouter, HTTPException, Body
 from sqlalchemy import select, func, delete
 
 from app.api.deps import SessionDep, CurrentUser
-from app.models.stocks import StockPool, PoolMembership, Stock, StockPrice
+from app.models.stocks import StockPool, PoolMembership, Stock
 from app.models.facts import MetricFact
 from app.services.market_data_service import (
-    ET,
-    compute_target_date,
-    read_canonical_eod_series,
+    read_canonical_eod_price,
+    read_current_eod_price,
+    serialize_canonical_eod_price,
 )
 from app.services.valuation import read_valuation_context, relative_discount
 
@@ -21,16 +21,6 @@ from app.services.valuation import read_valuation_context, relative_discount
 router = APIRouter()
 
 PIOTROSKI_TOTAL_KEY = "score.piotroski.total"
-
-
-def _latest_price_for_date(session: SessionDep, stock_id: int, price_date: date) -> StockPrice | None:
-    rows = read_canonical_eod_series(
-        session,
-        stock_ids=[stock_id],
-        through=price_date,
-        from_date=price_date,
-    )
-    return (rows.get(stock_id) or [None])[0]
 
 
 def _serialize_piotroski_total(fact: MetricFact) -> dict[str, Any]:
@@ -222,8 +212,6 @@ def _watchlist_rows_for_memberships(
     if not members:
         return []
 
-    now_et = datetime.now(timezone.utc).astimezone(ET)
-    target_date = compute_target_date(now_et)
     piotroski_scores_by_stock_id = _piotroski_scores_for_stocks(
         session, user_id, [membership.stock_id for membership in members]
     )
@@ -234,25 +222,50 @@ def _watchlist_rows_for_memberships(
         if not stock:
             continue
 
-        latest = _latest_price_for_date(session, stock.id, target_date)
-        price = float(latest.close) if latest else None
-        price_updated_at = latest.created_at if latest else None
+        current_price = read_current_eod_price(session, stock=stock)
+        price = current_price.current_value
 
-        previous_rows = read_canonical_eod_series(
-            session,
-            stock_ids=[stock.id],
-            through=target_date - timedelta(days=1),
-        ).get(stock.id) or []
-        prev_price_date = previous_rows[0].price_date if previous_rows else None
+        previous_price = (
+            read_canonical_eod_price(
+                session,
+                stock=stock,
+                as_of=current_price.price_date,
+            )
+            if current_price.status == "available" and current_price.price_date
+            else None
+        )
         delta_today = None
-        if prev_price_date and latest:
-            prev_price = previous_rows[0]
-            if prev_price and prev_price.close is not None:
-                delta_today = float(latest.close) - float(prev_price.close)
+        if (
+            previous_price is not None
+            and previous_price.status == "available"
+            and previous_price.current_value is not None
+            and price is not None
+        ):
+            delta_today = price - previous_price.current_value
 
         valuation = read_valuation_context(session, user_id=user_id, stock_id=stock.id)
         fair_value = valuation.user_intrinsic_value
-        mos = relative_discount(price, fair_value)
+        if current_price.status != "available":
+            price_comparison_reason = current_price.reason_code
+        elif fair_value is None:
+            price_comparison_reason = "intrinsic_value_unavailable"
+        elif current_price.currency != valuation.user_intrinsic_value_currency:
+            price_comparison_reason = "currency_mismatch"
+        else:
+            price_comparison_reason = None
+        mos = (
+            relative_discount(price, fair_value)
+            if price_comparison_reason is None
+            else None
+        )
+        if current_price.status != "available":
+            reference_comparison_reason = current_price.reason_code
+        elif valuation.system_reference_value is None:
+            reference_comparison_reason = "valuation_reference_unavailable"
+        elif current_price.currency != valuation.system_reference_currency:
+            reference_comparison_reason = "currency_mismatch"
+        else:
+            reference_comparison_reason = None
 
         rows.append(
             {
@@ -263,20 +276,24 @@ def _watchlist_rows_for_memberships(
                 "market_country": stock.market_country,
                 "listing_exchange": stock.listing_exchange,
                 "company_name": stock.company_name,
-                "price": price,
-                "price_date": target_date.isoformat(),
-                "price_updated_at": price_updated_at,
+                "current_price": serialize_canonical_eod_price(current_price),
                 "fair_value": fair_value,
                 "fair_value_source": "manual" if fair_value is not None else None,
                 "fair_value_status": valuation.user_intrinsic_value_status,
                 "fair_value_as_of": valuation.user_intrinsic_value_as_of,
+                "fair_value_currency": valuation.user_intrinsic_value_currency,
                 "mos": mos,
+                "price_comparison_reason": price_comparison_reason,
                 "valuation_reference": valuation.system_reference_value,
                 "valuation_reference_source": valuation.system_reference_type,
                 "valuation_reference_as_of": valuation.system_reference_as_of,
-                "discount_to_reference": relative_discount(
-                    price, valuation.system_reference_value
+                "valuation_reference_currency": valuation.system_reference_currency,
+                "discount_to_reference": (
+                    relative_discount(price, valuation.system_reference_value)
+                    if reference_comparison_reason is None
+                    else None
                 ),
+                "reference_comparison_reason": reference_comparison_reason,
                 "delta_today": delta_today,
                 "piotroski_f_scores": piotroski_scores_by_stock_id.get(stock.id, []),
             }

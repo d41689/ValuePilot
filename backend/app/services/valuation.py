@@ -20,10 +20,22 @@ class ValuationContext:
     user_intrinsic_value_status: str
     user_intrinsic_value_as_of: date | None
     user_intrinsic_value_fact_id: int | None
+    user_intrinsic_value_currency: str | None
     system_reference_value: float | None
     system_reference_type: str | None
     system_reference_as_of: date | None
     system_reference_fact_id: int | None
+    system_reference_currency: str | None
+
+
+def _fact_currency(fact: MetricFact | None) -> str | None:
+    if fact is None:
+        return None
+    for candidate in (fact.currency, fact.unit):
+        normalized = str(candidate or "").strip().upper()
+        if len(normalized) == 3 and normalized.isalpha():
+            return normalized
+    return None
 
 
 def _latest_current_fact(
@@ -92,12 +104,14 @@ def read_valuation_context(
         user_intrinsic_value_status=intrinsic_status,
         user_intrinsic_value_as_of=manual.period_end_date if manual else None,
         user_intrinsic_value_fact_id=manual.id if manual else None,
+        user_intrinsic_value_currency=_fact_currency(manual),
         system_reference_value=reference_value,
         system_reference_type=(
             VALUE_LINE_TARGET_REFERENCE_KEY if reference_value is not None else None
         ),
         system_reference_as_of=reference.period_end_date if reference else None,
         system_reference_fact_id=reference.id if reference else None,
+        system_reference_currency=_fact_currency(reference),
     )
 
 

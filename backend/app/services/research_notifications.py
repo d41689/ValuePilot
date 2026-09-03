@@ -1170,9 +1170,10 @@ def materialize_intrinsic_value_crossings(
                 session, user_id=user_id, stock_id=case.stock_id
             )
             if (
-                price.price_id is None
-                or price.close is None
-                or price.currency != "USD"
+                price.status != "available"
+                or price.current_value is None
+                or price.price_id is None
+                or price.currency != valuation.user_intrinsic_value_currency
                 or price.freshness_state != "fresh"
                 or valuation.user_intrinsic_value is None
                 or valuation.user_intrinsic_value_fact_id is None
@@ -1214,7 +1215,7 @@ def materialize_intrinsic_value_crossings(
             fair_value = valuation.user_intrinsic_value
             boundary = fair_value * (1 - float(policy.threshold_ratio))
             hysteresis = fair_value * float(policy.hysteresis_ratio)
-            close = float(price.close)
+            close = float(price.current_value)
             if state is None or state.last_side is None or boundary_changed:
                 side = "below" if close < boundary else "above"
                 if state is None:

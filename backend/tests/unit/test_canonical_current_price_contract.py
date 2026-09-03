@@ -100,23 +100,42 @@ def _expected_target() -> date:
 
 
 @pytest.mark.parametrize(
-    ("scenario", "expected_status", "expected_reason", "expected_value"),
+    (
+        "scenario",
+        "expected_status",
+        "expected_reason",
+        "expected_value",
+        "expected_mos",
+        "expected_comparison_reason",
+    ),
     [
-        ("valid", "available", None, 100.0),
-        ("missing", "unavailable", "price_missing", None),
+        ("valid", "available", None, 100.0, 0.5, None),
+        ("currency_mismatch", "available", None, 100.0, None, "currency_mismatch"),
+        ("missing", "unavailable", "price_missing", None, None, "price_missing"),
         (
             "stale",
             "unavailable",
             "price_older_than_expected_session",
             None,
+            None,
+            "price_older_than_expected_session",
         ),
         (
             "unknown_currency",
             "unavailable",
             "price_currency_unavailable",
             None,
+            None,
+            "price_currency_unavailable",
         ),
-        ("unauthorized", "unavailable", "source_unavailable", None),
+        (
+            "unauthorized",
+            "unavailable",
+            "source_unavailable",
+            None,
+            None,
+            "source_unavailable",
+        ),
     ],
 )
 def test_stock_watchlist_and_research_share_one_current_price_contract(
@@ -128,6 +147,8 @@ def test_stock_watchlist_and_research_share_one_current_price_contract(
     expected_status: str,
     expected_reason: str | None,
     expected_value: float | None,
+    expected_mos: float | None,
+    expected_comparison_reason: str | None,
 ):
     _authorize_yfinance(monkeypatch)
     user = _user(db_session, scenario)
@@ -176,7 +197,13 @@ def test_stock_watchlist_and_research_share_one_current_price_contract(
             stock,
             price_date=observed_date,
             source="unapproved-feed" if scenario == "unauthorized" else "yfinance",
-            currency=None if scenario == "unknown_currency" else "USD",
+            currency=(
+                None
+                if scenario == "unknown_currency"
+                else "CAD"
+                if scenario == "currency_mismatch"
+                else "USD"
+            ),
         )
 
     summary_response = client.get(
@@ -203,7 +230,8 @@ def test_stock_watchlist_and_research_share_one_current_price_contract(
     assert canonical["reason_code"] == expected_reason
     assert canonical["freshness_policy_version"] == PRICE_FRESHNESS_POLICY_VERSION
     assert canonical["as_of_mode"] == "latest_completed_session"
-    assert watchlist["mos"] == (0.5 if expected_status == "available" else None)
+    assert watchlist["mos"] == expected_mos
+    assert watchlist["price_comparison_reason"] == expected_comparison_reason
     assert watchlist["discount_to_reference"] is None
 
 
@@ -240,6 +268,7 @@ def test_report_price_is_a_dated_reference_not_a_current_price(
     assert payload["current_price"]["value"] == 100
     assert payload["report_price_reference"]["value"] == 54.52
     assert payload["report_price_reference"]["as_of_date"] == "2026-01-09"
+    assert payload["report_price_reference"]["currency"] == "USD"
     assert payload["report_price_reference"]["label"] == "report_reference"
 
 
@@ -259,3 +288,69 @@ def test_inactive_stock_current_price_fails_closed(db_session):
     assert result.current_value is None
     assert result.reason_code == "stock_inactive"
 
+
+def test_authorized_source_wins_same_session_over_unauthorized_source(
+    db_session, monkeypatch
+):
+    from app.services.market_data_service import read_current_eod_price
+
+    _authorize_yfinance(monkeypatch)
+    stock = _stock(db_session, "CPAUTH")
+    target = _expected_target()
+    selected = _price(
+        db_session, stock, price_date=target, source="yfinance", close=100
+    )
+    _price(
+        db_session, stock, price_date=target, source="twelvedata", close=999
+    )
+
+    result = read_current_eod_price(db_session, stock=stock)
+
+    assert result.status == "available"
+    assert result.price_id == selected.id
+    assert result.current_value == 100
+
+
+def test_non_currency_valuation_unit_blocks_comparison(
+    client, db_session, auth_headers, monkeypatch
+):
+    _authorize_yfinance(monkeypatch)
+    user = _user(db_session, "invalid-valuation-currency")
+    stock = _stock(db_session, "CPUNIT")
+    pool = StockPool(user_id=user.id, name="invalid valuation currency")
+    db_session.add(pool)
+    db_session.flush()
+    db_session.add(
+        PoolMembership(
+            user_id=user.id,
+            pool_id=pool.id,
+            stock_id=stock.id,
+            inclusion_type="manual",
+        )
+    )
+    db_session.add(
+        MetricFact(
+            user_id=user.id,
+            stock_id=stock.id,
+            metric_key="val.fair_value",
+            value_numeric=200,
+            unit="currency_per_share",
+            currency=None,
+            period_type="AS_OF",
+            period_end_date=date.today(),
+            source_type="manual",
+            is_current=True,
+        )
+    )
+    db_session.commit()
+    _price(db_session, stock, price_date=_expected_target())
+
+    response = client.get(
+        f"/api/v1/stock_pools/{pool.id}/members", headers=auth_headers(user)
+    )
+
+    assert response.status_code == 200, response.text
+    row = response.json()[0]
+    assert row["fair_value_currency"] is None
+    assert row["mos"] is None
+    assert row["price_comparison_reason"] == "currency_mismatch"
