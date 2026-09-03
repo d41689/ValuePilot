@@ -141,5 +141,8 @@ git diff --check
   coverage state/evidence. Application price reads remain centralized in the
   market-data service; the remaining direct `StockPrice` aggregation is the
   separate quant-trading data-audit surface. Focused round-2 verification passed
-  (`160 passed` backend; `37 passed` frontend); a new exact closing gate follows
-  before Terra round-3 review.
+  (`160 passed` backend; `37 passed` frontend).
+- 2026-09-03: post-round-2 exact closing gate passed: Compose rebuild, Alembic
+  upgrade, backend `2149 passed`, frontend `220 passed`, frontend lint,
+  production build, and `git diff --check`. No migration was added. Draft PR
+  #141 is ready for Terra adversarial review round 3.
