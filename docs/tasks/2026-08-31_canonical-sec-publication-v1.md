@@ -1,6 +1,6 @@
 # Canonical Financial Truth — SEC Publication V1
 
-Status: contract approved; delivery steps 1–6 complete; Step 6 Terra approved; Step 7A complete and Terra approved; Step 7B append-only parser v2.3 retained recovery implemented pending Terra review, then real locked 24-case retry; retained statement authority Terra PASS
+Status: contract approved; delivery steps 1–6 complete; Step 6 Terra approved; Step 7A complete and Terra approved; Step 7B retained-only eight-company parser v2.7/publication diagnostic complete and Terra approved; locked 24-case PASS intentionally remains outstanding; retained statement authority Terra PASS
 
 Owner: Product / Engineering
 
@@ -1259,6 +1259,227 @@ Run the canonical commands verbatim and in order:
   passes 158 tests, with only the existing third-party deprecation warning. No
   network, live acceptance database or retained-storage mutation, migration,
   commit or push was used.
+
+- 2026-09-02: Eight-company partial diagnostic baseline. Product direction
+  stopped further acquisition for the other fifteen not-yet-retained issuers
+  and authorized an offline diagnostic over only the already-retained
+  AAPL/MSFT/COST/WMT/NKE/PEP/JPM/BAC evidence in run
+  `ft04-gold-20260901-b`. This diagnostic is not, and must never be reported
+  as, the locked 24-case acceptance PASS. The immutable locked manifest,
+  ten-FY-by-21-metric denominator, selection cutoff, mapping version and
+  publication rules remain unchanged.
+
+  The read-only baseline contains 519,201 raw facts and 2,414 SEC metric facts,
+  but only 210 of the 1,680 expected issuer/FY/metric slots are published; no
+  slot is currently a typed gap and 1,470 are the generic
+  `missing_canonical_outcome`. Latest parser-v2.4 statement authority includes
+  income statement, comprehensive income and limited equity evidence, but no
+  balance-sheet or cash-flow authority. This is inconsistent with retained
+  FilingSummary evidence: representative AAPL filings explicitly reference
+  balance sheets and statements of cash flows, while mapped raw CFO, capex,
+  stock-based compensation, cash, assets, liabilities and shares facts are
+  abundant. The implementation currently discards the report name during
+  statement classification, does not recognize role tokens such as
+  `StatementOfCashFlows`, and requires the phrase `as of` even when an exact
+  balance-sheet instant column presents one unambiguous date. These are parser
+  defects, not a request for a new metric, source, formula or feature.
+
+  Remediation remains fail closed: generated occurrence identity still
+  requires the exact retained instance fact, context, unit, period, value,
+  linkbase role/order/label and unambiguous presentation cell. Concept-wide
+  rejection remains intact. Parser semantic changes append a new parser
+  identity and never rewrite prior runs. For every unpublished diagnostic slot,
+  acceptance will rebuild the most specific bounded gap stage from the exact
+  annual filing/parse/mapping/statement/normalization/publication authority;
+  typed gaps do not count as coverage, and integrity mismatches remain failures
+  rather than gaps. Verification will use retained-only disposable authority
+  with an upstream client that fails on any call, preserving the live database
+  and storage byte-for-byte.
+
+  Parser/acceptance remediation A+B is implemented pending focused verification
+  and retained-only eight-company replay. Parser `xbrl-lineage-v2.5` alone now
+  recognizes compact CashFlows roles/names and permits a date-only instant only
+  for a proven balance-sheet report with the existing unique exact
+  context/unit/value identity. Older parser classifiers and period behavior are
+  unchanged. The corresponding migration-owned SQL guards authorize v2.5 while
+  retaining the v2.4 definitions on downgrade. Because expanded FilingSummary
+  discovery can retain a referenced non-R statement filename, v2.5 acquisition
+  uses the explicit `sec-financial-artifacts-v2` retention identity; historical
+  parsers remain on v1 rather than silently changing an old manifest contract.
+
+  Acceptance no longer emits `missing_canonical_outcome` when a finalized run
+  has no decision for a locked FY/metric pair. Report creation and final audit
+  share one database reconstruction over the PIT-bounded publication run,
+  selected successful annual sources, later annual comparative authorities,
+  mapped raw facts, statement authorities, normalizations and actual
+  publication audits. Eligible failed annual parser runs outside the successful
+  publication source tuple remain visible at the publication requested cutoff;
+  bounded `StatementAuthorityParseError` codes such as `xml_resource_limit`
+  are preserved, while later post-cutoff failures are excluded. The first
+  unsupported stage becomes a typed gap, coverage remains published-only, and
+  a complete normalized authority with no decision is a hard integrity error.
+  Isolated PostgreSQL regressions cover the BAC-shaped failed-10-K case and a
+  target FY proven only by a later 10-K comparative authority.
+
+  The retained-only execution preflight exposed a bounded-capacity defect in
+  the production descriptor walk before any disposable-database write: the
+  legitimate eight-company run contains 33,710 traversed entries (33,450
+  regular content-addressed files, approximately 6.6 GB), exceeding the former
+  20,000-entry bound. A locked 24-case run scales to approximately 101,000
+  entries at the observed density. `MAX_RETAINED_STORAGE_ENTRIES` is therefore
+  explicitly 200,000, retaining bounded traversal headroom while leaving the
+  independent 20 GB byte limit unchanged. A low-bound regression proves an
+  exact N-entry tree succeeds and N+1 fails closed without creating a large
+  fixture. The descriptor-relative no-follow traversal and identity checks are
+  unchanged. Retained-only replay remains pending after this production
+  capacity remediation.
+
+  The first retained-only AAPL v2.5 replay then preserved 44 terminal failures:
+  three compact `StatementOfFinancialPositionClassified` report roles were
+  rejected by a database role guard even though the application classified the
+  same nonempty roles, and 41 generated occurrences failed because SQL searched
+  raw report bytes for BeautifulSoup's decoded Unicode row label (for example,
+  a curly apostrophe represented by an HTML entity). Parser
+  `xbrl-lineage-v2.6` is an append-only correction; v2.5 and migration 240000
+  remain unchanged. The v2.6 application and migration share role-only
+  recognition for spaced and compact financial-position/cash-flow roles,
+  permit the report name only as a non-conflicting confirmation, and reject an
+  unknown role or a recognized conflicting name. Generated occurrences retain
+  the decoded label for label-link matching while additionally binding a
+  bounded exact raw label/anchor fragment, exact character offsets, end tag,
+  SHA-256 values and occurrence count to the SGML-unwrapped retained report.
+  Database validation recomputes those identities only after assigning the
+  report text and explicitly fails closed on NULL; this avoids SQL three-valued
+  logic bypass while preserving all earlier parser semantics. Offset shift,
+  fragment replacement, repeated-count and oversized-fragment regressions are
+  included.
+
+  A read-only dry diagnosis used the source acceptance database in a read-only
+  transaction and the retained run mounted read-only; it did not create a parse
+  run, publication, report or network client. Across all 44 retained AAPL
+  filings, v2.6 discovered 264 exact statement references and resolved 7,610
+  occurrence candidates, with no zero-occurrence filing and none of the three
+  report-reference or 41 occurrence-identity failures. This diagnostic does
+  not sign publication or locked acceptance. The focused statement-authority,
+  financial-lineage, lineage-migration and gold-acceptance gate passed 338
+  tests in 169.73 seconds; compileall and `git diff --check` passed, and
+  migration 250000 is the unique append-only v2.6 head. Terra review is
+  pending before the preserved disposable clone is migrated or replayed.
+
+  The subsequent disposable-clone replay showed why the Python-only dry
+  diagnosis was not a persistence gate: v2.6 appended 13 successful and 31
+  failed AAPL runs, with every failure raised by the migration-owned generated
+  occurrence fact-identity guard. A separate diagnostic clone split that
+  compound guard into ordered typed conditions and replayed accession
+  `0000320193-19-000010` from retained evidence. The first failing occurrence
+  was an R2 revenue anchor whose identical start tag occurred three times;
+  Python recorded the exact count of three, but the legacy SQL complement still
+  required v2.6 to have a whole-report count of one. Temporarily excluding v2.6
+  from only that diagnostic condition made all 31 previously failed accessions
+  succeed with no other diagnostic condition. Every diagnostic transaction was
+  rolled back; the upstream factory was never constructed and no external
+  request occurred.
+
+  Parser `xbrl-lineage-v2.7` and migration 260000 are the append-only
+  correction. Explicit constants preserve v2.6, while the v2.4, v2.5 and v2.6
+  semantic helpers include every successor that inherits those contracts.
+  Migration 260000 leaves v2.6's terminal behavior unchanged: only v2.7 is
+  excluded from the legacy count-one complement, and v2.7 must instead match
+  the exact positive `anchor_start_tag_occurrence_count` already bound into its
+  locator and semantic digest. A real three-occurrence ingestion regression
+  proves v2.6 remains failed, v2.7 succeeds with recorded count three, and a
+  forged count of two is rejected. Upgrade/downgrade/re-upgrade restores the
+  byte-equivalent v2.6 guard definitions when no v2.7 lineage exists. The
+  focused statement-authority, lineage, migration and gold-acceptance gate
+  passed 342 tests in 215.52 seconds with only the existing third-party
+  deprecation warning.
+
+  The preserved disposable clone
+  `vp_ft04_b_offline8_v25_20260902` was migrated to 260000 and replayed from the
+  retained run mounted read-only. AAPL's replay base explicitly retained the
+  four original operations plus the immutable v2.5 failed operation and the
+  v2.6 operation containing 13 successes and 31 failures; v2.7 then appended
+  one new operation with 44/44 successful parse runs, 43,253 raw facts and
+  4,903 statement authorities. No historical run was deleted or rewritten.
+  The eight-company 1,680-slot diagnostic produced the following bounded
+  outcomes (published / typed gap / generic missing): AAPL 137/73/0, MSFT
+  65/145/0, COST 112/98/0, WMT 91/119/0, NKE 106/104/0, PEP 121/89/0, JPM
+  11/199/0, and BAC 0/210/0. Aggregate totals are 643 published, 1,037 typed
+  gaps and zero generic missing; typed gaps do not count as coverage.
+  Every case reported zero external SEC requests, zero current SEC slot
+  duplicates and zero PIT violations. Pass 2 reused each pass-1 cutoff and
+  exact source identity and added zero filings, snapshots, artifacts, parse
+  runs, parse links, raw facts, report references, occurrences, statement
+  authorities, normalizations, publication rows or metric facts; only expected
+  operation/control audit rows were appended. Final retained-storage authority
+  was unchanged at 33,433 files, 7,065,999,296 bytes and digest
+  `c22a4e1dd491d096082edb94e3c5b43a1b74e1884aae31b0176917d7c817e3d3`.
+  Source acceptance database core counts remained exactly 24 stocks, 14
+  operations, 480 parse runs, 525,837 raw facts, 13,634 statement authorities,
+  eight publication runs and 2,414 metric facts. The supplemental
+  mapping/publication gate initially exposed two stale recovery-test assertions
+  that still named v2.5 even though those CLI paths intentionally append the
+  current parser. Production had correctly appended v2.7 and preserved the
+  failed legacy rows. The fixtures now compare against the exported current
+  parser identity while retaining their exact no-refetch, manifest isolation,
+  append-only run and publication assertions; both focused regressions pass.
+  A subsequent historical-replay review closed two point-in-time drift paths
+  in the shared report/audit gap-evidence loader. Excluded failed annual
+  filings are now probed using the single immutable parser version recorded by
+  the publication run's ordered source set; a missing or mixed parser identity
+  fails closed rather than consulting the runtime acceptance parser constant.
+  Numeric normalizations are eligible only when their database-stamped
+  `created_at` is no later than the publication run's requested cutoff.
+  PostgreSQL regressions prove that advancing the runtime parser from v2.7 to
+  v2.8 cannot change an old BAC-shaped failed-annual typed gap, and that a
+  normalization appended after the cutoff cannot change an old typed gap or
+  its rebuilt outcome. The full publication E2E plus gold-acceptance focused
+  gate passed 149 tests in 130.23 seconds; in-container Python compilation and
+  `git diff --check` passed.
+  A later clean-rebuild closing gate exposed three stale SEC test expectations,
+  not production lineage drift: the canonical read API fixture still named
+  parser v2.1 even though its request uses the exported current v2.7 authority,
+  and two publication-schema roundtrip assertions still named migration head
+  230000. The assertions now use `PARSER_V2` and head 260000 respectively, so
+  the downgrade-to-parent/re-upgrade path executes parser migrations 240000,
+  250000 and 260000. The three focused regressions pass.
+  The remaining ten clean-rebuild branch regressions were also closed without
+  changing canonical numeric storage. Migration 270000 corrects the SEC
+  integrity trigger's non-SEC delete return value from `NEW` (NULL during a
+  PostgreSQL DELETE, which silently skipped the row) to `OLD`; the existing SEC
+  append-only rejection and current-demotion exception remain unchanged. This
+  restores document delete/dedupe and identity-changing reparse cleanup while
+  preserving manual-fact handling and per-period current reconciliation.
+  Document review numeric JSON fields and watchlist Piotroski scores now
+  explicitly serialize database Decimals as API numbers, while document
+  compare labels remove database scale without passing through binary float.
+  The unauthenticated documents regression no longer truncates users with
+  CASCADE through immutable migration-owned SEC authorities, and the Value
+  Line annual-fact assertion now compares the stored Numeric value using exact
+  Decimal arithmetic. The exact ten regressions passed, followed by 60 passing
+  related document, reparse, stock-pool, Value Line and migration tests.
+  Terra's closing-gate review found one further P2 in Decimal display
+  formatting: removing trailing zeroes from the whole fixed-point string made
+  `100` render as `1`. The formatter now removes zeroes only from a fractional
+  part, normalizes negative zero, and has explicit `100`, `1200`, `100.50`,
+  `-0.000` and `1E+3` regressions. Terra round 4 returned PASS with no new
+  P0–P3 findings. The clean rebuilt image's complete backend suite then passed
+  2,124 tests in 446.63 seconds; frontend passed 216 unit tests, lint and the
+  production build. `git diff --check` also passed.
+
+  The literal shared-development-database migration command did not pass:
+  public schema is stamped at unrelated branch revision `20260828500000`,
+  which is absent from this branch. No version-table rewrite or shared-data
+  mutation was attempted. Every test suite instead created an isolated schema
+  and successfully migrated it through the unique `20260901270000` head;
+  focused upgrade/downgrade/re-upgrade tests also passed. Container rebuild
+  additionally reported the pre-existing Next.js 15.1.7 package security
+  warning (npm reported two high and one critical advisory). That dependency
+  risk is outside this SEC-only change and requires an explicit separate
+  product decision; it is not represented as a green closing gate.
+
+  This remains an eight-company diagnostic, not the locked 24-case acceptance
+  PASS. No acquisition for the other fifteen issuers is planned in this slice.
 
 - 2026-09-01: Step 5 amendment-slot authority Terra round 1 remediation
   implemented pending Terra round 2. Publication now acquires one shared,
