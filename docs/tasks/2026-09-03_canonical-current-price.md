@@ -217,3 +217,9 @@ git diff --check
   an invalid-currency ready snapshot cannot materialize a ready notification.
   The focused round-5 file suite passed (`56 passed`); a full closing gate
   follows before Terra round 6.
+- 2026-09-03: post-round-5 exact closing gate passed: Compose rebuild, Alembic
+  upgrade, backend `2166 passed`, frontend `222 passed`, frontend lint,
+  production build, and `git diff --check`. The Next production build's
+  generated `tsconfig.json` include entry was removed after verification. No
+  migration, stored-data rewrite, full-table scan, or alternate canonical
+  reader was added. Draft PR #141 is ready for Terra adversarial review round 6.
