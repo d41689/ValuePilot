@@ -37,6 +37,10 @@ def _fact_currency(fact: MetricFact | None) -> str | None:
     return normalize_iso4217_currency(fact.unit)
 
 
+def _has_source_type(fact: MetricFact, *, source_type: str) -> bool:
+    return fact.source_type == source_type
+
+
 def _latest_current_fact(
     session: Session,
     *,
@@ -170,12 +174,12 @@ def read_valuation_facts_by_stock(
     for fact in facts:
         if (
             fact.metric_key == USER_INTRINSIC_VALUE_KEY
-            and fact.source_type != "manual"
+            and not _has_source_type(fact, source_type="manual")
         ):
             continue
         if (
             fact.metric_key == VALUE_LINE_TARGET_REFERENCE_KEY
-            and fact.source_type != "parsed"
+            and not _has_source_type(fact, source_type="parsed")
         ):
             continue
         result[fact.stock_id].setdefault(fact.metric_key, fact)
