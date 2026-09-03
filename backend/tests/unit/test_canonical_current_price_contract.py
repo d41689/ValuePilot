@@ -228,6 +228,8 @@ def test_stock_watchlist_and_research_share_one_current_price_contract(
     assert canonical["status"] == expected_status
     assert canonical["value"] == expected_value
     assert canonical["reason_code"] == expected_reason
+    if scenario == "unauthorized":
+        assert canonical["observation_value"] is None
     assert canonical["freshness_policy_version"] == PRICE_FRESHNESS_POLICY_VERSION
     assert canonical["as_of_mode"] == "latest_completed_session"
     assert watchlist["mos"] == expected_mos

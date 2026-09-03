@@ -483,7 +483,11 @@ def serialize_canonical_eod_price(price: CanonicalEodPrice) -> dict[str, Any]:
     return {
         "status": price.status,
         "value": price.current_value,
-        "observation_value": price.close,
+        "observation_value": (
+            price.close
+            if price.source_authorization_state != "unauthorized"
+            else None
+        ),
         "price_id": price.price_id,
         "price_date": price.price_date.isoformat() if price.price_date else None,
         "currency": price.currency,
