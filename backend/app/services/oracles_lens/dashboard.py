@@ -13,8 +13,13 @@ from sqlalchemy.orm import Session
 from app.models.facts import MetricFact
 from app.models.institutions import Filing13F, Holding13F, InstitutionManager, ParseRun13F
 from app.models.oracles_lens import OraclesLensSignal
-from app.models.stocks import Stock, StockPrice
-from app.services.market_data_service import read_canonical_eod_series
+from app.models.stocks import Stock
+from app.services.market_data_service import (
+    CanonicalEodPrice,
+    read_canonical_eod_price,
+    read_current_eod_price,
+    serialize_canonical_eod_price,
+)
 from app.services.canonical_financials import (
     CanonicalSourceConflictError,
     CanonicalUnavailableError,
@@ -261,12 +266,18 @@ def build_oracles_lens_dashboard(
     )
     price_as_of_date = selected.period_end_date if historical_price_context else None
     price_context = "historical_snapshot" if historical_price_context else "latest"
+    canonical_prices = _canonical_prices_by_stock(
+        session,
+        [item["stock_id"] for item in items],
+        as_of_date=price_as_of_date,
+    )
     quality_by_stock = _quality_overlay_by_stock(
         session,
         [item["stock_id"] for item in items],
         price_as_of_date=price_as_of_date,
         price_context=price_context,
         user_id=user_id,
+        canonical_prices=canonical_prices,
     )
     valuation_by_stock = _valuation_reference_by_stock(
         session,
@@ -280,6 +291,7 @@ def build_oracles_lens_dashboard(
         price_as_of_date=price_as_of_date,
         price_context=price_context,
         user_id=user_id,
+        canonical_prices=canonical_prices,
     )
     for item in items:
         item["quality_overlay"] = quality_by_stock.get(item["stock_id"], _empty_quality_overlay())
@@ -1264,6 +1276,7 @@ def _quality_overlay_by_stock(
     price_as_of_date: date | None = None,
     price_context: str = "latest",
     user_id: int | None = None,
+    canonical_prices: dict[int, CanonicalEodPrice] | None = None,
 ) -> dict[int, dict[str, Any]]:
     unique_stock_ids = list(dict.fromkeys(stock_ids))
     if not unique_stock_ids:
@@ -1284,7 +1297,11 @@ def _quality_overlay_by_stock(
             if label is not None:
                 facts_by_stock[stock_id][label] = fact
 
-    latest_prices = _latest_prices_by_stock(session, unique_stock_ids, as_of_date=price_as_of_date)
+    prices = canonical_prices or _canonical_prices_by_stock(
+        session,
+        unique_stock_ids,
+        as_of_date=price_as_of_date,
+    )
     method_decisions: dict[int, MethodGateDecision | dict[str, Any]] = {}
     for stock_id in unique_stock_ids:
         owner_fact = facts_by_stock.get(stock_id, {}).get("owners_earnings")
@@ -1309,7 +1326,7 @@ def _quality_overlay_by_stock(
     return {
         stock_id: _quality_payload(
             facts_by_stock.get(stock_id, {}),
-            latest_prices.get(stock_id),
+            prices.get(stock_id),
             price_context=price_context,
             owner_earnings_method=method_decisions[stock_id],
             canonical_source_status=source_statuses[stock_id],
@@ -1318,38 +1335,38 @@ def _quality_overlay_by_stock(
     }
 
 
-def _latest_prices_by_stock(
+def _canonical_prices_by_stock(
     session: Session,
     stock_ids: list[int],
     *,
     as_of_date: date | None = None,
-) -> dict[int, StockPrice]:
-    # The latest-period dashboard historically means latest locally stored
-    # observation; fixture datasets may intentionally be forward-dated. The
-    # coverage/freshness surface separately classifies whether that observation
-    # is plausible for the real current session.
-    through = as_of_date or date.max
-    series = read_canonical_eod_series(
-        session,
-        stock_ids=stock_ids,
-        through=through,
-    )
+) -> dict[int, CanonicalEodPrice]:
+    """Resolve display and calculation prices through the canonical contract."""
+    stocks = session.query(Stock).filter(Stock.id.in_(stock_ids)).all()
     return {
-        stock_id: rows[0]
-        for stock_id, rows in series.items()
-        if rows
+        stock.id: (
+            read_canonical_eod_price(
+                session,
+                stock=stock,
+                as_of=as_of_date,
+                include_as_of_session=True,
+            )
+            if as_of_date is not None
+            else read_current_eod_price(session, stock=stock)
+        )
+        for stock in stocks
     }
 
 
 def _quality_payload(
     facts: dict[str, MetricFact],
-    latest_price: StockPrice | None,
+    current_price: CanonicalEodPrice | None,
     *,
     price_context: str = "latest",
     owner_earnings_method: MethodGateDecision | dict[str, Any] | None = None,
     canonical_source_status: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    price = float(latest_price.close) if latest_price and latest_price.close is not None else None
+    price = current_price.current_value if current_price is not None else None
     method_status = (
         owner_earnings_method.get("status")
         if isinstance(owner_earnings_method, dict)
@@ -1361,7 +1378,31 @@ def _quality_payload(
     owners_earnings = (
         _fact_value(facts.get("owners_earnings")) if method_approved else None
     )
-    owner_yield = owners_earnings / price if owners_earnings is not None and price else None
+    owner_currency = _fact_currency(facts.get("owners_earnings"))
+    price_reason = (
+        current_price.reason_code
+        if current_price is not None and current_price.status != "available"
+        else "price_missing"
+        if current_price is None
+        else None
+    )
+    owner_comparison_reason = price_reason
+    if owner_comparison_reason is None and owner_currency is None:
+        owner_comparison_reason = "owner_earnings_currency_unavailable"
+    elif (
+        owner_comparison_reason is None
+        and current_price is not None
+        and current_price.currency != owner_currency
+    ):
+        owner_comparison_reason = "currency_mismatch"
+    owner_yield = (
+        owners_earnings / price
+        if owners_earnings is not None
+        and price is not None
+        and price > 0
+        and owner_comparison_reason is None
+        else None
+    )
     values = {
         "piotroski_total": _fact_value(facts.get("piotroski_total")),
         "return_on_total_capital": _fact_value(facts.get("return_on_total_capital")),
@@ -1370,7 +1411,16 @@ def _quality_payload(
         "debt_to_capital": _fact_value(facts.get("debt_to_capital")),
         "owner_earnings_yield": owner_yield,
         "latest_price": price,
-        "price_date": latest_price.price_date.isoformat() if latest_price else None,
+        "price_date": (
+            current_price.price_date.isoformat()
+            if current_price is not None and current_price.price_date
+            else None
+        ),
+        "current_price_state": (
+            serialize_canonical_eod_price(current_price)
+            if current_price is not None
+            else None
+        ),
         "price_context": price_context,
     }
     available_metrics = sum(
@@ -1388,14 +1438,15 @@ def _quality_payload(
     unavailable: list[str] = []
     if not facts:
         unavailable.append("missing Value Line facts")
-    if price is None:
-        unavailable.append("missing price")
+    if price_reason is not None:
+        unavailable.append(price_reason)
     if owner_earnings_method is not None and not method_approved:
         unavailable.append("owner earnings method unsupported")
     elif owners_earnings is None:
         unavailable.append("missing normalized owner earnings")
-    elif owner_yield is None:
-        unavailable.append("owner earnings yield unavailable without price")
+    elif owner_yield is None and owner_comparison_reason is not None:
+        if owner_comparison_reason not in unavailable:
+            unavailable.append(owner_comparison_reason)
 
     return {
         **values,
@@ -1482,6 +1533,16 @@ def _fact_value(fact: MetricFact | None) -> float | None:
     return None
 
 
+def _fact_currency(fact: MetricFact | None) -> str | None:
+    if fact is None:
+        return None
+    for candidate in (fact.currency, fact.unit):
+        normalized = str(candidate or "").strip().upper()
+        if len(normalized) == 3 and normalized.isalpha():
+            return normalized
+    return None
+
+
 def _empty_quality_overlay() -> dict[str, Any]:
     return _quality_payload({}, None)
 
@@ -1493,6 +1554,7 @@ def _valuation_reference_by_stock(
     price_as_of_date: date | None = None,
     price_context: str = "latest",
     user_id: int | None = None,
+    canonical_prices: dict[int, CanonicalEodPrice] | None = None,
 ) -> dict[int, dict[str, Any]]:
     stock_ids = list(holder_ranges_by_stock)
     if not stock_ids:
@@ -1504,11 +1566,15 @@ def _valuation_reference_by_stock(
         stock_ids=stock_ids,
     )
 
-    latest_prices = _latest_prices_by_stock(session, stock_ids, as_of_date=price_as_of_date)
+    prices = canonical_prices or _canonical_prices_by_stock(
+        session,
+        stock_ids,
+        as_of_date=price_as_of_date,
+    )
     return {
         stock_id: _valuation_payload(
             facts_by_stock.get(stock_id, {}),
-            latest_prices.get(stock_id),
+            prices.get(stock_id),
             holder_ranges_by_stock.get(stock_id, (None, None)),
             price_context=price_context,
         )
@@ -1518,12 +1584,12 @@ def _valuation_reference_by_stock(
 
 def _valuation_payload(
     facts: dict[str, MetricFact],
-    latest_price: StockPrice | None,
+    current_price: CanonicalEodPrice | None,
     holder_range: tuple[float | None, float | None],
     *,
     price_context: str = "latest",
 ) -> dict[str, Any]:
-    price = float(latest_price.close) if latest_price and latest_price.close is not None else None
+    price = current_price.current_value if current_price is not None else None
     holder_low, holder_high = holder_range
     manual = facts.get(USER_INTRINSIC_VALUE_KEY)
     target = facts.get(VALUE_LINE_TARGET_REFERENCE_KEY)
@@ -1531,24 +1597,59 @@ def _valuation_payload(
     reference_label = None
     reference_type = "missing"
     reference_confidence = "unavailable"
+    reference_currency = None
     if manual and manual.value_numeric is not None:
         reference = float(manual.value_numeric)
         reference_label = "User-entered valuation reference"
         reference_type = "manual_intrinsic_value"
         reference_confidence = "user_supplied"
+        reference_currency = _fact_currency(manual)
     elif target and target.value_numeric is not None:
         reference = float(target.value_numeric)
         reference_label = "Value Line 18-month target midpoint"
         reference_type = "analyst_target_reference"
         reference_confidence = "medium"
+        reference_currency = _fact_currency(target)
 
     discount_to_reference = None
-    if price is not None and reference:
+    price_reason = (
+        current_price.reason_code
+        if current_price is not None and current_price.status != "available"
+        else "price_missing"
+        if current_price is None
+        else None
+    )
+    comparison_reason = price_reason
+    if comparison_reason is None and reference is not None and reference_currency is None:
+        comparison_reason = "valuation_currency_unavailable"
+    elif (
+        comparison_reason is None
+        and reference is not None
+        and current_price is not None
+        and current_price.currency != reference_currency
+    ):
+        comparison_reason = "currency_mismatch"
+    if price is not None and reference and comparison_reason is None:
         discount_to_reference = round((reference - price) / reference, 6)
 
+    holder_comparison_reason = price_reason
+    if (
+        holder_comparison_reason is None
+        and current_price is not None
+        and current_price.currency != "USD"
+    ):
+        holder_comparison_reason = "currency_mismatch"
+
     unavailable: list[str] = []
-    if price is None:
-        unavailable.append("missing price")
+    if comparison_reason is not None:
+        unavailable.append(comparison_reason)
+    if (
+        holder_low is not None
+        and holder_high is not None
+        and holder_comparison_reason is not None
+        and holder_comparison_reason not in unavailable
+    ):
+        unavailable.append(holder_comparison_reason)
     if reference is None:
         unavailable.append("missing valuation reference")
     if holder_low is None or holder_high is None:
@@ -1556,7 +1657,16 @@ def _valuation_payload(
 
     return {
         "current_price": price,
-        "current_price_date": latest_price.price_date.isoformat() if latest_price else None,
+        "current_price_date": (
+            current_price.price_date.isoformat()
+            if current_price is not None and current_price.price_date
+            else None
+        ),
+        "current_price_state": (
+            serialize_canonical_eod_price(current_price)
+            if current_price is not None
+            else None
+        ),
         "price_context": price_context,
         "valuation_reference": reference,
         "valuation_reference_label": reference_label,
@@ -1564,9 +1674,17 @@ def _valuation_payload(
         "valuation_reference_confidence": reference_confidence,
         "discount_to_reference": discount_to_reference,
         "valuation_state": {
-            "below_holder_estimate": bool(price is not None and holder_low is not None and price < holder_low),
+            "below_holder_estimate": bool(
+                price is not None
+                and holder_comparison_reason is None
+                and holder_low is not None
+                and price < holder_low
+            ),
             "below_selected_valuation_reference": bool(
-                price is not None and reference is not None and price < reference
+                price is not None
+                and comparison_reason is None
+                and reference is not None
+                and price < reference
             ),
         },
         "valuation_unavailable_reasons": unavailable,

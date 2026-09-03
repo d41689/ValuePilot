@@ -1,12 +1,32 @@
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, datetime, timedelta, timezone
+
+import pytest
 
 from app.models.artifacts import PdfDocument
 from app.models.facts import MetricFact
 from app.models.institutions import Filing13F, Holding13F, InstitutionManager, ParseRun13F
 from app.models.stocks import Stock, StockPrice
 from app.models.users import User
+from app.services.market_data_service import ET, compute_target_date, expected_session_on_or_before
+
+
+@pytest.fixture(autouse=True)
+def _authorized_oracles_price_source(monkeypatch):
+    from app.services import market_data_service
+
+    monkeypatch.setattr(market_data_service.settings, "MARKET_DATA_PRIMARY", "yfinance")
+    monkeypatch.setattr(market_data_service.settings, "MARKET_DATA_SECONDARY", "none")
+    monkeypatch.setattr(
+        market_data_service.settings,
+        "MARKET_DATA_ALLOW_DEVELOPMENT_PROVIDER",
+        True,
+    )
+
+
+def _current_price_date() -> date:
+    return compute_target_date(datetime.now(timezone.utc).astimezone(ET))
 
 
 def _manager(db_session, name: str, *, cik: str, superinvestor: bool = True) -> InstitutionManager:
@@ -195,13 +215,19 @@ def _metric_fact(
     source_type: str = "parsed",
     source_document_id: int | None = None,
 ) -> MetricFact:
+    is_currency_fact = metric_key in {
+        "owners_earnings_per_share_normalized",
+        "val.fair_value",
+        "target.price_18m.mid",
+    }
     return MetricFact(
         user_id=stock._test_user_id,
         stock_id=stock.id,
         metric_key=metric_key,
         value_numeric=value,
         value_json={"fact_nature": "actual"},
-        unit="ratio",
+        unit="USD" if is_currency_fact else "ratio",
+        currency="USD" if is_currency_fact else None,
         period_type="FY",
         period_end_date=period_end,
         source_document_id=source_document_id,
@@ -389,14 +415,15 @@ def test_oracles_lens_adds_value_line_quality_overlay(
     db_session.add(
         StockPrice(
             stock_id=target.id,
-            price_date=date(2032, 1, 2),
+            price_date=_current_price_date(),
             open=99.0,
             high=101.0,
             low=98.0,
             close=100.0,
             adj_close=None,
             volume=1000,
-            source="test",
+            source="yfinance",
+            currency="USD",
         )
     )
     db_session.commit()
@@ -410,6 +437,10 @@ def test_oracles_lens_adds_value_line_quality_overlay(
     item = next(row for row in response.json()["items"] if row["stock_id"] == target.id)
     overlay = item["quality_overlay"]
     assert overlay.pop("owner_earnings_method")["status"] == "unsupported"
+    price_state = overlay.pop("current_price_state")
+    assert price_state["status"] == "available"
+    assert price_state["currency"] == "USD"
+    assert price_state["source"] == "yfinance"
     assert overlay == {
         "piotroski_total": 8.0,
         "return_on_total_capital": 0.24,
@@ -418,7 +449,7 @@ def test_oracles_lens_adds_value_line_quality_overlay(
         "debt_to_capital": 0.18,
         "owner_earnings_yield": None,
         "latest_price": 100.0,
-        "price_date": "2032-01-02",
+        "price_date": _current_price_date().isoformat(),
         "price_context": "latest",
         "canonical_source_status": {"status": "available"},
         "coverage": {
@@ -587,14 +618,15 @@ def test_oracles_lens_adds_conservative_valuation_reference(
     db_session.add(
         StockPrice(
             stock_id=target.id,
-            price_date=date(2032, 1, 2),
+            price_date=_current_price_date(),
             open=99.0,
             high=101.0,
             low=98.0,
             close=100.0,
             adj_close=None,
             volume=1000,
-            source="test",
+            source="yfinance",
+            currency="USD",
         )
     )
     db_session.commit()
@@ -613,7 +645,7 @@ def test_oracles_lens_adds_conservative_valuation_reference(
     assert item["holder_price_estimate_low"] == 10.0
     assert item["holder_price_estimate_high"] == 10.0
     assert item["current_price"] == 100.0
-    assert item["current_price_date"] == "2032-01-02"
+    assert item["current_price_date"] == _current_price_date().isoformat()
     assert item["price_context"] == "latest"
     assert item["valuation_reference"] == 175.0
     assert item["valuation_reference_label"] == "User-entered valuation reference"
@@ -632,6 +664,119 @@ def test_oracles_lens_adds_conservative_valuation_reference(
     assert response.json()["coverage"]["valuation_reference_coverage_count"] >= 1
 
 
+@pytest.mark.parametrize(
+    ("scenario", "expected_status", "expected_reason", "comparison_reason"),
+    [
+        ("unauthorized", "unavailable", "source_unavailable", "source_unavailable"),
+        (
+            "stale",
+            "unavailable",
+            "price_older_than_expected_session",
+            "price_older_than_expected_session",
+        ),
+        (
+            "unknown_currency",
+            "unavailable",
+            "price_currency_unavailable",
+            "price_currency_unavailable",
+        ),
+        ("currency_mismatch", "available", None, "currency_mismatch"),
+        ("inactive", "unavailable", "stock_inactive", "stock_inactive"),
+    ],
+)
+def test_oracles_lens_price_dependent_outputs_fail_closed(
+    client,
+    db_session,
+    auth_headers,
+    monkeypatch,
+    scenario,
+    expected_status,
+    expected_reason,
+    comparison_reason,
+):
+    from app.services import market_data_service
+
+    monkeypatch.setattr(market_data_service.settings, "MARKET_DATA_PRIMARY", "yfinance")
+    monkeypatch.setattr(market_data_service.settings, "MARKET_DATA_SECONDARY", "none")
+    monkeypatch.setattr(
+        market_data_service.settings,
+        "MARKET_DATA_ALLOW_DEVELOPMENT_PROVIDER",
+        True,
+    )
+    target = _seed_oracles_lens_fixture(db_session)
+    if scenario == "inactive":
+        target.is_active = False
+    owner_earnings = _metric_fact(
+        target,
+        "owners_earnings_per_share_normalized",
+        5.0,
+    )
+    owner_earnings.unit = "USD"
+    owner_earnings.currency = "USD"
+    owner_earnings.value_json = {
+        "fact_nature": "estimate",
+        "user_authored_formula": True,
+    }
+    fair_value = _metric_fact(
+        target,
+        "val.fair_value",
+        150.0,
+        source_type="manual",
+    )
+    fair_value.unit = "USD"
+    fair_value.currency = "USD"
+    db_session.add_all([owner_earnings, fair_value])
+
+    target_day = compute_target_date(datetime.now(timezone.utc).astimezone(ET))
+    price_day = target_day
+    if scenario == "stale":
+        price_day = expected_session_on_or_before(
+            target.listing_exchange or target.exchange,
+            target_day - timedelta(days=1),
+        ).session_date
+        assert price_day is not None
+    db_session.add(
+        StockPrice(
+            stock_id=target.id,
+            price_date=price_day,
+            open=100,
+            high=101,
+            low=99,
+            close=100,
+            volume=1_000,
+            source="unapproved-feed" if scenario == "unauthorized" else "yfinance",
+            currency=(
+                None
+                if scenario == "unknown_currency"
+                else "CAD"
+                if scenario == "currency_mismatch"
+                else "USD"
+            ),
+        )
+    )
+    db_session.commit()
+
+    response = client.get(
+        "/api/v1/13f/oracles-lens?use_persisted_scores=false",
+        headers=auth_headers(db_session.get(User, target._test_user_id)),
+    )
+
+    assert response.status_code == 200, response.text
+    item = next(row for row in response.json()["items"] if row["stock_id"] == target.id)
+    price_state = item["current_price_state"]
+    assert price_state["status"] == expected_status
+    assert price_state["reason_code"] == expected_reason
+    assert item["discount_to_reference"] is None
+    assert item["valuation_state"] == {
+        "below_holder_estimate": False,
+        "below_selected_valuation_reference": False,
+    }
+    assert comparison_reason in item["valuation_unavailable_reasons"]
+    assert item["quality_overlay"]["owner_earnings_yield"] is None
+    assert comparison_reason in item["quality_overlay"]["unavailable_reasons"]
+    assert item["quality_overlay"]["current_price_state"] == price_state
+
+
 def test_oracles_lens_labels_value_line_target_as_reference_not_intrinsic_value(
     client, db_session, auth_headers,
 ):
@@ -640,14 +785,15 @@ def test_oracles_lens_labels_value_line_target_as_reference_not_intrinsic_value(
     db_session.add(
         StockPrice(
             stock_id=target.id,
-            price_date=date(2032, 1, 2),
+            price_date=_current_price_date(),
             open=99.0,
             high=101.0,
             low=98.0,
             close=100.0,
             adj_close=None,
             volume=1000,
-            source="test",
+            source="yfinance",
+            currency="USD",
         )
     )
     db_session.commit()
@@ -687,7 +833,8 @@ def test_oracles_lens_uses_period_price_for_historical_snapshot(
                 close=80.0,
                 adj_close=None,
                 volume=1000,
-                source="test",
+                source="yfinance",
+                currency="USD",
             ),
             StockPrice(
                 stock_id=target.id,
@@ -698,7 +845,8 @@ def test_oracles_lens_uses_period_price_for_historical_snapshot(
                 close=100.0,
                 adj_close=None,
                 volume=1000,
-                source="test",
+                source="yfinance",
+                currency="USD",
             ),
         ]
     )
@@ -744,14 +892,15 @@ def test_quality_overlay_keeps_user_authored_owner_earnings_distinct(db_session)
     db_session.add(
         StockPrice(
             stock_id=target.id,
-            price_date=date(2032, 1, 2),
+            price_date=_current_price_date(),
             open=79.0,
             high=81.0,
             low=78.0,
             close=80.0,
             adj_close=None,
             volume=1000,
-            source="test",
+            source="yfinance",
+            currency="USD",
         )
     )
     db_session.commit()
@@ -824,14 +973,15 @@ def test_quality_overlay_gates_system_owner_earnings_before_selecting_user_autho
     db_session.add(
         StockPrice(
             stock_id=target.id,
-            price_date=date(2032, 1, 2),
+            price_date=_current_price_date(),
             open=79.0,
             high=81.0,
             low=78.0,
             close=80.0,
             adj_close=None,
             volume=1000,
-            source="test",
+            source="yfinance",
+            currency="USD",
         )
     )
     db_session.commit()

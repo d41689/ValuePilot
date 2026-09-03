@@ -873,6 +873,13 @@ export default function OraclesLensPage() {
                           {row.valuation.priceContextLabel} · {row.valuation.currentPriceDateLabel}
                         </div>
                         <div className="text-xs text-muted-foreground">
+                          {[row.valuation.currentPriceState.source,
+                            row.valuation.currentPriceState.currency,
+                            row.valuation.currentPriceState.freshnessState]
+                            .filter(Boolean)
+                            .join(' · ')}
+                        </div>
+                        <div className="text-xs text-muted-foreground">
                           Holder estimate {row.valuation.holderRangeLabel}
                         </div>
                       </div>

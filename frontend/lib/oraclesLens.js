@@ -236,6 +236,19 @@ function confidenceTone(confidence) {
   return 'secondary';
 }
 
+function normalizeCurrentPriceState(value) {
+  const state = value && typeof value === 'object' ? value : {};
+  return {
+    status: state.status ?? 'unavailable',
+    reasonCode: state.reason_code ?? null,
+    source: state.source ?? null,
+    currency: state.currency ?? null,
+    freshnessState: state.freshness_state ?? 'unknown_freshness',
+    sourceAuthorizationState: state.source_authorization_state ?? 'unavailable',
+    priceDate: state.price_date ?? null,
+  };
+}
+
 function normalizeQualityOverlay(qualityOverlay) {
   const quality = qualityOverlay && typeof qualityOverlay === 'object' ? qualityOverlay : {};
   const coverage = quality.coverage && typeof quality.coverage === 'object' ? quality.coverage : {};
@@ -259,6 +272,7 @@ function normalizeQualityOverlay(qualityOverlay) {
     ownerEarningsYieldLabel: formatPercent(quality.owner_earnings_yield, 1),
     latestPriceLabel:
       typeof quality.latest_price === 'number' ? `$${formatNumber(quality.latest_price, 2)}` : '—',
+    currentPriceState: normalizeCurrentPriceState(quality.current_price_state),
     qualityCoverageLabel:
       typeof coverage.available_metrics === 'number' && typeof coverage.expected_metrics === 'number'
         ? `${coverage.available_metrics}/${coverage.expected_metrics} facts`
@@ -292,6 +306,7 @@ function normalizeValuationReference(item) {
       ? `$${formatNumber(item.current_price, 2)}`
       : '—',
     currentPriceDateLabel: item?.current_price_date ?? '—',
+    currentPriceState: normalizeCurrentPriceState(item?.current_price_state),
     priceContext: item?.price_context ?? 'latest',
     priceContextLabel:
       item?.price_context === 'historical_snapshot' ? 'Historical snapshot' : 'Latest local price',
