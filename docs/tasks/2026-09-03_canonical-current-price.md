@@ -241,3 +241,12 @@ git diff --check
   scan. The existing canonical point contract performs all eligibility and
   selection logic. Focused round-6 verification passed (`58 passed`); a full
   closing gate follows before the next Terra review.
+- 2026-09-03: post-round-6 exact closing gate passed: Compose rebuild, Alembic
+  upgrade, backend `2168 passed`, frontend `222 passed`, frontend lint,
+  production build, and `git diff --check`. The first full backend execution
+  reached completion but its command session lost the final summary; the exact
+  backend command was rerun only after confirming no pytest process remained,
+  and returned an explicit green exit (`2168 passed` in 617.36 seconds). The
+  Next production build's generated `tsconfig.json` include entry was removed
+  after verification. No migration or stored-data rewrite was added. Draft PR
+  #141 is ready for the next Terra adversarial review.
