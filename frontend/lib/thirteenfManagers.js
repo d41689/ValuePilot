@@ -114,6 +114,8 @@ function normalizePosition(item) {
       typeof item?.implied_report_price === 'number' ? item.implied_report_price : null,
     marketContext: market
       ? {
+          status: market.status ?? 'unavailable',
+          reasonCode: market.reason_code ?? null,
           latestPrice: typeof market.latest_price === 'number' ? market.latest_price : null,
           latestPriceDate: market.latest_price_date ?? null,
           changeSinceReportPct:
@@ -123,6 +125,9 @@ function normalizePosition(item) {
           week52Low: typeof market.week_52_low === 'number' ? market.week_52_low : null,
           week52High: typeof market.week_52_high === 'number' ? market.week_52_high : null,
           source: market.source ?? null,
+          currency: market.currency ?? null,
+          freshnessState: market.freshness_state ?? 'unknown_freshness',
+          sourceAuthorizationState: market.source_authorization_state ?? 'unavailable',
         }
       : null,
   };

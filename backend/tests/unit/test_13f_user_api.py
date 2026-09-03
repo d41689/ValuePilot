@@ -3,6 +3,8 @@ from __future__ import annotations
 from datetime import date, datetime, timedelta, timezone
 from itertools import count
 
+import pytest
+
 from app.models.institutions import (
     Filing13F,
     Holding13F,
@@ -13,6 +15,7 @@ from app.models.institutions import (
 )
 from app.models.oracles_lens import OraclesLensScoreComponent, OraclesLensSignal
 from app.models.stocks import Stock, StockPrice
+from app.services.market_data_service import ET, compute_target_date, expected_session_on_or_before
 
 
 _CIK_COUNTER = count(9200000000)
@@ -595,7 +598,18 @@ def test_manager_holdings_returns_position_view_with_computed_common_weights(cli
     assert by_ticker["BRK"]["position_rank"] == 2
 
 
-def test_manager_holdings_exposes_portfolio_summary_and_local_market_context(client, db_session):
+def test_manager_holdings_exposes_portfolio_summary_and_local_market_context(
+    client, db_session, monkeypatch
+):
+    from app.services import market_data_service
+
+    monkeypatch.setattr(market_data_service.settings, "MARKET_DATA_PRIMARY", "yfinance")
+    monkeypatch.setattr(market_data_service.settings, "MARKET_DATA_SECONDARY", "none")
+    monkeypatch.setattr(
+        market_data_service.settings,
+        "MARKET_DATA_ALLOW_DEVELOPMENT_PROVIDER",
+        True,
+    )
     _clear_13f(db_session)
     manager = _manager(db_session)
     filing = _filing(db_session, manager, "0000000007-26-000001")
@@ -607,25 +621,33 @@ def test_manager_holdings_exposes_portfolio_summary_and_local_market_context(cli
     holding.shares = 3_000
     holding.portfolio_weight_pct = 30.0
     filing.total_13f_common_value_usd = 1_000_000
+    target_day = compute_target_date(datetime.now(timezone.utc).astimezone(ET))
+    older_day = expected_session_on_or_before(
+        stock.listing_exchange or stock.exchange,
+        target_day - timedelta(days=270),
+    ).session_date
+    assert older_day is not None
     db_session.add_all(
         [
             StockPrice(
                 stock_id=stock.id,
-                price_date=date(2025, 9, 30),
+                price_date=older_day,
                 open=75.0,
                 high=80.0,
                 low=70.0,
                 close=78.0,
-                source="test",
+                source="yfinance",
+                currency="USD",
             ),
             StockPrice(
                 stock_id=stock.id,
-                price_date=date(2026, 6, 30),
+                price_date=target_day,
                 open=118.0,
                 high=125.0,
                 low=115.0,
                 close=120.0,
-                source="test",
+                source="yfinance",
+                currency="USD",
             ),
         ]
     )
@@ -641,14 +663,106 @@ def test_manager_holdings_exposes_portfolio_summary_and_local_market_context(cli
     }
     position = payload["common_holdings"][0]
     assert position["implied_report_price"] == 100.0
-    assert position["market_context"] == {
+    context = position["market_context"]
+    current_price_state = context.pop("current_price_state")
+    assert context == {
+        "status": "available",
+        "reason_code": None,
         "latest_price": 120.0,
-        "latest_price_date": "2026-06-30",
+        "latest_price_date": target_day.isoformat(),
         "change_since_report_pct": 20.0,
         "week_52_low": 70.0,
         "week_52_high": 125.0,
-        "source": "test",
+        "source": "yfinance",
+        "currency": "USD",
+        "freshness_state": "fresh",
+        "source_authorization_state": "authorized",
     }
+    assert current_price_state["status"] == "available"
+    assert current_price_state["observation_value"] == 120.0
+    assert current_price_state["price_date"] == target_day.isoformat()
+
+
+@pytest.mark.parametrize(
+    ("scenario", "expected_reason"),
+    [
+        ("unauthorized", "source_unavailable"),
+        ("stale", "price_older_than_expected_session"),
+        ("unknown_currency", "price_currency_unavailable"),
+        ("currency_mismatch", "currency_mismatch"),
+        ("inactive", "stock_inactive"),
+    ],
+)
+def test_manager_market_context_fails_closed_for_ineligible_prices(
+    client, db_session, monkeypatch, scenario, expected_reason
+):
+    from app.services import market_data_service
+
+    monkeypatch.setattr(market_data_service.settings, "MARKET_DATA_PRIMARY", "yfinance")
+    monkeypatch.setattr(market_data_service.settings, "MARKET_DATA_SECONDARY", "none")
+    monkeypatch.setattr(
+        market_data_service.settings,
+        "MARKET_DATA_ALLOW_DEVELOPMENT_PROVIDER",
+        True,
+    )
+    _clear_13f(db_session)
+    manager = _manager(db_session)
+    filing = _filing(db_session, manager, "0000000007-26-000099")
+    parse_run = _parse_run(db_session, filing)
+    stock = _stock(db_session, f"MC{scenario[:3].upper()}")
+    if scenario == "inactive":
+        stock.is_active = False
+    holding = _holding(db_session, filing, parse_run, index=1, stock=stock)
+    holding.value_usd = 300_000
+    holding.ssh_prnamt = 3_000
+    holding.shares = 3_000
+    filing.total_13f_common_value_usd = 1_000_000
+    target_day = compute_target_date(datetime.now(timezone.utc).astimezone(ET))
+    price_day = target_day
+    if scenario == "stale":
+        price_day = expected_session_on_or_before(
+            stock.listing_exchange or stock.exchange,
+            target_day - timedelta(days=1),
+        ).session_date
+        assert price_day is not None
+    db_session.add(
+        StockPrice(
+            stock_id=stock.id,
+            price_date=price_day,
+            open=100,
+            high=101,
+            low=99,
+            close=100,
+            source="unapproved-feed" if scenario == "unauthorized" else "yfinance",
+            currency=(
+                None
+                if scenario == "unknown_currency"
+                else "CAD"
+                if scenario == "currency_mismatch"
+                else "USD"
+            ),
+        )
+    )
+    db_session.commit()
+
+    response = client.get(
+        f"/api/v1/13f/managers/{manager.id}/holdings?quarter=2026-Q1"
+    )
+
+    assert response.status_code == 200, response.text
+    context = response.json()["common_holdings"][0]["market_context"]
+    assert context["status"] == "unavailable"
+    assert context["reason_code"] == expected_reason
+    assert context["latest_price"] is None
+    assert context["change_since_report_pct"] is None
+    assert context["week_52_low"] is None
+    assert context["week_52_high"] is None
+    assert context["current_price_state"]["reason_code"] in {
+        expected_reason,
+        None,
+    }
+    if scenario == "unauthorized":
+        assert context["current_price_state"]["observation_value"] is None
 
 
 def test_manager_history_returns_quarter_summaries_concentration_and_all_activity(client, db_session):

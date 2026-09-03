@@ -80,6 +80,14 @@ class CanonicalEodPrice:
         return self.close if self.status == "available" else None
 
 
+@dataclass(frozen=True)
+class CanonicalEodContext:
+    current_price: CanonicalEodPrice
+    observations: tuple[StockPrice, ...]
+    status: str
+    reason_code: str | None
+
+
 class MarketDataProvider(Protocol):
     """
     Fetch daily (EOD) OHLCV for the given symbols and target trading date.
@@ -672,6 +680,69 @@ def read_current_eod_price(
         result,
         as_of_date=now_et.date(),
         as_of_mode="latest_completed_session",
+    )
+
+
+def read_current_eod_context(
+    session: Session,
+    *,
+    stock: Stock,
+    evaluated_at: datetime | None = None,
+    history_days: int = 370,
+    required_currency: str | None = None,
+) -> CanonicalEodContext:
+    """Return a current eligible observation plus safe, same-currency history.
+
+    Dated context may support comparisons such as a 52-week range, but it does
+    not weaken current source authorization, freshness, identity, or currency
+    requirements. Invalid historical OHLC rows are omitted rather than used in
+    arithmetic.
+    """
+    current = read_current_eod_price(
+        session,
+        stock=stock,
+        evaluated_at=evaluated_at,
+    )
+    if current.status != "available" or current.current_value is None:
+        return CanonicalEodContext(
+            current_price=current,
+            observations=(),
+            status="unavailable",
+            reason_code=current.reason_code or "price_unavailable",
+        )
+    normalized_required = _currency(required_currency)
+    if required_currency is not None and current.currency != normalized_required:
+        return CanonicalEodContext(
+            current_price=current,
+            observations=(),
+            status="unavailable",
+            reason_code="currency_mismatch",
+        )
+    assert current.price_date is not None
+    authorized_sources = configured_price_source_priority()
+    series = read_canonical_eod_series(
+        session,
+        stock_ids=[stock.id],
+        through=current.price_date,
+        from_date=current.price_date - timedelta(days=max(history_days, 0)),
+        source_priority=authorized_sources,
+    ).get(stock.id, [])
+
+    def eligible(row: StockPrice) -> bool:
+        values = (row.open, row.high, row.low, row.close)
+        return bool(
+            _normalized_source(row.source) in authorized_sources
+            and _currency(row.currency) == current.currency
+            and all(math.isfinite(float(value)) and float(value) > 0 for value in values)
+            and float(row.low) <= float(row.high)
+        )
+
+    observations = tuple(row for row in series if eligible(row))
+    return CanonicalEodContext(
+        current_price=current,
+        observations=observations,
+        status="available",
+        reason_code=None,
     )
 
 
