@@ -199,12 +199,17 @@ canonical commands at each closing gate.
 
 ### Git / PR conventions
 
-- Branch off `main`; never commit directly to `main`. Branch name
-  `<agent>/<slug>` (e.g. `claude/<slug>`).
+- Use one feature per fresh branch from the latest `main`; never commit directly
+  to `main`. Branch name `<agent>/<slug>` (e.g. `claude/<slug>`).
 - Before the first commit, confirm `git config user.email` is a real address,
   not a machine hostname.
-- Commit and push only when the user asks. Keep unrelated changes on separate
-  branches and PRs.
+- Keep commits focused and reviewable, and keep unrelated work on separate
+  branches and PRs. For substantive work, open a Draft PR early and push at
+  meaningful checkpoints so CI and review can guide the work.
+- Merge only after the canonical gates pass and review findings are resolved.
+  This workflow does not itself authorize outward actions: obtain user
+  authorization before committing, pushing, opening or merging a PR, deploying,
+  or otherwise changing external state.
 - A PR body states what changed and why, the verification results, and links to
   the task doc(s).
 
