@@ -17,7 +17,7 @@ from app.services.market_data_service import MarketDataService
 from app.services.research_coverage import (
     PRIORITY_POLICY_VERSION,
     evaluate_research_coverage,
-    serialize_requirement,
+    serialize_requirements,
 )
 
 
@@ -64,7 +64,11 @@ def list_requirements(
     )
     return {
         "priority_policy_version": PRIORITY_POLICY_VERSION,
-        "items": [serialize_requirement(session, row, stock) for row, stock in rows],
+        "items": serialize_requirements(
+            session,
+            rows,
+            evaluated_at=datetime.now(timezone.utc),
+        ),
     }
 
 

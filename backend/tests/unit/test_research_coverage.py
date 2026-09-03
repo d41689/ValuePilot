@@ -538,6 +538,197 @@ def test_legacy_ready_price_with_non_iso_currency_is_blocked_on_every_projection
     assert workspace_price["evidence"]["currency"] is None
 
 
+def test_ready_price_coverage_becomes_stale_after_session_rolls_without_reevaluation(
+    client, db_session, user_factory, auth_headers
+):
+    from app.models.notifications import LogicalNotification
+    from app.services.research_notifications import materialize_research_coverage_changes
+
+    user = user_factory(email="coverage-session-roll@example.com")
+    stock = _stock(db_session, "ROLL")
+    _watchlist(db_session, user.id, stock)
+    expected_day = compute_target_date(datetime.now(timezone.utc).astimezone(ET))
+    stale_day = expected_session_on_or_before(
+        stock.listing_exchange or stock.exchange,
+        expected_day - timedelta(days=1),
+    ).session_date
+    assert stale_day is not None
+    stale_price = StockPrice(
+        stock_id=stock.id,
+        price_date=stale_day,
+        open=88,
+        high=89,
+        low=87,
+        close=88,
+        volume=1_000,
+        currency="USD",
+        source="twelvedata",
+    )
+    db_session.add(stale_price)
+    db_session.flush()
+    db_session.add(
+        ResearchCoverageRequirement(
+            user_id=user.id,
+            stock_id=stock.id,
+            kind="eod_price",
+            priority_policy_version="research-coverage-priority-v1.0",
+            matched_rule="watchlist_member",
+            priority_rank=10,
+            state="ready",
+            reason="The prior evaluation marked this ready.",
+            source_type="stock_price",
+            source_ref_id=stale_price.id,
+            evidence_json={
+                "close": "88.0",
+                "currency": "USD",
+                "source": "twelvedata",
+                "source_authorization_state": "authorized",
+                "price_date": stale_day.isoformat(),
+            },
+            observed_at=stale_price.created_at,
+            freshness_policy_version="eod-freshness-v1.0",
+            evaluated_at=datetime.now(timezone.utc) - timedelta(days=1),
+            is_current=True,
+        )
+    )
+    db_session.commit()
+
+    headers = auth_headers(user)
+    created = client.post(
+        "/api/v1/research/cases",
+        headers=headers,
+        json={
+            "stock_id": stock.id,
+            "origin": {
+                "origin_type": "manual",
+                "origin_key": f"coverage-session-roll:{stock.id}",
+                "source_version": "coverage-session-roll-v1",
+                "source_ref": {"test": True},
+            },
+        },
+    )
+    assert created.status_code == 201, created.text
+
+    listed = client.get(
+        "/api/v1/coverage/requirements", headers=headers
+    ).json()["items"][0]
+    workspace = client.get(
+        f"/api/v1/research/cases/{created.json()['case']['id']}/workspace",
+        headers=headers,
+    ).json()
+    missing = next(
+        item for item in workspace["missing_items"] if item["kind"] == "eod_price"
+    )
+    assert listed["state"] == "stale"
+    assert listed["reason_code"] == "price_older_than_expected_session"
+    assert listed["evidence"]["close"] is None
+    assert missing["state"] == "stale"
+    assert missing["reason_code"] == "price_older_than_expected_session"
+    assert materialize_research_coverage_changes(db_session) == 0
+    assert db_session.query(LogicalNotification).count() == 0
+
+
+def test_ready_price_coverage_blocks_reference_date_and_canonical_id_mismatch(
+    client, db_session, user_factory, auth_headers
+):
+    from app.models.notifications import LogicalNotification
+    from app.services.research_notifications import materialize_research_coverage_changes
+
+    user = user_factory(email="coverage-reference-mismatch@example.com")
+    stock = _stock(db_session, "REFMISS")
+    _watchlist(db_session, user.id, stock)
+    expected_day = compute_target_date(datetime.now(timezone.utc).astimezone(ET))
+    prior_day = expected_session_on_or_before(
+        stock.listing_exchange or stock.exchange,
+        expected_day - timedelta(days=1),
+    ).session_date
+    assert prior_day is not None
+    referenced = StockPrice(
+        stock_id=stock.id,
+        price_date=prior_day,
+        open=90,
+        high=91,
+        low=89,
+        close=90,
+        volume=1_000,
+        currency="USD",
+        source="twelvedata",
+    )
+    canonical = StockPrice(
+        stock_id=stock.id,
+        price_date=expected_day,
+        open=100,
+        high=101,
+        low=99,
+        close=100,
+        volume=1_000,
+        currency="USD",
+        source="twelvedata",
+    )
+    db_session.add_all([referenced, canonical])
+    db_session.flush()
+    db_session.add(
+        ResearchCoverageRequirement(
+            user_id=user.id,
+            stock_id=stock.id,
+            kind="eod_price",
+            priority_policy_version="research-coverage-priority-v1.0",
+            matched_rule="watchlist_member",
+            priority_rank=10,
+            state="ready",
+            reason="The prior evaluation cited the wrong observation.",
+            source_type="stock_price",
+            source_ref_id=referenced.id,
+            evidence_json={
+                "close": "90.0",
+                "currency": "USD",
+                "source": "twelvedata",
+                "source_authorization_state": "authorized",
+                "price_date": expected_day.isoformat(),
+            },
+            observed_at=referenced.created_at,
+            freshness_policy_version="eod-freshness-v1.0",
+            evaluated_at=datetime.now(timezone.utc),
+            is_current=True,
+        )
+    )
+    db_session.commit()
+
+    headers = auth_headers(user)
+    created = client.post(
+        "/api/v1/research/cases",
+        headers=headers,
+        json={
+            "stock_id": stock.id,
+            "origin": {
+                "origin_type": "manual",
+                "origin_key": f"coverage-reference-mismatch:{stock.id}",
+                "source_version": "coverage-reference-mismatch-v1",
+                "source_ref": {"test": True},
+            },
+        },
+    )
+    assert created.status_code == 201, created.text
+
+    listed = client.get(
+        "/api/v1/coverage/requirements", headers=headers
+    ).json()["items"][0]
+    workspace = client.get(
+        f"/api/v1/research/cases/{created.json()['case']['id']}/workspace",
+        headers=headers,
+    ).json()
+    missing = next(
+        item for item in workspace["missing_items"] if item["kind"] == "eod_price"
+    )
+    assert listed["state"] == "blocked"
+    assert listed["reason_code"] == "price_reference_mismatch"
+    assert listed["evidence"]["close"] is None
+    assert missing["state"] == "blocked"
+    assert missing["reason_code"] == "price_reference_mismatch"
+    assert materialize_research_coverage_changes(db_session) == 0
+    assert db_session.query(LogicalNotification).count() == 0
+
+
 def test_coverage_evaluate_endpoint_is_idempotent(
     client, db_session, user_factory, auth_headers
 ):

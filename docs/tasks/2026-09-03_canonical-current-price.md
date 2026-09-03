@@ -223,3 +223,21 @@ git diff --check
   generated `tsconfig.json` include entry was removed after verification. No
   migration, stored-data rewrite, full-table scan, or alternate canonical
   reader was added. Draft PR #141 is ready for Terra adversarial review round 6.
+- 2026-09-03: Terra adversarial review round 6 found one valid read-time
+  eligibility gap: a persisted ready price requirement could remain ready after
+  the expected market session advanced, or when its cited observation no longer
+  matched its evidence/canonical selection. Coverage projection now captures
+  one request timestamp and batch-loads both canonical current-price contexts
+  and exact cited observations. Ready requires the cited id to exist for the
+  same stock, its source/currency/date to match persisted evidence, the
+  canonical result to remain eligible at that timestamp, and its selected id to
+  equal the citation.
+- 2026-09-03: a session rollover projects typed stale
+  `price_older_than_expected_session`; mismatched evidence date or canonical id
+  projects blocked `price_reference_mismatch`. Both redact the comparison close,
+  enter workspace `missing_items`, and cannot materialize a ready notification.
+  List, workspace, and notification paths use the same batch serializer, with
+  two fixed-count scoped price queries rather than per-row reads or a full-table
+  scan. The existing canonical point contract performs all eligibility and
+  selection logic. Focused round-6 verification passed (`58 passed`); a full
+  closing gate follows before the next Terra review.

@@ -85,6 +85,17 @@ class CanonicalEodContext:
     reason_code: str | None
 
 
+@dataclass(frozen=True)
+class StoredPriceEvidence:
+    price_id: int
+    stock_id: int
+    price_date: date
+    source: str
+    normalized_source: str
+    currency: str | None
+    source_authorization_state: str
+
+
 class MarketDataProvider(Protocol):
     """
     Fetch daily (EOD) OHLCV for the given symbols and target trading date.
@@ -521,23 +532,39 @@ def current_price_source_authorization_state(source: Any) -> str:
     )
 
 
-def stored_price_evidence_authority(
+def read_stored_price_evidence(
     session: Session,
     *,
-    price_id: int | None,
-    stock_id: int,
-) -> tuple[str, str | None]:
-    """Revalidate source and currency for one explicitly referenced observation."""
+    references: Iterable[tuple[int, int]],
+) -> dict[tuple[int, int], StoredPriceEvidence]:
+    """Batch-read exact cited observations; this never selects a market price."""
 
-    if price_id is None:
-        return "unavailable", None
-    observation = session.get(StockPrice, price_id)
-    if observation is None or observation.stock_id != stock_id:
-        return "unavailable", None
-    return (
-        current_price_source_authorization_state(observation.source),
-        _currency(observation.currency),
+    requested = {
+        (int(price_id), int(stock_id)) for price_id, stock_id in references
+    }
+    if not requested:
+        return {}
+    price_ids = {price_id for price_id, _ in requested}
+    observations = (
+        session.query(StockPrice).filter(StockPrice.id.in_(price_ids)).all()
     )
+    result: dict[tuple[int, int], StoredPriceEvidence] = {}
+    for observation in observations:
+        key = (int(observation.id), int(observation.stock_id))
+        if key not in requested:
+            continue
+        result[key] = StoredPriceEvidence(
+            price_id=int(observation.id),
+            stock_id=int(observation.stock_id),
+            price_date=observation.price_date,
+            source=observation.source,
+            normalized_source=_normalized_source(observation.source),
+            currency=_currency(observation.currency),
+            source_authorization_state=current_price_source_authorization_state(
+                observation.source
+            ),
+        )
+    return result
 
 
 def serialize_canonical_eod_price(price: CanonicalEodPrice) -> dict[str, Any]:
@@ -590,6 +617,7 @@ def read_canonical_eod_price(
     include_as_of_session: bool = False,
     knowledge_cutoff: datetime | None = None,
     source_priority: tuple[str, ...] | None = None,
+    _candidate_rows: Iterable[StockPrice] | None = None,
 ) -> CanonicalEodPrice:
     """Read one deterministic, freshness-classified EOD observation.
 
@@ -629,15 +657,24 @@ def read_canonical_eod_price(
             include_as_of_session=include_as_of_session,
         )
     )
-    rows = (
-        session.query(StockPrice)
-        .filter(
-            StockPrice.stock_id == stock.id,
-            StockPrice.price_date <= max_date,
-            StockPrice.created_at <= effective_knowledge_cutoff,
+    if _candidate_rows is None:
+        rows = (
+            session.query(StockPrice)
+            .filter(
+                StockPrice.stock_id == stock.id,
+                StockPrice.price_date <= max_date,
+                StockPrice.created_at <= effective_knowledge_cutoff,
+            )
+            .all()
         )
-        .all()
-    )
+    else:
+        rows = [
+            row
+            for row in _candidate_rows
+            if row.stock_id == stock.id
+            and row.price_date <= max_date
+            and _ensure_utc(row.created_at) <= effective_knowledge_cutoff
+        ]
     if not rows:
         return CanonicalEodPrice(
             stock_id=stock.id,
@@ -744,6 +781,53 @@ def read_current_eod_price(
         as_of_date=now_et.date(),
         as_of_mode="latest_completed_session",
     )
+
+
+def read_current_eod_prices(
+    session: Session,
+    *,
+    stocks: Iterable[Stock],
+    evaluated_at: datetime | None = None,
+    source_priority: tuple[str, ...] | None = None,
+) -> dict[int, CanonicalEodPrice]:
+    """Batch the storage read while preserving the canonical point contract."""
+
+    stock_by_id = {int(stock.id): stock for stock in stocks}
+    if not stock_by_id:
+        return {}
+    now_utc = _ensure_utc(evaluated_at or datetime.now(timezone.utc))
+    now_et = now_utc.astimezone(ET)
+    target_date = compute_target_date(now_et)
+    rows = (
+        session.query(StockPrice)
+        .filter(
+            StockPrice.stock_id.in_(stock_by_id),
+            StockPrice.price_date <= target_date,
+            StockPrice.created_at <= now_utc,
+        )
+        .all()
+    )
+    rows_by_stock_id: dict[int, list[StockPrice]] = {
+        stock_id: [] for stock_id in stock_by_id
+    }
+    for row in rows:
+        rows_by_stock_id[int(row.stock_id)].append(row)
+    return {
+        stock_id: replace(
+            read_canonical_eod_price(
+                session,
+                stock=stock,
+                as_of=target_date,
+                include_as_of_session=True,
+                knowledge_cutoff=now_utc,
+                source_priority=source_priority,
+                _candidate_rows=rows_by_stock_id[stock_id],
+            ),
+            as_of_date=now_et.date(),
+            as_of_mode="latest_completed_session",
+        )
+        for stock_id, stock in stock_by_id.items()
+    }
 
 
 def read_current_eod_context(

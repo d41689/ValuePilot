@@ -77,14 +77,18 @@ def _keys():
 def test_open_case_coverage_ready_and_failed_events_are_durable_and_idempotent(
     db_session, user_factory
 ):
+    from app.services.market_data_service import ET, compute_target_date
+
     user = user_factory("coverage-notify@example.com")
     stock = Stock(ticker="COVN", exchange="NYSE", company_name="Coverage Notice")
     db_session.add(stock)
     db_session.flush()
     case = ResearchCase(user_id=user.id, stock_id=stock.id, state="queued")
+    evaluated_at = datetime.now(timezone.utc)
+    price_date = compute_target_date(evaluated_at.astimezone(ET))
     price = StockPrice(
         stock_id=stock.id,
-        price_date=date(2026, 7, 17),
+        price_date=price_date,
         open=100,
         high=101,
         low=99,
@@ -108,11 +112,13 @@ def test_open_case_coverage_ready_and_failed_events_are_durable_and_idempotent(
         source_ref_id=price.id,
         evidence_json={
             "close": "100.0",
+            "currency": "USD",
             "source": "yfinance",
             "source_authorization_state": "authorized",
+            "price_date": price_date.isoformat(),
         },
         freshness_policy_version="us-market-session-v1.0",
-        evaluated_at=datetime(2026, 7, 20, tzinfo=timezone.utc),
+        evaluated_at=evaluated_at,
         is_current=True,
     )
     db_session.add_all([case, requirement])

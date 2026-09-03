@@ -1,7 +1,7 @@
 """User-authorized, stock-centric read model for a research case."""
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, datetime, timezone
 from typing import Any
 
 from sqlalchemy import select
@@ -24,7 +24,7 @@ from app.services.research_cases import (
     serialize_origin,
     serialize_revision,
 )
-from app.services.research_coverage import serialize_requirement
+from app.services.research_coverage import serialize_requirements
 from app.services.thirteenf_user_api import build_user_stock_holders
 from app.services.valuation import read_valuation_context
 from app.services.active_report_resolver import resolve_active_reports
@@ -75,6 +75,7 @@ def build_research_workspace(
     case_id: int,
     as_of: date,
 ) -> dict[str, Any]:
+    evaluated_at = datetime.now(timezone.utc)
     case = (
         session.query(ResearchCase)
         .filter(ResearchCase.id == case_id, ResearchCase.user_id == user_id)
@@ -152,7 +153,16 @@ def build_research_workspace(
         .order_by(ResearchCoverageRequirement.priority_rank, ResearchCoverageRequirement.kind)
         .all()
     )
-    current_price = read_current_eod_price(session, stock=stock)
+    current_price = read_current_eod_price(
+        session,
+        stock=stock,
+        evaluated_at=evaluated_at,
+    )
+    serialized_coverage = serialize_requirements(
+        session,
+        [(row, stock) for row in coverage_rows],
+        evaluated_at=evaluated_at,
+    )
     valuation = read_valuation_context(session, user_id=user_id, stock_id=stock.id)
     active_report = resolve_active_reports(
         session,
@@ -284,10 +294,7 @@ def build_research_workspace(
         "actual_conflicts": actual_conflicts,
         "missing_items": [
             requirement
-            for requirement in (
-                serialize_requirement(session, row, stock)
-                for row in coverage_rows
-            )
+            for requirement in serialized_coverage
             if requirement["state"] != "ready"
         ],
         "current_price": serialize_canonical_eod_price(current_price),
@@ -315,9 +322,7 @@ def build_research_workspace(
             ),
             "system_reference_currency": valuation.system_reference_currency,
         },
-        "coverage": [
-            serialize_requirement(session, row, stock) for row in coverage_rows
-        ],
+        "coverage": serialized_coverage,
         "oracles_lens": (
             {
                 "signal_id": signal.id,

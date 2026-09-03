@@ -924,7 +924,7 @@ def materialize_research_coverage_changes(session: Session) -> int:
     from app.models.coverage import ResearchCoverageRequirement
     from app.models.research import ResearchCase
     from app.models.stocks import Stock
-    from app.services.research_coverage import serialize_requirement
+    from app.services.research_coverage import serialize_requirements
 
     rows = (
         session.query(ResearchCoverageRequirement, ResearchCase, Stock)
@@ -946,9 +946,13 @@ def materialize_research_coverage_changes(session: Session) -> int:
         )
         .all()
     )
+    serialized_rows = serialize_requirements(
+        session,
+        [(requirement, stock) for requirement, _, stock in rows],
+        evaluated_at=datetime.now(timezone.utc),
+    )
     created = 0
-    for requirement, case, stock in rows:
-        serialized = serialize_requirement(session, requirement, stock)
+    for (requirement, case, stock), serialized in zip(rows, serialized_rows):
         if serialized["state"] not in {"ready", "failed"}:
             continue
         evidence_version = hashlib.sha256(
