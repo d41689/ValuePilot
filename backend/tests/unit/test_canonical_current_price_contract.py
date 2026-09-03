@@ -129,6 +129,22 @@ def _expected_target() -> date:
             "price_currency_unavailable",
         ),
         (
+            "non_iso_currency",
+            "unavailable",
+            "price_currency_unavailable",
+            None,
+            None,
+            "price_currency_unavailable",
+        ),
+        (
+            "non_iso_fact_currency",
+            "available",
+            None,
+            100.0,
+            None,
+            "currency_mismatch",
+        ),
+        (
             "unauthorized",
             "unavailable",
             "source_unavailable",
@@ -165,14 +181,20 @@ def test_stock_watchlist_and_research_share_one_current_price_contract(
             inclusion_type="manual",
         )
     )
+    fact_currency = (
+        "ZZZ"
+        if scenario in {"non_iso_currency", "non_iso_fact_currency"}
+        else "USD"
+    )
+    fact_unit = "ZZZ" if scenario == "non_iso_currency" else "USD"
     db_session.add(
         MetricFact(
             user_id=user.id,
             stock_id=stock.id,
             metric_key="val.fair_value",
             value_numeric=200,
-            unit="USD",
-            currency="USD",
+            unit=fact_unit,
+            currency=fact_currency,
             period_type="AS_OF",
             period_end_date=date.today(),
             source_type="manual",
@@ -200,6 +222,8 @@ def test_stock_watchlist_and_research_share_one_current_price_contract(
             currency=(
                 None
                 if scenario == "unknown_currency"
+                else "ZZZ"
+                if scenario == "non_iso_currency"
                 else "CAD"
                 if scenario == "currency_mismatch"
                 else "USD"

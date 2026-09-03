@@ -5,6 +5,7 @@ from datetime import date, datetime, timezone
 from decimal import Decimal
 from zoneinfo import ZoneInfo
 from app.api.deps import SessionDep, CurrentUser
+from app.core.currencies import normalize_iso4217_currency
 from app.models.artifacts import PdfDocument
 from app.models.stocks import Stock
 from app.models.facts import MetricFact
@@ -178,11 +179,9 @@ def _stock_summary_wire_number(
 def _stock_summary_currency(fact: MetricFact | None) -> str | None:
     if fact is None:
         return None
-    for candidate in (fact.currency, fact.unit):
-        normalized = str(candidate or "").strip().upper()
-        if len(normalized) == 3 and normalized.isalpha():
-            return normalized
-    return None
+    if fact.currency is not None:
+        return normalize_iso4217_currency(fact.currency)
+    return normalize_iso4217_currency(fact.unit)
 
 
 def _dcf_value(value: float, source: str, provenance: dict[str, Any] | None = None) -> dict[str, Any]:

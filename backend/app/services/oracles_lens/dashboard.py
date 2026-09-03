@@ -10,6 +10,7 @@ from typing import Any
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
+from app.core.currencies import normalize_iso4217_currency
 from app.models.facts import MetricFact
 from app.models.institutions import Filing13F, Holding13F, InstitutionManager, ParseRun13F
 from app.models.oracles_lens import OraclesLensSignal
@@ -1536,11 +1537,9 @@ def _fact_value(fact: MetricFact | None) -> float | None:
 def _fact_currency(fact: MetricFact | None) -> str | None:
     if fact is None:
         return None
-    for candidate in (fact.currency, fact.unit):
-        normalized = str(candidate or "").strip().upper()
-        if len(normalized) == 3 and normalized.isalpha():
-            return normalized
-    return None
+    if fact.currency is not None:
+        return normalize_iso4217_currency(fact.currency)
+    return normalize_iso4217_currency(fact.unit)
 
 
 def _empty_quality_overlay() -> dict[str, Any]:

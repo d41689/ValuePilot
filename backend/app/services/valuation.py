@@ -7,6 +7,7 @@ from typing import Any
 from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
+from app.core.currencies import normalize_iso4217_currency
 from app.models.facts import MetricFact
 
 
@@ -31,11 +32,9 @@ class ValuationContext:
 def _fact_currency(fact: MetricFact | None) -> str | None:
     if fact is None:
         return None
-    for candidate in (fact.currency, fact.unit):
-        normalized = str(candidate or "").strip().upper()
-        if len(normalized) == 3 and normalized.isalpha():
-            return normalized
-    return None
+    if fact.currency is not None:
+        return normalize_iso4217_currency(fact.currency)
+    return normalize_iso4217_currency(fact.unit)
 
 
 def _latest_current_fact(

@@ -665,12 +665,25 @@ def test_oracles_lens_adds_conservative_valuation_reference(
 
 
 @pytest.mark.parametrize(
-    ("scenario", "expected_status", "expected_reason", "comparison_reason"),
+    (
+        "scenario",
+        "expected_status",
+        "expected_reason",
+        "valuation_reason",
+        "quality_reason",
+    ),
     [
-        ("unauthorized", "unavailable", "source_unavailable", "source_unavailable"),
+        (
+            "unauthorized",
+            "unavailable",
+            "source_unavailable",
+            "source_unavailable",
+            "source_unavailable",
+        ),
         (
             "stale",
             "unavailable",
+            "price_older_than_expected_session",
             "price_older_than_expected_session",
             "price_older_than_expected_session",
         ),
@@ -679,9 +692,36 @@ def test_oracles_lens_adds_conservative_valuation_reference(
             "unavailable",
             "price_currency_unavailable",
             "price_currency_unavailable",
+            "price_currency_unavailable",
         ),
-        ("currency_mismatch", "available", None, "currency_mismatch"),
-        ("inactive", "unavailable", "stock_inactive", "stock_inactive"),
+        (
+            "non_iso_currency",
+            "unavailable",
+            "price_currency_unavailable",
+            "price_currency_unavailable",
+            "price_currency_unavailable",
+        ),
+        (
+            "non_iso_fact_currency",
+            "available",
+            None,
+            "valuation_currency_unavailable",
+            "owner_earnings_currency_unavailable",
+        ),
+        (
+            "currency_mismatch",
+            "available",
+            None,
+            "currency_mismatch",
+            "currency_mismatch",
+        ),
+        (
+            "inactive",
+            "unavailable",
+            "stock_inactive",
+            "stock_inactive",
+            "stock_inactive",
+        ),
     ],
 )
 def test_oracles_lens_price_dependent_outputs_fail_closed(
@@ -692,7 +732,8 @@ def test_oracles_lens_price_dependent_outputs_fail_closed(
     scenario,
     expected_status,
     expected_reason,
-    comparison_reason,
+    valuation_reason,
+    quality_reason,
 ):
     from app.services import market_data_service
 
@@ -711,8 +752,14 @@ def test_oracles_lens_price_dependent_outputs_fail_closed(
         "owners_earnings_per_share_normalized",
         5.0,
     )
-    owner_earnings.unit = "USD"
-    owner_earnings.currency = "USD"
+    fact_currency = (
+        "ZZZ"
+        if scenario in {"non_iso_currency", "non_iso_fact_currency"}
+        else "USD"
+    )
+    fact_unit = "ZZZ" if scenario == "non_iso_currency" else "USD"
+    owner_earnings.unit = fact_unit
+    owner_earnings.currency = fact_currency
     owner_earnings.value_json = {
         "fact_nature": "estimate",
         "user_authored_formula": True,
@@ -723,8 +770,8 @@ def test_oracles_lens_price_dependent_outputs_fail_closed(
         150.0,
         source_type="manual",
     )
-    fair_value.unit = "USD"
-    fair_value.currency = "USD"
+    fair_value.unit = fact_unit
+    fair_value.currency = fact_currency
     db_session.add_all([owner_earnings, fair_value])
 
     target_day = compute_target_date(datetime.now(timezone.utc).astimezone(ET))
@@ -748,6 +795,8 @@ def test_oracles_lens_price_dependent_outputs_fail_closed(
             currency=(
                 None
                 if scenario == "unknown_currency"
+                else "ZZZ"
+                if scenario == "non_iso_currency"
                 else "CAD"
                 if scenario == "currency_mismatch"
                 else "USD"
@@ -771,9 +820,9 @@ def test_oracles_lens_price_dependent_outputs_fail_closed(
         "below_holder_estimate": False,
         "below_selected_valuation_reference": False,
     }
-    assert comparison_reason in item["valuation_unavailable_reasons"]
+    assert valuation_reason in item["valuation_unavailable_reasons"]
     assert item["quality_overlay"]["owner_earnings_yield"] is None
-    assert comparison_reason in item["quality_overlay"]["unavailable_reasons"]
+    assert quality_reason in item["quality_overlay"]["unavailable_reasons"]
     assert item["quality_overlay"]["current_price_state"] == price_state
 
 

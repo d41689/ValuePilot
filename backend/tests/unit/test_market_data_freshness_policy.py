@@ -239,6 +239,34 @@ def test_missing_currency_is_typed_and_never_fresh(db_session):
     assert result.reason_code == "price_currency_unavailable"
 
 
+def test_non_iso_currency_is_typed_and_never_fresh(db_session):
+    from app.services.market_data_service import read_canonical_eod_price
+
+    stock = _stock(db_session, "BADCCY")
+    _price(
+        db_session,
+        stock,
+        price_date=date(2026, 7, 17),
+        source="licensed_fixture",
+        currency="ZZZ",
+        close=100,
+        created_at=datetime(2026, 7, 17, 22, tzinfo=timezone.utc),
+    )
+
+    result = read_canonical_eod_price(
+        db_session,
+        stock=stock,
+        as_of=date(2026, 7, 20),
+        source_priority=("licensed_fixture",),
+    )
+
+    assert result.status == "unavailable"
+    assert result.current_value is None
+    assert result.currency is None
+    assert result.freshness_state == "unknown_freshness"
+    assert result.reason_code == "price_currency_unavailable"
+
+
 def test_refresh_batches_eligible_stocks_and_persists_validated_currency(db_session):
     from app.services.market_data_service import MarketDataService
 
@@ -287,6 +315,32 @@ def test_provider_payload_without_currency_is_rejected(db_session):
     result = MarketDataService(
         db_session,
         provider=MissingCurrencyProvider(),
+        throttle_minutes=0,
+    ).refresh_stock_prices(
+        [stock.id],
+        reason="coverage_queue",
+        now=datetime(2026, 7, 20, 23, tzinfo=timezone.utc),
+    )
+
+    assert result[0]["status"] == "failed"
+    assert result[0]["reason"] == "provider_currency_missing"
+    assert db_session.query(StockPrice).filter_by(stock_id=stock.id).count() == 0
+
+
+def test_provider_payload_with_non_iso_currency_is_rejected(db_session):
+    from app.services.market_data_service import MarketDataService
+
+    class NonIsoCurrencyProvider(BatchProvider):
+        def fetch_daily(self, symbols: list[str], target_date: date):
+            payload = super().fetch_daily(symbols, target_date)
+            for row in payload.values():
+                row["currency"] = "ZZZ"
+            return payload
+
+    stock = _stock(db_session, "BADWRITE")
+    result = MarketDataService(
+        db_session,
+        provider=NonIsoCurrencyProvider(),
         throttle_minutes=0,
     ).refresh_stock_prices(
         [stock.id],

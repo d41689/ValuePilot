@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 import math
-import re
 import time
 import urllib.parse
 import urllib.request
@@ -14,6 +13,7 @@ from zoneinfo import ZoneInfo
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.core.currencies import normalize_iso4217_currency
 from app.models.institutions import Filing13F, Holding13F, InstitutionManager
 from app.models.stocks import Stock, StockPrice
 
@@ -42,9 +42,6 @@ _US_EQUITY_EXCHANGES = {
     "XNAS",
     "XNYS",
 }
-_ISO_CURRENCY_RE = re.compile(r"^[A-Z]{3}$")
-
-
 @dataclass(frozen=True)
 class MarketSessionResolution:
     calendar_code: str | None
@@ -455,8 +452,7 @@ def compute_target_date(
 
 
 def _currency(value: Any) -> str | None:
-    normalized = str(value or "").upper().strip()
-    return normalized if _ISO_CURRENCY_RE.fullmatch(normalized) else None
+    return normalize_iso4217_currency(value)
 
 
 def _source_rank(source: str, priorities: tuple[str, ...]) -> int:

@@ -182,3 +182,17 @@ git diff --check
   production build's generated `tsconfig.json` include entry was removed after
   verification; it is not part of the product change. No migration was added.
   Draft PR #141 is ready for Terra adversarial review round 4.
+- 2026-09-03: Terra adversarial review round 4 found one valid currency-
+  authority gap: the canonical reader accepted any three uppercase letters, so
+  a `ZZZ` price and `ZZZ` fact could authorize arithmetic. A single vendored,
+  deterministic registry now validates current monetary ISO 4217 codes for
+  canonical reads, provider writes, valuation/Oracle facts, stock-summary
+  references, and manual-position input. The registry is a 2026-09-03 snapshot
+  of the official SIX ISO 4217 Maintenance Agency List One; it has no runtime
+  network or locale dependency. `XTS` (testing) and `XXX` (no currency) remain
+  fail-closed even though they are reserved List One codes.
+- 2026-09-03: round-4 tests were written red first. They reproduced four `ZZZ`
+  bypasses in the canonical reader, provider persistence, Watchlist margin of
+  safety, and Oracle discount/owner-yield paths, plus invalid manual-position
+  input and the explicit-currency/fallback-unit conflict. The focused green run
+  passed (`59 passed`); a full closing gate follows before Terra round 5.

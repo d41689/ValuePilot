@@ -49,6 +49,17 @@ def _portfolio(db_session, user_id):
     )
 
 
+def test_manual_position_rejects_non_iso_currency():
+    with pytest.raises(ValueError, match="current ISO 4217"):
+        ManualPositionCreate(
+            stock_id=1,
+            quantity=Decimal("1"),
+            average_unit_cost=Decimal("100"),
+            currency="ZZZ",
+            opened_on=date(2026, 9, 3),
+        )
+
+
 def test_open_resize_review_close_is_decimal_versioned_and_append_only(
     db_session, user_factory
 ):
