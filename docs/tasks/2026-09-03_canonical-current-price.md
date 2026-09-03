@@ -120,3 +120,26 @@ git diff --check
 - 2026-09-03: post-remediation exact closing gate passed: Compose rebuild,
   Alembic upgrade, backend `2146 passed`, frontend `220 passed`, frontend lint,
   production build, and `git diff --check`. No migration was added.
+- 2026-09-03: Terra adversarial review round 2 found two remaining read-contract
+  gaps. Coverage serialization now revalidates the persisted `stock_price`
+  source reference against current provider authorization, redacts the close
+  and changes ready/stale wire state to typed `source_unavailable` when that
+  authority is absent, and treats missing legacy authorization metadata as
+  unproven. The same safe projection drives coverage lists, research workspace
+  coverage/missing items, and coverage-change notifications. Regression tests
+  cover pre-existing legacy rows and provider revocation after persistence.
+- 2026-09-03: manual portfolio positions now return the complete shared
+  canonical `current_price` object instead of a second decomposed price
+  contract. The UI consumes the shared type and evidence/reason labels and
+  renders availability, typed reason, source authorization, expected session,
+  as-of semantics, and policy versions. API/UI regressions cover valid,
+  unauthorized, stale, unknown-calendar, and position-currency-mismatch states.
+- 2026-09-03: no migration or stored-data rewrite is required for round 2.
+  Coverage rows remain audit snapshots; current display permission is enforced
+  at every serialization boundary, including legacy rows. The #138 bypass scan
+  found and closed notification materialization's direct use of persisted
+  coverage state/evidence. Application price reads remain centralized in the
+  market-data service; the remaining direct `StockPrice` aggregation is the
+  separate quant-trading data-audit surface. Focused round-2 verification passed
+  (`160 passed` backend; `37 passed` frontend); a new exact closing gate follows
+  before Terra round-3 review.
