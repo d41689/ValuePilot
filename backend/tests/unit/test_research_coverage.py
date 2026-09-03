@@ -444,6 +444,100 @@ def test_persisted_authorized_price_is_redacted_after_provider_revocation(
     assert workspace_price["evidence"]["close"] is None
 
 
+def test_legacy_ready_price_with_non_iso_currency_is_blocked_on_every_projection(
+    client, db_session, user_factory, auth_headers
+):
+    user = user_factory(email="coverage-invalid-currency@example.com")
+    stock = _stock(db_session, "BADCCOV")
+    _watchlist(db_session, user.id, stock)
+    price_day = compute_target_date(datetime.now(timezone.utc).astimezone(ET))
+    price = StockPrice(
+        stock_id=stock.id,
+        price_date=price_day,
+        open=88,
+        high=89,
+        low=87,
+        close=88,
+        volume=1_000,
+        currency="ZZZ",
+        source="twelvedata",
+    )
+    db_session.add(price)
+    db_session.flush()
+    db_session.add(
+        ResearchCoverageRequirement(
+            user_id=user.id,
+            stock_id=stock.id,
+            kind="eod_price",
+            priority_policy_version="research-coverage-priority-v1.0",
+            matched_rule="watchlist_member",
+            priority_rank=10,
+            rank_components={"tier": 5},
+            state="ready",
+            reason_code=None,
+            reason="Legacy ready snapshot.",
+            source_type="stock_price",
+            source_ref_id=price.id,
+            evidence_json={
+                "close": "88.0",
+                "currency": "ZZZ",
+                "source": "twelvedata",
+                "source_authorization_state": "authorized",
+                "price_date": price_day.isoformat(),
+            },
+            observed_at=price.created_at,
+            freshness_policy_version="eod-freshness-v1.0",
+            evaluated_at=datetime.now(timezone.utc),
+            next_action=None,
+            is_current=True,
+        )
+    )
+    db_session.commit()
+
+    headers = auth_headers(user)
+    listed = client.get("/api/v1/coverage/requirements", headers=headers)
+    assert listed.status_code == 200, listed.text
+    listed_price = listed.json()["items"][0]
+    assert listed_price["state"] == "blocked"
+    assert listed_price["reason_code"] == "price_currency_unavailable"
+    assert listed_price["evidence"]["close"] is None
+    assert listed_price["evidence"]["currency"] is None
+    assert listed_price["evidence"]["source_authorization_state"] == "authorized"
+
+    created = client.post(
+        "/api/v1/research/cases",
+        headers=headers,
+        json={
+            "stock_id": stock.id,
+            "origin": {
+                "origin_type": "manual",
+                "origin_key": f"coverage-invalid-currency:{stock.id}",
+                "source_version": "coverage-invalid-currency-v1",
+                "source_ref": {"test": True},
+            },
+        },
+    )
+    assert created.status_code == 201, created.text
+    workspace = client.get(
+        f"/api/v1/research/cases/{created.json()['case']['id']}/workspace",
+        headers=headers,
+    )
+    assert workspace.status_code == 200, workspace.text
+    workspace_price = next(
+        item for item in workspace.json()["coverage"] if item["kind"] == "eod_price"
+    )
+    missing_price = next(
+        item
+        for item in workspace.json()["missing_items"]
+        if item["kind"] == "eod_price"
+    )
+    assert workspace_price == missing_price
+    assert workspace_price["state"] == "blocked"
+    assert workspace_price["reason_code"] == "price_currency_unavailable"
+    assert workspace_price["evidence"]["close"] is None
+    assert workspace_price["evidence"]["currency"] is None
+
+
 def test_coverage_evaluate_endpoint_is_idempotent(
     client, db_session, user_factory, auth_headers
 ):

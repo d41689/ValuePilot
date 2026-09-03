@@ -202,3 +202,18 @@ git diff --check
   generated `tsconfig.json` include entry was removed after verification; it is
   not part of the product change. No migration or stored-data rewrite was
   added. Draft PR #141 is ready for Terra adversarial review round 5.
+- 2026-09-03: Terra adversarial review round 5 found two valid residual gaps.
+  Canonical point and series selection had truncated `created_at` to whole
+  seconds, allowing a newer microsecond observation with a lower id to lose to
+  an older observation. Both readers now share one deterministic selection key:
+  explicit source priority, full UTC ingestion datetime, then id. Point and
+  series regressions reverse microseconds and ids within the same second.
+- 2026-09-03: persisted ready coverage now revalidates both provider authority
+  and the referenced `stock_prices.currency` through one exact primary-key
+  lookup. A legacy `ZZZ` row is projected as typed
+  `price_currency_unavailable`, with display close/currency cleared and state
+  blocked. The same serialization drives coverage lists, workspace coverage,
+  workspace `missing_items`, and coverage-change notification eligibility, so
+  an invalid-currency ready snapshot cannot materialize a ready notification.
+  The focused round-5 file suite passed (`56 passed`); a full closing gate
+  follows before Terra round 6.

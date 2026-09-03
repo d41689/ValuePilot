@@ -17,7 +17,7 @@ from app.services.market_data_service import (
     PRICE_FRESHNESS_POLICY_VERSION,
     read_canonical_eod_price,
     serialize_canonical_eod_price,
-    stored_price_source_authorization_state,
+    stored_price_evidence_authority,
 )
 from app.services.oracles_lens.constants import SCORE_VERSION
 
@@ -467,7 +467,7 @@ def _serialize_price_requirement_evidence(
     session: Session,
     *,
     row: ResearchCoverageRequirement,
-) -> tuple[dict[str, Any], bool]:
+) -> tuple[dict[str, Any], str | None]:
     """Return persisted price evidence only while its authority remains valid.
 
     Read permission is deliberately stricter than storage. A legacy snapshot
@@ -476,22 +476,28 @@ def _serialize_price_requirement_evidence(
     """
     evidence = dict(row.evidence_json or {})
     persisted_authorization = evidence.get("source_authorization_state")
-    current_authorization = (
-        stored_price_source_authorization_state(
+    current_authorization, authoritative_currency = (
+        stored_price_evidence_authority(
             session,
             price_id=row.source_ref_id,
             stock_id=row.stock_id,
         )
         if row.source_type == "stock_price"
-        else "unavailable"
+        else ("unavailable", None)
     )
-    authorized = (
-        persisted_authorization == "authorized"
-        and current_authorization == "authorized"
-    )
-    if authorized:
+    blocker_reason = None
+    if (
+        persisted_authorization != "authorized"
+        or current_authorization != "authorized"
+    ):
+        blocker_reason = "source_unavailable"
+    elif authoritative_currency is None:
+        blocker_reason = "price_currency_unavailable"
+
+    if blocker_reason is None:
         evidence["source_authorization_state"] = "authorized"
-        return evidence, True
+        evidence["currency"] = authoritative_currency
+        return evidence, None
 
     had_displayable_observation = evidence.get("close") is not None
     evidence["close"] = None
@@ -500,7 +506,10 @@ def _serialize_price_requirement_evidence(
         if persisted_authorization == "authorized"
         else "unavailable"
     )
-    return evidence, not (had_displayable_observation or row.state == "ready")
+    if blocker_reason == "price_currency_unavailable":
+        evidence["currency"] = None
+    should_override = had_displayable_observation or row.state == "ready"
+    return evidence, blocker_reason if should_override else None
 
 
 def serialize_requirement(
@@ -509,9 +518,9 @@ def serialize_requirement(
     stock: Stock,
 ) -> dict[str, Any]:
     evidence = dict(row.evidence_json or {})
-    persisted_state_remains_valid = True
+    blocker_reason = None
     if row.kind == "eod_price":
-        evidence, persisted_state_remains_valid = _serialize_price_requirement_evidence(
+        evidence, blocker_reason = _serialize_price_requirement_evidence(
             session,
             row=row,
         )
@@ -525,16 +534,20 @@ def serialize_requirement(
         "matched_rule": row.matched_rule,
         "priority_rank": row.priority_rank,
         "rank_components": row.rank_components or {},
-        "state": row.state if persisted_state_remains_valid else "blocked",
+        "state": row.state if blocker_reason is None else "blocked",
         "reason_code": (
             row.reason_code
-            if persisted_state_remains_valid
-            else "source_unavailable"
+            if blocker_reason is None
+            else blocker_reason
         ),
         "reason": (
             row.reason
-            if persisted_state_remains_valid
-            else "The persisted price source is not currently authorized for display."
+            if blocker_reason is None
+            else (
+                "The persisted price currency is not a current monetary ISO 4217 code."
+                if blocker_reason == "price_currency_unavailable"
+                else "The persisted price source is not currently authorized for display."
+            )
         ),
         "source_type": row.source_type,
         "source_ref_id": row.source_ref_id,
@@ -544,7 +557,7 @@ def serialize_requirement(
         "evaluated_at": row.evaluated_at.isoformat(),
         "next_action": (
             row.next_action
-            if persisted_state_remains_valid
+            if blocker_reason is None
             else "refresh_eod_price"
         ),
         "first_unmet_at": (
