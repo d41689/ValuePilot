@@ -1112,7 +1112,7 @@ def materialize_intrinsic_value_crossings(
     """Evaluate USD price-to-user-value crossings with initialization/noise guards."""
     from app.models.research import ResearchCase, ResearchCaseRevision
     from app.models.stocks import Stock
-    from app.services.market_data_service import read_canonical_eod_price
+    from app.services.market_data_service import read_current_eod_price
     from app.services.valuation import read_valuation_context
 
     created = 0
@@ -1163,8 +1163,8 @@ def materialize_intrinsic_value_crossings(
             stock = session.get(Stock, case.stock_id)
             if stock is None:
                 continue
-            price = read_canonical_eod_price(
-                session, stock=stock, as_of=as_of.date()
+            price = read_current_eod_price(
+                session, stock=stock, evaluated_at=as_of
             )
             valuation = read_valuation_context(
                 session, user_id=user_id, stock_id=case.stock_id

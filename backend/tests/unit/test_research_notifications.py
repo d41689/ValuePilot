@@ -651,6 +651,70 @@ def test_intrinsic_value_change_reinitializes_alert_without_false_crossing(
     assert f"value-{second_value.id}" in notification.source_version
 
 
+def test_post_close_alert_evaluation_uses_same_day_completed_session(
+    db_session, user_factory
+):
+    user = user_factory("post-close-price@example.com")
+    stock = Stock(
+        ticker="AFTER",
+        exchange="NASDAQ",
+        company_name="After Close Corp",
+    )
+    db_session.add(stock)
+    db_session.flush()
+    db_session.add(
+        ResearchCase(
+            user_id=user.id,
+            stock_id=stock.id,
+            state="monitoring",
+            decision="watch",
+            next_review_on=date(2026, 10, 1),
+        )
+    )
+    db_session.add(
+        NotificationSubscription(
+            user_id=user.id,
+            event_family="intrinsic_value_threshold_crossed",
+            destination_id=None,
+            frequency="immediate",
+            timezone="UTC",
+            cooldown_minutes=60,
+            threshold_ratio=0.20,
+            hysteresis_ratio=0.02,
+            is_enabled=True,
+        )
+    )
+    publish_user_intrinsic_value(
+        db_session,
+        user_id=user.id,
+        stock_id=stock.id,
+        value_numeric=100,
+        as_of_date=date(2026, 7, 20),
+    )
+    same_day_price = StockPrice(
+        stock_id=stock.id,
+        price_date=date(2026, 7, 20),
+        open=75,
+        high=75,
+        low=75,
+        close=75,
+        source="yfinance",
+        currency="USD",
+    )
+    db_session.add(same_day_price)
+    db_session.commit()
+
+    created = materialize_intrinsic_value_crossings(
+        db_session,
+        as_of=datetime(2026, 7, 20, 22, tzinfo=timezone.utc),
+    )
+
+    assert created == 0
+    state = db_session.query(NotificationPriceAlertState).one()
+    assert state.last_price_id == same_day_price.id
+    assert state.last_side == "below"
+
+
 def test_new_monitoring_revision_reinitializes_alert_after_research_pause(
     db_session, user_factory
 ):
