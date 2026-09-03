@@ -117,3 +117,6 @@ git diff --check
   currency-mismatch, inactive-stock, and post-close states. The focused
   remediation gate passed (`115 passed` backend; `30 passed` frontend); a new
   full closing gate follows before round-2 review.
+- 2026-09-03: post-remediation exact closing gate passed: Compose rebuild,
+  Alembic upgrade, backend `2146 passed`, frontend `220 passed`, frontend lint,
+  production build, and `git diff --check`. No migration was added.
