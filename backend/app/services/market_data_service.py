@@ -463,6 +463,19 @@ def _source_rank(source: str, priorities: tuple[str, ...]) -> int:
         return len(priorities)
 
 
+def _price_selection_key(
+    row: StockPrice, source_priority: tuple[str, ...]
+) -> tuple[int, datetime, int]:
+    """Rank by source authority, then full ingestion time, then row identity."""
+
+    created_at = (
+        _ensure_utc(row.created_at)
+        if row.created_at is not None
+        else datetime.min.replace(tzinfo=timezone.utc)
+    )
+    return (-_source_rank(row.source, source_priority), created_at, int(row.id))
+
+
 def _normalized_source(source: Any) -> str:
     normalized = str(source or "").strip().lower()
     return {
@@ -508,19 +521,23 @@ def current_price_source_authorization_state(source: Any) -> str:
     )
 
 
-def stored_price_source_authorization_state(
+def stored_price_evidence_authority(
     session: Session,
     *,
     price_id: int | None,
     stock_id: int,
-) -> str:
-    """Revalidate a persisted observation link without bypassing this service."""
+) -> tuple[str, str | None]:
+    """Revalidate source and currency for one explicitly referenced observation."""
+
     if price_id is None:
-        return "unavailable"
+        return "unavailable", None
     observation = session.get(StockPrice, price_id)
     if observation is None or observation.stock_id != stock_id:
-        return "unavailable"
-    return current_price_source_authorization_state(observation.source)
+        return "unavailable", None
+    return (
+        current_price_source_authorization_state(observation.source),
+        _currency(observation.currency),
+    )
 
 
 def serialize_canonical_eod_price(price: CanonicalEodPrice) -> dict[str, Any]:
@@ -644,13 +661,9 @@ def read_canonical_eod_price(
 
     latest_date = max(row.price_date for row in rows)
     same_date = [row for row in rows if row.price_date == latest_date]
-    selected = min(
+    selected = max(
         same_date,
-        key=lambda row: (
-            _source_rank(row.source, selection_priority),
-            -int((_ensure_utc(row.created_at).timestamp()) if row.created_at else 0),
-            -int(row.id),
-        ),
+        key=lambda row: _price_selection_key(row, selection_priority),
     )
     currency = _currency(selected.currency)
     normalized_source = _normalized_source(selected.source)
@@ -833,19 +846,9 @@ def read_canonical_eod_series(
     for row in rows:
         key = (int(row.stock_id), row.price_date)
         incumbent = selected.get(key)
-        if incumbent is None or (
-            _source_rank(row.source, source_priority),
-            -int((_ensure_utc(row.created_at).timestamp()) if row.created_at else 0),
-            -int(row.id),
-        ) < (
-            _source_rank(incumbent.source, source_priority),
-            -int(
-                (_ensure_utc(incumbent.created_at).timestamp())
-                if incumbent.created_at
-                else 0
-            ),
-            -int(incumbent.id),
-        ):
+        if incumbent is None or _price_selection_key(
+            row, source_priority
+        ) > _price_selection_key(incumbent, source_priority):
             selected[key] = row
     result: dict[int, list[StockPrice]] = {stock_id: [] for stock_id in ids}
     for row in selected.values():

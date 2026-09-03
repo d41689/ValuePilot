@@ -180,6 +180,41 @@ def test_canonical_read_excludes_observations_ingested_after_knowledge_cutoff(
     assert result.close == 100
 
 
+def test_canonical_point_read_preserves_created_at_microseconds_before_id(db_session):
+    from app.services.market_data_service import read_canonical_eod_price
+
+    stock = _stock(db_session, "POINTUS")
+    newer_lower_id = _price(
+        db_session,
+        stock,
+        price_date=date(2026, 7, 17),
+        source="licensed_fixture",
+        currency="USD",
+        close=200,
+        created_at=datetime(2026, 7, 17, 22, 0, 0, 900000, tzinfo=timezone.utc),
+    )
+    older_higher_id = _price(
+        db_session,
+        stock,
+        price_date=date(2026, 7, 17),
+        source="licensed_fixture",
+        currency="USD",
+        close=100,
+        created_at=datetime(2026, 7, 17, 22, 0, 0, 100000, tzinfo=timezone.utc),
+    )
+    assert newer_lower_id.id < older_higher_id.id
+
+    result = read_canonical_eod_price(
+        db_session,
+        stock=stock,
+        as_of=date(2026, 7, 20),
+        source_priority=("licensed_fixture",),
+    )
+
+    assert result.price_id == newer_lower_id.id
+    assert result.current_value == 200
+
+
 def test_canonical_series_excludes_late_inserted_history(db_session):
     from app.services.market_data_service import read_canonical_eod_series
 
@@ -212,6 +247,42 @@ def test_canonical_series_excludes_late_inserted_history(db_session):
     )[stock.id]
 
     assert [row.id for row in rows] == [known.id]
+
+
+def test_canonical_series_preserves_created_at_microseconds_before_id(db_session):
+    from app.services.market_data_service import read_canonical_eod_series
+
+    stock = _stock(db_session, "SERIESUS")
+    newer_lower_id = _price(
+        db_session,
+        stock,
+        price_date=date(2026, 7, 17),
+        source="licensed_fixture",
+        currency="USD",
+        close=200,
+        created_at=datetime(2026, 7, 17, 22, 0, 0, 900000, tzinfo=timezone.utc),
+    )
+    older_higher_id = _price(
+        db_session,
+        stock,
+        price_date=date(2026, 7, 17),
+        source="licensed_fixture",
+        currency="USD",
+        close=100,
+        created_at=datetime(2026, 7, 17, 22, 0, 0, 100000, tzinfo=timezone.utc),
+    )
+    assert newer_lower_id.id < older_higher_id.id
+
+    rows = read_canonical_eod_series(
+        db_session,
+        stock_ids=[stock.id],
+        through=date(2026, 7, 17),
+        knowledge_cutoff=datetime(2026, 7, 17, 23, tzinfo=timezone.utc),
+        source_priority=("licensed_fixture",),
+    )[stock.id]
+
+    assert [row.id for row in rows] == [newer_lower_id.id]
+    assert float(rows[0].close) == 200
 
 
 def test_missing_currency_is_typed_and_never_fresh(db_session):
