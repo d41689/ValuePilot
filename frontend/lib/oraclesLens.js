@@ -1,3 +1,6 @@
+/* eslint-disable @typescript-eslint/no-require-imports */
+const { formatIsoCurrencyAmount } = require('./currencyFormat');
+
 function formatNumber(value, digits = 2) {
   if (typeof value !== 'number' || Number.isNaN(value)) {
     return '—';
@@ -296,6 +299,7 @@ function normalizeValuationReference(item) {
   const unavailableReasons = Array.isArray(item?.valuation_unavailable_reasons)
     ? item.valuation_unavailable_reasons
     : [];
+  const currentPriceState = normalizeCurrentPriceState(item?.current_price_state);
   return {
     holderRangeLabel:
       typeof item?.holder_price_estimate_low === 'number' &&
@@ -303,10 +307,10 @@ function normalizeValuationReference(item) {
         ? `$${formatNumber(item.holder_price_estimate_low, 2)}–$${formatNumber(item.holder_price_estimate_high, 2)}`
         : '—',
     currentPriceLabel: typeof item?.current_price === 'number'
-      ? `$${formatNumber(item.current_price, 2)}`
+      ? formatIsoCurrencyAmount(item.current_price, currentPriceState.currency, 2)
       : '—',
     currentPriceDateLabel: item?.current_price_date ?? '—',
-    currentPriceState: normalizeCurrentPriceState(item?.current_price_state),
+    currentPriceState,
     priceContext: item?.price_context ?? 'latest',
     priceContextLabel:
       item?.price_context === 'historical_snapshot' ? 'Historical snapshot' : 'Latest local price',

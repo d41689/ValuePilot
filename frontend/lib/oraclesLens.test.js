@@ -133,7 +133,7 @@ test('normalizeOracleLensRows emphasizes signal score with explanations', () => 
   assert.deepEqual(rows[0].quality.sourceDocumentIds, [2655]);
   assert.equal(rows[0].quality.provenanceFacts[0].metric_key, 'bs.return_on_total_capital');
   assert.equal(rows[0].valuation.holderRangeLabel, '$92.00–$118.00');
-  assert.equal(rows[0].valuation.currentPriceLabel, '$100.00');
+  assert.equal(rows[0].valuation.currentPriceLabel, 'USD 100.00');
   assert.equal(rows[0].valuation.currentPriceDateLabel, '2031-12-31');
   assert.equal(rows[0].valuation.currentPriceState.freshnessState, 'fresh');
   assert.equal(rows[0].valuation.priceContextLabel, 'Historical snapshot');
@@ -238,12 +238,27 @@ test('normalizeValuationReference keeps missing reference explicit', () => {
     valuation_unavailable_reasons: ['missing valuation reference'],
   });
 
-  assert.equal(valuation.currentPriceLabel, '$100.00');
+  assert.equal(valuation.currentPriceLabel, '100.00');
   assert.equal(valuation.referenceLabel, '—');
   assert.equal(valuation.referenceSourceLabel, 'Missing valuation reference');
   assert.equal(valuation.discountLabel, '—');
   assert.equal(valuation.referenceConfidence, 'unavailable');
   assert.deepEqual(valuation.unavailableReasons, ['missing valuation reference']);
+});
+
+test('normalizeValuationReference labels non-USD canonical prices unambiguously', () => {
+  const valuation = normalizeValuationReference({
+    current_price: 100,
+    current_price_state: {
+      status: 'available',
+      currency: 'CAD',
+      source: 'licensed_fixture',
+      price_date: '2031-12-31',
+    },
+  });
+
+  assert.equal(valuation.currentPriceLabel, 'CAD 100.00');
+  assert.notEqual(valuation.currentPriceLabel, '$100.00');
 });
 
 test('groupCautionFlags preserves all flags for drilldown', () => {

@@ -637,6 +637,7 @@ def test_intrinsic_value_change_reinitializes_alert_without_false_crossing(
         close=90,
         source="yfinance",
         currency="USD",
+        created_at=datetime(2026, 7, 17, 22, tzinfo=timezone.utc),
     )
     db_session.add(first_price)
     db_session.commit()
@@ -677,6 +678,7 @@ def test_intrinsic_value_change_reinitializes_alert_without_false_crossing(
         close=90,
         source="yfinance",
         currency="USD",
+        created_at=datetime(2026, 7, 20, 22, tzinfo=timezone.utc),
     )
     db_session.add(second_price)
     db_session.commit()
@@ -704,6 +706,7 @@ def test_intrinsic_value_change_reinitializes_alert_without_false_crossing(
         close=130,
         source="yfinance",
         currency="USD",
+        created_at=datetime(2026, 7, 21, 22, tzinfo=timezone.utc),
     )
     db_session.add(third_price)
     db_session.commit()
@@ -770,6 +773,7 @@ def test_post_close_alert_evaluation_uses_same_day_completed_session(
         close=75,
         source="yfinance",
         currency="USD",
+        created_at=datetime(2026, 7, 20, 21, tzinfo=timezone.utc),
     )
     db_session.add(same_day_price)
     db_session.commit()
@@ -783,6 +787,73 @@ def test_post_close_alert_evaluation_uses_same_day_completed_session(
     state = db_session.query(NotificationPriceAlertState).one()
     assert state.last_price_id == same_day_price.id
     assert state.last_side == "below"
+
+
+def test_historical_alert_evaluation_ignores_price_ingested_after_cutoff(
+    db_session, user_factory
+):
+    user = user_factory("late-price@example.com")
+    stock = Stock(
+        ticker="LATE",
+        exchange="NASDAQ",
+        company_name="Late Insert Corp",
+    )
+    db_session.add(stock)
+    db_session.flush()
+    db_session.add(
+        ResearchCase(
+            user_id=user.id,
+            stock_id=stock.id,
+            state="monitoring",
+            decision="watch",
+            next_review_on=date(2026, 10, 1),
+        )
+    )
+    db_session.add(
+        NotificationSubscription(
+            user_id=user.id,
+            event_family="intrinsic_value_threshold_crossed",
+            destination_id=None,
+            frequency="immediate",
+            timezone="UTC",
+            cooldown_minutes=60,
+            threshold_ratio=0.20,
+            hysteresis_ratio=0.02,
+            is_enabled=True,
+        )
+    )
+    publish_user_intrinsic_value(
+        db_session,
+        user_id=user.id,
+        stock_id=stock.id,
+        value_numeric=100,
+        as_of_date=date(2026, 7, 20),
+    )
+    db_session.add(
+        StockPrice(
+            stock_id=stock.id,
+            price_date=date(2026, 7, 20),
+            open=75,
+            high=75,
+            low=75,
+            close=75,
+            source="yfinance",
+            currency="USD",
+            created_at=datetime(2026, 7, 21, 12, tzinfo=timezone.utc),
+        )
+    )
+    db_session.commit()
+
+    created = materialize_intrinsic_value_crossings(
+        db_session,
+        as_of=datetime(2026, 7, 20, 22, tzinfo=timezone.utc),
+    )
+
+    assert created == 0
+    assert db_session.query(NotificationPriceAlertState).count() == 0
+    assert db_session.query(LogicalNotification).filter_by(
+        event_family="intrinsic_value_threshold_crossed"
+    ).count() == 0
 
 
 def test_new_monitoring_revision_reinitializes_alert_after_research_pause(
@@ -854,6 +925,7 @@ def test_new_monitoring_revision_reinitializes_alert_after_research_pause(
             close=90,
             source="yfinance",
             currency="USD",
+            created_at=datetime(2026, 7, 17, 22, tzinfo=timezone.utc),
         )
     )
     db_session.commit()
@@ -878,6 +950,7 @@ def test_new_monitoring_revision_reinitializes_alert_after_research_pause(
             close=70,
             source="yfinance",
             currency="USD",
+            created_at=datetime(2026, 7, 20, 22, tzinfo=timezone.utc),
         )
     )
     db_session.commit()
@@ -973,6 +1046,7 @@ def test_intrinsic_value_policy_change_reinitializes_without_false_crossing(
             close=90,
             source="yfinance",
             currency="USD",
+            created_at=datetime(2026, 7, 17, 22, tzinfo=timezone.utc),
         )
     )
     db_session.commit()
@@ -1004,6 +1078,7 @@ def test_intrinsic_value_policy_change_reinitializes_without_false_crossing(
         close=90,
         source="yfinance",
         currency="USD",
+        created_at=datetime(2026, 7, 20, 22, tzinfo=timezone.utc),
     )
     db_session.add(changed_policy_price)
     db_session.commit()

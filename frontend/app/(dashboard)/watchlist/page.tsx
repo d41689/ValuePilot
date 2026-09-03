@@ -16,6 +16,7 @@ import {
 } from 'lucide-react';
 
 import apiClient from '@/lib/api/client';
+import { formatIsoCurrencyAmount } from '@/lib/currencyFormat';
 import { cn } from '@/lib/utils';
 import { showAppToast } from '@/lib/appToast';
 import {
@@ -107,6 +108,11 @@ type WatchlistRow = {
   discount_to_reference: number | null;
   reference_comparison_reason: string | null;
   delta_today: number | null;
+  delta_today_state: {
+    status: 'available' | 'unavailable';
+    reason_code: string | null;
+    currency: string | null;
+  };
   piotroski_f_scores: Array<{
     period_end_date: string | null;
     fiscal_year: number | null;
@@ -184,11 +190,6 @@ type RefreshPriceResult = {
 };
 
 type ActiveWatchlistId = number | typeof OVERVIEW_WATCHLIST_ID;
-
-function formatNumber(value: number | null, digits = 2) {
-  if (value === null || Number.isNaN(value)) return '—';
-  return value.toFixed(digits);
-}
 
 function formatPercent(value: number | null) {
   if (value === null || Number.isNaN(value)) return '—';
@@ -772,7 +773,10 @@ export default function WatchlistPage() {
                       <div className="flex flex-col gap-1">
                         <span>
                           {row.current_price.status === 'available'
-                            ? formatNumber(row.current_price.value)
+                            ? formatIsoCurrencyAmount(
+                                row.current_price.value,
+                                row.current_price.currency,
+                              )
                             : 'Unavailable'}
                         </span>
                         <span className="text-xs text-muted-foreground">
@@ -855,7 +859,19 @@ export default function WatchlistPage() {
                         </span>
                       </div>
                     </TableCell>
-                    <TableCell>{formatNumber(row.delta_today)}</TableCell>
+                    <TableCell>
+                      {row.delta_today_state.status === 'available'
+                        ? formatIsoCurrencyAmount(
+                            row.delta_today,
+                            row.delta_today_state.currency,
+                          )
+                        : '—'}
+                      {row.delta_today_state.status === 'unavailable' ? (
+                        <div className="text-xs text-muted-foreground">
+                          {row.delta_today_state.reason_code ?? 'delta_unavailable'}
+                        </div>
+                      ) : null}
+                    </TableCell>
                     <TableCell>{formatDate(row.current_price.observed_at)}</TableCell>
                     <Watchlist13FColumns
                       snapshot={snapshotsByStockId.get(row.stock_id)}

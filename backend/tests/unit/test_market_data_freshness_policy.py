@@ -142,6 +142,78 @@ def test_canonical_read_prefers_source_priority_for_same_session(db_session):
     assert result.expected_session_date == date(2026, 7, 17)
 
 
+def test_canonical_read_excludes_observations_ingested_after_knowledge_cutoff(
+    db_session,
+):
+    from app.services.market_data_service import read_canonical_eod_price
+
+    stock = _stock(db_session, "PIT")
+    known = _price(
+        db_session,
+        stock,
+        price_date=date(2026, 7, 17),
+        source="licensed_fixture",
+        currency="USD",
+        close=100,
+        created_at=datetime(2026, 7, 17, 22, tzinfo=timezone.utc),
+    )
+    _price(
+        db_session,
+        stock,
+        price_date=date(2026, 7, 17),
+        source="licensed_fixture",
+        currency="USD",
+        close=999,
+        created_at=datetime(2026, 7, 21, 12, tzinfo=timezone.utc),
+    )
+
+    result = read_canonical_eod_price(
+        db_session,
+        stock=stock,
+        as_of=date(2026, 7, 17),
+        include_as_of_session=True,
+        knowledge_cutoff=datetime(2026, 7, 17, 23, tzinfo=timezone.utc),
+        source_priority=("licensed_fixture",),
+    )
+
+    assert result.price_id == known.id
+    assert result.close == 100
+
+
+def test_canonical_series_excludes_late_inserted_history(db_session):
+    from app.services.market_data_service import read_canonical_eod_series
+
+    stock = _stock(db_session, "SERIESPIT")
+    known = _price(
+        db_session,
+        stock,
+        price_date=date(2026, 7, 17),
+        source="licensed_fixture",
+        currency="USD",
+        close=100,
+        created_at=datetime(2026, 7, 17, 22, tzinfo=timezone.utc),
+    )
+    _price(
+        db_session,
+        stock,
+        price_date=date(2026, 7, 16),
+        source="licensed_fixture",
+        currency="USD",
+        close=1,
+        created_at=datetime(2026, 7, 21, 12, tzinfo=timezone.utc),
+    )
+
+    rows = read_canonical_eod_series(
+        db_session,
+        stock_ids=[stock.id],
+        through=date(2026, 7, 17),
+        knowledge_cutoff=datetime(2026, 7, 17, 23, tzinfo=timezone.utc),
+        source_priority=("licensed_fixture",),
+    )[stock.id]
+
+    assert [row.id for row in rows] == [known.id]
+
+
 def test_missing_currency_is_typed_and_never_fresh(db_session):
     from app.services.market_data_service import read_canonical_eod_price
 

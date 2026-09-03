@@ -297,12 +297,22 @@ def test_pool_members_include_price_and_fair_value(client, db_session, monkeypat
 
     stock_a = _make_stock(db_session, "AOS")
     stock_b = _make_stock(db_session, "MSFT")
+    stock_c = _make_stock(db_session, "SHOP")
 
     db_session.add(
         PoolMembership(
             user_id=user.id,
             pool_id=pool.id,
             stock_id=stock_a.id,
+            inclusion_type="manual",
+            rule_id=None,
+        )
+    )
+    db_session.add(
+        PoolMembership(
+            user_id=user.id,
+            pool_id=pool.id,
+            stock_id=stock_c.id,
             inclusion_type="manual",
             rule_id=None,
         )
@@ -392,7 +402,31 @@ def test_pool_members_include_price_and_fair_value(client, db_session, monkeypat
                 close=55.0,
                 volume=1_000,
                 source="seed",
-                currency="USD",
+                currency="CAD",
+                created_at=datetime(2026, 2, 2, 21, 0, tzinfo=timezone.utc),
+            ),
+            StockPrice(
+                stock_id=stock_c.id,
+                price_date=target_date,
+                open=69.0,
+                high=71.0,
+                low=68.0,
+                close=70.0,
+                volume=1_000,
+                source="seed",
+                currency="CAD",
+                created_at=datetime(2026, 2, 3, 21, 0, tzinfo=timezone.utc),
+            ),
+            StockPrice(
+                stock_id=stock_c.id,
+                price_date=prev_date,
+                open=64.0,
+                high=66.0,
+                low=63.0,
+                close=65.0,
+                volume=1_000,
+                source="seed",
+                currency=None,
                 created_at=datetime(2026, 2, 2, 21, 0, tzinfo=timezone.utc),
             ),
         ]
@@ -523,12 +557,17 @@ def test_pool_members_include_price_and_fair_value(client, db_session, monkeypat
     resp = client.get(f"/api/v1/stock_pools/{pool.id}/members", headers=headers)
     assert resp.status_code == 200
     rows = resp.json()
-    assert len(rows) == 2
+    assert len(rows) == 3
 
     row_a = next(row for row in rows if row["ticker"] == "AOS")
     assert row_a["current_price"]["value"] == pytest.approx(100.0)
     assert row_a["current_price"]["price_date"] == target_date.isoformat()
     assert row_a["delta_today"] == pytest.approx(2.0)
+    assert row_a["delta_today_state"] == {
+        "status": "available",
+        "reason_code": None,
+        "currency": "USD",
+    }
     assert row_a["fair_value"] == pytest.approx(200.0)
     assert row_a["fair_value_source"] == "manual"
     assert row_a["mos"] == pytest.approx(0.5)
@@ -573,7 +612,12 @@ def test_pool_members_include_price_and_fair_value(client, db_session, monkeypat
 
     row_b = next(row for row in rows if row["ticker"] == "MSFT")
     assert row_b["current_price"]["value"] == pytest.approx(50.0)
-    assert row_b["delta_today"] == pytest.approx(-5.0)
+    assert row_b["delta_today"] is None
+    assert row_b["delta_today_state"] == {
+        "status": "unavailable",
+        "reason_code": "currency_mismatch",
+        "currency": None,
+    }
     assert row_b["fair_value"] is None
     assert row_b["fair_value_source"] is None
     assert row_b["mos"] is None
@@ -581,3 +625,12 @@ def test_pool_members_include_price_and_fair_value(client, db_session, monkeypat
     assert row_b["valuation_reference_source"] == TARGET_KEY
     assert row_b["discount_to_reference"] == pytest.approx(0.375)
     assert row_b["piotroski_f_scores"] == []
+
+    row_c = next(row for row in rows if row["ticker"] == "SHOP")
+    assert row_c["current_price"]["value"] == pytest.approx(70.0)
+    assert row_c["delta_today"] is None
+    assert row_c["delta_today_state"] == {
+        "status": "unavailable",
+        "reason_code": "price_currency_unavailable",
+        "currency": None,
+    }

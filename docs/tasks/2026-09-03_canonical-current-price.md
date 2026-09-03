@@ -146,3 +146,25 @@ git diff --check
   upgrade, backend `2149 passed`, frontend `220 passed`, frontend lint,
   production build, and `git diff --check`. No migration was added. Draft PR
   #141 is ready for Terra adversarial review round 3.
+- 2026-09-03: Terra adversarial review round 3 found three valid gaps.
+  Watchlist daily change now requires two available observations with the same
+  known ISO currency and publishes a typed `delta_today_state` blocker for
+  missing, unknown-currency, or cross-currency inputs. Research workspace and
+  Oracle's Lens current-price labels now use one ISO-code formatter, including
+  explicit CAD coverage.
+- 2026-09-03: canonical point and series readers now exclude observations whose
+  `stock_prices.created_at` is after the caller's knowledge cutoff. Exact live
+  evaluations pass their timestamp through current and history selection;
+  date-only reads use a documented conservative start/end-of-exchange-day
+  cutoff. Negative regressions cover a late duplicate, late series history,
+  historical alert materialization, and an Oracle's Lens historical 13F
+  snapshot. Historical alert fixtures now set their intended ingestion time
+  instead of relying on the database's real current clock.
+- 2026-09-03: the PIT guarantee is intentionally bounded to append-only
+  application writes plus the stored `created_at` ingestion timestamp. Both
+  market-data acquisition paths append observations and never update selected
+  OHLC rows; there is no claim that this read filter can reconstruct an
+  out-of-band mutation to an existing row. No schema or migration change was
+  added in round 3. Focused verification passed (`63 passed` backend; `24
+  passed` frontend plus frontend lint). A full closing gate follows before
+  Terra round 4.

@@ -45,6 +45,8 @@ test('watchlist renders the full canonical contract and typed comparison blocker
   assert.match(page, /expected_session_date/);
   assert.match(page, /source_authorization_state/);
   assert.match(page, /Margin unavailable/);
+  assert.match(page, /delta_today_state/);
+  assert.match(page, /formatIsoCurrencyAmount/);
 });
 
 test('research case uses the same canonical current-price wire contract', () => {
@@ -54,4 +56,7 @@ test('research case uses the same canonical current-price wire contract', () => 
   assert.match(page, /current_price\.status !== 'available'/);
   assert.match(page, /current_price\.value/);
   assert.match(page, /source_authorization_state/);
+  assert.match(page, /money\(workspace\.current_price\.value, workspace\.current_price\.currency\)/);
+  assert.match(page, /formatIsoCurrencyAmount\(value, currency, 2\)/);
+  assert.doesNotMatch(page, /money\(workspace\.current_price\.value\)/);
 });

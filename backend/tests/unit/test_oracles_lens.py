@@ -835,6 +835,7 @@ def test_oracles_lens_uses_period_price_for_historical_snapshot(
                 volume=1000,
                 source="yfinance",
                 currency="USD",
+                created_at=datetime(2031, 9, 30, 22, tzinfo=timezone.utc),
             ),
             StockPrice(
                 stock_id=target.id,
@@ -873,6 +874,50 @@ def test_oracles_lens_uses_period_price_for_historical_snapshot(
     assert response.json()["coverage"]["price_missing_count"] == 0
     assert response.json()["coverage"]["price_coverage_ratio"] == 1.0
     assert response.json()["coverage"]["price_backfill_required"] is False
+
+
+def test_oracles_lens_historical_snapshot_ignores_late_inserted_price(
+    client, db_session, auth_headers,
+):
+    target = _seed_oracles_lens_fixture(db_session)
+    db_session.add(
+        _metric_fact(
+            target,
+            "target.price_18m.mid",
+            120.0,
+            period_end=date(2031, 9, 30),
+        )
+    )
+    db_session.add(
+        StockPrice(
+            stock_id=target.id,
+            price_date=date(2031, 9, 30),
+            open=78.0,
+            high=82.0,
+            low=77.0,
+            close=80.0,
+            adj_close=None,
+            volume=1000,
+            source="yfinance",
+            currency="USD",
+            created_at=datetime(2031, 10, 1, 12, tzinfo=timezone.utc),
+        )
+    )
+    db_session.commit()
+
+    response = client.get(
+        "/api/v1/13f/oracles-lens?period=2031-Q3&use_persisted_scores=false",
+        headers=auth_headers(db_session.get(User, target._test_user_id)),
+    )
+
+    assert response.status_code == 200
+    item = next(row for row in response.json()["items"] if row["stock_id"] == target.id)
+    assert item["current_price"] is None
+    assert item["current_price_state"]["status"] == "unavailable"
+    assert item["current_price_state"]["reason_code"] == "price_missing"
+    assert item["discount_to_reference"] is None
+    assert response.json()["coverage"]["price_coverage_count"] == 0
+    assert response.json()["coverage"]["price_missing_count"] == 1
 
 
 def test_quality_overlay_keeps_user_authored_owner_earnings_distinct(db_session):

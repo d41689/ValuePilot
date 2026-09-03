@@ -22,6 +22,7 @@ import {
 
 import apiClient from '@/lib/api/client';
 import { showAppToast } from '@/lib/appToast';
+import { formatIsoCurrencyAmount } from '@/lib/currencyFormat';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import {
@@ -293,12 +294,12 @@ function initialDraft(workspace: Workspace): Draft {
   };
 }
 
-function money(value: number | string | null | undefined): string {
+function money(
+  value: number | string | null | undefined,
+  currency: string | null | undefined,
+): string {
   if (value === null || value === undefined || value === '') return '—';
-  const parsed = Number(value);
-  return Number.isFinite(parsed)
-    ? new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', maximumFractionDigits: 2 }).format(parsed)
-    : String(value);
+  return formatIsoCurrencyAmount(value, currency, 2);
 }
 
 function label(value: string | null | undefined): string {
@@ -537,7 +538,7 @@ export default function ResearchCaseWorkspacePage() {
 
       <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
         <Card>
-          <CardHeader className="pb-2"><CardDescription>Canonical EOD price</CardDescription><CardTitle>{money(workspace.current_price.value)}</CardTitle></CardHeader>
+          <CardHeader className="pb-2"><CardDescription>Canonical EOD price</CardDescription><CardTitle>{money(workspace.current_price.value, workspace.current_price.currency)}</CardTitle></CardHeader>
           <CardContent className="text-xs text-muted-foreground">
             {currentPriceEvidenceLabel(workspace.current_price)}
             <div className="mt-1">Source authority: {workspace.current_price.source_authorization_state}</div>
@@ -545,14 +546,14 @@ export default function ResearchCaseWorkspacePage() {
           </CardContent>
         </Card>
         <Card>
-          <CardHeader className="pb-2"><CardDescription>User intrinsic value</CardDescription><CardTitle>{money(workspace.valuation.user_intrinsic_value)}</CardTitle></CardHeader>
+          <CardHeader className="pb-2"><CardDescription>User intrinsic value</CardDescription><CardTitle>{money(workspace.valuation.user_intrinsic_value, workspace.valuation.user_intrinsic_value_currency)}</CardTitle></CardHeader>
           <CardContent className="text-xs text-muted-foreground">
             {workspace.valuation.display_state === 'under_review' ? 'Last user value — under review' : label(workspace.valuation.user_intrinsic_value_status)} · {workspace.valuation.user_intrinsic_value_as_of ?? 'no valuation date'}
             <div className="mt-1">Margin of safety: {marginOfSafety === null ? 'Unavailable until fresh USD price and user value exist' : `${(marginOfSafety * 100).toFixed(1)}%`}</div>
           </CardContent>
         </Card>
         <Card>
-          <CardHeader className="pb-2"><CardDescription>System valuation reference</CardDescription><CardTitle>{money(workspace.valuation.system_reference_value)}</CardTitle></CardHeader>
+          <CardHeader className="pb-2"><CardDescription>System valuation reference</CardDescription><CardTitle>{money(workspace.valuation.system_reference_value, workspace.valuation.system_reference_currency)}</CardTitle></CardHeader>
           <CardContent className="text-xs text-muted-foreground">
             {workspace.valuation.system_reference_type ? label(workspace.valuation.system_reference_type) : 'No parsed reference'} · {workspace.valuation.system_reference_as_of ?? '—'}
             <div className="mt-1">Reference only; never treated as your intrinsic value.</div>
@@ -677,8 +678,8 @@ export default function ResearchCaseWorkspacePage() {
             <CardHeader><CardTitle className="flex items-center gap-2"><Landmark className="h-4 w-4" /> 13F context</CardTitle><CardDescription>13F is delayed up to 45 days after quarter end and is not proof of a current holding, cost basis, or complete portfolio.</CardDescription></CardHeader>
             <CardContent className="space-y-3">
               {workspace.oracles_lens ? <div className="rounded-lg border p-3 text-sm"><div className="font-medium">Oracle&apos;s Lens · {workspace.oracles_lens.report_quarter}</div><div className="mt-1 text-xs text-muted-foreground">Consensus {workspace.oracles_lens.consensus_score ?? '—'} · distinctive {workspace.oracles_lens.distinctive_score ?? '—'} · confidence {workspace.oracles_lens.confidence ?? '—'}</div><Button type="button" size="sm" variant="outline" className="mt-2" disabled={terminal} onClick={() => addEvidence({ source_type: 'oracles_lens_signal', source_id: workspace.oracles_lens!.signal_id, label: `Oracle's Lens ${workspace.oracles_lens!.report_quarter}`, claim: 'Reviewed the model signal and its disclosed limitations.' })}>Add signal evidence</Button></div> : <div className="text-sm text-muted-foreground">No current Oracle&apos;s Lens signal.</div>}
-              {workspace.holders_13f.status === 'unavailable' ? <div className="text-sm text-muted-foreground">{workspace.holders_13f.reason?.message ?? 'No active 13F holder context.'}</div> : workspace.holders_13f.top_holders?.slice(0, 8).map((holder) => <div key={holder.holding_id} className="flex items-center justify-between gap-3 rounded-lg border p-3 text-sm"><div><Link href={`/13f/managers/${holder.manager.id}`} className="font-medium text-primary hover:underline">{holder.manager.display_name ?? holder.manager.canonical_name ?? `Manager #${holder.manager.id}`}</Link><div className="text-xs text-muted-foreground">Reported weight {holder.portfolio_weight_pct ?? '—'}% · {money(holder.value_usd)} · holding streak {holder.holding_streak_quarters} quarter(s)</div></div><Button type="button" size="sm" variant="outline" disabled={terminal} onClick={() => addEvidence({ source_type: 'holding_13f', source_id: holder.holding_id, source_date: workspace.holders_13f.as_of_quarter ?? undefined, label: `${holder.manager.display_name ?? holder.manager.canonical_name ?? 'Manager'} 13F holding`, claim: `Reported position for ${workspace.holders_13f.as_of_quarter ?? 'the current active quarter'}.` })}>Add</Button></div>)}
-              {(workspace.holders_13f.recent_changes ?? []).length > 0 ? <div className="space-y-2"><div className="text-xs font-medium uppercase text-muted-foreground">Latest reported changes</div>{workspace.holders_13f.recent_changes!.slice(0, 8).map((change, index) => <div key={`${change.manager.id}-${change.change_status}-${index}`} className="rounded-lg border p-3 text-xs"><span className="font-medium">{change.manager.display_name ?? change.manager.canonical_name ?? `Manager #${change.manager.id}`}</span> · {label(change.change_status)} · value change {money(change.value_delta_usd)}</div>)}</div> : null}
+              {workspace.holders_13f.status === 'unavailable' ? <div className="text-sm text-muted-foreground">{workspace.holders_13f.reason?.message ?? 'No active 13F holder context.'}</div> : workspace.holders_13f.top_holders?.slice(0, 8).map((holder) => <div key={holder.holding_id} className="flex items-center justify-between gap-3 rounded-lg border p-3 text-sm"><div><Link href={`/13f/managers/${holder.manager.id}`} className="font-medium text-primary hover:underline">{holder.manager.display_name ?? holder.manager.canonical_name ?? `Manager #${holder.manager.id}`}</Link><div className="text-xs text-muted-foreground">Reported weight {holder.portfolio_weight_pct ?? '—'}% · {money(holder.value_usd, 'USD')} · holding streak {holder.holding_streak_quarters} quarter(s)</div></div><Button type="button" size="sm" variant="outline" disabled={terminal} onClick={() => addEvidence({ source_type: 'holding_13f', source_id: holder.holding_id, source_date: workspace.holders_13f.as_of_quarter ?? undefined, label: `${holder.manager.display_name ?? holder.manager.canonical_name ?? 'Manager'} 13F holding`, claim: `Reported position for ${workspace.holders_13f.as_of_quarter ?? 'the current active quarter'}.` })}>Add</Button></div>)}
+              {(workspace.holders_13f.recent_changes ?? []).length > 0 ? <div className="space-y-2"><div className="text-xs font-medium uppercase text-muted-foreground">Latest reported changes</div>{workspace.holders_13f.recent_changes!.slice(0, 8).map((change, index) => <div key={`${change.manager.id}-${change.change_status}-${index}`} className="rounded-lg border p-3 text-xs"><span className="font-medium">{change.manager.display_name ?? change.manager.canonical_name ?? `Manager #${change.manager.id}`}</span> · {label(change.change_status)} · value change {money(change.value_delta_usd, 'USD')}</div>)}</div> : null}
               {(workspace.holders_13f.data_caveats ?? []).map((caveat) => <div key={caveat.code} className="rounded-lg border border-amber-300 bg-amber-50 p-3 text-xs text-amber-950">{caveat.message}</div>)}
             </CardContent>
           </Card>
@@ -699,7 +700,7 @@ export default function ResearchCaseWorkspacePage() {
                 <div><div className="font-semibold">Revision {revision.revision_number} · {stateLabels[revision.case_state]}</div><div className="mt-1 text-xs text-muted-foreground">{new Date(revision.created_at).toLocaleString()} · recorded as {revision.recorded_identity.ticker} / {revision.recorded_identity.company_name}</div></div>
                 <div className="flex gap-2">{revision.is_qualified_decision ? <Badge variant="success"><CheckCircle2 className="h-3 w-3" /> Qualified decision</Badge> : <Badge variant="secondary">Draft record</Badge>}{revision.is_redacted ? <Badge variant="danger">Redacted</Badge> : null}{!sameIdentity(workspace, revision) ? <Badge variant="warning">Identity changed</Badge> : null}</div>
               </div>
-              <div className="mt-4 grid gap-4 md:grid-cols-3"><div><div className="text-xs font-medium uppercase text-muted-foreground">Thesis</div><p className="mt-1 whitespace-pre-wrap text-sm">{revision.thesis ?? 'Not recorded'}</p></div><div><div className="text-xs font-medium uppercase text-muted-foreground">Disconfirming view</div><p className="mt-1 whitespace-pre-wrap text-sm">{revision.variant_view ?? 'Not recorded'}</p></div><div><div className="text-xs font-medium uppercase text-muted-foreground">Valuation / decision</div><p className="mt-1 text-sm">{revision.valuation_base ? `${money(revision.valuation_low)} / ${money(revision.valuation_base)} / ${money(revision.valuation_high)}` : revision.valuation_unavailable_reason ?? 'Not assessed'}<br />{revision.decision ? label(revision.decision) : 'No decision'} · review {revision.next_review_on ?? '—'}</p></div></div>
+              <div className="mt-4 grid gap-4 md:grid-cols-3"><div><div className="text-xs font-medium uppercase text-muted-foreground">Thesis</div><p className="mt-1 whitespace-pre-wrap text-sm">{revision.thesis ?? 'Not recorded'}</p></div><div><div className="text-xs font-medium uppercase text-muted-foreground">Disconfirming view</div><p className="mt-1 whitespace-pre-wrap text-sm">{revision.variant_view ?? 'Not recorded'}</p></div><div><div className="text-xs font-medium uppercase text-muted-foreground">Valuation / decision</div><p className="mt-1 text-sm">{revision.valuation_base ? `${money(revision.valuation_low, revision.valuation_currency)} / ${money(revision.valuation_base, revision.valuation_currency)} / ${money(revision.valuation_high, revision.valuation_currency)}` : revision.valuation_unavailable_reason ?? 'Not assessed'}<br />{revision.decision ? label(revision.decision) : 'No decision'} · review {revision.next_review_on ?? '—'}</p></div></div>
               {revision.evidence.length > 0 ? <div className="mt-4"><div className="text-xs font-medium uppercase text-muted-foreground">Recorded evidence</div><div className="mt-2 flex flex-wrap gap-2">{revision.evidence.map((item, index) => item.access_status === 'source_unavailable' ? <Badge key={evidenceKey(item, index)} variant="danger" title="The recorded source is no longer authorized or available."><AlertCircle className="h-3 w-3" /> {item.label} · source_unavailable</Badge> : item.url ? <a key={evidenceKey(item, index)} href={item.url} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1 rounded-full border px-2.5 py-1 text-xs font-medium text-primary hover:underline">{item.label} · {item.destination_domain ?? new URL(item.url).hostname}<ExternalLink className="h-3 w-3" /></a> : <Badge key={evidenceKey(item, index)} variant="outline">{item.label}</Badge>)}</div></div> : null}
             </div>
           ))}

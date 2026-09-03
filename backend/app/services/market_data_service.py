@@ -321,6 +321,20 @@ def _ensure_utc(dt: datetime) -> datetime:
     return dt.astimezone(timezone.utc)
 
 
+def _date_only_knowledge_cutoff(
+    as_of: date, *, include_as_of_session: bool
+) -> datetime:
+    """Resolve a conservative knowledge cutoff for a date-only price read.
+
+    Start-of-day reads may use only observations known when that civil day
+    began. A caller explicitly asking through the as-of session receives the
+    end of that exchange civil day. Callers with an exact evaluation timestamp
+    pass it directly instead.
+    """
+    local_time = dt_time.max if include_as_of_session else dt_time.min
+    return datetime.combine(as_of, local_time, tzinfo=ET).astimezone(timezone.utc)
+
+
 def _observed_holiday(day: date) -> date:
     if day.weekday() == 5:
         return day - timedelta(days=1)
@@ -561,6 +575,7 @@ def read_canonical_eod_price(
     stock: Stock,
     as_of: date,
     include_as_of_session: bool = False,
+    knowledge_cutoff: datetime | None = None,
     source_priority: tuple[str, ...] | None = None,
 ) -> CanonicalEodPrice:
     """Read one deterministic, freshness-classified EOD observation.
@@ -568,6 +583,9 @@ def read_canonical_eod_price(
     A date-only ``as_of`` is interpreted at the start of that civil day, so its
     own close is not yet knowable. Callers refreshing after close already know
     the explicit target session and do not use this ambiguity-prone shortcut.
+    ``created_at`` is the stored ingestion-time boundary for append-only
+    application writes; this does not claim to reconstruct out-of-band row
+    mutations that the schema itself does not version.
     """
     authorized_sources = tuple(
         dict.fromkeys(
@@ -591,11 +609,19 @@ def read_canonical_eod_price(
         as_of if include_as_of_session else as_of - timedelta(days=1),
     )
     max_date = calendar.session_date or as_of
+    effective_knowledge_cutoff = _ensure_utc(
+        knowledge_cutoff
+        or _date_only_knowledge_cutoff(
+            as_of,
+            include_as_of_session=include_as_of_session,
+        )
+    )
     rows = (
         session.query(StockPrice)
         .filter(
             StockPrice.stock_id == stock.id,
             StockPrice.price_date <= max_date,
+            StockPrice.created_at <= effective_knowledge_cutoff,
         )
         .all()
     )
@@ -701,6 +727,7 @@ def read_current_eod_price(
         stock=stock,
         as_of=target_date,
         include_as_of_session=True,
+        knowledge_cutoff=now_utc,
         source_priority=source_priority,
     )
     return replace(
@@ -725,10 +752,11 @@ def read_current_eod_context(
     requirements. Invalid historical OHLC rows are omitted rather than used in
     arithmetic.
     """
+    knowledge_cutoff = _ensure_utc(evaluated_at or datetime.now(timezone.utc))
     current = read_current_eod_price(
         session,
         stock=stock,
-        evaluated_at=evaluated_at,
+        evaluated_at=knowledge_cutoff,
     )
     if current.status != "available" or current.current_value is None:
         return CanonicalEodContext(
@@ -752,6 +780,7 @@ def read_current_eod_context(
         stock_ids=[stock.id],
         through=current.price_date,
         from_date=current.price_date - timedelta(days=max(history_days, 0)),
+        knowledge_cutoff=knowledge_cutoff,
         source_priority=authorized_sources,
     ).get(stock.id, [])
 
@@ -779,19 +808,27 @@ def read_canonical_eod_series(
     stock_ids: Iterable[int],
     through: date,
     from_date: date | None = None,
+    knowledge_cutoff: datetime | None = None,
     source_priority: tuple[str, ...] = DEFAULT_PRICE_SOURCE_PRIORITY,
 ) -> dict[int, list[StockPrice]]:
     """Return at most one deterministic observation per stock/session.
 
     Historical context callers use this instead of independently choosing the
     newest duplicate row and accidentally disagreeing on provider priority.
+    Selection is bounded by the same stored ingestion-time knowledge cutoff as
+    the point reader.
     """
     ids = list(dict.fromkeys(int(stock_id) for stock_id in stock_ids))
     if not ids:
         return {}
+    effective_knowledge_cutoff = _ensure_utc(
+        knowledge_cutoff
+        or _date_only_knowledge_cutoff(through, include_as_of_session=True)
+    )
     query = session.query(StockPrice).filter(
         StockPrice.stock_id.in_(ids),
         StockPrice.price_date <= through,
+        StockPrice.created_at <= effective_knowledge_cutoff,
     )
     if from_date is not None:
         query = query.filter(StockPrice.price_date >= from_date)

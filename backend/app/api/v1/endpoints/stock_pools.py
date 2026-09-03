@@ -235,13 +235,50 @@ def _watchlist_rows_for_memberships(
             else None
         )
         delta_today = None
-        if (
-            previous_price is not None
-            and previous_price.status == "available"
-            and previous_price.current_value is not None
-            and price is not None
+        if current_price.status != "available" or price is None:
+            delta_today_state = {
+                "status": "unavailable",
+                "reason_code": current_price.reason_code or "price_unavailable",
+                "currency": None,
+            }
+        elif previous_price is None or previous_price.status != "available":
+            delta_today_state = {
+                "status": "unavailable",
+                "reason_code": (
+                    previous_price.reason_code
+                    if previous_price is not None
+                    else "previous_price_unavailable"
+                ),
+                "currency": None,
+            }
+        elif (
+            current_price.currency is None
+            or previous_price.currency is None
         ):
+            delta_today_state = {
+                "status": "unavailable",
+                "reason_code": "price_currency_unavailable",
+                "currency": None,
+            }
+        elif current_price.currency != previous_price.currency:
+            delta_today_state = {
+                "status": "unavailable",
+                "reason_code": "currency_mismatch",
+                "currency": None,
+            }
+        elif previous_price.current_value is None:
+            delta_today_state = {
+                "status": "unavailable",
+                "reason_code": "previous_price_unavailable",
+                "currency": None,
+            }
+        else:
             delta_today = price - previous_price.current_value
+            delta_today_state = {
+                "status": "available",
+                "reason_code": None,
+                "currency": current_price.currency,
+            }
 
         valuation = read_valuation_context(session, user_id=user_id, stock_id=stock.id)
         fair_value = valuation.user_intrinsic_value
@@ -295,6 +332,7 @@ def _watchlist_rows_for_memberships(
                 ),
                 "reference_comparison_reason": reference_comparison_reason,
                 "delta_today": delta_today,
+                "delta_today_state": delta_today_state,
                 "piotroski_f_scores": piotroski_scores_by_stock_id.get(stock.id, []),
             }
         )
