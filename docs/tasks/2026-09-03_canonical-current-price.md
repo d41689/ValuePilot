@@ -1,0 +1,100 @@
+# FT-01 — canonical current-price truth
+
+## Goal
+
+Deliver one authoritative, fail-closed EOD current-price contract for stock
+summary, DCF, research workspace/cases, and watchlist. This advances the product
+north star by preventing stale, unauthorised, or document-reference prices from
+silently changing valuation and margin-of-safety conclusions.
+
+## Acceptance criteria
+
+- Every target surface receives the same canonical EOD fields for the same
+  stock and `as_of`: observation id/value/date/source/currency, expected session,
+  freshness state/policy, availability state, and typed unavailable reason.
+- A current price is comparison-eligible only when its source is authorised,
+  its currency is known and exact, and it is fresh for the resolved exchange
+  session. Missing, stale, unknown-calendar, unknown-currency, inactive-stock,
+  and unauthorised-source states fail closed.
+- Stock summary labels `mkt.price` only as a dated report reference. It never
+  labels or substitutes it as current price.
+- DCF, research, and watchlist publish no margin-of-safety or discount arithmetic
+  from an ineligible canonical price. A manual DCF scenario price is explicitly
+  separate from current market price and cannot masquerade as canonical.
+- Cross-surface tests prove identical valid/missing/stale/unknown-currency/
+  unauthorised outcomes and deterministic same-day source selection.
+- Product code does not directly select `stock_prices` outside the canonical
+  market-data service.
+
+## Scope
+
+### In
+
+- Canonical price read/serialization/eligibility contract.
+- Stock summary and DCF API/UI.
+- Research workspace/case UI.
+- Watchlist API/UI, including safe daily delta behavior.
+- Focused backend and frontend contract tests.
+
+### Out
+
+- Licensed long-history and corporate-action adjusted data (FT-15).
+- SEC publication or financial-source reconciliation.
+- Trading, order, broker, or option execution rails.
+- Automatic acquisition beyond the existing coverage refresh job.
+
+## Authority
+
+- GitHub issue #138.
+- `docs/BACKLOG.md` FT-01.
+- `docs/plans/financial_truth_decision_loop_beta_acceptance.md`.
+- `docs/architecture/research-decision-support.md` §§6.2–6.3, 10.2.
+- `docs/prd/watchlist/watchlist-v1.md` canonical EOD read contract.
+- `docs/architecture/coverage-source-policy.md`.
+
+PR #128 is historical context only. No code, commit, or migration is copied or
+cherry-picked from it.
+
+## Design decisions
+
+- Extend the current `CanonicalEodPrice` application contract; do not create a
+  second price table or publish price into `metric_facts`.
+- Treat source authorisation as a read invariant, not merely an acquisition
+  invariant. Test/fixture sources are explicitly injected by policy in tests;
+  production defaults remain fail-closed.
+- Retain a stale observation for transparent dated display, but set the
+  comparison value to unavailable and carry the blocking reason.
+- Use one serializer so API surfaces cannot rename or omit decision-critical
+  fields independently.
+- No migration is expected; add one only if current storage cannot uphold the
+  contract.
+
+## Files expected to change
+
+- `backend/app/services/market_data_service.py`
+- `backend/app/api/v1/endpoints/stocks.py`
+- `backend/app/api/v1/endpoints/stock_pools.py`
+- `backend/app/services/research_workspace.py`
+- relevant backend tests
+- stock summary, DCF, watchlist, and research workspace frontend files
+- relevant frontend source-contract tests
+- `docs/BACKLOG.md`
+
+## Test plan
+
+Test first with targeted Docker runs, then run the exact repository closing gate:
+
+```text
+docker compose up -d --build
+docker compose exec -T api alembic upgrade head
+docker compose exec -T api pytest -q
+docker compose exec -T web sh -lc 'node --test lib/*.test.js'
+docker compose exec -T web npm run lint
+docker compose exec -T web sh -lc 'NODE_ENV=production npm run build'
+git diff --check
+```
+
+## Sign-off trail
+
+- 2026-09-03: task opened from current `origin/main` (`52a0c3ec`); no #128
+  commits or migrations reused.
