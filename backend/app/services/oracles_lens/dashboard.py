@@ -17,8 +17,8 @@ from app.models.oracles_lens import OraclesLensSignal
 from app.models.stocks import Stock
 from app.services.market_data_service import (
     CanonicalEodPrice,
-    read_canonical_eod_price,
-    read_current_eod_price,
+    read_canonical_eod_prices,
+    read_current_eod_prices,
     serialize_canonical_eod_price,
 )
 from app.services.canonical_financials import (
@@ -1344,19 +1344,14 @@ def _canonical_prices_by_stock(
 ) -> dict[int, CanonicalEodPrice]:
     """Resolve display and calculation prices through the canonical contract."""
     stocks = session.query(Stock).filter(Stock.id.in_(stock_ids)).all()
-    return {
-        stock.id: (
-            read_canonical_eod_price(
-                session,
-                stock=stock,
-                as_of=as_of_date,
-                include_as_of_session=True,
-            )
-            if as_of_date is not None
-            else read_current_eod_price(session, stock=stock)
+    if as_of_date is not None:
+        return read_canonical_eod_prices(
+            session,
+            stocks=stocks,
+            as_of=as_of_date,
+            include_as_of_session=True,
         )
-        for stock in stocks
-    }
+    return read_current_eod_prices(session, stocks=stocks)
 
 
 def _quality_payload(

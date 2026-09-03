@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from datetime import date, datetime, timezone
 
+from sqlalchemy import event
+
 from app.models.stocks import Stock, StockPrice
 
 
@@ -283,6 +285,97 @@ def test_canonical_series_preserves_created_at_microseconds_before_id(db_session
 
     assert [row.id for row in rows] == [newer_lower_id.id]
     assert float(rows[0].close) == 200
+
+
+def test_batch_point_current_and_context_readers_are_constant_query_and_one_clock(
+    db_session, monkeypatch
+):
+    from app.services import market_data_service
+    from app.services.market_data_service import (
+        read_canonical_eod_prices,
+        read_current_eod_contexts,
+        read_current_eod_prices,
+    )
+
+    monkeypatch.setattr(market_data_service.settings, "MARKET_DATA_PRIMARY", "yfinance")
+    monkeypatch.setattr(
+        market_data_service.settings,
+        "MARKET_DATA_ALLOW_DEVELOPMENT_PROVIDER",
+        True,
+    )
+    before_close = datetime(2026, 7, 20, 20, 29, tzinfo=timezone.utc)
+    after_close = datetime(2026, 7, 20, 20, 31, tzinfo=timezone.utc)
+    stocks = [_stock(db_session, f"B{i:03d}") for i in range(101)]
+    for stock in stocks:
+        _price(
+            db_session,
+            stock,
+            price_date=date(2026, 7, 17),
+            source="yahoo",
+            currency="USD",
+            close=100,
+            created_at=datetime(2026, 7, 17, 21, tzinfo=timezone.utc),
+        )
+        _price(
+            db_session,
+            stock,
+            price_date=date(2026, 7, 20),
+            source="yfinance",
+            currency="USD",
+            close=101,
+            created_at=datetime(2026, 7, 20, 20, 30, 30, tzinfo=timezone.utc),
+        )
+
+    statements: list[str] = []
+    connection = db_session.connection()
+
+    def capture(_conn, _cursor, statement, _params, _context, _executemany):
+        statements.append(statement)
+
+    event.listen(connection, "before_cursor_execute", capture)
+    try:
+        points = read_canonical_eod_prices(
+            db_session,
+            stocks=stocks,
+            as_of=date(2026, 7, 17),
+            include_as_of_session=True,
+            knowledge_cutoff=before_close,
+        )
+        point_queries = len(statements)
+        statements.clear()
+        current_before = read_current_eod_prices(
+            db_session,
+            stocks=stocks,
+            evaluated_at=before_close,
+        )
+        current_queries = len(statements)
+        statements.clear()
+        contexts = read_current_eod_contexts(
+            db_session,
+            stocks=stocks,
+            evaluated_at=after_close,
+            history_days=370,
+            required_currency_by_stock_id={stock.id: "USD" for stock in stocks},
+        )
+        context_queries = len(statements)
+    finally:
+        event.remove(connection, "before_cursor_execute", capture)
+
+    assert point_queries == 1
+    assert current_queries == 1
+    assert context_queries == 2
+    assert len(points) == len(current_before) == len(contexts) == 101
+    assert {item.as_of_date for item in current_before.values()} == {date(2026, 7, 20)}
+    assert {item.expected_session_date for item in current_before.values()} == {
+        date(2026, 7, 17)
+    }
+    assert {item.current_price.as_of_date for item in contexts.values()} == {
+        date(2026, 7, 20)
+    }
+    assert {item.current_price.expected_session_date for item in contexts.values()} == {
+        date(2026, 7, 20)
+    }
+    assert {item.current_price.current_value for item in contexts.values()} == {101}
 
 
 def test_missing_currency_is_typed_and_never_fresh(db_session):

@@ -538,6 +538,124 @@ def test_legacy_ready_price_with_non_iso_currency_is_blocked_on_every_projection
     assert workspace_price["evidence"]["currency"] is None
 
 
+@pytest.mark.parametrize(
+    ("stored_source", "evidence_source", "configured_source"),
+    [
+        ("yahoo", "yfinance", "yfinance"),
+        ("yfinance", "yahoo", "yfinance"),
+        ("twelve_data", "12data", "twelvedata"),
+        ("12data", "twelvedata", "twelvedata"),
+        ("twelvedata", "twelve_data", "twelvedata"),
+    ],
+)
+def test_ready_price_source_aliases_match_across_every_projection(
+    client,
+    db_session,
+    user_factory,
+    auth_headers,
+    monkeypatch,
+    stored_source,
+    evidence_source,
+    configured_source,
+):
+    from app.models.notifications import LogicalNotification
+    from app.services import market_data_service
+    from app.services.research_notifications import materialize_research_coverage_changes
+
+    monkeypatch.setattr(
+        market_data_service.settings, "MARKET_DATA_PRIMARY", configured_source
+    )
+    if configured_source == "yfinance":
+        monkeypatch.setattr(
+            market_data_service.settings,
+            "MARKET_DATA_ALLOW_DEVELOPMENT_PROVIDER",
+            True,
+        )
+
+    user = user_factory(
+        email=f"coverage-source-alias-{stored_source}-{evidence_source}@example.com"
+    )
+    stock = _stock(db_session, "ALIAS")
+    _watchlist(db_session, user.id, stock)
+    expected_day = compute_target_date(datetime.now(timezone.utc).astimezone(ET))
+    price = StockPrice(
+        stock_id=stock.id,
+        price_date=expected_day,
+        open=88,
+        high=89,
+        low=87,
+        close=88,
+        volume=1_000,
+        currency="USD",
+        source=stored_source,
+    )
+    db_session.add(price)
+    db_session.flush()
+    db_session.add(
+        ResearchCoverageRequirement(
+            user_id=user.id,
+            stock_id=stock.id,
+            kind="eod_price",
+            priority_policy_version="research-coverage-priority-v1.0",
+            matched_rule="watchlist_member",
+            priority_rank=10,
+            state="ready",
+            reason="The aliased source is authorized.",
+            source_type="stock_price",
+            source_ref_id=price.id,
+            evidence_json={
+                "close": "88.0",
+                "currency": "USD",
+                "source": evidence_source,
+                "source_authorization_state": "authorized",
+                "price_date": expected_day.isoformat(),
+            },
+            observed_at=price.created_at,
+            freshness_policy_version="eod-freshness-v1.0",
+            evaluated_at=datetime.now(timezone.utc),
+            is_current=True,
+        )
+    )
+    db_session.commit()
+
+    headers = auth_headers(user)
+    created = client.post(
+        "/api/v1/research/cases",
+        headers=headers,
+        json={
+            "stock_id": stock.id,
+            "origin": {
+                "origin_type": "manual",
+                "origin_key": f"coverage-source-alias:{stock.id}",
+                "source_version": "coverage-source-alias-v1",
+                "source_ref": {"test": True},
+            },
+        },
+    )
+    assert created.status_code == 201, created.text
+
+    listed = client.get(
+        "/api/v1/coverage/requirements", headers=headers
+    ).json()["items"][0]
+    workspace = client.get(
+        f"/api/v1/research/cases/{created.json()['case']['id']}/workspace",
+        headers=headers,
+    ).json()
+    workspace_price = next(
+        item for item in workspace["coverage"] if item["kind"] == "eod_price"
+    )
+
+    assert listed["state"] == "ready"
+    assert workspace_price["state"] == "ready"
+    assert listed["evidence"]["source"] == evidence_source
+    assert workspace_price["evidence"]["source"] == evidence_source
+    assert not any(item["kind"] == "eod_price" for item in workspace["missing_items"])
+    assert materialize_research_coverage_changes(db_session) == 1
+    notification = db_session.query(LogicalNotification).one()
+    assert notification.event_family == "research_coverage_changed"
+    assert notification.payload_json["state"] == "ready"
+
+
 def test_ready_price_coverage_becomes_stale_after_session_rolls_without_reevaluation(
     client, db_session, user_factory, auth_headers
 ):

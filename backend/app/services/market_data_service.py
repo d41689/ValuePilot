@@ -278,14 +278,14 @@ class FallbackProvider:
 from app.core.config import settings
 
 def _build_provider(kind: str) -> MarketDataProvider:
-    k = (kind or "").strip().lower()
+    k = normalize_price_source(kind)
     if k in ("", "none", "null", "unconfigured"):
         return NullProvider()
-    if k in ("yfinance", "yahoo"):
+    if k == "yfinance":
         if not settings.MARKET_DATA_ALLOW_DEVELOPMENT_PROVIDER:
             return NullProvider()
         return YFinanceProvider()
-    if k in ("twelvedata", "twelve_data", "12data"):
+    if k == "twelvedata":
         api_key = settings.TWELVE_DATA_API_KEY
         if not api_key or not settings.MARKET_DATA_COMMERCIAL_ENABLED:
             return NullProvider()
@@ -302,8 +302,8 @@ def get_default_provider() -> MarketDataProvider:
     Defaults fail closed. A provider must be named and separately authorized;
     merely finding a credential in an inherited environment is insufficient.
     """
-    primary_kind = settings.MARKET_DATA_PRIMARY.strip().lower()
-    secondary_kind = settings.MARKET_DATA_SECONDARY.strip().lower()
+    primary_kind = normalize_price_source(settings.MARKET_DATA_PRIMARY)
+    secondary_kind = normalize_price_source(settings.MARKET_DATA_SECONDARY)
 
     if not primary_kind:
         primary_kind = "none"
@@ -467,7 +467,7 @@ def _currency(value: Any) -> str | None:
 
 
 def _source_rank(source: str, priorities: tuple[str, ...]) -> int:
-    normalized = _normalized_source(source)
+    normalized = normalize_price_source(source)
     try:
         return priorities.index(normalized)
     except ValueError:
@@ -487,7 +487,9 @@ def _price_selection_key(
     return (-_source_rank(row.source, source_priority), created_at, int(row.id))
 
 
-def _normalized_source(source: Any) -> str:
+def normalize_price_source(source: Any) -> str:
+    """Return the canonical provider identity while preserving raw rows elsewhere."""
+
     normalized = str(source or "").strip().lower()
     return {
         "yahoo": "yfinance",
@@ -505,7 +507,7 @@ def configured_price_source_priority() -> tuple[str, ...]:
     """
     configured: list[str] = []
     for raw_kind in (settings.MARKET_DATA_PRIMARY, settings.MARKET_DATA_SECONDARY):
-        source = _normalized_source(raw_kind)
+        source = normalize_price_source(raw_kind)
         if source == "twelvedata":
             permitted = bool(
                 settings.MARKET_DATA_COMMERCIAL_ENABLED
@@ -522,7 +524,7 @@ def configured_price_source_priority() -> tuple[str, ...]:
 
 def current_price_source_authorization_state(source: Any) -> str:
     """Revalidate one stored provider identity against current deployment policy."""
-    normalized = _normalized_source(source)
+    normalized = normalize_price_source(source)
     if not normalized:
         return "unavailable"
     return (
@@ -558,7 +560,7 @@ def read_stored_price_evidence(
             stock_id=int(observation.stock_id),
             price_date=observation.price_date,
             source=observation.source,
-            normalized_source=_normalized_source(observation.source),
+            normalized_source=normalize_price_source(observation.source),
             currency=_currency(observation.currency),
             source_authorization_state=current_price_source_authorization_state(
                 observation.source
@@ -630,13 +632,13 @@ def read_canonical_eod_price(
     """
     authorized_sources = tuple(
         dict.fromkeys(
-            _normalized_source(source)
+            normalize_price_source(source)
             for source in (
                 source_priority
                 if source_priority is not None
                 else configured_price_source_priority()
             )
-            if _normalized_source(source)
+            if normalize_price_source(source)
         )
     )
     selection_priority = authorized_sources + tuple(
@@ -703,7 +705,7 @@ def read_canonical_eod_price(
         key=lambda row: _price_selection_key(row, selection_priority),
     )
     currency = _currency(selected.currency)
-    normalized_source = _normalized_source(selected.source)
+    normalized_source = normalize_price_source(selected.source)
     source_authorization_state = (
         "authorized" if normalized_source in authorized_sources else "unauthorized"
     )
@@ -783,6 +785,69 @@ def read_current_eod_price(
     )
 
 
+def read_canonical_eod_prices(
+    session: Session,
+    *,
+    stocks: Iterable[Stock],
+    as_of: date | None = None,
+    as_of_by_stock_id: dict[int, date] | None = None,
+    include_as_of_session: bool = False,
+    knowledge_cutoff: datetime | None = None,
+    source_priority: tuple[str, ...] | None = None,
+) -> dict[int, CanonicalEodPrice]:
+    """Batch point reads through the exact canonical single-stock contract."""
+
+    stock_by_id = {int(stock.id): stock for stock in stocks}
+    if not stock_by_id:
+        return {}
+    if (as_of is None) == (as_of_by_stock_id is None):
+        raise ValueError("Provide exactly one of as_of or as_of_by_stock_id.")
+    as_of_by_id = {
+        stock_id: (
+            as_of
+            if as_of is not None
+            else (as_of_by_stock_id or {})[stock_id]
+        )
+        for stock_id in stock_by_id
+    }
+    knowledge_cutoff_by_id = {
+        stock_id: _ensure_utc(
+            knowledge_cutoff
+            or _date_only_knowledge_cutoff(
+                stock_as_of,
+                include_as_of_session=include_as_of_session,
+            )
+        )
+        for stock_id, stock_as_of in as_of_by_id.items()
+    }
+    rows = (
+        session.query(StockPrice)
+        .filter(
+            StockPrice.stock_id.in_(stock_by_id),
+            StockPrice.price_date <= max(as_of_by_id.values()),
+            StockPrice.created_at <= max(knowledge_cutoff_by_id.values()),
+        )
+        .all()
+    )
+    rows_by_stock_id: dict[int, list[StockPrice]] = {
+        stock_id: [] for stock_id in stock_by_id
+    }
+    for row in rows:
+        rows_by_stock_id[int(row.stock_id)].append(row)
+    return {
+        stock_id: read_canonical_eod_price(
+            session,
+            stock=stock,
+            as_of=as_of_by_id[stock_id],
+            include_as_of_session=include_as_of_session,
+            knowledge_cutoff=knowledge_cutoff_by_id[stock_id],
+            source_priority=source_priority,
+            _candidate_rows=rows_by_stock_id[stock_id],
+        )
+        for stock_id, stock in stock_by_id.items()
+    }
+
+
 def read_current_eod_prices(
     session: Session,
     *,
@@ -798,35 +863,21 @@ def read_current_eod_prices(
     now_utc = _ensure_utc(evaluated_at or datetime.now(timezone.utc))
     now_et = now_utc.astimezone(ET)
     target_date = compute_target_date(now_et)
-    rows = (
-        session.query(StockPrice)
-        .filter(
-            StockPrice.stock_id.in_(stock_by_id),
-            StockPrice.price_date <= target_date,
-            StockPrice.created_at <= now_utc,
-        )
-        .all()
+    point_results = read_canonical_eod_prices(
+        session,
+        stocks=stock_by_id.values(),
+        as_of=target_date,
+        include_as_of_session=True,
+        knowledge_cutoff=now_utc,
+        source_priority=source_priority,
     )
-    rows_by_stock_id: dict[int, list[StockPrice]] = {
-        stock_id: [] for stock_id in stock_by_id
-    }
-    for row in rows:
-        rows_by_stock_id[int(row.stock_id)].append(row)
     return {
         stock_id: replace(
-            read_canonical_eod_price(
-                session,
-                stock=stock,
-                as_of=target_date,
-                include_as_of_session=True,
-                knowledge_cutoff=now_utc,
-                source_priority=source_priority,
-                _candidate_rows=rows_by_stock_id[stock_id],
-            ),
+            point_results[stock_id],
             as_of_date=now_et.date(),
             as_of_mode="latest_completed_session",
         )
-        for stock_id, stock in stock_by_id.items()
+        for stock_id in stock_by_id
     }
 
 
@@ -845,54 +896,119 @@ def read_current_eod_context(
     requirements. Invalid historical OHLC rows are omitted rather than used in
     arithmetic.
     """
-    knowledge_cutoff = _ensure_utc(evaluated_at or datetime.now(timezone.utc))
-    current = read_current_eod_price(
+    return read_current_eod_contexts(
         session,
-        stock=stock,
+        stocks=[stock],
+        evaluated_at=evaluated_at,
+        history_days=history_days,
+        required_currency_by_stock_id=(
+            {int(stock.id): required_currency}
+            if required_currency is not None
+            else None
+        ),
+    )[int(stock.id)]
+
+
+def read_current_eod_contexts(
+    session: Session,
+    *,
+    stocks: Iterable[Stock],
+    evaluated_at: datetime | None = None,
+    history_days: int = 370,
+    required_currency_by_stock_id: dict[int, str] | None = None,
+) -> dict[int, CanonicalEodContext]:
+    """Batch current observations and same-currency history with one clock."""
+
+    stock_by_id = {int(stock.id): stock for stock in stocks}
+    if not stock_by_id:
+        return {}
+    knowledge_cutoff = _ensure_utc(evaluated_at or datetime.now(timezone.utc))
+    current_by_stock_id = read_current_eod_prices(
+        session,
+        stocks=stock_by_id.values(),
         evaluated_at=knowledge_cutoff,
     )
-    if current.status != "available" or current.current_value is None:
-        return CanonicalEodContext(
-            current_price=current,
-            observations=(),
-            status="unavailable",
-            reason_code=current.reason_code or "price_unavailable",
-        )
-    normalized_required = _currency(required_currency)
-    if required_currency is not None and current.currency != normalized_required:
-        return CanonicalEodContext(
-            current_price=current,
-            observations=(),
-            status="unavailable",
-            reason_code="currency_mismatch",
-        )
-    assert current.price_date is not None
-    authorized_sources = configured_price_source_priority()
-    series = read_canonical_eod_series(
-        session,
-        stock_ids=[stock.id],
-        through=current.price_date,
-        from_date=current.price_date - timedelta(days=max(history_days, 0)),
-        knowledge_cutoff=knowledge_cutoff,
-        source_priority=authorized_sources,
-    ).get(stock.id, [])
-
-    def eligible(row: StockPrice) -> bool:
-        values = (row.open, row.high, row.low, row.close)
-        return bool(
-            _normalized_source(row.source) in authorized_sources
-            and _currency(row.currency) == current.currency
-            and all(math.isfinite(float(value)) and float(value) > 0 for value in values)
-            and float(row.low) <= float(row.high)
-        )
-
-    observations = tuple(row for row in series if eligible(row))
-    return CanonicalEodContext(
-        current_price=current,
-        observations=observations,
-        status="available",
-        reason_code=None,
+    eligible_ids = [
+        stock_id
+        for stock_id, current in current_by_stock_id.items()
+        if current.status == "available"
+        and current.current_value is not None
+        and current.price_date is not None
+    ]
+    through = max(
+        (current_by_stock_id[stock_id].price_date for stock_id in eligible_ids),
+        default=None,
     )
+    from_date = min(
+        (
+            current_by_stock_id[stock_id].price_date
+            - timedelta(days=max(history_days, 0))
+            for stock_id in eligible_ids
+        ),
+        default=None,
+    )
+    authorized_sources = configured_price_source_priority()
+    series_by_stock_id = (
+        read_canonical_eod_series(
+            session,
+            stock_ids=eligible_ids,
+            through=through,
+            from_date=from_date,
+            knowledge_cutoff=knowledge_cutoff,
+            source_priority=authorized_sources,
+        )
+        if through is not None
+        else {}
+    )
+    required_by_id = required_currency_by_stock_id or {}
+    result: dict[int, CanonicalEodContext] = {}
+    for stock_id, current in current_by_stock_id.items():
+        if current.status != "available" or current.current_value is None:
+            result[stock_id] = CanonicalEodContext(
+                current_price=current,
+                observations=(),
+                status="unavailable",
+                reason_code=current.reason_code or "price_unavailable",
+            )
+            continue
+        required_currency = required_by_id.get(stock_id)
+        normalized_required = _currency(required_currency)
+        if required_currency is not None and current.currency != normalized_required:
+            result[stock_id] = CanonicalEodContext(
+                current_price=current,
+                observations=(),
+                status="unavailable",
+                reason_code="currency_mismatch",
+            )
+            continue
+        assert current.price_date is not None
+        earliest = current.price_date - timedelta(days=max(history_days, 0))
+
+        def eligible(row: StockPrice) -> bool:
+            values = (row.open, row.high, row.low, row.close)
+            return bool(
+                earliest <= row.price_date <= current.price_date
+                and normalize_price_source(row.source) in authorized_sources
+                and _currency(row.currency) == current.currency
+                and all(
+                    math.isfinite(float(value)) and float(value) > 0
+                    for value in values
+                )
+                and float(row.low) <= float(row.high)
+            )
+
+        observations = tuple(
+            row
+            for row in series_by_stock_id.get(stock_id, [])
+            if eligible(row)
+        )
+        result[stock_id] = CanonicalEodContext(
+            current_price=current,
+            observations=observations,
+            status="available",
+            reason_code=None,
+        )
+    return result
 
 
 def read_canonical_eod_series(
@@ -914,6 +1030,13 @@ def read_canonical_eod_series(
     ids = list(dict.fromkeys(int(stock_id) for stock_id in stock_ids))
     if not ids:
         return {}
+    normalized_source_priority = tuple(
+        dict.fromkeys(
+            normalize_price_source(source)
+            for source in source_priority
+            if normalize_price_source(source)
+        )
+    )
     effective_knowledge_cutoff = _ensure_utc(
         knowledge_cutoff
         or _date_only_knowledge_cutoff(through, include_as_of_session=True)
@@ -931,8 +1054,8 @@ def read_canonical_eod_series(
         key = (int(row.stock_id), row.price_date)
         incumbent = selected.get(key)
         if incumbent is None or _price_selection_key(
-            row, source_priority
-        ) > _price_selection_key(incumbent, source_priority):
+            row, normalized_source_priority
+        ) > _price_selection_key(incumbent, normalized_source_priority):
             selected[key] = row
     result: dict[int, list[StockPrice]] = {stock_id: [] for stock_id in ids}
     for row in selected.values():

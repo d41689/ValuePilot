@@ -1,7 +1,8 @@
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
 import pytest
+from sqlalchemy import event
 
 from app.models.users import User
 from app.models.stocks import Stock, StockPool, PoolMembership, StockPrice
@@ -178,6 +179,95 @@ def test_overview_members_union_deduplicates_and_scopes_to_user(client, db_sessi
     assert all(row["ticker"] != "NVDA" for row in rows)
 
 
+def test_watchlist_rows_batch_101_members_with_fixed_query_count(
+    db_session, monkeypatch
+):
+    from app.api.v1.endpoints.stock_pools import _watchlist_rows_for_memberships
+    from app.services import market_data_service
+    from app.services.market_data_service import (
+        ET,
+        compute_target_date,
+        expected_session_on_or_before,
+    )
+
+    monkeypatch.setattr(market_data_service.settings, "MARKET_DATA_PRIMARY", "yfinance")
+    monkeypatch.setattr(
+        market_data_service.settings,
+        "MARKET_DATA_ALLOW_DEVELOPMENT_PROVIDER",
+        True,
+    )
+    user = _make_user(db_session, "watchlist-batch-101@example.com")
+    pool = StockPool(user_id=user.id, name="Batch 101")
+    db_session.add(pool)
+    db_session.flush()
+    stocks = [
+        Stock(ticker=f"W{i:03d}", exchange="NYSE", company_name=f"Watch {i}")
+        for i in range(101)
+    ]
+    db_session.add_all(stocks)
+    db_session.flush()
+    members = [
+        PoolMembership(
+            user_id=user.id,
+            pool_id=pool.id,
+            stock_id=stock.id,
+            inclusion_type="manual",
+        )
+        for stock in stocks
+    ]
+    db_session.add_all(members)
+    now = datetime.now(timezone.utc)
+    target = compute_target_date(now.astimezone(ET))
+    previous = expected_session_on_or_before(
+        "NYSE", target - timedelta(days=1)
+    ).session_date
+    assert previous is not None
+    db_session.add_all(
+        [
+            StockPrice(
+                stock_id=stock.id,
+                price_date=price_date,
+                open=close,
+                high=close,
+                low=close,
+                close=close,
+                volume=1,
+                source="yfinance",
+                currency="USD",
+                created_at=(
+                    now - timedelta(minutes=1)
+                    if price_date == target
+                    else datetime.combine(target, datetime.min.time(), timezone.utc)
+                    - timedelta(hours=1)
+                ),
+            )
+            for stock in stocks
+            for price_date, close in ((previous, 99), (target, 100))
+        ]
+    )
+    db_session.flush()
+
+    statements: list[str] = []
+    connection = db_session.connection()
+
+    def capture(_conn, _cursor, statement, _params, _context, _executemany):
+        statements.append(statement)
+
+    event.listen(connection, "before_cursor_execute", capture)
+    try:
+        rows = _watchlist_rows_for_memberships(db_session, user.id, members)
+    finally:
+        event.remove(connection, "before_cursor_execute", capture)
+
+    assert len(rows) == 101
+    assert len(statements) == 5
+    assert {row["delta_today"] for row in rows} == {1}
+    assert len({row["current_price"]["as_of_date"] for row in rows}) == 1
+    assert len(
+        {row["current_price"]["expected_session_date"] for row in rows}
+    ) == 1
+
+
 def test_pool_f_score_compare_returns_five_actual_and_two_estimate_years(
     client, db_session, auth_headers
 ):
@@ -330,27 +420,27 @@ def test_pool_members_include_price_and_fair_value(client, db_session, monkeypat
     target_date = date(2026, 2, 3)
     prev_date = date(2026, 2, 2)
     from app.services.market_data_service import (
-        read_canonical_eod_price,
-        read_current_eod_price,
+        read_canonical_eod_prices,
+        read_current_eod_prices,
     )
 
     monkeypatch.setattr(
         stock_pools_endpoint,
-        "read_current_eod_price",
-        lambda session, *, stock: read_current_eod_price(
+        "read_current_eod_prices",
+        lambda session, *, stocks, evaluated_at=None: read_current_eod_prices(
             session,
-            stock=stock,
+            stocks=stocks,
             evaluated_at=datetime(2026, 2, 4, 17, tzinfo=timezone.utc),
             source_priority=("seed",),
         ),
     )
     monkeypatch.setattr(
         stock_pools_endpoint,
-        "read_canonical_eod_price",
-        lambda session, *, stock, as_of: read_canonical_eod_price(
+        "read_canonical_eod_prices",
+        lambda session, *, stocks, as_of_by_stock_id: read_canonical_eod_prices(
             session,
-            stock=stock,
-            as_of=as_of,
+            stocks=stocks,
+            as_of_by_stock_id=as_of_by_stock_id,
             source_priority=("seed",),
         ),
     )

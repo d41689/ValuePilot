@@ -17,6 +17,7 @@ from app.services.market_data_service import (
     CanonicalEodPrice,
     PRICE_FRESHNESS_POLICY_VERSION,
     StoredPriceEvidence,
+    normalize_price_source,
     read_canonical_eod_price,
     read_current_eod_prices,
     read_stored_price_evidence,
@@ -501,7 +502,7 @@ def _serialize_price_requirement_evidence(
     elif authoritative_currency is None:
         blocker_reason = "price_currency_unavailable"
     elif (
-        str(evidence.get("source") or "").strip().lower()
+        normalize_price_source(evidence.get("source"))
         != referenced.normalized_source
         or str(evidence.get("currency") or "").strip().upper()
         != authoritative_currency

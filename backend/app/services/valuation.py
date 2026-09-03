@@ -68,20 +68,18 @@ def read_valuation_context(
     user_id: int,
     stock_id: int,
 ) -> ValuationContext:
-    manual = _latest_current_fact(
+    return read_valuation_contexts(
         session,
         user_id=user_id,
-        stock_id=stock_id,
-        metric_key=USER_INTRINSIC_VALUE_KEY,
-        source_type="manual",
-    )
-    reference = _latest_current_fact(
-        session,
-        user_id=user_id,
-        stock_id=stock_id,
-        metric_key=VALUE_LINE_TARGET_REFERENCE_KEY,
-        source_type="parsed",
-    )
+        stock_ids=[stock_id],
+    )[stock_id]
+
+
+def _valuation_context_from_facts(
+    facts: dict[str, MetricFact],
+) -> ValuationContext:
+    manual = facts.get(USER_INTRINSIC_VALUE_KEY)
+    reference = facts.get(VALUE_LINE_TARGET_REFERENCE_KEY)
 
     if manual is None:
         intrinsic_status = "missing"
@@ -112,6 +110,26 @@ def read_valuation_context(
         system_reference_fact_id=reference.id if reference else None,
         system_reference_currency=_fact_currency(reference),
     )
+
+
+def read_valuation_contexts(
+    session: Session,
+    *,
+    user_id: int,
+    stock_ids: list[int],
+) -> dict[int, ValuationContext]:
+    """Return valuation contexts with one user-scoped metric-fact query."""
+
+    unique_stock_ids = list(dict.fromkeys(int(stock_id) for stock_id in stock_ids))
+    facts_by_stock_id = read_valuation_facts_by_stock(
+        session,
+        user_id=user_id,
+        stock_ids=unique_stock_ids,
+    )
+    return {
+        stock_id: _valuation_context_from_facts(facts_by_stock_id[stock_id])
+        for stock_id in unique_stock_ids
+    }
 
 
 def read_valuation_facts_by_stock(

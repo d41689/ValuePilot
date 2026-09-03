@@ -25,7 +25,7 @@ from app.models.institutions import (
 )
 from app.models.stocks import Stock
 from app.services.market_data_service import (
-    read_current_eod_context,
+    read_current_eod_contexts,
     serialize_canonical_eod_price,
 )
 from app.services.thirteenf_holdings_query import HR_FORM_TYPES, NT_FORM_TYPES, active_hr_holdings_query
@@ -1191,6 +1191,13 @@ def _attach_market_context(session: Session, positions: list[dict[str, Any]]) ->
         stock.id: stock
         for stock in session.query(Stock).filter(Stock.id.in_(stock_ids)).all()
     }
+    contexts_by_stock_id = read_current_eod_contexts(
+        session,
+        stocks=stocks_by_id.values(),
+        evaluated_at=datetime.now(timezone.utc),
+        history_days=370,
+        required_currency_by_stock_id={stock_id: "USD" for stock_id in stocks_by_id},
+    )
 
     for position in positions:
         implied_report_price = position.get("implied_report_price")
@@ -1212,12 +1219,7 @@ def _attach_market_context(session: Session, positions: list[dict[str, Any]]) ->
                 "current_price_state": None,
             }
             continue
-        context = read_current_eod_context(
-            session,
-            stock=stock,
-            history_days=370,
-            required_currency="USD",
-        )
+        context = contexts_by_stock_id[stock.id]
         current = context.current_price
         current_wire = serialize_canonical_eod_price(current)
         latest_price = current.current_value if context.status == "available" else None

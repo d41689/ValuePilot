@@ -20,7 +20,7 @@ from app.schemas.portfolios import (
     ManualPositionReview,
 )
 from app.services.market_data_service import (
-    read_current_eod_price,
+    read_current_eod_prices,
     serialize_canonical_eod_price,
 )
 
@@ -543,6 +543,11 @@ def get_portfolio_workspace(
         case = cases_by_id.get(revision.case_id)
         if case is not None and revision.revision_number == case.head_revision_number:
             current_revisions_by_case.setdefault(case.id, revision)
+    current_prices = read_current_eod_prices(
+        session,
+        stocks=[stock for _position, stock in rows],
+        evaluated_at=datetime.now(timezone.utc),
+    )
     positions: list[dict[str, Any]] = []
     totals: dict[str, Decimal] = {}
     for position, stock in rows:
@@ -574,7 +579,7 @@ def get_portfolio_workspace(
             next_review_on.isoformat() if next_review_on is not None else None
         )
         item["identity_state"] = "active" if stock.is_active else "stock_inactive"
-        price = read_current_eod_price(session, stock=stock)
+        price = current_prices[stock.id]
         item["current_price"] = serialize_canonical_eod_price(price)
         item["market_value"] = None
         item["unrealized_return"] = None

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, datetime, timezone
 from decimal import Decimal
 from typing import Any
 
@@ -11,11 +11,11 @@ from app.api.deps import SessionDep, CurrentUser
 from app.models.stocks import StockPool, PoolMembership, Stock
 from app.models.facts import MetricFact
 from app.services.market_data_service import (
-    read_canonical_eod_price,
-    read_current_eod_price,
+    read_canonical_eod_prices,
+    read_current_eod_prices,
     serialize_canonical_eod_price,
 )
-from app.services.valuation import read_valuation_context, relative_discount
+from app.services.valuation import read_valuation_contexts, relative_discount
 
 
 router = APIRouter()
@@ -179,9 +179,15 @@ def _piotroski_compare_payload(
         selected_by_stock_id[stock_id] = selected
 
     ordered_years = sorted(years)
+    stocks_by_id = {
+        int(stock.id): stock
+        for stock in session.scalars(
+            select(Stock).where(Stock.id.in_(stock_ids))
+        ).all()
+    }
     rows: list[dict[str, Any]] = []
     for member in unique_members:
-        stock = session.get(Stock, member.stock_id)
+        stock = stocks_by_id.get(int(member.stock_id))
         if not stock:
             continue
         by_year = selected_by_stock_id.get(stock.id, {})
@@ -212,28 +218,52 @@ def _watchlist_rows_for_memberships(
     if not members:
         return []
 
+    stock_ids = list(dict.fromkeys(int(member.stock_id) for member in members))
     piotroski_scores_by_stock_id = _piotroski_scores_for_stocks(
-        session, user_id, [membership.stock_id for membership in members]
+        session, user_id, stock_ids
+    )
+    stocks_by_id = {
+        int(stock.id): stock
+        for stock in session.scalars(
+            select(Stock).where(Stock.id.in_(stock_ids))
+        ).all()
+    }
+    evaluated_at = datetime.now(timezone.utc)
+    current_prices = read_current_eod_prices(
+        session,
+        stocks=stocks_by_id.values(),
+        evaluated_at=evaluated_at,
+    )
+    previous_stocks = [
+        stock
+        for stock_id, stock in stocks_by_id.items()
+        if current_prices[stock_id].status == "available"
+        and current_prices[stock_id].price_date is not None
+    ]
+    previous_prices = read_canonical_eod_prices(
+        session,
+        stocks=previous_stocks,
+        as_of_by_stock_id={
+            int(stock.id): current_prices[int(stock.id)].price_date
+            for stock in previous_stocks
+        },
+    ) if previous_stocks else {}
+    valuations = read_valuation_contexts(
+        session,
+        user_id=user_id,
+        stock_ids=stock_ids,
     )
 
     rows: list[dict[str, Any]] = []
     for membership in members:
-        stock = session.get(Stock, membership.stock_id)
+        stock = stocks_by_id.get(int(membership.stock_id))
         if not stock:
             continue
 
-        current_price = read_current_eod_price(session, stock=stock)
+        current_price = current_prices[stock.id]
         price = current_price.current_value
 
-        previous_price = (
-            read_canonical_eod_price(
-                session,
-                stock=stock,
-                as_of=current_price.price_date,
-            )
-            if current_price.status == "available" and current_price.price_date
-            else None
-        )
+        previous_price = previous_prices.get(stock.id)
         delta_today = None
         if current_price.status != "available" or price is None:
             delta_today_state = {
@@ -280,7 +310,7 @@ def _watchlist_rows_for_memberships(
                 "currency": current_price.currency,
             }
 
-        valuation = read_valuation_context(session, user_id=user_id, stock_id=stock.id)
+        valuation = valuations[stock.id]
         fair_value = valuation.user_intrinsic_value
         if current_price.status != "available":
             price_comparison_reason = current_price.reason_code
