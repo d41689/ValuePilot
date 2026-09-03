@@ -1,4 +1,5 @@
 import pytest
+from datetime import date
 from app.services.formula_engine import FormulaEngine
 from app.services.screener_service import ScreenerService
 from app.models.users import User
@@ -61,13 +62,73 @@ def test_run_formula_integration(db_session):
     run = engine.run_formula(formula.id, stock.id, user.id)
     
     assert run is not None
-    assert run.result_value_json["value"] == 400.0
+    assert run.result_value_json["value"] == "400.000000000000"
     
     # Verify authoritative fact created
     output_fact = db_session.query(MetricFact).filter_by(stock_id=stock.id, metric_key="gross_profit").first()
     assert output_fact is not None
     assert output_fact.value_numeric == 400.0
     assert output_fact.source_type == "calculated"
+
+
+def test_formula_selects_manual_before_checking_sec_amendment_state(
+    db_session, monkeypatch
+):
+    user = User(email="formula-source@test.com", hashed_password=hash_password("TestPass123!"))
+    stock = Stock(ticker="FMLS", exchange="NYS", company_name="Formula Source Corp")
+    db_session.add_all([user, stock])
+    db_session.flush()
+    db_session.add_all(
+        [
+            MetricFact(
+                user_id=user.id,
+                stock_id=stock.id,
+                metric_key="revenue",
+                value_numeric=100,
+                source_type="manual",
+                period_type="FY",
+                period_end_date=date(2022, 12, 31),
+                is_current=True,
+            ),
+            MetricFact(
+                user_id=user.id,
+                stock_id=stock.id,
+                metric_key="revenue",
+                value_numeric=999,
+                source_type="parsed",
+                period_type="FY",
+                period_end_date=date(2025, 9, 30),
+                is_current=True,
+            ),
+        ]
+    )
+    formula = Formula(
+        user_id=user.id,
+        name="Selected Manual Revenue",
+        expression="revenue + 1",
+        dependencies_json=["revenue"],
+    )
+    db_session.add(formula)
+    db_session.commit()
+    def assert_selected_before_availability(_session, *, stock_id, facts):
+        selected = list(facts)
+        assert [fact.source_type for fact in selected] == ["manual"]
+        return selected
+
+    monkeypatch.setattr(
+        "app.services.formula_engine.guard_sec_run_availability",
+        assert_selected_before_availability,
+    )
+
+    run = FormulaEngine(db_session).run_formula(
+        formula.id,
+        stock.id,
+        user.id,
+        selected_source_type="manual",
+    )
+
+    assert run is not None
+    assert run.result_value_json["value"] == "101.000000000000"
 
 def test_screener_service(db_session):
     # Setup

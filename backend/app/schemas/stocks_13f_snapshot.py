@@ -117,6 +117,19 @@ class StockDetailCaveatFlag(BaseModel):
     label: str
 
 
+class CanonicalSourceStatus(BaseModel):
+    """Bounded canonical-financial state exposed by the optional M3 panel."""
+
+    status: Literal[
+        "available", "source_conflict", "unresolved", "rejected", "unavailable"
+    ]
+    reason_code: Optional[str] = Field(None, max_length=80)
+    source_types: list[Literal["sec", "parsed", "manual", "calculated"]] = Field(
+        default_factory=list
+    )
+    source_type: Optional[Literal["sec", "parsed", "manual", "calculated"]] = None
+
+
 class QualityOverlay(BaseModel):
     """MVP8-A2 + D1: typed schema for the Watchlist drawer M3 panel.
 
@@ -128,6 +141,9 @@ class QualityOverlay(BaseModel):
     """
 
     has_value_line: bool
+    canonical_source_status: CanonicalSourceStatus = Field(
+        default_factory=lambda: CanonicalSourceStatus(status="available")
+    )
     piotroski_score: Optional[int] = None
     piotroski_max: Optional[int] = None
     # Known values in dev DB: "partial", "calculated". "complete" is reserved

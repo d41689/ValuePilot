@@ -1,4 +1,5 @@
 from datetime import date, datetime
+from decimal import Decimal
 
 import sqlalchemy as sa
 
@@ -7,6 +8,25 @@ from app.models.stocks import Stock
 from app.models.artifacts import PdfDocument, DocumentPage
 from app.models.extractions import MetricExtraction
 from app.models.facts import MetricFact
+from app.api.v1.endpoints.documents import _document_compare_value_label
+
+
+def test_document_compare_decimal_label_preserves_integer_place_value():
+    assert _document_compare_value_label(
+        value_numeric=Decimal("100"), value_text=None, value_json={}
+    ) == "100"
+    assert _document_compare_value_label(
+        value_numeric=Decimal("1200"), value_text=None, value_json={}
+    ) == "1200"
+    assert _document_compare_value_label(
+        value_numeric=Decimal("100.50"), value_text=None, value_json={}
+    ) == "100.5"
+    assert _document_compare_value_label(
+        value_numeric=Decimal("-0.000"), value_text=None, value_json={}
+    ) == "0"
+    assert _document_compare_value_label(
+        value_numeric=Decimal("1E+3"), value_text=None, value_json={}
+    ) == "1000"
 
 
 def test_documents_list_returns_companies_and_page_count(client, db_session, user_factory, auth_headers):
@@ -2026,8 +2046,5 @@ def test_documents_compare_endpoint_returns_structured_diffs_by_fact_nature(
 
 
 def test_documents_list_requires_auth(client, db_session):
-    db_session.execute(sa.text("TRUNCATE TABLE users RESTART IDENTITY CASCADE"))
-    db_session.commit()
-
     resp = client.get("/api/v1/documents")
     assert resp.status_code == 401, resp.text

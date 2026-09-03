@@ -1,6 +1,7 @@
 from datetime import date, datetime
+from decimal import Decimal
 from typing import Optional, Any, TYPE_CHECKING
-from sqlalchemy import BigInteger, String, DateTime, Boolean, ForeignKey, Integer, Float, Date, Text, JSON
+from sqlalchemy import BigInteger, String, DateTime, Boolean, ForeignKey, Integer, Float, Date, Text, JSON, Numeric
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.sql import func
@@ -14,11 +15,13 @@ class MetricFact(Base):
     __tablename__ = "metric_facts"
 
     id: Mapped[int] = mapped_column(primary_key=True, index=True)
-    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"))
+    user_id: Mapped[Optional[int]] = mapped_column(ForeignKey("users.id"), nullable=True)
     stock_id: Mapped[int] = mapped_column(ForeignKey("stocks.id"))
     metric_key: Mapped[str] = mapped_column(String, index=True)
     value_json: Mapped[Optional[dict[str, Any]]] = mapped_column(JSONB, nullable=True)
-    value_numeric: Mapped[Optional[float]] = mapped_column(Float, nullable=True, index=True)
+    value_numeric: Mapped[Optional[Decimal]] = mapped_column(
+        Numeric(38, 12), nullable=True, index=True
+    )
     value_text: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     unit: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     currency: Mapped[Optional[str]] = mapped_column(String, nullable=True)
@@ -35,7 +38,7 @@ class MetricFact(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), onupdate=func.now(), server_default=func.now())
 
-    user: Mapped["User"] = relationship("User")
+    user: Mapped[Optional["User"]] = relationship("User")
     stock: Mapped["Stock"] = relationship("Stock")
 
 class Formula(Base):

@@ -9,8 +9,10 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+import pytest
 from sqlalchemy import create_engine, inspect, text
 from sqlalchemy.engine import make_url
+from sqlalchemy.exc import DBAPIError
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
@@ -28,7 +30,450 @@ from test_support.database_isolation import (
 
 PARENT_REVISION = "20260826130000"
 PERIOD_PARENT_REVISION = "20260827120000"
-HEAD_REVISION = "20260830140000"
+HEAD_REVISION = "20260901270000"
+
+
+def test_parser_v23_guard_migration_is_reversible_without_rewriting_v22() -> None:
+    backend_dir = Path(__file__).resolve().parents[2]
+    schema_name = new_test_schema_name()
+    database_url = build_isolated_database_url(_BASE_DATABASE_URL, schema_name)
+    create_test_schema(_BASE_DATABASE_URL, schema_name)
+    engine = create_engine(database_url, pool_pre_ping=True)
+    functions = (
+        "validate_sec_parser_v2_structured_unit",
+        "guard_sec_statement_report_reference_insert",
+        "guard_sec_statement_fact_authority_insert",
+        "guard_sec_statement_occurrence_insert",
+    )
+
+    def definitions() -> dict[str, str]:
+        with engine.connect() as connection:
+            return {
+                name: connection.execute(
+                    text(
+                        "SELECT pg_get_functiondef(p.oid) FROM pg_proc p "
+                        "JOIN pg_namespace n ON n.oid=p.pronamespace "
+                        "WHERE n.nspname=current_schema() AND p.proname=:name"
+                    ),
+                    {"name": name},
+                ).scalar_one()
+                for name in functions
+            }
+
+    try:
+        _alembic(backend_dir, database_url, "upgrade", "20260901210000")
+        v22_definitions = definitions()
+        assert all("xbrl-lineage-v2.3" not in source for source in v22_definitions.values())
+
+        _alembic(backend_dir, database_url, "upgrade", HEAD_REVISION)
+        v23_definitions = definitions()
+        assert all("xbrl-lineage-v2.3" in source for source in v23_definitions.values())
+        assert all("xbrl-lineage-v2.2" in source for source in v23_definitions.values())
+
+        _alembic(backend_dir, database_url, "downgrade", "20260901210000")
+        assert definitions() == v22_definitions
+        _alembic(backend_dir, database_url, "upgrade", HEAD_REVISION)
+    finally:
+        engine.dispose()
+        drop_test_schema(_BASE_DATABASE_URL, schema_name)
+
+
+def test_parser_v24_guard_migration_is_reversible_without_rewriting_v23() -> None:
+    backend_dir = Path(__file__).resolve().parents[2]
+    schema_name = new_test_schema_name()
+    database_url = build_isolated_database_url(_BASE_DATABASE_URL, schema_name)
+    create_test_schema(_BASE_DATABASE_URL, schema_name)
+    engine = create_engine(database_url, pool_pre_ping=True)
+    functions = (
+        "validate_sec_parser_v2_structured_unit",
+        "guard_sec_statement_report_reference_insert",
+        "guard_sec_statement_fact_authority_insert",
+        "guard_sec_statement_occurrence_insert",
+    )
+
+    def definitions() -> dict[str, str]:
+        with engine.connect() as connection:
+            return {
+                name: connection.execute(
+                    text(
+                        "SELECT pg_get_functiondef(p.oid) FROM pg_proc p "
+                        "JOIN pg_namespace n ON n.oid=p.pronamespace "
+                        "WHERE n.nspname=current_schema() AND p.proname=:name"
+                    ),
+                    {"name": name},
+                ).scalar_one()
+                for name in functions
+            }
+
+    try:
+        _alembic(backend_dir, database_url, "upgrade", "20260901220000")
+        v23_definitions = definitions()
+        assert all(
+            "xbrl-lineage-v2.4" not in source
+            for source in v23_definitions.values()
+        )
+
+        _alembic(backend_dir, database_url, "upgrade", HEAD_REVISION)
+        v24_definitions = definitions()
+        assert all(
+            "xbrl-lineage-v2.4" in source
+            for source in v24_definitions.values()
+        )
+        assert all(
+            "xbrl-lineage-v2.3" in source
+            for source in v24_definitions.values()
+        )
+
+        _alembic(backend_dir, database_url, "downgrade", "20260901220000")
+        assert definitions() == v23_definitions
+        _alembic(backend_dir, database_url, "upgrade", HEAD_REVISION)
+    finally:
+        engine.dispose()
+        drop_test_schema(_BASE_DATABASE_URL, schema_name)
+
+
+def test_parser_v25_guard_migration_is_reversible_without_rewriting_v24() -> None:
+    backend_dir = Path(__file__).resolve().parents[2]
+    schema_name = new_test_schema_name()
+    database_url = build_isolated_database_url(_BASE_DATABASE_URL, schema_name)
+    create_test_schema(_BASE_DATABASE_URL, schema_name)
+    engine = create_engine(database_url, pool_pre_ping=True)
+    functions = (
+        "validate_sec_parser_v2_structured_unit",
+        "guard_sec_statement_report_reference_insert",
+        "guard_sec_statement_fact_authority_insert",
+        "guard_sec_statement_occurrence_insert",
+    )
+
+    def definitions() -> dict[str, str]:
+        with engine.connect() as connection:
+            return {
+                name: connection.execute(
+                    text(
+                        "SELECT pg_get_functiondef(p.oid) FROM pg_proc p "
+                        "JOIN pg_namespace n ON n.oid=p.pronamespace "
+                        "WHERE n.nspname=current_schema() AND p.proname=:name"
+                    ),
+                    {"name": name},
+                ).scalar_one()
+                for name in functions
+            }
+
+    try:
+        _alembic(backend_dir, database_url, "upgrade", "20260901230000")
+        v24_definitions = definitions()
+        assert all("xbrl-lineage-v2.5" not in source for source in v24_definitions.values())
+
+        _alembic(backend_dir, database_url, "upgrade", HEAD_REVISION)
+        v25_definitions = definitions()
+        assert all("xbrl-lineage-v2.5" in source for source in v25_definitions.values())
+        assert all("xbrl-lineage-v2.4" in source for source in v25_definitions.values())
+
+        _alembic(backend_dir, database_url, "downgrade", "20260901230000")
+        assert definitions() == v24_definitions
+        _alembic(backend_dir, database_url, "upgrade", HEAD_REVISION)
+    finally:
+        engine.dispose()
+        drop_test_schema(_BASE_DATABASE_URL, schema_name)
+
+
+def test_parser_v26_guard_migration_is_reversible_without_rewriting_v25() -> None:
+    backend_dir = Path(__file__).resolve().parents[2]
+    schema_name = new_test_schema_name()
+    database_url = build_isolated_database_url(_BASE_DATABASE_URL, schema_name)
+    create_test_schema(_BASE_DATABASE_URL, schema_name)
+    engine = create_engine(database_url, pool_pre_ping=True)
+    functions = (
+        "validate_sec_parser_v2_structured_unit",
+        "guard_sec_statement_report_reference_insert",
+        "guard_sec_statement_fact_authority_insert",
+        "guard_sec_statement_occurrence_insert",
+    )
+
+    def definitions() -> dict[str, str]:
+        with engine.connect() as connection:
+            return {
+                name: connection.execute(
+                    text(
+                        "SELECT pg_get_functiondef(p.oid) FROM pg_proc p "
+                        "JOIN pg_namespace n ON n.oid=p.pronamespace "
+                        "WHERE n.nspname=current_schema() AND p.proname=:name"
+                    ),
+                    {"name": name},
+                ).scalar_one()
+                for name in functions
+            }
+
+    try:
+        _alembic(backend_dir, database_url, "upgrade", "20260901240000")
+        v25_definitions = definitions()
+        assert all("xbrl-lineage-v2.6" not in source for source in v25_definitions.values())
+
+        _alembic(backend_dir, database_url, "upgrade", HEAD_REVISION)
+        v26_definitions = definitions()
+        assert all("xbrl-lineage-v2.6" in source for source in v26_definitions.values())
+        assert all("xbrl-lineage-v2.5" in source for source in v26_definitions.values())
+        with engine.connect() as connection:
+            assert connection.execute(text(
+                "SELECT sec_statement_type_v26(:role)"
+            ), {"role": "http://issuer/role/StatementOfFinancialPositionClassified"}).scalar_one() == "balance_sheet"
+            assert connection.execute(text(
+                "SELECT sec_statement_type_v26(:role)"
+            ), {"role": "http://issuer/role/StatementsOfCashFlows"}).scalar_one() == "cash_flow"
+            assert connection.execute(text(
+                "SELECT sec_statement_type_v26(:role)"
+            ), {"role": "http://issuer/role/UnrecognizedStatement"}).scalar_one_or_none() is None
+
+        _alembic(backend_dir, database_url, "downgrade", "20260901240000")
+        assert definitions() == v25_definitions
+        _alembic(backend_dir, database_url, "upgrade", HEAD_REVISION)
+    finally:
+        engine.dispose()
+        drop_test_schema(_BASE_DATABASE_URL, schema_name)
+
+
+def test_parser_v27_guard_migration_preserves_v26_and_is_reversible() -> None:
+    backend_dir = Path(__file__).resolve().parents[2]
+    schema_name = new_test_schema_name()
+    database_url = build_isolated_database_url(_BASE_DATABASE_URL, schema_name)
+    create_test_schema(_BASE_DATABASE_URL, schema_name)
+    engine = create_engine(database_url, pool_pre_ping=True)
+    functions = (
+        "validate_sec_parser_v2_structured_unit",
+        "guard_sec_statement_report_reference_insert",
+        "guard_sec_statement_fact_authority_insert",
+        "guard_sec_statement_occurrence_insert",
+    )
+
+    def definitions() -> dict[str, str]:
+        with engine.connect() as connection:
+            return {
+                name: connection.execute(
+                    text(
+                        "SELECT pg_get_functiondef(p.oid) FROM pg_proc p "
+                        "JOIN pg_namespace n ON n.oid=p.pronamespace "
+                        "WHERE n.nspname=current_schema() AND p.proname=:name"
+                    ),
+                    {"name": name},
+                ).scalar_one()
+                for name in functions
+            }
+
+    try:
+        _alembic(backend_dir, database_url, "upgrade", "20260901250000")
+        v26_definitions = definitions()
+        assert all("xbrl-lineage-v2.7" not in source for source in v26_definitions.values())
+
+        _alembic(backend_dir, database_url, "upgrade", HEAD_REVISION)
+        v27_definitions = definitions()
+        assert all("xbrl-lineage-v2.7" in source for source in v27_definitions.values())
+        occurrence_guard = v27_definitions["guard_sec_statement_occurrence_insert"]
+        assert "anchor_start_tag_occurrence_count" in occurrence_guard
+        assert "xbrl-lineage-v2.7" in occurrence_guard
+        assert "xbrl-lineage-v2.6" in occurrence_guard
+
+        _alembic(backend_dir, database_url, "downgrade", "20260901250000")
+        assert definitions() == v26_definitions
+        _alembic(backend_dir, database_url, "upgrade", HEAD_REVISION)
+    finally:
+        engine.dispose()
+        drop_test_schema(_BASE_DATABASE_URL, schema_name)
+
+
+def test_statement_report_xml_helper_matches_ascii_whitespace_sgml_boundary() -> None:
+    backend_dir = Path(__file__).resolve().parents[2]
+    schema_name = new_test_schema_name()
+    database_url = build_isolated_database_url(_BASE_DATABASE_URL, schema_name)
+    create_test_schema(_BASE_DATABASE_URL, schema_name)
+    engine = create_engine(database_url, pool_pre_ping=True)
+    payload = b"<Report><Rows/></Report>"
+    wrapped = (
+        b" \t\r\n<DOCUMENT><TYPE>XML\n<TEXT>\t\r\n"
+        + payload
+        + b" \t\r\n</TEXT></DOCUMENT>\n\r\t "
+    )
+    try:
+        _alembic(backend_dir, database_url, "upgrade", HEAD_REVISION)
+        with engine.connect() as connection:
+            assert connection.execute(
+                text("SELECT sec_statement_report_xml_text(:content)"),
+                {"content": wrapped},
+            ).scalar_one() == payload.decode()
+            mixed_case = wrapped.replace(b"<DOCUMENT>", b"<dOcUmEnT>").replace(
+                b"</DOCUMENT>", b"</DoCuMeNt>"
+            ).replace(b"<TEXT>", b"<tExT>").replace(b"</TEXT>", b"</TeXt>")
+            assert connection.execute(
+                text("SELECT sec_statement_report_xml_text(:content)"),
+                {"content": mixed_case},
+            ).scalar_one() == payload.decode()
+            non_wrapper = b"\x0b<DOCUMENT><TEXT><Report/></TEXT></DOCUMENT>"
+            assert connection.execute(
+                text("SELECT sec_statement_report_xml_text(:content)"),
+                {"content": non_wrapper},
+            ).scalar_one() == non_wrapper.decode()
+        for disallowed in (b"\x0b", b"\x0c"):
+            leading = disallowed + wrapped
+            with engine.connect() as connection:
+                assert connection.execute(
+                    text("SELECT sec_statement_report_xml_text(:content)"),
+                    {"content": leading},
+                ).scalar_one() == leading.decode()
+            for invalid in (
+                b"<DOCUMENT><TEXT><Report/></TEXT>"
+                + disallowed
+                + b"</DOCUMENT>",
+                wrapped + disallowed,
+            ):
+                with engine.connect() as connection:
+                    with pytest.raises(DBAPIError, match="malformed SEC SGML"):
+                        connection.execute(
+                            text("SELECT sec_statement_report_xml_text(:content)"),
+                            {"content": invalid},
+                        ).scalar_one()
+        for extra_literal in (
+            b"<!-- </DOCUMENT> -->",
+            b"<!-- <DOCUMENT> -->",
+            b"<!-- </TEXT> -->",
+            b"<!-- <TEXT> -->",
+        ):
+            invalid = wrapped.replace(payload, payload + extra_literal)
+            with engine.connect() as connection:
+                with pytest.raises(DBAPIError, match="malformed SEC SGML"):
+                    connection.execute(
+                        text("SELECT sec_statement_report_xml_text(:content)"),
+                        {"content": invalid},
+                    ).scalar_one()
+    finally:
+        engine.dispose()
+        drop_test_schema(_BASE_DATABASE_URL, schema_name)
+
+
+def test_parser_v2_downgrade_locks_all_evidence_before_counting() -> None:
+    migration = (
+        Path(__file__).resolve().parents[2]
+        / "alembic/versions/20260831120000-sec-parser-v2-units.py"
+    ).read_text()
+    lock = migration.index("LOCK TABLE sec_raw_xbrl_facts")
+    first_count = migration.index("SELECT count(*) FROM sec_raw_xbrl_facts")
+    assert lock < first_count
+
+
+def test_parser_v2_downgrade_waits_for_pending_writer_then_refuses() -> None:
+    backend_dir = Path(__file__).resolve().parents[2]
+    schema_name = new_test_schema_name()
+    database_url = build_isolated_database_url(_BASE_DATABASE_URL, schema_name)
+    create_test_schema(_BASE_DATABASE_URL, schema_name)
+    engine = create_engine(database_url, pool_pre_ping=True)
+    writer = None
+    process = None
+    try:
+        _alembic(backend_dir, database_url, "upgrade", "head")
+        with engine.begin() as connection:
+            stock_id = connection.execute(
+                text(
+                    "INSERT INTO stocks (ticker, exchange, market_country, company_name, is_active) "
+                    "VALUES ('RACEV2', 'US', 'US', 'Race V2', true) RETURNING id"
+                )
+            ).scalar_one()
+            identity_id = connection.execute(
+                text(
+                    "INSERT INTO sec_issuer_identities "
+                    "(stock_id, cik, status, review_reason, effective_from, known_at) "
+                    "VALUES (:stock_id, '0000000088', 'reviewed', 'race test', "
+                    "'2020-01-01', '2026-08-31T00:00:00+00:00') RETURNING id"
+                ),
+                {"stock_id": stock_id},
+            ).scalar_one()
+            operation_id = _insert_ingestion_operation(connection, identity_id)
+            snapshot_id = connection.execute(
+                text(
+                    "INSERT INTO sec_submission_snapshots "
+                    "(issuer_identity_id, operation_id, source_url, sha256, byte_size, storage_key, fetched_at, known_at) "
+                    "VALUES (:identity_id, :operation_id, "
+                    "'https://data.sec.gov/submissions/CIK0000000088.json', :sha, 2, :key, "
+                    "clock_timestamp(), clock_timestamp()) RETURNING id"
+                ),
+                {
+                    "identity_id": identity_id,
+                    "operation_id": operation_id,
+                    "sha": "8" * 64,
+                    "key": "financial/88/" + "8" * 64,
+                },
+            ).scalar_one()
+
+        writer = engine.connect()
+        transaction = writer.begin()
+        operation_id = _insert_ingestion_operation(writer, identity_id)
+        history_snapshot_id = writer.execute(
+            text(
+                "INSERT INTO sec_submission_snapshots "
+                "(issuer_identity_id, operation_id, source_url, sha256, byte_size, storage_key, fetched_at, known_at) "
+                "VALUES (:identity_id, :operation_id, "
+                "'https://data.sec.gov/submissions/CIK0000000088-submissions-001.json', :sha, 2, :key, "
+                "clock_timestamp(), clock_timestamp()) RETURNING id"
+            ),
+            {"identity_id": identity_id, "operation_id": operation_id, "sha": "7" * 64, "key": "financial/77/" + "7" * 64},
+        ).scalar_one()
+        writer.execute(text(
+            "INSERT INTO sec_financial_operation_snapshots (operation_id, snapshot_id) VALUES (:operation_id, :snapshot_id)"
+        ), {"operation_id": operation_id, "snapshot_id": history_snapshot_id})
+        writer.execute(
+            text(
+                "INSERT INTO sec_financial_history_consumption_claims "
+                "(operation_id, issuer_identity_id, parent_id, main_snapshot_id, manifest_identity, filing_selection_as_of, history_target_json, start_index, end_index, "
+                "attempted_references_json, terminal_outcomes_json) VALUES "
+                "(:operation_id, :identity_id, NULL, :snapshot_id, :manifest, NULL, '{}'::jsonb, 0, 1, "
+                "'[\"CIK0000000088-submissions-001.json\"]'::jsonb, "
+                "'[{\"reference\":\"CIK0000000088-submissions-001.json\",\"outcome\":\"retained_and_parsed\"}]'::jsonb)"
+            ),
+            {
+                "operation_id": operation_id,
+                "identity_id": identity_id,
+                "snapshot_id": snapshot_id,
+                "manifest": "9" * 64,
+            },
+        )
+        process = subprocess.Popen(
+            ["alembic", "downgrade", "20260830140000"],
+            cwd=backend_dir,
+            env={**os.environ, "DATABASE_URL": database_url},
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        try:
+            process.communicate(timeout=1.5)
+        except subprocess.TimeoutExpired:
+            pass
+        else:
+            raise AssertionError("downgrade did not wait for pending evidence writer")
+        transaction.commit()
+        stdout, stderr = process.communicate(timeout=20)
+        assert process.returncode != 0
+        assert "cannot downgrade with retained SEC history continuations" in (
+            stdout + stderr
+        )
+        with engine.connect() as connection:
+            assert connection.execute(
+                text("SELECT version_num FROM alembic_version")
+            ).scalar_one() == HEAD_REVISION
+            assert connection.execute(
+                text(
+                    "SELECT attempted_references_json FROM sec_financial_history_consumption_claims "
+                    "WHERE operation_id = :operation_id"
+                ),
+                {"operation_id": operation_id},
+            ).scalar_one() == ["CIK0000000088-submissions-001.json"]
+    finally:
+        if process is not None and process.poll() is None:
+            process.kill()
+            process.communicate(timeout=5)
+        if writer is not None:
+            writer.close()
+        engine.dispose()
+        drop_test_schema(_BASE_DATABASE_URL, schema_name)
+
+
 _configured_url = make_url(settings.SQLALCHEMY_DATABASE_URI)
 _BASE_DATABASE_URL = _configured_url.set(
     query={key: value for key, value in _configured_url.query.items() if key != "options"}
@@ -58,6 +503,273 @@ def _insert_ingestion_operation(connection, identity_id: int) -> str:
         {"id": operation_id, "identity_id": identity_id},
     )
     return operation_id
+
+
+def test_completion_claim_upgrade_rejects_cross_attempt_legacy_checkpoints() -> None:
+    backend_dir = Path(__file__).resolve().parents[2]
+    schema_name = new_test_schema_name()
+    database_url = build_isolated_database_url(_BASE_DATABASE_URL, schema_name)
+    create_test_schema(_BASE_DATABASE_URL, schema_name)
+    engine = create_engine(database_url, pool_pre_ping=True)
+    try:
+        _alembic(backend_dir, database_url, "upgrade", "20260901190000")
+        with engine.begin() as connection:
+            connection.execute(
+                text(
+                    """INSERT INTO sec_acceptance_rate_guard_snapshots
+                         (run_id,phase,configured_route,expected_instance_id,
+                          observed_instance_id,fetch_mode,fallback_enabled,fallback_url,
+                          rate_per_sec,total_request_count,total_403_count,total_429_count,
+                          total_503_count,cache_hits,cache_misses,config_digest,
+                          manifest_digest,database_name,runtime_counts,
+                          retained_file_count,retained_bytes,retained_manifest_digest,
+                          captured_at,created_at,created_txid)
+                       VALUES ('legacy-cross-attempt','before','https://guard.test',
+                         '11111111-1111-4111-8111-111111111111',
+                         '11111111-1111-4111-8111-111111111111','rate_guard',false,NULL,
+                         1,0,0,0,0,0,0,:digest,:digest,
+                         'valuepilot_acceptance_legacy_cross','{}'::jsonb,0,0,:digest,
+                         clock_timestamp(),clock_timestamp(),txid_current())"""
+                ),
+                {"digest": "a" * 64},
+            )
+            attempt_a = connection.execute(
+                text(
+                    """INSERT INTO sec_acceptance_case_attempts
+                         (run_id,case_id,acceptance_pass,attempt_ordinal,
+                          attempted_at,created_at,created_txid)
+                       VALUES ('legacy-cross-attempt','aapl-primary',1,1,
+                               clock_timestamp(),clock_timestamp(),txid_current())
+                       RETURNING id"""
+                )
+            ).scalar_one()
+            attempt_b = connection.execute(
+                text(
+                    """INSERT INTO sec_acceptance_case_attempts
+                         (run_id,case_id,acceptance_pass,attempt_ordinal,
+                          attempted_at,created_at,created_txid)
+                       VALUES ('legacy-cross-attempt','aapl-primary',1,2,
+                               clock_timestamp(),clock_timestamp(),txid_current())
+                       RETURNING id"""
+                )
+            ).scalar_one()
+            connection.execute(
+                text(
+                    """INSERT INTO sec_acceptance_evidence_checkpoints
+                         (run_id,case_id,acceptance_pass,phase,attempt_id,operation_id,
+                          evidence_counts,captured_at,created_at,created_txid)
+                       VALUES ('legacy-cross-attempt','aapl-primary',1,'before',
+                               :attempt,NULL,'{}'::jsonb,clock_timestamp(),
+                               clock_timestamp(),txid_current())"""
+                ),
+                {"attempt": attempt_a},
+            )
+            stock_id = connection.execute(
+                text(
+                    "INSERT INTO stocks (ticker,exchange,market_country,company_name,is_active) "
+                    "VALUES ('LEGACYX','US','US','Legacy Cross Attempt',true) RETURNING id"
+                )
+            ).scalar_one()
+            identity_id = connection.execute(
+                text(
+                    """INSERT INTO sec_issuer_identities
+                         (stock_id,cik,status,review_reason,effective_from,known_at)
+                       VALUES (:stock,'0000000991','reviewed','legacy migration fixture',
+                               '2020-01-01',clock_timestamp()) RETURNING id"""
+                ),
+                {"stock": stock_id},
+            ).scalar_one()
+            operation_id = _insert_ingestion_operation(connection, identity_id)
+            connection.execute(
+                text(
+                    """INSERT INTO sec_acceptance_operation_links
+                         (attempt_id,operation_id,operation_ordinal,operation_role,
+                          linked_at,created_at,created_txid)
+                       VALUES (:attempt,:operation,1,'main',clock_timestamp(),
+                               clock_timestamp(),txid_current())"""
+                ),
+                {"attempt": attempt_b, "operation": operation_id},
+            )
+            connection.execute(
+                text(
+                    """INSERT INTO sec_acceptance_evidence_checkpoints
+                         (run_id,case_id,acceptance_pass,phase,attempt_id,operation_id,
+                          evidence_counts,captured_at,created_at,created_txid)
+                       VALUES ('legacy-cross-attempt','aapl-primary',1,'after',
+                               :attempt,:operation,'{}'::jsonb,clock_timestamp(),
+                               clock_timestamp(),txid_current())"""
+                ),
+                {"attempt": attempt_b, "operation": operation_id},
+            )
+
+        result = subprocess.run(
+            ["alembic", "upgrade", "head"],
+            cwd=backend_dir,
+            env={**os.environ, "DATABASE_URL": database_url},
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert result.returncode != 0
+        assert "legacy acceptance authority crosses completion attempts" in (
+            result.stdout + result.stderr
+        )
+        with engine.connect() as connection:
+            assert connection.execute(
+                text("SELECT version_num FROM alembic_version")
+            ).scalar_one() == "20260901190000"
+            assert "sec_acceptance_case_completion_claims" not in inspect(
+                connection
+            ).get_table_names()
+            rows = connection.execute(
+                text(
+                    """SELECT phase,attempt_id FROM sec_acceptance_evidence_checkpoints
+                       WHERE run_id='legacy-cross-attempt' ORDER BY phase"""
+                )
+            ).all()
+            assert {row.attempt_id for row in rows} == {attempt_a, attempt_b}
+    finally:
+        engine.dispose()
+        drop_test_schema(_BASE_DATABASE_URL, schema_name)
+
+
+def test_generated_authority_upgrade_preserves_v21_duplicate_report_ordinals() -> None:
+    backend_dir = Path(__file__).resolve().parents[2]
+    schema_name = new_test_schema_name()
+    database_url = build_isolated_database_url(_BASE_DATABASE_URL, schema_name)
+    create_test_schema(_BASE_DATABASE_URL, schema_name)
+    engine = create_engine(database_url, pool_pre_ping=True)
+    summary = b"""<FilingSummary><MyReports>
+      <Report><Position>7</Position><ShortName>Legacy Income A</ShortName>
+        <Role>role/IncomeStatement</Role><XmlFileName>R7a.xml</XmlFileName></Report>
+      <Report><Position>7</Position><ShortName>Legacy Income B</ShortName>
+        <Role>role/IncomeStatement</Role><XmlFileName>R7b.xml</XmlFileName></Report>
+      </MyReports></FilingSummary>"""
+    report = b"<Report/>"
+    summary_sha = hashlib.sha256(summary).hexdigest()
+    report_sha = hashlib.sha256(report).hexdigest()
+    try:
+        _alembic(backend_dir, database_url, "upgrade", "20260901200000")
+        with engine.begin() as connection:
+            stock_id = connection.execute(text(
+                "INSERT INTO stocks (ticker,exchange,market_country,company_name,is_active) "
+                "VALUES ('V21ORD','US','US','Legacy V21 Ordinal',true) RETURNING id"
+            )).scalar_one()
+            identity_id = connection.execute(text(
+                "INSERT INTO sec_issuer_identities "
+                "(stock_id,cik,status,review_reason,effective_from,known_at) VALUES "
+                "(:stock,'0000000777','reviewed','legacy ordinal fixture',"
+                "'2020-01-01','2026-08-27T00:00:00+00:00') RETURNING id"
+            ), {"stock": stock_id}).scalar_one()
+            operation_id = _insert_ingestion_operation(connection, identity_id)
+            filing_id = connection.execute(text(
+                "INSERT INTO sec_financial_filings "
+                "(issuer_identity_id,accession_no,form_type,is_amendment,filed_on,"
+                "report_date,accepted_at,known_at,primary_document,index_url,source_url,"
+                "submissions_source_url,discovery_payload_sha256) VALUES "
+                "(:identity,'0000000777-26-000001','10-Q',false,'2026-07-31',"
+                "'2026-06-30','2026-07-31T16:00:00+00:00',"
+                "'2026-08-27T00:01:00+00:00','fixture.htm',"
+                "'https://www.sec.gov/Archives/edgar/data/777/000000077726000001/index.json',"
+                "'https://www.sec.gov/Archives/edgar/data/777/000000077726000001/fixture.htm',"
+                "'https://data.sec.gov/submissions/CIK0000000777.json',:digest) RETURNING id"
+            ), {"identity": identity_id, "digest": "a" * 64}).scalar_one()
+            artifacts: dict[str, int] = {}
+            for sequence, filename, content, digest in (
+                (1, "FilingSummary.xml", summary, summary_sha),
+                (2, "R7a.xml", report, report_sha),
+                (3, "R7b.xml", report, report_sha),
+            ):
+                artifacts[filename] = connection.execute(text(
+                    "INSERT INTO sec_filing_artifacts "
+                    "(filing_id,sequence,filename,description,sec_type,declared_size,"
+                    "source_url,manifest_hash,state,content_mime,sha256,byte_size,"
+                    "storage_key,fetched_at,known_at) VALUES "
+                    "(:filing,:sequence,:filename,:filename,'XML',:size,:url,:manifest,"
+                    "'retained','application/xml',:sha,:size,:storage,"
+                    "'2026-08-27T00:02:00+00:00','2026-08-27T00:02:00+00:00') RETURNING id"
+                ), {
+                    "filing": filing_id, "sequence": sequence,
+                    "filename": filename, "size": len(content),
+                    "url": (
+                        "https://www.sec.gov/Archives/edgar/data/777/"
+                        f"000000077726000001/{filename}"
+                    ),
+                    "manifest": "b" * 64, "sha": digest,
+                    "storage": f"financial/{digest[:2]}/{digest}",
+                }).scalar_one()
+            run_id = connection.execute(text(
+                "INSERT INTO sec_financial_parse_runs "
+                "(filing_id,operation_id,parser_name,parser_version,input_manifest_hash,"
+                "status,started_at,completed_at,known_at,fact_count) VALUES "
+                "(:filing,:operation,'fixture','xbrl-lineage-v2.1',:manifest,'succeeded',"
+                "'2026-08-27T00:03:00+00:00','2026-08-27T00:03:00+00:00',"
+                "'2026-08-27T00:03:00+00:00',1) RETURNING id"
+            ), {"filing": filing_id, "operation": operation_id,
+                "manifest": "c" * 64}).scalar_one()
+            for artifact_id in artifacts.values():
+                connection.execute(text(
+                    "INSERT INTO sec_financial_parse_run_artifacts "
+                    "(parse_run_id,artifact_id,known_at) VALUES "
+                    "(:run,:artifact,'2026-08-27T00:03:00+00:00')"
+                ), {"run": run_id, "artifact": artifact_id})
+            connection.execute(text(
+                "INSERT INTO sec_raw_xbrl_facts "
+                "(parse_run_id,artifact_id,ordinal,concept,unit_numerator_json,"
+                "unit_denominator_json,dimensions_json,dimensions_structured_json,"
+                "locator_json) VALUES "
+                "(:run,:artifact,1,'us-gaap:Assets','[]'::jsonb,'[]'::jsonb,"
+                "'{}'::jsonb,'[]'::jsonb,'{}'::jsonb)"
+            ), {"run": run_id, "artifact": artifacts["R7a.xml"]})
+            for filename, report_name in (
+                ("R7a.xml", "Legacy Income A"),
+                ("R7b.xml", "Legacy Income B"),
+            ):
+                semantic = hashlib.sha256(chr(31).join((
+                    summary_sha, filename, "7", "role/IncomeStatement",
+                    "income_statement", report_name,
+                )).encode()).hexdigest()
+                connection.execute(text(
+                    "INSERT INTO sec_statement_report_references "
+                    "(parse_run_id,filing_summary_artifact_id,filing_summary_sha256,"
+                    "filing_summary_byte_size,filing_summary_content,report_artifact_id,"
+                    "report_sha256,report_byte_size,report_content,filename,report_ordinal,"
+                    "statement_role,statement_type,report_name,reference_semantic_sha256,"
+                    "known_at) VALUES (:run,:summary_artifact,:summary_sha,:summary_size,"
+                    ":summary,:report_artifact,:report_sha,:report_size,:report,:filename,7,"
+                    "'role/IncomeStatement','income_statement',:name,:semantic,"
+                    "'2026-08-27T00:03:00+00:00')"
+                ), {
+                    "run": run_id,
+                    "summary_artifact": artifacts["FilingSummary.xml"],
+                    "summary_sha": summary_sha, "summary_size": len(summary),
+                    "summary": summary,
+                    "report_artifact": artifacts[filename],
+                    "report_sha": report_sha, "report_size": len(report),
+                    "report": report, "filename": filename,
+                    "name": report_name, "semantic": semantic,
+                })
+
+        engine.dispose()
+        _alembic(backend_dir, database_url, "upgrade", "head")
+        engine = create_engine(database_url, pool_pre_ping=True)
+        with engine.connect() as connection:
+            assert connection.execute(text(
+                "SELECT count(*) FROM sec_statement_report_references "
+                "WHERE parse_run_id=:run AND report_ordinal=7"
+            ), {"run": run_id}).scalar_one() == 2
+            assert connection.execute(text(
+                "SELECT status FROM sec_financial_parse_runs WHERE id=:run"
+            ), {"run": run_id}).scalar_one() == "succeeded"
+            constraints = {
+                item["name"] for item in inspect(connection).get_unique_constraints(
+                    "sec_statement_report_references"
+                )
+            }
+            assert "uq_sec_statement_report_reference_parse_run_ordinal" not in constraints
+    finally:
+        engine.dispose()
+        drop_test_schema(_BASE_DATABASE_URL, schema_name)
 
 
 def test_sec_financial_lineage_migration_round_trip_and_triggers() -> None:
@@ -99,8 +811,26 @@ def test_sec_financial_lineage_migration_round_trip_and_triggers() -> None:
                 "sec_financial_accession_attempt_artifacts",
                 "sec_financial_acquisition_resolutions",
                 "sec_financial_legacy_parse_runs",
+                "sec_acceptance_rate_guard_snapshots",
+                "sec_acceptance_evidence_checkpoints",
+                "sec_acceptance_case_attempts",
+                "sec_acceptance_operation_links",
+                "sec_acceptance_report_readiness",
+                "sec_acceptance_publication_bindings",
+                "sec_acceptance_case_completion_claims",
             }
             assert expected <= set(inspector.get_table_names())
+            claim_columns = {
+                item["name"]
+                for item in inspector.get_columns(
+                    "sec_acceptance_case_completion_claims"
+                )
+            }
+            assert {
+                "owner_backend_pid",
+                "owner_backend_start",
+                "owner_session_token_hash",
+            } <= claim_columns
             raw_columns = {
                 item["name"]
                 for item in inspector.get_columns("sec_raw_xbrl_facts")
@@ -211,6 +941,8 @@ def test_sec_financial_lineage_migration_round_trip_and_triggers() -> None:
             assert {
                 "concept_namespace_uri",
                 "unit_measure",
+                "unit_numerator_json",
+                "unit_denominator_json",
                 "transformation_format",
                 "language",
                 "continued_at",

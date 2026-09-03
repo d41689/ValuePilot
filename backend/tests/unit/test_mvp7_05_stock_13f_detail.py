@@ -17,7 +17,9 @@ from app.models.institutions import (
     ParseRun13F,
 )
 from app.models.oracles_lens import OraclesLensSignal
+from app.models.facts import MetricFact
 from app.models.stocks import Stock
+from app.models.users import User
 from app.services.oracles_lens.constants import SCORE_VERSION
 
 
@@ -215,6 +217,79 @@ def test_detail_available_includes_top_holders_and_caveat_flags(client, db_sessi
     for flag in detail["caveat_flags"]:
         assert {"key", "group", "severity", "label"} <= set(flag.keys())
         assert flag["severity"] in {"warning", "info"}
+
+
+def test_detail_api_preserves_typed_m3_source_conflict(
+    client, db_session, auth_headers
+):
+    fixture = _seed_detail_fixture(db_session)
+    user = User(email="m3-detail-conflict@example.com")
+    db_session.add(user)
+    db_session.flush()
+    for source_type, value in (("parsed", 100), ("manual", 110)):
+        db_session.add(
+            MetricFact(
+                user_id=user.id,
+                stock_id=fixture["target_id"],
+                metric_key="target.price_18m.mid",
+                value_numeric=value,
+                period_type="FY",
+                period_end_date=date(2031, 12, 31),
+                source_type=source_type,
+                is_current=True,
+            )
+        )
+    db_session.commit()
+
+    response = client.get(
+        f"/api/v1/stocks/{fixture['target_id']}/13f-detail",
+        params={"period": "2031-Q4", "use_persisted_scores": "false"},
+        headers=auth_headers(user),
+    )
+
+    assert response.status_code == 200, response.text
+    overlay = response.json()["detail"]["quality_overlay"]
+    assert overlay["has_value_line"] is False
+    assert overlay["canonical_source_status"] == {
+        "status": "source_conflict",
+        "reason_code": "source_conflict",
+        "source_types": ["manual", "parsed"],
+        "source_type": None,
+    }
+
+
+def test_detail_api_preserves_typed_m3_amendment_unavailable(
+    client, db_session, monkeypatch
+):
+    fixture = _seed_detail_fixture(db_session)
+    monkeypatch.setattr(
+        "app.api.v1.endpoints.stocks_13f._m3_facts_by_stock",
+        lambda *_args, **_kwargs: (
+            {fixture["target_id"]: {}},
+            {
+                fixture["target_id"]: {
+                    "status": "unresolved",
+                    "reason_code": "unresolved_amendment_parse_failure",
+                    "source_type": "sec",
+                }
+            },
+        ),
+    )
+
+    response = client.get(
+        f"/api/v1/stocks/{fixture['target_id']}/13f-detail",
+        params={"period": "2031-Q4", "use_persisted_scores": "false"},
+    )
+
+    assert response.status_code == 200, response.text
+    overlay = response.json()["detail"]["quality_overlay"]
+    assert overlay["has_value_line"] is False
+    assert overlay["canonical_source_status"] == {
+        "status": "unresolved",
+        "reason_code": "unresolved_amendment_parse_failure",
+        "source_types": [],
+        "source_type": "sec",
+    }
 
 
 def test_detail_404_for_unknown_stock(client, db_session):

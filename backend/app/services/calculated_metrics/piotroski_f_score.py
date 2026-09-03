@@ -2,12 +2,15 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import date
+from decimal import Decimal
 from typing import Any, Callable, Iterable, Optional
 
-from sqlalchemy import select, update
+from sqlalchemy import and_, or_, select, update
 from sqlalchemy.orm import Session
 
 from app.models.facts import MetricFact
+from app.services.canonical_financials import guard_sec_run_availability, guard_source_selection
+from app.services.numeric_persistence import persist_numeric_38_12
 
 
 CALCULATION_VERSION = "piotroski_value_line_v1"
@@ -29,10 +32,11 @@ TOTAL_KEY = "score.piotroski.total"
 class FactSnapshot:
     id: Optional[int]
     metric_key: str
-    value_numeric: Optional[float]
+    value_numeric: Optional[Decimal]
     value_json: dict[str, Any]
     period_type: Optional[str]
     period_end_date: date
+    source_type: Optional[str]
 
 
 @dataclass(frozen=True)
@@ -49,7 +53,7 @@ class ComponentResult:
 class FactIndex:
     def __init__(self, facts: Iterable[Any]):
         self.facts: dict[tuple[str, date], FactSnapshot] = {}
-        for raw in facts:
+        for raw in guard_source_selection(facts, consumer="piotroski"):
             fact = _snapshot(raw)
             if fact is None or fact.value_numeric is None:
                 continue
@@ -112,11 +116,18 @@ class PiotroskiFScoreCalculator:
     def calculate_for_stock(self, *, user_id: int, stock_id: int) -> list[MetricFact]:
         source_facts = self.db.scalars(
             select(MetricFact).where(
-                MetricFact.user_id == user_id,
                 MetricFact.stock_id == stock_id,
                 MetricFact.is_current.is_(True),
+                or_(
+                    and_(MetricFact.user_id == user_id, MetricFact.source_type.in_(["parsed", "manual"])),
+                    and_(MetricFact.user_id.is_(None), MetricFact.source_type == "sec"),
+                ),
             )
         ).all()
+        source_facts = guard_source_selection(source_facts, consumer="piotroski")
+        source_facts = guard_sec_run_availability(
+            self.db, stock_id=stock_id, facts=source_facts
+        )
         derived = build_piotroski_f_score_facts(source_facts)
         return [
             self._insert_calculated_fact(user_id=user_id, stock_id=stock_id, payload=payload)
@@ -143,11 +154,12 @@ class PiotroskiFScoreCalculator:
             )
             .values(is_current=False)
         )
+        persisted_value = persist_numeric_38_12(payload["value_numeric"]) if payload.get("value_numeric") is not None else None
         fact = MetricFact(
             user_id=user_id,
             stock_id=stock_id,
             metric_key=payload["metric_key"],
-            value_numeric=payload.get("value_numeric"),
+            value_numeric=persisted_value,
             value_text=payload.get("value_text"),
             value_json=payload.get("value_json"),
             unit=payload.get("unit"),
@@ -294,8 +306,8 @@ def _current_position_totals_improving(
         return None
     if not _is_positive(current_liabilities.value_numeric) or not _is_positive(previous_liabilities.value_numeric):
         return None
-    current_ratio = float(current_assets.value_numeric) / float(current_liabilities.value_numeric)
-    previous_ratio = float(previous_assets.value_numeric) / float(previous_liabilities.value_numeric)
+    current_ratio = current_assets.value_numeric / current_liabilities.value_numeric
+    previous_ratio = previous_assets.value_numeric / previous_liabilities.value_numeric
     return ComponentResult(
         metric_key="score.piotroski.current_ratio_improving",
         standard_metric="current_ratio_improving",
@@ -386,7 +398,7 @@ def _first_current_rule(
             return ComponentResult(
                 metric_key=metric_key,
                 standard_metric=standard_metric,
-                value=1 if predicate(float(current.value_numeric)) else 0,
+                value=1 if predicate(current.value_numeric) else 0,
                 variant=variant,
                 method=method,
                 formula=formula,
@@ -416,7 +428,7 @@ def _first_comparison_rule(
             return ComponentResult(
                 metric_key=metric_key,
                 standard_metric=standard_metric,
-                value=1 if predicate(float(current.value_numeric), float(previous_fact.value_numeric)) else 0,
+                value=1 if predicate(current.value_numeric, previous_fact.value_numeric) else 0,
                 variant=variant,
                 method=method,
                 formula=formula,
@@ -451,7 +463,7 @@ def _binary_component(
     return ComponentResult(
         metric_key=metric_key,
         standard_metric=standard_metric,
-        value=1 if predicate(float(left.value_numeric), float(right.value_numeric)) else 0,
+        value=1 if predicate(left.value_numeric, right.value_numeric) else 0,
         variant=variant,
         method=method,
         formula=formula,
@@ -471,6 +483,7 @@ def _component_fact(result: ComponentResult, period_end: date) -> dict[str, Any]
             "calculation_version": CALCULATION_VERSION,
             "standard_metric": result.standard_metric,
             "fact_nature": _fact_nature(result.inputs),
+            "source_types": sorted({fact.source_type for fact in result.inputs if fact.source_type}),
             "formula": result.formula,
             "fiscal_year": period_end.year,
             "inputs": [_lineage_item(fact) for fact in result.inputs],
@@ -496,6 +509,9 @@ def _total_fact(
         "variant": variant,
         "calculation_version": CALCULATION_VERSION,
         "fact_nature": _fact_nature([fact for result in results for fact in result.inputs]),
+        "source_types": sorted(
+            {fact.source_type for result in results for fact in result.inputs if fact.source_type}
+        ),
         "fiscal_year": period_end.year,
         "inputs": [
             {"metric_key": result.metric_key, "value_numeric": float(result.value), "method": result.method}
@@ -550,10 +566,11 @@ def _snapshot(raw: Any) -> Optional[FactSnapshot]:
     return FactSnapshot(
         id=_get(raw, "id"),
         metric_key=metric_key,
-        value_numeric=float(value_numeric) if isinstance(value_numeric, (int, float)) else None,
+        value_numeric=Decimal(str(value_numeric)) if isinstance(value_numeric, (int, float, Decimal)) else None,
         value_json=value_json,
         period_type=period_type,
         period_end_date=period_end,
+        source_type=_get(raw, "source_type"),
     )
 
 
@@ -565,7 +582,7 @@ def _fact_nature(inputs: list[FactSnapshot]) -> str:
 
 
 def _is_positive(value: Any) -> bool:
-    return isinstance(value, (int, float)) and float(value) > 0
+    return isinstance(value, (int, float, Decimal)) and Decimal(str(value)) > 0
 
 
 def _lineage_item(fact: FactSnapshot) -> dict[str, Any]:
@@ -573,8 +590,9 @@ def _lineage_item(fact: FactSnapshot) -> dict[str, Any]:
         "metric_key": fact.metric_key,
         "period_end_date": fact.period_end_date.isoformat(),
         "fact_id": fact.id,
-        "value_numeric": fact.value_numeric,
+        "value_numeric": format(fact.value_numeric, "f") if fact.value_numeric is not None else None,
         "fact_nature": fact.value_json.get("fact_nature"),
+        "source_type": fact.source_type,
     }
 
 

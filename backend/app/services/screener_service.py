@@ -1,9 +1,16 @@
 from typing import List, Dict, Any, Callable
 from sqlalchemy.orm import Session, aliased
+from decimal import Decimal
 from sqlalchemy import select, and_, or_
 from app.models.stocks import Stock
 from app.models.facts import MetricFact
-from app.models.users import User
+from app.services.canonical_financials import (
+    CANONICAL_SOURCE_TYPES,
+    CanonicalSourceConflictError,
+    guard_sec_run_availability,
+    guard_source_selection,
+    visible_metric_fact_predicate,
+)
 
 class ScreenerService:
     def __init__(self, db: Session):
@@ -56,7 +63,7 @@ class ScreenerService:
     @staticmethod
     def _extract_value(fact: MetricFact) -> Any:
         if fact.value_numeric is not None:
-            return fact.value_numeric
+            return float(fact.value_numeric)
         if fact.value_text is not None:
             return fact.value_text
         if fact.value_json is None:
@@ -65,17 +72,22 @@ class ScreenerService:
             return fact.value_json.get("value", fact.value_json.get("raw"))
         return fact.value_json
 
-    def fetch_metrics_for_stocks(self, stock_ids: list[int], current_user_id: int) -> dict[int, dict[str, Any]]:
+    def fetch_metrics_for_stocks(
+        self,
+        stock_ids: list[int],
+        current_user_id: int,
+        *,
+        selected_source_type: str | None = None,
+    ) -> dict[int, dict[str, Any]]:
         if not stock_ids:
             return {}
 
-        admin_user_ids = self._admin_user_ids()
         fact_nature_expr = MetricFact.value_json["fact_nature"].as_string()
         stmt = select(MetricFact).where(
             MetricFact.stock_id.in_(stock_ids),
             MetricFact.metric_key.in_(self.metric_keys()),
             MetricFact.is_current.is_(True),
-            self._visibility_predicate(MetricFact, current_user_id, admin_user_ids),
+            visible_metric_fact_predicate(MetricFact, user_id=current_user_id),
             or_(
                 fact_nature_expr.is_(None),
                 fact_nature_expr != "estimate",
@@ -91,10 +103,21 @@ class ScreenerService:
         for stock_id in stock_ids:
             stock_metrics: dict[str, Any] = {}
             fact_map = facts_by_stock.get(stock_id, {})
+            selected = guard_source_selection(
+                [fact for rows in fact_map.values() for fact in rows],
+                consumer="screener_metrics",
+                selected_source_type=selected_source_type,
+            )
+            selected = guard_sec_run_availability(
+                self.db,
+                stock_id=stock_id,
+                facts=selected,
+            )
+            selected_ids = {fact.id for fact in selected}
             for output_key, spec in self.METRIC_OUTPUT_SPECS.items():
                 desired_period_type = spec.get("period_type")
                 for key in spec["keys"]:
-                    facts_for_key = fact_map.get(key, [])
+                    facts_for_key = [fact for fact in fact_map.get(key, []) if fact.id in selected_ids]
                     if desired_period_type:
                         if isinstance(desired_period_type, (list, tuple, set)):
                             facts_for_key = [
@@ -162,10 +185,23 @@ class ScreenerService:
         # WHERE f1.value_numeric < 20 AND f2.value_numeric > 0.02
         
         # We need to parse the rule and construct these joins dynamically.
-        admin_user_ids = self._admin_user_ids()
+        selected_source_type = rule_json.get("source_type")
+        if selected_source_type is not None and selected_source_type not in CANONICAL_SOURCE_TYPES:
+            raise ValueError("unsupported source_type selection")
+        conditions = rule_json.get("conditions", [])
+        self._guard_screen_sources(
+            conditions,
+            current_user_id=current_user_id,
+            selected_source_type=selected_source_type,
+        )
         
         if rule_json.get("type") == "AND":
-             query = self._build_and_query(query, rule_json.get("conditions", []), current_user_id, admin_user_ids)
+             query = self._build_and_query(
+                 query,
+                 conditions,
+                 current_user_id,
+                 selected_source_type=selected_source_type,
+             )
         else:
             # "OR" logic is trickier with simple inner joins (might need left joins + coalescing, or union)
             # Keeping V1 scope to AND logic for simplicity as per common screener MVPs.
@@ -179,12 +215,13 @@ class ScreenerService:
         query,
         conditions: List[Dict[str, Any]],
         current_user_id: int,
-        admin_user_ids: list[int],
+        *,
+        selected_source_type: str | None,
     ):
         for cond in conditions:
             metric_key = self._canonical_metric_key(cond["metric"])
             operator = cond["operator"]
-            target_value = cond["value"]
+            target_value = Decimal(str(cond["value"]))
             
             # Create an alias for MetricFact for this specific condition
             fact_alias = aliased(MetricFact)
@@ -196,7 +233,12 @@ class ScreenerService:
                     Stock.id == fact_alias.stock_id,
                     fact_alias.metric_key == metric_key,
                     fact_alias.is_current.is_(True),
-                    self._visibility_predicate(fact_alias, current_user_id, admin_user_ids),
+                    visible_metric_fact_predicate(fact_alias, user_id=current_user_id),
+                    *(
+                        [fact_alias.source_type == selected_source_type]
+                        if selected_source_type is not None
+                        else []
+                    ),
                 )
             )
             
@@ -213,20 +255,39 @@ class ScreenerService:
                 query = query.where(fact_alias.value_numeric == target_value)
                 
         return query
-    def _admin_user_ids(self) -> list[int]:
-        return list(self.db.scalars(select(User.id).where(User.role == "admin")).all())
 
-    def _visibility_predicate(self, fact_entity, current_user_id: int, admin_user_ids: list[int]):
-        return or_(
-            and_(
-                fact_entity.source_type == "parsed",
-                or_(
-                    fact_entity.user_id == current_user_id,
-                    fact_entity.user_id.in_(admin_user_ids),
-                ),
-            ),
-            and_(
-                fact_entity.user_id == current_user_id,
-                fact_entity.source_type.in_(["manual", "calculated"]),
-            ),
-        )
+    def _guard_screen_sources(
+        self,
+        conditions: list[dict[str, Any]],
+        *,
+        current_user_id: int,
+        selected_source_type: str | None,
+    ) -> None:
+        metric_keys = {
+            self._canonical_metric_key(str(condition.get("metric")))
+            for condition in conditions
+            if condition.get("metric") is not None
+        }
+        if not metric_keys:
+            return
+        facts = self.db.scalars(
+            select(MetricFact).where(
+                MetricFact.metric_key.in_(metric_keys),
+                MetricFact.is_current.is_(True),
+                visible_metric_fact_predicate(MetricFact, user_id=current_user_id),
+            )
+        ).all()
+        by_stock: dict[int, list[MetricFact]] = {}
+        for fact in facts:
+            by_stock.setdefault(fact.stock_id, []).append(fact)
+        for stock_id, stock_facts in by_stock.items():
+            stock_facts = guard_source_selection(
+                stock_facts,
+                consumer="screener",
+                selected_source_type=selected_source_type,
+            )
+            guard_sec_run_availability(
+                self.db,
+                stock_id=stock_id,
+                facts=stock_facts,
+            )

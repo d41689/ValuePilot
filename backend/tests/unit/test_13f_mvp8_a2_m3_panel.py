@@ -39,6 +39,7 @@ def _fact(
     value_numeric: float | None = None,
     value_json: dict | None = None,
     period_end: date = date(2024, 12, 31),
+    source_type: str = "parsed",
 ) -> MetricFact:
     fact = MetricFact(
         user_id=user_id,
@@ -46,7 +47,7 @@ def _fact(
         metric_key=metric_key,
         value_numeric=value_numeric,
         value_json=value_json or {"fact_nature": "actual"},
-        source_type="parsed",
+        source_type=source_type,
         is_current=True,
         period_type="FY",
         period_end_date=period_end,
@@ -60,6 +61,7 @@ def test_m3_panel_returns_has_value_line_false_when_no_facts(db_session):
     stock = _stock(db_session, "NOVL")
     result = _m3_panel_for_stock(db_session, stock.id, user_id=None)
     assert result.has_value_line is False
+    assert result.canonical_source_status.status == "available"
     # No VL data → all value fields default to None including provenance.
     assert result.vl_target_period_end is None
     assert result.vl_target_source_document_id is None
@@ -101,6 +103,7 @@ def test_m3_panel_returns_populated_panel_with_vl_facts(db_session):
     result = _m3_panel_for_stock(db_session, stock.id, user_id=user.id)
 
     assert result.has_value_line is True
+    assert result.canonical_source_status.status == "available"
     assert result.piotroski_score == 7
     assert result.piotroski_max == 8
     assert result.piotroski_status == "partial"
@@ -136,3 +139,64 @@ def test_m3_panel_handles_piotroski_only_without_other_facts(db_session):
     # has_value_line is True (piotroski alone is enough to flip the flag).
     assert result.vl_target_period_end is None
     assert result.vl_target_source_document_id is None
+
+
+def test_m3_panel_maps_real_canonical_source_conflict_to_existing_unavailable_state(
+    db_session,
+):
+    user = _user(db_session, "mvp8-a2-m3-source-conflict@example.com")
+    stock = _stock(db_session, "M3CONFLICT")
+    _fact(
+        db_session,
+        user_id=user.id,
+        stock_id=stock.id,
+        metric_key="target.price_18m.mid",
+        value_numeric=100,
+        source_type="parsed",
+    )
+    _fact(
+        db_session,
+        user_id=user.id,
+        stock_id=stock.id,
+        metric_key="target.price_18m.mid",
+        value_numeric=110,
+        source_type="manual",
+    )
+
+    result = _m3_panel_for_stock(db_session, stock.id, user_id=user.id)
+
+    assert result.has_value_line is False
+    assert result.vl_target_mid is None
+    assert result.canonical_source_status.status == "source_conflict"
+    assert result.canonical_source_status.reason_code == "source_conflict"
+    assert result.canonical_source_status.source_types == ["manual", "parsed"]
+
+
+def test_m3_panel_maps_typed_canonical_unavailable_without_raising(
+    db_session, monkeypatch
+):
+    stock = _stock(db_session, "M3UNAVAILABLE")
+    monkeypatch.setattr(
+        "app.api.v1.endpoints.stocks_13f._m3_facts_by_stock",
+        lambda *_args, **_kwargs: (
+            {stock.id: {}},
+            {
+                stock.id: {
+                    "status": "unresolved",
+                    "reason_code": "unresolved_amendment_parse_failure",
+                    "source_type": "sec",
+                }
+            },
+        ),
+    )
+
+    result = _m3_panel_for_stock(db_session, stock.id, user_id=None)
+
+    assert result.has_value_line is False
+    assert result.vl_target_mid is None
+    assert result.canonical_source_status.status == "unresolved"
+    assert (
+        result.canonical_source_status.reason_code
+        == "unresolved_amendment_parse_failure"
+    )
+    assert result.canonical_source_status.source_type == "sec"

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import date, datetime, timezone
 import hashlib
 import json
@@ -8,7 +8,7 @@ import mimetypes
 import os
 from pathlib import Path, PurePosixPath
 import re
-from typing import Any, Protocol
+from typing import Any, Callable, Protocol
 from urllib.parse import quote
 import uuid
 
@@ -20,7 +20,7 @@ from app.edgar.parsers.financial_submissions import (
     parse_financial_submissions,
     parse_historical_financial_submissions,
 )
-from app.edgar.parsers.inline_xbrl import parse_inline_xbrl
+from app.edgar.parsers.inline_xbrl import parse_inline_xbrl, parse_standalone_xbrl, safe_xml_preflight
 from app.models.sec_financials import (
     SecFilingArtifact,
     SecFinancialAccessionAttempt,
@@ -29,6 +29,9 @@ from app.models.sec_financials import (
     SecFinancialAcquisitionResolution,
     SecFinancialFiling,
     SecFinancialIngestionOperation,
+    SecFinancialHistoryContinuation,
+    SecFinancialHistoryConsumptionClaim,
+    SecFinancialHistoryContinuationFailure,
     SecFinancialLegacyParseRun,
     SecFinancialLineageAvailability,
     SecFinancialOperationResult,
@@ -38,10 +41,32 @@ from app.models.sec_financials import (
     SecFinancialResourceAnchor,
     SecIssuerIdentity,
     SecRawXbrlFact,
+    SecStatementFactAuthority,
+    SecStatementReportReference,
+    SecStatementOccurrenceEvidence,
     SecSubmissionSnapshot,
 )
 from app.rate_guard.client import RateGuardFetchError
 from app.services.sec_financial_validation import validate_submission_source
+from app.services.sec_statement_authority import (
+    ExplicitFiscalFocus,
+    DeiFocusEvidence,
+    PresentedPeriodEvidence,
+    RawOccurrenceIdentity,
+    StatementAuthorityParseError,
+    classify_statement_occurrence,
+    discover_statement_reports,
+    generated_occurrence_candidate_ordinals,
+    match_statement_occurrence,
+    build_explicit_fiscal_focus,
+    parse_generated_statement_occurrences,
+    parse_statement_occurrences,
+    statement_reference_digest,
+    statement_occurrence_digest,
+    parse_statement_header_date,
+)
+from app.services.sec_financial_mapping import DEI_URIS
+from app.services.sec_financial_locking import acquire_sec_financial_stock_lock
 
 
 CIK_RE = re.compile(r"^[0-9]{10}$")
@@ -55,7 +80,16 @@ HISTORICAL_SUBMISSION_FILENAME_RE = re.compile(
     r"^CIK(?P<cik>[0-9]{10})-submissions-[0-9]+[.]json$"
 )
 PARSER_NAME = "valuepilot-inline-xbrl-lineage"
-ARTIFACT_RETENTION_POLICY_VERSION = "sec-financial-artifacts-v1"
+PARSER_V2_LEGACY = "xbrl-lineage-v2"
+PARSER_V2_1 = "xbrl-lineage-v2.1"
+PARSER_V2_2 = "xbrl-lineage-v2.2"
+PARSER_V2_3 = "xbrl-lineage-v2.3"
+PARSER_V2_4 = "xbrl-lineage-v2.4"
+PARSER_V2_5 = "xbrl-lineage-v2.5"
+PARSER_V2_6 = "xbrl-lineage-v2.6"
+PARSER_V2 = "xbrl-lineage-v2.7"
+ARTIFACT_RETENTION_POLICY_V1 = "sec-financial-artifacts-v1"
+ARTIFACT_RETENTION_POLICY_VERSION = "sec-financial-artifacts-v2"
 ANNUAL_FORMS_BY_REGIME = {
     "us_10k_10q": frozenset({"10-K", "10-K/A"}),
     "foreign_20f_6k": frozenset({"20-F", "20-F/A"}),
@@ -94,6 +128,126 @@ class EdgarLikeClient(Protocol):
         ...
 
 
+class RetainedFinancialReplayClient:
+    """Serve committed SEC evidence locally and narrowly fetch missing instances."""
+
+    def __init__(
+        self,
+        *,
+        retained: dict[str, bytes],
+        missing_instances: dict[str, int | None],
+        upstream_factory: Callable[[], EdgarLikeClient] | None,
+        has_reparse_provenance_delta: bool = False,
+    ) -> None:
+        self._retained = dict(retained)
+        self._missing_instances = dict(missing_instances)
+        self._upstream_factory = upstream_factory
+        self._upstream: EdgarLikeClient | None = None
+        self._upstream_context: Any | None = None
+        self.external_requests: list[str] = []
+        self.has_reparse_provenance_delta = has_reparse_provenance_delta
+
+    def __enter__(self) -> RetainedFinancialReplayClient:
+        return self
+
+    def __exit__(self, exc_type: Any, exc: Any, traceback: Any) -> None:
+        if self._upstream_context is not None:
+            self._upstream_context.__exit__(exc_type, exc, traceback)
+
+    def _external(self) -> EdgarLikeClient:
+        if self._upstream is not None:
+            return self._upstream
+        if self._upstream_factory is None:
+            raise SecFinancialFetchError(
+                "retained_recovery_resource_missing",
+                "required standalone instance is not retained",
+            )
+        candidate = self._upstream_factory()
+        enter = getattr(candidate, "__enter__", None)
+        if callable(enter):
+            self._upstream_context = candidate
+            candidate = enter()
+        self._upstream = candidate
+        return candidate
+
+    def _read(self, url: str, *, revalidate: bool) -> bytes:
+        retained = self._retained.get(url)
+        if retained is not None:
+            return retained
+        if url not in self._missing_instances:
+            raise SecFinancialIntegrityError(
+                "retained recovery attempted an unapproved SEC resource"
+            )
+        expected_size = _validated_recovery_instance_size(
+            self._missing_instances[url]
+        )
+        upstream = self._external()
+        content = (
+            upstream.get_revalidated(url)
+            if revalidate
+            else upstream.get(url)
+        )
+        if len(content) != expected_size:
+            raise SecFinancialIntegrityError(
+                "recovered standalone instance declared size mismatch"
+            )
+        try:
+            root_name, _ = safe_xml_preflight(_unwrap_sec_document(content))
+        except ValueError as exc:
+            raise SecFinancialIntegrityError(
+                "recovered standalone instance is not bounded XML"
+            ) from exc
+        if root_name != ("http://www.xbrl.org/2003/instance", "xbrl"):
+            raise SecFinancialIntegrityError(
+                "recovered artifact is not an XBRL instance document"
+            )
+        self.external_requests.append(url)
+        self._retained[url] = content
+        return content
+
+    def get(self, url: str) -> bytes:
+        return self._read(url, revalidate=False)
+
+    def get_revalidated(self, url: str) -> bytes:
+        return self._read(url, revalidate=True)
+
+
+def _validated_recovery_instance_size(value: Any) -> int:
+    if type(value) is not int or value <= 0 or value > MAX_ARTIFACT_BYTES:
+        raise SecFinancialIntegrityError(
+            "retained recovery instance has invalid declared size"
+        )
+    return value
+
+
+def _unique_missing_instance_candidate(
+    artifacts: list[SecFilingArtifact],
+    *,
+    cik: str,
+    accession_no: str,
+) -> SecFilingArtifact | None:
+    candidates = [
+        artifact
+        for artifact in artifacts
+        if artifact.state == "manifest_only"
+        and _is_standalone_instance_filename(artifact.filename)
+    ]
+    if len(candidates) > 1:
+        raise SecFinancialIntegrityError(
+            "missing instance manifest authority is ambiguous"
+        )
+    if not candidates:
+        return None
+    candidate = candidates[0]
+    expected_url = _safe_artifact_url(cik, accession_no, candidate.filename)
+    if candidate.source_url != expected_url:
+        raise SecFinancialIntegrityError(
+            "missing instance resource identity mismatch"
+        )
+    _validated_recovery_instance_size(candidate.declared_size)
+    return candidate
+
+
 @dataclass(frozen=True)
 class FinancialFilingSelection:
     accession_no: str
@@ -114,6 +268,7 @@ class FinancialIngestionReport:
     raw_facts_created: int
     failures: tuple[str, ...]
     selected_filings: tuple[FinancialFilingSelection, ...] = ()
+    next_history_cursor: str | None = None
 
 
 @dataclass(frozen=True)
@@ -158,6 +313,42 @@ class _DiscoveryResult:
     failures: tuple[str, ...]
     audit_failures: tuple["_DiscoveryFailure", ...] = ()
     resolutions: tuple["_DiscoveryResolution", ...] = ()
+    next_history_cursor: str | None = None
+    continuation_references: tuple[str, ...] = ()
+    continuation_next_index: int | None = None
+    continuation_start_index: int | None = None
+    continuation_end_index: int | None = None
+    main_sha256: str | None = None
+
+
+def _history_manifest_identity(cik: str, main_sha256: str, names: list[str]) -> str:
+    material = json.dumps(
+        {"cik": cik, "main_sha256": main_sha256, "names": names},
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    return hashlib.sha256(material.encode()).hexdigest()
+
+
+def _history_target_payload(target: FinancialHistoryTarget | None) -> dict[str, Any]:
+    if target is None:
+        return {}
+    return {
+        "filing_regime": target.filing_regime,
+        "fiscal_year_end_mmdd": target.fiscal_year_end_mmdd,
+        "available_start_on": target.available_start_on.isoformat(),
+        "completed_fiscal_year_cap": target.completed_fiscal_year_cap,
+        "filing_selection_as_of": _aware(target.filing_selection_as_of).isoformat(),
+    }
+
+
+@dataclass(frozen=True)
+class _ContinuationAuthority:
+    id: str
+    main_content: bytes
+    main_sha256: str
+    references: tuple[str, ...]
+    next_index: int
 
 
 @dataclass(frozen=True)
@@ -493,6 +684,7 @@ def register_reviewed_sec_identity(
     if effective_to is not None and effective_to < effective_from:
         raise SecFinancialIngestionError("effective_to precedes effective_from")
 
+    acquire_sec_financial_stock_lock(db, stock_id=stock_id)
     _lock_keys(db, f"sec-issuer-stock:{stock_id}", f"sec-issuer-cik:{cik}")
 
     existing = db.scalars(
@@ -606,6 +798,7 @@ def retire_sec_identity(
     current = db.get(SecIssuerIdentity, identity_id)
     if current is None or current.status != "reviewed":
         raise SecFinancialIngestionError("reviewed identity to retire was not found")
+    acquire_sec_financial_stock_lock(db, stock_id=current.stock_id)
     _lock_keys(
         db,
         f"sec-issuer-stock:{current.stock_id}",
@@ -687,11 +880,12 @@ def _manifest_items(content: bytes) -> list[dict[str, Any]]:
     return items
 
 
-def _retain_item(item: dict[str, Any], primary_document: str) -> bool:
+def _retain_item(item: dict[str, Any], primary_document: str, referenced_statement_names: set[str] | None = None) -> bool:
     sec_type = str(item.get("type") or "").upper()
     name = str(item.get("name") or "").lower()
     return (
         item.get("name") == primary_document
+        or str(item.get("name") or "").lower() in (referenced_statement_names or set())
         or sec_type.startswith("EX-101")
         or name.endswith(".xsd")
         or name.endswith("_cal.xml")
@@ -699,7 +893,165 @@ def _retain_item(item: dict[str, Any], primary_document: str) -> bool:
         or name.endswith("_htm.xml")
         or name.endswith("_lab.xml")
         or name.endswith("_pre.xml")
+        or _is_standalone_instance_filename(name)
+        or name == "filingsummary.xml"
+        or re.fullmatch(r"r[0-9]{1,3}[.](?:xml|html?|htm)", name) is not None
     )
+
+
+def _is_parser_v2(parser_version: str) -> bool:
+    return parser_version in {
+        PARSER_V2_LEGACY,
+        PARSER_V2_1,
+        PARSER_V2_2,
+        PARSER_V2_3,
+        PARSER_V2_4,
+        PARSER_V2_5,
+        PARSER_V2_6,
+        PARSER_V2,
+    }
+
+
+def _is_sgml_instance_parser(parser_version: str) -> bool:
+    return parser_version in {
+        PARSER_V2_1, PARSER_V2_2, PARSER_V2_3, PARSER_V2_4, PARSER_V2_5,
+        PARSER_V2_6,
+        PARSER_V2,
+    }
+
+
+def _is_generated_statement_parser(parser_version: str) -> bool:
+    return parser_version in {
+        PARSER_V2_2, PARSER_V2_3, PARSER_V2_4, PARSER_V2_5, PARSER_V2_6,
+        PARSER_V2
+    }
+
+
+def _is_parser_v24(parser_version: str) -> bool:
+    return parser_version in {PARSER_V2_4, PARSER_V2_5, PARSER_V2_6, PARSER_V2}
+
+
+def _is_parser_v25(parser_version: str) -> bool:
+    return parser_version in {PARSER_V2_5, PARSER_V2_6, PARSER_V2}
+
+
+def _is_parser_v26(parser_version: str) -> bool:
+    return parser_version in {PARSER_V2_6, PARSER_V2}
+
+
+def _artifact_retention_policy_version(parser_version: str) -> str:
+    return (
+        ARTIFACT_RETENTION_POLICY_VERSION
+        if _is_parser_v25(parser_version)
+        else ARTIFACT_RETENTION_POLICY_V1
+    )
+
+
+def _is_standalone_instance_filename(filename: str) -> bool:
+    """Identify bounded instance candidates without trusting SEC index MIME/type."""
+
+    name = filename.lower()
+    if not name.endswith(".xml"):
+        return False
+    if name == "filingsummary.xml" or re.fullmatch(
+        r"r[0-9]+[.]xml", name, flags=re.ASCII
+    ):
+        return False
+    if name.endswith(("_cal.xml", "_def.xml", "_lab.xml", "_pre.xml", "_htm.xml")):
+        return False
+    return True
+
+
+_SEC_DOCUMENT_OPEN_RE = re.compile(
+    br"(?is)^[\x09\x0a\x0d\x20]*<DOCUMENT>[\x09\x0a\x0d\x20]*"
+)
+_SEC_DOCUMENT_ANY_RE = re.compile(br"(?is)<DOCUMENT>")
+_SEC_DOCUMENT_CLOSE_ANY_RE = re.compile(br"(?is)</DOCUMENT>")
+_SEC_TEXT_ANY_RE = re.compile(br"(?is)<TEXT>")
+_SEC_TEXT_CLOSE_ANY_RE = re.compile(br"(?is)</TEXT>")
+_SEC_TEXT_OPEN_RE = re.compile(br"(?is)<TEXT>[\x09\x0a\x0d\x20]*")
+_SEC_TEXT_CLOSE_RE = re.compile(br"(?is)[\x09\x0a\x0d\x20]*</TEXT>")
+_SEC_DOCUMENT_CLOSE_RE = re.compile(
+    br"(?is)[\x09\x0a\x0d\x20]*</DOCUMENT>[\x09\x0a\x0d\x20]*$"
+)
+_SEC_SGML_WHITESPACE = b"\x09\x0a\x0d\x20"
+
+
+def _unwrap_sec_document(content: bytes) -> bytes:
+    """Return one SEC SGML document's TEXT bytes without rewriting the payload."""
+
+    if len(content) > MAX_ARTIFACT_BYTES:
+        raise SecFinancialIngestionError("SEC document exceeds byte limit")
+    opened = _SEC_DOCUMENT_OPEN_RE.match(content)
+    if opened is None:
+        return content
+    if (
+        len(_SEC_DOCUMENT_ANY_RE.findall(content)) != 1
+        or len(_SEC_DOCUMENT_CLOSE_ANY_RE.findall(content)) != 1
+    ):
+        raise SecFinancialIngestionError("malformed SEC SGML document envelope")
+    if (
+        len(_SEC_TEXT_ANY_RE.findall(content)) != 1
+        or len(_SEC_TEXT_CLOSE_ANY_RE.findall(content)) != 1
+    ):
+        raise SecFinancialIngestionError("SEC SGML document has ambiguous TEXT payload")
+    document_closed = _SEC_DOCUMENT_CLOSE_RE.search(content, opened.end())
+    if document_closed is None:
+        raise SecFinancialIngestionError("malformed SEC SGML document envelope")
+    body = content[opened.end() : document_closed.start()]
+    text_opened = _SEC_TEXT_OPEN_RE.search(body)
+    if text_opened is None:
+        raise SecFinancialIngestionError("SEC SGML document has no TEXT payload")
+    text_closed = _SEC_TEXT_CLOSE_RE.search(body, text_opened.end())
+    if (
+        text_closed is None
+        or _SEC_TEXT_CLOSE_RE.search(body, text_closed.end()) is not None
+    ):
+        raise SecFinancialIngestionError("SEC SGML document has ambiguous TEXT payload")
+    if body[text_closed.end() :].strip(_SEC_SGML_WHITESPACE):
+        raise SecFinancialIngestionError("malformed SEC SGML document envelope")
+    payload = body[text_opened.end() : text_closed.start()]
+    if _SEC_DOCUMENT_ANY_RE.search(payload) is not None:
+        raise SecFinancialIngestionError("nested SEC SGML document envelope")
+    return payload
+
+
+@dataclass(frozen=True)
+class _VerifiedStandaloneInstance:
+    artifact: SecFilingArtifact
+    raw_content: bytes
+    content: bytes
+    root_name: tuple[str, str]
+
+
+def _standalone_instance_artifact(
+    artifacts: list[SecFilingArtifact],
+    *,
+    primary_document: str,
+    storage_root: Path,
+    require_declared_instance_type: bool = False,
+) -> _VerifiedStandaloneInstance | None:
+    candidates = []
+    for artifact in artifacts:
+        if artifact.state != "retained" or artifact.filename == primary_document:
+            continue
+        if not _is_standalone_instance_filename(artifact.filename):
+            continue
+        if require_declared_instance_type and str(
+            artifact.sec_type or ""
+        ).upper() not in {"EX-101.INS", "XML"}:
+            continue
+        raw_content = _read_verified_artifact(storage_root, artifact)
+        try:
+            content = _unwrap_sec_document(raw_content)
+            root_name, content = safe_xml_preflight(content)
+        except ValueError:
+            continue
+        if root_name == ("http://www.xbrl.org/2003/instance", "xbrl"):
+            candidates.append(_VerifiedStandaloneInstance(artifact, raw_content, content, root_name))
+    if len(candidates) > 1:
+        raise SecFinancialIngestionError("ambiguous standalone XBRL instance documents")
+    return candidates[0] if candidates else None
 
 
 def _safe_artifact_url(cik: str, accession_no: str, filename: str) -> str:
@@ -753,7 +1105,7 @@ def _store_content_immutable(storage_root: Path, content: bytes) -> tuple[str, s
     return relative.as_posix(), sha256
 
 
-def _verify_retained_artifact(storage_root: Path, artifact: SecFilingArtifact) -> None:
+def _read_verified_artifact(storage_root: Path, artifact: SecFilingArtifact) -> bytes:
     if (
         artifact.state != "retained"
         or not artifact.storage_key
@@ -775,6 +1127,11 @@ def _verify_retained_artifact(storage_root: Path, artifact: SecFilingArtifact) -
         raise SecFinancialIntegrityError("retained artifact differs from SEC declared size")
     if hashlib.sha256(content).hexdigest() != artifact.sha256:
         raise SecFinancialIntegrityError("retained artifact hash mismatch")
+    return content
+
+
+def _verify_retained_artifact(storage_root: Path, artifact: SecFilingArtifact) -> None:
+    _read_verified_artifact(storage_root, artifact)
 
 
 def _verify_submission_snapshot(
@@ -793,6 +1150,239 @@ def _verify_submission_snapshot(
         raise SecFinancialIntegrityError("submission snapshot byte size mismatch")
     if hashlib.sha256(content).hexdigest() != snapshot.sha256:
         raise SecFinancialIntegrityError("submission snapshot hash mismatch")
+
+
+def build_retained_financial_replay_client(
+    db: Session,
+    *,
+    stock_id: int,
+    operation_ids: tuple[str, ...],
+    storage_root: Path,
+    upstream_factory: Callable[[], EdgarLikeClient] | None,
+    target_parser_version: str = PARSER_V2,
+) -> RetainedFinancialReplayClient:
+    """Build a fail-closed replay client from committed issuer evidence."""
+
+    if not operation_ids:
+        raise SecFinancialIntegrityError("retained recovery operations are unavailable")
+    identity_ids = set(
+        db.scalars(
+            select(SecFinancialIngestionOperation.issuer_identity_id)
+            .join(
+                SecIssuerIdentity,
+                SecIssuerIdentity.id
+                == SecFinancialIngestionOperation.issuer_identity_id,
+            )
+            .where(
+                SecFinancialIngestionOperation.id.in_(operation_ids),
+                SecIssuerIdentity.stock_id == stock_id,
+            )
+        ).all()
+    )
+    if len(identity_ids) != 1:
+        raise SecFinancialIntegrityError("retained recovery issuer authority mismatch")
+    identity = db.get(SecIssuerIdentity, next(iter(identity_ids)))
+    if identity is None:
+        raise SecFinancialIntegrityError("retained recovery issuer is unavailable")
+    retained: dict[str, bytes] = {}
+
+    def add_retained(url: str | None, content: bytes) -> None:
+        if url is None:
+            return
+        existing = retained.get(url)
+        if existing is not None and existing != content:
+            raise SecFinancialIntegrityError(
+                "retained recovery resource has conflicting content identities"
+            )
+        retained[url] = content
+
+    snapshots = db.scalars(
+        select(SecSubmissionSnapshot)
+        .join(
+            SecFinancialOperationSnapshot,
+            SecFinancialOperationSnapshot.snapshot_id == SecSubmissionSnapshot.id,
+        )
+        .where(SecFinancialOperationSnapshot.operation_id.in_(operation_ids))
+        .order_by(SecSubmissionSnapshot.id)
+    ).all()
+    for snapshot in snapshots:
+        add_retained(
+            snapshot.source_url,
+            _read_verified_submission_snapshot(storage_root, snapshot),
+        )
+
+    accession_attempts = db.scalars(
+        select(SecFinancialAccessionAttempt)
+        .where(
+            SecFinancialAccessionAttempt.operation_id.in_(operation_ids),
+            SecFinancialAccessionAttempt.parse_run_id.is_not(None),
+        )
+        .order_by(SecFinancialAccessionAttempt.id)
+    ).all()
+    if not accession_attempts:
+        raise SecFinancialIntegrityError("retained recovery filings are unavailable")
+    operation_rank = {
+        operation_id: ordinal for ordinal, operation_id in enumerate(operation_ids)
+    }
+    latest_attempt_by_filing: dict[int, SecFinancialAccessionAttempt] = {}
+    for attempt in accession_attempts:
+        current = latest_attempt_by_filing.get(attempt.filing_id)
+        if current is None or (
+            operation_rank.get(attempt.operation_id, -1), attempt.id
+        ) > (
+            operation_rank.get(current.operation_id, -1), current.id
+        ):
+            latest_attempt_by_filing[attempt.filing_id] = attempt
+    artifacts: list[SecFilingArtifact] = []
+    authorized_missing_instance_ids: set[int] = set()
+    has_reparse_provenance_delta = False
+    seen_artifact_ids: set[int] = set()
+    for attempt in accession_attempts:
+        filing = db.get(SecFinancialFiling, attempt.filing_id)
+        if filing is None or filing.issuer_identity_id not in identity_ids:
+            raise SecFinancialIntegrityError(
+                "retained recovery accession issuer mismatch"
+            )
+        linked = db.scalars(
+            select(SecFilingArtifact)
+            .join(
+                SecFinancialAccessionAttemptArtifact,
+                SecFinancialAccessionAttemptArtifact.artifact_id
+                == SecFilingArtifact.id,
+            )
+            .where(SecFinancialAccessionAttemptArtifact.attempt_id == attempt.id)
+            .order_by(SecFilingArtifact.sequence, SecFilingArtifact.id)
+        ).all()
+        manifest_hashes = {artifact.manifest_hash for artifact in linked}
+        if (
+            not linked
+            or any(artifact.state != "retained" for artifact in linked)
+            or len(manifest_hashes) != 1
+            or attempt.input_manifest_hash != _artifact_input_hash(linked)
+        ):
+            raise SecFinancialIntegrityError(
+                "retained recovery accession manifest authority mismatch"
+            )
+        manifest_hash = next(iter(manifest_hashes))
+        group = db.scalars(
+            select(SecFilingArtifact)
+            .where(
+                SecFilingArtifact.filing_id == filing.id,
+                SecFilingArtifact.manifest_hash == manifest_hash,
+            )
+            .order_by(SecFilingArtifact.sequence, SecFilingArtifact.id)
+        ).all()
+        indexes = [
+            artifact
+            for artifact in group
+            if artifact.filename == "__accession_index__.json"
+            and artifact.state == "retained"
+        ]
+        group_identities = {
+            (artifact.filename, artifact.state) for artifact in group
+        }
+        if (
+            len(indexes) != 1
+            or indexes[0].sha256 != attempt.index_sha256
+            or indexes[0].source_url != attempt.index_resource_key
+            or len(group_identities) != len(group)
+        ):
+            raise SecFinancialIntegrityError(
+                "retained recovery manifest group is ambiguous"
+            )
+        candidate = _unique_missing_instance_candidate(
+            group,
+            cik=identity.cik,
+            accession_no=filing.accession_no,
+        )
+        if latest_attempt_by_filing[filing.id].id == attempt.id:
+            if candidate is not None:
+                authorized_missing_instance_ids.add(candidate.id)
+            current_parse_input_ids = set(
+                db.scalars(
+                    select(SecFinancialParseRunArtifact.artifact_id).where(
+                        SecFinancialParseRunArtifact.parse_run_id
+                        == attempt.parse_run_id
+                    )
+                ).all()
+            )
+            current_parse_run = db.get(
+                SecFinancialParseRun, attempt.parse_run_id
+            )
+            if current_parse_run is None:
+                raise SecFinancialIntegrityError(
+                    "retained recovery parse authority is unavailable"
+                )
+            retained_instance = _standalone_instance_artifact(
+                linked,
+                primary_document=filing.primary_document,
+                storage_root=storage_root,
+            )
+            if (
+                current_parse_run.parser_version != target_parser_version
+                or candidate is not None
+                or (
+                retained_instance is not None
+                and retained_instance.artifact.id not in current_parse_input_ids
+                )
+            ):
+                has_reparse_provenance_delta = True
+        linked_ids = {artifact.id for artifact in linked}
+        for artifact in group:
+            # Retained bytes are operation-owned only through the immutable
+            # accession-attempt link.  Non-retained observations are read from
+            # the exact linked manifest group solely to identify a bounded
+            # missing-instance continuation.
+            if artifact.state == "retained" and artifact.id not in linked_ids:
+                continue
+            if artifact.id in seen_artifact_ids:
+                continue
+            seen_artifact_ids.add(artifact.id)
+            artifacts.append(artifact)
+    retained_urls = {
+        artifact.source_url
+        for artifact in artifacts
+        if artifact.state == "retained" and artifact.source_url is not None
+    }
+    source_url_counts: dict[str, int] = {}
+    for artifact in artifacts:
+        if artifact.source_url is not None:
+            source_url_counts[artifact.source_url] = (
+                source_url_counts.get(artifact.source_url, 0) + 1
+            )
+    missing_instances: dict[str, int] = {}
+    for artifact in artifacts:
+        if artifact.state == "retained":
+            add_retained(
+                artifact.source_url,
+                _read_verified_artifact(storage_root, artifact),
+            )
+        elif (
+            artifact.state == "manifest_only"
+            and artifact.source_url is not None
+            and artifact.id in authorized_missing_instance_ids
+        ):
+            if (
+                source_url_counts.get(artifact.source_url) != 1
+                or artifact.source_url in retained_urls
+            ):
+                raise SecFinancialIntegrityError(
+                    "missing instance manifest authority is ambiguous"
+                )
+            declared_size = _validated_recovery_instance_size(
+                artifact.declared_size
+            )
+            if artifact.source_url in missing_instances:
+                raise SecFinancialIntegrityError(
+                    "missing instance manifest authority is ambiguous"
+                )
+            missing_instances[artifact.source_url] = declared_size
+    return RetainedFinancialReplayClient(
+        retained=retained,
+        missing_instances=missing_instances,
+        upstream_factory=upstream_factory,
+        has_reparse_provenance_delta=has_reparse_provenance_delta,
+    )
 
 
 def _read_verified_submission_snapshot(
@@ -1073,7 +1663,12 @@ def _record_initial_main_fetch_failure(
         resource_key=resource_key,
         error_code=error_code,
     )
-    failure_summary = (f"main_submissions:{error_code}",)
+    failure_summary = (
+        (error_code,)
+        if error_code.startswith("history_cursor")
+        or error_code == "invalid_history_cursor"
+        else (f"main_submissions:{error_code}",)
+    )
     if existing_operation_id is not None:
         return FinancialIngestionReport(
             operation_id=existing_operation_id,
@@ -1136,6 +1731,63 @@ def _record_initial_main_fetch_failure(
     )
 
 
+def _record_history_continuation_failure(
+    db: Session,
+    *,
+    stock_id: int,
+    identity: SecIssuerIdentity,
+    cursor_id: str,
+    reason_code: str,
+    now: datetime,
+    filing_selection_as_of: datetime | None,
+    history_target: FinancialHistoryTarget | None,
+    main_snapshot_id: int | None = None,
+) -> FinancialIngestionReport:
+    operation_id = str(uuid.uuid4())
+    db.add(
+        SecFinancialIngestionOperation(
+            id=operation_id, issuer_identity_id=identity.id, attempted_at=now
+        )
+    )
+    db.flush()
+    failure = SecFinancialHistoryContinuationFailure(
+        operation_id=operation_id,
+        issuer_identity_id=identity.id,
+        cursor_id=cursor_id,
+        reason_code=reason_code,
+        main_snapshot_id=main_snapshot_id,
+        request_contract_json={
+            "filing_selection_as_of": (
+                filing_selection_as_of.isoformat()
+                if filing_selection_as_of is not None
+                else None
+            ),
+            "history_target": _history_target_payload(history_target),
+        },
+    )
+    db.add(failure)
+    db.flush()
+    db.add(
+        SecFinancialOperationResult(
+            operation_id=operation_id,
+            result_kind="history_continuation_failure",
+            history_continuation_failure_id=failure.id,
+        )
+    )
+    db.flush()
+    return FinancialIngestionReport(
+        operation_id=operation_id,
+        stock_id=stock_id,
+        cik=identity.cik,
+        filings_discovered=0,
+        filings_created=0,
+        artifacts_created=0,
+        parse_runs_created=0,
+        raw_facts_created=0,
+        failures=(reason_code,),
+    )
+
+
 def _existing_artifacts(
     db: Session, filing_id: int, manifest_hash: str
 ) -> list[SecFilingArtifact]:
@@ -1158,9 +1810,10 @@ def _legacy_compatible_artifacts(
     items: list[dict[str, Any]],
     item_observations: dict[str, dict[str, Any]],
     storage_root: Path,
+    retention_policy_version: str,
 ) -> list[SecFilingArtifact]:
     """Reuse complete v1 manifests whose only obsolete input is submissions."""
-    if ARTIFACT_RETENTION_POLICY_VERSION != "sec-financial-artifacts-v1":
+    if retention_policy_version != ARTIFACT_RETENTION_POLICY_V1:
         return []
     index_sha256 = hashlib.sha256(index_content).hexdigest()
     index_candidates = db.scalars(
@@ -1188,7 +1841,7 @@ def _legacy_compatible_artifacts(
         expected_manifest_hash = hashlib.sha256(
             json.dumps(
                 {
-                    "retention_policy_version": ARTIFACT_RETENTION_POLICY_VERSION,
+                    "retention_policy_version": retention_policy_version,
                     "submissions_sha256": submissions.sha256,
                     "index_sha256": index_sha256,
                     "items": items,
@@ -1287,6 +1940,7 @@ def _create_artifacts(
     index_content: bytes,
     storage_root: Path,
     now: datetime,
+    parser_version: str,
 ) -> tuple[
     list[SecFilingArtifact],
     int,
@@ -1297,6 +1951,28 @@ def _create_artifacts(
         raise SecFinancialIngestionError("SEC accession manifest exceeds byte limit")
     items = _manifest_items(index_content)
     item_observations: dict[str, dict[str, Any]] = {}
+    referenced_statement_names: set[str] = set()
+    prefetched: dict[str, bytes] = {}
+    summary_item = next((item for item in items if item["name"].lower() == "filingsummary.xml"), None)
+    if summary_item is not None:
+        try:
+            summary_url = _safe_artifact_url(cik, filing.accession_no, summary_item["name"])
+            summary_content = _fetch_bytes(client, summary_url, revalidate=True)
+            if len(summary_content) > MAX_ARTIFACT_BYTES or (summary_item["size"] is not None and len(summary_content) != summary_item["size"]):
+                raise SecFinancialIngestionError("FilingSummary content size mismatch")
+            references = discover_statement_reports(
+                summary_content,
+                allow_compact_statement_names=_is_parser_v25(parser_version),
+                require_recognized_statement_role=_is_parser_v26(parser_version),
+            )
+            manifest_names = {item["name"].lower() for item in items}
+            referenced_statement_names = {name.lower() for reference in references for name in (reference.filename, reference.fallback_filename) if name}
+            if not referenced_statement_names.issubset(manifest_names):
+                raise SecFinancialIngestionError("FilingSummary references artifact outside accession manifest")
+            prefetched[summary_item["name"]] = summary_content
+        except Exception:
+            # The ordinary observation path records the exact typed acquisition/parse failure.
+            referenced_statement_names = set()
     for item in items:
         filename = item["name"]
         try:
@@ -1313,7 +1989,7 @@ def _create_artifacts(
             }
             continue
 
-        if not _retain_item(item, filing.primary_document):
+        if not _retain_item(item, filing.primary_document, referenced_statement_names):
             item_observations[filename] = {
                 "state": "manifest_only",
                 "reason_code": "artifact_type_not_in_ft03_retention_scope",
@@ -1338,7 +2014,9 @@ def _create_artifacts(
             }
             continue
         try:
-            content = _fetch_bytes(client, source_url, revalidate=True)
+            content = prefetched.pop(filename, None)
+            if content is None:
+                content = _fetch_bytes(client, source_url, revalidate=True)
             if len(content) > MAX_ARTIFACT_BYTES:
                 raise SecFinancialIngestionError("artifact exceeds byte limit")
             if item["size"] is not None and len(content) != item["size"]:
@@ -1402,8 +2080,9 @@ def _create_artifacts(
                 ),
             }
 
+    retention_policy_version = _artifact_retention_policy_version(parser_version)
     manifest_material = {
-        "retention_policy_version": ARTIFACT_RETENTION_POLICY_VERSION,
+        "retention_policy_version": retention_policy_version,
         "index_sha256": hashlib.sha256(index_content).hexdigest(),
         "items": items,
         "item_content_observations": [
@@ -1430,6 +2109,7 @@ def _create_artifacts(
             items=items,
             item_observations=item_observations,
             storage_root=storage_root,
+            retention_policy_version=retention_policy_version,
         )
         if legacy:
             return legacy, 0, [], True
@@ -1621,6 +2301,39 @@ def _parse_primary_artifact(
         ),
         None,
     )
+    parse_artifact = primary
+    standalone_authority: _VerifiedStandaloneInstance | None = None
+    if _is_sgml_instance_parser(parser_version):
+        standalone_authority = _standalone_instance_artifact(
+            artifacts, primary_document=filing.primary_document, storage_root=storage_root
+        )
+        inline_instance = next(
+            (
+                item
+                for item in artifacts
+                if item.state == "retained"
+                and item.filename.lower().endswith("_htm.xml")
+            ),
+            None,
+        )
+        # SEC's index ``type`` is not content authority.  Prefer a verified
+        # standalone instance, then the filing's explicit inline instance
+        # artifact, and use the primary document only as the final candidate.
+        parse_artifact = (
+            standalone_authority.artifact
+            if standalone_authority is not None
+            else inline_instance or primary
+        )
+    elif parser_version == PARSER_V2_LEGACY and primary is None:
+        standalone_authority = _standalone_instance_artifact(
+            artifacts,
+            primary_document=filing.primary_document,
+            storage_root=storage_root,
+            require_declared_instance_type=True,
+        )
+        parse_artifact = (
+            standalone_authority.artifact if standalone_authority is not None else None
+        )
     started_at = now
     retained_inputs = [item for item in artifacts if item.state == "retained"]
     incomplete_required = [
@@ -1655,7 +2368,7 @@ def _parse_primary_artifact(
                 )
             )
         return 1, 0, [f"{filing.accession_no}:required_artifact_unavailable"], run.id
-    if primary is None or not primary.storage_key:
+    if parse_artifact is None or not parse_artifact.storage_key:
         run = SecFinancialParseRun(
             filing_id=filing.id,
             operation_id=operation_id,
@@ -1682,11 +2395,50 @@ def _parse_primary_artifact(
             )
         return 1, 0, [f"{filing.accession_no}:primary_artifact_unavailable"], run.id
 
+    parse_savepoint = None
     try:
-        content = (storage_root / primary.storage_key).read_bytes()
-        if hashlib.sha256(content).hexdigest() != primary.sha256:
-            raise SecFinancialIntegrityError("stored primary artifact hash mismatch")
-        parsed = parse_inline_xbrl(content, artifact_id=primary.id)
+        if standalone_authority is not None and standalone_authority.artifact.id == parse_artifact.id:
+            content = standalone_authority.content
+            raw_content = standalone_authority.raw_content
+            root_name = standalone_authority.root_name
+        else:
+            raw_content = _read_verified_artifact(storage_root, parse_artifact)
+            try:
+                unwrapped_content = (
+                    _unwrap_sec_document(raw_content)
+                    if _is_sgml_instance_parser(parser_version)
+                    else raw_content
+                )
+                root_name, content = safe_xml_preflight(unwrapped_content)
+            except ValueError:
+                if _is_parser_v2(parser_version):
+                    raise
+                content = unwrapped_content
+                root_name = None
+        if root_name == ("http://www.xbrl.org/2003/instance", "xbrl"):
+            parsed = parse_standalone_xbrl(content, artifact_id=parse_artifact.id)
+        else:
+            parsed = parse_inline_xbrl(
+                content,
+                artifact_id=parse_artifact.id,
+                strict=_is_parser_v2(parser_version),
+            )
+        if not parsed and _is_parser_v2(parser_version):
+            standalone = _standalone_instance_artifact(
+                artifacts,
+                primary_document=filing.primary_document,
+                storage_root=storage_root,
+                require_declared_instance_type=(
+                    parser_version == PARSER_V2_LEGACY
+                ),
+            )
+            if standalone is not None:
+                parse_artifact = standalone.artifact
+                content = standalone.content
+                raw_content = standalone.raw_content
+                parsed = parse_standalone_xbrl(content, artifact_id=parse_artifact.id)
+        if _read_verified_artifact(storage_root, parse_artifact) != raw_content:
+            raise SecFinancialIntegrityError("retained parse authority changed after verification")
         if not parsed:
             run = SecFinancialParseRun(
                 filing_id=filing.id,
@@ -1699,8 +2451,16 @@ def _parse_primary_artifact(
                 completed_at=now,
                 known_at=now,
                 fact_count=0,
-                error_code="no_inline_xbrl_facts",
-                error_detail="The retained primary document contained no inline-XBRL facts.",
+                error_code=(
+                    "no_xbrl_facts"
+                    if _is_parser_v2(parser_version)
+                    else "no_inline_xbrl_facts"
+                ),
+                error_detail=(
+                    "The retained parse authority contained no XBRL facts."
+                    if _is_parser_v2(parser_version)
+                    else "The retained primary document contained no inline-XBRL facts."
+                ),
             )
             db.add(run)
             db.flush()
@@ -1712,7 +2472,224 @@ def _parse_primary_artifact(
                         known_at=now,
                     )
                 )
-            return 1, 0, [f"{filing.accession_no}:no_inline_xbrl_facts"], run.id
+            no_facts_code = (
+                "no_xbrl_facts"
+                if _is_parser_v2(parser_version)
+                else "no_inline_xbrl_facts"
+            )
+            return 1, 0, [f"{filing.accession_no}:{no_facts_code}"], run.id
+        statement_evidence = []
+        if _is_parser_v2(parser_version):
+            summary = next((item for item in retained_inputs if item.filename.lower() == "filingsummary.xml"), None)
+            if summary is None:
+                raise StatementAuthorityParseError("missing_retained_filing_summary")
+            summary_raw_content = _read_verified_artifact(storage_root, summary)
+            summary_content = (
+                _unwrap_sec_document(summary_raw_content)
+                if _is_sgml_instance_parser(parser_version)
+                else summary_raw_content
+            )
+            references = discover_statement_reports(
+                summary_content,
+                allow_compact_statement_names=_is_parser_v25(parser_version),
+                require_recognized_statement_role=_is_parser_v26(parser_version),
+            )
+            retained_by_name = {item.filename.lower(): item for item in retained_inputs}
+            parsed_identities = [RawOccurrenceIdentity(
+                index,
+                item.context_id or "",
+                item.concept,
+                item.raw_value or "",
+                item.unit_id,
+                item.locator.get("element_id"),
+                period_start=item.period_start,
+                period_end=item.period_end or item.period_instant,
+                dimensions=tuple(item.dimensions_structured),
+                unit_numerator=tuple(item.unit_numerator),
+                unit_denominator=tuple(item.unit_denominator),
+                decimals=item.decimals,
+                scale=item.scale,
+                sign=item.sign,
+                is_nil=item.is_nil,
+                is_hidden=bool(item.locator.get("is_hidden", False)),
+            ) for index, item in enumerate(parsed, start=1)]
+            presentation_artifact = None
+            label_artifact = None
+            presentation_content = None
+            label_content = None
+            rejected_generated_concepts: set[str] = set()
+            if _is_generated_statement_parser(parser_version) and any(
+                not reference.filename.lower().endswith(".xml")
+                for reference in references
+            ):
+                presentation_candidates = [
+                    item for item in retained_inputs
+                    if item.filename.lower().endswith("_pre.xml")
+                ]
+                label_candidates = [
+                    item for item in retained_inputs
+                    if item.filename.lower().endswith("_lab.xml")
+                ]
+                if len(presentation_candidates) != 1 or len(label_candidates) != 1:
+                    raise StatementAuthorityParseError(
+                        "missing_unique_retained_presentation_label_linkbase"
+                    )
+                presentation_artifact = presentation_candidates[0]
+                label_artifact = label_candidates[0]
+                presentation_content = _unwrap_sec_document(
+                    _read_verified_artifact(storage_root, presentation_artifact)
+                )
+                label_content = _unwrap_sec_document(
+                    _read_verified_artifact(storage_root, label_artifact)
+                )
+            for reference in references:
+                report_artifact = retained_by_name.get(reference.filename.lower())
+                if report_artifact is None:
+                    raise StatementAuthorityParseError(f"missing_retained_statement_report:{reference.filename}")
+                try:
+                    report_raw_content = _read_verified_artifact(
+                        storage_root, report_artifact
+                    )
+                    report_parse_content = (
+                        _unwrap_sec_document(report_raw_content)
+                        if _is_sgml_instance_parser(parser_version)
+                        else report_raw_content
+                    )
+                    if _is_generated_statement_parser(parser_version) and not report_artifact.filename.lower().endswith(".xml"):
+                        assert presentation_artifact is not None and label_artifact is not None
+                        assert presentation_content is not None and label_content is not None
+                        resolution = parse_generated_statement_occurrences(
+                            report_parse_content,
+                            filename=report_artifact.filename,
+                            statement_role=reference.statement_role,
+                            statement_type=reference.statement_type,
+                            presentation_linkbase=presentation_content,
+                            label_linkbase=label_content,
+                            candidates=parsed_identities,
+                            presentation_artifact_id=presentation_artifact.id,
+                            presentation_sha256=presentation_artifact.sha256,
+                            label_artifact_id=label_artifact.id,
+                            label_sha256=label_artifact.sha256,
+                            allow_partial=True,
+                            allow_dimension_member_anchors=_is_parser_v24(
+                                parser_version
+                            ),
+                            allow_balance_sheet_date_only_instant=_is_parser_v25(
+                                parser_version
+                            ),
+                            require_exact_raw_label_fragment=_is_parser_v26(
+                                parser_version
+                            ),
+                        )
+                        occurrences = resolution.occurrences
+                        rejected_generated_concepts.update(
+                            resolution.rejected_concepts
+                        )
+                    else:
+                        occurrences = parse_statement_occurrences(
+                            report_parse_content,
+                            filename=report_artifact.filename,
+                        )
+                except Exception:
+                    fallback = retained_by_name.get((reference.fallback_filename or "").lower())
+                    if fallback is None:
+                        raise
+                    report_artifact = fallback
+                    reference = replace(reference, filename=fallback.filename, fallback_filename=None)
+                    report_raw_content = _read_verified_artifact(
+                        storage_root, report_artifact
+                    )
+                    report_parse_content = (
+                        _unwrap_sec_document(report_raw_content)
+                        if _is_sgml_instance_parser(parser_version)
+                        else report_raw_content
+                    )
+                    if _is_generated_statement_parser(parser_version) and not report_artifact.filename.lower().endswith(".xml"):
+                        assert presentation_artifact is not None and label_artifact is not None
+                        assert presentation_content is not None and label_content is not None
+                        resolution = parse_generated_statement_occurrences(
+                            report_parse_content,
+                            filename=report_artifact.filename,
+                            statement_role=reference.statement_role,
+                            statement_type=reference.statement_type,
+                            presentation_linkbase=presentation_content,
+                            label_linkbase=label_content,
+                            candidates=parsed_identities,
+                            presentation_artifact_id=presentation_artifact.id,
+                            presentation_sha256=presentation_artifact.sha256,
+                            label_artifact_id=label_artifact.id,
+                            label_sha256=label_artifact.sha256,
+                            allow_partial=True,
+                            allow_dimension_member_anchors=_is_parser_v24(
+                                parser_version
+                            ),
+                            allow_balance_sheet_date_only_instant=_is_parser_v25(
+                                parser_version
+                            ),
+                            require_exact_raw_label_fragment=_is_parser_v26(
+                                parser_version
+                            ),
+                        )
+                        occurrences = resolution.occurrences
+                        rejected_generated_concepts.update(
+                            resolution.rejected_concepts
+                        )
+                    else:
+                        occurrences = parse_statement_occurrences(
+                            report_parse_content,
+                            filename=report_artifact.filename,
+                        )
+                if not _is_generated_statement_parser(parser_version) and not report_artifact.filename.lower().endswith(".xml"):
+                    raise StatementAuthorityParseError("html_statement_authority_diagnostic_only")
+                if (
+                    not _is_generated_statement_parser(parser_version)
+                    and (
+                        summary_content != summary_raw_content
+                        or report_parse_content != report_raw_content
+                    )
+                ):
+                    raise StatementAuthorityParseError(
+                        "sgml_statement_authority_has_no_exact_xml_identity"
+                    )
+                statement_evidence.extend((reference, report_artifact, occurrence) for occurrence in occurrences)
+
+            if rejected_generated_concepts:
+                statement_evidence = [
+                    item
+                    for item in statement_evidence
+                    if item[2].concept not in rejected_generated_concepts
+                ]
+
+            if _is_generated_statement_parser(parser_version) and not statement_evidence:
+                raise StatementAuthorityParseError(
+                    "no_unique_generated_statement_occurrence_authority"
+                )
+
+            if filing.report_date is None:
+                raise StatementAuthorityParseError("missing_statement_period_end")
+            presented_periods = []
+            for _, evidence_artifact, occurrence in statement_evidence:
+                if occurrence.locator.get("kind") == "sec_generated_statement_html_v2":
+                    parsed_index = generated_occurrence_candidate_ordinals(
+                        occurrence, parsed_identities
+                    )[0]
+                else:
+                    parsed_index = match_statement_occurrence(
+                        occurrence, parsed_identities
+                    )
+                item = parsed[parsed_index - 1]
+                end = item.period_end or item.period_instant
+                if end is None: raise StatementAuthorityParseError("statement_occurrence_has_no_period")
+                presented_periods.append(PresentedPeriodEvidence(
+                    occurrence.column_header, item.period_start, end,
+                    str(evidence_artifact.id), int(occurrence.locator.get("row", 0)),
+                    occurrence.concept, int(occurrence.locator.get("column", 0))))
+            focus = build_explicit_fiscal_focus(
+                dei_facts=[DeiFocusEvidence(item.concept_namespace_uri, item.concept.rsplit(":", 1)[-1],
+                    item.raw_value or "", tuple(item.dimensions_structured)) for item in parsed],
+                presented_periods=presented_periods, form=filing.form_type,
+                statement_period_end=filing.report_date, approved_dei_namespaces=DEI_URIS)
+        parse_savepoint = db.begin_nested()
         run = SecFinancialParseRun(
             filing_id=filing.id,
             operation_id=operation_id,
@@ -1738,17 +2715,27 @@ def _parse_primary_artifact(
                 )
             )
         db.flush()
+        raw_rows = []
         for ordinal, item in enumerate(parsed, start=1):
-            db.add(
-                SecRawXbrlFact(
+            raw_row = SecRawXbrlFact(
                     parse_run_id=run.id,
-                    artifact_id=primary.id,
+                    artifact_id=parse_artifact.id,
                     ordinal=ordinal,
                     concept=item.concept,
                     concept_namespace_uri=item.concept_namespace_uri,
                     context_id=item.context_id,
                     unit_id=item.unit_id,
                     unit_measure=item.unit_measure,
+                    unit_numerator_json=(
+                        list(item.unit_numerator)
+                        if _is_parser_v2(parser_version)
+                        else None
+                    ),
+                    unit_denominator_json=(
+                        list(item.unit_denominator)
+                        if _is_parser_v2(parser_version)
+                        else None
+                    ),
                     raw_value=item.raw_value,
                     transformation_format=item.transformation_format,
                     language=item.language,
@@ -1762,14 +2749,187 @@ def _parse_primary_artifact(
                     period_end=item.period_end,
                     entity_identifier=item.entity_identifier,
                     dimensions_json=item.dimensions,
+                    dimensions_structured_json=(
+                        list(item.dimensions_structured)
+                        if _is_parser_v2(parser_version)
+                        else None
+                    ),
                     locator_json=item.locator,
                 )
+            db.add(raw_row)
+            raw_rows.append(raw_row)
+        db.flush()
+        references_by_key = {}
+        occurrence_rows = []
+        for reference, report_artifact, occurrence in statement_evidence:
+            generated_ordinals = None
+            if occurrence.locator.get("kind") == "sec_generated_statement_html_v2":
+                generated_ordinals = generated_occurrence_candidate_ordinals(
+                    occurrence, parsed_identities
+                )
+                occurrence = replace(
+                    occurrence,
+                    locator={
+                        **occurrence.locator,
+                        "equivalent_raw_fact_ids": [
+                            raw_rows[item - 1].id for item in generated_ordinals
+                        ],
+                    },
+                )
+            reference_key = (reference.report_ordinal, report_artifact.id)
+            reference_row = references_by_key.get(reference_key)
+            if reference_row is None:
+                reference_row = SecStatementReportReference(
+                    parse_run_id=run.id, filing_summary_artifact_id=summary.id,
+                    filing_summary_sha256=summary.sha256, filing_summary_byte_size=summary.byte_size,
+                    filing_summary_content=summary_raw_content,
+                    report_artifact_id=report_artifact.id, report_sha256=report_artifact.sha256,
+                    report_byte_size=report_artifact.byte_size,
+                    report_content=_read_verified_artifact(storage_root, report_artifact), filename=report_artifact.filename,
+                    report_ordinal=reference.report_ordinal, statement_role=reference.statement_role,
+                    statement_type=reference.statement_type, report_name=reference.report_name, known_at=now)
+                reference_row.reference_semantic_sha256 = statement_reference_digest(summary.sha256, reference)
+                db.add(reference_row); db.flush(); references_by_key[reference_key] = reference_row
+            if generated_ordinals is not None:
+                raw_row = raw_rows[generated_ordinals[0] - 1]
+                if occurrence.locator["equivalent_raw_fact_ids"][0] != raw_row.id:
+                    raise StatementAuthorityParseError(
+                        "invalid_generated_canonical_raw_fact_identity"
+                    )
+            else:
+                raw_id = match_statement_occurrence(occurrence, [RawOccurrenceIdentity(
+                    row.id, row.context_id or "", row.concept, row.raw_value or "", row.unit_id,
+                    row.locator_json.get("element_id")) for row in raw_rows])
+                raw_row = next(row for row in raw_rows if row.id == raw_id)
+            if raw_row.period_end is None and raw_row.period_instant is None:
+                raise StatementAuthorityParseError("statement_occurrence_has_no_period")
+            header_date = parse_statement_header_date(occurrence.column_header)
+            occurrence_row = SecStatementOccurrenceEvidence(
+                statement_report_reference_id=reference_row.id, parse_run_id=run.id,
+                raw_fact_id=raw_row.id, report_sha256=report_artifact.sha256,
+                report_ordinal=reference.report_ordinal,
+                row_ordinal=int(occurrence.locator.get("row", 0)),
+                column_ordinal=int(occurrence.locator.get("column", 0)),
+                occurrence_ordinal=occurrence.occurrence_ordinal, fact_id=occurrence.fact_id,
+                context_id=occurrence.context_id, concept=occurrence.concept,
+                raw_value=" ".join(occurrence.raw_value.split()), unit_id=occurrence.unit_id,
+                header_raw=occurrence.column_header,
+                header_normalized=" ".join(occurrence.column_header.split()),
+                header_date=header_date, locator_json=occurrence.locator,
+                semantic_sha256=statement_occurrence_digest(
+                    report_artifact.sha256, reference.report_ordinal, occurrence, header_date), known_at=now)
+            db.add(occurrence_row); db.flush()
+            occurrence_rows.append((reference, report_artifact, occurrence, raw_row, occurrence_row))
+        fact_authority_count = 0
+        for reference, report_artifact, occurrence, raw_row, occurrence_row in occurrence_rows:
+            try:
+                classified = classify_statement_occurrence(
+                    occurrence,
+                    statement_type=reference.statement_type,
+                    period_start=raw_row.period_start,
+                    period_end=raw_row.period_end or raw_row.period_instant,
+                    focus=focus,
+                    allow_balance_sheet_date_only_instant=_is_parser_v25(
+                        parser_version
+                    ),
+                )
+            except StatementAuthorityParseError as exc:
+                if (
+                    _is_generated_statement_parser(parser_version)
+                    and str(exc) == "unproven_statement_presentation_class"
+                ):
+                    # Comparative YTD columns are retained as exact occurrence
+                    # anchors, but cannot independently claim a supported
+                    # canonical presentation class.
+                    continue
+                raise
+            if (
+                _is_generated_statement_parser(parser_version)
+                and classified.presentation_class
+                == "prior_fiscal_year_balance_sheet"
+            ):
+                # An instant comparative does not prove the prior fiscal-year
+                # start.  Keep its occurrence evidence, but do not invent an
+                # authority row from a presentation date alone.
+                continue
+            if (
+                _is_parser_v24(parser_version)
+                and classified.presentation_class
+                == "prior_fiscal_year_comparative"
+                and raw_row.period_start != focus.prior_fiscal_year_start
+            ):
+                # A generated annual table may retain a third or older fiscal
+                # year.  It is exact occurrence evidence, but it is not the
+                # immediately-prior cycle authorized by this parse run.
+                continue
+            same_anchor_identity = [item for item in occurrence_rows
+                if item[4].statement_report_reference_id == occurrence_row.statement_report_reference_id
+                and item[4].row_ordinal == occurrence_row.row_ordinal and item[4].concept == occurrence_row.concept]
+            current_anchors = [item for item in same_anchor_identity
+                if (item[3].period_end or item[3].period_instant) == focus.statement_period_end
+                and (
+                    item[3].period_start == focus.fiscal_year_start
+                    or (raw_row.period_start is None and item[3].period_start is None)
+                )]
+            if len(current_anchors) != 1:
+                if _is_parser_v24(parser_version):
+                    # Keep the exact occurrence row as typed audit evidence;
+                    # an incomplete row cannot claim presentation authority.
+                    continue
+                raise StatementAuthorityParseError("missing_unique_current_cycle_anchor")
+            current_anchor = current_anchors[0][4]
+            prior_anchor = None
+            if classified.presentation_class != "current_period":
+                prior_anchors = [item for item in same_anchor_identity if item[3].period_start == focus.prior_fiscal_year_start
+                    and (item[3].period_end or item[3].period_instant) != focus.statement_period_end]
+                if len(prior_anchors) != 1:
+                    if _is_parser_v24(parser_version):
+                        continue
+                    raise StatementAuthorityParseError("missing_unique_prior_cycle_anchor")
+                prior_anchor = prior_anchors[0][4]
+            authority_digest = hashlib.sha256(chr(31).join((occurrence_row.semantic_sha256,
+                classified.presentation_class, str(current_anchor.id), str(prior_anchor.id if prior_anchor else ""))).encode()).hexdigest()
+            db.add(SecStatementFactAuthority(
+                raw_fact_id=raw_row.id, parse_run_id=run.id,
+                statement_report_reference_id=occurrence_row.statement_report_reference_id,
+                statement_occurrence_id=occurrence_row.id,
+                current_anchor_occurrence_id=current_anchor.id,
+                prior_anchor_occurrence_id=prior_anchor.id if prior_anchor else None,
+                statement_artifact_id=report_artifact.id,
+                statement_sha256=report_artifact.sha256,
+                statement_byte_size=report_artifact.byte_size,
+                statement_role=reference.statement_role,
+                statement_type=reference.statement_type,
+                report_ordinal=reference.report_ordinal,
+                report_name=reference.report_name,
+                occurrence_ordinal=occurrence.occurrence_ordinal,
+                occurrence_fact_id=occurrence.fact_id,
+                occurrence_semantic_sha256=authority_digest,
+                context_id=occurrence.context_id,
+                presentation_class=classified.presentation_class,
+                statement_period_end=classified.statement_period_end,
+                fiscal_year=classified.fiscal_year,
+                fiscal_quarter_ordinal=classified.fiscal_quarter_ordinal,
+                fiscal_year_start=classified.fiscal_year_start,
+                locator_json=occurrence.locator,
+                known_at=now,
+            ))
+            fact_authority_count += 1
+        if _is_parser_v24(parser_version) and fact_authority_count == 0:
+            raise StatementAuthorityParseError(
+                "no_unique_statement_occurrence_authority"
             )
         db.flush()
+        parse_savepoint.commit()
         return 1, len(parsed), [], run.id
     except SecFinancialIntegrityError:
+        if parse_savepoint is not None:
+            parse_savepoint.rollback()
         raise
     except Exception as exc:
+        if parse_savepoint is not None:
+            parse_savepoint.rollback()
+        error_code = exc.reason_code if isinstance(exc, StatementAuthorityParseError) else "parse_failed"
         run = SecFinancialParseRun(
             filing_id=filing.id,
             operation_id=operation_id,
@@ -1781,7 +2941,7 @@ def _parse_primary_artifact(
             completed_at=now,
             known_at=now,
             fact_count=0,
-            error_code="parse_failed",
+            error_code=error_code,
             error_detail=f"{type(exc).__name__}: {str(exc)[:500]}",
         )
         db.add(run)
@@ -1797,7 +2957,7 @@ def _parse_primary_artifact(
         return (
             1,
             0,
-            [f"{filing.accession_no}:parse_failed:{type(exc).__name__}"],
+            [f"{filing.accession_no}:{error_code}:{type(exc).__name__}"],
             run.id,
         )
 
@@ -1809,6 +2969,7 @@ def _discover(
     max_filings: int,
     filing_selection_as_of: datetime | None,
     history_target: FinancialHistoryTarget | None = None,
+    continuation: _ContinuationAuthority | None = None,
 ) -> _DiscoveryResult:
     if filing_selection_as_of is not None:
         filing_selection_as_of = _aware(filing_selection_as_of)
@@ -1822,7 +2983,11 @@ def _discover(
                 "history target cutoff must match filing_selection_as_of"
             )
     submissions_url = f"https://data.sec.gov/submissions/CIK{cik}.json"
-    main_content = _fetch_bytes(client, submissions_url)
+    main_content = (
+        continuation.main_content
+        if continuation is not None
+        else _fetch_bytes(client, submissions_url)
+    )
     source_payloads = {submissions_url: main_content}
     try:
         main = parse_financial_submissions(main_content, source_url=submissions_url)
@@ -1889,8 +3054,9 @@ def _discover(
             eligible, history_target
         )
 
-    if not annual_coverage_complete():
-        safe_historical_files: list[str] = []
+    safe_historical_files: list[str] = []
+    next_index: int | None = None
+    if not annual_coverage_complete() or continuation is not None:
         unsafe_historical_files: list[str] = []
         for reference in main.historical_submission_references:
             if reference.error_code is not None or reference.name is None:
@@ -1918,7 +3084,21 @@ def _discover(
                 "unsafe_historical_submission_reference_additional:"
                 f"{len(unsafe_historical_files) - MAX_HISTORICAL_SUBMISSION_FILES}"
             )
-        for filename in safe_historical_files[:MAX_HISTORICAL_SUBMISSION_FILES]:
+        cursor_start = 0
+        if continuation is not None:
+            if (
+                continuation.main_sha256
+                != hashlib.sha256(main_content).hexdigest()
+                or continuation.references != tuple(safe_historical_files)
+                or continuation.next_index > len(safe_historical_files)
+            ):
+                raise SecFinancialIntegrityError("history continuation authority mismatch")
+            cursor_start = continuation.next_index
+        scanned = 0
+        for filename in safe_historical_files[
+            cursor_start : cursor_start + MAX_HISTORICAL_SUBMISSION_FILES
+        ]:
+            scanned += 1
             url = f"https://data.sec.gov/submissions/{quote(filename, safe='._-')}"
             try:
                 content = _fetch_bytes(client, url)
@@ -1975,11 +3155,13 @@ def _discover(
             discovered.extend(historical)
             if annual_coverage_complete():
                 break
-        if (
-            not annual_coverage_complete()
-            and len(safe_historical_files) > MAX_HISTORICAL_SUBMISSION_FILES
-        ):
+        next_index = cursor_start + scanned
+        next_history_cursor = None
+        if not annual_coverage_complete() and next_index < len(safe_historical_files):
             failures.append("history_scan_limit_exceeded")
+            next_history_cursor = "pending"
+    else:
+        next_history_cursor = None
     (
         canonical,
         conflicting_accessions,
@@ -2038,6 +3220,12 @@ def _discover(
         failures=tuple(failures),
         audit_failures=tuple(audit_failures),
         resolutions=tuple(resolutions),
+        next_history_cursor=next_history_cursor,
+        continuation_references=tuple(safe_historical_files),
+        continuation_next_index=(next_index if next_history_cursor else None),
+        continuation_start_index=(cursor_start if next_index is not None else None),
+        continuation_end_index=next_index,
+        main_sha256=hashlib.sha256(main_content).hexdigest(),
     )
 
 
@@ -2052,6 +3240,7 @@ def ingest_latest_financial_filings(
     parser_version: str = "inline-xbrl-v1",
     filing_selection_as_of: datetime | None = None,
     history_target: FinancialHistoryTarget | None = None,
+    history_cursor: str | None = None,
 ) -> FinancialIngestionReport:
     now = _aware(now or datetime.now(timezone.utc))
     filing_selection_as_of = (
@@ -2063,6 +3252,7 @@ def ingest_latest_financial_filings(
         raise SecFinancialIngestionError("max_filings must be between 1 and 200")
     if not parser_version.strip():
         raise SecFinancialIngestionError("parser_version is required")
+    acquire_sec_financial_stock_lock(db, stock_id=stock_id)
     candidate_identity = _reviewed_identity(db, stock_id, now)
     _lock_keys(
         db,
@@ -2074,6 +3264,78 @@ def ingest_latest_financial_filings(
         raise SecFinancialIngestionError(
             "reviewed SEC issuer identity changed during acquisition"
         )
+    continuation_authority: _ContinuationAuthority | None = None
+    continuation_row: SecFinancialHistoryContinuation | None = None
+    def continuation_failure(
+        reason_code: str, *, snapshot_id: int | None = None
+    ) -> FinancialIngestionReport:
+        return _record_history_continuation_failure(
+            db,
+            stock_id=stock_id,
+            identity=identity,
+            cursor_id=history_cursor or "invalid",
+            reason_code=reason_code,
+            now=now,
+            filing_selection_as_of=filing_selection_as_of,
+            history_target=history_target,
+            main_snapshot_id=snapshot_id,
+        )
+    if history_cursor is not None:
+        try:
+            uuid.UUID(history_cursor)
+        except ValueError:
+            return continuation_failure("invalid_history_cursor")
+        continuation_row = db.get(SecFinancialHistoryContinuation, history_cursor)
+        continuation_available = (
+            continuation_row is not None
+            and db.get(
+                SecFinancialLineageAvailability,
+                continuation_row.source_operation_id,
+            )
+            is not None
+        )
+        if (
+            continuation_row is None
+            or not continuation_available
+            or continuation_row.issuer_identity_id != identity.id
+            or continuation_row.filing_selection_as_of != filing_selection_as_of
+            or continuation_row.history_target_json != _history_target_payload(history_target)
+        ):
+            return continuation_failure(
+                    "history_cursor_not_available"
+                    if continuation_row is not None and not continuation_available
+                    else "history_cursor_mismatch"
+            )
+        snapshot = db.get(SecSubmissionSnapshot, continuation_row.main_snapshot_id)
+        if (
+            snapshot is None
+            or snapshot.issuer_identity_id != identity.id
+            or snapshot.sha256 != continuation_row.main_sha256
+        ):
+            return continuation_failure(
+                "history_cursor_integrity_failure",
+                snapshot_id=(snapshot.id if snapshot is not None else None),
+            )
+        try:
+            main_content = _read_verified_submission_snapshot(storage_root, snapshot)
+        except SecFinancialIntegrityError:
+            return continuation_failure(
+                "history_cursor_integrity_failure", snapshot_id=snapshot.id
+            )
+        references = tuple(continuation_row.validated_references_json)
+        if continuation_row.manifest_identity != _history_manifest_identity(
+            identity.cik, continuation_row.main_sha256, list(references)
+        ):
+            return continuation_failure(
+                "history_cursor_integrity_failure", snapshot_id=snapshot.id
+            )
+        continuation_authority = _ContinuationAuthority(
+            id=continuation_row.id,
+            main_content=main_content,
+            main_sha256=continuation_row.main_sha256,
+            references=references,
+            next_index=continuation_row.next_index,
+        )
     try:
         discovery = _discover(
             client,
@@ -2081,6 +3343,7 @@ def ingest_latest_financial_filings(
             max_filings=max_filings,
             filing_selection_as_of=filing_selection_as_of,
             history_target=history_target,
+            continuation=continuation_authority,
         )
     except SecFinancialFetchError as exc:
         return _record_initial_main_fetch_failure(
@@ -2103,11 +3366,15 @@ def ingest_latest_financial_filings(
             raise SecFinancialIngestionError(
                 "accession already belongs to a different reviewed issuer identity"
             )
-    reusable_failed_operation_id = _reusable_acquisition_failure_operation(
-        db,
-        issuer_identity_id=identity.id,
-        discovery=discovery,
-        storage_root=storage_root,
+    reusable_failed_operation_id = (
+        None
+        if discovery.continuation_next_index is not None
+        else _reusable_acquisition_failure_operation(
+            db,
+            issuer_identity_id=identity.id,
+            discovery=discovery,
+            storage_root=storage_root,
+        )
     )
     if reusable_failed_operation_id is not None:
         return FinancialIngestionReport(
@@ -2121,6 +3388,7 @@ def ingest_latest_financial_filings(
             raw_facts_created=0,
             failures=discovery.failures,
             selected_filings=_selected_filing_summaries(discovery.filings),
+            next_history_cursor=discovery.next_history_cursor,
         )
     operation_id = str(uuid.uuid4())
     db.add(
@@ -2139,6 +3407,55 @@ def ingest_latest_financial_filings(
         now=now,
         operation_id=operation_id,
     )
+    continuation_token: str | None = None
+    continuation_claim_payload: dict[str, Any] | None = None
+    if (
+        discovery.continuation_end_index is not None
+        and discovery.continuation_end_index
+        > (discovery.continuation_start_index or 0)
+    ):
+        main_url = f"https://data.sec.gov/submissions/CIK{identity.cik}.json"
+        main_snapshot = snapshots.get(main_url)
+        if main_snapshot is None or main_snapshot.sha256 != discovery.main_sha256:
+            raise SecFinancialIntegrityError(
+                "history continuation requires exact retained main snapshot"
+            )
+        manifest_identity = _history_manifest_identity(
+            identity.cik,
+            main_snapshot.sha256,
+            list(discovery.continuation_references),
+        )
+        start_index = discovery.continuation_start_index or 0
+        attempted_references = list(discovery.continuation_references)[
+            start_index : discovery.continuation_end_index
+        ]
+        failure_keys = {
+            item.resource_key: item.error_code for item in discovery.audit_failures
+        }
+        continuation_claim_payload = {
+                "operation_id": operation_id,
+                "issuer_identity_id": identity.id,
+                "parent_id": (continuation_row.id if continuation_row else None),
+                "main_snapshot_id": main_snapshot.id,
+                "manifest_identity": manifest_identity,
+                "filing_selection_as_of": filing_selection_as_of,
+                "history_target_json": _history_target_payload(history_target),
+                "start_index": start_index,
+                "end_index": discovery.continuation_end_index,
+                "attempted_references_json": attempted_references,
+                "terminal_outcomes_json": [
+                    {
+                        "reference": reference,
+                        "outcome": failure_keys.get(
+                            f"https://data.sec.gov/submissions/{reference}",
+                            "retained_and_parsed",
+                        ),
+                    }
+                    for reference in attempted_references
+                ],
+                "main_snapshot": main_snapshot,
+                "manifest_references": list(discovery.continuation_references),
+        }
     acquisition_failure_ids: list[int] = []
     recorded_acquisition_failures: dict[
         tuple[str, str, str, str, str | None],
@@ -2218,6 +3535,35 @@ def ingest_latest_financial_filings(
             )
         )
     db.flush()
+    if continuation_claim_payload is not None:
+        child_payload = dict(continuation_claim_payload)
+        main_snapshot = child_payload.pop("main_snapshot")
+        manifest_references = child_payload.pop("manifest_references")
+        db.add(SecFinancialHistoryConsumptionClaim(**child_payload))
+        db.flush()
+        existing_child = None
+        if continuation_row is not None:
+            existing_child = db.scalar(select(SecFinancialHistoryContinuation).where(
+                SecFinancialHistoryContinuation.parent_id == continuation_row.id
+            ))
+        if discovery.continuation_next_index is None:
+            continuation_token = None
+        elif existing_child is not None:
+            continuation_token = existing_child.id
+        else:
+            continuation_token = str(uuid.uuid4())
+            db.add(SecFinancialHistoryContinuation(
+                id=continuation_token, issuer_identity_id=identity.id,
+                main_snapshot_id=main_snapshot.id, source_operation_id=operation_id,
+                parent_id=(continuation_row.id if continuation_row else None),
+                main_sha256=main_snapshot.sha256,
+                manifest_identity=child_payload["manifest_identity"],
+                validated_references_json=manifest_references,
+                filing_selection_as_of=filing_selection_as_of,
+                history_target_json=_history_target_payload(history_target),
+                next_index=discovery.continuation_next_index,
+            ))
+            db.flush()
 
     def record_accession_attempt(
         *,
@@ -2338,6 +3684,7 @@ def ingest_latest_financial_filings(
                 index_content=index_content,
                 storage_root=storage_root,
                 now=now,
+                parser_version=parser_version,
             )
             created_artifacts += artifact_count
             failures.extend(artifact_failures)
@@ -2517,6 +3864,7 @@ def ingest_latest_financial_filings(
         raw_facts_created=created_facts,
         failures=tuple(failures),
         selected_filings=_selected_filing_summaries(discovered),
+        next_history_cursor=continuation_token,
     )
 
 
@@ -2526,6 +3874,21 @@ def finalize_sec_financial_ingestion_operation(
     operation_id: str,
 ) -> datetime:
     """Make committed lineage visible using a separately committed DB marker."""
+    operation_stock = db.execute(
+        select(
+            SecFinancialIngestionOperation.id,
+            SecIssuerIdentity.stock_id,
+        )
+        .join(
+            SecIssuerIdentity,
+            SecIssuerIdentity.id
+            == SecFinancialIngestionOperation.issuer_identity_id,
+        )
+        .where(SecFinancialIngestionOperation.id == operation_id)
+    ).one_or_none()
+    if operation_stock is None:
+        raise SecFinancialIngestionError("SEC financial ingestion operation not found")
+    acquire_sec_financial_stock_lock(db, stock_id=int(operation_stock.stock_id))
     operation = db.scalar(
         select(SecFinancialIngestionOperation)
         .where(SecFinancialIngestionOperation.id == operation_id)
@@ -2557,7 +3920,14 @@ def finalize_sec_financial_ingestion_operation(
             or 0
         )
         result = db.get(SecFinancialOperationResult, operation_id)
-        if snapshot_count < 1 and anchor_count < 1:
+        if (
+            snapshot_count < 1
+            and anchor_count < 1
+            and (
+                result is None
+                or result.result_kind != "history_continuation_failure"
+            )
+        ):
             raise SecFinancialIngestionError(
                 "availability requires retained submissions snapshot or no-bytes resource anchor"
             )
@@ -2568,7 +3938,8 @@ def finalize_sec_financial_ingestion_operation(
         if anchor_count and (
             snapshot_count
             or anchor_count != 1
-            or result.result_kind != "acquisition_failure"
+            or result.result_kind
+            not in {"acquisition_failure", "history_continuation_failure"}
         ):
             raise SecFinancialIngestionError(
                 "no-bytes resource anchor requires acquisition failure terminal"
@@ -2586,6 +3957,7 @@ def finalize_pending_sec_financial_ingestion_operations(
     stock_id: int,
 ) -> tuple[tuple[str, datetime], ...]:
     """Recover committed pending lineage under an explicit operator rerun."""
+    acquire_sec_financial_stock_lock(db, stock_id=stock_id)
     operation_ids = db.scalars(
         select(SecFinancialIngestionOperation.id)
         .join(

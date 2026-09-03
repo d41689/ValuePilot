@@ -16,7 +16,442 @@
 #   * FY/Q: derived from year/quarter end
 #   * AS_OF/EVENT: use the source module's as_of / event date; stored in period_end_date
 
-version: 1
+version: 2
+
+# SEC publication is a separate, versioned contract from the Value Line JSON
+# mappings below.  A raw XBRL observation is lineage, not product truth, until
+# an approved rule in this section produces a canonical metric_facts
+# publication.  Implementations match the namespace URI and local name; the
+# source document's prefix is display-only and never establishes taxonomy
+# identity.
+sec_xbrl:
+  versions:
+    - id: sec-us-gaap-v1
+      status: approved
+      known_at: "2026-08-31T00:00:00Z"
+      effective_from: "2026-08-31T00:00:00Z"
+      source_role: primary_as_filed_actual
+      source_precedence: none
+      taxonomy:
+        authority: namespace_uri_and_local_name
+        namespace_authorities:
+          us_gaap:
+            display_prefix: us-gaap
+            exact_namespace_uris:
+              - 'http://fasb.org/us-gaap/2014-01-31'
+              - 'http://fasb.org/us-gaap/2015-01-31'
+              - 'http://fasb.org/us-gaap/2016-01-31'
+              - 'http://fasb.org/us-gaap/2017-01-31'
+              - 'http://fasb.org/us-gaap/2018-01-31'
+              - 'http://fasb.org/us-gaap/2019-01-31'
+              - 'http://fasb.org/us-gaap/2020-01-31'
+              - 'http://fasb.org/us-gaap/2021-01-31'
+              - 'http://fasb.org/us-gaap/2022'
+              - 'http://fasb.org/us-gaap/2023'
+              - 'http://fasb.org/us-gaap/2024'
+              - 'http://fasb.org/us-gaap/2025'
+              - 'http://fasb.org/us-gaap/2026'
+          dei:
+            display_prefix: dei
+            exact_namespace_uris:
+              - 'http://xbrl.sec.gov/dei/2014-01-31'
+              - 'http://xbrl.sec.gov/dei/2018-01-31'
+              - 'http://xbrl.sec.gov/dei/2019-01-31'
+              - 'http://xbrl.sec.gov/dei/2020-01-31'
+              - 'http://xbrl.sec.gov/dei/2021'
+              - 'http://xbrl.sec.gov/dei/2021q4'
+              - 'http://xbrl.sec.gov/dei/2022'
+              - 'http://xbrl.sec.gov/dei/2023'
+              - 'http://xbrl.sec.gov/dei/2024'
+              - 'http://xbrl.sec.gov/dei/2025'
+              - 'http://xbrl.sec.gov/dei/2026'
+        prefix_role: display_only
+        registry_persistence: every_authority_exact_uri_with_mapping_spec_digest
+        new_namespace_uri_policy: new_mapping_version_required
+      fact_nature:
+        direct: actual
+        derived_quarter: derived_actual
+      unit_policy:
+        numeric_storage: numeric_38_12_normalized_base_unit
+        decimal_arithmetic: required
+        currency_registry:
+          id: locked_ft00_gold_set_v1
+          source_scope: locked_ft00_gold_set_observed_currencies
+          approved_currency_codes: [DKK, EUR, TWD, USD]
+          canonical_serialization: '["DKK","EUR","TWD","USD"]'
+          canonical_sha256: c398cea3e87a35c10aded8caa21bc8e592e72ac5129f3b182761cb8788e4c4c2
+          registry_persistence: ordered_codes_serialization_sha256_with_mapping_spec_digest
+          external_runtime_currency_list: ignored_for_replay
+          unlisted_code_outcome: unresolved_currency
+          expansion_policy: new_mapping_version_required
+        raw_structured_unit:
+          representation:
+            numerator_measures: ordered_qname_list
+            denominator_measures: ordered_qname_list
+            qname_fields: [namespace_uri, local_name]
+            prefix_role: display_only
+          namespace_authorities:
+            iso_4217:
+              namespace_uri: 'http://www.xbrl.org/2003/iso4217'
+              local_name: approved_iso_4217_currency_code
+            xbrli:
+              namespace_uri: 'http://www.xbrl.org/2003/instance'
+              shares_local_name: shares
+          accepted_shapes:
+            monetary:
+              numerator:
+                - {namespace_authority: iso_4217, local_name: source_currency}
+              denominator: []
+            currency_per_share:
+              numerator:
+                - {namespace_authority: iso_4217, local_name: source_currency}
+              denominator:
+                - {namespace_authority: xbrli, local_name: shares}
+            shares:
+              numerator:
+                - {namespace_authority: xbrli, local_name: shares}
+              denominator: []
+          extra_wrong_or_reordered_measure_outcome: unresolved_unit
+        monetary:
+          metric_facts_unit: currency
+          metric_facts_currency: issuer_currency
+          accepted_currency: iso_4217_source_reported
+          currency_pattern: '^[A-Z]{3}$'
+        currency_per_share:
+          metric_facts_unit: currency_per_share
+          metric_facts_currency: issuer_currency
+          accepted_currency: iso_4217_source_reported
+          currency_pattern: '^[A-Z]{3}$'
+        shares:
+          metric_facts_unit: shares
+          metric_facts_currency: null
+        fx_conversion: prohibited
+        unknown_currency_outcome: unresolved_currency
+      dimensions_policy:
+        accepted: consolidated_no_dimensions
+        dimensional_outcome: unresolved_dimensions
+        custom_concept_outcome: unresolved_custom_concept
+      duplicate_policy:
+        identical_candidates: deterministic_lowest_raw_fact_id
+        conflicting_candidates: unresolved_conflicting_candidates
+        last_write_wins: prohibited
+      concept_priority_pipeline:
+        group_order: priority_ascending
+        validation_order:
+          - namespace_authority
+          - unit_shape
+          - period
+          - dimensions
+          - value
+        advance_to_next_group_only_when: all_group_candidates_typed_invalid
+        valid_group_policy:
+          lower_priority_groups_participate: false
+          identical_valid_same_slot: deterministic_lowest_raw_fact_id
+          conflicting_valid_same_slot: unresolved_conflicting_candidates
+          conflict_fall_through: prohibited
+        audit_policy:
+          lower_priority_raw_candidate_outcome: lower_priority_concept_not_selected
+          decision_cardinality: one_bounded_decision_per_lower_priority_raw_candidate
+        contract_fixtures:
+          - id: higher_valid
+            candidates:
+              - {priority: 1, valid: true, raw_fact_id: 10, value: '100'}
+              - {priority: 2, valid: true, raw_fact_id: 20, value: '100'}
+            expected: {selected_raw_fact_id: 10, lower_priority_decisions: 1}
+          - id: higher_invalid_lower_valid
+            candidates:
+              - {priority: 1, valid: false, raw_fact_id: 10, typed_outcome: unresolved_unit}
+              - {priority: 2, valid: true, raw_fact_id: 20, value: '100'}
+            expected: {selected_raw_fact_id: 20, lower_priority_decisions: 0}
+          - id: cross_priority_same_value
+            candidates:
+              - {priority: 1, valid: true, raw_fact_id: 11, value: '100'}
+              - {priority: 2, valid: true, raw_fact_id: 9, value: '100'}
+            expected: {selected_raw_fact_id: 11, lower_priority_decisions: 1}
+          - id: cross_priority_different_value
+            candidates:
+              - {priority: 1, valid: true, raw_fact_id: 12, value: '100'}
+              - {priority: 2, valid: true, raw_fact_id: 8, value: '999'}
+            expected: {selected_raw_fact_id: 12, lower_priority_decisions: 1}
+          - id: same_priority_conflict
+            candidates:
+              - {priority: 1, valid: true, raw_fact_id: 13, value: '100'}
+              - {priority: 1, valid: true, raw_fact_id: 14, value: '101'}
+              - {priority: 2, valid: true, raw_fact_id: 15, value: '100'}
+            expected: {outcome: unresolved_conflicting_candidates, lower_priority_decisions: 1}
+      period_policy:
+        classification_order: form_then_period_shape_then_fiscal_cycle
+        instant:
+          allowed_period_types: [FY, Q]
+          rules:
+            - id: annual_current_or_comparative_fy
+              forms: [10-K, 10-K/A, 20-F, 20-F/A]
+              allowed_cycles:
+                - filing_fiscal_year_end
+                - explicit_prior_fiscal_year_comparative
+              output_period_type: FY
+            - id: quarterly_current_or_comparative_q
+              forms: [10-Q, 10-Q/A]
+              allowed_cycles:
+                - filing_quarter_end
+                - explicit_prior_same_fiscal_quarter_comparative
+              output_period_type: Q
+            - id: quarterly_explicit_fy_comparative
+              forms: [10-Q, 10-Q/A]
+              allowed_cycles: [explicit_prior_fiscal_year_end_balance_sheet]
+              output_period_type: FY
+          required_alignment: explicit_statement_period_and_fiscal_cycle
+          mismatch_outcome: unresolved_period_filing_cycle_mismatch
+        duration:
+          rules:
+            - id: annual_fy
+              forms: [10-K, 10-K/A, 20-F, 20-F/A]
+              elapsed_days: {min: 300, max: 380}
+              output_period_type: FY
+            - id: quarterly_discrete
+              forms: [10-Q, 10-Q/A]
+              elapsed_days: {min: 70, max: 110}
+              output_period_type: Q
+            - id: quarterly_ytd_six_month
+              forms: [10-Q, 10-Q/A]
+              elapsed_days: {min: 150, max: 210}
+              output_period_type: YTD
+            - id: quarterly_ytd_nine_month
+              forms: [10-Q, 10-Q/A]
+              elapsed_days: {min: 240, max: 300}
+              output_period_type: YTD
+          period_end_alignment: explicit_statement_period_and_fiscal_cycle
+          comparison_policy: same_fiscal_cycle_ordinal_explicitly_presented
+          fifty_two_or_fifty_three_week_years: supported_within_rule_bounds
+          unmatched_outcome: unresolved_period_filing_cycle_mismatch
+        foreign_6k_semantics: unresolved_without_approved_period_rule
+        contract_fixtures:
+          - {id: three_month_10q, form: 10-Q, period_basis: duration, elapsed_days: 90, expected: Q}
+          - {id: six_month_10q, form: 10-Q, period_basis: duration, elapsed_days: 181, expected: YTD}
+          - {id: nine_month_10q, form: 10-Q, period_basis: duration, elapsed_days: 273, expected: YTD}
+          - {id: fiscal_year_10k, form: 10-K, period_basis: duration, elapsed_days: 365, expected: FY}
+          - {id: lower_bound_fy_10k, form: 10-K, period_basis: duration, elapsed_days: 300, expected: FY}
+          - {id: upper_bound_ytd_10q, form: 10-Q, period_basis: duration, elapsed_days: 300, expected: YTD}
+          - {id: filing_period_mismatch, form: 10-Q, period_basis: duration, elapsed_days: 365, expected: unresolved_period_filing_cycle_mismatch}
+          - {id: unsupported_6k, form: 6-K, period_basis: duration, elapsed_days: 90, expected: unresolved_without_approved_period_rule}
+      derived_quarter_policy:
+        direct_disclosure_precedence: true
+        allowed_rules:
+          - current_ytd_minus_immediately_prior_ytd
+          - fiscal_year_minus_nine_month_ytd
+        fiscal_year_minus_nine_month_sources:
+          cross_10k_10q_run_sources: permitted
+        exact_input_publication_links: required
+        arithmetic: decimal
+        missing_input_outcome: unresolved_missing_derived_quarter_input
+        operand_compatibility:
+          stock_id: same
+          metric_key: same
+          mapping_semantics_id: same
+          fiscal_year_start: same
+          unit: same
+          currency: same
+          context_policy: consolidated_no_dimensions
+          dimensions: exact_empty_set
+          filing_selection: eligible_under_run_amendment_policy
+          knowledge_time: at_or_before_publication_cutoff
+        incompatibility_outcomes:
+          stock_id: unresolved_derived_cross_stock
+          metric_or_mapping_semantics: unresolved_derived_metric_semantics_mismatch
+          fiscal_year_start: unresolved_derived_fiscal_year_mismatch
+          unit: unresolved_derived_unit_mismatch
+          currency: unresolved_derived_currency_mismatch
+          context_or_dimensions: unresolved_derived_context_mismatch
+          filing_or_amendment_selection: unresolved_derived_filing_authority_mismatch
+          knowledge_time: unresolved_derived_input_after_cutoff
+        time_identity_rules:
+          current_ytd_minus_immediately_prior_ytd:
+            eligible_output_quarter_ordinals: [2, 3]
+            left_period_type: YTD
+            right_period_type_by_left_ordinal: {2: Q, 3: YTD}
+            right_fiscal_quarter_ordinal: left_ordinal_minus_one
+            same_fiscal_year_start: required
+            left_end_after_right_end: required
+            difference_duration_days: {min: 70, max: 110}
+            output:
+              period_type: Q
+              fiscal_quarter_ordinal: left_fiscal_quarter_ordinal
+              start: day_after_right_end
+              end: left_end
+          fiscal_year_minus_nine_month_ytd:
+            left_period_type: FY
+            left_duration_days: {min: 300, max: 380}
+            right_period_type: YTD
+            right_fiscal_quarter_ordinal: 3
+            same_fiscal_year_start: required
+            left_end_after_right_end: required
+            difference_duration_days: {min: 70, max: 110}
+            output:
+              period_type: Q
+              fiscal_quarter_ordinal: 4
+              start: day_after_right_end
+              end: left_end
+        time_identity_fixtures:
+          - {id: q2_adjacent, rule: current_ytd_minus_immediately_prior_ytd, left_ordinal: 2, right_ordinal: 1, same_fiscal_year_start: true, left_end_after_right_end: true, difference_days: 91, expected: Q}
+          - {id: q3_adjacent, rule: current_ytd_minus_immediately_prior_ytd, left_ordinal: 3, right_ordinal: 2, same_fiscal_year_start: true, left_end_after_right_end: true, difference_days: 92, expected: Q}
+          - {id: skipped_quarter, rule: current_ytd_minus_immediately_prior_ytd, left_ordinal: 3, right_ordinal: 1, same_fiscal_year_start: true, left_end_after_right_end: true, difference_days: 182, expected: unresolved_derived_period_identity}
+          - {id: cross_fiscal_year, rule: current_ytd_minus_immediately_prior_ytd, left_ordinal: 2, right_ordinal: 1, same_fiscal_year_start: false, left_end_after_right_end: true, difference_days: 91, expected: unresolved_derived_fiscal_year_mismatch}
+          - {id: wrong_difference_duration, rule: current_ytd_minus_immediately_prior_ytd, left_ordinal: 2, right_ordinal: 1, same_fiscal_year_start: true, left_end_after_right_end: true, difference_days: 120, expected: unresolved_derived_period_identity}
+          - {id: q4_from_fy_and_9m, rule: fiscal_year_minus_nine_month_ytd, left_duration_days: 365, right_ordinal: 3, same_fiscal_year_start: true, left_end_after_right_end: true, difference_days: 92, expected: Q}
+      unresolved_outcomes:
+        - unresolved_custom_concept
+        - unresolved_dimensions
+        - unresolved_conflicting_candidates
+        - unresolved_currency
+        - unresolved_unit
+        - unresolved_period
+        - unresolved_missing_derived_quarter_input
+        - unresolved_derived_cross_stock
+        - unresolved_derived_metric_semantics_mismatch
+        - unresolved_derived_fiscal_year_mismatch
+        - unresolved_derived_unit_mismatch
+        - unresolved_derived_currency_mismatch
+        - unresolved_derived_context_mismatch
+        - unresolved_derived_filing_authority_mismatch
+        - unresolved_derived_input_after_cutoff
+        - unresolved_derived_period_identity
+        - unresolved_period_filing_cycle_mismatch
+        - unresolved_unsupported_form_semantics
+      consumer_gate:
+        raw_xbrl_product_reads: prohibited
+        silent_cross_source_precedence: prohibited
+        mixed_source_formulas_before_ft06: prohibited
+        mixed_source_screening_before_ft06: prohibited
+      mappings:
+        - id: sec.revenue
+          metric_key: is.revenue
+          value_kind: monetary
+          period_basis: duration
+          concepts:
+            - {namespace_authority: us_gaap, local_name: RevenueFromContractWithCustomerExcludingAssessedTax, priority: 1}
+            - {namespace_authority: us_gaap, local_name: SalesRevenueNet, priority: 2}
+            - {namespace_authority: us_gaap, local_name: Revenues, priority: 3}
+        - id: sec.gross_profit
+          metric_key: is.gross_profit
+          value_kind: monetary
+          period_basis: duration
+          concepts:
+            - {namespace_authority: us_gaap, local_name: GrossProfit, priority: 1}
+        - id: sec.operating_income
+          metric_key: is.operating_income
+          value_kind: monetary
+          period_basis: duration
+          concepts:
+            - {namespace_authority: us_gaap, local_name: OperatingIncomeLoss, priority: 1}
+        - id: sec.net_income
+          metric_key: is.net_income
+          value_kind: monetary
+          period_basis: duration
+          concepts:
+            - {namespace_authority: us_gaap, local_name: NetIncomeLoss, priority: 1}
+        - id: sec.operating_cash_flow
+          metric_key: is.operating_cash_flow
+          value_kind: monetary
+          period_basis: duration
+          concepts:
+            - {namespace_authority: us_gaap, local_name: NetCashProvidedByUsedInOperatingActivities, priority: 1}
+        - id: sec.capital_expenditures
+          metric_key: cf.capital_expenditures
+          value_kind: monetary
+          period_basis: duration
+          concepts:
+            - {namespace_authority: us_gaap, local_name: PaymentsToAcquirePropertyPlantAndEquipment, priority: 1}
+        - id: sec.stock_based_compensation
+          metric_key: cf.stock_based_compensation
+          value_kind: monetary
+          period_basis: duration
+          concepts:
+            - {namespace_authority: us_gaap, local_name: ShareBasedCompensation, priority: 1}
+        - id: sec.cash_and_equivalents
+          metric_key: bs.cash_and_equivalents
+          value_kind: monetary
+          period_basis: instant
+          concepts:
+            - {namespace_authority: us_gaap, local_name: CashAndCashEquivalentsAtCarryingValue, priority: 1}
+        - id: sec.cash_and_restricted_cash
+          metric_key: bs.cash_and_restricted_cash
+          value_kind: monetary
+          period_basis: instant
+          concepts:
+            - {namespace_authority: us_gaap, local_name: CashCashEquivalentsRestrictedCashAndRestrictedCashEquivalents, priority: 1}
+        - id: sec.total_assets
+          metric_key: bs.total_assets
+          value_kind: monetary
+          period_basis: instant
+          concepts:
+            - {namespace_authority: us_gaap, local_name: Assets, priority: 1}
+        - id: sec.current_assets
+          metric_key: bs.current_assets
+          value_kind: monetary
+          period_basis: instant
+          concepts:
+            - {namespace_authority: us_gaap, local_name: AssetsCurrent, priority: 1}
+        - id: sec.total_liabilities
+          metric_key: bs.total_liabilities
+          value_kind: monetary
+          period_basis: instant
+          concepts:
+            - {namespace_authority: us_gaap, local_name: Liabilities, priority: 1}
+        - id: sec.current_liabilities
+          metric_key: bs.current_liabilities
+          value_kind: monetary
+          period_basis: instant
+          concepts:
+            - {namespace_authority: us_gaap, local_name: LiabilitiesCurrent, priority: 1}
+        - id: sec.stockholders_equity
+          metric_key: bs.stockholders_equity
+          value_kind: monetary
+          period_basis: instant
+          concepts:
+            - {namespace_authority: us_gaap, local_name: StockholdersEquity, priority: 1}
+        - id: sec.equity_including_noncontrolling_interest
+          metric_key: bs.equity_including_noncontrolling_interest
+          value_kind: monetary
+          period_basis: instant
+          concepts:
+            - {namespace_authority: us_gaap, local_name: StockholdersEquityIncludingPortionAttributableToNoncontrollingInterest, priority: 1}
+        - id: sec.long_term_debt_current
+          metric_key: cap.long_term_debt_current
+          value_kind: monetary
+          period_basis: instant
+          concepts:
+            - {namespace_authority: us_gaap, local_name: LongTermDebtCurrent, priority: 1}
+        - id: sec.short_term_borrowings
+          metric_key: cap.short_term_borrowings
+          value_kind: monetary
+          period_basis: instant
+          concepts:
+            - {namespace_authority: us_gaap, local_name: ShortTermBorrowings, priority: 1}
+        - id: sec.long_term_debt_noncurrent
+          metric_key: cap.long_term_debt_noncurrent
+          value_kind: monetary
+          period_basis: instant
+          concepts:
+            - {namespace_authority: us_gaap, local_name: LongTermDebtNoncurrent, priority: 1}
+        - id: sec.diluted_eps
+          metric_key: per_share.eps
+          value_kind: currency_per_share
+          period_basis: duration
+          concepts:
+            - {namespace_authority: us_gaap, local_name: EarningsPerShareDiluted, priority: 1}
+        - id: sec.shares_outstanding
+          metric_key: equity.shares_outstanding
+          value_kind: shares
+          period_basis: instant
+          concepts:
+            - {namespace_authority: us_gaap, local_name: CommonStockSharesOutstanding, priority: 1}
+            - {namespace_authority: dei, local_name: EntityCommonStockSharesOutstanding, priority: 2}
+        - id: sec.weighted_average_diluted_shares
+          metric_key: equity.weighted_average_diluted_shares
+          value_kind: shares
+          period_basis: duration
+          concepts:
+            - {namespace_authority: us_gaap, local_name: WeightedAverageNumberOfDilutedSharesOutstanding, priority: 1}
 
 enums:
   period_types:
@@ -36,6 +471,8 @@ enums:
 
   units:
     # Currency
+    - currency
+    - currency_per_share
     - USD
     - USD_millions
     - USD_per_share

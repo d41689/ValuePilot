@@ -1069,9 +1069,12 @@ that make the claim true.
 `sec_raw_xbrl_facts` is append-only and belongs to exactly one succeeded run and
 one retained source artifact. It preserves:
 
-- namespace-qualified concept and namespace URI, context ID, unit ID/definition,
-  raw lexical value, inline-XBRL transformation format, language and continuation
-  reference, decimals, scale, sign and nil state;
+- concept namespace URI and local name plus the source prefix as display-only
+  metadata; context ID; and a structured unit definition whose ordered
+  numerator/denominator measures each preserve namespace URI and local name
+  plus display-only prefix (the raw unit ID is retained but is not authority);
+  raw lexical value, inline-XBRL transformation format, language and
+  continuation reference, decimals, scale, sign and nil state;
 - instant or duration start/end, entity identifier and dimensions JSON;
 - an evidence locator containing artifact ID plus a validated HTML element ID
   or deterministic DOM/XPath-like locator and nearby-text hash/snippet within
@@ -1087,6 +1090,14 @@ The initial parser extracts inline-XBRL numeric and non-numeric facts plus
 context/unit definitions. It does not infer canonical metric identity, choose
 between duplicate contexts, derive quarters, normalize currency, or publish
 `value_numeric`.
+
+Neither concept nor unit identity may be reconstructed by trusting an XBRL
+prefix string. A currency measure is eligible for FT-04 only when its structured
+QName resolves to the exact ISO-4217 authority URI
+`http://www.xbrl.org/2003/iso4217` and an approved code. The XBRL instance
+authority URI is exactly `http://www.xbrl.org/2003/instance`. Compound units
+retain ordered numerator and denominator QName lists; a prefix is never
+authority.
 
 ### H.6 Point-in-time and supersession
 
@@ -1165,6 +1176,289 @@ cutoff, operation attempted/finalized/available times, expected completed fiscal
 years, selected forms/accessions, bounded typed gaps/failures, and lineage
 counts. The report explicitly records the number of `metric_facts` rows; FT-03
 acceptance requires that count to remain zero.
+
+### H.9 Canonical SEC publication (FT-04)
+
+FT-04 is the only boundary that may convert SEC raw financial lineage into
+product-queryable fundamentals. Metric keys, units, currency and period
+semantics come only from the approved `sec_xbrl` version in
+`docs/metric_facts_mapping_spec.yml`. Source permission remains governed by the
+coverage-source policy. This section owns publication storage, lifecycle, API,
+and point-in-time behavior; it does not create a second metric-semantics source.
+
+#### Publication storage
+
+The implementation adds these append-only lineage records:
+
+- `sec_metric_mapping_versions`: the mapping ID, approved/retired status,
+  mapping-spec content hash, `known_at`, `effective_from`, optional retirement
+  time, reviewer and reason. Runtime text or an unapplied YAML edit cannot
+  authorize publication by itself.
+- `sec_metric_mapping_version_namespaces`: one immutable row for every
+  `(mapping_version, namespace_authority, exact_namespace_uri)`, carrying the
+  parent mapping-spec digest. Runtime pattern matching is not publication
+  authority; an unregistered URI requires a new mapping version.
+- `sec_metric_mapping_version_currencies`: one immutable ordinal row for each
+  approved currency code, plus the currency-list ID, canonical serialization
+  and SHA-256 pinned by the parent mapping version. Runtime library contents do
+  not add or remove eligible codes during replay.
+- `sec_metric_publication_runs`: one database-stamped attempt for one stock,
+  reviewed SEC identity, mapping version and knowledge cutoff. It records
+  terminal status and exact published/unresolved/rejected counts. A succeeded
+  run is complete for its ordered exact parse-authority set and mapping version.
+- `sec_metric_publication_run_sources`: the ordered exact source set for a run.
+  Each row links one source ordinal to a finalized, PIT-eligible,
+  storage-verified succeeded parse run and records its filing/accession,
+  parser/manifest identity and availability. The set is immutable and its hash
+  is only a checksum of these durable source rows, not a replacement for them.
+- `sec_metric_publications`: one append-only mapping decision with status
+  `published`, `unresolved`, or `rejected`, a bounded typed reason, canonical
+  projection fields when published, source role, fact nature, filing/accession,
+  parser/mapping/context/period/unit/currency identity, knowledge time, locator,
+  and nullable resulting `metric_fact_id`.
+- `sec_metric_publication_inputs`: the ordered exact raw-fact inputs and their
+  role. A direct publication has one input; a subtraction-derived quarter has
+  every operand. A checksum is not a substitute for durable input FKs.
+
+Every publication input belongs to one member of the publication run's exact
+source set and its verified retained artifact. The database rejects input not
+in that set and rejects filing/identity, stock, context, period,
+mapping-version, operation, source-ordinal and knowledge-cutoff mismatches.
+Ordinary
+application roles cannot update, delete, or truncate mapping versions, runs,
+run sources, publication decisions, or input links. A narrowly audited
+migration/retention path remains the only administrative exception.
+
+Published facts use the existing table with all of these required rules:
+
+- `source_type='sec'`, `user_id=NULL`, because permitted SEC actuals are shared
+  public-source observations rather than a user's property;
+- `source_document_id=NULL`; SEC HTML/XML evidence is not a Value Line PDF and
+  no fake PDF document or page number may be created;
+- `source_ref_id` identifies the exact `sec_metric_publications` decision, not a
+  raw-fact ID or a polymorphic guess;
+- provenance retains the accession, source artifact and locator, raw or exact
+  derived inputs, parser and mapping versions, source role, fact nature,
+  accepted/known time, context, dimensions policy, period bounds, unit and
+  source-reported currency;
+- user-owned parsed/manual/calculated facts retain a non-null owner. SEC
+  publication never changes their visibility or current slots.
+
+FT-04 directly migrates `metric_facts.user_id` to nullable and
+`metric_facts.value_numeric` to exact `NUMERIC(38,12)`. A database ownership
+check requires `(source_type='sec' AND user_id IS NULL) OR
+(source_type<>'sec' AND user_id IS NOT NULL)`; every existing user-owned
+parsed/manual/calculated row therefore retains its owner.
+Existing float values are converted once by the migration; all new SEC
+publication and derived-quarter arithmetic reaches the column as Decimal,
+never through binary float. Upgrade declares the existing binary-float values
+at `NUMERIC(38,12)`
+precision. Downgrade is guarded: it is allowed only when no SEC facts exist and
+every remaining `value_numeric` survives an exact
+Numeric→double→`NUMERIC(38,12)` round trip. Otherwise downgrade fails explicitly
+instead of claiming an arbitrary Decimal is exactly representable as float.
+Migration tests must prove that an empty upgrade/downgrade/upgrade and a safe
+legacy value such as `42.5` round-trip, while the presence of any SEC fact or a
+precision-sensitive value such as `9007199254740993.000000000001` refuses
+downgrade without changing data. EUR-per-share and other SEC values must remain
+exact on upgrade but, as SEC facts, block downgrade.
+
+SEC fact unit storage is a closed grammar: monetary facts use `unit='currency'`,
+per-share monetary facts use `unit='currency_per_share'`, share counts use
+`unit='shares'`; `currency` is a separately validated uppercase ISO-4217 code
+for the first two and NULL for shares. An SEC fact requires non-NULL
+`source_ref_id`; database integrity proves that it names a published
+`sec_metric_publications` row whose reciprocal `metric_fact_id`, stock, metric,
+period, value, unit and currency match. A partial unique current-slot constraint
+applies only where `source_type='sec' AND is_current=true`, on
+`(stock_id, metric_key, period_type, period_end_date)`. It neither merges source
+roles nor changes user-owned current slots.
+
+The raw structured unit shape is equally closed. Monetary means exactly one
+ISO-4217 currency QName in the ordered numerator and no denominator.
+Currency-per-share means exactly one ISO-4217 currency numerator followed by
+exactly one XBRL-instance `shares` denominator. Shares means exactly one
+XBRL-instance `shares` numerator and no denominator. An additional, missing,
+reordered, wrong-namespace or wrong-local-name measure is `unresolved_unit`;
+display prefixes cannot make it eligible.
+
+`metric_facts` remains the only product-queryable fundamentals store. The SEC
+raw, mapping-version, run, publication, and input tables are lineage, operator,
+and evidence-resolution inputs; screeners, formulas, research, valuation,
+Watchlist and other product consumers MUST NOT query them for values.
+
+#### Mapping and typed outcomes
+
+Mapping matches the raw fact's namespace URI plus local name. An XBRL prefix is
+display metadata only. `sec-us-gaap-v1` accepts only the exact US-GAAP and DEI
+URIs enumerated in its mapping contract and persisted registry rows; a URI that
+merely has a plausible year/host/path shape is not eligible. A new taxonomy URI
+requires a new reviewed mapping version and digest.
+
+Normalization uses decimal arithmetic and the exact source
+scale/sign/transformation. `sec-us-gaap-v1` pins the ordered currency list
+`[DKK, EUR, TWD, USD]` observed in the locked FT-00 gold set, with canonical
+serialization and SHA-256 in both spec and registry. It does not consult a
+runtime ISO library for replay eligibility. An approved source-reported
+currency is preserved in `currency` and the corresponding source unit; any
+other valid, deprecated, unknown or malformed currency code is
+`unresolved_currency` until a new mapping version explicitly adds it. FT-04
+performs no FX conversion and never infers USD for a non-USD or unknown fact.
+
+Only the approved consolidated/no-dimension policy publishes in V1. Custom or
+unknown concepts, dimensions, conflicting candidates, unknown units/currency,
+invalid periods, unsupported form semantics, and missing derived-quarter inputs
+append typed unresolved/rejected decisions. They do not publish NULL/zero or a
+best guess. Identical candidates use the mapping spec's deterministic identity
+rule; different values never use last-write-wins.
+
+Concept selection has one deterministic priority pipeline. Candidate groups
+are evaluated by ascending concept priority. Within a group every candidate is
+validated, in order, for namespace authority, unit shape, period, dimensions
+and value. The next priority group is considered only when every candidate in
+the current group is typed-invalid. Once a group has a valid candidate, lower
+groups cannot participate in selection or conflict detection. Identical valid
+candidates for the same slot select the lowest raw-fact ID; different valid
+values in the same group yield `unresolved_conflicting_candidates` and never
+fall through. Every raw candidate in lower groups still receives one bounded
+`lower_priority_concept_not_selected` audit decision. Thus a higher valid
+concept wins over a lower concept whether their values agree or differ.
+
+Disposition slot authority is presentation-aware. Invalid unit, currency,
+value or nil evidence may carry a canonical slot only when the applicable rule
+and an exact retained statement occurrence independently prove that slot's
+presentation period. Dimensioned, custom, lower-priority, duplicate and
+unclassifiable-period evidence remains slotless audit evidence and cannot
+demote a current SEC fact. This restriction adds no new disposition type.
+
+Period classification is deterministic and form-first. A duration in a
+`10-K`/`10-K/A` or `20-F`/`20-F/A` is FY only within 300–380 elapsed days. A
+`10-Q`/`10-Q/A` duration is discrete Q only within 70–110 days, six-month YTD
+only within 150–210 days, or nine-month YTD only within 240–300 days. Form is
+evaluated before bounds, so the 300-day annual and nine-month boundaries are
+not ambiguous. Every accepted duration end must align to the filing's explicit
+statement period and fiscal cycle; unmatched gaps are typed unresolved.
+
+An instant publishes only when the filing explicitly presents it at the filing
+fiscal-cycle end or an allowed comparative cycle: annual/current or prior FY,
+current or prior same fiscal quarter, or a prior FY balance-sheet comparative
+in a quarterly filing. Comparison uses the same fiscal-cycle ordinal and
+explicit statement presentation; date proximity is not evidence. The duration
+bounds deliberately include valid 52/53-week years, while comparative alignment
+must retain their disclosed fiscal cadence. A `6-K` remains typed unresolved
+until a separate approved period rule exists.
+
+A direct discrete quarter is preferred. When an approved subtraction rule
+derives a quarter, every operand must have the same stock, canonical metric and
+mapping semantics, fiscal-year start, unit, currency, consolidated context and
+empty-dimension policy; every filing/amendment must be selected under the run's
+one amendment policy and every input must be known by the run cutoff.
+
+`current_ytd_minus_immediately_prior_ytd` applies only to Q2 or Q3. The left
+fiscal-quarter ordinal is respectively 2 or 3, the right ordinal is exactly one
+less, both share the same fiscal-year start, left end is later, and the
+difference duration is 70–110 days. The output is Q at the left ordinal, starts
+the day after the right end and ends at the left end. A skipped quarter is not a
+quarter derivation.
+
+For Q4, the left FY is 300–380 days and the right input is explicitly Q3/nine-
+month YTD with the same fiscal-year start; left end is later and their difference
+is 70–110 days. Output is Q4, from the day after the nine-month end through the
+FY end. This rule may use one selected 10-K source and one selected 10-Q source
+from the ordered run-source set. Cross-year, cross-currency, context, dimension,
+semantic, skipped-period, wrong-duration, unselected-amendment or post-cutoff
+inputs produce the mapping spec's specific typed incompatibility outcome; they
+are never coerced. The result is `derived_actual`, uses Decimal arithmetic, and
+records all exact operands.
+
+#### Atomic lifecycle, current slots, and replay
+
+Publication starts only from a reviewed identity and an ordered exact set of
+finalized, PIT-eligible, storage-verified succeeded parse runs. Selection
+records the full source set, one explicit amendment policy, mapping version and
+knowledge cutoff. It never queries raw facts as a product shortcut.
+
+One transaction appends the run's decisions and exact inputs, inserts each SEC
+`metric_facts` row, reconciles only the same SEC per-period current slot, and
+commits terminal counts. Deferred database checks prove that every published
+decision has exactly one matching canonical fact and that a succeeded run's
+counts equal its durable decisions. A crash commits none of that transaction.
+
+Exact `(ordered parse-authority set, amendment policy, mapping version,
+knowledge cutoff)` replay is idempotent and creates no new decisions or facts.
+Publication takes a
+transaction-scoped stock/publication lock; concurrent attempts cannot create
+two current SEC facts for the same `(stock_id, metric_key, period_type,
+period_end_date, source_type='sec')` slot. Mapping version is part of replay and
+provenance identity, not current-slot identity: an accepted newer mapping
+version supersedes the older SEC projection for that same period. This
+uniqueness is SEC- and period-scoped and MUST NOT become global `is_current`
+deduplication.
+
+V1 amendment authority is slot-level. An eligible amendment affects an original
+slot only when the amendment actually contains a candidate for that mapped slot
+and that candidate is published or receives a typed unresolved/rejected
+decision. A successfully parsed amendment with no applicable mapped financial
+facts records `nonfinancial_amendment_no_slot_effect` and does not clear any
+original slot; omission of some other metric from an otherwise financial
+amendment also does not imply deletion. A published amended value supersedes
+only its matching SEC period slot. A conflicting or otherwise unresolved
+candidate makes only that slot typed unavailable—never silently stale—while
+preserving the prior row as immutable non-current evidence.
+
+If an eligible amendment parse fails before its affected slots can be proven,
+canonical reads for that filing cycle fail closed with
+`unresolved_amendment_parse_failure`; they must not silently return original
+values as though no amendment existed. A later successful classification may
+establish the narrower slot-level effect by appending lineage. No amendment,
+including a nonfinancial one, affects current or historical projection before
+its own acceptance, availability, mapping-effective and knowledge boundaries.
+Original-to-amendment authority selection is recorded in the ordered run-source
+set; a query never combines an original and superseding amendment for the same
+slot by accident.
+
+A later parser version or mapping version also appends lineage and may
+supersede only the corresponding SEC period slot after its own effective and
+knowledge boundaries. Prior facts remain immutable historical evidence. A
+typed conflict never falls back to an older value without exposing the typed
+unavailable state.
+
+For knowledge cutoff `T`, a fact is eligible only when its identity, filing,
+artifact, every member of the ordered parse-authority set, amendment selection,
+mapping version, publication run, decision, inputs
+and fact were all known/effective and available by `T`. Historical reads select
+that eligible version and never relabel a current row with an old cutoff.
+
+#### Product visibility and API boundary
+
+Authenticated canonical-fact APIs may expose a shared SEC actual to any user
+authorized by the source policy. Responses include the canonical value and the
+bounded provenance above, or a typed unavailable/unresolved reason. They may
+return an authorized evidence resolver or canonical SEC source URL; they MUST
+NOT return a raw-table browsing endpoint, arbitrary raw fact content, internal
+storage key/path, filesystem URL, or local artifact location.
+
+The publication write surface is an operator service/CLI with bounded stock,
+mapping version and cutoff inputs. It is not a user endpoint and cannot accept
+caller-defined metric keys, taxonomy rules, SQL, source precedence, or
+timestamps.
+
+Until FT-06 approves reconciliation, canonical reads preserve SEC, Value Line,
+manual and calculated source roles separately. A dictionary overwrite, row ID,
+query order, newest timestamp, or value satisfying a predicate cannot select
+one source as truth. Mixed-source formulas, ratios, Piotroski inputs, screeners
+and system valuations fail closed unless their governing contract explicitly
+requires one eligible source role. User-authored valuation remains separate and
+does not make a system financial source authoritative.
+
+Industry applicability is also a separate gate. Raw SEC actuals may publish
+regardless of economic class, but Owner Earnings, ROIC, per-share trend and
+valuation outputs require a reviewed effective/knowledge-dated company
+classification and approved method version, or return typed `unsupported`.
+Foreign filing/currency regime is orthogonal to economic-method class. FT-04
+does not approve a generic bank, insurer, REIT, high-SBC/acquisitive,
+cyclical/commodity, or valuation formula, and ordinary price volatility or beta
+cannot satisfy this gate.
 
 ---
 

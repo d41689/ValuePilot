@@ -1,16 +1,28 @@
 from typing import Any
 from fastapi import APIRouter, HTTPException, Body, Query
-from sqlalchemy import select, func, and_, or_
+from sqlalchemy import select, func
 from datetime import date, datetime, timezone
+from decimal import Decimal
 from zoneinfo import ZoneInfo
 from app.api.deps import SessionDep, CurrentUser
 from app.models.artifacts import PdfDocument
 from app.models.stocks import Stock
 from app.models.facts import MetricFact
 from app.services.valuation import USER_INTRINSIC_VALUE_KEY
-from app.models.users import User
 from app.services.active_report_resolver import ActiveReportSelection, resolve_active_reports
 from app.services.actual_conflict_service import detect_actual_conflicts
+from app.services.canonical_financials import (
+    CanonicalUnavailableError,
+    CanonicalSourceConflictError,
+    apply_reviewed_method_gates,
+    current_sec_unresolved_states,
+    guard_sec_run_availability,
+    guard_source_selection,
+    partition_sec_run_availability,
+    resolve_sec_publication_evidence,
+    reviewed_method_gate,
+    visible_metric_fact_predicate,
+)
 from app.schemas.stock import ResearchValuationSave
 from app.services.research_cases import (
     ResearchCaseError,
@@ -155,6 +167,14 @@ PIOTROSKI_CARD_ROWS = [
 PIOTROSKI_TOTAL_KEY = "score.piotroski.total"
 
 
+def _stock_summary_wire_number(
+    value: Decimal | int | float | None,
+) -> int | float | None:
+    """Preserve the established JSON-number shape at the by-ticker boundary."""
+
+    return float(value) if isinstance(value, Decimal) else value
+
+
 def _dcf_value(value: float, source: str, provenance: dict[str, Any] | None = None) -> dict[str, Any]:
     payload: dict[str, Any] = {"value": float(value), "source": source}
     if provenance is not None:
@@ -213,7 +233,7 @@ def _score_value(fact: MetricFact | None) -> int | float | None:
     raw_value = fact.value_numeric
     if raw_value is None:
         raw_value = value_json.get("partial_score")
-    if not isinstance(raw_value, (int, float)):
+    if not isinstance(raw_value, (int, float, Decimal)):
         return None
     value = float(raw_value)
     return int(value) if value.is_integer() else value
@@ -523,19 +543,7 @@ def _resolve_normalized_dcf_inputs(
 
 
 def _visible_fact_predicate(current_user_id: int, admin_user_ids: list[int]):
-    return or_(
-        and_(
-            MetricFact.source_type == "parsed",
-            or_(
-                MetricFact.user_id == current_user_id,
-                MetricFact.user_id.in_(admin_user_ids),
-            ),
-        ),
-        and_(
-            MetricFact.user_id == current_user_id,
-            MetricFact.source_type.in_(["manual", "calculated"]),
-        ),
-    )
+    return visible_metric_fact_predicate(MetricFact, user_id=current_user_id)
 
 
 def _select_stock_for_ticker(
@@ -598,7 +606,10 @@ def read_stock_by_ticker(
     Get stock overview by ticker (case-insensitive).
     """
     ticker_normalized = ticker.strip().lower()
-    admin_user_ids = list(session.scalars(select(User.id).where(User.role == "admin")).all())
+    # Value Line and user-authored facts remain tenant-private.  SEC facts are
+    # shared through the canonical visibility predicate, not through an admin
+    # uploader convention.
+    admin_user_ids: list[int] = []
     stock = _select_stock_for_ticker(
         session,
         ticker_normalized,
@@ -623,7 +634,6 @@ def read_stock_by_ticker(
         ),
     )
     facts = session.scalars(facts_stmt).all()
-    facts_by_key = {fact.metric_key: fact for fact in facts}
 
     now_et = datetime.now(timezone.utc).astimezone(ET)
     target_date = compute_target_date(now_et)
@@ -660,6 +670,39 @@ def read_stock_by_ticker(
         .order_by(MetricFact.metric_key.asc(), MetricFact.period_end_date.desc())
     )
     dcf_input_facts = session.scalars(dcf_inputs_stmt).all()
+    canonical_input_status: dict[str, Any] = {"status": "available"}
+    try:
+        dcf_input_facts = guard_source_selection(
+            dcf_input_facts,
+            consumer="valuation_inputs",
+        )
+        dcf_input_facts = guard_sec_run_availability(
+            session,
+            stock_id=stock.id,
+            facts=dcf_input_facts,
+        )
+    except CanonicalSourceConflictError as error:
+        dcf_input_facts = []
+        canonical_input_status = {
+            "status": "source_conflict",
+            "reason_code": error.code,
+            "source_types": list(error.source_types),
+        }
+    except CanonicalUnavailableError as error:
+        dcf_input_facts = []
+        canonical_input_status = error.state
+    method_gate_decisions = {
+        method_key: reviewed_method_gate(
+            session,
+            stock_id=stock.id,
+            method_key=method_key,
+            effective_as_of=date.today(),
+        )
+        for method_key in ("owner_earnings", "roic", "per_share_trend", "system_valuation")
+    }
+    # These are raw valuation inputs, not a system-authored per-share trend
+    # output. Keep the method decision observable without suppressing source
+    # facts that are explicitly exempt from the reviewed-method gate.
     dcf_inputs_by_date: dict[date, dict[str, MetricFact | None]] = {}
     for fact in dcf_input_facts:
         period_end = fact.period_end_date
@@ -689,6 +732,52 @@ def read_stock_by_ticker(
         .order_by(MetricFact.metric_key.asc(), MetricFact.period_end_date.desc())
     )
     growth_facts = session.scalars(growth_stmt).all()
+    # Separate explicit user-authored outputs from legacy system-method facts
+    # before any source or row selection can make authorization order-dependent.
+    facts, _, _ = apply_reviewed_method_gates(
+        session,
+        stock_id=stock.id,
+        facts=facts,
+        effective_as_of=date.today(),
+    )
+    oeps_facts, _, _ = apply_reviewed_method_gates(
+        session,
+        stock_id=stock.id,
+        facts=oeps_facts,
+        effective_as_of=date.today(),
+    )
+    try:
+        summary_facts = guard_source_selection(
+            [*facts, *oeps_facts, *growth_facts],
+            consumer="stock_summary",
+        )
+        guard_sec_run_availability(
+            session,
+            stock_id=stock.id,
+            facts=summary_facts,
+        )
+    except (CanonicalSourceConflictError, CanonicalUnavailableError) as error:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": error.code,
+                "message": str(error),
+                "source_types": list(getattr(error, "source_types", ())),
+            },
+        ) from error
+    facts_by_key: dict[str, MetricFact] = {}
+    for fact in facts:
+        current = facts_by_key.get(fact.metric_key)
+        if current is None or (
+            fact.period_end_date or date.min,
+            fact.created_at or datetime.min.replace(tzinfo=timezone.utc),
+            fact.id or 0,
+        ) > (
+            current.period_end_date or date.min,
+            current.created_at or datetime.min.replace(tzinfo=timezone.utc),
+            current.id or 0,
+        ):
+            facts_by_key[fact.metric_key] = fact
     growth_by_metric_key: dict[str, float] = {}
     growth_fact_by_metric_key: dict[str, MetricFact] = {}
 
@@ -736,7 +825,9 @@ def read_stock_by_ticker(
         period_end = fact.period_end_date
         if not period_end:
             continue
-        value = fact.value_numeric if fact.value_numeric is not None else 0.0
+        value = _stock_summary_wire_number(fact.value_numeric)
+        if value is None:
+            value = 0.0
         oeps_series.append(
             {
                 "year": period_end.year,
@@ -835,26 +926,34 @@ def read_stock_by_ticker(
         "company_name": stock.company_name,
         "active_report_document_id": active_report.document_id if active_report else None,
         "active_report_date": active_report.report_date.isoformat() if active_report and active_report.report_date else None,
-        "price": facts_by_key.get("mkt.price").value_numeric if facts_by_key.get("mkt.price") else None,
+        "price": _stock_summary_wire_number(
+            facts_by_key.get("mkt.price").value_numeric
+            if facts_by_key.get("mkt.price")
+            else None
+        ),
         "price_provenance": _fact_provenance(
             facts_by_key.get("mkt.price"),
             active_report=active_report,
             report_dates_by_doc=report_dates_by_doc,
         ),
-        "latest_price": latest_price.close,
+        "latest_price": _stock_summary_wire_number(latest_price.close),
         "latest_price_date": latest_price.price_date.isoformat() if latest_price.price_date else None,
         "latest_price_updated_at": latest_price.observed_at.isoformat() if latest_price.observed_at else None,
         "latest_price_currency": latest_price.currency,
         "latest_price_source": latest_price.source,
         "latest_price_freshness": latest_price.freshness_state,
         "latest_price_reason": latest_price.reason_code,
-        "pe": facts_by_key.get("val.pe").value_numeric if facts_by_key.get("val.pe") else None,
+        "pe": _stock_summary_wire_number(
+            facts_by_key.get("val.pe").value_numeric
+            if facts_by_key.get("val.pe")
+            else None
+        ),
         "pe_provenance": _fact_provenance(
             facts_by_key.get("val.pe"),
             active_report=active_report,
             report_dates_by_doc=report_dates_by_doc,
         ),
-        "oeps_normalized": (
+        "oeps_normalized": _stock_summary_wire_number(
             facts_by_key.get("owners_earnings_per_share_normalized").value_numeric
             if facts_by_key.get("owners_earnings_per_share_normalized")
             else None
@@ -868,6 +967,10 @@ def read_stock_by_ticker(
         "dcf_inputs": dcf_inputs,
         "dcf_inputs_series": dcf_inputs_series,
         "growth_rate_options": growth_rate_options,
+        "system_method_gates": {
+            key: decision.as_dict() for key, decision in method_gate_decisions.items()
+        },
+        "canonical_input_status": canonical_input_status,
         "piotroski_f_score_card": _build_piotroski_f_score_card(
             session,
             stock.id,
@@ -913,7 +1016,7 @@ def read_stock_facts(
     if not stock:
         raise HTTPException(status_code=404, detail="Stock not found")
 
-    admin_user_ids = list(session.scalars(select(User.id).where(User.role == "admin")).all())
+    admin_user_ids: list[int] = []
 
     # Get current facts
     stmt = select(MetricFact).where(
@@ -922,19 +1025,54 @@ def read_stock_facts(
         _visible_fact_predicate(current_user.id, admin_user_ids),
     )
     facts = session.scalars(stmt).all()
+    facts, _ = partition_sec_run_availability(
+        session, stock_id=stock_id, facts=facts
+    )
+    facts, unsupported, _ = apply_reviewed_method_gates(
+        session,
+        stock_id=stock_id,
+        facts=facts,
+        effective_as_of=date.today(),
+    )
 
-    return [
+    published = [
         {
             "id": f.id,
+            "status": "published",
             "metric_key": f.metric_key,
             "value_numeric": f.value_numeric,
             "unit": f.unit,
             "period": f.period,
             "period_end_date": f.period_end_date,
-            "source_type": f.source_type
+            "source_type": f.source_type,
+            "evidence_route": (
+                f"/api/v1/stocks/{stock_id}/sec-publications/{f.source_ref_id}/evidence"
+                if f.source_type == "sec" and f.source_ref_id is not None
+                else None
+            ),
         }
         for f in facts
     ]
+    return published + unsupported + current_sec_unresolved_states(session, stock_id=stock_id)
+
+
+@router.get("/{stock_id}/sec-publications/{publication_id}/evidence", response_model=dict)
+def read_sec_publication_evidence(
+    stock_id: int,
+    publication_id: int,
+    session: SessionDep,
+    current_user: CurrentUser,
+) -> Any:
+    if session.get(Stock, stock_id) is None:
+        raise HTTPException(status_code=404, detail="Stock not found")
+    evidence = resolve_sec_publication_evidence(
+        session,
+        stock_id=stock_id,
+        publication_id=publication_id,
+    )
+    if evidence is None:
+        raise HTTPException(status_code=404, detail="SEC publication evidence not found")
+    return evidence
 
 
 @router.put("/{stock_id}/facts", response_model=dict)
@@ -977,7 +1115,7 @@ def upsert_stock_fact(
         "id": fact.id,
         "stock_id": fact.stock_id,
         "metric_key": fact.metric_key,
-        "value_numeric": fact.value_numeric,
+        "value_numeric": float(fact.value_numeric),
         "unit": fact.unit,
         "period_type": fact.period_type,
         "period_end_date": fact.period_end_date,

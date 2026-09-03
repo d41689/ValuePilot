@@ -408,24 +408,27 @@ def test_oracles_lens_adds_value_line_quality_overlay(
     assert response.status_code == 200
 
     item = next(row for row in response.json()["items"] if row["stock_id"] == target.id)
-    assert item["quality_overlay"] == {
+    overlay = item["quality_overlay"]
+    assert overlay.pop("owner_earnings_method")["status"] == "unsupported"
+    assert overlay == {
         "piotroski_total": 8.0,
         "return_on_total_capital": 0.24,
         "return_on_equity": 0.31,
         "net_profit_margin": 0.22,
         "debt_to_capital": 0.18,
-        "owner_earnings_yield": 0.05,
+        "owner_earnings_yield": None,
         "latest_price": 100.0,
         "price_date": "2032-01-02",
         "price_context": "latest",
+        "canonical_source_status": {"status": "available"},
         "coverage": {
             "value_line": True,
             "price": True,
-            "owner_earnings": True,
-            "available_metrics": 6,
+            "owner_earnings": False,
+            "available_metrics": 5,
             "expected_metrics": 6,
         },
-        "unavailable_reasons": [],
+        "unavailable_reasons": ["owner earnings method unsupported"],
         "provenance": {
             "primary_source_document_id": document.id,
             "source_document_ids": [document.id],
@@ -465,14 +468,6 @@ def test_oracles_lens_adds_value_line_quality_overlay(
                 {
                     "label": "debt_to_capital",
                     "metric_key": "leverage.long_term_debt_to_capital",
-                    "source_document_id": document.id,
-                    "source_type": "parsed",
-                    "period_type": "FY",
-                    "period_end_date": "2031-12-31",
-                },
-                {
-                    "label": "owners_earnings",
-                    "metric_key": "owners_earnings_per_share_normalized",
                     "source_document_id": document.id,
                     "source_type": "parsed",
                     "period_type": "FY",
@@ -720,7 +715,8 @@ def test_oracles_lens_uses_period_price_for_historical_snapshot(
     assert item["current_price_date"] == "2031-09-30"
     assert item["price_context"] == "historical_snapshot"
     assert item["discount_to_reference"] == 0.333333
-    assert item["quality_overlay"]["owner_earnings_yield"] == 0.05
+    assert item["quality_overlay"]["owner_earnings_yield"] is None
+    assert item["quality_overlay"]["owner_earnings_method"]["status"] == "unsupported"
     assert item["quality_overlay"]["price_context"] == "historical_snapshot"
     assert response.json()["coverage"]["price_context"] == "historical_snapshot"
     assert response.json()["coverage"]["price_target_date"] == "2031-09-30"
@@ -729,6 +725,125 @@ def test_oracles_lens_uses_period_price_for_historical_snapshot(
     assert response.json()["coverage"]["price_missing_count"] == 0
     assert response.json()["coverage"]["price_coverage_ratio"] == 1.0
     assert response.json()["coverage"]["price_backfill_required"] is False
+
+
+def test_quality_overlay_keeps_user_authored_owner_earnings_distinct(db_session):
+    from app.services.oracles_lens.dashboard import _quality_overlay_by_stock
+
+    target = _seed_oracles_lens_fixture(db_session)
+    custom = _metric_fact(
+        target,
+        "owners_earnings_per_share_normalized",
+        4.0,
+    )
+    custom.value_json = {
+        "fact_nature": "estimate",
+        "user_authored_formula": True,
+    }
+    db_session.add(custom)
+    db_session.add(
+        StockPrice(
+            stock_id=target.id,
+            price_date=date(2032, 1, 2),
+            open=79.0,
+            high=81.0,
+            low=78.0,
+            close=80.0,
+            adj_close=None,
+            volume=1000,
+            source="test",
+        )
+    )
+    db_session.commit()
+
+    overlay = _quality_overlay_by_stock(
+        db_session,
+        [target.id],
+        user_id=target._test_user_id,
+    )[target.id]
+
+    assert overlay["owner_earnings_yield"] == 0.05
+    assert overlay["owner_earnings_method"] == {
+        "method_key": "owner_earnings",
+        "status": "user_defined",
+        "reason_code": "user_authored_formula",
+    }
+
+
+def test_quality_overlay_returns_typed_conflict_before_cross_source_aggregation(
+    db_session
+):
+    from app.services.oracles_lens.dashboard import _quality_overlay_by_stock
+
+    target = _seed_oracles_lens_fixture(db_session)
+    parsed = _metric_fact(target, "bs.return_on_equity", 0.2, source_type="parsed")
+    manual = _metric_fact(target, "bs.return_on_equity", 0.3, source_type="manual")
+    db_session.add_all([parsed, manual])
+    db_session.commit()
+
+    overlay = _quality_overlay_by_stock(
+        db_session,
+        [target.id],
+        user_id=target._test_user_id,
+    )[target.id]
+
+    assert overlay["return_on_equity"] is None
+    assert overlay["canonical_source_status"] == {
+        "status": "source_conflict",
+        "reason_code": "source_conflict",
+        "source_types": ["manual", "parsed"],
+    }
+
+
+def test_quality_overlay_gates_system_owner_earnings_before_selecting_user_authored(
+    db_session
+):
+    from app.services.oracles_lens.dashboard import _quality_overlay_by_stock
+
+    target = _seed_oracles_lens_fixture(db_session)
+    custom = _metric_fact(
+        target,
+        "owners_earnings_per_share_normalized",
+        4.0,
+        period_end=date(2030, 12, 31),
+        source_type="calculated",
+    )
+    custom.value_json = {
+        "fact_nature": "estimate",
+        "user_authored_formula": True,
+    }
+    system = _metric_fact(
+        target,
+        "owners_earnings_per_share_normalized",
+        99.0,
+        period_end=date(2031, 12, 31),
+        source_type="calculated",
+    )
+    system.value_json = {"fact_nature": "actual"}
+    db_session.add_all([custom, system])
+    db_session.add(
+        StockPrice(
+            stock_id=target.id,
+            price_date=date(2032, 1, 2),
+            open=79.0,
+            high=81.0,
+            low=78.0,
+            close=80.0,
+            adj_close=None,
+            volume=1000,
+            source="test",
+        )
+    )
+    db_session.commit()
+
+    overlay = _quality_overlay_by_stock(
+        db_session,
+        [target.id],
+        user_id=target._test_user_id,
+    )[target.id]
+
+    assert overlay["owner_earnings_yield"] == 0.05
+    assert overlay["owner_earnings_method"]["status"] == "user_defined"
 
 
 def test_oracles_lens_never_leaks_another_users_valuation(
