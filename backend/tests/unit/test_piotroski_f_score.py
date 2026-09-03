@@ -1,7 +1,10 @@
 from datetime import date
 
+import pytest
+
 from app.models.facts import MetricFact
 from app.models.stocks import Stock
+from app.services.canonical_financials import CanonicalSourceConflictError
 from app.services.calculated_metrics.piotroski_f_score import (
     PiotroskiFScoreCalculator,
     build_piotroski_f_score_facts,
@@ -52,6 +55,33 @@ def test_build_piotroski_f_score_facts_calculates_complete_standard_total():
     assert by_key["score.piotroski.total"]["value_json"]["variant"] == "standard"
     assert by_key["score.piotroski.roa_positive"]["value_json"]["method"] == "standard_roa"
     assert by_key["score.piotroski.roa_improving"]["value_json"]["method"] == "standard_roa"
+
+
+def test_piotroski_does_not_reclassify_a_document_manual_correction_as_parsed():
+    period_end = date(2024, 12, 31)
+    parsed = MetricFact(
+        id=1,
+        metric_key="returns.roa",
+        value_numeric=0.1,
+        value_json={"fact_nature": "actual"},
+        period_type="FY",
+        period_end_date=period_end,
+        source_type="parsed",
+        source_document_id=41,
+    )
+    correction = MetricFact(
+        id=2,
+        metric_key="is.operating_cash_flow",
+        value_numeric=100,
+        value_json={"fact_nature": "actual", "correction": True},
+        period_type="FY",
+        period_end_date=period_end,
+        source_type="manual",
+        source_document_id=41,
+    )
+
+    with pytest.raises(CanonicalSourceConflictError):
+        build_piotroski_f_score_facts([parsed, correction])
 
 
 def test_build_piotroski_f_score_facts_uses_standard_before_proxy():

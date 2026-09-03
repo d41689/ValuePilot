@@ -15,6 +15,16 @@ from app.models.institutions import Filing13F, Holding13F, InstitutionManager, P
 from app.models.oracles_lens import OraclesLensSignal
 from app.models.stocks import Stock, StockPrice
 from app.services.market_data_service import read_canonical_eod_series
+from app.services.canonical_financials import (
+    CanonicalSourceConflictError,
+    CanonicalUnavailableError,
+    MethodGateDecision,
+    apply_reviewed_method_gates,
+    guard_sec_run_availability,
+    guard_source_selection,
+    reviewed_method_gate,
+    visible_metric_fact_predicate,
+)
 from app.edgar.parsers.value_units import TRANSITION_ACCEPTED_DATE
 from app.services.oracles_lens.constants import SCORE_VERSION
 from app.services.valuation import (
@@ -1148,8 +1158,9 @@ def _m3_facts_by_stock(
     metric_keys: list[str],
     *,
     user_id: int | None = None,
-) -> dict[int, dict[str, MetricFact]]:
-    """Most-recent ``is_current=True`` ``MetricFact`` per (stock_id, metric_key).
+    effective_as_of: date | None = None,
+) -> tuple[dict[int, dict[str, MetricFact]], dict[int, dict[str, Any]]]:
+    """Guard and select one current fact per (stock_id, metric_key).
 
     Shared by both the legacy Oracle's Lens quality overlay and the
     MVP8-A2 drawer M3 panel. Does NOT filter on ``value_numeric.isnot(None)``
@@ -1158,18 +1169,21 @@ def _m3_facts_by_stock(
     extract the value via :func:`_fact_value`, which falls back to
     ``value_json['partial_score']`` when ``value_numeric`` is null.
 
-    Tiebreak ordering: ``period_end_date DESC NULLS LAST, created_at DESC``.
-    The duplicate-``is_current`` row case (multiple ``is_current=True`` rows
-    for the same metric_key) is masked by this ordering until the upstream
-    ingestion-side fix lands (D4 of this sweep ticket).
+    Source-role conflicts are returned as typed stock statuses. Within one
+    canonical role, explicit period/creation ordering selects the latest slot.
+    System-method facts are gated before user-authored and system rows can be
+    collapsed by ordering.
     """
     unique_stock_ids = list(dict.fromkeys(stock_ids))
     if user_id is None or not unique_stock_ids or not metric_keys:
-        return {stock_id: {} for stock_id in unique_stock_ids}
+        return (
+            {stock_id: {} for stock_id in unique_stock_ids},
+            {stock_id: {"status": "available"} for stock_id in unique_stock_ids},
+        )
 
     facts = (
         session.query(MetricFact)
-        .filter(MetricFact.user_id == user_id)
+        .filter(visible_metric_fact_predicate(MetricFact, user_id=user_id))
         .filter(MetricFact.stock_id.in_(unique_stock_ids))
         .filter(MetricFact.metric_key.in_(metric_keys))
         .filter(MetricFact.is_current.is_(True))
@@ -1181,12 +1195,66 @@ def _m3_facts_by_stock(
         )
         .all()
     )
-    result: dict[int, dict[str, MetricFact]] = {stock_id: {} for stock_id in unique_stock_ids}
+    candidates: dict[int, dict[str, list[MetricFact]]] = {
+        stock_id: {} for stock_id in unique_stock_ids
+    }
     for fact in facts:
-        bucket = result[fact.stock_id]
-        if fact.metric_key not in bucket:
-            bucket[fact.metric_key] = fact
-    return result
+        candidates[fact.stock_id].setdefault(fact.metric_key, []).append(fact)
+    result: dict[int, dict[str, MetricFact]] = {
+        stock_id: {} for stock_id in unique_stock_ids
+    }
+    statuses = {stock_id: {"status": "available"} for stock_id in unique_stock_ids}
+    for stock_id, by_key in candidates.items():
+        all_facts = [fact for rows in by_key.values() for fact in rows]
+        kept, _, _ = apply_reviewed_method_gates(
+            session,
+            stock_id=stock_id,
+            facts=all_facts,
+            effective_as_of=effective_as_of or date.today(),
+        )
+        kept_ids = {fact.id for fact in kept}
+        for metric_key, rows in by_key.items():
+            rows = [fact for fact in rows if fact.id in kept_ids]
+            if not rows:
+                continue
+            try:
+                selected = guard_source_selection(rows, consumer="oracles_lens_quality")
+                selected = guard_sec_run_availability(
+                    session,
+                    stock_id=stock_id,
+                    facts=selected,
+                )
+            except CanonicalSourceConflictError as error:
+                statuses[stock_id] = {
+                    "status": "source_conflict",
+                    "reason_code": error.code,
+                    "source_types": list(error.source_types),
+                }
+                result[stock_id] = {}
+                break
+            except CanonicalUnavailableError as error:
+                statuses[stock_id] = error.state
+                result[stock_id] = {}
+                break
+            if metric_key.startswith("owners_earnings_per_share"):
+                authoring_types = {
+                    "user_authored"
+                    if isinstance(fact.value_json, dict)
+                    and fact.value_json.get("user_authored_formula") is True
+                    else "system_method"
+                    for fact in selected
+                }
+                if len(authoring_types) > 1:
+                    statuses[stock_id] = {
+                        "status": "source_conflict",
+                        "reason_code": "authoring_conflict",
+                        "source_types": sorted({fact.source_type for fact in selected}),
+                        "authoring_types": sorted(authoring_types),
+                    }
+                    result[stock_id] = {}
+                    break
+            result[stock_id][metric_key] = selected[0]
+    return result, statuses
 
 
 def _quality_overlay_by_stock(
@@ -1201,11 +1269,12 @@ def _quality_overlay_by_stock(
     if not unique_stock_ids:
         return {}
 
-    facts_by_metric_key = _m3_facts_by_stock(
+    facts_by_metric_key, source_statuses = _m3_facts_by_stock(
         session,
         unique_stock_ids,
         list(QUALITY_METRIC_KEYS.values()),
         user_id=user_id,
+        effective_as_of=price_as_of_date or date.today(),
     )
     reverse_keys = {metric_key: label for label, metric_key in QUALITY_METRIC_KEYS.items()}
     facts_by_stock: dict[int, dict[str, MetricFact]] = {stock_id: {} for stock_id in unique_stock_ids}
@@ -1216,11 +1285,34 @@ def _quality_overlay_by_stock(
                 facts_by_stock[stock_id][label] = fact
 
     latest_prices = _latest_prices_by_stock(session, unique_stock_ids, as_of_date=price_as_of_date)
+    method_decisions: dict[int, MethodGateDecision | dict[str, Any]] = {}
+    for stock_id in unique_stock_ids:
+        owner_fact = facts_by_stock.get(stock_id, {}).get("owners_earnings")
+        owner_metadata = (
+            owner_fact.value_json
+            if owner_fact is not None and isinstance(owner_fact.value_json, dict)
+            else {}
+        )
+        if owner_metadata.get("user_authored_formula") is True:
+            method_decisions[stock_id] = {
+                "method_key": "owner_earnings",
+                "status": "user_defined",
+                "reason_code": "user_authored_formula",
+            }
+        else:
+            method_decisions[stock_id] = reviewed_method_gate(
+                session,
+                stock_id=stock_id,
+                method_key="owner_earnings",
+                effective_as_of=price_as_of_date or date.today(),
+            )
     return {
         stock_id: _quality_payload(
             facts_by_stock.get(stock_id, {}),
             latest_prices.get(stock_id),
             price_context=price_context,
+            owner_earnings_method=method_decisions[stock_id],
+            canonical_source_status=source_statuses[stock_id],
         )
         for stock_id in unique_stock_ids
     }
@@ -1254,9 +1346,21 @@ def _quality_payload(
     latest_price: StockPrice | None,
     *,
     price_context: str = "latest",
+    owner_earnings_method: MethodGateDecision | dict[str, Any] | None = None,
+    canonical_source_status: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     price = float(latest_price.close) if latest_price and latest_price.close is not None else None
-    owners_earnings = _fact_value(facts.get("owners_earnings"))
+    method_status = (
+        owner_earnings_method.get("status")
+        if isinstance(owner_earnings_method, dict)
+        else owner_earnings_method.status
+        if owner_earnings_method is not None
+        else None
+    )
+    method_approved = method_status in {"approved", "user_defined"}
+    owners_earnings = (
+        _fact_value(facts.get("owners_earnings")) if method_approved else None
+    )
     owner_yield = owners_earnings / price if owners_earnings is not None and price else None
     values = {
         "piotroski_total": _fact_value(facts.get("piotroski_total")),
@@ -1286,13 +1390,27 @@ def _quality_payload(
         unavailable.append("missing Value Line facts")
     if price is None:
         unavailable.append("missing price")
-    if owners_earnings is None:
+    if owner_earnings_method is not None and not method_approved:
+        unavailable.append("owner earnings method unsupported")
+    elif owners_earnings is None:
         unavailable.append("missing normalized owner earnings")
     elif owner_yield is None:
         unavailable.append("owner earnings yield unavailable without price")
 
     return {
         **values,
+        "canonical_source_status": canonical_source_status or {"status": "available"},
+        "owner_earnings_method": (
+            owner_earnings_method.as_dict()
+            if isinstance(owner_earnings_method, MethodGateDecision)
+            else owner_earnings_method
+            if owner_earnings_method is not None
+            else {
+                "method_key": "owner_earnings",
+                "status": "unavailable",
+                "reason_code": "method_gate_not_evaluated",
+            }
+        ),
         "coverage": {
             "value_line": any(key in facts for key in QUALITY_METRIC_KEYS if key != "owners_earnings"),
             "price": price is not None,

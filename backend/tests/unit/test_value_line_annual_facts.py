@@ -1,5 +1,6 @@
 import json
 from datetime import date
+from decimal import Decimal
 from pathlib import Path
 from unittest.mock import patch
 
@@ -121,7 +122,9 @@ def test_upload_writes_annual_facts_latest_actual_and_estimate(client, db_sessio
     )
     assert actual_dividend is not None
     expected_dividend = annual["valuation_metrics"]["avg_annual_dividend_yield_pct"][str(actual_year)]
-    assert actual_dividend.value_numeric == expected_dividend / 100.0
+    assert actual_dividend.value_numeric == (
+        Decimal(str(expected_dividend)) / Decimal("100")
+    )
 
     estimate_dividend = None
     if estimate_year is not None:
@@ -142,7 +145,9 @@ def test_upload_writes_annual_facts_latest_actual_and_estimate(client, db_sessio
         assert estimate_dividend is None
     else:
         assert estimate_dividend is not None
-        assert estimate_dividend.value_numeric == expected_estimate / 100.0
+        assert estimate_dividend.value_numeric == (
+            Decimal(str(expected_estimate)) / Decimal("100")
+        )
         assert estimate_dividend.value_json is not None
         assert "is_estimate" not in estimate_dividend.value_json
         assert estimate_dividend.value_json.get("fact_nature") == "estimate"

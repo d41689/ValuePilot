@@ -1,4 +1,5 @@
 from collections import defaultdict
+from decimal import Decimal
 from functools import lru_cache
 from pathlib import Path
 import re
@@ -910,7 +911,7 @@ def _document_review_item(
         "fact_id": fact.id,
         "stock_ticker": stock.ticker if stock else None,
         "display_value": display_value,
-        "value_numeric": fact.value_numeric,
+        "value_numeric": _json_number(fact.value_numeric),
         "value_text": fact.value_text,
         "unit": fact.unit,
         "period": fact.period,
@@ -1002,7 +1003,7 @@ def _document_review_summary_item(
         "metric_key": fact.metric_key,
         "label": label,
         "display_value": _document_review_display_value(fact),
-        "value_numeric": fact.value_numeric,
+        "value_numeric": _json_number(fact.value_numeric),
         "unit": fact.unit,
     }
 
@@ -1559,8 +1560,21 @@ def _document_compare_value_label(
     value_json: dict[str, Any],
 ) -> Optional[str]:
     if value_numeric is not None:
+        if isinstance(value_numeric, Decimal):
+            if value_numeric.is_zero():
+                return "0"
+            rendered = format(value_numeric, "f")
+            if "." in rendered:
+                rendered = rendered.rstrip("0").rstrip(".")
+            return rendered
         return f"{value_numeric:g}"
     if value_text:
         return value_text
     raw = value_json.get("raw")
     return str(raw) if raw is not None else None
+
+
+def _json_number(value: Any) -> Any:
+    """Keep established JSON number fields stable for database Decimals."""
+
+    return float(value) if isinstance(value, Decimal) else value

@@ -102,7 +102,7 @@ def reconcile_monitored_rate_guard_route() -> RateGuardRoute:
 
 def verify_live_rate_guard() -> str | None:
     """Resolve and pin the route before any live external client is created."""
-    if settings.EDGAR_FETCH_MODE != "live":
+    if settings.EDGAR_FETCH_MODE not in {"live", "rate_guard"}:
         return None
     if (
         not settings.RATE_GUARD_ALLOW_LOCAL_FALLBACK

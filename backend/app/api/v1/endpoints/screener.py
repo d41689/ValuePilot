@@ -2,6 +2,10 @@ from typing import Any, List, Dict
 from fastapi import APIRouter, HTTPException, Body
 from app.api.deps import SessionDep, CurrentUser
 from app.services.screener_service import ScreenerService
+from app.services.canonical_financials import (
+    CanonicalSourceConflictError,
+    CanonicalUnavailableError,
+)
 
 router = APIRouter()
 
@@ -32,7 +36,11 @@ def run_screen(
     try:
         results = service.execute_screen(rule, current_user_id=current_user.id)
         stock_ids = [stock.id for stock in results]
-        metrics_by_stock = service.fetch_metrics_for_stocks(stock_ids, current_user_id=current_user.id)
+        metrics_by_stock = service.fetch_metrics_for_stocks(
+            stock_ids,
+            current_user_id=current_user.id,
+            selected_source_type=rule.get("source_type"),
+        )
         return [
             {
                 "id": stock.id,
@@ -42,5 +50,14 @@ def run_screen(
             }
             for stock in results
         ]
+    except (CanonicalSourceConflictError, CanonicalUnavailableError) as error:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": error.code,
+                "message": str(error),
+                "source_types": list(getattr(error, "source_types", ())),
+            },
+        ) from error
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))

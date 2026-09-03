@@ -12,6 +12,7 @@ from app.services.sec_financial_ingestion import (
     _discover,
     _expected_completed_fiscal_years,
     _financially_useful_6k,
+    _ContinuationAuthority,
 )
 
 
@@ -412,6 +413,31 @@ def test_history_scan_limit_and_missing_annual_year_are_both_typed(
         "history_scan_limit_exceeded",
         "annual_coverage_gap:2023",
     )
+    assert result.next_history_cursor is not None
+
+    continuation_client = HistoryClient(recent=recent, historical=historical)
+    continued = _discover(
+        continuation_client,
+        CIK,
+        max_filings=3,
+        filing_selection_as_of=CUTOFF,
+        history_target=_target(cap=3),
+        continuation=_ContinuationAuthority(
+            id="fixture",
+            main_content=client.responses[SUBMISSIONS_URL],
+            main_sha256=result.main_sha256 or "",
+            references=result.continuation_references,
+            next_index=result.continuation_next_index or 0,
+        ),
+    )
+    assert continuation_client.calls == [
+        f"https://data.sec.gov/submissions/CIK{CIK}-submissions-001.json",
+    ]
+    assert {item.report_date.year for item in continued.filings if item.report_date} == {
+        2023,
+        2025,
+    }
+    assert continued.next_history_cursor is None
 
 
 def test_annual_amendment_reserves_one_year_before_companion_filing() -> None:

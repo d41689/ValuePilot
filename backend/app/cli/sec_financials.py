@@ -12,7 +12,9 @@ or raw fact values, and it never publishes ``metric_facts``.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
+import hashlib
+import json
 from pathlib import Path
 import re
 
@@ -27,10 +29,14 @@ from app.acceptance.sec_gold_environment import (
 )
 from app.acceptance.sec_gold_audit import (
     audit_case_report_operation,
+    audit_runtime_snapshot_rate_guard,
     build_aggregate_payload,
     build_case_database_audit,
     build_runtime_snapshot,
     load_stable_json,
+    locked_case_contract,
+    persist_rate_guard_snapshot,
+    rate_guard_configuration_digest,
     render_human_aggregate_summary,
     validate_aggregate_payload,
     validate_case_report_structure,
@@ -39,8 +45,34 @@ from app.acceptance.sec_gold_audit import (
 )
 from app.acceptance.sec_gold_report import (
     build_case_report,
+    case_report_payload,
     render_human_case_summary,
     write_case_report,
+)
+from app.acceptance.sec_gold_storage import (
+    secure_read_bytes,
+    secure_regular_file_exists,
+)
+from app.acceptance.sec_gold_publication import (
+    ACCEPTANCE_PARSER_VERSION,
+    AcceptanceCompletionClaimLease,
+    acquire_acceptance_completion_lease,
+    append_acceptance_completion_claim,
+    acceptance_operation_authority,
+    begin_acceptance_case_attempt,
+    completed_acceptance_checkpoint,
+    execute_acceptance_publication,
+    initialize_acceptance_case_attempt,
+    linked_acceptance_ingestion_reports,
+    link_acceptance_operation,
+    load_acceptance_evidence_delta,
+    load_acceptance_report_readiness,
+    load_completed_acceptance_publication,
+    mark_acceptance_report_ready,
+    record_acceptance_evidence_checkpoint,
+    recoverable_bound_acceptance_attempt,
+    recoverable_finalized_acceptance_acquisition,
+    validate_acceptance_report_readiness_replay,
 )
 from app.core.config import settings
 from app.core.db import SessionLocal
@@ -53,7 +85,9 @@ from app.models.stocks import Stock
 from app.rate_guard.client import RateGuardClient
 from app.services.sec_financial_ingestion import (
     FinancialHistoryTarget,
+    SecFinancialIngestionError,
     _expected_completed_fiscal_years,
+    build_retained_financial_replay_client,
     earliest_replayable_sec_financial_evidence_at,
     finalize_sec_financial_ingestion_operation,
     finalize_pending_sec_financial_ingestion_operations,
@@ -63,6 +97,7 @@ from app.services.sec_financial_ingestion import (
     select_sec_financial_evidence_as_of,
     select_sec_financial_failures_as_of,
 )
+from app.services.sec_financial_locking import acquire_sec_financial_stock_lock
 
 
 app = typer.Typer(add_completion=False, no_args_is_help=True)
@@ -105,6 +140,16 @@ def _gold_case(case_id: str) -> _LockedGoldCase:
 
 def _utc_now() -> datetime:
     return datetime.now(timezone.utc)
+
+
+def _report_datetime_value(payload: dict, field: str, case_id: str) -> datetime:
+    value = payload.get(field)
+    if not isinstance(value, str):
+        raise ValueError(f"acceptance report {field} is invalid: {case_id}")
+    parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    if parsed.tzinfo is None:
+        raise ValueError(f"acceptance report {field} is invalid: {case_id}")
+    return parsed
 
 
 def _history_target_for_case(
@@ -303,7 +348,7 @@ def _bootstrap_gold_case_stocks(db, manifest: dict) -> int:
 def acceptance_bootstrap_stocks(
     acceptance_run_id: str = typer.Option(...),
 ) -> None:
-    """Seed only the 24 locked stock rows into a preflighted acceptance DB."""
+    """Seed only the 24 locked stock rows into a validated acceptance DB."""
     try:
         preflight_configured_acceptance_runtime(acceptance_run_id)
     except Exception as exc:
@@ -327,11 +372,152 @@ def acceptance_bootstrap_stocks(
         db.close()
 
 
+def _recover_completed_gold_case_report(
+    db,
+    *,
+    acceptance_run_id: str,
+    acceptance_pass: int,
+    case: dict,
+    filing_selection_as_of: datetime,
+    expected_years: tuple[int, ...],
+    report_json: Path,
+    storage_root: Path,
+) -> object | None:
+    """Recover an after-checkpoint case report without any source or DB write."""
+
+    case_id = str(case["case_id"])
+    checkpoint = completed_acceptance_checkpoint(
+        db,
+        run_id=acceptance_run_id,
+        case_id=case_id,
+        acceptance_pass=acceptance_pass,
+    )
+    if checkpoint is None:
+        return None
+    authority = acceptance_operation_authority(
+        db,
+        run_id=acceptance_run_id,
+        case_id=case_id,
+        acceptance_pass=acceptance_pass,
+    )
+    operation_id = str(checkpoint["operation_id"])
+    matching_links = [
+        item
+        for item in authority["links"]
+        if int(item["attempt_id"]) == int(checkpoint["attempt_id"])
+        and str(item["operation_id"]) == operation_id
+        and str(item["operation_role"]) != "recovered"
+    ]
+    if (
+        len(matching_links) != 1
+        or not authority["creation_operation_ids"]
+        or authority["creation_operation_ids"][-1] != operation_id
+    ):
+        raise ValueError(
+            "acceptance_recovery_authority_incomplete: checkpoint operation link mismatch"
+        )
+    operation = db.get(SecFinancialIngestionOperation, operation_id)
+    if operation is None:
+        raise ValueError(
+            "acceptance_recovery_authority_incomplete: checkpoint operation is missing"
+        )
+    identity = db.get(SecIssuerIdentity, operation.issuer_identity_id)
+    availability = db.execute(
+        text(
+            "SELECT available_at FROM sec_financial_lineage_availabilities "
+            "WHERE operation_id=:operation"
+        ),
+        {"operation": operation_id},
+    ).scalar_one_or_none()
+    if identity is None or availability is None or availability > checkpoint["captured_at"]:
+        raise ValueError(
+            "acceptance_recovery_authority_incomplete: finalized lineage is missing"
+        )
+    reports = linked_acceptance_ingestion_reports(
+        db,
+        run_id=acceptance_run_id,
+        case_id=case_id,
+        acceptance_pass=acceptance_pass,
+        current_reports=(),
+    )
+    if reports[-1].operation_id != operation_id:
+        raise ValueError(
+            "acceptance_recovery_authority_incomplete: final acquisition chain mismatch"
+        )
+    publication = load_completed_acceptance_publication(
+        db,
+        attempt_id=int(checkpoint["attempt_id"]),
+        stock_id=identity.stock_id,
+        issuer_identity_id=identity.id,
+        acceptance_pass=acceptance_pass,
+        completed_at=checkpoint["captured_at"],
+    )
+    report = build_case_report(
+        db,
+        run_id=acceptance_run_id,
+        case_id=case_id,
+        filing_selection_as_of=filing_selection_as_of,
+        expected_completed_fiscal_years=expected_years,
+        ingestion_report=reports[-1],
+        evidence_available_at=availability,
+        acceptance_pass=acceptance_pass,
+        ingestion_reports=reports,
+        publication=publication,
+        persistent_delta=load_acceptance_evidence_delta(
+            db,
+            run_id=acceptance_run_id,
+            case_id=case_id,
+            acceptance_pass=acceptance_pass,
+        ),
+    )
+    payload = case_report_payload(report)
+    audit_case_report_operation(
+        db,
+        expected_run_id=acceptance_run_id,
+        case=case,
+        report=payload,
+        acceptance_pass=acceptance_pass,
+        expected_filing_selection_as_of=filing_selection_as_of,
+        expected_completed_fiscal_years=expected_years,
+    )
+    if secure_regular_file_exists(storage_root=storage_root, source=report_json):
+        existing = load_stable_json(report_json, storage_root=storage_root)
+        audit_case_report_operation(
+            db,
+            expected_run_id=acceptance_run_id,
+            case=case,
+            report=existing,
+            acceptance_pass=acceptance_pass,
+            expected_filing_selection_as_of=filing_selection_as_of,
+            expected_completed_fiscal_years=expected_years,
+        )
+        if existing != payload:
+            raise ValueError("acceptance recovery report differs from database authority")
+    human = render_human_case_summary(report)
+    human_path = report_json.with_suffix(".txt")
+    expected_human = human.rstrip() + "\n"
+    existing_human = secure_read_bytes(
+        storage_root=storage_root, source=human_path, missing_ok=True
+    )
+    if existing_human is not None and existing_human.decode("utf-8") != expected_human:
+        raise ValueError("acceptance recovery human report differs from database authority")
+    if not secure_regular_file_exists(storage_root=storage_root, source=report_json):
+        write_case_report(report, destination=report_json, storage_root=storage_root)
+    if existing_human is None:
+        write_stable_text(
+            human,
+            destination=human_path,
+            storage_root=storage_root,
+        )
+    return report
+
+
 @app.command("ingest-gold-case")
 def ingest_gold_case(
     case_id: str = typer.Option(..., help="Locked FT-00 case id."),
     max_filings: int = typer.Option(50, min=1, max=200),
-    parser_version: str = typer.Option("inline-xbrl-v1"),
+    parser_version: str = typer.Option(ACCEPTANCE_PARSER_VERSION),
+    history_cursor: str | None = typer.Option(None, help="Validated cursor emitted by a prior bounded history operation."),
     as_of: str | None = typer.Option(
         None,
         help=(
@@ -401,10 +587,251 @@ def ingest_gold_case(
         case, filing_selection_as_of=filing_selection_as_of
     )
     expected_years = _expected_completed_fiscal_years(history_target)
+    replay_cutoff = None
+    expected_publication_run_id = None
+    if acceptance_run_id is not None and acceptance_pass == 2:
+        pass_one_path = (
+            acceptance_environment.reports_root / "pass-1" / f"{case_id}.json"
+        )
+        pass_one = load_stable_json(
+            pass_one_path, storage_root=acceptance_environment.storage_root
+        )
+        validation_db = SessionLocal()
+        try:
+            validation_db.execute(text("SET TRANSACTION READ ONLY"))
+            validate_case_report_structure(
+                pass_one,
+                expected_run_id=acceptance_run_id,
+                expected_case_id=case_id,
+                expected_pass=1,
+            )
+            audit_case_report_operation(
+                validation_db,
+                expected_run_id=acceptance_run_id,
+                case=case,
+                report=pass_one,
+                acceptance_pass=1,
+                expected_filing_selection_as_of=filing_selection_as_of,
+                expected_completed_fiscal_years=expected_years,
+            )
+            replay_cutoff = _report_datetime_value(
+                pass_one, "publication_requested_cutoff", case_id
+            )
+            expected_publication_run_id = str(pass_one["publication_run_id"])
+        finally:
+            validation_db.rollback()
+            validation_db.close()
     db = SessionLocal()
+    completion_claim: AcceptanceCompletionClaimLease | None = None
     try:
+        if acceptance_run_id is not None:
+            db.execute(text("SET TRANSACTION READ ONLY"))
+            recovered_report = _recover_completed_gold_case_report(
+                db,
+                acceptance_run_id=acceptance_run_id,
+                acceptance_pass=acceptance_pass,
+                case=case,
+                filing_selection_as_of=filing_selection_as_of,
+                expected_years=expected_years,
+                report_json=report_json,
+                storage_root=Path(settings.EDGAR_RAW_STORAGE_DIR),
+            )
+            db.rollback()
+            if recovered_report is not None:
+                human_summary = render_human_case_summary(recovered_report)
+                typer.echo(human_summary)
+                typer.echo(f"acceptance_report_json={report_json.resolve()}")
+                if (
+                    recovered_report.typed_gaps
+                    or recovered_report.typed_failures
+                    or recovered_report.metric_outcomes.get("typed_gap_count", 0)
+                    or recovered_report.metric_outcomes.get("missing_count", 0)
+                    or (
+                        acceptance_pass == 2
+                        and not recovered_report.persistent_delta.get(
+                            "idempotent", False
+                        )
+                    )
+                ):
+                    raise typer.Exit(2)
+                return
+            completion_claim = acquire_acceptance_completion_lease(
+                db,
+                run_id=acceptance_run_id,
+                case_id=case_id,
+                acceptance_pass=acceptance_pass,
+            )
+            if completion_claim is None:
+                raise SecFinancialIngestionError(
+                    "acceptance_case_completion_in_progress"
+                )
+            # The state may have advanced between the initial read and the
+            # nonblocking ownership lease.  Rebuild it while ownership is held.
+            db.execute(text("SET TRANSACTION READ ONLY"))
+            recovered_report = _recover_completed_gold_case_report(
+                db,
+                acceptance_run_id=acceptance_run_id,
+                acceptance_pass=acceptance_pass,
+                case=case,
+                filing_selection_as_of=filing_selection_as_of,
+                expected_years=expected_years,
+                report_json=report_json,
+                storage_root=Path(settings.EDGAR_RAW_STORAGE_DIR),
+            )
+            db.rollback()
+            if recovered_report is not None:
+                human_summary = render_human_case_summary(recovered_report)
+                typer.echo(human_summary)
+                typer.echo(f"acceptance_report_json={report_json.resolve()}")
+                if (
+                    recovered_report.typed_gaps
+                    or recovered_report.typed_failures
+                    or recovered_report.metric_outcomes.get("typed_gap_count", 0)
+                    or recovered_report.metric_outcomes.get("missing_count", 0)
+                    or (
+                        acceptance_pass == 2
+                        and not recovered_report.persistent_delta.get(
+                            "idempotent", False
+                        )
+                    )
+                ):
+                    raise typer.Exit(2)
+                return
+            pending_publication = recoverable_bound_acceptance_attempt(
+                db,
+                run_id=acceptance_run_id,
+                case_id=case_id,
+                acceptance_pass=acceptance_pass,
+            )
+            db.rollback()
+            if pending_publication is not None:
+                if completion_claim.attempt_id != int(
+                    pending_publication["attempt_id"]
+                ):
+                    raise ValueError(
+                        "acceptance_recovery_authority_incomplete: "
+                        "bound publication is not owned by the completion claim"
+                    )
+                publication_identity = db.execute(
+                    text(
+                        """SELECT stock_id,issuer_identity_id
+                           FROM sec_metric_publication_runs WHERE id=:run"""
+                    ),
+                    {"run": pending_publication["publication_run_id"]},
+                ).mappings().one_or_none()
+                if publication_identity is None:
+                    raise ValueError(
+                        "acceptance_recovery_authority_incomplete: bound publication is missing"
+                    )
+                execute_acceptance_publication(
+                    db,
+                    stock_id=int(publication_identity.stock_id),
+                    issuer_identity_id=int(publication_identity.issuer_identity_id),
+                    filing_selection_as_of=filing_selection_as_of,
+                    replay_cutoff=pending_publication["requested_cutoff"],
+                    expected_run_id=pending_publication["publication_run_id"],
+                    attempt_id=int(pending_publication["attempt_id"]),
+                    acceptance_pass=acceptance_pass,
+                )
+                record_acceptance_evidence_checkpoint(
+                    db,
+                    run_id=acceptance_run_id,
+                    case_id=case_id,
+                    acceptance_pass=acceptance_pass,
+                    phase="after",
+                    attempt_id=int(pending_publication["attempt_id"]),
+                    operation_id=str(pending_publication["operation_id"]),
+                )
+                db.execute(text("SET TRANSACTION READ ONLY"))
+                recovered_report = _recover_completed_gold_case_report(
+                    db,
+                    acceptance_run_id=acceptance_run_id,
+                    acceptance_pass=acceptance_pass,
+                    case=case,
+                    filing_selection_as_of=filing_selection_as_of,
+                    expected_years=expected_years,
+                    report_json=report_json,
+                    storage_root=Path(settings.EDGAR_RAW_STORAGE_DIR),
+                )
+                db.rollback()
+                if recovered_report is None:
+                    raise ValueError(
+                        "acceptance_recovery_authority_incomplete: report reconstruction failed"
+                    )
+                human_summary = render_human_case_summary(recovered_report)
+                typer.echo(human_summary)
+                typer.echo(f"acceptance_report_json={report_json.resolve()}")
+                if (
+                    recovered_report.typed_gaps
+                    or recovered_report.typed_failures
+                    or recovered_report.metric_outcomes.get("typed_gap_count", 0)
+                    or recovered_report.metric_outcomes.get("missing_count", 0)
+                    or (
+                        acceptance_pass == 2
+                        and not recovered_report.persistent_delta.get(
+                            "idempotent", False
+                        )
+                    )
+                ):
+                    raise typer.Exit(2)
+                return
+        acceptance_attempt = None
+        operation_ordinal = 0
+        if acceptance_run_id is not None:
+            if completion_claim is None:
+                raise RuntimeError("acceptance completion lease is unavailable")
+            if completion_claim.attempt_id is None:
+                acceptance_attempt, before_checkpoint = (
+                    initialize_acceptance_case_attempt(completion_claim)
+                )
+            else:
+                attempt_row = db.execute(
+                    text(
+                        """SELECT id,attempt_ordinal,attempted_at,created_txid
+                           FROM sec_acceptance_case_attempts
+                           WHERE id=:attempt AND run_id=:run AND case_id=:case
+                             AND acceptance_pass=:pass"""
+                    ),
+                    {
+                        "attempt": completion_claim.attempt_id,
+                        "run": acceptance_run_id,
+                        "case": case_id,
+                        "pass": acceptance_pass,
+                    },
+                ).mappings().one_or_none()
+                if attempt_row is None:
+                    raise ValueError(
+                        "acceptance completion claim attempt identity mismatch"
+                    )
+                acceptance_attempt = dict(attempt_row)
+                operation_ordinal = int(
+                    db.execute(
+                        text(
+                            "SELECT COALESCE(max(operation_ordinal),0) "
+                            "FROM sec_acceptance_operation_links "
+                            "WHERE attempt_id=:attempt"
+                        ),
+                        {"attempt": completion_claim.attempt_id},
+                    ).scalar_one()
+                )
+                before_checkpoint = record_acceptance_evidence_checkpoint(
+                    db,
+                    run_id=acceptance_run_id,
+                    case_id=case_id,
+                    acceptance_pass=acceptance_pass,
+                    phase="before",
+                    attempt_id=int(acceptance_attempt["id"]),
+                )
+            captured_at = before_checkpoint.get("captured_at")
+            if isinstance(captured_at, datetime):
+                ingestion_attempted_at = max(
+                    _utc_now(), captured_at + timedelta(microseconds=1)
+                )
+            else:
+                ingestion_attempted_at = _utc_now()
         resolution = _resolve_gold_case_stock(db, case, at=ingestion_attempted_at)
         stock = resolution.stock
+        acquire_sec_financial_stock_lock(db, stock_id=stock.id)
         if resolution.source == "locked_manifest_bootstrap":
             register_reviewed_sec_identity(
                 db,
@@ -419,6 +846,49 @@ def ingest_gold_case(
                     "financial_truth_beta_gold_set.yml."
                 ),
             )
+        if acceptance_run_id is not None:
+            concurrently_completed = _recover_completed_gold_case_report(
+                db,
+                acceptance_run_id=acceptance_run_id,
+                acceptance_pass=acceptance_pass,
+                case=case,
+                filing_selection_as_of=filing_selection_as_of,
+                expected_years=expected_years,
+                report_json=report_json,
+                storage_root=Path(settings.EDGAR_RAW_STORAGE_DIR),
+            )
+            if concurrently_completed is not None:
+                db.rollback()
+                human_summary = render_human_case_summary(concurrently_completed)
+                typer.echo(human_summary)
+                typer.echo(f"acceptance_report_json={report_json.resolve()}")
+                if (
+                    concurrently_completed.typed_gaps
+                    or concurrently_completed.typed_failures
+                    or concurrently_completed.metric_outcomes.get(
+                        "typed_gap_count", 0
+                    )
+                    or concurrently_completed.metric_outcomes.get(
+                        "missing_count", 0
+                    )
+                    or (
+                        acceptance_pass == 2
+                        and not concurrently_completed.persistent_delta.get(
+                            "idempotent", False
+                        )
+                    )
+                ):
+                    raise typer.Exit(2)
+                return
+            if recoverable_bound_acceptance_attempt(
+                db,
+                run_id=acceptance_run_id,
+                case_id=case_id,
+                acceptance_pass=acceptance_pass,
+            ) is not None:
+                raise SecFinancialIngestionError(
+                    "acceptance_recovery_publication_state_advanced"
+                )
         typer.echo(
             f"identity_resolution={resolution.source} case={case_id} "
             f"manifest_ticker={resolution.manifest_ticker} stock_ticker={stock.ticker} "
@@ -427,12 +897,56 @@ def ingest_gold_case(
         recovered_operations = finalize_pending_sec_financial_ingestion_operations(
             db, stock_id=stock.id
         )
-        if recovered_operations:
-            db.commit()
-            for operation_id, available_at in recovered_operations:
+        finalized_acquisition = (
+            recoverable_finalized_acceptance_acquisition(
+                db,
+                run_id=acceptance_run_id,
+                case_id=case_id,
+                acceptance_pass=acceptance_pass,
+            )
+            if acceptance_run_id is not None
+            else None
+        )
+        recovery_operations = (
+            tuple(finalized_acquisition["operations"])
+            if finalized_acquisition is not None
+            else tuple(
+                {
+                    "operation_id": operation_id,
+                    "available_at": available_at,
+                }
+                for operation_id, available_at in recovered_operations
+            )
+        )
+        if recovery_operations:
+            if acceptance_run_id is not None:
+                if acceptance_attempt is None:
+                    raise RuntimeError("acceptance recovery requires attempt authority")
+                for item in recovery_operations:
+                    already_linked = db.execute(
+                        text(
+                            """SELECT 1 FROM sec_acceptance_operation_links
+                               WHERE attempt_id=:attempt AND operation_id=:operation"""
+                        ),
+                        {
+                            "attempt": int(acceptance_attempt["id"]),
+                            "operation": str(item["operation_id"]),
+                        },
+                    ).scalar_one_or_none()
+                    if already_linked is not None:
+                        continue
+                    operation_ordinal += 1
+                    link_acceptance_operation(
+                        db,
+                        attempt_id=int(acceptance_attempt["id"]),
+                        operation_id=str(item["operation_id"]),
+                        operation_ordinal=operation_ordinal,
+                        operation_role="recovered",
+                    )
+            for item in recovery_operations:
                 typer.echo(
-                    f"recovered_lineage_operation_id={operation_id} "
-                    f"lineage_available_at={available_at.isoformat()}"
+                    f"recovered_lineage_operation_id={item['operation_id']} "
+                    f"lineage_available_at={item['available_at'].isoformat()}"
                 )
         typer.echo(
             f"filing_selection_as_of={filing_selection_as_of.isoformat()} "
@@ -444,31 +958,158 @@ def ingest_gold_case(
             f"expected_completed_fiscal_year_count={len(expected_years)}"
         )
         typer.echo(f"ingestion_attempted_at={ingestion_attempted_at.isoformat()}")
-        with EdgarClient() as client:
-            report = ingest_latest_financial_filings(
+        if acceptance_run_id is not None:
+            if parser_version != ACCEPTANCE_PARSER_VERSION:
+                raise typer.BadParameter(
+                    f"acceptance parser version is locked to {ACCEPTANCE_PARSER_VERSION}"
+                )
+            if as_of is not None or history_cursor is not None:
+                raise typer.BadParameter(
+                    "acceptance filing cutoff and history continuation are manifest-owned"
+                )
+        reports = (
+            list(
+                linked_acceptance_ingestion_reports(
+                    db,
+                    run_id=acceptance_run_id,
+                    case_id=case_id,
+                    acceptance_pass=acceptance_pass,
+                    current_reports=(),
+                )
+            )
+            if finalized_acquisition is not None
+            else []
+        )
+        available_times: dict[str, datetime] = {
+            str(item["operation_id"]): item["available_at"]
+            for item in recovery_operations
+        }
+        cursor = (
+            finalized_acquisition["next_history_cursor"]
+            if finalized_acquisition is not None
+            else history_cursor
+        )
+        seen_cursors: set[str] = set()
+        retained_replay = (
+            None
+            if finalized_acquisition is None
+            else build_retained_financial_replay_client(
                 db,
                 stock_id=stock.id,
-                client=client,
+                operation_ids=tuple(
+                    str(item["operation_id"])
+                    for item in finalized_acquisition["operations"]
+                ),
                 storage_root=Path(settings.EDGAR_RAW_STORAGE_DIR),
-                max_filings=max_filings,
-                now=ingestion_attempted_at,
-                parser_version=parser_version,
-                filing_selection_as_of=filing_selection_as_of,
-                history_target=history_target,
+                upstream_factory=EdgarClient,
+                target_parser_version=ACCEPTANCE_PARSER_VERSION,
             )
-        db.commit()
-        typer.echo(
-            f"lineage_operation_id={report.operation_id} "
-            "lineage_availability=pending"
         )
-        available_at = finalize_sec_financial_ingestion_operation(
-            db, operation_id=report.operation_id
+        should_ingest = (
+            finalized_acquisition is None
+            or cursor is not None
+            or bool(finalized_acquisition.get("requires_reparse"))
+            or bool(
+                retained_replay is not None
+                and retained_replay.has_reparse_provenance_delta
+            )
         )
-        db.commit()
-        typer.echo(
-            f"lineage_operation_id={report.operation_id} "
-            f"lineage_available_at={available_at.isoformat()}"
-        )
+        if (
+            finalized_acquisition is not None
+            and not should_ingest
+            and not bool(finalized_acquisition.get("has_succeeded_parse"))
+        ):
+            raise SecFinancialIngestionError(
+                "retained_recovery_no_provenance_delta"
+            )
+        if should_ingest:
+            client_context = (
+                EdgarClient()
+                if finalized_acquisition is None
+                else retained_replay
+            )
+            if client_context is None:
+                raise RuntimeError("retained recovery client is unavailable")
+            with client_context as client:
+                for continuation_ordinal in range(1, 34):
+                    report = ingest_latest_financial_filings(
+                        db,
+                        stock_id=stock.id,
+                        client=client,
+                        storage_root=Path(settings.EDGAR_RAW_STORAGE_DIR),
+                        max_filings=max_filings,
+                        now=(
+                            ingestion_attempted_at
+                            if continuation_ordinal == 1
+                            else _utc_now()
+                        ),
+                        parser_version=(
+                            ACCEPTANCE_PARSER_VERSION
+                            if acceptance_run_id is not None
+                            else parser_version
+                        ),
+                        filing_selection_as_of=filing_selection_as_of,
+                        history_target=history_target,
+                        history_cursor=cursor,
+                    )
+                    if acceptance_run_id is not None:
+                        if acceptance_attempt is None:
+                            raise RuntimeError(
+                                "acceptance ingestion requires attempt authority"
+                            )
+                        operation_ordinal += 1
+                        link_acceptance_operation(
+                            db,
+                            attempt_id=int(acceptance_attempt["id"]),
+                            operation_id=report.operation_id,
+                            operation_ordinal=operation_ordinal,
+                            operation_role=(
+                                "main"
+                                if not reports and continuation_ordinal == 1
+                                else "continuation"
+                            ),
+                        )
+                    db.commit()
+                    typer.echo(
+                        f"lineage_operation_id={report.operation_id} "
+                        "lineage_availability=pending"
+                    )
+                    available_at = finalize_sec_financial_ingestion_operation(
+                        db, operation_id=report.operation_id
+                    )
+                    db.commit()
+                    typer.echo(
+                        f"lineage_operation_id={report.operation_id} "
+                        f"lineage_available_at={available_at.isoformat()}"
+                    )
+                    reports.append(report)
+                    available_times[report.operation_id] = available_at
+                    next_cursor = report.next_history_cursor
+                    if acceptance_run_id is None or next_cursor is None:
+                        break
+                    if next_cursor in seen_cursors:
+                        raise RuntimeError(
+                            "bounded history continuation repeated a cursor"
+                        )
+                    seen_cursors.add(next_cursor)
+                    cursor = next_cursor
+                else:
+                    raise RuntimeError(
+                        "bounded history continuation exceeded 33 operations"
+                    )
+
+        if acceptance_run_id is not None:
+            reports = list(
+                linked_acceptance_ingestion_reports(
+                    db,
+                    run_id=acceptance_run_id,
+                    case_id=case_id,
+                    acceptance_pass=acceptance_pass,
+                    current_reports=tuple(reports),
+                )
+            )
+        report = reports[-1]
+        available_at = available_times[report.operation_id]
         operation = db.get(SecFinancialIngestionOperation, report.operation_id)
         if operation is None:
             raise RuntimeError("persisted SEC ingestion operation is unavailable")
@@ -504,7 +1145,45 @@ def ingest_gold_case(
             f"parse_runs_created={report.parse_runs_created} "
             f"raw_facts_created={report.raw_facts_created} failures={len(report.failures)}"
         )
+        typer.echo(f"next_history_cursor={report.next_history_cursor or 'exhausted'}")
         if acceptance_run_id is not None and report_json is not None:
+            identity = db.scalar(
+                select(SecIssuerIdentity)
+                .where(
+                    SecIssuerIdentity.stock_id == stock.id,
+                    SecIssuerIdentity.cik == str(case["cik"]),
+                    SecIssuerIdentity.status == "reviewed",
+                )
+                .order_by(SecIssuerIdentity.known_at.desc(), SecIssuerIdentity.id.desc())
+                .limit(1)
+            )
+            if identity is None:
+                raise RuntimeError("acceptance publication requires reviewed SEC identity")
+            publication = execute_acceptance_publication(
+                db,
+                stock_id=stock.id,
+                issuer_identity_id=identity.id,
+                filing_selection_as_of=filing_selection_as_of,
+                replay_cutoff=replay_cutoff,
+                expected_run_id=expected_publication_run_id,
+                attempt_id=int(acceptance_attempt["id"]),
+                acceptance_pass=acceptance_pass,
+            )
+            record_acceptance_evidence_checkpoint(
+                db,
+                run_id=acceptance_run_id,
+                case_id=case_id,
+                acceptance_pass=acceptance_pass,
+                phase="after",
+                attempt_id=int(acceptance_attempt["id"]),
+                operation_id=report.operation_id,
+            )
+            pass_delta = load_acceptance_evidence_delta(
+                db,
+                run_id=acceptance_run_id,
+                case_id=case_id,
+                acceptance_pass=acceptance_pass,
+            )
             acceptance_report = build_case_report(
                 db,
                 run_id=acceptance_run_id,
@@ -514,6 +1193,9 @@ def ingest_gold_case(
                 ingestion_report=report,
                 evidence_available_at=available_at,
                 acceptance_pass=acceptance_pass,
+                ingestion_reports=tuple(reports),
+                publication=publication,
+                persistent_delta=pass_delta,
             )
             write_case_report(
                 acceptance_report,
@@ -528,9 +1210,23 @@ def ingest_gold_case(
             )
             typer.echo(human_summary)
             typer.echo(f"acceptance_report_json={report_json.resolve()}")
-        for failure in report.failures:
+        all_failures = tuple(
+            failure for item in reports for failure in item.failures
+        )
+        for failure in all_failures:
             typer.echo(f"failure={failure}", err=True)
-        if report.failures:
+        if all_failures or (
+            acceptance_run_id is not None
+            and acceptance_report.metric_outcomes
+            and (
+                acceptance_report.metric_outcomes["typed_gap_count"]
+                or acceptance_report.metric_outcomes["missing_count"]
+                or (
+                    acceptance_pass == 2
+                    and not acceptance_report.persistent_delta.get("idempotent", False)
+                )
+            )
+        ):
             raise typer.Exit(2)
     except typer.Exit:
         raise
@@ -539,6 +1235,8 @@ def ingest_gold_case(
         typer.echo(f"Error: {type(exc).__name__}: {exc}", err=True)
         raise typer.Exit(1)
     finally:
+        if completion_claim is not None:
+            completion_claim.release()
         db.close()
 
 
@@ -546,7 +1244,6 @@ def ingest_gold_case(
 def acceptance_snapshot(
     acceptance_run_id: str = typer.Option(...),
     phase: str = typer.Option(..., help="Snapshot phase: before or after."),
-    central_preflight_status: str = typer.Option("not_attempted"),
 ) -> None:
     """Capture a stable isolated DB/storage/Rate Guard acceptance snapshot."""
     if phase not in {"before", "after"}:
@@ -558,29 +1255,33 @@ def acceptance_snapshot(
         raise typer.Exit(1) from exc
     db = SessionLocal()
     try:
+        manifest_bytes = MANIFEST_PATH.read_bytes()
+        manifest = yaml.safe_load(manifest_bytes)
+        validate_gold_set(manifest)
         with RateGuardClient() as client:
             instance_id = client.verify_identity()
             metrics = client.metrics("edgar")
-        source_path_proof = {
-            "configured_route": str(settings.RATE_GUARD_URL or "").rstrip("/"),
-            "configured_instance_id": str(
-                settings.RATE_GUARD_EXPECTED_INSTANCE_ID or ""
-            ),
-            "central_preflight_status": central_preflight_status,
-            "direct_sec_path": False,
-            "fallback_enabled": bool(settings.RATE_GUARD_ALLOW_LOCAL_FALLBACK),
-            "fetch_mode": settings.EDGAR_FETCH_MODE,
-        }
+        authority = persist_rate_guard_snapshot(
+            db,
+            run_id=acceptance_run_id,
+            phase=phase,
+            configured_route=str(settings.RATE_GUARD_URL or ""),
+            expected_instance_id=str(settings.RATE_GUARD_EXPECTED_INSTANCE_ID or ""),
+            observed_instance_id=instance_id,
+            fetch_mode=settings.EDGAR_FETCH_MODE,
+            fallback_enabled=bool(settings.RATE_GUARD_ALLOW_LOCAL_FALLBACK),
+            fallback_url=settings.RATE_GUARD_FALLBACK_URL,
+            metrics=metrics,
+            manifest_digest=hashlib.sha256(manifest_bytes).hexdigest(),
+            database_name=environment.database_name,
+            storage_root=environment.storage_root,
+        )
         payload = build_runtime_snapshot(
             db,
             run_id=acceptance_run_id,
-            captured_at=_utc_now(),
             database_name=environment.database_name,
             storage_root=Path(settings.EDGAR_RAW_STORAGE_DIR),
-            rate_guard_url=str(settings.RATE_GUARD_URL or ""),
-            rate_guard_instance_id=instance_id,
-            rate_guard_metrics=metrics,
-            source_path_proof=source_path_proof,
+            rate_guard_authority=authority,
         )
         db.rollback()
         destination = environment.reports_root / f"runtime-{phase}.json"
@@ -599,6 +1300,81 @@ def acceptance_snapshot(
         raise typer.Exit(1) from exc
     finally:
         db.close()
+
+
+@dataclass(frozen=True)
+class _AcceptanceReportReadinessCandidate:
+    case_id: str
+    attempt_id: int
+    operation_id: str
+    report_sha256: str
+    is_incomplete: bool
+
+
+def _audit_acceptance_report_readiness_candidate(
+    db,
+    *,
+    environment,
+    manifest,
+    case,
+    acceptance_run_id: str,
+    acceptance_pass: int,
+) -> _AcceptanceReportReadinessCandidate:
+    """Rebuild one report's exact readiness identity from file and database."""
+
+    case_id = str(case["case_id"])
+    report_path = (
+        environment.reports_root / f"pass-{acceptance_pass}" / f"{case_id}.json"
+    )
+    report_bytes = secure_read_bytes(
+        storage_root=environment.storage_root, source=report_path
+    )
+    assert report_bytes is not None
+    try:
+        payload = json.loads(report_bytes.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ValueError(f"acceptance JSON is malformed: {report_path}") from exc
+    if not isinstance(payload, dict):
+        raise ValueError(f"acceptance JSON must be an object: {report_path}")
+    is_incomplete = validate_case_report_structure(
+        payload,
+        expected_run_id=acceptance_run_id,
+        expected_case_id=case_id,
+        expected_pass=acceptance_pass,
+    )
+    locked_cutoff, locked_years = locked_case_contract(manifest, case)
+    audit_case_report_operation(
+        db,
+        expected_run_id=acceptance_run_id,
+        case=case,
+        report=payload,
+        acceptance_pass=acceptance_pass,
+        expected_filing_selection_as_of=locked_cutoff,
+        expected_completed_fiscal_years=locked_years,
+    )
+    authority = acceptance_operation_authority(
+        db,
+        run_id=acceptance_run_id,
+        case_id=case_id,
+        acceptance_pass=acceptance_pass,
+    )
+    final_links = [
+        item
+        for item in authority["links"]
+        if item["operation_role"] != "recovered"
+        and str(item["operation_id"]) == str(payload["operation_id"])
+    ]
+    if len(final_links) != 1:
+        raise ValueError(
+            f"acceptance report final operation attempt authority mismatch: {case_id}"
+        )
+    return _AcceptanceReportReadinessCandidate(
+        case_id=case_id,
+        attempt_id=int(final_links[0]["attempt_id"]),
+        operation_id=str(payload["operation_id"]),
+        report_sha256=hashlib.sha256(report_bytes).hexdigest(),
+        is_incomplete=is_incomplete,
+    )
 
 
 @app.command("acceptance-pass-report-status")
@@ -621,8 +1397,8 @@ def acceptance_pass_report_status(
         raise typer.Exit(1) from exc
     db = SessionLocal()
     try:
-        db.execute(text("SET TRANSACTION READ ONLY"))
-        manifest = yaml.safe_load(MANIFEST_PATH.read_text(encoding="utf-8"))
+        manifest_bytes = MANIFEST_PATH.read_bytes()
+        manifest = yaml.safe_load(manifest_bytes)
         validate_gold_set(manifest)
         incomplete = 0
         completed = 0
@@ -633,26 +1409,106 @@ def acceptance_pass_report_status(
                 / f"pass-{acceptance_pass}"
                 / f"{case_id}.json"
             )
-            if allow_missing and not report_path.is_file():
+            if allow_missing and not secure_regular_file_exists(
+                storage_root=environment.storage_root, source=report_path
+            ):
                 continue
-            payload = load_stable_json(report_path)
-            is_incomplete = validate_case_report_structure(
-                payload,
-                expected_run_id=acceptance_run_id,
-                expected_case_id=case_id,
-                expected_pass=acceptance_pass,
-            )
-            audit_case_report_operation(
+            db.execute(text("SET TRANSACTION READ ONLY"))
+            candidate = _audit_acceptance_report_readiness_candidate(
                 db,
-                expected_run_id=acceptance_run_id,
+                environment=environment,
+                manifest=manifest,
                 case=case,
-                report=payload,
+                acceptance_run_id=acceptance_run_id,
                 acceptance_pass=acceptance_pass,
             )
-            if is_incomplete:
+            existing = load_acceptance_report_readiness(
+                db,
+                run_id=acceptance_run_id,
+                case_id=case_id,
+                acceptance_pass=acceptance_pass,
+            )
+            db.rollback()
+            if existing is not None:
+                validate_acceptance_report_readiness_replay(
+                    existing,
+                    attempt_id=candidate.attempt_id,
+                    operation_id=candidate.operation_id,
+                    report_sha256=candidate.report_sha256,
+                )
+            else:
+                completion_claim = acquire_acceptance_completion_lease(
+                    db,
+                    run_id=acceptance_run_id,
+                    case_id=case_id,
+                    acceptance_pass=acceptance_pass,
+                    append_existing_claim=False,
+                )
+                if completion_claim is None:
+                    raise SecFinancialIngestionError(
+                        "acceptance_case_completion_in_progress"
+                    )
+                try:
+                    if completion_claim.attempt_id != candidate.attempt_id:
+                        raise ValueError(
+                            "acceptance report completion claim attempt mismatch"
+                        )
+                    # A different owner may have finished after the preflight
+                    # read but before this physical lease was acquired.  Read
+                    # readiness under the lease before appending any successor
+                    # claim, because completed authority is terminal.
+                    db.execute(text("SET TRANSACTION READ ONLY"))
+                    locked_readiness = load_acceptance_report_readiness(
+                        db,
+                        run_id=acceptance_run_id,
+                        case_id=case_id,
+                        acceptance_pass=acceptance_pass,
+                    )
+                    db.rollback()
+                    if locked_readiness is not None:
+                        validate_acceptance_report_readiness_replay(
+                            locked_readiness,
+                            attempt_id=candidate.attempt_id,
+                            operation_id=candidate.operation_id,
+                            report_sha256=candidate.report_sha256,
+                        )
+                    else:
+                        append_acceptance_completion_claim(
+                            completion_claim, attempt_id=candidate.attempt_id
+                        )
+                        # The preflight audit proved that the report was
+                        # eligible to request ownership.  Repeat the complete
+                        # file/DB audit after the successor claim and before the
+                        # only write.
+                        db.execute(text("SET TRANSACTION READ ONLY"))
+                        owned_candidate = _audit_acceptance_report_readiness_candidate(
+                            db,
+                            environment=environment,
+                            manifest=manifest,
+                            case=case,
+                            acceptance_run_id=acceptance_run_id,
+                            acceptance_pass=acceptance_pass,
+                        )
+                        db.rollback()
+                        if owned_candidate != candidate:
+                            raise ValueError(
+                                "acceptance report identity changed during readiness recovery"
+                            )
+                        mark_acceptance_report_ready(
+                            db,
+                            run_id=acceptance_run_id,
+                            case_id=case_id,
+                            acceptance_pass=acceptance_pass,
+                            attempt_id=owned_candidate.attempt_id,
+                            operation_id=owned_candidate.operation_id,
+                            report_sha256=owned_candidate.report_sha256,
+                        )
+                        candidate = owned_candidate
+                finally:
+                    completion_claim.release()
+            if candidate.is_incomplete:
                 incomplete += 1
             completed += 1
-        db.rollback()
         typer.echo(
             f"acceptance_pass_status pass={acceptance_pass} "
             f"completed={completed}/{len(manifest['cases'])} "
@@ -684,19 +1540,95 @@ def acceptance_audit(
     db = SessionLocal()
     validation_error: ValueError | None = None
     try:
-        manifest = yaml.safe_load(MANIFEST_PATH.read_text(encoding="utf-8"))
+        with RateGuardClient() as client:
+            live_instance_id = client.verify_identity()
+            live_metrics = client.metrics("edgar")
+        db.execute(text("SET TRANSACTION READ ONLY"))
+        manifest_bytes = MANIFEST_PATH.read_bytes()
+        manifest = yaml.safe_load(manifest_bytes)
         validate_gold_set(manifest)
         expected_case_ids = tuple(str(item["case_id"]) for item in manifest["cases"])
-        before = load_stable_json(environment.reports_root / "runtime-before.json")
-        after = load_stable_json(environment.reports_root / "runtime-after.json")
+        before = load_stable_json(
+            environment.reports_root / "runtime-before.json",
+            storage_root=environment.storage_root,
+        )
+        after = load_stable_json(
+            environment.reports_root / "runtime-after.json",
+            storage_root=environment.storage_root,
+        )
+        after_runtime_payload = after
+        before_authority = audit_runtime_snapshot_rate_guard(
+            db, payload=before, run_id=acceptance_run_id, phase="before"
+        )
+        after_authority = audit_runtime_snapshot_rate_guard(
+            db,
+            payload=after,
+            run_id=acceptance_run_id,
+            phase="after",
+            storage_root=environment.storage_root,
+            verify_current=True,
+        )
+        if before_authority["source_path_proof"] != after_authority["source_path_proof"]:
+            raise ValueError("Rate Guard durable configuration changed during acceptance")
+        for key in (
+            "mapping_versions",
+            "mapping_rules",
+            "mapping_rule_concepts",
+            "method_policy_versions",
+        ):
+            if int(before_authority["lineage_counts"][key]) != int(
+                after_authority["lineage_counts"][key]
+            ):
+                raise ValueError(
+                    f"migration-owned publication registry changed during acceptance: {key}"
+                )
+        proof = before_authority["source_path_proof"]
+        if (
+            proof["configured_route"] != str(settings.RATE_GUARD_URL or "").rstrip("/")
+            or proof["expected_instance_id"]
+            != str(settings.RATE_GUARD_EXPECTED_INSTANCE_ID or "")
+            or proof["fetch_mode"] != settings.EDGAR_FETCH_MODE
+            or proof["fallback_enabled"]
+            != bool(settings.RATE_GUARD_ALLOW_LOCAL_FALLBACK)
+            or proof["fallback_url"] != settings.RATE_GUARD_FALLBACK_URL
+            or proof["config_digest"]
+            != rate_guard_configuration_digest(
+                configured_route=str(settings.RATE_GUARD_URL or ""),
+                expected_instance_id=str(
+                    settings.RATE_GUARD_EXPECTED_INSTANCE_ID or ""
+                ),
+                fetch_mode=settings.EDGAR_FETCH_MODE,
+                fallback_enabled=bool(settings.RATE_GUARD_ALLOW_LOCAL_FALLBACK),
+                fallback_url=settings.RATE_GUARD_FALLBACK_URL,
+            )
+            or proof["manifest_digest"] != hashlib.sha256(manifest_bytes).hexdigest()
+            or live_instance_id != proof["expected_instance_id"]
+        ):
+            raise ValueError("current Rate Guard configuration/identity differs from authority")
+        for key in (
+            "total_request_count",
+            "total_403_count",
+            "total_429_count",
+            "total_503_count",
+            "cache_hits",
+            "cache_misses",
+        ):
+            if int(live_metrics.get(key, 0)) < int(
+                after_authority["rate_guard"]["metrics"][key]
+            ):
+                raise ValueError(f"live Rate Guard counter regressed: {key}")
+        before = {**before, **before_authority}
+        after = {**after, **after_authority}
         cases = []
         for case in manifest["cases"]:
             case_id = str(case["case_id"])
             pass_one = load_stable_json(
-                environment.reports_root / "pass-1" / f"{case_id}.json"
+                environment.reports_root / "pass-1" / f"{case_id}.json",
+                storage_root=environment.storage_root,
             )
             pass_two = load_stable_json(
-                environment.reports_root / "pass-2" / f"{case_id}.json"
+                environment.reports_root / "pass-2" / f"{case_id}.json",
+                storage_root=environment.storage_root,
             )
             if pass_one.get("acceptance_pass") != 1 or pass_two.get(
                 "acceptance_pass"
@@ -707,11 +1639,22 @@ def acceptance_audit(
                     db,
                     expected_run_id=acceptance_run_id,
                     case=case,
+                    manifest=manifest,
                     pass_one=pass_one,
                     pass_two=pass_two,
                     storage_root=environment.storage_root,
                 )
             )
+        final_after_authority = audit_runtime_snapshot_rate_guard(
+            db,
+            payload=after_runtime_payload,
+            run_id=acceptance_run_id,
+            phase="after",
+            storage_root=environment.storage_root,
+            verify_current=True,
+        )
+        if final_after_authority != after_authority:
+            raise ValueError("durable runtime authority changed during case audits")
         db.rollback()
         payload = build_aggregate_payload(
             run_id=acceptance_run_id,
@@ -719,7 +1662,7 @@ def acceptance_audit(
             before=before,
             after=after,
             cases=cases,
-            source_path_proof=dict(before["source_path_proof"]),
+            source_path_proof=proof,
         )
         human = render_human_aggregate_summary(payload)
         write_stable_json(

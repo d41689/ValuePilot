@@ -126,6 +126,46 @@ long — escalate to the user. **medium / low** = ordinary follow-up.
   current-policy artifact observations, and extracted 860 raw facts with zero
   `metric_facts` publication; an exact rerun created zero rows. FT-03 remains
   open for the complete locked form/history/issuer scope and evidence package.
+- **Progress (2026-08-31):** the locked 24-case run finalized two idempotent
+  passes with verified retained lineage and zero `metric_facts`. Twenty-two
+  cases cover their expected annual denominator; JPM is 3/10 and GS 5/10.
+  Contract review found that another bounded operation currently restarts at
+  the first 20 historical-submissions references rather than advancing through
+  a retained-manifest cursor. It also found that early annual filings frequently
+  have standalone XBRL instance documents rather than inline XBRL; the current
+  retention/parser path does not preserve/parse those instances, leaving many
+  pre-inline years as typed `no_inline_xbrl_facts`. Publication-grade FT-03
+  therefore still requires a validated resumable cursor plus immutable
+  standalone-instance retention and a new append-only parser version. The
+  existing typed failures and Step-D evidence must not be rewritten.
+- **Progress (2026-08-31, Step 2):** bounded continuation and parser-v2 are now
+  implemented. Random persisted continuation authorities bind the retained main
+  snapshot, identity, cutoff, full target and ordered validated references;
+  each advance is backed by an immutable operation consumption claim and cursor
+  validation failures have a separate durable terminal audit;
+  the database now proves every ordered consumption outcome from same-operation
+  retained snapshots/failures and reciprocally guards continuation failures and
+  terminal results rather than trusting caller JSON or timestamps;
+  standalone instance XML is retained through
+  the existing artifact policy and parsed with namespace/local-name and
+  structured unit QName lineage. Typed dimensions retain a bounded canonical
+  namespace-aware structure with a database-verified digest; inline parser-v2
+  obtains that authority from retained XHTML XML events rather than tolerant
+  HTML normalization and fails closed when XML/context correspondence is not
+  provable. Exact URI/local structural selection and expanded taxonomy-QName
+  fact signatures prevent tolerant HTML or fake-namespace nodes from entering
+  parser v2. The safe streaming authority rejects DTD/entities and clears
+  completed nodes; the same expanded-root preflight is mandatory for service
+  dispatch and standalone parsing, whose dimension structures now require exact
+  XBRLDI identity. Standalone candidates carry frozen verified bytes through
+  parsing and are storage-reverified before run creation. Token-aware Expat
+  declaration handlers reject real DTD/entities without rejecting lexical text
+  in comments, CDATA or processing instructions. Preflight returns the exact
+  downstream bytes: UTF-8/16 stays original, while UTF-32 normalization changes
+  only the XML declaration token and rejects BOM/declaration conflicts. Global parser and database resource budgets bound the retained
+  structure. Standalone parsing exposes no caller-controlled preflight bypass;
+  every direct or service invocation revalidates its downstream bytes. A fresh isolated acceptance acquisition remains
+  required before FT-03 can be closed.
 - **Acceptance criteria:**
   - Before acquisition expands, `coverage-source-policy.md` records permitted
     SEC financial forms, retention, automation, rate limits, and visibility.
@@ -150,6 +190,16 @@ long — escalate to the user. **medium / low** = ordinary follow-up.
 - **Problem:** raw filing facts require explicit, versioned conversion into the
   existing financial-fact contract before any product use.
 - **Outcome:** publish permitted SEC actuals through `metric_facts` only.
+- **Progress (2026-08-31):** the `sec-us-gaap-v1` metric contract, PRD
+  publication boundary, and source-policy authorization are approved. They
+  define strict namespace-URI/local-name authority, semantically distinct cash,
+  equity and debt concepts, generic revenue, source-reported ISO currency
+  without FX, form-first period classification, ordered exact parse-authority
+  sets, compatible exact derived-quarter inputs, slot-level amendments, shared
+  SEC ownership, exact NUMERIC publication, PIT, SEC-only per-period current
+  slots, provenance and fail-closed consumer behavior before FT-06. No
+  publication migration, service, API, gold-set fact, or production activation
+  is implemented yet; this item remains open.
 - **Acceptance criteria:**
   - Metric keys, units, normalization, period semantics, source roles, and
     mapping rules are approved in `metric_facts_mapping_spec.yml`; schema, APIs,

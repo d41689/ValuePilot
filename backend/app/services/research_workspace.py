@@ -26,6 +26,13 @@ from app.services.thirteenf_user_api import build_user_stock_holders
 from app.services.valuation import read_valuation_context
 from app.services.active_report_resolver import resolve_active_reports
 from app.services.actual_conflict_service import detect_actual_conflicts
+from app.services.canonical_financials import (
+    apply_reviewed_method_gates,
+    current_sec_unresolved_states,
+    partition_sec_run_availability,
+    reviewed_method_gate,
+    visible_metric_fact_predicate,
+)
 
 
 def _piotroski_series(facts: list[MetricFact]) -> list[dict[str, Any]]:
@@ -111,9 +118,9 @@ def build_research_workspace(
     facts = session.scalars(
         select(MetricFact)
         .where(
-            MetricFact.user_id == user_id,
             MetricFact.stock_id == stock.id,
             MetricFact.is_current.is_(True),
+            visible_metric_fact_predicate(MetricFact, user_id=user_id),
         )
         .order_by(
             MetricFact.metric_key,
@@ -123,6 +130,15 @@ def build_research_workspace(
         )
         .limit(250)
     ).all()
+    facts, _ = partition_sec_run_availability(
+        session, stock_id=stock.id, facts=facts
+    )
+    facts, unsupported_method_states, _ = apply_reviewed_method_gates(
+        session,
+        stock_id=stock.id,
+        facts=facts,
+        effective_as_of=as_of,
+    )
     coverage_rows = (
         session.query(ResearchCoverageRequirement)
         .filter(
@@ -243,11 +259,24 @@ def build_research_workspace(
                 "original_evidence_route": (
                     f"/documents/{fact.source_document_id}/review"
                     if fact.source_document_id is not None
-                    else None
+                    else (
+                        f"/api/v1/stocks/{stock.id}/sec-publications/{fact.source_ref_id}/evidence"
+                        if fact.source_type == "sec" and fact.source_ref_id is not None
+                        else None
+                    )
                 ),
             }
             for fact in facts
-        ],
+        ] + unsupported_method_states + current_sec_unresolved_states(session, stock_id=stock.id),
+        "system_method_gates": {
+            method_key: reviewed_method_gate(
+                session,
+                stock_id=stock.id,
+                method_key=method_key,
+                effective_as_of=as_of,
+            ).as_dict()
+            for method_key in ("owner_earnings", "roic", "per_share_trend", "system_valuation")
+        },
         "piotroski_f_score": _piotroski_series(facts),
         "actual_conflicts": actual_conflicts,
         "missing_items": [

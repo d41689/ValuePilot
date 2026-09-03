@@ -55,11 +55,6 @@ case "$storage_root" in
     "$REPO_ROOT"/storage/sec_gold_acceptance/"$run_id") ;;
     *) echo "derived acceptance storage path is unsafe" >&2; exit 64 ;;
 esac
-[ ! -L "$storage_parent" ] && [ ! -L "$storage_root" ] || {
-    echo "acceptance storage must not use symlinks" >&2
-    exit 64
-}
-
 admin_psql() {
     "$DOCKER_BIN" compose -f "$INFRA_COMPOSE" exec -T postgres \
         psql -X -v ON_ERROR_STOP=1 -U "$ADMIN_USER" -d postgres "$@"
@@ -102,22 +97,21 @@ create_storage() {
         --project-name "$project_name" \
         -f "$REPO_ROOT/docker-compose.yml" \
         run --rm --no-deps \
-        -v "$storage_parent:/acceptance-root" \
-        api sh -eu -c \
-        'target="/acceptance-root/$1"; [ ! -e "$target" ]; mkdir -p "$target/reports"' \
-        sh "$run_id"
+        -v /code/storage/edgar_raw \
+        -v "$REPO_ROOT:/trusted-repo" \
+        api python -m app.acceptance.sec_gold_environment \
+        prepare-storage /trusted-repo "$run_id"
 }
 
 destroy_storage() {
-    [ -e "$storage_root" ] || return 0
     "$DOCKER_BIN" compose \
         --project-name "$project_name" \
         -f "$REPO_ROOT/docker-compose.yml" \
         run --rm --no-deps \
-        -v "$storage_parent:/acceptance-root" \
-        api sh -eu -c \
-        'target="/acceptance-root/$1"; case "$target" in /acceptance-root/[a-z0-9][a-z0-9-]*) ;; *) exit 64 ;; esac; [ ! -L "$target" ]; find "$target" -depth -delete' \
-        sh "$run_id"
+        -v /code/storage/edgar_raw \
+        -v "$REPO_ROOT:/trusted-repo" \
+        api python -m app.acceptance.sec_gold_environment \
+        cleanup-storage /trusted-repo "$run_id"
 }
 
 verify_head() {
@@ -145,17 +139,29 @@ case "$action" in
             echo "acceptance database already exists; destroy the exact run before retry" >&2
             exit 1
         fi
-        [ ! -e "$storage_root" ] || {
-            echo "acceptance storage already exists; destroy the exact run before retry" >&2
-            exit 1
+        create_storage
+        create_cleanup_needed=1
+        cleanup_failed_create() {
+            status=$?
+            trap - EXIT HUP INT TERM
+            if [ "$create_cleanup_needed" -eq 1 ]; then
+                if database_exists; then
+                    "$DOCKER_BIN" compose -f "$INFRA_COMPOSE" exec -T postgres \
+                        dropdb -U "$ADMIN_USER" --force "$database_name" || true
+                fi
+                destroy_storage || true
+            fi
+            exit "$status"
         }
+        trap cleanup_failed_create EXIT HUP INT TERM
         "$DOCKER_BIN" compose -f "$INFRA_COMPOSE" exec -T postgres \
             createdb -U "$ADMIN_USER" --owner valuepilot --template template0 \
             "$database_name"
-        create_storage
         runtime_preflight
         acceptance_run alembic upgrade head
         verify_head
+        create_cleanup_needed=0
+        trap - EXIT HUP INT TERM
         ;;
     verify)
         [ "$#" -eq 2 ] || usage
@@ -209,7 +215,10 @@ case "$action" in
             tests/unit/test_sec_financial_source_guard.py \
             tests/unit/test_sec_egress_guard.py \
             tests/unit/test_rate_guard_client.py \
-            tests/unit/test_edgar_client.py
+            tests/unit/test_edgar_client.py \
+            tests/unit/test_sec_metric_publication_service.py \
+            tests/unit/test_sec_metric_publication_service_e2e.py \
+            tests/unit/test_sec_publication_contracts.py
         ;;
     run-case)
         [ "$#" -eq 4 ] || usage
@@ -238,17 +247,21 @@ case "$action" in
             --report-json "/code/storage/sec_gold_acceptance/$run_id/reports/pass-$pass_number/$case_id.json"
         ;;
     snapshot)
-        [ "$#" -ge 3 ] && [ "$#" -le 4 ] || usage
+        [ "$#" -eq 3 ] || usage
         phase=$3
-        central_status=${4:-not_attempted}
         case "$phase" in before | after) ;; *) usage ;; esac
         database_exists || { echo "acceptance database does not exist" >&2; exit 1; }
         [ -d "$storage_root" ] || { echo "acceptance storage does not exist" >&2; exit 1; }
         runtime_preflight
+        if [ "$phase" = "after" ]; then
+            acceptance_run python -m app.cli.sec_financials acceptance-pass-report-status \
+                --acceptance-run-id "$run_id" --acceptance-pass 1
+            acceptance_run python -m app.cli.sec_financials acceptance-pass-report-status \
+                --acceptance-run-id "$run_id" --acceptance-pass 2
+        fi
         acceptance_run python -m app.cli.sec_financials acceptance-snapshot \
             --acceptance-run-id "$run_id" \
-            --phase "$phase" \
-            --central-preflight-status "$central_status"
+            --phase "$phase"
         ;;
     run-pass)
         [ "$#" -eq 3 ] || usage

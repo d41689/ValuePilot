@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+import errno
 import hashlib
 import json
+import os
 from pathlib import Path
+import stat
 
 import pytest
 
@@ -12,10 +15,13 @@ from app.acceptance.sec_gold_environment import (
     AcceptanceRuntimeConfiguration,
     assert_acceptance_database_identity,
     build_acceptance_environment,
+    prepare_acceptance_storage,
     preflight_acceptance_runtime,
     validate_acceptance_database_name,
     validate_acceptance_storage_target,
 )
+from app.acceptance.sec_gold_storage import secure_atomic_write_bytes, secure_read_bytes
+from app.acceptance import sec_gold_storage as gold_storage
 from app.acceptance.sec_gold_report import (
     SecGoldAcceptanceCaseReport,
     SecGoldSelectedFiling,
@@ -30,6 +36,17 @@ from app.acceptance.sec_gold_audit import (
     validate_aggregate_payload,
     write_stable_json,
 )
+from app.acceptance.sec_gold_publication import (
+    ACCEPTANCE_AMENDMENT_POLICY_ID,
+    ACCEPTANCE_MAPPING_VERSION_ID,
+    ACCEPTANCE_METHOD_POLICY_VERSION_ID,
+    ACCEPTANCE_PARSER_VERSION,
+    MetricGapEvidence,
+    V1_METRIC_DENOMINATOR,
+    build_metric_outcome_matrix,
+    classify_metric_gap_evidence,
+    publication_idempotency_delta,
+)
 from test_support.database_isolation import build_isolated_database_url
 
 
@@ -38,7 +55,6 @@ def test_acceptance_environment_derives_exact_isolated_targets(tmp_path: Path) -
         repo_root=tmp_path,
         run_id="step-c-20260830",
     )
-
     assert environment.run_id == "step-c-20260830"
     assert environment.database_name == "valuepilot_acceptance_step_c_20260830"
     assert environment.database_url == (
@@ -56,6 +72,329 @@ def test_acceptance_environment_derives_exact_isolated_targets(tmp_path: Path) -
         storage_root=environment.storage_root,
     )
 
+
+def test_acceptance_storage_prepare_is_exact_and_rejects_symlink_components(
+    tmp_path: Path,
+) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    prepared = prepare_acceptance_storage(repo_root=repo, run_id="round-four")
+    assert prepared == repo / "storage" / "sec_gold_acceptance" / "round-four"
+    assert (prepared / "reports").is_dir()
+    with pytest.raises(AcceptanceEnvironmentError, match="already exists"):
+        prepare_acceptance_storage(repo_root=repo, run_id="round-four")
+
+    unsafe_repo = tmp_path / "unsafe"
+    external = tmp_path / "external"
+    unsafe_repo.mkdir()
+    external.mkdir()
+    (unsafe_repo / "storage").symlink_to(external, target_is_directory=True)
+    with pytest.raises(AcceptanceEnvironmentError, match="safe directory"):
+        prepare_acceptance_storage(repo_root=unsafe_repo, run_id="round-four")
+    assert list(external.iterdir()) == []
+
+
+def test_acceptance_storage_prepare_detects_component_swap(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo = tmp_path / "repo"
+    parent = repo / "storage" / "sec_gold_acceptance"
+    parent.mkdir(parents=True)
+    displaced = parent.with_name("sec_gold_acceptance-displaced")
+    original_mkdir = os.mkdir
+    swapped = False
+
+    def swap_before_run_create(path, mode=0o777, *, dir_fd=None):
+        nonlocal swapped
+        if path == "round-four" and dir_fd is not None and not swapped:
+            swapped = True
+            os.rename(parent, displaced)
+            original_mkdir(parent, 0o750)
+        return original_mkdir(path, mode, dir_fd=dir_fd)
+
+    monkeypatch.setattr(os, "mkdir", swap_before_run_create)
+    with pytest.raises(AcceptanceEnvironmentError, match="identity race"):
+        prepare_acceptance_storage(repo_root=repo, run_id="round-four")
+    assert not (parent / "round-four").exists()
+    assert not (displaced / "round-four").exists()
+
+
+def test_acceptance_authority_io_rejects_symlink_and_detects_read_mutation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    reports = tmp_path / "reports"
+    reports.mkdir()
+    external = tmp_path.parent / f"{tmp_path.name}-external.json"
+    external.write_text('{"outside":true}\n', encoding="utf-8")
+    linked = reports / "runtime-before.json"
+    linked.symlink_to(external)
+    with pytest.raises(ValueError, match="unsafe"):
+        secure_read_bytes(storage_root=tmp_path, source=linked)
+
+    unsafe_root = tmp_path / "unsafe-root"
+    external_directory = tmp_path / "external-directory"
+    unsafe_root.mkdir()
+    external_directory.mkdir()
+    (unsafe_root / "reports").symlink_to(external_directory, target_is_directory=True)
+    with pytest.raises(ValueError, match="unsafe"):
+        write_stable_json(
+            {"blocked": True},
+            destination=unsafe_root / "reports" / "runtime-before.json",
+            storage_root=unsafe_root,
+        )
+    assert list(external_directory.iterdir()) == []
+
+    linked.unlink()
+    stable = reports / "runtime-before.json"
+    stable.write_text('{"stable":true}\n', encoding="utf-8")
+    original_read = os.read
+    changed = False
+
+    def mutate_after_read(descriptor: int, size: int) -> bytes:
+        nonlocal changed
+        chunk = original_read(descriptor, size)
+        if chunk and not changed:
+            changed = True
+            stable.write_text('{"changed":true}\n', encoding="utf-8")
+        return chunk
+
+    monkeypatch.setattr(os, "read", mutate_after_read)
+    with pytest.raises(ValueError, match="file changed during read"):
+        secure_read_bytes(storage_root=tmp_path, source=stable)
+
+
+def test_acceptance_authority_io_detects_parent_directory_swap(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    reports = tmp_path / "reports"
+    reports.mkdir()
+    source = reports / "runtime-after.json"
+    encoded = b'{"stable":true}\n'
+    source.write_bytes(encoded)
+    displaced = tmp_path / "reports-displaced"
+    original_read = os.read
+    swapped = False
+
+    def swap_parent_after_read(descriptor: int, size: int) -> bytes:
+        nonlocal swapped
+        chunk = original_read(descriptor, size)
+        if chunk and not swapped:
+            swapped = True
+            os.rename(reports, displaced)
+            reports.mkdir()
+            (reports / source.name).write_bytes(encoded)
+        return chunk
+
+    monkeypatch.setattr(os, "read", swap_parent_after_read)
+    with pytest.raises(ValueError, match="component changed"):
+        secure_read_bytes(storage_root=tmp_path, source=source)
+
+
+@pytest.mark.parametrize("replacement_kind", ("symlink", "regular"))
+def test_acceptance_atomic_writer_rejects_temp_replacement_without_publishing(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    replacement_kind: str,
+) -> None:
+    reports = tmp_path / "reports"
+    reports.mkdir()
+    destination = reports / "aggregate.json"
+    expected = b'{"authority":true}\n'
+    external = tmp_path / "external"
+    external.write_bytes(b"external")
+    original_open = os.open
+    original_fsync = os.fsync
+    held_identity: tuple[int, int] | None = None
+    replacement_path: Path | None = None
+    replacement_identity: tuple[int, int] | None = None
+    replaced = False
+
+    def force_named_temporary(path, flags, mode=0o777, *, dir_fd=None):
+        temporary_flag = getattr(os, "O_TMPFILE", 0)
+        if temporary_flag and flags & temporary_flag == temporary_flag:
+            raise OSError(errno.EOPNOTSUPP, "fixture forces named fallback")
+        return original_open(path, flags, mode, dir_fd=dir_fd)
+
+    def replace_named_temp(descriptor: int) -> None:
+        nonlocal held_identity
+        nonlocal replacement_identity
+        nonlocal replacement_path
+        nonlocal replaced
+        info = os.fstat(descriptor)
+        if stat.S_ISREG(info.st_mode) and not replaced:
+            names = [name for name in os.listdir(reports) if name.endswith(".tmp")]
+            if names:
+                replaced = True
+                held_identity = (info.st_dev, info.st_ino)
+                temporary = reports / names[0]
+                replacement_path = temporary
+                temporary.unlink()
+                if replacement_kind == "symlink":
+                    temporary.symlink_to(external)
+                else:
+                    temporary.write_bytes(b"attacker replacement")
+                replacement = temporary.stat(follow_symlinks=False)
+                replacement_identity = (replacement.st_dev, replacement.st_ino)
+        original_fsync(descriptor)
+
+    monkeypatch.setattr(os, "open", force_named_temporary)
+    monkeypatch.setattr(os, "fsync", replace_named_temp)
+    with pytest.raises(ValueError, match="descriptor-based"):
+        secure_atomic_write_bytes(
+            storage_root=tmp_path,
+            destination=destination,
+            content=expected,
+        )
+    assert held_identity is not None
+    assert not os.path.lexists(destination)
+    assert external.read_bytes() == b"external"
+    assert replacement_path is not None
+    assert os.path.lexists(replacement_path)
+    retained = replacement_path.stat(follow_symlinks=False)
+    assert (retained.st_dev, retained.st_ino) == replacement_identity
+    if replacement_kind == "symlink":
+        assert replacement_path.is_symlink()
+        assert replacement_path.readlink() == external
+    else:
+        assert replacement_path.read_bytes() == b"attacker replacement"
+
+
+def test_acceptance_atomic_writer_publishes_the_held_descriptor_inode(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    reports = tmp_path / "reports"
+    reports.mkdir()
+    destination = reports / "aggregate.json"
+    expected = b'{"authority":true}\n'
+    original_open = os.open
+    original_fsync = os.fsync
+    held_identity: tuple[int, int] | None = None
+
+    def force_named_temporary(path, flags, mode=0o777, *, dir_fd=None):
+        temporary_flag = getattr(os, "O_TMPFILE", 0)
+        if temporary_flag and flags & temporary_flag == temporary_flag:
+            raise OSError(errno.EOPNOTSUPP, "fixture forces named fallback")
+        return original_open(path, flags, mode, dir_fd=dir_fd)
+
+    def capture_held_inode(descriptor: int) -> None:
+        nonlocal held_identity
+        info = os.fstat(descriptor)
+        if stat.S_ISREG(info.st_mode) and held_identity is None:
+            held_identity = (info.st_dev, info.st_ino)
+        original_fsync(descriptor)
+
+    monkeypatch.setattr(os, "open", force_named_temporary)
+    monkeypatch.setattr(os, "fsync", capture_held_inode)
+    secure_atomic_write_bytes(
+        storage_root=tmp_path,
+        destination=destination,
+        content=expected,
+    )
+    published = destination.stat(follow_symlinks=False)
+    assert (published.st_dev, published.st_ino) == held_identity
+    assert destination.read_bytes() == expected
+    assert not any(name.endswith(".tmp") for name in os.listdir(reports))
+
+
+def test_acceptance_atomic_writer_destination_race_and_existing_file_are_no_overwrite(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    reports = tmp_path / "reports"
+    reports.mkdir()
+    destination = reports / "aggregate.json"
+    original_fsync = os.fsync
+    raced = False
+
+    def create_destination_before_publish(descriptor: int) -> None:
+        nonlocal raced
+        info = os.fstat(descriptor)
+        if stat.S_ISREG(info.st_mode) and not raced:
+            raced = True
+            destination.write_bytes(b"raced authority")
+        original_fsync(descriptor)
+
+    monkeypatch.setattr(os, "fsync", create_destination_before_publish)
+    with pytest.raises(ValueError, match="existing acceptance authority"):
+        secure_atomic_write_bytes(
+            storage_root=tmp_path,
+            destination=destination,
+            content=b"new authority",
+        )
+    assert destination.read_bytes() == b"raced authority"
+    assert not any(name.endswith(".tmp") for name in os.listdir(reports))
+
+    monkeypatch.setattr(os, "fsync", original_fsync)
+    with pytest.raises(ValueError, match="overwrite existing"):
+        secure_atomic_write_bytes(
+            storage_root=tmp_path,
+            destination=destination,
+            content=b"different authority",
+        )
+
+
+def test_acceptance_atomic_writer_removes_its_publication_on_post_link_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    reports = tmp_path / "reports"
+    reports.mkdir()
+    destination = reports / "aggregate.json"
+    original_open = os.open
+    original_fsync = os.fsync
+    calls = 0
+
+    def force_named_temporary(path, flags, mode=0o777, *, dir_fd=None):
+        temporary_flag = getattr(os, "O_TMPFILE", 0)
+        if temporary_flag and flags & temporary_flag == temporary_flag:
+            raise OSError(errno.EOPNOTSUPP, "fixture forces named fallback")
+        return original_open(path, flags, mode, dir_fd=dir_fd)
+
+    def fail_directory_sync(descriptor: int) -> None:
+        nonlocal calls
+        calls += 1
+        if calls >= 2:
+            raise OSError(errno.EIO, "simulated directory sync failure")
+        original_fsync(descriptor)
+
+    monkeypatch.setattr(os, "open", force_named_temporary)
+    monkeypatch.setattr(os, "fsync", fail_directory_sync)
+    with pytest.raises(ValueError, match="descriptor-based"):
+        secure_atomic_write_bytes(
+            storage_root=tmp_path,
+            destination=destination,
+            content=b"authority",
+        )
+    assert not os.path.lexists(destination)
+
+
+def test_acceptance_atomic_writer_cleans_only_its_owned_temp_on_publish_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    reports = tmp_path / "reports"
+    reports.mkdir()
+    destination = reports / "aggregate.json"
+    original_open = os.open
+
+    def force_named_temporary(path, flags, mode=0o777, *, dir_fd=None):
+        temporary_flag = getattr(os, "O_TMPFILE", 0)
+        if temporary_flag and flags & temporary_flag == temporary_flag:
+            raise OSError(errno.EOPNOTSUPP, "fixture forces named fallback")
+        return original_open(path, flags, mode, dir_fd=dir_fd)
+
+    def fail_descriptor_publish(**_kwargs):
+        raise OSError(errno.ENOSYS, "simulated descriptor publish failure")
+
+    monkeypatch.setattr(os, "open", force_named_temporary)
+    monkeypatch.setattr(
+        gold_storage, "_publish_held_descriptor", fail_descriptor_publish
+    )
+    with pytest.raises(ValueError, match="descriptor-based"):
+        secure_atomic_write_bytes(
+            storage_root=tmp_path,
+            destination=destination,
+            content=b"authority",
+        )
+    assert not os.path.lexists(destination)
+    assert not any(name.endswith(".tmp") for name in os.listdir(reports))
 
 @pytest.mark.parametrize(
     "run_id",
@@ -131,6 +470,14 @@ def _runtime_configuration(
         "configured_storage_root": environment.storage_root,
         "rate_guard_allow_fallback": False,
         "rate_guard_fallback_url": None,
+        "rate_guard_url": "https://rate-guard.example.test",
+        "rate_guard_expected_instance_id": "11111111-1111-4111-8111-111111111111",
+        "edgar_fetch_mode": "rate_guard",
+        "edgar_scheduler_enabled": False,
+        "thirteenf_job_worker_enabled": False,
+        "manager_seed_on_startup": False,
+        "notification_delivery_enabled": False,
+        "research_notification_scheduler_enabled": False,
     }
     values.update(overrides)
     return AcceptanceRuntimeConfiguration(**values)
@@ -173,6 +520,12 @@ def test_acceptance_runtime_preflight_accepts_only_exact_derived_environment(
         ),
         ({"rate_guard_allow_fallback": True}, None, "fallback"),
         ({"rate_guard_fallback_url": "http://rate-guard-local:9000"}, None, "fallback"),
+        ({"edgar_scheduler_enabled": True}, None, "workers and schedulers"),
+        ({"rate_guard_url": None}, None, "pinned Rate Guard URL"),
+        ({"rate_guard_url": "rate-guard.invalid"}, None, "valid pinned Rate Guard URL"),
+        ({"rate_guard_expected_instance_id": None}, None, "instance ID"),
+        ({"rate_guard_expected_instance_id": "wrong-instance"}, None, "instance ID"),
+        ({"edgar_fetch_mode": "live"}, None, "rate_guard"),
         ({}, "valuepilot", "connected database"),
     ),
 )
@@ -426,6 +779,71 @@ def test_retained_file_audit_checks_existence_size_and_sha(tmp_path: Path) -> No
     }
 
 
+def test_retained_file_audit_rejects_object_and_parent_replacement(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    content = b"descriptor-owned retained bytes"
+    digest = hashlib.sha256(content).hexdigest()
+    retained = tmp_path / "financial" / digest[:2] / digest
+    retained.parent.mkdir(parents=True)
+    retained.write_bytes(content)
+    displaced_parent = retained.parent.with_name(retained.parent.name + "-old")
+    original_read = os.read
+    replaced = False
+
+    def replace_parent_after_read(descriptor: int, size: int) -> bytes:
+        nonlocal replaced
+        chunk = original_read(descriptor, size)
+        if chunk and not replaced:
+            replaced = True
+            os.rename(retained.parent, displaced_parent)
+            retained.parent.mkdir()
+            retained.write_bytes(content)
+        return chunk
+
+    monkeypatch.setattr(os, "read", replace_parent_after_read)
+    with pytest.raises(ValueError, match="component changed"):
+        audit_retained_file(
+            storage_root=tmp_path,
+            storage_key=f"financial/{digest[:2]}/{digest}",
+            expected_size=len(content),
+            expected_sha256=digest,
+        )
+
+
+def test_retained_file_audit_rejects_regular_object_to_external_symlink_swap(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    content = b"descriptor-owned retained bytes"
+    digest = hashlib.sha256(content).hexdigest()
+    retained = tmp_path / "financial" / digest[:2] / digest
+    retained.parent.mkdir(parents=True)
+    retained.write_bytes(content)
+    external = tmp_path / "external"
+    external.write_bytes(content)
+    original_read = os.read
+    replaced = False
+
+    def replace_object_after_read(descriptor: int, size: int) -> bytes:
+        nonlocal replaced
+        chunk = original_read(descriptor, size)
+        if chunk and not replaced:
+            replaced = True
+            retained.unlink()
+            retained.symlink_to(external)
+        return chunk
+
+    monkeypatch.setattr(os, "read", replace_object_after_read)
+    with pytest.raises(ValueError, match="file changed during read"):
+        audit_retained_file(
+            storage_root=tmp_path,
+            storage_key=f"financial/{digest[:2]}/{digest}",
+            expected_size=len(content),
+            expected_sha256=digest,
+        )
+    assert external.read_bytes() == content
+
+
 def test_idempotency_delta_uses_database_owned_second_pass_lineage() -> None:
     database_created = {
         "filings_created": 0,
@@ -448,12 +866,195 @@ def test_idempotency_delta_uses_database_owned_second_pass_lineage() -> None:
     assert build_idempotency_delta(database_created)["idempotent"] is False
 
 
-def test_acceptance_aggregate_payload_is_stable_and_validates() -> None:
-    before = {
+def test_ft04_publication_acceptance_authorities_are_not_caller_configurable() -> None:
+    assert ACCEPTANCE_MAPPING_VERSION_ID == "sec-us-gaap-v1"
+    assert ACCEPTANCE_METHOD_POLICY_VERSION_ID == "sec-method-gate-v1"
+    assert ACCEPTANCE_AMENDMENT_POLICY_ID == "latest-known-v1"
+    assert ACCEPTANCE_PARSER_VERSION == "xbrl-lineage-v2.7"
+    assert V1_METRIC_DENOMINATOR == 21
+
+
+def test_metric_outcome_matrix_keeps_typed_gaps_out_of_published_coverage() -> None:
+    rows = build_metric_outcome_matrix(
+        expected_fiscal_years=(2025,),
+        metric_keys=("is.revenue", "is.gross_profit"),
+        decisions=(
+            {
+                "id": 11,
+                "metric_key": "is.revenue",
+                "fiscal_year": 2025,
+                "period_type": "FY",
+                "status": "published",
+                "reason_code": "published",
+                "metric_fact_id": 31,
+            },
+            {
+                "id": 12,
+                "metric_key": "is.gross_profit",
+                "fiscal_year": 2025,
+                "period_type": "FY",
+                "status": "unresolved",
+                "reason_code": "unresolved_dimensions",
+                "metric_fact_id": None,
+            },
+        ),
+    )
+
+    assert rows["metric_denominator"] == 2
+    assert rows["issuer_year_metric_denominator"] == 2
+    assert rows["published_count"] == 1
+    assert rows["typed_gap_count"] == 1
+    assert rows["missing_count"] == 0
+    assert rows["coverage_count"] == 1
+    assert rows["outcomes"][1]["outcome"] == "typed_gap"
+
+
+def test_metric_outcome_matrix_never_hides_absent_locked_metric() -> None:
+    rows = build_metric_outcome_matrix(
+        expected_fiscal_years=(2025,),
+        metric_keys=("is.revenue",),
+        decisions=(),
+    )
+
+    assert rows["coverage_count"] == 0
+    assert rows["missing_count"] == 1
+    assert rows["outcomes"] == [
+        {
+            "fiscal_year": 2025,
+            "metric_key": "is.revenue",
+            "outcome": "missing",
+            "decision_ids": [],
+            "metric_fact_ids": [],
+            "typed_reasons": ["missing_canonical_outcome"],
+        }
+    ]
+
+
+@pytest.mark.parametrize(
+    ("evidence", "reason"),
+    [
+        (
+            MetricGapEvidence(),
+            "unresolved_annual_filing_authority_unavailable",
+        ),
+        (
+            MetricGapEvidence(failed_parse_codes=("statement_authority_parse_failed",)),
+            "unresolved_annual_filing_parse_failed:statement_authority_parse_failed",
+        ),
+        (
+            MetricGapEvidence(annual_source_ids=(11,)),
+            "unresolved_mapped_raw_absent",
+        ),
+        (
+            MetricGapEvidence(annual_source_ids=(11,), mapped_raw_ids=(21,)),
+            "unresolved_statement_authority",
+        ),
+    ],
+)
+def test_metric_gap_evidence_uses_most_specific_bounded_stage(
+    evidence: MetricGapEvidence,
+    reason: str,
+) -> None:
+    assert classify_metric_gap_evidence(evidence) == (reason,)
+
+
+def test_metric_gap_evidence_rejects_complete_candidate_without_decision() -> None:
+    evidence = MetricGapEvidence(
+        annual_source_ids=(11,),
+        mapped_raw_ids=(21,),
+        statement_authority_ids=(31,),
+        normalization_ids=(41,),
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="canonical publication decision missing despite complete authority",
+    ):
+        classify_metric_gap_evidence(evidence)
+
+
+def test_metric_outcome_matrix_preserves_gap_when_same_pair_also_published() -> None:
+    rows = build_metric_outcome_matrix(
+        expected_fiscal_years=(2024,),
+        metric_keys=("revenue",),
+        decisions=(
+            {
+                "id": 1,
+                "fiscal_year": 2024,
+                "period_type": "FY",
+                "metric_key": "revenue",
+                "status": "published",
+                "reason_code": "published",
+                "metric_fact_id": 9,
+            },
+            {
+                "id": 2,
+                "fiscal_year": 2024,
+                "period_type": "FY",
+                "metric_key": "revenue",
+                "status": "unresolved",
+                "reason_code": "conflicting_evidence",
+                "metric_fact_id": None,
+            },
+        ),
+    )
+
+    assert rows["coverage_count"] == 0
+    assert rows["typed_gap_count"] == 1
+    assert rows["outcomes"][0]["outcome"] == "typed_gap"
+    assert rows["outcomes"][0]["typed_reasons"] == ["conflicting_evidence"]
+
+
+def test_publication_idempotency_delta_requires_every_persistent_evidence_delta_zero() -> None:
+    fields = {
+        "issuer_identities": 0,
+        "filings": 0,
+        "submission_snapshots": 0,
+        "artifacts": 0,
+        "parse_runs": 0,
+        "parse_run_artifacts": 0,
+        "raw_facts": 0,
+        "statement_report_references": 0,
+        "statement_occurrences": 0,
+        "statement_authorities": 0,
+        "numeric_normalizations": 0,
+        "publication_runs": 0,
+        "publication_run_sources": 0,
+        "publication_decisions": 0,
+        "publication_inputs": 0,
+        "publication_unresolved_inputs": 0,
+        "publication_audits": 0,
+        "publication_availabilities": 0,
         "metric_facts": 0,
+    }
+
+    assert publication_idempotency_delta(fields)["idempotent"] is True
+    fields["publication_inputs"] = 1
+    assert publication_idempotency_delta(fields)["idempotent"] is False
+    del fields["publication_inputs"]
+    with pytest.raises(ValueError, match="incomplete"):
+        publication_idempotency_delta(fields)
+
+
+def test_acceptance_aggregate_payload_is_stable_and_validates() -> None:
+    source_path_proof = {
+        "configured_route": "https://rate-guard.example.test",
+        "expected_instance_id": "11111111-1111-4111-8111-111111111111",
+        "fetch_mode": "rate_guard",
+        "fallback_enabled": False,
+        "fallback_url": None,
+        "config_digest": "a" * 64,
+        "manifest_digest": "b" * 64,
+    }
+    before = {
+        "run_id": "step-d-test",
+        "database": "valuepilot_acceptance_step_d_test",
+        "metric_facts": 0,
+        "source_path_proof": source_path_proof,
         "rate_guard": {
             "instance_id": "11111111-1111-4111-8111-111111111111",
-            "url": "http://rate-guard-local:9000",
+            "url": "https://rate-guard.example.test",
+            "expected_instance_id": "11111111-1111-4111-8111-111111111111",
             "metrics": {
                 "rate_per_sec": 1.0,
                 "total_request_count": 0,
@@ -464,10 +1065,14 @@ def test_acceptance_aggregate_payload_is_stable_and_validates() -> None:
         },
     }
     after = {
-        "metric_facts": 0,
+        "run_id": "step-d-test",
+        "database": "valuepilot_acceptance_step_d_test",
+        "metric_facts": 21,
+        "source_path_proof": source_path_proof,
         "rate_guard": {
             "instance_id": "11111111-1111-4111-8111-111111111111",
-            "url": "http://rate-guard-local:9000",
+            "url": "https://rate-guard.example.test",
+            "expected_instance_id": "11111111-1111-4111-8111-111111111111",
             "metrics": {
                 "rate_per_sec": 1.0,
                 "total_request_count": 17,
@@ -484,8 +1089,30 @@ def test_acceptance_aggregate_payload_is_stable_and_validates() -> None:
             "cik": "0000320193",
             "expected_completed_fiscal_years": [2025],
             "covered_completed_fiscal_years": [2025],
-            "pass_1": {"typed_gaps": [], "typed_failures": []},
+            "pass_1": {
+                "typed_gaps": [],
+                "typed_failures": [],
+                "mapping_version_id": "sec-us-gaap-v1",
+                "method_policy_version_id": "sec-method-gate-v1",
+                "publication_requested_cutoff": "2026-09-01T12:00:00+00:00",
+                "metric_outcomes": {
+                    "metric_denominator": 21,
+                    "issuer_year_metric_denominator": 21,
+                    "published_count": 21,
+                    "typed_gap_count": 0,
+                    "missing_count": 0,
+                    "coverage_count": 21,
+                },
+            },
             "pass_2": {"typed_gaps": [], "typed_failures": []},
+            "metric_outcomes": {
+                "metric_denominator": 21,
+                "issuer_year_metric_denominator": 21,
+                "published_count": 21,
+                "typed_gap_count": 0,
+                "missing_count": 0,
+                "coverage_count": 21,
+            },
             "idempotency_delta": {"idempotent": True},
             "retained_integrity": {"checked": 2, "failed": 0, "bytes": 40},
             "duplicates": {
@@ -493,6 +1120,7 @@ def test_acceptance_aggregate_payload_is_stable_and_validates() -> None:
                 "artifacts": 0,
                 "parse_runs": 0,
                 "raw_facts": 0,
+                "current_sec_slots": 0,
             },
         }
     ]
@@ -503,43 +1131,74 @@ def test_acceptance_aggregate_payload_is_stable_and_validates() -> None:
         before=before,
         after=after,
         cases=cases,
-        source_path_proof={
-            "configured_route": "http://rate-guard-local:9000",
-            "direct_sec_path": False,
-            "fallback_enabled": False,
-        },
+        source_path_proof=source_path_proof,
     )
 
     validate_aggregate_payload(payload)
-    assert payload["rate_guard_delta"]["requests"] == 17
-    assert payload["rate_guard_delta"]["429"] == 1
+    assert payload["shared_observed_window_delta"]["requests"] == 17
+    assert "rate_guard_delta" not in payload
+    assert payload["schema_version"] == 2
+    assert payload["shared_observed_window_delta"]["429"] == 1
     assert payload["retained_integrity"]["checked"] == 2
     assert payload["idempotent_case_count"] == 1
     assert "cases=1/1" in render_human_aggregate_summary(payload)
 
+    regressed_before = json.loads(json.dumps(before))
+    regressed_before["rate_guard"]["metrics"]["total_request_count"] = 18
+    with pytest.raises(ValueError, match="counter decreased"):
+        build_aggregate_payload(
+            run_id="step-d-test",
+            expected_case_ids=("aapl-primary",),
+            before=regressed_before,
+            after=after,
+            cases=cases,
+            source_path_proof=source_path_proof,
+        )
+
 
 def test_acceptance_aggregate_validator_rejects_integrity_or_publication() -> None:
     payload = {
-        "schema_version": 1,
+        "schema_version": 2,
         "run_id": "step-d-test",
         "expected_case_ids": ["aapl-primary"],
         "cases": [{"case_id": "aapl-primary"}],
         "case_count": 1,
         "metric_facts_before": 0,
         "metric_facts_after": 1,
+        "metric_outcomes": {
+            "metric_denominator": 21,
+            "issuer_year_metric_denominator": 2,
+            "published_count": 2,
+            "typed_gap_count": 0,
+            "missing_count": 0,
+            "coverage_count": 2,
+        },
         "retained_integrity": {"checked": 1, "failed": 1, "bytes": 4},
         "duplicate_totals": {
             "filings": 0,
             "artifacts": 0,
             "parse_runs": 0,
             "raw_facts": 0,
+            "current_sec_slots": 0,
         },
+        "mapping_versions": ["sec-us-gaap-v1"],
+        "method_policy_versions": ["sec-method-gate-v1"],
         "rate_guard_before": {"instance_id": "same"},
         "rate_guard_after": {"instance_id": "same"},
-        "rate_guard_delta": {"requests": 0, "403": 0, "429": 0, "503": 0},
+        "shared_observed_window_delta": {
+            "requests": 0,
+            "403": 0,
+            "429": 0,
+            "503": 0,
+            "cache_hits": 0,
+            "cache_misses": 0,
+        },
         "source_path_proof": {
-            "direct_sec_path": False,
+            "configured_route": "https://rate-guard.example.test",
+            "expected_instance_id": "11111111-1111-4111-8111-111111111111",
+            "fetch_mode": "rate_guard",
             "fallback_enabled": False,
+            "fallback_url": None,
         },
     }
     with pytest.raises(ValueError, match="metric_facts"):
@@ -548,7 +1207,7 @@ def test_acceptance_aggregate_validator_rejects_integrity_or_publication() -> No
 
 def test_acceptance_aggregate_validator_rejects_non_idempotent_second_pass() -> None:
     payload = {
-        "schema_version": 1,
+        "schema_version": 2,
         "run_id": "step-d-test",
         "expected_case_ids": ["aapl-primary"],
         "cases": [{"case_id": "aapl-primary"}],
@@ -556,25 +1215,85 @@ def test_acceptance_aggregate_validator_rejects_non_idempotent_second_pass() -> 
         "idempotent_case_count": 0,
         "metric_facts_before": 0,
         "metric_facts_after": 0,
+        "metric_outcomes": {
+            "metric_denominator": 21,
+            "issuer_year_metric_denominator": 0,
+            "published_count": 0,
+            "typed_gap_count": 0,
+            "missing_count": 0,
+            "coverage_count": 0,
+        },
         "retained_integrity": {"checked": 1, "failed": 0, "bytes": 4},
         "duplicate_totals": {
             "filings": 0,
             "artifacts": 0,
             "parse_runs": 0,
             "raw_facts": 0,
+            "current_sec_slots": 0,
         },
+        "mapping_versions": ["sec-us-gaap-v1"],
+        "method_policy_versions": ["sec-method-gate-v1"],
         "rate_guard_before": {"instance_id": "same"},
         "rate_guard_after": {
             "instance_id": "same",
             "metrics": {"rate_per_sec": 1.0},
         },
         "source_path_proof": {
-            "direct_sec_path": False,
+            "configured_route": "https://rate-guard.example.test",
+            "expected_instance_id": "11111111-1111-4111-8111-111111111111",
+            "fetch_mode": "rate_guard",
             "fallback_enabled": False,
+            "fallback_url": None,
         },
     }
 
     with pytest.raises(ValueError, match="idempotent"):
+        validate_aggregate_payload(payload)
+
+
+def test_acceptance_aggregate_validator_rejects_metric_outcome_mismatch() -> None:
+    payload = {
+        "schema_version": 2,
+        "run_id": "step-d-test",
+        "expected_case_ids": ["aapl-primary"],
+        "cases": [{"case_id": "aapl-primary"}],
+        "case_count": 1,
+        "idempotent_case_count": 1,
+        "metric_facts_before": 0,
+        "metric_facts_after": 21,
+        "metric_outcomes": {
+            "metric_denominator": 21,
+            "issuer_year_metric_denominator": 21,
+            "published_count": 20,
+            "typed_gap_count": 0,
+            "missing_count": 0,
+            "coverage_count": 20,
+        },
+        "retained_integrity": {"checked": 1, "failed": 0, "bytes": 4},
+        "duplicate_totals": {
+            "filings": 0,
+            "artifacts": 0,
+            "parse_runs": 0,
+            "raw_facts": 0,
+            "current_sec_slots": 0,
+        },
+        "mapping_versions": ["sec-us-gaap-v1"],
+        "method_policy_versions": ["sec-method-gate-v1"],
+        "rate_guard_before": {"instance_id": "same"},
+        "rate_guard_after": {
+            "instance_id": "same",
+            "metrics": {"rate_per_sec": 1.0},
+        },
+        "source_path_proof": {
+            "configured_route": "https://rate-guard.example.test",
+            "expected_instance_id": "11111111-1111-4111-8111-111111111111",
+            "fetch_mode": "rate_guard",
+            "fallback_enabled": False,
+            "fallback_url": None,
+        },
+    }
+
+    with pytest.raises(ValueError, match="denominator mismatch"):
         validate_aggregate_payload(payload)
 
 

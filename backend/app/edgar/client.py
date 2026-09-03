@@ -26,7 +26,7 @@ class EdgarClient:
 
     def __init__(self, http_client: httpx.Client | None = None) -> None:
         if (
-            settings.EDGAR_FETCH_MODE == "live"
+            settings.EDGAR_FETCH_MODE in {"live", "rate_guard"}
             and settings.RATE_GUARD_ALLOW_LOCAL_FALLBACK
             and get_active_route() is None
         ):
@@ -36,7 +36,7 @@ class EdgarClient:
 
             verify_live_rate_guard()
         self._rate_guard = RateGuardClient(http_client)
-        if settings.EDGAR_FETCH_MODE == "live":
+        if settings.EDGAR_FETCH_MODE in {"live", "rate_guard"}:
             # API startup verifies early; this second boundary also protects
             # operator CLIs and one-off workers that do not run FastAPI lifespan.
             try:

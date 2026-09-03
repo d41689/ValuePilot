@@ -22,6 +22,7 @@ from app.ingestion.parsers.v1_value_line.semantics import has_value_line_markers
 from app.ingestion.normalization.scaler import Scaler
 from app.services.mapping_spec import MappingSpec
 from app.services.owners_earnings import build_owners_earnings_facts
+from app.services.canonical_financials import reviewed_method_gate
 from app.services.calculated_metrics.value_line_ratios import ValueLineRatioCalculator
 from app.services.calculated_metrics.piotroski_f_score import PiotroskiFScoreCalculator
 
@@ -259,12 +260,19 @@ class IngestionService:
                         self.db.flush()
 
                     facts, _, unmapped = self.mapping_spec.generate_facts(page_json)
-                    facts.extend(
-                        build_owners_earnings_facts(
-                            facts,
-                            report_date=report_date,
-                        )
+                    owner_earnings_gate = reviewed_method_gate(
+                        self.db,
+                        stock_id=stock.id,
+                        method_key="owner_earnings",
+                        effective_as_of=report_date,
                     )
+                    if owner_earnings_gate.status == "approved":
+                        facts.extend(
+                            build_owners_earnings_facts(
+                                facts,
+                                report_date=report_date,
+                            )
+                        )
                     for path in sorted(unmapped):
                         LOGGER.warning(
                             "Unmapped page_json path: %s (document_id=%s page=%s)",
@@ -511,12 +519,19 @@ class IngestionService:
                 self.db.flush()
 
             facts, _, unmapped = self.mapping_spec.generate_facts(page_json)
-            facts.extend(
-                build_owners_earnings_facts(
-                    facts,
-                    report_date=report_date,
-                )
+            owner_earnings_gate = reviewed_method_gate(
+                self.db,
+                stock_id=stock.id,
+                method_key="owner_earnings",
+                effective_as_of=report_date,
             )
+            if owner_earnings_gate.status == "approved":
+                facts.extend(
+                    build_owners_earnings_facts(
+                        facts,
+                        report_date=report_date,
+                    )
+                )
             for path in sorted(unmapped):
                 LOGGER.warning(
                     "Unmapped page_json path: %s (document_id=%s page=%s)",
