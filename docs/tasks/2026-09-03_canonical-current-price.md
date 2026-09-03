@@ -250,3 +250,35 @@ git diff --check
   Next production build's generated `tsconfig.json` include entry was removed
   after verification. No migration or stored-data rewrite was added. Draft PR
   #141 is ready for the next Terra adversarial review.
+- 2026-09-03: Terra adversarial review round 7 found two valid residual gaps.
+  Persisted coverage source identity compared a raw evidence label against a
+  normalized cited label, so valid aliases could be blocked. A single public
+  `normalize_price_source` contract now drives provider construction,
+  authorization, selection, and both sides of coverage identity comparison.
+  Raw stored/evidence source labels remain unchanged for audit display.
+  Regressions cover `yahoo`/`yfinance` and
+  `twelve_data`/`12data`/`twelvedata` across coverage list, workspace, and
+  ready-notification materialization.
+- 2026-09-03: canonical current, point, and current-plus-history readers now
+  have composable batch APIs. Every current/context batch captures one
+  `evaluated_at`; point batches retain per-stock date-only knowledge cutoffs.
+  All batch results delegate the existing single-reader selection,
+  authorization, ISO-currency, PIT, and freshness contract. Watchlist, manual
+  portfolio, Oracle's Lens, and 13F list projections now use scoped batch Stock,
+  price, history, and valuation-fact reads rather than per-item reads. The
+  101-stock regression holds point/current/context price queries to `1/1/2`;
+  the 101-member Watchlist regression fell from a reproduced `405` SQL
+  statements to exactly `5`, with one response clock and expected session.
+- 2026-09-03: the first round-7 full backend run exposed one source-scanner
+  regression (`2174 passed, 1 failed`): the equivalent batched valuation filter
+  no longer contained the machine-verifiable `source_type="parsed"` keyword
+  boundary. The batch filter now uses an explicit keyword helper for both
+  `manual` and `parsed`, retaining the single scoped fact query. The red guard
+  passed before the full rerun.
+- 2026-09-03: post-round-7 exact closing gate passed: Compose rebuild, Alembic
+  upgrade, backend `2175 passed`, frontend `222 passed`, frontend lint,
+  production build, and `git diff --check`. The Next production build's
+  generated `tsconfig.json` include entry was removed after verification. No
+  migration, stored-data rewrite, unscoped/full-table price read, or alternate
+  canonical reader was added. Draft PR #141 is ready for Terra adversarial
+  review round 8.
