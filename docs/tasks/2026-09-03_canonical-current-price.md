@@ -98,3 +98,13 @@ git diff --check
 
 - 2026-09-03: task opened from current `origin/main` (`52a0c3ec`); no #128
   commits or migrations reused.
+- 2026-09-03: Draft PR #141 opened before implementation. Contract tests were
+  committed red; the implementation extends the existing canonical reader and
+  requires no schema or migration change.
+- 2026-09-03: focused backend regression set passed (91 tests); frontend unit
+  tests passed (220 tests), lint passed, and the production build passed.
+- 2026-09-03: exact closing gate passed: Compose rebuild, Alembic upgrade,
+  backend `2134 passed`, frontend `220 passed`, frontend lint, production build,
+  and `git diff --check`. The first Compose lint attempt found an old anonymous
+  `node_modules` volume; `npm install` inside the web container synchronized it,
+  after which the exact frontend unit/lint/build commands all passed.
