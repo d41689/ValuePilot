@@ -20,7 +20,7 @@ test('stock summary separates canonical current price from dated report referenc
   assert.match(page, /report_price_reference/);
   assert.match(card, /Canonical EOD price/);
   assert.match(card, /Report price reference/);
-  assert.match(card, /reasonCode/);
+  assert.match(card, /reason_code/);
   assert.doesNotMatch(card, />现价</);
 });
 
@@ -28,7 +28,7 @@ test('DCF uses only eligible canonical value for margin of safety', () => {
   const page = source('app', '(dashboard)', 'stocks', '[ticker]', 'dcf', 'page.tsx');
 
   assert.match(page, /current_price/);
-  assert.match(page, /currentPrice\.status === 'available'/);
+  assert.match(page, /currentPrice\.status !== 'available'/);
   assert.match(page, /currentPrice\.value/);
   assert.match(page, /Manual scenario price/);
   assert.match(page, /canonical current price remains unavailable/);
@@ -37,9 +37,10 @@ test('DCF uses only eligible canonical value for margin of safety', () => {
 
 test('watchlist renders the full canonical contract and typed comparison blocker', () => {
   const page = source('app', '(dashboard)', 'watchlist', 'page.tsx');
+  const contract = source('lib', 'currentPrice.ts');
 
   assert.match(page, /current_price/);
-  assert.match(page, /freshness_state/);
+  assert.match(contract, /freshness_state/);
   assert.match(page, /reason_code/);
   assert.match(page, /expected_session_date/);
   assert.match(page, /source_authorization_state/);

@@ -15,6 +15,7 @@ import provenanceHelpers from '@/lib/factProvenance';
 import { buildStockRoute, normalizeTicker } from '@/lib/stockRoutes';
 import type { DynamicFScoreApiCard } from '@/lib/dynamicFScoreCard';
 import { OpenResearchCaseButton } from '@/components/research/OpenResearchCaseButton';
+import type { CanonicalCurrentPrice, ReportPriceReference } from '@/lib/currentPrice';
 
 const { buildActualConflictDisplayItems } = actualConflictHelpers;
 const { formatFactProvenanceLabel } = provenanceHelpers;
@@ -32,11 +33,11 @@ type StockSummary = {
   ticker: string;
   exchange: string | null;
   company_name: string;
-  price: number | null;
+  current_price: CanonicalCurrentPrice;
+  report_price_reference: ReportPriceReference;
   pe: number | null;
   active_report_document_id?: number | null;
   active_report_date?: string | null;
-  price_provenance?: FactProvenance | null;
   pe_provenance?: FactProvenance | null;
   actual_conflict_count?: number;
   actual_conflicts?: Array<{
@@ -132,11 +133,11 @@ export default function StockSummaryPage() {
             companyName={summary.company_name}
             ticker={summary.ticker}
             exchange={summary.exchange}
-            price={summary.price}
+            currentPrice={summary.current_price}
+            reportPriceReference={summary.report_price_reference}
             pe={summary.pe}
             activeReportDate={summary.active_report_date}
             activeReportDocumentId={summary.active_report_document_id}
-            priceProvenanceLabel={formatFactProvenanceLabel(summary.price_provenance)}
             peProvenanceLabel={formatFactProvenanceLabel(summary.pe_provenance)}
             actualConflictCount={summary.actual_conflict_count ?? 0}
             actualConflictItems={actualConflictItems}

@@ -49,6 +49,10 @@ import {
 } from '@/components/ui/table';
 import { Textarea } from '@/components/ui/textarea';
 import { useToast } from '@/components/ui/use-toast';
+import {
+  currentPriceEvidenceLabel,
+  type CanonicalCurrentPrice,
+} from '@/lib/currentPrice';
 
 type CaseState = 'queued' | 'researching' | 'monitoring' | 'closed' | 'voided';
 type Decision = 'watch' | 'own' | 'pass';
@@ -159,24 +163,17 @@ type Workspace = {
     current_value_numeric: number | null;
     previous_value_numeric: number | null;
   }>;
-  price: {
-    price_id: number | null;
-    close: number | string | null;
-    price_date: string | null;
-    currency: string | null;
-    source: string | null;
-    freshness_state: string;
-    reason_code: string | null;
-    expected_session_date: string | null;
-  };
+  current_price: CanonicalCurrentPrice;
   valuation: {
     user_intrinsic_value: number | null;
     user_intrinsic_value_status: string;
     display_state: string;
     user_intrinsic_value_as_of: string | null;
+    user_intrinsic_value_currency: string | null;
     system_reference_value: number | null;
     system_reference_type: string | null;
     system_reference_as_of: string | null;
+    system_reference_currency: string | null;
   };
   coverage: Array<{
     id: number;
@@ -469,14 +466,14 @@ export default function ResearchCaseWorkspacePage() {
       !workspace ||
       workspace.valuation.user_intrinsic_value === null ||
       workspace.valuation.display_state === 'under_review' ||
-      workspace.price.close === null ||
-      workspace.price.currency !== 'USD' ||
-      workspace.price.freshness_state !== 'fresh'
+      workspace.current_price.status !== 'available' ||
+      workspace.current_price.value === null ||
+      workspace.current_price.currency !== workspace.valuation.user_intrinsic_value_currency
     ) {
       return null;
     }
     const fairValue = workspace.valuation.user_intrinsic_value;
-    return (fairValue - Number(workspace.price.close)) / fairValue;
+    return (fairValue - Number(workspace.current_price.value)) / fairValue;
   }, [workspace]);
 
   if (workspaceQuery.isLoading) {
@@ -540,10 +537,11 @@ export default function ResearchCaseWorkspacePage() {
 
       <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
         <Card>
-          <CardHeader className="pb-2"><CardDescription>Canonical EOD price</CardDescription><CardTitle>{money(workspace.price.close)}</CardTitle></CardHeader>
+          <CardHeader className="pb-2"><CardDescription>Canonical EOD price</CardDescription><CardTitle>{money(workspace.current_price.value)}</CardTitle></CardHeader>
           <CardContent className="text-xs text-muted-foreground">
-            {workspace.price.price_date ?? 'No observation'} · {workspace.price.currency ?? 'currency unknown'} · {label(workspace.price.freshness_state)}
-            {workspace.price.reason_code ? <div className="mt-1 font-mono">{workspace.price.reason_code}</div> : null}
+            {currentPriceEvidenceLabel(workspace.current_price)}
+            <div className="mt-1">Source authority: {workspace.current_price.source_authorization_state}</div>
+            {workspace.current_price.reason_code ? <div className="mt-1 font-mono">{workspace.current_price.reason_code}</div> : null}
           </CardContent>
         </Card>
         <Card>
