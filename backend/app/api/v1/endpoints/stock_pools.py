@@ -38,7 +38,7 @@ def _serialize_piotroski_total(fact: MetricFact) -> dict[str, Any]:
     return {
         "period_end_date": fact.period_end_date.isoformat() if fact.period_end_date else None,
         "fiscal_year": value_json.get("fiscal_year") or (fact.period_end_date.year if fact.period_end_date else None),
-        "score": fact.value_numeric,
+        "score": float(fact.value_numeric) if fact.value_numeric is not None else None,
         "status": value_json.get("status"),
         "variant": value_json.get("variant"),
         "partial_score": value_json.get("partial_score"),
