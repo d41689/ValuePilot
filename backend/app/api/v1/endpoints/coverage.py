@@ -64,7 +64,7 @@ def list_requirements(
     )
     return {
         "priority_policy_version": PRIORITY_POLICY_VERSION,
-        "items": [serialize_requirement(row, stock) for row, stock in rows],
+        "items": [serialize_requirement(session, row, stock) for row, stock in rows],
     }
 
 

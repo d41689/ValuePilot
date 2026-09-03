@@ -486,6 +486,33 @@ def configured_price_source_priority() -> tuple[str, ...]:
     return tuple(configured)
 
 
+def current_price_source_authorization_state(source: Any) -> str:
+    """Revalidate one stored provider identity against current deployment policy."""
+    normalized = _normalized_source(source)
+    if not normalized:
+        return "unavailable"
+    return (
+        "authorized"
+        if normalized in configured_price_source_priority()
+        else "unauthorized"
+    )
+
+
+def stored_price_source_authorization_state(
+    session: Session,
+    *,
+    price_id: int | None,
+    stock_id: int,
+) -> str:
+    """Revalidate a persisted observation link without bypassing this service."""
+    if price_id is None:
+        return "unavailable"
+    observation = session.get(StockPrice, price_id)
+    if observation is None or observation.stock_id != stock_id:
+        return "unavailable"
+    return current_price_source_authorization_state(observation.source)
+
+
 def serialize_canonical_eod_price(price: CanonicalEodPrice) -> dict[str, Any]:
     """One wire contract for every current-price product surface."""
     return {

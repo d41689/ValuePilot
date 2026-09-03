@@ -17,6 +17,7 @@ from app.services.market_data_service import (
     PRICE_FRESHNESS_POLICY_VERSION,
     read_canonical_eod_price,
     serialize_canonical_eod_price,
+    stored_price_source_authorization_state,
 )
 from app.services.oracles_lens.constants import SCORE_VERSION
 
@@ -458,7 +459,58 @@ def evaluate_research_coverage(
     }
 
 
-def serialize_requirement(row: ResearchCoverageRequirement, stock: Stock) -> dict[str, Any]:
+def _serialize_price_requirement_evidence(
+    session: Session,
+    *,
+    row: ResearchCoverageRequirement,
+) -> tuple[dict[str, Any], bool]:
+    """Return persisted price evidence only while its authority remains valid.
+
+    Read permission is deliberately stricter than storage. A legacy snapshot
+    without proof that its source was authorized when persisted cannot acquire
+    authority merely because that provider happens to be configured today.
+    """
+    evidence = dict(row.evidence_json or {})
+    persisted_authorization = evidence.get("source_authorization_state")
+    current_authorization = (
+        stored_price_source_authorization_state(
+            session,
+            price_id=row.source_ref_id,
+            stock_id=row.stock_id,
+        )
+        if row.source_type == "stock_price"
+        else "unavailable"
+    )
+    authorized = (
+        persisted_authorization == "authorized"
+        and current_authorization == "authorized"
+    )
+    if authorized:
+        evidence["source_authorization_state"] = "authorized"
+        return evidence, True
+
+    had_displayable_observation = evidence.get("close") is not None
+    evidence["close"] = None
+    evidence["source_authorization_state"] = (
+        current_authorization
+        if persisted_authorization == "authorized"
+        else "unavailable"
+    )
+    return evidence, not (had_displayable_observation or row.state == "ready")
+
+
+def serialize_requirement(
+    session: Session,
+    row: ResearchCoverageRequirement,
+    stock: Stock,
+) -> dict[str, Any]:
+    evidence = dict(row.evidence_json or {})
+    persisted_state_remains_valid = True
+    if row.kind == "eod_price":
+        evidence, persisted_state_remains_valid = _serialize_price_requirement_evidence(
+            session,
+            row=row,
+        )
     return {
         "id": row.id,
         "stock_id": row.stock_id,
@@ -469,16 +521,28 @@ def serialize_requirement(row: ResearchCoverageRequirement, stock: Stock) -> dic
         "matched_rule": row.matched_rule,
         "priority_rank": row.priority_rank,
         "rank_components": row.rank_components or {},
-        "state": row.state,
-        "reason_code": row.reason_code,
-        "reason": row.reason,
+        "state": row.state if persisted_state_remains_valid else "blocked",
+        "reason_code": (
+            row.reason_code
+            if persisted_state_remains_valid
+            else "source_unavailable"
+        ),
+        "reason": (
+            row.reason
+            if persisted_state_remains_valid
+            else "The persisted price source is not currently authorized for display."
+        ),
         "source_type": row.source_type,
         "source_ref_id": row.source_ref_id,
-        "evidence": row.evidence_json or {},
+        "evidence": evidence,
         "observed_at": row.observed_at.isoformat() if row.observed_at else None,
         "freshness_policy_version": row.freshness_policy_version,
         "evaluated_at": row.evaluated_at.isoformat(),
-        "next_action": row.next_action,
+        "next_action": (
+            row.next_action
+            if persisted_state_remains_valid
+            else "refresh_eod_price"
+        ),
         "first_unmet_at": (
             row.first_unmet_at.isoformat() if row.first_unmet_at else None
         ),

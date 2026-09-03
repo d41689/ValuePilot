@@ -82,6 +82,19 @@ def test_open_case_coverage_ready_and_failed_events_are_durable_and_idempotent(
     db_session.add(stock)
     db_session.flush()
     case = ResearchCase(user_id=user.id, stock_id=stock.id, state="queued")
+    price = StockPrice(
+        stock_id=stock.id,
+        price_date=date(2026, 7, 17),
+        open=100,
+        high=101,
+        low=99,
+        close=100,
+        volume=1_000,
+        currency="USD",
+        source="yfinance",
+    )
+    db_session.add(price)
+    db_session.flush()
     requirement = ResearchCoverageRequirement(
         user_id=user.id,
         stock_id=stock.id,
@@ -92,7 +105,12 @@ def test_open_case_coverage_ready_and_failed_events_are_durable_and_idempotent(
         state="ready",
         reason="A current EOD close is ready.",
         source_type="stock_price",
-        source_ref_id=77,
+        source_ref_id=price.id,
+        evidence_json={
+            "close": "100.0",
+            "source": "yfinance",
+            "source_authorization_state": "authorized",
+        },
         freshness_policy_version="us-market-session-v1.0",
         evaluated_at=datetime(2026, 7, 20, tzinfo=timezone.utc),
         is_current=True,
@@ -107,6 +125,7 @@ def test_open_case_coverage_ready_and_failed_events_are_durable_and_idempotent(
     requirement.reason_code = "provider_failed"
     requirement.reason = "The configured provider failed permanently."
     requirement.source_ref_id = None
+    requirement.evidence_json = {"close": None}
     requirement.evaluated_at = datetime(2026, 7, 21, tzinfo=timezone.utc)
     db_session.commit()
     assert materialize_research_coverage_changes(db_session) == 1
@@ -118,6 +137,57 @@ def test_open_case_coverage_ready_and_failed_events_are_durable_and_idempotent(
     ]
     assert [row.severity for row in rows] == ["info", "warning"]
     assert all(row.case_id == case.id for row in rows)
+
+
+def test_revoked_price_coverage_does_not_materialize_a_ready_notification(
+    db_session, user_factory, monkeypatch
+):
+    user = user_factory("coverage-notify-revoked@example.com")
+    stock = Stock(ticker="COVR", exchange="NYSE", company_name="Revoked Coverage")
+    db_session.add(stock)
+    db_session.flush()
+    case = ResearchCase(user_id=user.id, stock_id=stock.id, state="queued")
+    price = StockPrice(
+        stock_id=stock.id,
+        price_date=date(2026, 7, 17),
+        open=100,
+        high=101,
+        low=99,
+        close=100,
+        volume=1_000,
+        currency="USD",
+        source="yfinance",
+    )
+    db_session.add(price)
+    db_session.flush()
+    requirement = ResearchCoverageRequirement(
+        user_id=user.id,
+        stock_id=stock.id,
+        kind="eod_price",
+        priority_policy_version="research-coverage-priority-v1.0",
+        matched_rule="open_case_queued",
+        priority_rank=40,
+        state="ready",
+        reason="A current EOD close is ready.",
+        source_type="stock_price",
+        source_ref_id=price.id,
+        evidence_json={
+            "close": "100.0",
+            "source": "yfinance",
+            "source_authorization_state": "authorized",
+        },
+        freshness_policy_version="eod-freshness-v1.0",
+        evaluated_at=datetime(2026, 7, 20, tzinfo=timezone.utc),
+        is_current=True,
+    )
+    db_session.add_all([case, requirement])
+    db_session.commit()
+
+    monkeypatch.setattr(settings, "MARKET_DATA_PRIMARY", "none")
+    monkeypatch.setattr(settings, "MARKET_DATA_SECONDARY", "none")
+
+    assert materialize_research_coverage_changes(db_session) == 0
+    assert db_session.query(LogicalNotification).count() == 0
 
 
 def test_manager_follow_is_idempotent_and_user_scoped(db_session, user_factory):

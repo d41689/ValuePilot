@@ -283,9 +283,12 @@ def build_research_workspace(
         "piotroski_f_score": _piotroski_series(facts),
         "actual_conflicts": actual_conflicts,
         "missing_items": [
-            serialize_requirement(row, stock)
-            for row in coverage_rows
-            if row.state != "ready"
+            requirement
+            for requirement in (
+                serialize_requirement(session, row, stock)
+                for row in coverage_rows
+            )
+            if requirement["state"] != "ready"
         ],
         "current_price": serialize_canonical_eod_price(current_price),
         "valuation": {
@@ -312,7 +315,9 @@ def build_research_workspace(
             ),
             "system_reference_currency": valuation.system_reference_currency,
         },
-        "coverage": [serialize_requirement(row, stock) for row in coverage_rows],
+        "coverage": [
+            serialize_requirement(session, row, stock) for row in coverage_rows
+        ],
         "oracles_lens": (
             {
                 "signal_id": signal.id,

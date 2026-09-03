@@ -924,6 +924,7 @@ def materialize_research_coverage_changes(session: Session) -> int:
     from app.models.coverage import ResearchCoverageRequirement
     from app.models.research import ResearchCase
     from app.models.stocks import Stock
+    from app.services.research_coverage import serialize_requirement
 
     rows = (
         session.query(ResearchCoverageRequirement, ResearchCase, Stock)
@@ -947,19 +948,22 @@ def materialize_research_coverage_changes(session: Session) -> int:
     )
     created = 0
     for requirement, case, stock in rows:
+        serialized = serialize_requirement(session, requirement, stock)
+        if serialized["state"] not in {"ready", "failed"}:
+            continue
         evidence_version = hashlib.sha256(
             json.dumps(
                 {
-                    "state": requirement.state,
-                    "reason_code": requirement.reason_code,
-                    "source_type": requirement.source_type,
-                    "source_ref_id": requirement.source_ref_id,
+                    "state": serialized["state"],
+                    "reason_code": serialized["reason_code"],
+                    "source_type": serialized["source_type"],
+                    "source_ref_id": serialized["source_ref_id"],
                     "observed_at": (
                         requirement.observed_at.isoformat()
                         if requirement.observed_at
                         else None
                     ),
-                    "evidence": requirement.evidence_json,
+                    "evidence": serialized["evidence"],
                     "freshness_policy_version": requirement.freshness_policy_version,
                 },
                 sort_keys=True,
@@ -971,11 +975,11 @@ def materialize_research_coverage_changes(session: Session) -> int:
             [
                 requirement.priority_policy_version,
                 requirement.kind,
-                requirement.state,
+                serialized["state"],
                 evidence_version,
             ]
         )
-        was_ready = requirement.state == "ready"
+        was_ready = serialized["state"] == "ready"
         _, was_created = produce_notification(
             session,
             user_id=requirement.user_id,
@@ -992,7 +996,7 @@ def materialize_research_coverage_changes(session: Session) -> int:
                 f"{requirement.kind.replace('_', ' ')} is ready for the open research case. "
                 "Review the source and continue independent research."
                 if was_ready
-                else f"{requirement.kind.replace('_', ' ')} failed: {requirement.reason}"
+                else f"{requirement.kind.replace('_', ' ')} failed: {serialized['reason']}"
             ),
             evidence_route=f"/research/cases/{case.id}",
             case_id=case.id,
@@ -1001,10 +1005,10 @@ def materialize_research_coverage_changes(session: Session) -> int:
             payload={
                 "coverage_requirement_id": requirement.id,
                 "kind": requirement.kind,
-                "state": requirement.state,
-                "reason_code": requirement.reason_code,
-                "source_type": requirement.source_type,
-                "source_ref_id": requirement.source_ref_id,
+                "state": serialized["state"],
+                "reason_code": serialized["reason_code"],
+                "source_type": serialized["source_type"],
+                "source_ref_id": serialized["source_ref_id"],
             },
         )
         created += int(was_created)

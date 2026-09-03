@@ -19,7 +19,10 @@ from app.schemas.portfolios import (
     ManualPositionResize,
     ManualPositionReview,
 )
-from app.services.market_data_service import read_current_eod_price
+from app.services.market_data_service import (
+    read_current_eod_price,
+    serialize_canonical_eod_price,
+)
 
 
 SIX_PLACES = Decimal("0.000001")
@@ -572,23 +575,7 @@ def get_portfolio_workspace(
         )
         item["identity_state"] = "active" if stock.is_active else "stock_inactive"
         price = read_current_eod_price(session, stock=stock)
-        item["price"] = (
-            str(price.current_value) if price.current_value is not None else None
-        )
-        item["price_observation"] = (
-            str(price.close)
-            if price.close is not None
-            and price.source_authorization_state != "unauthorized"
-            else None
-        )
-        item["price_date"] = price.price_date.isoformat() if price.price_date else None
-        item["price_currency"] = price.currency
-        item["price_freshness_state"] = price.freshness_state
-        item["price_source"] = price.source
-        item["price_source_authorization_state"] = (
-            price.source_authorization_state
-        )
-        item["price_reason_code"] = price.reason_code
+        item["current_price"] = serialize_canonical_eod_price(price)
         item["market_value"] = None
         item["unrealized_return"] = None
         if not stock.is_active:
