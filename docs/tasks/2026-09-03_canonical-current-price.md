@@ -176,3 +176,9 @@ git diff --check
   for the current projection while historical service-level dates retain the
   date-only cutoff. The full coverage test file passes (`11 passed`); the exact
   full backend command will be rerun.
+- 2026-09-03: post-round-3 exact closing gate passed after the coverage cutoff
+  fix: Compose rebuild, Alembic upgrade, backend `2153 passed`, frontend `222
+  passed`, frontend lint, production build, and `git diff --check`. The Next
+  production build's generated `tsconfig.json` include entry was removed after
+  verification; it is not part of the product change. No migration was added.
+  Draft PR #141 is ready for Terra adversarial review round 4.
