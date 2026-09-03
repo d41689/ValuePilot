@@ -196,3 +196,9 @@ git diff --check
   safety, and Oracle discount/owner-yield paths, plus invalid manual-position
   input and the explicit-currency/fallback-unit conflict. The focused green run
   passed (`59 passed`); a full closing gate follows before Terra round 5.
+- 2026-09-03: post-round-4 exact closing gate passed: Compose rebuild, Alembic
+  upgrade, backend `2162 passed`, frontend `222 passed`, frontend lint,
+  production build, and `git diff --check`. The Next production build's
+  generated `tsconfig.json` include entry was removed after verification; it is
+  not part of the product change. No migration or stored-data rewrite was
+  added. Draft PR #141 is ready for Terra adversarial review round 5.
