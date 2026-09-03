@@ -16,6 +16,7 @@ from app.models.stocks import PoolMembership, Stock
 from app.services.market_data_service import (
     PRICE_FRESHNESS_POLICY_VERSION,
     read_canonical_eod_price,
+    serialize_canonical_eod_price,
 )
 from app.services.oracles_lens.constants import SCORE_VERSION
 
@@ -193,6 +194,7 @@ def _price_requirement(
         as_of=as_of,
         include_as_of_session=include_as_of_session,
     )
+    canonical = serialize_canonical_eod_price(result)
     if result.status == "available":
         state = "ready"
     elif result.reason_code == "price_older_than_expected_session":
@@ -213,17 +215,21 @@ def _price_requirement(
         "source_type": "stock_price" if result.price_id else None,
         "source_ref_id": result.price_id,
         "evidence_json": {
-            "price_date": result.price_date.isoformat() if result.price_date else None,
-            "expected_session_date": (
-                result.expected_session_date.isoformat()
-                if result.expected_session_date
+            "price_date": canonical["price_date"],
+            "expected_session_date": canonical["expected_session_date"],
+            "close": (
+                str(canonical["observation_value"])
+                if canonical["observation_value"] is not None
                 else None
             ),
-            "close": str(result.close) if result.close is not None else None,
-            "currency": result.currency,
-            "source": result.source,
-            "source_authorization_state": result.source_authorization_state,
-            "calendar_code": result.calendar_code,
+            "currency": canonical["currency"],
+            "source": canonical["source"],
+            "source_authorization_state": canonical["source_authorization_state"],
+            "calendar_code": canonical["calendar_code"],
+            "status": canonical["status"],
+            "as_of_date": canonical["as_of_date"],
+            "as_of_mode": canonical["as_of_mode"],
+            "source_policy_version": canonical["source_policy_version"],
         },
         "observed_at": result.observed_at,
         "next_action": (

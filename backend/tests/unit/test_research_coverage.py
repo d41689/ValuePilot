@@ -9,6 +9,7 @@ from app.models.artifacts import PdfDocument
 from app.models.coverage import ResearchCoverageRequirement
 from app.models.oracles_lens import OraclesLensSignal
 from app.models.stocks import PoolMembership, Stock, StockPool, StockPrice
+from app.services.market_data_service import ET, compute_target_date, expected_session_on_or_before
 from app.services.oracles_lens.constants import SCORE_VERSION
 
 
@@ -214,6 +215,82 @@ def test_coverage_api_never_returns_another_users_projection(
     assert {row["stock_id"] for row in owner_response.json()["items"]} == {stock.id}
     assert other_response.status_code == 200, other_response.text
     assert other_response.json()["items"] == []
+
+
+def test_unauthorized_price_is_redacted_in_coverage_storage_list_and_workspace(
+    client, db_session, user_factory, auth_headers, monkeypatch
+):
+    from app.services import market_data_service
+    from app.services.research_coverage import evaluate_research_coverage
+
+    monkeypatch.setattr(market_data_service.settings, "MARKET_DATA_PRIMARY", "none")
+    monkeypatch.setattr(market_data_service.settings, "MARKET_DATA_SECONDARY", "none")
+    user = user_factory(email="coverage-redaction@example.com")
+    stock = _stock(db_session, "REDACT")
+    _watchlist(db_session, user.id, stock)
+    coverage_day = expected_session_on_or_before(
+        stock.listing_exchange or stock.exchange,
+        date.today() - timedelta(days=1),
+    ).session_date
+    current_day = compute_target_date(datetime.now(timezone.utc).astimezone(ET))
+    assert coverage_day is not None
+    for price_day in {coverage_day, current_day}:
+        db_session.add(
+            StockPrice(
+                stock_id=stock.id,
+                price_date=price_day,
+                open=100,
+                high=101,
+                low=99,
+                close=100,
+                volume=1_000,
+                currency="USD",
+                source="unapproved-feed",
+            )
+        )
+    db_session.commit()
+
+    evaluate_research_coverage(db_session, user_id=user.id, as_of=date.today())
+    stored = db_session.query(ResearchCoverageRequirement).filter_by(
+        user_id=user.id,
+        stock_id=stock.id,
+        kind="eod_price",
+        is_current=True,
+    ).one()
+    assert stored.reason_code == "source_unavailable"
+    assert stored.evidence_json["close"] is None
+
+    headers = auth_headers(user)
+    listed = client.get("/api/v1/coverage/requirements", headers=headers)
+    assert listed.status_code == 200, listed.text
+    listed_price = next(
+        item for item in listed.json()["items"] if item["kind"] == "eod_price"
+    )
+    assert listed_price["evidence"]["close"] is None
+
+    created = client.post(
+        "/api/v1/research/cases",
+        headers=headers,
+        json={
+            "stock_id": stock.id,
+            "origin": {
+                "origin_type": "manual",
+                "origin_key": f"coverage-redaction:{stock.id}",
+                "source_version": "coverage-redaction-v1",
+                "source_ref": {"test": True},
+            },
+        },
+    )
+    assert created.status_code == 201, created.text
+    workspace = client.get(
+        f"/api/v1/research/cases/{created.json()['case']['id']}/workspace",
+        headers=headers,
+    )
+    assert workspace.status_code == 200, workspace.text
+    workspace_price = next(
+        item for item in workspace.json()["coverage"] if item["kind"] == "eod_price"
+    )
+    assert workspace_price["evidence"]["close"] is None
 
 
 def test_coverage_evaluate_endpoint_is_idempotent(
