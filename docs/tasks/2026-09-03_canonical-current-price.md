@@ -168,3 +168,11 @@ git diff --check
   added in round 3. Focused verification passed (`63 passed` backend; `24
   passed` frontend plus frontend lint). A full closing gate follows before
   Terra round 4.
+- 2026-09-03: the first round-3 full backend run found one coverage-current
+  regression (`2152 passed, 1 failed`): current-day coverage evaluation had a
+  precise `evaluated_at` but did not pass it into the price reader, so an
+  observation ingested earlier the same day was conservatively hidden by the
+  date-only start-of-day cutoff. Coverage now uses its exact evaluation time
+  for the current projection while historical service-level dates retain the
+  date-only cutoff. The full coverage test file passes (`11 passed`); the exact
+  full backend command will be rerun.

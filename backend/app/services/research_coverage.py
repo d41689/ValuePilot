@@ -177,6 +177,7 @@ def _price_requirement(
     stock: Stock,
     as_of: date,
     include_as_of_session: bool = False,
+    knowledge_cutoff: datetime | None = None,
 ) -> dict[str, Any]:
     if not stock.is_active:
         return {
@@ -194,6 +195,7 @@ def _price_requirement(
         stock=stock,
         as_of=as_of,
         include_as_of_session=include_as_of_session,
+        knowledge_cutoff=knowledge_cutoff,
     )
     canonical = serialize_canonical_eod_price(result)
     if result.status == "available":
@@ -391,6 +393,7 @@ def evaluate_research_coverage(
         {"key": f"coverage:{user_id}:{PRIORITY_POLICY_VERSION}"},
     )
     evaluated_at = datetime.now(timezone.utc)
+    price_knowledge_cutoff = evaluated_at if as_of == evaluated_at.date() else None
     candidates, lens_eligible_count, lens_evaluated_count = _candidates(
         session,
         user_id=user_id,
@@ -421,6 +424,7 @@ def evaluate_research_coverage(
                     stock=stock,
                     as_of=as_of,
                     include_as_of_session=include_as_of_session,
+                    knowledge_cutoff=price_knowledge_cutoff,
                 ),
             ),
             (
