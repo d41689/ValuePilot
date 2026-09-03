@@ -108,3 +108,12 @@ git diff --check
   and `git diff --check`. The first Compose lint attempt found an old anonymous
   `node_modules` volume; `npm install` inside the web container synchronized it,
   after which the exact frontend unit/lint/build commands all passed.
+- 2026-09-03: Terra adversarial review round 1 found four valid boundary gaps.
+  Remediation now redacts unauthorized coverage evidence before persistence,
+  evaluates notifications against the same completed-session clock, routes
+  Oracle's Lens arithmetic through the canonical eligible observation, and
+  gives 13F comparisons an authorized same-currency current/history context.
+  Negative tests cover unauthorized, stale, unknown-currency,
+  currency-mismatch, inactive-stock, and post-close states. The focused
+  remediation gate passed (`115 passed` backend; `30 passed` frontend); a new
+  full closing gate follows before round-2 review.
