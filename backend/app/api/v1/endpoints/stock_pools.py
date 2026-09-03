@@ -247,6 +247,7 @@ def _watchlist_rows_for_memberships(
             int(stock.id): current_prices[int(stock.id)].price_date
             for stock in previous_stocks
         },
+        knowledge_cutoff=evaluated_at,
     ) if previous_stocks else {}
     valuations = read_valuation_contexts(
         session,

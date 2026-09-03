@@ -268,6 +268,109 @@ def test_watchlist_rows_batch_101_members_with_fixed_query_count(
     ) == 1
 
 
+def test_watchlist_previous_price_uses_same_live_knowledge_cutoff(
+    db_session, monkeypatch
+):
+    from app.api.v1.endpoints import stock_pools as stock_pools_endpoint
+    from app.services import market_data_service
+
+    evaluated_at = datetime(2026, 2, 4, 17, tzinfo=timezone.utc)
+
+    class FixedDateTime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return evaluated_at if tz is not None else evaluated_at.replace(tzinfo=None)
+
+    monkeypatch.setattr(stock_pools_endpoint, "datetime", FixedDateTime)
+    monkeypatch.setattr(market_data_service.settings, "MARKET_DATA_PRIMARY", "yfinance")
+    monkeypatch.setattr(
+        market_data_service.settings,
+        "MARKET_DATA_ALLOW_DEVELOPMENT_PROVIDER",
+        True,
+    )
+    user = _make_user(db_session, "watchlist-previous-pit@example.com")
+    pool = StockPool(user_id=user.id, name="PIT")
+    known_stock = _make_stock(db_session, "KNOWN")
+    future_stock = _make_stock(db_session, "FUTURE")
+    db_session.add(pool)
+    db_session.flush()
+    members = [
+        PoolMembership(
+            user_id=user.id,
+            pool_id=pool.id,
+            stock_id=stock.id,
+            inclusion_type="manual",
+        )
+        for stock in (known_stock, future_stock)
+    ]
+    db_session.add_all(members)
+    db_session.add_all(
+        [
+            StockPrice(
+                stock_id=stock.id,
+                price_date=date(2026, 2, 3),
+                open=100,
+                high=100,
+                low=100,
+                close=100,
+                volume=1,
+                source="yfinance",
+                currency="USD",
+                created_at=datetime(2026, 2, 3, 22, tzinfo=timezone.utc),
+            )
+            for stock in (known_stock, future_stock)
+        ]
+    )
+    db_session.add_all(
+        [
+            StockPrice(
+                stock_id=known_stock.id,
+                price_date=date(2026, 2, 2),
+                open=98,
+                high=98,
+                low=98,
+                close=98,
+                volume=1,
+                source="yfinance",
+                currency="USD",
+                # After target-date NY midnight (05:00 UTC), but known now.
+                created_at=datetime(2026, 2, 3, 6, tzinfo=timezone.utc),
+            ),
+            StockPrice(
+                stock_id=future_stock.id,
+                price_date=date(2026, 2, 2),
+                open=97,
+                high=97,
+                low=97,
+                close=97,
+                volume=1,
+                source="yfinance",
+                currency="USD",
+                created_at=datetime(2026, 2, 4, 18, tzinfo=timezone.utc),
+            ),
+        ]
+    )
+    db_session.flush()
+
+    rows = stock_pools_endpoint._watchlist_rows_for_memberships(
+        db_session, user.id, members
+    )
+    by_ticker = {row["ticker"]: row for row in rows}
+
+    assert by_ticker["KNOWN"]["delta_today"] == 2
+    assert by_ticker["KNOWN"]["delta_today_state"] == {
+        "status": "available",
+        "reason_code": None,
+        "currency": "USD",
+    }
+    assert by_ticker["FUTURE"]["delta_today"] is None
+    assert by_ticker["FUTURE"]["delta_today_state"] == {
+        "status": "unavailable",
+        "reason_code": "price_missing",
+        "currency": None,
+    }
+
+
 def test_pool_f_score_compare_returns_five_actual_and_two_estimate_years(
     client, db_session, auth_headers
 ):
@@ -437,10 +540,11 @@ def test_pool_members_include_price_and_fair_value(client, db_session, monkeypat
     monkeypatch.setattr(
         stock_pools_endpoint,
         "read_canonical_eod_prices",
-        lambda session, *, stocks, as_of_by_stock_id: read_canonical_eod_prices(
+        lambda session, *, stocks, as_of_by_stock_id, knowledge_cutoff: read_canonical_eod_prices(
             session,
             stocks=stocks,
             as_of_by_stock_id=as_of_by_stock_id,
+            knowledge_cutoff=knowledge_cutoff,
             source_priority=("seed",),
         ),
     )
