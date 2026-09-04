@@ -5,7 +5,7 @@ from datetime import date, timedelta
 import pytest
 from sqlalchemy.exc import DBAPIError
 
-from app.models.artifacts import PdfDocument
+from app.models.artifacts import PdfDocument, ValueLineParseRun
 from app.models.facts import MetricFact
 from app.models.research import (
     ResearchCase,
@@ -346,7 +346,7 @@ def test_evidence_rejects_non_https_and_another_users_document(
         user_id=other.id,
         stock_id=stock.id,
         file_name="private.pdf",
-        source="Value Line",
+        source="upload",
         file_storage_key="private/other.pdf",
         parse_status="parsed",
     )
@@ -540,7 +540,7 @@ def test_workspace_combines_user_owned_fundamentals_valuation_coverage_and_publi
         user_id=owner.id,
         stock_id=stock.id,
         file_name="owner.pdf",
-        source="Value Line",
+        source="upload",
         file_storage_key="workspace/owner.pdf",
         parse_status="parsed",
         report_date=date(2026, 6, 1),
@@ -556,20 +556,43 @@ def test_workspace_combines_user_owned_fundamentals_valuation_coverage_and_publi
     )
     db_session.add_all([owner_doc, other_doc])
     db_session.flush()
+    owner_run = ValueLineParseRun(
+        user_id=owner.id,
+        document_id=owner_doc.id,
+        parser_version="value-line-v1",
+        source_mapping_version="value-line-spec-v2",
+        status="running",
+    )
+    db_session.add(owner_run)
+    db_session.flush()
+    owner_metric = MetricFact(
+        user_id=owner.id,
+        stock_id=stock.id,
+        metric_key="returns.return_on_equity",
+        value_numeric=0.21,
+        value_json={
+            "mapping_id": "returns.return_on_equity.fy",
+            "source_mapping_version": "value-line-spec-v2",
+            "definition_basis": "adjusted",
+            "dimensions_identity": "empty",
+            "fact_nature": "actual",
+            "fiscal_year": 2025,
+            "period_duration_kind": "fiscal_year",
+        },
+        unit="ratio",
+        period_type="FY",
+        period_end_date=date(2025, 12, 31),
+        source_type="parsed",
+        source_document_id=owner_doc.id,
+        value_line_parse_run_id=owner_run.id,
+        is_current=True,
+    )
+    db_session.add(owner_metric)
+    db_session.flush()
+    owner_run.status = "succeeded"
+    db_session.flush()
     db_session.add_all(
         [
-            MetricFact(
-                user_id=owner.id,
-                stock_id=stock.id,
-                metric_key="returns.return_on_equity",
-                value_numeric=0.21,
-                unit="ratio",
-                period_type="FY",
-                period_end_date=date(2025, 12, 31),
-                source_type="parsed",
-                source_document_id=owner_doc.id,
-                is_current=True,
-            ),
             MetricFact(
                 user_id=owner.id,
                 stock_id=stock.id,
@@ -579,6 +602,18 @@ def test_workspace_combines_user_owned_fundamentals_valuation_coverage_and_publi
                     "status": "calculated",
                     "variant": "standard",
                     "fiscal_year": 2025,
+                    "fact_nature": "derived_actual",
+                    "calculation_version": "piotroski_value_line_v1",
+                    "definition_basis": "derived",
+                    "dimensions_identity": "empty",
+                    "period_duration_kind": "fiscal_year",
+                    "inputs": [
+                        {
+                            "fact_id": owner_metric.id,
+                            "metric_key": owner_metric.metric_key,
+                            "source_type": "parsed",
+                        }
+                    ],
                 },
                 unit="score_total",
                 period_type="FY",
@@ -692,12 +727,119 @@ def test_workspace_reports_bounded_reconciliation_as_unavailable_instead_of_clea
     )
 
     assert response.status_code == 200, response.text
-    assert response.json()["source_reconciliation"] == {
+    payload = response.json()
+    assert payload["source_reconciliation"] == {
         "status": "partial",
         "reason_code": "reconciliation_bound_exceeded",
         "consumer_gate_status": "blocked",
         "limit": 250,
     }
+    assert payload["piotroski_f_score"] == []
+    assert payload["fundamentals"] == [
+        {
+            "id": None,
+            "status": "unavailable",
+            "reason_code": "reconciliation_bound_exceeded",
+            "metric_key": None,
+            "value_numeric": None,
+            "value_text": None,
+            "unit": None,
+            "currency": None,
+            "period_type": None,
+            "period_end_date": None,
+            "source_type": None,
+            "source_document_id": None,
+            "source_ref_id": None,
+            "original_evidence_route": None,
+        }
+    ]
+
+
+def test_workspace_redacts_only_blocked_reconciliation_slot(
+    client, db_session, user_factory, auth_headers
+):
+    user = user_factory(email="workspace-reconciliation-redaction@example.com")
+    stock = _stock(db_session, "REDACT")
+    case_id = _create(client, auth_headers(user), stock.id).json()["case"]["id"]
+    documents = [
+        PdfDocument(
+            user_id=user.id,
+            file_name=f"redact-{index}.pdf",
+            source="upload",
+            file_storage_key=f"private/redact-{index}.pdf",
+            parse_status="parsed",
+            stock_id=stock.id,
+            identity_needs_review=False,
+            report_date=date(2026, 1, 2),
+        )
+        for index in range(2)
+    ]
+    db_session.add_all(documents)
+    db_session.flush()
+    common_metadata = {
+        "mapping_id": "returns.return_on_equity.fy",
+        "source_mapping_version": "value-line-legacy-test",
+        "definition_basis": "adjusted",
+        "dimensions_identity": "empty",
+        "fact_nature": "actual",
+        "fiscal_year": 2025,
+        "period_duration_kind": "fiscal_year",
+    }
+    db_session.add_all(
+        [
+            MetricFact(
+                user_id=user.id,
+                stock_id=stock.id,
+                metric_key="returns.return_on_equity",
+                value_numeric=value,
+                value_json=common_metadata,
+                unit="ratio",
+                period_type="FY",
+                period_end_date=date(2025, 12, 31),
+                source_type="parsed",
+                source_document_id=document.id,
+                is_current=True,
+            )
+            for document, value in zip(documents, (0.2, 0.3), strict=True)
+        ]
+        + [
+            MetricFact(
+                user_id=user.id,
+                stock_id=stock.id,
+                metric_key="research.user_note_score",
+                value_numeric=0.75,
+                value_json={"manual_role": "original_input"},
+                unit="ratio",
+                period_type="AS_OF",
+                period_end_date=date(2026, 9, 4),
+                source_type="manual",
+                is_current=True,
+            )
+        ]
+    )
+    db_session.commit()
+
+    response = client.get(
+        f"/api/v1/research/cases/{case_id}/workspace",
+        headers=auth_headers(user),
+    )
+
+    assert response.status_code == 200, response.text
+    fundamentals = response.json()["fundamentals"]
+    blocked = [
+        item
+        for item in fundamentals
+        if item["metric_key"] == "returns.return_on_equity"
+    ]
+    assert len(blocked) == 1
+    assert blocked[0]["status"] == "unavailable"
+    assert blocked[0]["reason_code"] == "unresolved_source_reconciliation"
+    assert blocked[0]["value_numeric"] is None
+    assert [
+        item["value_numeric"]
+        for item in fundamentals
+        if item["metric_key"] == "research.user_note_score"
+    ] == ["0.750000000000"]
 
 
 def test_workspace_rejects_historical_as_of_until_pit_reconstruction_exists(

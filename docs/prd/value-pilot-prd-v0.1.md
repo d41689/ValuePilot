@@ -1506,10 +1506,19 @@ The run, its extraction rows, and its parsed facts are created and finalized in
 one transaction. A successful reparse appends a new immutable extraction/fact
 revision and demotes only current parsed rows in the same stock, canonical key,
 period, and parsed-source slot. It never deletes or rewrites prior extraction
-history. A failed reparse rolls back the new run and every currentness change,
-so the prior current revision remains intact. Reparses of the same document are
-serialized. Legacy parsed rows without a run identity remain readable but are
-comparison-identity-incomplete.
+history. Missing output is not deletion authority: if any company page cannot
+complete, the entire reparse revision rolls back, including document metadata,
+new rows, calculated outputs, and every currentness change. The prior current
+revision remains intact. Reparses of the same document are serialized.
+
+The migration database-stamps pre-existing parsed rows with an immutable legacy
+marker; callers cannot forge that marker on later inserts. A run-bound fact or
+extraction cannot change its run, provenance, identity, or value after insert;
+a fact may only be demoted from current with its update timestamp. Legacy or
+otherwise runless parsed rows remain readable for single-source continuity but
+are comparison-identity-incomplete. A schema downgrade MUST refuse before any
+DDL or data change when parse-run history cannot be represented by the old
+schema; it never deletes retained revisions to make downgrade succeed.
 
 The approved outcomes are `match`, `expected_definition_difference`,
 `restatement`, `mapping_conflict`, and `unresolved`. Tolerance uses Decimal
@@ -1556,6 +1565,21 @@ selection is explicit and cannot bypass a blocking `mapping_conflict` or
 selection, mixed source roles remain a typed `source_conflict`; even a `match`
 does not invent a global source winner. Query order, dictionary overwrite,
 highest row ID, newest row, or tolerance is never source authority.
+
+Value Line ratio and Piotroski generation explicitly select the `parsed` role
+only after the shared guard evaluates each complete input slot. SEC presence or
+an expected SEC-versus-Value-Line definition difference therefore does not
+silently replace the Value Line input, while an unresolved conflict still
+blocks calculation. Original manual inputs and manual corrections are not
+silently substituted into these automated Value Line calculations; adopting a
+reviewed correction requires a separate explicit consumer policy.
+
+The research workspace emits numeric fundamentals and Piotroski history only
+from guard-returned eligible facts. A blocked slot is replaced by a typed
+`unavailable / unresolved_source_reconciliation` state without its numeric
+value; unaffected slots remain visible. If the global fact bound is exceeded,
+the workspace returns `partial / reconciliation_bound_exceeded` and no numeric
+prefix, because a truncated prefix cannot prove any omitted slot safe.
 
 Market-price authority, user intrinsic-value publication, valuation methods,
 industry/economic applicability, new acquisition rights, and evidence

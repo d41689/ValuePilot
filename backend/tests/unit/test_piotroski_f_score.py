@@ -1,4 +1,5 @@
 from datetime import date
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -9,6 +10,7 @@ from app.services.calculated_metrics.piotroski_f_score import (
     PiotroskiFScoreCalculator,
     build_piotroski_f_score_facts,
 )
+from app.services.source_reconciliation import guard_reconciled_source_selection
 
 
 def _fact(metric_key, value, period_end, *, fact_nature="actual", fact_id=1, source_type="parsed", period_type="FY"):
@@ -352,3 +354,19 @@ def test_piotroski_calculator_inserts_current_calculated_facts(db_session, user_
     assert current_total.value_numeric == 9.0
     assert current_total.source_type == "calculated"
     assert current_total.value_json["calculation_version"] == "piotroski_value_line_v1"
+
+
+def test_piotroski_calculator_explicitly_selects_parsed_source():
+    db = MagicMock()
+    db.scalars.return_value.all.return_value = []
+
+    with patch(
+        "app.services.calculated_metrics.piotroski_f_score."
+        "guard_reconciled_source_selection",
+        wraps=guard_reconciled_source_selection,
+    ) as guard:
+        assert PiotroskiFScoreCalculator(db).calculate_for_stock(
+            user_id=17, stock_id=23
+        ) == []
+
+    assert guard.call_args.kwargs["selected_source_type"] == "parsed"

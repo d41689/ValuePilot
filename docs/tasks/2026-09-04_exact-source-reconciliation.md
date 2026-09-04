@@ -255,3 +255,18 @@ reconciliation outcomes or create another financial fact store.
   upload/page behavior, source reconciliation/API, SEC integration, canonical
   SEC reads, and migration empty/legacy/round-trip cases. Fresh Terra R6 and
   exact closing gates remain pending.
+- 2026-09-04: Terra adversarial review R6 found five valid history/consumer
+  gaps: caller-created runless parsed rows could claim complete authority;
+  downgrade deleted revisions it could not represent; Value Line calculators
+  did not state their parsed-source policy; partial reparse demoted prior slots;
+  and the workspace leaked numbers after declaring reconciliation blocked.
+- 2026-09-04: Sol remediation database-stamps and freezes legacy/run-bound
+  lineage, refuses lossy downgrade before mutation, makes both Value Line
+  calculators explicitly select parsed only after full-slot review, rolls back
+  incomplete reparses, and redacts only blocked workspace slots (or every
+  numeric row when the global bound is exceeded). Direct SQL mutation/forged
+  legacy markers, failed downgrade preservation, partial-reparse rollback,
+  calculator-source selection, and workspace no-value behavior now have
+  regression coverage. The 59-test R6 focused suite and 192-test expanded
+  consumer/ingestion suite are green; fresh Terra R7 and exact closing gates
+  remain pending.

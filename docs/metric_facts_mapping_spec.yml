@@ -116,14 +116,28 @@ source_reconciliation:
           recorded_input_currentness: required_for_current_derived_fact
           recursion: bounded_cycle_safe
           missing_or_overflow_outcome: unresolved
+        research_workspace:
+          blocked_slot_value_output: prohibited
+          unaffected_slot_output: permitted
+          global_bound_prefix_output: prohibited
+        value_line_calculations:
+          explicit_source_type: parsed
+          evaluate_complete_slot_before_selection: required
+          manual_correction_auto_substitution: prohibited
       value_line_parse_authority:
         new_fact_run_identity: required
         run_extraction_fact_commit: atomic
         source_mapping_identity: exact_resolved_digest
         extraction_revisions: append_only
+        legacy_marker: database_stamped_immutable
+        run_bound_provenance_and_value: immutable
+        fact_currentness_transition: demotion_only
         successful_reparse: demote_exact_parsed_slots_then_append
-        failed_reparse: preserve_prior_current_revision
+        missing_output_semantics: not_a_deletion
+        partial_reparse: rollback_complete_revision
+        failed_reparse: rollback_and_preserve_prior_current_revision
         legacy_missing_run_identity: comparison_identity_incomplete
+        run_history_downgrade: refuse_before_change
       point_in_time:
         fact_known_and_effective_by_cutoff: required
         source_authorized_at_cutoff: required

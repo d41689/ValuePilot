@@ -37,8 +37,11 @@ from app.services.canonical_financials import (
     visible_metric_fact_predicate,
 )
 from app.services.source_reconciliation import (
+    CanonicalReconciliationError,
     MAX_RECONCILIATION_FACTS,
     build_source_reconciliation_report_from_facts,
+    group_metric_facts_by_reconciliation_slot,
+    guard_reconciled_source_selection,
 )
 
 
@@ -70,6 +73,72 @@ def _piotroski_series(facts: list[MetricFact]) -> list[dict[str, Any]]:
         rows,
         key=lambda item: (item["fiscal_year"] or -1, item["period_end_date"] or ""),
     )
+
+
+def _reconciled_workspace_facts(
+    session: Session,
+    *,
+    facts: list[MetricFact],
+    user_id: int,
+    knowledge_cutoff: datetime,
+) -> tuple[list[MetricFact], list[dict[str, Any]]]:
+    """Return only slot-safe facts, plus typed redactions for blocked slots.
+
+    The workspace is a comparison surface, not a source-precedence policy.  A
+    clear slot therefore keeps every eligible source rather than electing a
+    winner.  Each source selection is nevertheless made only after the shared
+    guard evaluates the complete slot and its derived lineage.
+    """
+
+    safe_by_id: dict[int, MetricFact] = {}
+    blocked: list[dict[str, Any]] = []
+    by_metric: dict[str, list[MetricFact]] = {}
+    for fact in facts:
+        by_metric.setdefault(fact.metric_key, []).append(fact)
+
+    for metric_key, metric_facts in sorted(by_metric.items()):
+        for slot in group_metric_facts_by_reconciliation_slot(
+            session,
+            facts=metric_facts,
+            user_id=user_id,
+            knowledge_cutoff=knowledge_cutoff,
+        ):
+            try:
+                for source_type in sorted({fact.source_type for fact in slot}):
+                    eligible = guard_reconciled_source_selection(
+                        slot,
+                        consumer="research_workspace",
+                        selected_source_type=source_type,
+                        knowledge_cutoff=knowledge_cutoff,
+                        session=session,
+                        user_id=user_id,
+                    )
+                    for fact in eligible:
+                        safe_by_id[fact.id] = fact
+            except CanonicalReconciliationError as error:
+                exemplar = slot[0]
+                blocked.append(
+                    {
+                        "id": None,
+                        "status": "unavailable",
+                        "reason_code": error.code,
+                        "metric_key": metric_key,
+                        "value_numeric": None,
+                        "value_text": None,
+                        "unit": None,
+                        "currency": None,
+                        "period_type": exemplar.period_type,
+                        "period_end_date": exemplar.period_end_date,
+                        "source_type": None,
+                        "source_document_id": None,
+                        "source_ref_id": None,
+                        "source_types": list(error.source_types),
+                        "blocking_items": list(error.blocking_items),
+                        "original_evidence_route": None,
+                    }
+                )
+
+    return [safe_by_id[fact_id] for fact_id in sorted(safe_by_id)], blocked
 
 
 def build_research_workspace(
@@ -140,15 +209,39 @@ def build_research_workspace(
     ).all()
     reconciliation_bound_exceeded = len(facts) > MAX_RECONCILIATION_FACTS
     facts = facts[:MAX_RECONCILIATION_FACTS]
-    facts, _ = partition_sec_run_availability(
-        session, stock_id=stock.id, facts=facts
-    )
-    facts, unsupported_method_states, _ = apply_reviewed_method_gates(
-        session,
-        stock_id=stock.id,
-        facts=facts,
-        effective_as_of=as_of,
-    )
+    reconciliation_blocked_states: list[dict[str, Any]] = []
+    if reconciliation_bound_exceeded:
+        # A truncated prefix cannot support any trustworthy slot conclusion.
+        facts = []
+        unsupported_method_states: list[dict[str, Any]] = []
+        reconciliation_blocked_states.append(
+            {
+                "id": None,
+                "status": "unavailable",
+                "reason_code": "reconciliation_bound_exceeded",
+                "metric_key": None,
+                "value_numeric": None,
+                "value_text": None,
+                "unit": None,
+                "currency": None,
+                "period_type": None,
+                "period_end_date": None,
+                "source_type": None,
+                "source_document_id": None,
+                "source_ref_id": None,
+                "original_evidence_route": None,
+            }
+        )
+    else:
+        facts, _ = partition_sec_run_availability(
+            session, stock_id=stock.id, facts=facts
+        )
+        facts, unsupported_method_states, _ = apply_reviewed_method_gates(
+            session,
+            stock_id=stock.id,
+            facts=facts,
+            effective_as_of=as_of,
+        )
     coverage_rows = (
         session.query(ResearchCoverageRequirement)
         .filter(
@@ -203,6 +296,13 @@ def build_research_workspace(
             "reason_code": "reconciliation_bound_exceeded",
             "message": str(error),
         }
+    if not reconciliation_bound_exceeded:
+        facts, reconciliation_blocked_states = _reconciled_workspace_facts(
+            session,
+            facts=facts,
+            user_id=user_id,
+            knowledge_cutoff=evaluated_at,
+        )
     signal = (
         session.query(OraclesLensSignal)
         .filter(OraclesLensSignal.stock_id == stock.id)
@@ -308,7 +408,10 @@ def build_research_workspace(
                 ),
             }
             for fact in facts
-        ] + unsupported_method_states + current_sec_unresolved_states(session, stock_id=stock.id),
+        ]
+        + reconciliation_blocked_states
+        + unsupported_method_states
+        + current_sec_unresolved_states(session, stock_id=stock.id),
         "system_method_gates": {
             method_key: reviewed_method_gate(
                 session,

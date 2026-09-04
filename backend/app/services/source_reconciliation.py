@@ -1013,7 +1013,15 @@ def materialize_reconciliation_candidates(
                     )
                 )
             )
-            source_authority_complete = document is not None and run_authorized
+            # Runless rows remain readable for legacy/single-source continuity,
+            # but can never establish a complete cross-source comparison
+            # identity.  PostgreSQL stamps the immutable legacy marker; caller
+            # timestamps or JSON cannot manufacture transaction-bound lineage.
+            source_authority_complete = bool(
+                document is not None
+                and fact.value_line_parse_run_id is not None
+                and run_authorized
+            )
             authorized = fact.source_document_id is None or (
                 document is not None
                 and document.user_id == user_id

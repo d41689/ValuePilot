@@ -37,6 +37,9 @@ class MetricExtraction(Base):
     value_line_parse_run_id: Mapped[Optional[int]] = mapped_column(
         ForeignKey("value_line_parse_runs.id"), nullable=True, index=True
     )
+    value_line_legacy_revision: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default="false"
+    )
 
     user: Mapped["User"] = relationship("User")
     document: Mapped["PdfDocument"] = relationship("PdfDocument")

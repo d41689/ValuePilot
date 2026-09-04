@@ -39,6 +39,11 @@ class MetricFact(Base):
     value_line_parse_run_id: Mapped[Optional[int]] = mapped_column(
         ForeignKey("value_line_parse_runs.id"), nullable=True, index=True
     )
+    # PostgreSQL stamps this only for rows that predate parse-run authority.
+    # New runless rows remain false and comparison-identity-incomplete.
+    value_line_legacy_revision: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default="false"
+    )
     is_current: Mapped[bool] = mapped_column(Boolean, default=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), onupdate=func.now(), server_default=func.now())

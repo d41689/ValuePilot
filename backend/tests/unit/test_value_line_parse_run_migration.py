@@ -31,14 +31,18 @@ PARENT = "20260901280000"
 HEAD = "20260904120000"
 
 
-def _alembic(url: str, *args: str) -> None:
-    result = subprocess.run(
+def _alembic_result(url: str, *args: str) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
         ["alembic", *args],
         cwd=BACKEND,
         env={**os.environ, "DATABASE_URL": url},
         capture_output=True,
         text=True,
     )
+
+
+def _alembic(url: str, *args: str) -> None:
+    result = _alembic_result(url, *args)
     assert result.returncode == 0, result.stdout + result.stderr
 
 
@@ -58,6 +62,7 @@ def isolated():
 def test_value_line_parse_run_empty_upgrade_roundtrip(isolated) -> None:
     url, engine = isolated
     _alembic(url, "upgrade", "head")
+
     with engine.connect() as connection:
         assert connection.execute(
             text("SELECT version_num FROM alembic_version")
@@ -106,6 +111,15 @@ def test_value_line_parse_run_allows_history_but_rejects_late_binding(isolated) 
         ).scalar_one()
 
     _alembic(url, "upgrade", "head")
+
+    with engine.connect() as connection:
+        assert connection.execute(
+            text(
+                "SELECT value_line_legacy_revision FROM metric_facts "
+                "WHERE id=:id"
+            ),
+            {"id": old_fact_id},
+        ).scalar_one() is True
 
     with engine.begin() as connection:
         run_id = connection.execute(
@@ -176,11 +190,12 @@ def test_value_line_parse_run_allows_history_but_rejects_late_binding(isolated) 
     with engine.begin() as connection:
         assert connection.execute(
             text(
-                "SELECT array_agg(id ORDER BY id), array_agg(is_current ORDER BY id) "
+                "SELECT array_agg(id ORDER BY id), array_agg(is_current ORDER BY id), "
+                "array_agg(value_line_legacy_revision ORDER BY id) "
                 "FROM metric_facts WHERE id IN (:old,:new)"
             ),
             {"old": old_fact_id, "new": new_fact_id},
-        ).one() == ([old_fact_id, new_fact_id], [False, True])
+        ).one() == ([old_fact_id, new_fact_id], [False, True], [True, False])
         with pytest.raises(DBAPIError, match="creating parse run"):
             with connection.begin_nested():
                 connection.execute(
@@ -201,23 +216,63 @@ def test_value_line_parse_run_allows_history_but_rejects_late_binding(isolated) 
                     ),
                     {"id": extraction_id},
                 )
+        with pytest.raises(DBAPIError, match="binding is immutable"):
+            with connection.begin_nested():
+                connection.execute(
+                    text(
+                        "UPDATE metric_extractions SET raw_value_text='forged' "
+                        "WHERE id=:id"
+                    ),
+                    {"id": extraction_id},
+                )
+        with pytest.raises(DBAPIError, match="binding is immutable"):
+            with connection.begin_nested():
+                connection.execute(
+                    text(
+                        "UPDATE metric_facts SET value_numeric=999 "
+                        "WHERE id=:id"
+                    ),
+                    {"id": new_fact_id},
+                )
+        with pytest.raises(DBAPIError, match="binding is immutable"):
+            with connection.begin_nested():
+                connection.execute(
+                    text(
+                        "UPDATE metric_facts SET value_numeric=998 "
+                        "WHERE id=:id"
+                    ),
+                    {"id": old_fact_id},
+                )
         with pytest.raises(DBAPIError, match="parse runs are append-only"):
             with connection.begin_nested():
                 connection.execute(
                     text("DELETE FROM value_line_parse_runs WHERE id=:run"),
                     {"run": run_id},
                 )
-        with pytest.raises(DBAPIError):
+        with pytest.raises(DBAPIError, match="requires a creating parse run"):
             with connection.begin_nested():
                 connection.execute(
                     text(
                         "INSERT INTO metric_facts "
                         "(user_id,stock_id,metric_key,value_numeric,unit,currency,"
                         "period_type,period_end_date,source_type,source_document_id,"
-                        "is_current) VALUES (:user,:stock,'is.net_income',120,'USD',"
-                        "'USD','FY','2025-12-31','parsed',:document,true)"
+                        "value_json,value_line_legacy_revision,is_current) "
+                        "VALUES (:user,:stock,'is.net_income',120,'USD','USD','FY',"
+                        "'2025-12-31','parsed',:document,"
+                        "'{\"source_mapping_version\":\"value-line-resolved-v1:forged\"}'::jsonb,"
+                        "true,true)"
                     ),
                     {"user": user_id, "stock": stock_id, "document": document_id},
+                )
+        connection.execute(
+            text("UPDATE metric_facts SET is_current=false WHERE id=:id"),
+            {"id": new_fact_id},
+        )
+        with pytest.raises(DBAPIError, match="binding is immutable"):
+            with connection.begin_nested():
+                connection.execute(
+                    text("UPDATE metric_facts SET is_current=true WHERE id=:id"),
+                    {"id": new_fact_id},
                 )
         connection.execute(
             text("DELETE FROM pdf_documents WHERE id=:document"),
@@ -228,13 +283,23 @@ def test_value_line_parse_run_allows_history_but_rejects_late_binding(isolated) 
             {"run": deleted_run_id},
         ).scalar_one() == 0
 
-    _alembic(url, "downgrade", PARENT)
+    before_counts: tuple[int, int]
+    with engine.connect() as connection:
+        before_counts = (
+            connection.execute(text("SELECT count(*) FROM metric_facts")).scalar_one(),
+            connection.execute(text("SELECT count(*) FROM value_line_parse_runs")).scalar_one(),
+        )
+    result = _alembic_result(url, "downgrade", PARENT)
+    assert result.returncode != 0
+    assert "downgrade refused" in result.stdout + result.stderr
     with engine.connect() as connection:
         assert connection.execute(
-            text("SELECT count(*) FROM metric_facts WHERE stock_id=:stock"),
-            {"stock": stock_id},
-        ).scalar_one() == 1
-    _alembic(url, "upgrade", "head")
+            text("SELECT version_num FROM alembic_version")
+        ).scalar_one() == HEAD
+        assert (
+            connection.execute(text("SELECT count(*) FROM metric_facts")).scalar_one(),
+            connection.execute(text("SELECT count(*) FROM value_line_parse_runs")).scalar_one(),
+        ) == before_counts
 
 
 def test_value_line_reparse_document_lock_serializes_concurrent_attempts(

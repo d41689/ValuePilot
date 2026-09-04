@@ -46,8 +46,37 @@ def upgrade() -> None:
         sa.Column("value_line_parse_run_id", sa.BigInteger(), nullable=True),
     )
     op.add_column(
+        "metric_extractions",
+        sa.Column(
+            "value_line_legacy_revision",
+            sa.Boolean(),
+            server_default=sa.text("false"),
+            nullable=False,
+        ),
+    )
+    op.add_column(
         "metric_facts",
         sa.Column("value_line_parse_run_id", sa.BigInteger(), nullable=True),
+    )
+    op.add_column(
+        "metric_facts",
+        sa.Column(
+            "value_line_legacy_revision",
+            sa.Boolean(),
+            server_default=sa.text("false"),
+            nullable=False,
+        ),
+    )
+    # This is the only point at which a row may acquire the legacy marker.
+    # The insert/update triggers installed below force all future rows false
+    # and freeze the DB-stamped marker.
+    op.execute(
+        "UPDATE metric_extractions SET value_line_legacy_revision=true; "
+        "UPDATE metric_facts SET value_line_legacy_revision=true "
+        "WHERE source_type='parsed'; "
+        # Prior append-only constraints are deferred.  Drain their pending
+        # events before this migration adds constraints to the same tables.
+        "SET CONSTRAINTS ALL IMMEDIATE"
     )
     op.create_foreign_key(
         "fk_metric_extractions_value_line_parse_run_id",
@@ -66,7 +95,14 @@ def upgrade() -> None:
     op.create_check_constraint(
         "ck_metric_facts_value_line_parse_run_source",
         "metric_facts",
-        "value_line_parse_run_id IS NULL OR source_type='parsed'",
+        "(value_line_parse_run_id IS NULL OR source_type='parsed') AND "
+        "(NOT value_line_legacy_revision OR "
+        "(source_type='parsed' AND value_line_parse_run_id IS NULL))",
+    )
+    op.create_check_constraint(
+        "ck_metric_extractions_value_line_legacy_revision",
+        "metric_extractions",
+        "NOT value_line_legacy_revision OR value_line_parse_run_id IS NULL",
     )
     op.create_index(
         "ix_metric_extractions_value_line_parse_run_id",
@@ -153,8 +189,33 @@ def upgrade() -> None:
 
         CREATE FUNCTION guard_value_line_extraction_run_binding() RETURNS trigger
         LANGUAGE plpgsql AS $$ DECLARE run_row value_line_parse_runs%ROWTYPE; BEGIN
+          IF TG_OP='INSERT' THEN
+            NEW.value_line_legacy_revision := false;
+          END IF;
           IF TG_OP='UPDATE' THEN
-            IF NEW.value_line_parse_run_id IS DISTINCT FROM OLD.value_line_parse_run_id THEN
+            IF NEW.value_line_parse_run_id IS DISTINCT FROM OLD.value_line_parse_run_id
+               OR NEW.value_line_legacy_revision IS DISTINCT FROM
+                    OLD.value_line_legacy_revision
+               OR (
+                 (OLD.value_line_parse_run_id IS NOT NULL
+                  OR OLD.value_line_legacy_revision)
+                 AND ROW(NEW.id,NEW.user_id,NEW.document_id,NEW.page_number,
+                         NEW.field_key,NEW.raw_value_text,
+                         NEW.original_text_snippet,NEW.parsed_value_json::text,
+                         NEW.unit,NEW.currency,NEW.period,NEW.period_type,
+                         NEW.period_end_date,NEW.as_of_date,NEW.confidence_score,
+                         NEW.bbox_json::text,NEW.parser_template_id,NEW.parser_version,
+                         NEW.created_at,NEW.target_year_range)
+                     IS DISTINCT FROM
+                     ROW(OLD.id,OLD.user_id,OLD.document_id,OLD.page_number,
+                         OLD.field_key,OLD.raw_value_text,
+                         OLD.original_text_snippet,OLD.parsed_value_json::text,
+                         OLD.unit,OLD.currency,OLD.period,OLD.period_type,
+                         OLD.period_end_date,OLD.as_of_date,OLD.confidence_score,
+                         OLD.bbox_json::text,OLD.parser_template_id,OLD.parser_version,
+                         OLD.created_at,OLD.target_year_range)
+               )
+            THEN
               RAISE EXCEPTION 'Value Line extraction run binding is immutable';
             END IF;
             RETURN NEW;
@@ -173,18 +234,54 @@ def upgrade() -> None:
         END $$;
 
         CREATE TRIGGER trg_value_line_extraction_run_binding
-        BEFORE INSERT OR UPDATE OF value_line_parse_run_id ON metric_extractions
+        BEFORE INSERT OR UPDATE ON metric_extractions
         FOR EACH ROW EXECUTE FUNCTION guard_value_line_extraction_run_binding();
 
         CREATE FUNCTION guard_value_line_fact_run_binding() RETURNS trigger
         LANGUAGE plpgsql AS $$ DECLARE run_row value_line_parse_runs%ROWTYPE; BEGIN
+          IF TG_OP='INSERT' THEN
+            NEW.value_line_legacy_revision := false;
+          END IF;
           IF TG_OP='UPDATE' THEN
-            IF NEW.value_line_parse_run_id IS DISTINCT FROM OLD.value_line_parse_run_id THEN
+            IF NEW.value_line_parse_run_id IS DISTINCT FROM OLD.value_line_parse_run_id
+               OR NEW.value_line_legacy_revision IS DISTINCT FROM
+                    OLD.value_line_legacy_revision
+               OR (
+                 (OLD.value_line_parse_run_id IS NOT NULL
+                  OR OLD.value_line_legacy_revision)
+                 AND OLD.is_current=false AND NEW.is_current=true
+               )
+               OR (
+                 (OLD.value_line_parse_run_id IS NOT NULL
+                  OR OLD.value_line_legacy_revision)
+                 AND ROW(NEW.id,NEW.user_id,NEW.stock_id,NEW.metric_key,
+                         NEW.value_json,NEW.value_numeric,NEW.value_text,
+                         NEW.unit,NEW.currency,NEW.period,NEW.period_type,
+                         NEW.period_end_date,NEW.as_of_date,
+                         NEW.source_document_id,NEW.source_type,
+                         NEW.source_ref_id,NEW.created_at)
+                     IS DISTINCT FROM
+                     ROW(OLD.id,OLD.user_id,OLD.stock_id,OLD.metric_key,
+                         OLD.value_json,OLD.value_numeric,OLD.value_text,
+                         OLD.unit,OLD.currency,OLD.period,OLD.period_type,
+                         OLD.period_end_date,OLD.as_of_date,
+                         OLD.source_document_id,OLD.source_type,
+                         OLD.source_ref_id,OLD.created_at)
+               )
+            THEN
               RAISE EXCEPTION 'Value Line fact run binding is immutable';
             END IF;
             RETURN NEW;
           END IF;
-          IF NEW.value_line_parse_run_id IS NULL THEN RETURN NEW; END IF;
+          IF NEW.value_line_parse_run_id IS NULL THEN
+            IF NEW.source_type='parsed'
+               AND coalesce(NEW.value_json->>'source_mapping_version','')
+                     LIKE 'value-line-resolved-v1:%'
+            THEN
+              RAISE EXCEPTION 'Modern Value Line fact requires a creating parse run';
+            END IF;
+            RETURN NEW;
+          END IF;
           SELECT * INTO run_row FROM value_line_parse_runs
             WHERE id=NEW.value_line_parse_run_id;
           IF NOT FOUND OR run_row.status<>'running'
@@ -199,13 +296,34 @@ def upgrade() -> None:
         END $$;
 
         CREATE TRIGGER trg_value_line_fact_run_binding
-        BEFORE INSERT OR UPDATE OF value_line_parse_run_id ON metric_facts
+        BEFORE INSERT OR UPDATE ON metric_facts
         FOR EACH ROW EXECUTE FUNCTION guard_value_line_fact_run_binding();
         """
     )
 
 
 def downgrade() -> None:
+    bind = op.get_bind()
+    run_count = bind.execute(
+        sa.text("SELECT count(*) FROM value_line_parse_runs")
+    ).scalar_one()
+    duplicate_count = bind.execute(
+        sa.text(
+            "SELECT count(*) FROM ("
+            "SELECT 1 FROM metric_facts "
+            "WHERE stock_id IS NOT NULL AND metric_key IS NOT NULL "
+            "AND period_type IS NOT NULL AND period_end_date IS NOT NULL "
+            "AND source_document_id IS NOT NULL "
+            "GROUP BY stock_id,metric_key,period_type,period_end_date,"
+            "source_document_id HAVING count(*)>1) duplicates"
+        )
+    ).scalar_one()
+    if run_count or duplicate_count:
+        raise RuntimeError(
+            "downgrade refused: Value Line revision history cannot be represented "
+            "by the legacy metric_facts uniqueness contract"
+        )
+
     op.execute(
         """
         DROP TRIGGER IF EXISTS trg_value_line_fact_run_binding ON metric_facts;
@@ -226,22 +344,6 @@ def downgrade() -> None:
         "uq_metric_facts_nonparsed_document_period",
         table_name="metric_facts",
     )
-    # The legacy schema cannot represent revision history.  Keep the newest
-    # row per former uniqueness tuple solely to make an explicit downgrade
-    # reversible; forward migration never deletes audit history.
-    op.execute(
-        """
-        DELETE FROM metric_facts older
-        USING metric_facts newer
-        WHERE older.source_type='parsed' AND newer.source_type='parsed'
-          AND older.id<newer.id
-          AND ROW(older.stock_id,older.metric_key,older.period_type,
-                  older.period_end_date,older.source_document_id)
-              IS NOT DISTINCT FROM
-              ROW(newer.stock_id,newer.metric_key,newer.period_type,
-                  newer.period_end_date,newer.source_document_id)
-        """
-    )
     op.create_unique_constraint(
         "uq_metric_facts_dedupe",
         "metric_facts",
@@ -252,6 +354,11 @@ def downgrade() -> None:
             "period_end_date",
             "source_document_id",
         ],
+    )
+    op.drop_constraint(
+        "ck_metric_extractions_value_line_legacy_revision",
+        "metric_extractions",
+        type_="check",
     )
     op.drop_constraint(
         "ck_metric_facts_value_line_parse_run_source",
@@ -274,5 +381,7 @@ def downgrade() -> None:
         type_="foreignkey",
     )
     op.drop_column("metric_facts", "value_line_parse_run_id")
+    op.drop_column("metric_facts", "value_line_legacy_revision")
     op.drop_column("metric_extractions", "value_line_parse_run_id")
+    op.drop_column("metric_extractions", "value_line_legacy_revision")
     op.drop_table("value_line_parse_runs")

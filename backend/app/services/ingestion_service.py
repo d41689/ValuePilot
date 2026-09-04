@@ -443,6 +443,7 @@ class IngestionService:
         doc = self.db.get(PdfDocument, document_id)
         if not doc or doc.user_id != user_id:
             raise ValueError("Document not found for user")
+
         self.db.execute(
             VALUE_LINE_REPARSE_LOCK_SQL,
             {"document_id": document_id},
@@ -474,6 +475,13 @@ class IngestionService:
         doc = self.db.get(PdfDocument, document_id)
         if not doc or doc.user_id != user_id:
             raise ValueError("Document not found for user")
+        prior_company_page_numbers = set(
+            self.db.scalars(
+                select(MetricExtraction.page_number).where(
+                    MetricExtraction.document_id == doc.id
+                )
+            ).all()
+        )
 
         page_words: dict[int, list[dict]] = {}
         if reextract_pdf:
@@ -525,7 +533,8 @@ class IngestionService:
             user_id=user_id,
             document_id=doc.id,
         )
-        self._clear_document_parsed_snapshot(doc)
+        prior_document_stock_id = doc.stock_id
+        self._reset_document_parse_projection(doc)
         # Reconciliation may authorize the freshly rebuilt facts while the
         # owning transaction computes deterministic metrics.  The terminal
         # status is assigned below before commit.
@@ -538,6 +547,8 @@ class IngestionService:
 
         company_pages = 0
         parsed_company_pages = 0
+        parsed_stock_ids: set[int] = set()
+        parsed_page_numbers: set[int] = set()
 
         for page_num, text, words in pages_data:
             if len((text or "").strip()) < MIN_PARSEABLE_PAGE_TEXT_CHARS:
@@ -634,33 +645,53 @@ class IngestionService:
                     value_line_parse_run_id=parse_run.id,
                 )
 
-            self._run_calculated_metrics(user_id=user_id, stock_id=stock.id)
-
+            parsed_stock_ids.add(stock.id)
+            parsed_page_numbers.add(page_num)
             parsed_company_pages += 1
 
         if parsed_company_pages == 0:
             raise ValueError("reparse produced no successful company pages")
-        elif parsed_company_pages < company_pages:
-            doc.parse_status = "parsed_partial"
-        else:
-            doc.parse_status = "parsed"
+        if (
+            parsed_company_pages < company_pages
+            or not prior_company_page_numbers.issubset(parsed_page_numbers)
+        ):
+            # A reparse publishes one atomic replacement revision.  A partial
+            # page set cannot be interpreted as deletion of fields/pages that
+            # were present in the prior successful revision.
+            raise ValueError("reparse produced an incomplete company-page revision")
+        doc.parse_status = "parsed"
+
+        for stock_id in sorted(parsed_stock_ids):
+            self._run_calculated_metrics(user_id=user_id, stock_id=stock_id)
+
+        if (
+            prior_document_stock_id is not None
+            and doc.stock_id is not None
+            and prior_document_stock_id != doc.stock_id
+        ):
+            # Identity changes are published only after every company page has
+            # parsed successfully.  Old-stock rows cannot share an exact slot
+            # with the replacement stock and therefore need this explicit,
+            # document-scoped demotion.
+            self.db.execute(
+                update(MetricFact)
+                .where(
+                    MetricFact.source_document_id == doc.id,
+                    MetricFact.source_type == "parsed",
+                    MetricFact.stock_id == prior_document_stock_id,
+                    MetricFact.is_current.is_(True),
+                )
+                .values(is_current=False)
+            )
+            self.db.flush()
 
         self._finish_value_line_parse_run(parse_run, status="succeeded")
         return doc
 
-    def _clear_document_parsed_snapshot(self, doc: PdfDocument) -> None:
+    def _reset_document_parse_projection(self, doc: PdfDocument) -> None:
         # Reparse never rewrites or deletes extraction/fact audit history.
-        # Only the exact document-owned parsed rows are demoted; new rows are
-        # appended under a fresh immutable parse-run identity.
-        self.db.execute(
-            update(MetricFact)
-            .where(
-                MetricFact.source_document_id == doc.id,
-                MetricFact.source_type == "parsed",
-                MetricFact.is_current.is_(True),
-            )
-            .values(is_current=False)
-        )
+        # Existing facts remain current until an exact replacement slot is
+        # appended.  Missing output is not evidence that a prior fact vanished.
         doc.stock_id = None
         doc.report_date = None
         doc.identity_needs_review = False

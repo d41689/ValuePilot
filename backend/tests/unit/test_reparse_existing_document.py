@@ -283,6 +283,97 @@ def test_reparse_existing_document_multi_page_updates_all_pages(db_session):
     assert doc.stock_id is None
 
 
+def test_partial_reparse_rolls_back_and_preserves_every_prior_current_slot(db_session):
+    user = User(email="reparse-partial-rollback@example.com")
+    stock_one = Stock(ticker="RPA", exchange="NYSE", company_name="Reparse Alpha")
+    stock_two = Stock(ticker="RPB", exchange="NYSE", company_name="Reparse Beta")
+    db_session.add_all([user, stock_one, stock_two])
+    db_session.flush()
+    doc = PdfDocument(
+        user_id=user.id,
+        file_name="partial.pdf",
+        source="upload",
+        file_storage_key="/tmp/partial.pdf",
+        parse_status="parsed",
+        stock_id=None,
+        identity_needs_review=False,
+        report_date=date(2026, 1, 2),
+    )
+    db_session.add(doc)
+    db_session.flush()
+    prior_facts = [
+        MetricFact(
+            user_id=user.id,
+            stock_id=stock.id,
+            metric_key="mkt.price",
+            value_numeric=value,
+            value_json={"raw": str(value)},
+            unit="USD",
+            currency="USD",
+            period_type="AS_OF",
+            period_end_date=date(2026, 1, 2),
+            source_type="parsed",
+            source_document_id=doc.id,
+            is_current=True,
+        )
+        for stock, value in ((stock_one, 9), (stock_two, 19))
+    ]
+    db_session.add_all(prior_facts)
+    db_session.add(
+        MetricExtraction(
+            user_id=user.id,
+            document_id=doc.id,
+            page_number=2,
+            field_key="recent_price",
+            raw_value_text="19",
+            original_text_snippet="RECENT PRICE 19",
+            parsed_value_json={"raw": "19"},
+            parser_version="v1",
+        )
+    )
+    db_session.commit()
+    prior_ids = [fact.id for fact in prior_facts]
+
+    pages = [
+        (
+            1,
+            "REPARSE ALPHA\nNYSE-RPA\nRECENT PRICE 10\n"
+            "VALUE LINE\nAnalystX January 2, 2026\n",
+            [],
+        ),
+        (
+            2,
+            # A formerly parsed company page now has no parseable text.  It
+            # must not be interpreted as deleting the prior page-2 snapshot.
+            "scan",
+            [],
+        ),
+    ]
+    with patch(
+        "app.services.ingestion_service.PdfExtractor.extract_pages_with_words",
+        return_value=pages,
+    ), pytest.raises(ValueError, match="incomplete company-page revision"):
+        IngestionService(db_session).reparse_existing_document(
+            user_id=user.id,
+            document_id=doc.id,
+            reextract_pdf=True,
+        )
+
+    db_session.expire_all()
+    rows = (
+        db_session.query(MetricFact)
+        .filter(MetricFact.source_document_id == doc.id)
+        .order_by(MetricFact.id)
+        .all()
+    )
+    assert [row.id for row in rows] == prior_ids
+    assert all(row.is_current for row in rows)
+    assert db_session.query(ValueLineParseRun).filter_by(document_id=doc.id).count() == 0
+    preserved_doc = db_session.get(PdfDocument, doc.id)
+    assert preserved_doc.parse_status == "parsed"
+    assert preserved_doc.report_date == date(2026, 1, 2)
+
+
 def test_reparse_existing_document_ignores_industry_pages_in_status(db_session):
     user = User(email="reparse_industry@example.com")
     db_session.add(user)
@@ -701,7 +792,7 @@ def test_reparse_appends_mapping_revision_and_preserves_manual_lineage(db_sessio
         value_numeric=9,
         value_json={
             "mapping_id": "mkt.price.as_of",
-            "source_mapping_version": "value-line-resolved-v1:old",
+            "source_mapping_version": "value-line-legacy-test:old",
             "definition_basis": "adjusted",
             "dimensions_identity": "empty",
             "fact_nature": "snapshot",
@@ -845,7 +936,7 @@ def test_failed_reparse_atomically_preserves_prior_current_revision(db_session):
         value_numeric=9,
         value_json={
             "mapping_id": "mkt.price.as_of",
-            "source_mapping_version": "value-line-resolved-v1:prior",
+            "source_mapping_version": "value-line-legacy-test:prior",
             "definition_basis": "adjusted",
             "dimensions_identity": "empty",
         },

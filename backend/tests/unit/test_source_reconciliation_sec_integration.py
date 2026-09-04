@@ -6,7 +6,7 @@ from fastapi.testclient import TestClient
 from app.api.deps import get_db
 from app.core.security import hash_password
 from app.main import app
-from app.models.artifacts import PdfDocument
+from app.models.artifacts import PdfDocument, ValueLineParseRun
 from app.models.facts import MetricFact
 from app.models.sec_publication import SecMetricPublication
 from app.models.users import User
@@ -141,6 +141,15 @@ def test_sec_as_filed_and_value_line_adjusted_are_compared_without_precedence(
         and fact["value_json"]["fiscal_year"] == publication.fiscal_year
     )
     ingestion = IngestionService(publication_db)
+    parse_run = ValueLineParseRun(
+        user_id=owner.id,
+        document_id=document.id,
+        parser_version="value-line-v1",
+        source_mapping_version=generated["value_json"]["source_mapping_version"],
+        status="running",
+    )
+    publication_db.add(parse_run)
+    publication_db.flush()
     ingestion._insert_metric_fact_from_mapping(
         user_id=owner.id,
         stock_id=request.stock_id,
@@ -153,7 +162,10 @@ def test_sec_as_filed_and_value_line_adjusted_are_compared_without_precedence(
         period_type=generated["period_type"],
         period_end_date=generated["period_end_date"],
         source_document_id=document.id,
+        value_line_parse_run_id=parse_run.id,
     )
+    parse_run.status = "succeeded"
+    publication_db.flush()
     publication_db.commit()
     adjusted = publication_db.query(MetricFact).filter_by(
         user_id=owner.id,

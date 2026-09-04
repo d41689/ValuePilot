@@ -157,6 +157,7 @@ class PiotroskiFScoreCalculator:
             knowledge_cutoff=datetime.now(timezone.utc),
             session=self.db,
             user_id=user_id,
+            selected_source_type="parsed",
         )
         source_facts = guard_sec_run_availability(
             self.db, stock_id=stock_id, facts=source_facts

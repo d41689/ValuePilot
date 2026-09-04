@@ -4,7 +4,7 @@ from datetime import date, datetime, timedelta, timezone
 
 import pytest
 
-from app.models.artifacts import PdfDocument
+from app.models.artifacts import PdfDocument, ValueLineParseRun
 from app.models.facts import Formula, MetricFact
 from app.models.stocks import Stock
 from app.services.formula_engine import FormulaEngine
@@ -104,7 +104,19 @@ def test_authenticated_reconciliation_is_tenant_safe_and_bounded(
         document_id=other_doc.id,
         value=999,
     )
+    owner_run = ValueLineParseRun(
+        user_id=owner.id,
+        document_id=owner_doc.id,
+        parser_version="value-line-v1",
+        source_mapping_version="value-line-spec-v2",
+        status="running",
+    )
+    db_session.add(owner_run)
+    db_session.flush()
+    owner_fact.value_line_parse_run_id = owner_run.id
     db_session.add_all([owner_fact, other_fact])
+    db_session.flush()
+    owner_run.status = "succeeded"
     db_session.flush()
     manual = MetricFact(
         user_id=owner.id,
