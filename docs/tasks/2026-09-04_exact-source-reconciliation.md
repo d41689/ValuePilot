@@ -355,3 +355,11 @@ reconciliation outcomes or create another financial fact store.
   The exact full backend suite is green at 2,319 tests with only the two
   existing dependency-deprecation warnings. Remaining frontend closing gates
   and fresh Terra R11 remain pending.
+- 2026-09-04: Terra R11 found one valid P3 service-boundary atomicity gap.
+  Manual correction demoted the current manual slot before a parsed source's
+  exact primary extraction manifest was validated; a non-HTTP caller could
+  catch the typed validation error and commit that demotion. Sol remediation
+  moves currentness mutation after every fail-closed value/source/lineage
+  check. A service-level regression catches the error, commits, reloads the
+  prior manual fact, and proves it remains current. The focused correction
+  suite is green at 9 tests. Full backend and fresh Terra R12 remain pending.

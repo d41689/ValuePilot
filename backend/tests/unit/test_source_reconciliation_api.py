@@ -11,6 +11,10 @@ from app.models.stocks import Stock
 from app.services.formula_engine import FormulaEngine
 from app.services.ingestion_service import IngestionService
 from app.services.dcf_inputs import load_canonical_dcf_fact_universe
+from app.services.manual_metric_correction import (
+    ManualMetricCorrectionError,
+    create_manual_metric_correction,
+)
 from app.services.source_reconciliation import (
     CanonicalReconciliationError,
     build_source_reconciliation_report_from_facts,
@@ -375,6 +379,60 @@ def test_ingested_owner_earnings_becomes_unavailable_when_input_is_superseded(
     assert {
         item["reason_code"] for item in error.value.blocking_items
     } == {"derived_lineage_superseded"}
+
+
+def test_failed_correction_validation_cannot_demote_current_manual_fact(
+    db_session, user_factory
+):
+    user = user_factory("correction-atomicity@example.com")
+    stock = Stock(ticker="MCAT", exchange="NYSE", company_name="Manual Atomicity")
+    db_session.add(stock)
+    db_session.flush()
+    document = _document(user_id=user.id, stock_id=stock.id, suffix="-manual")
+    db_session.add(document)
+    db_session.flush()
+    parsed = _parsed_fact(
+        user_id=user.id,
+        stock_id=stock.id,
+        document_id=document.id,
+    )
+    current_manual = MetricFact(
+        user_id=user.id,
+        stock_id=stock.id,
+        metric_key=parsed.metric_key,
+        value_numeric=101,
+        value_json={
+            "correction": True,
+            "corrected_from_fact_id": 123,
+            "source_fact_id": 123,
+            "source_extraction_id": 456,
+        },
+        unit="USD",
+        currency="USD",
+        period_type=parsed.period_type,
+        period_end_date=parsed.period_end_date,
+        source_type="manual",
+        is_current=True,
+    )
+    db_session.add_all([parsed, current_manual])
+    db_session.flush()
+    manual_id = current_manual.id
+
+    with pytest.raises(ManualMetricCorrectionError) as error:
+        create_manual_metric_correction(
+            db_session,
+            user_id=user.id,
+            source_fact=parsed,
+            raw_value="102",
+        )
+    assert error.value.code == "correction_lineage_unavailable"
+
+    # A non-HTTP caller may catch the typed validation error and commit other
+    # work. Validation must therefore be side-effect free without relying on
+    # endpoint rollback behavior.
+    db_session.commit()
+    db_session.expire_all()
+    assert db_session.get(MetricFact, manual_id).is_current is True
 
 
 def test_reconciliation_excludes_post_cutoff_and_revoked_source_authority(

@@ -56,21 +56,6 @@ def create_manual_metric_correction(
         )
 
     acquire_metric_fact_stock_lock(session, stock_id=source_fact.stock_id)
-    session.execute(
-        update(MetricFact)
-        .where(
-            MetricFact.user_id == user_id,
-            MetricFact.stock_id == source_fact.stock_id,
-            MetricFact.metric_key == source_fact.metric_key,
-            MetricFact.period_type == source_fact.period_type,
-            MetricFact.period_end_date == source_fact.period_end_date,
-            MetricFact.as_of_date == source_fact.as_of_date,
-            MetricFact.source_type == "manual",
-            MetricFact.is_current.is_(True),
-        )
-        .values(is_current=False)
-    )
-
     source_metadata = (
         source_fact.value_json if isinstance(source_fact.value_json, dict) else {}
     )
@@ -142,6 +127,24 @@ def create_manual_metric_correction(
             value_json[identity_key] = source_metadata[identity_key]
     if note:
         value_json["note"] = str(note)
+
+    # All fail-closed source/lineage checks must finish before currentness is
+    # changed. A caller may intentionally catch a typed validation error and
+    # commit unrelated work without an endpoint-level rollback.
+    session.execute(
+        update(MetricFact)
+        .where(
+            MetricFact.user_id == user_id,
+            MetricFact.stock_id == source_fact.stock_id,
+            MetricFact.metric_key == source_fact.metric_key,
+            MetricFact.period_type == source_fact.period_type,
+            MetricFact.period_end_date == source_fact.period_end_date,
+            MetricFact.as_of_date == source_fact.as_of_date,
+            MetricFact.source_type == "manual",
+            MetricFact.is_current.is_(True),
+        )
+        .values(is_current=False)
+    )
 
     manual_fact = MetricFact(
         user_id=user_id,
