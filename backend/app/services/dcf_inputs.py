@@ -26,10 +26,10 @@ from app.models.facts import MetricFact
 from app.services.canonical_financials import (
     apply_reviewed_method_gates,
     guard_sec_run_availability,
-    guard_source_selection,
     reviewed_method_gate,
     visible_metric_fact_predicate,
 )
+from app.services.source_reconciliation import guard_reconciled_source_selection
 
 
 DCF_INPUT_FACT_KEYS = {
@@ -157,7 +157,13 @@ def load_canonical_dcf_fact_universe(
             "system_valuation",
         )
     }
-    facts = guard_source_selection(facts, consumer="valuation_inputs")
+    facts = guard_reconciled_source_selection(
+        facts,
+        consumer="valuation_inputs",
+        knowledge_cutoff=evaluated_at,
+        session=session,
+        user_id=user_id,
+    )
     facts = guard_sec_run_availability(session, stock_id=stock_id, facts=facts)
     dcf_facts = [fact for fact in facts if fact.metric_key in DCF_INPUT_FACT_KEYS.values()]
     oeps_facts = [fact for fact in facts if fact.metric_key == "owners_earnings_per_share"]

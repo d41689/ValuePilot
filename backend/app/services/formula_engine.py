@@ -1,5 +1,6 @@
 import ast
 import operator
+from datetime import datetime, timezone
 from decimal import Decimal, localcontext
 from typing import Dict, List, Optional
 from sqlalchemy.orm import Session
@@ -8,8 +9,11 @@ from app.models.facts import MetricFact, Formula, CalculatedRun
 from app.services.numeric_persistence import persist_numeric_38_12
 from app.services.canonical_financials import (
     guard_sec_run_availability,
-    guard_source_selection,
     visible_metric_fact_predicate,
+)
+from app.services.source_reconciliation import (
+    CanonicalReconciliationError,
+    guard_reconciled_source_selection,
 )
 
 # Safe operators for formula evaluation
@@ -127,12 +131,39 @@ class FormulaEngine:
                 visible_metric_fact_predicate(MetricFact, user_id=user_id),
             )
         ).all()
-        facts = guard_source_selection(
+        facts = guard_reconciled_source_selection(
             facts,
             consumer="formula",
+            knowledge_cutoff=datetime.now(timezone.utc),
             selected_source_type=selected_source_type,
+            session=self.db,
+            user_id=user_id,
         )
         facts = guard_sec_run_availability(self.db, stock_id=stock_id, facts=facts)
+        facts_by_metric = {
+            metric_key: [fact for fact in facts if fact.metric_key == metric_key]
+            for metric_key in formula.dependencies_json
+        }
+        ambiguous = {
+            metric_key: rows
+            for metric_key, rows in facts_by_metric.items()
+            if len(rows) > 1
+        }
+        if ambiguous:
+            raise CanonicalReconciliationError(
+                consumer="formula",
+                blocking_items=[
+                    {
+                        "metric_key": metric_key,
+                        "status": "unresolved",
+                        "reason_code": "formula_period_selection_required",
+                        "blocking": True,
+                        "fact_ids": sorted(fact.id for fact in rows),
+                        "source_types": sorted({fact.source_type for fact in rows}),
+                    }
+                    for metric_key, rows in sorted(ambiguous.items())
+                ],
+            )
         context = {f.metric_key: f.value_numeric for f in facts if f.value_numeric is not None}
         
         # Check if we have all dependencies
@@ -180,6 +211,15 @@ class FormulaEngine:
                     "formula_id": formula.id,
                     "source_types": sorted({f.source_type for f in facts}),
                     "user_authored_formula": True,
+                    "fact_nature": "derived_actual",
+                    "inputs": [
+                        {
+                            "fact_id": source.id,
+                            "metric_key": source.metric_key,
+                            "source_type": source.source_type,
+                        }
+                        for source in sorted(facts, key=lambda item: item.id)
+                    ],
                 },
                 value_numeric=persisted_result,
                 source_type="calculated",

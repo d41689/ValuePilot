@@ -21,7 +21,6 @@ from app.services.canonical_financials import (
     apply_reviewed_method_gates,
     current_sec_unresolved_states,
     guard_sec_run_availability,
-    guard_source_selection,
     partition_sec_run_availability,
     resolve_sec_publication_evidence,
     reviewed_method_gate,
@@ -53,6 +52,11 @@ from app.services.market_data_service import (
     MarketDataService,
     read_current_eod_price,
     serialize_canonical_eod_price,
+)
+from app.services.source_reconciliation import (
+    CanonicalReconciliationError,
+    build_source_reconciliation_report,
+    guard_reconciled_source_selection,
 )
 
 router = APIRouter()
@@ -940,12 +944,18 @@ def read_stock_by_ticker(
         dcf_input_facts = universe.dcf_facts
         dcf_method_authority = universe.method_authority
         method_gate_decisions = universe.method_decisions
-    except CanonicalSourceConflictError as error:
+    except (CanonicalSourceConflictError, CanonicalReconciliationError) as error:
         dcf_input_facts = []
         canonical_input_status = {
             "status": "source_conflict",
             "reason_code": error.code,
-            "source_types": list(error.source_types),
+            "source_types": list(getattr(error, "source_types", ())),
+            "blocking_reasons": sorted(
+                {
+                    str(item.get("reason_code"))
+                    for item in getattr(error, "blocking_items", ())
+                }
+            ),
         }
     except CanonicalUnavailableError as error:
         canonical_input_status = error.state
@@ -999,22 +1009,35 @@ def read_stock_by_ticker(
         knowledge_at=dcf_evaluated_at,
     )
     try:
-        summary_facts = guard_source_selection(
+        summary_facts = guard_reconciled_source_selection(
             [*facts, *oeps_facts, *growth_facts],
             consumer="stock_summary",
+            knowledge_cutoff=dcf_evaluated_at,
+            session=session,
+            user_id=current_user.id,
         )
         guard_sec_run_availability(
             session,
             stock_id=stock.id,
             facts=summary_facts,
         )
-    except (CanonicalSourceConflictError, CanonicalUnavailableError) as error:
+    except (
+        CanonicalSourceConflictError,
+        CanonicalUnavailableError,
+        CanonicalReconciliationError,
+    ) as error:
         raise HTTPException(
             status_code=409,
             detail={
                 "code": error.code,
                 "message": str(error),
                 "source_types": list(getattr(error, "source_types", ())),
+                "blocking_reasons": sorted(
+                    {
+                        str(item.get("reason_code"))
+                        for item in getattr(error, "blocking_items", ())
+                    }
+                ),
             },
         ) from error
     facts_by_key: dict[str, MetricFact] = {}
@@ -1286,6 +1309,51 @@ def read_stock(
         "is_active": stock.is_active,
         "created_at": stock.created_at
     }
+
+
+@router.get("/{stock_id}/source-reconciliation", response_model=dict)
+def read_source_reconciliation(
+    stock_id: int,
+    session: SessionDep,
+    current_user: CurrentUser,
+    metric_key: list[str] | None = Query(default=None),
+    knowledge_cutoff: datetime | None = Query(default=None),
+) -> Any:
+    """Return the bounded comparison view without electing a source winner."""
+
+    if session.get(Stock, stock_id) is None:
+        raise HTTPException(status_code=404, detail="Stock not found")
+    if metric_key is not None and len(metric_key) > 50:
+        raise HTTPException(
+            status_code=422,
+            detail={"code": "reconciliation_filter_limit_exceeded"},
+        )
+    cutoff = knowledge_cutoff or datetime.now(timezone.utc)
+    if cutoff.tzinfo is None:
+        raise HTTPException(
+            status_code=422,
+            detail={"code": "timezone_aware_knowledge_cutoff_required"},
+        )
+    request_clock = datetime.now(timezone.utc)
+    if cutoff > request_clock:
+        raise HTTPException(
+            status_code=422,
+            detail={"code": "future_knowledge_cutoff"},
+        )
+    try:
+        return build_source_reconciliation_report(
+            session,
+            user_id=current_user.id,
+            stock_id=stock_id,
+            knowledge_cutoff=cutoff,
+            metric_keys=metric_key,
+            historical_request=knowledge_cutoff is not None,
+        )
+    except ValueError as error:
+        raise HTTPException(
+            status_code=422,
+            detail={"code": "invalid_reconciliation_request", "message": str(error)},
+        ) from error
 
 @router.get("/{stock_id}/facts", response_model=list[dict])
 def read_stock_facts(

@@ -36,6 +36,7 @@ from app.services.canonical_financials import (
     reviewed_method_gate,
     visible_metric_fact_predicate,
 )
+from app.services.source_reconciliation import build_source_reconciliation_report_from_facts
 
 
 def _piotroski_series(facts: list[MetricFact]) -> list[dict[str, Any]]:
@@ -175,6 +176,20 @@ def build_research_workspace(
         active_report=active_report,
         current_user_id=user_id,
     )
+    try:
+        source_reconciliation = build_source_reconciliation_report_from_facts(
+            session,
+            facts=facts,
+            user_id=user_id,
+            stock_id=stock.id,
+            knowledge_cutoff=evaluated_at,
+        )
+    except ValueError as error:
+        source_reconciliation = {
+            "status": "unavailable",
+            "reason_code": "reconciliation_bound_exceeded",
+            "message": str(error),
+        }
     signal = (
         session.query(OraclesLensSignal)
         .filter(OraclesLensSignal.stock_id == stock.id)
@@ -292,6 +307,7 @@ def build_research_workspace(
         },
         "piotroski_f_score": _piotroski_series(facts),
         "actual_conflicts": actual_conflicts,
+        "source_reconciliation": source_reconciliation,
         "missing_items": [
             requirement
             for requirement in serialized_coverage

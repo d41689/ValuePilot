@@ -6,6 +6,7 @@ from app.services.canonical_financials import (
     CanonicalSourceConflictError,
     CanonicalUnavailableError,
 )
+from app.services.source_reconciliation import CanonicalReconciliationError
 
 router = APIRouter()
 
@@ -50,13 +51,23 @@ def run_screen(
             }
             for stock in results
         ]
-    except (CanonicalSourceConflictError, CanonicalUnavailableError) as error:
+    except (
+        CanonicalSourceConflictError,
+        CanonicalUnavailableError,
+        CanonicalReconciliationError,
+    ) as error:
         raise HTTPException(
             status_code=409,
             detail={
                 "code": error.code,
                 "message": str(error),
                 "source_types": list(getattr(error, "source_types", ())),
+                "blocking_reasons": sorted(
+                    {
+                        str(item.get("reason_code"))
+                        for item in getattr(error, "blocking_items", ())
+                    }
+                ),
             },
         ) from error
     except Exception as e:

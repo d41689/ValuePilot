@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, datetime, timezone
 from decimal import Decimal
 from typing import Any, Callable, Iterable, Optional
 
@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session
 from app.models.facts import MetricFact
 from app.services.canonical_financials import guard_sec_run_availability, guard_source_selection
 from app.services.numeric_persistence import persist_numeric_38_12
+from app.services.source_reconciliation import guard_reconciled_source_selection
 
 
 CALCULATION_VERSION = "piotroski_value_line_v1"
@@ -124,7 +125,13 @@ class PiotroskiFScoreCalculator:
                 ),
             )
         ).all()
-        source_facts = guard_source_selection(source_facts, consumer="piotroski")
+        source_facts = guard_reconciled_source_selection(
+            source_facts,
+            consumer="piotroski",
+            knowledge_cutoff=datetime.now(timezone.utc),
+            session=self.db,
+            user_id=user_id,
+        )
         source_facts = guard_sec_run_availability(
             self.db, stock_id=stock_id, facts=source_facts
         )

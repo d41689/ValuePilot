@@ -159,7 +159,8 @@ def test_authenticated_reads_share_sec_but_keep_private_facts_private(
         },
     )
     assert conflict.status_code == 409
-    assert conflict.json()["detail"]["code"] == "source_conflict"
+    assert conflict.json()["detail"]["code"] == "unresolved_source_reconciliation"
+    assert conflict.json()["detail"]["blocking_reasons"]
 
 
 def test_typed_unresolved_sec_state_is_observable_without_retained_content(

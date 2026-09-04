@@ -1460,6 +1460,68 @@ does not approve a generic bank, insurer, REIT, high-SBC/acquisitive,
 cyclical/commodity, or valuation formula, and ordinary price volatility or beta
 cannot satisfy this gate.
 
+### H.10 Exact source reconciliation (FT-06)
+
+FT-06 is governed by `financial-source-reconciliation-v1` in the mapping spec.
+It compares eligible canonical `metric_facts` from SEC, Value Line, manual, and
+calculated roles. The result is a deterministic comparison/audit projection;
+it is not a second fact store, does not change any per-period `is_current` slot,
+and must not select a winning source.
+
+The authenticated stock reconciliation read accepts a bounded optional metric
+filter and a timezone-aware knowledge cutoff no later than the request time. It
+returns the policy ID, mapping-spec digest, cutoff, exact ordered eligible fact
+IDs, typed exclusions, comparison items, and a deterministic report digest.
+Each comparison item includes only bounded canonical identity, source role,
+fact IDs, outcome/reason, blocking state, and Decimal variance/tolerance when
+variance is semantically eligible. It does not expose raw XBRL, proprietary
+snippets, internal storage keys/paths, file URLs, or another user's facts.
+
+Before variance, the service aligns the canonical definition and mapping
+identity, fiscal period/duration, dimensions, normalized base unit/scale,
+currency, fact nature, source identity and authorization, effective time, and
+knowledge cutoff. A mismatch that makes values non-comparable is
+`mapping_conflict` and has no numeric variance. A legacy owned parsed row whose
+document/mapping identity was not retained may remain visible as single-source
+data, but its identity is incomplete and it cannot establish a cross-source
+match. Actual-versus-estimate,
+as-filed-versus-adjusted, direct-versus-derived, and an explicit manual
+correction are separate typed definition relationships; their values are never
+treated as interchangeable merely because their metric key matches.
+
+The approved outcomes are `match`, `expected_definition_difference`,
+`restatement`, `mapping_conflict`, and `unresolved`. Tolerance uses Decimal
+arithmetic only to identify a bounded match and prioritize review. It never
+rewrites either fact, hides a material difference, or authorizes source
+selection. Ambiguous current duplicates, missing derived/manual lineage,
+material same-definition differences, or an otherwise unclassifiable
+comparison are `unresolved`. Single-source coverage is a visible non-blocking
+`unresolved` comparison state rather than evidence that a cross-source check
+passed.
+
+Eligibility is point-in-time and permission aware. A fact, source document,
+canonical publication, mapping/policy version, derived input, and applicable
+authorization must be known/effective and visible by the cutoff. Post-cutoff,
+retired, unauthorized, cross-stock, cross-user, or unverifiable evidence is
+excluded with a typed reason. Today's mutable non-SEC `is_current` projection
+must not be relabeled as historical when its cutoff state cannot be proven. A
+requested historical cutoff therefore returns the visible comparison as
+`partial` with `historical_current_projection_unverifiable`, rather than a
+false claim of complete PIT reconstruction.
+
+Formula, ratio, Piotroski, screener, research, workspace, and other fundamental
+consumers continue to read values only from `metric_facts`. A consumer may
+request one source role when its own contract permits that role, but the
+selection is explicit and cannot bypass a blocking `mapping_conflict` or
+`unresolved` comparison for the same canonical slot. Without explicit source
+selection, mixed source roles remain a typed `source_conflict`; even a `match`
+does not invent a global source winner. Query order, dictionary overwrite,
+highest row ID, newest row, or tolerance is never source authority.
+
+Market-price authority, user intrinsic-value publication, valuation methods,
+industry/economic applicability, new acquisition rights, and evidence
+retirement/account erasure remain outside FT-06.
+
 ---
 
 ## Appendix A: Metric Keys & Mapping Contracts (V1)

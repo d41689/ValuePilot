@@ -61,9 +61,11 @@ types.
    variance/tolerance when eligible, cutoff, policy/mapping identity, and no raw
    artifact path, private snippet, or cross-user fact.
 4. SEC facts are eligible only through their canonical publication and active
-   mapping/source authority. Value Line facts require an owned, parsed,
-   stock-matched document. Manual and calculated facts require the requesting
-   owner; calculated facts require bounded exact input lineage.
+   mapping/source authority. Value Line facts with durable document provenance
+   validate an owned, parsed, stock-matched document; a legacy owned parsed row
+   without that provenance remains comparison-identity-incomplete and can never
+   establish a cross-source match. Manual and calculated facts require the
+   requesting owner; calculated facts require bounded exact input lineage.
 5. Conflicting SEC and Value Line actuals, actual-versus-estimate, manual
    corrections, and derived facts remain separate roles. Mixed currency, unit,
    dimensions, duration/period, mapping identity, ambiguous duplicate,
@@ -139,3 +141,8 @@ decision and a tested migration rather than storing JSON opportunistically.
   `cf5af9846e6aaf132790b9a9a3a272b00a61925b`; frozen PR #128 was consulted only
   for its stated requirements/file inventory and no code, commit, migration, or
   file was copied.
+- 2026-09-04: Tests-first checkpoint established focused service/API red cases
+  before the DB projection and consumer guard existed. The implementation
+  remains migration-free: reports are computed from `metric_facts` plus
+  source-authority lineage. Explicit historical cutoffs over mutable non-SEC
+  current state return `partial / historical_current_projection_unverifiable`.

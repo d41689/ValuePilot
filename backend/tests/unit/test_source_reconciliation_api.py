@@ -1,0 +1,422 @@
+from __future__ import annotations
+
+from datetime import date, datetime, timedelta, timezone
+
+import pytest
+
+from app.models.artifacts import PdfDocument
+from app.models.facts import Formula, MetricFact
+from app.models.stocks import Stock
+from app.services.formula_engine import FormulaEngine
+from app.services.source_reconciliation import CanonicalReconciliationError
+
+
+def _document(*, user_id: int, stock_id: int, suffix: str = "") -> PdfDocument:
+    return PdfDocument(
+        user_id=user_id,
+        stock_id=stock_id,
+        file_name=f"report{suffix}.pdf",
+        source="value_line",
+        file_storage_key=f"private/storage/report{suffix}.pdf",
+        report_date=date(2026, 1, 9),
+        parse_status="parsed",
+        parser_version="value-line-v1",
+        identity_needs_review=False,
+    )
+
+
+def _parsed_fact(
+    *,
+    user_id: int,
+    stock_id: int,
+    document_id: int,
+    metric_key: str = "is.net_income",
+    value: int = 100,
+) -> MetricFact:
+    return MetricFact(
+        user_id=user_id,
+        stock_id=stock_id,
+        metric_key=metric_key,
+        value_numeric=value,
+        value_json={
+            "fact_nature": "actual",
+            "mapping_id": "is.net_income.fy",
+            "definition_basis": "adjusted",
+            "period_start_date": "2025-01-01",
+            "duration_days": 365,
+            "dimensions_identity": "empty",
+        },
+        unit="USD",
+        period_type="FY",
+        period_end_date=date(2025, 12, 31),
+        source_type="parsed",
+        source_document_id=document_id,
+        is_current=True,
+    )
+
+
+def _assert_safe(value):
+    if isinstance(value, dict):
+        forbidden = {
+            "file_storage_key",
+            "storage_key",
+            "storage_path",
+            "raw_text",
+            "original_text_snippet",
+        }
+        assert not (forbidden & set(value))
+        for nested in value.values():
+            _assert_safe(nested)
+    elif isinstance(value, list):
+        for nested in value:
+            _assert_safe(nested)
+    elif isinstance(value, str):
+        assert "private/storage" not in value
+        assert not value.startswith("file://")
+
+
+def test_authenticated_reconciliation_is_tenant_safe_and_bounded(
+    client, db_session, user_factory, auth_headers
+):
+    owner = user_factory("reconcile-owner@example.com")
+    other = user_factory("reconcile-other@example.com")
+    stock = Stock(ticker="RECON", exchange="NYSE", company_name="Reconcile Co")
+    db_session.add(stock)
+    db_session.flush()
+    owner_doc = _document(user_id=owner.id, stock_id=stock.id)
+    other_doc = _document(user_id=other.id, stock_id=stock.id, suffix="-other")
+    db_session.add_all([owner_doc, other_doc])
+    db_session.flush()
+    owner_fact = _parsed_fact(
+        user_id=owner.id,
+        stock_id=stock.id,
+        document_id=owner_doc.id,
+    )
+    other_fact = _parsed_fact(
+        user_id=other.id,
+        stock_id=stock.id,
+        document_id=other_doc.id,
+        value=999,
+    )
+    db_session.add_all([owner_fact, other_fact])
+    db_session.flush()
+    manual = MetricFact(
+        user_id=owner.id,
+        stock_id=stock.id,
+        metric_key="is.net_income",
+        value_numeric=95,
+        value_json={
+            "fact_nature": "manual",
+            "corrects_fact_id": owner_fact.id,
+            "definition_basis": "adjusted",
+            "period_start_date": "2025-01-01",
+            "duration_days": 365,
+            "dimensions_identity": "empty",
+        },
+        unit="USD",
+        period_type="FY",
+        period_end_date=date(2025, 12, 31),
+        source_type="manual",
+        is_current=True,
+    )
+    db_session.add(manual)
+    db_session.commit()
+
+    response = client.get(
+        f"/api/v1/stocks/{stock.id}/source-reconciliation",
+        headers=auth_headers(owner),
+        params=[("metric_key", "is.net_income")],
+    )
+
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload["point_in_time_status"] == "verified_from_available_authority"
+    assert payload["status"] == "complete"
+    assert payload["policy_version"] == "financial-source-reconciliation-v1"
+    assert len(payload["mapping_spec_sha256"]) == 64
+    assert payload["eligible_fact_ids"] == [owner_fact.id, manual.id]
+    returned_fact_ids = {
+        candidate["fact_id"]
+        for item in payload["items"]
+        for candidate in item["inputs"]
+    } | {row["fact_id"] for row in payload["excluded"]}
+    assert other_fact.id not in returned_fact_ids
+    assert payload["items"][0]["status"] == "expected_definition_difference"
+    assert payload["items"][0]["reason_code"] == "explicit_manual_correction"
+    _assert_safe(payload)
+
+    anonymous = client.get(f"/api/v1/stocks/{stock.id}/source-reconciliation")
+    assert anonymous.status_code == 401
+    too_many = client.get(
+        f"/api/v1/stocks/{stock.id}/source-reconciliation",
+        headers=auth_headers(owner),
+        params=[("metric_key", f"metric.{index}") for index in range(51)],
+    )
+    assert too_many.status_code == 422
+    invalid_key = client.get(
+        f"/api/v1/stocks/{stock.id}/source-reconciliation",
+        headers=auth_headers(owner),
+        params=[("metric_key", "is.net_income;drop")],
+    )
+    assert invalid_key.status_code == 422
+
+
+def test_reconciliation_excludes_post_cutoff_and_revoked_source_authority(
+    client, db_session, user_factory, auth_headers
+):
+    user = user_factory("reconcile-cutoff@example.com")
+    stock = Stock(ticker="RCUT", exchange="NYSE", company_name="Cutoff Co")
+    db_session.add(stock)
+    db_session.flush()
+    valid_doc = _document(user_id=user.id, stock_id=stock.id)
+    revoked_doc = _document(user_id=user.id, stock_id=stock.id, suffix="-revoked")
+    revoked_doc.parse_status = "failed"
+    db_session.add_all([valid_doc, revoked_doc])
+    db_session.flush()
+    valid = _parsed_fact(
+        user_id=user.id, stock_id=stock.id, document_id=valid_doc.id
+    )
+    post_cutoff = _parsed_fact(
+        user_id=user.id,
+        stock_id=stock.id,
+        document_id=valid_doc.id,
+        metric_key="bs.total_assets",
+    )
+    revoked = _parsed_fact(
+        user_id=user.id,
+        stock_id=stock.id,
+        document_id=revoked_doc.id,
+        metric_key="bs.total_equity",
+    )
+    cutoff = datetime.now(timezone.utc)
+    post_cutoff.created_at = cutoff + timedelta(hours=1)
+    post_cutoff.updated_at = cutoff + timedelta(hours=1)
+    db_session.add_all([valid, post_cutoff, revoked])
+    db_session.commit()
+
+    response = client.get(
+        f"/api/v1/stocks/{stock.id}/source-reconciliation",
+        headers=auth_headers(user),
+        params={"knowledge_cutoff": cutoff.isoformat()},
+    )
+
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload["point_in_time_status"] == "historical_current_projection_unverifiable"
+    assert payload["status"] == "partial"
+    assert payload["consumer_gate_status"] == "blocked"
+    assert valid.id in payload["eligible_fact_ids"]
+    reasons = {row["fact_id"]: row["reason_code"] for row in payload["excluded"]}
+    assert reasons[post_cutoff.id] == "fact_known_after_cutoff"
+    assert reasons[revoked.id] == "source_unauthorized"
+
+    future = client.get(
+        f"/api/v1/stocks/{stock.id}/source-reconciliation",
+        headers=auth_headers(user),
+        params={
+            "knowledge_cutoff": (
+                datetime.now(timezone.utc) + timedelta(days=1)
+            ).isoformat()
+        },
+    )
+    assert future.status_code == 422
+    assert future.json()["detail"]["code"] == "future_knowledge_cutoff"
+
+
+def test_formula_selected_source_cannot_bypass_missing_derived_lineage(
+    db_session, user_factory
+):
+    user = user_factory("reconcile-formula@example.com")
+    stock = Stock(ticker="RFML", exchange="NYSE", company_name="Formula Guard Co")
+    db_session.add(stock)
+    db_session.flush()
+    document = _document(user_id=user.id, stock_id=stock.id)
+    db_session.add(document)
+    db_session.flush()
+    parsed = _parsed_fact(
+        user_id=user.id,
+        stock_id=stock.id,
+        document_id=document.id,
+        metric_key="input_metric",
+    )
+    calculated = MetricFact(
+        user_id=user.id,
+        stock_id=stock.id,
+        metric_key="input_metric",
+        value_numeric=130,
+        value_json={
+            "fact_nature": "derived_actual",
+            "calculation_version": "test-v1",
+            "period_start_date": "2025-01-01",
+            "duration_days": 365,
+            "dimensions_identity": "empty",
+        },
+        unit="USD",
+        period_type="FY",
+        period_end_date=date(2025, 12, 31),
+        source_type="calculated",
+        is_current=True,
+    )
+    formula = Formula(
+        user_id=user.id,
+        name="Guarded result",
+        expression="input_metric + 1",
+        dependencies_json=["input_metric"],
+    )
+    db_session.add_all([parsed, calculated, formula])
+    db_session.commit()
+
+    with pytest.raises(CanonicalReconciliationError) as raised:
+        FormulaEngine(db_session).run_formula(
+            formula.id,
+            stock.id,
+            user.id,
+            selected_source_type="parsed",
+        )
+
+    assert raised.value.blocking_items[0]["reason_code"] == "derived_lineage_unavailable"
+
+
+def test_formula_persists_exact_input_lineage_for_replay(db_session, user_factory):
+    user = user_factory("reconcile-formula-lineage@example.com")
+    stock = Stock(ticker="RLIN", exchange="NYSE", company_name="Lineage Co")
+    db_session.add(stock)
+    db_session.flush()
+    source = MetricFact(
+        user_id=user.id,
+        stock_id=stock.id,
+        metric_key="source_metric",
+        value_numeric=10,
+        value_json={"fact_nature": "manual"},
+        source_type="manual",
+        is_current=True,
+    )
+    formula = Formula(
+        user_id=user.id,
+        name="Lineage result",
+        expression="source_metric + 1",
+        dependencies_json=["source_metric"],
+    )
+    db_session.add_all([source, formula])
+    db_session.commit()
+
+    run = FormulaEngine(db_session).run_formula(formula.id, stock.id, user.id)
+
+    output = db_session.query(MetricFact).filter_by(source_ref_id=run.id).one()
+    assert output.value_json["fact_nature"] == "derived_actual"
+    assert output.value_json["inputs"] == [
+        {
+            "fact_id": source.id,
+            "metric_key": "source_metric",
+            "source_type": "manual",
+        }
+    ]
+
+
+def test_formula_never_overwrites_periods_in_dependency_dictionary(
+    db_session, user_factory
+):
+    user = user_factory("reconcile-formula-periods@example.com")
+    stock = Stock(ticker="RPER", exchange="NYSE", company_name="Period Guard Co")
+    db_session.add(stock)
+    db_session.flush()
+    facts = [
+        MetricFact(
+            user_id=user.id,
+            stock_id=stock.id,
+            metric_key="period_metric",
+            value_numeric=value,
+            value_json={"fact_nature": "manual"},
+            unit="USD",
+            period_type="FY",
+            period_end_date=period_end,
+            source_type="manual",
+            is_current=True,
+        )
+        for value, period_end in (
+            (10, date(2024, 12, 31)),
+            (99, date(2025, 12, 31)),
+        )
+    ]
+    formula = Formula(
+        user_id=user.id,
+        name="No overwrite",
+        expression="period_metric + 1",
+        dependencies_json=["period_metric"],
+    )
+    db_session.add_all([*facts, formula])
+    db_session.commit()
+
+    with pytest.raises(CanonicalReconciliationError) as raised:
+        FormulaEngine(db_session).run_formula(formula.id, stock.id, user.id)
+
+    assert (
+        raised.value.blocking_items[0]["reason_code"]
+        == "formula_period_selection_required"
+    )
+
+
+def test_user_valuation_is_not_reconciled_as_a_financial_manual_correction(
+    client, db_session, user_factory, auth_headers
+):
+    user = user_factory("reconcile-valuation-boundary@example.com")
+    stock = Stock(ticker="RVAL", exchange="NYSE", company_name="Valuation Boundary")
+    db_session.add(stock)
+    db_session.flush()
+    document = _document(user_id=user.id, stock_id=stock.id)
+    db_session.add(document)
+    db_session.flush()
+    valuation = MetricFact(
+        user_id=user.id,
+        stock_id=stock.id,
+        metric_key="val.fair_value",
+        value_numeric=80,
+        value_json={"user_authored": True},
+        unit="USD",
+        currency="USD",
+        period_type="AS_OF",
+        period_end_date=date(2026, 9, 4),
+        source_type="manual",
+        is_current=True,
+    )
+    reference = MetricFact(
+        user_id=user.id,
+        stock_id=stock.id,
+        metric_key="target.price_18m.mid",
+        value_numeric=100,
+        value_json={
+            "fact_nature": "estimate",
+            "mapping_id": "target.price_18m.mid",
+            "definition_basis": "adjusted",
+            "dimensions_identity": "empty",
+        },
+        unit="USD",
+        currency="USD",
+        period_type="AS_OF",
+        period_end_date=date(2026, 9, 4),
+        source_type="parsed",
+        source_document_id=document.id,
+        is_current=True,
+    )
+    db_session.add_all([valuation, reference])
+    db_session.commit()
+
+    response = client.get(
+        f"/api/v1/stocks/{stock.id}/source-reconciliation",
+        headers=auth_headers(user),
+    )
+
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert valuation.id not in payload["eligible_fact_ids"]
+    assert any(
+        row["fact_id"] == valuation.id
+        and row["reason_code"] == "user_authored_valuation_out_of_scope"
+        for row in payload["excluded"]
+    )
+    assert all(
+        item["metric_key"] != "val.fair_value" for item in payload["items"]
+    )
+    assert any(
+        item["metric_key"] == "target.price_18m.mid" for item in payload["items"]
+    )

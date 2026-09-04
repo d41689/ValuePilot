@@ -18,6 +18,95 @@
 
 version: 2
 
+# FT-06 compares canonical facts; it does not replace them or rank their
+# sources. This policy is separate from the source-specific publication
+# mappings. Variance is eligible only after every identity field aligns.
+source_reconciliation:
+  versions:
+    - id: financial-source-reconciliation-v1
+      status: approved
+      known_at: "2026-09-04T00:00:00Z"
+      effective_from: "2026-09-04T00:00:00Z"
+      source_precedence: none
+      fact_store: metric_facts
+      result_role: comparison_audit_projection
+      decimal_arithmetic: required
+      source_roles:
+        sec: [primary_as_filed_actual, primary_as_filed_derived_actual]
+        parsed: [value_line_adjusted_actual, value_line_estimate]
+        manual: [user_manual_correction]
+        calculated: [deterministic_derived]
+      fact_natures: [actual, estimate, derived_actual, manual]
+      comparison_identity:
+        align_before_variance:
+          - canonical_definition
+          - mapping_version
+          - fiscal_period_and_duration
+          - dimensions
+          - normalized_unit_and_scale
+          - monetary_currency
+          - fact_nature
+          - source_identity_and_authorization
+          - effective_time
+          - knowledge_cutoff
+        period_bucket:
+          fiscal: metric_key_fiscal_year_and_quarter_ordinal
+          as_of: metric_key_and_exact_period_end_date
+        empty_dimensions_identity: empty
+        missing_identity_outcome: mapping_conflict
+      unit_equivalence:
+        currency: [currency, USD]
+        currency_per_share: [currency_per_share, USD_per_share]
+        shares: [shares]
+        ratio: [ratio, percent]
+        exact_scale_required: normalized_base_unit
+        fx_conversion: prohibited
+      definition_relationships:
+        sec_vs_value_line:
+          left_basis: as_filed
+          right_basis: adjusted
+          unequal_value_outcome: expected_definition_difference
+          reason_code: as_filed_vs_adjusted
+        direct_vs_derived:
+          derived_lineage: exact_fact_ids_required
+          outcome: expected_definition_difference
+          reason_code: direct_vs_derived
+        manual_correction:
+          correction_lineage: exact_fact_id_required
+          outcome: expected_definition_difference
+          reason_code: explicit_manual_correction
+        actual_vs_estimate:
+          variance: prohibited
+          outcome: expected_definition_difference
+          reason_code: actual_vs_estimate
+      tolerance:
+        absolute: '0.000001'
+        relative: '0.000001'
+        purpose: review_prioritization_only
+        source_selection: prohibited
+      outcomes:
+        - match
+        - expected_definition_difference
+        - restatement
+        - mapping_conflict
+        - unresolved
+      consumer_gate:
+        unresolved_conflict: fail_closed
+        mapping_conflict: fail_closed
+        caller_selected_source_bypass: prohibited
+        dictionary_or_query_order_precedence: prohibited
+        matched_source_auto_winner: prohibited
+      point_in_time:
+        fact_known_and_effective_by_cutoff: required
+        source_authorized_at_cutoff: required
+        post_cutoff_evidence: excluded_with_typed_reason
+        unverifiable_historical_current_projection: unavailable
+        non_sec_historical_projection_status: partial
+      privacy:
+        tenant_visibility: required
+        raw_artifact_paths: prohibited
+        proprietary_snippets: prohibited
+
 # SEC publication is a separate, versioned contract from the Value Line JSON
 # mappings below.  A raw XBRL observation is lineage, not product truth, until
 # an approved rule in this section produces a canonical metric_facts

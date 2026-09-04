@@ -3,7 +3,7 @@ from __future__ import annotations
 import math
 from collections import defaultdict
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, datetime, timezone
 from statistics import median
 from typing import Any
 
@@ -27,9 +27,12 @@ from app.services.canonical_financials import (
     MethodGateDecision,
     apply_reviewed_method_gates,
     guard_sec_run_availability,
-    guard_source_selection,
     reviewed_method_gate,
     visible_metric_fact_predicate,
+)
+from app.services.source_reconciliation import (
+    CanonicalReconciliationError,
+    guard_reconciled_source_selection,
 )
 from app.edgar.parsers.value_units import TRANSITION_ACCEPTED_DATE
 from app.services.oracles_lens.constants import SCORE_VERSION
@@ -1231,7 +1234,13 @@ def _m3_facts_by_stock(
             if not rows:
                 continue
             try:
-                selected = guard_source_selection(rows, consumer="oracles_lens_quality")
+                selected = guard_reconciled_source_selection(
+                    rows,
+                    consumer="oracles_lens_quality",
+                    knowledge_cutoff=datetime.now(timezone.utc),
+                    session=session,
+                    user_id=user_id,
+                )
                 selected = guard_sec_run_availability(
                     session,
                     stock_id=stock_id,
@@ -1247,6 +1256,14 @@ def _m3_facts_by_stock(
                 break
             except CanonicalUnavailableError as error:
                 statuses[stock_id] = error.state
+                result[stock_id] = {}
+                break
+            except CanonicalReconciliationError as error:
+                statuses[stock_id] = {
+                    "status": "source_conflict",
+                    "reason_code": error.code,
+                    "source_types": [],
+                }
                 result[stock_id] = {}
                 break
             if metric_key.startswith("owners_earnings_per_share"):
