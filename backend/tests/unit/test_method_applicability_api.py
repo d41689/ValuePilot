@@ -2,11 +2,12 @@ from __future__ import annotations
 
 from datetime import date
 
-from sqlalchemy import func, select
+from sqlalchemy import func, select, text
 
 from app.models.sec_publication import SecEconomicClassificationReview
 from app.models.stocks import Stock
 from app.services.canonical_financials import reviewed_method_gate
+from app.services import method_applicability
 
 
 def _stock(db_session) -> Stock:
@@ -167,3 +168,61 @@ def test_classification_review_conflicts_are_typed_and_rollback_cleanly(
     )
     assert current.economic_class == "bank"
     assert current.reason_code == "owner_earnings_unsupported_for_bank"
+
+
+def test_concurrent_admin_deactivation_is_typed_and_rollback_cleanly(
+    client, db_session, user_factory, auth_headers, monkeypatch
+) -> None:
+    admin = user_factory("ft07-race-admin@example.com", role="admin")
+    stock = _stock(db_session)
+    route = f"/api/v1/admin/stocks/{stock.id}/method-classification-reviews"
+    original = client.post(
+        route,
+        headers=auth_headers(admin),
+        json={
+            "economic_class": "ordinary",
+            "effective_from": "2020-01-01",
+            "review_reason": "Initial reviewed classification.",
+        },
+    )
+    assert original.status_code == 201, original.text
+    original_id = original.json()["id"]
+    real_lock = method_applicability._lock_review_slot
+
+    def deactivate_after_validation(session, *, stock_id: int, kind: str) -> None:
+        real_lock(session, stock_id=stock_id, kind=kind)
+        session.execute(
+            text("UPDATE users SET is_active=false WHERE id=:reviewer"),
+            {"reviewer": admin.id},
+        )
+
+    monkeypatch.setattr(
+        method_applicability, "_lock_review_slot", deactivate_after_validation
+    )
+    rejected = client.post(
+        route,
+        headers=auth_headers(admin),
+        json={
+            "economic_class": "bank",
+            "effective_from": "2025-01-01",
+            "review_reason": "Concurrent deactivation must fail closed.",
+            "supersedes_review_id": original_id,
+        },
+    )
+
+    assert rejected.status_code == 409, rejected.text
+    assert rejected.json()["detail"]["code"] == "reviewer_not_authorized"
+    assert db_session.scalar(
+        select(func.count()).select_from(SecEconomicClassificationReview).where(
+            SecEconomicClassificationReview.stock_id == stock.id
+        )
+    ) == 1
+    db_session.expire_all()
+    assert db_session.get(type(admin), admin.id).is_active is True
+    unchanged = reviewed_method_gate(
+        db_session,
+        stock_id=stock.id,
+        method_key="owner_earnings",
+        effective_as_of=date(2025, 1, 1),
+    )
+    assert unchanged.economic_class == "ordinary"

@@ -36,6 +36,14 @@ def _method_review_http_error(error: MethodApplicabilityReviewError) -> HTTPExce
 
 def _method_review_db_conflict(error: DBAPIError) -> HTTPException:
     detail = str(error.orig).lower()
+    if "method applicability review requires active admin" in detail:
+        return HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={
+                "code": "reviewer_not_authorized",
+                "message": "Method review requires an active admin; reload and retry.",
+            },
+        )
     known_conflicts = (
         "overlapping economic classification review",
         "overlapping economic risk review",

@@ -257,16 +257,34 @@ def reviewed_method_gate(
     classifications = session.execute(
         text(
             """
+            WITH RECURSIVE review_descendants AS (
+                SELECT root.id AS ancestor_id, root.id AS descendant_id,
+                       root.effective_from AS descendant_effective_from,
+                       root.effective_to AS descendant_effective_to
+                FROM sec_economic_classification_reviews root
+                WHERE root.stock_id=:stock_id
+                  AND root.effective_from<=:as_of
+                  AND (root.effective_to IS NULL OR root.effective_to>=:as_of)
+                  AND root.known_at<=:cutoff
+                UNION ALL
+                SELECT path.ancestor_id, later.id, later.effective_from,
+                       later.effective_to
+                FROM review_descendants path
+                JOIN sec_economic_classification_reviews later
+                  ON later.supersedes_review_id=path.descendant_id
+                WHERE later.stock_id=:stock_id AND later.known_at<=:cutoff
+            )
             SELECT r.id, r.economic_class
             FROM sec_economic_classification_reviews r
             WHERE r.stock_id=:stock_id AND r.effective_from<=:as_of
               AND (r.effective_to IS NULL OR r.effective_to>=:as_of)
               AND r.known_at<=:cutoff
               AND NOT EXISTS (
-                SELECT 1 FROM sec_economic_classification_reviews later
-                WHERE later.supersedes_review_id=r.id AND later.known_at<=:cutoff
-                  AND later.effective_from<=:as_of
-                  AND (later.effective_to IS NULL OR later.effective_to>=:as_of)
+                SELECT 1 FROM review_descendants later
+                WHERE later.ancestor_id=r.id AND later.descendant_id<>r.id
+                  AND later.descendant_effective_from<=:as_of
+                  AND (later.descendant_effective_to IS NULL
+                       OR later.descendant_effective_to>=:as_of)
               )
             ORDER BY r.known_at DESC, r.id DESC
             LIMIT 2
@@ -340,16 +358,34 @@ def reviewed_method_gate(
     risk_rows = session.execute(
         text(
             """
+            WITH RECURSIVE review_descendants AS (
+                SELECT root.id AS ancestor_id, root.id AS descendant_id,
+                       root.effective_from AS descendant_effective_from,
+                       root.effective_to AS descendant_effective_to
+                FROM sec_economic_risk_attribute_reviews root
+                WHERE root.stock_id=:stock_id
+                  AND root.effective_from<=:as_of
+                  AND (root.effective_to IS NULL OR root.effective_to>=:as_of)
+                  AND root.known_at<=:cutoff
+                UNION ALL
+                SELECT path.ancestor_id, later.id, later.effective_from,
+                       later.effective_to
+                FROM review_descendants path
+                JOIN sec_economic_risk_attribute_reviews later
+                  ON later.supersedes_review_id=path.descendant_id
+                WHERE later.stock_id=:stock_id AND later.known_at<=:cutoff
+            )
             SELECT r.id, r.risk_attribute, r.is_present
             FROM sec_economic_risk_attribute_reviews r
             WHERE r.stock_id=:stock_id AND r.effective_from<=:as_of
               AND (r.effective_to IS NULL OR r.effective_to>=:as_of)
               AND r.known_at<=:cutoff
               AND NOT EXISTS (
-                SELECT 1 FROM sec_economic_risk_attribute_reviews later
-                WHERE later.supersedes_review_id=r.id AND later.known_at<=:cutoff
-                  AND later.effective_from<=:as_of
-                  AND (later.effective_to IS NULL OR later.effective_to>=:as_of)
+                SELECT 1 FROM review_descendants later
+                WHERE later.ancestor_id=r.id AND later.descendant_id<>r.id
+                  AND later.descendant_effective_from<=:as_of
+                  AND (later.descendant_effective_to IS NULL
+                       OR later.descendant_effective_to>=:as_of)
               )
             ORDER BY r.risk_attribute, r.known_at DESC, r.id DESC
             """

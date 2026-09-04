@@ -508,6 +508,99 @@ def test_prospective_supersession_preserves_prior_effective_range(
         assert review_kind in prospective_effective.risk_attributes
 
 
+@pytest.mark.parametrize("review_kind", ["classification", *RISK_ATTRIBUTES])
+def test_multilevel_supersession_resolves_descendant_over_ancestor_range(
+    db_session, user_factory, review_kind: str
+) -> None:
+    reviewer = user_factory(f"ft07-chain-{review_kind}@example.com", role="admin")
+    stock = _stock(db_session, f"C{review_kind[:6]}")
+    _review_ordinary_profile(db_session, reviewer=reviewer, stock=stock)
+
+    if review_kind == "classification":
+        original = db_session.scalar(
+            select(SecEconomicClassificationReview).where(
+                SecEconomicClassificationReview.stock_id == stock.id
+            )
+        )
+        assert original is not None
+        middle = review_company_classification(
+            db_session,
+            reviewer_user_id=reviewer.id,
+            stock_id=stock.id,
+            economic_class="bank",
+            effective_from=date(2024, 1, 1),
+            effective_to=date(2024, 12, 31),
+            review_reason="Finite intermediate classification review.",
+            supersedes_review_id=original.id,
+        )
+        descendant = review_company_classification(
+            db_session,
+            reviewer_user_id=reviewer.id,
+            stock_id=stock.id,
+            economic_class="reit",
+            effective_from=date(2024, 12, 31),
+            effective_to=date(2025, 12, 31),
+            review_reason="Reviewed classification extending the terminal range.",
+            supersedes_review_id=middle.id,
+        )
+    else:
+        original = db_session.scalar(
+            select(SecEconomicRiskReview).where(
+                SecEconomicRiskReview.stock_id == stock.id,
+                SecEconomicRiskReview.risk_attribute == review_kind,
+            )
+        )
+        assert original is not None
+        middle = review_company_risk_attribute(
+            db_session,
+            reviewer_user_id=reviewer.id,
+            stock_id=stock.id,
+            risk_attribute=review_kind,
+            is_present=False,
+            effective_from=date(2024, 1, 1),
+            effective_to=date(2024, 12, 31),
+            review_reason="Finite intermediate risk review.",
+            supersedes_review_id=original.id,
+        )
+        descendant = review_company_risk_attribute(
+            db_session,
+            reviewer_user_id=reviewer.id,
+            stock_id=stock.id,
+            risk_attribute=review_kind,
+            is_present=True,
+            effective_from=date(2024, 12, 31),
+            effective_to=date(2025, 12, 31),
+            review_reason="Reviewed risk state extending the terminal range.",
+            supersedes_review_id=middle.id,
+        )
+    db_session.commit()
+
+    before_descendant = reviewed_method_gate(
+        db_session,
+        stock_id=stock.id,
+        method_key="owner_earnings",
+        effective_as_of=date(2025, 6, 1),
+        knowledge_at=middle.known_at,
+    )
+    decision = reviewed_method_gate(
+        db_session,
+        stock_id=stock.id,
+        method_key="owner_earnings",
+        effective_as_of=date(2025, 6, 1),
+        knowledge_at=descendant.known_at,
+    )
+
+    assert before_descendant.status == "approved"
+    assert before_descendant.economic_class == "ordinary"
+    if review_kind == "classification":
+        assert decision.economic_class == "reit"
+        assert decision.reason_code == "owner_earnings_unsupported_for_reit"
+    else:
+        assert decision.economic_class == "ordinary"
+        assert decision.reason_code == "reviewed_risk_attribute_unsupported"
+        assert decision.risk_attributes == (review_kind,)
+
+
 @pytest.mark.parametrize(
     ("metric_key", "expected"),
     [

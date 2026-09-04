@@ -159,3 +159,13 @@ strict read-only Terra full-diff review with no P0–P3 findings before sign-off
   valuation: every system DCF path stays typed
   `system_valuation_method_pending_ft09`, with no canonical model inputs or
   saved numeric conclusion, until FT-09 approves a normative method contract.
+- 2026-09-04: Strict Terra R1 found two real edge cases. Tests first reproduced
+  a three-level finite-range supersession conflict for classification and all
+  four risk attributes, plus a reviewer deactivation between service preflight
+  and the database trigger. Cutoff-aware recursive descendant resolution and a
+  typed `409 reviewer_not_authorized` translation closed both; the focused set
+  is `66 passed` and the affected 14-file set is `221 passed` in Docker. R1's
+  policy-effective-date concern was independently rejected: policy effective
+  time is operational knowledge authority, while `effective_as_of` is company
+  economic/input time; applying the policy date to historical input periods
+  would make reviewed historical calculation/backfill impossible.
