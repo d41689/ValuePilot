@@ -11,11 +11,9 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import date, datetime, timezone
 from decimal import Decimal
-from functools import lru_cache
 import hashlib
 from itertools import combinations
 import json
-from pathlib import Path
 import re
 from typing import Any, Iterable, Sequence
 
@@ -23,7 +21,10 @@ from sqlalchemy import select, text
 from sqlalchemy.orm import Session
 from app.models.artifacts import PdfDocument, ValueLineMappingPolicy
 from app.models.facts import MetricFact
-from app.services.mapping_spec import MappingSpec
+from app.services.mapping_spec import (
+    MappingSpec,
+    load_resolved_value_line_mapping_spec,
+)
 from app.services.canonical_financials import (
     CanonicalSourceConflictError,
     partition_sec_run_availability,
@@ -699,9 +700,6 @@ def reconcile_candidates(
     return report
 
 
-_SPEC_PATH = Path(__file__).resolve().parents[2] / "docs" / "metric_facts_mapping_spec.yml"
-
-
 def _policy_datetime(value: Any, *, field: str) -> datetime:
     if not isinstance(value, str) or not value:
         raise RuntimeError(f"source reconciliation {field} is unavailable")
@@ -716,13 +714,14 @@ def _policy_datetime(value: Any, *, field: str) -> datetime:
     return parsed.astimezone(timezone.utc)
 
 
-@lru_cache(maxsize=1)
 def _resolved_mapping_spec() -> MappingSpec:
-    return MappingSpec.load(_SPEC_PATH)
+    return load_resolved_value_line_mapping_spec()
 
 
-def _mapping_spec_identity() -> tuple[str, str, str, datetime, datetime]:
-    resolved_mapping = _resolved_mapping_spec()
+def _mapping_spec_identity(
+    resolved_mapping: MappingSpec | None = None,
+) -> tuple[str, str, str, datetime, datetime]:
+    resolved_mapping = resolved_mapping or _resolved_mapping_spec()
     spec = resolved_mapping.spec
     versions = spec.get("source_reconciliation", {}).get("versions", [])
     policy = next(
@@ -752,8 +751,8 @@ def _registered_mapping_spec_identity(
     session: Session,
 ) -> tuple[str, str, str, datetime, datetime] | None:
     try:
-        identity = _mapping_spec_identity()
         resolved_mapping = _resolved_mapping_spec()
+        identity = _mapping_spec_identity(resolved_mapping)
     except (OSError, RuntimeError, ValueError):
         return None
     registry = session.get(

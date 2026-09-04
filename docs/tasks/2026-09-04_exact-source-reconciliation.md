@@ -333,3 +333,23 @@ reconciliation outcomes or create another financial fact store.
   tests (123 broad focused plus the explicit missing-manifest correction
   regression). Full backend, fresh Terra R10, and exact closing gates remain
   pending.
+- 2026-09-04: After the R9 checkpoint, the exact full backend suite passed at
+  2,314 tests (two existing dependency-deprecation warnings). Terra R10 then
+  found two valid gaps: ingestion labeled pre-persistence Owner Earnings
+  projections as parsed facts without exact input IDs, and the reconciliation
+  boundary permanently cached the deployed mapping policy in a warm process.
+- 2026-09-04: Sol R10 remediation makes Owner Earnings a strict two-phase
+  calculation. Canonical Value Line inputs are persisted first; only one
+  complete, current four-fact FY set from the exact parse run can create a
+  `calculated` OEPS fact. Each annual fact records a stable calculation version
+  and four bounded fact IDs, and the normalized snapshot records at most five
+  exact, already-persisted annual OEPS IDs. Missing, ambiguous, unpersisted,
+  mixed-currency, or invalid-share inputs create no derived fact. Recursive
+  reconciliation therefore makes DCF input assembly typed-unavailable when a
+  recorded input is later superseded.
+- 2026-09-04: Ingestion and reconciliation now share one resolved MappingSpec
+  loader with no process-lifetime cache. Registry validation uses one loaded
+  instance per check, and a warm-process regression proves that a second
+  resolution observes a changed digest rather than continuing to accept the
+  old approved policy. The R10 affected Docker suite is green at 114 tests.
+  Exact closing gates and fresh Terra R11 remain pending.

@@ -25,8 +25,12 @@ from app.ingestion.parsers.v1_value_line.parser import ValueLineV1Parser
 from app.ingestion.parsers.v1_value_line.page_json import build_value_line_page_json
 from app.ingestion.parsers.v1_value_line.semantics import has_value_line_markers
 from app.ingestion.normalization.scaler import Scaler
-from app.services.mapping_spec import MappingSpec
-from app.services.owners_earnings import build_owners_earnings_facts
+from app.services.mapping_spec import load_resolved_value_line_mapping_spec
+from app.services.owners_earnings import (
+    OE_INPUT_KEYS,
+    build_normalized_owners_earnings_fact,
+    build_owners_earnings_facts,
+)
 from app.services.canonical_financials import reviewed_method_gate
 from app.services.calculated_metrics.value_line_ratios import ValueLineRatioCalculator
 from app.services.calculated_metrics.piotroski_f_score import PiotroskiFScoreCalculator
@@ -105,9 +109,7 @@ class IngestionService:
         self.db = db
         self.storage = FileStorageService()
         self.identity_service = IdentityService(db)
-        self.mapping_spec = MappingSpec.load(
-            Path(__file__).resolve().parents[2] / "docs" / "metric_facts_mapping_spec.yml"
-        )
+        self.mapping_spec = load_resolved_value_line_mapping_spec()
 
     def process_upload(self, user_id: int, file: UploadFile) -> tuple[PdfDocument, list[dict]]:
         """
@@ -294,13 +296,6 @@ class IngestionService:
                         method_key="owner_earnings",
                         effective_as_of=report_date,
                     )
-                    if owner_earnings_gate.status == "approved":
-                        facts.extend(
-                            build_owners_earnings_facts(
-                                facts,
-                                report_date=report_date,
-                            )
-                        )
                     for path in sorted(unmapped):
                         LOGGER.warning(
                             "Unmapped page_json path: %s (document_id=%s page=%s)",
@@ -327,6 +322,14 @@ class IngestionService:
                             source_document_id=doc.id,
                             value_line_parse_run_id=parse_run.id,
                             source_extraction_ids=source_extraction_ids,
+                        )
+
+                    if owner_earnings_gate.status == "approved":
+                        self._persist_owner_earnings_facts(
+                            user_id=user_id,
+                            stock_id=stock.id,
+                            report_date=report_date,
+                            value_line_parse_run_id=parse_run.id,
                         )
 
                     self._run_calculated_metrics(user_id=user_id, stock_id=stock.id)
@@ -633,13 +636,6 @@ class IngestionService:
                 method_key="owner_earnings",
                 effective_as_of=report_date,
             )
-            if owner_earnings_gate.status == "approved":
-                facts.extend(
-                    build_owners_earnings_facts(
-                        facts,
-                        report_date=report_date,
-                    )
-                )
             for path in sorted(unmapped):
                 LOGGER.warning(
                     "Unmapped page_json path: %s (document_id=%s page=%s)",
@@ -666,6 +662,14 @@ class IngestionService:
                     source_document_id=doc.id,
                     value_line_parse_run_id=parse_run.id,
                     source_extraction_ids=source_extraction_ids,
+                )
+
+            if owner_earnings_gate.status == "approved":
+                self._persist_owner_earnings_facts(
+                    user_id=user_id,
+                    stock_id=stock.id,
+                    report_date=report_date,
+                    value_line_parse_run_id=parse_run.id,
                 )
 
             parsed_stock_ids.add(stock.id)
@@ -725,6 +729,103 @@ class IngestionService:
     def _run_calculated_metrics(self, *, user_id: int, stock_id: int) -> None:
         ValueLineRatioCalculator(self.db).calculate_for_stock(user_id=user_id, stock_id=stock_id)
         PiotroskiFScoreCalculator(self.db).calculate_for_stock(user_id=user_id, stock_id=stock_id)
+
+    def _persist_owner_earnings_facts(
+        self,
+        *,
+        user_id: int,
+        stock_id: int,
+        report_date: date,
+        value_line_parse_run_id: int | None = None,
+    ) -> list[MetricFact]:
+        """Persist base-derived OEPS first, then its normalized snapshot.
+
+        Production ingestion supplies the immutable parse-run ID, preventing a
+        calculation from silently combining facts from different Value Line
+        report revisions.  The optional form exists for canonical backfills and
+        tests; duplicate slots still fail closed in the pure builder.
+        """
+
+        source_query = select(MetricFact).where(
+            MetricFact.user_id == user_id,
+            MetricFact.stock_id == stock_id,
+            MetricFact.source_type == "parsed",
+            MetricFact.is_current.is_(True),
+            MetricFact.period_type == "FY",
+            MetricFact.metric_key.in_(OE_INPUT_KEYS),
+        )
+        if value_line_parse_run_id is not None:
+            source_query = source_query.where(
+                MetricFact.value_line_parse_run_id == value_line_parse_run_id
+            )
+        source_facts = self.db.scalars(
+            source_query.order_by(
+                MetricFact.period_end_date.asc(),
+                MetricFact.metric_key.asc(),
+                MetricFact.id.asc(),
+            )
+        ).all()
+        annual = [
+            self._insert_calculated_fact(
+                user_id=user_id,
+                stock_id=stock_id,
+                payload=payload,
+            )
+            for payload in build_owners_earnings_facts(source_facts)
+        ]
+        normalized = build_normalized_owners_earnings_fact(
+            annual,
+            report_date=report_date,
+        )
+        if normalized is not None:
+            annual.append(
+                self._insert_calculated_fact(
+                    user_id=user_id,
+                    stock_id=stock_id,
+                    payload=normalized,
+                )
+            )
+        return annual
+
+    def _insert_calculated_fact(
+        self,
+        *,
+        user_id: int,
+        stock_id: int,
+        payload: dict,
+    ) -> MetricFact:
+        self.db.execute(
+            update(MetricFact)
+            .where(
+                MetricFact.user_id == user_id,
+                MetricFact.stock_id == stock_id,
+                MetricFact.metric_key == payload["metric_key"],
+                MetricFact.period_type == payload.get("period_type"),
+                MetricFact.period_end_date == payload.get("period_end_date"),
+                MetricFact.source_type == "calculated",
+                MetricFact.is_current.is_(True),
+            )
+            .values(is_current=False)
+        )
+        fact = MetricFact(
+            user_id=user_id,
+            stock_id=stock_id,
+            metric_key=payload["metric_key"],
+            value_numeric=payload.get("value_numeric"),
+            value_text=payload.get("value_text"),
+            value_json=payload.get("value_json"),
+            unit=payload.get("unit"),
+            currency=payload.get("currency"),
+            period_type=payload.get("period_type"),
+            period_end_date=payload.get("period_end_date"),
+            source_type="calculated",
+            source_ref_id=None,
+            source_document_id=None,
+            is_current=True,
+        )
+        self.db.add(fact)
+        self.db.flush()
+        return fact
 
     def _start_value_line_parse_run(
         self,

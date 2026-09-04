@@ -10,6 +10,7 @@ from app.models.facts import Formula, MetricFact
 from app.models.stocks import Stock
 from app.services.formula_engine import FormulaEngine
 from app.services.ingestion_service import IngestionService
+from app.services.dcf_inputs import load_canonical_dcf_fact_universe
 from app.services.source_reconciliation import (
     CanonicalReconciliationError,
     build_source_reconciliation_report_from_facts,
@@ -266,6 +267,114 @@ def test_deployed_mapping_must_match_database_approved_policy(
             user_id=user.id,
         )
     assert error.value.blocking_items[0]["reason_code"] == "mapping_policy_unavailable"
+
+
+def test_reconciliation_mapping_resolution_observes_warm_process_policy_drift(
+    monkeypatch,
+):
+    """A warm worker must not retain an approved policy after files change."""
+
+    resolver = source_reconciliation._resolved_mapping_spec
+    clear_cache = getattr(resolver, "cache_clear", None)
+    if clear_cache is not None:
+        clear_cache()
+    approved = SimpleNamespace(mapping_policy_sha256="a" * 64)
+    drifted = SimpleNamespace(mapping_policy_sha256="b" * 64)
+    calls = iter((approved, drifted))
+    monkeypatch.setattr(
+        source_reconciliation.MappingSpec,
+        "load",
+        lambda *_args, **_kwargs: next(calls),
+    )
+    try:
+        assert resolver().mapping_policy_sha256 == "a" * 64
+        assert resolver().mapping_policy_sha256 == "b" * 64
+    finally:
+        if clear_cache is not None:
+            clear_cache()
+
+
+def test_ingested_owner_earnings_becomes_unavailable_when_input_is_superseded(
+    db_session, user_factory
+):
+    user = user_factory("owner-earnings-lineage@example.com")
+    stock = Stock(ticker="OEL", exchange="NYSE", company_name="Owner Earnings Lineage")
+    db_session.add(stock)
+    db_session.flush()
+    document = _document(user_id=user.id, stock_id=stock.id, suffix="-oe")
+    db_session.add(document)
+    db_session.flush()
+    inputs = [
+        _parsed_fact(
+            user_id=user.id,
+            stock_id=stock.id,
+            document_id=document.id,
+            metric_key="per_share.eps",
+            value=5,
+        ),
+        _parsed_fact(
+            user_id=user.id,
+            stock_id=stock.id,
+            document_id=document.id,
+            metric_key="per_share.capital_spending",
+            value=2,
+        ),
+        _parsed_fact(
+            user_id=user.id,
+            stock_id=stock.id,
+            document_id=document.id,
+            metric_key="is.depreciation",
+            value=10,
+        ),
+        _parsed_fact(
+            user_id=user.id,
+            stock_id=stock.id,
+            document_id=document.id,
+            metric_key="equity.shares_outstanding",
+            value=20,
+        ),
+    ]
+    for monetary_input in inputs[:3]:
+        monetary_input.currency = "USD"
+    inputs[-1].unit = "shares"
+    inputs[-1].currency = None
+    db_session.add_all(inputs)
+    db_session.flush()
+
+    created = IngestionService(db_session)._persist_owner_earnings_facts(
+        user_id=user.id,
+        stock_id=stock.id,
+        report_date=date(2026, 1, 9),
+    )
+    oeps = next(fact for fact in created if fact.metric_key == "owners_earnings_per_share")
+    assert oeps.source_type == "calculated"
+    assert {row["fact_id"] for row in oeps.value_json["inputs"]} == {
+        fact.id for fact in inputs
+    }
+
+    inputs[0].is_current = False
+    db_session.flush()
+    replacement = _parsed_fact(
+        user_id=user.id,
+        stock_id=stock.id,
+        document_id=document.id,
+        metric_key="per_share.eps",
+        value=6,
+    )
+    db_session.add(replacement)
+    db_session.flush()
+
+    with pytest.raises(CanonicalReconciliationError) as error:
+        load_canonical_dcf_fact_universe(
+            db_session,
+            stock_id=stock.id,
+            user_id=user.id,
+            evaluated_at=datetime.now(timezone.utc) + timedelta(seconds=1),
+            effective_as_of=date(2026, 1, 9),
+        )
+    assert {
+        item["reason_code"] for item in error.value.blocking_items
+    } == {"derived_lineage_superseded"}
 
 
 def test_reconciliation_excludes_post_cutoff_and_revoked_source_authority(

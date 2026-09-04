@@ -19,6 +19,9 @@ LOGGER = logging.getLogger(__name__)
 
 METRIC_KEY_RE = re.compile(r"^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)*$")
 TOKEN_RE = re.compile(r"^(?P<key>.+?)(?P<list>\[\])?$")
+VALUE_LINE_MAPPING_SPEC_PATH = (
+    Path(__file__).resolve().parents[2] / "docs" / "metric_facts_mapping_spec.yml"
+)
 
 
 @dataclass(frozen=True)
@@ -115,6 +118,17 @@ class MappingSpec:
                 )
         unmapped = _unmapped_paths(page_json, used_paths)
         return facts, used_paths, unmapped
+
+
+def load_resolved_value_line_mapping_spec() -> MappingSpec:
+    """Load the deployed, fully resolved policy without process-lifetime cache.
+
+    The mapping and taxonomy files form a deployable authority unit.  Reloading
+    them for each ingestion/report boundary ensures a warm worker cannot keep
+    accepting an obsolete digest after either file changes.
+    """
+
+    return MappingSpec.load(VALUE_LINE_MAPPING_SPEC_PATH)
 
 
 def _source_currency(
