@@ -297,3 +297,30 @@ git diff --check
   `tsconfig.json` entry was removed after verification. No migration,
   `storage/` change, PR #128 reuse, or merge was performed. Draft PR #141 is
   ready for Terra adversarial review round 9.
+- 2026-09-03: Terra adversarial review round 9 found one DCF arithmetic-boundary
+  gap. The stock DCF projection now derives a single valuation currency from
+  the selected FY canonical `metric_facts` for EPS, depreciation, and capital
+  spending per share, while treating shares outstanding only as the
+  non-monetary denominator. Every result carries a typed currency state and
+  per-input provenance. Missing facts or currencies, non-monetary/unknown
+  units, invalid ISO codes, and mixed currencies fail closed.
+- 2026-09-03: the DCF page now formats all computed amounts with that validated
+  ISO currency and computes Safe Margin only when the canonical current price
+  is available in the exact same currency. DKK/EUR/TWD DCF inputs paired with
+  a USD price expose `valuation_price_currency_mismatch`; unresolved DCF or
+  price states retain their typed blocker. Hard-coded dollar formatting was
+  removed from the DCF calculation surface.
+- 2026-09-03: DCF publication now requires an explicit currency and selected
+  canonical input set. The backend independently re-queries current visible
+  facts, reapplies source/SEC/method authority, recomputes the selected input
+  currency, checks the client declaration, and rejects unresolved or non-USD
+  results before the transactional research revision/fact write. The research
+  service receives the validated currency explicitly instead of relabeling
+  every result as USD. Direct-API bypass regressions cover absent, EUR,
+  mixed, and `ZZZ` inputs; the authorized USD path remains green.
+- 2026-09-03: post-round-9 exact closing gate passed: Compose rebuild, Alembic
+  upgrade, backend `2189 passed`, frontend `227 passed`, frontend lint,
+  production build, and `git diff --check`. The generated Next `tsconfig.json`
+  entry was removed after verification. No migration, `storage/` change, FX,
+  new valuation method, PR #128 reuse, or merge was performed. Draft PR #141
+  is ready for Terra adversarial review round 10.
