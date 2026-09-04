@@ -7,14 +7,13 @@ from typing import Any, Optional
 
 from fastapi import APIRouter, UploadFile, File, HTTPException, Query, Body, status
 from fastapi.responses import FileResponse
-from sqlalchemy import select, func, update
+from sqlalchemy import select, func
 import yaml
 from app.models.artifacts import DocumentPage
 from app.models.extractions import MetricExtraction
 from app.models.facts import MetricFact
 from app.models.stocks import Stock
 from app.api.deps import SessionDep, CurrentUser
-from app.ingestion.normalization.scaler import Scaler
 from app.ingestion.parsers.v1_value_line.evidence import parse_rating_event_notes
 from app.ingestion.parsers.v1_value_line.page_json import (
     _build_annual_financials as _build_value_line_annual_financials,
@@ -30,10 +29,11 @@ from app.ingestion.parsers.v1_value_line.page_json import (
 from app.services.active_report_resolver import resolve_active_reports
 from app.services.document_dedupe_service import DocumentDedupeService
 from app.services.ingestion_service import IngestionService
-from app.services.metric_fact_locking import acquire_metric_fact_stock_lock
 from app.services.api_rate_limits import RateLimitExceeded, consume_user_operation
-from app.services.calculated_metrics.value_line_ratios import ValueLineRatioCalculator
-from app.services.calculated_metrics.piotroski_f_score import PiotroskiFScoreCalculator
+from app.services.manual_metric_correction import (
+    ManualMetricCorrectionError,
+    create_manual_metric_correction,
+)
 from app.models.artifacts import PdfDocument
 
 router = APIRouter()
@@ -651,8 +651,6 @@ def correct_document_review_fact(
     if not _document_review_fact_belongs_to_document(session, doc, fact):
         raise HTTPException(status_code=404, detail="Fact not found")
 
-    acquire_metric_fact_stock_lock(session, stock_id=fact.stock_id)
-
     raw_value = payload.get("value")
     if raw_value is None or str(raw_value).strip() == "":
         raise HTTPException(status_code=400, detail={"value": "Correction value is required"})
@@ -660,89 +658,24 @@ def correct_document_review_fact(
     unit_hint = payload.get("unit")
     note = payload.get("note")
 
-    value_numeric, normalized_unit, value_text = _normalize_review_correction(
-        raw_text=raw_text,
-        unit_hint=str(unit_hint).strip() if unit_hint else None,
-        fact=fact,
-    )
-    if value_numeric is None and value_text is None:
+    try:
+        manual_fact = create_manual_metric_correction(
+            session,
+            user_id=current_user.id,
+            source_fact=fact,
+            raw_value=raw_text,
+            unit_hint=str(unit_hint).strip() if unit_hint else None,
+            note=str(note) if note else None,
+        )
+    except ManualMetricCorrectionError as exc:
         raise HTTPException(
             status_code=400,
             detail={
-                "value": "Correction value could not be normalized",
+                "code": exc.code,
+                "value": exc.message,
                 "metric_key": fact.metric_key,
             },
-        )
-
-    session.execute(
-        update(MetricFact)
-        .where(
-            MetricFact.user_id == current_user.id,
-            MetricFact.stock_id == fact.stock_id,
-            MetricFact.metric_key == fact.metric_key,
-            MetricFact.period_type == fact.period_type,
-            MetricFact.period_end_date == fact.period_end_date,
-            MetricFact.as_of_date == fact.as_of_date,
-            MetricFact.source_type == "manual",
-            MetricFact.is_current.is_(True),
-        )
-        .values(is_current=False)
-    )
-
-    source_metadata = fact.value_json if isinstance(fact.value_json, dict) else {}
-    original_source_fact_id = (
-        source_metadata.get("source_fact_id")
-        if fact.source_type == "manual"
-        else fact.id
-    )
-    if not isinstance(original_source_fact_id, int):
-        original_source_fact_id = fact.id
-    value_json = {
-        "raw": raw_text,
-        "correction": True,
-        "corrected_from_fact_id": fact.id,
-        # Keep both the immediate chain and the original source fact so a
-        # repeated manual correction remains exactly reconcilable.
-        "source_fact_id": original_source_fact_id,
-    }
-    for identity_key in (
-        "mapping_id",
-        "source_mapping_version",
-        "definition_basis",
-        "period_start_date",
-        "duration_days",
-        "period_duration_kind",
-        "fiscal_year",
-        "fiscal_quarter_ordinal",
-        "dimensions_identity",
-    ):
-        if identity_key in source_metadata:
-            value_json[identity_key] = source_metadata[identity_key]
-    if note:
-        value_json["note"] = str(note)
-
-    manual_fact = MetricFact(
-        user_id=current_user.id,
-        stock_id=fact.stock_id,
-        metric_key=fact.metric_key,
-        value_json=value_json,
-        value_numeric=value_numeric,
-        value_text=value_text,
-        unit=normalized_unit or fact.unit,
-        currency=fact.currency,
-        period=fact.period,
-        period_type=fact.period_type,
-        period_end_date=fact.period_end_date,
-        as_of_date=fact.as_of_date,
-        source_document_id=doc.id,
-        source_type="manual",
-        source_ref_id=fact.source_ref_id,
-        is_current=True,
-    )
-    session.add(manual_fact)
-    session.flush()
-    ValueLineRatioCalculator(session).calculate_for_stock(user_id=current_user.id, stock_id=fact.stock_id)
-    PiotroskiFScoreCalculator(session).calculate_for_stock(user_id=current_user.id, stock_id=fact.stock_id)
+        ) from exc
     session.commit()
     session.refresh(manual_fact)
 
@@ -1333,44 +1266,6 @@ def _document_review_fact_belongs_to_document(
         and extraction.user_id == doc.user_id
         and extraction.document_id == doc.id
     )
-
-
-def _normalize_review_correction(
-    *,
-    raw_text: str,
-    unit_hint: Optional[str],
-    fact: MetricFact,
-) -> tuple[Optional[float], Optional[str], Optional[str]]:
-    value_type = _document_review_value_type(fact)
-    if value_type == "text":
-        return None, fact.unit, raw_text
-
-    normalization_input = raw_text
-    if unit_hint and unit_hint.lower() not in raw_text.lower():
-        normalization_input = f"{raw_text} {unit_hint}"
-    value_numeric, normalized_unit = Scaler.normalize(normalization_input, value_type)
-    return value_numeric, normalized_unit, None
-
-
-def _document_review_value_type(fact: MetricFact) -> str:
-    metric_key = (fact.metric_key or "").lower()
-    unit = (fact.unit or "").lower()
-    if fact.value_numeric is None and unit not in {"usd", "ratio", "number", "shares"}:
-        return "text"
-    if unit == "usd" or any(
-        token in metric_key
-        for token in ["price", "market_cap", "debt", "sales", "revenue", "cash", "earnings", "income", "dividend"]
-    ):
-        return "currency"
-    if unit == "ratio":
-        if "%" in str(fact.value_json or "") or any(
-            token in metric_key for token in ["yield", "pct", "percent", "margin", "cagr", "rate"]
-        ):
-            return "percent"
-        return "ratio"
-    if any(token in metric_key for token in ["yield", "pct", "percent", "margin", "cagr"]):
-        return "percent"
-    return "number"
 
 
 def _document_stock_ids(session: SessionDep, doc: PdfDocument) -> set[int]:

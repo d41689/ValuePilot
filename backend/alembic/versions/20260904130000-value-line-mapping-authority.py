@@ -224,7 +224,7 @@ def upgrade() -> None:
                            NEW.period_type,NEW.period_end_date,NEW.as_of_date,
                            NEW.confidence_score,NEW.bbox_json::text,
                            NEW.parser_template_id,NEW.parser_version,NEW.created_at,
-                           NEW.target_year_range)
+                           NEW.target_year_range,NEW.corrected_by_user,NEW.corrected_at)
                        IS DISTINCT FROM
                        ROW(OLD.id,OLD.user_id,OLD.document_id,OLD.page_number,
                            OLD.field_key,OLD.raw_value_text,OLD.original_text_snippet,
@@ -232,7 +232,7 @@ def upgrade() -> None:
                            OLD.period_type,OLD.period_end_date,OLD.as_of_date,
                            OLD.confidence_score,OLD.bbox_json::text,
                            OLD.parser_template_id,OLD.parser_version,OLD.created_at,
-                           OLD.target_year_range))
+                           OLD.target_year_range,OLD.corrected_by_user,OLD.corrected_at))
             THEN
               RAISE EXCEPTION 'Value Line extraction run binding is immutable';
             END IF;
@@ -261,8 +261,16 @@ def upgrade() -> None:
             NEW.value_line_legacy_revision := false;
           END IF;
           IF TG_OP='UPDATE' THEN
+            IF NEW.source_type='parsed'
+               AND OLD.source_type IS DISTINCT FROM 'parsed'
+               AND NEW.value_line_parse_run_id IS NULL
+            THEN
+              RAISE EXCEPTION 'Value Line parsed fact requires a creating parse run';
+            END IF;
             IF NEW.value_line_parse_run_id IS DISTINCT FROM OLD.value_line_parse_run_id
                OR NEW.value_line_legacy_revision IS DISTINCT FROM OLD.value_line_legacy_revision
+               OR (OLD.source_type IS DISTINCT FROM NEW.source_type
+                   AND (OLD.source_type='parsed' OR NEW.source_type='parsed'))
                OR ((OLD.value_line_parse_run_id IS NOT NULL OR OLD.value_line_legacy_revision)
                    AND OLD.is_current=false AND NEW.is_current=true)
                OR ((OLD.value_line_parse_run_id IS NOT NULL OR OLD.value_line_legacy_revision)

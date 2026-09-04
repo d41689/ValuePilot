@@ -257,6 +257,15 @@ def test_value_line_parse_run_allows_history_but_rejects_late_binding(isolated) 
             with connection.begin_nested():
                 connection.execute(
                     text(
+                        "UPDATE metric_extractions SET corrected_by_user=true, "
+                        "corrected_at=now() WHERE id=:id"
+                    ),
+                    {"id": extraction_id},
+                )
+        with pytest.raises(DBAPIError, match="binding is immutable"):
+            with connection.begin_nested():
+                connection.execute(
+                    text(
                         "UPDATE metric_facts SET value_numeric=999 "
                         "WHERE id=:id"
                     ),
@@ -291,6 +300,25 @@ def test_value_line_parse_run_allows_history_but_rejects_late_binding(isolated) 
                         "true,true)"
                     ),
                     {"user": user_id, "stock": stock_id, "document": document_id},
+                )
+        relabel_fact_id = connection.execute(
+            text(
+                "INSERT INTO metric_facts "
+                "(user_id,stock_id,metric_key,value_numeric,unit,currency,period_type,"
+                "period_end_date,source_type,is_current) VALUES (:user,:stock,"
+                "'manual.relabel_attack',1,'USD','USD','FY','2025-12-31','manual',true) "
+                "RETURNING id"
+            ),
+            {"user": user_id, "stock": stock_id},
+        ).scalar_one()
+        with pytest.raises(DBAPIError, match="requires a creating parse run"):
+            with connection.begin_nested():
+                connection.execute(
+                    text(
+                        "UPDATE metric_facts SET source_type='parsed', "
+                        "source_document_id=:document WHERE id=:id"
+                    ),
+                    {"document": document_id, "id": relabel_fact_id},
                 )
         with pytest.raises(DBAPIError, match="approved mapping policy"):
             with connection.begin_nested():

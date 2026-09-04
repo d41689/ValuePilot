@@ -1,6 +1,7 @@
 from datetime import date, datetime
 from decimal import Decimal
 
+import pytest
 import sqlalchemy as sa
 
 from app.models.users import User
@@ -10,6 +11,10 @@ from app.models.extractions import MetricExtraction
 from app.models.facts import MetricFact
 from app.api.v1.endpoints.documents import _document_compare_value_label
 from app.services.ingestion_service import IngestionService
+from app.api.v1.endpoints.extractions import (
+    ExtractionCorrectionIdentityError,
+    _resolve_canonical_fact_for_extraction,
+)
 
 
 def test_document_compare_decimal_label_preserves_integer_place_value():
@@ -1717,6 +1722,208 @@ def test_document_review_correction_creates_manual_current_fact_without_mutating
     )
     assert manual_fact.value_json["dimensions_identity"] == "empty"
     assert manual_fact.value_json["note"] == "Checked against report."
+
+
+def test_extraction_correction_requires_authoritative_run_identity(db_session):
+    legacy_extraction = MetricExtraction(
+        id=987654,
+        user_id=42,
+        document_id=73,
+        page_number=1,
+        field_key="market_cap",
+        raw_value_text="$9.5 billion",
+        original_text_snippet="Market Cap: $9.5 billion",
+        parser_version="legacy",
+        value_line_parse_run_id=None,
+        value_line_legacy_revision=True,
+    )
+
+    with pytest.raises(ExtractionCorrectionIdentityError) as error:
+        _resolve_canonical_fact_for_extraction(
+            db_session,
+            extraction=legacy_extraction,
+            user_id=legacy_extraction.user_id,
+        )
+
+    assert error.value.code == "extraction_correction_identity_unavailable"
+
+
+def test_extraction_correction_delegates_to_canonical_manual_history(
+    client, db_session, user_factory, auth_headers
+):
+    user = user_factory("canonical-extraction-correction@example.com")
+    stock = Stock(ticker="EXTC", exchange="NYSE", company_name="Canonical Correction")
+    db_session.add(stock)
+    db_session.flush()
+    document = PdfDocument(
+        user_id=user.id,
+        stock_id=stock.id,
+        file_name="canonical-correction.pdf",
+        source="upload",
+        file_storage_key="private/canonical-correction.pdf",
+        parse_status="parsed",
+        identity_needs_review=False,
+    )
+    db_session.add(document)
+    db_session.flush()
+    mapping_version = IngestionService(db_session).mapping_spec.source_mapping_version
+    parse_run = ValueLineParseRun(
+        user_id=user.id,
+        document_id=document.id,
+        parser_version="value-line-v1",
+        source_mapping_version=mapping_version,
+        status="running",
+    )
+    db_session.add(parse_run)
+    db_session.flush()
+    extraction = MetricExtraction(
+        user_id=user.id,
+        document_id=document.id,
+        page_number=1,
+        field_key="market_cap",
+        raw_value_text="$9.5 billion",
+        original_text_snippet="Market Cap: $9.5 billion",
+        parser_version="value-line-v1",
+        value_line_parse_run_id=parse_run.id,
+    )
+    db_session.add(extraction)
+    db_session.flush()
+    parsed_fact = MetricFact(
+        user_id=user.id,
+        stock_id=stock.id,
+        metric_key="mkt.market_cap",
+        value_json={
+            "mapping_id": "mkt.market_cap.as_of",
+            "source_mapping_version": mapping_version,
+            "definition_basis": "adjusted",
+            "dimensions_identity": "empty",
+            "fact_nature": "snapshot",
+        },
+        value_numeric=9_500_000_000,
+        unit="USD",
+        currency="USD",
+        period_type="AS_OF",
+        as_of_date=date(2026, 1, 2),
+        source_type="parsed",
+        source_ref_id=extraction.id,
+        source_document_id=document.id,
+        value_line_parse_run_id=parse_run.id,
+        is_current=True,
+    )
+    db_session.add(parsed_fact)
+    db_session.flush()
+    parse_run.status = "succeeded"
+    db_session.commit()
+
+    first = client.post(
+        f"/api/v1/extractions/{extraction.id}/correct",
+        headers=auth_headers(user),
+        json={"corrected_value": "$9.6 billion"},
+    )
+    second = client.post(
+        f"/api/v1/extractions/{extraction.id}/correct",
+        headers=auth_headers(user),
+        json={"corrected_value": "$9.7 billion"},
+    )
+
+    assert first.status_code == 200, first.text
+    assert second.status_code == 200, second.text
+    db_session.refresh(extraction)
+    assert extraction.corrected_by_user is False
+    assert extraction.corrected_at is None
+    manual_facts = (
+        db_session.query(MetricFact)
+        .filter(MetricFact.source_type == "manual", MetricFact.source_ref_id == extraction.id)
+        .order_by(MetricFact.id)
+        .all()
+    )
+    assert [fact.is_current for fact in manual_facts] == [False, True]
+    assert [float(fact.value_numeric) for fact in manual_facts] == [9_600_000_000, 9_700_000_000]
+    assert all(fact.value_json["source_fact_id"] == parsed_fact.id for fact in manual_facts)
+    assert all(fact.value_json["source_extraction_id"] == extraction.id for fact in manual_facts)
+    assert all(fact.value_json["source_parse_run_id"] == parse_run.id for fact in manual_facts)
+
+
+def test_extraction_correction_rejects_one_extraction_to_multiple_facts(
+    client, db_session, user_factory, auth_headers
+):
+    user = user_factory("ambiguous-extraction-correction@example.com")
+    stock = Stock(ticker="EXTA", exchange="NYSE", company_name="Ambiguous Correction")
+    db_session.add(stock)
+    db_session.flush()
+    document = PdfDocument(
+        user_id=user.id,
+        stock_id=stock.id,
+        file_name="ambiguous-correction.pdf",
+        source="upload",
+        file_storage_key="private/ambiguous-correction.pdf",
+        parse_status="parsed",
+        identity_needs_review=False,
+    )
+    db_session.add(document)
+    db_session.flush()
+    mapping_version = IngestionService(db_session).mapping_spec.source_mapping_version
+    parse_run = ValueLineParseRun(
+        user_id=user.id,
+        document_id=document.id,
+        parser_version="value-line-v1",
+        source_mapping_version=mapping_version,
+        status="running",
+    )
+    db_session.add(parse_run)
+    db_session.flush()
+    extraction = MetricExtraction(
+        user_id=user.id,
+        document_id=document.id,
+        page_number=1,
+        field_key="annual_sales",
+        raw_value_text="2024 100 2025 110",
+        original_text_snippet="Annual Sales 2024 100 2025 110",
+        parser_version="value-line-v1",
+        value_line_parse_run_id=parse_run.id,
+    )
+    db_session.add(extraction)
+    db_session.flush()
+    for fiscal_year, value in ((2024, 100), (2025, 110)):
+        db_session.add(
+            MetricFact(
+                user_id=user.id,
+                stock_id=stock.id,
+                metric_key="is.revenue",
+                value_json={
+                    "mapping_id": "is.revenue.fy",
+                    "source_mapping_version": mapping_version,
+                    "definition_basis": "adjusted",
+                    "dimensions_identity": "empty",
+                    "fact_nature": "actual",
+                    "fiscal_year": fiscal_year,
+                    "period_duration_kind": "fiscal_year",
+                },
+                value_numeric=value,
+                unit="USD",
+                currency="USD",
+                period_type="FY",
+                period_end_date=date(fiscal_year, 12, 31),
+                source_type="parsed",
+                source_ref_id=extraction.id,
+                source_document_id=document.id,
+                value_line_parse_run_id=parse_run.id,
+                is_current=True,
+            )
+        )
+    db_session.flush()
+    parse_run.status = "succeeded"
+    db_session.commit()
+
+    response = client.post(
+        f"/api/v1/extractions/{extraction.id}/correct",
+        headers=auth_headers(user),
+        json={"corrected_value": "120"},
+    )
+
+    assert response.status_code == 409
+    assert response.json()["detail"]["code"] == "extraction_correction_ambiguous"
+    assert db_session.query(MetricFact).filter_by(source_type="manual").count() == 0
 
 
 def test_document_review_corrections_append_manual_history_without_demoting_parsed(

@@ -251,10 +251,18 @@ Text Extraction Strategy (V1):
 - target_year_range (nullable; e.g. "2028-2030" for rolling projections)
 
 Correction Semantics (V1):
-- `parsed_value_json` stores the latest parsed value produced by the parser.
+- `parsed_value_json` stores the exact value produced in that immutable parser
+  revision; later reparses append a new revision rather than updating it.
 - When a user corrects a value:
   - The corrected value is written into `metric_facts` (source_type = manual).
   - The original extraction in `metric_extractions` is preserved for auditability.
+- The legacy extraction-level correction route may delegate only after the
+  extraction, parse run, source document/stock, and one canonical parsed fact
+  resolve exactly. Zero or multiple candidate facts return a typed conflict and
+  require fact/period selection; `field_key`, row order, and newest-row choice
+  are never substitutes for canonical identity.
+- `corrected_by_user` and `corrected_at` are retained legacy columns and are
+  read-only; a correction never mutates them or any other extraction field.
 - V1 does NOT overwrite historical parser output.
 
 UI & Query Semantics (V1):

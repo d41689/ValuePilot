@@ -1,14 +1,24 @@
+from dataclasses import dataclass
 from typing import Any
-from datetime import datetime
+
 from fastapi import APIRouter, HTTPException, Body
 from sqlalchemy import select
 from app.api.deps import SessionDep, CurrentUser
 from app.models.extractions import MetricExtraction
 from app.models.facts import MetricFact
-from app.models.artifacts import PdfDocument
-from app.ingestion.normalization.scaler import Scaler
+from app.models.artifacts import PdfDocument, ValueLineMappingPolicy, ValueLineParseRun
+from app.services.manual_metric_correction import (
+    ManualMetricCorrectionError,
+    create_manual_metric_correction,
+)
 
 router = APIRouter()
+
+
+@dataclass(frozen=True)
+class ExtractionCorrectionIdentityError(ValueError):
+    code: str
+    message: str
 
 @router.get("/document/{document_id}", response_model=list[dict])
 def read_document_extractions(
@@ -48,8 +58,7 @@ def correct_extraction(
     corrected_value: str = Body(..., embed=True),
 ) -> Any:
     """
-    Correct an extraction value.
-    Creates a new manual MetricFact and marks the extraction as corrected.
+    Correct an extraction only when it resolves to one canonical parsed fact.
     """
     extraction = session.get(MetricExtraction, extraction_id)
     if not extraction:
@@ -57,45 +66,94 @@ def correct_extraction(
     if extraction.user_id != current_user.id:
         raise HTTPException(status_code=404, detail="Extraction not found")
 
-    # 1. Update Extraction
-    extraction.corrected_by_user = True
-    extraction.corrected_at = datetime.now()
-    session.add(extraction)
-    
-    # 2. Normalize new value
-    # Heuristic for value type based on field key (reusing logic from ingestion - ideally centralized)
-    value_type = "number"
-    if "yield" in extraction.field_key or "pct" in extraction.field_key:
-        value_type = "percent"
-    elif "ratio" in extraction.field_key:
-        value_type = "ratio"
-    
-    norm_val, norm_unit = Scaler.normalize(corrected_value, value_type)
-    
-    # 3. Create Manual Fact
-    # Need to resolve stock_id from document
-    doc = session.get(PdfDocument, extraction.document_id)
-    if not doc or not doc.stock_id:
-         raise HTTPException(status_code=400, detail="Document not linked to a stock, cannot create fact.")
+    try:
+        source_fact = _resolve_canonical_fact_for_extraction(
+            session,
+            extraction=extraction,
+            user_id=current_user.id,
+        )
+        fact = create_manual_metric_correction(
+            session,
+            user_id=current_user.id,
+            source_fact=source_fact,
+            raw_value=corrected_value,
+        )
+    except ExtractionCorrectionIdentityError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail={"code": exc.code, "message": exc.message},
+        ) from exc
+    except ManualMetricCorrectionError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail={"code": exc.code, "message": exc.message},
+        ) from exc
 
-    fact = MetricFact(
-        user_id=extraction.user_id,
-        stock_id=doc.stock_id,
-        metric_key=extraction.field_key,
-        value_json={"raw": corrected_value, "normalized": norm_val, "unit": norm_unit, "correction": True},
-        value_numeric=norm_val,
-        unit=norm_unit,
-        source_type="manual",
-        source_ref_id=extraction.id,
-        is_current=True
-    )
-    session.add(fact)
-    
-    # TODO: Mark old facts as not current?
-    # For V1 simple logic: We assume the latest manual fact is the truth. 
-    # Real implementation would query existing current fact and set is_current=False.
-    
     session.commit()
     session.refresh(fact)
-    
-    return {"status": "success", "fact_id": fact.id, "normalized_value": norm_val}
+
+    return {
+        "status": "success",
+        "fact_id": fact.id,
+        "normalized_value": fact.value_numeric,
+        "unit": fact.unit,
+    }
+
+
+def _resolve_canonical_fact_for_extraction(
+    session: SessionDep,
+    *,
+    extraction: MetricExtraction,
+    user_id: int,
+) -> MetricFact:
+    document = session.get(PdfDocument, extraction.document_id)
+    if (
+        extraction.user_id != user_id
+        or extraction.value_line_parse_run_id is None
+        or extraction.value_line_legacy_revision
+        or document is None
+        or document.user_id != user_id
+        or document.stock_id is None
+        or document.identity_needs_review
+    ):
+        raise ExtractionCorrectionIdentityError(
+            code="extraction_correction_identity_unavailable",
+            message="This extraction has no authoritative parse-run identity; select a canonical fact for review.",
+        )
+
+    candidates = session.scalars(
+        select(MetricFact)
+        .join(
+            ValueLineParseRun,
+            ValueLineParseRun.id == MetricFact.value_line_parse_run_id,
+        )
+        .join(
+            ValueLineMappingPolicy,
+            ValueLineMappingPolicy.id == ValueLineParseRun.source_mapping_version,
+        )
+        .where(
+            MetricFact.user_id == user_id,
+            MetricFact.source_type == "parsed",
+            MetricFact.stock_id == document.stock_id,
+            MetricFact.source_document_id == extraction.document_id,
+            MetricFact.source_ref_id == extraction.id,
+            MetricFact.value_line_parse_run_id == extraction.value_line_parse_run_id,
+            ValueLineParseRun.user_id == user_id,
+            ValueLineParseRun.document_id == extraction.document_id,
+            ValueLineParseRun.status == "succeeded",
+            ValueLineMappingPolicy.status.in_(("approved", "superseded")),
+        )
+        .order_by(MetricFact.id)
+        .limit(2)
+    ).all()
+    if len(candidates) == 1:
+        return candidates[0]
+    if not candidates:
+        raise ExtractionCorrectionIdentityError(
+            code="extraction_correction_identity_unavailable",
+            message="No canonical parsed fact is bound to this extraction and parse run.",
+        )
+    raise ExtractionCorrectionIdentityError(
+        code="extraction_correction_ambiguous",
+        message="This extraction maps to multiple canonical facts; select the exact fact and fiscal period for review.",
+    )

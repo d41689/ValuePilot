@@ -123,6 +123,7 @@ Out of scope:
 - `docs/prd/value-pilot-prd-v0.1.md`
 - `backend/app/services/canonical_financials.py`
 - `backend/app/services/source_reconciliation.py` (new)
+- `backend/app/services/manual_metric_correction.py` (new)
 - `backend/alembic/versions/20260904120000-value-line-parse-run-history.py`
 - `backend/app/models/artifacts.py`
 - `backend/app/models/extractions.py`
@@ -289,3 +290,18 @@ reconciliation outcomes or create another financial fact store.
   production MappingSpec-to-ingestion-to-SEC comparison are green. The R7
   focused suite is 6 passed and the expanded affected suite is 137 passed;
   fresh Terra R8 and exact closing gates remain pending.
+- 2026-09-04: Terra adversarial review R8 found two valid write-boundary gaps:
+  a non-parsed fact could be relabeled as runless parsed through `UPDATE`, and
+  the legacy extraction correction route still mutated immutable extraction
+  fields while inventing a noncanonical fact from `field_key`.
+- 2026-09-04: Sol remediation rejects parsed source-role transitions without
+  authoritative run binding and freezes legacy correction flags with the rest
+  of extraction lineage. Both correction routes now share one stock-locked,
+  append-only manual-correction service. The extraction route succeeds only
+  when user, document, stock, exact parse run, source reference, and one
+  canonical parsed fact resolve uniquely; missing/legacy/unreviewed or
+  one-to-many identity returns typed 409 without a write. Repeated corrections
+  retain original fact, extraction, and parse-run lineage and demote only the
+  exact prior manual slot. Raw-SQL relabel/lineage-mutation tests and API
+  legacy, exact, repeated, and ambiguous cases are green; the expanded affected
+  suite is 140 passed. Fresh Terra R9 and exact closing gates remain pending.
