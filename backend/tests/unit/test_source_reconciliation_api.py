@@ -12,6 +12,7 @@ from app.services.source_reconciliation import (
     CanonicalReconciliationError,
     guard_reconciled_source_selection,
 )
+from app.services.canonical_financials import CanonicalSourceConflictError
 
 
 def _document(*, user_id: int, stock_id: int, suffix: str = "") -> PdfDocument:
@@ -352,6 +353,126 @@ def test_formula_persists_exact_input_lineage_for_replay(db_session, user_factor
             "source_type": "manual",
         }
     ]
+
+
+def test_later_same_slot_competitor_invalidates_preexisting_calculated_output(
+    db_session, user_factory
+):
+    baseline_known_at = datetime.now(timezone.utc) - timedelta(minutes=2)
+    competing_known_at = baseline_known_at + timedelta(minutes=1)
+    historical_cutoff = baseline_known_at + timedelta(seconds=30)
+    user = user_factory("reconcile-late-competitor@example.com")
+    stock = Stock(ticker="RLATE", exchange="NYSE", company_name="Late Source Co")
+    db_session.add(stock)
+    db_session.flush()
+    document = _document(user_id=user.id, stock_id=stock.id)
+    document.upload_time = baseline_known_at
+    db_session.add(document)
+    db_session.flush()
+    original = _parsed_fact(
+        user_id=user.id,
+        stock_id=stock.id,
+        document_id=document.id,
+        metric_key="is.net_income",
+        value=100,
+    )
+    original.created_at = baseline_known_at
+    original.updated_at = baseline_known_at
+    db_session.add(original)
+    db_session.flush()
+    output = MetricFact(
+        user_id=user.id,
+        stock_id=stock.id,
+        metric_key="score.piotroski.total",
+        value_numeric=7,
+        value_json={
+            "fact_nature": "derived_actual",
+            "calculation_version": "piotroski-v1",
+            "definition_basis": "derived",
+            "period_start_date": "2025-01-01",
+            "duration_days": 365,
+            "fiscal_year": 2025,
+            "dimensions_identity": "empty",
+            "inputs": [{"fact_id": original.id, "metric_key": original.metric_key}],
+        },
+        unit="score",
+        period_type="FY",
+        period_end_date=date(2025, 12, 31),
+        source_type="calculated",
+        is_current=True,
+        created_at=baseline_known_at,
+        updated_at=baseline_known_at,
+    )
+    db_session.add(output)
+    db_session.commit()
+
+    assert guard_reconciled_source_selection(
+        [output],
+        consumer="stock_pool_piotroski_display",
+        knowledge_cutoff=datetime.now(timezone.utc),
+        session=db_session,
+        user_id=user.id,
+    ) == [output]
+
+    competing_document = _document(
+        user_id=user.id, stock_id=stock.id, suffix="-late"
+    )
+    competing_document.upload_time = competing_known_at
+    db_session.add(competing_document)
+    db_session.flush()
+    competing = _parsed_fact(
+        user_id=user.id,
+        stock_id=stock.id,
+        document_id=competing_document.id,
+        metric_key="is.net_income",
+        value=140,
+    )
+    competing.value_json = {
+        **competing.value_json,
+        "mapping_id": "is.net_income.alternate",
+    }
+    competing.created_at = competing_known_at
+    competing.updated_at = competing_known_at
+    db_session.add(competing)
+    db_session.commit()
+
+    try:
+        historical_selection = guard_reconciled_source_selection(
+            [output],
+            consumer="stock_pool_piotroski_display",
+            knowledge_cutoff=historical_cutoff,
+            session=db_session,
+            user_id=user.id,
+        )
+    except CanonicalReconciliationError as exc:
+        pytest.fail(
+            "historical selection unexpectedly blocked: "
+            f"{exc.blocking_items}"
+        )
+    assert historical_selection == [output]
+
+    with pytest.raises(CanonicalSourceConflictError):
+        guard_reconciled_source_selection(
+            [output],
+            consumer="stock_pool_piotroski_display",
+            knowledge_cutoff=datetime.now(timezone.utc),
+            session=db_session,
+            user_id=user.id,
+        )
+
+    original.is_current = False
+    db_session.commit()
+    with pytest.raises(CanonicalReconciliationError) as exc_info:
+        guard_reconciled_source_selection(
+            [output],
+            consumer="stock_pool_piotroski_display",
+            knowledge_cutoff=datetime.now(timezone.utc),
+            session=db_session,
+            user_id=user.id,
+        )
+    assert {
+        item["reason_code"] for item in exc_info.value.blocking_items
+    } == {"derived_lineage_superseded"}
 
 
 def test_formula_never_overwrites_periods_in_dependency_dictionary(

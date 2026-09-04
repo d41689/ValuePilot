@@ -34,6 +34,9 @@ class MetricExtraction(Base):
     corrected_by_user: Mapped[bool] = mapped_column(Boolean, default=False)
     corrected_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
     target_year_range: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    value_line_parse_run_id: Mapped[Optional[int]] = mapped_column(
+        ForeignKey("value_line_parse_runs.id"), nullable=True, index=True
+    )
 
     user: Mapped["User"] = relationship("User")
     document: Mapped["PdfDocument"] = relationship("PdfDocument")

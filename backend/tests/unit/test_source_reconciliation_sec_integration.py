@@ -179,6 +179,26 @@ def test_sec_as_filed_and_value_line_adjusted_are_compared_without_precedence(
     assert adjusted.currency == sec_fact.currency
     assert adjusted.value_json["period_duration_kind"] == "fiscal_year"
 
+    facts_response = reconciliation_publication_client.get(
+        f"/api/v1/stocks/{request.stock_id}/facts",
+        headers=auth_headers(owner),
+    )
+    assert facts_response.status_code == 200, facts_response.text
+    facts_payload = facts_response.json()
+    assert not any(
+        row.get("status") == "published"
+        and row.get("metric_key") == sec_fact.metric_key
+        for row in facts_payload
+    )
+    blocked_slot = next(
+        row
+        for row in facts_payload
+        if row.get("status") == "unavailable"
+        and row.get("metric_key") == sec_fact.metric_key
+    )
+    assert blocked_slot["reason_code"] == "source_conflict"
+    assert blocked_slot["source_types"] == ["parsed", "sec"]
+
     peer = User(
         email="sec-reconciliation-peer@example.com",
         hashed_password=hash_password("x"),

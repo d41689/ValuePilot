@@ -108,6 +108,22 @@ source_reconciliation:
         caller_selected_source_bypass: prohibited
         dictionary_or_query_order_precedence: prohibited
         matched_source_auto_winner: prohibited
+        raw_fact_json_slot_grouping: prohibited
+        canonical_slot_grouping: resolved_candidate_identity_required
+        derived_lineage_competitor_closure:
+          scope: every_reached_canonical_input_slot
+          membership: current_visible_authorized_by_cutoff
+          recorded_input_currentness: required_for_current_derived_fact
+          recursion: bounded_cycle_safe
+          missing_or_overflow_outcome: unresolved
+      value_line_parse_authority:
+        new_fact_run_identity: required
+        run_extraction_fact_commit: atomic
+        source_mapping_identity: exact_resolved_digest
+        extraction_revisions: append_only
+        successful_reparse: demote_exact_parsed_slots_then_append
+        failed_reparse: preserve_prior_current_revision
+        legacy_missing_run_identity: comparison_identity_incomplete
       point_in_time:
         fact_known_and_effective_by_cutoff: required
         source_authorized_at_cutoff: required

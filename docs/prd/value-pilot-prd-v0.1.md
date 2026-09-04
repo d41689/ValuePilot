@@ -1500,6 +1500,17 @@ MUST therefore change identity even when a human forgets to increment the
 display version; neither file may silently reinterpret already-persisted
 facts.
 
+Every newly generated Value Line fact and extraction is bound to one durable
+parse-run identity containing the parser and resolved source-mapping versions.
+The run, its extraction rows, and its parsed facts are created and finalized in
+one transaction. A successful reparse appends a new immutable extraction/fact
+revision and demotes only current parsed rows in the same stock, canonical key,
+period, and parsed-source slot. It never deletes or rewrites prior extraction
+history. A failed reparse rolls back the new run and every currentness change,
+so the prior current revision remains intact. Reparses of the same document are
+serialized. Legacy parsed rows without a run identity remain readable but are
+comparison-identity-incomplete.
+
 The approved outcomes are `match`, `expected_definition_difference`,
 `restatement`, `mapping_conflict`, and `unresolved`. Tolerance uses Decimal
 arithmetic only to identify a bounded match and prioritize review. It never
@@ -1525,6 +1536,17 @@ cutoff: mapping/run authority, publication availability, audit knowledge,
 filing/parse knowledge, and any later successful resolution must all have been
 available by that cutoff. A later amendment failure or recovery MUST NOT alter
 an earlier replay.
+
+Consumer checks expand deterministic/manual lineage recursively and inspect
+every current, tenant-visible, authorized candidate in each canonical input
+slot reached by that lineage. The closure is bounded and cycle-safe. A later
+current competitor can therefore invalidate a previously calculated output;
+recording only the originally selected input IDs is not proof that the slot is
+still unambiguous, and a current calculated fact whose recorded input has been
+superseded is unavailable until recalculated. Slot identity is materialized
+from the canonical mapping and source-authority contracts, never reconstructed
+from raw `value_json` fields or date heuristics. Evidence not known/effective
+by the requested cutoff is not a competitor for that replay.
 
 Formula, ratio, Piotroski, screener, research, workspace, and other fundamental
 consumers continue to read values only from `metric_facts`. A consumer may

@@ -55,6 +55,7 @@ from app.services.market_data_service import (
 from app.services.source_reconciliation import (
     CanonicalReconciliationError,
     build_source_reconciliation_report,
+    group_metric_facts_by_reconciliation_slot,
     guard_reconciled_source_selection,
 )
 
@@ -1446,28 +1447,23 @@ def read_stock_facts(
         effective_as_of=date.today(),
     )
     evaluation_cutoff = datetime.now(timezone.utc)
-    facts_by_slot: dict[tuple[Any, ...], list[MetricFact]] = {}
+    facts_by_metric: dict[str, list[MetricFact]] = {}
     for fact in facts:
-        metadata = fact.value_json if isinstance(fact.value_json, dict) else {}
-        fiscal_year = metadata.get("fiscal_year")
-        fiscal_quarter = metadata.get("fiscal_quarter_ordinal")
-        if fact.period_type in {"FY", "PROJ_FY"} and isinstance(fiscal_year, int):
-            slot = (fact.metric_key, "FY", fiscal_year, None)
-        elif fact.period_type in {"Q", "YTD"} and isinstance(fiscal_year, int):
-            slot = (fact.metric_key, fact.period_type, fiscal_year, fiscal_quarter)
-        else:
-            slot = (
-                fact.metric_key,
-                fact.period_type,
-                fact.period_end_date or fact.as_of_date,
-                None,
-            )
-        facts_by_slot.setdefault(slot, []).append(fact)
+        facts_by_metric.setdefault(fact.metric_key, []).append(fact)
 
     reconciled_facts: list[MetricFact] = []
     reconciliation_states: list[dict[str, Any]] = []
-    for slot in sorted(facts_by_slot, key=repr):
-        slot_facts = facts_by_slot[slot]
+    slot_groups = [
+        slot
+        for metric_key in sorted(facts_by_metric)
+        for slot in group_metric_facts_by_reconciliation_slot(
+            session,
+            facts=facts_by_metric[metric_key],
+            user_id=current_user.id,
+            knowledge_cutoff=evaluation_cutoff,
+        )
+    ]
+    for slot_facts in slot_groups:
         try:
             reconciled_facts.extend(
                 guard_reconciled_source_selection(

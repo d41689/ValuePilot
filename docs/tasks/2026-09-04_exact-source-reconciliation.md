@@ -123,6 +123,11 @@ Out of scope:
 - `docs/prd/value-pilot-prd-v0.1.md`
 - `backend/app/services/canonical_financials.py`
 - `backend/app/services/source_reconciliation.py` (new)
+- `backend/alembic/versions/20260904120000-value-line-parse-run-history.py`
+- `backend/app/models/artifacts.py`
+- `backend/app/models/extractions.py`
+- `backend/app/models/facts.py`
+- `backend/app/services/ingestion_service.py`
 - `backend/app/api/v1/endpoints/stocks.py`
 - affected formula/screener/calculated/research services only where the shared
   guard must replace a bypass
@@ -130,10 +135,12 @@ Out of scope:
 - this task record and, if needed, `docs/BACKLOG.md` for genuinely deferred
   findings
 
-No migration is planned because FT-06 comparison state is a reproducible audit
-projection, not a second persisted financial store. If implementation evidence
-shows that durable review state is required, work pauses for a PRD/schema
-decision and a tested migration rather than storing JSON opportunistically.
+Reconciliation state remains an unpersisted reproducible audit projection.
+Implementation review did establish a distinct lineage requirement: immutable
+Value Line reparses need a durable parse-run identity so an extraction/fact can
+be tied to the exact parser and fully resolved mapping version that created it.
+The additive migration therefore persists run identity only; it does not store
+reconciliation outcomes or create another financial fact store.
 
 ## Test-first plan
 
@@ -224,3 +231,27 @@ decision and a tested migration rather than storing JSON opportunistically.
   facts read also pass their focused regressions. A prior 302-test expansion
   found only the intentionally changed `/facts` expectation; that assertion
   now requires typed fail-closed output and passes. No blocker is deferred.
+- 2026-09-04: Terra adversarial review R5 found three valid lineage/history
+  gaps. The canonical `/facts` endpoint grouped fiscal SEC and Value Line rows
+  from raw JSON rather than their source-authoritative period identities;
+  derived consumers checked recorded input IDs but missed a later current
+  competitor in the same input slot; and Value Line reparse deleted the prior
+  extraction/fact audit revision. Four red reproductions pinned those failures.
+- 2026-09-04: Sol remediation now groups `/facts` through canonical candidate
+  materialization, expands a bounded/cycle-safe current competitor closure for
+  every reached lineage slot, and excludes competitors not authorized,
+  known, or effective at the replay cutoff. A new additive migration gives
+  every new Value Line extraction/fact set one transaction-bound parse-run
+  identity. The old all-history parsed uniqueness constraint is replaced with
+  exact current parsed-slot uniqueness while legacy rows remain nullable and
+  readable; the prior non-parsed uniqueness behavior is retained separately.
+  Reparse is serialized per document, appends history, and commits run,
+  extraction, fact, and currentness changes atomically. Failed reparse preserves
+  the prior current revision. Direct late run binding is rejected by PostgreSQL,
+  while explicit parent-document deletion retains its existing FK cleanup
+  boundary.
+- 2026-09-04: R5 remediation-focused Docker suite is green at 43 tests across
+  reparse success/failure, mapping revision and correction lineage, Value Line
+  upload/page behavior, source reconciliation/API, SEC integration, canonical
+  SEC reads, and migration empty/legacy/round-trip cases. Fresh Terra R6 and
+  exact closing gates remain pending.

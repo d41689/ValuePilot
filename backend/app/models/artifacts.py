@@ -1,6 +1,6 @@
 from datetime import date, datetime
 from typing import Optional, TYPE_CHECKING
-from sqlalchemy import String, Date, DateTime, Boolean, ForeignKey, Integer, Text
+from sqlalchemy import BigInteger, CheckConstraint, String, Date, DateTime, Boolean, ForeignKey, Integer, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.sql import func
 from app.core.db import Base
@@ -53,3 +53,31 @@ class DocumentPage(Base):
     text_extraction_method: Mapped[str] = mapped_column(String) # native_text / ocr
 
     document: Mapped["PdfDocument"] = relationship(back_populates="pages")
+
+
+class ValueLineParseRun(Base):
+    """Durable identity for one immutable Value Line extraction/fact set."""
+
+    __tablename__ = "value_line_parse_runs"
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('running', 'succeeded', 'failed')",
+            name="ck_value_line_parse_runs_status",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), nullable=False)
+    document_id: Mapped[int] = mapped_column(
+        ForeignKey("pdf_documents.id", ondelete="CASCADE"), nullable=False
+    )
+    parser_version: Mapped[str] = mapped_column(String, nullable=False)
+    source_mapping_version: Mapped[str] = mapped_column(Text, nullable=False)
+    status: Mapped[str] = mapped_column(String, nullable=False)
+    created_txid: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    started_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    completed_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )

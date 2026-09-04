@@ -805,6 +805,35 @@ def _document_authority(
     }
 
 
+def _value_line_parse_run_authority(
+    session: Session,
+    facts: Sequence[MetricFact],
+) -> dict[int, dict[str, Any]]:
+    ids = sorted(
+        {
+            fact.value_line_parse_run_id
+            for fact in facts
+            if fact.source_type == "parsed"
+            and fact.value_line_parse_run_id is not None
+        }
+    )
+    if not ids:
+        return {}
+    rows = session.execute(
+        text(
+            """
+            SELECT id, user_id, document_id, parser_version,
+                   source_mapping_version, status, started_at, completed_at,
+                   created_txid=txid_current() AS creator_transaction
+            FROM value_line_parse_runs
+            WHERE id=ANY(:ids)
+            """
+        ),
+        {"ids": ids},
+    ).mappings()
+    return {int(row.id): dict(row) for row in rows}
+
+
 def _sec_authority(
     session: Session,
     facts: Sequence[MetricFact],
@@ -868,6 +897,7 @@ def materialize_reconciliation_candidates(
         raise ValueError("knowledge_cutoff must be timezone-aware")
     rows = list(facts)
     documents = _document_authority(session, rows)
+    value_line_runs = _value_line_parse_run_authority(session, rows)
     sec = _sec_authority(session, rows, knowledge_cutoff=knowledge_cutoff)
     _, _, canonical_definition_version, _, _ = _mapping_spec_identity()
     candidates: list[ReconciliationCandidate] = []
@@ -969,7 +999,21 @@ def materialize_reconciliation_candidates(
             authorization_state = "unauthorized"
         elif fact.source_type == "parsed":
             document = documents.get(fact.source_document_id or -1)
-            source_authority_complete = document is not None
+            parse_run = value_line_runs.get(fact.value_line_parse_run_id or -1)
+            run_authorized = fact.value_line_parse_run_id is None or (
+                parse_run is not None
+                and parse_run["user_id"] == user_id
+                and parse_run["document_id"] == fact.source_document_id
+                and parse_run["source_mapping_version"] == source_mapping_version
+                and (
+                    parse_run["status"] == "succeeded"
+                    or (
+                        parse_run["status"] == "running"
+                        and parse_run["creator_transaction"]
+                    )
+                )
+            )
+            source_authority_complete = document is not None and run_authorized
             authorized = fact.source_document_id is None or (
                 document is not None
                 and document.user_id == user_id
@@ -982,8 +1026,16 @@ def materialize_reconciliation_candidates(
                 and not document.identity_needs_review
                 and (document.stock_id is None or document.stock_id == fact.stock_id)
                 and _aware(document.upload_time) <= knowledge_cutoff
+                and run_authorized
             )
             authorization_state = "authorized" if authorized else "unauthorized"
+            if parse_run is not None:
+                known_at = max(
+                    known_at,
+                    _aware(parse_run["started_at"]),
+                    _aware(parse_run["completed_at"]),
+                )
+                effective_at = known_at
             source_role = (
                 "value_line_estimate"
                 if fact_nature == "estimate"
@@ -1107,7 +1159,12 @@ def materialize_reconciliation_candidates(
                 source_identity=(
                     f"sec-publication:{sec[fact.id]['publication_id']}"
                     if fact.source_type == "sec" and fact.id in sec
-                    else f"{fact.source_type}:{fact.source_document_id or fact.source_ref_id or fact.id}"
+                    else (
+                        f"value-line-run:{fact.value_line_parse_run_id}"
+                        if fact.source_type == "parsed"
+                        and fact.value_line_parse_run_id is not None
+                        else f"{fact.source_type}:{fact.source_document_id or fact.source_ref_id or fact.id}"
+                    )
                 ),
                 metric_key=fact.metric_key,
                 definition_family=f"canonical:{fact.metric_key}",
@@ -1162,6 +1219,96 @@ def _lineage_blocking_item(
     }
 
 
+def _current_same_slot_competitors(
+    session: Session,
+    *,
+    facts: Sequence[MetricFact],
+    user_id: int,
+    stock_id: int,
+    knowledge_cutoff: datetime,
+    max_facts: int,
+) -> tuple[list[MetricFact], bool]:
+    """Find current visible competitors using canonical, source-backed slots."""
+
+    seed_candidates, _ = materialize_reconciliation_candidates(
+        session,
+        facts,
+        user_id=user_id,
+        knowledge_cutoff=knowledge_cutoff,
+    )
+    seed_candidates = [
+        candidate
+        for candidate in seed_candidates
+        if candidate.authorization_state == "authorized"
+        and candidate.known_at <= knowledge_cutoff
+        and candidate.effective_at <= knowledge_cutoff
+    ]
+    seed_by_metric: dict[str, list[ReconciliationCandidate]] = {}
+    for candidate in seed_candidates:
+        seed_by_metric.setdefault(candidate.metric_key, []).append(candidate)
+
+    selected: dict[int, MetricFact] = {}
+    for metric_key, metric_seeds in seed_by_metric.items():
+        pool = list(
+            session.scalars(
+                select(MetricFact)
+                .where(
+                    MetricFact.stock_id == stock_id,
+                    MetricFact.metric_key == metric_key,
+                    MetricFact.is_current.is_(True),
+                    visible_metric_fact_predicate(MetricFact, user_id=user_id),
+                )
+                .order_by(MetricFact.id)
+                .limit(max_facts + 1)
+            )
+        )
+        if len(pool) > max_facts:
+            return [], True
+        pool_candidates, _ = materialize_reconciliation_candidates(
+            session,
+            pool,
+            user_id=user_id,
+            knowledge_cutoff=knowledge_cutoff,
+        )
+        pool_candidates = [
+            candidate
+            for candidate in pool_candidates
+            if candidate.authorization_state == "authorized"
+            and candidate.known_at <= knowledge_cutoff
+            and candidate.effective_at <= knowledge_cutoff
+        ]
+        all_fiscal = [
+            candidate
+            for candidate in [*metric_seeds, *pool_candidates]
+            if candidate.period_type in FISCAL_PERIOD_TYPES
+        ]
+        fiscal_identity_unavailable = (
+            len({candidate.source_type for candidate in all_fiscal}) > 1
+            and any(
+                candidate.fiscal_year is None
+                or (
+                    candidate.period_type in {"Q", "YTD"}
+                    and candidate.fiscal_quarter_ordinal is None
+                )
+                for candidate in all_fiscal
+            )
+        )
+        if fiscal_identity_unavailable:
+            selected_ids = {
+                candidate.fact_id for candidate in pool_candidates
+                if candidate.period_type in FISCAL_PERIOD_TYPES
+            }
+        else:
+            seed_slots = {_bucket_key(candidate) for candidate in metric_seeds}
+            selected_ids = {
+                candidate.fact_id
+                for candidate in pool_candidates
+                if _bucket_key(candidate) in seed_slots
+            }
+        selected.update({fact.id: fact for fact in pool if fact.id in selected_ids})
+    return list(selected.values()), False
+
+
 def _expand_visible_lineage(
     session: Session,
     *,
@@ -1185,58 +1332,94 @@ def _expand_visible_lineage(
         if lineage_id not in by_id
     }
     errors: list[dict[str, Any]] = []
-    while queue:
-        if len(by_id) + len(queue) > max_facts:
-            errors.append(
-                _lineage_blocking_item(
-                    facts[0], reason_code="derived_lineage_bound_exceeded"
+    while True:
+        while queue:
+            if len(by_id) + len(queue) > max_facts:
+                errors.append(
+                    _lineage_blocking_item(
+                        facts[0], reason_code="derived_lineage_bound_exceeded"
+                    )
+                )
+                break
+            requested = sorted(queue)
+            queue.clear()
+            fetched = list(
+                session.scalars(
+                    select(MetricFact).where(
+                        MetricFact.id.in_(requested),
+                        visible_metric_fact_predicate(MetricFact, user_id=user_id),
+                    )
                 )
             )
-            break
-        requested = sorted(queue)
-        queue.clear()
-        fetched = list(
-            session.scalars(
-                select(MetricFact).where(
-                    MetricFact.id.in_(requested),
-                    visible_metric_fact_predicate(MetricFact, user_id=user_id),
+            fetched_by_id = {fact.id: fact for fact in fetched}
+            missing = set(requested) - set(fetched_by_id)
+            if missing:
+                parent = next(
+                    fact
+                    for fact in by_id.values()
+                    if missing
+                    & set(
+                        _lineage_ids(
+                            _json_dict(fact.value_json),
+                            source_type=fact.source_type,
+                        )
+                    )
                 )
-            )
-        )
-        fetched_by_id = {fact.id: fact for fact in fetched}
-        missing = set(requested) - set(fetched_by_id)
-        if missing:
-            parent = next(
-                fact
-                for fact in by_id.values()
-                if missing
-                & set(
-                    _lineage_ids(
+                errors.append(
+                    _lineage_blocking_item(
+                        parent, reason_code="lineage_reference_unavailable"
+                    )
+                )
+                break
+            for fact in fetched:
+                if fact.stock_id != stock_id:
+                    errors.append(
+                        _lineage_blocking_item(
+                            fact, reason_code="cross_stock_lineage_reference"
+                        )
+                    )
+                    continue
+                if max(
+                    _aware(fact.created_at), _aware(fact.updated_at)
+                ) > knowledge_cutoff:
+                    errors.append(
+                        _lineage_blocking_item(
+                            fact, reason_code="lineage_known_after_cutoff"
+                        )
+                    )
+                    continue
+                by_id[fact.id] = fact
+                queue.update(
+                    lineage_id
+                    for lineage_id in _lineage_ids(
                         _json_dict(fact.value_json), source_type=fact.source_type
                     )
+                    if lineage_id not in by_id
                 )
-            )
+            if errors:
+                break
+        if errors:
+            break
+
+        competitors, overflow = _current_same_slot_competitors(
+            session,
+            facts=list(by_id.values()),
+            user_id=user_id,
+            stock_id=stock_id,
+            knowledge_cutoff=knowledge_cutoff,
+            max_facts=max_facts,
+        )
+        new_competitors = [fact for fact in competitors if fact.id not in by_id]
+        if overflow or len(by_id) + len(new_competitors) > max_facts:
             errors.append(
                 _lineage_blocking_item(
-                    parent, reason_code="lineage_reference_unavailable"
+                    facts[0], reason_code="source_slot_competitor_bound_exceeded"
                 )
             )
             break
-        for fact in fetched:
-            if fact.stock_id != stock_id:
-                errors.append(
-                    _lineage_blocking_item(
-                        fact, reason_code="cross_stock_lineage_reference"
-                    )
-                )
-                continue
-            if max(_aware(fact.created_at), _aware(fact.updated_at)) > knowledge_cutoff:
-                errors.append(
-                    _lineage_blocking_item(
-                        fact, reason_code="lineage_known_after_cutoff"
-                    )
-                )
-                continue
+        if not new_competitors:
+            break
+        for fact in new_competitors:
             by_id[fact.id] = fact
             queue.update(
                 lineage_id
@@ -1245,8 +1428,25 @@ def _expand_visible_lineage(
                 )
                 if lineage_id not in by_id
             )
-        if errors:
-            break
+
+    if not errors:
+        for fact in by_id.values():
+            if fact.source_type != "calculated" or not fact.is_current:
+                continue
+            superseded_inputs = [
+                by_id[lineage_id]
+                for lineage_id in _lineage_ids(
+                    _json_dict(fact.value_json), source_type=fact.source_type
+                )
+                if lineage_id in by_id and not by_id[lineage_id].is_current
+            ]
+            if superseded_inputs:
+                errors.append(
+                    _lineage_blocking_item(
+                        fact, reason_code="derived_lineage_superseded"
+                    )
+                )
+                break
 
     visiting: set[int] = set()
     visited: set[int] = set()
@@ -1470,6 +1670,64 @@ def build_source_reconciliation_report_from_facts(
     report.pop("report_digest", None)
     report["report_digest"] = _report_digest(report)
     return report
+
+
+def group_metric_facts_by_reconciliation_slot(
+    session: Session,
+    *,
+    facts: Sequence[MetricFact],
+    user_id: int,
+    knowledge_cutoff: datetime,
+    max_facts: int = MAX_RECONCILIATION_FACTS,
+) -> list[list[MetricFact]]:
+    """Group one metric's facts by the canonical comparison projection."""
+
+    rows = list(facts)
+    if not rows:
+        return []
+    if len({fact.metric_key for fact in rows}) != 1:
+        raise ValueError("slot grouping requires exactly one metric key")
+    if len(rows) > max_facts:
+        # Preserve the entire overflowing metric as one typed blocked unit;
+        # the shared guard owns the bounded-limit outcome.
+        return [rows]
+    candidates, _ = materialize_reconciliation_candidates(
+        session,
+        rows,
+        user_id=user_id,
+        knowledge_cutoff=knowledge_cutoff,
+    )
+    report = reconcile_candidates(candidates, knowledge_cutoff=knowledge_cutoff)
+    parent = {fact.id: fact.id for fact in rows}
+
+    def find(fact_id: int) -> int:
+        while parent[fact_id] != fact_id:
+            parent[fact_id] = parent[parent[fact_id]]
+            fact_id = parent[fact_id]
+        return fact_id
+
+    def union(left: int, right: int) -> None:
+        left_root = find(left)
+        right_root = find(right)
+        if left_root != right_root:
+            parent[max(left_root, right_root)] = min(left_root, right_root)
+
+    original_ids = set(parent)
+    for item in report["items"]:
+        item_ids = [
+            fact_id for fact_id in item.get("fact_ids", ())
+            if fact_id in original_ids
+        ]
+        for fact_id in item_ids[1:]:
+            union(item_ids[0], fact_id)
+
+    grouped: dict[int, list[MetricFact]] = {}
+    for fact in rows:
+        grouped.setdefault(find(fact.id), []).append(fact)
+    return [
+        sorted(group, key=lambda fact: fact.id)
+        for _, group in sorted(grouped.items())
+    ]
 
 
 def guard_reconciled_source_selection(

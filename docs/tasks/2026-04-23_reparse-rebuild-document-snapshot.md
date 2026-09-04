@@ -1,5 +1,11 @@
 # Task: Reparse should rebuild a document's parsed snapshot
 
+Status: superseded on 2026-09-04 by
+`docs/tasks/2026-09-04_exact-source-reconciliation.md`. The original execution
+record below is retained for audit, but its delete-and-reinsert design is no
+longer authoritative: reparse now appends immutable extraction/fact revisions
+under a durable parse-run identity and changes currentness atomically.
+
 ## Goal / Acceptance Criteria
 - When a user clicks `reparse`, the system should discard the document's old parsed snapshot and rebuild it from the current parse output.
 - Old `parsed` records linked to the same `document_id` must not remain visible after reparse.
