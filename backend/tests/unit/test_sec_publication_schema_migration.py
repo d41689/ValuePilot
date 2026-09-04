@@ -185,7 +185,7 @@ def test_mapping_and_method_authorities_stamp_and_fail_closed(isolated) -> None:
               (stock_id,risk_attribute,is_present,effective_from,known_at,reviewer_user_id,review_reason,created_at,created_txid)
             VALUES (:stock,'cyclical',true,'2020-01-01','2000-01-01',:user,'review','2000-01-01',1)
         """), {"stock": stock_id, "user": user_id})
-        with pytest.raises(DBAPIError, match="overlapping economic classification"):
+        with pytest.raises(DBAPIError, match="exact terminal supersession"):
             with connection.begin_nested():
                 connection.execute(text("""
                     INSERT INTO sec_economic_classification_reviews

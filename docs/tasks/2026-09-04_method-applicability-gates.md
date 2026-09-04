@@ -218,3 +218,16 @@ strict read-only Terra full-diff review with no P0–P3 findings before sign-off
   R3 focused verification is `82 passed`; the expanded 17-file affected set is
   `269 passed`. Fresh strict full-diff review and exact canonical closing gates
   remain pending.
+- 2026-09-04: Strict Terra R4 found that the batch legacy-revision query's
+  stock-set filter did not prove the revision matched each individual fact. An
+  A-stock fact could point at a B-stock human revision included in the same
+  batch. The resolver now explicitly verifies revision creator and snapshot
+  stock against every fact before considering legacy assumptions; a two-stock
+  regression covers the canonical reader, stock-pool/watchlist projection, and
+  Oracle valuation batch while preserving B's valid human value.
+- 2026-09-04: Four full-suite compatibility failures were stale test contracts,
+  not production behavior: the SEC lineage migration tests now target Alembic
+  head `20260904150000`, and the direct-SQL classification conflict expects the
+  FT-07 exact-terminal error. The expanded 19-file affected suite is
+  `308 passed`. Fresh strict full-diff review and exact canonical closing gates
+  remain pending.

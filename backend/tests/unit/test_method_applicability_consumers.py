@@ -1092,3 +1092,85 @@ def test_legacy_linked_explicit_human_origin_remains_available(
     assert context.user_intrinsic_value_status == "available"
     assert context.user_intrinsic_value_fact_id == fact.id
     assert fact.source_ref_id == revision.id
+
+
+def test_batch_valuation_revision_identity_is_checked_per_fact(
+    client, db_session, user_factory, auth_headers
+) -> None:
+    user = user_factory("batch-valuation-lineage@example.com")
+    stock_a = _stock(db_session, "BATCHA")
+    stock_b = _stock(db_session, "BATCHB")
+    _, revision_b, fact_b = save_product_valuation_revision(
+        db_session,
+        user_id=user.id,
+        stock_id=stock_b.id,
+        value_numeric=90,
+        valuation_low=85,
+        valuation_high=95,
+        as_of_date=date.today(),
+        source="manual",
+        pool_id=None,
+        assumptions=[{"source": "manual", "label": "Legacy human value"}],
+        valuation_currency="USD",
+    )
+    fact_b.value_json = None
+    fact_a = MetricFact(
+        user_id=user.id,
+        stock_id=stock_a.id,
+        metric_key="val.fair_value",
+        value_numeric=150,
+        unit="USD",
+        currency="USD",
+        period_type="AS_OF",
+        period_end_date=date.today(),
+        source_type="manual",
+        source_ref_id=revision_b.id,
+        is_current=True,
+    )
+    pool = StockPool(user_id=user.id, name="Batch lineage watchlist")
+    db_session.add_all([fact_a, pool])
+    db_session.flush()
+    db_session.add_all(
+        [
+            PoolMembership(
+                user_id=user.id,
+                pool_id=pool.id,
+                stock_id=stock.id,
+                inclusion_type="manual",
+            )
+            for stock in (stock_a, stock_b)
+        ]
+    )
+    db_session.commit()
+
+    projected = read_valuation_facts_by_stock(
+        db_session, user_id=user.id, stock_ids=[stock_a.id, stock_b.id]
+    )
+    assert projected[stock_a.id]["val.fair_value"].value_numeric is None
+    assert projected[stock_a.id]["val.fair_value"].value_json["reason_code"] == (
+        "valuation_origin_unverifiable"
+    )
+    assert projected[stock_b.id]["val.fair_value"].value_numeric == 90
+
+    oracle = _valuation_reference_by_stock(
+        db_session,
+        {stock_a.id: (100, 140), stock_b.id: (80, 100)},
+        user_id=user.id,
+    )
+    assert oracle[stock_a.id]["valuation_reference"] is None
+    assert "valuation_origin_unverifiable" in oracle[stock_a.id][
+        "valuation_unavailable_reasons"
+    ]
+    assert oracle[stock_b.id]["valuation_reference"] == 90
+
+    response = client.get(
+        f"/api/v1/stock_pools/{pool.id}/members",
+        headers=auth_headers(user),
+    )
+    assert response.status_code == 200, response.text
+    rows = {row["stock_id"]: row for row in response.json()}
+    assert rows[stock_a.id]["fair_value"] is None
+    assert rows[stock_a.id]["fair_value_reason_code"] == (
+        "valuation_origin_unverifiable"
+    )
+    assert rows[stock_b.id]["fair_value"] == 90

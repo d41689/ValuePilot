@@ -96,8 +96,15 @@ def _server_valuation_origin(fact: MetricFact) -> tuple[str, str | None]:
     return "valid", str(source)
 
 
-def _legacy_valuation_reason(revision: Any | None) -> str | None:
-    if revision is None or revision.is_redacted is True:
+def _legacy_valuation_reason(
+    revision: Any | None, *, fact: MetricFact
+) -> str | None:
+    if (
+        revision is None
+        or revision.is_redacted is True
+        or int(revision.created_by_user_id) != fact.user_id
+        or int(revision.snapshot_stock_id) != fact.stock_id
+    ):
         return "valuation_origin_unverifiable"
     assumptions = revision.assumptions_json
     if not isinstance(assumptions, list):
@@ -266,6 +273,7 @@ def read_valuation_facts_by_stock(
         revisions = session.execute(
             select(
                 ResearchCaseRevision.id,
+                ResearchCaseRevision.created_by_user_id,
                 ResearchCaseRevision.snapshot_stock_id,
                 ResearchCaseRevision.assumptions_json,
                 ResearchCaseRevision.is_redacted,
@@ -299,7 +307,7 @@ def read_valuation_facts_by_stock(
                 blocked_reason = "system_valuation_method_pending_ft09"
             elif origin_state == "absent" and fact.source_ref_id is not None:
                 blocked_reason = _legacy_valuation_reason(
-                    revisions_by_id.get(int(fact.source_ref_id))
+                    revisions_by_id.get(int(fact.source_ref_id)), fact=fact
                 )
         if blocked_reason is not None:
             selected = ValuationFactProjection(
