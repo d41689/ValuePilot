@@ -1952,11 +1952,11 @@ def test_lookup_stock_by_ticker_does_not_serialize_fact_known_after_evaluation_c
             },
             unit="ratio",
             period_type="AS_OF",
-            period_end_date=date(2026, 9, 4),
+            period_end_date=date(2099, 9, 4),
             source_type="parsed",
             is_current=True,
-            created_at=datetime(2026, 9, 4, 13, tzinfo=timezone.utc),
-            updated_at=datetime(2026, 9, 4, 13, tzinfo=timezone.utc),
+            created_at=datetime(2099, 9, 4, 13, tzinfo=timezone.utc),
+            updated_at=datetime(2099, 9, 4, 13, tzinfo=timezone.utc),
         )
     )
     db_session.commit()
@@ -1964,8 +1964,8 @@ def test_lookup_stock_by_ticker_does_not_serialize_fact_known_after_evaluation_c
         stocks_endpoint,
         "dcf_evaluation_clock",
         lambda: DcfEvaluationClock(
-            datetime(2026, 9, 4, 12, tzinfo=timezone.utc),
-            date(2026, 9, 4),
+            datetime(2099, 9, 4, 12, tzinfo=timezone.utc),
+            date(2099, 9, 4),
         ),
     )
 

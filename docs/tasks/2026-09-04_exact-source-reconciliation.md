@@ -377,3 +377,12 @@ reconciliation outcomes or create another financial fact store.
   source and retains the manifest extraction/run IDs. Focused missing-manifest,
   caught-error commit, cycle, and existing correction API coverage is green at
   11 tests. Full backend and fresh Terra R13 remain pending.
+- 2026-09-04: The first R12 full-backend run reached 2,321 passed and one
+  failure. The failure was a deterministic-test defect, not a production
+  regression: a PIT stock-summary test fixed its cutoff at 2026-09-04 12:00 UTC
+  while fixture source authority used database current time, so the run crossed
+  the hard-coded boundary and correctly classified the source as post-cutoff.
+  The test now uses a fixed 2099 cutoff and a fact exactly one hour later,
+  preserving “authorized source, post-cutoff fact” as the sole variable without
+  depending on wall-clock execution time. Its affected suite is green at 11
+  tests; the repeated full backend run remains pending.
