@@ -133,6 +133,10 @@ def seed_strict_piotroski_total(
         reason_code="approved",
         economic_class="ordinary_operating",
     )
+    # A strict total is only valid while every component declared in its
+    # manifest is present as a current sibling.  Persist the complete period
+    # even when a consumer test only needs the returned total object.
+    _ = include_components
     payloads = [
         item
         for item in build_piotroski_f_score_facts(
@@ -140,7 +144,6 @@ def seed_strict_piotroski_total(
             roic_decisions_by_period={prior_end: decision, period_end: decision},
         )
         if item["period_end_date"] == period_end
-        and (include_components or item["metric_key"] == "score.piotroski.total")
     ]
     facts = [
         MetricFact(

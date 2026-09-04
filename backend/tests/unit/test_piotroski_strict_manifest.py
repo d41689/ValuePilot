@@ -2,16 +2,21 @@ from __future__ import annotations
 
 from copy import deepcopy
 from datetime import date, timedelta
+from decimal import Decimal
 
 import pytest
-from sqlalchemy import event
+from sqlalchemy import event, update
 
 from app.models.facts import MetricFact
 from app.models.stocks import Stock
 from app.services.calculated_metrics.piotroski_f_score import (
     PiotroskiFScoreCalculator,
 )
-from app.services.canonical_financials import guard_piotroski_method_authority
+from app.services.canonical_financials import (
+    PiotroskiMethodAuthorityError,
+    guard_piotroski_method_authority,
+)
+from app.services.screener_service import ScreenerService
 
 
 PERIOD_0 = date(2023, 12, 31)
@@ -321,7 +326,222 @@ def test_guard_batches_input_lookup_for_many_piotroski_facts(
 
     assert kept == facts
     assert blocked == []
-    assert len(statements) <= 1
+    # One bounded sibling expansion plus one batched input lookup.
+    assert len(statements) <= 2
+
+
+def test_component_only_request_requires_and_uses_complete_current_siblings(
+    db_session, user_factory
+) -> None:
+    user = user_factory("piot-component-only@example.com")
+    stock = _stock(db_session, "PCOMPONLY")
+    written = _generate_complete(db_session, user=user, stock=stock)
+    component = next(
+        fact
+        for fact in written
+        if fact.metric_key == "score.piotroski.roa_positive"
+        and fact.period_end_date == PERIOD_1
+    )
+
+    kept, blocked = guard_piotroski_method_authority(
+        db_session,
+        facts=[component],
+        effective_as_of=date.today(),
+    )
+
+    assert kept == [component]
+    assert blocked == []
+
+
+def test_component_only_screener_requires_complete_current_sibling_period(
+    db_session, user_factory
+) -> None:
+    user = user_factory("piot-component-screener@example.com")
+    stock = _stock(db_session, "PCOMPSCR")
+    written = _generate_complete(db_session, user=user, stock=stock)
+    total = next(
+        fact
+        for fact in written
+        if fact.metric_key == "score.piotroski.total"
+        and fact.period_end_date == PERIOD_1
+    )
+    rule = {
+        "type": "AND",
+        "conditions": [
+            {
+                "metric": "score.piotroski.roa_positive",
+                "operator": ">=",
+                "value": 0,
+            }
+        ],
+    }
+
+    assert {
+        item.id
+        for item in ScreenerService(db_session).execute_screen(
+            rule, current_user_id=user.id
+        )
+    } == {stock.id}
+
+    db_session.execute(
+        update(MetricFact)
+        .where(MetricFact.id == total.id)
+        .values(is_current=False)
+    )
+    db_session.commit()
+    with pytest.raises(PiotroskiMethodAuthorityError) as error:
+        ScreenerService(db_session).execute_screen(
+            rule, current_user_id=user.id
+        )
+    assert error.value.code == "piotroski_method_authority_manifest_invalid"
+
+
+def test_component_only_request_is_quarantined_when_current_total_is_demoted(
+    db_session, user_factory
+) -> None:
+    user = user_factory("piot-component-missing-total@example.com")
+    stock = _stock(db_session, "PNOTOTAL")
+    written = _generate_complete(db_session, user=user, stock=stock)
+    component = next(
+        fact
+        for fact in written
+        if fact.metric_key == "score.piotroski.roa_positive"
+        and fact.period_end_date == PERIOD_1
+    )
+    total = next(
+        fact
+        for fact in written
+        if fact.metric_key == "score.piotroski.total"
+        and fact.period_end_date == PERIOD_1
+    )
+    db_session.execute(
+        update(MetricFact)
+        .where(MetricFact.id == total.id)
+        .values(is_current=False)
+    )
+    db_session.commit()
+
+    kept, blocked = guard_piotroski_method_authority(
+        db_session,
+        facts=[component],
+        effective_as_of=date.today(),
+    )
+
+    assert kept == []
+    assert blocked[0]["reason_code"] == (
+        "piotroski_method_authority_manifest_invalid"
+    )
+    assert blocked[0]["value_numeric"] is None
+
+
+def test_total_only_request_is_quarantined_when_a_current_component_is_missing(
+    db_session, user_factory
+) -> None:
+    user = user_factory("piot-total-missing-component@example.com")
+    stock = _stock(db_session, "PNOCOMP")
+    written = _generate_complete(db_session, user=user, stock=stock)
+    total = next(
+        fact
+        for fact in written
+        if fact.metric_key == "score.piotroski.total"
+        and fact.period_end_date == PERIOD_1
+    )
+    component = next(
+        fact
+        for fact in written
+        if fact.metric_key == "score.piotroski.roa_positive"
+        and fact.period_end_date == PERIOD_1
+    )
+    db_session.execute(
+        update(MetricFact)
+        .where(MetricFact.id == component.id)
+        .values(is_current=False)
+    )
+    db_session.commit()
+
+    kept, blocked = guard_piotroski_method_authority(
+        db_session,
+        facts=[total],
+        effective_as_of=date.today(),
+    )
+
+    assert kept == []
+    assert blocked[0]["reason_code"] == (
+        "piotroski_method_authority_manifest_invalid"
+    )
+
+
+def test_total_only_request_is_quarantined_for_duplicate_current_sibling_key(
+    db_session, user_factory
+) -> None:
+    user = user_factory("piot-duplicate-sibling@example.com")
+    stock = _stock(db_session, "PDUPSIB")
+    written = _generate_complete(db_session, user=user, stock=stock)
+    total = next(
+        fact
+        for fact in written
+        if fact.metric_key == "score.piotroski.total"
+        and fact.period_end_date == PERIOD_1
+    )
+    component = next(
+        fact
+        for fact in written
+        if fact.metric_key == "score.piotroski.roa_positive"
+        and fact.period_end_date == PERIOD_1
+    )
+    db_session.add(_clone(component))
+    db_session.commit()
+
+    kept, blocked = guard_piotroski_method_authority(
+        db_session,
+        facts=[total],
+        effective_as_of=date.today(),
+    )
+
+    assert kept == []
+    assert blocked[0]["reason_code"] == (
+        "piotroski_method_authority_manifest_invalid"
+    )
+
+
+def test_total_only_request_is_quarantined_for_invalid_current_sibling(
+    db_session, user_factory
+) -> None:
+    user = user_factory("piot-invalid-sibling@example.com")
+    stock = _stock(db_session, "PBADSIB")
+    written = _generate_complete(db_session, user=user, stock=stock)
+    total = next(
+        fact
+        for fact in written
+        if fact.metric_key == "score.piotroski.total"
+        and fact.period_end_date == PERIOD_1
+    )
+    component = next(
+        fact
+        for fact in written
+        if fact.metric_key == "score.piotroski.roa_positive"
+        and fact.period_end_date == PERIOD_1
+    )
+    forged = _clone(component)
+    forged.value_numeric = Decimal("0")
+    db_session.execute(
+        update(MetricFact)
+        .where(MetricFact.id == component.id)
+        .values(is_current=False)
+    )
+    db_session.add(forged)
+    db_session.commit()
+
+    kept, blocked = guard_piotroski_method_authority(
+        db_session,
+        facts=[total],
+        effective_as_of=date.today(),
+    )
+
+    assert kept == []
+    assert blocked[0]["reason_code"] == (
+        "piotroski_method_authority_manifest_invalid"
+    )
 
 
 def test_blocked_proxy_period_writes_only_unavailable_total(
@@ -451,3 +671,285 @@ def test_period_quarantine_never_crosses_tenant_boundary(
     assert [state["metric_key"] for state in blocked] == [
         "score.piotroski.total"
     ]
+
+
+def test_missing_siblings_quarantine_only_the_matching_tenant_period(
+    db_session, user_factory
+) -> None:
+    first_user = user_factory("piot-sibling-tenant-a@example.com")
+    second_user = user_factory("piot-sibling-tenant-b@example.com")
+    stock = _stock(db_session, "PSIBTEN")
+    first = _generate_complete(db_session, user=first_user, stock=stock)
+    second = _generate_complete(db_session, user=second_user, stock=stock)
+    first_component = next(
+        fact
+        for fact in first
+        if fact.metric_key == "score.piotroski.roa_positive"
+        and fact.period_end_date == PERIOD_1
+    )
+    first_total = next(
+        fact
+        for fact in first
+        if fact.metric_key == "score.piotroski.total"
+        and fact.period_end_date == PERIOD_1
+    )
+    second_component = next(
+        fact
+        for fact in second
+        if fact.metric_key == "score.piotroski.roa_positive"
+        and fact.period_end_date == PERIOD_1
+    )
+    db_session.execute(
+        update(MetricFact)
+        .where(MetricFact.id == first_total.id)
+        .values(is_current=False)
+    )
+    db_session.commit()
+
+    kept, blocked = guard_piotroski_method_authority(
+        db_session,
+        facts=[first_component, second_component],
+        effective_as_of=date.today(),
+    )
+
+    assert kept == [second_component]
+    assert len(blocked) == 1
+    assert blocked[0]["metric_key"] == first_component.metric_key
+    assert blocked[0]["reason_code"] == (
+        "piotroski_method_authority_manifest_invalid"
+    )
+
+
+def _captured_metric_fact_queries(db_session):
+    statements: list[str] = []
+
+    def capture(_connection, _cursor, statement, _parameters, _context, _many):
+        if "FROM metric_facts" in statement:
+            statements.append(statement)
+
+    event.listen(db_session.get_bind(), "before_cursor_execute", capture)
+    return statements, capture
+
+
+def test_request_fact_bound_blocks_before_any_authority_query(
+    db_session, user_factory
+) -> None:
+    user = user_factory("piot-request-bound@example.com")
+    stock = _stock(db_session, "PREQBOUND")
+    written = _generate_complete(db_session, user=user, stock=stock)
+    total = next(
+        fact
+        for fact in written
+        if fact.metric_key == "score.piotroski.total"
+        and fact.period_end_date == PERIOD_1
+    )
+    requested = [_clone(total) for _ in range(501)]
+    statements, listener = _captured_metric_fact_queries(db_session)
+    try:
+        kept, blocked = guard_piotroski_method_authority(
+            db_session,
+            facts=requested,
+            effective_as_of=date.today(),
+        )
+    finally:
+        event.remove(db_session.get_bind(), "before_cursor_execute", listener)
+
+    assert kept == []
+    assert len(blocked) == len(requested)
+    assert {state["reason_code"] for state in blocked} == {
+        "piotroski_method_authority_bound_exceeded"
+    }
+    assert statements == []
+
+
+def test_period_group_bound_blocks_before_any_authority_query(
+    db_session, user_factory
+) -> None:
+    user = user_factory("piot-period-bound@example.com")
+    stock = _stock(db_session, "PPERBOUND")
+    written = _generate_complete(db_session, user=user, stock=stock)
+    total = next(
+        fact
+        for fact in written
+        if fact.metric_key == "score.piotroski.total"
+        and fact.period_end_date == PERIOD_1
+    )
+    requested = []
+    for ordinal in range(51):
+        clone = _clone(total)
+        clone.period_end_date = PERIOD_1 + timedelta(days=ordinal)
+        requested.append(clone)
+    statements, listener = _captured_metric_fact_queries(db_session)
+    try:
+        kept, blocked = guard_piotroski_method_authority(
+            db_session,
+            facts=requested,
+            effective_as_of=date.today(),
+        )
+    finally:
+        event.remove(db_session.get_bind(), "before_cursor_execute", listener)
+
+    assert kept == []
+    assert len(blocked) == len(requested)
+    assert {state["reason_code"] for state in blocked} == {
+        "piotroski_method_authority_bound_exceeded"
+    }
+    assert statements == []
+
+
+def test_per_manifest_input_bound_blocks_before_any_authority_query(
+    db_session, user_factory
+) -> None:
+    user = user_factory("piot-manifest-bound@example.com")
+    stock = _stock(db_session, "PMANBOUND")
+    written = _generate_complete(db_session, user=user, stock=stock)
+    total = _clone(
+        next(
+            fact
+            for fact in written
+            if fact.metric_key == "score.piotroski.total"
+            and fact.period_end_date == PERIOD_1
+        )
+    )
+    seed = deepcopy(total.value_json["inputs"][0])
+    while len(total.value_json["inputs"]) <= 32:
+        item = deepcopy(seed)
+        item["fact_id"] = 1_000_000 + len(total.value_json["inputs"])
+        total.value_json["inputs"].append(item)
+    statements, listener = _captured_metric_fact_queries(db_session)
+    try:
+        kept, blocked = guard_piotroski_method_authority(
+            db_session,
+            facts=[total],
+            effective_as_of=date.today(),
+        )
+    finally:
+        event.remove(db_session.get_bind(), "before_cursor_execute", listener)
+
+    assert kept == []
+    assert blocked[0]["reason_code"] == (
+        "piotroski_method_authority_bound_exceeded"
+    )
+    assert statements == []
+
+
+def test_aggregate_unique_input_bound_blocks_before_any_authority_query(
+    db_session, user_factory
+) -> None:
+    user = user_factory("piot-input-id-bound@example.com")
+    stock = _stock(db_session, "PIDBOUND")
+    written = _generate_complete(db_session, user=user, stock=stock)
+    persisted = next(
+        fact
+        for fact in written
+        if fact.metric_key == "score.piotroski.total"
+        and fact.period_end_date == PERIOD_1
+    )
+    requested = []
+    for ordinal in range(40):
+        clone = _clone(persisted)
+        seed = deepcopy(clone.value_json["inputs"][0])
+        clone.value_json["inputs"] = []
+        for input_ordinal in range(30):
+            item = deepcopy(seed)
+            item["fact_id"] = 2_000_000 + ordinal * 100 + input_ordinal
+            clone.value_json["inputs"].append(item)
+        requested.append(clone)
+    statements, listener = _captured_metric_fact_queries(db_session)
+    try:
+        kept, blocked = guard_piotroski_method_authority(
+            db_session,
+            facts=requested,
+            effective_as_of=date.today(),
+        )
+    finally:
+        event.remove(db_session.get_bind(), "before_cursor_execute", listener)
+
+    assert kept == []
+    assert len(blocked) == len(requested)
+    assert {state["reason_code"] for state in blocked} == {
+        "piotroski_method_authority_bound_exceeded"
+    }
+    assert statements == []
+
+
+@pytest.mark.parametrize("value", ["NaN", "Infinity", "-Infinity"])
+def test_non_finite_output_is_typed_unavailable_instead_of_raising(
+    db_session, user_factory, value: str
+) -> None:
+    user = user_factory(f"piot-nonfinite-{value.lower()}@example.com")
+    stock = _stock(db_session, f"PNF{value[:3]}")
+    written = _generate_complete(db_session, user=user, stock=stock)
+    total = _clone(
+        next(
+            fact
+            for fact in written
+            if fact.metric_key == "score.piotroski.total"
+            and fact.period_end_date == PERIOD_1
+        )
+    )
+    total.value_numeric = Decimal(value)
+
+    kept, blocked = guard_piotroski_method_authority(
+        db_session,
+        facts=[total],
+        effective_as_of=date.today(),
+    )
+
+    assert kept == []
+    assert blocked[0]["reason_code"] == (
+        "piotroski_method_authority_manifest_invalid"
+    )
+    assert blocked[0]["value_numeric"] is None
+
+
+def test_postgres_nan_source_is_typed_unavailable_instead_of_raising(
+    db_session, user_factory
+) -> None:
+    user = user_factory("piot-source-nan@example.com")
+    stock = _stock(db_session, "PSRCNAN")
+    written = _generate_complete(db_session, user=user, stock=stock)
+    total = _clone(
+        next(
+            fact
+            for fact in written
+            if fact.metric_key == "score.piotroski.total"
+            and fact.period_end_date == PERIOD_1
+        )
+    )
+    original_source = next(
+        fact
+        for fact in db_session.query(MetricFact).filter(
+            MetricFact.stock_id == stock.id,
+            MetricFact.source_type == "parsed",
+            MetricFact.metric_key == "returns.roa",
+            MetricFact.period_end_date == PERIOD_1,
+        )
+    )
+    source = _input(
+        user_id=user.id,
+        stock_id=stock.id,
+        key="returns.roa",
+        value=Decimal("NaN"),
+        period_end=PERIOD_1,
+    )
+    db_session.add(source)
+    db_session.commit()
+    lineage_index = next(
+        index
+        for index, item in enumerate(total.value_json["inputs"])
+        if item["fact_id"] == original_source.id
+    )
+    total.value_json["inputs"][lineage_index] = _strict_lineage_item(source)
+
+    kept, blocked = guard_piotroski_method_authority(
+        db_session,
+        facts=[total],
+        effective_as_of=date.today(),
+    )
+
+    assert kept == []
+    assert blocked[0]["reason_code"] == (
+        "piotroski_method_authority_manifest_invalid"
+    )
+    assert blocked[0]["value_numeric"] is None

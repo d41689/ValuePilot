@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, replace
 from datetime import date, datetime, timezone
-from decimal import Decimal
+from decimal import Decimal, DecimalException
 from typing import Any, Callable, Iterable, Optional
 
 from sqlalchemy import and_, func, or_, select, update
@@ -834,12 +834,13 @@ def _snapshot(raw: Any) -> Optional[FactSnapshot]:
     if not isinstance(value_json, dict):
         value_json = {}
     value_numeric = _get(raw, "value_numeric")
+    numeric = _finite_decimal(value_numeric)
     return FactSnapshot(
         id=_get(raw, "id"),
         user_id=_get(raw, "user_id"),
         stock_id=_get(raw, "stock_id"),
         metric_key=metric_key,
-        value_numeric=Decimal(str(value_numeric)) if isinstance(value_numeric, (int, float, Decimal)) else None,
+        value_numeric=numeric,
         value_json=value_json,
         period_type=period_type,
         period_end_date=period_end,
@@ -856,10 +857,26 @@ def _fact_nature(inputs: list[FactSnapshot]) -> str:
 
 
 def _is_positive(value: Any) -> bool:
-    return isinstance(value, (int, float, Decimal)) and Decimal(str(value)) > 0
+    numeric = _finite_decimal(value)
+    return numeric is not None and numeric > 0
+
+
+def _finite_decimal(value: Any) -> Decimal | None:
+    if not isinstance(value, (int, float, Decimal)) or isinstance(value, bool):
+        return None
+    try:
+        numeric = value if isinstance(value, Decimal) else Decimal(str(value))
+    except (DecimalException, TypeError, ValueError):
+        return None
+    return numeric if numeric.is_finite() else None
 
 
 def _lineage_item(fact: FactSnapshot) -> dict[str, Any]:
+    numeric = (
+        _finite_decimal(fact.value_numeric)
+        if fact.value_numeric is not None
+        else None
+    )
     return {
         "fact_id": fact.id,
         "user_id": fact.user_id,
@@ -867,7 +884,7 @@ def _lineage_item(fact: FactSnapshot) -> dict[str, Any]:
         "metric_key": fact.metric_key,
         "period_type": fact.period_type,
         "period_end_date": fact.period_end_date.isoformat(),
-        "value_numeric": format(fact.value_numeric, "f") if fact.value_numeric is not None else None,
+        "value_numeric": format(numeric, "f") if numeric is not None else None,
         "source_type": fact.source_type,
         "fact_nature": fact.value_json.get("fact_nature"),
         "created_at": fact.created_at.isoformat() if fact.created_at is not None else None,

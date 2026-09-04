@@ -8,11 +8,11 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import date, datetime, timezone
-from decimal import Decimal
+from decimal import Decimal, DecimalException
 import re
 from typing import Any, Iterable
 
-from sqlalchemy import and_, or_, select, text
+from sqlalchemy import and_, func, or_, select, text
 from sqlalchemy.orm import Session
 
 from app.models.facts import MetricFact
@@ -24,6 +24,12 @@ SYSTEM_METHOD_KEYS = frozenset(
 )
 PIOTROSKI_PREFIX = "score.piotroski."
 PIOTROSKI_TOTAL_CAPITAL_KEY = "returns.total_capital"
+PIOTROSKI_TOTAL_KEY = "score.piotroski.total"
+MAX_PIOTROSKI_REQUEST_FACTS = 500
+MAX_PIOTROSKI_PERIOD_GROUPS = 50
+MAX_PIOTROSKI_MANIFEST_INPUTS = 32
+MAX_PIOTROSKI_UNIQUE_INPUT_IDS = 1_000
+MAX_PIOTROSKI_CURRENT_SIBLINGS_PER_PERIOD = 10
 
 
 class CanonicalSourceConflictError(ValueError):
@@ -626,8 +632,21 @@ class _PiotroskiRebuildDecision:
         return self.snapshot
 
 
+def _finite_decimal(value: Any) -> Decimal | None:
+    try:
+        candidate = value if isinstance(value, Decimal) else Decimal(str(value))
+    except (DecimalException, TypeError, ValueError):
+        return None
+    return candidate if candidate.is_finite() else None
+
+
 def _piotroski_lineage_item(fact: MetricFact) -> dict[str, Any]:
     metadata = fact.value_json if isinstance(fact.value_json, dict) else {}
+    numeric = (
+        _finite_decimal(fact.value_numeric)
+        if fact.value_numeric is not None
+        else None
+    )
     return {
         "fact_id": fact.id,
         "user_id": fact.user_id,
@@ -640,9 +659,7 @@ def _piotroski_lineage_item(fact: MetricFact) -> dict[str, Any]:
             else None
         ),
         "value_numeric": (
-            format(fact.value_numeric, "f")
-            if fact.value_numeric is not None
-            else None
+            format(numeric, "f") if numeric is not None else None
         ),
         "source_type": fact.source_type,
         "fact_nature": metadata.get("fact_nature"),
@@ -714,12 +731,21 @@ def _piotroski_rebuild_matches(
         for item in inputs
         if item.period_type == "FY" and item.period_end_date is not None
     }
+    if any(
+        item.value_numeric is not None
+        and _finite_decimal(item.value_numeric) is None
+        for item in inputs
+    ) or (
+        fact.value_numeric is not None
+        and _finite_decimal(fact.value_numeric) is None
+    ):
+        return False
     try:
         rebuilt = build_piotroski_f_score_facts(
             inputs,
             roic_decisions_by_period=decisions,
         )
-    except (CanonicalSourceConflictError, TypeError, ValueError):
+    except (CanonicalSourceConflictError, DecimalException, TypeError, ValueError):
         return False
     expected = next(
         (
@@ -734,12 +760,22 @@ def _piotroski_rebuild_matches(
     if expected is None:
         return False
     expected_numeric = expected.get("value_numeric")
+    expected_decimal = (
+        _finite_decimal(expected_numeric) if expected_numeric is not None else None
+    )
+    fact_decimal = (
+        _finite_decimal(fact.value_numeric)
+        if fact.value_numeric is not None
+        else None
+    )
     numeric_matches = (
         expected_numeric is None and fact.value_numeric is None
     ) or (
         expected_numeric is not None
         and fact.value_numeric is not None
-        and Decimal(str(expected_numeric)) == Decimal(fact.value_numeric)
+        and expected_decimal is not None
+        and fact_decimal is not None
+        and expected_decimal == fact_decimal
     )
     return bool(
         numeric_matches
@@ -747,6 +783,73 @@ def _piotroski_rebuild_matches(
         and expected.get("unit") == fact.unit
         and expected.get("value_json") == fact.value_json
     )
+
+
+def _piotroski_period_key(
+    fact: MetricFact,
+) -> tuple[int | None, int, str | None, date | None]:
+    return (
+        fact.user_id,
+        fact.stock_id,
+        fact.period_type,
+        fact.period_end_date,
+    )
+
+
+def _parse_piotroski_manifest(
+    fact: MetricFact,
+) -> tuple[dict[int, dict[str, Any]] | None, str | None]:
+    if fact.source_type != "calculated":
+        return None, "piotroski_method_authority_source_invalid"
+    metadata = fact.value_json if isinstance(fact.value_json, dict) else {}
+    if (
+        metadata.get("calculation_version") != "piotroski_value_line_v2"
+        or metadata.get("manifest_version") != "piotroski-strict-manifest-v1"
+    ):
+        return None, "piotroski_method_authority_manifest_missing"
+    raw_inputs = metadata.get("inputs")
+    if not isinstance(raw_inputs, list) or not raw_inputs:
+        return None, "piotroski_method_authority_manifest_invalid"
+    if len(raw_inputs) > MAX_PIOTROSKI_MANIFEST_INPUTS:
+        return None, "piotroski_method_authority_bound_exceeded"
+    by_id: dict[int, dict[str, Any]] = {}
+    for item in raw_inputs:
+        fact_id = item.get("fact_id") if isinstance(item, dict) else None
+        if (
+            not isinstance(item, dict)
+            or set(item) != PIOTROSKI_STRICT_LINEAGE_FIELDS
+            or not isinstance(fact_id, int)
+            or isinstance(fact_id, bool)
+            or fact_id <= 0
+            or fact_id in by_id
+        ):
+            return None, "piotroski_method_authority_manifest_invalid"
+        by_id[fact_id] = item
+    return by_id, None
+
+
+def _piotroski_declared_sibling_keys(fact: MetricFact) -> set[str] | None:
+    metadata = fact.value_json if isinstance(fact.value_json, dict) else {}
+    if metadata.get("status") == "unavailable":
+        return {PIOTROSKI_TOTAL_KEY}
+    components = metadata.get("components")
+    if not isinstance(components, list):
+        return None
+    keys = [
+        item.get("metric_key") if isinstance(item, dict) else None
+        for item in components
+    ]
+    if (
+        any(
+            not isinstance(key, str)
+            or not key.startswith(PIOTROSKI_PREFIX)
+            or key == PIOTROSKI_TOTAL_KEY
+            for key in keys
+        )
+        or len(keys) != len(set(keys))
+    ):
+        return None
+    return {PIOTROSKI_TOTAL_KEY, *keys}
 
 
 def guard_piotroski_method_authority(
@@ -765,50 +868,163 @@ def guard_piotroski_method_authority(
     piotroski = [
         fact for fact in materialized if fact.metric_key.startswith(PIOTROSKI_PREFIX)
     ]
+    non_piotroski = [
+        fact for fact in materialized if not fact.metric_key.startswith(PIOTROSKI_PREFIX)
+    ]
+    if not piotroski:
+        return materialized, []
+
+    def block_all(reason_code: str) -> tuple[list[MetricFact], list[dict[str, Any]]]:
+        return non_piotroski, [
+            _piotroski_blocked_state(fact, reason_code=reason_code)
+            for fact in piotroski
+        ]
+
+    if len(piotroski) > MAX_PIOTROSKI_REQUEST_FACTS:
+        return block_all("piotroski_method_authority_bound_exceeded")
+
+    requested_by_period: dict[
+        tuple[int | None, int, str | None, date | None], list[MetricFact]
+    ] = {}
+    for fact in piotroski:
+        requested_by_period.setdefault(_piotroski_period_key(fact), []).append(fact)
+    if len(requested_by_period) > MAX_PIOTROSKI_PERIOD_GROUPS:
+        return block_all("piotroski_method_authority_bound_exceeded")
+
+    # Parse request manifests and enforce every request-side resource bound before
+    # issuing either the sibling expansion or referenced-input query.
+    request_errors: dict[int, str] = {}
+    request_input_ids: set[int] = set()
+    bounded_periods: set[tuple[int | None, int, str | None, date | None]] = set()
+    for ordinal, fact in enumerate(piotroski):
+        lineage, error = _parse_piotroski_manifest(fact)
+        if error is not None:
+            request_errors[ordinal] = error
+            if error == "piotroski_method_authority_bound_exceeded":
+                bounded_periods.add(_piotroski_period_key(fact))
+            continue
+        assert lineage is not None
+        request_input_ids.update(lineage)
+    if len(request_input_ids) > MAX_PIOTROSKI_UNIQUE_INPUT_IDS:
+        return block_all("piotroski_method_authority_bound_exceeded")
+
+    query_periods = [
+        period
+        for period in requested_by_period
+        if period not in bounded_periods
+        and isinstance(period[0], int)
+        and isinstance(period[1], int)
+        and period[2] == "FY"
+        and isinstance(period[3], date)
+    ]
+    sibling_rows: list[MetricFact] = []
+    if query_periods:
+        period_clauses = [
+            and_(
+                MetricFact.user_id == user_id,
+                MetricFact.stock_id == stock_id,
+                MetricFact.period_type == period_type,
+                MetricFact.period_end_date == period_end,
+            )
+            for user_id, stock_id, period_type, period_end in query_periods
+        ]
+        ranked_siblings = (
+            select(
+                MetricFact.id.label("fact_id"),
+                func.row_number()
+                .over(
+                    partition_by=(
+                        MetricFact.user_id,
+                        MetricFact.stock_id,
+                        MetricFact.period_type,
+                        MetricFact.period_end_date,
+                    ),
+                    order_by=MetricFact.id,
+                )
+                .label("sibling_rank"),
+            )
+            .where(
+                MetricFact.is_current.is_(True),
+                MetricFact.metric_key.like(f"{PIOTROSKI_PREFIX}%"),
+                or_(*period_clauses),
+            )
+            .subquery()
+        )
+        sibling_rows = list(
+            session.scalars(
+                select(MetricFact)
+                .join(
+                    ranked_siblings,
+                    ranked_siblings.c.fact_id == MetricFact.id,
+                )
+                .where(
+                    ranked_siblings.c.sibling_rank
+                    <= MAX_PIOTROSKI_CURRENT_SIBLINGS_PER_PERIOD + 1
+                )
+                .limit(
+                    len(query_periods)
+                    * (MAX_PIOTROSKI_CURRENT_SIBLINGS_PER_PERIOD + 1)
+                )
+            ).all()
+        )
+
+    siblings_by_period: dict[
+        tuple[int | None, int, str | None, date | None], list[MetricFact]
+    ] = {}
+    for fact in sibling_rows:
+        siblings_by_period.setdefault(_piotroski_period_key(fact), []).append(fact)
+    for period, siblings in siblings_by_period.items():
+        if len(siblings) > MAX_PIOTROSKI_CURRENT_SIBLINGS_PER_PERIOD:
+            # The limit+1 row proves the period exceeds the only valid key set.
+            # The period is malformed, while other tenant/period groups remain usable.
+            request_errors.update(
+                {
+                    ordinal: "piotroski_method_authority_manifest_invalid"
+                    for ordinal, fact in enumerate(piotroski)
+                    if _piotroski_period_key(fact) == period
+                }
+            )
+
+    sibling_object_ids = {id(fact) for fact in sibling_rows}
+    validation_facts = [
+        *sibling_rows,
+        *(fact for fact in piotroski if id(fact) not in sibling_object_ids),
+    ]
     parsed_lineage: dict[int, dict[int, dict[str, Any]]] = {}
     preliminary_errors: dict[int, str] = {}
     all_input_ids: set[int] = set()
-    for ordinal, fact in enumerate(piotroski):
-        if fact.source_type != "calculated":
+    for ordinal, fact in enumerate(validation_facts):
+        period = _piotroski_period_key(fact)
+        if period in bounded_periods:
             preliminary_errors[ordinal] = (
-                "piotroski_method_authority_source_invalid"
+                "piotroski_method_authority_bound_exceeded"
             )
             continue
-        metadata = fact.value_json if isinstance(fact.value_json, dict) else {}
-        if (
-            metadata.get("calculation_version") != "piotroski_value_line_v2"
-            or metadata.get("manifest_version")
-            != "piotroski-strict-manifest-v1"
-        ):
-            preliminary_errors[ordinal] = (
-                "piotroski_method_authority_manifest_missing"
-            )
+        lineage, error = _parse_piotroski_manifest(fact)
+        if error is not None:
+            preliminary_errors[ordinal] = error
+            if error == "piotroski_method_authority_bound_exceeded":
+                bounded_periods.add(period)
             continue
-        raw_inputs = metadata.get("inputs")
-        if not isinstance(raw_inputs, list) or not raw_inputs:
-            preliminary_errors[ordinal] = (
-                "piotroski_method_authority_manifest_invalid"
-            )
-            continue
-        by_id: dict[int, dict[str, Any]] = {}
-        for item in raw_inputs:
-            fact_id = item.get("fact_id") if isinstance(item, dict) else None
-            if (
-                not isinstance(item, dict)
-                or set(item) != PIOTROSKI_STRICT_LINEAGE_FIELDS
-                or not isinstance(fact_id, int)
-                or isinstance(fact_id, bool)
-                or fact_id <= 0
-                or fact_id in by_id
-            ):
-                preliminary_errors[ordinal] = (
-                    "piotroski_method_authority_manifest_invalid"
-                )
-                break
-            by_id[fact_id] = item
-        else:
-            parsed_lineage[ordinal] = by_id
-            all_input_ids.update(by_id)
+        assert lineage is not None
+        parsed_lineage[ordinal] = lineage
+        all_input_ids.update(lineage)
+
+    if bounded_periods:
+        all_input_ids = {
+            fact_id
+            for ordinal, lineage in parsed_lineage.items()
+            if _piotroski_period_key(validation_facts[ordinal]) not in bounded_periods
+            for fact_id in lineage
+        }
+    if len(all_input_ids) > MAX_PIOTROSKI_UNIQUE_INPUT_IDS:
+        bounded_periods.update(requested_by_period)
+        all_input_ids.clear()
+        parsed_lineage.clear()
+        preliminary_errors = {
+            ordinal: "piotroski_method_authority_bound_exceeded"
+            for ordinal in range(len(validation_facts))
+        }
 
     referenced = (
         list(
@@ -823,7 +1039,12 @@ def guard_piotroski_method_authority(
     origin_cache: dict[tuple[int, date, datetime], MethodGateDecision] = {}
     current_cache: dict[tuple[int, date, datetime], MethodGateDecision] = {}
     evaluations: list[tuple[MetricFact, str | None, MethodGateDecision | None]] = []
-    for ordinal, fact in enumerate(piotroski):
+    for ordinal, fact in enumerate(validation_facts):
+        if _piotroski_period_key(fact) in bounded_periods:
+            evaluations.append(
+                (fact, "piotroski_method_authority_bound_exceeded", None)
+            )
+            continue
         error = preliminary_errors.get(ordinal)
         decision: MethodGateDecision | None = None
         if error is not None:
@@ -967,21 +1188,51 @@ def guard_piotroski_method_authority(
                 continue
         evaluations.append((fact, None, decision))
 
-    by_period: dict[
+    evaluation_by_object = {
+        id(fact): (reason, decision)
+        for fact, reason, decision in evaluations
+    }
+    validation_by_period: dict[
         tuple[int | None, int, str | None, date | None], list[int]
     ] = {}
     for index, (fact, _reason, _decision) in enumerate(evaluations):
-        by_period.setdefault(
-            (fact.user_id, fact.stock_id, fact.period_type, fact.period_end_date),
-            [],
-        ).append(index)
-    blocked_by_index: dict[int, tuple[str, MethodGateDecision | None]] = {}
-    for indexes in by_period.values():
+        validation_by_period.setdefault(_piotroski_period_key(fact), []).append(index)
+
+    blocked_by_period: dict[
+        tuple[int | None, int, str | None, date | None],
+        tuple[str, MethodGateDecision | None],
+    ] = {}
+    for period in requested_by_period:
+        indexes = validation_by_period.get(period, [])
+        siblings = siblings_by_period.get(period, [])
+        period_error: str | None = None
+        if period in bounded_periods:
+            period_error = "piotroski_method_authority_bound_exceeded"
+        elif len(siblings) > MAX_PIOTROSKI_CURRENT_SIBLINGS_PER_PERIOD:
+            period_error = "piotroski_method_authority_manifest_invalid"
+        elif not siblings:
+            period_error = "piotroski_method_authority_manifest_invalid"
+        else:
+            sibling_keys = [fact.metric_key for fact in siblings]
+            totals = [
+                fact for fact in siblings if fact.metric_key == PIOTROSKI_TOTAL_KEY
+            ]
+            if len(totals) != 1 or len(sibling_keys) != len(set(sibling_keys)):
+                period_error = "piotroski_method_authority_manifest_invalid"
+            else:
+                declared = _piotroski_declared_sibling_keys(totals[0])
+                if declared is None or declared != set(sibling_keys):
+                    period_error = "piotroski_method_authority_manifest_invalid"
+
+        if period_error is not None:
+            blocked_by_period[period] = (period_error, None)
+            continue
+
         root_index = next(
             (
                 index
                 for index in indexes
-                if evaluations[index][0].metric_key == "score.piotroski.total"
+                if evaluations[index][0].metric_key == PIOTROSKI_TOTAL_KEY
                 and evaluations[index][1] is not None
             ),
             next(
@@ -994,31 +1245,23 @@ def guard_piotroski_method_authority(
         root_reason = evaluations[root_index][1]
         root_decision = evaluations[root_index][2]
         assert root_reason is not None
-        for index in indexes:
-            own_reason = evaluations[index][1]
-            own_decision = evaluations[index][2]
-            blocked_by_index[index] = (
-                own_reason or root_reason,
-                own_decision or root_decision,
-            )
+        blocked_by_period[period] = (root_reason, root_decision)
 
-    kept = [
-        fact
-        for fact in materialized
-        if not fact.metric_key.startswith(PIOTROSKI_PREFIX)
-    ]
+    kept = list(non_piotroski)
     blocked: list[dict[str, Any]] = []
-    for index, (fact, _reason, _decision) in enumerate(evaluations):
-        blocked_entry = blocked_by_index.get(index)
+    for ordinal, fact in enumerate(piotroski):
+        blocked_entry = blocked_by_period.get(_piotroski_period_key(fact))
         if blocked_entry is None:
             kept.append(fact)
             continue
+        own_reason, own_decision = evaluation_by_object.get(id(fact), (None, None))
+        request_error = request_errors.get(ordinal)
         reason, decision = blocked_entry
         blocked.append(
             _piotroski_blocked_state(
                 fact,
-                reason_code=reason,
-                decision=decision,
+                reason_code=request_error or own_reason or reason,
+                decision=own_decision or decision,
             )
         )
     return kept, blocked

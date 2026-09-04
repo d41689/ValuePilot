@@ -340,3 +340,27 @@ strict read-only Terra full-diff review with no P0–P3 findings before sign-off
   warnings remain. Migration 160 was not modified and no migration 170 was
   needed because its OLD/NEW trigger already protects the complete calculated
   Piotroski payload and identity.
+- 2026-09-04: Strict Terra R8 found that a caller could request only one valid
+  Piotroski fact and thereby avoid validating missing, demoted, duplicate, or
+  invalid current siblings from the same publication period. The central guard
+  now expands every requested `(user, stock, FY, period-end)` to its current
+  database siblings for validation only. It requires exactly one strict total
+  and an exact one-row-per-key match between the current sibling set and the
+  total's rebuilt component declaration. Any failure quarantines only the
+  matching tenant/stock/period; the caller still receives only its originally
+  requested objects. A component-only screener rule is therefore checked
+  before its numeric SQL predicate, while a valid complete period remains
+  usable.
+- 2026-09-04: Piotroski authority reads are explicitly bounded before database
+  work: at most 500 requested facts, 50 period groups, 32 inputs per manifest,
+  and 1,000 aggregate unique input IDs. The sibling expansion uses one
+  partitioned query capped at the ten valid period rows plus one sentinel per
+  group, followed by one bulk input query. Violations return typed
+  `piotroski_method_authority_bound_exceeded` without leaking numerics; an
+  over-limit request manifest performs neither sibling nor input reads.
+  Decimal inputs and outputs are also required to be finite before formatting,
+  reconstruction, or comparison, so PostgreSQL `NaN` and in-memory positive or
+  negative infinity fail closed as a typed invalid manifest rather than
+  raising. R8 focused verification is `63 passed`; the serial 29-file R5–R8
+  affected superset is `759 passed` with only the pre-existing Starlette/httpx
+  and anyio deprecation warnings. No migration or retained data changed.
