@@ -482,3 +482,10 @@ git diff --check
   TypeScript path was removed after verification. No migration, stored-data
   rewrite, `storage/` change, PR #128 reuse, or merge was performed. Draft PR
   #141 is ready for Terra adversarial review round 15.
+- 2026-09-03: Terra adversarial review round 15 completed as a full read-only
+  review of the round-14 result and returned PASS with no P0–P3 findings. The
+  accepted closing evidence remains the round-14 exact canonical gate: Compose
+  rebuild, Alembic upgrade, backend `2257 passed`, frontend `233 passed`,
+  frontend lint, production build, and `git diff --check`. No code changed and
+  the full gate was not rerun for this sign-off-only update. Draft PR #141
+  remains unmerged.
