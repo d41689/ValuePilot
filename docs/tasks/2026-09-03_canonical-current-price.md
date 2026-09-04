@@ -282,3 +282,18 @@ git diff --check
   migration, stored-data rewrite, unscoped/full-table price read, or alternate
   canonical reader was added. Draft PR #141 is ready for Terra adversarial
   review round 8.
+- 2026-09-03: Terra adversarial review round 8 found one live-response PIT gap.
+  Watchlist batched current prices captured one exact request timestamp, but
+  its previous-session batch fell back to the conservative date-only midnight
+  cutoff. The caller now passes that same `evaluated_at` as the previous-price
+  `knowledge_cutoff`; the canonical single and batch readers are unchanged.
+  A previous-session row ingested after target-date New York midnight but
+  before the request is now eligible for same-currency daily delta, while a row
+  ingested after the request remains hidden with typed `price_missing`.
+- 2026-09-03: the focused PIT regressions and the existing 101-member strict
+  five-query bound passed. Post-round-8 exact closing gate passed: Compose
+  rebuild, Alembic upgrade, backend `2176 passed`, frontend `222 passed`,
+  frontend lint, production build, and `git diff --check`. The generated Next
+  `tsconfig.json` entry was removed after verification. No migration,
+  `storage/` change, PR #128 reuse, or merge was performed. Draft PR #141 is
+  ready for Terra adversarial review round 9.
