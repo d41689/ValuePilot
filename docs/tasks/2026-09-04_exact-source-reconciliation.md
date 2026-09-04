@@ -362,4 +362,6 @@ reconciliation outcomes or create another financial fact store.
   moves currentness mutation after every fail-closed value/source/lineage
   check. A service-level regression catches the error, commits, reloads the
   prior manual fact, and proves it remains current. The focused correction
-  suite is green at 9 tests. Full backend and fresh Terra R12 remain pending.
+  suite is green at 9 tests. The exact full backend suite is green at 2,320
+  tests with only the two existing dependency-deprecation warnings. Fresh
+  Terra R12 and the final ordered closing gate remain pending.
