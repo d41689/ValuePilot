@@ -95,6 +95,16 @@ def test_mapping_and_prd_own_the_ft06_contract():
         "canonical-financial-definitions-v1"
     )
     assert policy["source_mapping_identity_required"] is True
+    assert policy["comparison_identity"]["fiscal_duration_identity"] == {
+        "fiscal_year": {
+            "value_line_authority": "source_column_mapped_as_fy_with_fiscal_year",
+            "sec_authority": "approved_sec_publication_mapped_as_fy",
+            "exact_start_and_day_count": "optional_audit_detail",
+            "sufficient_for_alignment": True,
+        },
+        "inferred_start_or_fixed_365_day_duration": "prohibited",
+        "non_fy_missing_exact_duration_outcome": "mapping_conflict",
+    }
     assert policy["comparison_identity"]["align_before_variance"] == [
         "canonical_definition",
         "mapping_version",

@@ -139,6 +139,7 @@ def test_authenticated_reconciliation_is_tenant_safe_and_bounded(
     assert payload["point_in_time_status"] == "verified_from_available_authority"
     assert payload["status"] == "complete"
     assert payload["policy_version"] == "financial-source-reconciliation-v1"
+    assert payload["requesting_user_id"] == owner.id
     assert payload["canonical_definition_version"] == (
         "canonical-financial-definitions-v1"
     )

@@ -82,6 +82,7 @@ class ReconciliationCandidate:
     effective_at: datetime
     authorization_state: str
     is_current: bool
+    period_duration_kind: str = ""
     lineage_fact_ids: tuple[int, ...] = ()
     identity_complete: bool = True
 
@@ -193,6 +194,7 @@ def _safe_candidate(candidate: ReconciliationCandidate) -> dict[str, Any]:
         "fiscal_quarter_ordinal": candidate.fiscal_quarter_ordinal,
         "period_start_date": _iso(candidate.period_start_date),
         "duration_days": candidate.duration_days,
+        "period_duration_kind": candidate.period_duration_kind,
         "dimensions_identity": candidate.dimensions_identity,
         "unit": candidate.unit,
         "currency": candidate.currency,
@@ -218,17 +220,32 @@ def _excluded(candidate: ReconciliationCandidate, reason_code: str) -> dict[str,
 def _alignment_conflict(
     candidates: list[ReconciliationCandidate],
 ) -> str | None:
+    def period_identity(item: ReconciliationCandidate) -> tuple[Any, ...]:
+        if item.period_type in {"FY", "PROJ_FY"}:
+            if item.period_duration_kind:
+                return ("FY", item.fiscal_year, item.period_duration_kind)
+            return (
+                "FY_EXACT",
+                item.fiscal_year,
+                item.period_end_date,
+                item.period_start_date,
+                item.duration_days,
+            )
+        return (
+            item.period_type,
+            item.fiscal_year,
+            item.fiscal_quarter_ordinal,
+            item.period_end_date,
+            item.period_start_date,
+            item.duration_days,
+        )
+
     checks: tuple[tuple[str, Any], ...] = (
         ("definition_family_mismatch", lambda item: item.definition_family),
         ("mapping_version_mismatch", lambda item: item.mapping_version),
         (
             "period_mismatch",
-            lambda item: (
-                item.period_type,
-                item.period_end_date,
-                item.period_start_date,
-                item.duration_days,
-            ),
+            period_identity,
         ),
         ("dimensions_mismatch", lambda item: item.dimensions_identity),
         (
@@ -522,6 +539,49 @@ def reconcile_candidates(
         raise ValueError("knowledge_cutoff must be timezone-aware")
     knowledge_cutoff = knowledge_cutoff.astimezone(timezone.utc)
     ordered = sorted(facts, key=_candidate_sort_key)
+    (
+        _,
+        _,
+        _,
+        policy_known_at,
+        policy_effective_from,
+    ) = _mapping_spec_identity()
+    if knowledge_cutoff < max(policy_known_at, policy_effective_from):
+        policy_item = {
+            "metric_key": None,
+            "period_type": None,
+            "period_end_date": None,
+            "fact_ids": sorted(candidate.fact_id for candidate in ordered),
+            "source_types": sorted(
+                {candidate.source_type for candidate in ordered}
+            ),
+            "source_roles": sorted(
+                {candidate.source_role for candidate in ordered}
+            ),
+            "status": "unresolved",
+            "reason_code": "reconciliation_policy_unavailable_at_cutoff",
+            "blocking": True,
+            "absolute_variance": None,
+            "relative_variance": None,
+            "absolute_tolerance": _decimal_text(ABSOLUTE_TOLERANCE),
+            "relative_tolerance": _decimal_text(RELATIVE_TOLERANCE),
+            "inputs": [],
+        }
+        unavailable: dict[str, Any] = {
+            "status": "unavailable",
+            "reason_code": "reconciliation_policy_unavailable_at_cutoff",
+            "policy_version": POLICY_VERSION,
+            "policy_known_at": policy_known_at.isoformat(),
+            "policy_effective_from": policy_effective_from.isoformat(),
+            "knowledge_cutoff": knowledge_cutoff.isoformat(),
+            "stock_id": ordered[0].stock_id if ordered else None,
+            "eligible_fact_ids": [],
+            "excluded": [],
+            "items": [policy_item],
+            "blocking_item_count": 1,
+        }
+        unavailable["report_digest"] = _report_digest(unavailable)
+        return unavailable
     eligible: list[ReconciliationCandidate] = []
     excluded: list[dict[str, Any]] = []
     expected_stock_id = ordered[0].stock_id if ordered else None
@@ -628,6 +688,8 @@ def reconcile_candidates(
         "status": "complete",
         "policy_version": POLICY_VERSION,
         "knowledge_cutoff": knowledge_cutoff.isoformat(),
+        "policy_known_at": policy_known_at.isoformat(),
+        "policy_effective_from": policy_effective_from.isoformat(),
         "stock_id": expected_stock_id,
         "eligible_fact_ids": sorted(candidate.fact_id for candidate in eligible),
         "excluded": excluded,
@@ -641,8 +703,22 @@ def reconcile_candidates(
 _SPEC_PATH = Path(__file__).resolve().parents[2] / "docs" / "metric_facts_mapping_spec.yml"
 
 
+def _policy_datetime(value: Any, *, field: str) -> datetime:
+    if not isinstance(value, str) or not value:
+        raise RuntimeError(f"source reconciliation {field} is unavailable")
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError as error:
+        raise RuntimeError(
+            f"source reconciliation {field} is invalid"
+        ) from error
+    if parsed.tzinfo is None:
+        raise RuntimeError(f"source reconciliation {field} must be timezone-aware")
+    return parsed.astimezone(timezone.utc)
+
+
 @lru_cache(maxsize=1)
-def _mapping_spec_identity() -> tuple[str, str, str]:
+def _mapping_spec_identity() -> tuple[str, str, str, datetime, datetime]:
     payload = _SPEC_PATH.read_bytes()
     spec = yaml.safe_load(payload)
     versions = spec.get("source_reconciliation", {}).get("versions", [])
@@ -660,7 +736,13 @@ def _mapping_spec_identity() -> tuple[str, str, str]:
     definition_version = policy.get("canonical_definition_version")
     if not isinstance(definition_version, str) or not definition_version:
         raise RuntimeError("canonical definition version is unavailable")
-    return POLICY_VERSION, hashlib.sha256(payload).hexdigest(), definition_version
+    return (
+        POLICY_VERSION,
+        hashlib.sha256(payload).hexdigest(),
+        definition_version,
+        _policy_datetime(policy.get("known_at"), field="known_at"),
+        _policy_datetime(policy.get("effective_from"), field="effective_from"),
+    )
 
 
 def _aware(value: datetime | None) -> datetime:
@@ -788,7 +870,7 @@ def materialize_reconciliation_candidates(
     rows = list(facts)
     documents = _document_authority(session, rows)
     sec = _sec_authority(session, rows, knowledge_cutoff=knowledge_cutoff)
-    _, _, canonical_definition_version = _mapping_spec_identity()
+    _, _, canonical_definition_version, _, _ = _mapping_spec_identity()
     candidates: list[ReconciliationCandidate] = []
     excluded: list[dict[str, Any]] = []
 
@@ -828,6 +910,7 @@ def materialize_reconciliation_candidates(
         lineage = _lineage_ids(metadata, source_type=fact.source_type)
         source_authority_complete = True
         source_mapping_version = str(metadata.get("source_mapping_version") or "")
+        period_duration_kind = str(metadata.get("period_duration_kind") or "")
         fiscal_year = metadata.get("fiscal_year")
         fiscal_year = fiscal_year if isinstance(fiscal_year, int) else None
         fiscal_quarter = metadata.get("fiscal_quarter_ordinal")
@@ -875,7 +958,13 @@ def materialize_reconciliation_candidates(
                     if fact.period_end_date is not None and period_start is not None
                     else None
                 )
-                dimensions = str(authority["dimensions_sha256"] or "")
+                if fact.period_type == "FY":
+                    period_duration_kind = "fiscal_year"
+                dimensions = (
+                    "empty"
+                    if authority["dimensions_policy"] == "empty_only_v1"
+                    else str(authority["dimensions_sha256"] or "")
+                )
                 lineage = tuple(int(value) for value in authority["lineage_fact_ids"])
         elif fact.user_id != user_id:
             authorization_state = "unauthorized"
@@ -886,7 +975,11 @@ def materialize_reconciliation_candidates(
                 document is not None
                 and document.user_id == user_id
                 and document.source in {"upload", "value_line"}
-                and document.parse_status == "parsed"
+                # ``parsing`` is visible only to the owning ingestion
+                # transaction while deterministic calculated facts are built;
+                # ``parsed_partial`` still contains reviewed, usable company
+                # pages.  Persisted failed documents remain unavailable.
+                and document.parse_status in {"parsing", "parsed", "parsed_partial"}
                 and not document.identity_needs_review
                 and (document.stock_id is None or document.stock_id == fact.stock_id)
                 and _aware(document.upload_time) <= knowledge_cutoff
@@ -959,12 +1052,27 @@ def materialize_reconciliation_candidates(
                 and (
                     fact.period_type not in FISCAL_PERIOD_TYPES
                     or (
-                        period_start is not None
-                        and isinstance(duration_days, int)
-                        and fiscal_year is not None
+                        fiscal_year is not None
                         and (
-                            fact.period_type not in {"Q", "YTD"}
-                            or fiscal_quarter in {1, 2, 3, 4}
+                            (
+                                fact.period_type in {"FY", "PROJ_FY"}
+                                and (
+                                    period_duration_kind == "fiscal_year"
+                                    or (
+                                        period_start is not None
+                                        and isinstance(duration_days, int)
+                                    )
+                                )
+                            )
+                            or (
+                                fact.period_type not in {"FY", "PROJ_FY"}
+                                and period_start is not None
+                                and isinstance(duration_days, int)
+                                and (
+                                    fact.period_type not in {"Q", "YTD"}
+                                    or fiscal_quarter in {1, 2, 3, 4}
+                                )
+                            )
                         )
                     )
                 )
@@ -1023,6 +1131,7 @@ def materialize_reconciliation_candidates(
                 effective_at=effective_at,
                 authorization_state=authorization_state,
                 is_current=fact.is_current,
+                period_duration_kind=period_duration_kind,
                 lineage_fact_ids=lineage,
                 identity_complete=identity_complete,
             )
@@ -1282,6 +1391,32 @@ def build_source_reconciliation_report_from_facts(
         raise ValueError("reconciliation fact set exceeds bounded contract")
     if any(fact.stock_id != stock_id for fact in fact_rows):
         raise ValueError("reconciliation fact set contains another stock")
+    if knowledge_cutoff.tzinfo is None:
+        raise ValueError("knowledge_cutoff must be timezone-aware")
+    knowledge_cutoff = knowledge_cutoff.astimezone(timezone.utc)
+    (
+        _,
+        spec_digest,
+        definition_version,
+        policy_known_at,
+        policy_effective_from,
+    ) = _mapping_spec_identity()
+    if knowledge_cutoff < max(policy_known_at, policy_effective_from):
+        report = reconcile_candidates([], knowledge_cutoff=knowledge_cutoff)
+        report["stock_id"] = stock_id
+        report["blocking_exclusion_count"] = 0
+        report["sec_unavailable_states"] = []
+        report["consumer_gate_status"] = "blocked"
+        report["mapping_spec_sha256"] = spec_digest
+        report["canonical_definition_version"] = definition_version
+        report["point_in_time_status"] = "policy_unavailable_at_cutoff"
+        # The authenticated caller already receives this identifier from
+        # ``/auth/me``.  Keeping it in the digested report binds replay/cache
+        # identity to the principal without inventing a forgeable hash token.
+        report["requesting_user_id"] = user_id
+        report.pop("report_digest", None)
+        report["report_digest"] = _report_digest(report)
+        return report
     expanded_rows, lineage_errors = _expand_visible_lineage(
         session,
         facts=fact_rows,
@@ -1320,7 +1455,6 @@ def build_source_reconciliation_report_from_facts(
         if report["blocking_item_count"] or report["blocking_exclusion_count"]
         else "clear"
     )
-    _, spec_digest, definition_version = _mapping_spec_identity()
     report["mapping_spec_sha256"] = spec_digest
     report["canonical_definition_version"] = definition_version
     report["point_in_time_status"] = (
@@ -1330,6 +1464,7 @@ def build_source_reconciliation_report_from_facts(
     )
     if report["point_in_time_status"] == "historical_current_projection_unverifiable":
         report["status"] = "partial"
+    report["requesting_user_id"] = user_id
     report.pop("report_digest", None)
     report["report_digest"] = _report_digest(report)
     return report
@@ -1360,6 +1495,12 @@ def guard_reconciled_source_selection(
                     "metric_key": None,
                 }
             ],
+        )
+    policy_probe = reconcile_candidates([], knowledge_cutoff=knowledge_cutoff)
+    if policy_probe["status"] == "unavailable":
+        raise CanonicalReconciliationError(
+            consumer=consumer,
+            blocking_items=policy_probe["items"],
         )
     if originals and isinstance(originals[0], MetricFact):
         if session is None or user_id is None:

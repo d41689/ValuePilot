@@ -697,6 +697,7 @@ def correct_document_review_fact(
         "definition_basis",
         "period_start_date",
         "duration_days",
+        "period_duration_kind",
         "fiscal_year",
         "fiscal_quarter_ordinal",
         "dimensions_identity",

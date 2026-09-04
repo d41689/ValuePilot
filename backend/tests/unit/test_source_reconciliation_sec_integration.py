@@ -16,13 +16,19 @@ from app.services.sec_metric_publication import (
     finalize_sec_publication,
     publish_sec_mapping_result,
 )
+from app.services.ingestion_service import IngestionService
+from app.services.mapping_spec import MappingSpec
 from app.services.sec_financial_ingestion import (
     finalize_sec_financial_ingestion_operation,
     ingest_latest_financial_filings,
 )
 from app.services import sec_financial_ingestion as financial_ingestion
 from sqlalchemy import text
-from test_sec_metric_publication_service_e2e import _FailedAmendmentClient, _request
+from test_sec_metric_publication_service_e2e import (
+    _AnnualGeneratedStatementClient,
+    _FailedAmendmentClient,
+    _request,
+)
 from test_sec_metric_publication_service_e2e import db as publication_db
 from test_sec_metric_publication_service_e2e import isolated_engine
 
@@ -48,7 +54,17 @@ def test_sec_as_filed_and_value_line_adjusted_are_compared_without_precedence(
     tmp_path,
     auth_headers,
 ):
-    request = _request(publication_db, tmp_path, ticker="RECONSEC")
+    request = _request(
+        publication_db,
+        tmp_path,
+        ticker="RECONSEC",
+        client=_AnnualGeneratedStatementClient(
+            accession="0000320193-26-900101",
+            report_date="2026-06-27",
+            accepted_at="20260820160528",
+            comparative_authority=True,
+        ),
+    )
     receipt = publish_sec_mapping_result(publication_db, request)
     publication_db.commit()
     finalize_sec_publication(publication_db, receipt.run_id)
@@ -82,38 +98,69 @@ def test_sec_as_filed_and_value_line_adjusted_are_compared_without_precedence(
     )
     publication_db.add(document)
     publication_db.flush()
-    period_start = publication.period_start_date
-    duration_days = (
-        (publication.period_end_date - period_start).days + 1
-        if period_start is not None
-        else None
+    page_json = {
+        "meta": {"report_date": "2026-08-20"},
+        "annual_financials": {
+            "meta": {
+                "currency": sec_fact.currency,
+                "actual_years": [publication.fiscal_year],
+                "estimate_years": [],
+                "fiscal_year_end_month": publication.period_end_date.month,
+            },
+            "income_statement_usd_millions": {
+                "net_profit": {
+                    str(publication.fiscal_year): float(sec_fact.value_numeric) / 1_000_000 + 1,
+                }
+            },
+        },
+    }
+    mapped = MappingSpec(
+        {
+            "version": 2,
+            "mappings": [
+                {
+                    "id": "is.revenue.fy",
+                    "json_path": (
+                        "annual_financials.income_statement_usd_millions."
+                        "net_profit.*"
+                    ),
+                    "metric_key": sec_fact.metric_key,
+                    "period_type": "FY",
+                    "unit": "USD_millions",
+                    "period_end_date": {"derive": "year_end_from_key"},
+                    "value": {"numeric_from": "$value"},
+                }
+            ],
+        }
+    ).generate_facts(page_json)[0]
+    generated = next(
+        fact
+        for fact in mapped
+        if fact["metric_key"] == sec_fact.metric_key
+        and fact["period_type"] == "FY"
+        and fact["value_json"]["fiscal_year"] == publication.fiscal_year
     )
-    adjusted = MetricFact(
+    ingestion = IngestionService(publication_db)
+    ingestion._insert_metric_fact_from_mapping(
+        user_id=owner.id,
+        stock_id=request.stock_id,
+        metric_key=generated["metric_key"],
+        value_numeric=generated["value_numeric"],
+        value_text=generated["value_text"],
+        value_json=generated["value_json"],
+        unit=generated["unit"],
+        currency=generated["currency"],
+        period_type=generated["period_type"],
+        period_end_date=generated["period_end_date"],
+        source_document_id=document.id,
+    )
+    publication_db.commit()
+    adjusted = publication_db.query(MetricFact).filter_by(
         user_id=owner.id,
         stock_id=request.stock_id,
         metric_key=sec_fact.metric_key,
-        value_numeric=sec_fact.value_numeric + 10,
-        value_json={
-            "fact_nature": "actual",
-            "mapping_id": f"value-line:{sec_fact.metric_key}",
-            "source_mapping_version": "value-line-spec-v2",
-            "definition_basis": "adjusted",
-            "period_start_date": period_start.isoformat() if period_start else None,
-            "duration_days": duration_days,
-            "fiscal_year": publication.fiscal_year,
-            "fiscal_quarter_ordinal": publication.fiscal_quarter_ordinal,
-            "dimensions_identity": publication.dimensions_sha256,
-        },
-        unit=sec_fact.unit,
-        currency=sec_fact.currency,
-        period_type=sec_fact.period_type,
-        period_end_date=sec_fact.period_end_date,
-        source_type="parsed",
         source_document_id=document.id,
-        is_current=True,
-    )
-    publication_db.add(adjusted)
-    publication_db.commit()
+    ).one()
 
     response = reconciliation_publication_client.get(
         f"/api/v1/stocks/{request.stock_id}/source-reconciliation",
@@ -128,7 +175,53 @@ def test_sec_as_filed_and_value_line_adjusted_are_compared_without_precedence(
     assert compared["status"] == "expected_definition_difference", compared
     assert compared["reason_code"] == "as_filed_vs_adjusted"
     assert compared["blocking"] is False
-    assert compared["absolute_variance"] == "10"
+    assert compared["absolute_variance"] == "1000000"
+    assert adjusted.currency == sec_fact.currency
+    assert adjusted.value_json["period_duration_kind"] == "fiscal_year"
+
+    peer = User(
+        email="sec-reconciliation-peer@example.com",
+        hashed_password=hash_password("x"),
+    )
+    second_peer = User(
+        email="sec-reconciliation-second-peer@example.com",
+        hashed_password=hash_password("x"),
+    )
+    publication_db.add_all([peer, second_peer])
+    publication_db.commit()
+    peer_report = reconciliation_publication_client.get(
+        f"/api/v1/stocks/{request.stock_id}/source-reconciliation",
+        headers=auth_headers(peer),
+        params=[("metric_key", sec_fact.metric_key)],
+    ).json()
+    second_peer_report = reconciliation_publication_client.get(
+        f"/api/v1/stocks/{request.stock_id}/source-reconciliation",
+        headers=auth_headers(second_peer),
+        params=[("metric_key", sec_fact.metric_key)],
+    ).json()
+    assert peer_report["eligible_fact_ids"] == [sec_fact.id]
+    assert second_peer_report["eligible_fact_ids"] == [sec_fact.id]
+    assert peer_report["requesting_user_id"] == peer.id
+    assert second_peer_report["requesting_user_id"] == second_peer.id
+    assert peer_report["report_digest"] != second_peer_report["report_digest"]
+
+    pre_policy = reconciliation_publication_client.get(
+        f"/api/v1/stocks/{request.stock_id}/source-reconciliation",
+        headers=auth_headers(peer),
+        params={
+            "metric_key": sec_fact.metric_key,
+            "knowledge_cutoff": "2026-09-03T23:59:59Z",
+        },
+    )
+    assert pre_policy.status_code == 200, pre_policy.text
+    assert pre_policy.json()["status"] == "unavailable"
+    assert pre_policy.json()["reason_code"] == (
+        "reconciliation_policy_unavailable_at_cutoff"
+    )
+    assert pre_policy.json()["consumer_gate_status"] == "blocked"
+    assert pre_policy.json()["point_in_time_status"] == (
+        "policy_unavailable_at_cutoff"
+    )
 
 
 def test_reconciliation_api_fails_closed_for_unresolved_sec_amendment(

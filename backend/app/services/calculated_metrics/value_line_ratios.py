@@ -15,6 +15,20 @@ from app.services.source_reconciliation import guard_reconciled_source_selection
 
 
 CALCULATION_VERSION = "piotroski_value_line_v1"
+RATIO_INPUT_KEYS = frozenset(
+    {
+        "bs.current_assets",
+        "bs.current_liabilities",
+        "bs.total_assets",
+        "bs.total_equity",
+        "cap.long_term_debt",
+        "ins.premium_income",
+        "is.net_income",
+        "is.net_premiums_earned",
+        "is.pc_premiums_earned",
+        "is.sales",
+    }
+)
 
 
 @dataclass(frozen=True)
@@ -106,6 +120,7 @@ class ValueLineRatioCalculator:
             select(MetricFact).where(
                 MetricFact.stock_id == stock_id,
                 MetricFact.is_current.is_(True),
+                MetricFact.metric_key.in_(RATIO_INPUT_KEYS),
                 or_(
                     and_(MetricFact.user_id == user_id, MetricFact.source_type.in_(["parsed", "manual"])),
                     and_(MetricFact.user_id.is_(None), MetricFact.source_type == "sec"),

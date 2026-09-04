@@ -27,6 +27,31 @@ COMPONENT_KEYS = [
     "score.piotroski.asset_turnover_improving",
 ]
 TOTAL_KEY = "score.piotroski.total"
+PIOTROSKI_INPUT_KEYS = frozenset(
+    {
+        "bs.current_assets",
+        "bs.current_liabilities",
+        "cap.long_term_debt",
+        "efficiency.asset_turnover",
+        "efficiency.capital_turnover",
+        "equity.shares_outstanding",
+        "ins.premium_turnover",
+        "ins.underwriting_margin",
+        "is.gross_margin",
+        "is.net_income",
+        "is.net_premiums_earned",
+        "is.operating_cash_flow",
+        "is.operating_margin",
+        "is.pc_premiums_earned",
+        "leverage.long_term_debt_to_assets",
+        "leverage.long_term_debt_to_capital",
+        "liquidity.current_ratio",
+        "per_share.cash_flow",
+        "per_share.eps",
+        "returns.roa",
+        "returns.total_capital",
+    }
+)
 
 
 @dataclass(frozen=True)
@@ -119,6 +144,7 @@ class PiotroskiFScoreCalculator:
             select(MetricFact).where(
                 MetricFact.stock_id == stock_id,
                 MetricFact.is_current.is_(True),
+                MetricFact.metric_key.in_(PIOTROSKI_INPUT_KEYS),
                 or_(
                     and_(MetricFact.user_id == user_id, MetricFact.source_type.in_(["parsed", "manual"])),
                     and_(MetricFact.user_id.is_(None), MetricFact.source_type == "sec"),

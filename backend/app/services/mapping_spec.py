@@ -10,6 +10,8 @@ from typing import Any, Iterable, Optional
 
 import yaml
 
+from app.core.currencies import normalize_iso4217_currency
+
 
 LOGGER = logging.getLogger(__name__)
 
@@ -81,6 +83,8 @@ class MappingSpec:
                 )
                 if period_type in {"FY", "PROJ_FY"} and fiscal_year is not None:
                     value_json.setdefault("fiscal_year", fiscal_year)
+                    value_json.setdefault("period_duration_kind", "fiscal_year")
+                currency = _source_currency(mapping, page_json, unit)
                 facts.append(
                     {
                         "metric_key": metric_key,
@@ -88,12 +92,31 @@ class MappingSpec:
                         "value_text": value_text,
                         "value_json": value_json,
                         "unit": unit,
+                        "currency": currency,
                         "period_type": period_type,
                         "period_end_date": period_end_date,
                     }
                 )
         unmapped = _unmapped_paths(page_json, used_paths)
         return facts, used_paths, unmapped
+
+
+def _source_currency(
+    mapping: dict[str, Any],
+    root: dict[str, Any],
+    normalized_unit: str | None,
+) -> str | None:
+    if normalized_unit not in {"USD", "USD_per_share", "currency", "currency_per_share"}:
+        return None
+    reported = normalize_iso4217_currency(
+        _resolve_path(root, "annual_financials.meta.currency")
+    )
+    if reported is not None:
+        return reported
+    declared_unit = str(mapping.get("unit") or "")
+    if declared_unit in {"USD", "USD_millions", "USD_per_share"}:
+        return "USD"
+    return None
 
 
 def _iter_matches(root: dict[str, Any], json_path: str) -> Iterable[MappingMatch]:

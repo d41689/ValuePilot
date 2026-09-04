@@ -54,6 +54,14 @@ source_reconciliation:
         period_bucket:
           fiscal: metric_key_fiscal_year_and_quarter_ordinal
           as_of: metric_key_and_exact_period_end_date
+        fiscal_duration_identity:
+          fiscal_year:
+            value_line_authority: source_column_mapped_as_fy_with_fiscal_year
+            sec_authority: approved_sec_publication_mapped_as_fy
+            exact_start_and_day_count: optional_audit_detail
+            sufficient_for_alignment: true
+          inferred_start_or_fixed_365_day_duration: prohibited
+          non_fy_missing_exact_duration_outcome: mapping_conflict
         empty_dimensions_identity: empty
         missing_identity_outcome: mapping_conflict
       unit_equivalence:

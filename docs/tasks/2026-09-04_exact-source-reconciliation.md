@@ -184,3 +184,21 @@ decision and a tested migration rather than storing JSON opportunistically.
   truncated prefix is reported `partial / reconciliation_bound_exceeded`
   instead of `complete / clear`. Original manual-input passthrough also now
   respects cutoff and authority state before it can reach a consumer.
+- 2026-09-04: Terra adversarial review R3 found three additional PIT/identity
+  gaps. Sol remediation now persists only source-authoritative Value Line
+  currency and fiscal-year duration semantics (never a guessed period start or
+  fixed 365-day duration), treats the policy's `known_at` and `effective_from`
+  as prerequisites before candidate materialization, and includes the
+  authenticated `requesting_user_id` in the report digest so replay/cache
+  identity cannot cross principals. A production-path integration test now
+  exercises `MappingSpec` generation through `IngestionService`, persisted
+  `MetricFact`, approved SEC publication, and reconciliation with an expected
+  as-filed-versus-adjusted difference.
+- 2026-09-04: R3 remediation-focused Docker suite is green: 199 tests across
+  reconciliation, mapping/ingestion, SEC publication, formula/screener,
+  ratio/Piotroski, DCF, stock summary/pool, Oracle's Lens, research workspace,
+  and document reparse consumers. A valid in-transaction ingestion edge was
+  also pinned: owned documents may authorize facts while `parsing`, and
+  successfully parsed partial documents remain usable, while persisted
+  `failed` documents remain unavailable. Terra R4 and full closing gates remain
+  pending.

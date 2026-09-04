@@ -289,6 +289,7 @@ class IngestionService:
                             value_text=fact.get("value_text"),
                             value_json=fact.get("value_json"),
                             unit=fact.get("unit"),
+                            currency=fact.get("currency"),
                             period_type=fact.get("period_type"),
                             period_end_date=fact.get("period_end_date"),
                             source_document_id=doc.id,
@@ -452,6 +453,10 @@ class IngestionService:
             return doc
 
         self._clear_document_parsed_snapshot(doc)
+        # Reconciliation may authorize the freshly rebuilt facts while the
+        # owning transaction computes deterministic metrics.  The terminal
+        # status is assigned below before commit.
+        doc.parse_status = "parsing"
 
         is_multi_company_container = len(pages_data) > 1
         if is_multi_company_container:
@@ -548,6 +553,7 @@ class IngestionService:
                     value_text=fact.get("value_text"),
                     value_json=fact.get("value_json"),
                     unit=fact.get("unit"),
+                    currency=fact.get("currency"),
                     period_type=fact.get("period_type"),
                     period_end_date=fact.get("period_end_date"),
                     source_document_id=doc.id,
@@ -975,6 +981,7 @@ class IngestionService:
         value_text: Optional[str],
         value_json: Optional[dict],
         unit: Optional[str],
+        currency: Optional[str],
         period_type: Optional[str],
         period_end_date: Optional[date],
         source_document_id: Optional[int],
@@ -987,6 +994,7 @@ class IngestionService:
             value_numeric=value_numeric,
             value_text=value_text,
             unit=unit,
+            currency=currency,
             period_type=period_type,
             period_end_date=period_end_date,
             source_type="parsed",
@@ -1007,6 +1015,7 @@ class IngestionService:
                 "value_numeric": value_numeric,
                 "value_text": value_text,
                 "unit": unit,
+                "currency": currency,
                 "period_type": period_type,
                 "period_end_date": period_end_date,
                 "is_current": True,

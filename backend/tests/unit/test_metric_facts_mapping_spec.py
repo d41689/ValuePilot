@@ -45,6 +45,8 @@ def test_mapping_spec_generates_core_facts():
     assert eps_2024["value_json"]["definition_basis"] == "adjusted"
     assert eps_2024["value_json"]["dimensions_identity"] == "empty"
     assert eps_2024["value_json"]["fiscal_year"] == 2024
+    assert eps_2024["value_json"]["period_duration_kind"] == "fiscal_year"
+    assert eps_2024["currency"] == "USD"
     assert "period_start_date" not in eps_2024["value_json"]
     assert "duration_days" not in eps_2024["value_json"]
 
@@ -107,6 +109,7 @@ def test_mapping_spec_uses_value_line_fiscal_year_end_month_for_fy_facts():
     assert debt_2024 is not None
     assert debt_2024["value_numeric"] == pytest.approx(441_100_000.0)
     assert debt_2024["unit"] == "USD"
+    assert debt_2024["currency"] == "USD"
 
 
 def test_mapping_spec_maps_value_line_return_on_total_capital_proxy():
