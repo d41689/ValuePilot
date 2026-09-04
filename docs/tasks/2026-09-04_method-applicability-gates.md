@@ -81,6 +81,8 @@ partial numeric conclusion.
   module chosen after consumer inventory
 - Current governed consumers under `backend/app/services/`
 - Focused tests under `backend/tests/unit/`
+- `docs/prd/value-pilot-prd-v0.1.md` for the reviewed lifecycle and fail-closed
+  publication contract
 - This task record and `docs/BACKLOG.md` when FT-07 is completed
 
 ## Test plan
@@ -143,3 +145,17 @@ strict read-only Terra full-diff review with no P0–P3 findings before sign-off
   from expected red to `60 passed`; consumer tests moved from `7 failed` to
   green; the full affected 14-file backend set is `215 passed` in Docker. Exact
   canonical closing gates and independent strict review remain pending.
+- 2026-09-04: Normative closeout keeps one authority per concern: the existing
+  mapping entries already own canonical input semantics, PRD §H.11 now owns
+  review lifecycle and fail-closed publication behavior, and the immutable
+  database policy registry owns runtime permission. The mapping file remains
+  unchanged because its resolved contents are also approved Value Line source-
+  mapping identity; changing it merely to restate policy would invalidate that
+  authority. The existing data-layer and research-decision architecture already
+  supplies the required fact-truth, replay, and human-authority boundaries, so
+  those documents were not duplicated or changed.
+- 2026-09-04: FT-07 implementation and affected-suite verification are complete
+  and its backlog entry is removed. The intentional remaining block is system
+  valuation: every system DCF path stays typed
+  `system_valuation_method_pending_ft09`, with no canonical model inputs or
+  saved numeric conclusion, until FT-09 approves a normative method contract.

@@ -254,34 +254,6 @@ long — escalate to the user. **medium / low** = ordinary follow-up.
   `docs/metric_facts_mapping_spec.yml`; `docs/prd/value-pilot-prd-v0.1.md`
 - **Issue:** —
 
-### FT-07 — industry applicability and permanent-impairment method gate
-- **Found:** 2026-08-27, adversarial review VG-03 and omitted-risk finding
-- **Severity:** high (generic industrial-company formulas can publish false
-  Owner Earnings, ROIC, trends, or valuation for banks, insurers, and REITs)
-- **Problem:** industry and business-model applicability is not implied by
-  complete data. Unsupported economics must block conclusions.
-- **Outcome:** each analytical output is governed by an approved, versioned,
-  auditable applicability policy or is visibly unsupported.
-- **Acceptance criteria:**
-  - Mapping spec owns input semantics and the PRD owns calculation/publication
-    behavior and classification/applicability lifecycle for every gold-set
-    primary stratum; no formula or company classification is adopted from the
-    non-normative Vision or issuer-name inference alone.
-  - Banks, insurers, REITs, ordinary operating companies, high-SBC/acquisitive
-    businesses, and cyclical/commodity businesses each have an approved method
-    and required evidence, or return typed `unsupported` and block the affected
-    Owner Earnings, ROIC, per-share trend, and valuation conclusion.
-  - Every result records method/version, company classification at calculation
-    time, inputs, adjustments, unsupported reasons, and source/knowledge cutoff.
-  - Balance-sheet/refinancing risk, accounting credibility, management
-    integrity, dilution, and capital allocation are evidence-backed or typed
-    unknown; ordinary price volatility or low beta cannot satisfy this gate.
-  - Golden and negative tests cover every manifest stratum, including attempts
-    to apply an ordinary-company method to financials, insurers, and REITs.
-- **Context:** `docs/Investment_Research_Vision.md` §9–§15 (non-normative);
-  `docs/metric_facts_mapping_spec.yml`; `docs/prd/value-pilot-prd-v0.1.md`
-- **Issue:** —
-
 ### FT-08 — decision-centered research workspace
 - **Found:** 2026-08-27, PO acceptance of `/research/cases/2`; review VG-03/VG-05
 - **Severity:** medium (the current workspace leaves users to synthesize a raw
