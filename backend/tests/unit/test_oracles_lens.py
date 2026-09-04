@@ -473,7 +473,20 @@ def test_oracles_lens_adds_value_line_quality_overlay(
         "latest_price": 100.0,
         "price_date": _current_price_date().isoformat(),
         "price_context": "latest",
-        "canonical_source_status": {"status": "available"},
+        "canonical_source_status": {
+            "status": "partial",
+            "reason_code": "classification_unreviewed",
+            "unavailable_metrics": [
+                {
+                    "metric_key": "bs.return_on_total_capital",
+                    "blocking_reasons": ["classification_unreviewed"],
+                },
+                {
+                    "metric_key": "owners_earnings_per_share_normalized",
+                    "blocking_reasons": ["classification_unreviewed"],
+                },
+            ],
+        },
         "coverage": {
             "value_line": True,
             "price": True,

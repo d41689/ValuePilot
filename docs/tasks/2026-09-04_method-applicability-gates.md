@@ -169,3 +169,32 @@ strict read-only Terra full-diff review with no P0–P3 findings before sign-off
   time is operational knowledge authority, while `effective_as_of` is company
   economic/input time; applying the policy date to historical input periods
   would make reviewed historical calculation/backfill impossible.
+- 2026-09-04: Strict Terra R2 found three retained-authority edge cases. Legacy
+  calculated Owner Earnings now require an exact, replayable origin gate
+  snapshot whose knowledge cutoff is no later than the fact's actual
+  database-clock insert time; missing, malformed, forged, future, or mismatched
+  snapshots are quarantined on read with no numeric output. Current authority
+  must independently remain approved, so a later policy cannot retroactively
+  authorize an old calculation.
+- 2026-09-04: Legacy manual `val.fair_value` facts linked to a research revision
+  whose assumptions identify a DCF source remain immutable audit evidence but
+  project as typed `system_valuation_method_pending_ft09` with no numeric value.
+  The shared valuation boundary covers workspace, stock-pool, Oracle, and
+  notification consumers; ordinary human-authored intrinsic values remain
+  available. This quarantine is structural and cannot be lifted merely by a
+  future current policy.
+- 2026-09-04: Review authority is now one explicit lineage per stock/kind. Every
+  continuation after the root must supersede the exact terminal even across a
+  non-overlapping interval; cutoff-aware resolution still returns an ancestor
+  in uncovered gaps and before the continuation is known. Service and database
+  triggers enforce the same rule, legacy multiple roots fail migration
+  preflight, and the trigger locks the active-admin reviewer row so concurrent
+  deactivation has a defined commit order.
+- 2026-09-04: R2 verification is green: the focused gate/consumer/migration/API/
+  notification set is `123 passed`; the original 14-file affected set plus the
+  notification suite is `256 passed`. A fresh isolated
+  upgrade/downgrade/upgrade test is green, and the local applied database was
+  replayed through `20260904140000` back to head `20260904150000`; its two review
+  triggers both execute the final `guard_ft07_method_review_insert` function.
+  Fresh strict full-diff review and exact canonical closing gates remain
+  pending.

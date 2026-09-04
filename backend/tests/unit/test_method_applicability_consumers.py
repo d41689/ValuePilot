@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import date, datetime, timedelta, timezone
 
 from app.models.facts import MetricFact
@@ -20,8 +21,20 @@ from app.services.method_applicability import (
     review_company_classification,
     review_company_risk_attribute,
 )
-from app.services.canonical_financials import reviewed_method_gate
-from app.services.oracles_lens.dashboard import _quality_overlay_by_stock
+from app.services.canonical_financials import (
+    apply_reviewed_method_gates,
+    reviewed_method_gate,
+)
+from app.services import dcf_inputs
+from app.services.oracles_lens.dashboard import (
+    _quality_overlay_by_stock,
+    _valuation_reference_by_stock,
+)
+from app.services.research_cases import save_product_valuation_revision
+from app.services.valuation import (
+    read_valuation_context,
+    read_valuation_facts_by_stock,
+)
 
 
 def _stock(db_session, ticker: str) -> Stock:
@@ -83,6 +96,31 @@ def _owner_earnings_inputs(*, user_id: int, stock_id: int) -> list[MetricFact]:
     ]
 
 
+def _legacy_owner_earnings_facts(
+    *, user_id: int, stock_id: int, analysis_method=None
+) -> list[MetricFact]:
+    value_json = {"calculation_version": "owners-earnings-per-share-v1"}
+    if analysis_method is not None:
+        value_json["analysis_method"] = analysis_method
+    return [
+        MetricFact(
+            user_id=user_id,
+            stock_id=stock_id,
+            metric_key=metric_key,
+            value_numeric=value,
+            value_json=dict(value_json),
+            unit="USD",
+            currency="USD",
+            period_type=period_type,
+            period_end_date=date(2025, 12, 31),
+            source_type="calculated",
+            is_current=True,
+        )
+        for metric_key, value, period_type in (
+            ("owners_earnings_per_share", 3.5, "FY"),
+            ("owners_earnings_per_share_normalized", 3.5, "AS_OF"),
+        )
+    ]
 def test_owner_earnings_persistence_requires_reviewed_method_authority(
     db_session, user_factory
 ) -> None:
@@ -150,6 +188,158 @@ def test_owner_earnings_persists_exact_reviewed_authority_snapshot(
         ]
         assert authority["effective_as_of"] == date.today().isoformat()
         assert authority["knowledge_at"]
+
+
+@pytest.mark.parametrize(
+    ("snapshot_kind", "reason_code"),
+    [
+        ("missing", "method_authority_snapshot_missing"),
+        ("malformed", "method_authority_snapshot_invalid"),
+        ("forged", "method_authority_snapshot_invalid"),
+        ("future", "method_authority_snapshot_invalid"),
+    ],
+)
+def test_calculated_owner_earnings_requires_exact_origin_authority_snapshot(
+    db_session, user_factory, snapshot_kind: str, reason_code: str
+) -> None:
+    reviewer = user_factory(f"oe-origin-{snapshot_kind}@example.com", role="admin")
+    stock = _stock(db_session, f"OE{snapshot_kind[:6]}")
+    _review_ordinary_profile(db_session, reviewer=reviewer, stock=stock)
+    evaluation_cutoff = datetime.now(timezone.utc) + timedelta(seconds=2)
+    snapshot = reviewed_method_gate(
+        db_session,
+        stock_id=stock.id,
+        method_key="owner_earnings",
+        effective_as_of=date.today(),
+        knowledge_at=evaluation_cutoff,
+    ).as_dict()
+    if snapshot_kind == "missing":
+        snapshot = None
+    elif snapshot_kind == "malformed":
+        snapshot = ["not", "a", "decision"]
+    elif snapshot_kind == "forged":
+        snapshot["policy_sha256"] = "0" * 64
+    else:
+        future_cutoff = datetime.now(timezone.utc) + timedelta(days=1)
+        snapshot = reviewed_method_gate(
+            db_session,
+            stock_id=stock.id,
+            method_key="owner_earnings",
+            effective_as_of=date.today(),
+            knowledge_at=future_cutoff,
+        ).as_dict()
+        evaluation_cutoff = future_cutoff
+    fact = _legacy_owner_earnings_facts(
+        user_id=reviewer.id,
+        stock_id=stock.id,
+        analysis_method=snapshot,
+    )[0]
+    db_session.add(fact)
+    db_session.commit()
+
+    kept, blocked, _ = apply_reviewed_method_gates(
+        db_session,
+        stock_id=stock.id,
+        facts=[fact],
+        effective_as_of=date.today(),
+        knowledge_at=evaluation_cutoff,
+    )
+
+    assert kept == []
+    assert len(blocked) == 1
+    assert blocked[0]["reason_code"] == reason_code
+    assert blocked[0]["value_numeric"] is None
+
+
+def test_legacy_owner_earnings_without_origin_snapshot_is_quarantined_everywhere(
+    client, db_session, user_factory, auth_headers, monkeypatch
+) -> None:
+    reviewer = user_factory("oe-origin-consumers@example.com", role="admin")
+    stock = _stock(db_session, "OEORIGIN")
+    _review_ordinary_profile(db_session, reviewer=reviewer, stock=stock)
+    db_session.add_all(
+        _legacy_owner_earnings_facts(user_id=reviewer.id, stock_id=stock.id)
+    )
+    db_session.commit()
+
+    stock_facts = client.get(
+        f"/api/v1/stocks/{stock.id}/facts", headers=auth_headers(reviewer)
+    )
+    assert stock_facts.status_code == 200, stock_facts.text
+    legacy_states = [
+        row
+        for row in stock_facts.json()
+        if row["metric_key"].startswith("owners_earnings_per_share")
+    ]
+    assert legacy_states
+    assert all(row["value_numeric"] is None for row in legacy_states)
+    assert {row["reason_code"] for row in legacy_states} == {
+        "method_authority_snapshot_missing"
+    }
+
+    created = client.post(
+        "/api/v1/research/cases",
+        headers=auth_headers(reviewer),
+        json={
+            "stock_id": stock.id,
+            "origin": {
+                "origin_type": "manual",
+                "origin_key": "legacy-owner-earnings-origin-test",
+                "source_version": "user-action-v1",
+                "source_ref": {"entry_point": "test"},
+            },
+        },
+    )
+    assert created.status_code == 201, created.text
+    workspace = client.get(
+        f"/api/v1/research/cases/{created.json()['case']['id']}/workspace",
+        headers=auth_headers(reviewer),
+    )
+    assert workspace.status_code == 200, workspace.text
+    workspace_states = [
+        row
+        for row in workspace.json()["fundamentals"]
+        if row["metric_key"].startswith("owners_earnings_per_share")
+    ]
+    assert workspace_states
+    assert all(row["value_numeric"] is None for row in workspace_states)
+    assert {row["reason_code"] for row in workspace_states} == {
+        "method_authority_snapshot_missing"
+    }
+
+    overlay = _quality_overlay_by_stock(
+        db_session, [stock.id], user_id=reviewer.id
+    )[stock.id]
+    assert overlay["owner_earnings_yield"] is None
+    assert overlay["owner_earnings_method"]["status"] == "unsupported"
+    assert overlay["owner_earnings_method"]["reason_code"] == (
+        "method_authority_snapshot_missing"
+    )
+
+    original_gate = dcf_inputs.reviewed_method_gate
+
+    def ft09_test_gate(session, **kwargs):
+        decision = original_gate(session, **kwargs)
+        if decision.method_key != "system_valuation":
+            return decision
+        return replace(
+            decision,
+            status="approved",
+            reason_code="approved",
+            method_version_id="test-system-valuation-v1",
+        )
+
+    monkeypatch.setattr(dcf_inputs, "reviewed_method_gate", ft09_test_gate)
+    with pytest.raises(DcfFactUniverseError) as captured:
+        load_canonical_dcf_fact_universe(
+            db_session,
+            stock_id=stock.id,
+            user_id=reviewer.id,
+            evaluated_at=datetime.now(timezone.utc) + timedelta(seconds=1),
+            effective_as_of=date.today(),
+        )
+    assert captured.value.code == "unsupported"
+    assert captured.value.reason_code == "method_authority_snapshot_missing"
 
 
 def test_stock_facts_publish_method_authority_and_block_unreviewed_numeric(
@@ -415,6 +605,14 @@ def test_stock_page_and_save_block_pending_system_valuation_without_numeric(
     )
     assert created
     db_session.commit()
+    created_snapshot = created[0].value_json["analysis_method"]
+    assert reviewed_method_gate(
+        db_session,
+        stock_id=stock.id,
+        method_key="owner_earnings",
+        effective_as_of=date.fromisoformat(created_snapshot["effective_as_of"]),
+        knowledge_at=datetime.fromisoformat(created_snapshot["knowledge_at"]),
+    ).as_dict() == created_snapshot
 
     summary = client.get(
         f"/api/v1/stocks/by_ticker/{stock.ticker}", headers=auth_headers(reviewer)
@@ -488,3 +686,137 @@ def test_stock_page_and_save_block_pending_system_valuation_without_numeric(
         MetricFact.stock_id == stock.id,
         MetricFact.metric_key == "val.fair_value",
     ).count() == 0
+
+
+def test_legacy_dcf_revision_is_quarantined_across_valuation_consumers(
+    client, db_session, user_factory, auth_headers
+) -> None:
+    user = user_factory("legacy-dcf-reader@example.com")
+    stock = _stock(db_session, "LEGACYDCF")
+    case, revision, fact = save_product_valuation_revision(
+        db_session,
+        user_id=user.id,
+        stock_id=stock.id,
+        value_numeric=125,
+        valuation_low=100,
+        valuation_high=150,
+        as_of_date=date.today(),
+        source="dcf",
+        pool_id=None,
+        assumptions=[{"source": "dcf", "label": "Legacy system DCF"}],
+        valuation_currency="USD",
+    )
+    assert fact.value_numeric == 125
+
+    projected = read_valuation_facts_by_stock(
+        db_session, user_id=user.id, stock_ids=[stock.id]
+    )[stock.id]["val.fair_value"]
+    assert projected.id == fact.id
+    assert projected.source_ref_id == revision.id
+    assert projected.value_numeric is None
+    assert projected.value_json == {
+        "status": "unsupported",
+        "reason_code": "system_valuation_method_pending_ft09",
+    }
+    context = read_valuation_context(
+        db_session, user_id=user.id, stock_id=stock.id
+    )
+    assert context.user_intrinsic_value is None
+    assert context.user_intrinsic_value_status == "unsupported"
+    assert context.user_intrinsic_value_reason_code == (
+        "system_valuation_method_pending_ft09"
+    )
+
+    workspace = client.get(
+        f"/api/v1/research/cases/{case.id}/workspace",
+        headers=auth_headers(user),
+    )
+    assert workspace.status_code == 200, workspace.text
+    assert workspace.json()["valuation"]["user_intrinsic_value"] is None
+    assert workspace.json()["valuation"]["user_intrinsic_value_status"] == (
+        "unsupported"
+    )
+    assert workspace.json()["valuation"]["user_intrinsic_value_reason_code"] == (
+        "system_valuation_method_pending_ft09"
+    )
+
+    pool = client.post(
+        "/api/v1/stock_pools",
+        headers=auth_headers(user),
+        json={"name": "Legacy DCF quarantine"},
+    )
+    assert pool.status_code == 200, pool.text
+    membership = client.post(
+        f"/api/v1/stock_pools/{pool.json()['id']}/members",
+        headers=auth_headers(user),
+        json={"stock_id": stock.id},
+    )
+    assert membership.status_code == 200, membership.text
+    rows = client.get(
+        f"/api/v1/stock_pools/{pool.json()['id']}/members",
+        headers=auth_headers(user),
+    )
+    assert rows.status_code == 200, rows.text
+    row = next(item for item in rows.json() if item["stock_id"] == stock.id)
+    assert row["fair_value"] is None
+    assert row["fair_value_status"] == "unsupported"
+    assert row["fair_value_reason_code"] == (
+        "system_valuation_method_pending_ft09"
+    )
+
+    oracle = _valuation_reference_by_stock(
+        db_session,
+        {stock.id: (90, 140)},
+        user_id=user.id,
+    )[stock.id]
+    assert oracle["valuation_reference"] is None
+    assert "system_valuation_method_pending_ft09" in oracle[
+        "valuation_unavailable_reasons"
+    ]
+
+    manual_stock = _stock(db_session, "MANUALIV")
+    _, _, manual_fact = save_product_valuation_revision(
+        db_session,
+        user_id=user.id,
+        stock_id=manual_stock.id,
+        value_numeric=80,
+        valuation_low=70,
+        valuation_high=90,
+        as_of_date=date.today(),
+        source="manual",
+        pool_id=None,
+        assumptions=[{"source": "manual", "label": "Human valuation"}],
+        valuation_currency="USD",
+    )
+    manual_context = read_valuation_context(
+        db_session, user_id=user.id, stock_id=manual_stock.id
+    )
+    assert manual_context.user_intrinsic_value == 80
+    assert manual_context.user_intrinsic_value_status == "available"
+    assert manual_context.user_intrinsic_value_reason_code is None
+    assert manual_context.user_intrinsic_value_fact_id == manual_fact.id
+
+    _, replacement_revision, replacement_fact = save_product_valuation_revision(
+        db_session,
+        user_id=user.id,
+        stock_id=stock.id,
+        value_numeric=130,
+        valuation_low=120,
+        valuation_high=140,
+        as_of_date=date.today(),
+        source="manual",
+        pool_id=None,
+        assumptions=[{"source": "manual", "label": "Human replacement"}],
+        valuation_currency="USD",
+    )
+    assert {item["source"] for item in replacement_revision.assumptions_json} == {
+        "dcf",
+        "manual",
+    }
+    replacement_context = read_valuation_context(
+        db_session, user_id=user.id, stock_id=stock.id
+    )
+    assert replacement_context.user_intrinsic_value == 130
+    assert replacement_context.user_intrinsic_value_status == "available"
+    assert replacement_context.user_intrinsic_value_reason_code is None
+    assert replacement_context.user_intrinsic_value_fact_id == replacement_fact.id

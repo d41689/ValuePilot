@@ -177,6 +177,28 @@ def upgrade() -> None:
     ).scalar_one()
     if untrusted_legacy_reviews:
         raise RuntimeError("cannot adopt untrusted legacy method reviews into FT-07")
+    conflicting_legacy_lineages = connection.execute(
+        sa.text(
+            """
+            SELECT count(*)
+            FROM (
+              SELECT stock_id, 'classification'::text AS review_kind
+              FROM sec_economic_classification_reviews
+              WHERE supersedes_review_id IS NULL
+              GROUP BY stock_id
+              HAVING count(*) > 1
+              UNION ALL
+              SELECT stock_id, risk_attribute AS review_kind
+              FROM sec_economic_risk_attribute_reviews
+              WHERE supersedes_review_id IS NULL
+              GROUP BY stock_id, risk_attribute
+              HAVING count(*) > 1
+            ) conflicts
+            """
+        )
+    ).scalar_one()
+    if conflicting_legacy_lineages:
+        raise RuntimeError("cannot adopt conflicting legacy method review lineages")
 
     op.create_check_constraint(
         "ck_sec_economic_classification_review_reason",
@@ -190,23 +212,80 @@ def upgrade() -> None:
     )
     op.execute(
         """
-        CREATE FUNCTION guard_ft07_method_reviewer_authority()
+        DROP TRIGGER trg_sec_economic_classification_guard
+          ON sec_economic_classification_reviews;
+        DROP TRIGGER trg_sec_economic_risk_guard
+          ON sec_economic_risk_attribute_reviews;
+
+        CREATE FUNCTION guard_ft07_method_review_insert()
         RETURNS trigger LANGUAGE plpgsql AS $$
+        DECLARE
+          review_count integer;
+          terminal_count integer;
+          terminal_id bigint;
+          lock_key text;
         BEGIN
-          IF NOT EXISTS (
-            SELECT 1 FROM users
-            WHERE id=NEW.reviewer_user_id AND role='admin' AND is_active=true
-          ) THEN
+          NEW.created_at := clock_timestamp();
+          NEW.known_at := NEW.created_at;
+          NEW.created_txid := txid_current();
+          PERFORM 1 FROM users
+          WHERE id=NEW.reviewer_user_id AND role='admin' AND is_active=true
+          FOR SHARE;
+          IF NOT FOUND THEN
             RAISE EXCEPTION 'method applicability review requires active admin';
+          END IF;
+
+          IF TG_TABLE_NAME='sec_economic_classification_reviews' THEN
+            lock_key := 'method-applicability-review' || chr(58) || NEW.stock_id ||
+              chr(58) || 'classification';
+            PERFORM pg_advisory_xact_lock(hashtextextended(lock_key, 0));
+            SELECT count(*) INTO review_count
+            FROM sec_economic_classification_reviews r
+            WHERE r.stock_id=NEW.stock_id;
+            SELECT count(*), min(r.id) INTO terminal_count, terminal_id
+            FROM sec_economic_classification_reviews r
+            WHERE r.stock_id=NEW.stock_id
+              AND NOT EXISTS (
+                SELECT 1 FROM sec_economic_classification_reviews later
+                WHERE later.supersedes_review_id=r.id
+              );
+          ELSE
+            lock_key := 'method-applicability-review' || chr(58) || NEW.stock_id ||
+              chr(58) || 'risk' || chr(58) || NEW.risk_attribute;
+            PERFORM pg_advisory_xact_lock(hashtextextended(lock_key, 0));
+            SELECT count(*) INTO review_count
+            FROM sec_economic_risk_attribute_reviews r
+            WHERE r.stock_id=NEW.stock_id
+              AND r.risk_attribute=NEW.risk_attribute;
+            SELECT count(*), min(r.id) INTO terminal_count, terminal_id
+            FROM sec_economic_risk_attribute_reviews r
+            WHERE r.stock_id=NEW.stock_id
+              AND r.risk_attribute=NEW.risk_attribute
+              AND NOT EXISTS (
+                SELECT 1 FROM sec_economic_risk_attribute_reviews later
+                WHERE later.supersedes_review_id=r.id
+              );
+          END IF;
+
+          IF review_count=0 THEN
+            IF NEW.supersedes_review_id IS NOT NULL THEN
+              RAISE EXCEPTION 'method review requires exact terminal supersession';
+            END IF;
+          ELSIF terminal_count<>1 THEN
+            RAISE EXCEPTION 'method review lineage conflict';
+          ELSIF NEW.supersedes_review_id IS NULL
+             OR NEW.supersedes_review_id<>terminal_id THEN
+            RAISE EXCEPTION 'method review requires exact terminal supersession';
           END IF;
           RETURN NEW;
         END $$;
-        CREATE TRIGGER trg_sec_economic_classification_reviewer_authority
+
+        CREATE TRIGGER trg_sec_economic_classification_guard
           BEFORE INSERT ON sec_economic_classification_reviews
-          FOR EACH ROW EXECUTE FUNCTION guard_ft07_method_reviewer_authority();
-        CREATE TRIGGER trg_sec_economic_risk_reviewer_authority
+          FOR EACH ROW EXECUTE FUNCTION guard_ft07_method_review_insert();
+        CREATE TRIGGER trg_sec_economic_risk_guard
           BEFORE INSERT ON sec_economic_risk_attribute_reviews
-          FOR EACH ROW EXECUTE FUNCTION guard_ft07_method_reviewer_authority();
+          FOR EACH ROW EXECUTE FUNCTION guard_ft07_method_review_insert();
         """
     )
     op.add_column(
@@ -295,7 +374,27 @@ def downgrade() -> None:
     if retained:
         raise RuntimeError("cannot downgrade retained FT-07 method authority")
 
-    op.execute("DROP FUNCTION guard_ft07_method_reviewer_authority() CASCADE")
+    # ``IF EXISTS`` also lets a developer who applied an earlier draft of this
+    # unmerged revision return through the canonical migration path. Retained
+    # authority was already rejected above, before any mutation.
+    op.execute(
+        "DROP FUNCTION IF EXISTS guard_ft07_method_review_insert() CASCADE; "
+        "DROP FUNCTION IF EXISTS guard_ft07_method_reviewer_authority() CASCADE; "
+        "DROP TRIGGER IF EXISTS trg_sec_economic_classification_guard "
+        "ON sec_economic_classification_reviews; "
+        "DROP TRIGGER IF EXISTS trg_sec_economic_risk_guard "
+        "ON sec_economic_risk_attribute_reviews"
+    )
+    op.execute(
+        "CREATE TRIGGER trg_sec_economic_classification_guard BEFORE INSERT "
+        "ON sec_economic_classification_reviews FOR EACH ROW "
+        "EXECUTE FUNCTION guard_sec_method_authority_insert()"
+    )
+    op.execute(
+        "CREATE TRIGGER trg_sec_economic_risk_guard BEFORE INSERT "
+        "ON sec_economic_risk_attribute_reviews FOR EACH ROW "
+        "EXECUTE FUNCTION guard_sec_method_authority_insert()"
+    )
 
     op.execute("DROP TRIGGER trg_sec_method_policy_insert_guard ON sec_method_policy_versions")
     op.execute("DROP TRIGGER trg_sec_method_policy_rule_stamp ON sec_method_policy_rules")

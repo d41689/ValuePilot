@@ -451,6 +451,9 @@ def build_research_workspace(
         "valuation": {
             "user_intrinsic_value": valuation.user_intrinsic_value,
             "user_intrinsic_value_status": valuation.user_intrinsic_value_status,
+            "user_intrinsic_value_reason_code": (
+                valuation.user_intrinsic_value_reason_code
+            ),
             "user_intrinsic_value_as_of": (
                 valuation.user_intrinsic_value_as_of.isoformat()
                 if valuation.user_intrinsic_value_as_of

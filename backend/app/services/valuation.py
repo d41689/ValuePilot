@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, datetime
 from decimal import Decimal, ROUND_HALF_EVEN
 from typing import Any
 
@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session
 
 from app.core.currencies import normalize_iso4217_currency
 from app.models.facts import MetricFact
+from app.models.research import ResearchCaseRevision
 
 
 USER_INTRINSIC_VALUE_KEY = "val.fair_value"
@@ -28,6 +29,7 @@ def quantize_valuation_value(value: Decimal) -> Decimal:
 class ValuationContext:
     user_intrinsic_value: float | None
     user_intrinsic_value_status: str
+    user_intrinsic_value_reason_code: str | None
     user_intrinsic_value_as_of: date | None
     user_intrinsic_value_fact_id: int | None
     user_intrinsic_value_currency: str | None
@@ -38,7 +40,30 @@ class ValuationContext:
     system_reference_currency: str | None
 
 
-def _fact_currency(fact: MetricFact | None) -> str | None:
+@dataclass(frozen=True)
+class ValuationFactProjection:
+    """Read-only fact view used to quarantine an inapplicable retained value."""
+
+    id: int
+    user_id: int | None
+    stock_id: int
+    metric_key: str
+    value_numeric: None
+    value_json: dict[str, Any]
+    unit: str | None
+    currency: str | None
+    period_type: str | None
+    period_end_date: date | None
+    source_type: str
+    source_ref_id: int | None
+    is_current: bool
+    created_at: datetime | None
+
+
+ValuationFact = MetricFact | ValuationFactProjection
+
+
+def _fact_currency(fact: ValuationFact | None) -> str | None:
     if fact is None:
         return None
     if fact.currency is not None:
@@ -46,8 +71,21 @@ def _fact_currency(fact: MetricFact | None) -> str | None:
     return normalize_iso4217_currency(fact.unit)
 
 
-def _has_source_type(fact: MetricFact, *, source_type: str) -> bool:
+def _has_source_type(fact: ValuationFact, *, source_type: str) -> bool:
     return fact.source_type == source_type
+
+
+def _revision_valuation_source(assumptions: Any) -> str | None:
+    if not isinstance(assumptions, list):
+        return None
+    # Product valuation saves preserve prior assumptions and append the current
+    # source's assumptions.  The last explicit source therefore identifies the
+    # value published by this revision without allowing an older DCF assumption
+    # to quarantine a later human replacement.
+    for item in reversed(assumptions):
+        if isinstance(item, dict) and isinstance(item.get("source"), str):
+            return item["source"]
+    return None
 
 
 def _latest_current_fact(
@@ -89,19 +127,30 @@ def read_valuation_context(
 
 
 def _valuation_context_from_facts(
-    facts: dict[str, MetricFact],
+    facts: dict[str, ValuationFact],
 ) -> ValuationContext:
     manual = facts.get(USER_INTRINSIC_VALUE_KEY)
     reference = facts.get(VALUE_LINE_TARGET_REFERENCE_KEY)
 
     if manual is None:
         intrinsic_status = "missing"
+        intrinsic_reason = None
+        intrinsic_value = None
+    elif (
+        isinstance(manual.value_json, dict)
+        and manual.value_json.get("status") == "unsupported"
+    ):
+        intrinsic_status = "unsupported"
+        reason = manual.value_json.get("reason_code")
+        intrinsic_reason = reason if isinstance(reason, str) else None
         intrinsic_value = None
     elif manual.value_numeric is None:
         intrinsic_status = "unavailable"
+        intrinsic_reason = None
         intrinsic_value = None
     else:
         intrinsic_status = "available"
+        intrinsic_reason = None
         intrinsic_value = float(manual.value_numeric)
 
     reference_value = (
@@ -112,6 +161,7 @@ def _valuation_context_from_facts(
     return ValuationContext(
         user_intrinsic_value=intrinsic_value,
         user_intrinsic_value_status=intrinsic_status,
+        user_intrinsic_value_reason_code=intrinsic_reason,
         user_intrinsic_value_as_of=manual.period_end_date if manual else None,
         user_intrinsic_value_fact_id=manual.id if manual else None,
         user_intrinsic_value_currency=_fact_currency(manual),
@@ -150,7 +200,7 @@ def read_valuation_facts_by_stock(
     *,
     user_id: int | None,
     stock_ids: list[int],
-) -> dict[int, dict[str, MetricFact]]:
+) -> dict[int, dict[str, ValuationFact]]:
     """Canonical, user-scoped valuation facts for batched product overlays.
 
     Anonymous callers receive no user-owned facts.  This matters for both the
@@ -158,7 +208,7 @@ def read_valuation_facts_by_stock(
     belong to the uploading user and must never be selected across tenants.
     """
     unique_stock_ids = sorted(set(stock_ids))
-    result: dict[int, dict[str, MetricFact]] = {
+    result: dict[int, dict[str, ValuationFact]] = {
         stock_id: {} for stock_id in unique_stock_ids
     }
     if user_id is None or not unique_stock_ids:
@@ -180,6 +230,30 @@ def read_valuation_facts_by_stock(
             MetricFact.id.desc(),
         )
     ).all()
+    revision_ids = {
+        int(fact.source_ref_id)
+        for fact in facts
+        if fact.metric_key == USER_INTRINSIC_VALUE_KEY
+        and fact.source_ref_id is not None
+    }
+    dcf_revision_stock_pairs: set[tuple[int, int]] = set()
+    if revision_ids:
+        revisions = session.execute(
+            select(
+                ResearchCaseRevision.id,
+                ResearchCaseRevision.snapshot_stock_id,
+                ResearchCaseRevision.assumptions_json,
+            ).where(
+                ResearchCaseRevision.id.in_(revision_ids),
+                ResearchCaseRevision.created_by_user_id == user_id,
+                ResearchCaseRevision.snapshot_stock_id.in_(unique_stock_ids),
+            )
+        ).all()
+        dcf_revision_stock_pairs = {
+            (int(revision.id), int(revision.snapshot_stock_id))
+            for revision in revisions
+            if _revision_valuation_source(revision.assumptions_json) == "dcf"
+        }
     for fact in facts:
         if (
             fact.metric_key == USER_INTRINSIC_VALUE_KEY
@@ -191,7 +265,33 @@ def read_valuation_facts_by_stock(
             and not _has_source_type(fact, source_type="parsed")
         ):
             continue
-        result[fact.stock_id].setdefault(fact.metric_key, fact)
+        selected: ValuationFact = fact
+        if (
+            fact.metric_key == USER_INTRINSIC_VALUE_KEY
+            and fact.source_ref_id is not None
+            and (int(fact.source_ref_id), int(fact.stock_id))
+            in dcf_revision_stock_pairs
+        ):
+            selected = ValuationFactProjection(
+                id=int(fact.id),
+                user_id=fact.user_id,
+                stock_id=int(fact.stock_id),
+                metric_key=fact.metric_key,
+                value_numeric=None,
+                value_json={
+                    "status": "unsupported",
+                    "reason_code": "system_valuation_method_pending_ft09",
+                },
+                unit=fact.unit,
+                currency=fact.currency,
+                period_type=fact.period_type,
+                period_end_date=fact.period_end_date,
+                source_type=fact.source_type,
+                source_ref_id=fact.source_ref_id,
+                is_current=fact.is_current,
+                created_at=fact.created_at,
+            )
+        result[fact.stock_id].setdefault(fact.metric_key, selected)
     return result
 
 

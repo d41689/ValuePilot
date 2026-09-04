@@ -95,30 +95,35 @@ def _validate_supersession(
             effective_to is None or row.effective_from <= effective_to
         )
 
+    if not rows:
+        if supersedes_review_id is not None:
+            raise MethodApplicabilityReviewError(
+                "stale_review_supersession", "review supersession target is not terminal"
+            )
+        return
+    if len(terminal) != 1:
+        raise MethodApplicabilityReviewError(
+            "method_review_lineage_conflict",
+            "review authority has multiple terminal lineages",
+        )
     if supersedes_review_id is None:
-        if any(overlaps(row) for row in terminal):
+        if overlaps(terminal[0]):
             raise MethodApplicabilityReviewError(
                 "overlapping_method_review",
                 "overlapping review requires the exact terminal supersession target",
             )
-        return
-    prior = next((row for row in terminal if row.id == supersedes_review_id), None)
-    if prior is None:
+        raise MethodApplicabilityReviewError(
+            "missing_review_supersession",
+            "review continuation requires the exact terminal supersession target",
+        )
+    prior = terminal[0]
+    if prior.id != supersedes_review_id:
         raise MethodApplicabilityReviewError(
             "stale_review_supersession", "review supersession target is not terminal"
         )
     if risk_attribute is not None and prior.risk_attribute != risk_attribute:
         raise MethodApplicabilityReviewError(
             "invalid_review_supersession", "risk review type cannot change on supersession"
-        )
-    if not overlaps(prior):
-        raise MethodApplicabilityReviewError(
-            "invalid_review_supersession",
-            "superseding review must overlap its exact target interval",
-        )
-    if any(row.id != prior.id and overlaps(row) for row in terminal):
-        raise MethodApplicabilityReviewError(
-            "overlapping_method_review", "review overlaps another terminal interval"
         )
 
 

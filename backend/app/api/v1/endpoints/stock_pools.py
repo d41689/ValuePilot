@@ -396,7 +396,10 @@ def _watchlist_rows_for_memberships(
         if current_price.status != "available":
             price_comparison_reason = current_price.reason_code
         elif fair_value is None:
-            price_comparison_reason = "intrinsic_value_unavailable"
+            price_comparison_reason = (
+                valuation.user_intrinsic_value_reason_code
+                or "intrinsic_value_unavailable"
+            )
         elif current_price.currency != valuation.user_intrinsic_value_currency:
             price_comparison_reason = "currency_mismatch"
         else:
@@ -428,6 +431,9 @@ def _watchlist_rows_for_memberships(
                 "fair_value": fair_value,
                 "fair_value_source": "manual" if fair_value is not None else None,
                 "fair_value_status": valuation.user_intrinsic_value_status,
+                "fair_value_reason_code": (
+                    valuation.user_intrinsic_value_reason_code
+                ),
                 "fair_value_as_of": valuation.user_intrinsic_value_as_of,
                 "fair_value_currency": valuation.user_intrinsic_value_currency,
                 "mos": mos,

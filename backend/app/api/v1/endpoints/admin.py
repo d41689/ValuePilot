@@ -49,6 +49,8 @@ def _method_review_db_conflict(error: DBAPIError) -> HTTPException:
         "overlapping economic risk review",
         "invalid economic classification supersession",
         "invalid economic risk supersession",
+        "method review requires exact terminal supersession",
+        "method review lineage conflict",
         "duplicate key value",
     )
     if not any(marker in detail for marker in known_conflicts):

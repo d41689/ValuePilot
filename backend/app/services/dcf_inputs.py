@@ -85,13 +85,15 @@ class DcfFactUniverseError(ValueError):
         message: str,
         *,
         method_decision: Any | None = None,
+        reason_code: str | None = None,
+        method_gate: dict[str, Any] | None = None,
     ):
         self.code = code
         self.method_decision = method_decision
-        self.reason_code = (
+        self.reason_code = reason_code or (
             method_decision.reason_code if method_decision is not None else code
         )
-        self.method_gate = (
+        self.method_gate = method_gate or (
             method_decision.as_dict() if method_decision is not None else None
         )
         super().__init__(message)
@@ -175,6 +177,28 @@ def load_canonical_dcf_fact_universe(
             "dcf_fact_universe_too_large",
             "Canonical DCF fact universe exceeds the safe evaluation bound",
         )
+    candidate_oeps = [
+        fact for fact in facts if fact.metric_key == "owners_earnings_per_share"
+    ]
+    oeps_facts, blocked_oeps, _ = apply_reviewed_method_gates(
+        session,
+        stock_id=stock_id,
+        facts=candidate_oeps,
+        effective_as_of=effective_as_of,
+        knowledge_at=evaluated_at,
+        precomputed_decisions=method_decisions,
+    )
+    if blocked_oeps:
+        blocked = blocked_oeps[0]
+        raise DcfFactUniverseError(
+            "unsupported",
+            f"owner_earnings is unsupported: {blocked['reason_code']}",
+            reason_code=str(blocked["reason_code"]),
+            method_gate=blocked.get("method_gate"),
+        )
+    facts = [
+        fact for fact in facts if fact.metric_key != "owners_earnings_per_share"
+    ] + oeps_facts
     facts = guard_reconciled_source_selection(
         facts,
         consumer="valuation_inputs",
@@ -185,14 +209,6 @@ def load_canonical_dcf_fact_universe(
     facts = guard_sec_run_availability(session, stock_id=stock_id, facts=facts)
     dcf_facts = [fact for fact in facts if fact.metric_key in DCF_INPUT_FACT_KEYS.values()]
     oeps_facts = [fact for fact in facts if fact.metric_key == "owners_earnings_per_share"]
-    oeps_facts, _, _ = apply_reviewed_method_gates(
-        session,
-        stock_id=stock_id,
-        facts=oeps_facts,
-        effective_as_of=effective_as_of,
-        knowledge_at=evaluated_at,
-        precomputed_decisions=method_decisions,
-    )
     return DcfFactUniverse(
         dcf_facts=dcf_facts,
         oeps_facts=oeps_facts,

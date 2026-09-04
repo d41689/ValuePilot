@@ -5,7 +5,7 @@ from datetime import datetime, date
 from pathlib import Path
 from typing import Optional
 from sqlalchemy.orm import Session
-from sqlalchemy import update, select, text
+from sqlalchemy import func, update, select, text
 from sqlalchemy.dialects.postgresql import insert
 from fastapi import UploadFile
 
@@ -844,6 +844,10 @@ class IngestionService:
             source_ref_id=None,
             source_document_id=None,
             is_current=True,
+            # ``func.now()`` is transaction-start time in PostgreSQL and can
+            # precede the authority cutoff captured later in a long-lived
+            # transaction.  This origin boundary needs the actual insert time.
+            created_at=func.clock_timestamp(),
         )
         self.db.add(fact)
         self.db.flush()

@@ -601,6 +601,191 @@ def test_multilevel_supersession_resolves_descendant_over_ancestor_range(
         assert decision.risk_attributes == (review_kind,)
 
 
+@pytest.mark.parametrize("review_kind", ["classification", *RISK_ATTRIBUTES])
+def test_nonoverlap_continuation_requires_and_accepts_exact_terminal_lineage(
+    db_session, user_factory, review_kind: str
+) -> None:
+    reviewer = user_factory(f"ft07-gap-{review_kind}@example.com", role="admin")
+    stock = _stock(db_session, f"G{review_kind[:6]}")
+    _review_ordinary_profile(db_session, reviewer=reviewer, stock=stock)
+
+    if review_kind == "classification":
+        original = db_session.scalar(
+            select(SecEconomicClassificationReview).where(
+                SecEconomicClassificationReview.stock_id == stock.id
+            )
+        )
+        assert original is not None
+        middle = review_company_classification(
+            db_session,
+            reviewer_user_id=reviewer.id,
+            stock_id=stock.id,
+            economic_class="bank",
+            effective_from=date(2024, 1, 1),
+            effective_to=date(2024, 1, 31),
+            review_reason="Finite regulated-company interval.",
+            supersedes_review_id=original.id,
+        )
+        continuation = review_company_classification(
+            db_session,
+            reviewer_user_id=reviewer.id,
+            stock_id=stock.id,
+            economic_class="ordinary",
+            effective_from=date(2024, 3, 1),
+            review_reason="Reviewed non-overlap operating-company continuation.",
+            supersedes_review_id=middle.id,
+        )
+    else:
+        original = db_session.scalar(
+            select(SecEconomicRiskReview).where(
+                SecEconomicRiskReview.stock_id == stock.id,
+                SecEconomicRiskReview.risk_attribute == review_kind,
+            )
+        )
+        assert original is not None
+        middle = review_company_risk_attribute(
+            db_session,
+            reviewer_user_id=reviewer.id,
+            stock_id=stock.id,
+            risk_attribute=review_kind,
+            is_present=True,
+            effective_from=date(2024, 1, 1),
+            effective_to=date(2024, 1, 31),
+            review_reason="Finite material-risk interval.",
+            supersedes_review_id=original.id,
+        )
+        continuation = review_company_risk_attribute(
+            db_session,
+            reviewer_user_id=reviewer.id,
+            stock_id=stock.id,
+            risk_attribute=review_kind,
+            is_present=False,
+            effective_from=date(2024, 3, 1),
+            review_reason="Reviewed non-overlap risk continuation.",
+            supersedes_review_id=middle.id,
+        )
+    db_session.commit()
+
+    before_middle = reviewed_method_gate(
+        db_session,
+        stock_id=stock.id,
+        method_key="owner_earnings",
+        effective_as_of=date(2024, 1, 15),
+        knowledge_at=middle.known_at - timedelta(microseconds=1),
+    )
+    at_middle_boundary = reviewed_method_gate(
+        db_session,
+        stock_id=stock.id,
+        method_key="owner_earnings",
+        effective_as_of=date(2024, 1, 31),
+        knowledge_at=continuation.known_at,
+    )
+    gap = reviewed_method_gate(
+        db_session,
+        stock_id=stock.id,
+        method_key="owner_earnings",
+        effective_as_of=date(2024, 2, 15),
+        knowledge_at=continuation.known_at,
+    )
+    before_continuation = reviewed_method_gate(
+        db_session,
+        stock_id=stock.id,
+        method_key="owner_earnings",
+        effective_as_of=date(2024, 3, 1),
+        knowledge_at=middle.known_at,
+    )
+    current = reviewed_method_gate(
+        db_session,
+        stock_id=stock.id,
+        method_key="owner_earnings",
+        effective_as_of=date(2024, 3, 1),
+        knowledge_at=continuation.known_at,
+    )
+
+    assert before_middle.status == "approved"
+    assert gap.status == "approved"
+    assert before_continuation.status == "approved"
+    if review_kind == "classification":
+        assert at_middle_boundary.economic_class == "bank"
+        assert at_middle_boundary.classification_review_id == middle.id
+        assert gap.classification_review_id == original.id
+        assert current.economic_class == "ordinary"
+        assert current.classification_review_id == continuation.id
+    else:
+        assert at_middle_boundary.reason_code == "reviewed_risk_attribute_unsupported"
+        assert next(
+            row for row in at_middle_boundary.risk_reviews
+            if row.risk_attribute == review_kind
+        ).review_id == middle.id
+        assert next(
+            row for row in gap.risk_reviews if row.risk_attribute == review_kind
+        ).review_id == original.id
+        assert current.status == "approved"
+        assert next(
+            row for row in current.risk_reviews if row.risk_attribute == review_kind
+        ).review_id == continuation.id
+
+
+@pytest.mark.parametrize("review_kind", ["classification", "high_sbc"])
+def test_database_enforces_nonoverlap_exact_terminal_lineage(
+    db_session, user_factory, review_kind: str
+) -> None:
+    reviewer = user_factory(f"ft07-sql-gap-{review_kind}@example.com", role="admin")
+    stock = _stock(db_session, f"S{review_kind[:6]}")
+    if review_kind == "classification":
+        table = "sec_economic_classification_reviews"
+        root = review_company_classification(
+            db_session,
+            reviewer_user_id=reviewer.id,
+            stock_id=stock.id,
+            economic_class="ordinary",
+            effective_from=date(2024, 1, 1),
+            effective_to=date(2024, 1, 31),
+            review_reason="Finite SQL lineage root.",
+        )
+        columns = "economic_class"
+        value = "'bank'"
+    else:
+        table = "sec_economic_risk_attribute_reviews"
+        root = review_company_risk_attribute(
+            db_session,
+            reviewer_user_id=reviewer.id,
+            stock_id=stock.id,
+            risk_attribute=review_kind,
+            is_present=False,
+            effective_from=date(2024, 1, 1),
+            effective_to=date(2024, 1, 31),
+            review_reason="Finite SQL lineage root.",
+        )
+        columns = "risk_attribute,is_present"
+        value = "'high_sbc',true"
+    db_session.commit()
+
+    continuation_id = db_session.execute(
+        text(
+            f"INSERT INTO {table} "
+            f"(stock_id,{columns},effective_from,reviewer_user_id,review_reason,"
+            "supersedes_review_id) VALUES "
+            f"(:stock,{value},'2024-03-01',:reviewer,'exact terminal continuation',"
+            ":prior) RETURNING id"
+        ),
+        {"stock": stock.id, "reviewer": reviewer.id, "prior": root.id},
+    ).scalar_one()
+    assert continuation_id > root.id
+    db_session.commit()
+
+    with pytest.raises(DBAPIError, match="exact terminal supersession"):
+        db_session.execute(
+            text(
+                f"INSERT INTO {table} "
+                f"(stock_id,{columns},effective_from,reviewer_user_id,review_reason) "
+                f"VALUES (:stock,{value},'2025-01-01',:reviewer,'independent root')"
+            ),
+            {"stock": stock.id, "reviewer": reviewer.id},
+        )
+    db_session.rollback()
+
+
 @pytest.mark.parametrize(
     ("metric_key", "expected"),
     [

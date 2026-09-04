@@ -39,6 +39,7 @@ from app.services.oracles_lens.constants import SCORE_VERSION
 from app.services.valuation import (
     USER_INTRINSIC_VALUE_KEY,
     VALUE_LINE_TARGET_REFERENCE_KEY,
+    ValuationFact,
     read_valuation_facts_by_stock,
 )
 from app.services.oracles_lens.manager_signal import derive_manager_signal_profile
@@ -1226,7 +1227,7 @@ def _m3_facts_by_stock(
     statuses = {stock_id: {"status": "available"} for stock_id in unique_stock_ids}
     for stock_id, by_key in candidates.items():
         all_facts = [fact for rows in by_key.values() for fact in rows]
-        kept, _, _ = apply_reviewed_method_gates(
+        kept, method_blocked, _ = apply_reviewed_method_gates(
             session,
             stock_id=stock_id,
             facts=all_facts,
@@ -1234,6 +1235,18 @@ def _m3_facts_by_stock(
             knowledge_at=knowledge_at,
             precomputed_decisions=(method_decisions_by_stock or {}).get(stock_id),
         )
+        if method_blocked:
+            statuses[stock_id] = {
+                "status": "partial",
+                "reason_code": method_blocked[0]["reason_code"],
+                "unavailable_metrics": [
+                    {
+                        "metric_key": item["metric_key"],
+                        "blocking_reasons": [item["reason_code"]],
+                    }
+                    for item in method_blocked
+                ],
+            }
         kept_ids = {fact.id for fact in kept}
         for metric_key, rows in by_key.items():
             rows = [fact for fact in rows if fact.id in kept_ids]
@@ -1372,7 +1385,29 @@ def _quality_overlay_by_stock(
                 "reason_code": "user_authored_formula",
             }
         else:
-            method_decisions[stock_id] = gate_decisions[stock_id]["owner_earnings"]
+            owner_block = next(
+                (
+                    reason
+                    for item in source_statuses[stock_id].get(
+                        "unavailable_metrics", []
+                    )
+                    if str(item.get("metric_key", "")).startswith(
+                        "owners_earnings_per_share"
+                    )
+                    for reason in item.get("blocking_reasons", [])
+                    if str(reason).startswith("method_authority_snapshot_")
+                ),
+                None,
+            )
+            method_decisions[stock_id] = (
+                {
+                    "method_key": "owner_earnings",
+                    "status": "unsupported",
+                    "reason_code": owner_block,
+                }
+                if owner_block is not None
+                else gate_decisions[stock_id]["owner_earnings"]
+            )
     return {
         stock_id: _quality_payload(
             facts_by_stock.get(stock_id, {}),
@@ -1651,7 +1686,7 @@ def _valuation_reference_by_stock(
 
 
 def _valuation_payload(
-    facts: dict[str, MetricFact],
+    facts: dict[str, ValuationFact],
     current_price: CanonicalEodPrice | None,
     holder_range: tuple[float | None, float | None],
     *,
@@ -1666,12 +1701,21 @@ def _valuation_payload(
     reference_type = "missing"
     reference_confidence = "unavailable"
     reference_currency = None
-    if manual and manual.value_numeric is not None:
-        reference = float(manual.value_numeric)
-        reference_label = "User-entered valuation reference"
-        reference_type = "manual_intrinsic_value"
-        reference_confidence = "user_supplied"
-        reference_currency = _fact_currency(manual)
+    manual_reason = None
+    if manual is not None:
+        if manual.value_numeric is not None:
+            reference = float(manual.value_numeric)
+            reference_label = "User-entered valuation reference"
+            reference_type = "manual_intrinsic_value"
+            reference_confidence = "user_supplied"
+            reference_currency = _fact_currency(manual)
+        elif isinstance(manual.value_json, dict):
+            reason = manual.value_json.get("reason_code")
+            if manual.value_json.get("status") == "unsupported" and isinstance(
+                reason, str
+            ):
+                manual_reason = reason
+                reference_type = "unsupported"
     elif target and target.value_numeric is not None:
         reference = float(target.value_numeric)
         reference_label = "Value Line 18-month target midpoint"
@@ -1687,7 +1731,7 @@ def _valuation_payload(
         if current_price is None
         else None
     )
-    comparison_reason = price_reason
+    comparison_reason = manual_reason or price_reason
     if comparison_reason is None and reference is not None and reference_currency is None:
         comparison_reason = "valuation_currency_unavailable"
     elif (
@@ -1719,7 +1763,7 @@ def _valuation_payload(
     ):
         unavailable.append(holder_comparison_reason)
     if reference is None:
-        unavailable.append("missing valuation reference")
+        unavailable.append(manual_reason or "missing valuation reference")
     if holder_low is None or holder_high is None:
         unavailable.append("missing holder price estimate")
 

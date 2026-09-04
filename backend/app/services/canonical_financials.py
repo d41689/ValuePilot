@@ -520,6 +520,45 @@ def system_method_for_fact(fact: MetricFact) -> str | None:
     return None
 
 
+def _owner_earnings_origin_error(
+    session: Session, *, stock_id: int, fact: MetricFact
+) -> str | None:
+    if fact.source_type != "calculated":
+        return None
+    metadata = fact.value_json if isinstance(fact.value_json, dict) else {}
+    snapshot = metadata.get("analysis_method")
+    if snapshot is None:
+        return "method_authority_snapshot_missing"
+    if not isinstance(snapshot, dict):
+        return "method_authority_snapshot_invalid"
+    try:
+        effective_raw = snapshot.get("effective_as_of")
+        knowledge_raw = snapshot.get("knowledge_at")
+        if not isinstance(effective_raw, str) or not isinstance(knowledge_raw, str):
+            return "method_authority_snapshot_invalid"
+        origin_effective_as_of = date.fromisoformat(effective_raw)
+        origin_knowledge_at = datetime.fromisoformat(knowledge_raw.replace("Z", "+00:00"))
+        if origin_knowledge_at.tzinfo is None:
+            return "method_authority_snapshot_invalid"
+        fact_created_at = fact.created_at
+        if fact_created_at is None or fact_created_at.tzinfo is None:
+            return "method_authority_snapshot_invalid"
+        if origin_knowledge_at > fact_created_at:
+            return "method_authority_snapshot_invalid"
+        replay = reviewed_method_gate(
+            session,
+            stock_id=stock_id,
+            method_key="owner_earnings",
+            effective_as_of=origin_effective_as_of,
+            knowledge_at=origin_knowledge_at,
+        )
+    except (TypeError, ValueError):
+        return "method_authority_snapshot_invalid"
+    if replay.status != "approved" or replay.as_dict() != snapshot:
+        return "method_authority_snapshot_invalid"
+    return None
+
+
 def apply_reviewed_method_gates(
     session: Session,
     *,
@@ -554,14 +593,22 @@ def apply_reviewed_method_gates(
     for fact in materialized:
         method = system_method_for_fact(fact)
         decision = decisions.get(method) if method else None
-        if decision is None or decision.status == "approved":
+        origin_error = (
+            _owner_earnings_origin_error(session, stock_id=stock_id, fact=fact)
+            if method == "owner_earnings"
+            and decision is not None
+            and decision.status == "approved"
+            else None
+        )
+        if decision is None or (decision.status == "approved" and origin_error is None):
             kept.append(fact)
             continue
+        reason_code = origin_error or decision.reason_code
         blocked.append(
             {
                 "id": None,
                 "status": "unsupported",
-                "reason_code": decision.reason_code,
+                "reason_code": reason_code,
                 "method_key": method,
                 "metric_key": fact.metric_key,
                 "value_numeric": None,
