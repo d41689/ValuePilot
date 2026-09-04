@@ -3,6 +3,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 
 const {
+  formatDcfExactMoney,
   formatDcfMoney,
   resolveDcfCurrencyState,
   resolveSafeMarginState,
@@ -19,6 +20,14 @@ test('DCF renders its validated ISO currency without a dollar assumption', () =>
   assert.equal(formatDcfMoney(1234.5, available('DKK')), 'DKK 1,234.50');
   assert.equal(formatDcfMoney(1234.5, available('EUR')), 'EUR 1,234.50');
   assert.equal(formatDcfMoney(1234.5, available('TWD')), 'TWD 1,234.50');
+});
+
+test('DCF formats the exact server decimal without first coercing through Number', () => {
+  assert.equal(
+    formatDcfExactMoney('991218953812.597121', available('USD')),
+    'USD 991,218,953,812.60'
+  );
+  assert.equal(formatDcfExactMoney('invalid', available('USD')), 'Unavailable');
 });
 
 test('DCF currency selection follows the selected input set', () => {

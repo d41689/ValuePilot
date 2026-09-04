@@ -1,5 +1,6 @@
 import copy
 from datetime import date, datetime, timedelta, timezone
+from decimal import Decimal
 from zoneinfo import ZoneInfo
 
 import pytest
@@ -197,6 +198,7 @@ def test_put_fair_value_preserves_prior_period_and_demotes_only_same_day_slot(
     payload = resp.json()
     assert payload["metric_key"] == FAIR_VALUE_KEY
     assert payload["value_numeric"] == 125.0
+    assert payload["value_numeric_exact"] == "125.000000"
     assert payload["is_current"] is True
     assert payload["research_case_id"] is not None
     assert payload["research_revision_id"] is not None
@@ -403,6 +405,45 @@ def test_put_dcf_accepts_maximum_bounded_scenario_and_saves_decimal_result(
     )
     assert revision.valuation_base == expected
     assert revision.assumptions_json[0]["result"]["value_per_share"] == str(expected)
+
+
+def test_put_dcf_preserves_exact_server_decimal_through_revision_fact_and_wire(
+    client, db_session, auth_headers, monkeypatch
+):
+    user = _make_user(db_session, "dcf-exact-decimal@example.com")
+    stock = _make_stock(db_session, "DCFEX")
+    _add_dcf_inputs(db_session, user=user, stock=stock)
+    assumption = _dcf_assumption(
+        client, user=user, stock=stock, auth_headers=auth_headers
+    )
+    exact = Decimal("991218953812.597121")
+    real_calculate = stocks_endpoint.calculate_dcf_model
+
+    def exact_server_calculation(actual_inputs):
+        result = real_calculate(actual_inputs)
+        result["value_per_share"] = exact
+        return result
+
+    monkeypatch.setattr(
+        stocks_endpoint, "calculate_dcf_model", exact_server_calculation
+    )
+
+    response = client.put(
+        f"/api/v1/stocks/{stock.id}/facts",
+        headers=auth_headers(user),
+        json=_dcf_save_payload(assumption),
+    )
+
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload["value_numeric_exact"] == "991218953812.597121"
+    revision = db_session.get(
+        ResearchCaseRevision, payload["research_revision_id"]
+    )
+    fact = db_session.get(MetricFact, payload["id"])
+    assert revision.valuation_base == exact
+    assert revision.assumptions_json[0]["result"]["value_per_share"] == str(exact)
+    assert fact.value_numeric == exact
 
 
 def test_put_dcf_rejects_removed_nested_client_result_field(
@@ -956,6 +997,8 @@ def test_put_fair_value_reopens_monitoring_case_for_explicit_review(
     )
 
     assert response.status_code == 200, response.text
+    assert response.json()["value_numeric"] == 140.0
+    assert response.json()["value_numeric_exact"] == "140.000000"
     db_session.refresh(case)
     assert case.state == "researching"
     assert case.decision is None

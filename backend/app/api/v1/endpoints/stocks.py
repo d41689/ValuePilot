@@ -9,7 +9,10 @@ from app.core.currencies import normalize_iso4217_currency
 from app.models.artifacts import PdfDocument
 from app.models.stocks import Stock
 from app.models.facts import MetricFact
-from app.services.valuation import USER_INTRINSIC_VALUE_KEY
+from app.services.valuation import (
+    USER_INTRINSIC_VALUE_KEY,
+    quantize_valuation_value,
+)
 from app.services.active_report_resolver import ActiveReportSelection, resolve_active_reports
 from app.services.actual_conflict_service import detect_actual_conflicts
 from app.services.canonical_financials import (
@@ -24,7 +27,7 @@ from app.services.canonical_financials import (
     reviewed_method_gate,
     visible_metric_fact_predicate,
 )
-from app.schemas.stock import ResearchValuationSave
+from app.schemas.stock import ResearchValuationSave, ResearchValuationSaveResponse
 from app.services.research_cases import (
     ResearchCaseError,
     save_product_valuation_revision,
@@ -1357,7 +1360,7 @@ def read_sec_publication_evidence(
     return evidence
 
 
-@router.put("/{stock_id}/facts", response_model=dict)
+@router.put("/{stock_id}/facts", response_model=ResearchValuationSaveResponse)
 def upsert_stock_fact(
     *,
     stock_id: int,
@@ -1425,11 +1428,13 @@ def upsert_stock_fact(
             detail={"code": error.code, "message": error.message},
         ) from error
 
+    exact_value = quantize_valuation_value(fact.value_numeric)
     return {
         "id": fact.id,
         "stock_id": fact.stock_id,
         "metric_key": fact.metric_key,
-        "value_numeric": float(fact.value_numeric),
+        "value_numeric_exact": exact_value,
+        "value_numeric": float(exact_value),
         "unit": fact.unit,
         "period_type": fact.period_type,
         "period_end_date": fact.period_end_date,

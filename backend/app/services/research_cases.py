@@ -31,6 +31,7 @@ from app.schemas.research import (
 from app.services.valuation import (
     USER_INTRINSIC_VALUE_KEY,
     publish_user_intrinsic_value,
+    quantize_valuation_value,
     redact_published_unavailable_reason,
 )
 from app.services.screener_service import ScreenerService
@@ -407,6 +408,21 @@ def save_revision(
         evidence=payload.evidence,
     )
     revision_number = case.head_revision_number + 1
+    valuation_low = (
+        quantize_valuation_value(payload.valuation_low)
+        if payload.valuation_low is not None
+        else None
+    )
+    valuation_base = (
+        quantize_valuation_value(payload.valuation_base)
+        if payload.valuation_base is not None
+        else None
+    )
+    valuation_high = (
+        quantize_valuation_value(payload.valuation_high)
+        if payload.valuation_high is not None
+        else None
+    )
     revision = ResearchCaseRevision(
         case_id=case.id,
         revision_number=revision_number,
@@ -417,9 +433,9 @@ def save_revision(
         risks_json=payload.risks,
         evidence_json=evidence,
         case_state=payload.target_state,
-        valuation_low=payload.valuation_low,
-        valuation_base=payload.valuation_base,
-        valuation_high=payload.valuation_high,
+        valuation_low=valuation_low,
+        valuation_base=valuation_base,
+        valuation_high=valuation_high,
         valuation_currency=payload.valuation_currency,
         valuation_unavailable_reason=payload.valuation_unavailable_reason,
         valuation_as_of_date=payload.valuation_as_of_date,
@@ -462,11 +478,7 @@ def save_revision(
             session,
             user_id=user_id,
             stock_id=case.stock_id,
-            value_numeric=(
-                float(payload.valuation_base)
-                if payload.valuation_base is not None
-                else None
-            ),
+            value_numeric=valuation_base,
             as_of_date=payload.valuation_as_of_date,
             unavailable_reason=payload.valuation_unavailable_reason,
             source_ref_id=revision.id,

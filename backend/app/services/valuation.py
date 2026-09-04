@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import date
+from decimal import Decimal, ROUND_HALF_EVEN
 from typing import Any
 
 from sqlalchemy import select, update
@@ -13,6 +14,14 @@ from app.models.facts import MetricFact
 
 USER_INTRINSIC_VALUE_KEY = "val.fair_value"
 VALUE_LINE_TARGET_REFERENCE_KEY = "target.price_18m.mid"
+VALUATION_VALUE_QUANTUM = Decimal("0.000001")
+
+
+def quantize_valuation_value(value: Decimal) -> Decimal:
+    """Normalize every published valuation to the revision's six-place contract."""
+
+    decimal_value = value if isinstance(value, Decimal) else Decimal(str(value))
+    return decimal_value.quantize(VALUATION_VALUE_QUANTUM, rounding=ROUND_HALF_EVEN)
 
 
 @dataclass(frozen=True)
@@ -191,11 +200,14 @@ def publish_user_intrinsic_value(
     *,
     user_id: int,
     stock_id: int,
-    value_numeric: float | None,
+    value_numeric: Decimal | None,
     as_of_date: date,
     unavailable_reason: str | None = None,
     source_ref_id: int | None = None,
 ) -> MetricFact:
+    persisted_value = (
+        quantize_valuation_value(value_numeric) if value_numeric is not None else None
+    )
     session.execute(
         update(MetricFact)
         .where(
@@ -221,7 +233,7 @@ def publish_user_intrinsic_value(
         user_id=user_id,
         stock_id=stock_id,
         metric_key=USER_INTRINSIC_VALUE_KEY,
-        value_numeric=value_numeric,
+        value_numeric=persisted_value,
         value_json=value_json,
         unit="USD",
         currency="USD",

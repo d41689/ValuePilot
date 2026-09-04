@@ -110,7 +110,7 @@ test('DCF page labels browser output as preview and displays the saved server va
   );
 
   assert.match(source, /Local preview value/);
-  assert.match(source, /saved\.data\.value_numeric/);
+  assert.match(source, /saved\.data\.value_numeric_exact/);
   assert.match(source, /Server-calculated value/);
   assert.doesNotMatch(source, /clientResultPerShare/);
 });

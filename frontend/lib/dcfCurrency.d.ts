@@ -8,6 +8,7 @@ export function resolveDcfCurrencyState(
   selection: 'norm' | number,
 ): DcfCurrencyState;
 export function formatDcfMoney(value: number, currencyState: DcfCurrencyState): string;
+export function formatDcfExactMoney(value: string, currencyState: DcfCurrencyState): string;
 export function resolveSafeMarginState(input: {
   currencyState: DcfCurrencyState;
   currentPrice: CanonicalCurrentPrice | null;

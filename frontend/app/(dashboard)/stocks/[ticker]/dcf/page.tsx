@@ -16,6 +16,7 @@ import { normalizeTicker } from '@/lib/stockRoutes';
 import { computeGrowthValue, computeTerminalValue, computeTotalValue } from '@/lib/dcfMath';
 import { buildDcfModelPayload } from '@/lib/dcfModel';
 import {
+  formatDcfExactMoney,
   formatDcfMoney,
   resolveDcfCurrencyState,
   resolveSafeMarginState,
@@ -457,11 +458,11 @@ export default function StockDcfPage() {
           },
         ],
       });
-      const savedValue = Number(saved.data.value_numeric);
+      const savedExactValue = String(saved.data.value_numeric_exact);
       toast({
         title: 'Saved',
-        description: `Server-calculated value ${formatDcfMoney(
-          savedValue,
+        description: `Server-calculated value ${formatDcfExactMoney(
+          savedExactValue,
           valuationCurrencyState
         )} saved to research history.`,
       });

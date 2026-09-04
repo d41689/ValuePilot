@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from datetime import date
+from datetime import date, datetime
 from decimal import Decimal
 from typing import Any, Literal
 
@@ -61,3 +61,23 @@ class ResearchValuationSave(BaseModel):
         if self.source == "dcf" and self.valuation_currency is None:
             raise ValueError("valuation_currency is required for DCF valuations")
         return self
+
+
+class ResearchValuationSaveResponse(BaseModel):
+    """Exact persisted valuation plus a derived display-only compatibility number."""
+
+    id: int
+    stock_id: int
+    metric_key: str
+    value_numeric_exact: Decimal = Field(max_digits=24, decimal_places=6)
+    value_numeric: float = Field(
+        description="Non-authoritative display number derived from value_numeric_exact"
+    )
+    unit: str | None
+    period_type: str | None
+    period_end_date: date | None
+    source_type: str
+    is_current: bool
+    created_at: datetime
+    research_case_id: int
+    research_revision_id: int
