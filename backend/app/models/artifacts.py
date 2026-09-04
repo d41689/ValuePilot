@@ -111,3 +111,35 @@ class ValueLineMappingPolicy(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
+
+
+class ValueLineFactExtractionInput(Base):
+    """Append-only exact extraction input for one parsed Value Line fact."""
+
+    __tablename__ = "value_line_fact_extraction_inputs"
+    __table_args__ = (
+        CheckConstraint(
+            "input_role IN ('primary', 'supporting')",
+            name="ck_value_line_fact_extraction_inputs_role",
+        ),
+        CheckConstraint(
+            "input_ordinal > 0",
+            name="ck_value_line_fact_extraction_inputs_ordinal",
+        ),
+    )
+
+    fact_id: Mapped[int] = mapped_column(
+        ForeignKey("metric_facts.id", ondelete="CASCADE"), primary_key=True
+    )
+    extraction_id: Mapped[int] = mapped_column(
+        ForeignKey("metric_extractions.id", ondelete="CASCADE"), primary_key=True
+    )
+    value_line_parse_run_id: Mapped[int] = mapped_column(
+        ForeignKey("value_line_parse_runs.id", ondelete="CASCADE"), nullable=False
+    )
+    input_role: Mapped[str] = mapped_column(String, nullable=False)
+    input_ordinal: Mapped[int] = mapped_column(Integer, nullable=False)
+    created_txid: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )

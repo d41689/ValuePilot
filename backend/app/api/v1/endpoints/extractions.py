@@ -6,7 +6,12 @@ from sqlalchemy import select
 from app.api.deps import SessionDep, CurrentUser
 from app.models.extractions import MetricExtraction
 from app.models.facts import MetricFact
-from app.models.artifacts import PdfDocument, ValueLineMappingPolicy, ValueLineParseRun
+from app.models.artifacts import (
+    PdfDocument,
+    ValueLineFactExtractionInput,
+    ValueLineMappingPolicy,
+    ValueLineParseRun,
+)
 from app.services.manual_metric_correction import (
     ManualMetricCorrectionError,
     create_manual_metric_correction,
@@ -124,6 +129,10 @@ def _resolve_canonical_fact_for_extraction(
     candidates = session.scalars(
         select(MetricFact)
         .join(
+            ValueLineFactExtractionInput,
+            ValueLineFactExtractionInput.fact_id == MetricFact.id,
+        )
+        .join(
             ValueLineParseRun,
             ValueLineParseRun.id == MetricFact.value_line_parse_run_id,
         )
@@ -136,8 +145,11 @@ def _resolve_canonical_fact_for_extraction(
             MetricFact.source_type == "parsed",
             MetricFact.stock_id == document.stock_id,
             MetricFact.source_document_id == extraction.document_id,
-            MetricFact.source_ref_id == extraction.id,
             MetricFact.value_line_parse_run_id == extraction.value_line_parse_run_id,
+            ValueLineFactExtractionInput.extraction_id == extraction.id,
+            ValueLineFactExtractionInput.value_line_parse_run_id
+            == extraction.value_line_parse_run_id,
+            ValueLineFactExtractionInput.input_role == "primary",
             ValueLineParseRun.user_id == user_id,
             ValueLineParseRun.document_id == extraction.document_id,
             ValueLineParseRun.status == "succeeded",

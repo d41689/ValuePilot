@@ -1,7 +1,5 @@
 from datetime import date, datetime, timezone
 
-from sqlalchemy import update
-
 from app.models.artifacts import PdfDocument
 from app.models.facts import MetricFact
 from app.models.stocks import Stock, StockPrice
@@ -325,8 +323,7 @@ def test_lookup_stock_by_ticker_returns_summary(client, db_session, auth_headers
     db_session.add(doc)
     db_session.commit()
 
-    db_session.add_all(
-        [
+    facts = [
             MetricFact(
                 user_id=user.id,
                 stock_id=stock.id,
@@ -831,7 +828,15 @@ def test_lookup_stock_by_ticker_returns_summary(client, db_session, auth_headers
                 is_current=True,
             ),
         ]
-    )
+    for fact in facts:
+        fact.source_document_id = doc.id
+        if fact.metric_key in {
+            "per_share.eps",
+            "is.depreciation",
+            "per_share.capital_spending",
+        }:
+            fact.currency = "USD"
+    db_session.add_all(facts)
     db_session.add(
         StockPrice(
             stock_id=stock.id,
@@ -847,30 +852,6 @@ def test_lookup_stock_by_ticker_returns_summary(client, db_session, auth_headers
         )
     )
     db_session.flush()
-    db_session.execute(
-        update(MetricFact)
-        .where(
-            MetricFact.user_id == user.id,
-            MetricFact.stock_id == stock.id,
-            MetricFact.source_type == "parsed",
-        )
-        .values(source_document_id=doc.id)
-    )
-    db_session.execute(
-        update(MetricFact)
-        .where(
-            MetricFact.user_id == user.id,
-            MetricFact.stock_id == stock.id,
-            MetricFact.metric_key.in_(
-                [
-                    "per_share.eps",
-                    "is.depreciation",
-                    "per_share.capital_spending",
-                ]
-            ),
-        )
-        .values(currency="USD")
-    )
     db_session.commit()
 
     response = client.get(
@@ -1722,7 +1703,18 @@ def test_lookup_stock_by_ticker_uses_revenues_growth_when_sales_missing(
     user = User(email="ticker_lookup_revenues@example.com")
     stock = Stock(ticker="REV_TEST", exchange="NDQ", company_name="REVENUES INC", is_active=True)
     db_session.add_all([user, stock])
-    db_session.commit()
+    db_session.flush()
+    doc = PdfDocument(
+        user_id=user.id,
+        file_name="revenues.pdf",
+        source="value_line",
+        file_storage_key="/tmp/revenues.pdf",
+        parse_status="parsed",
+        stock_id=stock.id,
+        report_date=date(2026, 1, 9),
+    )
+    db_session.add(doc)
+    db_session.flush()
 
     db_session.add_all(
         [
@@ -1737,6 +1729,7 @@ def test_lookup_stock_by_ticker_uses_revenues_growth_when_sales_missing(
                 period_end_date=date(2026, 1, 9),
                 source_type="parsed",
                 source_ref_id=None,
+                source_document_id=doc.id,
                 is_current=True,
             ),
             MetricFact(
@@ -1750,6 +1743,7 @@ def test_lookup_stock_by_ticker_uses_revenues_growth_when_sales_missing(
                 period_end_date=date(2026, 1, 9),
                 source_type="parsed",
                 source_ref_id=None,
+                source_document_id=doc.id,
                 is_current=True,
             ),
             MetricFact(
@@ -1763,6 +1757,7 @@ def test_lookup_stock_by_ticker_uses_revenues_growth_when_sales_missing(
                 period_end_date=date(2026, 1, 9),
                 source_type="parsed",
                 source_ref_id=None,
+                source_document_id=doc.id,
                 is_current=True,
             ),
         ]
@@ -1783,10 +1778,10 @@ def test_lookup_stock_by_ticker_uses_revenues_growth_when_sales_missing(
             "value": 11.0,
             "provenance": {
                 "source_type": "parsed",
-                "source_document_id": None,
-                "source_report_date": None,
+                "source_document_id": doc.id,
+                "source_report_date": "2026-01-09",
                 "period_end_date": "2026-01-09",
-                "is_active_report": False,
+                "is_active_report": True,
             },
         },
         {
@@ -1795,10 +1790,10 @@ def test_lookup_stock_by_ticker_uses_revenues_growth_when_sales_missing(
             "value": 7.5,
             "provenance": {
                 "source_type": "parsed",
-                "source_document_id": None,
-                "source_report_date": None,
+                "source_document_id": doc.id,
+                "source_report_date": "2026-01-09",
                 "period_end_date": "2026-01-09",
-                "is_active_report": False,
+                "is_active_report": True,
             },
         },
         {
@@ -1807,10 +1802,10 @@ def test_lookup_stock_by_ticker_uses_revenues_growth_when_sales_missing(
             "value": 5.0,
             "provenance": {
                 "source_type": "parsed",
-                "source_document_id": None,
-                "source_report_date": None,
+                "source_document_id": doc.id,
+                "source_report_date": "2026-01-09",
                 "period_end_date": "2026-01-09",
-                "is_active_report": False,
+                "is_active_report": True,
             },
         },
     ]

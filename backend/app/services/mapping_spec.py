@@ -108,6 +108,9 @@ class MappingSpec:
                         "currency": currency,
                         "period_type": period_type,
                         "period_end_date": period_end_date,
+                        "source_extraction_keys": tuple(
+                            mapping.get("source_extraction_keys") or ()
+                        ),
                     }
                 )
         unmapped = _unmapped_paths(page_json, used_paths)

@@ -333,6 +333,9 @@ def test_partial_reparse_rolls_back_and_preserves_every_prior_current_slot(db_se
     )
     db_session.commit()
     prior_ids = [fact.id for fact in prior_facts]
+    baseline_run_count = (
+        db_session.query(ValueLineParseRun).filter_by(document_id=doc.id).count()
+    )
 
     pages = [
         (
@@ -368,7 +371,10 @@ def test_partial_reparse_rolls_back_and_preserves_every_prior_current_slot(db_se
     )
     assert [row.id for row in rows] == prior_ids
     assert all(row.is_current for row in rows)
-    assert db_session.query(ValueLineParseRun).filter_by(document_id=doc.id).count() == 0
+    assert (
+        db_session.query(ValueLineParseRun).filter_by(document_id=doc.id).count()
+        == baseline_run_count
+    )
     preserved_doc = db_session.get(PdfDocument, doc.id)
     assert preserved_doc.parse_status == "parsed"
     assert preserved_doc.report_date == date(2026, 1, 2)
@@ -743,7 +749,7 @@ def test_reparse_existing_document_replaces_prior_document_snapshot_when_identit
     assert any(extraction.raw_value_text != "9" for extraction in extractions)
 
 
-def test_reparse_appends_mapping_revision_and_preserves_manual_lineage(db_session):
+def test_reparse_appends_run_revision_and_preserves_manual_lineage(db_session):
     user = User(email="reparse_mapping_history@example.com")
     stock = Stock(ticker="RMAP", exchange="NYSE", company_name="Reparse Mapping")
     db_session.add_all([user, stock])
@@ -807,6 +813,7 @@ def test_reparse_appends_mapping_revision_and_preserves_manual_lineage(db_sessio
     )
     db_session.add(old_fact)
     db_session.flush()
+    old_parse_run_id = old_fact.value_line_parse_run_id
     correction = MetricFact(
         user_id=user.id,
         stock_id=stock.id,
@@ -870,13 +877,17 @@ def test_reparse_appends_mapping_revision_and_preserves_manual_lineage(db_sessio
     assert len(revisions) == 2
     assert revisions[0].id == old_fact.id
     assert revisions[0].is_current is False
-    assert revisions[0].value_json["source_mapping_version"].endswith(":old")
+    assert (
+        revisions[0].value_json["source_mapping_version"]
+        == service.mapping_spec.source_mapping_version
+    )
     assert revisions[1].is_current is True
     assert (
         revisions[1].value_json["source_mapping_version"]
         == service.mapping_spec.source_mapping_version
     )
     assert revisions[1].value_line_parse_run_id is not None
+    assert revisions[1].value_line_parse_run_id != old_parse_run_id
     assert db_session.get(MetricFact, correction.id).value_json["corrects_fact_id"] == old_fact.id
     assert db_session.get(MetricExtraction, old_extraction.id) is not None
     new_extractions = (
@@ -950,6 +961,9 @@ def test_failed_reparse_atomically_preserves_prior_current_revision(db_session):
     )
     db_session.add(prior)
     db_session.commit()
+    baseline_run_count = (
+        db_session.query(ValueLineParseRun).filter_by(document_id=doc.id).count()
+    )
 
     generated = {
         "metric_key": "mkt.price",
@@ -990,5 +1004,8 @@ def test_failed_reparse_atomically_preserves_prior_current_revision(db_session):
     ).all()
     assert [fact.id for fact in revisions] == [prior.id]
     assert revisions[0].is_current is True
-    assert db_session.query(ValueLineParseRun).filter_by(document_id=doc.id).count() == 0
+    assert (
+        db_session.query(ValueLineParseRun).filter_by(document_id=doc.id).count()
+        == baseline_run_count
+    )
     assert db_session.get(PdfDocument, doc.id).parse_status == "parsed"

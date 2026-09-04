@@ -10,6 +10,9 @@ from unittest.mock import patch
 
 from fastapi import UploadFile
 
+from app.models.artifacts import ValueLineFactExtractionInput
+from app.models.extractions import MetricExtraction
+from app.models.facts import MetricFact
 from app.models.users import User
 from app.services.ingestion_service import IngestionService
 
@@ -78,3 +81,53 @@ def test_multipage_report_date_first_page_wins(db_session, caplog):
     # First page's date sticks; the mismatching second page must not overwrite.
     assert doc.report_date == date(2026, 1, 9)
     assert any("report_date" in record.message for record in caplog.records)
+
+
+def test_ingestion_persists_exact_primary_extraction_for_correction(
+    client, db_session, user_factory, auth_headers
+):
+    user = user_factory("ingestion-lineage@example.com")
+    with patch(
+        "app.services.ingestion_service.PdfExtractor.extract_pages_with_words",
+        return_value=[(1, _company_page_text("LNG", "January 9, 2026"), [])],
+    ), patch(
+        "app.services.ingestion_service.FileStorageService.save_upload_file",
+        return_value="/tmp/fake-lineage.pdf",
+    ), patch(
+        "app.services.ingestion_service.IngestionService._archive_single_company_value_line_pdf",
+        return_value=None,
+    ):
+        document, page_reports = IngestionService(db_session).process_upload(
+            user_id=user.id,
+            file=_upload_file("lineage.pdf"),
+        )
+
+    assert page_reports[0]["status"] == "parsed"
+    extraction = db_session.query(MetricExtraction).filter_by(
+        document_id=document.id,
+        field_key="recent_price",
+    ).one()
+    fact = db_session.query(MetricFact).filter_by(
+        source_document_id=document.id,
+        metric_key="mkt.price",
+        source_type="parsed",
+    ).one()
+    lineage = db_session.query(ValueLineFactExtractionInput).filter_by(
+        fact_id=fact.id,
+    ).one()
+    assert fact.source_ref_id is None
+    assert lineage.extraction_id == extraction.id
+    assert lineage.value_line_parse_run_id == fact.value_line_parse_run_id
+    assert lineage.input_role == "primary"
+
+    response = client.post(
+        f"/api/v1/extractions/{extraction.id}/correct",
+        headers=auth_headers(user),
+        json={"corrected_value": "51.00"},
+    )
+    assert response.status_code == 200, response.text
+    correction = db_session.get(MetricFact, response.json()["fact_id"])
+    assert correction is not None
+    assert correction.value_json["source_fact_id"] == fact.id
+    assert correction.value_json["source_extraction_id"] == extraction.id
+    assert correction.value_json["source_parse_run_id"] == fact.value_line_parse_run_id

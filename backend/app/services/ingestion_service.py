@@ -9,7 +9,12 @@ from sqlalchemy import update, select, text
 from sqlalchemy.dialects.postgresql import insert
 from fastapi import UploadFile
 
-from app.models.artifacts import PdfDocument, DocumentPage, ValueLineParseRun
+from app.models.artifacts import (
+    PdfDocument,
+    DocumentPage,
+    ValueLineFactExtractionInput,
+    ValueLineParseRun,
+)
 from app.models.extractions import MetricExtraction
 from app.models.facts import MetricFact
 from app.models.stocks import Stock
@@ -260,6 +265,7 @@ class IngestionService:
                         results=extractions,
                     )
 
+                    extraction_ids_by_key: dict[str, list[int]] = {}
                     for ext in extractions:
                         metric_record = MetricExtraction(
                             user_id=user_id,
@@ -277,6 +283,9 @@ class IngestionService:
                         )
                         self.db.add(metric_record)
                         self.db.flush()
+                        extraction_ids_by_key.setdefault(ext.field_key, []).append(
+                            metric_record.id
+                        )
 
                     facts, _, unmapped = self.mapping_spec.generate_facts(page_json)
                     owner_earnings_gate = reviewed_method_gate(
@@ -300,6 +309,10 @@ class IngestionService:
                             page_num,
                         )
                     for fact in facts:
+                        source_extraction_ids = self._mapping_source_extraction_ids(
+                            fact,
+                            extraction_ids_by_key=extraction_ids_by_key,
+                        )
                         self._insert_metric_fact_from_mapping(
                             user_id=user_id,
                             stock_id=stock.id,
@@ -313,6 +326,7 @@ class IngestionService:
                             period_end_date=fact.get("period_end_date"),
                             source_document_id=doc.id,
                             value_line_parse_run_id=parse_run.id,
+                            source_extraction_ids=source_extraction_ids,
                         )
 
                     self._run_calculated_metrics(user_id=user_id, stock_id=stock.id)
@@ -590,6 +604,7 @@ class IngestionService:
                 page_number=page_num,
                 results=extractions,
             )
+            extraction_ids_by_key: dict[str, list[int]] = {}
             for ext in extractions:
                 metric_record = MetricExtraction(
                     user_id=user_id,
@@ -607,6 +622,9 @@ class IngestionService:
                 )
                 self.db.add(metric_record)
                 self.db.flush()
+                extraction_ids_by_key.setdefault(ext.field_key, []).append(
+                    metric_record.id
+                )
 
             facts, _, unmapped = self.mapping_spec.generate_facts(page_json)
             owner_earnings_gate = reviewed_method_gate(
@@ -630,6 +648,10 @@ class IngestionService:
                     page_num,
                 )
             for fact in facts:
+                source_extraction_ids = self._mapping_source_extraction_ids(
+                    fact,
+                    extraction_ids_by_key=extraction_ids_by_key,
+                )
                 self._insert_metric_fact_from_mapping(
                     user_id=user_id,
                     stock_id=stock.id,
@@ -643,6 +665,7 @@ class IngestionService:
                     period_end_date=fact.get("period_end_date"),
                     source_document_id=doc.id,
                     value_line_parse_run_id=parse_run.id,
+                    source_extraction_ids=source_extraction_ids,
                 )
 
             parsed_stock_ids.add(stock.id)
@@ -1122,7 +1145,8 @@ class IngestionService:
         period_end_date: Optional[date],
         source_document_id: Optional[int],
         value_line_parse_run_id: Optional[int] = None,
-    ) -> None:
+        source_extraction_ids: tuple[int, ...] = (),
+    ) -> int:
         if value_line_parse_run_id is not None:
             value_json = dict(value_json or {})
             value_json.setdefault(
@@ -1154,13 +1178,54 @@ class IngestionService:
             value_line_parse_run_id=value_line_parse_run_id,
             is_current=True,
         )
-        self.db.execute(insert_stmt)
+        fact_id = self.db.execute(
+            insert_stmt.returning(MetricFact.id)
+        ).scalar_one()
+        if value_line_parse_run_id is not None and source_extraction_ids:
+            role = "primary" if len(source_extraction_ids) == 1 else "supporting"
+            self.db.add_all(
+                [
+                    ValueLineFactExtractionInput(
+                        fact_id=fact_id,
+                        extraction_id=extraction_id,
+                        value_line_parse_run_id=value_line_parse_run_id,
+                        input_role=role,
+                        input_ordinal=ordinal,
+                        created_txid=0,
+                    )
+                    for ordinal, extraction_id in enumerate(
+                        source_extraction_ids,
+                        start=1,
+                    )
+                ]
+            )
         self.db.flush()
         self._reconcile_parsed_fact_current_slot(
             stock_id=stock_id,
             metric_key=metric_key,
             period_type=period_type,
             period_end_date=period_end_date,
+        )
+        return fact_id
+
+    @staticmethod
+    def _mapping_source_extraction_ids(
+        fact: dict,
+        *,
+        extraction_ids_by_key: dict[str, list[int]],
+    ) -> tuple[int, ...]:
+        declared = fact.get("source_extraction_keys")
+        if not isinstance(declared, (tuple, list)) or not declared:
+            return ()
+        if any(
+            not isinstance(key, str) or key not in extraction_ids_by_key
+            for key in declared
+        ):
+            return ()
+        return tuple(
+            extraction_id
+            for key in declared
+            for extraction_id in extraction_ids_by_key[key]
         )
 
     def _demote_document_parsed_slot(

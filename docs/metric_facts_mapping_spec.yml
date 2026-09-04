@@ -673,6 +673,9 @@ date_paths:
 # - metric_key_from:
 #     - relative path used to fill metric_key_template (e.g. metric_key)
 # - transforms: list of transforms to apply
+# - source_extraction_keys: exact parser extraction field keys that produced
+#     the mapped fact; omitted means extraction lineage is unavailable rather
+#     than inferred
 # - notes: free-form text
 # ============================================================
 
@@ -890,6 +893,7 @@ mappings:
   # -------------------------
   - id: bs.total_assets.fy
     json_path: annual_financials.balance_sheet_and_returns_usd_millions.total_assets.*
+    source_extraction_keys: [tables_time_series]
     metric_key: bs.total_assets
     period_type: FY
     unit: USD_millions
@@ -1051,6 +1055,7 @@ mappings:
   # -------------------------
   - id: mkt.price.as_of
     json_path: header.recent_price
+    source_extraction_keys: [recent_price]
     metric_key: mkt.price
     period_type: AS_OF
     unit: USD
@@ -1061,6 +1066,7 @@ mappings:
 
   - id: val.pe.as_of
     json_path: header.pe_ratio
+    source_extraction_keys: [pe_ratio]
     metric_key: val.pe
     period_type: AS_OF
     unit: ratio
@@ -1071,6 +1077,7 @@ mappings:
 
   - id: val.pe_trailing.as_of
     json_path: header.pe_ratio_trailing
+    source_extraction_keys: [pe_ratio_trailing]
     metric_key: val.pe_trailing
     period_type: AS_OF
     unit: ratio
@@ -1081,6 +1088,7 @@ mappings:
 
   - id: val.pe_median.as_of
     json_path: header.pe_ratio_median
+    source_extraction_keys: [pe_ratio_median]
     metric_key: val.pe_median
     period_type: AS_OF
     unit: ratio
@@ -1091,6 +1099,7 @@ mappings:
 
   - id: val.relative_pe.as_of
     json_path: header.relative_pe_ratio
+    source_extraction_keys: [relative_pe_ratio]
     metric_key: val.relative_pe
     period_type: AS_OF
     unit: ratio
@@ -1101,6 +1110,7 @@ mappings:
 
   - id: val.dividend_yield.as_of
     json_path: header.dividend_yield_pct
+    source_extraction_keys: [dividend_yield]
     metric_key: val.dividend_yield
     period_type: AS_OF
     unit: percent
@@ -1358,6 +1368,7 @@ mappings:
 
   - id: mkt.market_cap.as_of
     json_path: capital_structure.market_cap.normalized
+    source_extraction_keys: [market_cap]
     metric_key: mkt.market_cap
     period_type: AS_OF
     unit: USD

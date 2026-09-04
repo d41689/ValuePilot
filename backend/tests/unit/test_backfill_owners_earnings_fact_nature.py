@@ -1,5 +1,7 @@
 from datetime import date
 
+import pytest
+
 from app.models.artifacts import PdfDocument
 from app.models.facts import MetricFact
 from app.models.stocks import Stock
@@ -7,7 +9,7 @@ from app.models.users import User
 from scripts.backfill_owners_earnings_fact_nature import backfill_in_session
 
 
-def test_backfill_owners_earnings_fact_nature_uses_source_inputs(db_session):
+def test_backfill_refuses_to_mutate_immutable_parsed_history(db_session):
     user = User(email="owners_earnings_backfill@example.com")
     stock = Stock(ticker="OEPS", exchange="NYSE", company_name="Owners Earnings Test")
     db_session.add_all([user, stock])
@@ -91,9 +93,8 @@ def test_backfill_owners_earnings_fact_nature_uses_source_inputs(db_session):
         .all()
         if fact.metric_key.startswith("owners_earnings_per_share")
     ]
-    result = backfill_in_session(db_session, dry_run=False, metric_fact_ids=target_ids)
-
-    assert result == {"matched": 2, "updated": 2}
+    with pytest.raises(RuntimeError, match="backfill is retired"):
+        backfill_in_session(db_session, dry_run=False, metric_fact_ids=target_ids)
 
     facts = {
         fact.metric_key: fact
@@ -102,8 +103,10 @@ def test_backfill_owners_earnings_fact_nature_uses_source_inputs(db_session):
         .all()
         if fact.metric_key.startswith("owners_earnings_per_share")
     }
-    assert facts["owners_earnings_per_share"].value_json["fact_nature"] == "estimate"
-    assert facts["owners_earnings_per_share_normalized"].value_json["fact_nature"] == "snapshot"
+    assert facts["owners_earnings_per_share"].value_json["raw"] == "2.0"
+    assert "fact_nature" not in facts["owners_earnings_per_share"].value_json
+    assert facts["owners_earnings_per_share_normalized"].value_json["raw"] == "2.0"
+    assert "fact_nature" not in facts["owners_earnings_per_share_normalized"].value_json
 
 
 def test_backfill_owners_earnings_fact_nature_dry_run_rolls_back(db_session):
@@ -139,8 +142,9 @@ def test_backfill_owners_earnings_fact_nature_dry_run_rolls_back(db_session):
     db_session.add(fact)
     db_session.commit()
 
-    result = backfill_in_session(db_session, dry_run=True, metric_fact_ids=[fact.id])
-    assert result == {"matched": 1, "updated": 1}
+    with pytest.raises(RuntimeError, match="backfill is retired"):
+        backfill_in_session(db_session, dry_run=True, metric_fact_ids=[fact.id])
 
     db_session.refresh(fact)
-    assert fact.value_json == {"raw": "3.0"}
+    assert fact.value_json["raw"] == "3.0"
+    assert "fact_nature" not in fact.value_json

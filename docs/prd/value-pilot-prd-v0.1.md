@@ -1516,10 +1516,26 @@ run. Database triggers copy the run's mapping identity into fact JSON only as
 an audit aid; reconciliation trusts the run-to-registry relation, never the
 caller-controlled JSON copy. A mapping or taxonomy semantic change therefore
 requires an explicit reviewed migration that registers the newly resolved
-digest before ingestion may use it.
+digest before ingestion may use it. A deployed mapping digest that does not
+exactly match an approved registry row makes the whole reconciliation report
+typed policy-unavailable. The service does not fall back to a superseded row or
+to mutable mapping files.
 
 Every newly generated Value Line fact and extraction is bound to one durable
 parse-run identity containing the parser and resolved source-mapping versions.
+When the resolved mapping declares exact `source_extraction_keys`, that
+many-to-many provenance is recorded in the append-only
+`value_line_fact_extraction_inputs` manifest. Each link names its creating run,
+role (`primary` or `supporting`), and stable ordinal; PostgreSQL requires the
+fact, extraction, document, owner, run, and creating transaction to agree.
+Links cannot be added after the run transaction or changed after insertion.
+`metric_facts.source_ref_id` is not parsed-fact lineage authority.
+One extraction may support multiple period facts and one fact may depend on
+multiple extractions; a manual correction may cite an extraction only when the
+manifest identifies exactly one primary canonical input. Otherwise the
+correction and review surface return a typed review-required state rather than
+guessing from a field name or row order.
+
 The run, its extraction rows, and its parsed facts are created and finalized in
 one transaction. A successful reparse appends a new immutable extraction/fact
 revision and demotes only current parsed rows in the same stock, canonical key,

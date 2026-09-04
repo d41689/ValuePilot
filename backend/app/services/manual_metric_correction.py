@@ -4,10 +4,11 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Optional
 
-from sqlalchemy import update
+from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
 from app.ingestion.normalization.scaler import Scaler
+from app.models.artifacts import ValueLineFactExtractionInput
 from app.models.facts import MetricFact
 from app.services.calculated_metrics.piotroski_f_score import PiotroskiFScoreCalculator
 from app.services.calculated_metrics.value_line_ratios import ValueLineRatioCalculator
@@ -82,11 +83,38 @@ def create_manual_metric_correction(
         original_source_fact_id = source_fact.id
 
     source_extraction_id = source_metadata.get("source_extraction_id")
-    if not isinstance(source_extraction_id, int):
-        source_extraction_id = source_fact.source_ref_id
+    manifest_parse_run_id: int | None = None
+    if not isinstance(source_extraction_id, int) and source_fact.source_type == "parsed":
+        primary_input = session.execute(
+            select(
+                ValueLineFactExtractionInput.extraction_id,
+                ValueLineFactExtractionInput.value_line_parse_run_id,
+            ).where(
+                ValueLineFactExtractionInput.fact_id == source_fact.id,
+                ValueLineFactExtractionInput.input_role == "primary",
+            )
+        ).one_or_none()
+        if primary_input is not None:
+            source_extraction_id = primary_input.extraction_id
+            manifest_parse_run_id = primary_input.value_line_parse_run_id
+        elif (
+            source_fact.value_line_legacy_revision
+            and isinstance(source_fact.source_ref_id, int)
+        ):
+            source_extraction_id = source_fact.source_ref_id
+        else:
+            raise ManualMetricCorrectionError(
+                code="correction_lineage_unavailable",
+                message=(
+                    "Parsed fact has no exact primary extraction lineage; "
+                    "manual correction requires review"
+                ),
+            )
     source_parse_run_id = source_metadata.get("source_parse_run_id")
     if not isinstance(source_parse_run_id, int):
-        source_parse_run_id = source_fact.value_line_parse_run_id
+        source_parse_run_id = (
+            manifest_parse_run_id or source_fact.value_line_parse_run_id
+        )
 
     value_json = {
         "raw": raw_text,

@@ -29,7 +29,7 @@ BASE = make_url(settings.SQLALCHEMY_DATABASE_URI).set(
 ).render_as_string(hide_password=False)
 BACKEND = Path(__file__).resolve().parents[2]
 PARENT = "20260901280000"
-HEAD = "20260904130000"
+HEAD = "20260904140000"
 APPROVED_MAPPING_VERSION = MappingSpec.load(
     BACKEND / "docs" / "metric_facts_mapping_spec.yml"
 ).source_mapping_version
@@ -155,6 +155,16 @@ def test_value_line_parse_run_allows_history_but_rejects_late_binding(isolated) 
             ),
             {"user": user_id, "document": document_id, "run": run_id},
         ).scalar_one()
+        supporting_extraction_id = connection.execute(
+            text(
+                "INSERT INTO metric_extractions "
+                "(user_id,document_id,page_number,field_key,parser_version,"
+                "corrected_by_user,value_line_parse_run_id) "
+                "VALUES (:user,:document,1,'net_profit_note','v1',false,:run) "
+                "RETURNING id"
+            ),
+            {"user": user_id, "document": document_id, "run": run_id},
+        ).scalar_one()
         connection.execute(
             text("UPDATE metric_facts SET is_current=false WHERE id=:id"),
             {"id": old_fact_id},
@@ -184,6 +194,19 @@ def test_value_line_parse_run_allows_history_but_rejects_late_binding(isolated) 
             {"id": new_fact_id},
         ).scalar_one()
         assert stamped_mapping == APPROVED_MAPPING_VERSION
+        lineage = connection.execute(
+            text(
+                "INSERT INTO value_line_fact_extraction_inputs "
+                "(fact_id,extraction_id,value_line_parse_run_id,input_role,"
+                "input_ordinal,created_txid,created_at) "
+                "VALUES (:fact,:extraction,:run,'primary',1,0,"
+                "TIMESTAMPTZ '2000-01-01 00:00:00+00') "
+                "RETURNING created_txid,created_at,txid_current()"
+            ),
+            {"fact": new_fact_id, "extraction": extraction_id, "run": run_id},
+        ).one()
+        assert lineage.created_txid == lineage[2]
+        assert lineage.created_at.year > 2000
         connection.execute(
             text("UPDATE value_line_parse_runs SET status='succeeded' WHERE id=:run"),
             {"run": run_id},
@@ -243,6 +266,39 @@ def test_value_line_parse_run_allows_history_but_rejects_late_binding(isolated) 
                         "WHERE id=:id"
                     ),
                     {"id": extraction_id},
+                )
+        with pytest.raises(DBAPIError, match="creating run"):
+            with connection.begin_nested():
+                connection.execute(
+                    text(
+                        "INSERT INTO value_line_fact_extraction_inputs "
+                        "(fact_id,extraction_id,value_line_parse_run_id,input_role,"
+                        "input_ordinal,created_txid) "
+                        "VALUES (:fact,:extraction,:run,'supporting',2,0)"
+                    ),
+                    {
+                        "fact": new_fact_id,
+                        "extraction": supporting_extraction_id,
+                        "run": run_id,
+                    },
+                )
+        with pytest.raises(DBAPIError, match="append-only"):
+            with connection.begin_nested():
+                connection.execute(
+                    text(
+                        "UPDATE value_line_fact_extraction_inputs "
+                        "SET input_role='supporting' WHERE fact_id=:fact"
+                    ),
+                    {"fact": new_fact_id},
+                )
+        with pytest.raises(DBAPIError, match="append-only"):
+            with connection.begin_nested():
+                connection.execute(
+                    text(
+                        "DELETE FROM value_line_fact_extraction_inputs "
+                        "WHERE fact_id=:fact"
+                    ),
+                    {"fact": new_fact_id},
                 )
         with pytest.raises(DBAPIError, match="binding is immutable"):
             with connection.begin_nested():

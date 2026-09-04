@@ -50,6 +50,10 @@ def test_mapping_spec_generates_core_facts():
     assert "period_start_date" not in eps_2024["value_json"]
     assert "duration_days" not in eps_2024["value_json"]
 
+    price = by_key.get(("mkt.price", "AS_OF", date(2026, 1, 9)))
+    assert price is not None
+    assert price["source_extraction_keys"] == ("recent_price",)
+
     rate = by_key.get(("rates.premium_income.cagr_10y", "AS_OF", date(2026, 1, 9)))
     assert rate is not None
     assert rate["value_numeric"] == pytest.approx(0.065)

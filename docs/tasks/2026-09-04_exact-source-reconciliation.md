@@ -125,6 +125,8 @@ Out of scope:
 - `backend/app/services/source_reconciliation.py` (new)
 - `backend/app/services/manual_metric_correction.py` (new)
 - `backend/alembic/versions/20260904120000-value-line-parse-run-history.py`
+- `backend/alembic/versions/20260904130000-value-line-mapping-authority.py`
+- `backend/alembic/versions/20260904140000-value-line-fact-extraction-lineage.py`
 - `backend/app/models/artifacts.py`
 - `backend/app/models/extractions.py`
 - `backend/app/models/facts.py`
@@ -165,10 +167,12 @@ reconciliation outcomes or create another financial fact store.
   for its stated requirements/file inventory and no code, commit, migration, or
   file was copied.
 - 2026-09-04: Tests-first checkpoint established focused service/API red cases
-  before the DB projection and consumer guard existed. The implementation
-  remains migration-free: reports are computed from `metric_facts` plus
-  source-authority lineage. Explicit historical cutoffs over mutable non-SEC
-  current state return `partial / historical_current_projection_unverifiable`.
+  before the DB projection and consumer guard existed. At that checkpoint the
+  report remained migration-free and was computed from `metric_facts` plus
+  source-authority lineage; later adversarial findings required the additive
+  parse-run, approved-policy, and exact-input-manifest migrations below.
+  Explicit historical cutoffs over mutable non-SEC current state return
+  `partial / historical_current_projection_unverifiable`.
 - 2026-09-04: Terra adversarial review R1 found five valid gaps: definition and
   source-mapping identity could be bypassed, fiscal endpoint drift escaped the
   slot, singleton manual/derived lineage was unchecked (including stock-pool
@@ -305,3 +309,27 @@ reconciliation outcomes or create another financial fact store.
   exact prior manual slot. Raw-SQL relabel/lineage-mutation tests and API
   legacy, exact, repeated, and ambiguous cases are green; the expanded affected
   suite is 140 passed. Fresh Terra R9 and exact closing gates remain pending.
+- 2026-09-04: Terra adversarial review R9 found three valid authority gaps:
+  production MappingSpec ingestion did not retain an exact extraction-to-fact
+  relationship; the research workspace discarded blocked SEC rows before the
+  shared reconciliation guard could see their competing Value Line slot; and
+  report policy identity could fall back to the mutable deployed mapping files
+  instead of the database-approved registry.
+- 2026-09-04: Sol remediation adds the append-only
+  `value_line_fact_extraction_inputs` manifest in a new 140 migration while
+  leaving the already-pushed 130 migration unchanged. Database triggers bind
+  every link to the same owner, document, parse run, and creating transaction,
+  preserve many-to-many supporting lineage, and allow correction only for one
+  exact primary input. Ingestion, document review, and both correction routes
+  now use that manifest rather than `source_ref_id`, field-name inference, row
+  order, or query order. Research workspace passes the full bounded fact set
+  to the shared guard. Reports resolve the deployed digest against the exact
+  database-approved policy and return typed policy-unavailable on drift without
+  falling back to an old policy.
+- 2026-09-04: R9 remediation also pins real
+  MappingSpec→IngestionService→MetricFact→SEC reconciliation, SEC amendment
+  state before/after its knowledge cutoff, and Stock Pool provenance without
+  post-insert parsed-row mutation. The affected Docker suite is green at 124
+  tests (123 broad focused plus the explicit missing-manifest correction
+  regression). Full backend, fresh Terra R10, and exact closing gates remain
+  pending.

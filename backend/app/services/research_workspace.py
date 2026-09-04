@@ -32,7 +32,6 @@ from app.services.actual_conflict_service import detect_actual_conflicts
 from app.services.canonical_financials import (
     apply_reviewed_method_gates,
     current_sec_unresolved_states,
-    partition_sec_run_availability,
     reviewed_method_gate,
     visible_metric_fact_predicate,
 )
@@ -233,9 +232,6 @@ def build_research_workspace(
             }
         )
     else:
-        facts, _ = partition_sec_run_availability(
-            session, stock_id=stock.id, facts=facts
-        )
         facts, unsupported_method_states, _ = apply_reviewed_method_gates(
             session,
             stock_id=stock.id,

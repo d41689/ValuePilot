@@ -21,7 +21,7 @@ from typing import Any, Iterable, Sequence
 
 from sqlalchemy import select, text
 from sqlalchemy.orm import Session
-from app.models.artifacts import PdfDocument
+from app.models.artifacts import PdfDocument, ValueLineMappingPolicy
 from app.models.facts import MetricFact
 from app.services.mapping_spec import MappingSpec
 from app.services.canonical_financials import (
@@ -717,8 +717,12 @@ def _policy_datetime(value: Any, *, field: str) -> datetime:
 
 
 @lru_cache(maxsize=1)
+def _resolved_mapping_spec() -> MappingSpec:
+    return MappingSpec.load(_SPEC_PATH)
+
+
 def _mapping_spec_identity() -> tuple[str, str, str, datetime, datetime]:
-    resolved_mapping = MappingSpec.load(_SPEC_PATH)
+    resolved_mapping = _resolved_mapping_spec()
     spec = resolved_mapping.spec
     versions = spec.get("source_reconciliation", {}).get("versions", [])
     policy = next(
@@ -742,6 +746,115 @@ def _mapping_spec_identity() -> tuple[str, str, str, datetime, datetime]:
         _policy_datetime(policy.get("known_at"), field="known_at"),
         _policy_datetime(policy.get("effective_from"), field="effective_from"),
     )
+
+
+def _registered_mapping_spec_identity(
+    session: Session,
+) -> tuple[str, str, str, datetime, datetime] | None:
+    try:
+        identity = _mapping_spec_identity()
+        resolved_mapping = _resolved_mapping_spec()
+    except (OSError, RuntimeError, ValueError):
+        return None
+    registry = session.get(
+        ValueLineMappingPolicy,
+        resolved_mapping.source_mapping_version,
+    )
+    if registry is None or registry.status != "approved":
+        return None
+    if (
+        registry.policy_sha256 != identity[1]
+        or registry.spec_version != resolved_mapping.spec.get("version")
+    ):
+        return None
+    return (
+        identity[0],
+        registry.policy_sha256,
+        identity[2],
+        max(identity[3], _aware(registry.known_at)),
+        max(identity[4], _aware(registry.effective_from)),
+    )
+
+
+def _mapping_policy_unavailable_report(
+    *,
+    user_id: int,
+    stock_id: int,
+    knowledge_cutoff: datetime,
+) -> dict[str, Any]:
+    report: dict[str, Any] = {
+        "status": "unavailable",
+        "policy_version": POLICY_VERSION,
+        "knowledge_cutoff": knowledge_cutoff.isoformat(),
+        "policy_known_at": None,
+        "policy_effective_from": None,
+        "stock_id": stock_id,
+        "eligible_fact_ids": [],
+        "excluded": [],
+        "items": [],
+        "blocking_item_count": 0,
+        "blocking_exclusion_count": 0,
+        "sec_unavailable_states": [],
+        "consumer_gate_status": "blocked",
+        "mapping_policy_sha256": None,
+        "canonical_definition_version": None,
+        "point_in_time_status": "mapping_policy_unavailable",
+        "reason_code": "unapproved_deployed_mapping_policy",
+        "requesting_user_id": user_id,
+    }
+    report["report_digest"] = _report_digest(report)
+    return report
+
+
+def _policy_cutoff_unavailable_report(
+    *,
+    facts: Sequence[MetricFact],
+    user_id: int,
+    stock_id: int,
+    knowledge_cutoff: datetime,
+    mapping_policy_digest: str,
+    definition_version: str,
+    policy_known_at: datetime,
+    policy_effective_from: datetime,
+) -> dict[str, Any]:
+    item = {
+        "metric_key": None,
+        "period_type": None,
+        "period_end_date": None,
+        "fact_ids": sorted(fact.id for fact in facts),
+        "source_types": sorted({fact.source_type for fact in facts}),
+        "source_roles": [],
+        "status": "unresolved",
+        "reason_code": "reconciliation_policy_unavailable_at_cutoff",
+        "blocking": True,
+        "absolute_variance": None,
+        "relative_variance": None,
+        "absolute_tolerance": _decimal_text(ABSOLUTE_TOLERANCE),
+        "relative_tolerance": _decimal_text(RELATIVE_TOLERANCE),
+        "inputs": [],
+    }
+    report: dict[str, Any] = {
+        "status": "unavailable",
+        "reason_code": "reconciliation_policy_unavailable_at_cutoff",
+        "policy_version": POLICY_VERSION,
+        "knowledge_cutoff": knowledge_cutoff.isoformat(),
+        "policy_known_at": policy_known_at.isoformat(),
+        "policy_effective_from": policy_effective_from.isoformat(),
+        "stock_id": stock_id,
+        "eligible_fact_ids": [],
+        "excluded": [],
+        "items": [item],
+        "blocking_item_count": 1,
+        "blocking_exclusion_count": 0,
+        "sec_unavailable_states": [],
+        "consumer_gate_status": "blocked",
+        "mapping_policy_sha256": mapping_policy_digest,
+        "canonical_definition_version": definition_version,
+        "point_in_time_status": "policy_unavailable_at_cutoff",
+        "requesting_user_id": user_id,
+    }
+    report["report_digest"] = _report_digest(report)
+    return report
 
 
 def _aware(value: datetime | None) -> datetime:
@@ -1627,29 +1740,31 @@ def build_source_reconciliation_report_from_facts(
     if knowledge_cutoff.tzinfo is None:
         raise ValueError("knowledge_cutoff must be timezone-aware")
     knowledge_cutoff = knowledge_cutoff.astimezone(timezone.utc)
+    registered_policy = _registered_mapping_spec_identity(session)
+    if registered_policy is None:
+        return _mapping_policy_unavailable_report(
+            user_id=user_id,
+            stock_id=stock_id,
+            knowledge_cutoff=knowledge_cutoff,
+        )
     (
         _,
         mapping_policy_digest,
         definition_version,
         policy_known_at,
         policy_effective_from,
-    ) = _mapping_spec_identity()
+    ) = registered_policy
     if knowledge_cutoff < max(policy_known_at, policy_effective_from):
-        report = reconcile_candidates([], knowledge_cutoff=knowledge_cutoff)
-        report["stock_id"] = stock_id
-        report["blocking_exclusion_count"] = 0
-        report["sec_unavailable_states"] = []
-        report["consumer_gate_status"] = "blocked"
-        report["mapping_policy_sha256"] = mapping_policy_digest
-        report["canonical_definition_version"] = definition_version
-        report["point_in_time_status"] = "policy_unavailable_at_cutoff"
-        # The authenticated caller already receives this identifier from
-        # ``/auth/me``.  Keeping it in the digested report binds replay/cache
-        # identity to the principal without inventing a forgeable hash token.
-        report["requesting_user_id"] = user_id
-        report.pop("report_digest", None)
-        report["report_digest"] = _report_digest(report)
-        return report
+        return _policy_cutoff_unavailable_report(
+            facts=fact_rows,
+            user_id=user_id,
+            stock_id=stock_id,
+            knowledge_cutoff=knowledge_cutoff,
+            mapping_policy_digest=mapping_policy_digest,
+            definition_version=definition_version,
+            policy_known_at=policy_known_at,
+            policy_effective_from=policy_effective_from,
+        )
     expanded_rows, lineage_errors = _expand_visible_lineage(
         session,
         facts=fact_rows,
@@ -1774,6 +1889,9 @@ def guard_reconciled_source_selection(
     """Apply FT-06 blocking outcomes before any explicit source selection."""
 
     originals = list(facts)
+    if knowledge_cutoff.tzinfo is None:
+        raise ValueError("knowledge_cutoff must be timezone-aware")
+    knowledge_cutoff = knowledge_cutoff.astimezone(timezone.utc)
     if len(originals) > MAX_RECONCILIATION_FACTS:
         raise CanonicalReconciliationError(
             consumer=consumer,
@@ -1788,6 +1906,38 @@ def guard_reconciled_source_selection(
                 }
             ],
         )
+    if originals and isinstance(originals[0], MetricFact):
+        if session is None or user_id is None:
+            raise ValueError("session and user_id are required for metric_facts")
+        registered_policy = _registered_mapping_spec_identity(session)
+        if registered_policy is None:
+            raise CanonicalReconciliationError(
+                consumer=consumer,
+                blocking_items=[
+                    {
+                        "status": "unresolved",
+                        "reason_code": "mapping_policy_unavailable",
+                        "blocking": True,
+                        "fact_ids": [],
+                        "source_types": [],
+                        "metric_key": None,
+                    }
+                ],
+            )
+        if knowledge_cutoff < max(registered_policy[3], registered_policy[4]):
+            raise CanonicalReconciliationError(
+                consumer=consumer,
+                blocking_items=[
+                    {
+                        "status": "unresolved",
+                        "reason_code": "reconciliation_policy_unavailable_at_cutoff",
+                        "blocking": True,
+                        "fact_ids": [],
+                        "source_types": [],
+                        "metric_key": None,
+                    }
+                ],
+            )
     policy_probe = reconcile_candidates([], knowledge_cutoff=knowledge_cutoff)
     if policy_probe["status"] == "unavailable":
         raise CanonicalReconciliationError(
@@ -1795,8 +1945,6 @@ def guard_reconciled_source_selection(
             blocking_items=policy_probe["items"],
         )
     if originals and isinstance(originals[0], MetricFact):
-        if session is None or user_id is None:
-            raise ValueError("session and user_id are required for metric_facts")
         stock_ids = {fact.stock_id for fact in originals}
         if len(stock_ids) != 1:
             raise ValueError("reconciliation fact set contains multiple stocks")

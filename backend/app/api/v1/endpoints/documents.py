@@ -9,7 +9,7 @@ from fastapi import APIRouter, UploadFile, File, HTTPException, Query, Body, sta
 from fastapi.responses import FileResponse
 from sqlalchemy import select, func
 import yaml
-from app.models.artifacts import DocumentPage
+from app.models.artifacts import DocumentPage, ValueLineFactExtractionInput
 from app.models.extractions import MetricExtraction
 from app.models.facts import MetricFact
 from app.models.stocks import Stock
@@ -669,7 +669,7 @@ def correct_document_review_fact(
         )
     except ManualMetricCorrectionError as exc:
         raise HTTPException(
-            status_code=400,
+            status_code=(409 if exc.code == "correction_lineage_unavailable" else 400),
             detail={
                 "code": exc.code,
                 "value": exc.message,
@@ -809,7 +809,34 @@ def _document_review_lineage_by_fact_id(
     doc: PdfDocument,
     facts: list[MetricFact],
 ) -> dict[int, MetricExtraction]:
-    source_ref_ids = sorted({fact.source_ref_id for fact in facts if fact.source_ref_id is not None})
+    fact_ids = sorted({fact.id for fact in facts})
+    manifest_lineage: dict[int, MetricExtraction] = {}
+    if fact_ids:
+        manifest_rows = session.execute(
+            select(ValueLineFactExtractionInput.fact_id, MetricExtraction)
+            .join(
+                MetricExtraction,
+                MetricExtraction.id == ValueLineFactExtractionInput.extraction_id,
+            )
+            .where(
+                ValueLineFactExtractionInput.fact_id.in_(fact_ids),
+                ValueLineFactExtractionInput.input_role == "primary",
+                MetricExtraction.user_id == doc.user_id,
+                MetricExtraction.document_id == doc.id,
+            )
+        ).all()
+        manifest_lineage = {
+            int(fact_id): extraction for fact_id, extraction in manifest_rows
+        }
+
+    source_ref_ids = sorted(
+        {
+            fact.source_ref_id
+            for fact in facts
+            if fact.source_ref_id is not None
+            and (fact.source_type != "parsed" or fact.value_line_legacy_revision)
+        }
+    )
     by_extraction_id = {}
     if source_ref_ids:
         extractions = session.scalars(
@@ -832,6 +859,11 @@ def _document_review_lineage_by_fact_id(
 
     lineage: dict[int, MetricExtraction] = {}
     for fact in facts:
+        if fact.id in manifest_lineage:
+            lineage[fact.id] = manifest_lineage[fact.id]
+            continue
+        if fact.source_type == "parsed" and not fact.value_line_legacy_revision:
+            continue
         if fact.source_ref_id in by_extraction_id:
             lineage[fact.id] = by_extraction_id[fact.source_ref_id]
             continue

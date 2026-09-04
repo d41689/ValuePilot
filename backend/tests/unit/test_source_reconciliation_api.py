@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import date, datetime, timedelta, timezone
+from types import SimpleNamespace
 
 import pytest
 
@@ -11,8 +12,10 @@ from app.services.formula_engine import FormulaEngine
 from app.services.ingestion_service import IngestionService
 from app.services.source_reconciliation import (
     CanonicalReconciliationError,
+    build_source_reconciliation_report_from_facts,
     guard_reconciled_source_selection,
 )
+from app.services import source_reconciliation
 from app.services.canonical_financials import CanonicalSourceConflictError
 
 
@@ -204,6 +207,65 @@ def test_authenticated_reconciliation_is_tenant_safe_and_bounded(
         params=[("metric_key", "is.net_income;drop")],
     )
     assert invalid_key.status_code == 422
+
+
+def test_deployed_mapping_must_match_database_approved_policy(
+    db_session, user_factory, monkeypatch
+):
+    user = user_factory("reconcile-policy-drift@example.com")
+    stock = Stock(ticker="RDRIFT", exchange="NYSE", company_name="Policy Drift")
+    db_session.add(stock)
+    db_session.flush()
+    fact = MetricFact(
+        user_id=user.id,
+        stock_id=stock.id,
+        metric_key="is.net_income",
+        value_numeric=100,
+        value_json={"fact_nature": "manual"},
+        unit="USD",
+        currency="USD",
+        period_type="FY",
+        period_end_date=date(2025, 12, 31),
+        source_type="manual",
+        is_current=True,
+    )
+    db_session.add(fact)
+    db_session.flush()
+    deployed = source_reconciliation._resolved_mapping_spec()
+    unapproved_digest = "0" * 64
+    monkeypatch.setattr(
+        source_reconciliation,
+        "_resolved_mapping_spec",
+        lambda: SimpleNamespace(
+            spec=deployed.spec,
+            mapping_policy_sha256=unapproved_digest,
+            source_mapping_version=f"value-line-resolved-v2:{unapproved_digest}",
+        ),
+    )
+    cutoff = datetime.now(timezone.utc)
+
+    report = build_source_reconciliation_report_from_facts(
+        db_session,
+        facts=[fact],
+        user_id=user.id,
+        stock_id=stock.id,
+        knowledge_cutoff=cutoff,
+    )
+
+    assert report["status"] == "unavailable"
+    assert report["consumer_gate_status"] == "blocked"
+    assert report["reason_code"] == "unapproved_deployed_mapping_policy"
+    assert report["mapping_policy_sha256"] is None
+    assert report["eligible_fact_ids"] == []
+    with pytest.raises(CanonicalReconciliationError) as error:
+        guard_reconciled_source_selection(
+            [fact],
+            consumer="policy-drift-test",
+            knowledge_cutoff=cutoff,
+            session=db_session,
+            user_id=user.id,
+        )
+    assert error.value.blocking_items[0]["reason_code"] == "mapping_policy_unavailable"
 
 
 def test_reconciliation_excludes_post_cutoff_and_revoked_source_authority(

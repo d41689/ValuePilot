@@ -6,7 +6,12 @@ import sqlalchemy as sa
 
 from app.models.users import User
 from app.models.stocks import Stock
-from app.models.artifacts import PdfDocument, DocumentPage, ValueLineParseRun
+from app.models.artifacts import (
+    PdfDocument,
+    DocumentPage,
+    ValueLineFactExtractionInput,
+    ValueLineParseRun,
+)
 from app.models.extractions import MetricExtraction
 from app.models.facts import MetricFact
 from app.api.v1.endpoints.documents import _document_compare_value_label
@@ -776,6 +781,17 @@ def test_document_review_endpoint_returns_grouped_facts_with_lineage(
     db_session.add(doc)
     db_session.commit()
 
+    mapping_version = IngestionService(db_session).mapping_spec.source_mapping_version
+    parse_run = ValueLineParseRun(
+        user_id=user.id,
+        document_id=doc.id,
+        parser_version="value-line-v1",
+        source_mapping_version=mapping_version,
+        status="running",
+    )
+    db_session.add(parse_run)
+    db_session.flush()
+
     extraction = MetricExtraction(
         user_id=user.id,
         document_id=doc.id,
@@ -784,8 +800,9 @@ def test_document_review_endpoint_returns_grouped_facts_with_lineage(
         raw_value_text="$68.11",
         original_text_snippet="Recent price $68.11",
         confidence_score=0.92,
-        parser_version="v1",
+        parser_version="value-line-v1",
         as_of_date=date(2026, 1, 2),
+        value_line_parse_run_id=parse_run.id,
     )
     db_session.add(extraction)
     db_session.flush()
@@ -794,17 +811,38 @@ def test_document_review_endpoint_returns_grouped_facts_with_lineage(
         user_id=user.id,
         stock_id=stock.id,
         metric_key="mkt.price",
-        value_json={"raw": "$68.11", "fact_nature": "snapshot"},
+        value_json={
+            "raw": "$68.11",
+            "fact_nature": "snapshot",
+            "mapping_id": "mkt.price.as_of",
+            "source_mapping_version": mapping_version,
+            "definition_basis": "adjusted",
+            "dimensions_identity": "empty",
+        },
         value_numeric=68.11,
         unit="USD",
         period_type="AS_OF",
         as_of_date=date(2026, 1, 2),
         source_type="parsed",
-        source_ref_id=extraction.id,
+        source_ref_id=None,
         source_document_id=doc.id,
+        value_line_parse_run_id=parse_run.id,
         is_current=True,
     )
     db_session.add(fact)
+    db_session.flush()
+    db_session.add(
+        ValueLineFactExtractionInput(
+            fact_id=fact.id,
+            extraction_id=extraction.id,
+            value_line_parse_run_id=parse_run.id,
+            input_role="primary",
+            input_ordinal=1,
+            created_txid=0,
+        )
+    )
+    db_session.flush()
+    parse_run.status = "succeeded"
     db_session.commit()
 
     resp = client.get(f"/api/v1/documents/{doc.id}/review", headers=headers)
@@ -1653,6 +1691,17 @@ def test_document_review_correction_creates_manual_current_fact_without_mutating
     db_session.add(doc)
     db_session.commit()
 
+    mapping_version = IngestionService(db_session).mapping_spec.source_mapping_version
+    parse_run = ValueLineParseRun(
+        user_id=user.id,
+        document_id=doc.id,
+        parser_version="value-line-v1",
+        source_mapping_version=mapping_version,
+        status="running",
+    )
+    db_session.add(parse_run)
+    db_session.flush()
+
     extraction = MetricExtraction(
         user_id=user.id,
         document_id=doc.id,
@@ -1661,7 +1710,8 @@ def test_document_review_correction_creates_manual_current_fact_without_mutating
         raw_value_text="$9.5 billion",
         original_text_snippet="Market Cap: $9.5 billion",
         confidence_score=0.92,
-        parser_version="v1",
+        parser_version="value-line-v1",
+        value_line_parse_run_id=parse_run.id,
     )
     db_session.add(extraction)
     db_session.flush()
@@ -1674,7 +1724,7 @@ def test_document_review_correction_creates_manual_current_fact_without_mutating
             "raw": "$9.5 billion",
             "fact_nature": "snapshot",
             "mapping_id": "mkt.market_cap.as_of",
-            "source_mapping_version": "value-line-spec-v2",
+            "source_mapping_version": mapping_version,
             "definition_basis": "adjusted",
             "dimensions_identity": "empty",
         },
@@ -1683,11 +1733,25 @@ def test_document_review_correction_creates_manual_current_fact_without_mutating
         period_type="AS_OF",
         as_of_date=date(2026, 1, 2),
         source_type="parsed",
-        source_ref_id=extraction.id,
+        source_ref_id=None,
         source_document_id=doc.id,
+        value_line_parse_run_id=parse_run.id,
         is_current=True,
     )
     db_session.add(parsed_fact)
+    db_session.flush()
+    db_session.add(
+        ValueLineFactExtractionInput(
+            fact_id=parsed_fact.id,
+            extraction_id=extraction.id,
+            value_line_parse_run_id=parse_run.id,
+            input_role="primary",
+            input_ordinal=1,
+            created_txid=0,
+        )
+    )
+    db_session.flush()
+    parse_run.status = "succeeded"
     db_session.commit()
 
     resp = client.post(
@@ -1722,6 +1786,71 @@ def test_document_review_correction_creates_manual_current_fact_without_mutating
     )
     assert manual_fact.value_json["dimensions_identity"] == "empty"
     assert manual_fact.value_json["note"] == "Checked against report."
+
+
+def test_document_review_correction_rejects_post_cutover_fact_without_manifest(
+    client, db_session, user_factory, auth_headers
+):
+    user = user_factory("documents-review-no-manifest@example.com")
+    stock = Stock(ticker="NOMAN", exchange="NYSE", company_name="No Manifest")
+    db_session.add(stock)
+    db_session.flush()
+    document = PdfDocument(
+        user_id=user.id,
+        stock_id=stock.id,
+        file_name="no-manifest.pdf",
+        source="value_line",
+        file_storage_key="private/no-manifest.pdf",
+        parse_status="parsed",
+        identity_needs_review=False,
+    )
+    db_session.add(document)
+    db_session.flush()
+    mapping_version = IngestionService(db_session).mapping_spec.source_mapping_version
+    parse_run = ValueLineParseRun(
+        user_id=user.id,
+        document_id=document.id,
+        parser_version="value-line-v1",
+        source_mapping_version=mapping_version,
+        status="running",
+    )
+    db_session.add(parse_run)
+    db_session.flush()
+    parsed_fact = MetricFact(
+        user_id=user.id,
+        stock_id=stock.id,
+        metric_key="mkt.market_cap",
+        value_json={
+            "mapping_id": "mkt.market_cap.as_of",
+            "source_mapping_version": mapping_version,
+            "definition_basis": "adjusted",
+            "dimensions_identity": "empty",
+            "fact_nature": "snapshot",
+        },
+        value_numeric=9_500_000_000,
+        unit="USD",
+        currency="USD",
+        period_type="AS_OF",
+        as_of_date=date(2026, 1, 2),
+        source_type="parsed",
+        source_document_id=document.id,
+        value_line_parse_run_id=parse_run.id,
+        is_current=True,
+    )
+    db_session.add(parsed_fact)
+    db_session.flush()
+    parse_run.status = "succeeded"
+    db_session.commit()
+
+    response = client.post(
+        f"/api/v1/documents/{document.id}/review/facts/{parsed_fact.id}/corrections",
+        headers=auth_headers(user),
+        json={"value": "$9.6 billion"},
+    )
+
+    assert response.status_code == 409, response.text
+    assert response.json()["detail"]["code"] == "correction_lineage_unavailable"
+    assert db_session.query(MetricFact).filter_by(source_type="manual").count() == 0
 
 
 def test_extraction_correction_requires_authoritative_run_identity(db_session):
@@ -1805,12 +1934,23 @@ def test_extraction_correction_delegates_to_canonical_manual_history(
         period_type="AS_OF",
         as_of_date=date(2026, 1, 2),
         source_type="parsed",
-        source_ref_id=extraction.id,
+        source_ref_id=None,
         source_document_id=document.id,
         value_line_parse_run_id=parse_run.id,
         is_current=True,
     )
     db_session.add(parsed_fact)
+    db_session.flush()
+    db_session.add(
+        ValueLineFactExtractionInput(
+            fact_id=parsed_fact.id,
+            extraction_id=extraction.id,
+            value_line_parse_run_id=parse_run.id,
+            input_role="primary",
+            input_ordinal=1,
+            created_txid=0,
+        )
+    )
     db_session.flush()
     parse_run.status = "succeeded"
     db_session.commit()
@@ -1884,33 +2024,48 @@ def test_extraction_correction_rejects_one_extraction_to_multiple_facts(
     )
     db_session.add(extraction)
     db_session.flush()
+    parsed_facts = []
     for fiscal_year, value in ((2024, 100), (2025, 110)):
-        db_session.add(
-            MetricFact(
-                user_id=user.id,
-                stock_id=stock.id,
-                metric_key="is.revenue",
-                value_json={
-                    "mapping_id": "is.revenue.fy",
-                    "source_mapping_version": mapping_version,
-                    "definition_basis": "adjusted",
-                    "dimensions_identity": "empty",
-                    "fact_nature": "actual",
-                    "fiscal_year": fiscal_year,
-                    "period_duration_kind": "fiscal_year",
-                },
-                value_numeric=value,
-                unit="USD",
-                currency="USD",
-                period_type="FY",
-                period_end_date=date(fiscal_year, 12, 31),
-                source_type="parsed",
-                source_ref_id=extraction.id,
-                source_document_id=document.id,
-                value_line_parse_run_id=parse_run.id,
-                is_current=True,
-            )
+        parsed_fact = MetricFact(
+            user_id=user.id,
+            stock_id=stock.id,
+            metric_key="is.revenue",
+            value_json={
+                "mapping_id": "is.revenue.fy",
+                "source_mapping_version": mapping_version,
+                "definition_basis": "adjusted",
+                "dimensions_identity": "empty",
+                "fact_nature": "actual",
+                "fiscal_year": fiscal_year,
+                "period_duration_kind": "fiscal_year",
+            },
+            value_numeric=value,
+            unit="USD",
+            currency="USD",
+            period_type="FY",
+            period_end_date=date(fiscal_year, 12, 31),
+            source_type="parsed",
+            source_ref_id=None,
+            source_document_id=document.id,
+            value_line_parse_run_id=parse_run.id,
+            is_current=True,
         )
+        db_session.add(parsed_fact)
+        parsed_facts.append(parsed_fact)
+    db_session.flush()
+    db_session.add_all(
+        [
+            ValueLineFactExtractionInput(
+                fact_id=parsed_fact.id,
+                extraction_id=extraction.id,
+                value_line_parse_run_id=parse_run.id,
+                input_role="primary",
+                input_ordinal=1,
+                created_txid=0,
+            )
+            for parsed_fact in parsed_facts
+        ]
+    )
     db_session.flush()
     parse_run.status = "succeeded"
     db_session.commit()
@@ -1955,6 +2110,18 @@ def test_document_review_corrections_append_manual_history_without_demoting_pars
     )
     db_session.add(parse_run)
     db_session.flush()
+    net_income_extraction = MetricExtraction(
+        user_id=user.id,
+        document_id=doc.id,
+        page_number=1,
+        field_key="net_profit",
+        raw_value_text="100",
+        original_text_snippet="Net Profit 100",
+        parser_version="value-line-v1",
+        value_line_parse_run_id=parse_run.id,
+    )
+    db_session.add(net_income_extraction)
+    db_session.flush()
     shared_identity = {
         "source_mapping_version": mapping_version,
         "definition_basis": "adjusted",
@@ -1994,6 +2161,17 @@ def test_document_review_corrections_append_manual_history_without_demoting_pars
         is_current=True,
     )
     db_session.add_all([net_income, assets])
+    db_session.flush()
+    db_session.add(
+        ValueLineFactExtractionInput(
+            fact_id=net_income.id,
+            extraction_id=net_income_extraction.id,
+            value_line_parse_run_id=parse_run.id,
+            input_role="primary",
+            input_ordinal=1,
+            created_txid=0,
+        )
+    )
     db_session.flush()
     parse_run.status = "succeeded"
     db_session.commit()

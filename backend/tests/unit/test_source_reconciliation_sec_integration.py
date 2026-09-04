@@ -8,7 +8,9 @@ from app.api.deps import get_db
 from app.core.security import hash_password
 from app.main import app
 from app.models.artifacts import PdfDocument, ValueLineParseRun
+from app.models.extractions import MetricExtraction
 from app.models.facts import MetricFact
+from app.models.research import ResearchCase
 from app.models.sec_publication import SecMetricPublication
 from app.models.users import User
 from app.services.sec_metric_publication import (
@@ -31,9 +33,11 @@ from test_sec_metric_publication_service_e2e import (
 from test_sec_metric_publication_service_e2e import db as publication_db
 from test_sec_metric_publication_service_e2e import isolated_engine
 from test_sec_financial_lineage import (
+    CIK,
     GeneratedBalanceAndCashFlowAuthorityClient,
     INDEX_URL,
     SUBMISSIONS_URL,
+    _canonical_artifact_url,
 )
 
 
@@ -79,6 +83,47 @@ def _annual_total_assets_client() -> GeneratedBalanceAndCashFlowAuthorityClient:
         if isinstance(artifact, bytes):
             item["size"] = len(artifact)
     client.responses[INDEX_URL] = json.dumps(index).encode()
+    return client
+
+
+def _annual_total_assets_with_failed_amendment_client():
+    client = _annual_total_assets_client()
+    submissions = json.loads(client.responses[SUBMISSIONS_URL])
+    recent = submissions["filings"]["recent"]
+    values = {
+        "accessionNumber": _FailedAmendmentClient.accession,
+        "filingDate": "2026-08-28",
+        "reportDate": "2026-06-30",
+        "acceptanceDateTime": "20260828160528",
+        "form": "10-K/A",
+        "primaryDocument": _FailedAmendmentClient.primary,
+        "primaryDocDescription": "10-K/A",
+    }
+    for key, value in values.items():
+        recent[key].insert(0, value)
+    client.responses[SUBMISSIONS_URL] = json.dumps(submissions).encode()
+    index_url = _canonical_artifact_url(
+        CIK, _FailedAmendmentClient.accession, "index.json"
+    )
+    primary_url = _canonical_artifact_url(
+        CIK, _FailedAmendmentClient.accession, _FailedAmendmentClient.primary
+    )
+    no_facts = b"<html><body>amendment content unavailable for classification</body></html>"
+    client.responses[index_url] = json.dumps(
+        {
+            "directory": {
+                "item": [
+                    {
+                        "name": _FailedAmendmentClient.primary,
+                        "type": "10-K/A",
+                        "size": len(no_facts),
+                        "description": "10-K/A",
+                    }
+                ]
+            }
+        }
+    ).encode()
+    client.responses[primary_url] = no_facts
     return client
 
 
@@ -165,6 +210,23 @@ def test_sec_as_filed_and_value_line_adjusted_are_compared_without_precedence(
     )
     publication_db.add(parse_run)
     publication_db.flush()
+    source_extraction = MetricExtraction(
+        user_id=owner.id,
+        document_id=document.id,
+        page_number=1,
+        field_key="tables_time_series",
+        raw_value_text="Total Assets",
+        original_text_snippet="Total Assets annual series",
+        parser_version="value-line-v1",
+        value_line_parse_run_id=parse_run.id,
+    )
+    publication_db.add(source_extraction)
+    publication_db.flush()
+    source_extraction_ids = ingestion._mapping_source_extraction_ids(
+        generated,
+        extraction_ids_by_key={"tables_time_series": [source_extraction.id]},
+    )
+    assert source_extraction_ids == (source_extraction.id,)
     ingestion._insert_metric_fact_from_mapping(
         user_id=owner.id,
         stock_id=request.stock_id,
@@ -178,6 +240,7 @@ def test_sec_as_filed_and_value_line_adjusted_are_compared_without_precedence(
         period_end_date=generated["period_end_date"],
         source_document_id=document.id,
         value_line_parse_run_id=parse_run.id,
+        source_extraction_ids=source_extraction_ids,
     )
     parse_run.status = "succeeded"
     publication_db.flush()
@@ -277,16 +340,127 @@ def test_reconciliation_api_fails_closed_for_unresolved_sec_amendment(
     tmp_path,
     auth_headers,
 ):
-    original = _request(publication_db, tmp_path, ticker="RECONAMEND")
+    original = _request(
+        publication_db,
+        tmp_path,
+        ticker="RECONAMEND",
+        client=_annual_total_assets_client(),
+        concept_like="%Assets",
+        rule_id="sec.total_assets",
+    )
     initial = publish_sec_mapping_result(publication_db, original)
     publication_db.commit()
     finalize_sec_publication(publication_db, initial.run_id)
     publication_db.commit()
 
+    sec_fact = publication_db.query(MetricFact).filter_by(
+        stock_id=original.stock_id,
+        source_type="sec",
+        is_current=True,
+    ).first()
+    assert sec_fact is not None
+    sec_publication = publication_db.get(SecMetricPublication, sec_fact.source_ref_id)
+    assert sec_publication is not None
+    owner = User(
+        email="sec-reconciliation-amendment@example.com",
+        hashed_password=hash_password("x"),
+    )
+    publication_db.add(owner)
+    publication_db.flush()
+    document = PdfDocument(
+        user_id=owner.id,
+        stock_id=original.stock_id,
+        file_name="amendment-comparison.pdf",
+        source="value_line",
+        file_storage_key="private/amendment-comparison.pdf",
+        parse_status="parsed",
+        parser_version="value-line-v1",
+        report_date=original.sources[0].available_at.date(),
+        identity_needs_review=False,
+    )
+    publication_db.add(document)
+    publication_db.flush()
+    page_json = {
+        "meta": {"report_date": "2026-08-20"},
+        "annual_financials": {
+            "meta": {
+                "currency": sec_fact.currency,
+                "actual_years": [sec_publication.fiscal_year],
+                "estimate_years": [],
+                "fiscal_year_end_month": 6,
+            },
+            "balance_sheet_and_returns_usd_millions": {
+                "total_assets": {
+                    str(sec_publication.fiscal_year): (
+                        float(sec_fact.value_numeric) / 1_000_000 + 1
+                    )
+                }
+            },
+        },
+    }
+    ingestion = IngestionService(publication_db)
+    generated = next(
+        fact
+        for fact in ingestion.mapping_spec.generate_facts(page_json)[0]
+        if fact["metric_key"] == sec_fact.metric_key
+        and fact["period_type"] == "FY"
+        and fact["period_end_date"] == sec_publication.period_end_date
+    )
+    parse_run = ValueLineParseRun(
+        user_id=owner.id,
+        document_id=document.id,
+        parser_version="value-line-v1",
+        source_mapping_version=generated["value_json"]["source_mapping_version"],
+        status="running",
+    )
+    publication_db.add(parse_run)
+    publication_db.flush()
+    source_extraction = MetricExtraction(
+        user_id=owner.id,
+        document_id=document.id,
+        page_number=1,
+        field_key="tables_time_series",
+        raw_value_text="Total Assets",
+        original_text_snippet="Total Assets annual series",
+        parser_version="value-line-v1",
+        value_line_parse_run_id=parse_run.id,
+    )
+    publication_db.add(source_extraction)
+    publication_db.flush()
+    source_extraction_ids = ingestion._mapping_source_extraction_ids(
+        generated,
+        extraction_ids_by_key={"tables_time_series": [source_extraction.id]},
+    )
+    assert source_extraction_ids == (source_extraction.id,)
+    ingestion._insert_metric_fact_from_mapping(
+        user_id=owner.id,
+        stock_id=original.stock_id,
+        metric_key=generated["metric_key"],
+        value_numeric=generated["value_numeric"],
+        value_text=generated["value_text"],
+        value_json=generated["value_json"],
+        unit=generated["unit"],
+        currency=generated["currency"],
+        period_type=generated["period_type"],
+        period_end_date=generated["period_end_date"],
+        source_document_id=document.id,
+        value_line_parse_run_id=parse_run.id,
+        source_extraction_ids=source_extraction_ids,
+    )
+    parse_run.status = "succeeded"
+    publication_db.flush()
+    publication_db.commit()
+    parsed_fact = publication_db.query(MetricFact).filter_by(
+        user_id=owner.id,
+        stock_id=original.stock_id,
+        metric_key=sec_fact.metric_key,
+        source_document_id=document.id,
+    ).one()
+
     report = ingest_latest_financial_filings(
         publication_db,
         stock_id=original.stock_id,
-        client=_FailedAmendmentClient(),
+        client=_annual_total_assets_with_failed_amendment_client(),
         storage_root=tmp_path,
         max_filings=1,
         now=datetime(2026, 8, 28, 17, tzinfo=timezone.utc),
@@ -332,11 +506,12 @@ def test_reconciliation_api_fails_closed_for_unresolved_sec_amendment(
     publication_db.commit()
     finalize_sec_publication(publication_db, amended.run_id)
     publication_db.commit()
-    owner = User(
-        email="sec-reconciliation-amendment@example.com",
-        hashed_password=hash_password("x"),
+    research_case = ResearchCase(
+        user_id=owner.id,
+        stock_id=original.stock_id,
+        state="queued",
     )
-    publication_db.add(owner)
+    publication_db.add(research_case)
     publication_db.commit()
 
     response = reconciliation_publication_client.get(
@@ -347,7 +522,7 @@ def test_reconciliation_api_fails_closed_for_unresolved_sec_amendment(
     assert response.status_code == 200, response.text
     payload = response.json()
     assert payload["consumer_gate_status"] == "blocked"
-    assert payload["blocking_exclusion_count"] > 0
+    assert payload["sec_unavailable_states"], payload
     assert any(
         row["reason_code"] == "unresolved_amendment_parse_failure"
         for row in payload["excluded"]
@@ -355,6 +530,24 @@ def test_reconciliation_api_fails_closed_for_unresolved_sec_amendment(
     assert payload["sec_unavailable_states"][0]["reason_code"] == (
         "unresolved_amendment_parse_failure"
     )
+    workspace_response = reconciliation_publication_client.get(
+        f"/api/v1/research/cases/{research_case.id}/workspace",
+        headers=auth_headers(owner),
+    )
+    assert workspace_response.status_code == 200, workspace_response.text
+    workspace_facts = workspace_response.json()["fundamentals"]
+    assert not any(
+        row.get("id") == parsed_fact.id and row.get("value_numeric") is not None
+        for row in workspace_facts
+    )
+    blocked_workspace_slot = next(
+        row
+        for row in workspace_facts
+        if row.get("metric_key") == sec_fact.metric_key
+        and row.get("status") == "unavailable"
+    )
+    assert blocked_workspace_slot["reason_code"] == "unresolved_source_reconciliation"
+    assert blocked_workspace_slot["value_numeric"] is None
     failure_known_at = datetime.fromisoformat(
         payload["sec_unavailable_states"][0]["known_at"]
     )
