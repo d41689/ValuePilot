@@ -109,3 +109,37 @@ strict read-only Terra full-diff review with no P0–P3 findings before sign-off
   `3cef5c75`; existing SEC method tables are the baseline contract, not authority
   to publish any method because their seed policy intentionally marks all rules
   unsupported.
+- 2026-09-04: Added migration `20260904150000` on parent `20260904140000`.
+  It preflights retained reviews before DDL, requires active-admin reviewers at
+  the database boundary, preserves database-stamped knowledge/transaction time,
+  and seeds semantic policy `analysis-method-applicability-v2` with a canonical
+  digest that excludes deployment time.
+- 2026-09-04: V2 approves only the existing ordinary-company Owner Earnings,
+  Value Line return-on-total-capital proxy, and Value Line per-share-rate
+  methods after all four risk reviews are explicitly false. System valuation
+  remains typed unsupported pending FT-09; financials, REITs, unclassified
+  companies, and every reviewed material-risk state remain fail-closed.
+- 2026-09-04: The authorized operator surface is the admin-only classification
+  and risk-review API backed by append-only service writes, stock-scoped
+  advisory locks, exact terminal supersession, stable typed conflicts, and
+  rollback. Database triggers remain the final defense against direct-SQL
+  reviewer or timestamp forgery.
+- 2026-09-04: Supersession resolution is effective-range-aware as well as
+  knowledge-dated. A prospective review does not erase an earlier effective
+  state, and a cutoff before the later review's database stamp replays the prior
+  state.
+- 2026-09-04: Gate decisions expose policy ID/digest, method version, class
+  review, explicit attribute-to-review-ID/state snapshots, required evidence,
+  adjustments/outputs, effective date, knowledge cutoff, and typed reasons.
+  Generated Owner Earnings facts persist this exact snapshot under
+  `value_json.analysis_method`.
+- 2026-09-04: Shared gates now cover Owner Earnings generation, stock fact and
+  ticker reads, per-share growth options, research workspaces, Oracle's Lens,
+  DCF input manifests, and DCF save-time revalidation. An unsupported system
+  valuation produces no canonical DCF model inputs or saved numeric valuation;
+  an independently approved Owner Earnings series can still be shown with its
+  own authority.
+- 2026-09-04: Tests-first checkpoints: the core schema/service/API suite moved
+  from expected red to `60 passed`; consumer tests moved from `7 failed` to
+  green; the full affected 14-file backend set is `215 passed` in Docker. Exact
+  canonical closing gates and independent strict review remain pending.

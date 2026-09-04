@@ -31,7 +31,7 @@ BASE = make_url(settings.SQLALCHEMY_DATABASE_URI).set(
 ).render_as_string(hide_password=False)
 BACKEND = Path(__file__).resolve().parents[2]
 PARENT = "20260831120000"
-HEAD = "20260904140000"
+HEAD = "20260904150000"
 
 
 def test_unresolved_guard_keeps_published_unit_strict() -> None:
@@ -122,7 +122,7 @@ def test_mapping_and_method_authorities_stamp_and_fail_closed(isolated) -> None:
     url, engine = isolated
     alembic(url, "upgrade", "head")
     with engine.begin() as connection:
-        user_id = connection.execute(text("INSERT INTO users (email,hashed_password,is_active) VALUES ('schema@example.com','x',true) RETURNING id")).scalar_one()
+        user_id = connection.execute(text("INSERT INTO users (email,hashed_password,is_active,role) VALUES ('schema@example.com','x',true,'admin') RETURNING id")).scalar_one()
         stock_id = connection.execute(text("INSERT INTO stocks (ticker,exchange,market_country,company_name,is_active) VALUES ('SCH','US','US','Schema',true) RETURNING id")).scalar_one()
         other_stock_id = connection.execute(text("INSERT INTO stocks (ticker,exchange,market_country,company_name,is_active) VALUES ('SCHB','US','US','Schema B',true) RETURNING id")).scalar_one()
         assert connection.execute(text("SELECT count(*) FROM sec_metric_mapping_rules WHERE mapping_version_id='sec-us-gaap-v1'")).scalar_one() == 21

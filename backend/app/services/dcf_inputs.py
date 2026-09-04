@@ -79,8 +79,21 @@ class DcfFactUniverse:
 
 
 class DcfFactUniverseError(ValueError):
-    def __init__(self, code: str, message: str):
+    def __init__(
+        self,
+        code: str,
+        message: str,
+        *,
+        method_decision: Any | None = None,
+    ):
         self.code = code
+        self.method_decision = method_decision
+        self.reason_code = (
+            method_decision.reason_code if method_decision is not None else code
+        )
+        self.method_gate = (
+            method_decision.as_dict() if method_decision is not None else None
+        )
         super().__init__(message)
 
 
@@ -93,18 +106,14 @@ def dcf_evaluation_clock(evaluated_at: datetime | None = None) -> DcfEvaluationC
 
 
 def _stable_method_authority(decisions: dict[str, Any]) -> list[dict[str, Any]]:
-    return [
-        {
-            "method_key": decision.method_key,
-            "status": decision.status,
-            "reason_code": decision.reason_code,
-            "method_policy_version_id": decision.method_policy_version_id,
-            "economic_class": decision.economic_class,
-            "classification_review_id": decision.classification_review_id,
-            "effective_as_of": decision.effective_as_of.isoformat(),
-        }
-        for _, decision in sorted(decisions.items())
-    ]
+    authority = []
+    for _, decision in sorted(decisions.items()):
+        snapshot = decision.as_dict()
+        # The manifest already records ``evaluated_at``. Excluding only this
+        # duplicate clock field keeps otherwise-identical manifests stable.
+        snapshot.pop("knowledge_at")
+        authority.append(snapshot)
+    return authority
 
 
 def load_canonical_dcf_fact_universe(
@@ -116,6 +125,30 @@ def load_canonical_dcf_fact_universe(
     effective_as_of: date,
 ) -> DcfFactUniverse:
     """Load and gate the complete bounded DCF fact universe before selection."""
+
+    method_decisions = {
+        method_key: reviewed_method_gate(
+            session,
+            stock_id=stock_id,
+            method_key=method_key,
+            effective_as_of=effective_as_of,
+            knowledge_at=evaluated_at,
+        )
+        for method_key in (
+            "owner_earnings",
+            "per_share_trend",
+            "roic",
+            "system_valuation",
+        )
+    }
+    for required_method in ("owner_earnings", "system_valuation"):
+        decision = method_decisions[required_method]
+        if decision.status != "approved":
+            raise DcfFactUniverseError(
+                "unsupported",
+                f"{required_method} is unsupported: {decision.reason_code}",
+                method_decision=decision,
+            )
 
     facts = session.scalars(
         select(MetricFact)
@@ -142,21 +175,6 @@ def load_canonical_dcf_fact_universe(
             "dcf_fact_universe_too_large",
             "Canonical DCF fact universe exceeds the safe evaluation bound",
         )
-    method_decisions = {
-        method_key: reviewed_method_gate(
-            session,
-            stock_id=stock_id,
-            method_key=method_key,
-            effective_as_of=effective_as_of,
-            knowledge_at=evaluated_at,
-        )
-        for method_key in (
-            "owner_earnings",
-            "per_share_trend",
-            "roic",
-            "system_valuation",
-        )
-    }
     facts = guard_reconciled_source_selection(
         facts,
         consumer="valuation_inputs",

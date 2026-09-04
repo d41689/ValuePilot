@@ -51,6 +51,20 @@ class CanonicalUnavailableError(ValueError):
 
 
 @dataclass(frozen=True)
+class RiskReviewSnapshot:
+    risk_attribute: str
+    review_id: int
+    is_present: bool
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "risk_attribute": self.risk_attribute,
+            "review_id": self.review_id,
+            "is_present": self.is_present,
+        }
+
+
+@dataclass(frozen=True)
 class MethodGateDecision:
     method_key: str
     status: str
@@ -65,6 +79,7 @@ class MethodGateDecision:
     required_outputs: tuple[str, ...]
     required_risk_reviews: tuple[str, ...]
     risk_review_ids: tuple[int, ...]
+    risk_reviews: tuple[RiskReviewSnapshot, ...]
     risk_attributes: tuple[str, ...]
     missing_risk_reviews: tuple[str, ...]
     unsupported_reasons: tuple[str, ...]
@@ -86,6 +101,7 @@ class MethodGateDecision:
             "required_outputs": list(self.required_outputs),
             "required_risk_reviews": list(self.required_risk_reviews),
             "risk_review_ids": list(self.risk_review_ids),
+            "risk_reviews": [review.as_dict() for review in self.risk_reviews],
             "risk_attributes": list(self.risk_attributes),
             "missing_risk_reviews": list(self.missing_risk_reviews),
             "unsupported_reasons": list(self.unsupported_reasons),
@@ -111,6 +127,7 @@ def _method_decision(
     required_outputs: tuple[str, ...] = (),
     required_risk_reviews: tuple[str, ...] = (),
     risk_review_ids: tuple[int, ...] = (),
+    risk_reviews: tuple[RiskReviewSnapshot, ...] = (),
     risk_attributes: tuple[str, ...] = (),
     missing_risk_reviews: tuple[str, ...] = (),
     unsupported_reasons: tuple[str, ...] = (),
@@ -129,6 +146,7 @@ def _method_decision(
         required_outputs=required_outputs,
         required_risk_reviews=required_risk_reviews,
         risk_review_ids=risk_review_ids,
+        risk_reviews=risk_reviews,
         risk_attributes=risk_attributes,
         missing_risk_reviews=missing_risk_reviews,
         unsupported_reasons=unsupported_reasons,
@@ -342,6 +360,16 @@ def reviewed_method_gate(
     for row in risk_rows:
         if row.risk_attribute in by_risk:
             by_risk[row.risk_attribute].append(row)
+    risk_reviews = tuple(
+        RiskReviewSnapshot(
+            risk_attribute=attribute,
+            review_id=int(row.id),
+            is_present=row.is_present is True,
+        )
+        for attribute in required_risk_reviews
+        for row in by_risk[attribute]
+    )
+    risk_review_ids = tuple(review.review_id for review in risk_reviews)
     conflicts = tuple(
         attribute for attribute in required_risk_reviews if len(by_risk[attribute]) > 1
     )
@@ -351,15 +379,12 @@ def reviewed_method_gate(
             status="unsupported",
             reason_code="risk_review_conflict",
             method_version_id=rule.method_version_id,
+            risk_review_ids=risk_review_ids,
+            risk_reviews=risk_reviews,
             unsupported_reasons=tuple(f"risk_review_conflict:{item}" for item in conflicts),
         )
     missing = tuple(
         attribute for attribute in required_risk_reviews if not by_risk[attribute]
-    )
-    risk_review_ids = tuple(
-        int(by_risk[attribute][0].id)
-        for attribute in required_risk_reviews
-        if by_risk[attribute]
     )
     present = tuple(
         attribute
@@ -377,6 +402,7 @@ def reviewed_method_gate(
             status="unsupported",
             reason_code=reason,
             risk_review_ids=risk_review_ids,
+            risk_reviews=risk_reviews,
             risk_attributes=present,
             missing_risk_reviews=missing,
             unsupported_reasons=tuple(detail_reasons),
@@ -387,6 +413,7 @@ def reviewed_method_gate(
             status="unsupported",
             reason_code="method_policy_invalid",
             risk_review_ids=risk_review_ids,
+            risk_reviews=risk_reviews,
             risk_attributes=present,
             missing_risk_reviews=missing,
             unsupported_reasons=("method_version_missing",),
@@ -398,6 +425,7 @@ def reviewed_method_gate(
             reason_code="risk_review_incomplete",
             method_version_id=rule.method_version_id,
             risk_review_ids=risk_review_ids,
+            risk_reviews=risk_reviews,
             missing_risk_reviews=missing,
             unsupported_reasons=tuple(f"risk_review_missing:{item}" for item in missing),
         )
@@ -408,6 +436,7 @@ def reviewed_method_gate(
             reason_code="reviewed_risk_attribute_unsupported",
             method_version_id=rule.method_version_id,
             risk_review_ids=risk_review_ids,
+            risk_reviews=risk_reviews,
             risk_attributes=present,
             unsupported_reasons=tuple(
                 f"reviewed_risk_attribute:{item}" for item in present
@@ -419,6 +448,7 @@ def reviewed_method_gate(
         reason_code="approved",
         method_version_id=rule.method_version_id,
         risk_review_ids=risk_review_ids,
+        risk_reviews=risk_reviews,
     )
 
 

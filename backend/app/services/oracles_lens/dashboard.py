@@ -1175,6 +1175,10 @@ def _m3_facts_by_stock(
     *,
     user_id: int | None = None,
     effective_as_of: date | None = None,
+    knowledge_at: datetime | None = None,
+    method_decisions_by_stock: (
+        dict[int, dict[str, MethodGateDecision]] | None
+    ) = None,
 ) -> tuple[dict[int, dict[str, MetricFact]], dict[int, dict[str, Any]]]:
     """Guard and select one current fact per (stock_id, metric_key).
 
@@ -1227,6 +1231,8 @@ def _m3_facts_by_stock(
             stock_id=stock_id,
             facts=all_facts,
             effective_as_of=effective_as_of or date.today(),
+            knowledge_at=knowledge_at,
+            precomputed_decisions=(method_decisions_by_stock or {}).get(stock_id),
         )
         kept_ids = {fact.id for fact in kept}
         for metric_key, rows in by_key.items():
@@ -1237,7 +1243,7 @@ def _m3_facts_by_stock(
                 selected = guard_reconciled_source_selection(
                     rows,
                     consumer="oracles_lens_quality",
-                    knowledge_cutoff=datetime.now(timezone.utc),
+                    knowledge_cutoff=knowledge_at or datetime.now(timezone.utc),
                     session=session,
                     user_id=user_id,
                 )
@@ -1314,12 +1320,29 @@ def _quality_overlay_by_stock(
     if not unique_stock_ids:
         return {}
 
+    effective_as_of = price_as_of_date or date.today()
+    evaluated_at = datetime.now(timezone.utc)
+    gate_decisions = {
+        stock_id: {
+            method_key: reviewed_method_gate(
+                session,
+                stock_id=stock_id,
+                method_key=method_key,
+                effective_as_of=effective_as_of,
+                knowledge_at=evaluated_at,
+            )
+            for method_key in ("owner_earnings", "roic")
+        }
+        for stock_id in unique_stock_ids
+    }
     facts_by_metric_key, source_statuses = _m3_facts_by_stock(
         session,
         unique_stock_ids,
         list(QUALITY_METRIC_KEYS.values()),
         user_id=user_id,
-        effective_as_of=price_as_of_date or date.today(),
+        effective_as_of=effective_as_of,
+        knowledge_at=evaluated_at,
+        method_decisions_by_stock=gate_decisions,
     )
     reverse_keys = {metric_key: label for label, metric_key in QUALITY_METRIC_KEYS.items()}
     facts_by_stock: dict[int, dict[str, MetricFact]] = {stock_id: {} for stock_id in unique_stock_ids}
@@ -1349,18 +1372,17 @@ def _quality_overlay_by_stock(
                 "reason_code": "user_authored_formula",
             }
         else:
-            method_decisions[stock_id] = reviewed_method_gate(
-                session,
-                stock_id=stock_id,
-                method_key="owner_earnings",
-                effective_as_of=price_as_of_date or date.today(),
-            )
+            method_decisions[stock_id] = gate_decisions[stock_id]["owner_earnings"]
     return {
         stock_id: _quality_payload(
             facts_by_stock.get(stock_id, {}),
             prices.get(stock_id),
             price_context=price_context,
             owner_earnings_method=method_decisions[stock_id],
+            system_method_gates={
+                "owner_earnings": gate_decisions[stock_id]["owner_earnings"],
+                "roic": gate_decisions[stock_id]["roic"],
+            },
             canonical_source_status=source_statuses[stock_id],
         )
         for stock_id in unique_stock_ids
@@ -1391,6 +1413,9 @@ def _quality_payload(
     *,
     price_context: str = "latest",
     owner_earnings_method: MethodGateDecision | dict[str, Any] | None = None,
+    system_method_gates: dict[
+        str, MethodGateDecision | dict[str, Any]
+    ] | None = None,
     canonical_source_status: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     price = current_price.current_value if current_price is not None else None
@@ -1474,6 +1499,16 @@ def _quality_payload(
     elif owner_yield is None and owner_comparison_reason is not None:
         if owner_comparison_reason not in unavailable:
             unavailable.append(owner_comparison_reason)
+    roic_decision = (system_method_gates or {}).get("roic")
+    roic_status = (
+        roic_decision.get("status")
+        if isinstance(roic_decision, dict)
+        else roic_decision.status
+        if roic_decision is not None
+        else None
+    )
+    if roic_decision is not None and roic_status != "approved":
+        unavailable.append("ROIC method unsupported")
 
     return {
         **values,
@@ -1489,6 +1524,14 @@ def _quality_payload(
                 "reason_code": "method_gate_not_evaluated",
             }
         ),
+        "system_method_gates": {
+            method_key: (
+                decision.as_dict()
+                if isinstance(decision, MethodGateDecision)
+                else decision
+            )
+            for method_key, decision in (system_method_gates or {}).items()
+        },
         "coverage": {
             "value_line": any(key in facts for key in QUALITY_METRIC_KEYS if key != "owners_earnings"),
             "price": price is not None,

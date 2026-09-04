@@ -456,13 +456,16 @@ def test_oracles_lens_adds_value_line_quality_overlay(
     item = next(row for row in response.json()["items"] if row["stock_id"] == target.id)
     overlay = item["quality_overlay"]
     assert overlay.pop("owner_earnings_method")["status"] == "unsupported"
+    method_gates = overlay.pop("system_method_gates")
+    assert method_gates["owner_earnings"]["reason_code"] == "classification_unreviewed"
+    assert method_gates["roic"]["reason_code"] == "classification_unreviewed"
     price_state = overlay.pop("current_price_state")
     assert price_state["status"] == "available"
     assert price_state["currency"] == "USD"
     assert price_state["source"] == "yfinance"
     assert overlay == {
         "piotroski_total": 8.0,
-        "return_on_total_capital": 0.24,
+        "return_on_total_capital": None,
         "return_on_equity": 0.31,
         "net_profit_margin": 0.22,
         "debt_to_capital": 0.18,
@@ -475,10 +478,13 @@ def test_oracles_lens_adds_value_line_quality_overlay(
             "value_line": True,
             "price": True,
             "owner_earnings": False,
-            "available_metrics": 5,
+                "available_metrics": 4,
             "expected_metrics": 6,
         },
-        "unavailable_reasons": ["owner earnings method unsupported"],
+            "unavailable_reasons": [
+                "owner earnings method unsupported",
+                "ROIC method unsupported",
+            ],
         "provenance": {
             "primary_source_document_id": document.id,
             "source_document_ids": [document.id],
@@ -488,14 +494,6 @@ def test_oracles_lens_adds_value_line_quality_overlay(
                     "metric_key": "score.piotroski.total",
                     "source_document_id": document.id,
                     "source_type": "calculated",
-                    "period_type": "FY",
-                    "period_end_date": "2031-12-31",
-                },
-                {
-                    "label": "return_on_total_capital",
-                    "metric_key": "bs.return_on_total_capital",
-                    "source_document_id": document.id,
-                    "source_type": "parsed",
                     "period_type": "FY",
                     "period_end_date": "2031-12-31",
                 },

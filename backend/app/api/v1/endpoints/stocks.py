@@ -23,6 +23,7 @@ from app.services.canonical_financials import (
     guard_sec_run_availability,
     resolve_sec_publication_evidence,
     reviewed_method_gate,
+    system_method_for_fact,
     visible_metric_fact_predicate,
 )
 from app.schemas.stock import ResearchValuationSave, ResearchValuationSaveResponse
@@ -729,7 +730,9 @@ def _validated_dcf_save(
     except (CanonicalSourceConflictError, CanonicalUnavailableError) as error:
         raise _selection_changed() from error
     except DcfFactUniverseError as error:
-        raise ResearchCaseError(error.code, str(error), status_code=409) from error
+        raise ResearchCaseError(
+            error.reason_code, str(error), status_code=409
+        ) from error
     entry = evaluate_dcf_input_selection(
         stock_id=stock_id,
         dcf_facts=universe.dcf_facts,
@@ -1018,9 +1021,47 @@ def read_stock_by_ticker(
         canonical_input_status = error.state
     except DcfFactUniverseError as error:
         canonical_input_status = {
-            "status": "unavailable",
-            "reason_code": error.code,
+            "status": "unsupported" if error.code == "unsupported" else "unavailable",
+            "reason_code": error.reason_code,
+            **(
+                {"method_gate": error.method_gate}
+                if error.method_gate is not None
+                else {}
+            ),
         }
+        method_gate_decisions = {
+            method_key: reviewed_method_gate(
+                session,
+                stock_id=stock.id,
+                method_key=method_key,
+                effective_as_of=dcf_clock.effective_as_of,
+                knowledge_at=dcf_evaluated_at,
+            )
+            for method_key in (
+                "owner_earnings",
+                "roic",
+                "per_share_trend",
+                "system_valuation",
+            )
+        }
+        owner_candidates = session.scalars(
+            select(MetricFact).where(
+                MetricFact.stock_id == stock.id,
+                MetricFact.is_current.is_(True),
+                MetricFact.created_at <= dcf_evaluated_at,
+                _visible_fact_predicate(current_user.id, admin_user_ids),
+                MetricFact.period_type == "FY",
+                MetricFact.metric_key == "owners_earnings_per_share",
+            )
+        ).all()
+        oeps_facts, _, _ = apply_reviewed_method_gates(
+            session,
+            stock_id=stock.id,
+            facts=owner_candidates,
+            effective_as_of=dcf_clock.effective_as_of,
+            knowledge_at=dcf_evaluated_at,
+            precomputed_decisions=method_gate_decisions,
+        )
     if method_gate_decisions is None:
         method_gate_decisions = {
             method_key: reviewed_method_gate(
@@ -1064,6 +1105,15 @@ def read_stock_by_ticker(
         facts=facts,
         effective_as_of=dcf_clock.effective_as_of,
         knowledge_at=dcf_evaluated_at,
+        precomputed_decisions=method_gate_decisions,
+    )
+    growth_facts, _, _ = apply_reviewed_method_gates(
+        session,
+        stock_id=stock.id,
+        facts=growth_facts,
+        effective_as_of=dcf_clock.effective_as_of,
+        knowledge_at=dcf_evaluated_at,
+        precomputed_decisions=method_gate_decisions,
     )
     try:
         summary_facts = guard_reconciled_source_selection(
@@ -1177,7 +1227,10 @@ def read_stock_by_ticker(
         )
 
     seen_dcf_years: set[int] = set()
-    for fact in oeps_facts:
+    dcf_selection_oeps_facts = (
+        oeps_facts if canonical_input_status.get("status") == "available" else []
+    )
+    for fact in dcf_selection_oeps_facts:
         period_end = fact.period_end_date
         if not period_end or period_end.year in seen_dcf_years:
             continue
@@ -1212,7 +1265,7 @@ def read_stock_by_ticker(
                 report_dates_by_doc=report_dates_by_doc,
             ),
         )
-        if oeps_facts
+        if dcf_selection_oeps_facts
         else None
     )
 
@@ -1440,13 +1493,14 @@ def read_stock_facts(
         _visible_fact_predicate(current_user.id, admin_user_ids),
     )
     facts = session.scalars(stmt).all()
-    facts, unsupported, _ = apply_reviewed_method_gates(
+    evaluation_cutoff = datetime.now(timezone.utc)
+    facts, unsupported, method_decisions = apply_reviewed_method_gates(
         session,
         stock_id=stock_id,
         facts=facts,
-        effective_as_of=date.today(),
+        effective_as_of=evaluation_cutoff.astimezone(ET).date(),
+        knowledge_at=evaluation_cutoff,
     )
-    evaluation_cutoff = datetime.now(timezone.utc)
     facts_by_metric: dict[str, list[MetricFact]] = {}
     for fact in facts:
         facts_by_metric.setdefault(fact.metric_key, []).append(fact)
@@ -1514,8 +1568,12 @@ def read_stock_facts(
                 }
             )
 
-    published = [
-        {
+    published = []
+    for f in reconciled_facts:
+        method_key = system_method_for_fact(f)
+        method_decision = method_decisions.get(method_key) if method_key else None
+        published.append(
+            {
             "id": f.id,
             "status": "published",
             "metric_key": f.metric_key,
@@ -1529,9 +1587,13 @@ def read_stock_facts(
                 if f.source_type == "sec" and f.source_ref_id is not None
                 else None
             ),
-        }
-        for f in reconciled_facts
-    ]
+            **(
+                {"method_gate": method_decision.as_dict()}
+                if method_decision is not None
+                else {}
+            ),
+            }
+        )
     return (
         published
         + unsupported

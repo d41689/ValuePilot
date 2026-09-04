@@ -1,3 +1,4 @@
+from dataclasses import replace
 from datetime import date, datetime, timezone
 
 from app.models.artifacts import PdfDocument
@@ -7,6 +8,52 @@ from app.models.users import User
 from app.api.v1.endpoints import stocks as stocks_endpoint
 from app.services import dcf_inputs
 from app.services.dcf_inputs import DcfEvaluationClock
+from app.services.method_applicability import (
+    RISK_ATTRIBUTES,
+    review_company_classification,
+    review_company_risk_attribute,
+)
+
+
+def _review_ordinary_profile(db_session, *, reviewer: User, stock: Stock) -> None:
+    review_company_classification(
+        db_session,
+        reviewer_user_id=reviewer.id,
+        stock_id=stock.id,
+        economic_class="ordinary",
+        effective_from=date(2020, 1, 1),
+        review_reason="Reviewed operating model for the focused summary test.",
+    )
+    for risk_attribute in sorted(RISK_ATTRIBUTES):
+        review_company_risk_attribute(
+            db_session,
+            reviewer_user_id=reviewer.id,
+            stock_id=stock.id,
+            risk_attribute=risk_attribute,
+            is_present=False,
+            effective_from=date(2020, 1, 1),
+            review_reason=f"Reviewed {risk_attribute} for the focused summary test.",
+        )
+    db_session.commit()
+
+
+def _allow_test_system_valuation(monkeypatch) -> None:
+    """Exercise post-gate shaping where FT-09 will authorize a DCF method."""
+
+    original_gate = dcf_inputs.reviewed_method_gate
+
+    def approve_gate(session, **kwargs):
+        decision = original_gate(session, **kwargs)
+        if decision.method_key != "system_valuation":
+            return decision
+        return replace(
+            decision,
+            status="approved",
+            reason_code="approved",
+            method_version_id=f"test-{decision.method_key}-v1",
+        )
+
+    monkeypatch.setattr(dcf_inputs, "reviewed_method_gate", approve_gate)
 
 
 def test_lookup_uses_one_et_effective_clock_for_all_method_gates(
@@ -305,11 +352,15 @@ def test_lookup_stock_by_ticker_hides_piotroski_card_when_exact_lineage_is_missi
     }
 
 
-def test_lookup_stock_by_ticker_returns_summary(client, db_session, auth_headers):
-    user = User(email="ticker_lookup@example.com")
+def test_lookup_stock_by_ticker_returns_summary(
+    client, db_session, auth_headers, monkeypatch
+):
+    _allow_test_system_valuation(monkeypatch)
+    user = User(email="ticker_lookup@example.com", role="admin")
     stock = Stock(ticker="COCO_TEST", exchange="NDQ", company_name="VITA COCO", is_active=True)
     db_session.add_all([user, stock])
     db_session.commit()
+    _review_ordinary_profile(db_session, reviewer=user, stock=stock)
 
     doc = PdfDocument(
         user_id=user.id,
@@ -1698,12 +1749,13 @@ def test_lookup_stock_by_ticker_returns_actual_conflicts(
 
 
 def test_lookup_stock_by_ticker_uses_revenues_growth_when_sales_missing(
-    client, db_session, auth_headers
+    client, db_session, auth_headers, monkeypatch
 ):
-    user = User(email="ticker_lookup_revenues@example.com")
+    user = User(email="ticker_lookup_revenues@example.com", role="admin")
     stock = Stock(ticker="REV_TEST", exchange="NDQ", company_name="REVENUES INC", is_active=True)
     db_session.add_all([user, stock])
     db_session.flush()
+    _review_ordinary_profile(db_session, reviewer=user, stock=stock)
     doc = PdfDocument(
         user_id=user.id,
         file_name="revenues.pdf",
@@ -1981,9 +2033,9 @@ def test_lookup_stock_by_ticker_does_not_serialize_fact_known_after_evaluation_c
 
 
 def test_lookup_stock_by_ticker_returns_typed_source_conflict_before_growth_aggregation(
-    client, db_session, auth_headers
+    client, db_session, auth_headers, monkeypatch
 ):
-    user = User(email="ticker-growth-conflict@example.com")
+    user = User(email="ticker-growth-conflict@example.com", role="admin")
     stock = Stock(
         ticker="GROWTH_CONFLICT",
         exchange="NYSE",
@@ -1992,6 +2044,7 @@ def test_lookup_stock_by_ticker_returns_typed_source_conflict_before_growth_aggr
     )
     db_session.add_all([user, stock])
     db_session.flush()
+    _review_ordinary_profile(db_session, reviewer=user, stock=stock)
     for source_type, value in (("parsed", 0.05), ("manual", 0.06)):
         db_session.add(
             MetricFact(

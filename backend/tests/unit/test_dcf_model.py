@@ -100,8 +100,12 @@ def test_dcf_evaluation_clock_derives_effective_date_in_new_york():
     assert clock.effective_as_of.isoformat() == "2026-09-03"
 
 
-def test_dcf_fact_universe_fails_closed_above_bounded_query_limit():
+def test_dcf_fact_universe_fails_closed_above_bounded_query_limit(monkeypatch):
     session = MagicMock()
+    monkeypatch.setattr(
+        "app.services.dcf_inputs.reviewed_method_gate",
+        lambda *_args, **_kwargs: MagicMock(status="approved"),
+    )
     session.scalars.return_value.all.return_value = [
         object() for _ in range(DCF_MAX_FACT_UNIVERSE_ROWS + 1)
     ]

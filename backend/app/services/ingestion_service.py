@@ -31,7 +31,7 @@ from app.services.owners_earnings import (
     build_normalized_owners_earnings_fact,
     build_owners_earnings_facts,
 )
-from app.services.canonical_financials import reviewed_method_gate
+from app.services.canonical_financials import MethodGateDecision, reviewed_method_gate
 from app.services.calculated_metrics.value_line_ratios import ValueLineRatioCalculator
 from app.services.calculated_metrics.piotroski_f_score import PiotroskiFScoreCalculator
 
@@ -330,6 +330,7 @@ class IngestionService:
                             stock_id=stock.id,
                             report_date=report_date,
                             value_line_parse_run_id=parse_run.id,
+                            method_decision=owner_earnings_gate,
                         )
 
                     self._run_calculated_metrics(user_id=user_id, stock_id=stock.id)
@@ -670,6 +671,7 @@ class IngestionService:
                     stock_id=stock.id,
                     report_date=report_date,
                     value_line_parse_run_id=parse_run.id,
+                    method_decision=owner_earnings_gate,
                 )
 
             parsed_stock_ids.add(stock.id)
@@ -737,6 +739,7 @@ class IngestionService:
         stock_id: int,
         report_date: date,
         value_line_parse_run_id: int | None = None,
+        method_decision: MethodGateDecision | None = None,
     ) -> list[MetricFact]:
         """Persist base-derived OEPS first, then its normalized snapshot.
 
@@ -745,6 +748,16 @@ class IngestionService:
         report revisions.  The optional form exists for canonical backfills and
         tests; duplicate slots still fail closed in the pure builder.
         """
+
+        decision = method_decision or reviewed_method_gate(
+            self.db,
+            stock_id=stock_id,
+            method_key="owner_earnings",
+            effective_as_of=report_date,
+        )
+        if decision.status != "approved":
+            return []
+        method_snapshot = decision.as_dict()
 
         source_query = select(MetricFact).where(
             MetricFact.user_id == user_id,
@@ -765,19 +778,28 @@ class IngestionService:
                 MetricFact.id.asc(),
             )
         ).all()
-        annual = [
-            self._insert_calculated_fact(
-                user_id=user_id,
-                stock_id=stock_id,
-                payload=payload,
+        annual = []
+        for payload in build_owners_earnings_facts(source_facts):
+            payload["value_json"] = {
+                **(payload.get("value_json") or {}),
+                "analysis_method": method_snapshot,
+            }
+            annual.append(
+                self._insert_calculated_fact(
+                    user_id=user_id,
+                    stock_id=stock_id,
+                    payload=payload,
+                )
             )
-            for payload in build_owners_earnings_facts(source_facts)
-        ]
         normalized = build_normalized_owners_earnings_fact(
             annual,
             report_date=report_date,
         )
         if normalized is not None:
+            normalized["value_json"] = {
+                **(normalized.get("value_json") or {}),
+                "analysis_method": method_snapshot,
+            }
             annual.append(
                 self._insert_calculated_fact(
                     user_id=user_id,

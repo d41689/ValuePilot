@@ -153,6 +153,10 @@ def _create_policy_insert_guard() -> None:
 
 def upgrade() -> None:
     connection = op.get_bind()
+    op.execute(
+        "LOCK TABLE sec_economic_classification_reviews, "
+        "sec_economic_risk_attribute_reviews IN SHARE MODE"
+    )
     untrusted_legacy_reviews = connection.execute(
         sa.text(
             """
@@ -274,13 +278,17 @@ def upgrade() -> None:
 
 def downgrade() -> None:
     connection = op.get_bind()
+    op.execute(
+        "LOCK TABLE sec_economic_classification_reviews, "
+        "sec_economic_risk_attribute_reviews, metric_facts IN SHARE MODE"
+    )
     retained = connection.execute(
         sa.text(
             "SELECT "
             "(SELECT count(*) FROM sec_economic_classification_reviews) + "
             "(SELECT count(*) FROM sec_economic_risk_attribute_reviews) + "
             "(SELECT count(*) FROM metric_facts WHERE "
-            " value_json->'analysis_method'->>'policy_version'=:policy)"
+            " value_json->'analysis_method'->>'method_policy_version_id'=:policy)"
         ),
         {"policy": POLICY_ID},
     ).scalar_one()

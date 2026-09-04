@@ -29,7 +29,7 @@ BASE = make_url(settings.SQLALCHEMY_DATABASE_URI).set(
 ).render_as_string(hide_password=False)
 BACKEND = Path(__file__).resolve().parents[2]
 PARENT = "20260901280000"
-HEAD = "20260904140000"
+HEAD = "20260904150000"
 APPROVED_MAPPING_VERSION = MappingSpec.load(
     BACKEND / "docs" / "metric_facts_mapping_spec.yml"
 ).source_mapping_version

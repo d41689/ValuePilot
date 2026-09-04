@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import date, datetime, timedelta, timezone
 from types import SimpleNamespace
 
@@ -12,6 +13,7 @@ from app.models.stocks import Stock
 from app.services.formula_engine import FormulaEngine
 from app.services.ingestion_service import IngestionService
 from app.services.dcf_inputs import load_canonical_dcf_fact_universe
+from app.services import dcf_inputs
 from app.services.manual_metric_correction import (
     ManualMetricCorrectionError,
     create_manual_metric_correction,
@@ -23,6 +25,11 @@ from app.services.source_reconciliation import (
 )
 from app.services import source_reconciliation
 from app.services.canonical_financials import CanonicalSourceConflictError
+from app.services.method_applicability import (
+    RISK_ATTRIBUTES,
+    review_company_classification,
+    review_company_risk_attribute,
+)
 
 
 def _document(*, user_id: int, stock_id: int, suffix: str = "") -> PdfDocument:
@@ -300,12 +307,30 @@ def test_reconciliation_mapping_resolution_observes_warm_process_policy_drift(
 
 
 def test_ingested_owner_earnings_becomes_unavailable_when_input_is_superseded(
-    db_session, user_factory
+    db_session, user_factory, monkeypatch
 ):
-    user = user_factory("owner-earnings-lineage@example.com")
+    user = user_factory("owner-earnings-lineage@example.com", role="admin")
     stock = Stock(ticker="OEL", exchange="NYSE", company_name="Owner Earnings Lineage")
     db_session.add(stock)
     db_session.flush()
+    review_company_classification(
+        db_session,
+        reviewer_user_id=user.id,
+        stock_id=stock.id,
+        economic_class="ordinary",
+        effective_from=date(2020, 1, 1),
+        review_reason="Reviewed ordinary operating model for OE lineage test.",
+    )
+    for risk_attribute in sorted(RISK_ATTRIBUTES):
+        review_company_risk_attribute(
+            db_session,
+            reviewer_user_id=user.id,
+            stock_id=stock.id,
+            risk_attribute=risk_attribute,
+            is_present=False,
+            effective_from=date(2020, 1, 1),
+            review_reason=f"Reviewed {risk_attribute} for OE lineage test.",
+        )
     document = _document(user_id=user.id, stock_id=stock.id, suffix="-oe")
     db_session.add(document)
     db_session.flush()
@@ -368,6 +393,23 @@ def test_ingested_owner_earnings_becomes_unavailable_when_input_is_superseded(
     )
     db_session.add(replacement)
     db_session.flush()
+
+    original_gate = dcf_inputs.reviewed_method_gate
+
+    def allow_test_system_valuation(session, **kwargs):
+        decision = original_gate(session, **kwargs)
+        if decision.method_key != "system_valuation":
+            return decision
+        return replace(
+            decision,
+            status="approved",
+            reason_code="approved",
+            method_version_id="test-system-valuation-v1",
+        )
+
+    monkeypatch.setattr(
+        dcf_inputs, "reviewed_method_gate", allow_test_system_valuation
+    )
 
     with pytest.raises(CanonicalReconciliationError) as error:
         load_canonical_dcf_fact_universe(

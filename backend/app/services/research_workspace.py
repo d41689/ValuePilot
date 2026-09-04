@@ -33,6 +33,7 @@ from app.services.canonical_financials import (
     apply_reviewed_method_gates,
     current_sec_unresolved_states,
     reviewed_method_gate,
+    system_method_for_fact,
     visible_metric_fact_predicate,
 )
 from app.services.source_reconciliation import (
@@ -209,6 +210,21 @@ def build_research_workspace(
     reconciliation_bound_exceeded = len(facts) > MAX_RECONCILIATION_FACTS
     facts = facts[:MAX_RECONCILIATION_FACTS]
     reconciliation_blocked_states: list[dict[str, Any]] = []
+    method_gate_decisions = {
+        method_key: reviewed_method_gate(
+            session,
+            stock_id=stock.id,
+            method_key=method_key,
+            effective_as_of=as_of,
+            knowledge_at=evaluated_at,
+        )
+        for method_key in (
+            "owner_earnings",
+            "roic",
+            "per_share_trend",
+            "system_valuation",
+        )
+    }
     if reconciliation_bound_exceeded:
         # A truncated prefix cannot support any trustworthy slot conclusion.
         facts = []
@@ -237,6 +253,8 @@ def build_research_workspace(
             stock_id=stock.id,
             facts=facts,
             effective_as_of=as_of,
+            knowledge_at=evaluated_at,
+            precomputed_decisions=method_gate_decisions,
         )
     coverage_rows = (
         session.query(ResearchCoverageRequirement)
@@ -402,6 +420,15 @@ def build_research_workspace(
                         else None
                     )
                 ),
+                **(
+                    {
+                        "method_gate": method_gate_decisions[
+                            system_method_for_fact(fact)
+                        ].as_dict()
+                    }
+                    if system_method_for_fact(fact) in method_gate_decisions
+                    else {}
+                ),
             }
             for fact in facts
         ]
@@ -409,12 +436,7 @@ def build_research_workspace(
         + unsupported_method_states
         + current_sec_unresolved_states(session, stock_id=stock.id),
         "system_method_gates": {
-            method_key: reviewed_method_gate(
-                session,
-                stock_id=stock.id,
-                method_key=method_key,
-                effective_as_of=as_of,
-            ).as_dict()
+            method_key: method_gate_decisions[method_key].as_dict()
             for method_key in ("owner_earnings", "roic", "per_share_trend", "system_valuation")
         },
         "piotroski_f_score": _piotroski_series(facts),
