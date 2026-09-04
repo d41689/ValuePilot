@@ -1,4 +1,5 @@
 from datetime import date, datetime, timedelta, timezone
+import json
 
 import pytest
 from fastapi.testclient import TestClient
@@ -17,7 +18,6 @@ from app.services.sec_metric_publication import (
     publish_sec_mapping_result,
 )
 from app.services.ingestion_service import IngestionService
-from app.services.mapping_spec import MappingSpec
 from app.services.sec_financial_ingestion import (
     finalize_sec_financial_ingestion_operation,
     ingest_latest_financial_filings,
@@ -25,12 +25,16 @@ from app.services.sec_financial_ingestion import (
 from app.services import sec_financial_ingestion as financial_ingestion
 from sqlalchemy import text
 from test_sec_metric_publication_service_e2e import (
-    _AnnualGeneratedStatementClient,
     _FailedAmendmentClient,
     _request,
 )
 from test_sec_metric_publication_service_e2e import db as publication_db
 from test_sec_metric_publication_service_e2e import isolated_engine
+from test_sec_financial_lineage import (
+    GeneratedBalanceAndCashFlowAuthorityClient,
+    INDEX_URL,
+    SUBMISSIONS_URL,
+)
 
 
 @pytest.fixture
@@ -48,6 +52,36 @@ def reconciliation_publication_client(publication_db, monkeypatch):
     app.dependency_overrides.clear()
 
 
+def _annual_total_assets_client() -> GeneratedBalanceAndCashFlowAuthorityClient:
+    client = GeneratedBalanceAndCashFlowAuthorityClient()
+    submissions = json.loads(client.responses[SUBMISSIONS_URL])
+    recent = submissions["filings"]["recent"]
+    recent["form"][0] = "10-K"
+    recent["reportDate"][0] = "2026-06-30"
+    client.responses[SUBMISSIONS_URL] = json.dumps(submissions).encode()
+    for url, content in list(client.responses.items()):
+        if url in {SUBMISSIONS_URL, INDEX_URL} or not isinstance(content, bytes):
+            continue
+        client.responses[url] = (
+            content.replace(b"Jun. 27, 2026", b"Jun. 30, 2026")
+            .replace(b"2026-06-27", b"2026-06-30")
+            .replace(b"2025-09-28", b"2025-07-01")
+            .replace(b"9 Months Ended", b"12 Months Ended")
+            .replace(b">Q3</ix:nonNumeric>", b">FY</ix:nonNumeric>")
+        )
+    index = json.loads(client.responses[INDEX_URL])
+    for item in index["directory"]["item"]:
+        suffix = "/" + item["name"]
+        artifact = next(
+            (body for url, body in client.responses.items() if url.endswith(suffix)),
+            None,
+        )
+        if isinstance(artifact, bytes):
+            item["size"] = len(artifact)
+    client.responses[INDEX_URL] = json.dumps(index).encode()
+    return client
+
+
 def test_sec_as_filed_and_value_line_adjusted_are_compared_without_precedence(
     reconciliation_publication_client,
     publication_db,
@@ -58,12 +92,9 @@ def test_sec_as_filed_and_value_line_adjusted_are_compared_without_precedence(
         publication_db,
         tmp_path,
         ticker="RECONSEC",
-        client=_AnnualGeneratedStatementClient(
-            accession="0000320193-26-900101",
-            report_date="2026-06-27",
-            accepted_at="20260820160528",
-            comparative_authority=True,
-        ),
+        client=_annual_total_assets_client(),
+        concept_like="%Assets",
+        rule_id="sec.total_assets",
     )
     receipt = publish_sec_mapping_result(publication_db, request)
     publication_db.commit()
@@ -105,42 +136,26 @@ def test_sec_as_filed_and_value_line_adjusted_are_compared_without_precedence(
                 "currency": sec_fact.currency,
                 "actual_years": [publication.fiscal_year],
                 "estimate_years": [],
-                "fiscal_year_end_month": publication.period_end_date.month,
+                "fiscal_year_end_month": 6,
             },
-            "income_statement_usd_millions": {
-                "net_profit": {
-                    str(publication.fiscal_year): float(sec_fact.value_numeric) / 1_000_000 + 1,
+            "balance_sheet_and_returns_usd_millions": {
+                "total_assets": {
+                    str(publication.fiscal_year): (
+                        float(sec_fact.value_numeric) / 1_000_000 + 1
+                    )
                 }
             },
         },
     }
-    mapped = MappingSpec(
-        {
-            "version": 2,
-            "mappings": [
-                {
-                    "id": "is.revenue.fy",
-                    "json_path": (
-                        "annual_financials.income_statement_usd_millions."
-                        "net_profit.*"
-                    ),
-                    "metric_key": sec_fact.metric_key,
-                    "period_type": "FY",
-                    "unit": "USD_millions",
-                    "period_end_date": {"derive": "year_end_from_key"},
-                    "value": {"numeric_from": "$value"},
-                }
-            ],
-        }
-    ).generate_facts(page_json)[0]
+    ingestion = IngestionService(publication_db)
+    mapped = ingestion.mapping_spec.generate_facts(page_json)[0]
     generated = next(
         fact
         for fact in mapped
         if fact["metric_key"] == sec_fact.metric_key
         and fact["period_type"] == "FY"
-        and fact["value_json"]["fiscal_year"] == publication.fiscal_year
+        and fact["period_end_date"] == publication.period_end_date
     )
-    ingestion = IngestionService(publication_db)
     parse_run = ValueLineParseRun(
         user_id=owner.id,
         document_id=document.id,

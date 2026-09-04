@@ -14,6 +14,7 @@ from app.models.research import (
     ResearchCaseRevision,
 )
 from app.models.stocks import Stock
+from app.services.ingestion_service import IngestionService
 
 
 def _stock(db_session, ticker: str = "CASE") -> Stock:
@@ -560,7 +561,9 @@ def test_workspace_combines_user_owned_fundamentals_valuation_coverage_and_publi
         user_id=owner.id,
         document_id=owner_doc.id,
         parser_version="value-line-v1",
-        source_mapping_version="value-line-spec-v2",
+        source_mapping_version=IngestionService(
+            db_session
+        ).mapping_spec.source_mapping_version,
         status="running",
     )
     db_session.add(owner_run)

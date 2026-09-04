@@ -125,7 +125,14 @@ source_reconciliation:
           evaluate_complete_slot_before_selection: required
           manual_correction_auto_substitution: prohibited
       value_line_parse_authority:
+        approved_mapping_registry: migration_seeded_immutable
+        application_policy_registration: prohibited
+        semantic_policy_change: explicit_reviewed_migration_required
         new_fact_run_identity: required
+        all_new_parsed_rows_require_run: true
+        run_mapping_identity: approved_registry_foreign_key
+        fact_and_extraction_mapping_identity: database_stamped_from_run
+        fact_json_mapping_identity: audit_copy_not_authority
         run_extraction_fact_commit: atomic
         source_mapping_identity: exact_resolved_digest
         extraction_revisions: append_only
@@ -138,6 +145,10 @@ source_reconciliation:
         failed_reparse: rollback_and_preserve_prior_current_revision
         legacy_missing_run_identity: comparison_identity_incomplete
         run_history_downgrade: refuse_before_change
+      manual_correction_currentness:
+        slot: user_stock_metric_period_manual_source
+        parsed_or_sec_or_calculated_demotion: prohibited
+        append_history: required
       point_in_time:
         fact_known_and_effective_by_cutoff: required
         source_authorized_at_cutoff: required

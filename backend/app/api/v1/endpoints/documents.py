@@ -30,6 +30,7 @@ from app.ingestion.parsers.v1_value_line.page_json import (
 from app.services.active_report_resolver import resolve_active_reports
 from app.services.document_dedupe_service import DocumentDedupeService
 from app.services.ingestion_service import IngestionService
+from app.services.metric_fact_locking import acquire_metric_fact_stock_lock
 from app.services.api_rate_limits import RateLimitExceeded, consume_user_operation
 from app.services.calculated_metrics.value_line_ratios import ValueLineRatioCalculator
 from app.services.calculated_metrics.piotroski_f_score import PiotroskiFScoreCalculator
@@ -650,6 +651,8 @@ def correct_document_review_fact(
     if not _document_review_fact_belongs_to_document(session, doc, fact):
         raise HTTPException(status_code=404, detail="Fact not found")
 
+    acquire_metric_fact_stock_lock(session, stock_id=fact.stock_id)
+
     raw_value = payload.get("value")
     if raw_value is None or str(raw_value).strip() == "":
         raise HTTPException(status_code=400, detail={"value": "Correction value is required"})
@@ -680,17 +683,28 @@ def correct_document_review_fact(
             MetricFact.period_type == fact.period_type,
             MetricFact.period_end_date == fact.period_end_date,
             MetricFact.as_of_date == fact.as_of_date,
+            MetricFact.source_type == "manual",
             MetricFact.is_current.is_(True),
         )
         .values(is_current=False)
     )
 
+    source_metadata = fact.value_json if isinstance(fact.value_json, dict) else {}
+    original_source_fact_id = (
+        source_metadata.get("source_fact_id")
+        if fact.source_type == "manual"
+        else fact.id
+    )
+    if not isinstance(original_source_fact_id, int):
+        original_source_fact_id = fact.id
     value_json = {
         "raw": raw_text,
         "correction": True,
         "corrected_from_fact_id": fact.id,
+        # Keep both the immediate chain and the original source fact so a
+        # repeated manual correction remains exactly reconcilable.
+        "source_fact_id": original_source_fact_id,
     }
-    source_metadata = fact.value_json if isinstance(fact.value_json, dict) else {}
     for identity_key in (
         "mapping_id",
         "source_mapping_version",

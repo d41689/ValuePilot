@@ -822,11 +822,19 @@ def _value_line_parse_run_authority(
     rows = session.execute(
         text(
             """
-            SELECT id, user_id, document_id, parser_version,
-                   source_mapping_version, status, started_at, completed_at,
-                   created_txid=txid_current() AS creator_transaction
-            FROM value_line_parse_runs
-            WHERE id=ANY(:ids)
+            SELECT r.id, r.user_id, r.document_id, r.parser_version,
+                   r.source_mapping_version, r.status, r.started_at, r.completed_at,
+                   r.created_txid=txid_current() AS creator_transaction,
+                   p.id AS mapping_policy_id, p.policy_sha256,
+                   p.parser_version AS policy_parser_version,
+                   p.status AS mapping_policy_status,
+                   p.known_at AS mapping_known_at,
+                   p.effective_from AS mapping_effective_from,
+                   p.retired_at AS mapping_retired_at
+            FROM value_line_parse_runs r
+            LEFT JOIN value_line_mapping_policies p
+              ON p.id=r.source_mapping_version
+            WHERE r.id=ANY(:ids)
             """
         ),
         {"ids": ids},
@@ -1000,11 +1008,23 @@ def materialize_reconciliation_candidates(
         elif fact.source_type == "parsed":
             document = documents.get(fact.source_document_id or -1)
             parse_run = value_line_runs.get(fact.value_line_parse_run_id or -1)
+            if parse_run is not None:
+                # The immutable run-to-registry relation is authoritative.
+                # value_json contains only a trigger-stamped audit copy.
+                source_mapping_version = str(parse_run["source_mapping_version"])
             run_authorized = fact.value_line_parse_run_id is None or (
                 parse_run is not None
                 and parse_run["user_id"] == user_id
                 and parse_run["document_id"] == fact.source_document_id
-                and parse_run["source_mapping_version"] == source_mapping_version
+                and parse_run["mapping_policy_id"]
+                    == parse_run["source_mapping_version"]
+                and parse_run["mapping_policy_status"]
+                    in {"approved", "superseded"}
+                and parse_run["policy_parser_version"]
+                    == parse_run["parser_version"]
+                and _aware(parse_run["mapping_known_at"]) <= knowledge_cutoff
+                and _aware(parse_run["mapping_effective_from"])
+                    <= knowledge_cutoff
                 and (
                     parse_run["status"] == "succeeded"
                     or (
@@ -1042,8 +1062,12 @@ def materialize_reconciliation_candidates(
                     known_at,
                     _aware(parse_run["started_at"]),
                     _aware(parse_run["completed_at"]),
+                    _aware(parse_run["mapping_known_at"]),
                 )
-                effective_at = known_at
+                effective_at = max(
+                    known_at,
+                    _aware(parse_run["mapping_effective_from"]),
+                )
             source_role = (
                 "value_line_estimate"
                 if fact_nature == "estimate"

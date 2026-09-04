@@ -72,7 +72,9 @@ class ValueLineParseRun(Base):
         ForeignKey("pdf_documents.id", ondelete="CASCADE"), nullable=False
     )
     parser_version: Mapped[str] = mapped_column(String, nullable=False)
-    source_mapping_version: Mapped[str] = mapped_column(Text, nullable=False)
+    source_mapping_version: Mapped[str] = mapped_column(
+        ForeignKey("value_line_mapping_policies.id"), nullable=False
+    )
     status: Mapped[str] = mapped_column(String, nullable=False)
     created_txid: Mapped[int] = mapped_column(BigInteger, nullable=False)
     started_at: Mapped[datetime] = mapped_column(
@@ -80,4 +82,32 @@ class ValueLineParseRun(Base):
     )
     completed_at: Mapped[Optional[datetime]] = mapped_column(
         DateTime(timezone=True), nullable=True
+    )
+
+
+class ValueLineMappingPolicy(Base):
+    """Migration-approved immutable Value Line semantic policy identity."""
+
+    __tablename__ = "value_line_mapping_policies"
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('approved', 'superseded')",
+            name="ck_value_line_mapping_policies_status",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(Text, primary_key=True)
+    policy_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    spec_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    parser_version: Mapped[str] = mapped_column(String, nullable=False)
+    status: Mapped[str] = mapped_column(String, nullable=False)
+    known_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    effective_from: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    retired_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
     )

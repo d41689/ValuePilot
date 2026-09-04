@@ -11,6 +11,7 @@ from sqlalchemy.exc import DBAPIError
 
 from app.core.config import settings
 from app.services.ingestion_service import VALUE_LINE_REPARSE_LOCK_SQL
+from app.services.mapping_spec import MappingSpec
 from test_support.database_isolation import (
     build_isolated_database_url,
     create_test_schema,
@@ -28,7 +29,10 @@ BASE = make_url(settings.SQLALCHEMY_DATABASE_URI).set(
 ).render_as_string(hide_password=False)
 BACKEND = Path(__file__).resolve().parents[2]
 PARENT = "20260901280000"
-HEAD = "20260904120000"
+HEAD = "20260904130000"
+APPROVED_MAPPING_VERSION = MappingSpec.load(
+    BACKEND / "docs" / "metric_facts_mapping_spec.yml"
+).source_mapping_version
 
 
 def _alembic_result(url: str, *args: str) -> subprocess.CompletedProcess[str]:
@@ -68,6 +72,12 @@ def test_value_line_parse_run_empty_upgrade_roundtrip(isolated) -> None:
             text("SELECT version_num FROM alembic_version")
         ).scalar_one() == HEAD
         assert "value_line_parse_runs" in inspect(connection).get_table_names()
+        assert connection.execute(
+            text(
+                "SELECT id FROM value_line_mapping_policies "
+                "WHERE status='approved'"
+            )
+        ).scalar_one() == APPROVED_MAPPING_VERSION
     _alembic(url, "downgrade", PARENT)
     _alembic(url, "upgrade", "head")
 
@@ -126,10 +136,14 @@ def test_value_line_parse_run_allows_history_but_rejects_late_binding(isolated) 
             text(
                 "INSERT INTO value_line_parse_runs "
                 "(user_id,document_id,parser_version,source_mapping_version,status,created_txid) "
-                "VALUES (:user,:document,'value-line-v1','resolved:new','running',0) "
+                "VALUES (:user,:document,'value-line-v1',:mapping,'running',0) "
                 "RETURNING id"
             ),
-            {"user": user_id, "document": document_id},
+            {
+                "user": user_id,
+                "document": document_id,
+                "mapping": APPROVED_MAPPING_VERSION,
+            },
         ).scalar_one()
         extraction_id = connection.execute(
             text(
@@ -150,8 +164,10 @@ def test_value_line_parse_run_allows_history_but_rejects_late_binding(isolated) 
                 "INSERT INTO metric_facts "
                 "(user_id,stock_id,metric_key,value_numeric,unit,currency,period_type,"
                 "period_end_date,source_type,source_document_id,value_line_parse_run_id,"
-                "is_current) VALUES (:user,:stock,'is.net_income',110,'USD','USD','FY',"
-                "'2025-12-31','parsed',:document,:run,true) RETURNING id"
+                "value_json,is_current) VALUES (:user,:stock,'is.net_income',110,'USD',"
+                "'USD','FY','2025-12-31','parsed',:document,:run,"
+                "'{\"source_mapping_version\":\"caller:forged\"}'::jsonb,true) "
+                "RETURNING id"
             ),
             {
                 "user": user_id,
@@ -160,6 +176,14 @@ def test_value_line_parse_run_allows_history_but_rejects_late_binding(isolated) 
                 "run": run_id,
             },
         ).scalar_one()
+        stamped_mapping = connection.execute(
+            text(
+                "SELECT value_json->>'source_mapping_version' FROM metric_facts "
+                "WHERE id=:id"
+            ),
+            {"id": new_fact_id},
+        ).scalar_one()
+        assert stamped_mapping == APPROVED_MAPPING_VERSION
         connection.execute(
             text("UPDATE value_line_parse_runs SET status='succeeded' WHERE id=:run"),
             {"run": run_id},
@@ -178,9 +202,13 @@ def test_value_line_parse_run_allows_history_but_rejects_late_binding(isolated) 
                 "INSERT INTO value_line_parse_runs "
                 "(user_id,document_id,parser_version,source_mapping_version,status,"
                 "created_txid) VALUES (:user,:document,'value-line-v1',"
-                "'resolved:delete','running',0) RETURNING id"
+                ":mapping,'running',0) RETURNING id"
             ),
-            {"user": user_id, "document": deleted_document_id},
+            {
+                "user": user_id,
+                "document": deleted_document_id,
+                "mapping": APPROVED_MAPPING_VERSION,
+            },
         ).scalar_one()
         connection.execute(
             text("UPDATE value_line_parse_runs SET status='succeeded' WHERE id=:run"),
@@ -259,10 +287,94 @@ def test_value_line_parse_run_allows_history_but_rejects_late_binding(isolated) 
                         "value_json,value_line_legacy_revision,is_current) "
                         "VALUES (:user,:stock,'is.net_income',120,'USD','USD','FY',"
                         "'2025-12-31','parsed',:document,"
-                        "'{\"source_mapping_version\":\"value-line-resolved-v1:forged\"}'::jsonb,"
+                        "'{\"source_mapping_version\":\"legacy-looking-forged\"}'::jsonb,"
                         "true,true)"
                     ),
                     {"user": user_id, "stock": stock_id, "document": document_id},
+                )
+        with pytest.raises(DBAPIError, match="approved mapping policy"):
+            with connection.begin_nested():
+                connection.execute(
+                    text(
+                        "INSERT INTO value_line_parse_runs "
+                        "(user_id,document_id,parser_version,source_mapping_version,"
+                        "status,created_txid) VALUES (:user,:document,'value-line-v1',"
+                        "'caller:forged','running',0)"
+                    ),
+                    {"user": user_id, "document": document_id},
+                )
+        second_document_id = connection.execute(
+            text(
+                "INSERT INTO pdf_documents "
+                "(user_id,file_name,source,file_storage_key,parse_status,stock_id,"
+                "identity_needs_review) VALUES (:user,'second-manual.pdf','upload',"
+                "'private/second-manual.pdf','parsed',:stock,false) RETURNING id"
+            ),
+            {"user": user_id, "stock": stock_id},
+        ).scalar_one()
+        connection.execute(
+            text(
+                "INSERT INTO metric_facts "
+                "(user_id,stock_id,metric_key,value_numeric,unit,currency,period_type,"
+                "period_end_date,source_type,source_document_id,is_current) "
+                "VALUES (:user,:stock,'manual.concurrent',1,'USD','USD','FY',"
+                "'2025-12-31','manual',:document,true)"
+            ),
+            {"user": user_id, "stock": stock_id, "document": document_id},
+        )
+        with pytest.raises(DBAPIError, match="uq_metric_facts_current_manual_slot"):
+            with connection.begin_nested():
+                connection.execute(
+                    text(
+                        "INSERT INTO metric_facts "
+                        "(user_id,stock_id,metric_key,value_numeric,unit,currency,"
+                        "period_type,period_end_date,source_type,source_document_id,"
+                        "is_current) VALUES (:user,:stock,'manual.concurrent',2,'USD',"
+                        "'USD','FY','2025-12-31','manual',:document,true)"
+                    ),
+                    {
+                        "user": user_id,
+                        "stock": stock_id,
+                        "document": second_document_id,
+                    },
+                )
+        with pytest.raises(DBAPIError, match="registry is immutable"):
+            with connection.begin_nested():
+                connection.execute(
+                    text(
+                        "INSERT INTO value_line_mapping_policies "
+                        "(id,policy_sha256,spec_version,parser_version,status,known_at,"
+                        "effective_from) VALUES ('caller:registered',repeat('0',64),2,"
+                        "'value-line-v1','approved',now(),now())"
+                    )
+                )
+        with pytest.raises(DBAPIError, match="registry is immutable"):
+            with connection.begin_nested():
+                connection.execute(
+                    text(
+                        "UPDATE value_line_mapping_policies SET parser_version='forged' "
+                        "WHERE id=:mapping"
+                    ),
+                    {"mapping": APPROVED_MAPPING_VERSION},
+                )
+        with pytest.raises(DBAPIError, match="registry is immutable"):
+            with connection.begin_nested():
+                connection.execute(
+                    text(
+                        "DELETE FROM value_line_mapping_policies WHERE id=:mapping"
+                    ),
+                    {"mapping": APPROVED_MAPPING_VERSION},
+                )
+        with pytest.raises(DBAPIError, match="requires a creating parse run"):
+            with connection.begin_nested():
+                connection.execute(
+                    text(
+                        "INSERT INTO metric_extractions "
+                        "(user_id,document_id,page_number,field_key,parser_version,"
+                        "corrected_by_user,value_line_legacy_revision) "
+                        "VALUES (:user,:document,9,'generic_runless','v1',false,true)"
+                    ),
+                    {"user": user_id, "document": document_id},
                 )
         connection.execute(
             text("UPDATE metric_facts SET is_current=false WHERE id=:id"),

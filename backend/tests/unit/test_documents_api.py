@@ -5,10 +5,11 @@ import sqlalchemy as sa
 
 from app.models.users import User
 from app.models.stocks import Stock
-from app.models.artifacts import PdfDocument, DocumentPage
+from app.models.artifacts import PdfDocument, DocumentPage, ValueLineParseRun
 from app.models.extractions import MetricExtraction
 from app.models.facts import MetricFact
 from app.api.v1.endpoints.documents import _document_compare_value_label
+from app.services.ingestion_service import IngestionService
 
 
 def test_document_compare_decimal_label_preserves_integer_place_value():
@@ -567,7 +568,9 @@ def test_delete_document_removes_dependents_and_reconciles_current(
 
     refreshed_old_fact = db_session.get(MetricFact, old_fact_id)
     assert refreshed_old_fact is not None
-    assert refreshed_old_fact.is_current is True
+    # Deleting another source revision is not authority to resurrect this
+    # immutable historical revision.
+    assert refreshed_old_fact.is_current is False
     assert calculator_calls == [
         ("ratios", user.id, stock.id),
         ("fscore", user.id, stock.id),
@@ -1695,7 +1698,7 @@ def test_document_review_correction_creates_manual_current_fact_without_mutating
 
     assert extraction.corrected_by_user is False
     assert extraction.corrected_at is None
-    assert parsed_fact.is_current is False
+    assert parsed_fact.is_current is True
     assert manual_fact is not None
     assert manual_fact.source_type == "manual"
     assert manual_fact.source_document_id == doc.id
@@ -1706,10 +1709,129 @@ def test_document_review_correction_creates_manual_current_fact_without_mutating
     assert manual_fact.value_json["raw"] == "$9.6 billion"
     assert manual_fact.value_json["correction"] is True
     assert manual_fact.value_json["corrected_from_fact_id"] == parsed_fact.id
+    assert manual_fact.value_json["source_fact_id"] == parsed_fact.id
     assert manual_fact.value_json["mapping_id"] == "mkt.market_cap.as_of"
-    assert manual_fact.value_json["source_mapping_version"] == "value-line-spec-v2"
+    assert (
+        manual_fact.value_json["source_mapping_version"]
+        == parsed_fact.value_json["source_mapping_version"]
+    )
     assert manual_fact.value_json["dimensions_identity"] == "empty"
     assert manual_fact.value_json["note"] == "Checked against report."
+
+
+def test_document_review_corrections_append_manual_history_without_demoting_parsed(
+    client, db_session, user_factory, auth_headers
+):
+    user = user_factory("documents_review_repeat_correction@example.com")
+    stock = Stock(ticker="RPTC", exchange="NYSE", company_name="Repeat Correction")
+    db_session.add(stock)
+    db_session.flush()
+    doc = PdfDocument(
+        user_id=user.id,
+        stock_id=stock.id,
+        file_name="repeat-correction.pdf",
+        source="upload",
+        file_storage_key="private/repeat-correction.pdf",
+        parse_status="parsed",
+        report_date=date(2026, 1, 2),
+        identity_needs_review=False,
+    )
+    db_session.add(doc)
+    db_session.flush()
+    mapping_version = IngestionService(db_session).mapping_spec.source_mapping_version
+    parse_run = ValueLineParseRun(
+        user_id=user.id,
+        document_id=doc.id,
+        parser_version="value-line-v1",
+        source_mapping_version=mapping_version,
+        status="running",
+    )
+    db_session.add(parse_run)
+    db_session.flush()
+    shared_identity = {
+        "source_mapping_version": mapping_version,
+        "definition_basis": "adjusted",
+        "dimensions_identity": "empty",
+        "fact_nature": "actual",
+        "fiscal_year": 2025,
+        "period_duration_kind": "fiscal_year",
+    }
+    net_income = MetricFact(
+        user_id=user.id,
+        stock_id=stock.id,
+        metric_key="is.net_income",
+        value_numeric=100,
+        value_json={**shared_identity, "mapping_id": "is.net_income.fy"},
+        unit="USD",
+        currency="USD",
+        period_type="FY",
+        period_end_date=date(2025, 12, 31),
+        source_type="parsed",
+        source_document_id=doc.id,
+        value_line_parse_run_id=parse_run.id,
+        is_current=True,
+    )
+    assets = MetricFact(
+        user_id=user.id,
+        stock_id=stock.id,
+        metric_key="bs.total_assets",
+        value_numeric=1000,
+        value_json={**shared_identity, "mapping_id": "bs.total_assets.fy"},
+        unit="USD",
+        currency="USD",
+        period_type="FY",
+        period_end_date=date(2025, 12, 31),
+        source_type="parsed",
+        source_document_id=doc.id,
+        value_line_parse_run_id=parse_run.id,
+        is_current=True,
+    )
+    db_session.add_all([net_income, assets])
+    db_session.flush()
+    parse_run.status = "succeeded"
+    db_session.commit()
+
+    first = client.post(
+        f"/api/v1/documents/{doc.id}/review/facts/{net_income.id}/corrections",
+        headers=auth_headers(user),
+        json={"value": "110"},
+    )
+    assert first.status_code == 200, first.text
+    first_manual_id = first.json()["fact_id"]
+    second = client.post(
+        f"/api/v1/documents/{doc.id}/review/facts/{first_manual_id}/corrections",
+        headers=auth_headers(user),
+        json={"value": "120"},
+    )
+    assert second.status_code == 200, second.text
+
+    db_session.expire_all()
+    assert db_session.get(MetricFact, net_income.id).is_current is True
+    manual_rows = (
+        db_session.query(MetricFact)
+        .filter_by(
+            user_id=user.id,
+            stock_id=stock.id,
+            metric_key="is.net_income",
+            source_type="manual",
+        )
+        .order_by(MetricFact.id)
+        .all()
+    )
+    assert [row.is_current for row in manual_rows] == [False, True]
+    assert [float(row.value_numeric) for row in manual_rows] == [110.0, 120.0]
+    roa = (
+        db_session.query(MetricFact)
+        .filter_by(
+            user_id=user.id,
+            stock_id=stock.id,
+            metric_key="returns.roa",
+            source_type="calculated",
+            is_current=True,
+        )
+        .one()
+    )
+    assert float(roa.value_numeric) == 0.1
 
 
 def test_document_review_correction_rejects_fact_from_another_document(

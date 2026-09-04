@@ -270,3 +270,22 @@ reconciliation outcomes or create another financial fact store.
   regression coverage. The 59-test R6 focused suite and 192-test expanded
   consumer/ingestion suite are green; fresh Terra R7 and exact closing gates
   remain pending.
+- 2026-09-04: Terra adversarial review R7 found three valid authority/history
+  gaps: an application caller could register a self-consistent but unapproved
+  parse mapping identity, generic runless parsed rows still bypassed the guard,
+  and document correction both demoted parsed truth and could not append a
+  second manual revision under the non-parsed all-history index.
+- 2026-09-04: Sol remediation adds a migration-seeded immutable approved Value
+  Line mapping-policy registry. Parse runs must reference the current approved
+  parser/policy pair and the database stamps fact JSON from that run; all later
+  parsed facts and extractions require a same-transaction run regardless of
+  caller metadata. Reconciliation reads the run/registry relation as authority.
+  Manual correction is stock-lock serialized, demotes only the exact current
+  manual slot, preserves the original correction lineage through repeated
+  revisions, and never demotes or resurrects parsed facts. A source deletion
+  leaves a missing current slot instead of promoting an immutable historical
+  revision. Raw-SQL forgery/registry mutation/runless tests, repeat-correction
+  history, parsed-calculation continuity, migration round-trip/refusal, and a
+  production MappingSpec-to-ingestion-to-SEC comparison are green. The R7
+  focused suite is 6 passed and the expanded affected suite is 137 passed;
+  fresh Terra R8 and exact closing gates remain pending.

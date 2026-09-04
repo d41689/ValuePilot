@@ -8,6 +8,7 @@ from app.models.artifacts import PdfDocument, ValueLineParseRun
 from app.models.facts import Formula, MetricFact
 from app.models.stocks import Stock
 from app.services.formula_engine import FormulaEngine
+from app.services.ingestion_service import IngestionService
 from app.services.source_reconciliation import (
     CanonicalReconciliationError,
     guard_reconciled_source_selection,
@@ -108,7 +109,9 @@ def test_authenticated_reconciliation_is_tenant_safe_and_bounded(
         user_id=owner.id,
         document_id=owner_doc.id,
         parser_version="value-line-v1",
-        source_mapping_version="value-line-spec-v2",
+        source_mapping_version=IngestionService(
+            db_session
+        ).mapping_spec.source_mapping_version,
         status="running",
     )
     db_session.add(owner_run)
@@ -215,6 +218,25 @@ def test_reconciliation_excludes_post_cutoff_and_revoked_source_authority(
     revoked_doc.parse_status = "failed"
     db_session.add_all([valid_doc, revoked_doc])
     db_session.flush()
+    mapping_version = IngestionService(
+        db_session
+    ).mapping_spec.source_mapping_version
+    valid_run = ValueLineParseRun(
+        user_id=user.id,
+        document_id=valid_doc.id,
+        parser_version="value-line-v1",
+        source_mapping_version=mapping_version,
+        status="running",
+    )
+    revoked_run = ValueLineParseRun(
+        user_id=user.id,
+        document_id=revoked_doc.id,
+        parser_version="value-line-v1",
+        source_mapping_version=mapping_version,
+        status="running",
+    )
+    db_session.add_all([valid_run, revoked_run])
+    db_session.flush()
     valid = _parsed_fact(
         user_id=user.id, stock_id=stock.id, document_id=valid_doc.id
     )
@@ -237,10 +259,19 @@ def test_reconciliation_excludes_post_cutoff_and_revoked_source_authority(
         metric_key="bs.total_liabilities",
     )
     retired.value_json = {**retired.value_json, "authorization_state": "retired"}
-    cutoff = datetime.now(timezone.utc)
-    post_cutoff.created_at = cutoff + timedelta(hours=1)
-    post_cutoff.updated_at = cutoff + timedelta(hours=1)
+    valid.value_line_parse_run_id = valid_run.id
+    post_cutoff.value_line_parse_run_id = valid_run.id
+    retired.value_line_parse_run_id = valid_run.id
+    revoked.value_line_parse_run_id = revoked_run.id
+    future_known_at = datetime.now(timezone.utc) + timedelta(hours=1)
+    post_cutoff.created_at = future_known_at
+    post_cutoff.updated_at = future_known_at
     db_session.add_all([valid, post_cutoff, revoked, retired])
+    db_session.flush()
+    valid_run.status = "succeeded"
+    revoked_run.status = "succeeded"
+    db_session.flush()
+    cutoff = datetime.now(timezone.utc)
     db_session.commit()
 
     response = client.get(

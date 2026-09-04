@@ -1500,6 +1500,16 @@ MUST therefore change identity even when a human forgets to increment the
 display version; neither file may silently reinterpret already-persisted
 facts.
 
+PostgreSQL owns the approved Value Line mapping identity. A reviewed migration
+seeds the immutable approved-policy registry; application DML cannot register,
+change, or remove a policy. Every later parse run references an approved policy
+row, and every new parsed fact and extraction must reference that same creating
+run. Database triggers copy the run's mapping identity into fact JSON only as
+an audit aid; reconciliation trusts the run-to-registry relation, never the
+caller-controlled JSON copy. A mapping or taxonomy semantic change therefore
+requires an explicit reviewed migration that registers the newly resolved
+digest before ingestion may use it.
+
 Every newly generated Value Line fact and extraction is bound to one durable
 parse-run identity containing the parser and resolved source-mapping versions.
 The run, its extraction rows, and its parsed facts are created and finalized in
@@ -1510,6 +1520,12 @@ history. Missing output is not deletion authority: if any company page cannot
 complete, the entire reparse revision rolls back, including document metadata,
 new rows, calculated outputs, and every currentness change. The prior current
 revision remains intact. Reparses of the same document are serialized.
+
+A document-review correction appends a `manual` fact and demotes only the prior
+current `manual` fact in the same user, stock, canonical key, and exact period
+slot. It never demotes parsed, SEC, or calculated facts. Repeated corrections
+remain immutable history while a partial unique current-slot constraint closes
+the concurrent-write window for the manual role.
 
 The migration database-stamps pre-existing parsed rows with an immutable legacy
 marker; callers cannot forge that marker on later inserts. A run-bound fact or
