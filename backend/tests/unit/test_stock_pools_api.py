@@ -48,7 +48,16 @@ def _piotroski_total_fact(
         "fact_nature": fact_nature,
         "calculation_version": "piotroski-test-v1",
         "inputs": (
-            [{"fact_id": lineage_fact_id}]
+            [
+                {
+                    "fact_id": lineage_fact_id,
+                    "metric_key": "piotroski.user_input",
+                    "period_end_date": None,
+                    "value_numeric": "1",
+                    "source_type": "manual",
+                    "fact_nature": None,
+                }
+            ]
             if lineage_fact_id is not None
             else []
         ),
@@ -582,7 +591,16 @@ def test_pool_members_include_price_and_fair_value(client, db_session, monkeypat
     piotroski_source = _piotroski_lineage_source(user.id, stock_a.id)
     db_session.add(piotroski_source)
     db_session.flush()
-    piotroski_lineage = [{"fact_id": piotroski_source.id}]
+    piotroski_lineage = [
+        {
+            "fact_id": piotroski_source.id,
+            "metric_key": piotroski_source.metric_key,
+            "period_end_date": None,
+            "value_numeric": "1",
+            "source_type": "manual",
+            "fact_nature": None,
+        }
+    ]
 
     db_session.add(
         PoolMembership(

@@ -100,7 +100,7 @@ def _piotroski_fact(
     year: int,
     value: float | None,
     value_json: dict | None = None,
-    lineage_fact_id: int | None = None,
+    lineage_fact: MetricFact | None = None,
 ) -> MetricFact:
     metadata = value_json or {
         "status": "calculated",
@@ -112,7 +112,7 @@ def _piotroski_fact(
         ),
         "fiscal_year": year,
     }
-    if lineage_fact_id is not None:
+    if lineage_fact is not None:
         inputs = metadata.setdefault(
             "inputs",
             [
@@ -126,7 +126,22 @@ def _piotroski_fact(
         )
         for item in inputs:
             if isinstance(item, dict):
-                item.setdefault("fact_id", lineage_fact_id)
+                item.update(
+                    {
+                        "fact_id": lineage_fact.id,
+                        "metric_key": lineage_fact.metric_key,
+                        "value_numeric": format(lineage_fact.value_numeric, "f"),
+                        "period_end_date": (
+                            lineage_fact.period_end_date.isoformat()
+                            if lineage_fact.period_end_date
+                            else None
+                        ),
+                        "source_type": lineage_fact.source_type,
+                        "fact_nature": (
+                            lineage_fact.value_json or {}
+                        ).get("fact_nature"),
+                    }
+                )
     return MetricFact(
         user_id=user_id,
         stock_id=stock_id,
@@ -191,6 +206,24 @@ def test_lookup_stock_by_ticker_returns_dynamic_piotroski_card_from_current_stoc
     facts = []
     for metric_key, values in component_values.items():
         for year, value in zip(years, values):
+            fact_nature = (
+                "estimate"
+                if metric_key == "score.piotroski.roa_positive" and year == 2026
+                else "actual"
+            )
+            component_input = MetricFact(
+                user_id=user.id,
+                stock_id=stock.id,
+                metric_key=f"piotroski.input.{metric_key.removeprefix('score.piotroski.')}",
+                value_numeric=float(value) * 10,
+                value_json={"fact_nature": fact_nature},
+                period_type="FY",
+                period_end_date=date(year, 12, 31),
+                source_type="manual",
+                is_current=True,
+            )
+            db_session.add(component_input)
+            db_session.flush()
             facts.append(
                 _piotroski_fact(
                     user_id=user.id,
@@ -198,15 +231,11 @@ def test_lookup_stock_by_ticker_returns_dynamic_piotroski_card_from_current_stoc
                     metric_key=metric_key,
                     year=year,
                     value=float(value),
-                    lineage_fact_id=lineage_fact.id,
+                    lineage_fact=component_input,
                     value_json={
                         "status": "calculated",
                         "variant": "valueline_proxy",
-                        "fact_nature": (
-                            "estimate"
-                            if metric_key == "score.piotroski.roa_positive" and year == 2026
-                            else "actual"
-                        ),
+                        "fact_nature": fact_nature,
                         "fiscal_year": year,
                         "formula": f"{metric_key}[Y] test formula",
                         "inputs": [
@@ -214,11 +243,7 @@ def test_lookup_stock_by_ticker_returns_dynamic_piotroski_card_from_current_stoc
                                 "metric_key": f"{metric_key}.input",
                                 "value_numeric": float(value) * 10,
                                 "period_end_date": f"{year}-12-31",
-                                "fact_nature": (
-                                    "estimate"
-                                    if metric_key == "score.piotroski.roa_positive" and year == 2026
-                                    else "actual"
-                                ),
+                                "fact_nature": fact_nature,
                             }
                         ],
                     },
@@ -232,7 +257,7 @@ def test_lookup_stock_by_ticker_returns_dynamic_piotroski_card_from_current_stoc
                 metric_key="score.piotroski.total",
                 year=year,
                 value=float(value),
-                lineage_fact_id=lineage_fact.id,
+                lineage_fact=lineage_fact,
             )
         )
     facts.append(
@@ -242,7 +267,7 @@ def test_lookup_stock_by_ticker_returns_dynamic_piotroski_card_from_current_stoc
             metric_key="score.piotroski.total",
             year=2026,
             value=2.0,
-            lineage_fact_id=other_lineage_fact.id,
+            lineage_fact=other_lineage_fact,
         )
     )
     db_session.add_all(facts)
@@ -273,32 +298,32 @@ def test_lookup_stock_by_ticker_returns_dynamic_piotroski_card_from_current_stoc
     roa_row = rows_by_key["score.piotroski.roa_positive"]
     assert roa_row["formula_details"]["used_values"] == [
         {
-            "metric_key": "score.piotroski.roa_positive.input",
-            "value_numeric": 10.0,
+            "metric_key": "piotroski.input.roa_positive",
+            "value_numeric": "10.000000",
             "period_end_date": "2022-12-31",
             "fact_nature": "actual",
         },
         {
-            "metric_key": "score.piotroski.roa_positive.input",
-            "value_numeric": 10.0,
+            "metric_key": "piotroski.input.roa_positive",
+            "value_numeric": "10.000000",
             "period_end_date": "2023-12-31",
             "fact_nature": "actual",
         },
         {
-            "metric_key": "score.piotroski.roa_positive.input",
-            "value_numeric": 10.0,
+            "metric_key": "piotroski.input.roa_positive",
+            "value_numeric": "10.000000",
             "period_end_date": "2024-12-31",
             "fact_nature": "actual",
         },
         {
-            "metric_key": "score.piotroski.roa_positive.input",
-            "value_numeric": 10.0,
+            "metric_key": "piotroski.input.roa_positive",
+            "value_numeric": "10.000000",
             "period_end_date": "2025-12-31",
             "fact_nature": "actual",
         },
         {
-            "metric_key": "score.piotroski.roa_positive.input",
-            "value_numeric": 10.0,
+            "metric_key": "piotroski.input.roa_positive",
+            "value_numeric": "10.000000",
             "period_end_date": "2026-12-31",
             "fact_nature": "estimate",
         },

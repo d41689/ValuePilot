@@ -264,3 +264,49 @@ strict read-only Terra full-diff review with no P0–P3 findings before sign-off
   head with one final fact-authority trigger and both final review-authority
   triggers. Fresh strict full-diff review and exact canonical closing gates
   remain pending.
+- 2026-09-04: Strict Terra R6 found that Piotroski generation and retained-score
+  consumers could use the governed `returns.total_capital` ROIC proxy without
+  proving FT-07 authority. Piotroski remains a derived score, not a fifth
+  applicability method: only its total-capital fallback is governed by the
+  shared `roic` decision. Generation now resolves one reviewed decision at the
+  same effective date and knowledge cutoff as each input period, excludes the
+  proxy unless approved, and persists the exact gate snapshot on every affected
+  component and total. Standard ROA inputs remain usable without ROIC proxy
+  approval. Reviewed banks and other financials retain the existing no-score
+  boundary; insurers retain the existing explicitly classified insurance
+  variant, and no parsed field silently classifies a company.
+- 2026-09-04: A shared retained-score guard now verifies every claimed input ID
+  against its actual tenant, stock, key, date, numeric, source role, and fact
+  nature. A total-capital proxy additionally requires a complete snapshot whose
+  knowledge cutoff is no later than the database-stamped score creation time,
+  an exact approved replay at origin, and current approval. Missing, malformed,
+  forged, future, mismatched, cross-tenant/stock, non-calculated, and legacy
+  unprovable scores are typed unavailable with no numeric or partial/component
+  leakage. Stock detail, raw facts, research workspace, stock pools, Oracle,
+  the 13F drawer, formulas, and screeners all use that guard; the
+  `score.piotroski.*` namespace is reserved for system-derived outputs without
+  being mapped to a new method.
+- 2026-09-04: Fresh migration `20260904160000` (parent `20260904150000`) extends
+  the OLD/NEW calculated-fact update guard to all Piotroski rows, preventing
+  snapshot/lineage injection, numeric or identity rewrites, and simultaneous
+  key/source escape while allowing current demotion. Its downgrade locks and
+  refuses retained Piotroski authority before restoring the exact migration-150
+  function. Document reconciliation now demotes old calculated projections and
+  appends replacements rather than deleting their audit history. Isolated
+  `160→150→160` and `160→140→160` paths, refusal-before-mutation, and direct SQL
+  attacks are covered.
+- 2026-09-04: R6 focused tests moved from `21 failed / 2 passed` to green. The
+  final deduplicated 25-file R5+R6 affected superset is `442 passed` in Docker;
+  its only warnings are the pre-existing Starlette/httpx and anyio deprecation
+  notices. Before shared-database migration, read-only counts were zero for all
+  `score.piotroski.*` facts, totals, total-capital lineage, and method snapshots.
+  The database was upgraded without backfill to `20260904160000`; direct schema
+  inspection proves one fact-authority trigger whose final function contains
+  the Piotroski guard. The migration artifact SHA-256 is
+  `6e4a999f114c70616dca196ae94b8bd4f1c9f346821660b805f58625ad0eec77`, and the
+  final isolated migration-focused rerun is `9 passed`. Rollout policy is
+  fail-closed: any legacy proxy score in
+  another environment remains unavailable until a later reviewed, authorized
+  recomputation appends a new score. The missing operator-triggered bounded
+  recomputation entry point is recorded in `docs/BACKLOG.md`; this PR does not
+  rewrite legacy authority or add a batch job.

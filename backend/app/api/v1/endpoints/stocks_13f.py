@@ -82,8 +82,11 @@ def _m3_panel_for_stock(
     )
     by_key = facts_by_stock.get(stock_id, {})
     canonical_status = canonical_statuses.get(stock_id, {"status": "available"})
+    canonical_status_value = canonical_status.get("status", "unavailable")
+    if canonical_status_value == "partial":
+        canonical_status_value = "unavailable"
     panel_status = CanonicalSourceStatus(
-        status=canonical_status.get("status", "unavailable"),
+        status=canonical_status_value,
         reason_code=canonical_status.get("reason_code"),
         source_types=canonical_status.get("source_types") or [],
         source_type=canonical_status.get("source_type"),

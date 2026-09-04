@@ -15,7 +15,10 @@ from app.services.market_data_service import (
     read_current_eod_prices,
     serialize_canonical_eod_price,
 )
-from app.services.canonical_financials import CanonicalSourceConflictError
+from app.services.canonical_financials import (
+    CanonicalSourceConflictError,
+    guard_piotroski_method_authority,
+)
 from app.services.source_reconciliation import (
     CanonicalReconciliationError,
     guard_reconciled_source_selection,
@@ -140,6 +143,20 @@ def _guard_piotroski_display_facts(
             "status": "unavailable",
             "reason_code": error.code,
             "blocking_reasons": ["explicit_source_selection_required"],
+        }
+    guarded, method_blocked = guard_piotroski_method_authority(
+        session,
+        facts=guarded,
+        effective_as_of=date.today(),
+        knowledge_at=evaluated_at,
+    )
+    if method_blocked:
+        return [], {
+            "status": "unavailable",
+            "reason_code": method_blocked[0]["reason_code"],
+            "blocking_reasons": sorted(
+                {item["reason_code"] for item in method_blocked}
+            ),
         }
     return list(guarded), {
         "status": "available",

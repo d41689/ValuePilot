@@ -85,6 +85,8 @@ def test_run_formula_integration(db_session):
         ("rates.sales.cagr_5y", "RSV09"),
         ("system_valuation", "RSV10"),
         ("system_valuation.dcf", "RSV11"),
+        ("score.piotroski.total", "RSV12"),
+        ("score.piotroski.roa_positive", "RSV13"),
     ],
 )
 def test_formula_engine_rejects_reserved_method_output_before_writing(

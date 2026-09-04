@@ -9,6 +9,31 @@ long — escalate to the user. **medium / low** = ordinary follow-up.
 
 ## Open
 
+### FT-07 — operator-triggered Piotroski authority recomputation
+- **Found:** 2026-09-04, PR #143 Terra R6 review
+- **Severity:** medium (legacy return-on-total-capital proxy scores correctly
+  fail closed, but recovery currently depends on a later ingestion, correction,
+  or document-reconciliation event)
+- **Problem:** no bounded operator action can non-destructively recompute current
+  Piotroski facts immediately after the required classification and risk
+  reviews are approved. Migration 160 intentionally does not backfill or
+  re-authorize retained scores.
+- **Acceptance criteria:**
+  - An authorized operator can request a stock-scoped recomputation without
+    editing or deleting retained `metric_facts`.
+  - Recalculation uses one explicit effective date and knowledge cutoff, calls
+    the shared ROIC applicability gate, appends new facts, and only demotes the
+    prior current projection.
+  - Repeated requests are serialized and do not create conflicting current
+    facts; blocked profiles retain a typed unavailable result with no proxy
+    numeric.
+  - No bulk action infers a classification, backfills authority into legacy
+    JSON, or weakens source reconciliation/PIT behavior.
+- **Context:** `backend/app/services/calculated_metrics/piotroski_f_score.py`;
+  `backend/app/services/method_applicability.py`;
+  `docs/tasks/2026-09-04_method-applicability-gates.md`
+- **Issue:** —
+
 ### Development hot reload repeatedly creates quarantined 13F reparses
 - **Found:** 2026-08-31, PR #131 post-review closing-gate run
 - **Severity:** medium (audit-table growth and misleading repeated work; current

@@ -20,6 +20,7 @@ from app.services.canonical_financials import (
     CanonicalSourceConflictError,
     apply_reviewed_method_gates,
     current_sec_unresolved_states,
+    guard_piotroski_method_authority,
     guard_sec_run_availability,
     resolve_sec_publication_evidence,
     reviewed_method_gate,
@@ -422,6 +423,25 @@ def _build_piotroski_f_score_card(
                 "status": "unavailable",
                 "reason_code": error.code,
                 "blocking_reasons": ["explicit_source_selection_required"],
+            },
+        }
+
+    facts, method_blocked = guard_piotroski_method_authority(
+        session,
+        facts=facts,
+        effective_as_of=date.today(),
+        knowledge_at=evaluated_at,
+    )
+    if method_blocked:
+        return {
+            "years": [],
+            "rows": [],
+            "state": {
+                "status": "unavailable",
+                "reason_code": method_blocked[0]["reason_code"],
+                "blocking_reasons": sorted(
+                    {item["reason_code"] for item in method_blocked}
+                ),
             },
         }
 

@@ -43,7 +43,7 @@ def test_ratio_and_piotroski_primitives_fail_closed_on_mixed_sources():
     with pytest.raises(CanonicalSourceConflictError):
         build_value_line_ratio_facts(facts)
     with pytest.raises(CanonicalSourceConflictError):
-        build_piotroski_f_score_facts(facts)
+        build_piotroski_f_score_facts(facts, roic_decisions_by_period={})
 
 
 def test_source_guard_uses_only_the_facts_canonical_source_role():

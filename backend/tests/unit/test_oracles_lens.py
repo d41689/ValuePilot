@@ -256,6 +256,17 @@ def _derived_lineage_source(db_session, stock: Stock) -> MetricFact:
     return source
 
 
+def _piotroski_lineage(source: MetricFact) -> dict:
+    return {
+        "fact_id": source.id,
+        "metric_key": source.metric_key,
+        "period_end_date": None,
+        "value_numeric": "1",
+        "source_type": source.source_type,
+        "fact_nature": None,
+    }
+
+
 def _review_ordinary_method_profile(db_session, stock: Stock) -> None:
     reviewer = db_session.get(User, stock._test_user_id)
     reviewer.role = "admin"
@@ -439,7 +450,7 @@ def test_oracles_lens_adds_value_line_quality_overlay(
     piotroski.value_json = {
         **piotroski.value_json,
         "calculation_version": "piotroski-test-v1",
-        "inputs": [{"fact_id": lineage_source.id}],
+        "inputs": [_piotroski_lineage(lineage_source)],
     }
     db_session.add_all(
         [
@@ -596,7 +607,7 @@ def test_oracles_lens_reads_piotroski_from_value_json_when_value_numeric_null(
                 "status": "partial",
                 "fact_nature": "actual",
                 "calculation_version": "piotroski-test-v1",
-                "inputs": [{"fact_id": lineage_source.id}],
+                "inputs": [_piotroski_lineage(lineage_source)],
             },
             unit=None,
             period_type="FY",
@@ -643,7 +654,7 @@ def test_oracles_lens_value_numeric_takes_precedence_over_partial_score(
                 "status": "partial",
                 "fact_nature": "actual",
                 "calculation_version": "piotroski-test-v1",
-                "inputs": [{"fact_id": lineage_source.id}],
+                "inputs": [_piotroski_lineage(lineage_source)],
             },
             unit=None,
             period_type="FY",
@@ -1050,7 +1061,7 @@ def test_quality_overlay_quarantines_legacy_user_authored_owner_earnings(db_sess
         "fact_nature": "estimate",
         "user_authored_formula": True,
         "calculation_version": "formula-test-v1",
-        "inputs": [{"fact_id": lineage_source.id}],
+        "inputs": [_piotroski_lineage(lineage_source)],
     }
     db_session.add(custom)
     db_session.add(
@@ -1137,11 +1148,13 @@ def test_missing_derived_lineage_does_not_hide_unrelated_legal_source(
     assert overlay["piotroski_total"] is None
     assert overlay["canonical_source_status"] == {
         "status": "partial",
-        "reason_code": "unresolved_source_reconciliation",
+        "reason_code": "piotroski_method_authority_lineage_unverifiable",
         "unavailable_metrics": [
             {
                 "metric_key": "score.piotroski.total",
-                "blocking_reasons": ["derived_lineage_unavailable"],
+                "blocking_reasons": [
+                    "piotroski_method_authority_lineage_unverifiable"
+                ],
             }
         ],
     }
@@ -1165,7 +1178,7 @@ def test_quality_overlay_gates_all_legacy_owner_earnings_formula_claims(
         "fact_nature": "estimate",
         "user_authored_formula": True,
         "calculation_version": "formula-test-v1",
-        "inputs": [{"fact_id": lineage_source.id}],
+        "inputs": [_piotroski_lineage(lineage_source)],
     }
     system = _metric_fact(
         target,

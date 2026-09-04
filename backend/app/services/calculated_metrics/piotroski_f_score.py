@@ -1,15 +1,20 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import date, datetime, timezone
 from decimal import Decimal
 from typing import Any, Callable, Iterable, Optional
 
-from sqlalchemy import and_, or_, select, update
+from sqlalchemy import and_, func, or_, select, update
 from sqlalchemy.orm import Session
 
 from app.models.facts import MetricFact
-from app.services.canonical_financials import guard_sec_run_availability, guard_source_selection
+from app.services.canonical_financials import (
+    MethodGateDecision,
+    guard_sec_run_availability,
+    guard_source_selection,
+    reviewed_method_gate,
+)
 from app.services.numeric_persistence import persist_numeric_38_12
 from app.services.source_reconciliation import guard_reconciled_source_selection
 
@@ -74,6 +79,13 @@ class ComponentResult:
     method: str
     formula: str
     inputs: list[FactSnapshot]
+    analysis_method: dict[str, Any] | None = None
+
+
+@dataclass(frozen=True)
+class MethodBlock:
+    component_key: str
+    reason_code: str
 
 
 class FactIndex:
@@ -105,33 +117,56 @@ class FactIndex:
 def build_piotroski_f_score_facts(
     facts: Iterable[Any],
     *,
-    company_type: Optional[str] = None,
+    roic_decisions_by_period: dict[date, MethodGateDecision],
 ) -> list[dict[str, Any]]:
     index = FactIndex(facts)
-    inferred_company_type = company_type or _infer_company_type(index)
-    if inferred_company_type in {"bank", "financial"}:
-        return []
 
     derived: list[dict[str, Any]] = []
     for period_end in index.dates():
+        decision = roic_decisions_by_period.get(period_end)
+        if decision is None:
+            raise ValueError("roic decision required for every Piotroski period")
+        if decision.economic_class in {"bank", "other_financial", "financial"}:
+            continue
+        company_type = (
+            "insurance" if decision.economic_class == "insurer" else decision.economic_class
+        )
+        roa_positive, roa_positive_block = _roa_positive(
+            index, period_end, decision
+        )
+        roa_improving, roa_improving_block = _roa_improving(
+            index, period_end, decision
+        )
+        method_blocks = [
+            block
+            for block in (roa_positive_block, roa_improving_block)
+            if block is not None
+        ]
         component_results = [
             result
             for result in [
-                _roa_positive(index, period_end),
+                roa_positive,
                 _cfo_positive(index, period_end),
-                _roa_improving(index, period_end),
+                roa_improving,
                 _accrual_quality(index, period_end),
                 _leverage_declining(index, period_end),
                 _current_ratio_improving(index, period_end),
                 _no_dilution(index, period_end),
-                _gross_margin_improving(index, period_end, inferred_company_type),
-                _asset_turnover_improving(index, period_end, inferred_company_type),
+                _gross_margin_improving(index, period_end, company_type),
+                _asset_turnover_improving(index, period_end, company_type),
             ]
             if result is not None
         ]
         derived.extend(_component_fact(result, period_end) for result in component_results)
-        if component_results:
-            derived.append(_total_fact(component_results, period_end, company_type=inferred_company_type))
+        if component_results or method_blocks:
+            derived.append(
+                _total_fact(
+                    component_results,
+                    period_end,
+                    company_type=company_type,
+                    method_blocks=method_blocks,
+                )
+            )
     return derived
 
 
@@ -140,6 +175,7 @@ class PiotroskiFScoreCalculator:
         self.db = db
 
     def calculate_for_stock(self, *, user_id: int, stock_id: int) -> list[MetricFact]:
+        knowledge_cutoff = datetime.now(timezone.utc)
         source_facts = self.db.scalars(
             select(MetricFact).where(
                 MetricFact.stock_id == stock_id,
@@ -154,7 +190,7 @@ class PiotroskiFScoreCalculator:
         source_facts = guard_reconciled_source_selection(
             source_facts,
             consumer="piotroski",
-            knowledge_cutoff=datetime.now(timezone.utc),
+            knowledge_cutoff=knowledge_cutoff,
             session=self.db,
             user_id=user_id,
             selected_source_type="parsed",
@@ -162,7 +198,23 @@ class PiotroskiFScoreCalculator:
         source_facts = guard_sec_run_availability(
             self.db, stock_id=stock_id, facts=source_facts
         )
-        derived = build_piotroski_f_score_facts(source_facts)
+        roic_decisions = {
+            period_end: reviewed_method_gate(
+                self.db,
+                stock_id=stock_id,
+                method_key="roic",
+                effective_as_of=period_end,
+                knowledge_at=knowledge_cutoff,
+            )
+            for period_end in {
+                fact.period_end_date
+                for fact in source_facts
+                if fact.period_type == "FY" and fact.period_end_date is not None
+            }
+        }
+        derived = build_piotroski_f_score_facts(
+            source_facts, roic_decisions_by_period=roic_decisions
+        )
         return [
             self._insert_calculated_fact(user_id=user_id, stock_id=stock_id, payload=payload)
             for payload in derived
@@ -203,23 +255,62 @@ class PiotroskiFScoreCalculator:
             source_ref_id=None,
             source_document_id=None,
             is_current=True,
+            created_at=func.clock_timestamp(),
         )
         self.db.add(fact)
         self.db.flush()
         return fact
 
 
-def _roa_positive(index: FactIndex, period_end: date) -> Optional[ComponentResult]:
-    return _first_current_rule(
+def _roa_positive(
+    index: FactIndex,
+    period_end: date,
+    decision: MethodGateDecision,
+) -> tuple[Optional[ComponentResult], MethodBlock | None]:
+    standard = _first_current_rule(
         index,
         period_end,
         metric_key="score.piotroski.roa_positive",
         standard_metric="roa_positive",
         candidates=[
             ("returns.roa", "standard", "standard_roa", "returns.roa[Y] > 0", lambda cur: cur > 0),
-            ("returns.total_capital", "valueline_proxy", "fallback_return_on_total_capital", "returns.total_capital[Y] > 0", lambda cur: cur > 0),
-            ("is.net_income", "valueline_proxy", "fallback_net_income_positive", "is.net_income[Y] > 0", lambda cur: cur > 0),
         ],
+    )
+    if standard is not None:
+        return standard, None
+    total_capital = index.get("returns.total_capital", period_end)
+    if total_capital is not None and total_capital.value_numeric is not None:
+        if decision.status != "approved":
+            return None, MethodBlock(
+                component_key="score.piotroski.roa_positive",
+                reason_code=decision.reason_code,
+            )
+        result = _first_current_rule(
+            index,
+            period_end,
+            metric_key="score.piotroski.roa_positive",
+            standard_metric="roa_positive",
+            candidates=[
+                ("returns.total_capital", "valueline_proxy", "fallback_return_on_total_capital", "returns.total_capital[Y] > 0", lambda cur: cur > 0),
+            ],
+        )
+        return (
+            replace(result, analysis_method=decision.as_dict())
+            if result is not None
+            else None,
+            None,
+        )
+    return (
+        _first_current_rule(
+            index,
+            period_end,
+            metric_key="score.piotroski.roa_positive",
+            standard_metric="roa_positive",
+            candidates=[
+                ("is.net_income", "valueline_proxy", "fallback_net_income_positive", "is.net_income[Y] > 0", lambda cur: cur > 0),
+            ],
+        ),
+        None,
     )
 
 
@@ -236,11 +327,15 @@ def _cfo_positive(index: FactIndex, period_end: date) -> Optional[ComponentResul
     )
 
 
-def _roa_improving(index: FactIndex, period_end: date) -> Optional[ComponentResult]:
+def _roa_improving(
+    index: FactIndex,
+    period_end: date,
+    decision: MethodGateDecision,
+) -> tuple[Optional[ComponentResult], MethodBlock | None]:
     previous = index.previous_date(period_end)
     if not previous:
-        return None
-    return _first_comparison_rule(
+        return None, None
+    standard = _first_comparison_rule(
         index,
         period_end,
         previous,
@@ -248,8 +343,34 @@ def _roa_improving(index: FactIndex, period_end: date) -> Optional[ComponentResu
         standard_metric="roa_improving",
         candidates=[
             ("returns.roa", "standard", "standard_roa", "returns.roa[Y] > returns.roa[Y-1]", lambda cur, prev: cur > prev),
+        ],
+    )
+    if standard is not None:
+        return standard, None
+    current = index.get("returns.total_capital", period_end)
+    prior = index.get("returns.total_capital", previous)
+    if current is None or prior is None:
+        return None, None
+    if decision.status != "approved":
+        return None, MethodBlock(
+            component_key="score.piotroski.roa_improving",
+            reason_code=decision.reason_code,
+        )
+    result = _first_comparison_rule(
+        index,
+        period_end,
+        previous,
+        metric_key="score.piotroski.roa_improving",
+        standard_metric="roa_improving",
+        candidates=[
             ("returns.total_capital", "valueline_proxy", "fallback_return_on_total_capital", "returns.total_capital[Y] > returns.total_capital[Y-1]", lambda cur, prev: cur > prev),
         ],
+    )
+    return (
+        replace(result, analysis_method=decision.as_dict())
+        if result is not None
+        else None,
+        None,
     )
 
 
@@ -506,22 +627,25 @@ def _binary_component(
 
 
 def _component_fact(result: ComponentResult, period_end: date) -> dict[str, Any]:
+    value_json = {
+        "status": "calculated",
+        "variant": result.variant,
+        "method": result.method,
+        "calculation_version": CALCULATION_VERSION,
+        "standard_metric": result.standard_metric,
+        "fact_nature": _fact_nature(result.inputs),
+        "source_types": sorted({fact.source_type for fact in result.inputs if fact.source_type}),
+        "formula": result.formula,
+        "fiscal_year": period_end.year,
+        "inputs": [_lineage_item(fact) for fact in result.inputs],
+    }
+    if result.analysis_method is not None:
+        value_json["analysis_method"] = result.analysis_method
     return {
         "metric_key": result.metric_key,
         "value_numeric": float(result.value),
         "value_text": None,
-        "value_json": {
-            "status": "calculated",
-            "variant": result.variant,
-            "method": result.method,
-            "calculation_version": CALCULATION_VERSION,
-            "standard_metric": result.standard_metric,
-            "fact_nature": _fact_nature(result.inputs),
-            "source_types": sorted({fact.source_type for fact in result.inputs if fact.source_type}),
-            "formula": result.formula,
-            "fiscal_year": period_end.year,
-            "inputs": [_lineage_item(fact) for fact in result.inputs],
-        },
+        "value_json": value_json,
         "unit": "score_point",
         "period_type": "FY",
         "period_end_date": period_end,
@@ -532,7 +656,8 @@ def _total_fact(
     results: list[ComponentResult],
     period_end: date,
     *,
-    company_type: Optional[str],
+    company_type: str,
+    method_blocks: list[MethodBlock],
 ) -> dict[str, Any]:
     available_keys = {result.metric_key for result in results}
     missing = [key for key in COMPONENT_KEYS if key not in available_keys]
@@ -556,8 +681,8 @@ def _total_fact(
             fact.source_type or "",
         ),
     )
-    value_json = {
-        "status": "calculated" if complete else "partial",
+    value_json: dict[str, Any] = {
+        "status": "unavailable" if method_blocks else ("calculated" if complete else "partial"),
         "variant": variant,
         "calculation_version": CALCULATION_VERSION,
         "fact_nature": _fact_nature([fact for result in results for fact in result.inputs]),
@@ -571,7 +696,35 @@ def _total_fact(
             for result in results
         ],
     }
-    if not complete:
+    authority_snapshots = {
+        str(result.analysis_method)
+        for result in results
+        if result.analysis_method is not None
+    }
+    if authority_snapshots:
+        if len(authority_snapshots) != 1:
+            raise ValueError("Piotroski ROIC authority must be identical within a period")
+        value_json["analysis_method"] = next(
+            result.analysis_method
+            for result in results
+            if result.analysis_method is not None
+        )
+    if method_blocks:
+        value_json.update(
+            {
+                "reason_code": method_blocks[0].reason_code,
+                "method_blocks": [
+                    {
+                        "component_key": block.component_key,
+                        "method_key": "roic",
+                        "reason_code": block.reason_code,
+                    }
+                    for block in method_blocks
+                ],
+                "missing_indicators": missing,
+            }
+        )
+    elif not complete:
         value_json.update(
             {
                 "partial_score": sum(result.value for result in results),
@@ -582,7 +735,11 @@ def _total_fact(
         )
     return {
         "metric_key": TOTAL_KEY,
-        "value_numeric": float(sum(result.value for result in results)) if complete else None,
+        "value_numeric": (
+            float(sum(result.value for result in results))
+            if complete and not method_blocks
+            else None
+        ),
         "value_text": None,
         "value_json": value_json,
         "unit": "score_total",
@@ -598,12 +755,6 @@ def _total_variant(results: list[ComponentResult]) -> str:
     if variants == {"standard"}:
         return "standard"
     return "valueline_proxy"
-
-
-def _infer_company_type(index: FactIndex) -> Optional[str]:
-    if index.has_any({"ins.underwriting_margin", "ins.premium_turnover", "is.net_premiums_earned", "is.pc_premiums_earned"}):
-        return "insurance"
-    return None
 
 
 def _snapshot(raw: Any) -> Optional[FactSnapshot]:

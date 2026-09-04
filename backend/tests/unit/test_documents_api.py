@@ -575,7 +575,9 @@ def test_delete_document_removes_dependents_and_reconciles_current(
     assert db_session.get(MetricExtraction, extraction_id) is None
     assert db_session.get(MetricFact, target_fact_id) is None
     assert db_session.get(MetricFact, manual_fact_id) is None
-    assert db_session.get(MetricFact, stale_calculated_fact_id) is None
+    stale_calculated = db_session.get(MetricFact, stale_calculated_fact_id)
+    assert stale_calculated is not None
+    assert stale_calculated.is_current is False
 
     refreshed_old_fact = db_session.get(MetricFact, old_fact_id)
     assert refreshed_old_fact is not None

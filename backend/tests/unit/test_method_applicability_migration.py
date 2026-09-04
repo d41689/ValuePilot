@@ -27,7 +27,8 @@ BASE = make_url(settings.SQLALCHEMY_DATABASE_URI).set(
     }
 ).render_as_string(hide_password=False)
 BACKEND = Path(__file__).resolve().parents[2]
-HEAD = "20260904150000"
+HEAD = "20260904160000"
+V2_REVISION = "20260904150000"
 PARENT = "20260904140000"
 
 
@@ -376,6 +377,40 @@ def test_v2_clean_downgrade_upgrade_roundtrip_restores_final_review_guard(
         ).scalar_one() == 1
 
 
+def test_piotroski_guard_clean_downgrade_upgrade_restores_exact_revision(
+    isolated,
+) -> None:
+    url, engine = isolated
+    upgraded = _alembic_result(url, "upgrade", HEAD)
+    assert upgraded.returncode == 0, upgraded.stdout + upgraded.stderr
+
+    downgraded = _alembic_result(url, "downgrade", V2_REVISION)
+    assert downgraded.returncode == 0, downgraded.stdout + downgraded.stderr
+    with engine.connect() as connection:
+        assert connection.execute(
+            text("SELECT version_num FROM alembic_version")
+        ).scalar_one() == V2_REVISION
+        definition = connection.execute(
+            text(
+                "SELECT pg_get_functiondef('guard_ft07_metric_fact_authority_update()'::regprocedure)"
+            )
+        ).scalar_one()
+        assert "governs_piotroski" not in definition
+
+    restored = _alembic_result(url, "upgrade", HEAD)
+    assert restored.returncode == 0, restored.stdout + restored.stderr
+    with engine.connect() as connection:
+        assert connection.execute(
+            text("SELECT version_num FROM alembic_version")
+        ).scalar_one() == HEAD
+        definition = connection.execute(
+            text(
+                "SELECT pg_get_functiondef('guard_ft07_metric_fact_authority_update()'::regprocedure)"
+            )
+        ).scalar_one()
+        assert "governs_piotroski" in definition
+
+
 def test_metric_fact_authority_cannot_be_injected_or_rewritten(isolated) -> None:
     url, engine = isolated
     upgraded = _alembic_result(url, "upgrade", HEAD)
@@ -428,6 +463,33 @@ def test_metric_fact_authority_cannot_be_injected_or_rewritten(isolated) -> None
                 "user": user_id,
                 "stock": stock_id,
                 "payload": json.dumps({"analysis_method": {"status": "approved"}}),
+            },
+        ).scalar_one()
+        legacy_piotroski_id = connection.execute(
+            text(
+                "INSERT INTO metric_facts "
+                "(user_id,stock_id,metric_key,value_numeric,value_json,source_type,is_current) "
+                "VALUES (:user,:stock,'score.piotroski.total',8,"
+                "'{\"inputs\":[]}'::jsonb,'calculated',true) RETURNING id"
+            ),
+            {"user": user_id, "stock": stock_id},
+        ).scalar_one()
+        governed_piotroski_id = connection.execute(
+            text(
+                "INSERT INTO metric_facts "
+                "(user_id,stock_id,metric_key,value_numeric,value_json,source_type,is_current) "
+                "VALUES (:user,:stock,'score.piotroski.roa_positive',1,"
+                "CAST(:payload AS jsonb),'calculated',true) RETURNING id"
+            ),
+            {
+                "user": user_id,
+                "stock": stock_id,
+                "payload": json.dumps(
+                    {
+                        "analysis_method": {"method_key": "roic"},
+                        "inputs": [],
+                    }
+                ),
             },
         ).scalar_one()
         dcf_fact_id = connection.execute(
@@ -502,6 +564,24 @@ def test_metric_fact_authority_cannot_be_injected_or_rewritten(isolated) -> None
         ),
         (
             "UPDATE metric_facts SET value_json=jsonb_set(value_json, "
+            "'{analysis_method}', '{\"method_key\":\"roic\"}'::jsonb) WHERE id=:id",
+            legacy_piotroski_id,
+        ),
+        (
+            "UPDATE metric_facts SET value_numeric=7 WHERE id=:id",
+            legacy_piotroski_id,
+        ),
+        (
+            "UPDATE metric_facts SET value_json='{}'::jsonb WHERE id=:id",
+            governed_piotroski_id,
+        ),
+        (
+            "UPDATE metric_facts SET metric_key='custom.piotroski', "
+            "source_type='manual', value_numeric=7 WHERE id=:id",
+            governed_piotroski_id,
+        ),
+        (
+            "UPDATE metric_facts SET value_json=jsonb_set(value_json, "
             "'{valuation_origin,source}', '\"manual\"'::jsonb) WHERE id=:id",
             dcf_fact_id,
         ),
@@ -547,8 +627,15 @@ def test_metric_fact_authority_cannot_be_injected_or_rewritten(isolated) -> None
 
     with engine.begin() as connection:
         connection.execute(
-            text("UPDATE metric_facts SET is_current=false WHERE id IN (:oe,:dcf)"),
-            {"oe": governed_oe_id, "dcf": dcf_fact_id},
+            text(
+                "UPDATE metric_facts SET is_current=false "
+                "WHERE id IN (:oe,:dcf,:piotroski)"
+            ),
+            {
+                "oe": governed_oe_id,
+                "dcf": dcf_fact_id,
+                "piotroski": governed_piotroski_id,
+            },
         )
         connection.execute(
             text(
@@ -576,11 +663,13 @@ def test_metric_fact_authority_cannot_be_injected_or_rewritten(isolated) -> None
             text(
                 "SELECT id,metric_key,value_numeric,value_json,source_type,source_ref_id,"
                 "is_current FROM metric_facts WHERE id IN "
-                "(:legacy_oe,:oe,:dcf,:legacy,:unavailable)"
+                "(:legacy_oe,:oe,:legacy_piotroski,:piotroski,:dcf,:legacy,:unavailable)"
             ),
             {
                 "legacy_oe": legacy_oe_id,
                 "oe": governed_oe_id,
+                "legacy_piotroski": legacy_piotroski_id,
+                "piotroski": governed_piotroski_id,
                 "dcf": dcf_fact_id,
                 "legacy": legacy_manual_id,
                 "unavailable": unavailable_id,
@@ -592,6 +681,11 @@ def test_metric_fact_authority_cannot_be_injected_or_rewritten(isolated) -> None
         assert by_id[governed_oe_id]["metric_key"] == (
             "owners_earnings_per_share_normalized"
         )
+        assert "analysis_method" not in by_id[legacy_piotroski_id]["value_json"]
+        assert by_id[legacy_piotroski_id]["value_numeric"] == 8
+        assert by_id[governed_piotroski_id]["value_json"]["analysis_method"] == {
+            "method_key": "roic"
+        }
         assert by_id[dcf_fact_id]["value_json"]["valuation_origin"]["source"] == "dcf"
         assert by_id[dcf_fact_id]["source_ref_id"] == 501
         assert by_id[legacy_manual_id]["value_json"] is None
@@ -600,4 +694,52 @@ def test_metric_fact_authority_cannot_be_injected_or_rewritten(isolated) -> None
             "manual"
         )
         assert by_id[governed_oe_id]["is_current"] is False
+        assert by_id[governed_piotroski_id]["is_current"] is False
         assert by_id[dcf_fact_id]["is_current"] is False
+
+
+def test_piotroski_authority_refuses_downgrade_before_guard_mutation(
+    isolated,
+) -> None:
+    url, engine = isolated
+    upgraded = _alembic_result(url, "upgrade", HEAD)
+    assert upgraded.returncode == 0, upgraded.stdout + upgraded.stderr
+    with engine.begin() as connection:
+        user_id = connection.execute(
+            text(
+                "INSERT INTO users (email,hashed_password,is_active) "
+                "VALUES ('ft07-piot-down@example.com','x',true) RETURNING id"
+            )
+        ).scalar_one()
+        stock_id = connection.execute(
+            text(
+                "INSERT INTO stocks "
+                "(ticker,exchange,market_country,company_name,is_active) "
+                "VALUES ('PIOTDOWN','NYSE','US','Piot Downgrade',true) RETURNING id"
+            )
+        ).scalar_one()
+        connection.execute(
+            text(
+                "INSERT INTO metric_facts "
+                "(user_id,stock_id,metric_key,value_numeric,value_json,source_type,is_current) "
+                "VALUES (:user,:stock,'score.piotroski.total',8,"
+                "'{\"inputs\":[]}'::jsonb,'calculated',true)"
+            ),
+            {"user": user_id, "stock": stock_id},
+        )
+
+    refused = _alembic_result(url, "downgrade", V2_REVISION)
+    assert refused.returncode != 0
+    assert "cannot downgrade retained Piotroski method authority" in (
+        refused.stdout + refused.stderr
+    )
+    with engine.connect() as connection:
+        assert connection.execute(
+            text("SELECT version_num FROM alembic_version")
+        ).scalar_one() == HEAD
+        definition = connection.execute(
+            text(
+                "SELECT pg_get_functiondef('guard_ft07_metric_fact_authority_update()'::regprocedure)"
+            )
+        ).scalar_one()
+        assert "governs_piotroski" in definition

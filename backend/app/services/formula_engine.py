@@ -1,6 +1,6 @@
 import ast
 import operator
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from decimal import Decimal, localcontext
 from typing import Dict, List, Optional
 from sqlalchemy.orm import Session
@@ -9,7 +9,9 @@ from app.models.facts import MetricFact, Formula, CalculatedRun
 from app.services.numeric_persistence import persist_numeric_38_12
 from app.services.canonical_financials import (
     guard_sec_run_availability,
-    system_method_for_metric_key,
+    guard_piotroski_method_authority,
+    is_reserved_system_output_key,
+    PiotroskiMethodAuthorityError,
     visible_metric_fact_predicate,
 )
 from app.services.source_reconciliation import (
@@ -130,7 +132,7 @@ class FormulaEngine:
         if not formula or formula.user_id != user_id:
             raise ValueError("Formula not found")
         output_key = formula.name.lower().replace(" ", "_")
-        if system_method_for_metric_key(output_key) is not None:
+        if is_reserved_system_output_key(output_key):
             raise ReservedMethodFormulaOutputError(output_key)
         
         # Fetch dependencies
@@ -146,15 +148,24 @@ class FormulaEngine:
                 visible_metric_fact_predicate(MetricFact, user_id=user_id),
             )
         ).all()
+        evaluated_at = datetime.now(timezone.utc)
         facts = guard_reconciled_source_selection(
             facts,
             consumer="formula",
-            knowledge_cutoff=datetime.now(timezone.utc),
+            knowledge_cutoff=evaluated_at,
             selected_source_type=selected_source_type,
             session=self.db,
             user_id=user_id,
         )
         facts = guard_sec_run_availability(self.db, stock_id=stock_id, facts=facts)
+        facts, method_blocked = guard_piotroski_method_authority(
+            self.db,
+            facts=facts,
+            effective_as_of=date.today(),
+            knowledge_at=evaluated_at,
+        )
+        if method_blocked:
+            raise PiotroskiMethodAuthorityError(method_blocked[0])
         facts_by_metric = {
             metric_key: [fact for fact in facts if fact.metric_key == metric_key]
             for metric_key in formula.dependencies_json

@@ -618,7 +618,10 @@ def test_workspace_combines_user_owned_fundamentals_valuation_coverage_and_publi
                         {
                             "fact_id": owner_metric.id,
                             "metric_key": owner_metric.metric_key,
+                            "period_end_date": "2025-12-31",
+                            "value_numeric": "0.21",
                             "source_type": "parsed",
+                            "fact_nature": "actual",
                         }
                     ],
                 },

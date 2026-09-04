@@ -1,5 +1,5 @@
 from typing import List, Dict, Any, Callable
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from sqlalchemy.orm import Session, aliased
 from decimal import Decimal
 from sqlalchemy import select, and_, or_
@@ -8,6 +8,8 @@ from app.models.facts import MetricFact
 from app.services.canonical_financials import (
     CANONICAL_SOURCE_TYPES,
     guard_sec_run_availability,
+    guard_piotroski_method_authority,
+    PiotroskiMethodAuthorityError,
     visible_metric_fact_predicate,
 )
 from app.services.source_reconciliation import guard_reconciled_source_selection
@@ -284,16 +286,25 @@ class ScreenerService:
         for fact in facts:
             by_stock.setdefault(fact.stock_id, []).append(fact)
         for stock_id, stock_facts in by_stock.items():
+            evaluated_at = datetime.now(timezone.utc)
             stock_facts = guard_reconciled_source_selection(
                 stock_facts,
                 consumer="screener",
-                knowledge_cutoff=datetime.now(timezone.utc),
+                knowledge_cutoff=evaluated_at,
                 selected_source_type=selected_source_type,
                 session=self.db,
                 user_id=current_user_id,
             )
-            guard_sec_run_availability(
+            stock_facts = guard_sec_run_availability(
                 self.db,
                 stock_id=stock_id,
                 facts=stock_facts,
             )
+            _, method_blocked = guard_piotroski_method_authority(
+                self.db,
+                facts=stock_facts,
+                effective_as_of=date.today(),
+                knowledge_at=evaluated_at,
+            )
+            if method_blocked:
+                raise PiotroskiMethodAuthorityError(method_blocked[0])

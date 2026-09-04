@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from datetime import date, datetime
 from typing import Any, Optional
 
-from sqlalchemy import delete, select
+from sqlalchemy import delete, select, update
 from sqlalchemy.orm import Session
 
 from app.models.artifacts import DocumentPage, PdfDocument
@@ -322,12 +322,13 @@ class DocumentDedupeService:
     ) -> None:
         for affected_user_id, affected_stock_id in affected_user_stock_pairs:
             self.db.execute(
-                delete(MetricFact).where(
+                update(MetricFact).where(
                     MetricFact.user_id == affected_user_id,
                     MetricFact.stock_id == affected_stock_id,
                     MetricFact.source_type == "calculated",
                     MetricFact.metric_key.in_(sorted(REFRESH_CALCULATED_KEYS)),
-                )
+                    MetricFact.is_current.is_(True),
+                ).values(is_current=False)
             )
         self.db.flush()
 

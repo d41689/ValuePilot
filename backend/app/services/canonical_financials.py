@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import date, datetime, timezone
+from decimal import Decimal, InvalidOperation
 import re
 from typing import Any, Iterable
 
@@ -21,6 +22,9 @@ CANONICAL_SOURCE_TYPES = frozenset({"sec", "parsed", "manual", "calculated"})
 SYSTEM_METHOD_KEYS = frozenset(
     {"owner_earnings", "roic", "per_share_trend", "system_valuation"}
 )
+PIOTROSKI_PREFIX = "score.piotroski."
+PIOTROSKI_TOTAL_CAPITAL_METHOD = "fallback_return_on_total_capital"
+PIOTROSKI_TOTAL_CAPITAL_KEY = "returns.total_capital"
 
 
 class CanonicalSourceConflictError(ValueError):
@@ -48,6 +52,13 @@ class CanonicalUnavailableError(ValueError):
         self.state = state
         self.code = str(state["reason_code"])
         super().__init__(f"canonical SEC facts are unavailable: {self.code}")
+
+
+class PiotroskiMethodAuthorityError(ValueError):
+    def __init__(self, state: dict[str, Any]):
+        self.state = state
+        self.code = str(state["reason_code"])
+        super().__init__(f"Piotroski input authority is unavailable: {self.code}")
 
 
 @dataclass(frozen=True)
@@ -520,6 +531,14 @@ def system_method_for_fact(fact: MetricFact) -> str | None:
     return system_method_for_metric_key(fact.metric_key)
 
 
+def is_reserved_system_output_key(key: str) -> bool:
+    """Return whether users may not publish a formula under this system key."""
+
+    return system_method_for_metric_key(key) is not None or key.startswith(
+        PIOTROSKI_PREFIX
+    )
+
+
 def _owner_earnings_origin_error(
     session: Session, *, stock_id: int, fact: MetricFact
 ) -> str | None:
@@ -559,6 +578,248 @@ def _owner_earnings_origin_error(
     return None
 
 
+def _piotroski_blocked_state(
+    fact: MetricFact,
+    *,
+    reason_code: str,
+    decision: MethodGateDecision | None = None,
+) -> dict[str, Any]:
+    return {
+        "id": None,
+        "status": "unsupported",
+        "reason_code": reason_code,
+        "method_key": "roic",
+        "metric_key": fact.metric_key,
+        "value_numeric": None,
+        "unit": None,
+        "period": fact.period_type,
+        "period_end_date": fact.period_end_date,
+        "source_type": fact.source_type,
+        "method_gate": decision.as_dict() if decision is not None else None,
+        "evidence_route": None,
+    }
+
+
+def _piotroski_lineage_error(
+    session: Session,
+    *,
+    fact: MetricFact,
+) -> tuple[str | None, bool]:
+    """Validate exact Piotroski inputs and report whether they use ROIC proxy.
+
+    Legacy calculated scores are readable only when their persisted input
+    lineage proves which canonical facts were used.  Metadata labels alone are
+    not authority: every claimed identity/value/date/source is checked against
+    the referenced metric fact in the same tenant and stock.
+    """
+
+    metadata = fact.value_json if isinstance(fact.value_json, dict) else {}
+    inputs = metadata.get("inputs")
+    if not isinstance(inputs, list) or not inputs:
+        return "piotroski_method_authority_lineage_unverifiable", False
+    if fact.user_id is None:
+        return "piotroski_method_authority_lineage_unverifiable", False
+
+    lineage_by_id: dict[int, dict[str, Any]] = {}
+    for item in inputs:
+        if not isinstance(item, dict):
+            return "piotroski_method_authority_lineage_unverifiable", False
+        fact_id = item.get("fact_id")
+        if not isinstance(fact_id, int) or isinstance(fact_id, bool) or fact_id <= 0:
+            return "piotroski_method_authority_lineage_unverifiable", False
+        if fact_id in lineage_by_id and lineage_by_id[fact_id] != item:
+            return "piotroski_method_authority_lineage_unverifiable", False
+        lineage_by_id[fact_id] = item
+
+    referenced = list(
+        session.scalars(
+            select(MetricFact).where(MetricFact.id.in_(lineage_by_id))
+        ).all()
+    )
+    if len(referenced) != len(lineage_by_id):
+        return "piotroski_method_authority_lineage_unverifiable", False
+
+    uses_total_capital = False
+    for referenced_fact in referenced:
+        item = lineage_by_id[referenced_fact.id]
+        expected_date = (
+            referenced_fact.period_end_date.isoformat()
+            if isinstance(referenced_fact.period_end_date, date)
+            else None
+        )
+        claimed_numeric = item.get("value_numeric")
+        try:
+            numeric_matches = (
+                referenced_fact.value_numeric is None and claimed_numeric is None
+            ) or (
+                referenced_fact.value_numeric is not None
+                and isinstance(claimed_numeric, str)
+                and Decimal(claimed_numeric) == Decimal(referenced_fact.value_numeric)
+            )
+        except (InvalidOperation, TypeError, ValueError):
+            numeric_matches = False
+        source_metadata = (
+            referenced_fact.value_json
+            if isinstance(referenced_fact.value_json, dict)
+            else {}
+        )
+        visible_owner = (
+            referenced_fact.source_type == "sec" and referenced_fact.user_id is None
+        ) or (
+            referenced_fact.source_type != "sec"
+            and referenced_fact.user_id == fact.user_id
+        )
+        if (
+            referenced_fact.stock_id != fact.stock_id
+            or not visible_owner
+            or item.get("metric_key") != referenced_fact.metric_key
+            or item.get("period_end_date") != expected_date
+            or not numeric_matches
+            or item.get("source_type") != referenced_fact.source_type
+            or item.get("fact_nature") != source_metadata.get("fact_nature")
+        ):
+            return "piotroski_method_authority_lineage_unverifiable", False
+        uses_total_capital = uses_total_capital or (
+            referenced_fact.metric_key == PIOTROSKI_TOTAL_CAPITAL_KEY
+        )
+
+    components = metadata.get("components")
+    claims_total_capital = metadata.get("method") == PIOTROSKI_TOTAL_CAPITAL_METHOD
+    if isinstance(components, list):
+        claims_total_capital = claims_total_capital or any(
+            isinstance(component, dict)
+            and component.get("method") == PIOTROSKI_TOTAL_CAPITAL_METHOD
+            for component in components
+        )
+    return None, uses_total_capital or claims_total_capital
+
+
+def guard_piotroski_method_authority(
+    session: Session,
+    *,
+    facts: Iterable[MetricFact],
+    effective_as_of: date,
+    knowledge_at: datetime | None = None,
+) -> tuple[list[MetricFact], list[dict[str, Any]]]:
+    """Quarantine retained Piotroski numerics that cannot prove ROIC authority."""
+
+    cutoff = knowledge_at or datetime.now(timezone.utc)
+    if cutoff.tzinfo is None:
+        raise ValueError("knowledge_at must be timezone-aware")
+    kept: list[MetricFact] = []
+    blocked: list[dict[str, Any]] = []
+    for fact in facts:
+        if not fact.metric_key.startswith(PIOTROSKI_PREFIX):
+            kept.append(fact)
+            continue
+        if fact.source_type != "calculated":
+            blocked.append(
+                _piotroski_blocked_state(
+                    fact,
+                    reason_code="piotroski_method_authority_source_invalid",
+                )
+            )
+            continue
+        metadata = fact.value_json if isinstance(fact.value_json, dict) else {}
+        method_blocks = metadata.get("method_blocks")
+        if isinstance(method_blocks, list) and method_blocks:
+            reason = next(
+                (
+                    item.get("reason_code")
+                    for item in method_blocks
+                    if isinstance(item, dict)
+                    and isinstance(item.get("reason_code"), str)
+                ),
+                "piotroski_method_authority_snapshot_invalid",
+            )
+            blocked.append(_piotroski_blocked_state(fact, reason_code=reason))
+            continue
+        lineage_error, uses_total_capital = _piotroski_lineage_error(
+            session, fact=fact
+        )
+        if lineage_error is not None:
+            blocked.append(
+                _piotroski_blocked_state(fact, reason_code=lineage_error)
+            )
+            continue
+        if not uses_total_capital:
+            kept.append(fact)
+            continue
+
+        snapshot = metadata.get("analysis_method")
+        if snapshot is None:
+            blocked.append(
+                _piotroski_blocked_state(
+                    fact,
+                    reason_code="piotroski_method_authority_snapshot_missing",
+                )
+            )
+            continue
+        if not isinstance(snapshot, dict):
+            blocked.append(
+                _piotroski_blocked_state(
+                    fact,
+                    reason_code="piotroski_method_authority_snapshot_invalid",
+                )
+            )
+            continue
+        replay: MethodGateDecision | None = None
+        try:
+            origin_effective_raw = snapshot.get("effective_as_of")
+            origin_knowledge_raw = snapshot.get("knowledge_at")
+            if not isinstance(origin_effective_raw, str) or not isinstance(
+                origin_knowledge_raw, str
+            ):
+                raise ValueError("missing origin cutoff")
+            origin_effective = date.fromisoformat(origin_effective_raw)
+            origin_knowledge = datetime.fromisoformat(
+                origin_knowledge_raw.replace("Z", "+00:00")
+            )
+            if origin_knowledge.tzinfo is None:
+                raise ValueError("naive origin cutoff")
+            if (
+                fact.created_at is None
+                or fact.created_at.tzinfo is None
+                or origin_knowledge > fact.created_at
+                or origin_effective != fact.period_end_date
+            ):
+                raise ValueError("invalid origin cutoff")
+            replay = reviewed_method_gate(
+                session,
+                stock_id=fact.stock_id,
+                method_key="roic",
+                effective_as_of=origin_effective,
+                knowledge_at=origin_knowledge,
+            )
+        except (TypeError, ValueError):
+            replay = None
+        if replay is None or replay.status != "approved" or replay.as_dict() != snapshot:
+            blocked.append(
+                _piotroski_blocked_state(
+                    fact,
+                    reason_code="piotroski_method_authority_snapshot_invalid",
+                    decision=replay,
+                )
+            )
+            continue
+        current = reviewed_method_gate(
+            session,
+            stock_id=fact.stock_id,
+            method_key="roic",
+            effective_as_of=effective_as_of,
+            knowledge_at=cutoff,
+        )
+        if current.status != "approved":
+            blocked.append(
+                _piotroski_blocked_state(
+                    fact, reason_code=current.reason_code, decision=current
+                )
+            )
+            continue
+        kept.append(fact)
+    return kept, blocked
+
+
 def apply_reviewed_method_gates(
     session: Session,
     *,
@@ -570,7 +831,12 @@ def apply_reviewed_method_gates(
 ) -> tuple[list[MetricFact], list[dict[str, Any]], dict[str, MethodGateDecision]]:
     """Remove unsupported system outputs while preserving raw and user-authored facts."""
 
-    materialized = list(facts)
+    materialized, piotroski_blocked = guard_piotroski_method_authority(
+        session,
+        facts=list(facts),
+        effective_as_of=effective_as_of,
+        knowledge_at=knowledge_at,
+    )
     required_methods = {
         method for fact in materialized if (method := system_method_for_fact(fact))
     }
@@ -589,7 +855,7 @@ def apply_reviewed_method_gates(
         for method in sorted(required_methods)
     }
     kept: list[MetricFact] = []
-    blocked: list[dict[str, Any]] = []
+    blocked: list[dict[str, Any]] = list(piotroski_blocked)
     for fact in materialized:
         method = system_method_for_fact(fact)
         decision = decisions.get(method) if method else None

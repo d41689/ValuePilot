@@ -1,4 +1,5 @@
-from datetime import date
+from datetime import date, datetime, timezone
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -50,8 +51,38 @@ def _complete_standard_facts():
     ]
 
 
+def _build(facts, *, economic_class="ordinary"):
+    materialized = list(facts)
+    decisions = {}
+    for period_end in {
+        fact["period_end_date"]
+        if isinstance(fact, dict)
+        else fact.period_end_date
+        for fact in materialized
+        if (fact.get("period_type") if isinstance(fact, dict) else fact.period_type)
+        == "FY"
+    }:
+        snapshot = {
+            "method_key": "roic",
+            "status": "approved",
+            "reason_code": "approved",
+            "economic_class": economic_class,
+            "effective_as_of": period_end.isoformat(),
+            "knowledge_at": datetime.now(timezone.utc).isoformat(),
+        }
+        decisions[period_end] = SimpleNamespace(
+            status="approved",
+            reason_code="approved",
+            economic_class=economic_class,
+            as_dict=lambda snapshot=snapshot: snapshot,
+        )
+    return build_piotroski_f_score_facts(
+        materialized, roic_decisions_by_period=decisions
+    )
+
+
 def test_build_piotroski_f_score_facts_calculates_complete_standard_total():
-    derived = build_piotroski_f_score_facts(_complete_standard_facts())
+    derived = _build(_complete_standard_facts())
     by_key = {fact["metric_key"]: fact for fact in derived if fact["period_end_date"] == date(2024, 12, 31)}
 
     assert by_key["score.piotroski.total"]["value_numeric"] == 9.0
@@ -91,7 +122,7 @@ def test_piotroski_does_not_reclassify_a_document_manual_correction_as_parsed():
     )
 
     with pytest.raises(CanonicalSourceConflictError):
-        build_piotroski_f_score_facts([parsed, correction])
+        _build([parsed, correction])
 
 
 def test_build_piotroski_f_score_facts_uses_standard_before_proxy():
@@ -102,7 +133,7 @@ def test_build_piotroski_f_score_facts_uses_standard_before_proxy():
         _fact("returns.total_capital", -0.4, y1, fact_id=21),
     ]
 
-    derived = build_piotroski_f_score_facts(facts)
+    derived = _build(facts)
     by_key = {fact["metric_key"]: fact for fact in derived if fact["period_end_date"] == y1}
 
     assert by_key["score.piotroski.roa_positive"]["value_numeric"] == 1.0
@@ -119,7 +150,7 @@ def test_build_piotroski_f_score_facts_uses_return_on_total_capital_for_roa_impr
         _fact("returns.total_capital", 0.12, y1, fact_id=2),
     ]
 
-    derived = build_piotroski_f_score_facts(facts)
+    derived = _build(facts)
     by_key = {fact["metric_key"]: fact for fact in derived if fact["period_end_date"] == y1}
 
     assert by_key["score.piotroski.roa_positive"]["value_numeric"] == 1.0
@@ -137,7 +168,7 @@ def test_build_piotroski_f_score_facts_prefers_total_capital_over_net_income_for
         _fact("is.net_income", -100.0, y1, fact_id=3),
     ]
 
-    derived = build_piotroski_f_score_facts(facts)
+    derived = _build(facts)
     by_key = {fact["metric_key"]: fact for fact in derived if fact["period_end_date"] == y1}
 
     assert by_key["score.piotroski.roa_positive"]["value_numeric"] == 1.0
@@ -155,7 +186,7 @@ def test_build_piotroski_f_score_facts_uses_debt_to_capital_for_leverage_proxy()
         _fact("leverage.long_term_debt_to_capital", 0.30, y1, fact_id=2),
     ]
 
-    derived = build_piotroski_f_score_facts(facts)
+    derived = _build(facts)
     by_key = {fact["metric_key"]: fact for fact in derived if fact["period_end_date"] == y1}
 
     assert by_key["score.piotroski.leverage_declining"]["value_numeric"] == 1.0
@@ -174,7 +205,7 @@ def test_build_piotroski_f_score_facts_uses_standard_current_ratio_before_positi
         _fact("bs.current_liabilities", 100.0, y1, fact_id=6),
     ]
 
-    derived = build_piotroski_f_score_facts(facts)
+    derived = _build(facts)
     by_key = {fact["metric_key"]: fact for fact in derived if fact["period_end_date"] == y1}
 
     assert by_key["score.piotroski.current_ratio_improving"]["value_numeric"] == 0.0
@@ -192,7 +223,7 @@ def test_build_piotroski_f_score_facts_uses_current_position_totals_for_current_
         _fact("bs.current_liabilities", 100.0, y1, fact_id=4),
     ]
 
-    derived = build_piotroski_f_score_facts(facts)
+    derived = _build(facts)
     by_key = {fact["metric_key"]: fact for fact in derived if fact["period_end_date"] == y1}
 
     assert by_key["score.piotroski.current_ratio_improving"]["value_numeric"] == 1.0
@@ -222,7 +253,7 @@ def test_build_piotroski_f_score_facts_skips_current_position_fallback_with_zero
         _fact("bs.current_liabilities", 100.0, y1, fact_id=4),
     ]
 
-    derived = build_piotroski_f_score_facts(facts)
+    derived = _build(facts)
     by_key = {fact["metric_key"]: fact for fact in derived if fact["period_end_date"] == y1}
 
     assert "score.piotroski.current_ratio_improving" not in by_key
@@ -236,7 +267,7 @@ def test_build_piotroski_f_score_facts_uses_capital_turnover_for_asset_turnover_
         _fact("efficiency.capital_turnover", 1.25, y1, fact_id=2),
     ]
 
-    derived = build_piotroski_f_score_facts(facts)
+    derived = _build(facts)
     by_key = {fact["metric_key"]: fact for fact in derived if fact["period_end_date"] == y1}
 
     assert by_key["score.piotroski.asset_turnover_improving"]["value_numeric"] == 1.0
@@ -251,7 +282,7 @@ def test_build_piotroski_f_score_facts_writes_partial_total_when_missing_compone
         _fact("is.net_income", 100.0, y1, fact_id=3),
     ]
 
-    derived = build_piotroski_f_score_facts(facts)
+    derived = _build(facts)
     total = next(fact for fact in derived if fact["metric_key"] == "score.piotroski.total")
 
     assert total["value_numeric"] is None
@@ -269,7 +300,7 @@ def test_build_piotroski_f_score_facts_ignores_non_fy_inputs():
         _fact("is.operating_cash_flow", 250.0, snapshot_date, fact_id=91, period_type="AS_OF"),
     ]
 
-    derived = build_piotroski_f_score_facts(facts)
+    derived = _build(facts)
 
     assert all(fact["period_end_date"] != snapshot_date for fact in derived)
 
@@ -289,7 +320,7 @@ def test_build_piotroski_f_score_facts_calculates_insurance_adjusted_variant():
         if fact["metric_key"] not in {"is.gross_margin", "efficiency.asset_turnover"}
     ]
 
-    derived = build_piotroski_f_score_facts(facts, company_type="insurance")
+    derived = _build(facts, economic_class="insurer")
     by_key = {fact["metric_key"]: fact for fact in derived if fact["period_end_date"] == y1}
 
     assert by_key["score.piotroski.total"]["value_numeric"] == 9.0
