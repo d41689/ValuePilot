@@ -32,7 +32,6 @@ const buildDcfModelPayload = ({
   canonicalInputs,
   actualInputs,
   growthRateSelection,
-  clientResultPerShare,
 }) => {
   if (
     (selection !== 'norm' && !Number.isInteger(selection)) ||
@@ -64,10 +63,6 @@ const buildDcfModelPayload = ({
     }
     canonical[field] = value;
   }
-  const clientResult = finiteString(clientResultPerShare);
-  if (clientResult === null) {
-    return null;
-  }
   const nonnegativeFields = [
     'based_on_per_share',
     'discount_rate_pct',
@@ -87,9 +82,7 @@ const buildDcfModelPayload = ({
     Number(normalizedInputs.growth_rate_pct) > DCF_MODEL_BOUNDS.maxRatePct ||
     Number(normalizedInputs.terminal_rate_pct) > DCF_MODEL_BOUNDS.maxRatePct ||
     Number(normalizedInputs.discount_rate_pct) <=
-      Number(normalizedInputs.terminal_rate_pct) ||
-    Number(clientResult) <= 0 ||
-    Number(clientResult) > DCF_MODEL_BOUNDS.maxResultPerShare
+      Number(normalizedInputs.terminal_rate_pct)
   ) {
     return null;
   }
@@ -103,7 +96,6 @@ const buildDcfModelPayload = ({
       (field) => Number(normalizedInputs[field]) !== Number(canonical[field])
     ),
     growth_rate_selection: growthRateSelection,
-    client_result_per_share: clientResult,
   };
 };
 

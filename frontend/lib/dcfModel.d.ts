@@ -24,5 +24,4 @@ export function buildDcfModelPayload(options: {
   canonicalInputs: DcfCanonicalInputs | null | undefined;
   actualInputs: DcfModelInputs;
   growthRateSelection: string | null;
-  clientResultPerShare: number;
 }): Record<string, unknown> | null;

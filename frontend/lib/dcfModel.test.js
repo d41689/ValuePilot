@@ -1,8 +1,8 @@
 /* eslint-disable @typescript-eslint/no-require-imports */
 const assert = require('node:assert/strict');
+const fs = require('node:fs');
 const test = require('node:test');
 
-const { computeGrowthValue, computeTerminalValue } = require('./dcfMath');
 const { buildDcfModelPayload } = require('./dcfModel');
 
 const manifest = {
@@ -29,9 +29,6 @@ test('buildDcfModelPayload records the gold scenario and every user override', (
     terminal_years: 10,
     terminal_rate_pct: 4,
   };
-  const growth = computeGrowthValue(15.55, 11, 10, 20);
-  const terminal = computeTerminalValue(15.55, 11, 10, 20, 10, 4);
-
   assert.deepEqual(
     buildDcfModelPayload({
       selection: 'norm',
@@ -40,7 +37,6 @@ test('buildDcfModelPayload records the gold scenario and every user override', (
       canonicalInputs,
       actualInputs,
       growthRateSelection: 'sales',
-      clientResultPerShare: growth + terminal,
     }),
     {
       model_version: 'dcf_model_v1',
@@ -57,7 +53,6 @@ test('buildDcfModelPayload records the gold scenario and every user override', (
       },
       user_override_fields: ['net_profit_per_share', 'based_on_per_share'],
       growth_rate_selection: 'sales',
-      client_result_per_share: String(growth + terminal),
     }
   );
 });
@@ -85,7 +80,6 @@ test('buildDcfModelPayload rejects non-finite and incomplete scenarios', () => {
       terminal_rate_pct: 4,
     },
     growthRateSelection: null,
-    clientResultPerShare: 700.433543,
   };
 
   assert.equal(buildDcfModelPayload(shared).actual_inputs.growth_years, '10.9');
@@ -107,4 +101,16 @@ test('buildDcfModelPayload rejects non-finite and incomplete scenarios', () => {
     }),
     null
   );
+});
+
+test('DCF page labels browser output as preview and displays the saved server value', () => {
+  const source = fs.readFileSync(
+    'app/(dashboard)/stocks/[ticker]/dcf/page.tsx',
+    'utf8'
+  );
+
+  assert.match(source, /Local preview value/);
+  assert.match(source, /saved\.data\.value_numeric/);
+  assert.match(source, /Server-calculated value/);
+  assert.doesNotMatch(source, /clientResultPerShare/);
 });

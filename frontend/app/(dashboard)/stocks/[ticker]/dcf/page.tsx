@@ -371,7 +371,6 @@ export default function StockDcfPage() {
           terminal_rate_pct: terminalRate,
         },
         growthRateSelection,
-        clientResultPerShare: totalValue,
       }),
     [
       basedOnSelection,
@@ -386,7 +385,6 @@ export default function StockDcfPage() {
       selectedBasedOnPayload,
       terminalRate,
       terminalYears,
-      totalValue,
     ]
   );
 
@@ -447,9 +445,8 @@ export default function StockDcfPage() {
     }
     setIsSavingFairValue(true);
     try {
-      await apiClient.put(`/stocks/${stockId}/facts`, {
+      const saved = await apiClient.put(`/stocks/${stockId}/facts`, {
         metric_key: 'val.fair_value',
-        value_numeric: Number(totalValue.toFixed(6)),
         valuation_currency: valuationCurrencyState.currency,
         source: 'dcf',
         assumptions: [
@@ -460,9 +457,13 @@ export default function StockDcfPage() {
           },
         ],
       });
+      const savedValue = Number(saved.data.value_numeric);
       toast({
         title: 'Saved',
-        description: 'Fair Value and labeled DCF assumptions saved to research history.',
+        description: `Server-calculated value ${formatDcfMoney(
+          savedValue,
+          valuationCurrencyState
+        )} saved to research history.`,
       });
     } catch {
       toast({
@@ -903,7 +904,9 @@ export default function StockDcfPage() {
             </div>
             <div className="flex flex-wrap items-center gap-4 text-base font-semibold">
               <div className="flex items-center gap-2">
-                <span className="text-sm font-medium text-muted-foreground">Total Value</span>
+                <span className="text-sm font-medium text-muted-foreground">
+                  Local preview value
+                </span>
                 <span>
                   {hasResolvedStockDefaults
                     ? formatDcfMoney(totalValue, valuationCurrencyState)

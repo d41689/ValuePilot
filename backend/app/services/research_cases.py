@@ -7,7 +7,7 @@ from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 from typing import Any
 
-from sqlalchemy import text
+from sqlalchemy import select, text
 from sqlalchemy.orm import Session
 
 from app.models.artifacts import PdfDocument
@@ -22,6 +22,7 @@ from app.models.research import (
 )
 from app.models.stocks import PoolMembership, Stock
 from app.services.market_data_service import stock_price_evidence_matches
+from app.services.metric_fact_locking import acquire_metric_fact_stock_lock
 from app.schemas.research import (
     EvidenceInput,
     ResearchOriginInput,
@@ -355,6 +356,14 @@ def save_revision(
     payload: ResearchRevisionCreate,
     commit: bool = True,
 ) -> tuple[ResearchCase, ResearchCaseRevision]:
+    case_stock_id = session.scalar(
+        select(ResearchCase.stock_id).where(
+            ResearchCase.id == case_id,
+            ResearchCase.user_id == user_id,
+        )
+    )
+    if case_stock_id is not None:
+        acquire_metric_fact_stock_lock(session, stock_id=case_stock_id)
     case = _owned_case(session, user_id=user_id, case_id=case_id, for_update=True)
     if payload.correlation_id:
         prior_event = (
@@ -593,6 +602,7 @@ def save_product_valuation_revision(
         )
 
     try:
+        acquire_metric_fact_stock_lock(session, stock_id=stock_id)
         case, _, _ = create_or_open_case(
             session,
             user_id=user_id,

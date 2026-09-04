@@ -15,6 +15,14 @@ MIGRATION = (
     Path(__file__).resolve().parents[2]
     / "alembic/versions/20260901280000-metric-fact-stock-lock.py"
 )
+LOCKING_SERVICE = (
+    Path(__file__).resolve().parents[2]
+    / "app/services/metric_fact_locking.py"
+)
+RESEARCH_SERVICE = (
+    Path(__file__).resolve().parents[2]
+    / "app/services/research_cases.py"
+)
 
 
 def _bootstrap_lock_entities() -> tuple[int, int, int]:
@@ -94,6 +102,7 @@ def _assert_mutation_waits_for_stock_lock(
 
 def test_metric_fact_stock_lock_migration_handles_every_mutation_identity():
     source = MIGRATION.read_text()
+    locking_source = LOCKING_SERVICE.read_text()
 
     assert "BEFORE INSERT OR UPDATE OR DELETE ON metric_facts" in source
     assert "OLD.stock_id" in source
@@ -101,6 +110,8 @@ def test_metric_fact_stock_lock_migration_handles_every_mutation_identity():
     assert "LEAST(old_stock_id, new_stock_id)" in source
     assert "GREATEST(old_stock_id, new_stock_id)" in source
     assert "pg_advisory_xact_lock" in source
+    assert "valuepilot:metric-facts-stock:" in source
+    assert "valuepilot:metric-facts-stock:" in locking_source
     assert "DROP TRIGGER IF EXISTS trg_metric_facts_stock_lock" in source
 
 
@@ -113,6 +124,21 @@ def test_dcf_save_acquires_matching_stock_lock_before_validation_reads():
 
     assert save.index("acquire_metric_fact_stock_lock(") < save.index(
         "stock = session.get(Stock, stock_id)"
+    )
+
+
+def test_research_revision_paths_take_metric_lock_before_research_locks():
+    source = RESEARCH_SERVICE.read_text()
+    product_save = source[source.index("def save_product_valuation_revision(") :]
+    revision_save = source[
+        source.index("def save_revision(") : source.index("def research_decision_metrics(")
+    ]
+
+    assert product_save.index("acquire_metric_fact_stock_lock(") < product_save.index(
+        "create_or_open_case("
+    )
+    assert revision_save.index("acquire_metric_fact_stock_lock(") < revision_save.index(
+        "case = _owned_case("
     )
 
 

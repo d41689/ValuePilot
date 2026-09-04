@@ -39,13 +39,13 @@ from app.services.dcf_inputs import (
     DCF_NORMALIZED_SELECTION_RULE,
     DcfFactUniverseError,
     DcfModelError,
-    acquire_metric_fact_stock_lock,
     calculate_dcf_model,
     dcf_evaluation_clock,
     dcf_manifest_token,
     evaluate_dcf_input_selection,
     load_canonical_dcf_fact_universe,
 )
+from app.services.metric_fact_locking import acquire_metric_fact_stock_lock
 from app.services.market_data_service import (
     MarketDataService,
     read_current_eod_price,
@@ -458,7 +458,6 @@ DCF_MODEL_FIELDS = frozenset(
         "actual_inputs",
         "user_override_fields",
         "growth_rate_selection",
-        "client_result_per_share",
     }
 )
 DCF_OVERRIDEABLE_FIELDS = frozenset(
@@ -482,7 +481,6 @@ DCF_OVERRIDE_LABELS = {
     "capital_spending_per_share": "Capital spending per share",
     "based_on_per_share": "Based-on value per share",
 }
-DCF_CLIENT_RESULT_TOLERANCE = Decimal("0.01")
 DCF_RESERVED_ASSUMPTION_FIELDS = frozenset(
     {
         "model",
@@ -501,6 +499,7 @@ DCF_RESERVED_ASSUMPTION_FIELDS = frozenset(
         "computed_growth_value",
         "computed_terminal_value",
         "computed_total_value",
+        "client_result_per_share",
     }
 )
 
@@ -530,7 +529,6 @@ def _validated_dcf_save(
     current_user_id: int,
     assumptions: list[dict[str, Any]],
     declared_currency: str | None,
-    submitted_value: Decimal,
     server_evaluated_at: datetime,
     server_effective_as_of: date,
 ) -> tuple[str, list[dict[str, Any]], Decimal]:
@@ -752,25 +750,6 @@ def _validated_dcf_save(
         )
 
     result = calculation["value_per_share"]
-    try:
-        client_result = Decimal(str(model.get("client_result_per_share")))
-    except (InvalidOperation, ValueError, TypeError) as error:
-        raise ResearchCaseError(
-            "dcf_result_mismatch",
-            "Client DCF result is invalid.",
-            status_code=409,
-        ) from error
-    if (
-        not client_result.is_finite()
-        or not submitted_value.is_finite()
-        or abs(client_result - result) > DCF_CLIENT_RESULT_TOLERANCE
-        or abs(submitted_value - result) > DCF_CLIENT_RESULT_TOLERANCE
-    ):
-        raise ResearchCaseError(
-            "dcf_result_mismatch",
-            "Submitted DCF result does not match the server calculation.",
-            status_code=409,
-        )
 
     normalized_inputs = calculation["normalized_inputs"]
 
@@ -1417,12 +1396,16 @@ def upsert_stock_fact(
                 current_user_id=user_id,
                 assumptions=payload.assumptions,
                 declared_currency=payload.valuation_currency,
-                submitted_value=payload.value_numeric,
                 server_evaluated_at=save_clock.evaluated_at,
                 server_effective_as_of=save_clock.effective_as_of,
             )
             save_low = save_value
             save_high = save_value
+        if save_value is None:
+            raise ResearchCaseError(
+                "valuation_value_required",
+                "A valuation value is required.",
+            )
         case, revision, fact = save_product_valuation_revision(
             session,
             user_id=user_id,

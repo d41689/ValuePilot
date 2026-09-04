@@ -128,7 +128,6 @@ def _dcf_assumption(client, *, user, stock, auth_headers, selection="norm"):
         "terminal_years": "100",
         "terminal_rate_pct": "4",
     }
-    result = calculate_dcf_model(actual_inputs)
     return {
         "source": "dcf",
         "label": "DCF model v1",
@@ -140,16 +139,13 @@ def _dcf_assumption(client, *, user, stock, auth_headers, selection="norm"):
             "actual_inputs": actual_inputs,
             "user_override_fields": [],
             "growth_rate_selection": None,
-            "client_result_per_share": str(result["value_per_share"]),
         },
     }
 
 
 def _dcf_save_payload(assumption, *, as_of_date=None):
-    client_result = assumption.get("model", {}).get("client_result_per_share", "150")
     payload = {
         "metric_key": FAIR_VALUE_KEY,
-        "value_numeric": client_result,
         "source": "dcf",
         "valuation_currency": "USD",
         "assumptions": [assumption],
@@ -246,7 +242,7 @@ def test_put_dcf_value_copies_labeled_assumptions_into_research_revision(
         headers=auth_headers(user),
         json={
             "metric_key": FAIR_VALUE_KEY,
-            "value_numeric": assumption["model"]["client_result_per_share"],
+            "value_numeric": "999.000000",
             "source": "dcf",
             "valuation_currency": "USD",
             "assumptions": [assumption],
@@ -258,7 +254,7 @@ def test_put_dcf_value_copies_labeled_assumptions_into_research_revision(
         ResearchCaseRevision, response.json()["research_revision_id"]
     )
     assert revision is not None
-    expected_result = float(assumption["model"]["client_result_per_share"])
+    expected_result = float(calculate_dcf_model(assumption["model"]["actual_inputs"])["value_per_share"])
     assert [
         float(revision.valuation_low),
         float(revision.valuation_base),
@@ -273,11 +269,14 @@ def test_put_dcf_value_copies_labeled_assumptions_into_research_revision(
     assert saved_assumption["manifest_verified_at"] is not None
     assert saved_assumption["input_manifest"] == assumption["model"]["input_manifest"]
     assert saved_assumption["input_manifest_token"] == assumption["model"]["input_manifest_token"]
-    assert saved_assumption["result"]["value_per_share"] == assumption["model"]["client_result_per_share"]
+    assert saved_assumption["result"]["value_per_share"] == str(
+        calculate_dcf_model(assumption["model"]["actual_inputs"])["value_per_share"]
+    )
+    assert "client_result_per_share" not in saved_assumption
     assert saved_assumption["actual_inputs"]["discount_rate_pct"]["authority"] == "user_assumption"
 
 
-def test_put_dcf_rejects_arbitrary_client_result_even_with_a_valid_manifest(
+def test_put_dcf_ignores_arbitrary_legacy_top_level_value_and_saves_server_result(
     client, db_session, auth_headers
 ):
     user = _make_user(db_session, "dcf-arbitrary-result@example.com")
@@ -295,9 +294,17 @@ def test_put_dcf_rejects_arbitrary_client_result_even_with_a_valid_manifest(
         json=payload,
     )
 
-    assert response.status_code == 409
-    assert response.json()["detail"]["code"] == "dcf_result_mismatch"
-    assert db_session.query(ResearchCaseRevision).count() == 0
+    assert response.status_code == 200, response.text
+    expected = calculate_dcf_model(assumption["model"]["actual_inputs"])[
+        "value_per_share"
+    ]
+    assert response.json()["value_numeric"] == float(expected)
+    revision = db_session.get(
+        ResearchCaseRevision, response.json()["research_revision_id"]
+    )
+    assert revision.valuation_base == expected
+    assert revision.assumptions_json[0]["result"]["value_per_share"] == str(expected)
+    assert "client_result_per_share" not in revision.assumptions_json[0]
 
 
 def test_put_dcf_rejects_unrecorded_component_edit(
@@ -311,9 +318,6 @@ def test_put_dcf_rejects_unrecorded_component_edit(
     )
     assumption["model"]["actual_inputs"]["net_profit_per_share"] = "11.000"
     assumption["model"]["actual_inputs"]["based_on_per_share"] = "19.000"
-    result = calculate_dcf_model(assumption["model"]["actual_inputs"])
-    assumption["model"]["client_result_per_share"] = str(result["value_per_share"])
-
     response = client.put(
         f"/api/v1/stocks/{stock.id}/facts",
         headers=auth_headers(user),
@@ -340,7 +344,6 @@ def test_put_dcf_recomputes_and_labels_recorded_user_scenario_overrides(
         "based_on_per_share",
     ]
     result = calculate_dcf_model(assumption["model"]["actual_inputs"])
-    assumption["model"]["client_result_per_share"] = str(result["value_per_share"])
 
     response = client.put(
         f"/api/v1/stocks/{stock.id}/facts",
@@ -361,6 +364,66 @@ def test_put_dcf_recomputes_and_labels_recorded_user_scenario_overrides(
         "authority": "derived_from_canonical_inputs",
     }
     assert saved["result"]["value_per_share"] == str(result["value_per_share"])
+
+
+def test_put_dcf_accepts_maximum_bounded_scenario_and_saves_decimal_result(
+    client, db_session, auth_headers
+):
+    user = _make_user(db_session, "dcf-max-domain@example.com")
+    stock = _make_stock(db_session, "DCFMAX")
+    _add_dcf_inputs(db_session, user=user, stock=stock)
+    assumption = _dcf_assumption(
+        client, user=user, stock=stock, auth_headers=auth_headers
+    )
+    assumption["model"]["actual_inputs"].update(
+        {
+            "based_on_per_share": "1000000",
+            "discount_rate_pct": "1000",
+            "growth_years": "1000",
+            "growth_rate_pct": "1000",
+            "terminal_years": "1000",
+            "terminal_rate_pct": "999.999",
+        }
+    )
+    assumption["model"]["user_override_fields"] = ["based_on_per_share"]
+    expected = calculate_dcf_model(assumption["model"]["actual_inputs"])[
+        "value_per_share"
+    ]
+
+    response = client.put(
+        f"/api/v1/stocks/{stock.id}/facts",
+        headers=auth_headers(user),
+        json=_dcf_save_payload(assumption),
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["value_numeric"] == float(expected)
+    revision = db_session.get(
+        ResearchCaseRevision, response.json()["research_revision_id"]
+    )
+    assert revision.valuation_base == expected
+    assert revision.assumptions_json[0]["result"]["value_per_share"] == str(expected)
+
+
+def test_put_dcf_rejects_removed_nested_client_result_field(
+    client, db_session, auth_headers
+):
+    user = _make_user(db_session, "dcf-client-result-field@example.com")
+    stock = _make_stock(db_session, "DCFCR")
+    _add_dcf_inputs(db_session, user=user, stock=stock)
+    assumption = _dcf_assumption(
+        client, user=user, stock=stock, auth_headers=auth_headers
+    )
+    assumption["model"]["client_result_per_share"] = "999"
+
+    response = client.put(
+        f"/api/v1/stocks/{stock.id}/facts",
+        headers=auth_headers(user),
+        json=_dcf_save_payload(assumption),
+    )
+
+    assert response.status_code == 409
+    assert response.json()["detail"]["code"] == "dcf_assumption_invalid"
 
 
 def test_put_dcf_value_rejects_direct_api_bypass_without_canonical_inputs(
@@ -641,8 +704,11 @@ def test_put_dcf_rejects_duplicate_dcf_assumptions_even_if_first_is_valid(
     assert response.json()["detail"]["code"] == "dcf_assumption_invalid"
 
 
+@pytest.mark.parametrize(
+    "reserved_field", ["computed_total_value", "client_result_per_share"]
+)
 def test_put_dcf_rejects_dcf_fields_smuggled_in_a_non_dcf_assumption(
-    client, db_session, auth_headers
+    client, db_session, auth_headers, reserved_field
 ):
     user = _make_user(db_session, "dcf-smuggled-fields@example.com")
     stock = _make_stock(db_session, "DCFSM")
@@ -652,7 +718,7 @@ def test_put_dcf_rejects_dcf_fields_smuggled_in_a_non_dcf_assumption(
     )
     payload = _dcf_save_payload(assumption)
     payload["assumptions"].append(
-        {"source": "manual", "label": "not DCF", "computed_total_value": 999}
+        {"source": "manual", "label": "not DCF", reserved_field: 999}
     )
 
     response = client.put(
@@ -776,7 +842,6 @@ def test_get_then_save_selects_older_eligible_facts_after_latest_are_blocked(
         "terminal_years": "100",
         "terminal_rate_pct": "4",
     }
-    calculation = calculate_dcf_model(actual_inputs)
     assumption = {
         "source": "dcf",
         "label": "DCF model v1",
@@ -788,7 +853,6 @@ def test_get_then_save_selects_older_eligible_facts_after_latest_are_blocked(
             "actual_inputs": actual_inputs,
             "user_override_fields": [],
             "growth_rate_selection": None,
-            "client_result_per_share": str(calculation["value_per_share"]),
         },
     }
     saved = client.put(

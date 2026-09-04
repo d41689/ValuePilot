@@ -17,7 +17,7 @@ from decimal import (
 from typing import Any, Callable, Iterable
 from zoneinfo import ZoneInfo
 
-from sqlalchemy import select, text
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.core.currencies import normalize_iso4217_currency
@@ -89,19 +89,6 @@ def dcf_evaluation_clock(evaluated_at: datetime | None = None) -> DcfEvaluationC
     return DcfEvaluationClock(
         evaluated_at=instant,
         effective_as_of=instant.astimezone(ET).date(),
-    )
-
-
-def acquire_metric_fact_stock_lock(session: Session, *, stock_id: int) -> None:
-    """Serialize DCF validation with every metric-fact mutation for a stock."""
-
-    session.execute(
-        text(
-            "SELECT pg_advisory_xact_lock("
-            "hashtextextended('valuepilot:metric-facts-stock:' || "
-            "CAST(:stock_id AS text), 0))"
-        ),
-        {"stock_id": stock_id},
     )
 
 

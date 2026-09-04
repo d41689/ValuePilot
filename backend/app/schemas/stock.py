@@ -15,7 +15,9 @@ class ResearchValuationSave(BaseModel):
     """A product valuation write that must also create an auditable revision."""
 
     metric_key: str = Field(min_length=1, max_length=120)
-    value_numeric: Decimal = Field(gt=0, max_digits=24, decimal_places=6)
+    value_numeric: Decimal | None = Field(
+        default=None, gt=0, max_digits=24, decimal_places=6
+    )
     valuation_low: Decimal | None = Field(default=None, gt=0, max_digits=24, decimal_places=6)
     valuation_high: Decimal | None = Field(default=None, gt=0, max_digits=24, decimal_places=6)
     as_of_date: date | None = None
@@ -32,10 +34,24 @@ class ResearchValuationSave(BaseModel):
             > DCF_MAX_ASSUMPTIONS_BYTES
         ):
             raise ValueError("assumptions exceed the 64 KiB contract limit")
-        low = self.valuation_low if self.valuation_low is not None else self.value_numeric
-        high = self.valuation_high if self.valuation_high is not None else self.value_numeric
-        if not low <= self.value_numeric <= high:
-            raise ValueError("valuation must satisfy low <= value_numeric <= high")
+        if self.source != "dcf" and self.value_numeric is None:
+            raise ValueError("value_numeric is required for manual and watchlist valuations")
+        if self.value_numeric is None:
+            if self.valuation_low is not None or self.valuation_high is not None:
+                raise ValueError("valuation bounds require value_numeric")
+        else:
+            low = (
+                self.valuation_low
+                if self.valuation_low is not None
+                else self.value_numeric
+            )
+            high = (
+                self.valuation_high
+                if self.valuation_high is not None
+                else self.value_numeric
+            )
+            if not low <= self.value_numeric <= high:
+                raise ValueError("valuation must satisfy low <= value_numeric <= high")
         if self.source != "watchlist" and self.pool_id is not None:
             raise ValueError("pool_id is only valid for watchlist valuations")
         if self.valuation_currency is not None:
