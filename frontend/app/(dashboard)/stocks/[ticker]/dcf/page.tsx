@@ -335,9 +335,15 @@ export default function StockDcfPage() {
         | {
             net_profit_per_share?: DcfValueWithProvenance | null;
             depreciation_per_share?: DcfValueWithProvenance | null;
+            input_manifest?: Record<string, unknown> | null;
+            input_manifest_token?: string | null;
           }
         | null,
     [basedOnSelection, dcfInputsPayload]
+  );
+  const hasSelectedInputManifest = Boolean(
+    selectedBasedOnPayload?.input_manifest &&
+      typeof selectedBasedOnPayload.input_manifest_token === 'string'
   );
 
   const basedOnProvenanceLabel = useMemo(() => {
@@ -383,7 +389,8 @@ export default function StockDcfPage() {
     }
     if (
       valuationCurrencyState.status !== 'available' ||
-      valuationCurrencyState.currency !== 'USD'
+      valuationCurrencyState.currency !== 'USD' ||
+      !hasSelectedInputManifest
     ) {
       toast({
         title: 'Save unavailable',
@@ -404,7 +411,6 @@ export default function StockDcfPage() {
           {
             source: 'dcf',
             label: 'DCF model inputs',
-            based_on_per_share: basedOnValue,
             based_on_selection: basedOnSelection,
             discount_rate_pct: discountRate,
             growth_years: growthYears,
@@ -412,9 +418,8 @@ export default function StockDcfPage() {
             growth_rate_selection: growthRateSelection,
             terminal_years: terminalYears,
             terminal_rate_pct: terminalRate,
-            computed_growth_value: growthValue,
-            computed_terminal_value: terminalValue,
-            computed_total_value: totalValue,
+            input_manifest: selectedBasedOnPayload?.input_manifest,
+            input_manifest_token: selectedBasedOnPayload?.input_manifest_token,
           },
         ],
       });
@@ -866,7 +871,8 @@ export default function StockDcfPage() {
                     isSavingFairValue ||
                     !hasResolvedStockDefaults ||
                     valuationCurrencyState.status !== 'available' ||
-                    valuationCurrencyState.currency !== 'USD'
+                    valuationCurrencyState.currency !== 'USD' ||
+                    !hasSelectedInputManifest
                   }
                   type="button"
                 >

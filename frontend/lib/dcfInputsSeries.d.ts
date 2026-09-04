@@ -13,6 +13,8 @@ export type DcfCurrencyState = {
 export type DcfInputsPayload = {
   valuation_currency?: string | null;
   currency_state?: DcfCurrencyState;
+  input_manifest?: Record<string, unknown> | null;
+  input_manifest_token?: string | null;
   net_profit_per_share: DcfInput;
   depreciation_per_share: DcfInput;
   capital_spending_per_share: DcfInput;

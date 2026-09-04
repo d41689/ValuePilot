@@ -730,6 +730,21 @@ def test_lookup_stock_by_ticker_returns_summary(client, db_session, auth_headers
         )
         .values(source_document_id=doc.id)
     )
+    db_session.execute(
+        update(MetricFact)
+        .where(
+            MetricFact.user_id == user.id,
+            MetricFact.stock_id == stock.id,
+            MetricFact.metric_key.in_(
+                [
+                    "per_share.eps",
+                    "is.depreciation",
+                    "per_share.capital_spending",
+                ]
+            ),
+        )
+        .values(currency="USD")
+    )
     db_session.commit()
 
     response = client.get(
@@ -849,10 +864,43 @@ def test_lookup_stock_by_ticker_returns_summary(client, db_session, auth_headers
     assert payload["dcf_inputs"]["currency_state"]["status"] == "available"
     assert payload["dcf_inputs"]["currency_state"]["reason_code"] is None
     assert len(payload["dcf_inputs"]["currency_state"]["provenance"]) == 3
+    assert payload["dcf_inputs"]["input_manifest"]["manifest_version"] == "dcf-input-manifest-v1"
+    assert payload["dcf_inputs"]["input_manifest"]["selection"] == "norm"
+    assert payload["dcf_inputs"]["input_manifest"]["selected_year"] == 2024
+    assert len(payload["dcf_inputs"]["input_manifest"]["facts"]) == 9
+    assert len(payload["dcf_inputs"]["input_manifest_token"]) == 64
+    assert {
+        "role",
+        "id",
+        "stock_id",
+        "metric_key",
+        "source_type",
+        "source_ref_id",
+        "source_document_id",
+        "period_type",
+        "period_end_date",
+        "value_numeric",
+        "unit",
+        "currency",
+        "created_at",
+    } == set(payload["dcf_inputs"]["input_manifest"]["facts"][0])
+    manifest_times = {
+        payload["dcf_inputs"]["input_manifest"]["evaluated_at"],
+        *(
+            entry["input_manifest"]["evaluated_at"]
+            for entry in payload["dcf_inputs_series"]
+        ),
+    }
+    assert len(manifest_times) == 1
     dcf_inputs_without_currency = {
         key: value
         for key, value in payload["dcf_inputs"].items()
-        if key not in {"valuation_currency", "currency_state"}
+        if key not in {
+            "valuation_currency",
+            "currency_state",
+            "input_manifest",
+            "input_manifest_token",
+        }
     }
     assert dcf_inputs_without_currency == {
         "net_profit_per_share": {
@@ -907,13 +955,20 @@ def test_lookup_stock_by_ticker_returns_summary(client, db_session, auth_headers
     assert all(
         entry["valuation_currency"] == "USD"
         and entry["currency_state"]["status"] == "available"
+        and entry["input_manifest"]["selection"] == entry["year"]
+        and len(entry["input_manifest"]["facts"]) == 5
         for entry in payload["dcf_inputs_series"]
     )
     dcf_series_without_currency = [
         {
             key: value
             for key, value in entry.items()
-            if key not in {"valuation_currency", "currency_state"}
+            if key not in {
+                "valuation_currency",
+                "currency_state",
+                "input_manifest",
+                "input_manifest_token",
+            }
         }
         for entry in payload["dcf_inputs_series"]
     ]

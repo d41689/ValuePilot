@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from datetime import date
 from decimal import Decimal
 from typing import Any, Literal
@@ -7,6 +8,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, Field, model_validator
 
 from app.core.currencies import normalize_iso4217_currency
+from app.services.dcf_inputs import DCF_MAX_ASSUMPTIONS_BYTES
 
 
 class ResearchValuationSave(BaseModel):
@@ -24,6 +26,12 @@ class ResearchValuationSave(BaseModel):
 
     @model_validator(mode="after")
     def validate_range_and_origin(self):
+        if (
+            self.source == "dcf"
+            and len(json.dumps(self.assumptions, separators=(",", ":")).encode("utf-8"))
+            > DCF_MAX_ASSUMPTIONS_BYTES
+        ):
+            raise ValueError("assumptions exceed the 64 KiB contract limit")
         low = self.valuation_low if self.valuation_low is not None else self.value_numeric
         high = self.valuation_high if self.valuation_high is not None else self.value_numeric
         if not low <= self.value_numeric <= high:
