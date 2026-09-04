@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/no-require-imports */
 const { DCF_MODEL_BOUNDS } = require('./dcfMath');
 
 const MODEL_VERSION = 'dcf_model_v1';
