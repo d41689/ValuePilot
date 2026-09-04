@@ -1,3 +1,5 @@
+const { DCF_MODEL_BOUNDS } = require('./dcfMath');
+
 const MODEL_VERSION = 'dcf_model_v1';
 const COMPONENT_FIELDS = [
   'net_profit_per_share',
@@ -75,11 +77,18 @@ const buildDcfModelPayload = ({
   ];
   if (
     nonnegativeFields.some((field) => Number(normalizedInputs[field]) < 0) ||
-    Number(normalizedInputs.growth_years) > 100000 ||
-    Number(normalizedInputs.terminal_years) > 100000 ||
+    COMPONENT_FIELDS.some(
+      (field) => Math.abs(Number(normalizedInputs[field])) > DCF_MODEL_BOUNDS.maxAbsPerShare
+    ) ||
+    Number(normalizedInputs.growth_years) > DCF_MODEL_BOUNDS.maxYears ||
+    Number(normalizedInputs.terminal_years) > DCF_MODEL_BOUNDS.maxYears ||
+    Number(normalizedInputs.discount_rate_pct) > DCF_MODEL_BOUNDS.maxRatePct ||
+    Number(normalizedInputs.growth_rate_pct) > DCF_MODEL_BOUNDS.maxRatePct ||
+    Number(normalizedInputs.terminal_rate_pct) > DCF_MODEL_BOUNDS.maxRatePct ||
     Number(normalizedInputs.discount_rate_pct) <=
       Number(normalizedInputs.terminal_rate_pct) ||
-    Number(clientResult) <= 0
+    Number(clientResult) <= 0 ||
+    Number(clientResult) > DCF_MODEL_BOUNDS.maxResultPerShare
   ) {
     return null;
   }

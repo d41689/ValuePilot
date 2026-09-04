@@ -17,7 +17,7 @@ from decimal import (
 from typing import Any, Callable, Iterable
 from zoneinfo import ZoneInfo
 
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.orm import Session
 
 from app.core.currencies import normalize_iso4217_currency
@@ -27,6 +27,7 @@ from app.services.canonical_financials import (
     apply_reviewed_method_gates,
     guard_sec_run_availability,
     guard_source_selection,
+    reviewed_method_gate,
     visible_metric_fact_predicate,
 )
 
@@ -49,10 +50,11 @@ DCF_MAX_MANIFEST_FACTS = 9
 DCF_MAX_ASSUMPTIONS_BYTES = 65_536
 DCF_MODEL_VERSION = "dcf_model_v1"
 DCF_CALCULATION_VERSION = "dcf-two-stage-finite-v1"
-DCF_MAX_MODEL_YEARS = 100_000
+DCF_MAX_MODEL_YEARS = 1_000
 DCF_MAX_FACT_UNIVERSE_ROWS = 500
-DCF_MAX_RATE_PCT = Decimal("10000")
-DCF_MAX_ABS_PER_SHARE = Decimal("1000000000000000000")
+DCF_MAX_RATE_PCT = Decimal("1000")
+DCF_MAX_ABS_PER_SHARE = Decimal("1000000")
+DCF_MAX_RESULT_PER_SHARE = Decimal("1000000000000")
 DCF_INPUT_QUANTUM = Decimal("0.001")
 DCF_RESULT_QUANTUM = Decimal("0.000001")
 SHARES_UNITS = frozenset({"count", "share", "shares"})
@@ -72,6 +74,8 @@ class DcfEvaluationClock:
 class DcfFactUniverse:
     dcf_facts: list[MetricFact]
     oeps_facts: list[MetricFact]
+    method_authority: list[dict[str, Any]]
+    method_decisions: dict[str, Any]
 
 
 class DcfFactUniverseError(ValueError):
@@ -86,6 +90,34 @@ def dcf_evaluation_clock(evaluated_at: datetime | None = None) -> DcfEvaluationC
         evaluated_at=instant,
         effective_as_of=instant.astimezone(ET).date(),
     )
+
+
+def acquire_metric_fact_stock_lock(session: Session, *, stock_id: int) -> None:
+    """Serialize DCF validation with every metric-fact mutation for a stock."""
+
+    session.execute(
+        text(
+            "SELECT pg_advisory_xact_lock("
+            "hashtextextended('valuepilot:metric-facts-stock:' || "
+            "CAST(:stock_id AS text), 0))"
+        ),
+        {"stock_id": stock_id},
+    )
+
+
+def _stable_method_authority(decisions: dict[str, Any]) -> list[dict[str, Any]]:
+    return [
+        {
+            "method_key": decision.method_key,
+            "status": decision.status,
+            "reason_code": decision.reason_code,
+            "method_policy_version_id": decision.method_policy_version_id,
+            "economic_class": decision.economic_class,
+            "classification_review_id": decision.classification_review_id,
+            "effective_as_of": decision.effective_as_of.isoformat(),
+        }
+        for _, decision in sorted(decisions.items())
+    ]
 
 
 def load_canonical_dcf_fact_universe(
@@ -123,6 +155,21 @@ def load_canonical_dcf_fact_universe(
             "dcf_fact_universe_too_large",
             "Canonical DCF fact universe exceeds the safe evaluation bound",
         )
+    method_decisions = {
+        method_key: reviewed_method_gate(
+            session,
+            stock_id=stock_id,
+            method_key=method_key,
+            effective_as_of=effective_as_of,
+            knowledge_at=evaluated_at,
+        )
+        for method_key in (
+            "owner_earnings",
+            "per_share_trend",
+            "roic",
+            "system_valuation",
+        )
+    }
     facts = guard_source_selection(facts, consumer="valuation_inputs")
     facts = guard_sec_run_availability(session, stock_id=stock_id, facts=facts)
     dcf_facts = [fact for fact in facts if fact.metric_key in DCF_INPUT_FACT_KEYS.values()]
@@ -133,8 +180,14 @@ def load_canonical_dcf_fact_universe(
         facts=oeps_facts,
         effective_as_of=effective_as_of,
         knowledge_at=evaluated_at,
+        precomputed_decisions=method_decisions,
     )
-    return DcfFactUniverse(dcf_facts=dcf_facts, oeps_facts=oeps_facts)
+    return DcfFactUniverse(
+        dcf_facts=dcf_facts,
+        oeps_facts=oeps_facts,
+        method_authority=_stable_method_authority(method_decisions),
+        method_decisions=method_decisions,
+    )
 
 
 class DcfModelError(ValueError):
@@ -240,36 +293,22 @@ def calculate_dcf_model(actual_inputs: dict[str, Any]) -> dict[str, Any]:
             growth = growth_rate_pct / hundred
             terminal = terminal_rate_pct / hundred
             growth_ratio = (one + growth) / (one + discount)
-            growth_value = (
-                Decimal(0)
-                if growth_years == 0
-                else base * growth_years
-                if abs(growth_ratio - one) < Decimal("1e-12")
-                else base
-                * (growth_ratio * (one - growth_ratio**growth_years))
-                / (one - growth_ratio)
-            )
+            discounted_value = base
+            growth_value = Decimal(0)
+            for _ in range(growth_years):
+                discounted_value *= growth_ratio
+                growth_value += discounted_value
+            terminal_ratio = (one + terminal) / (one + discount)
             terminal_value = Decimal(0)
-            if terminal_years:
-                base_after_growth = base * (one + growth) ** growth_years
-                terminal_ratio = (one + terminal) / (one + discount)
-                discount_factor = (one + discount) ** growth_years
-                terminal_multiplier = (
-                    Decimal(terminal_years)
-                    if abs(terminal_ratio - one) < Decimal("1e-12")
-                    else terminal_ratio
-                    * (one - terminal_ratio**terminal_years)
-                    / (one - terminal_ratio)
-                )
-                terminal_value = (
-                    base_after_growth / discount_factor * terminal_multiplier
-                )
+            for _ in range(terminal_years):
+                discounted_value *= terminal_ratio
+                terminal_value += discounted_value
             total = growth_value + terminal_value
             if not all(value.is_finite() for value in (growth_value, terminal_value, total)):
                 raise DcfModelError(
                     "dcf_model_result_unavailable", "DCF result is not finite"
                 )
-            if total <= 0 or abs(total) > DCF_MAX_ABS_PER_SHARE:
+            if total <= 0 or abs(total) > DCF_MAX_RESULT_PER_SHARE:
                 raise DcfModelError(
                     "dcf_model_result_unavailable",
                     "DCF result is outside the publishable per-share range",
@@ -501,11 +540,14 @@ def evaluate_dcf_input_selection(
     oeps_facts: Iterable[MetricFact],
     selection: str | int,
     evaluated_at: datetime,
+    effective_as_of: date | None = None,
+    method_authority: list[dict[str, Any]] | None = None,
     provenance_for_fact: Callable[[MetricFact], dict[str, Any] | None] | None = None,
 ) -> dict[str, Any]:
     """Evaluate one selectable DCF input set and emit its immutable manifest."""
 
     evaluated_at = _aware_utc(evaluated_at)
+    effective_as_of = effective_as_of or evaluated_at.astimezone(ET).date()
     by_period = _canonical_by_period(
         fact for fact in dcf_facts if fact.stock_id == stock_id
     )
@@ -577,6 +619,8 @@ def evaluate_dcf_input_selection(
         "selection": selection,
         "selected_year": selected_period.year if selected_period else None,
         "evaluated_at": evaluated_at.isoformat(),
+        "effective_as_of": effective_as_of.isoformat(),
+        "method_authority": method_authority or [],
         "facts": manifest_facts,
     }
 

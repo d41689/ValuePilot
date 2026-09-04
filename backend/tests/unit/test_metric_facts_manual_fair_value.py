@@ -3,13 +3,19 @@ from datetime import date, datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
 import pytest
+from sqlalchemy import text
 
+from app.api.v1.endpoints import stocks as stocks_endpoint
 from app.models.users import User
 from app.models.stocks import PoolMembership, Stock, StockPool
 from app.models.facts import MetricFact
 from app.models.research import ResearchCase, ResearchCaseRevision
 from app.core.security import hash_password
-from app.services.dcf_inputs import calculate_dcf_model, dcf_manifest_token
+from app.services.dcf_inputs import (
+    DcfEvaluationClock,
+    calculate_dcf_model,
+    dcf_manifest_token,
+)
 
 
 FAIR_VALUE_KEY = "val.fair_value"
@@ -497,6 +503,108 @@ def test_put_dcf_rejects_manifest_after_canonical_fact_correction(
         is_current=True,
     )
     db_session.add(replacement)
+    db_session.commit()
+
+    response = client.put(
+        f"/api/v1/stocks/{stock.id}/facts",
+        headers=auth_headers(user),
+        json=_dcf_save_payload(assumption),
+    )
+
+    assert response.status_code == 409
+    assert response.json()["detail"]["code"] == "dcf_input_selection_changed"
+
+
+def test_put_dcf_revalidates_newer_current_fact_at_save_time(
+    client, db_session, auth_headers
+):
+    user = _make_user(db_session, "dcf-new-year@example.com")
+    stock = _make_stock(db_session, "DCFNY")
+    _add_dcf_inputs(db_session, user=user, stock=stock)
+    assumption = _dcf_assumption(
+        client, user=user, stock=stock, auth_headers=auth_headers
+    )
+    db_session.add(
+        MetricFact(
+            user_id=user.id,
+            stock_id=stock.id,
+            metric_key="owners_earnings_per_share",
+            value_numeric=50,
+            value_json={"user_authored_formula": True},
+            unit="USD",
+            currency="USD",
+            period_type="FY",
+            period_end_date=date(2026, 12, 31),
+            source_type="manual",
+            is_current=True,
+        )
+    )
+    db_session.commit()
+
+    response = client.put(
+        f"/api/v1/stocks/{stock.id}/facts",
+        headers=auth_headers(user),
+        json=_dcf_save_payload(assumption),
+    )
+
+    assert response.status_code == 409
+    assert response.json()["detail"]["code"] == "dcf_input_selection_changed"
+
+
+def test_put_dcf_rejects_manifest_across_new_york_calendar_day(
+    client, db_session, auth_headers, monkeypatch
+):
+    user = _make_user(db_session, "dcf-et-rollover@example.com")
+    stock = _make_stock(db_session, "DCFET")
+    _add_dcf_inputs(db_session, user=user, stock=stock)
+    clock = DcfEvaluationClock(
+        datetime(2026, 9, 10, 1, 30, tzinfo=timezone.utc),
+        date(2026, 9, 9),
+    )
+    monkeypatch.setattr(stocks_endpoint, "dcf_evaluation_clock", lambda: clock)
+    assumption = _dcf_assumption(
+        client, user=user, stock=stock, auth_headers=auth_headers
+    )
+    clock = DcfEvaluationClock(
+        datetime(2026, 9, 10, 5, 0, tzinfo=timezone.utc),
+        date(2026, 9, 10),
+    )
+
+    response = client.put(
+        f"/api/v1/stocks/{stock.id}/facts",
+        headers=auth_headers(user),
+        json=_dcf_save_payload(assumption),
+    )
+
+    assert response.status_code == 409
+    assert response.json()["detail"]["code"] == "dcf_input_selection_changed"
+
+
+def test_put_dcf_revalidates_classification_authority_at_save_time(
+    client, db_session, auth_headers
+):
+    user = _make_user(db_session, "dcf-classification-change@example.com")
+    stock = _make_stock(db_session, "DCFCA")
+    _add_dcf_inputs(db_session, user=user, stock=stock)
+    assumption = _dcf_assumption(
+        client, user=user, stock=stock, auth_headers=auth_headers
+    )
+    db_session.execute(
+        text(
+            """
+            INSERT INTO sec_economic_classification_reviews
+              (stock_id, economic_class, effective_from, reviewer_user_id,
+               review_reason)
+            VALUES (:stock_id, 'ordinary', :effective_from, :reviewer,
+                    'R12 save-time authority regression')
+            """
+        ),
+        {
+            "stock_id": stock.id,
+            "effective_from": datetime.now(timezone.utc).astimezone(ET).date(),
+            "reviewer": user.id,
+        },
+    )
     db_session.commit()
 
     response = client.put(

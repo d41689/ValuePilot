@@ -5,7 +5,10 @@ from unittest.mock import MagicMock
 import pytest
 
 from app.services.dcf_inputs import (
+    DCF_MAX_ABS_PER_SHARE,
     DCF_MAX_FACT_UNIVERSE_ROWS,
+    DCF_MAX_MODEL_YEARS,
+    DCF_MAX_RATE_PCT,
     DcfFactUniverseError,
     DcfModelError,
     calculate_dcf_model,
@@ -39,14 +42,32 @@ def test_dcf_model_v1_matches_frontend_gold_fixture():
     assert abs(result["value_per_share"] - Decimal("454.688611")) < Decimal("0.000001")
 
 
-def test_dcf_model_v1_matches_large_finite_terminal_edge_and_year_flooring():
+def test_dcf_model_v1_matches_bounded_terminal_edge_and_year_flooring():
     result = calculate_dcf_model(
-        _inputs(growth_years="10.9", terminal_years="100000")
+        _inputs(growth_years="10.9", terminal_years="1000")
     )
 
     assert result["normalized_inputs"]["growth_years"] == 10
-    assert result["normalized_inputs"]["terminal_years"] == 100000
+    assert result["normalized_inputs"]["terminal_years"] == 1000
     assert abs(result["value_per_share"] - Decimal("700.433543")) < Decimal("0.000001")
+
+
+def test_dcf_model_v1_near_equal_ratio_is_stable_at_schema_maxima():
+    result = calculate_dcf_model(
+        _inputs(
+            net_profit_per_share=str(DCF_MAX_ABS_PER_SHARE),
+            depreciation_per_share="0",
+            capital_spending_per_share="0",
+            based_on_per_share=str(DCF_MAX_ABS_PER_SHARE),
+            discount_rate_pct=str(DCF_MAX_RATE_PCT),
+            growth_rate_pct=str(DCF_MAX_RATE_PCT),
+            growth_years=str(DCF_MAX_MODEL_YEARS),
+            terminal_rate_pct="999.999",
+            terminal_years=str(DCF_MAX_MODEL_YEARS),
+        )
+    )
+
+    assert result["value_per_share"] == Decimal("1999545137.709673")
 
 
 @pytest.mark.parametrize(
@@ -56,7 +77,10 @@ def test_dcf_model_v1_matches_large_finite_terminal_edge_and_year_flooring():
         ({"discount_rate_pct": "3"}, "dcf_discount_not_above_terminal"),
         ({"net_profit_per_share": "NaN"}, "dcf_model_input_invalid"),
         ({"based_on_per_share": "-1"}, "dcf_model_input_invalid"),
-        ({"growth_years": "100001"}, "dcf_model_input_out_of_range"),
+        ({"growth_years": "1001"}, "dcf_model_input_out_of_range"),
+        ({"terminal_years": "100000"}, "dcf_model_input_out_of_range"),
+        ({"discount_rate_pct": "1000.001"}, "dcf_model_input_out_of_range"),
+        ({"based_on_per_share": "1000000.001"}, "dcf_model_input_out_of_range"),
         ({"terminal_years": "Infinity"}, "dcf_model_input_invalid"),
     ],
 )

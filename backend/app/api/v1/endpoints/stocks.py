@@ -39,6 +39,7 @@ from app.services.dcf_inputs import (
     DCF_NORMALIZED_SELECTION_RULE,
     DcfFactUniverseError,
     DcfModelError,
+    acquire_metric_fact_stock_lock,
     calculate_dcf_model,
     dcf_evaluation_clock,
     dcf_manifest_token,
@@ -531,6 +532,7 @@ def _validated_dcf_save(
     declared_currency: str | None,
     submitted_value: Decimal,
     server_evaluated_at: datetime,
+    server_effective_as_of: date,
 ) -> tuple[str, list[dict[str, Any]], Decimal]:
     dcf_assumptions = [
         item for item in assumptions if isinstance(item, dict) and item.get("source") == "dcf"
@@ -634,7 +636,12 @@ def _validated_dcf_save(
         cutoff = datetime.fromisoformat(str(manifest.get("evaluated_at")))
     except (TypeError, ValueError) as error:
         raise _selection_changed() from error
-    if cutoff.tzinfo is None or cutoff > server_evaluated_at:
+    if (
+        cutoff.tzinfo is None
+        or cutoff > server_evaluated_at
+        or manifest.get("effective_as_of")
+        != cutoff.astimezone(ET).date().isoformat()
+    ):
         raise _selection_changed()
 
     cited_facts = session.scalars(
@@ -642,7 +649,7 @@ def _validated_dcf_save(
             MetricFact.id.in_(fact_ids),
             MetricFact.stock_id == stock_id,
             MetricFact.is_current.is_(True),
-            MetricFact.created_at <= cutoff,
+            MetricFact.created_at <= server_evaluated_at,
             _visible_fact_predicate(current_user_id, []),
         )
     ).all()
@@ -654,8 +661,8 @@ def _validated_dcf_save(
             session,
             stock_id=stock_id,
             user_id=current_user_id,
-            evaluated_at=cutoff,
-            effective_as_of=cutoff.astimezone(ET).date(),
+            evaluated_at=server_evaluated_at,
+            effective_as_of=server_effective_as_of,
         )
     except (CanonicalSourceConflictError, CanonicalUnavailableError) as error:
         raise _selection_changed() from error
@@ -666,9 +673,15 @@ def _validated_dcf_save(
         dcf_facts=universe.dcf_facts,
         oeps_facts=universe.oeps_facts,
         selection=selection,
-        evaluated_at=cutoff,
+        evaluated_at=server_evaluated_at,
+        effective_as_of=server_effective_as_of,
+        method_authority=universe.method_authority,
     )
-    if entry["input_manifest"] != manifest or entry["input_manifest_token"] != submitted_token:
+
+    def current_identity(candidate: dict[str, Any]) -> dict[str, Any]:
+        return {key: value for key, value in candidate.items() if key != "evaluated_at"}
+
+    if current_identity(entry["input_manifest"]) != current_identity(manifest):
         raise _selection_changed()
     state = entry["currency_state"]
     if state["status"] != "available" or state["currency"] is None:
@@ -811,8 +824,12 @@ def _validated_dcf_save(
             "currency": state["currency"],
         },
     }
-    normalized_dcf["input_manifest"] = entry["input_manifest"]
-    normalized_dcf["input_manifest_token"] = entry["input_manifest_token"]
+    normalized_dcf["input_manifest"] = manifest
+    normalized_dcf["input_manifest_token"] = submitted_token
+    normalized_dcf["current_validation_manifest"] = entry["input_manifest"]
+    normalized_dcf["current_validation_manifest_token"] = entry[
+        "input_manifest_token"
+    ]
     normalized_dcf["manifest_verified_at"] = server_evaluated_at.isoformat()
     normalized_assumptions = [
         normalized_dcf
@@ -926,6 +943,8 @@ def read_stock_by_ticker(
 
     oeps_facts: list[MetricFact] = []
     dcf_input_facts: list[MetricFact] = []
+    dcf_method_authority: list[dict[str, Any]] = []
+    method_gate_decisions: dict[str, Any] | None = None
     canonical_input_status: dict[str, Any] = {"status": "available"}
     try:
         universe = load_canonical_dcf_fact_universe(
@@ -937,6 +956,8 @@ def read_stock_by_ticker(
         )
         oeps_facts = universe.oeps_facts
         dcf_input_facts = universe.dcf_facts
+        dcf_method_authority = universe.method_authority
+        method_gate_decisions = universe.method_decisions
     except CanonicalSourceConflictError as error:
         dcf_input_facts = []
         canonical_input_status = {
@@ -951,16 +972,22 @@ def read_stock_by_ticker(
             "status": "unavailable",
             "reason_code": error.code,
         }
-    method_gate_decisions = {
-        method_key: reviewed_method_gate(
-            session,
-            stock_id=stock.id,
-            method_key=method_key,
-            effective_as_of=dcf_clock.effective_as_of,
-            knowledge_at=dcf_evaluated_at,
-        )
-        for method_key in ("owner_earnings", "roic", "per_share_trend", "system_valuation")
-    }
+    if method_gate_decisions is None:
+        method_gate_decisions = {
+            method_key: reviewed_method_gate(
+                session,
+                stock_id=stock.id,
+                method_key=method_key,
+                effective_as_of=dcf_clock.effective_as_of,
+                knowledge_at=dcf_evaluated_at,
+            )
+            for method_key in (
+                "owner_earnings",
+                "roic",
+                "per_share_trend",
+                "system_valuation",
+            )
+        }
     dcf_inputs_series = []
 
     growth_metric_keys = [
@@ -1095,6 +1122,8 @@ def read_stock_by_ticker(
             oeps_facts=oeps_facts,
             selection=period_end.year,
             evaluated_at=dcf_evaluated_at,
+            effective_as_of=dcf_clock.effective_as_of,
+            method_authority=dcf_method_authority,
             provenance_for_fact=lambda input_fact: _fact_provenance(
                 input_fact,
                 active_report=active_report,
@@ -1109,6 +1138,8 @@ def read_stock_by_ticker(
             oeps_facts=oeps_facts,
             selection="norm",
             evaluated_at=dcf_evaluated_at,
+            effective_as_of=dcf_clock.effective_as_of,
+            method_authority=dcf_method_authority,
             provenance_for_fact=lambda input_fact: _fact_provenance(
                 input_fact,
                 active_report=active_report,
@@ -1357,13 +1388,16 @@ def upsert_stock_fact(
 ) -> Any:
     user_id = current_user.id
 
+    if payload.source == "dcf":
+        acquire_metric_fact_stock_lock(session, stock_id=stock_id)
     stock = session.get(Stock, stock_id)
     if not stock:
         raise HTTPException(status_code=404, detail="Stock not found")
     if payload.metric_key != USER_INTRINSIC_VALUE_KEY:
         raise HTTPException(status_code=400, detail="Unsupported metric_key")
 
-    now_et = datetime.now(timezone.utc).astimezone(ET)
+    save_clock = dcf_evaluation_clock()
+    now_et = save_clock.evaluated_at.astimezone(ET)
     try:
         valuation_currency = payload.valuation_currency or "USD"
         save_assumptions = payload.assumptions
@@ -1384,7 +1418,8 @@ def upsert_stock_fact(
                 assumptions=payload.assumptions,
                 declared_currency=payload.valuation_currency,
                 submitted_value=payload.value_numeric,
-                server_evaluated_at=now_et.astimezone(timezone.utc),
+                server_evaluated_at=save_clock.evaluated_at,
+                server_effective_as_of=save_clock.effective_as_of,
             )
             save_low = save_value
             save_high = save_value

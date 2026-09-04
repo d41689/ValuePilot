@@ -81,7 +81,7 @@ test('buildDcfModelPayload rejects non-finite and incomplete scenarios', () => {
       discount_rate_pct: 10,
       growth_years: 10.9,
       growth_rate_pct: 6,
-      terminal_years: 100000,
+      terminal_years: 1000,
       terminal_rate_pct: 4,
     },
     growthRateSelection: null,
@@ -98,6 +98,13 @@ test('buildDcfModelPayload rejects non-finite and incomplete scenarios', () => {
   );
   assert.equal(
     buildDcfModelPayload({ ...shared, inputManifestToken: '' }),
+    null
+  );
+  assert.equal(
+    buildDcfModelPayload({
+      ...shared,
+      actualInputs: { ...shared.actualInputs, terminal_years: 1001 },
+    }),
     null
   );
 });
