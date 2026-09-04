@@ -661,6 +661,45 @@ def test_workspace_combines_user_owned_fundamentals_valuation_coverage_and_publi
     assert hidden.status_code == 404
 
 
+def test_workspace_reports_bounded_reconciliation_as_unavailable_instead_of_clear(
+    client, db_session, user_factory, auth_headers
+):
+    user = user_factory(email="workspace-reconciliation-bound@example.com")
+    stock = _stock(db_session, "RECONBOUND")
+    case_id = _create(client, auth_headers(user), stock.id).json()["case"]["id"]
+    db_session.add_all(
+        [
+            MetricFact(
+                user_id=user.id,
+                stock_id=stock.id,
+                metric_key=f"bounded.metric_{index:03d}",
+                value_numeric=index,
+                value_json={"manual_role": "original_input"},
+                unit="ratio",
+                period_type="AS_OF",
+                period_end_date=date(2026, 9, 4),
+                source_type="manual",
+                is_current=True,
+            )
+            for index in range(251)
+        ]
+    )
+    db_session.commit()
+
+    response = client.get(
+        f"/api/v1/research/cases/{case_id}/workspace",
+        headers=auth_headers(user),
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["source_reconciliation"] == {
+        "status": "partial",
+        "reason_code": "reconciliation_bound_exceeded",
+        "consumer_gate_status": "blocked",
+        "limit": 250,
+    }
+
+
 def test_workspace_rejects_historical_as_of_until_pit_reconstruction_exists(
     client, db_session, user_factory, auth_headers
 ):

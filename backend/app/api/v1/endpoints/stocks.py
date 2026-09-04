@@ -360,6 +360,7 @@ def _build_piotroski_f_score_card(
     stock_id: int,
     *,
     current_user_id: int,
+    evaluated_at: datetime,
 ) -> dict[str, Any]:
     metric_keys = [row["metric_key"] for row in PIOTROSKI_CARD_ROWS] + [PIOTROSKI_TOTAL_KEY]
     facts = session.scalars(
@@ -374,6 +375,54 @@ def _build_piotroski_f_score_card(
         )
         .order_by(MetricFact.period_end_date.desc(), MetricFact.created_at.desc())
     ).all()
+
+    if not facts:
+        return {
+            "years": [],
+            "rows": [],
+            "state": {
+                "status": "unavailable",
+                "reason_code": "piotroski_f_score_unavailable",
+                "blocking_reasons": [],
+            },
+        }
+
+    try:
+        facts = list(
+            guard_reconciled_source_selection(
+                facts,
+                consumer="stock_piotroski_card",
+                knowledge_cutoff=evaluated_at,
+                session=session,
+                user_id=current_user_id,
+            )
+        )
+    except CanonicalReconciliationError as error:
+        return {
+            "years": [],
+            "rows": [],
+            "state": {
+                "status": "unavailable",
+                "reason_code": error.code,
+                "blocking_reasons": sorted(
+                    {
+                        str(item.get("reason_code"))
+                        for item in error.blocking_items
+                        if item.get("reason_code")
+                    }
+                ),
+            },
+        }
+    except CanonicalSourceConflictError as error:
+        return {
+            "years": [],
+            "rows": [],
+            "state": {
+                "status": "unavailable",
+                "reason_code": error.code,
+                "blocking_reasons": ["explicit_source_selection_required"],
+            },
+        }
 
     by_key_year: dict[str, dict[int, MetricFact]] = {metric_key: {} for metric_key in metric_keys}
     years: list[int] = []
@@ -452,7 +501,15 @@ def _build_piotroski_f_score_card(
         }
     )
 
-    return {"years": display_years, "rows": rows}
+    return {
+        "years": display_years,
+        "rows": rows,
+        "state": {
+            "status": "available",
+            "reason_code": None,
+            "blocking_reasons": [],
+        },
+    }
 
 
 DCF_ASSUMPTION_FIELDS = frozenset({"source", "label", "model"})
@@ -1016,7 +1073,7 @@ def read_stock_by_ticker(
             session=session,
             user_id=current_user.id,
         )
-        guard_sec_run_availability(
+        summary_facts = guard_sec_run_availability(
             session,
             stock_id=stock.id,
             facts=summary_facts,
@@ -1040,6 +1097,10 @@ def read_stock_by_ticker(
                 ),
             },
         ) from error
+    guarded_summary_ids = {id(fact) for fact in summary_facts}
+    facts = [fact for fact in facts if id(fact) in guarded_summary_ids]
+    oeps_facts = [fact for fact in oeps_facts if id(fact) in guarded_summary_ids]
+    growth_facts = [fact for fact in growth_facts if id(fact) in guarded_summary_ids]
     facts_by_key: dict[str, MetricFact] = {}
     for fact in facts:
         current = facts_by_key.get(fact.metric_key)
@@ -1283,6 +1344,7 @@ def read_stock_by_ticker(
             session,
             stock.id,
             current_user_id=current_user.id,
+            evaluated_at=dcf_evaluated_at,
         ),
         "actual_conflict_count": len(actual_conflicts),
         "actual_conflicts": actual_conflicts,

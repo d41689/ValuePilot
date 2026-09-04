@@ -36,7 +36,10 @@ from app.services.canonical_financials import (
     reviewed_method_gate,
     visible_metric_fact_predicate,
 )
-from app.services.source_reconciliation import build_source_reconciliation_report_from_facts
+from app.services.source_reconciliation import (
+    MAX_RECONCILIATION_FACTS,
+    build_source_reconciliation_report_from_facts,
+)
 
 
 def _piotroski_series(facts: list[MetricFact]) -> list[dict[str, Any]]:
@@ -133,8 +136,10 @@ def build_research_workspace(
             MetricFact.created_at.desc(),
             MetricFact.id.desc(),
         )
-        .limit(250)
+        .limit(MAX_RECONCILIATION_FACTS + 1)
     ).all()
+    reconciliation_bound_exceeded = len(facts) > MAX_RECONCILIATION_FACTS
+    facts = facts[:MAX_RECONCILIATION_FACTS]
     facts, _ = partition_sec_run_availability(
         session, stock_id=stock.id, facts=facts
     )
@@ -177,13 +182,21 @@ def build_research_workspace(
         current_user_id=user_id,
     )
     try:
-        source_reconciliation = build_source_reconciliation_report_from_facts(
-            session,
-            facts=facts,
-            user_id=user_id,
-            stock_id=stock.id,
-            knowledge_cutoff=evaluated_at,
-        )
+        if reconciliation_bound_exceeded:
+            source_reconciliation = {
+                "status": "partial",
+                "reason_code": "reconciliation_bound_exceeded",
+                "consumer_gate_status": "blocked",
+                "limit": MAX_RECONCILIATION_FACTS,
+            }
+        else:
+            source_reconciliation = build_source_reconciliation_report_from_facts(
+                session,
+                facts=facts,
+                user_id=user_id,
+                stock_id=stock.id,
+                knowledge_cutoff=evaluated_at,
+            )
     except ValueError as error:
         source_reconciliation = {
             "status": "unavailable",

@@ -467,6 +467,42 @@ def test_consumer_guard_rejects_cyclic_and_cross_stock_derived_lineage(
     )
 
 
+def test_original_manual_input_passthrough_still_respects_knowledge_cutoff(
+    db_session, user_factory
+):
+    user = user_factory("manual-input-cutoff@example.com")
+    stock = Stock(ticker="MANPIT", exchange="NYSE", company_name="Manual PIT")
+    db_session.add(stock)
+    db_session.flush()
+    cutoff = datetime(2026, 9, 4, 12, tzinfo=timezone.utc)
+    future_input = MetricFact(
+        user_id=user.id,
+        stock_id=stock.id,
+        metric_key="manual.assumption",
+        value_numeric=1,
+        value_json={"manual_role": "original_input"},
+        unit="ratio",
+        period_type="AS_OF",
+        period_end_date=date(2026, 9, 4),
+        source_type="manual",
+        is_current=True,
+        created_at=cutoff + timedelta(seconds=1),
+        updated_at=cutoff + timedelta(seconds=1),
+    )
+    db_session.add(future_input)
+    db_session.commit()
+
+    guarded = guard_reconciled_source_selection(
+        [future_input],
+        consumer="formula",
+        knowledge_cutoff=cutoff,
+        session=db_session,
+        user_id=user.id,
+    )
+
+    assert guarded == []
+
+
 def test_user_valuation_is_not_reconciled_as_a_financial_manual_correction(
     client, db_session, user_factory, auth_headers
 ):

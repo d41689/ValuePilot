@@ -176,3 +176,11 @@ decision and a tested migration rather than storing JSON opportunistically.
   reconciliation, SEC publication integration, mapping generation, all listed
   consumers, document correction lineage, and stock-pool behavior. Full
   closing gates and Terra R2 remain pending.
+- 2026-09-04: Terra adversarial review R2 found three additional consumer
+  bypasses. Sol remediation now guards the by-ticker Piotroski card and returns
+  no partial numbers with typed unavailable state, builds every stock-summary
+  field and provenance entry only from the guard-returned fact set at the same
+  evaluation cutoff, and fetches the research-workspace bound plus one so a
+  truncated prefix is reported `partial / reconciliation_bound_exceeded`
+  instead of `complete / clear`. Original manual-input passthrough also now
+  respects cutoff and authority state before it can reach a consumer.

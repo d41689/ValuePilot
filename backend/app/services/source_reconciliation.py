@@ -932,6 +932,17 @@ def materialize_reconciliation_candidates(
             authorization_state = "revoked"
         elif metadata_authorization == "unauthorized":
             authorization_state = "unauthorized"
+        if reason in PASSTHROUGH_EXCLUSION_REASONS:
+            if authorization_state == "retired":
+                reason = "source_retired"
+            elif authorization_state == "revoked":
+                reason = "source_revoked"
+            elif authorization_state != "authorized":
+                reason = "source_unauthorized"
+            elif known_at > knowledge_cutoff:
+                reason = "fact_known_after_cutoff"
+            elif effective_at > knowledge_cutoff:
+                reason = "fact_effective_after_cutoff"
         if fact.period_end_date is None and fact.as_of_date is None:
             period_end = date.min
             identity_complete = False
