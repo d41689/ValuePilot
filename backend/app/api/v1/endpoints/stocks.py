@@ -21,7 +21,6 @@ from app.services.canonical_financials import (
     apply_reviewed_method_gates,
     current_sec_unresolved_states,
     guard_sec_run_availability,
-    partition_sec_run_availability,
     resolve_sec_publication_evidence,
     reviewed_method_gate,
     visible_metric_fact_predicate,
@@ -1440,15 +1439,84 @@ def read_stock_facts(
         _visible_fact_predicate(current_user.id, admin_user_ids),
     )
     facts = session.scalars(stmt).all()
-    facts, _ = partition_sec_run_availability(
-        session, stock_id=stock_id, facts=facts
-    )
     facts, unsupported, _ = apply_reviewed_method_gates(
         session,
         stock_id=stock_id,
         facts=facts,
         effective_as_of=date.today(),
     )
+    evaluation_cutoff = datetime.now(timezone.utc)
+    facts_by_slot: dict[tuple[Any, ...], list[MetricFact]] = {}
+    for fact in facts:
+        metadata = fact.value_json if isinstance(fact.value_json, dict) else {}
+        fiscal_year = metadata.get("fiscal_year")
+        fiscal_quarter = metadata.get("fiscal_quarter_ordinal")
+        if fact.period_type in {"FY", "PROJ_FY"} and isinstance(fiscal_year, int):
+            slot = (fact.metric_key, "FY", fiscal_year, None)
+        elif fact.period_type in {"Q", "YTD"} and isinstance(fiscal_year, int):
+            slot = (fact.metric_key, fact.period_type, fiscal_year, fiscal_quarter)
+        else:
+            slot = (
+                fact.metric_key,
+                fact.period_type,
+                fact.period_end_date or fact.as_of_date,
+                None,
+            )
+        facts_by_slot.setdefault(slot, []).append(fact)
+
+    reconciled_facts: list[MetricFact] = []
+    reconciliation_states: list[dict[str, Any]] = []
+    for slot in sorted(facts_by_slot, key=repr):
+        slot_facts = facts_by_slot[slot]
+        try:
+            reconciled_facts.extend(
+                guard_reconciled_source_selection(
+                    slot_facts,
+                    consumer="stock_facts",
+                    knowledge_cutoff=evaluation_cutoff,
+                    session=session,
+                    user_id=current_user.id,
+                )
+            )
+        except CanonicalReconciliationError as error:
+            reconciliation_states.append(
+                {
+                    "id": None,
+                    "status": "unavailable",
+                    "reason_code": error.code,
+                    "metric_key": slot_facts[0].metric_key,
+                    "value_numeric": None,
+                    "unit": None,
+                    "period": slot_facts[0].period_type,
+                    "period_end_date": slot_facts[0].period_end_date,
+                    "source_type": None,
+                    "source_types": list(error.source_types),
+                    "blocking_reasons": sorted(
+                        {
+                            str(item.get("reason_code"))
+                            for item in error.blocking_items
+                        }
+                    ),
+                    "evidence_route": None,
+                }
+            )
+        except CanonicalSourceConflictError as error:
+            reconciliation_states.append(
+                {
+                    "id": None,
+                    "status": "unavailable",
+                    "reason_code": error.code,
+                    "metric_key": slot_facts[0].metric_key,
+                    "value_numeric": None,
+                    "unit": None,
+                    "period": slot_facts[0].period_type,
+                    "period_end_date": slot_facts[0].period_end_date,
+                    "source_type": None,
+                    "source_types": list(error.source_types),
+                    "blocking_reasons": [],
+                    "evidence_route": None,
+                }
+            )
 
     published = [
         {
@@ -1466,9 +1534,14 @@ def read_stock_facts(
                 else None
             ),
         }
-        for f in facts
+        for f in reconciled_facts
     ]
-    return published + unsupported + current_sec_unresolved_states(session, stock_id=stock_id)
+    return (
+        published
+        + unsupported
+        + reconciliation_states
+        + current_sec_unresolved_states(session, stock_id=stock_id)
+    )
 
 
 @router.get("/{stock_id}/sec-publications/{publication_id}/evidence", response_model=dict)

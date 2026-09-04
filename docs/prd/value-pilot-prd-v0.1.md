@@ -1470,8 +1470,9 @@ and must not select a winning source.
 
 The authenticated stock reconciliation read accepts a bounded optional metric
 filter and a timezone-aware knowledge cutoff no later than the request time. It
-returns the policy ID, mapping-spec digest, cutoff, exact ordered eligible fact
-IDs, typed exclusions, comparison items, and a deterministic report digest.
+returns the policy ID, resolved mapping-policy digest, cutoff, exact ordered
+eligible fact IDs, typed exclusions, comparison items, and a deterministic
+report digest.
 Each comparison item includes only bounded canonical identity, source role,
 fact IDs, outcome/reason, blocking state, and Decimal variance/tolerance when
 variance is semantically eligible. It does not expose raw XBRL, proprietary
@@ -1488,6 +1489,16 @@ match. Actual-versus-estimate,
 as-filed-versus-adjusted, direct-versus-derived, and an explicit manual
 correction are separate typed definition relationships; their values are never
 treated as interchangeable merely because their metric key matches.
+
+For Value Line, source-mapping identity is the canonical digest of the fully
+resolved mapping policy: `metric_facts_mapping_spec.yml` after applying the
+semantic inputs in `value_line_field_taxonomy.yml`, with both source documents
+included in the canonical serialization. Every generated parsed fact persists
+that immutable digest in `source_mapping_version`, and the reconciliation
+report includes the same resolved-policy digest. A taxonomy or mapping change
+MUST therefore change identity even when a human forgets to increment the
+display version; neither file may silently reinterpret already-persisted
+facts.
 
 The approved outcomes are `match`, `expected_definition_difference`,
 `restatement`, `mapping_conflict`, and `unresolved`. Tolerance uses Decimal
@@ -1508,6 +1519,12 @@ must not be relabeled as historical when its cutoff state cannot be proven. A
 requested historical cutoff therefore returns the visible comparison as
 `partial` with `historical_current_projection_unverifiable`, rather than a
 false claim of complete PIT reconstruction.
+
+An unresolved SEC amendment state is likewise evaluated at the requested
+cutoff: mapping/run authority, publication availability, audit knowledge,
+filing/parse knowledge, and any later successful resolution must all have been
+available by that cutoff. A later amendment failure or recovery MUST NOT alter
+an earlier replay.
 
 Formula, ratio, Piotroski, screener, research, workspace, and other fundamental
 consumers continue to read values only from `metric_facts`. A consumer may
@@ -1536,7 +1553,11 @@ The authoritative mapping and metric semantics live in:
 docs/metric_facts_mapping_spec.yml
 ```
 
-This mapping spec MUST be treated as versioned contract code. If PRD text and the mapping spec diverge on metric semantics, the mapping spec wins (see §A).
+This mapping spec MUST be treated as versioned contract code. Its declared
+`value_line_field_taxonomy.yml` semantic inputs are resolved into that contract
+and have no independent precedence or identity. If PRD text and the fully
+resolved mapping policy diverge on metric semantics, the resolved mapping
+policy wins (see §A).
 
 ### A.2 Metric Key Naming (Canonical)
 
@@ -1559,7 +1580,9 @@ This mapping spec MUST be treated as versioned contract code. If PRD text and th
 - Ingestion builds a stable page JSON payload and maps it to `metric_facts.metric_key` via `docs/metric_facts_mapping_spec.yml`.
 
 Legacy note:
-- Earlier drafts referenced a `value_line_v1_field_map.json` approach. This is deprecated for v0.1; do not introduce new metric semantics outside the mapping spec.
+- Earlier drafts referenced a `value_line_v1_field_map.json` approach. This is
+  deprecated for v0.1; do not introduce new metric semantics outside the
+  mapping spec or its explicitly declared, digest-bound semantic inputs.
 ---
 
 ## Appendix B: Normalization Layer Specification (V1)

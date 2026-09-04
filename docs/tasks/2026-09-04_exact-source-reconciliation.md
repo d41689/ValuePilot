@@ -30,7 +30,7 @@ types.
   reconciliation result is a deterministic comparison/audit projection over
   exact fact IDs; it does not copy values into a new fact table or select a
   winning source.
-- Exact replay is identified by policy version, mapping-spec digest, requesting
+- Exact replay is identified by policy version, resolved mapping-policy digest, requesting
   user, stock, knowledge cutoff, source-authorization state, and the ordered
   eligible fact IDs/versions. The report exposes this identity and its digest.
 - A source-specific consumer selection remains explicit. Reconciliation never
@@ -202,3 +202,25 @@ decision and a tested migration rather than storing JSON opportunistically.
   successfully parsed partial documents remain usable, while persisted
   `failed` documents remain unavailable. Terra R4 and full closing gates remain
   pending.
+- 2026-09-04: Terra adversarial review R4 found four additional authority
+  gaps. Sol remediation makes unresolved SEC amendment and same-filing recovery
+  state fully cutoff-aware across mapping, run, publication availability,
+  audit, parse, filing, and resolution timestamps; wraps every uploaded company
+  page in a database savepoint so failed-page extractions, facts, calculated
+  writes, and identity mutations cannot survive a later successful page; and
+  makes the canonical `/facts` read reconcile each fiscal/as-of slot before it
+  emits either published facts or a typed unavailable state.
+- 2026-09-04: Value Line `source_mapping_version` is now an immutable canonical
+  digest of the fully resolved mapping policy, including both mapping-spec and
+  taxonomy semantic inputs. The report exposes that resolved-policy digest, so
+  a taxonomy-only semantic revision cannot silently reinterpret old facts under
+  the same identity. New red-to-green tests cover taxonomy-only revision,
+  failed-page post-write rollback, `/facts` conflict/authority behavior, an SEC
+  amendment before its failure becomes known, and a same-filing recovery both
+  before and after its PIT resolution cutoff. Terra R5 and exact closing gates
+  remain pending.
+- 2026-09-04: R4 remediation-focused Docker consumer suite is green at 206
+  tests. The amendment/recovery database scenarios and the changed canonical
+  facts read also pass their focused regressions. A prior 302-test expansion
+  found only the intentionally changed `/facts` expectation; that assertion
+  now requires typed fail-closed output and passes. No blocker is deferred.

@@ -3,6 +3,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import date
 from calendar import monthrange
+import hashlib
+import json
 from pathlib import Path
 import logging
 import re
@@ -31,6 +33,17 @@ class MappingSpec:
         self.spec = spec
         self.taxonomy = taxonomy or {}
         self.mappings = spec.get("mappings", [])
+        canonical_policy = json.dumps(
+            {"resolved_mapping_spec": self.spec, "taxonomy": self.taxonomy},
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=True,
+        ).encode("utf-8")
+        self.mapping_policy_sha256 = hashlib.sha256(canonical_policy).hexdigest()
+        self.source_mapping_version = (
+            f"value-line-resolved-v{self.spec.get('version', 'unknown')}:"
+            f"{self.mapping_policy_sha256}"
+        )
 
     @classmethod
     def load(cls, path: Path, taxonomy_path: Optional[Path] = None) -> "MappingSpec":
@@ -74,7 +87,7 @@ class MappingSpec:
                 value_json.setdefault("mapping_id", str(mapping.get("id") or ""))
                 value_json.setdefault(
                     "source_mapping_version",
-                    f"value-line-spec-v{self.spec.get('version', 'unknown')}",
+                    self.source_mapping_version,
                 )
                 value_json.setdefault("definition_basis", "adjusted")
                 value_json.setdefault("dimensions_identity", "empty")

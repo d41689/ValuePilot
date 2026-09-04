@@ -143,7 +143,7 @@ def test_authenticated_reconciliation_is_tenant_safe_and_bounded(
     assert payload["canonical_definition_version"] == (
         "canonical-financial-definitions-v1"
     )
-    assert len(payload["mapping_spec_sha256"]) == 64
+    assert len(payload["mapping_policy_sha256"]) == 64
     assert payload["eligible_fact_ids"] == [owner_fact.id, manual.id]
     returned_fact_ids = {
         candidate["fact_id"]
@@ -154,6 +154,25 @@ def test_authenticated_reconciliation_is_tenant_safe_and_bounded(
     assert payload["items"][0]["status"] == "expected_definition_difference"
     assert payload["items"][0]["reason_code"] == "explicit_manual_correction"
     _assert_safe(payload)
+
+    facts_response = client.get(
+        f"/api/v1/stocks/{stock.id}/facts",
+        headers=auth_headers(owner),
+    )
+    assert facts_response.status_code == 200, facts_response.text
+    facts_payload = facts_response.json()
+    assert not any(
+        row.get("status") == "published" and row.get("metric_key") == "is.net_income"
+        for row in facts_payload
+    )
+    blocked = next(
+        row
+        for row in facts_payload
+        if row.get("metric_key") == "is.net_income"
+        and row.get("status") == "unavailable"
+    )
+    assert blocked["reason_code"] == "source_conflict"
+    assert blocked["source_types"] == ["manual", "parsed"]
 
     anonymous = client.get(f"/api/v1/stocks/{stock.id}/source-reconciliation")
     assert anonymous.status_code == 401

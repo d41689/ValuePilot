@@ -167,6 +167,7 @@ class IngestionService:
             requires_ocr_pages = 0
 
             for page_num, text, words in pages_data:
+                page_savepoint = None
                 try:
                     if len((text or "").strip()) < MIN_PARSEABLE_PAGE_TEXT_CHARS:
                         requires_ocr_pages += 1
@@ -199,10 +200,17 @@ class IngestionService:
                         continue
 
                     company_pages += 1
+                    # A page is the smallest publishable Value Line unit.  If
+                    # any downstream extraction, fact, or calculation step
+                    # fails, none of that page's writes may survive merely
+                    # because another page later succeeds.
+                    page_savepoint = self.db.begin_nested()
 
                     try:
                         stock, needs_review, note = self.identity_service.resolve_stock(identity_info)
                     except ValueError:
+                        page_savepoint.rollback()
+                        page_savepoint = None
                         page_reports.append(
                             {
                                 "page_number": page_num,
@@ -296,6 +304,8 @@ class IngestionService:
                         )
 
                     self._run_calculated_metrics(user_id=user_id, stock_id=stock.id)
+                    page_savepoint.commit()
+                    page_savepoint = None
 
                     parsed_company_pages += 1
                     page_reports.append(
@@ -309,6 +319,8 @@ class IngestionService:
                         }
                     )
                 except Exception as e:
+                    if page_savepoint is not None and page_savepoint.is_active:
+                        page_savepoint.rollback()
                     page_reports.append(
                         {
                             "page_number": page_num,

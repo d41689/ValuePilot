@@ -277,7 +277,7 @@ def test_reconciliation_api_fails_closed_for_unresolved_sec_amendment(
         original.stock_id,
         original.issuer_identity_id,
         original.mapping_version_id,
-        failed.available_at + timedelta(seconds=1),
+        failed.available_at,
         original.amendment_policy,
         original.sources + (failed_source,),
     )
@@ -308,3 +308,14 @@ def test_reconciliation_api_fails_closed_for_unresolved_sec_amendment(
     assert payload["sec_unavailable_states"][0]["reason_code"] == (
         "unresolved_amendment_parse_failure"
     )
+    failure_known_at = datetime.fromisoformat(
+        payload["sec_unavailable_states"][0]["known_at"]
+    )
+    before_failure = reconciliation_publication_client.get(
+        f"/api/v1/stocks/{original.stock_id}/source-reconciliation",
+        headers=auth_headers(owner),
+        params={"knowledge_cutoff": (failure_known_at - timedelta(microseconds=1)).isoformat()},
+    )
+    assert before_failure.status_code == 200, before_failure.text
+    assert before_failure.json()["consumer_gate_status"] == "clear"
+    assert before_failure.json()["sec_unavailable_states"] == []

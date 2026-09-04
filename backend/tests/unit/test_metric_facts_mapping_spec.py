@@ -40,7 +40,7 @@ def test_mapping_spec_generates_core_facts():
     assert eps_2024["value_numeric"] == pytest.approx(11.18)
     assert eps_2024["value_json"]["mapping_id"] == "per_share.eps.fy"
     assert eps_2024["value_json"]["source_mapping_version"] == (
-        "value-line-spec-v2"
+        spec.source_mapping_version
     )
     assert eps_2024["value_json"]["definition_basis"] == "adjusted"
     assert eps_2024["value_json"]["dimensions_identity"] == "empty"

@@ -21,10 +21,9 @@ from typing import Any, Iterable, Sequence
 
 from sqlalchemy import select, text
 from sqlalchemy.orm import Session
-import yaml
-
 from app.models.artifacts import PdfDocument
 from app.models.facts import MetricFact
+from app.services.mapping_spec import MappingSpec
 from app.services.canonical_financials import (
     CanonicalSourceConflictError,
     partition_sec_run_availability,
@@ -719,8 +718,8 @@ def _policy_datetime(value: Any, *, field: str) -> datetime:
 
 @lru_cache(maxsize=1)
 def _mapping_spec_identity() -> tuple[str, str, str, datetime, datetime]:
-    payload = _SPEC_PATH.read_bytes()
-    spec = yaml.safe_load(payload)
+    resolved_mapping = MappingSpec.load(_SPEC_PATH)
+    spec = resolved_mapping.spec
     versions = spec.get("source_reconciliation", {}).get("versions", [])
     policy = next(
         (
@@ -738,7 +737,7 @@ def _mapping_spec_identity() -> tuple[str, str, str, datetime, datetime]:
         raise RuntimeError("canonical definition version is unavailable")
     return (
         POLICY_VERSION,
-        hashlib.sha256(payload).hexdigest(),
+        resolved_mapping.mapping_policy_sha256,
         definition_version,
         _policy_datetime(policy.get("known_at"), field="known_at"),
         _policy_datetime(policy.get("effective_from"), field="effective_from"),
@@ -1285,6 +1284,7 @@ def _partition_available_sec_facts(
     *,
     stock_id: int,
     facts: Sequence[MetricFact],
+    knowledge_cutoff: datetime,
 ) -> tuple[list[MetricFact], list[dict[str, Any]], list[dict[str, Any]]]:
     """Apply the canonical unresolved-amendment boundary before comparison."""
 
@@ -1292,6 +1292,7 @@ def _partition_available_sec_facts(
         session,
         stock_id=stock_id,
         facts=facts,
+        knowledge_cutoff=knowledge_cutoff,
     )
     available_object_ids = {id(fact) for fact in available}
     blocked = [
@@ -1396,7 +1397,7 @@ def build_source_reconciliation_report_from_facts(
     knowledge_cutoff = knowledge_cutoff.astimezone(timezone.utc)
     (
         _,
-        spec_digest,
+        mapping_policy_digest,
         definition_version,
         policy_known_at,
         policy_effective_from,
@@ -1407,7 +1408,7 @@ def build_source_reconciliation_report_from_facts(
         report["blocking_exclusion_count"] = 0
         report["sec_unavailable_states"] = []
         report["consumer_gate_status"] = "blocked"
-        report["mapping_spec_sha256"] = spec_digest
+        report["mapping_policy_sha256"] = mapping_policy_digest
         report["canonical_definition_version"] = definition_version
         report["point_in_time_status"] = "policy_unavailable_at_cutoff"
         # The authenticated caller already receives this identifier from
@@ -1429,6 +1430,7 @@ def build_source_reconciliation_report_from_facts(
             session,
             stock_id=stock_id,
             facts=expanded_rows,
+            knowledge_cutoff=knowledge_cutoff,
         )
     )
     candidates, materialization_excluded = materialize_reconciliation_candidates(
@@ -1455,7 +1457,7 @@ def build_source_reconciliation_report_from_facts(
         if report["blocking_item_count"] or report["blocking_exclusion_count"]
         else "clear"
     )
-    report["mapping_spec_sha256"] = spec_digest
+    report["mapping_policy_sha256"] = mapping_policy_digest
     report["canonical_definition_version"] = definition_version
     report["point_in_time_status"] = (
         "historical_current_projection_unverifiable"
@@ -1524,6 +1526,7 @@ def guard_reconciled_source_selection(
             session,
             stock_id=next(iter(stock_ids)),
             facts=expanded_facts,
+            knowledge_cutoff=knowledge_cutoff,
         )
         candidates, materialization_excluded = materialize_reconciliation_candidates(
             session,

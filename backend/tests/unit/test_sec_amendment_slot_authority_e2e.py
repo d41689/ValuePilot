@@ -571,13 +571,37 @@ def test_successful_reparse_of_same_failed_filing_replaces_run_level_unavailabil
     db, tmp_path
 ):
     original = _request(db, tmp_path, ticker="AMENDREPARSE")
-    _ingest_client(
+    failed_available = _ingest_client(
         db,
         tmp_path,
         original,
         _FailedAmendmentClient(),
         now=datetime(2026, 8, 28, 17, tzinfo=timezone.utc),
     )
+    failed_cutoff = failed_available
+    failed_sources = resolve_latest_known_v1_sources(
+        db,
+        stock_id=original.stock_id,
+        issuer_identity_id=original.issuer_identity_id,
+        requested_cutoff=failed_cutoff,
+    )
+    failed_receipt = publish_sec_mapping_result(
+        db, _request_with_sources(original, failed_cutoff, failed_sources)
+    )
+    db.commit()
+    finalize_sec_publication(db, failed_receipt.run_id)
+    db.commit()
+    failure_state = active_sec_run_unresolved_states(
+        db, stock_id=original.stock_id
+    )[0]
+    failure_cutoff = failure_state["known_at"] + timedelta(microseconds=1)
+    assert len(
+        active_sec_run_unresolved_states(
+            db,
+            stock_id=original.stock_id,
+            knowledge_cutoff=failure_cutoff,
+        )
+    ) == 1
     recovered_available = _ingest_client(
         db,
         tmp_path,
@@ -618,7 +642,23 @@ def test_successful_reparse_of_same_failed_filing_replaces_run_level_unavailabil
         ),
         {"run": receipt.run_id},
     ).scalar_one()
-    assert active_sec_run_unresolved_states(db, stock_id=original.stock_id) == []
+    assert active_sec_run_unresolved_states(
+        db,
+        stock_id=original.stock_id,
+        knowledge_cutoff=cutoff,
+    ) == []
+    assert len(
+        active_sec_run_unresolved_states(
+            db,
+            stock_id=original.stock_id,
+            knowledge_cutoff=failure_cutoff,
+        )
+    ) == 1
+    assert active_sec_run_unresolved_states(
+        db,
+        stock_id=original.stock_id,
+        knowledge_cutoff=recovered_available + timedelta(seconds=1),
+    ) == []
 
 
 def test_publication_waits_for_uncommitted_availability_then_rejects_stale_sources(

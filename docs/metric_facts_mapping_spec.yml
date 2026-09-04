@@ -21,6 +21,8 @@ version: 2
 # FT-06 compares canonical facts; it does not replace them or rank their
 # sources. This policy is separate from the source-specific publication
 # mappings. Variance is eligible only after every identity field aligns.
+# The immutable Value Line source-mapping identity is a canonical digest of
+# this resolved file plus value_line_field_taxonomy.yml semantic inputs.
 source_reconciliation:
   versions:
     - id: financial-source-reconciliation-v1

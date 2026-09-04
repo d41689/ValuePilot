@@ -1,4 +1,5 @@
 import json
+from copy import deepcopy
 from datetime import date
 from pathlib import Path
 
@@ -110,3 +111,35 @@ def test_mapping_spec_uses_taxonomy_semantics_for_generated_facts():
 
     net_income_estimate = by_key[("is.net_income", "FY", date(2025, 12, 31))]
     assert net_income_estimate["value_json"]["fact_nature"] == "estimate"
+
+
+def test_resolved_mapping_identity_changes_with_taxonomy_semantics(tmp_path):
+    with SPEC_PATH.open("r", encoding="utf-8") as fh:
+        spec_data = yaml.safe_load(fh)
+    taxonomy = load_taxonomy()
+    revised = deepcopy(taxonomy)
+    revised["mapping_semantics"]["is.net_income.fy"]["fact_nature_rule"] = "context_only"
+    spec_path = tmp_path / "metric_facts_mapping_spec.yml"
+    first_taxonomy = tmp_path / "taxonomy-first.yml"
+    second_taxonomy = tmp_path / "taxonomy-second.yml"
+    spec_path.write_text(yaml.safe_dump(spec_data), encoding="utf-8")
+    first_taxonomy.write_text(yaml.safe_dump(taxonomy), encoding="utf-8")
+    second_taxonomy.write_text(yaml.safe_dump(revised), encoding="utf-8")
+
+    first = MappingSpec.load(spec_path, taxonomy_path=first_taxonomy)
+    second = MappingSpec.load(spec_path, taxonomy_path=second_taxonomy)
+    first_fact = next(
+        fact for fact in first.generate_facts(load_page_json())[0]
+        if fact["metric_key"] == "is.net_income"
+        and fact["period_end_date"] == date(2024, 12, 31)
+    )
+    second_fact = next(
+        fact for fact in second.generate_facts(load_page_json())[0]
+        if fact["metric_key"] == "is.net_income"
+        and fact["period_end_date"] == date(2024, 12, 31)
+    )
+
+    assert first.mapping_policy_sha256 != second.mapping_policy_sha256
+    assert first_fact["value_json"]["source_mapping_version"] != (
+        second_fact["value_json"]["source_mapping_version"]
+    )
