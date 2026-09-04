@@ -372,7 +372,8 @@ git diff --check
   top-level candidate value are consistency checks with a fixed `0.01`
   tolerance; arbitrary values and unrecorded edits fail closed. Shared gold
   and 100,000-year finite-horizon fixtures preserve frontend/backend formula
-  behavior.
+  behavior. Round 12 subsequently replaced the formerly unbounded stress
+  horizon with the bounded product contract described below.
 - 2026-09-03: GET and Save now use one canonical fact-universe loader that
   applies visibility, source, SEC, and reviewed-method authority before the
   bounded selection evaluator. The `501`-row query bound is only a DoS
@@ -391,3 +392,48 @@ git diff --check
   after verification. No migration, `storage/` change, FX, new valuation
   method, PR #128 reuse, or merge was performed. Draft PR #141 is ready for
   Terra adversarial review round 12.
+- 2026-09-03: Terra adversarial review round 12 found four valid DCF/current
+  authority gaps. The browser and Decimal server now share a product-bounded
+  model schema: horizons are capped at 1,000 years, rates at 1,000%, absolute
+  per-share inputs at 1,000,000, and publishable results at 1e12. Both sides
+  use the same stable year-by-year discounted-ratio recurrence. Gold,
+  near-equal-ratio maximum-bound, and over-bound/100,000-year rejection tests
+  keep browser output within the fixed `0.01` server consistency tolerance
+  while rejecting abusive iteration workloads before calculation.
+- 2026-09-03: a DCF Save no longer treats the manifest acquisition cutoff as
+  current authority. Under one save-time New York clock it reloads the full
+  bounded canonical fact universe, reapplies current visibility, source, SEC,
+  classification, and method policy gates, reconstructs the exact selection,
+  and compares every stable manifest field. A New York day rollover, a newly
+  published FY fact, correction/supersession, or classification/policy
+  authority change returns typed `dcf_input_selection_changed`; the original
+  acquisition manifest and save-time validation manifest are both retained in
+  immutable revision evidence.
+- 2026-09-03: migration `20260901280000` adds one PostgreSQL transaction-scoped
+  advisory-lock boundary for `metric_facts` mutations. Its trigger locks the
+  stable namespaced stock key on INSERT and DELETE, and both OLD/NEW stock ids
+  in sorted order on UPDATE. DCF Save acquires the identical key before any
+  validation read, so fact publication/correction and revision commit for one
+  stock serialize without blocking a different stock. Two-session INSERT,
+  UPDATE, DELETE, same-stock blocking, and different-stock progress tests pass;
+  empty-schema upgrade and downgrade→upgrade round trips pass.
+- 2026-09-03: the static SIX List One snapshot now distinguishes registered
+  codes from codes eligible for product monetary arithmetic. Precious-metal,
+  fund/unit-of-account, bond-market, testing, and no-currency codes including
+  XAU/XAG/XPT/XPD, XDR/XSU/XUA, XBA–XBD, BOV/CLF/COU/MXV/UYI/UYW, XTS, and XXX
+  fail closed through the existing shared validator. USD/CAD/EUR and real
+  circulating X-currencies XAF/XCD/XCG/XOF/XPF remain eligible. Canonical
+  price, DCF, and manual portfolio regressions cover the distinction.
+- 2026-09-03: round-12 focused verification passed (`117 passed` backend plus
+  the dedicated `52 passed` DCF/locking set; `10 passed` frontend DCF). The
+  first exact backend run exposed only test-infrastructure integration gaps:
+  two-session fixtures had committed rows outside the rollback fixture and
+  older migration tests pinned the prior head (`2243 passed, 8 failed`). The
+  fixtures now clean up their independent transactions and all head assertions
+  name `20260901280000`; the eight-failure set reran `12 passed`.
+- 2026-09-03: post-round-12 exact closing gate passed: Compose rebuild,
+  Alembic upgrade, backend `2251 passed`, frontend `231 passed`, frontend lint,
+  production build, and `git diff --check`. The new migration also passed an
+  explicit downgrade to `20260901270000` and upgrade back to head. No stored
+  data rewrite, `storage/` change, FX, PR #128 reuse, or merge was performed.
+  Draft PR #141 is ready for Terra adversarial review round 13.
