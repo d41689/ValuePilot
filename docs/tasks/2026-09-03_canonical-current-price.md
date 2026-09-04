@@ -437,3 +437,28 @@ git diff --check
   explicit downgrade to `20260901270000` and upgrade back to head. No stored
   data rewrite, `storage/` change, FX, PR #128 reuse, or merge was performed.
   Draft PR #141 is ready for Terra adversarial review round 13.
+- 2026-09-03: Terra adversarial review round 13 found two valid DCF publication
+  boundary gaps. Every research valuation path now acquires the shared
+  stock-scoped metric-fact advisory lock before either the research-case
+  advisory lock or the case row lock. DCF validation remains inside that same
+  M-before-R transaction boundary. A real two-session PostgreSQL regression
+  reproduced the former deadlock and now proves both DCF versus manual and DCF
+  versus Watchlist saves wait, complete, and commit without an aborted
+  transaction.
+- 2026-09-03: the browser DCF result is now explicitly a local preview, not
+  evidence or publication authority. The client omits both the legacy nested
+  result and top-level value, while Save independently recomputes from the
+  validated current manifest plus structured assumptions and publishes the
+  exact server Decimal result. Legacy or arbitrary top-level values are
+  ignored and never enter immutable revision evidence; the removed nested
+  result remains a reserved field so unknown/smuggled payloads fail closed.
+  The success UI renders the server-returned value. Extreme valid bounded-domain
+  scenarios save without a browser/server tolerance rejection, while invalid
+  model domains remain rejected.
+- 2026-09-03: round-13 focused verification passed (`58 passed` backend and
+  `18 passed` frontend DCF). The exact closing gate passed: Compose rebuild,
+  Alembic upgrade, backend `2256 passed`, frontend `232 passed`, frontend lint,
+  production build, and `git diff --check`. The generated Next TypeScript path
+  was removed after verification. No migration, stored-data rewrite,
+  `storage/` change, PR #128 reuse, or merge was performed. Draft PR #141 is
+  ready for Terra adversarial review round 14.
