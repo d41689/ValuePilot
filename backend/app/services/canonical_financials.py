@@ -56,8 +56,18 @@ class MethodGateDecision:
     status: str
     reason_code: str
     method_policy_version_id: str | None
+    policy_sha256: str | None
     economic_class: str
     classification_review_id: int | None
+    method_version_id: str | None
+    required_evidence: tuple[str, ...]
+    required_adjustments: tuple[str, ...]
+    required_outputs: tuple[str, ...]
+    required_risk_reviews: tuple[str, ...]
+    risk_review_ids: tuple[int, ...]
+    risk_attributes: tuple[str, ...]
+    missing_risk_reviews: tuple[str, ...]
+    unsupported_reasons: tuple[str, ...]
     effective_as_of: date
     knowledge_at: datetime
 
@@ -67,11 +77,70 @@ class MethodGateDecision:
             "status": self.status,
             "reason_code": self.reason_code,
             "method_policy_version_id": self.method_policy_version_id,
+            "policy_sha256": self.policy_sha256,
             "economic_class": self.economic_class,
             "classification_review_id": self.classification_review_id,
+            "method_version_id": self.method_version_id,
+            "required_evidence": list(self.required_evidence),
+            "required_adjustments": list(self.required_adjustments),
+            "required_outputs": list(self.required_outputs),
+            "required_risk_reviews": list(self.required_risk_reviews),
+            "risk_review_ids": list(self.risk_review_ids),
+            "risk_attributes": list(self.risk_attributes),
+            "missing_risk_reviews": list(self.missing_risk_reviews),
+            "unsupported_reasons": list(self.unsupported_reasons),
             "effective_as_of": self.effective_as_of.isoformat(),
             "knowledge_at": self.knowledge_at.isoformat(),
         }
+
+
+def _method_decision(
+    *,
+    method_key: str,
+    status: str,
+    reason_code: str,
+    method_policy_version_id: str | None,
+    policy_sha256: str | None,
+    economic_class: str,
+    classification_review_id: int | None,
+    effective_as_of: date,
+    knowledge_at: datetime,
+    method_version_id: str | None = None,
+    required_evidence: tuple[str, ...] = (),
+    required_adjustments: tuple[str, ...] = (),
+    required_outputs: tuple[str, ...] = (),
+    required_risk_reviews: tuple[str, ...] = (),
+    risk_review_ids: tuple[int, ...] = (),
+    risk_attributes: tuple[str, ...] = (),
+    missing_risk_reviews: tuple[str, ...] = (),
+    unsupported_reasons: tuple[str, ...] = (),
+) -> MethodGateDecision:
+    return MethodGateDecision(
+        method_key=method_key,
+        status=status,
+        reason_code=reason_code,
+        method_policy_version_id=method_policy_version_id,
+        policy_sha256=policy_sha256,
+        economic_class=economic_class,
+        classification_review_id=classification_review_id,
+        method_version_id=method_version_id,
+        required_evidence=required_evidence,
+        required_adjustments=required_adjustments,
+        required_outputs=required_outputs,
+        required_risk_reviews=required_risk_reviews,
+        risk_review_ids=risk_review_ids,
+        risk_attributes=risk_attributes,
+        missing_risk_reviews=missing_risk_reviews,
+        unsupported_reasons=unsupported_reasons,
+        effective_as_of=effective_as_of,
+        knowledge_at=knowledge_at,
+    )
+
+
+def _string_tuple(value: Any) -> tuple[str, ...]:
+    if not isinstance(value, list) or any(not isinstance(item, str) for item in value):
+        return ()
+    return tuple(value)
 
 
 def visible_metric_fact_predicate(fact_entity: Any, *, user_id: int):
@@ -137,7 +206,7 @@ def reviewed_method_gate(
     policy = session.execute(
         text(
             """
-            SELECT id
+            SELECT id, policy_sha256
             FROM sec_method_policy_versions
             WHERE status='approved' AND effective_from<=:cutoff AND known_at<=:cutoff
               AND NOT EXISTS (
@@ -155,11 +224,19 @@ def reviewed_method_gate(
         {"cutoff": cutoff},
     ).mappings().first()
     if policy is None:
-        return MethodGateDecision(
-            method_key, "unsupported", "method_policy_unavailable", None,
-            "unclassified", None, effective_as_of, cutoff,
+        return _method_decision(
+            method_key=method_key,
+            status="unsupported",
+            reason_code="method_policy_unavailable",
+            method_policy_version_id=None,
+            policy_sha256=None,
+            economic_class="unclassified",
+            classification_review_id=None,
+            effective_as_of=effective_as_of,
+            knowledge_at=cutoff,
+            unsupported_reasons=("method_policy_unavailable",),
         )
-    classification = session.execute(
+    classifications = session.execute(
         text(
             """
             SELECT r.id, r.economic_class
@@ -170,18 +247,37 @@ def reviewed_method_gate(
               AND NOT EXISTS (
                 SELECT 1 FROM sec_economic_classification_reviews later
                 WHERE later.supersedes_review_id=r.id AND later.known_at<=:cutoff
+                  AND later.effective_from<=:as_of
+                  AND (later.effective_to IS NULL OR later.effective_to>=:as_of)
               )
             ORDER BY r.known_at DESC, r.id DESC
-            LIMIT 1
+            LIMIT 2
             """
         ),
         {"stock_id": stock_id, "as_of": effective_as_of, "cutoff": cutoff},
-    ).mappings().first()
-    economic_class = classification.economic_class if classification else "unclassified"
+    ).mappings().all()
+    if len(classifications) != 1:
+        reason = "classification_unreviewed" if not classifications else "classification_conflict"
+        return _method_decision(
+            method_key=method_key,
+            status="unsupported",
+            reason_code=reason,
+            method_policy_version_id=policy.id,
+            policy_sha256=policy.policy_sha256,
+            economic_class="unclassified",
+            classification_review_id=None,
+            effective_as_of=effective_as_of,
+            knowledge_at=cutoff,
+            unsupported_reasons=(reason,),
+        )
+    classification = classifications[0]
+    economic_class = classification.economic_class
     rule = session.execute(
         text(
             """
-            SELECT applicability
+            SELECT applicability, method_version_id, required_evidence_json,
+                   required_outputs_json, required_risk_reviews_json,
+                   required_adjustments_json, unsupported_reason_code
             FROM sec_method_policy_rules
             WHERE method_policy_version_id=:policy_id
               AND method_key=:method_key AND economic_class=:economic_class
@@ -193,25 +289,136 @@ def reviewed_method_gate(
             "economic_class": economic_class,
         },
     ).mappings().first()
-    approved = bool(rule and rule.applicability == "approved" and classification)
-    reason = (
-        "approved"
-        if approved
-        else "classification_unreviewed"
-        if classification is None
-        else "method_not_approved"
-        if rule is None
-        else "method_unsupported"
+    if rule is None:
+        return _method_decision(
+            method_key=method_key,
+            status="unsupported",
+            reason_code="method_rule_unavailable",
+            method_policy_version_id=policy.id,
+            policy_sha256=policy.policy_sha256,
+            economic_class=economic_class,
+            classification_review_id=classification.id,
+            effective_as_of=effective_as_of,
+            knowledge_at=cutoff,
+            unsupported_reasons=("method_rule_unavailable",),
+        )
+    required_evidence = _string_tuple(rule.required_evidence_json)
+    required_outputs = _string_tuple(rule.required_outputs_json)
+    required_risk_reviews = _string_tuple(rule.required_risk_reviews_json)
+    required_adjustments = _string_tuple(rule.required_adjustments_json)
+    decision_fields: dict[str, Any] = {
+        "method_key": method_key,
+        "method_policy_version_id": policy.id,
+        "policy_sha256": policy.policy_sha256,
+        "economic_class": economic_class,
+        "classification_review_id": classification.id,
+        "effective_as_of": effective_as_of,
+        "knowledge_at": cutoff,
+        "required_evidence": required_evidence,
+        "required_adjustments": required_adjustments,
+        "required_outputs": required_outputs,
+        "required_risk_reviews": required_risk_reviews,
+    }
+    risk_rows = session.execute(
+        text(
+            """
+            SELECT r.id, r.risk_attribute, r.is_present
+            FROM sec_economic_risk_attribute_reviews r
+            WHERE r.stock_id=:stock_id AND r.effective_from<=:as_of
+              AND (r.effective_to IS NULL OR r.effective_to>=:as_of)
+              AND r.known_at<=:cutoff
+              AND NOT EXISTS (
+                SELECT 1 FROM sec_economic_risk_attribute_reviews later
+                WHERE later.supersedes_review_id=r.id AND later.known_at<=:cutoff
+                  AND later.effective_from<=:as_of
+                  AND (later.effective_to IS NULL OR later.effective_to>=:as_of)
+              )
+            ORDER BY r.risk_attribute, r.known_at DESC, r.id DESC
+            """
+        ),
+        {"stock_id": stock_id, "as_of": effective_as_of, "cutoff": cutoff},
+    ).mappings().all()
+    by_risk: dict[str, list[Any]] = {attribute: [] for attribute in required_risk_reviews}
+    for row in risk_rows:
+        if row.risk_attribute in by_risk:
+            by_risk[row.risk_attribute].append(row)
+    conflicts = tuple(
+        attribute for attribute in required_risk_reviews if len(by_risk[attribute]) > 1
     )
-    return MethodGateDecision(
-        method_key=method_key,
-        status="approved" if approved else "unsupported",
-        reason_code=reason,
-        method_policy_version_id=policy.id,
-        economic_class=economic_class,
-        classification_review_id=classification.id if classification else None,
-        effective_as_of=effective_as_of,
-        knowledge_at=cutoff,
+    if conflicts:
+        return _method_decision(
+            **decision_fields,
+            status="unsupported",
+            reason_code="risk_review_conflict",
+            method_version_id=rule.method_version_id,
+            unsupported_reasons=tuple(f"risk_review_conflict:{item}" for item in conflicts),
+        )
+    missing = tuple(
+        attribute for attribute in required_risk_reviews if not by_risk[attribute]
+    )
+    risk_review_ids = tuple(
+        int(by_risk[attribute][0].id)
+        for attribute in required_risk_reviews
+        if by_risk[attribute]
+    )
+    present = tuple(
+        attribute
+        for attribute in required_risk_reviews
+        if by_risk[attribute] and by_risk[attribute][0].is_present is True
+    )
+    if rule.applicability != "approved":
+        reason = rule.unsupported_reason_code or "method_unsupported"
+        detail_reasons = [reason]
+        detail_reasons.extend(f"risk_review_conflict:{item}" for item in conflicts)
+        detail_reasons.extend(f"risk_review_missing:{item}" for item in missing)
+        detail_reasons.extend(f"reviewed_risk_attribute:{item}" for item in present)
+        return _method_decision(
+            **decision_fields,
+            status="unsupported",
+            reason_code=reason,
+            risk_review_ids=risk_review_ids,
+            risk_attributes=present,
+            missing_risk_reviews=missing,
+            unsupported_reasons=tuple(detail_reasons),
+        )
+    if not isinstance(rule.method_version_id, str) or not rule.method_version_id:
+        return _method_decision(
+            **decision_fields,
+            status="unsupported",
+            reason_code="method_policy_invalid",
+            risk_review_ids=risk_review_ids,
+            risk_attributes=present,
+            missing_risk_reviews=missing,
+            unsupported_reasons=("method_version_missing",),
+        )
+    if missing:
+        return _method_decision(
+            **decision_fields,
+            status="unsupported",
+            reason_code="risk_review_incomplete",
+            method_version_id=rule.method_version_id,
+            risk_review_ids=risk_review_ids,
+            missing_risk_reviews=missing,
+            unsupported_reasons=tuple(f"risk_review_missing:{item}" for item in missing),
+        )
+    if present:
+        return _method_decision(
+            **decision_fields,
+            status="unsupported",
+            reason_code="reviewed_risk_attribute_unsupported",
+            method_version_id=rule.method_version_id,
+            risk_review_ids=risk_review_ids,
+            risk_attributes=present,
+            unsupported_reasons=tuple(
+                f"reviewed_risk_attribute:{item}" for item in present
+            ),
+        )
+    return _method_decision(
+        **decision_fields,
+        status="approved",
+        reason_code="approved",
+        method_version_id=rule.method_version_id,
+        risk_review_ids=risk_review_ids,
     )
 
 
@@ -222,16 +429,25 @@ def require_reviewed_method(*args: Any, **kwargs: Any) -> MethodGateDecision:
     return decision
 
 
-def _system_method_for_fact(fact: MetricFact) -> str | None:
+def system_method_for_fact(fact: MetricFact) -> str | None:
     metadata = fact.value_json if isinstance(fact.value_json, dict) else {}
     if metadata.get("user_authored_formula") is True:
         return None
     key = fact.metric_key
     if key.startswith("owners_earnings_per_share"):
         return "owner_earnings"
-    if key in {"returns.roic", "roic"} or key.startswith("returns.roic."):
+    if key in {
+        "returns.roic",
+        "roic",
+        "returns.total_capital",
+        "bs.return_on_total_capital",
+    } or key.startswith("returns.roic."):
         return "roic"
-    if key.startswith("per_share_trend.") or key.startswith("trend.per_share."):
+    if (
+        key.startswith("per_share_trend.")
+        or key.startswith("trend.per_share.")
+        or (key.startswith("rates.") and ".cagr_" in key)
+    ):
         return "per_share_trend"
     if key.startswith("system_valuation."):
         return "system_valuation"
@@ -251,7 +467,7 @@ def apply_reviewed_method_gates(
 
     materialized = list(facts)
     required_methods = {
-        method for fact in materialized if (method := _system_method_for_fact(fact))
+        method for fact in materialized if (method := system_method_for_fact(fact))
     }
     decisions = {
         method: (
@@ -270,7 +486,7 @@ def apply_reviewed_method_gates(
     kept: list[MetricFact] = []
     blocked: list[dict[str, Any]] = []
     for fact in materialized:
-        method = _system_method_for_fact(fact)
+        method = system_method_for_fact(fact)
         decision = decisions.get(method) if method else None
         if decision is None or decision.status == "approved":
             kept.append(fact)

@@ -88,7 +88,7 @@ partial numeric conclusion.
 Test-first focused iterations, always inside Docker:
 
 1. `docker compose up -d --build`
-2. `docker compose exec -T api pytest -q backend/tests/unit/test_analysis_method_gate.py`
+2. `docker compose exec -T api pytest -q tests/unit/test_analysis_method_gate.py`
 3. Targeted consumer suites identified during inventory.
 
 Closing gate, verbatim and in order:
