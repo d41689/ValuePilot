@@ -4,6 +4,7 @@ from copy import deepcopy
 from datetime import date, datetime, timedelta, timezone
 
 import pytest
+from sqlalchemy import update
 
 from app.api.v1.endpoints.stock_pools import _guard_piotroski_display_facts
 from app.api.v1.endpoints.stocks import _build_piotroski_f_score_card
@@ -452,6 +453,19 @@ def _clone_fact(fact: MetricFact) -> MetricFact:
     )
 
 
+def _persist_forged_replacement(
+    db_session, *, original: MetricFact, replacement: MetricFact
+) -> MetricFact:
+    db_session.execute(
+        update(MetricFact)
+        .where(MetricFact.id == original.id)
+        .values(is_current=False)
+    )
+    db_session.add(replacement)
+    db_session.commit()
+    return replacement
+
+
 def _strict_lineage_item(fact: MetricFact) -> dict:
     return {
         "fact_id": fact.id,
@@ -490,14 +504,13 @@ def test_retained_total_capital_proxy_requires_exact_origin_authority(
     generated = PiotroskiFScoreCalculator(db_session).calculate_for_stock(
         user_id=reviewer.id, stock_id=stock.id
     )
-    fact = _clone_fact(
-        next(
-            item
-            for item in generated
-            if item.metric_key == "score.piotroski.total"
-            and item.period_end_date == PERIOD_1
-        )
+    original = next(
+        item
+        for item in generated
+        if item.metric_key == "score.piotroski.total"
+        and item.period_end_date == PERIOD_1
     )
+    fact = _clone_fact(original)
     if snapshot_kind == "missing":
         fact.value_json.pop("analysis_method")
     elif snapshot_kind == "malformed":
@@ -512,6 +525,9 @@ def test_retained_total_capital_proxy_requires_exact_origin_authority(
         fact.value_json["analysis_method"]["effective_as_of"] = (
             PERIOD_0.isoformat()
         )
+    fact = _persist_forged_replacement(
+        db_session, original=original, replacement=fact
+    )
 
     kept, blocked, _ = apply_reviewed_method_gates(
         db_session,
@@ -553,14 +569,13 @@ def test_retained_piotroski_requires_verifiable_input_lineage(
     generated = PiotroskiFScoreCalculator(db_session).calculate_for_stock(
         user_id=owner.id, stock_id=stock.id
     )
-    fact = _clone_fact(
-        next(
-            item
-            for item in generated
-            if item.metric_key == "score.piotroski.total"
-            and item.period_end_date == PERIOD_1
-        )
+    original = next(
+        item
+        for item in generated
+        if item.metric_key == "score.piotroski.total"
+        and item.period_end_date == PERIOD_1
     )
+    fact = _clone_fact(original)
     if lineage_state == "missing":
         fact.value_json["inputs"] = []
     elif lineage_state in {"cross_stock", "cross_user"}:
@@ -583,6 +598,9 @@ def test_retained_piotroski_requires_verifiable_input_lineage(
         fact.value_json["inputs"][0]["value_numeric"] = "0.13"
     elif lineage_state == "wrong_source":
         fact.value_json["inputs"][0]["source_type"] = "manual"
+    fact = _persist_forged_replacement(
+        db_session, original=original, replacement=fact
+    )
 
     kept, blocked, _ = apply_reviewed_method_gates(
         db_session,

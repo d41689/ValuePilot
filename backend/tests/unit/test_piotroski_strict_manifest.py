@@ -5,7 +5,8 @@ from datetime import date, timedelta
 from decimal import Decimal
 
 import pytest
-from sqlalchemy import event, update
+from sqlalchemy import event, func, select, update
+from sqlalchemy.orm import Session
 
 from app.models.facts import MetricFact
 from app.models.stocks import Stock
@@ -115,7 +116,21 @@ def _clone(fact: MetricFact) -> MetricFact:
         source_type=fact.source_type,
         is_current=True,
         created_at=fact.created_at,
+        updated_at=fact.updated_at,
     )
+
+
+def _identified_clone(fact: MetricFact) -> MetricFact:
+    clone = _clone(fact)
+    clone.id = fact.id
+    clone.is_current = fact.is_current
+    clone.period = fact.period
+    clone.as_of_date = fact.as_of_date
+    clone.source_document_id = fact.source_document_id
+    clone.source_ref_id = fact.source_ref_id
+    clone.value_line_parse_run_id = fact.value_line_parse_run_id
+    clone.value_line_legacy_revision = fact.value_line_legacy_revision
+    return clone
 
 
 def _strict_lineage_item(fact: MetricFact) -> dict:
@@ -236,6 +251,13 @@ def test_strict_manifest_rejects_any_input_or_rebuilt_output_mismatch(
         )
     else:
         forged.value_numeric = 8
+    db_session.execute(
+        update(MetricFact)
+        .where(MetricFact.id == total.id)
+        .values(is_current=False)
+    )
+    db_session.add(forged)
+    db_session.commit()
 
     kept, blocked = guard_piotroski_method_authority(
         db_session,
@@ -268,7 +290,7 @@ def test_legacy_non_proxy_score_is_quarantined_without_strict_manifest(
     legacy = MetricFact(
         user_id=user.id,
         stock_id=stock.id,
-        metric_key="score.piotroski.roa_positive",
+        metric_key="score.piotroski.total",
         value_numeric=1,
         value_json={
             "calculation_version": "piotroski_value_line_v1",
@@ -289,6 +311,8 @@ def test_legacy_non_proxy_score_is_quarantined_without_strict_manifest(
         source_type="calculated",
         is_current=True,
     )
+    db_session.add(legacy)
+    db_session.commit()
 
     kept, blocked = guard_piotroski_method_authority(
         db_session,
@@ -326,8 +350,9 @@ def test_guard_batches_input_lookup_for_many_piotroski_facts(
 
     assert kept == facts
     assert blocked == []
-    # One bounded sibling expansion plus one batched input lookup.
-    assert len(statements) <= 2
+    # One bounded sibling expansion, one future-projection diagnostic, and one
+    # batched input lookup. The count does not grow with facts or periods.
+    assert len(statements) <= 3
 
 
 def test_component_only_request_requires_and_uses_complete_current_siblings(
@@ -888,7 +913,20 @@ def test_non_finite_output_is_typed_unavailable_instead_of_raising(
             and fact.period_end_date == PERIOD_1
         )
     )
+    original_total = next(
+        fact
+        for fact in written
+        if fact.metric_key == "score.piotroski.total"
+        and fact.period_end_date == PERIOD_1
+    )
     total.value_numeric = Decimal(value)
+    db_session.execute(
+        update(MetricFact)
+        .where(MetricFact.id == original_total.id)
+        .values(is_current=False)
+    )
+    db_session.add(total)
+    db_session.commit()
 
     kept, blocked = guard_piotroski_method_authority(
         db_session,
@@ -909,14 +947,13 @@ def test_postgres_nan_source_is_typed_unavailable_instead_of_raising(
     user = user_factory("piot-source-nan@example.com")
     stock = _stock(db_session, "PSRCNAN")
     written = _generate_complete(db_session, user=user, stock=stock)
-    total = _clone(
-        next(
-            fact
-            for fact in written
-            if fact.metric_key == "score.piotroski.total"
-            and fact.period_end_date == PERIOD_1
-        )
+    original_total = next(
+        fact
+        for fact in written
+        if fact.metric_key == "score.piotroski.total"
+        and fact.period_end_date == PERIOD_1
     )
+    total = _clone(original_total)
     original_source = next(
         fact
         for fact in db_session.query(MetricFact).filter(
@@ -941,6 +978,13 @@ def test_postgres_nan_source_is_typed_unavailable_instead_of_raising(
         if item["fact_id"] == original_source.id
     )
     total.value_json["inputs"][lineage_index] = _strict_lineage_item(source)
+    db_session.execute(
+        update(MetricFact)
+        .where(MetricFact.id == original_total.id)
+        .values(is_current=False)
+    )
+    db_session.add(total)
+    db_session.commit()
 
     kept, blocked = guard_piotroski_method_authority(
         db_session,
@@ -953,3 +997,340 @@ def test_postgres_nan_source_is_typed_unavailable_instead_of_raising(
         "piotroski_method_authority_manifest_invalid"
     )
     assert blocked[0]["value_numeric"] is None
+
+
+def test_guard_rebinds_identified_detached_caller_to_fresh_canonical_row(
+    db_session, user_factory
+) -> None:
+    user = user_factory("piot-canonical-rebind@example.com")
+    stock = _stock(db_session, "PREBIND")
+    written = _generate_complete(db_session, user=user, stock=stock)
+    db_session.commit()
+    total = next(
+        fact
+        for fact in written
+        if fact.metric_key == "score.piotroski.total"
+        and fact.period_end_date == PERIOD_1
+    )
+    caller = _identified_clone(total)
+
+    kept, blocked = guard_piotroski_method_authority(
+        db_session,
+        facts=[caller],
+        effective_as_of=date.today(),
+    )
+
+    assert blocked == []
+    assert [fact.id for fact in kept] == [total.id]
+    assert kept[0] is not caller
+    assert kept[0] is db_session.get(MetricFact, total.id)
+
+
+@pytest.mark.parametrize("tamper", ["numeric", "current", "timestamp"])
+def test_guard_rejects_detached_caller_that_differs_from_canonical_projection(
+    db_session, user_factory, tamper: str
+) -> None:
+    user = user_factory(f"piot-caller-{tamper}@example.com")
+    stock = _stock(db_session, f"PCALL{tamper[:3]}")
+    written = _generate_complete(db_session, user=user, stock=stock)
+    db_session.commit()
+    total = next(
+        fact
+        for fact in written
+        if fact.metric_key == "score.piotroski.total"
+        and fact.period_end_date == PERIOD_1
+    )
+    caller = _identified_clone(total)
+    if tamper == "numeric":
+        caller.value_numeric = Decimal("8")
+    elif tamper == "current":
+        caller.is_current = False
+    else:
+        caller.updated_at = caller.updated_at + timedelta(microseconds=1)
+
+    kept, blocked = guard_piotroski_method_authority(
+        db_session,
+        facts=[caller],
+        effective_as_of=date.today(),
+    )
+
+    assert kept == []
+    assert blocked[0]["reason_code"] == (
+        "piotroski_current_projection_unverifiable"
+    )
+    assert blocked[0]["value_numeric"] is None
+
+
+def test_guard_rejects_missing_or_duplicate_caller_identity_before_numeric_use(
+    db_session, user_factory
+) -> None:
+    user = user_factory("piot-caller-identity@example.com")
+    stock = _stock(db_session, "PCALLID")
+    written = _generate_complete(db_session, user=user, stock=stock)
+    db_session.commit()
+    total = next(
+        fact
+        for fact in written
+        if fact.metric_key == "score.piotroski.total"
+        and fact.period_end_date == PERIOD_1
+    )
+
+    missing_id = _clone(total)
+    kept, blocked = guard_piotroski_method_authority(
+        db_session,
+        facts=[missing_id],
+        effective_as_of=date.today(),
+    )
+    assert kept == []
+    assert blocked[0]["reason_code"] == (
+        "piotroski_current_projection_unverifiable"
+    )
+
+    duplicate_a = _identified_clone(total)
+    duplicate_b = _identified_clone(total)
+    kept, blocked = guard_piotroski_method_authority(
+        db_session,
+        facts=[duplicate_a, duplicate_b],
+        effective_as_of=date.today(),
+    )
+    assert kept == []
+    assert len(blocked) == 2
+    assert {item["reason_code"] for item in blocked} == {
+        "piotroski_current_projection_unverifiable"
+    }
+
+
+def test_guard_fails_closed_when_current_score_was_created_after_cutoff(
+    db_session, user_factory
+) -> None:
+    user = user_factory("piot-future-score@example.com")
+    stock = _stock(db_session, "PFUTSCORE")
+    written = _generate_complete(db_session, user=user, stock=stock)
+    db_session.commit()
+    total = next(
+        fact
+        for fact in written
+        if fact.metric_key == "score.piotroski.total"
+        and fact.period_end_date == PERIOD_1
+    )
+    caller = _identified_clone(total)
+    cutoff = total.created_at - timedelta(microseconds=1)
+
+    kept, blocked = guard_piotroski_method_authority(
+        db_session,
+        facts=[caller],
+        effective_as_of=date.today(),
+        knowledge_at=cutoff,
+    )
+
+    assert kept == []
+    assert blocked[0]["reason_code"] == (
+        "historical_current_projection_unverifiable"
+    )
+
+
+def test_guard_fails_closed_when_current_sibling_was_updated_after_cutoff(
+    db_session, user_factory
+) -> None:
+    user = user_factory("piot-future-sibling-update@example.com")
+    stock = _stock(db_session, "PFUTSIB")
+    written = _generate_complete(db_session, user=user, stock=stock)
+    db_session.commit()
+    total = next(
+        fact
+        for fact in written
+        if fact.metric_key == "score.piotroski.total"
+        and fact.period_end_date == PERIOD_1
+    )
+    component = next(
+        fact
+        for fact in written
+        if fact.metric_key == "score.piotroski.roa_positive"
+        and fact.period_end_date == PERIOD_1
+    )
+    caller = _identified_clone(total)
+    cutoff = db_session.scalar(select(func.clock_timestamp()))
+    assert cutoff is not None
+    db_session.execute(
+        update(MetricFact)
+        .where(MetricFact.id == component.id)
+        .values(updated_at=cutoff + timedelta(seconds=1))
+    )
+    db_session.commit()
+
+    kept, blocked = guard_piotroski_method_authority(
+        db_session,
+        facts=[caller],
+        effective_as_of=date.today(),
+        knowledge_at=cutoff,
+    )
+
+    assert kept == []
+    assert blocked[0]["reason_code"] == (
+        "historical_current_projection_unverifiable"
+    )
+
+
+def test_guard_fails_closed_when_manifest_input_was_updated_after_cutoff(
+    db_session, user_factory
+) -> None:
+    user = user_factory("piot-future-input-update@example.com")
+    stock = _stock(db_session, "PFUTINPUT")
+    written = _generate_complete(db_session, user=user, stock=stock)
+    db_session.commit()
+    total = next(
+        fact
+        for fact in written
+        if fact.metric_key == "score.piotroski.total"
+        and fact.period_end_date == PERIOD_1
+    )
+    caller = _identified_clone(total)
+    cutoff = db_session.scalar(select(func.clock_timestamp()))
+    assert cutoff is not None
+    source = db_session.scalar(
+        select(MetricFact).where(
+            MetricFact.user_id == user.id,
+            MetricFact.stock_id == stock.id,
+            MetricFact.metric_key == "returns.roa",
+            MetricFact.period_end_date == PERIOD_1,
+            MetricFact.source_type == "parsed",
+        )
+    )
+    assert source is not None
+    db_session.execute(
+        update(MetricFact)
+        .where(MetricFact.id == source.id)
+        .values(updated_at=cutoff + timedelta(seconds=1))
+    )
+    db_session.commit()
+
+    kept, blocked = guard_piotroski_method_authority(
+        db_session,
+        facts=[caller],
+        effective_as_of=date.today(),
+        knowledge_at=cutoff,
+    )
+
+    assert kept == []
+    assert blocked[0]["reason_code"] == (
+        "historical_current_projection_unverifiable"
+    )
+
+
+def test_guard_does_not_reconstruct_historical_currentness_after_replacement(
+    db_session, user_factory
+) -> None:
+    user = user_factory("piot-toctou-replacement@example.com")
+    stock = _stock(db_session, "PTOCTOU")
+    written = _generate_complete(db_session, user=user, stock=stock)
+    db_session.commit()
+    total = next(
+        fact
+        for fact in written
+        if fact.metric_key == "score.piotroski.total"
+        and fact.period_end_date == PERIOD_1
+    )
+    caller = _identified_clone(total)
+    cutoff = db_session.scalar(select(func.clock_timestamp()))
+    assert cutoff is not None
+
+    with Session(bind=db_session.get_bind(), autoflush=False) as concurrent:
+        replacement = PiotroskiFScoreCalculator(concurrent).calculate_for_stock(
+            user_id=user.id,
+            stock_id=stock.id,
+        )
+        assert replacement
+        concurrent.commit()
+        replacement_created = [fact.created_at for fact in replacement]
+    with Session(bind=db_session.get_bind(), autoflush=False) as verify:
+        demoted = verify.get(MetricFact, total.id)
+        assert demoted is not None
+        assert demoted.is_current is False
+        assert any(created_at > cutoff for created_at in replacement_created)
+
+    kept, blocked = guard_piotroski_method_authority(
+        db_session,
+        facts=[caller],
+        effective_as_of=date.today(),
+        knowledge_at=cutoff,
+    )
+
+    assert kept == []
+    assert blocked[0]["reason_code"] == (
+        "historical_current_projection_unverifiable"
+    )
+
+
+def test_guard_does_not_reconstruct_currentness_for_a_demoted_caller(
+    db_session, user_factory
+) -> None:
+    user = user_factory("piot-demoted-caller@example.com")
+    stock = _stock(db_session, "PDEMOTE")
+    written = _generate_complete(db_session, user=user, stock=stock)
+    db_session.commit()
+    total = next(
+        fact
+        for fact in written
+        if fact.metric_key == "score.piotroski.total"
+        and fact.period_end_date == PERIOD_1
+    )
+    caller = _identified_clone(total)
+    db_session.execute(
+        update(MetricFact)
+        .where(MetricFact.id == total.id)
+        .values(is_current=False)
+    )
+    db_session.commit()
+    cutoff = db_session.scalar(select(func.clock_timestamp()))
+    assert cutoff is not None
+
+    kept, blocked = guard_piotroski_method_authority(
+        db_session,
+        facts=[caller],
+        effective_as_of=date.today(),
+        knowledge_at=cutoff,
+    )
+
+    assert kept == []
+    assert blocked[0]["reason_code"] == (
+        "historical_current_projection_unverifiable"
+    )
+
+
+def test_caller_mismatch_quarantine_does_not_cross_tenant_boundary(
+    db_session, user_factory
+) -> None:
+    first_user = user_factory("piot-caller-tenant-a@example.com")
+    second_user = user_factory("piot-caller-tenant-b@example.com")
+    stock = _stock(db_session, "PCALLTEN")
+    first = _generate_complete(db_session, user=first_user, stock=stock)
+    second = _generate_complete(db_session, user=second_user, stock=stock)
+    db_session.commit()
+    first_total = next(
+        fact
+        for fact in first
+        if fact.metric_key == "score.piotroski.total"
+        and fact.period_end_date == PERIOD_1
+    )
+    second_total = next(
+        fact
+        for fact in second
+        if fact.metric_key == "score.piotroski.total"
+        and fact.period_end_date == PERIOD_1
+    )
+    bad_first = _identified_clone(first_total)
+    bad_first.value_numeric = Decimal("8")
+    good_second = _identified_clone(second_total)
+
+    kept, blocked = guard_piotroski_method_authority(
+        db_session,
+        facts=[bad_first, good_second],
+        effective_as_of=date.today(),
+    )
+
+    assert [fact.id for fact in kept] == [second_total.id]
+    assert kept[0] is not good_second
+    assert len(blocked) == 1
+    assert blocked[0]["reason_code"] == (
+        "piotroski_current_projection_unverifiable"
+    )

@@ -6,6 +6,7 @@ typed unavailable publication decision.
 """
 from __future__ import annotations
 
+from copy import deepcopy
 from dataclasses import dataclass
 from datetime import date, datetime, timezone
 from decimal import Decimal, DecimalException
@@ -30,6 +31,12 @@ MAX_PIOTROSKI_PERIOD_GROUPS = 50
 MAX_PIOTROSKI_MANIFEST_INPUTS = 32
 MAX_PIOTROSKI_UNIQUE_INPUT_IDS = 1_000
 MAX_PIOTROSKI_CURRENT_SIBLINGS_PER_PERIOD = 10
+PIOTROSKI_CURRENT_PROJECTION_UNVERIFIABLE = (
+    "piotroski_current_projection_unverifiable"
+)
+HISTORICAL_CURRENT_PROJECTION_UNVERIFIABLE = (
+    "historical_current_projection_unverifiable"
+)
 
 
 class CanonicalSourceConflictError(ValueError):
@@ -796,6 +803,49 @@ def _piotroski_period_key(
     )
 
 
+def _piotroski_projection_snapshot(fact: MetricFact) -> tuple[Any, ...]:
+    return (
+        fact.id,
+        fact.user_id,
+        fact.stock_id,
+        fact.metric_key,
+        deepcopy(fact.value_json),
+        str(fact.value_numeric) if fact.value_numeric is not None else None,
+        fact.value_text,
+        fact.unit,
+        fact.currency,
+        fact.period,
+        fact.period_type,
+        fact.period_end_date,
+        fact.as_of_date,
+        fact.source_document_id,
+        fact.source_type,
+        fact.source_ref_id,
+        fact.value_line_parse_run_id,
+        fact.value_line_legacy_revision,
+        fact.is_current,
+        fact.created_at,
+        fact.updated_at,
+    )
+
+
+def _piotroski_temporal_reason(
+    fact: MetricFact,
+    *,
+    cutoff: datetime,
+) -> str | None:
+    if (
+        fact.created_at is None
+        or fact.created_at.tzinfo is None
+        or fact.updated_at is None
+        or fact.updated_at.tzinfo is None
+    ):
+        return "piotroski_method_authority_manifest_invalid"
+    if fact.created_at > cutoff or fact.updated_at > cutoff:
+        return HISTORICAL_CURRENT_PROJECTION_UNVERIFIABLE
+    return None
+
+
 def _parse_piotroski_manifest(
     fact: MetricFact,
 ) -> tuple[dict[int, dict[str, Any]] | None, str | None]:
@@ -886,8 +936,9 @@ def guard_piotroski_method_authority(
     requested_by_period: dict[
         tuple[int | None, int, str | None, date | None], list[MetricFact]
     ] = {}
-    for fact in piotroski:
-        requested_by_period.setdefault(_piotroski_period_key(fact), []).append(fact)
+    caller_periods = [_piotroski_period_key(fact) for fact in piotroski]
+    for ordinal, fact in enumerate(piotroski):
+        requested_by_period.setdefault(caller_periods[ordinal], []).append(fact)
     if len(requested_by_period) > MAX_PIOTROSKI_PERIOD_GROUPS:
         return block_all("piotroski_method_authority_bound_exceeded")
 
@@ -901,12 +952,51 @@ def guard_piotroski_method_authority(
         if error is not None:
             request_errors[ordinal] = error
             if error == "piotroski_method_authority_bound_exceeded":
-                bounded_periods.add(_piotroski_period_key(fact))
+                bounded_periods.add(caller_periods[ordinal])
             continue
         assert lineage is not None
         request_input_ids.update(lineage)
     if len(request_input_ids) > MAX_PIOTROSKI_UNIQUE_INPUT_IDS:
         return block_all("piotroski_method_authority_bound_exceeded")
+
+    caller_snapshots = [_piotroski_projection_snapshot(fact) for fact in piotroski]
+    projection_errors: dict[
+        tuple[int | None, int, str | None, date | None], str
+    ] = {}
+
+    def mark_projection_error(
+        period: tuple[int | None, int, str | None, date | None],
+        reason: str,
+    ) -> None:
+        if (
+            projection_errors.get(period)
+            != HISTORICAL_CURRENT_PROJECTION_UNVERIFIABLE
+            or reason == HISTORICAL_CURRENT_PROJECTION_UNVERIFIABLE
+        ):
+            projection_errors[period] = reason
+
+    caller_id_counts: dict[int, int] = {}
+    for ordinal, fact in enumerate(piotroski):
+        if (
+            not isinstance(fact.id, int)
+            or isinstance(fact.id, bool)
+            or fact.id <= 0
+        ):
+            mark_projection_error(
+                caller_periods[ordinal],
+                PIOTROSKI_CURRENT_PROJECTION_UNVERIFIABLE,
+            )
+            continue
+        caller_id_counts[fact.id] = caller_id_counts.get(fact.id, 0) + 1
+    duplicate_caller_ids = {
+        fact_id for fact_id, count in caller_id_counts.items() if count > 1
+    }
+    for ordinal, fact in enumerate(piotroski):
+        if fact.id in duplicate_caller_ids:
+            mark_projection_error(
+                caller_periods[ordinal],
+                PIOTROSKI_CURRENT_PROJECTION_UNVERIFIABLE,
+            )
 
     query_periods = [
         period
@@ -918,6 +1008,7 @@ def guard_piotroski_method_authority(
         and isinstance(period[3], date)
     ]
     sibling_rows: list[MetricFact] = []
+    future_projection_rows: list[MetricFact] = []
     if query_periods:
         period_clauses = [
             and_(
@@ -945,6 +1036,7 @@ def guard_piotroski_method_authority(
             )
             .where(
                 MetricFact.is_current.is_(True),
+                MetricFact.created_at <= cutoff,
                 MetricFact.metric_key.like(f"{PIOTROSKI_PREFIX}%"),
                 or_(*period_clauses),
             )
@@ -965,14 +1057,68 @@ def guard_piotroski_method_authority(
                     len(query_periods)
                     * (MAX_PIOTROSKI_CURRENT_SIBLINGS_PER_PERIOD + 1)
                 )
+                .execution_options(populate_existing=True, autoflush=False)
             ).all()
+        )
+        future_ranked = (
+            select(
+                MetricFact.id.label("fact_id"),
+                func.row_number()
+                .over(
+                    partition_by=(
+                        MetricFact.user_id,
+                        MetricFact.stock_id,
+                        MetricFact.period_type,
+                        MetricFact.period_end_date,
+                    ),
+                    order_by=MetricFact.id,
+                )
+                .label("projection_rank"),
+            )
+            .where(
+                MetricFact.is_current.is_(True),
+                MetricFact.created_at > cutoff,
+                MetricFact.metric_key.like(f"{PIOTROSKI_PREFIX}%"),
+                or_(*period_clauses),
+            )
+            .subquery()
+        )
+        future_projection_rows = list(
+            session.scalars(
+                select(MetricFact)
+                .join(
+                    future_ranked,
+                    future_ranked.c.fact_id == MetricFact.id,
+                )
+                .where(
+                    future_ranked.c.projection_rank
+                    <= MAX_PIOTROSKI_CURRENT_SIBLINGS_PER_PERIOD + 1
+                )
+                .limit(
+                    len(query_periods)
+                    * (MAX_PIOTROSKI_CURRENT_SIBLINGS_PER_PERIOD + 1)
+                )
+                .execution_options(populate_existing=True, autoflush=False)
+            ).all()
+        )
+
+    # These rows are diagnostic evidence only. They can never become the
+    # canonical sibling set for an earlier cutoff.
+    for fact in future_projection_rows:
+        mark_projection_error(
+            _piotroski_period_key(fact),
+            HISTORICAL_CURRENT_PROJECTION_UNVERIFIABLE,
         )
 
     siblings_by_period: dict[
         tuple[int | None, int, str | None, date | None], list[MetricFact]
     ] = {}
     for fact in sibling_rows:
-        siblings_by_period.setdefault(_piotroski_period_key(fact), []).append(fact)
+        period = _piotroski_period_key(fact)
+        siblings_by_period.setdefault(period, []).append(fact)
+        temporal_reason = _piotroski_temporal_reason(fact, cutoff=cutoff)
+        if temporal_reason is not None:
+            mark_projection_error(period, temporal_reason)
     for period, siblings in siblings_by_period.items():
         if len(siblings) > MAX_PIOTROSKI_CURRENT_SIBLINGS_PER_PERIOD:
             # The limit+1 row proves the period exceeds the only valid key set.
@@ -981,15 +1127,78 @@ def guard_piotroski_method_authority(
                 {
                     ordinal: "piotroski_method_authority_manifest_invalid"
                     for ordinal, fact in enumerate(piotroski)
-                    if _piotroski_period_key(fact) == period
+                    if caller_periods[ordinal] == period
                 }
             )
 
-    sibling_object_ids = {id(fact) for fact in sibling_rows}
-    validation_facts = [
-        *sibling_rows,
-        *(fact for fact in piotroski if id(fact) not in sibling_object_ids),
-    ]
+    canonical_by_id = {fact.id: fact for fact in sibling_rows}
+    eligible_caller_ids = {
+        fact.id
+        for ordinal, fact in enumerate(piotroski)
+        if isinstance(fact.id, int)
+        and not isinstance(fact.id, bool)
+        and fact.id > 0
+        and caller_periods[ordinal] not in bounded_periods
+    }
+    missing_caller_ids = eligible_caller_ids - set(canonical_by_id)
+    diagnostic_rows = (
+        list(
+            session.scalars(
+                select(MetricFact)
+                .where(MetricFact.id.in_(missing_caller_ids))
+                .execution_options(populate_existing=True, autoflush=False)
+            ).all()
+        )
+        if missing_caller_ids
+        else []
+    )
+    diagnostics_by_id = {fact.id: fact for fact in diagnostic_rows}
+    canonical_request_rows: dict[int, MetricFact] = {}
+    for ordinal, fact in enumerate(piotroski):
+        period = caller_periods[ordinal]
+        if period in bounded_periods or fact.id in duplicate_caller_ids:
+            continue
+        if (
+            not isinstance(fact.id, int)
+            or isinstance(fact.id, bool)
+            or fact.id <= 0
+        ):
+            continue
+        canonical = canonical_by_id.get(fact.id)
+        if canonical is None:
+            diagnostic = diagnostics_by_id.get(fact.id)
+            diagnostic_reason: str | None = None
+            if diagnostic is not None:
+                if diagnostic.is_current is not True:
+                    diagnostic_reason = (
+                        HISTORICAL_CURRENT_PROJECTION_UNVERIFIABLE
+                    )
+                else:
+                    diagnostic_reason = _piotroski_temporal_reason(
+                        diagnostic,
+                        cutoff=cutoff,
+                    )
+            mark_projection_error(
+                period,
+                diagnostic_reason
+                or PIOTROSKI_CURRENT_PROJECTION_UNVERIFIABLE,
+            )
+            continue
+        temporal_reason = _piotroski_temporal_reason(canonical, cutoff=cutoff)
+        if temporal_reason is not None:
+            mark_projection_error(period, temporal_reason)
+            continue
+        if caller_snapshots[ordinal] != _piotroski_projection_snapshot(canonical):
+            mark_projection_error(
+                period,
+                PIOTROSKI_CURRENT_PROJECTION_UNVERIFIABLE,
+            )
+            continue
+        canonical_request_rows[ordinal] = canonical
+
+    # Only freshly queried, currently canonical rows participate in authority
+    # validation. Detached or stale caller objects are never numeric authority.
+    validation_facts = list(sibling_rows)
     parsed_lineage: dict[int, dict[int, dict[str, Any]]] = {}
     preliminary_errors: dict[int, str] = {}
     all_input_ids: set[int] = set()
@@ -1029,7 +1238,9 @@ def guard_piotroski_method_authority(
     referenced = (
         list(
             session.scalars(
-                select(MetricFact).where(MetricFact.id.in_(all_input_ids))
+                select(MetricFact)
+                .where(MetricFact.id.in_(all_input_ids))
+                .execution_options(populate_existing=True, autoflush=False)
             ).all()
         )
         if all_input_ids
@@ -1050,6 +1261,10 @@ def guard_piotroski_method_authority(
         if error is not None:
             evaluations.append((fact, error, None))
             continue
+        temporal_reason = _piotroski_temporal_reason(fact, cutoff=cutoff)
+        if temporal_reason is not None:
+            evaluations.append((fact, temporal_reason, None))
+            continue
         lineage = parsed_lineage[ordinal]
         inputs = [referenced_by_id.get(fact_id) for fact_id in lineage]
         if (
@@ -1065,8 +1280,23 @@ def guard_piotroski_method_authority(
             )
             continue
         typed_inputs = [item for item in inputs if item is not None]
+        input_temporal_reason = next(
+            (
+                reason
+                for item in typed_inputs
+                if (
+                    reason := _piotroski_temporal_reason(item, cutoff=cutoff)
+                )
+                is not None
+            ),
+            None,
+        )
+        if input_temporal_reason is not None:
+            evaluations.append((fact, input_temporal_reason, None))
+            continue
         if any(
-            item.period_type != "FY"
+            item.is_current is not True
+            or item.period_type != "FY"
             or item.period_end_date is None
             or item.created_at is None
             or item.created_at.tzinfo is None
@@ -1208,6 +1438,8 @@ def guard_piotroski_method_authority(
         period_error: str | None = None
         if period in bounded_periods:
             period_error = "piotroski_method_authority_bound_exceeded"
+        elif period in projection_errors:
+            period_error = projection_errors[period]
         elif len(siblings) > MAX_PIOTROSKI_CURRENT_SIBLINGS_PER_PERIOD:
             period_error = "piotroski_method_authority_manifest_invalid"
         elif not siblings:
@@ -1221,7 +1453,12 @@ def guard_piotroski_method_authority(
                 period_error = "piotroski_method_authority_manifest_invalid"
             else:
                 declared = _piotroski_declared_sibling_keys(totals[0])
-                if declared is None or declared != set(sibling_keys):
+                total_reason = evaluation_by_object.get(
+                    id(totals[0]), (None, None)
+                )[0]
+                if declared is None and total_reason is None:
+                    period_error = "piotroski_method_authority_manifest_invalid"
+                elif declared is not None and declared != set(sibling_keys):
                     period_error = "piotroski_method_authority_manifest_invalid"
 
         if period_error is not None:
@@ -1249,18 +1486,39 @@ def guard_piotroski_method_authority(
 
     kept = list(non_piotroski)
     blocked: list[dict[str, Any]] = []
+    projection_reason_codes = {
+        PIOTROSKI_CURRENT_PROJECTION_UNVERIFIABLE,
+        HISTORICAL_CURRENT_PROJECTION_UNVERIFIABLE,
+    }
     for ordinal, fact in enumerate(piotroski):
-        blocked_entry = blocked_by_period.get(_piotroski_period_key(fact))
+        blocked_entry = blocked_by_period.get(caller_periods[ordinal])
         if blocked_entry is None:
-            kept.append(fact)
+            canonical = canonical_request_rows.get(ordinal)
+            if canonical is None:
+                blocked.append(
+                    _piotroski_blocked_state(
+                        fact,
+                        reason_code=PIOTROSKI_CURRENT_PROJECTION_UNVERIFIABLE,
+                    )
+                )
+                continue
+            kept.append(canonical)
             continue
-        own_reason, own_decision = evaluation_by_object.get(id(fact), (None, None))
+        canonical = canonical_request_rows.get(ordinal)
+        own_reason, own_decision = evaluation_by_object.get(
+            id(canonical), (None, None)
+        )
         request_error = request_errors.get(ordinal)
         reason, decision = blocked_entry
+        final_reason = (
+            reason
+            if reason in projection_reason_codes
+            else request_error or own_reason or reason
+        )
         blocked.append(
             _piotroski_blocked_state(
-                fact,
-                reason_code=request_error or own_reason or reason,
+                canonical or fact,
+                reason_code=final_reason,
                 decision=own_decision or decision,
             )
         )

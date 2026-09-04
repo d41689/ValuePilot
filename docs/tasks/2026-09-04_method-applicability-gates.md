@@ -364,3 +364,31 @@ strict read-only Terra full-diff review with no P0–P3 findings before sign-off
   raising. R8 focused verification is `63 passed`; the serial 29-file R5–R8
   affected superset is `759 passed` with only the pre-existing Starlette/httpx
   and anyio deprecation warnings. No migration or retained data changed.
+- 2026-09-04: Strict Terra R9 found that the central Piotroski guard could
+  validate database siblings yet return a detached or stale caller object, and
+  that a present-day current projection could be mistaken for a historical
+  one. The guard now snapshots every positive-ID caller before any query,
+  boundedly reloads the current sibling projection from PostgreSQL with
+  `created_at <= knowledge_at`, and requires an exact identity, authority,
+  numeric, currentness, and timestamp match. Successful reads return those
+  freshly populated canonical rows in caller order; duplicate, absent,
+  non-current, or mismatched callers are typed unavailable for only their own
+  tenant/stock/period.
+- 2026-09-04: Piotroski point-in-time reads remain deliberately conservative.
+  Freshly reloaded scores and inputs must be current, created no later than the
+  read cutoff, and unchanged by that cutoff; inputs must also predate their
+  score. A bounded diagnostic for a current replacement created after the
+  cutoff, or direct proof that the requested row has since been demoted,
+  returns `historical_current_projection_unverifiable` rather than inventing a
+  historical currentness timeline. The calculator's bulk demotion does not
+  advance the old row's `updated_at`, so this diagnostic is necessary and its
+  future rows never become canonical read authority.
+- 2026-09-04: R9 tests-first started with `10 failed / 29 passed`. Detached
+  tampering, missing/duplicate IDs, future score/sibling/input timestamps,
+  demotion and concurrent replacement, current happy-path rebinding, and
+  cross-tenant isolation now pass. Final focused verification is `74 passed`;
+  the exact serial 29-file R5-R9 affected superset is `760 passed`, with only
+  the pre-existing Starlette/httpx and anyio deprecation warnings. An
+  additional mistakenly selected but related two-file set contributed 25
+  passing tests before the exact superset was rerun. No migration or retained
+  data changed.
