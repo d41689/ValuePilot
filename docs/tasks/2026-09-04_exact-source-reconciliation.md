@@ -401,3 +401,11 @@ reconciliation outcomes or create another financial fact store.
   tests. The exact full backend suite is green at 2,323 tests with only the two
   existing dependency-deprecation warnings. Fresh Terra R14 and the final
   ordered closing gate remain pending.
+- 2026-09-04: Fresh independent Terra R14 completed a strict read-only review
+  of the complete branch and returned PASS with no valid P0-P3. It confirmed
+  the R10-R13 remediations, migrations, authority/PIT boundaries, consumer
+  guards, and no-leakage behavior. Two candidates were closed as unreachable:
+  the extraction route resolves an exact manifest before its downstream error
+  mapper, and every declared source key in the supported mapping is produced
+  by the same parser extraction that supplies its mapped page-json value. The
+  final ordered canonical closing gate remains pending.
