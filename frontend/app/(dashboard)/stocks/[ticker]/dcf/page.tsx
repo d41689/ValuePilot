@@ -14,6 +14,7 @@ import { toast } from '@/components/ui/use-toast';
 import provenanceHelpers from '@/lib/factProvenance';
 import { normalizeTicker } from '@/lib/stockRoutes';
 import { computeGrowthValue, computeTerminalValue, computeTotalValue } from '@/lib/dcfMath';
+import { buildDcfModelPayload } from '@/lib/dcfModel';
 import {
   formatDcfMoney,
   resolveDcfCurrencyState,
@@ -337,6 +338,12 @@ export default function StockDcfPage() {
             depreciation_per_share?: DcfValueWithProvenance | null;
             input_manifest?: Record<string, unknown> | null;
             input_manifest_token?: string | null;
+            canonical_model_inputs?: {
+              net_profit_per_share: string | null;
+              depreciation_per_share: string | null;
+              capital_spending_per_share: string | null;
+              based_on_per_share: string | null;
+            } | null;
           }
         | null,
     [basedOnSelection, dcfInputsPayload]
@@ -344,6 +351,43 @@ export default function StockDcfPage() {
   const hasSelectedInputManifest = Boolean(
     selectedBasedOnPayload?.input_manifest &&
       typeof selectedBasedOnPayload.input_manifest_token === 'string'
+  );
+  const dcfModelPayload = useMemo(
+    () =>
+      buildDcfModelPayload({
+        selection: basedOnSelection,
+        inputManifest: selectedBasedOnPayload?.input_manifest,
+        inputManifestToken: selectedBasedOnPayload?.input_manifest_token,
+        canonicalInputs: selectedBasedOnPayload?.canonical_model_inputs,
+        actualInputs: {
+          net_profit_per_share: netProfitPerShare,
+          depreciation_per_share: depreciationPerShare,
+          capital_spending_per_share: capexPerShare,
+          based_on_per_share: basedOnValue,
+          discount_rate_pct: discountRate,
+          growth_years: growthYears,
+          growth_rate_pct: growthRate,
+          terminal_years: terminalYears,
+          terminal_rate_pct: terminalRate,
+        },
+        growthRateSelection,
+        clientResultPerShare: totalValue,
+      }),
+    [
+      basedOnSelection,
+      basedOnValue,
+      capexPerShare,
+      depreciationPerShare,
+      discountRate,
+      growthRate,
+      growthRateSelection,
+      growthYears,
+      netProfitPerShare,
+      selectedBasedOnPayload,
+      terminalRate,
+      terminalYears,
+      totalValue,
+    ]
   );
 
   const basedOnProvenanceLabel = useMemo(() => {
@@ -390,7 +434,8 @@ export default function StockDcfPage() {
     if (
       valuationCurrencyState.status !== 'available' ||
       valuationCurrencyState.currency !== 'USD' ||
-      !hasSelectedInputManifest
+      !hasSelectedInputManifest ||
+      !dcfModelPayload
     ) {
       toast({
         title: 'Save unavailable',
@@ -404,22 +449,14 @@ export default function StockDcfPage() {
     try {
       await apiClient.put(`/stocks/${stockId}/facts`, {
         metric_key: 'val.fair_value',
-        value_numeric: totalValue,
+        value_numeric: Number(totalValue.toFixed(6)),
         valuation_currency: valuationCurrencyState.currency,
         source: 'dcf',
         assumptions: [
           {
             source: 'dcf',
-            label: 'DCF model inputs',
-            based_on_selection: basedOnSelection,
-            discount_rate_pct: discountRate,
-            growth_years: growthYears,
-            growth_rate_pct: growthRate,
-            growth_rate_selection: growthRateSelection,
-            terminal_years: terminalYears,
-            terminal_rate_pct: terminalRate,
-            input_manifest: selectedBasedOnPayload?.input_manifest,
-            input_manifest_token: selectedBasedOnPayload?.input_manifest_token,
+            label: 'DCF model v1',
+            model: dcfModelPayload,
           },
         ],
       });
@@ -583,6 +620,15 @@ export default function StockDcfPage() {
                 className="h-auto w-20 border-0 bg-transparent px-0 py-0 text-right text-sm font-medium text-foreground shadow-none focus-visible:ring-0 focus-visible:ring-offset-0"
               />
             </label>
+          </div>
+          <div className="px-6 pb-4 text-xs text-muted-foreground">
+            DCF rates and horizons are user assumptions. Edited per-share fields are saved as
+            user overrides, not canonical facts.
+            {!dcfModelPayload ? (
+              <span className="ml-1 text-amber-800">
+                Save unavailable: scenario inputs do not satisfy the versioned model contract.
+              </span>
+            ) : null}
           </div>
 
           <div className="flex items-center justify-between gap-4 px-6 py-4 text-sm font-medium">
@@ -872,7 +918,8 @@ export default function StockDcfPage() {
                     !hasResolvedStockDefaults ||
                     valuationCurrencyState.status !== 'available' ||
                     valuationCurrencyState.currency !== 'USD' ||
-                    !hasSelectedInputManifest
+                    !hasSelectedInputManifest ||
+                    !dcfModelPayload
                   }
                   type="button"
                 >

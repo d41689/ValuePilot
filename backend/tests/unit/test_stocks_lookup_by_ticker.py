@@ -6,6 +6,44 @@ from app.models.artifacts import PdfDocument
 from app.models.facts import MetricFact
 from app.models.stocks import Stock, StockPrice
 from app.models.users import User
+from app.api.v1.endpoints import stocks as stocks_endpoint
+from app.services.dcf_inputs import DcfEvaluationClock
+
+
+def test_lookup_uses_one_et_effective_clock_for_all_method_gates(
+    client, db_session, auth_headers, monkeypatch
+):
+    user = User(email="ticker-clock@example.com")
+    stock = Stock(ticker="CLOCK", exchange="NYSE", company_name="Clock Inc")
+    db_session.add_all([user, stock])
+    db_session.commit()
+    evaluated_at = datetime(2026, 9, 4, 1, 30, tzinfo=timezone.utc)
+    effective_as_of = date(2026, 9, 3)
+    calls = []
+    original_gate = stocks_endpoint.reviewed_method_gate
+
+    def capture_gate(session, **kwargs):
+        calls.append(kwargs)
+        return original_gate(session, **kwargs)
+
+    monkeypatch.setattr(
+        stocks_endpoint,
+        "dcf_evaluation_clock",
+        lambda: DcfEvaluationClock(evaluated_at, effective_as_of),
+    )
+    monkeypatch.setattr(stocks_endpoint, "reviewed_method_gate", capture_gate)
+
+    response = client.get(
+        "/api/v1/stocks/by_ticker/CLOCK", headers=auth_headers(user)
+    )
+
+    assert response.status_code == 200, response.text
+    assert len(calls) == 4
+    assert {call["effective_as_of"] for call in calls} == {effective_as_of}
+    assert {call["knowledge_at"] for call in calls} == {evaluated_at}
+    for gate in response.json()["system_method_gates"].values():
+        assert gate["effective_as_of"] == "2026-09-03"
+        assert gate["knowledge_at"] == "2026-09-04T01:30:00+00:00"
 
 
 def _piotroski_fact(
@@ -903,6 +941,12 @@ def test_lookup_stock_by_ticker_returns_summary(client, db_session, auth_headers
         }
     }
     assert dcf_inputs_without_currency == {
+        "canonical_model_inputs": {
+            "net_profit_per_share": "4.800",
+            "depreciation_per_share": "0.900",
+            "capital_spending_per_share": "0.600",
+            "based_on_per_share": "5.100",
+        },
         "net_profit_per_share": {
             "value": 4.8,
             "source": "fact",
@@ -968,6 +1012,7 @@ def test_lookup_stock_by_ticker_returns_summary(client, db_session, auth_headers
                 "currency_state",
                 "input_manifest",
                 "input_manifest_token",
+                "canonical_model_inputs",
             }
         }
         for entry in payload["dcf_inputs_series"]

@@ -33,6 +33,20 @@ const resolveDcfComponentInputs = (payload, selection) => {
     };
   }
 
+  const canonical = inputs.canonical_model_inputs;
+  if (
+    canonical &&
+    typeof canonical.net_profit_per_share === 'string' &&
+    typeof canonical.depreciation_per_share === 'string' &&
+    typeof canonical.capital_spending_per_share === 'string'
+  ) {
+    return {
+      netProfitPerShare: canonical.net_profit_per_share,
+      depreciationPerShare: canonical.depreciation_per_share,
+      capexPerShare: canonical.capital_spending_per_share,
+    };
+  }
+
   return {
     netProfitPerShare: formatValue(inputs.net_profit_per_share),
     depreciationPerShare: formatValue(inputs.depreciation_per_share),

@@ -58,6 +58,12 @@ def test_dcf_input_entry_exposes_one_validated_iso_currency(currency):
     assert {
         item["metric_key"] for item in entry["currency_state"]["provenance"]
     } == {"per_share.eps", "is.depreciation", "per_share.capital_spending"}
+    assert entry["canonical_model_inputs"] == {
+        "net_profit_per_share": "10.000",
+        "depreciation_per_share": "10.000",
+        "capital_spending_per_share": "2.000",
+        "based_on_per_share": "18.000",
+    }
 
 
 @pytest.mark.parametrize(

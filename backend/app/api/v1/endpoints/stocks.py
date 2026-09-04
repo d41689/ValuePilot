@@ -1,9 +1,8 @@
-import math
 from typing import Any
 from fastapi import APIRouter, HTTPException, Body, Query
 from sqlalchemy import select, func
 from datetime import date, datetime, timezone
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 from zoneinfo import ZoneInfo
 from app.api.deps import SessionDep, CurrentUser
 from app.core.currencies import normalize_iso4217_currency
@@ -31,13 +30,20 @@ from app.services.research_cases import (
     save_product_valuation_revision,
 )
 from app.services.dcf_inputs import (
+    DCF_CALCULATION_VERSION,
     DCF_EXPLICIT_SELECTION_RULE,
     DCF_INPUT_FACT_KEYS,
     DCF_MANIFEST_VERSION,
     DCF_MAX_MANIFEST_FACTS,
+    DCF_MODEL_VERSION,
     DCF_NORMALIZED_SELECTION_RULE,
+    DcfFactUniverseError,
+    DcfModelError,
+    calculate_dcf_model,
+    dcf_evaluation_clock,
     dcf_manifest_token,
     evaluate_dcf_input_selection,
+    load_canonical_dcf_fact_universe,
 )
 from app.services.market_data_service import (
     MarketDataService,
@@ -441,10 +447,46 @@ def _build_piotroski_f_score_card(
     return {"years": display_years, "rows": rows}
 
 
-DCF_ASSUMPTION_FIELDS = frozenset(
+DCF_ASSUMPTION_FIELDS = frozenset({"source", "label", "model"})
+DCF_MODEL_FIELDS = frozenset(
     {
-        "source",
-        "label",
+        "model_version",
+        "selection",
+        "input_manifest",
+        "input_manifest_token",
+        "actual_inputs",
+        "user_override_fields",
+        "growth_rate_selection",
+        "client_result_per_share",
+    }
+)
+DCF_OVERRIDEABLE_FIELDS = frozenset(
+    {
+        "net_profit_per_share",
+        "depreciation_per_share",
+        "capital_spending_per_share",
+        "based_on_per_share",
+    }
+)
+DCF_CANONICAL_COMPONENT_FIELDS = frozenset(
+    {
+        "net_profit_per_share",
+        "depreciation_per_share",
+        "capital_spending_per_share",
+    }
+)
+DCF_OVERRIDE_LABELS = {
+    "net_profit_per_share": "Net profit per share",
+    "depreciation_per_share": "Depreciation per share",
+    "capital_spending_per_share": "Capital spending per share",
+    "based_on_per_share": "Based-on value per share",
+}
+DCF_CLIENT_RESULT_TOLERANCE = Decimal("0.01")
+DCF_RESERVED_ASSUMPTION_FIELDS = frozenset(
+    {
+        "model",
+        "model_version",
+        "selection",
         "based_on_selection",
         "discount_rate_pct",
         "growth_years",
@@ -454,20 +496,6 @@ DCF_ASSUMPTION_FIELDS = frozenset(
         "terminal_rate_pct",
         "input_manifest",
         "input_manifest_token",
-    }
-)
-DCF_NUMERIC_ASSUMPTION_FIELDS = frozenset(
-    {
-        "discount_rate_pct",
-        "growth_years",
-        "growth_rate_pct",
-        "terminal_years",
-        "terminal_rate_pct",
-    }
-)
-DCF_RESERVED_ASSUMPTION_FIELDS = frozenset(
-    {
-        *(DCF_ASSUMPTION_FIELDS - {"source", "label"}),
         "based_on_per_share",
         "computed_growth_value",
         "computed_terminal_value",
@@ -477,7 +505,8 @@ DCF_RESERVED_ASSUMPTION_FIELDS = frozenset(
 
 
 def _dcf_selection_from_assumption(assumption: dict[str, Any]) -> str | int | None:
-    selection = assumption.get("based_on_selection")
+    model = assumption.get("model")
+    selection = model.get("selection") if isinstance(model, dict) else None
     if selection == "norm":
         return "norm"
     if isinstance(selection, int) and not isinstance(selection, bool):
@@ -500,8 +529,9 @@ def _validated_dcf_save(
     current_user_id: int,
     assumptions: list[dict[str, Any]],
     declared_currency: str | None,
+    submitted_value: Decimal,
     server_evaluated_at: datetime,
-) -> tuple[str, list[dict[str, Any]]]:
+) -> tuple[str, list[dict[str, Any]], Decimal]:
     dcf_assumptions = [
         item for item in assumptions if isinstance(item, dict) and item.get("source") == "dcf"
     ]
@@ -522,42 +552,55 @@ def _validated_dcf_save(
             status_code=409,
         )
     submitted = dcf_assumptions[0]
-    if set(submitted) - DCF_ASSUMPTION_FIELDS:
+    if set(submitted) != DCF_ASSUMPTION_FIELDS:
         raise ResearchCaseError(
             "dcf_assumption_invalid",
-            "DCF assumption contains fields outside the verified contract.",
+            "DCF assumption must contain exactly the versioned model contract.",
             status_code=409,
         )
-    if not DCF_NUMERIC_ASSUMPTION_FIELDS.issubset(submitted):
+    model = submitted.get("model")
+    if not isinstance(model, dict) or set(model) != DCF_MODEL_FIELDS:
         raise ResearchCaseError(
             "dcf_assumption_invalid",
-            "DCF assumption is missing model parameters.",
+            "dcf_model_v1 must contain exactly the versioned model fields.",
             status_code=409,
         )
-    normalized_parameters: dict[str, float] = {}
-    for field in DCF_NUMERIC_ASSUMPTION_FIELDS:
-        value = submitted.get(field)
-        if (
-            isinstance(value, bool)
-            or not isinstance(value, (int, float))
-            or not math.isfinite(value)
-        ):
-            raise ResearchCaseError(
-                "dcf_assumption_invalid",
-                "DCF model parameters must be finite numbers.",
-                status_code=409,
-            )
-        normalized_parameters[field] = float(value)
-    growth_selection = submitted.get("growth_rate_selection")
+    if model.get("model_version") != DCF_MODEL_VERSION:
+        raise ResearchCaseError(
+            "dcf_assumption_invalid",
+            "Unsupported DCF model version.",
+            status_code=409,
+        )
+    growth_selection = model.get("growth_rate_selection")
     if growth_selection is not None and not isinstance(growth_selection, str):
         raise ResearchCaseError(
             "dcf_assumption_invalid",
             "DCF growth-rate selection must be a string or null.",
             status_code=409,
         )
+    overrides = model.get("user_override_fields")
+    if (
+        not isinstance(overrides, list)
+        or len(overrides) > len(DCF_OVERRIDEABLE_FIELDS)
+        or any(not isinstance(field, str) for field in overrides)
+        or len(set(overrides)) != len(overrides)
+        or not set(overrides).issubset(DCF_OVERRIDEABLE_FIELDS)
+    ):
+        raise ResearchCaseError(
+            "dcf_assumption_invalid",
+            "DCF user overrides must be a unique bounded field list.",
+            status_code=409,
+        )
+    actual_inputs = model.get("actual_inputs")
+    if not isinstance(actual_inputs, dict):
+        raise ResearchCaseError(
+            "dcf_assumption_invalid",
+            "DCF actual inputs must be a structured object.",
+            status_code=409,
+        )
     selection = _dcf_selection_from_assumption(submitted)
-    manifest = submitted.get("input_manifest")
-    submitted_token = submitted.get("input_manifest_token")
+    manifest = model.get("input_manifest")
+    submitted_token = model.get("input_manifest_token")
     if selection is None or not isinstance(manifest, dict) or not isinstance(submitted_token, str):
         raise ResearchCaseError(
             "dcf_assumption_invalid",
@@ -606,42 +649,22 @@ def _validated_dcf_save(
     if len(cited_facts) != len(fact_ids):
         raise _selection_changed()
 
-    facts = session.scalars(
-        select(MetricFact)
-        .where(
-            MetricFact.stock_id == stock_id,
-            MetricFact.is_current.is_(True),
-            MetricFact.created_at <= cutoff,
-            _visible_fact_predicate(current_user_id, []),
-            MetricFact.period_type == "FY",
-            MetricFact.metric_key.in_(
-                [*DCF_INPUT_FACT_KEYS.values(), "owners_earnings_per_share"]
-            ),
-        )
-        .order_by(
-            MetricFact.metric_key.asc(),
-            MetricFact.period_end_date.desc(),
-            MetricFact.created_at.desc(),
-            MetricFact.id.desc(),
-        )
-    ).all()
     try:
-        facts = guard_source_selection(facts, consumer="valuation_inputs")
-        facts = guard_sec_run_availability(session, stock_id=stock_id, facts=facts)
+        universe = load_canonical_dcf_fact_universe(
+            session,
+            stock_id=stock_id,
+            user_id=current_user_id,
+            evaluated_at=cutoff,
+            effective_as_of=cutoff.astimezone(ET).date(),
+        )
     except (CanonicalSourceConflictError, CanonicalUnavailableError) as error:
         raise _selection_changed() from error
-
-    oeps_facts = [fact for fact in facts if fact.metric_key == "owners_earnings_per_share"]
-    oeps_facts, _, _ = apply_reviewed_method_gates(
-        session,
-        stock_id=stock_id,
-        facts=oeps_facts,
-        effective_as_of=server_evaluated_at.astimezone(ET).date(),
-    )
+    except DcfFactUniverseError as error:
+        raise ResearchCaseError(error.code, str(error), status_code=409) from error
     entry = evaluate_dcf_input_selection(
         stock_id=stock_id,
-        dcf_facts=[fact for fact in facts if fact.metric_key in DCF_INPUT_FACT_KEYS.values()],
-        oeps_facts=oeps_facts,
+        dcf_facts=universe.dcf_facts,
+        oeps_facts=universe.oeps_facts,
         selection=selection,
         evaluated_at=cutoff,
     )
@@ -666,13 +689,127 @@ def _validated_dcf_save(
             "Saving DCF valuations currently supports USD only.",
             status_code=409,
         )
+    canonical_base = entry.get("canonical_model_inputs")
+    if not isinstance(canonical_base, dict) or any(
+        canonical_base.get(field) is None for field in DCF_OVERRIDEABLE_FIELDS
+    ):
+        raise ResearchCaseError(
+            "dcf_input_unavailable",
+            "Canonical DCF model inputs are unavailable.",
+            status_code=409,
+        )
+    try:
+        calculation = calculate_dcf_model(actual_inputs)
+    except DcfModelError as error:
+        raise ResearchCaseError(error.code, str(error), status_code=409) from error
+
+    def decimal_input(field: str, source: dict[str, Any]) -> Decimal:
+        try:
+            value = Decimal(str(source[field]))
+        except (InvalidOperation, KeyError, TypeError, ValueError) as error:
+            raise ResearchCaseError(
+                "dcf_assumption_invalid",
+                "DCF monetary input is missing or invalid.",
+                status_code=409,
+            ) from error
+        if not value.is_finite():
+            raise ResearchCaseError(
+                "dcf_assumption_invalid",
+                "DCF monetary input must be finite.",
+                status_code=409,
+            )
+        return value
+
+    actual_components = {
+        field: decimal_input(field, actual_inputs) for field in DCF_OVERRIDEABLE_FIELDS
+    }
+    canonical_components = {
+        field: decimal_input(field, canonical_base) for field in DCF_OVERRIDEABLE_FIELDS
+    }
+    expected_overrides = {
+        field
+        for field in DCF_OVERRIDEABLE_FIELDS
+        if actual_components[field] != canonical_components[field]
+    }
+    if set(overrides) != expected_overrides:
+        raise ResearchCaseError(
+            "dcf_override_unrecorded",
+            "Every changed DCF component must be explicitly recorded as a user override.",
+            status_code=409,
+        )
+
+    result = calculation["value_per_share"]
+    try:
+        client_result = Decimal(str(model.get("client_result_per_share")))
+    except (InvalidOperation, ValueError, TypeError) as error:
+        raise ResearchCaseError(
+            "dcf_result_mismatch",
+            "Client DCF result is invalid.",
+            status_code=409,
+        ) from error
+    if (
+        not client_result.is_finite()
+        or not submitted_value.is_finite()
+        or abs(client_result - result) > DCF_CLIENT_RESULT_TOLERANCE
+        or abs(submitted_value - result) > DCF_CLIENT_RESULT_TOLERANCE
+    ):
+        raise ResearchCaseError(
+            "dcf_result_mismatch",
+            "Submitted DCF result does not match the server calculation.",
+            status_code=409,
+        )
+
+    normalized_inputs = calculation["normalized_inputs"]
+
+    def wire(value: Decimal | int) -> str | int:
+        return value if isinstance(value, int) else str(value)
+
+    def input_authority(field: str) -> str:
+        if field in expected_overrides:
+            return "user_override"
+        if field in DCF_CANONICAL_COMPONENT_FIELDS:
+            return "canonical_fact"
+        if field == "based_on_per_share":
+            return "derived_from_canonical_inputs"
+        return "user_assumption"
+
     normalized_dcf: dict[str, Any] = {
         "source": "dcf",
-        "label": "DCF model inputs",
-        "based_on_selection": selection,
-        **normalized_parameters,
+        "label": "DCF model v1",
+        "model_version": DCF_MODEL_VERSION,
+        "calculation_version": DCF_CALCULATION_VERSION,
+        "selection": selection,
         "growth_rate_selection": growth_selection,
         "valuation_currency": state["currency"],
+        "canonical_base": {
+            field: {
+                "value": value,
+                "authority": (
+                    "canonical_fact"
+                    if field in DCF_CANONICAL_COMPONENT_FIELDS
+                    else "derived_from_canonical_inputs"
+                ),
+            }
+            for field, value in canonical_base.items()
+        },
+        "actual_inputs": {
+            field: {
+                "value": wire(value),
+                "authority": input_authority(field),
+            }
+            for field, value in normalized_inputs.items()
+        },
+        "user_overrides": [
+            {"field": field, "label": DCF_OVERRIDE_LABELS[field]}
+            for field in DCF_OVERRIDE_LABELS
+            if field in expected_overrides
+        ],
+        "result": {
+            "growth_value_per_share": str(calculation["growth_value_per_share"]),
+            "terminal_value_per_share": str(calculation["terminal_value_per_share"]),
+            "value_per_share": str(result),
+            "currency": state["currency"],
+        },
     }
     normalized_dcf["input_manifest"] = entry["input_manifest"]
     normalized_dcf["input_manifest_token"] = entry["input_manifest_token"]
@@ -683,7 +820,7 @@ def _validated_dcf_save(
         else item
         for item in assumptions
     ]
-    return state["currency"], normalized_assumptions
+    return state["currency"], normalized_assumptions, result
 
 
 def _visible_fact_predicate(current_user_id: int, admin_user_ids: list[int]):
@@ -762,7 +899,8 @@ def read_stock_by_ticker(
     )
     if not stock:
         raise HTTPException(status_code=404, detail="Stock not found")
-    dcf_evaluated_at = datetime.now(timezone.utc)
+    dcf_clock = dcf_evaluation_clock()
+    dcf_evaluated_at = dcf_clock.evaluated_at
     active_report = resolve_active_reports(
         session,
         stock_ids=[stock.id],
@@ -780,56 +918,25 @@ def read_stock_by_ticker(
     )
     facts = session.scalars(facts_stmt).all()
 
-    current_price = read_current_eod_price(session, stock=stock)
-
-    oeps_stmt = (
-        select(MetricFact)
-        .where(
-            MetricFact.stock_id == stock.id,
-            MetricFact.is_current.is_(True),
-            _visible_fact_predicate(current_user.id, admin_user_ids),
-            MetricFact.metric_key == "owners_earnings_per_share",
-            MetricFact.period_type == "FY",
-            MetricFact.created_at <= dcf_evaluated_at,
-        )
-        .order_by(
-            MetricFact.period_end_date.desc(),
-            MetricFact.created_at.desc(),
-            MetricFact.id.desc(),
-        )
-        .limit(6)
+    current_price = read_current_eod_price(
+        session,
+        stock=stock,
+        evaluated_at=dcf_evaluated_at,
     )
-    oeps_facts = session.scalars(oeps_stmt).all()
 
-    dcf_inputs_stmt = (
-        select(MetricFact)
-        .where(
-            MetricFact.stock_id == stock.id,
-            MetricFact.is_current.is_(True),
-            _visible_fact_predicate(current_user.id, admin_user_ids),
-            MetricFact.period_type == "FY",
-            MetricFact.metric_key.in_(list(DCF_INPUT_FACT_KEYS.values())),
-            MetricFact.created_at <= dcf_evaluated_at,
-        )
-        .order_by(
-            MetricFact.metric_key.asc(),
-            MetricFact.period_end_date.desc(),
-            MetricFact.created_at.desc(),
-            MetricFact.id.desc(),
-        )
-    )
-    dcf_input_facts = session.scalars(dcf_inputs_stmt).all()
+    oeps_facts: list[MetricFact] = []
+    dcf_input_facts: list[MetricFact] = []
     canonical_input_status: dict[str, Any] = {"status": "available"}
     try:
-        dcf_input_facts = guard_source_selection(
-            dcf_input_facts,
-            consumer="valuation_inputs",
-        )
-        dcf_input_facts = guard_sec_run_availability(
+        universe = load_canonical_dcf_fact_universe(
             session,
             stock_id=stock.id,
-            facts=dcf_input_facts,
+            user_id=current_user.id,
+            evaluated_at=dcf_evaluated_at,
+            effective_as_of=dcf_clock.effective_as_of,
         )
+        oeps_facts = universe.oeps_facts
+        dcf_input_facts = universe.dcf_facts
     except CanonicalSourceConflictError as error:
         dcf_input_facts = []
         canonical_input_status = {
@@ -838,14 +945,19 @@ def read_stock_by_ticker(
             "source_types": list(error.source_types),
         }
     except CanonicalUnavailableError as error:
-        dcf_input_facts = []
         canonical_input_status = error.state
+    except DcfFactUniverseError as error:
+        canonical_input_status = {
+            "status": "unavailable",
+            "reason_code": error.code,
+        }
     method_gate_decisions = {
         method_key: reviewed_method_gate(
             session,
             stock_id=stock.id,
             method_key=method_key,
-            effective_as_of=date.today(),
+            effective_as_of=dcf_clock.effective_as_of,
+            knowledge_at=dcf_evaluated_at,
         )
         for method_key in ("owner_earnings", "roic", "per_share_trend", "system_valuation")
     }
@@ -874,13 +986,8 @@ def read_stock_by_ticker(
         session,
         stock_id=stock.id,
         facts=facts,
-        effective_as_of=date.today(),
-    )
-    oeps_facts, _, _ = apply_reviewed_method_gates(
-        session,
-        stock_id=stock.id,
-        facts=oeps_facts,
-        effective_as_of=date.today(),
+        effective_as_of=dcf_clock.effective_as_of,
+        knowledge_at=dcf_evaluated_at,
     )
     try:
         summary_facts = guard_source_selection(
@@ -1260,6 +1367,9 @@ def upsert_stock_fact(
     try:
         valuation_currency = payload.valuation_currency or "USD"
         save_assumptions = payload.assumptions
+        save_value = payload.value_numeric
+        save_low = payload.valuation_low
+        save_high = payload.valuation_high
         if payload.source == "dcf":
             if payload.as_of_date is not None and payload.as_of_date != now_et.date():
                 raise ResearchCaseError(
@@ -1267,21 +1377,24 @@ def upsert_stock_fact(
                     "DCF results can only be saved for the current server date.",
                     status_code=409,
                 )
-            valuation_currency, save_assumptions = _validated_dcf_save(
+            valuation_currency, save_assumptions, save_value = _validated_dcf_save(
                 session,
                 stock_id=stock_id,
                 current_user_id=user_id,
                 assumptions=payload.assumptions,
                 declared_currency=payload.valuation_currency,
+                submitted_value=payload.value_numeric,
                 server_evaluated_at=now_et.astimezone(timezone.utc),
             )
+            save_low = save_value
+            save_high = save_value
         case, revision, fact = save_product_valuation_revision(
             session,
             user_id=user_id,
             stock_id=stock_id,
-            value_numeric=payload.value_numeric,
-            valuation_low=payload.valuation_low,
-            valuation_high=payload.valuation_high,
+            value_numeric=save_value,
+            valuation_low=save_low,
+            valuation_high=save_high,
             as_of_date=payload.as_of_date or now_et.date(),
             source=payload.source,
             pool_id=payload.pool_id,

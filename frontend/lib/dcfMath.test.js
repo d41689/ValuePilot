@@ -50,4 +50,5 @@ test('DCF handles very large terminal years without NaN', () => {
   assert.ok(Number.isFinite(growthValue));
   assert.ok(Number.isFinite(terminalValue));
   assert.ok(Number.isFinite(totalValue));
+  assert.ok(Math.abs(totalValue - 700.433543) < 0.000001);
 });

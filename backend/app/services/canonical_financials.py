@@ -244,6 +244,7 @@ def apply_reviewed_method_gates(
     stock_id: int,
     facts: Iterable[MetricFact],
     effective_as_of: date,
+    knowledge_at: datetime | None = None,
 ) -> tuple[list[MetricFact], list[dict[str, Any]], dict[str, MethodGateDecision]]:
     """Remove unsupported system outputs while preserving raw and user-authored facts."""
 
@@ -257,6 +258,7 @@ def apply_reviewed_method_gates(
             stock_id=stock_id,
             method_key=method,
             effective_as_of=effective_as_of,
+            knowledge_at=knowledge_at,
         )
         for method in sorted(required_methods)
     }

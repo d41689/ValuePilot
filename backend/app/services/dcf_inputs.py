@@ -4,13 +4,31 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
+from dataclasses import dataclass
 from datetime import date, datetime, timezone
-from decimal import Decimal, InvalidOperation
+from decimal import (
+    Decimal,
+    DecimalException,
+    InvalidOperation,
+    ROUND_FLOOR,
+    ROUND_HALF_EVEN,
+    localcontext,
+)
 from typing import Any, Callable, Iterable
+from zoneinfo import ZoneInfo
+
+from sqlalchemy import select
+from sqlalchemy.orm import Session
 
 from app.core.currencies import normalize_iso4217_currency
 from app.core.config import settings
 from app.models.facts import MetricFact
+from app.services.canonical_financials import (
+    apply_reviewed_method_gates,
+    guard_sec_run_availability,
+    guard_source_selection,
+    visible_metric_fact_predicate,
+)
 
 
 DCF_INPUT_FACT_KEYS = {
@@ -29,10 +47,254 @@ DCF_EXPLICIT_SELECTION_RULE = "explicit-fy-v1"
 DCF_NORMALIZED_SELECTION_RULE = "median-latest-five-oeps-v1"
 DCF_MAX_MANIFEST_FACTS = 9
 DCF_MAX_ASSUMPTIONS_BYTES = 65_536
+DCF_MODEL_VERSION = "dcf_model_v1"
+DCF_CALCULATION_VERSION = "dcf-two-stage-finite-v1"
+DCF_MAX_MODEL_YEARS = 100_000
+DCF_MAX_FACT_UNIVERSE_ROWS = 500
+DCF_MAX_RATE_PCT = Decimal("10000")
+DCF_MAX_ABS_PER_SHARE = Decimal("1000000000000000000")
+DCF_INPUT_QUANTUM = Decimal("0.001")
+DCF_RESULT_QUANTUM = Decimal("0.000001")
 SHARES_UNITS = frozenset({"count", "share", "shares"})
 NON_MONETARY_UNITS = frozenset(
     {"percent", "percentage", "ratio", "share", "shares", "count"}
 )
+ET = ZoneInfo("America/New_York")
+
+
+@dataclass(frozen=True)
+class DcfEvaluationClock:
+    evaluated_at: datetime
+    effective_as_of: date
+
+
+@dataclass(frozen=True)
+class DcfFactUniverse:
+    dcf_facts: list[MetricFact]
+    oeps_facts: list[MetricFact]
+
+
+class DcfFactUniverseError(ValueError):
+    def __init__(self, code: str, message: str):
+        self.code = code
+        super().__init__(message)
+
+
+def dcf_evaluation_clock(evaluated_at: datetime | None = None) -> DcfEvaluationClock:
+    instant = _aware_utc(evaluated_at or datetime.now(timezone.utc))
+    return DcfEvaluationClock(
+        evaluated_at=instant,
+        effective_as_of=instant.astimezone(ET).date(),
+    )
+
+
+def load_canonical_dcf_fact_universe(
+    session: Session,
+    *,
+    stock_id: int,
+    user_id: int,
+    evaluated_at: datetime,
+    effective_as_of: date,
+) -> DcfFactUniverse:
+    """Load and gate the complete bounded DCF fact universe before selection."""
+
+    facts = session.scalars(
+        select(MetricFact)
+        .where(
+            MetricFact.stock_id == stock_id,
+            MetricFact.is_current.is_(True),
+            MetricFact.created_at <= evaluated_at,
+            visible_metric_fact_predicate(MetricFact, user_id=user_id),
+            MetricFact.period_type == "FY",
+            MetricFact.metric_key.in_(
+                [*DCF_INPUT_FACT_KEYS.values(), "owners_earnings_per_share"]
+            ),
+        )
+        .order_by(
+            MetricFact.metric_key.asc(),
+            MetricFact.period_end_date.desc(),
+            MetricFact.created_at.desc(),
+            MetricFact.id.desc(),
+        )
+        .limit(DCF_MAX_FACT_UNIVERSE_ROWS + 1)
+    ).all()
+    if len(facts) > DCF_MAX_FACT_UNIVERSE_ROWS:
+        raise DcfFactUniverseError(
+            "dcf_fact_universe_too_large",
+            "Canonical DCF fact universe exceeds the safe evaluation bound",
+        )
+    facts = guard_source_selection(facts, consumer="valuation_inputs")
+    facts = guard_sec_run_availability(session, stock_id=stock_id, facts=facts)
+    dcf_facts = [fact for fact in facts if fact.metric_key in DCF_INPUT_FACT_KEYS.values()]
+    oeps_facts = [fact for fact in facts if fact.metric_key == "owners_earnings_per_share"]
+    oeps_facts, _, _ = apply_reviewed_method_gates(
+        session,
+        stock_id=stock_id,
+        facts=oeps_facts,
+        effective_as_of=effective_as_of,
+        knowledge_at=evaluated_at,
+    )
+    return DcfFactUniverse(dcf_facts=dcf_facts, oeps_facts=oeps_facts)
+
+
+class DcfModelError(ValueError):
+    def __init__(self, code: str, message: str):
+        self.code = code
+        super().__init__(message)
+
+
+def _model_decimal(
+    inputs: dict[str, Any],
+    key: str,
+    *,
+    nonnegative: bool = False,
+) -> Decimal:
+    value = inputs.get(key)
+    if isinstance(value, bool):
+        raise DcfModelError("dcf_model_input_invalid", f"{key} must be a finite number")
+    decimal_value = _finite_decimal(value)
+    if decimal_value is None or (nonnegative and decimal_value < 0):
+        raise DcfModelError("dcf_model_input_invalid", f"{key} must be a finite number")
+    if abs(decimal_value) > DCF_MAX_ABS_PER_SHARE:
+        raise DcfModelError("dcf_model_input_out_of_range", f"{key} is out of range")
+    return decimal_value
+
+
+def _model_years(inputs: dict[str, Any], key: str) -> int:
+    value = _model_decimal(inputs, key, nonnegative=True)
+    if value > DCF_MAX_MODEL_YEARS:
+        raise DcfModelError("dcf_model_input_out_of_range", f"{key} is out of range")
+    return int(value.to_integral_value(rounding=ROUND_FLOOR))
+
+
+def _model_rate(inputs: dict[str, Any], key: str) -> Decimal:
+    value = _model_decimal(inputs, key, nonnegative=True)
+    if value > DCF_MAX_RATE_PCT:
+        raise DcfModelError("dcf_model_input_out_of_range", f"{key} is out of range")
+    return value
+
+
+def calculate_dcf_model(actual_inputs: dict[str, Any]) -> dict[str, Any]:
+    """Evaluate the existing finite two-stage per-share DCF with Decimal math."""
+
+    required = {
+        "net_profit_per_share",
+        "depreciation_per_share",
+        "capital_spending_per_share",
+        "based_on_per_share",
+        "discount_rate_pct",
+        "growth_years",
+        "growth_rate_pct",
+        "terminal_years",
+        "terminal_rate_pct",
+    }
+    if not isinstance(actual_inputs, dict) or set(actual_inputs) != required:
+        raise DcfModelError(
+            "dcf_model_input_invalid",
+            "dcf_model_v1 requires exactly the versioned model input fields",
+        )
+    normalized: dict[str, Decimal | int] = {
+        "net_profit_per_share": _model_decimal(actual_inputs, "net_profit_per_share"),
+        "depreciation_per_share": _model_decimal(
+            actual_inputs, "depreciation_per_share"
+        ),
+        "capital_spending_per_share": _model_decimal(
+            actual_inputs, "capital_spending_per_share"
+        ),
+        "based_on_per_share": _model_decimal(
+            actual_inputs, "based_on_per_share", nonnegative=True
+        ),
+        "discount_rate_pct": _model_rate(actual_inputs, "discount_rate_pct"),
+        "growth_years": _model_years(actual_inputs, "growth_years"),
+        "growth_rate_pct": _model_rate(actual_inputs, "growth_rate_pct"),
+        "terminal_years": _model_years(actual_inputs, "terminal_years"),
+        "terminal_rate_pct": _model_rate(actual_inputs, "terminal_rate_pct"),
+    }
+    discount_rate_pct = normalized["discount_rate_pct"]
+    terminal_rate_pct = normalized["terminal_rate_pct"]
+    if not isinstance(discount_rate_pct, Decimal) or not isinstance(
+        terminal_rate_pct, Decimal
+    ):
+        raise AssertionError("DCF rates must be decimals")
+    if discount_rate_pct <= terminal_rate_pct:
+        raise DcfModelError(
+            "dcf_discount_not_above_terminal",
+            "Discount rate must be greater than the terminal growth rate",
+        )
+
+    base = normalized["based_on_per_share"]
+    growth_rate_pct = normalized["growth_rate_pct"]
+    growth_years = normalized["growth_years"]
+    terminal_years = normalized["terminal_years"]
+    if not isinstance(base, Decimal) or not isinstance(growth_rate_pct, Decimal):
+        raise AssertionError("DCF monetary inputs and rates must be decimals")
+    if not isinstance(growth_years, int) or not isinstance(terminal_years, int):
+        raise AssertionError("DCF year inputs must be integers")
+
+    try:
+        with localcontext() as context:
+            context.prec = 50
+            one = Decimal(1)
+            hundred = Decimal(100)
+            discount = discount_rate_pct / hundred
+            growth = growth_rate_pct / hundred
+            terminal = terminal_rate_pct / hundred
+            growth_ratio = (one + growth) / (one + discount)
+            growth_value = (
+                Decimal(0)
+                if growth_years == 0
+                else base * growth_years
+                if abs(growth_ratio - one) < Decimal("1e-12")
+                else base
+                * (growth_ratio * (one - growth_ratio**growth_years))
+                / (one - growth_ratio)
+            )
+            terminal_value = Decimal(0)
+            if terminal_years:
+                base_after_growth = base * (one + growth) ** growth_years
+                terminal_ratio = (one + terminal) / (one + discount)
+                discount_factor = (one + discount) ** growth_years
+                terminal_multiplier = (
+                    Decimal(terminal_years)
+                    if abs(terminal_ratio - one) < Decimal("1e-12")
+                    else terminal_ratio
+                    * (one - terminal_ratio**terminal_years)
+                    / (one - terminal_ratio)
+                )
+                terminal_value = (
+                    base_after_growth / discount_factor * terminal_multiplier
+                )
+            total = growth_value + terminal_value
+            if not all(value.is_finite() for value in (growth_value, terminal_value, total)):
+                raise DcfModelError(
+                    "dcf_model_result_unavailable", "DCF result is not finite"
+                )
+            if total <= 0 or abs(total) > DCF_MAX_ABS_PER_SHARE:
+                raise DcfModelError(
+                    "dcf_model_result_unavailable",
+                    "DCF result is outside the publishable per-share range",
+                )
+            growth_value = growth_value.quantize(
+                DCF_RESULT_QUANTUM, rounding=ROUND_HALF_EVEN
+            )
+            terminal_value = terminal_value.quantize(
+                DCF_RESULT_QUANTUM, rounding=ROUND_HALF_EVEN
+            )
+            total = total.quantize(DCF_RESULT_QUANTUM, rounding=ROUND_HALF_EVEN)
+    except DcfModelError:
+        raise
+    except DecimalException as error:
+        raise DcfModelError(
+            "dcf_model_result_unavailable", "DCF result cannot be represented"
+        ) from error
+
+    return {
+        "calculation_version": DCF_CALCULATION_VERSION,
+        "normalized_inputs": normalized,
+        "growth_value_per_share": growth_value,
+        "terminal_value_per_share": terminal_value,
+        "value_per_share": total,
+    }
 
 
 def _aware_utc(value: datetime | None) -> datetime:
@@ -277,6 +539,29 @@ def evaluate_dcf_input_selection(
         and shares_value > 0
         else None
     )
+    canonical_component_values = {
+        "net_profit_per_share": eps_value,
+        "depreciation_per_share": depreciation_per_share,
+        "capital_spending_per_share": capex_value,
+    }
+    canonical_model_inputs: dict[str, str | None] = {
+        key: (
+            str(value.quantize(DCF_INPUT_QUANTUM, rounding=ROUND_HALF_EVEN))
+            if available and value is not None
+            else None
+        )
+        for key, value in canonical_component_values.items()
+    }
+    if available:
+        based_on = max(
+            Decimal(0),
+            Decimal(canonical_model_inputs["net_profit_per_share"] or "0")
+            + Decimal(canonical_model_inputs["depreciation_per_share"] or "0")
+            - Decimal(canonical_model_inputs["capital_spending_per_share"] or "0"),
+        )
+        canonical_model_inputs["based_on_per_share"] = str(based_on)
+    else:
+        canonical_model_inputs["based_on_per_share"] = None
 
     manifest_facts = [
         _fact_snapshot(fact, role="dcf_input")
@@ -324,6 +609,7 @@ def evaluate_dcf_input_selection(
     return {
         "valuation_currency": state["currency"],
         "currency_state": state,
+        "canonical_model_inputs": canonical_model_inputs,
         "input_manifest": manifest,
         "input_manifest_token": dcf_manifest_token(manifest),
         "net_profit_per_share": value_payload(eps_value, "fact", provenance(eps)),
