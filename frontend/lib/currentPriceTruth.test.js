@@ -34,8 +34,10 @@ test('DCF uses only eligible canonical value for margin of safety', () => {
   assert.match(page, /resolveSafeMarginState/);
   assert.match(page, /valuationCurrencyState/);
   assert.match(page, /valuation_currency: valuationCurrencyState\.currency/);
-  assert.match(page, /input_manifest: selectedBasedOnPayload\?\.input_manifest/);
-  assert.match(page, /input_manifest_token: selectedBasedOnPayload\?\.input_manifest_token/);
+  assert.match(page, /buildDcfModelPayload/);
+  assert.match(page, /inputManifest: selectedBasedOnPayload\?\.input_manifest/);
+  assert.match(page, /inputManifestToken: selectedBasedOnPayload\?\.input_manifest_token/);
+  assert.match(page, /model: dcfModelPayload/);
   assert.match(page, /hasSelectedInputManifest/);
   assert.match(page, /valuationCurrencyState\.currency !== 'USD'/);
   assert.doesNotMatch(page, /currentPrice\.currency !== 'USD'/);

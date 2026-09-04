@@ -359,3 +359,35 @@ git diff --check
   entry was removed after verification. No migration, `storage/` change, FX,
   PIT replay, PR #128 reuse, or merge was performed. Draft PR #141 is ready for
   Terra adversarial review round 11.
+- 2026-09-03: Terra adversarial review round 11 found three DCF evidence-chain
+  gaps. The browser now submits one bounded `dcf_model_v1` object containing
+  the verified canonical selection manifest, every actual monetary/rate/year
+  input, the optional growth label, and an explicit list of changed per-share
+  fields. Canonical facts, the derived based-on default, user overrides, and
+  user assumptions remain separately labeled in immutable revision history.
+- 2026-09-03: Save now runs the existing finite two-stage DCF through the
+  versioned `dcf-two-stage-finite-v1` Decimal calculator, validates finite and
+  bounded inputs plus `discount > terminal`, and publishes only the
+  server-computed six-decimal result. Both the nested client result and the
+  top-level candidate value are consistency checks with a fixed `0.01`
+  tolerance; arbitrary values and unrecorded edits fail closed. Shared gold
+  and 100,000-year finite-horizon fixtures preserve frontend/backend formula
+  behavior.
+- 2026-09-03: GET and Save now use one canonical fact-universe loader that
+  applies visibility, source, SEC, and reviewed-method authority before the
+  bounded selection evaluator. The `501`-row query bound is only a DoS
+  detector: oversized universes return typed `dcf_fact_universe_too_large` and
+  no truncated set is evaluated. A regression proves two blocked facts among
+  the latest six cannot hide older eligible facts from an immediate GET→Save.
+  One UTC instant now derives the New York effective date passed to every DCF
+  classification/method gate; the UTC/ET midnight boundary is covered.
+- 2026-09-03: round-11 focused verification passed (`71 passed` backend;
+  `12 passed` frontend, lint, and production build). The exact closing gate
+  passed: Compose rebuild, Alembic upgrade, backend `2233 passed`, frontend
+  `229 passed`, frontend lint, production build, and `git diff --check`. The
+  first frontend full-suite run found one stale source-contract assertion;
+  that test was updated for the stricter nested manifest contract and the exact
+  command reran green. The generated Next `tsconfig.json` entry was removed
+  after verification. No migration, `storage/` change, FX, new valuation
+  method, PR #128 reuse, or merge was performed. Draft PR #141 is ready for
+  Terra adversarial review round 12.
