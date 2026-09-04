@@ -324,3 +324,38 @@ git diff --check
   entry was removed after verification. No migration, `storage/` change, FX,
   new valuation method, PR #128 reuse, or merge was performed. Draft PR #141
   is ready for Terra adversarial review round 10.
+- 2026-09-03: Terra adversarial review round 10 found three valid DCF
+  publication gaps. GET and Save now share one canonical DCF input evaluator.
+  Monetary inputs require finite values and an explicit active ISO 4217
+  currency; ratio/percent/share units, unknown currency, and cross-input
+  currency conflicts fail closed. Shares outstanding require a finite positive
+  count with no currency. Finite zero or negative monetary facts remain exact
+  inputs rather than being silently defaulted or subjected to a new economic
+  method threshold.
+- 2026-09-03: each normalized or explicit-FY choice now carries a versioned,
+  HMAC-authenticated manifest with the exact durable fact ids, stock, metric,
+  source reference/document, period, value, unit, currency, creation time,
+  selection rule, and one server evaluation timestamp. Normalized selection is
+  bounded to four arithmetic facts plus its five ranking facts; assumptions are
+  bounded to 64 KiB. Save re-queries the cited ids at that cutoff, requires
+  current visibility and an exact canonical reconstruction, and returns typed
+  `dcf_input_selection_changed` for corrections, supersession, wrong identity,
+  or tampering.
+- 2026-09-03: DCF saves now accept exactly one strict DCF assumption, reject
+  duplicate or smuggled unverified DCF fields, preserve permitted non-DCF
+  notes, and write only the server-normalized parameters plus verified manifest
+  evidence. The server rejects any explicit past or future valuation date with
+  `historical_dcf_save_unsupported`; the frontend submits the selected manifest
+  and disables Save when the selected canonical input state or manifest is
+  unavailable.
+- 2026-09-03: round-10 tests were written red first for invalid/missing/mixed
+  monetary semantics, nonpositive/nonfinite shares, legacy unit-only currency,
+  cross-stock selection, manifest identity fields, correction/supersession,
+  duplicate/smuggled DCF assumptions, date bounds, and current USD success.
+  Focused verification passed (`89 passed` backend; `12 passed` frontend plus
+  lint). Post-round-10 exact closing gate passed: Compose rebuild, Alembic
+  upgrade, backend `2218 passed`, frontend `227 passed`, frontend lint,
+  production build, and `git diff --check`. The generated Next `tsconfig.json`
+  entry was removed after verification. No migration, `storage/` change, FX,
+  PIT replay, PR #128 reuse, or merge was performed. Draft PR #141 is ready for
+  Terra adversarial review round 11.
