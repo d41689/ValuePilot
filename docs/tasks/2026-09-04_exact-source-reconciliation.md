@@ -398,4 +398,6 @@ reconciliation outcomes or create another financial fact store.
   model a legacy fact without weakening the production DB trigger and prove
   typed HTTP 409, no appended manual fact, and caught-error commit preserving
   the prior current manual row. The focused correction suite is green at 11
-  tests. Full backend and fresh Terra R14 remain pending.
+  tests. The exact full backend suite is green at 2,323 tests with only the two
+  existing dependency-deprecation warnings. Fresh Terra R14 and the final
+  ordered closing gate remain pending.
