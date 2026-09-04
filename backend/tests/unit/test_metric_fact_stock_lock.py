@@ -30,6 +30,23 @@ def _bootstrap_lock_entities() -> tuple[int, int, int]:
     return identities
 
 
+def _cleanup_lock_entities(user_id: int, first_id: int, second_id: int) -> None:
+    cleanup = SessionLocal()
+    try:
+        cleanup.execute(
+            text("DELETE FROM metric_facts WHERE stock_id IN (:first_id, :second_id)"),
+            {"first_id": first_id, "second_id": second_id},
+        )
+        cleanup.execute(
+            text("DELETE FROM stocks WHERE id IN (:first_id, :second_id)"),
+            {"first_id": first_id, "second_id": second_id},
+        )
+        cleanup.execute(text("DELETE FROM users WHERE id=:user_id"), {"user_id": user_id})
+        cleanup.commit()
+    finally:
+        cleanup.close()
+
+
 def _assert_mutation_waits_for_stock_lock(
     *, locked_stock_id: int, statement: str, parameters: dict[str, int]
 ) -> None:
@@ -71,7 +88,8 @@ def _assert_mutation_waits_for_stock_lock(
     finally:
         owner.rollback()
         owner.close()
-        worker.join(timeout=10)
+        if worker.ident is not None:
+            worker.join(timeout=10)
 
 
 def test_metric_fact_stock_lock_migration_handles_every_mutation_identity():
@@ -133,6 +151,7 @@ def test_metric_fact_trigger_serializes_same_stock_but_not_other_stock():
             contender.close()
             finished.set()
 
+    worker = threading.Thread(target=insert_same_stock, daemon=True)
     try:
         owner.execute(
             text(
@@ -142,7 +161,6 @@ def test_metric_fact_trigger_serializes_same_stock_but_not_other_stock():
             ),
             {"stock_id": first_id},
         )
-        worker = threading.Thread(target=insert_same_stock, daemon=True)
         worker.start()
         assert started.wait(timeout=2)
         assert not finished.wait(timeout=0.25)
@@ -172,43 +190,49 @@ def test_metric_fact_trigger_serializes_same_stock_but_not_other_stock():
     finally:
         owner.rollback()
         owner.close()
+        if worker.ident is not None:
+            worker.join(timeout=10)
+        _cleanup_lock_entities(user_id, first_id, second_id)
 
 
 def test_metric_fact_trigger_locks_both_update_identities_and_delete():
     user_id, first_id, second_id = _bootstrap_lock_entities()
-    bootstrap = SessionLocal()
-    update_fact_id = bootstrap.execute(
-        text(
-            """
-            INSERT INTO metric_facts
-              (user_id, stock_id, metric_key, value_numeric, source_type, is_current)
-            VALUES (:user_id, :stock_id, 'test.update-lock', 1, 'manual', true)
-            RETURNING id
-            """
-        ),
-        {"user_id": user_id, "stock_id": first_id},
-    ).scalar_one()
-    delete_fact_id = bootstrap.execute(
-        text(
-            """
-            INSERT INTO metric_facts
-              (user_id, stock_id, metric_key, value_numeric, source_type, is_current)
-            VALUES (:user_id, :stock_id, 'test.delete-lock', 1, 'manual', true)
-            RETURNING id
-            """
-        ),
-        {"user_id": user_id, "stock_id": first_id},
-    ).scalar_one()
-    bootstrap.commit()
-    bootstrap.close()
+    try:
+        bootstrap = SessionLocal()
+        update_fact_id = bootstrap.execute(
+            text(
+                """
+                INSERT INTO metric_facts
+                  (user_id, stock_id, metric_key, value_numeric, source_type, is_current)
+                VALUES (:user_id, :stock_id, 'test.update-lock', 1, 'manual', true)
+                RETURNING id
+                """
+            ),
+            {"user_id": user_id, "stock_id": first_id},
+        ).scalar_one()
+        delete_fact_id = bootstrap.execute(
+            text(
+                """
+                INSERT INTO metric_facts
+                  (user_id, stock_id, metric_key, value_numeric, source_type, is_current)
+                VALUES (:user_id, :stock_id, 'test.delete-lock', 1, 'manual', true)
+                RETURNING id
+                """
+            ),
+            {"user_id": user_id, "stock_id": first_id},
+        ).scalar_one()
+        bootstrap.commit()
+        bootstrap.close()
 
-    _assert_mutation_waits_for_stock_lock(
-        locked_stock_id=second_id,
-        statement="UPDATE metric_facts SET stock_id=:new_stock_id WHERE id=:fact_id",
-        parameters={"new_stock_id": second_id, "fact_id": update_fact_id},
-    )
-    _assert_mutation_waits_for_stock_lock(
-        locked_stock_id=first_id,
-        statement="DELETE FROM metric_facts WHERE id=:fact_id",
-        parameters={"fact_id": delete_fact_id},
-    )
+        _assert_mutation_waits_for_stock_lock(
+            locked_stock_id=second_id,
+            statement="UPDATE metric_facts SET stock_id=:new_stock_id WHERE id=:fact_id",
+            parameters={"new_stock_id": second_id, "fact_id": update_fact_id},
+        )
+        _assert_mutation_waits_for_stock_lock(
+            locked_stock_id=first_id,
+            statement="DELETE FROM metric_facts WHERE id=:fact_id",
+            parameters={"fact_id": delete_fact_id},
+        )
+    finally:
+        _cleanup_lock_entities(user_id, first_id, second_id)
