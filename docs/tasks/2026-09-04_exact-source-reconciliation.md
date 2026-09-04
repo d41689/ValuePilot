@@ -388,3 +388,14 @@ reconciliation outcomes or create another financial fact store.
   tests. The repeated exact full backend suite is green at 2,322 tests with
   only the two existing dependency-deprecation warnings. Fresh Terra R13 and
   the final ordered closing gate remain pending.
+- 2026-09-04: Terra R13 found one valid P3 compatibility bypass: direct
+  correction of a database-stamped legacy parsed fact could still substitute a
+  positive polymorphic `source_ref_id` for the required primary manifest. Sol
+  remediation removes that fallback from every correction path. A parsed fact
+  now needs exactly one authoritative manifest even when it predates the
+  cutover; otherwise service and HTTP paths return
+  `correction_lineage_unavailable` before any insert or demotion. Regressions
+  model a legacy fact without weakening the production DB trigger and prove
+  typed HTTP 409, no appended manual fact, and caught-error commit preserving
+  the prior current manual row. The focused correction suite is green at 11
+  tests. Full backend and fresh Terra R14 remain pending.

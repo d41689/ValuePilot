@@ -3,6 +3,7 @@ from decimal import Decimal
 
 import pytest
 import sqlalchemy as sa
+from sqlalchemy.orm.attributes import set_committed_value
 
 from app.models.users import User
 from app.models.stocks import Stock
@@ -1851,6 +1852,79 @@ def test_document_review_correction_rejects_post_cutover_fact_without_manifest(
     assert response.status_code == 409, response.text
     assert response.json()["detail"]["code"] == "correction_lineage_unavailable"
     assert db_session.query(MetricFact).filter_by(source_type="manual").count() == 0
+
+
+def test_document_review_correction_rejects_legacy_source_ref_without_manifest(
+    client, db_session, user_factory, auth_headers
+):
+    user = user_factory("documents-review-legacy-source-ref@example.com")
+    stock = Stock(ticker="LSREF", exchange="NYSE", company_name="Legacy Source Ref")
+    db_session.add(stock)
+    db_session.flush()
+    document = PdfDocument(
+        user_id=user.id,
+        stock_id=stock.id,
+        file_name="legacy-source-ref.pdf",
+        source="value_line",
+        file_storage_key="private/legacy-source-ref.pdf",
+        parse_status="parsed",
+        identity_needs_review=False,
+    )
+    db_session.add(document)
+    db_session.flush()
+    parsed = MetricFact(
+        user_id=user.id,
+        stock_id=stock.id,
+        metric_key="mkt.market_cap",
+        value_numeric=100,
+        value_json={"fact_nature": "snapshot"},
+        unit="USD",
+        currency="USD",
+        period_type="AS_OF",
+        period_end_date=date(2026, 1, 2),
+        source_document_id=document.id,
+        source_type="parsed",
+        is_current=True,
+    )
+    current_manual = MetricFact(
+        user_id=user.id,
+        stock_id=stock.id,
+        metric_key=parsed.metric_key,
+        value_numeric=101,
+        value_json={
+            "correction": True,
+            "corrected_from_fact_id": 1,
+            "source_fact_id": 1,
+        },
+        unit="USD",
+        currency="USD",
+        period_type=parsed.period_type,
+        period_end_date=parsed.period_end_date,
+        source_document_id=document.id,
+        source_type="manual",
+        is_current=True,
+    )
+    db_session.add_all([parsed, current_manual])
+    db_session.flush()
+    # Model a row grandfathered by the 120 migration without mutating or
+    # weakening the production trigger in this post-cutover test database.
+    set_committed_value(parsed, "value_line_legacy_revision", True)
+    set_committed_value(parsed, "value_line_parse_run_id", None)
+    set_committed_value(parsed, "source_ref_id", 987_654)
+    manual_id = current_manual.id
+
+    response = client.post(
+        f"/api/v1/documents/{document.id}/review/facts/{parsed.id}/corrections",
+        headers=auth_headers(user),
+        json={"value": "102"},
+    )
+
+    assert response.status_code == 409, response.text
+    assert response.json()["detail"]["code"] == "correction_lineage_unavailable"
+    db_session.expire_all()
+    manual_rows = db_session.query(MetricFact).filter_by(source_type="manual").all()
+    assert [fact.id for fact in manual_rows] == [manual_id]
+    assert manual_rows[0].is_current is True
 
 
 def test_extraction_correction_requires_authoritative_run_identity(db_session):

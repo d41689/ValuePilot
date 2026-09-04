@@ -73,7 +73,6 @@ def create_manual_metric_correction(
     source_extraction_id, source_parse_run_id = _exact_primary_lineage(
         session,
         parsed_fact=original_source,
-        allow_legacy_reference=source_fact.source_type == "parsed",
     )
     if source_fact.source_type == "manual":
         declared_extraction = source_metadata.get("source_extraction_id")
@@ -252,7 +251,6 @@ def _exact_primary_lineage(
     session: Session,
     *,
     parsed_fact: MetricFact,
-    allow_legacy_reference: bool,
 ) -> tuple[int, int | None]:
     if parsed_fact.source_type != "parsed" or _positive_id(parsed_fact.id) is None:
         raise _lineage_unavailable()
@@ -276,13 +274,6 @@ def _exact_primary_lineage(
         ):
             raise _lineage_unavailable()
         return primary.extraction_id, primary.value_line_parse_run_id
-    if (
-        not primary_inputs
-        and allow_legacy_reference
-        and parsed_fact.value_line_legacy_revision
-        and _positive_id(parsed_fact.source_ref_id) is not None
-    ):
-        return int(parsed_fact.source_ref_id), parsed_fact.value_line_parse_run_id
     raise _lineage_unavailable()
 
 

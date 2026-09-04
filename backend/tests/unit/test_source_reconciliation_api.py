@@ -4,6 +4,7 @@ from datetime import date, datetime, timedelta, timezone
 from types import SimpleNamespace
 
 import pytest
+from sqlalchemy.orm.attributes import set_committed_value
 
 from app.models.artifacts import PdfDocument, ValueLineParseRun
 from app.models.facts import Formula, MetricFact
@@ -381,7 +382,7 @@ def test_ingested_owner_earnings_becomes_unavailable_when_input_is_superseded(
     } == {"derived_lineage_superseded"}
 
 
-def test_failed_correction_validation_cannot_demote_current_manual_fact(
+def test_legacy_source_ref_validation_cannot_demote_current_manual_fact(
     db_session, user_factory
 ):
     user = user_factory("correction-atomicity@example.com")
@@ -416,6 +417,9 @@ def test_failed_correction_validation_cannot_demote_current_manual_fact(
     )
     db_session.add_all([parsed, current_manual])
     db_session.flush()
+    set_committed_value(parsed, "value_line_legacy_revision", True)
+    set_committed_value(parsed, "value_line_parse_run_id", None)
+    set_committed_value(parsed, "source_ref_id", 987_654)
     manual_id = current_manual.id
 
     with pytest.raises(ManualMetricCorrectionError) as error:
