@@ -462,3 +462,23 @@ git diff --check
   was removed after verification. No migration, stored-data rewrite,
   `storage/` change, PR #128 reuse, or merge was performed. Draft PR #141 is
   ready for Terra adversarial review round 14.
+- 2026-09-03: Terra adversarial review round 14 found one valid precision gap
+  in the server-authoritative DCF publication chain. Revision and fact writes
+  now share an explicit six-decimal, half-even Decimal quantization boundary;
+  `save_revision` passes Decimal directly to `publish_user_intrinsic_value`,
+  and the `Numeric(38,12)` bind no longer passes through binary float.
+- 2026-09-03: the valuation-save response now exposes authoritative
+  `value_numeric_exact` through a Pydantic Decimal field. The legacy JSON number
+  remains only a documented display-compatibility projection derived from the
+  exact value. The DCF success UI consumes the exact decimal string and formats
+  it without first coercing through JavaScript Number. A regression using
+  `991218953812.597121` proves exact equality across the normalized immutable
+  assumption result, revision base, MetricFact value, and wire field; manual
+  and Watchlist publication regressions retain their existing behavior.
+- 2026-09-03: round-14 focused verification passed (`83 passed` backend and
+  `19 passed` frontend DCF plus lint). The exact closing gate passed: Compose
+  rebuild, Alembic upgrade, backend `2257 passed`, frontend `233 passed`,
+  frontend lint, production build, and `git diff --check`. The generated Next
+  TypeScript path was removed after verification. No migration, stored-data
+  rewrite, `storage/` change, PR #128 reuse, or merge was performed. Draft PR
+  #141 is ready for Terra adversarial review round 15.
