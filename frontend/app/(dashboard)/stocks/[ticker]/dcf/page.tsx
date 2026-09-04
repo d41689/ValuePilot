@@ -14,6 +14,11 @@ import { toast } from '@/components/ui/use-toast';
 import provenanceHelpers from '@/lib/factProvenance';
 import { normalizeTicker } from '@/lib/stockRoutes';
 import { computeGrowthValue, computeTerminalValue, computeTotalValue } from '@/lib/dcfMath';
+import {
+  formatDcfMoney,
+  resolveDcfCurrencyState,
+  resolveSafeMarginState,
+} from '@/lib/dcfCurrency';
 import { resolveDcfDefaults } from '@/lib/dcfDefaults';
 import {
   resolveDcfComponentInputs,
@@ -45,12 +50,6 @@ const toNumber = (value: string, fallback = 0) => {
 };
 
 const clampNonNegative = (value: number) => (value < 0 ? 0 : value);
-
-const formatMoney = (value: number) =>
-  value.toLocaleString('en-US', {
-    minimumFractionDigits: 2,
-    maximumFractionDigits: 2,
-  });
 
 const formatInputMoney = (value: number) =>
   value.toLocaleString('en-US', {
@@ -289,27 +288,27 @@ export default function StockDcfPage() {
     return Math.max(0, parsed);
   }, [manualPrice]);
 
-  const safeMarginPct = useMemo(() => {
+  const valuationCurrencyState = useMemo(
+    () => resolveDcfCurrencyState(dcfInputsPayload ?? {}, basedOnSelection),
+    [basedOnSelection, dcfInputsPayload]
+  );
+
+  const safeMarginState = useMemo(
+    () =>
+      resolveSafeMarginState({ currencyState: valuationCurrencyState, currentPrice, totalValue }),
+    [currentPrice, totalValue, valuationCurrencyState]
+  );
+
+  const scenarioMarginPct = useMemo(() => {
     if (
-      !currentPrice ||
-      currentPrice.status !== 'available' ||
-      currentPrice.value === null ||
-      currentPrice.currency !== 'USD'
+      valuationCurrencyState.status !== 'available' ||
+      manualScenarioPrice === null ||
+      totalValue <= 0
     ) {
       return null;
     }
-    if (totalValue <= 0) {
-      return null;
-    }
-    return 100 * (1 - currentPrice.value / totalValue);
-  }, [currentPrice, totalValue]);
-
-  const scenarioMarginPct = useMemo(() => {
-    if (manualScenarioPrice === null || totalValue <= 0) {
-      return null;
-    }
     return 100 * (1 - manualScenarioPrice / totalValue);
-  }, [manualScenarioPrice, totalValue]);
+  }, [manualScenarioPrice, totalValue, valuationCurrencyState.status]);
 
   const activeReportLabel = useMemo(() => {
     if (!stockPayload) {
@@ -382,11 +381,24 @@ export default function StockDcfPage() {
       });
       return;
     }
+    if (
+      valuationCurrencyState.status !== 'available' ||
+      valuationCurrencyState.currency !== 'USD'
+    ) {
+      toast({
+        title: 'Save unavailable',
+        description:
+          valuationCurrencyState.reason_code ?? 'Only validated USD DCF results can be saved.',
+        variant: 'destructive',
+      });
+      return;
+    }
     setIsSavingFairValue(true);
     try {
       await apiClient.put(`/stocks/${stockId}/facts`, {
         metric_key: 'val.fair_value',
         value_numeric: totalValue,
+        valuation_currency: valuationCurrencyState.currency,
         source: 'dcf',
         assumptions: [
           {
@@ -514,7 +526,11 @@ export default function StockDcfPage() {
               ) : null}
             </div>
             <div className="flex items-center gap-2 rounded-lg border border-border/70 bg-card/80 px-4 py-2">
-              <span className="text-muted-foreground">$</span>
+              <span className="text-muted-foreground">
+                {valuationCurrencyState.status === 'available'
+                  ? valuationCurrencyState.currency
+                  : 'Unavailable'}
+              </span>
               <Input
                 value={basedOnInputValue}
                 onChange={(event) => setBasedOnOverride(event.target.value)}
@@ -605,7 +621,7 @@ export default function StockDcfPage() {
               </label>
             </div>
             <div className="rounded-lg border border-border/70 bg-card/80 px-4 py-2 text-base font-semibold">
-              $ 29.91
+              —
             </div>
           </div>
 
@@ -712,7 +728,11 @@ export default function StockDcfPage() {
                 </div>
                 <div className="flex items-center justify-between text-base font-semibold">
                   <span>Growth Value</span>
-                  <span>{hasResolvedStockDefaults ? `$ ${formatMoney(growthValue)}` : '—'}</span>
+                  <span>
+                    {hasResolvedStockDefaults
+                      ? formatDcfMoney(growthValue, valuationCurrencyState)
+                      : '—'}
+                  </span>
                 </div>
               </div>
             </div>
@@ -783,7 +803,11 @@ export default function StockDcfPage() {
                 </div>
                 <div className="flex items-center justify-between text-base font-semibold">
                   <span>Terminal Value</span>
-                  <span>{hasResolvedStockDefaults ? `$ ${formatMoney(terminalValue)}` : '—'}</span>
+                  <span>
+                    {hasResolvedStockDefaults
+                      ? formatDcfMoney(terminalValue, valuationCurrencyState)
+                      : '—'}
+                  </span>
                 </div>
               </div>
             </div>
@@ -809,7 +833,11 @@ export default function StockDcfPage() {
               </div>
               <div className="rounded-lg border border-border/70 bg-card/80 px-4 py-2 text-base font-semibold">
                 {currentPrice?.status === 'available'
-                  ? `${currentPrice.currency ?? ''} ${formatMoney(currentPrice.value ?? 0)}`.trim()
+                  ? formatDcfMoney(currentPrice.value ?? 0, {
+                      status: currentPrice.currency ? 'available' : 'unavailable',
+                      reason_code: currentPrice.reason_code,
+                      currency: currentPrice.currency,
+                    })
                   : 'Unavailable'}
               </div>
               <div className="flex items-center gap-2 rounded-lg border border-border/70 bg-card/80 px-4 py-2">
@@ -825,12 +853,21 @@ export default function StockDcfPage() {
             <div className="flex flex-wrap items-center gap-4 text-base font-semibold">
               <div className="flex items-center gap-2">
                 <span className="text-sm font-medium text-muted-foreground">Total Value</span>
-                <span>{hasResolvedStockDefaults ? `$ ${formatMoney(totalValue)}` : '—'}</span>
+                <span>
+                  {hasResolvedStockDefaults
+                    ? formatDcfMoney(totalValue, valuationCurrencyState)
+                    : '—'}
+                </span>
                 <Button
                   size="sm"
                   variant="outline"
                   onClick={handleSaveFairValue}
-                  disabled={isSavingFairValue || !hasResolvedStockDefaults}
+                  disabled={
+                    isSavingFairValue ||
+                    !hasResolvedStockDefaults ||
+                    valuationCurrencyState.status !== 'available' ||
+                    valuationCurrencyState.currency !== 'USD'
+                  }
                   type="button"
                 >
                   Save
@@ -850,9 +887,9 @@ export default function StockDcfPage() {
               <div className="flex items-center gap-2">
                 <span className="text-sm font-medium text-muted-foreground">Safe Margin</span>
                 <span>
-                  {safeMarginPct === null
-                    ? '—'
-                    : `${safeMarginPct.toLocaleString('en-US', {
+                  {safeMarginState.status !== 'available' || safeMarginState.value === null
+                    ? `Unavailable · ${safeMarginState.reason_code}`
+                    : `${safeMarginState.value.toLocaleString('en-US', {
                         minimumFractionDigits: 1,
                         maximumFractionDigits: 1,
                       })}%`}

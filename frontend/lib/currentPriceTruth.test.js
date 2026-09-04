@@ -28,10 +28,15 @@ test('DCF uses only eligible canonical value for margin of safety', () => {
   const page = source('app', '(dashboard)', 'stocks', '[ticker]', 'dcf', 'page.tsx');
 
   assert.match(page, /current_price/);
-  assert.match(page, /currentPrice\.status !== 'available'/);
   assert.match(page, /currentPrice\.value/);
   assert.match(page, /Manual scenario price/);
   assert.match(page, /canonical current price remains unavailable/);
+  assert.match(page, /resolveSafeMarginState/);
+  assert.match(page, /valuationCurrencyState/);
+  assert.match(page, /valuation_currency: valuationCurrencyState\.currency/);
+  assert.match(page, /valuationCurrencyState\.currency !== 'USD'/);
+  assert.doesNotMatch(page, /currentPrice\.currency !== 'USD'/);
+  assert.doesNotMatch(page, /`\$ \$\{formatMoney/);
   assert.doesNotMatch(page, /best-effort refresh; keep existing price/);
 });
 

@@ -26,6 +26,75 @@ def _make_stock(db_session, ticker: str) -> Stock:
     return stock
 
 
+def _add_dcf_inputs(db_session, *, user, stock, currencies=("USD", "USD", "USD")):
+    period_end = date(2025, 12, 31)
+    facts = [
+        MetricFact(
+            user_id=user.id,
+            stock_id=stock.id,
+            metric_key="owners_earnings_per_share",
+            value_numeric=10,
+            value_json={"user_authored_formula": True},
+            unit=currencies[0],
+            currency=currencies[0],
+            period_type="FY",
+            period_end_date=period_end,
+            source_type="manual",
+            is_current=True,
+        ),
+        MetricFact(
+            user_id=user.id,
+            stock_id=stock.id,
+            metric_key="per_share.eps",
+            value_numeric=10,
+            unit=currencies[0],
+            currency=currencies[0],
+            period_type="FY",
+            period_end_date=period_end,
+            source_type="manual",
+            is_current=True,
+        ),
+        MetricFact(
+            user_id=user.id,
+            stock_id=stock.id,
+            metric_key="is.depreciation",
+            value_numeric=100,
+            unit=currencies[1],
+            currency=currencies[1],
+            period_type="FY",
+            period_end_date=period_end,
+            source_type="manual",
+            is_current=True,
+        ),
+        MetricFact(
+            user_id=user.id,
+            stock_id=stock.id,
+            metric_key="equity.shares_outstanding",
+            value_numeric=10,
+            unit="shares",
+            period_type="FY",
+            period_end_date=period_end,
+            source_type="manual",
+            is_current=True,
+        ),
+        MetricFact(
+            user_id=user.id,
+            stock_id=stock.id,
+            metric_key="per_share.capital_spending",
+            value_numeric=2,
+            unit=currencies[2],
+            currency=currencies[2],
+            period_type="FY",
+            period_end_date=period_end,
+            source_type="manual",
+            is_current=True,
+        ),
+    ]
+    db_session.add_all(facts)
+    db_session.commit()
+    return facts
+
+
 def test_put_fair_value_preserves_prior_period_and_demotes_only_same_day_slot(
     client, db_session, auth_headers
 ):
@@ -103,6 +172,7 @@ def test_put_dcf_value_copies_labeled_assumptions_into_research_revision(
 ):
     user = _make_user(db_session, "fairvalue-dcf@example.com")
     stock = _make_stock(db_session, "DCFJ")
+    _add_dcf_inputs(db_session, user=user, stock=stock)
 
     response = client.put(
         f"/api/v1/stocks/{stock.id}/facts",
@@ -113,12 +183,14 @@ def test_put_dcf_value_copies_labeled_assumptions_into_research_revision(
             "valuation_low": 120.0,
             "valuation_high": 180.0,
             "source": "dcf",
+            "valuation_currency": "USD",
             "assumptions": [
                 {
                     "source": "dcf",
                     "label": "DCF model inputs",
                     "discount_rate_pct": 10.0,
                     "growth_rate_pct": 6.0,
+                    "based_on_selection": "norm",
                 }
             ],
         },
@@ -140,8 +212,78 @@ def test_put_dcf_value_copies_labeled_assumptions_into_research_revision(
             "label": "DCF model inputs",
             "discount_rate_pct": 10.0,
             "growth_rate_pct": 6.0,
+            "based_on_selection": "norm",
         }
     ]
+
+
+def test_put_dcf_value_rejects_direct_api_bypass_without_canonical_inputs(
+    client, db_session, auth_headers
+):
+    user = _make_user(db_session, "dcf-bypass@example.com")
+    stock = _make_stock(db_session, "DCFB")
+
+    response = client.put(
+        f"/api/v1/stocks/{stock.id}/facts",
+        headers=auth_headers(user),
+        json={
+            "metric_key": FAIR_VALUE_KEY,
+            "value_numeric": 150.0,
+            "source": "dcf",
+            "valuation_currency": "USD",
+            "assumptions": [{"source": "dcf", "based_on_selection": "norm"}],
+        },
+    )
+
+    assert response.status_code == 409
+    assert response.json()["detail"]["code"] == "dcf_input_missing"
+
+
+def test_put_dcf_value_rejects_non_usd_and_does_not_relabel_it(
+    client, db_session, auth_headers
+):
+    user = _make_user(db_session, "dcf-eur@example.com")
+    stock = _make_stock(db_session, "DCFE")
+    _add_dcf_inputs(db_session, user=user, stock=stock, currencies=("EUR", "EUR", "EUR"))
+
+    response = client.put(
+        f"/api/v1/stocks/{stock.id}/facts",
+        headers=auth_headers(user),
+        json={
+            "metric_key": FAIR_VALUE_KEY,
+            "value_numeric": 150.0,
+            "source": "dcf",
+            "valuation_currency": "EUR",
+            "assumptions": [{"source": "dcf", "based_on_selection": "norm"}],
+        },
+    )
+
+    assert response.status_code == 409
+    assert response.json()["detail"]["code"] == "dcf_currency_not_supported"
+    assert db_session.query(ResearchCaseRevision).count() == 0
+
+
+def test_put_dcf_value_rejects_mixed_or_invalid_canonical_input_currency(
+    client, db_session, auth_headers
+):
+    user = _make_user(db_session, "dcf-invalid@example.com")
+    stock = _make_stock(db_session, "DCFI")
+    _add_dcf_inputs(db_session, user=user, stock=stock, currencies=("USD", "TWD", "ZZZ"))
+
+    response = client.put(
+        f"/api/v1/stocks/{stock.id}/facts",
+        headers=auth_headers(user),
+        json={
+            "metric_key": FAIR_VALUE_KEY,
+            "value_numeric": 150.0,
+            "source": "dcf",
+            "valuation_currency": "USD",
+            "assumptions": [{"source": "dcf", "based_on_selection": "norm"}],
+        },
+    )
+
+    assert response.status_code == 409
+    assert response.json()["detail"]["code"] == "dcf_input_currency_invalid"
 
 
 def test_put_fair_value_reopens_monitoring_case_for_explicit_review(

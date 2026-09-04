@@ -3,7 +3,16 @@ export type DcfInput = {
   source?: 'fact' | 'computed' | 'missing';
 };
 
+export type DcfCurrencyState = {
+  status: 'available' | 'unavailable';
+  reason_code: string | null;
+  currency: string | null;
+  provenance?: Array<Record<string, unknown>>;
+};
+
 export type DcfInputsPayload = {
+  valuation_currency?: string | null;
+  currency_state?: DcfCurrencyState;
   net_profit_per_share: DcfInput;
   depreciation_per_share: DcfInput;
   capital_spending_per_share: DcfInput;
@@ -29,4 +38,3 @@ export function resolveDcfComponentInputs(
   depreciationPerShare: string;
   capexPerShare: string;
 };
-

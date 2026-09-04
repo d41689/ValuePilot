@@ -25,6 +25,14 @@ const resolveDcfInputsPayload = (payload, selection) => {
 const resolveDcfComponentInputs = (payload, selection) => {
   const inputs = resolveDcfInputsPayload(payload, selection) ?? {};
 
+  if (inputs.currency_state?.status !== 'available' || !inputs.currency_state?.currency) {
+    return {
+      netProfitPerShare: '',
+      depreciationPerShare: '',
+      capexPerShare: '',
+    };
+  }
+
   return {
     netProfitPerShare: formatValue(inputs.net_profit_per_share),
     depreciationPerShare: formatValue(inputs.depreciation_per_share),
@@ -36,4 +44,3 @@ module.exports = {
   resolveDcfComponentInputs,
   resolveDcfInputsPayload,
 };
-

@@ -845,7 +845,16 @@ def test_lookup_stock_by_ticker_returns_summary(client, db_session, auth_headers
         isinstance(entry["value"], (int, float))
         for entry in payload["oeps_series"]
     )
-    assert payload["dcf_inputs"] == {
+    assert payload["dcf_inputs"]["valuation_currency"] == "USD"
+    assert payload["dcf_inputs"]["currency_state"]["status"] == "available"
+    assert payload["dcf_inputs"]["currency_state"]["reason_code"] is None
+    assert len(payload["dcf_inputs"]["currency_state"]["provenance"]) == 3
+    dcf_inputs_without_currency = {
+        key: value
+        for key, value in payload["dcf_inputs"].items()
+        if key not in {"valuation_currency", "currency_state"}
+    }
+    assert dcf_inputs_without_currency == {
         "net_profit_per_share": {
             "value": 4.8,
             "source": "fact",
@@ -895,7 +904,20 @@ def test_lookup_stock_by_ticker_returns_summary(client, db_session, auth_headers
     }
     assert payload["dcf_inputs_series"][0]["net_profit_per_share"]["provenance"]["period_end_date"] == "2026-12-31"
     assert payload["dcf_inputs_series"][0]["depreciation_per_share"]["provenance"]["inputs"][0]["metric_key"] == "is.depreciation"
-    assert payload["dcf_inputs_series"] == [
+    assert all(
+        entry["valuation_currency"] == "USD"
+        and entry["currency_state"]["status"] == "available"
+        for entry in payload["dcf_inputs_series"]
+    )
+    dcf_series_without_currency = [
+        {
+            key: value
+            for key, value in entry.items()
+            if key not in {"valuation_currency", "currency_state"}
+        }
+        for entry in payload["dcf_inputs_series"]
+    ]
+    assert dcf_series_without_currency == [
         {
             "year": 2026,
             "net_profit_per_share": {

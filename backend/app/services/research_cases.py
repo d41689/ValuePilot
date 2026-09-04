@@ -568,8 +568,15 @@ def save_product_valuation_revision(
     source: str,
     pool_id: int | None,
     assumptions: list[dict[str, Any]],
+    valuation_currency: str,
 ) -> tuple[ResearchCase, ResearchCaseRevision, MetricFact]:
     """Atomically save a UI valuation as revision, projection, and fact."""
+    if valuation_currency != "USD":
+        raise ResearchCaseError(
+            "valuation_currency_not_supported",
+            "Published valuation revisions currently support USD only.",
+            status_code=409,
+        )
     if source == "watchlist":
         origin = ResearchOriginInput(
             origin_type="watchlist",
@@ -642,7 +649,7 @@ def save_product_valuation_revision(
             valuation_low=low,
             valuation_base=value_numeric,
             valuation_high=high,
-            valuation_currency="USD",
+            valuation_currency=valuation_currency,
             valuation_as_of_date=as_of_date,
             decision=None,
             next_review_on=None,
