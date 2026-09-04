@@ -15,6 +15,9 @@ from app.services.calculated_metrics.value_line_ratios import ValueLineRatioCalc
 from app.services.metric_fact_locking import acquire_metric_fact_stock_lock
 
 
+MAX_MANUAL_CORRECTION_ANCESTRY = 32
+
+
 @dataclass(frozen=True)
 class ManualMetricCorrectionError(ValueError):
     code: str
@@ -56,50 +59,35 @@ def create_manual_metric_correction(
         )
 
     acquire_metric_fact_stock_lock(session, stock_id=source_fact.stock_id)
-    source_metadata = (
-        source_fact.value_json if isinstance(source_fact.value_json, dict) else {}
-    )
-    original_source_fact_id = (
-        source_metadata.get("source_fact_id")
-        if source_fact.source_type == "manual"
-        else source_fact.id
-    )
-    if not isinstance(original_source_fact_id, int):
-        original_source_fact_id = source_fact.id
-
-    source_extraction_id = source_metadata.get("source_extraction_id")
-    manifest_parse_run_id: int | None = None
-    if not isinstance(source_extraction_id, int) and source_fact.source_type == "parsed":
-        primary_input = session.execute(
-            select(
-                ValueLineFactExtractionInput.extraction_id,
-                ValueLineFactExtractionInput.value_line_parse_run_id,
-            ).where(
-                ValueLineFactExtractionInput.fact_id == source_fact.id,
-                ValueLineFactExtractionInput.input_role == "primary",
-            )
-        ).one_or_none()
-        if primary_input is not None:
-            source_extraction_id = primary_input.extraction_id
-            manifest_parse_run_id = primary_input.value_line_parse_run_id
-        elif (
-            source_fact.value_line_legacy_revision
-            and isinstance(source_fact.source_ref_id, int)
-        ):
-            source_extraction_id = source_fact.source_ref_id
-        else:
-            raise ManualMetricCorrectionError(
-                code="correction_lineage_unavailable",
-                message=(
-                    "Parsed fact has no exact primary extraction lineage; "
-                    "manual correction requires review"
-                ),
-            )
-    source_parse_run_id = source_metadata.get("source_parse_run_id")
-    if not isinstance(source_parse_run_id, int):
-        source_parse_run_id = (
-            manifest_parse_run_id or source_fact.value_line_parse_run_id
+    source_metadata = _fact_metadata(source_fact)
+    original_source = (
+        _resolve_manual_original_parsed_fact(
+            session,
+            user_id=user_id,
+            manual_fact=source_fact,
         )
+        if source_fact.source_type == "manual"
+        else source_fact
+    )
+    original_source_fact_id = original_source.id
+    source_extraction_id, source_parse_run_id = _exact_primary_lineage(
+        session,
+        parsed_fact=original_source,
+        allow_legacy_reference=source_fact.source_type == "parsed",
+    )
+    if source_fact.source_type == "manual":
+        declared_extraction = source_metadata.get("source_extraction_id")
+        declared_run = source_metadata.get("source_parse_run_id")
+        if (
+            isinstance(declared_extraction, int)
+            and declared_extraction != source_extraction_id
+        ) or (
+            isinstance(declared_run, int)
+            and declared_run != source_parse_run_id
+        ):
+            raise _lineage_unavailable()
+
+    identity_metadata = _fact_metadata(original_source)
 
     value_json = {
         "raw": raw_text,
@@ -123,8 +111,8 @@ def create_manual_metric_correction(
         "dimensions_identity",
         "fact_nature",
     ):
-        if identity_key in source_metadata:
-            value_json[identity_key] = source_metadata[identity_key]
+        if identity_key in identity_metadata:
+            value_json[identity_key] = identity_metadata[identity_key]
     if note:
         value_json["note"] = str(note)
 
@@ -175,6 +163,127 @@ def create_manual_metric_correction(
         stock_id=source_fact.stock_id,
     )
     return manual_fact
+
+
+def _fact_metadata(fact: MetricFact) -> dict:
+    return fact.value_json if isinstance(fact.value_json, dict) else {}
+
+
+def _positive_id(value: object) -> int | None:
+    if isinstance(value, int) and not isinstance(value, bool) and value > 0:
+        return value
+    return None
+
+
+def _lineage_unavailable() -> ManualMetricCorrectionError:
+    return ManualMetricCorrectionError(
+        code="correction_lineage_unavailable",
+        message=(
+            "Correction source has no exact primary extraction lineage; "
+            "manual correction requires review"
+        ),
+    )
+
+
+def _same_correction_slot(left: MetricFact, right: MetricFact) -> bool:
+    return (
+        left.user_id == right.user_id
+        and left.stock_id == right.stock_id
+        and left.metric_key == right.metric_key
+        and left.period_type == right.period_type
+        and left.period_end_date == right.period_end_date
+        and left.as_of_date == right.as_of_date
+        and left.source_document_id == right.source_document_id
+    )
+
+
+def _resolve_manual_original_parsed_fact(
+    session: Session,
+    *,
+    user_id: int,
+    manual_fact: MetricFact,
+) -> MetricFact:
+    """Follow explicit correction ancestry to one parsed source, boundedly."""
+
+    if manual_fact.user_id != user_id or not manual_fact.is_current:
+        raise _lineage_unavailable()
+    cursor = manual_fact
+    visited: set[int] = set()
+    declared_root: int | None = None
+    for _ in range(MAX_MANUAL_CORRECTION_ANCESTRY):
+        cursor_id = _positive_id(cursor.id)
+        if cursor_id is None or cursor_id in visited:
+            raise _lineage_unavailable()
+        visited.add(cursor_id)
+        if cursor.source_type == "parsed":
+            if (
+                not _same_correction_slot(cursor, manual_fact)
+                or (declared_root is not None and cursor_id != declared_root)
+            ):
+                raise _lineage_unavailable()
+            return cursor
+        if cursor.source_type != "manual" or not _same_correction_slot(
+            cursor, manual_fact
+        ):
+            raise _lineage_unavailable()
+        metadata = _fact_metadata(cursor)
+        if metadata.get("correction") is not True:
+            raise _lineage_unavailable()
+        root_id = _positive_id(metadata.get("source_fact_id"))
+        if root_id is not None:
+            if root_id in visited or (
+                declared_root is not None and root_id != declared_root
+            ):
+                raise _lineage_unavailable()
+            declared_root = root_id
+        parent_id = _positive_id(metadata.get("corrected_from_fact_id"))
+        if parent_id is None:
+            parent_id = root_id
+        if parent_id is None or parent_id in visited:
+            raise _lineage_unavailable()
+        parent = session.get(MetricFact, parent_id)
+        if parent is None or parent.user_id != user_id:
+            raise _lineage_unavailable()
+        cursor = parent
+    raise _lineage_unavailable()
+
+
+def _exact_primary_lineage(
+    session: Session,
+    *,
+    parsed_fact: MetricFact,
+    allow_legacy_reference: bool,
+) -> tuple[int, int | None]:
+    if parsed_fact.source_type != "parsed" or _positive_id(parsed_fact.id) is None:
+        raise _lineage_unavailable()
+    primary_inputs = session.execute(
+        select(
+            ValueLineFactExtractionInput.extraction_id,
+            ValueLineFactExtractionInput.value_line_parse_run_id,
+        )
+        .where(
+            ValueLineFactExtractionInput.fact_id == parsed_fact.id,
+            ValueLineFactExtractionInput.input_role == "primary",
+        )
+        .limit(2)
+    ).all()
+    if len(primary_inputs) == 1:
+        primary = primary_inputs[0]
+        if (
+            parsed_fact.value_line_parse_run_id is None
+            or primary.value_line_parse_run_id
+            != parsed_fact.value_line_parse_run_id
+        ):
+            raise _lineage_unavailable()
+        return primary.extraction_id, primary.value_line_parse_run_id
+    if (
+        not primary_inputs
+        and allow_legacy_reference
+        and parsed_fact.value_line_legacy_revision
+        and _positive_id(parsed_fact.source_ref_id) is not None
+    ):
+        return int(parsed_fact.source_ref_id), parsed_fact.value_line_parse_run_id
+    raise _lineage_unavailable()
 
 
 def _normalize_correction(

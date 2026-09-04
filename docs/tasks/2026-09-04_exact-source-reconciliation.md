@@ -365,3 +365,15 @@ reconciliation outcomes or create another financial fact store.
   suite is green at 9 tests. The exact full backend suite is green at 2,320
   tests with only the two existing dependency-deprecation warnings. Fresh
   Terra R12 and the final ordered closing gate remain pending.
+- 2026-09-04: Terra R12 found one valid P3 legacy-repeat gap. A manual source
+  without retained extraction/run identity could be corrected again because
+  primary-manifest lookup was limited to parsed sources. Sol remediation now
+  follows only explicit manual correction ancestry, with a 32-fact bound and
+  cycle/root-consistency checks, to one same-tenant/stock/document/slot parsed
+  source. The resolved parsed source must have exactly one primary manifest
+  whose run matches the fact; legacy, missing, conflicting, or ambiguous
+  ancestry returns `correction_lineage_unavailable` before currentness changes.
+  The successful repeated-correction path copies identity only from that parsed
+  source and retains the manifest extraction/run IDs. Focused missing-manifest,
+  caught-error commit, cycle, and existing correction API coverage is green at
+  11 tests. Full backend and fresh Terra R13 remain pending.

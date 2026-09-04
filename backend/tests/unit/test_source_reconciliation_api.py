@@ -435,6 +435,101 @@ def test_failed_correction_validation_cannot_demote_current_manual_fact(
     assert db_session.get(MetricFact, manual_id).is_current is True
 
 
+def test_repeat_legacy_manual_without_exact_manifest_fails_before_demotion(
+    db_session, user_factory
+):
+    user = user_factory("legacy-repeat-correction@example.com")
+    stock = Stock(ticker="LMAN", exchange="NYSE", company_name="Legacy Manual")
+    db_session.add(stock)
+    db_session.flush()
+    document = _document(user_id=user.id, stock_id=stock.id, suffix="-legacy-manual")
+    db_session.add(document)
+    db_session.flush()
+    parsed = _parsed_fact(
+        user_id=user.id,
+        stock_id=stock.id,
+        document_id=document.id,
+    )
+    db_session.add(parsed)
+    db_session.flush()
+    legacy_manual = MetricFact(
+        user_id=user.id,
+        stock_id=stock.id,
+        metric_key=parsed.metric_key,
+        value_numeric=101,
+        value_json={
+            "correction": True,
+            "corrected_from_fact_id": parsed.id,
+        },
+        unit="USD",
+        currency="USD",
+        period_type=parsed.period_type,
+        period_end_date=parsed.period_end_date,
+        source_document_id=document.id,
+        source_type="manual",
+        is_current=True,
+    )
+    db_session.add(legacy_manual)
+    db_session.flush()
+    manual_id = legacy_manual.id
+
+    with pytest.raises(ManualMetricCorrectionError) as error:
+        create_manual_metric_correction(
+            db_session,
+            user_id=user.id,
+            source_fact=legacy_manual,
+            raw_value="102",
+        )
+    assert error.value.code == "correction_lineage_unavailable"
+
+    db_session.commit()
+    db_session.expire_all()
+    assert db_session.get(MetricFact, manual_id).is_current is True
+
+
+def test_repeat_manual_correction_cycle_fails_before_demotion(
+    db_session, user_factory
+):
+    user = user_factory("cyclic-repeat-correction@example.com")
+    stock = Stock(ticker="CMAN", exchange="NYSE", company_name="Cyclic Manual")
+    db_session.add(stock)
+    db_session.flush()
+    manual_id = 9_000_001
+    cyclic_manual = MetricFact(
+        id=manual_id,
+        user_id=user.id,
+        stock_id=stock.id,
+        metric_key="is.net_income",
+        value_numeric=101,
+        value_json={
+            "correction": True,
+            "corrected_from_fact_id": manual_id,
+            "source_fact_id": manual_id,
+        },
+        unit="USD",
+        currency="USD",
+        period_type="FY",
+        period_end_date=date(2025, 12, 31),
+        source_type="manual",
+        is_current=True,
+    )
+    db_session.add(cyclic_manual)
+    db_session.flush()
+
+    with pytest.raises(ManualMetricCorrectionError) as error:
+        create_manual_metric_correction(
+            db_session,
+            user_id=user.id,
+            source_fact=cyclic_manual,
+            raw_value="102",
+        )
+    assert error.value.code == "correction_lineage_unavailable"
+
+    db_session.commit()
+    db_session.expire_all()
+    assert db_session.get(MetricFact, manual_id).is_current is True
+
+
 def test_reconciliation_excludes_post_cutoff_and_revoked_source_authority(
     client, db_session, user_factory, auth_headers
 ):
