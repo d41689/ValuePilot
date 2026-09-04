@@ -385,4 +385,6 @@ reconciliation outcomes or create another financial fact store.
   The test now uses a fixed 2099 cutoff and a fact exactly one hour later,
   preserving “authorized source, post-cutoff fact” as the sole variable without
   depending on wall-clock execution time. Its affected suite is green at 11
-  tests; the repeated full backend run remains pending.
+  tests. The repeated exact full backend suite is green at 2,322 tests with
+  only the two existing dependency-deprecation warnings. Fresh Terra R13 and
+  the final ordered closing gate remain pending.
