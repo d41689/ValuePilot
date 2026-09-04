@@ -14,8 +14,14 @@ from app.models.oracles_lens import OraclesLensSignal
 from app.models.research import ResearchCase
 from app.models.stocks import PoolMembership, Stock
 from app.services.market_data_service import (
+    CanonicalEodPrice,
     PRICE_FRESHNESS_POLICY_VERSION,
+    StoredPriceEvidence,
+    normalize_price_source,
     read_canonical_eod_price,
+    read_current_eod_prices,
+    read_stored_price_evidence,
+    serialize_canonical_eod_price,
 )
 from app.services.oracles_lens.constants import SCORE_VERSION
 
@@ -175,6 +181,7 @@ def _price_requirement(
     stock: Stock,
     as_of: date,
     include_as_of_session: bool = False,
+    knowledge_cutoff: datetime | None = None,
 ) -> dict[str, Any]:
     if not stock.is_active:
         return {
@@ -192,13 +199,17 @@ def _price_requirement(
         stock=stock,
         as_of=as_of,
         include_as_of_session=include_as_of_session,
+        knowledge_cutoff=knowledge_cutoff,
     )
-    state = {
-        "fresh": "ready",
-        "stale": "stale",
-        "missing": "missing",
-        "unknown_freshness": "blocked",
-    }[result.freshness_state]
+    canonical = serialize_canonical_eod_price(result)
+    if result.status == "available":
+        state = "ready"
+    elif result.reason_code == "price_older_than_expected_session":
+        state = "stale"
+    elif result.reason_code == "price_missing":
+        state = "missing"
+    else:
+        state = "blocked"
     return {
         "state": state,
         "reason_code": result.reason_code,
@@ -211,16 +222,21 @@ def _price_requirement(
         "source_type": "stock_price" if result.price_id else None,
         "source_ref_id": result.price_id,
         "evidence_json": {
-            "price_date": result.price_date.isoformat() if result.price_date else None,
-            "expected_session_date": (
-                result.expected_session_date.isoformat()
-                if result.expected_session_date
+            "price_date": canonical["price_date"],
+            "expected_session_date": canonical["expected_session_date"],
+            "close": (
+                str(canonical["observation_value"])
+                if canonical["observation_value"] is not None
                 else None
             ),
-            "close": str(result.close) if result.close is not None else None,
-            "currency": result.currency,
-            "source": result.source,
-            "calendar_code": result.calendar_code,
+            "currency": canonical["currency"],
+            "source": canonical["source"],
+            "source_authorization_state": canonical["source_authorization_state"],
+            "calendar_code": canonical["calendar_code"],
+            "status": canonical["status"],
+            "as_of_date": canonical["as_of_date"],
+            "as_of_mode": canonical["as_of_mode"],
+            "source_policy_version": canonical["source_policy_version"],
         },
         "observed_at": result.observed_at,
         "next_action": (
@@ -381,6 +397,7 @@ def evaluate_research_coverage(
         {"key": f"coverage:{user_id}:{PRIORITY_POLICY_VERSION}"},
     )
     evaluated_at = datetime.now(timezone.utc)
+    price_knowledge_cutoff = evaluated_at if as_of == evaluated_at.date() else None
     candidates, lens_eligible_count, lens_evaluated_count = _candidates(
         session,
         user_id=user_id,
@@ -411,6 +428,7 @@ def evaluate_research_coverage(
                     stock=stock,
                     as_of=as_of,
                     include_as_of_session=include_as_of_session,
+                    knowledge_cutoff=price_knowledge_cutoff,
                 ),
             ),
             (
@@ -449,7 +467,114 @@ def evaluate_research_coverage(
     }
 
 
-def serialize_requirement(row: ResearchCoverageRequirement, stock: Stock) -> dict[str, Any]:
+def _serialize_price_requirement_evidence(
+    *,
+    row: ResearchCoverageRequirement,
+    canonical: CanonicalEodPrice | None,
+    referenced: StoredPriceEvidence | None,
+) -> tuple[dict[str, Any], str | None]:
+    """Return persisted price evidence only while its authority remains valid.
+
+    Read permission is deliberately stricter than storage. A legacy snapshot
+    without proof that its source was authorized when persisted cannot acquire
+    authority merely because that provider happens to be configured today.
+    """
+    evidence = dict(row.evidence_json or {})
+    had_displayable_observation = evidence.get("close") is not None
+    if not (had_displayable_observation or row.state == "ready"):
+        return evidence, None
+
+    persisted_authorization = evidence.get("source_authorization_state")
+    current_authorization = (
+        referenced.source_authorization_state
+        if referenced is not None
+        else "unavailable"
+    )
+    authoritative_currency = referenced.currency if referenced is not None else None
+    blocker_reason = None
+    if (
+        row.source_type != "stock_price"
+        or referenced is None
+        or persisted_authorization != "authorized"
+        or current_authorization != "authorized"
+    ):
+        blocker_reason = "source_unavailable"
+    elif authoritative_currency is None:
+        blocker_reason = "price_currency_unavailable"
+    elif (
+        normalize_price_source(evidence.get("source"))
+        != referenced.normalized_source
+        or str(evidence.get("currency") or "").strip().upper()
+        != authoritative_currency
+        or evidence.get("price_date") != referenced.price_date.isoformat()
+    ):
+        blocker_reason = "price_reference_mismatch"
+    elif canonical is None:
+        blocker_reason = "price_missing"
+    elif canonical.status != "available":
+        blocker_reason = canonical.reason_code or "price_unavailable"
+    elif canonical.price_id != referenced.price_id:
+        blocker_reason = "price_reference_mismatch"
+
+    if blocker_reason is None:
+        evidence["source_authorization_state"] = "authorized"
+        evidence["currency"] = authoritative_currency
+        return evidence, None
+
+    evidence["close"] = None
+    evidence["source_authorization_state"] = (
+        current_authorization
+        if persisted_authorization == "authorized"
+        else "unavailable"
+    )
+    if blocker_reason == "price_currency_unavailable":
+        evidence["currency"] = None
+    return evidence, blocker_reason
+
+
+def _projection_state(row: ResearchCoverageRequirement, blocker_reason: str | None) -> str:
+    if blocker_reason is None:
+        return row.state
+    if blocker_reason == "price_older_than_expected_session":
+        return "stale"
+    if blocker_reason == "price_missing":
+        return "missing"
+    return "blocked"
+
+
+def _projection_reason(blocker_reason: str) -> str:
+    return {
+        "price_currency_unavailable": (
+            "The persisted price currency is not a current monetary ISO 4217 code."
+        ),
+        "price_older_than_expected_session": (
+            "The persisted price no longer covers the latest expected market session."
+        ),
+        "price_missing": "No canonical EOD observation is currently available.",
+        "price_reference_mismatch": (
+            "The persisted price reference no longer matches canonical price evidence."
+        ),
+    }.get(
+        blocker_reason,
+        "The persisted price source is not currently authorized for display.",
+    )
+
+
+def _serialize_requirement(
+    row: ResearchCoverageRequirement,
+    stock: Stock,
+    *,
+    canonical: CanonicalEodPrice | None = None,
+    referenced: StoredPriceEvidence | None = None,
+) -> dict[str, Any]:
+    evidence = dict(row.evidence_json or {})
+    blocker_reason = None
+    if row.kind == "eod_price":
+        evidence, blocker_reason = _serialize_price_requirement_evidence(
+            row=row,
+            canonical=canonical,
+            referenced=referenced,
+        )
     return {
         "id": row.id,
         "stock_id": row.stock_id,
@@ -460,17 +585,83 @@ def serialize_requirement(row: ResearchCoverageRequirement, stock: Stock) -> dic
         "matched_rule": row.matched_rule,
         "priority_rank": row.priority_rank,
         "rank_components": row.rank_components or {},
-        "state": row.state,
-        "reason_code": row.reason_code,
-        "reason": row.reason,
+        "state": _projection_state(row, blocker_reason),
+        "reason_code": (
+            row.reason_code
+            if blocker_reason is None
+            else blocker_reason
+        ),
+        "reason": (
+            row.reason
+            if blocker_reason is None
+            else _projection_reason(blocker_reason)
+        ),
         "source_type": row.source_type,
         "source_ref_id": row.source_ref_id,
-        "evidence": row.evidence_json or {},
+        "evidence": evidence,
         "observed_at": row.observed_at.isoformat() if row.observed_at else None,
         "freshness_policy_version": row.freshness_policy_version,
         "evaluated_at": row.evaluated_at.isoformat(),
-        "next_action": row.next_action,
+        "next_action": (
+            row.next_action
+            if blocker_reason is None
+            else "refresh_eod_price"
+        ),
         "first_unmet_at": (
             row.first_unmet_at.isoformat() if row.first_unmet_at else None
         ),
     }
+
+
+def serialize_requirements(
+    session: Session,
+    rows: list[tuple[ResearchCoverageRequirement, Stock]],
+    *,
+    evaluated_at: datetime | None = None,
+) -> list[dict[str, Any]]:
+    """Project coverage with one request clock and fixed-count price reads."""
+
+    projection_time = evaluated_at or datetime.now(timezone.utc)
+    price_rows = [pair for pair in rows if pair[0].kind == "eod_price"]
+    canonical_by_stock_id = read_current_eod_prices(
+        session,
+        stocks=[stock for _, stock in price_rows],
+        evaluated_at=projection_time,
+    )
+    references = read_stored_price_evidence(
+        session,
+        references=[
+            (int(row.source_ref_id), int(row.stock_id))
+            for row, _ in price_rows
+            if row.source_ref_id is not None
+        ],
+    )
+    return [
+        _serialize_requirement(
+            row,
+            stock,
+            canonical=canonical_by_stock_id.get(int(row.stock_id)),
+            referenced=(
+                references.get((int(row.source_ref_id), int(row.stock_id)))
+                if row.source_ref_id is not None
+                else None
+            ),
+        )
+        for row, stock in rows
+    ]
+
+
+def serialize_requirement(
+    session: Session,
+    row: ResearchCoverageRequirement,
+    stock: Stock,
+    *,
+    evaluated_at: datetime | None = None,
+) -> dict[str, Any]:
+    """Compatibility wrapper; product list projections use the batch API."""
+
+    return serialize_requirements(
+        session,
+        [(row, stock)],
+        evaluated_at=evaluated_at,
+    )[0]

@@ -16,6 +16,7 @@ import {
 } from 'lucide-react';
 
 import apiClient from '@/lib/api/client';
+import { formatIsoCurrencyAmount } from '@/lib/currencyFormat';
 import { cn } from '@/lib/utils';
 import { showAppToast } from '@/lib/appToast';
 import {
@@ -74,6 +75,10 @@ import {
   TableRow,
 } from '@/components/ui/table';
 import { useToast } from '@/components/ui/use-toast';
+import {
+  currentPriceEvidenceLabel,
+  type CanonicalCurrentPrice,
+} from '@/lib/currentPrice';
 
 type StockPool = {
   id: number;
@@ -88,19 +93,26 @@ type WatchlistRow = {
   ticker: string;
   exchange: string;
   company_name: string;
-  price: number | null;
-  price_date: string;
-  price_updated_at: string | null;
+  current_price: CanonicalCurrentPrice;
   fair_value: number | null;
   fair_value_source: string | null;
   fair_value_status: 'available' | 'unavailable' | 'missing';
   fair_value_as_of: string | null;
+  fair_value_currency: string | null;
   mos: number | null;
+  price_comparison_reason: string | null;
   valuation_reference: number | null;
   valuation_reference_source: string | null;
   valuation_reference_as_of: string | null;
+  valuation_reference_currency: string | null;
   discount_to_reference: number | null;
+  reference_comparison_reason: string | null;
   delta_today: number | null;
+  delta_today_state: {
+    status: 'available' | 'unavailable';
+    reason_code: string | null;
+    currency: string | null;
+  };
   piotroski_f_scores: Array<{
     period_end_date: string | null;
     fiscal_year: number | null;
@@ -178,11 +190,6 @@ type RefreshPriceResult = {
 };
 
 type ActiveWatchlistId = number | typeof OVERVIEW_WATCHLIST_ID;
-
-function formatNumber(value: number | null, digits = 2) {
-  if (value === null || Number.isNaN(value)) return '—';
-  return value.toFixed(digits);
-}
 
 function formatPercent(value: number | null) {
   if (value === null || Number.isNaN(value)) return '—';
@@ -762,7 +769,32 @@ export default function WatchlistPage() {
                     <TableCell className="min-w-[9rem] max-w-[11rem] whitespace-pre-line text-xs leading-5 text-muted-foreground">
                       {formatPiotroskiFScoreSeries(row.piotroski_f_scores)}
                     </TableCell>
-                    <TableCell>{formatNumber(row.price)}</TableCell>
+                    <TableCell className="min-w-[11rem]">
+                      <div className="flex flex-col gap-1">
+                        <span>
+                          {row.current_price.status === 'available'
+                            ? formatIsoCurrencyAmount(
+                                row.current_price.value,
+                                row.current_price.currency,
+                              )
+                            : 'Unavailable'}
+                        </span>
+                        <span className="text-xs text-muted-foreground">
+                          {currentPriceEvidenceLabel(row.current_price)}
+                        </span>
+                        <span className="text-xs text-muted-foreground">
+                          {row.current_price.source_authorization_state}
+                          {row.current_price.expected_session_date
+                            ? ` · expected ${row.current_price.expected_session_date}`
+                            : ''}
+                        </span>
+                        {row.current_price.reason_code ? (
+                          <span className="font-mono text-xs text-amber-800">
+                            {row.current_price.reason_code}
+                          </span>
+                        ) : null}
+                      </div>
+                    </TableCell>
                     <TableCell>
                       <div className="flex flex-col gap-1">
                         <Input
@@ -790,7 +822,18 @@ export default function WatchlistPage() {
                         row.mos !== null && row.mos > 0.3 ? 'font-semibold text-emerald-600' : undefined
                       }
                     >
-                      {formatPercent(row.mos)}
+                      {row.mos === null ? (
+                        <span className="text-xs text-muted-foreground">
+                          Margin unavailable
+                          {row.current_price.reason_code
+                            ? ` · ${row.current_price.reason_code}`
+                            : row.price_comparison_reason
+                              ? ` · ${row.price_comparison_reason}`
+                            : ''}
+                        </span>
+                      ) : (
+                        formatPercent(row.mos)
+                      )}
                       {(() => {
                         const snap = snapshotsByStockId.get(row.stock_id);
                         const signal = mosCrossSignal({
@@ -811,13 +854,25 @@ export default function WatchlistPage() {
                         </span>
                         <span className="text-xs text-muted-foreground">
                           {row.discount_to_reference === null
-                            ? 'Discount unavailable'
+                            ? `Discount unavailable${row.reference_comparison_reason ? ` · ${row.reference_comparison_reason}` : ''}`
                             : `${formatPercent(row.discount_to_reference)} to reference`}
                         </span>
                       </div>
                     </TableCell>
-                    <TableCell>{formatNumber(row.delta_today)}</TableCell>
-                    <TableCell>{formatDate(row.price_updated_at)}</TableCell>
+                    <TableCell>
+                      {row.delta_today_state.status === 'available'
+                        ? formatIsoCurrencyAmount(
+                            row.delta_today,
+                            row.delta_today_state.currency,
+                          )
+                        : '—'}
+                      {row.delta_today_state.status === 'unavailable' ? (
+                        <div className="text-xs text-muted-foreground">
+                          {row.delta_today_state.reason_code ?? 'delta_unavailable'}
+                        </div>
+                      ) : null}
+                    </TableCell>
+                    <TableCell>{formatDate(row.current_price.observed_at)}</TableCell>
                     <Watchlist13FColumns
                       snapshot={snapshotsByStockId.get(row.stock_id)}
                       period={snapshotsPeriod}

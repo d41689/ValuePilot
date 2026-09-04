@@ -7,7 +7,7 @@ from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 from typing import Any
 
-from sqlalchemy import text
+from sqlalchemy import select, text
 from sqlalchemy.orm import Session
 
 from app.models.artifacts import PdfDocument
@@ -22,6 +22,7 @@ from app.models.research import (
 )
 from app.models.stocks import PoolMembership, Stock
 from app.services.market_data_service import stock_price_evidence_matches
+from app.services.metric_fact_locking import acquire_metric_fact_stock_lock
 from app.schemas.research import (
     EvidenceInput,
     ResearchOriginInput,
@@ -30,6 +31,7 @@ from app.schemas.research import (
 from app.services.valuation import (
     USER_INTRINSIC_VALUE_KEY,
     publish_user_intrinsic_value,
+    quantize_valuation_value,
     redact_published_unavailable_reason,
 )
 from app.services.screener_service import ScreenerService
@@ -355,6 +357,14 @@ def save_revision(
     payload: ResearchRevisionCreate,
     commit: bool = True,
 ) -> tuple[ResearchCase, ResearchCaseRevision]:
+    case_stock_id = session.scalar(
+        select(ResearchCase.stock_id).where(
+            ResearchCase.id == case_id,
+            ResearchCase.user_id == user_id,
+        )
+    )
+    if case_stock_id is not None:
+        acquire_metric_fact_stock_lock(session, stock_id=case_stock_id)
     case = _owned_case(session, user_id=user_id, case_id=case_id, for_update=True)
     if payload.correlation_id:
         prior_event = (
@@ -398,6 +408,21 @@ def save_revision(
         evidence=payload.evidence,
     )
     revision_number = case.head_revision_number + 1
+    valuation_low = (
+        quantize_valuation_value(payload.valuation_low)
+        if payload.valuation_low is not None
+        else None
+    )
+    valuation_base = (
+        quantize_valuation_value(payload.valuation_base)
+        if payload.valuation_base is not None
+        else None
+    )
+    valuation_high = (
+        quantize_valuation_value(payload.valuation_high)
+        if payload.valuation_high is not None
+        else None
+    )
     revision = ResearchCaseRevision(
         case_id=case.id,
         revision_number=revision_number,
@@ -408,9 +433,9 @@ def save_revision(
         risks_json=payload.risks,
         evidence_json=evidence,
         case_state=payload.target_state,
-        valuation_low=payload.valuation_low,
-        valuation_base=payload.valuation_base,
-        valuation_high=payload.valuation_high,
+        valuation_low=valuation_low,
+        valuation_base=valuation_base,
+        valuation_high=valuation_high,
         valuation_currency=payload.valuation_currency,
         valuation_unavailable_reason=payload.valuation_unavailable_reason,
         valuation_as_of_date=payload.valuation_as_of_date,
@@ -453,11 +478,7 @@ def save_revision(
             session,
             user_id=user_id,
             stock_id=case.stock_id,
-            value_numeric=(
-                float(payload.valuation_base)
-                if payload.valuation_base is not None
-                else None
-            ),
+            value_numeric=valuation_base,
             as_of_date=payload.valuation_as_of_date,
             unavailable_reason=payload.valuation_unavailable_reason,
             source_ref_id=revision.id,
@@ -568,8 +589,15 @@ def save_product_valuation_revision(
     source: str,
     pool_id: int | None,
     assumptions: list[dict[str, Any]],
+    valuation_currency: str,
 ) -> tuple[ResearchCase, ResearchCaseRevision, MetricFact]:
     """Atomically save a UI valuation as revision, projection, and fact."""
+    if valuation_currency != "USD":
+        raise ResearchCaseError(
+            "valuation_currency_not_supported",
+            "Published valuation revisions currently support USD only.",
+            status_code=409,
+        )
     if source == "watchlist":
         origin = ResearchOriginInput(
             origin_type="watchlist",
@@ -586,6 +614,7 @@ def save_product_valuation_revision(
         )
 
     try:
+        acquire_metric_fact_stock_lock(session, stock_id=stock_id)
         case, _, _ = create_or_open_case(
             session,
             user_id=user_id,
@@ -642,7 +671,7 @@ def save_product_valuation_revision(
             valuation_low=low,
             valuation_base=value_numeric,
             valuation_high=high,
-            valuation_currency="USD",
+            valuation_currency=valuation_currency,
             valuation_as_of_date=as_of_date,
             decision=None,
             next_review_on=None,

@@ -210,7 +210,17 @@ function HoldingsView({
                   <TableCell className="text-right font-mono text-xs">{formatCurrency(item.valueUsd)}</TableCell>
                   <TableCell className="text-right font-mono text-xs">
                     <div>{formatPrice(item.marketContext?.latestPrice)}</div>
-                    <div className="mt-1 text-muted-foreground">{item.marketContext?.latestPriceDate ?? 'No local quote'}</div>
+                    <div className="mt-1 text-muted-foreground">
+                      {item.marketContext?.status === 'available'
+                        ? [
+                            item.marketContext.latestPriceDate,
+                            item.marketContext.source,
+                            item.marketContext.currency,
+                          ].filter(Boolean).join(' · ')
+                        : item.marketContext?.reasonCode
+                          ? titleizeCode(item.marketContext.reasonCode)
+                          : 'No eligible quote'}
+                    </div>
                   </TableCell>
                   <TableCell
                     className={cn(

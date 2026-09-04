@@ -49,12 +49,17 @@ export type ThirteenFManagerPosition = {
   mappingStatus: string;
   impliedReportPrice: number | null;
   marketContext: {
+    status: string;
+    reasonCode: string | null;
     latestPrice: number | null;
     latestPriceDate: string | null;
     changeSinceReportPct: number | null;
     week52Low: number | null;
     week52High: number | null;
     source: string | null;
+    currency: string | null;
+    freshnessState: string;
+    sourceAuthorizationState: string;
   } | null;
 };
 

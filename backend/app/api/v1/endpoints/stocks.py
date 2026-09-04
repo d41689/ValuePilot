@@ -2,13 +2,17 @@ from typing import Any
 from fastapi import APIRouter, HTTPException, Body, Query
 from sqlalchemy import select, func
 from datetime import date, datetime, timezone
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 from zoneinfo import ZoneInfo
 from app.api.deps import SessionDep, CurrentUser
+from app.core.currencies import normalize_iso4217_currency
 from app.models.artifacts import PdfDocument
 from app.models.stocks import Stock
 from app.models.facts import MetricFact
-from app.services.valuation import USER_INTRINSIC_VALUE_KEY
+from app.services.valuation import (
+    USER_INTRINSIC_VALUE_KEY,
+    quantize_valuation_value,
+)
 from app.services.active_report_resolver import ActiveReportSelection, resolve_active_reports
 from app.services.actual_conflict_service import detect_actual_conflicts
 from app.services.canonical_financials import (
@@ -23,26 +27,37 @@ from app.services.canonical_financials import (
     reviewed_method_gate,
     visible_metric_fact_predicate,
 )
-from app.schemas.stock import ResearchValuationSave
+from app.schemas.stock import ResearchValuationSave, ResearchValuationSaveResponse
 from app.services.research_cases import (
     ResearchCaseError,
     save_product_valuation_revision,
 )
+from app.services.dcf_inputs import (
+    DCF_CALCULATION_VERSION,
+    DCF_EXPLICIT_SELECTION_RULE,
+    DCF_INPUT_FACT_KEYS,
+    DCF_MANIFEST_VERSION,
+    DCF_MAX_MANIFEST_FACTS,
+    DCF_MODEL_VERSION,
+    DCF_NORMALIZED_SELECTION_RULE,
+    DcfFactUniverseError,
+    DcfModelError,
+    calculate_dcf_model,
+    dcf_evaluation_clock,
+    dcf_manifest_token,
+    evaluate_dcf_input_selection,
+    load_canonical_dcf_fact_universe,
+)
+from app.services.metric_fact_locking import acquire_metric_fact_stock_lock
 from app.services.market_data_service import (
     MarketDataService,
-    compute_target_date,
-    read_canonical_eod_price,
+    read_current_eod_price,
+    serialize_canonical_eod_price,
 )
 
 router = APIRouter()
 
 ET = ZoneInfo("America/New_York")
-DCF_INPUT_FACT_KEYS = {
-    "net_profit_per_share": "per_share.eps",
-    "depreciation": "is.depreciation",
-    "shares_outstanding": "equity.shares_outstanding",
-    "capital_spending_per_share": "per_share.capital_spending",
-}
 PIOTROSKI_CARD_ROWS = [
     {
         "category": "盈利",
@@ -175,11 +190,12 @@ def _stock_summary_wire_number(
     return float(value) if isinstance(value, Decimal) else value
 
 
-def _dcf_value(value: float, source: str, provenance: dict[str, Any] | None = None) -> dict[str, Any]:
-    payload: dict[str, Any] = {"value": float(value), "source": source}
-    if provenance is not None:
-        payload["provenance"] = provenance
-    return payload
+def _stock_summary_currency(fact: MetricFact | None) -> str | None:
+    if fact is None:
+        return None
+    if fact.currency is not None:
+        return normalize_iso4217_currency(fact.currency)
+    return normalize_iso4217_currency(fact.unit)
 
 
 def _fact_provenance(
@@ -203,27 +219,6 @@ def _fact_provenance(
             and active_report.document_id == document_id
         ),
     }
-
-
-def _computed_dcf_provenance(
-    facts: list[tuple[str, MetricFact | None]],
-    *,
-    active_report: ActiveReportSelection | None,
-    report_dates_by_doc: dict[int, date | None],
-) -> dict[str, Any] | None:
-    inputs = []
-    for metric_key, fact in facts:
-        provenance = _fact_provenance(
-            fact,
-            active_report=active_report,
-            report_dates_by_doc=report_dates_by_doc,
-        )
-        if provenance is None:
-            continue
-        inputs.append({"metric_key": metric_key, **provenance})
-    if not inputs:
-        return None
-    return {"inputs": inputs}
 
 
 def _score_value(fact: MetricFact | None) -> int | float | None:
@@ -456,90 +451,375 @@ def _build_piotroski_f_score_card(
     return {"years": display_years, "rows": rows}
 
 
-def _build_dcf_inputs_entry(
-    inputs_by_key: dict[str, MetricFact | None],
-    *,
-    active_report: ActiveReportSelection | None,
-    report_dates_by_doc: dict[int, date | None],
-) -> dict[str, dict[str, Any]]:
-    eps_fact = inputs_by_key.get(DCF_INPUT_FACT_KEYS["net_profit_per_share"])
-    capex_fact = inputs_by_key.get(DCF_INPUT_FACT_KEYS["capital_spending_per_share"])
-    depreciation_fact = inputs_by_key.get(DCF_INPUT_FACT_KEYS["depreciation"])
-    shares_fact = inputs_by_key.get(DCF_INPUT_FACT_KEYS["shares_outstanding"])
-
-    eps_value = float(eps_fact.value_numeric) if eps_fact and eps_fact.value_numeric is not None else 0.0
-    eps_source = "fact" if eps_fact and eps_fact.value_numeric is not None else "missing"
-
-    capex_value = float(capex_fact.value_numeric) if capex_fact and capex_fact.value_numeric is not None else 0.0
-    capex_source = "fact" if capex_fact and capex_fact.value_numeric is not None else "missing"
-
-    depreciation_value = (
-        float(depreciation_fact.value_numeric)
-        if depreciation_fact and depreciation_fact.value_numeric is not None
-        else 0.0
-    )
-    shares_value = float(shares_fact.value_numeric) if shares_fact and shares_fact.value_numeric is not None else 0.0
-    depreciation_per_share = depreciation_value / shares_value if shares_value > 0 else 0.0
-    depreciation_source = (
-        "computed"
-        if depreciation_fact and depreciation_fact.value_numeric is not None and shares_value > 0
-        else "missing"
-    )
-
-    return {
-        "net_profit_per_share": _dcf_value(
-            eps_value,
-            eps_source,
-            _fact_provenance(
-                eps_fact,
-                active_report=active_report,
-                report_dates_by_doc=report_dates_by_doc,
-            ),
-        ),
-        "depreciation_per_share": _dcf_value(
-            depreciation_per_share,
-            depreciation_source,
-            _computed_dcf_provenance(
-                [
-                    (DCF_INPUT_FACT_KEYS["depreciation"], depreciation_fact),
-                    (DCF_INPUT_FACT_KEYS["shares_outstanding"], shares_fact),
-                ],
-                active_report=active_report,
-                report_dates_by_doc=report_dates_by_doc,
-            ),
-        ),
-        "capital_spending_per_share": _dcf_value(
-            capex_value,
-            capex_source,
-            _fact_provenance(
-                capex_fact,
-                active_report=active_report,
-                report_dates_by_doc=report_dates_by_doc,
-            ),
-        ),
+DCF_ASSUMPTION_FIELDS = frozenset({"source", "label", "model"})
+DCF_MODEL_FIELDS = frozenset(
+    {
+        "model_version",
+        "selection",
+        "input_manifest",
+        "input_manifest_token",
+        "actual_inputs",
+        "user_override_fields",
+        "growth_rate_selection",
     }
+)
+DCF_OVERRIDEABLE_FIELDS = frozenset(
+    {
+        "net_profit_per_share",
+        "depreciation_per_share",
+        "capital_spending_per_share",
+        "based_on_per_share",
+    }
+)
+DCF_CANONICAL_COMPONENT_FIELDS = frozenset(
+    {
+        "net_profit_per_share",
+        "depreciation_per_share",
+        "capital_spending_per_share",
+    }
+)
+DCF_OVERRIDE_LABELS = {
+    "net_profit_per_share": "Net profit per share",
+    "depreciation_per_share": "Depreciation per share",
+    "capital_spending_per_share": "Capital spending per share",
+    "based_on_per_share": "Based-on value per share",
+}
+DCF_RESERVED_ASSUMPTION_FIELDS = frozenset(
+    {
+        "model",
+        "model_version",
+        "selection",
+        "based_on_selection",
+        "discount_rate_pct",
+        "growth_years",
+        "growth_rate_pct",
+        "growth_rate_selection",
+        "terminal_years",
+        "terminal_rate_pct",
+        "input_manifest",
+        "input_manifest_token",
+        "based_on_per_share",
+        "computed_growth_value",
+        "computed_terminal_value",
+        "computed_total_value",
+        "client_result_per_share",
+    }
+)
 
 
-def _resolve_normalized_dcf_inputs(
-    oeps_facts: list[MetricFact],
-    dcf_inputs_series_by_year: dict[int, dict[str, dict[str, Any]]],
-) -> dict[str, dict[str, Any]] | None:
-    latest_five = [fact for fact in oeps_facts if fact.period_end_date is not None][:5]
-    if not latest_five:
-        return None
+def _dcf_selection_from_assumption(assumption: dict[str, Any]) -> str | int | None:
+    model = assumption.get("model")
+    selection = model.get("selection") if isinstance(model, dict) else None
+    if selection == "norm":
+        return "norm"
+    if isinstance(selection, int) and not isinstance(selection, bool):
+        return selection
+    return None
 
-    ranked = sorted(
-        latest_five,
-        key=lambda fact: (
-            float(fact.value_numeric) if fact.value_numeric is not None else 0.0,
-            fact.period_end_date,
-        ),
+
+def _selection_changed() -> ResearchCaseError:
+    return ResearchCaseError(
+        "dcf_input_selection_changed",
+        "Canonical DCF inputs changed; reload the calculator before saving.",
+        status_code=409,
     )
-    median_fact = ranked[len(ranked) // 2]
-    median_year = median_fact.period_end_date.year if median_fact.period_end_date else None
-    if median_year is None:
-        return None
-    return dcf_inputs_series_by_year.get(median_year)
+
+
+def _validated_dcf_save(
+    session: SessionDep,
+    *,
+    stock_id: int,
+    current_user_id: int,
+    assumptions: list[dict[str, Any]],
+    declared_currency: str | None,
+    server_evaluated_at: datetime,
+    server_effective_as_of: date,
+) -> tuple[str, list[dict[str, Any]], Decimal]:
+    dcf_assumptions = [
+        item for item in assumptions if isinstance(item, dict) and item.get("source") == "dcf"
+    ]
+    if len(dcf_assumptions) != 1:
+        raise ResearchCaseError(
+            "dcf_assumption_invalid",
+            "Exactly one structured DCF assumption is required.",
+            status_code=409,
+        )
+    if any(
+        item.get("source") != "dcf" and set(item) & DCF_RESERVED_ASSUMPTION_FIELDS
+        for item in assumptions
+        if isinstance(item, dict)
+    ):
+        raise ResearchCaseError(
+            "dcf_assumption_invalid",
+            "DCF fields may only appear in the one verified DCF assumption.",
+            status_code=409,
+        )
+    submitted = dcf_assumptions[0]
+    if set(submitted) != DCF_ASSUMPTION_FIELDS:
+        raise ResearchCaseError(
+            "dcf_assumption_invalid",
+            "DCF assumption must contain exactly the versioned model contract.",
+            status_code=409,
+        )
+    model = submitted.get("model")
+    if not isinstance(model, dict) or set(model) != DCF_MODEL_FIELDS:
+        raise ResearchCaseError(
+            "dcf_assumption_invalid",
+            "dcf_model_v1 must contain exactly the versioned model fields.",
+            status_code=409,
+        )
+    if model.get("model_version") != DCF_MODEL_VERSION:
+        raise ResearchCaseError(
+            "dcf_assumption_invalid",
+            "Unsupported DCF model version.",
+            status_code=409,
+        )
+    growth_selection = model.get("growth_rate_selection")
+    if growth_selection is not None and not isinstance(growth_selection, str):
+        raise ResearchCaseError(
+            "dcf_assumption_invalid",
+            "DCF growth-rate selection must be a string or null.",
+            status_code=409,
+        )
+    overrides = model.get("user_override_fields")
+    if (
+        not isinstance(overrides, list)
+        or len(overrides) > len(DCF_OVERRIDEABLE_FIELDS)
+        or any(not isinstance(field, str) for field in overrides)
+        or len(set(overrides)) != len(overrides)
+        or not set(overrides).issubset(DCF_OVERRIDEABLE_FIELDS)
+    ):
+        raise ResearchCaseError(
+            "dcf_assumption_invalid",
+            "DCF user overrides must be a unique bounded field list.",
+            status_code=409,
+        )
+    actual_inputs = model.get("actual_inputs")
+    if not isinstance(actual_inputs, dict):
+        raise ResearchCaseError(
+            "dcf_assumption_invalid",
+            "DCF actual inputs must be a structured object.",
+            status_code=409,
+        )
+    selection = _dcf_selection_from_assumption(submitted)
+    manifest = model.get("input_manifest")
+    submitted_token = model.get("input_manifest_token")
+    if selection is None or not isinstance(manifest, dict) or not isinstance(submitted_token, str):
+        raise ResearchCaseError(
+            "dcf_assumption_invalid",
+            "DCF assumption must include a selection and input manifest.",
+            status_code=409,
+        )
+    if manifest.get("manifest_version") != DCF_MANIFEST_VERSION:
+        raise _selection_changed()
+    expected_rule = (
+        DCF_NORMALIZED_SELECTION_RULE
+        if selection == "norm"
+        else DCF_EXPLICIT_SELECTION_RULE
+    )
+    if (
+        manifest.get("selection") != selection
+        or manifest.get("selection_rule_version") != expected_rule
+        or dcf_manifest_token(manifest) != submitted_token
+    ):
+        raise _selection_changed()
+    facts_manifest = manifest.get("facts")
+    if not isinstance(facts_manifest, list) or len(facts_manifest) > DCF_MAX_MANIFEST_FACTS:
+        raise _selection_changed()
+    fact_ids = [item.get("id") for item in facts_manifest if isinstance(item, dict)]
+    if (
+        len(fact_ids) != len(facts_manifest)
+        or any(not isinstance(fact_id, int) or isinstance(fact_id, bool) for fact_id in fact_ids)
+        or len(set(fact_ids)) != len(fact_ids)
+    ):
+        raise _selection_changed()
+    try:
+        cutoff = datetime.fromisoformat(str(manifest.get("evaluated_at")))
+    except (TypeError, ValueError) as error:
+        raise _selection_changed() from error
+    if (
+        cutoff.tzinfo is None
+        or cutoff > server_evaluated_at
+        or manifest.get("effective_as_of")
+        != cutoff.astimezone(ET).date().isoformat()
+    ):
+        raise _selection_changed()
+
+    cited_facts = session.scalars(
+        select(MetricFact).where(
+            MetricFact.id.in_(fact_ids),
+            MetricFact.stock_id == stock_id,
+            MetricFact.is_current.is_(True),
+            MetricFact.created_at <= server_evaluated_at,
+            _visible_fact_predicate(current_user_id, []),
+        )
+    ).all()
+    if len(cited_facts) != len(fact_ids):
+        raise _selection_changed()
+
+    try:
+        universe = load_canonical_dcf_fact_universe(
+            session,
+            stock_id=stock_id,
+            user_id=current_user_id,
+            evaluated_at=server_evaluated_at,
+            effective_as_of=server_effective_as_of,
+        )
+    except (CanonicalSourceConflictError, CanonicalUnavailableError) as error:
+        raise _selection_changed() from error
+    except DcfFactUniverseError as error:
+        raise ResearchCaseError(error.code, str(error), status_code=409) from error
+    entry = evaluate_dcf_input_selection(
+        stock_id=stock_id,
+        dcf_facts=universe.dcf_facts,
+        oeps_facts=universe.oeps_facts,
+        selection=selection,
+        evaluated_at=server_evaluated_at,
+        effective_as_of=server_effective_as_of,
+        method_authority=universe.method_authority,
+    )
+
+    def current_identity(candidate: dict[str, Any]) -> dict[str, Any]:
+        return {key: value for key, value in candidate.items() if key != "evaluated_at"}
+
+    if current_identity(entry["input_manifest"]) != current_identity(manifest):
+        raise _selection_changed()
+    state = entry["currency_state"]
+    if state["status"] != "available" or state["currency"] is None:
+        raise ResearchCaseError(
+            state["reason_code"] or "dcf_input_currency_unavailable",
+            "Canonical DCF inputs do not resolve to one verified currency.",
+            status_code=409,
+        )
+    if declared_currency != state["currency"]:
+        raise ResearchCaseError(
+            "dcf_currency_declaration_mismatch",
+            "Submitted DCF currency does not match canonical inputs.",
+            status_code=409,
+        )
+    if state["currency"] != "USD":
+        raise ResearchCaseError(
+            "dcf_currency_not_supported",
+            "Saving DCF valuations currently supports USD only.",
+            status_code=409,
+        )
+    canonical_base = entry.get("canonical_model_inputs")
+    if not isinstance(canonical_base, dict) or any(
+        canonical_base.get(field) is None for field in DCF_OVERRIDEABLE_FIELDS
+    ):
+        raise ResearchCaseError(
+            "dcf_input_unavailable",
+            "Canonical DCF model inputs are unavailable.",
+            status_code=409,
+        )
+    try:
+        calculation = calculate_dcf_model(actual_inputs)
+    except DcfModelError as error:
+        raise ResearchCaseError(error.code, str(error), status_code=409) from error
+
+    def decimal_input(field: str, source: dict[str, Any]) -> Decimal:
+        try:
+            value = Decimal(str(source[field]))
+        except (InvalidOperation, KeyError, TypeError, ValueError) as error:
+            raise ResearchCaseError(
+                "dcf_assumption_invalid",
+                "DCF monetary input is missing or invalid.",
+                status_code=409,
+            ) from error
+        if not value.is_finite():
+            raise ResearchCaseError(
+                "dcf_assumption_invalid",
+                "DCF monetary input must be finite.",
+                status_code=409,
+            )
+        return value
+
+    actual_components = {
+        field: decimal_input(field, actual_inputs) for field in DCF_OVERRIDEABLE_FIELDS
+    }
+    canonical_components = {
+        field: decimal_input(field, canonical_base) for field in DCF_OVERRIDEABLE_FIELDS
+    }
+    expected_overrides = {
+        field
+        for field in DCF_OVERRIDEABLE_FIELDS
+        if actual_components[field] != canonical_components[field]
+    }
+    if set(overrides) != expected_overrides:
+        raise ResearchCaseError(
+            "dcf_override_unrecorded",
+            "Every changed DCF component must be explicitly recorded as a user override.",
+            status_code=409,
+        )
+
+    result = calculation["value_per_share"]
+
+    normalized_inputs = calculation["normalized_inputs"]
+
+    def wire(value: Decimal | int) -> str | int:
+        return value if isinstance(value, int) else str(value)
+
+    def input_authority(field: str) -> str:
+        if field in expected_overrides:
+            return "user_override"
+        if field in DCF_CANONICAL_COMPONENT_FIELDS:
+            return "canonical_fact"
+        if field == "based_on_per_share":
+            return "derived_from_canonical_inputs"
+        return "user_assumption"
+
+    normalized_dcf: dict[str, Any] = {
+        "source": "dcf",
+        "label": "DCF model v1",
+        "model_version": DCF_MODEL_VERSION,
+        "calculation_version": DCF_CALCULATION_VERSION,
+        "selection": selection,
+        "growth_rate_selection": growth_selection,
+        "valuation_currency": state["currency"],
+        "canonical_base": {
+            field: {
+                "value": value,
+                "authority": (
+                    "canonical_fact"
+                    if field in DCF_CANONICAL_COMPONENT_FIELDS
+                    else "derived_from_canonical_inputs"
+                ),
+            }
+            for field, value in canonical_base.items()
+        },
+        "actual_inputs": {
+            field: {
+                "value": wire(value),
+                "authority": input_authority(field),
+            }
+            for field, value in normalized_inputs.items()
+        },
+        "user_overrides": [
+            {"field": field, "label": DCF_OVERRIDE_LABELS[field]}
+            for field in DCF_OVERRIDE_LABELS
+            if field in expected_overrides
+        ],
+        "result": {
+            "growth_value_per_share": str(calculation["growth_value_per_share"]),
+            "terminal_value_per_share": str(calculation["terminal_value_per_share"]),
+            "value_per_share": str(result),
+            "currency": state["currency"],
+        },
+    }
+    normalized_dcf["input_manifest"] = manifest
+    normalized_dcf["input_manifest_token"] = submitted_token
+    normalized_dcf["current_validation_manifest"] = entry["input_manifest"]
+    normalized_dcf["current_validation_manifest_token"] = entry[
+        "input_manifest_token"
+    ]
+    normalized_dcf["manifest_verified_at"] = server_evaluated_at.isoformat()
+    normalized_assumptions = [
+        normalized_dcf
+        if isinstance(item, dict) and item.get("source") == "dcf"
+        else item
+        for item in assumptions
+    ]
+    return state["currency"], normalized_assumptions, result
 
 
 def _visible_fact_predicate(current_user_id: int, admin_user_ids: list[int]):
@@ -618,6 +898,8 @@ def read_stock_by_ticker(
     )
     if not stock:
         raise HTTPException(status_code=404, detail="Stock not found")
+    dcf_clock = dcf_evaluation_clock()
+    dcf_evaluated_at = dcf_clock.evaluated_at
     active_report = resolve_active_reports(
         session,
         stock_ids=[stock.id],
@@ -635,52 +917,29 @@ def read_stock_by_ticker(
     )
     facts = session.scalars(facts_stmt).all()
 
-    now_et = datetime.now(timezone.utc).astimezone(ET)
-    target_date = compute_target_date(now_et)
-    latest_price = read_canonical_eod_price(
+    current_price = read_current_eod_price(
         session,
         stock=stock,
-        as_of=target_date,
-        include_as_of_session=True,
+        evaluated_at=dcf_evaluated_at,
     )
 
-    oeps_stmt = (
-        select(MetricFact)
-        .where(
-            MetricFact.stock_id == stock.id,
-            MetricFact.is_current.is_(True),
-            _visible_fact_predicate(current_user.id, admin_user_ids),
-            MetricFact.metric_key == "owners_earnings_per_share",
-            MetricFact.period_type == "FY",
-        )
-        .order_by(MetricFact.period_end_date.desc())
-        .limit(6)
-    )
-    oeps_facts = session.scalars(oeps_stmt).all()
-
-    dcf_inputs_stmt = (
-        select(MetricFact)
-        .where(
-            MetricFact.stock_id == stock.id,
-            MetricFact.is_current.is_(True),
-            _visible_fact_predicate(current_user.id, admin_user_ids),
-            MetricFact.period_type == "FY",
-            MetricFact.metric_key.in_(list(DCF_INPUT_FACT_KEYS.values())),
-        )
-        .order_by(MetricFact.metric_key.asc(), MetricFact.period_end_date.desc())
-    )
-    dcf_input_facts = session.scalars(dcf_inputs_stmt).all()
+    oeps_facts: list[MetricFact] = []
+    dcf_input_facts: list[MetricFact] = []
+    dcf_method_authority: list[dict[str, Any]] = []
+    method_gate_decisions: dict[str, Any] | None = None
     canonical_input_status: dict[str, Any] = {"status": "available"}
     try:
-        dcf_input_facts = guard_source_selection(
-            dcf_input_facts,
-            consumer="valuation_inputs",
-        )
-        dcf_input_facts = guard_sec_run_availability(
+        universe = load_canonical_dcf_fact_universe(
             session,
             stock_id=stock.id,
-            facts=dcf_input_facts,
+            user_id=current_user.id,
+            evaluated_at=dcf_evaluated_at,
+            effective_as_of=dcf_clock.effective_as_of,
         )
+        oeps_facts = universe.oeps_facts
+        dcf_input_facts = universe.dcf_facts
+        dcf_method_authority = universe.method_authority
+        method_gate_decisions = universe.method_decisions
     except CanonicalSourceConflictError as error:
         dcf_input_facts = []
         canonical_input_status = {
@@ -689,31 +948,29 @@ def read_stock_by_ticker(
             "source_types": list(error.source_types),
         }
     except CanonicalUnavailableError as error:
-        dcf_input_facts = []
         canonical_input_status = error.state
-    method_gate_decisions = {
-        method_key: reviewed_method_gate(
-            session,
-            stock_id=stock.id,
-            method_key=method_key,
-            effective_as_of=date.today(),
-        )
-        for method_key in ("owner_earnings", "roic", "per_share_trend", "system_valuation")
-    }
-    # These are raw valuation inputs, not a system-authored per-share trend
-    # output. Keep the method decision observable without suppressing source
-    # facts that are explicitly exempt from the reviewed-method gate.
-    dcf_inputs_by_date: dict[date, dict[str, MetricFact | None]] = {}
-    for fact in dcf_input_facts:
-        period_end = fact.period_end_date
-        if not period_end:
-            continue
-        by_key = dcf_inputs_by_date.setdefault(period_end, {})
-        if fact.metric_key not in by_key:
-            by_key[fact.metric_key] = fact
-
+    except DcfFactUniverseError as error:
+        canonical_input_status = {
+            "status": "unavailable",
+            "reason_code": error.code,
+        }
+    if method_gate_decisions is None:
+        method_gate_decisions = {
+            method_key: reviewed_method_gate(
+                session,
+                stock_id=stock.id,
+                method_key=method_key,
+                effective_as_of=dcf_clock.effective_as_of,
+                knowledge_at=dcf_evaluated_at,
+            )
+            for method_key in (
+                "owner_earnings",
+                "roic",
+                "per_share_trend",
+                "system_valuation",
+            )
+        }
     dcf_inputs_series = []
-    dcf_inputs_series_by_year: dict[int, dict[str, dict[str, Any]]] = {}
 
     growth_metric_keys = [
         "rates.sales.cagr_est",
@@ -738,13 +995,8 @@ def read_stock_by_ticker(
         session,
         stock_id=stock.id,
         facts=facts,
-        effective_as_of=date.today(),
-    )
-    oeps_facts, _, _ = apply_reviewed_method_gates(
-        session,
-        stock_id=stock.id,
-        facts=oeps_facts,
-        effective_as_of=date.today(),
+        effective_as_of=dcf_clock.effective_as_of,
+        knowledge_at=dcf_evaluated_at,
     )
     try:
         summary_facts = guard_source_selection(
@@ -840,18 +1092,45 @@ def read_stock_by_ticker(
             }
         )
 
+    seen_dcf_years: set[int] = set()
     for fact in oeps_facts:
         period_end = fact.period_end_date
-        if not period_end:
+        if not period_end or period_end.year in seen_dcf_years:
             continue
-        entry = _build_dcf_inputs_entry(
-            dcf_inputs_by_date.get(period_end, {}),
-            active_report=active_report,
-            report_dates_by_doc=report_dates_by_doc,
+        seen_dcf_years.add(period_end.year)
+        entry = evaluate_dcf_input_selection(
+            stock_id=stock.id,
+            dcf_facts=dcf_input_facts,
+            oeps_facts=oeps_facts,
+            selection=period_end.year,
+            evaluated_at=dcf_evaluated_at,
+            effective_as_of=dcf_clock.effective_as_of,
+            method_authority=dcf_method_authority,
+            provenance_for_fact=lambda input_fact: _fact_provenance(
+                input_fact,
+                active_report=active_report,
+                report_dates_by_doc=report_dates_by_doc,
+            ),
         )
         dcf_inputs_series.append({"year": period_end.year, **entry})
-        dcf_inputs_series_by_year[period_end.year] = entry
-    dcf_inputs = _resolve_normalized_dcf_inputs(oeps_facts, dcf_inputs_series_by_year)
+    dcf_inputs = (
+        evaluate_dcf_input_selection(
+            stock_id=stock.id,
+            dcf_facts=dcf_input_facts,
+            oeps_facts=oeps_facts,
+            selection="norm",
+            evaluated_at=dcf_evaluated_at,
+            effective_as_of=dcf_clock.effective_as_of,
+            method_authority=dcf_method_authority,
+            provenance_for_fact=lambda input_fact: _fact_provenance(
+                input_fact,
+                active_report=active_report,
+                report_dates_by_doc=report_dates_by_doc,
+            ),
+        )
+        if oeps_facts
+        else None
+    )
 
     growth_rate_options = []
 
@@ -917,6 +1196,19 @@ def read_stock_by_ticker(
         shared_parsed_user_ids=admin_user_ids,
     )
 
+    report_price_fact = facts_by_key.get("mkt.price")
+    report_price_provenance = _fact_provenance(
+        report_price_fact,
+        active_report=active_report,
+        report_dates_by_doc=report_dates_by_doc,
+    )
+    report_price_as_of = (
+        report_price_provenance.get("source_report_date")
+        or report_price_provenance.get("period_end_date")
+        if report_price_provenance
+        else None
+    )
+
     return {
         "id": stock.id,
         "ticker": stock.ticker,
@@ -926,23 +1218,16 @@ def read_stock_by_ticker(
         "company_name": stock.company_name,
         "active_report_document_id": active_report.document_id if active_report else None,
         "active_report_date": active_report.report_date.isoformat() if active_report and active_report.report_date else None,
-        "price": _stock_summary_wire_number(
-            facts_by_key.get("mkt.price").value_numeric
-            if facts_by_key.get("mkt.price")
-            else None
-        ),
-        "price_provenance": _fact_provenance(
-            facts_by_key.get("mkt.price"),
-            active_report=active_report,
-            report_dates_by_doc=report_dates_by_doc,
-        ),
-        "latest_price": _stock_summary_wire_number(latest_price.close),
-        "latest_price_date": latest_price.price_date.isoformat() if latest_price.price_date else None,
-        "latest_price_updated_at": latest_price.observed_at.isoformat() if latest_price.observed_at else None,
-        "latest_price_currency": latest_price.currency,
-        "latest_price_source": latest_price.source,
-        "latest_price_freshness": latest_price.freshness_state,
-        "latest_price_reason": latest_price.reason_code,
+        "current_price": serialize_canonical_eod_price(current_price),
+        "report_price_reference": {
+            "label": "report_reference",
+            "value": _stock_summary_wire_number(
+                report_price_fact.value_numeric if report_price_fact else None
+            ),
+            "as_of_date": report_price_as_of,
+            "currency": _stock_summary_currency(report_price_fact),
+            "provenance": report_price_provenance,
+        },
         "pe": _stock_summary_wire_number(
             facts_by_key.get("val.pe").value_numeric
             if facts_by_key.get("val.pe")
@@ -1075,7 +1360,7 @@ def read_sec_publication_evidence(
     return evidence
 
 
-@router.put("/{stock_id}/facts", response_model=dict)
+@router.put("/{stock_id}/facts", response_model=ResearchValuationSaveResponse)
 def upsert_stock_fact(
     *,
     stock_id: int,
@@ -1085,25 +1370,57 @@ def upsert_stock_fact(
 ) -> Any:
     user_id = current_user.id
 
+    if payload.source == "dcf":
+        acquire_metric_fact_stock_lock(session, stock_id=stock_id)
     stock = session.get(Stock, stock_id)
     if not stock:
         raise HTTPException(status_code=404, detail="Stock not found")
     if payload.metric_key != USER_INTRINSIC_VALUE_KEY:
         raise HTTPException(status_code=400, detail="Unsupported metric_key")
 
-    now_et = datetime.now(timezone.utc).astimezone(ET)
+    save_clock = dcf_evaluation_clock()
+    now_et = save_clock.evaluated_at.astimezone(ET)
     try:
+        valuation_currency = payload.valuation_currency or "USD"
+        save_assumptions = payload.assumptions
+        save_value = payload.value_numeric
+        save_low = payload.valuation_low
+        save_high = payload.valuation_high
+        if payload.source == "dcf":
+            if payload.as_of_date is not None and payload.as_of_date != now_et.date():
+                raise ResearchCaseError(
+                    "historical_dcf_save_unsupported",
+                    "DCF results can only be saved for the current server date.",
+                    status_code=409,
+                )
+            valuation_currency, save_assumptions, save_value = _validated_dcf_save(
+                session,
+                stock_id=stock_id,
+                current_user_id=user_id,
+                assumptions=payload.assumptions,
+                declared_currency=payload.valuation_currency,
+                server_evaluated_at=save_clock.evaluated_at,
+                server_effective_as_of=save_clock.effective_as_of,
+            )
+            save_low = save_value
+            save_high = save_value
+        if save_value is None:
+            raise ResearchCaseError(
+                "valuation_value_required",
+                "A valuation value is required.",
+            )
         case, revision, fact = save_product_valuation_revision(
             session,
             user_id=user_id,
             stock_id=stock_id,
-            value_numeric=payload.value_numeric,
-            valuation_low=payload.valuation_low,
-            valuation_high=payload.valuation_high,
+            value_numeric=save_value,
+            valuation_low=save_low,
+            valuation_high=save_high,
             as_of_date=payload.as_of_date or now_et.date(),
             source=payload.source,
             pool_id=payload.pool_id,
-            assumptions=payload.assumptions,
+            assumptions=save_assumptions,
+            valuation_currency=valuation_currency,
         )
     except ResearchCaseError as error:
         raise HTTPException(
@@ -1111,11 +1428,13 @@ def upsert_stock_fact(
             detail={"code": error.code, "message": error.message},
         ) from error
 
+    exact_value = quantize_valuation_value(fact.value_numeric)
     return {
         "id": fact.id,
         "stock_id": fact.stock_id,
         "metric_key": fact.metric_key,
-        "value_numeric": float(fact.value_numeric),
+        "value_numeric_exact": exact_value,
+        "value_numeric": float(exact_value),
         "unit": fact.unit,
         "period_type": fact.period_type,
         "period_end_date": fact.period_end_date,

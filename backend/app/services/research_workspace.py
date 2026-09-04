@@ -1,7 +1,7 @@
 """User-authorized, stock-centric read model for a research case."""
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, datetime, timezone
 from typing import Any
 
 from sqlalchemy import select
@@ -13,7 +13,10 @@ from app.models.facts import MetricFact
 from app.models.oracles_lens import OraclesLensSignal
 from app.models.research import ResearchCase, ResearchCaseOrigin, ResearchCaseRevision
 from app.models.stocks import Stock
-from app.services.market_data_service import read_canonical_eod_price
+from app.services.market_data_service import (
+    read_current_eod_price,
+    serialize_canonical_eod_price,
+)
 from app.services.research_cases import (
     ResearchCaseError,
     serialize_case,
@@ -21,7 +24,7 @@ from app.services.research_cases import (
     serialize_origin,
     serialize_revision,
 )
-from app.services.research_coverage import serialize_requirement
+from app.services.research_coverage import serialize_requirements
 from app.services.thirteenf_user_api import build_user_stock_holders
 from app.services.valuation import read_valuation_context
 from app.services.active_report_resolver import resolve_active_reports
@@ -72,6 +75,7 @@ def build_research_workspace(
     case_id: int,
     as_of: date,
 ) -> dict[str, Any]:
+    evaluated_at = datetime.now(timezone.utc)
     case = (
         session.query(ResearchCase)
         .filter(ResearchCase.id == case_id, ResearchCase.user_id == user_id)
@@ -149,7 +153,16 @@ def build_research_workspace(
         .order_by(ResearchCoverageRequirement.priority_rank, ResearchCoverageRequirement.kind)
         .all()
     )
-    price = read_canonical_eod_price(session, stock=stock, as_of=as_of)
+    current_price = read_current_eod_price(
+        session,
+        stock=stock,
+        evaluated_at=evaluated_at,
+    )
+    serialized_coverage = serialize_requirements(
+        session,
+        [(row, stock) for row in coverage_rows],
+        evaluated_at=evaluated_at,
+    )
     valuation = read_valuation_context(session, user_id=user_id, stock_id=stock.id)
     active_report = resolve_active_reports(
         session,
@@ -280,23 +293,11 @@ def build_research_workspace(
         "piotroski_f_score": _piotroski_series(facts),
         "actual_conflicts": actual_conflicts,
         "missing_items": [
-            serialize_requirement(row, stock)
-            for row in coverage_rows
-            if row.state != "ready"
+            requirement
+            for requirement in serialized_coverage
+            if requirement["state"] != "ready"
         ],
-        "price": {
-            "price_id": price.price_id,
-            "close": price.close,
-            "price_date": price.price_date.isoformat() if price.price_date else None,
-            "currency": price.currency,
-            "source": price.source,
-            "freshness_state": price.freshness_state,
-            "reason_code": price.reason_code,
-            "expected_session_date": (
-                price.expected_session_date.isoformat() if price.expected_session_date else None
-            ),
-            "freshness_policy_version": price.freshness_policy_version,
-        },
+        "current_price": serialize_canonical_eod_price(current_price),
         "valuation": {
             "user_intrinsic_value": valuation.user_intrinsic_value,
             "user_intrinsic_value_status": valuation.user_intrinsic_value_status,
@@ -305,6 +306,7 @@ def build_research_workspace(
                 if valuation.user_intrinsic_value_as_of
                 else None
             ),
+            "user_intrinsic_value_currency": valuation.user_intrinsic_value_currency,
             "display_state": (
                 "under_review"
                 if case.state == "researching"
@@ -318,8 +320,9 @@ def build_research_workspace(
                 if valuation.system_reference_as_of
                 else None
             ),
+            "system_reference_currency": valuation.system_reference_currency,
         },
-        "coverage": [serialize_requirement(row, stock) for row in coverage_rows],
+        "coverage": serialized_coverage,
         "oracles_lens": (
             {
                 "signal_id": signal.id,

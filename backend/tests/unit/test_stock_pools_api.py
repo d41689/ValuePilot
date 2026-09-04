@@ -1,7 +1,8 @@
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
 import pytest
+from sqlalchemy import event
 
 from app.models.users import User
 from app.models.stocks import Stock, StockPool, PoolMembership, StockPrice
@@ -178,6 +179,198 @@ def test_overview_members_union_deduplicates_and_scopes_to_user(client, db_sessi
     assert all(row["ticker"] != "NVDA" for row in rows)
 
 
+def test_watchlist_rows_batch_101_members_with_fixed_query_count(
+    db_session, monkeypatch
+):
+    from app.api.v1.endpoints.stock_pools import _watchlist_rows_for_memberships
+    from app.services import market_data_service
+    from app.services.market_data_service import (
+        ET,
+        compute_target_date,
+        expected_session_on_or_before,
+    )
+
+    monkeypatch.setattr(market_data_service.settings, "MARKET_DATA_PRIMARY", "yfinance")
+    monkeypatch.setattr(
+        market_data_service.settings,
+        "MARKET_DATA_ALLOW_DEVELOPMENT_PROVIDER",
+        True,
+    )
+    user = _make_user(db_session, "watchlist-batch-101@example.com")
+    pool = StockPool(user_id=user.id, name="Batch 101")
+    db_session.add(pool)
+    db_session.flush()
+    stocks = [
+        Stock(ticker=f"W{i:03d}", exchange="NYSE", company_name=f"Watch {i}")
+        for i in range(101)
+    ]
+    db_session.add_all(stocks)
+    db_session.flush()
+    members = [
+        PoolMembership(
+            user_id=user.id,
+            pool_id=pool.id,
+            stock_id=stock.id,
+            inclusion_type="manual",
+        )
+        for stock in stocks
+    ]
+    db_session.add_all(members)
+    now = datetime.now(timezone.utc)
+    target = compute_target_date(now.astimezone(ET))
+    previous = expected_session_on_or_before(
+        "NYSE", target - timedelta(days=1)
+    ).session_date
+    assert previous is not None
+    db_session.add_all(
+        [
+            StockPrice(
+                stock_id=stock.id,
+                price_date=price_date,
+                open=close,
+                high=close,
+                low=close,
+                close=close,
+                volume=1,
+                source="yfinance",
+                currency="USD",
+                created_at=(
+                    now - timedelta(minutes=1)
+                    if price_date == target
+                    else datetime.combine(target, datetime.min.time(), timezone.utc)
+                    - timedelta(hours=1)
+                ),
+            )
+            for stock in stocks
+            for price_date, close in ((previous, 99), (target, 100))
+        ]
+    )
+    db_session.flush()
+
+    statements: list[str] = []
+    connection = db_session.connection()
+
+    def capture(_conn, _cursor, statement, _params, _context, _executemany):
+        statements.append(statement)
+
+    event.listen(connection, "before_cursor_execute", capture)
+    try:
+        rows = _watchlist_rows_for_memberships(db_session, user.id, members)
+    finally:
+        event.remove(connection, "before_cursor_execute", capture)
+
+    assert len(rows) == 101
+    assert len(statements) == 5
+    assert {row["delta_today"] for row in rows} == {1}
+    assert len({row["current_price"]["as_of_date"] for row in rows}) == 1
+    assert len(
+        {row["current_price"]["expected_session_date"] for row in rows}
+    ) == 1
+
+
+def test_watchlist_previous_price_uses_same_live_knowledge_cutoff(
+    db_session, monkeypatch
+):
+    from app.api.v1.endpoints import stock_pools as stock_pools_endpoint
+    from app.services import market_data_service
+
+    evaluated_at = datetime(2026, 2, 4, 17, tzinfo=timezone.utc)
+
+    class FixedDateTime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return evaluated_at if tz is not None else evaluated_at.replace(tzinfo=None)
+
+    monkeypatch.setattr(stock_pools_endpoint, "datetime", FixedDateTime)
+    monkeypatch.setattr(market_data_service.settings, "MARKET_DATA_PRIMARY", "yfinance")
+    monkeypatch.setattr(
+        market_data_service.settings,
+        "MARKET_DATA_ALLOW_DEVELOPMENT_PROVIDER",
+        True,
+    )
+    user = _make_user(db_session, "watchlist-previous-pit@example.com")
+    pool = StockPool(user_id=user.id, name="PIT")
+    known_stock = _make_stock(db_session, "KNOWN")
+    future_stock = _make_stock(db_session, "FUTURE")
+    db_session.add(pool)
+    db_session.flush()
+    members = [
+        PoolMembership(
+            user_id=user.id,
+            pool_id=pool.id,
+            stock_id=stock.id,
+            inclusion_type="manual",
+        )
+        for stock in (known_stock, future_stock)
+    ]
+    db_session.add_all(members)
+    db_session.add_all(
+        [
+            StockPrice(
+                stock_id=stock.id,
+                price_date=date(2026, 2, 3),
+                open=100,
+                high=100,
+                low=100,
+                close=100,
+                volume=1,
+                source="yfinance",
+                currency="USD",
+                created_at=datetime(2026, 2, 3, 22, tzinfo=timezone.utc),
+            )
+            for stock in (known_stock, future_stock)
+        ]
+    )
+    db_session.add_all(
+        [
+            StockPrice(
+                stock_id=known_stock.id,
+                price_date=date(2026, 2, 2),
+                open=98,
+                high=98,
+                low=98,
+                close=98,
+                volume=1,
+                source="yfinance",
+                currency="USD",
+                # After target-date NY midnight (05:00 UTC), but known now.
+                created_at=datetime(2026, 2, 3, 6, tzinfo=timezone.utc),
+            ),
+            StockPrice(
+                stock_id=future_stock.id,
+                price_date=date(2026, 2, 2),
+                open=97,
+                high=97,
+                low=97,
+                close=97,
+                volume=1,
+                source="yfinance",
+                currency="USD",
+                created_at=datetime(2026, 2, 4, 18, tzinfo=timezone.utc),
+            ),
+        ]
+    )
+    db_session.flush()
+
+    rows = stock_pools_endpoint._watchlist_rows_for_memberships(
+        db_session, user.id, members
+    )
+    by_ticker = {row["ticker"]: row for row in rows}
+
+    assert by_ticker["KNOWN"]["delta_today"] == 2
+    assert by_ticker["KNOWN"]["delta_today_state"] == {
+        "status": "available",
+        "reason_code": None,
+        "currency": "USD",
+    }
+    assert by_ticker["FUTURE"]["delta_today"] is None
+    assert by_ticker["FUTURE"]["delta_today_state"] == {
+        "status": "unavailable",
+        "reason_code": "price_missing",
+        "currency": None,
+    }
+
+
 def test_pool_f_score_compare_returns_five_actual_and_two_estimate_years(
     client, db_session, auth_headers
 ):
@@ -297,12 +490,22 @@ def test_pool_members_include_price_and_fair_value(client, db_session, monkeypat
 
     stock_a = _make_stock(db_session, "AOS")
     stock_b = _make_stock(db_session, "MSFT")
+    stock_c = _make_stock(db_session, "SHOP")
 
     db_session.add(
         PoolMembership(
             user_id=user.id,
             pool_id=pool.id,
             stock_id=stock_a.id,
+            inclusion_type="manual",
+            rule_id=None,
+        )
+    )
+    db_session.add(
+        PoolMembership(
+            user_id=user.id,
+            pool_id=pool.id,
+            stock_id=stock_c.id,
             inclusion_type="manual",
             rule_id=None,
         )
@@ -319,10 +522,31 @@ def test_pool_members_include_price_and_fair_value(client, db_session, monkeypat
 
     target_date = date(2026, 2, 3)
     prev_date = date(2026, 2, 2)
+    from app.services.market_data_service import (
+        read_canonical_eod_prices,
+        read_current_eod_prices,
+    )
+
     monkeypatch.setattr(
         stock_pools_endpoint,
-        "compute_target_date",
-        lambda now_et, **kwargs: target_date,
+        "read_current_eod_prices",
+        lambda session, *, stocks, evaluated_at=None: read_current_eod_prices(
+            session,
+            stocks=stocks,
+            evaluated_at=datetime(2026, 2, 4, 17, tzinfo=timezone.utc),
+            source_priority=("seed",),
+        ),
+    )
+    monkeypatch.setattr(
+        stock_pools_endpoint,
+        "read_canonical_eod_prices",
+        lambda session, *, stocks, as_of_by_stock_id, knowledge_cutoff: read_canonical_eod_prices(
+            session,
+            stocks=stocks,
+            as_of_by_stock_id=as_of_by_stock_id,
+            knowledge_cutoff=knowledge_cutoff,
+            source_priority=("seed",),
+        ),
     )
 
     db_session.add_all(
@@ -336,6 +560,7 @@ def test_pool_members_include_price_and_fair_value(client, db_session, monkeypat
                 close=100.0,
                 volume=1_000,
                 source="seed",
+                currency="USD",
                 created_at=datetime(2026, 2, 3, 21, 0, tzinfo=timezone.utc),
             ),
             StockPrice(
@@ -347,6 +572,7 @@ def test_pool_members_include_price_and_fair_value(client, db_session, monkeypat
                 close=98.0,
                 volume=1_000,
                 source="seed",
+                currency="USD",
                 created_at=datetime(2026, 2, 2, 21, 0, tzinfo=timezone.utc),
             ),
             StockPrice(
@@ -358,6 +584,7 @@ def test_pool_members_include_price_and_fair_value(client, db_session, monkeypat
                 close=50.0,
                 volume=1_000,
                 source="seed",
+                currency="USD",
                 created_at=datetime(2026, 2, 3, 21, 0, tzinfo=timezone.utc),
             ),
             StockPrice(
@@ -369,6 +596,31 @@ def test_pool_members_include_price_and_fair_value(client, db_session, monkeypat
                 close=55.0,
                 volume=1_000,
                 source="seed",
+                currency="CAD",
+                created_at=datetime(2026, 2, 2, 21, 0, tzinfo=timezone.utc),
+            ),
+            StockPrice(
+                stock_id=stock_c.id,
+                price_date=target_date,
+                open=69.0,
+                high=71.0,
+                low=68.0,
+                close=70.0,
+                volume=1_000,
+                source="seed",
+                currency="CAD",
+                created_at=datetime(2026, 2, 3, 21, 0, tzinfo=timezone.utc),
+            ),
+            StockPrice(
+                stock_id=stock_c.id,
+                price_date=prev_date,
+                open=64.0,
+                high=66.0,
+                low=63.0,
+                close=65.0,
+                volume=1_000,
+                source="seed",
+                currency=None,
                 created_at=datetime(2026, 2, 2, 21, 0, tzinfo=timezone.utc),
             ),
         ]
@@ -499,11 +751,17 @@ def test_pool_members_include_price_and_fair_value(client, db_session, monkeypat
     resp = client.get(f"/api/v1/stock_pools/{pool.id}/members", headers=headers)
     assert resp.status_code == 200
     rows = resp.json()
-    assert len(rows) == 2
+    assert len(rows) == 3
 
     row_a = next(row for row in rows if row["ticker"] == "AOS")
-    assert row_a["price"] == pytest.approx(100.0)
+    assert row_a["current_price"]["value"] == pytest.approx(100.0)
+    assert row_a["current_price"]["price_date"] == target_date.isoformat()
     assert row_a["delta_today"] == pytest.approx(2.0)
+    assert row_a["delta_today_state"] == {
+        "status": "available",
+        "reason_code": None,
+        "currency": "USD",
+    }
     assert row_a["fair_value"] == pytest.approx(200.0)
     assert row_a["fair_value_source"] == "manual"
     assert row_a["mos"] == pytest.approx(0.5)
@@ -547,8 +805,13 @@ def test_pool_members_include_price_and_fair_value(client, db_session, monkeypat
     ]
 
     row_b = next(row for row in rows if row["ticker"] == "MSFT")
-    assert row_b["price"] == pytest.approx(50.0)
-    assert row_b["delta_today"] == pytest.approx(-5.0)
+    assert row_b["current_price"]["value"] == pytest.approx(50.0)
+    assert row_b["delta_today"] is None
+    assert row_b["delta_today_state"] == {
+        "status": "unavailable",
+        "reason_code": "currency_mismatch",
+        "currency": None,
+    }
     assert row_b["fair_value"] is None
     assert row_b["fair_value_source"] is None
     assert row_b["mos"] is None
@@ -556,3 +819,12 @@ def test_pool_members_include_price_and_fair_value(client, db_session, monkeypat
     assert row_b["valuation_reference_source"] == TARGET_KEY
     assert row_b["discount_to_reference"] == pytest.approx(0.375)
     assert row_b["piotroski_f_scores"] == []
+
+    row_c = next(row for row in rows if row["ticker"] == "SHOP")
+    assert row_c["current_price"]["value"] == pytest.approx(70.0)
+    assert row_c["delta_today"] is None
+    assert row_c["delta_today_state"] == {
+        "status": "unavailable",
+        "reason_code": "price_currency_unavailable",
+        "currency": None,
+    }

@@ -2,16 +2,26 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import date
+from decimal import Decimal, ROUND_HALF_EVEN
 from typing import Any
 
 from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
+from app.core.currencies import normalize_iso4217_currency
 from app.models.facts import MetricFact
 
 
 USER_INTRINSIC_VALUE_KEY = "val.fair_value"
 VALUE_LINE_TARGET_REFERENCE_KEY = "target.price_18m.mid"
+VALUATION_VALUE_QUANTUM = Decimal("0.000001")
+
+
+def quantize_valuation_value(value: Decimal) -> Decimal:
+    """Normalize every published valuation to the revision's six-place contract."""
+
+    decimal_value = value if isinstance(value, Decimal) else Decimal(str(value))
+    return decimal_value.quantize(VALUATION_VALUE_QUANTUM, rounding=ROUND_HALF_EVEN)
 
 
 @dataclass(frozen=True)
@@ -20,10 +30,24 @@ class ValuationContext:
     user_intrinsic_value_status: str
     user_intrinsic_value_as_of: date | None
     user_intrinsic_value_fact_id: int | None
+    user_intrinsic_value_currency: str | None
     system_reference_value: float | None
     system_reference_type: str | None
     system_reference_as_of: date | None
     system_reference_fact_id: int | None
+    system_reference_currency: str | None
+
+
+def _fact_currency(fact: MetricFact | None) -> str | None:
+    if fact is None:
+        return None
+    if fact.currency is not None:
+        return normalize_iso4217_currency(fact.currency)
+    return normalize_iso4217_currency(fact.unit)
+
+
+def _has_source_type(fact: MetricFact, *, source_type: str) -> bool:
+    return fact.source_type == source_type
 
 
 def _latest_current_fact(
@@ -57,20 +81,18 @@ def read_valuation_context(
     user_id: int,
     stock_id: int,
 ) -> ValuationContext:
-    manual = _latest_current_fact(
+    return read_valuation_contexts(
         session,
         user_id=user_id,
-        stock_id=stock_id,
-        metric_key=USER_INTRINSIC_VALUE_KEY,
-        source_type="manual",
-    )
-    reference = _latest_current_fact(
-        session,
-        user_id=user_id,
-        stock_id=stock_id,
-        metric_key=VALUE_LINE_TARGET_REFERENCE_KEY,
-        source_type="parsed",
-    )
+        stock_ids=[stock_id],
+    )[stock_id]
+
+
+def _valuation_context_from_facts(
+    facts: dict[str, MetricFact],
+) -> ValuationContext:
+    manual = facts.get(USER_INTRINSIC_VALUE_KEY)
+    reference = facts.get(VALUE_LINE_TARGET_REFERENCE_KEY)
 
     if manual is None:
         intrinsic_status = "missing"
@@ -92,13 +114,35 @@ def read_valuation_context(
         user_intrinsic_value_status=intrinsic_status,
         user_intrinsic_value_as_of=manual.period_end_date if manual else None,
         user_intrinsic_value_fact_id=manual.id if manual else None,
+        user_intrinsic_value_currency=_fact_currency(manual),
         system_reference_value=reference_value,
         system_reference_type=(
             VALUE_LINE_TARGET_REFERENCE_KEY if reference_value is not None else None
         ),
         system_reference_as_of=reference.period_end_date if reference else None,
         system_reference_fact_id=reference.id if reference else None,
+        system_reference_currency=_fact_currency(reference),
     )
+
+
+def read_valuation_contexts(
+    session: Session,
+    *,
+    user_id: int,
+    stock_ids: list[int],
+) -> dict[int, ValuationContext]:
+    """Return valuation contexts with one user-scoped metric-fact query."""
+
+    unique_stock_ids = list(dict.fromkeys(int(stock_id) for stock_id in stock_ids))
+    facts_by_stock_id = read_valuation_facts_by_stock(
+        session,
+        user_id=user_id,
+        stock_ids=unique_stock_ids,
+    )
+    return {
+        stock_id: _valuation_context_from_facts(facts_by_stock_id[stock_id])
+        for stock_id in unique_stock_ids
+    }
 
 
 def read_valuation_facts_by_stock(
@@ -139,12 +183,12 @@ def read_valuation_facts_by_stock(
     for fact in facts:
         if (
             fact.metric_key == USER_INTRINSIC_VALUE_KEY
-            and fact.source_type != "manual"
+            and not _has_source_type(fact, source_type="manual")
         ):
             continue
         if (
             fact.metric_key == VALUE_LINE_TARGET_REFERENCE_KEY
-            and fact.source_type != "parsed"
+            and not _has_source_type(fact, source_type="parsed")
         ):
             continue
         result[fact.stock_id].setdefault(fact.metric_key, fact)
@@ -156,11 +200,14 @@ def publish_user_intrinsic_value(
     *,
     user_id: int,
     stock_id: int,
-    value_numeric: float | None,
+    value_numeric: Decimal | None,
     as_of_date: date,
     unavailable_reason: str | None = None,
     source_ref_id: int | None = None,
 ) -> MetricFact:
+    persisted_value = (
+        quantize_valuation_value(value_numeric) if value_numeric is not None else None
+    )
     session.execute(
         update(MetricFact)
         .where(
@@ -186,7 +233,7 @@ def publish_user_intrinsic_value(
         user_id=user_id,
         stock_id=stock_id,
         metric_key=USER_INTRINSIC_VALUE_KEY,
-        value_numeric=value_numeric,
+        value_numeric=persisted_value,
         value_json=value_json,
         unit="USD",
         currency="USD",

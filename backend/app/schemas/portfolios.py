@@ -5,6 +5,8 @@ from decimal import Decimal
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
+from app.core.currencies import normalize_iso4217_currency
+
 
 class ManualPortfolioCreate(BaseModel):
     name: str = Field(min_length=1, max_length=120)
@@ -47,9 +49,9 @@ class ManualPositionCreate(_ResearchLink):
     @field_validator("currency")
     @classmethod
     def normalize_currency(cls, value: str) -> str:
-        normalized = value.upper()
-        if not normalized.isalpha():
-            raise ValueError("currency must be a three-letter code")
+        normalized = normalize_iso4217_currency(value)
+        if normalized is None:
+            raise ValueError("currency must be a current ISO 4217 code")
         return normalized
 
     @field_validator("reason")

@@ -924,6 +924,7 @@ def materialize_research_coverage_changes(session: Session) -> int:
     from app.models.coverage import ResearchCoverageRequirement
     from app.models.research import ResearchCase
     from app.models.stocks import Stock
+    from app.services.research_coverage import serialize_requirements
 
     rows = (
         session.query(ResearchCoverageRequirement, ResearchCase, Stock)
@@ -945,21 +946,28 @@ def materialize_research_coverage_changes(session: Session) -> int:
         )
         .all()
     )
+    serialized_rows = serialize_requirements(
+        session,
+        [(requirement, stock) for requirement, _, stock in rows],
+        evaluated_at=datetime.now(timezone.utc),
+    )
     created = 0
-    for requirement, case, stock in rows:
+    for (requirement, case, stock), serialized in zip(rows, serialized_rows):
+        if serialized["state"] not in {"ready", "failed"}:
+            continue
         evidence_version = hashlib.sha256(
             json.dumps(
                 {
-                    "state": requirement.state,
-                    "reason_code": requirement.reason_code,
-                    "source_type": requirement.source_type,
-                    "source_ref_id": requirement.source_ref_id,
+                    "state": serialized["state"],
+                    "reason_code": serialized["reason_code"],
+                    "source_type": serialized["source_type"],
+                    "source_ref_id": serialized["source_ref_id"],
                     "observed_at": (
                         requirement.observed_at.isoformat()
                         if requirement.observed_at
                         else None
                     ),
-                    "evidence": requirement.evidence_json,
+                    "evidence": serialized["evidence"],
                     "freshness_policy_version": requirement.freshness_policy_version,
                 },
                 sort_keys=True,
@@ -971,11 +979,11 @@ def materialize_research_coverage_changes(session: Session) -> int:
             [
                 requirement.priority_policy_version,
                 requirement.kind,
-                requirement.state,
+                serialized["state"],
                 evidence_version,
             ]
         )
-        was_ready = requirement.state == "ready"
+        was_ready = serialized["state"] == "ready"
         _, was_created = produce_notification(
             session,
             user_id=requirement.user_id,
@@ -992,7 +1000,7 @@ def materialize_research_coverage_changes(session: Session) -> int:
                 f"{requirement.kind.replace('_', ' ')} is ready for the open research case. "
                 "Review the source and continue independent research."
                 if was_ready
-                else f"{requirement.kind.replace('_', ' ')} failed: {requirement.reason}"
+                else f"{requirement.kind.replace('_', ' ')} failed: {serialized['reason']}"
             ),
             evidence_route=f"/research/cases/{case.id}",
             case_id=case.id,
@@ -1001,10 +1009,10 @@ def materialize_research_coverage_changes(session: Session) -> int:
             payload={
                 "coverage_requirement_id": requirement.id,
                 "kind": requirement.kind,
-                "state": requirement.state,
-                "reason_code": requirement.reason_code,
-                "source_type": requirement.source_type,
-                "source_ref_id": requirement.source_ref_id,
+                "state": serialized["state"],
+                "reason_code": serialized["reason_code"],
+                "source_type": serialized["source_type"],
+                "source_ref_id": serialized["source_ref_id"],
             },
         )
         created += int(was_created)
@@ -1112,7 +1120,7 @@ def materialize_intrinsic_value_crossings(
     """Evaluate USD price-to-user-value crossings with initialization/noise guards."""
     from app.models.research import ResearchCase, ResearchCaseRevision
     from app.models.stocks import Stock
-    from app.services.market_data_service import read_canonical_eod_price
+    from app.services.market_data_service import read_current_eod_price
     from app.services.valuation import read_valuation_context
 
     created = 0
@@ -1163,16 +1171,17 @@ def materialize_intrinsic_value_crossings(
             stock = session.get(Stock, case.stock_id)
             if stock is None:
                 continue
-            price = read_canonical_eod_price(
-                session, stock=stock, as_of=as_of.date()
+            price = read_current_eod_price(
+                session, stock=stock, evaluated_at=as_of
             )
             valuation = read_valuation_context(
                 session, user_id=user_id, stock_id=case.stock_id
             )
             if (
-                price.price_id is None
-                or price.close is None
-                or price.currency != "USD"
+                price.status != "available"
+                or price.current_value is None
+                or price.price_id is None
+                or price.currency != valuation.user_intrinsic_value_currency
                 or price.freshness_state != "fresh"
                 or valuation.user_intrinsic_value is None
                 or valuation.user_intrinsic_value_fact_id is None
@@ -1214,7 +1223,7 @@ def materialize_intrinsic_value_crossings(
             fair_value = valuation.user_intrinsic_value
             boundary = fair_value * (1 - float(policy.threshold_ratio))
             hysteresis = fair_value * float(policy.hysteresis_ratio)
-            close = float(price.close)
+            close = float(price.current_value)
             if state is None or state.last_side is None or boundary_changed:
                 side = "below" if close < boundary else "above"
                 if state is None:

@@ -14,6 +14,13 @@ import { toast } from '@/components/ui/use-toast';
 import provenanceHelpers from '@/lib/factProvenance';
 import { normalizeTicker } from '@/lib/stockRoutes';
 import { computeGrowthValue, computeTerminalValue, computeTotalValue } from '@/lib/dcfMath';
+import { buildDcfModelPayload } from '@/lib/dcfModel';
+import {
+  formatDcfExactMoney,
+  formatDcfMoney,
+  resolveDcfCurrencyState,
+  resolveSafeMarginState,
+} from '@/lib/dcfCurrency';
 import { resolveDcfDefaults } from '@/lib/dcfDefaults';
 import {
   resolveDcfComponentInputs,
@@ -23,6 +30,10 @@ import {
   type DcfInputsSeriesEntry,
 } from '@/lib/dcfInputsSeries';
 import apiClient from '@/lib/api/client';
+import {
+  currentPriceEvidenceLabel,
+  type CanonicalCurrentPrice,
+} from '@/lib/currentPrice';
 
 const { formatFactProvenanceLabel, formatComputedFactProvenanceLabel } = provenanceHelpers;
 
@@ -41,12 +52,6 @@ const toNumber = (value: string, fallback = 0) => {
 };
 
 const clampNonNegative = (value: number) => (value < 0 ? 0 : value);
-
-const formatMoney = (value: number) =>
-  value.toLocaleString('en-US', {
-    minimumFractionDigits: 2,
-    maximumFractionDigits: 2,
-  });
 
 const formatInputMoney = (value: number) =>
   value.toLocaleString('en-US', {
@@ -78,8 +83,7 @@ type DcfValueWithProvenance = {
 
 type StockDcfPayload = {
   id?: number;
-  latest_price?: number | null;
-  latest_price_updated_at?: string | null;
+  current_price: CanonicalCurrentPrice;
   active_report_document_id?: number | null;
   active_report_date?: string | null;
   dcf_inputs?: DcfInputsPayload | null;
@@ -98,8 +102,8 @@ export default function StockDcfPage() {
   const tickerParam = Array.isArray(params?.ticker) ? params.ticker[0] : params?.ticker;
   const displayTicker = normalizeTicker((tickerParam || '').toString());
 
-  const [latestPrice, setLatestPrice] = useState<number | null>(null);
-  const [latestPriceUpdatedAt, setLatestPriceUpdatedAt] = useState<string | null>(null);
+  const [currentPrice, setCurrentPrice] = useState<CanonicalCurrentPrice | null>(null);
+  const [priceRefreshReason, setPriceRefreshReason] = useState<string | null>(null);
   const [manualPrice, setManualPrice] = useState('');
   const [stockId, setStockId] = useState<number | null>(null);
   const [stockPayload, setStockPayload] = useState<StockDcfPayload | null>(null);
@@ -130,8 +134,8 @@ export default function StockDcfPage() {
     }
     let isActive = true;
     setHasResolvedStockDefaults(false);
-    setLatestPrice(null);
-    setLatestPriceUpdatedAt(null);
+    setCurrentPrice(null);
+    setPriceRefreshReason(null);
     setManualPrice('');
     setStockId(null);
     setStockPayload(null);
@@ -166,11 +170,7 @@ export default function StockDcfPage() {
         if (typeof payload.id === 'number') {
           setStockId(payload.id);
         }
-        const fetchedLatest = payload.latest_price;
-        if (typeof fetchedLatest === 'number' && Number.isFinite(fetchedLatest)) {
-          setLatestPrice(fetchedLatest);
-          setLatestPriceUpdatedAt(payload.latest_price_updated_at ?? null);
-        }
+        setCurrentPrice(payload.current_price);
         setDcfInputsPayload(nextDcfInputsPayload);
         setOepsSeries(defaults.oepsSeries);
         setOepsNormalized(defaults.oepsNormalized);
@@ -216,13 +216,15 @@ export default function StockDcfPage() {
             if (typeof refreshedPayload.id === 'number') {
               setStockId(refreshedPayload.id);
             }
-            const refreshedPrice = refreshedPayload.latest_price;
-            if (typeof refreshedPrice === 'number' && Number.isFinite(refreshedPrice)) {
-              setLatestPrice(refreshedPrice);
-              setLatestPriceUpdatedAt(refreshedPayload.latest_price_updated_at ?? null);
-            }
-          } catch {
-            // best-effort refresh; keep existing price if refresh fails
+            setCurrentPrice(refreshedPayload.current_price);
+            setPriceRefreshReason(null);
+          } catch (refreshError) {
+            const detail = axios.isAxiosError(refreshError)
+              ? refreshError.response?.data?.detail
+              : null;
+            setPriceRefreshReason(
+              typeof detail === 'string' ? detail : 'price_refresh_failed'
+            );
           }
         }
       } catch (err) {
@@ -280,38 +282,35 @@ export default function StockDcfPage() {
     : hasResolvedStockDefaults
       ? formatInputMoney(computedBasedOn)
       : '';
-  const effectivePrice = useMemo(() => {
-    if (latestPrice !== null) {
-      return Math.max(0, latestPrice);
-    }
+  const manualScenarioPrice = useMemo(() => {
     const parsed = Number(manualPrice);
-    if (!Number.isFinite(parsed)) {
+    if (!manualPrice.trim() || !Number.isFinite(parsed) || parsed <= 0) {
       return null;
     }
     return Math.max(0, parsed);
-  }, [latestPrice, manualPrice]);
+  }, [manualPrice]);
 
-  const safeMarginPct = useMemo(() => {
-    const price = effectivePrice;
-    if (price === null) {
-      return null;
-    }
-    if (totalValue <= 0) {
-      return null;
-    }
-    return 100 * (1 - price / totalValue);
-  }, [effectivePrice, totalValue]);
+  const valuationCurrencyState = useMemo(
+    () => resolveDcfCurrencyState(dcfInputsPayload ?? {}, basedOnSelection),
+    [basedOnSelection, dcfInputsPayload]
+  );
 
-  const priceUpdatedLabel = useMemo(() => {
-    if (!latestPriceUpdatedAt) {
+  const safeMarginState = useMemo(
+    () =>
+      resolveSafeMarginState({ currencyState: valuationCurrencyState, currentPrice, totalValue }),
+    [currentPrice, totalValue, valuationCurrencyState]
+  );
+
+  const scenarioMarginPct = useMemo(() => {
+    if (
+      valuationCurrencyState.status !== 'available' ||
+      manualScenarioPrice === null ||
+      totalValue <= 0
+    ) {
       return null;
     }
-    const dt = new Date(latestPriceUpdatedAt);
-    if (Number.isNaN(dt.getTime())) {
-      return null;
-    }
-    return dt.toLocaleString();
-  }, [latestPriceUpdatedAt]);
+    return 100 * (1 - manualScenarioPrice / totalValue);
+  }, [manualScenarioPrice, totalValue, valuationCurrencyState.status]);
 
   const activeReportLabel = useMemo(() => {
     if (!stockPayload) {
@@ -338,9 +337,56 @@ export default function StockDcfPage() {
         | {
             net_profit_per_share?: DcfValueWithProvenance | null;
             depreciation_per_share?: DcfValueWithProvenance | null;
+            input_manifest?: Record<string, unknown> | null;
+            input_manifest_token?: string | null;
+            canonical_model_inputs?: {
+              net_profit_per_share: string | null;
+              depreciation_per_share: string | null;
+              capital_spending_per_share: string | null;
+              based_on_per_share: string | null;
+            } | null;
           }
         | null,
     [basedOnSelection, dcfInputsPayload]
+  );
+  const hasSelectedInputManifest = Boolean(
+    selectedBasedOnPayload?.input_manifest &&
+      typeof selectedBasedOnPayload.input_manifest_token === 'string'
+  );
+  const dcfModelPayload = useMemo(
+    () =>
+      buildDcfModelPayload({
+        selection: basedOnSelection,
+        inputManifest: selectedBasedOnPayload?.input_manifest,
+        inputManifestToken: selectedBasedOnPayload?.input_manifest_token,
+        canonicalInputs: selectedBasedOnPayload?.canonical_model_inputs,
+        actualInputs: {
+          net_profit_per_share: netProfitPerShare,
+          depreciation_per_share: depreciationPerShare,
+          capital_spending_per_share: capexPerShare,
+          based_on_per_share: basedOnValue,
+          discount_rate_pct: discountRate,
+          growth_years: growthYears,
+          growth_rate_pct: growthRate,
+          terminal_years: terminalYears,
+          terminal_rate_pct: terminalRate,
+        },
+        growthRateSelection,
+      }),
+    [
+      basedOnSelection,
+      basedOnValue,
+      capexPerShare,
+      depreciationPerShare,
+      discountRate,
+      growthRate,
+      growthRateSelection,
+      growthYears,
+      netProfitPerShare,
+      selectedBasedOnPayload,
+      terminalRate,
+      terminalYears,
+    ]
   );
 
   const basedOnProvenanceLabel = useMemo(() => {
@@ -384,33 +430,41 @@ export default function StockDcfPage() {
       });
       return;
     }
+    if (
+      valuationCurrencyState.status !== 'available' ||
+      valuationCurrencyState.currency !== 'USD' ||
+      !hasSelectedInputManifest ||
+      !dcfModelPayload
+    ) {
+      toast({
+        title: 'Save unavailable',
+        description:
+          valuationCurrencyState.reason_code ?? 'Only validated USD DCF results can be saved.',
+        variant: 'destructive',
+      });
+      return;
+    }
     setIsSavingFairValue(true);
     try {
-      await apiClient.put(`/stocks/${stockId}/facts`, {
+      const saved = await apiClient.put(`/stocks/${stockId}/facts`, {
         metric_key: 'val.fair_value',
-        value_numeric: totalValue,
+        valuation_currency: valuationCurrencyState.currency,
         source: 'dcf',
         assumptions: [
           {
             source: 'dcf',
-            label: 'DCF model inputs',
-            based_on_per_share: basedOnValue,
-            based_on_selection: basedOnSelection,
-            discount_rate_pct: discountRate,
-            growth_years: growthYears,
-            growth_rate_pct: growthRate,
-            growth_rate_selection: growthRateSelection,
-            terminal_years: terminalYears,
-            terminal_rate_pct: terminalRate,
-            computed_growth_value: growthValue,
-            computed_terminal_value: terminalValue,
-            computed_total_value: totalValue,
+            label: 'DCF model v1',
+            model: dcfModelPayload,
           },
         ],
       });
+      const savedExactValue = String(saved.data.value_numeric_exact);
       toast({
         title: 'Saved',
-        description: 'Fair Value and labeled DCF assumptions saved to research history.',
+        description: `Server-calculated value ${formatDcfExactMoney(
+          savedExactValue,
+          valuationCurrencyState
+        )} saved to research history.`,
       });
     } catch {
       toast({
@@ -516,7 +570,11 @@ export default function StockDcfPage() {
               ) : null}
             </div>
             <div className="flex items-center gap-2 rounded-lg border border-border/70 bg-card/80 px-4 py-2">
-              <span className="text-muted-foreground">$</span>
+              <span className="text-muted-foreground">
+                {valuationCurrencyState.status === 'available'
+                  ? valuationCurrencyState.currency
+                  : 'Unavailable'}
+              </span>
               <Input
                 value={basedOnInputValue}
                 onChange={(event) => setBasedOnOverride(event.target.value)}
@@ -565,6 +623,15 @@ export default function StockDcfPage() {
               />
             </label>
           </div>
+          <div className="px-6 pb-4 text-xs text-muted-foreground">
+            DCF rates and horizons are user assumptions. Edited per-share fields are saved as
+            user overrides, not canonical facts.
+            {!dcfModelPayload ? (
+              <span className="ml-1 text-amber-800">
+                Save unavailable: scenario inputs do not satisfy the versioned model contract.
+              </span>
+            ) : null}
+          </div>
 
           <div className="flex items-center justify-between gap-4 px-6 py-4 text-sm font-medium">
             <div className="flex items-center gap-2">
@@ -607,7 +674,7 @@ export default function StockDcfPage() {
               </label>
             </div>
             <div className="rounded-lg border border-border/70 bg-card/80 px-4 py-2 text-base font-semibold">
-              $ 29.91
+              —
             </div>
           </div>
 
@@ -714,7 +781,11 @@ export default function StockDcfPage() {
                 </div>
                 <div className="flex items-center justify-between text-base font-semibold">
                   <span>Growth Value</span>
-                  <span>{hasResolvedStockDefaults ? `$ ${formatMoney(growthValue)}` : '—'}</span>
+                  <span>
+                    {hasResolvedStockDefaults
+                      ? formatDcfMoney(growthValue, valuationCurrencyState)
+                      : '—'}
+                  </span>
                 </div>
               </div>
             </div>
@@ -785,7 +856,11 @@ export default function StockDcfPage() {
                 </div>
                 <div className="flex items-center justify-between text-base font-semibold">
                   <span>Terminal Value</span>
-                  <span>{hasResolvedStockDefaults ? `$ ${formatMoney(terminalValue)}` : '—'}</span>
+                  <span>
+                    {hasResolvedStockDefaults
+                      ? formatDcfMoney(terminalValue, valuationCurrencyState)
+                      : '—'}
+                  </span>
                 </div>
               </div>
             </div>
@@ -793,41 +868,85 @@ export default function StockDcfPage() {
 
           <div className="flex flex-wrap items-center justify-between gap-4 px-6 py-4 text-sm font-medium">
             <div className="flex items-center gap-3">
-              <span>Stock Price</span>
+              <div>
+                <div>Canonical EOD price</div>
+                <div className="text-xs font-normal text-muted-foreground">
+                  {currentPrice ? currentPriceEvidenceLabel(currentPrice) : 'Loading price contract'}
+                </div>
+                {currentPrice?.reason_code ? (
+                  <div className="font-mono text-xs font-normal text-amber-800">
+                    {currentPrice.reason_code}
+                  </div>
+                ) : null}
+                {priceRefreshReason ? (
+                  <div className="text-xs font-normal text-amber-800">
+                    Refresh failed; canonical current price remains unavailable or unchanged: {priceRefreshReason}
+                  </div>
+                ) : null}
+              </div>
+              <div className="rounded-lg border border-border/70 bg-card/80 px-4 py-2 text-base font-semibold">
+                {currentPrice?.status === 'available'
+                  ? formatDcfMoney(currentPrice.value ?? 0, {
+                      status: currentPrice.currency ? 'available' : 'unavailable',
+                      reason_code: currentPrice.reason_code,
+                      currency: currentPrice.currency,
+                    })
+                  : 'Unavailable'}
+              </div>
               <div className="flex items-center gap-2 rounded-lg border border-border/70 bg-card/80 px-4 py-2">
-                <span className="text-muted-foreground">$</span>
+                <span className="text-xs text-muted-foreground">Manual scenario price</span>
                 <Input
-                  value={latestPrice !== null ? latestPrice.toFixed(2) : manualPrice}
+                  value={manualPrice}
                   onChange={(event) => setManualPrice(event.target.value)}
                   inputMode="decimal"
-                  disabled={latestPrice !== null}
                   className="h-auto w-28 border-0 bg-transparent px-0 py-0 text-right text-base font-semibold shadow-none focus-visible:ring-0 focus-visible:ring-offset-0"
                 />
-                {priceUpdatedLabel && latestPrice !== null && (
-                  <span className="text-xs text-muted-foreground">Updated {priceUpdatedLabel}</span>
-                )}
               </div>
             </div>
             <div className="flex flex-wrap items-center gap-4 text-base font-semibold">
               <div className="flex items-center gap-2">
-                <span className="text-sm font-medium text-muted-foreground">Total Value</span>
-                <span>{hasResolvedStockDefaults ? `$ ${formatMoney(totalValue)}` : '—'}</span>
+                <span className="text-sm font-medium text-muted-foreground">
+                  Local preview value
+                </span>
+                <span>
+                  {hasResolvedStockDefaults
+                    ? formatDcfMoney(totalValue, valuationCurrencyState)
+                    : '—'}
+                </span>
                 <Button
                   size="sm"
                   variant="outline"
                   onClick={handleSaveFairValue}
-                  disabled={isSavingFairValue || !hasResolvedStockDefaults}
+                  disabled={
+                    isSavingFairValue ||
+                    !hasResolvedStockDefaults ||
+                    valuationCurrencyState.status !== 'available' ||
+                    valuationCurrencyState.currency !== 'USD' ||
+                    !hasSelectedInputManifest ||
+                    !dcfModelPayload
+                  }
                   type="button"
                 >
                   Save
                 </Button>
               </div>
               <div className="flex items-center gap-2">
+                <span className="text-sm font-medium text-muted-foreground">Scenario discount</span>
+                <span>
+                  {scenarioMarginPct === null
+                    ? '—'
+                    : `${scenarioMarginPct.toLocaleString('en-US', {
+                        minimumFractionDigits: 1,
+                        maximumFractionDigits: 1,
+                      })}%`}
+                </span>
+              </div>
+              <div className="flex items-center gap-2">
                 <span className="text-sm font-medium text-muted-foreground">Safe Margin</span>
                 <span>
-                  {safeMarginPct === null
-                    ? '—'
-                    : `${safeMarginPct.toLocaleString('en-US', {
+                  {safeMarginState.status !== 'available' || safeMarginState.value === null
+                    ? `Unavailable · ${safeMarginState.reason_code}`
+                    : `${safeMarginState.value.toLocaleString('en-US', {
                         minimumFractionDigits: 1,
                         maximumFractionDigits: 1,
                       })}%`}

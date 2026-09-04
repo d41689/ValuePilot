@@ -62,26 +62,6 @@ long — escalate to the user. **medium / low** = ordinary follow-up.
   `docs/architecture/research-decision-support.md`
 - **Issue:** —
 
-### FT-01 — one canonical current-price truth across every product surface
-- **Found:** 2026-08-27, PO acceptance of stock summary, DCF, research, and watchlist
-- **Severity:** high (a conflicting price changes margin-of-safety conclusions)
-- **Problem:** stock summary labels a Value Line report price current while
-  other surfaces use or correctly withhold canonical EOD data.
-- **Outcome:** current price has one authority and identical fail-closed behavior;
-  document prices remain dated references.
-- **Acceptance criteria:**
-  - Every current/latest/market-price field reads the canonical EOD contract and
-    exposes date, source, currency, freshness, or its typed unavailable reason.
-  - Document prices are labeled report references with an as-of date and never
-    substitute for current price.
-  - Cross-surface tests cover valid, missing, stale, unknown-currency, and
-    unauthorized states; one stock/as-of never yields conflicting current prices.
-  - Margin-of-safety and discount calculations do not publish from an invalid
-    price and show the canonical blocking reason.
-- **Context:** `backend/app/api/v1/endpoints/stocks.py`;
-  `frontend/app/(dashboard)/stocks/[ticker]/summary/page.tsx`
-- **Issue:** —
-
 ### FT-02 — evidence retirement without unauthorized retention or lost lineage
 - **Found:** 2026-08-27, PO acceptance of `/documents`; adversarial review VG-01
 - **Severity:** high (physical deletion can destroy lineage, while unconditional

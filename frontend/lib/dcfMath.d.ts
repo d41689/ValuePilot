@@ -1,3 +1,10 @@
+export const DCF_MODEL_BOUNDS: Readonly<{
+  maxYears: number;
+  maxRatePct: number;
+  maxAbsPerShare: number;
+  maxResultPerShare: number;
+}>;
+
 export function computeGrowthValue(
   baseValue: number,
   discountRatePct: number,

@@ -520,12 +520,17 @@ def test_append_only_tables_reject_normal_update_and_delete(
 
 
 def test_workspace_combines_user_owned_fundamentals_valuation_coverage_and_public_13f(
-    client, db_session, user_factory, auth_headers
+    client, db_session, user_factory, auth_headers, monkeypatch
 ):
     from datetime import datetime, timezone
 
     from app.models.coverage import ResearchCoverageRequirement
     from app.models.stocks import StockPrice
+    from app.services import market_data_service
+
+    monkeypatch.setattr(market_data_service.settings, "MARKET_DATA_PRIMARY", "twelvedata")
+    monkeypatch.setattr(market_data_service.settings, "TWELVE_DATA_API_KEY", "test-key")
+    monkeypatch.setattr(market_data_service.settings, "MARKET_DATA_COMMERCIAL_ENABLED", True)
 
     owner = user_factory(email="workspace-owner@example.com")
     other = user_factory(email="workspace-other@example.com")
@@ -634,8 +639,8 @@ def test_workspace_combines_user_owned_fundamentals_valuation_coverage_and_publi
     assert response.status_code == 200, response.text
     payload = response.json()
     assert payload["case"]["id"] == case_id
-    assert payload["price"]["close"] == 100
-    assert payload["price"]["currency"] == "USD"
+    assert payload["current_price"]["observation_value"] == 100
+    assert payload["current_price"]["currency"] == "USD"
     assert payload["documents"][0]["id"] == owner_doc.id
     assert {fact["metric_key"] for fact in payload["fundamentals"]} == {
         "returns.return_on_equity",

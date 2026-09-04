@@ -23,11 +23,10 @@ from app.models.institutions import (
     OwnershipChange13F,
     ParseRun13F,
 )
-from app.models.stocks import Stock, StockPrice
+from app.models.stocks import Stock
 from app.services.market_data_service import (
-    ET,
-    compute_target_date,
-    read_canonical_eod_series,
+    read_current_eod_contexts,
+    serialize_canonical_eod_price,
 )
 from app.services.thirteenf_holdings_query import HR_FORM_TYPES, NT_FORM_TYPES, active_hr_holdings_query
 
@@ -1188,35 +1187,77 @@ def _attach_market_context(session: Session, positions: list[dict[str, Any]]) ->
         for position in positions
         if position.get("stock_id") is not None
     }
-    through = compute_target_date(datetime.now(timezone.utc).astimezone(ET))
-    prices_by_stock = read_canonical_eod_series(
+    stocks_by_id = {
+        stock.id: stock
+        for stock in session.query(Stock).filter(Stock.id.in_(stock_ids)).all()
+    }
+    contexts_by_stock_id = read_current_eod_contexts(
         session,
-        stock_ids=sorted(stock_ids),
-        through=through,
-        from_date=through - timedelta(days=370),
+        stocks=stocks_by_id.values(),
+        evaluated_at=datetime.now(timezone.utc),
+        history_days=370,
+        required_currency_by_stock_id={stock_id: "USD" for stock_id in stocks_by_id},
     )
 
     for position in positions:
         implied_report_price = position.get("implied_report_price")
-        rows = prices_by_stock.get(int(position["stock_id"])) if position.get("stock_id") is not None else None
-        if not rows:
-            position["market_context"] = None
+        stock_id = int(position["stock_id"]) if position.get("stock_id") is not None else None
+        stock = stocks_by_id.get(stock_id) if stock_id is not None else None
+        if stock is None:
+            position["market_context"] = {
+                "status": "unavailable",
+                "reason_code": "stock_missing",
+                "latest_price": None,
+                "latest_price_date": None,
+                "change_since_report_pct": None,
+                "week_52_low": None,
+                "week_52_high": None,
+                "source": None,
+                "currency": None,
+                "freshness_state": "unknown_freshness",
+                "source_authorization_state": "unavailable",
+                "current_price_state": None,
+            }
             continue
-        latest = rows[0]
-        cutoff = latest.price_date - timedelta(days=365)
-        trailing = [row for row in rows if row.price_date >= cutoff]
-        latest_price = float(latest.close)
+        context = contexts_by_stock_id[stock.id]
+        current = context.current_price
+        current_wire = serialize_canonical_eod_price(current)
+        latest_price = current.current_value if context.status == "available" else None
+        cutoff = (
+            current.price_date - timedelta(days=365)
+            if current.price_date is not None
+            else None
+        )
+        trailing = [
+            row
+            for row in context.observations
+            if cutoff is not None and row.price_date >= cutoff
+        ]
         position["market_context"] = {
+            "status": context.status,
+            "reason_code": context.reason_code,
             "latest_price": latest_price,
-            "latest_price_date": latest.price_date.isoformat(),
+            "latest_price_date": current_wire["price_date"],
             "change_since_report_pct": (
                 round(((latest_price / implied_report_price) - 1) * 100, 6)
-                if implied_report_price and implied_report_price > 0
+                if latest_price is not None
+                and implied_report_price
+                and implied_report_price > 0
                 else None
             ),
-            "week_52_low": min(float(row.low) for row in trailing),
-            "week_52_high": max(float(row.high) for row in trailing),
-            "source": latest.source,
+            "week_52_low": (
+                min(float(row.low) for row in trailing) if trailing else None
+            ),
+            "week_52_high": (
+                max(float(row.high) for row in trailing) if trailing else None
+            ),
+            "source": current_wire["source"],
+            "currency": current_wire["currency"],
+            "freshness_state": current_wire["freshness_state"],
+            "source_authorization_state": current_wire[
+                "source_authorization_state"
+            ],
+            "current_price_state": current_wire,
         }
 
 

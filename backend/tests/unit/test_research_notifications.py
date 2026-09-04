@@ -23,6 +23,13 @@ from app.models.notifications import (
     NotificationPriceAlertState,
     NotificationSubscription,
 )
+
+
+@pytest.fixture(autouse=True)
+def _authorized_test_price_source(monkeypatch):
+    monkeypatch.setattr(settings, "MARKET_DATA_PRIMARY", "yfinance")
+    monkeypatch.setattr(settings, "MARKET_DATA_SECONDARY", "none")
+    monkeypatch.setattr(settings, "MARKET_DATA_ALLOW_DEVELOPMENT_PROVIDER", True)
 from app.models.stocks import StockPrice
 from app.services.research_notifications import (
     NotificationError,
@@ -70,11 +77,28 @@ def _keys():
 def test_open_case_coverage_ready_and_failed_events_are_durable_and_idempotent(
     db_session, user_factory
 ):
+    from app.services.market_data_service import ET, compute_target_date
+
     user = user_factory("coverage-notify@example.com")
     stock = Stock(ticker="COVN", exchange="NYSE", company_name="Coverage Notice")
     db_session.add(stock)
     db_session.flush()
     case = ResearchCase(user_id=user.id, stock_id=stock.id, state="queued")
+    evaluated_at = datetime.now(timezone.utc)
+    price_date = compute_target_date(evaluated_at.astimezone(ET))
+    price = StockPrice(
+        stock_id=stock.id,
+        price_date=price_date,
+        open=100,
+        high=101,
+        low=99,
+        close=100,
+        volume=1_000,
+        currency="USD",
+        source="yfinance",
+    )
+    db_session.add(price)
+    db_session.flush()
     requirement = ResearchCoverageRequirement(
         user_id=user.id,
         stock_id=stock.id,
@@ -85,9 +109,16 @@ def test_open_case_coverage_ready_and_failed_events_are_durable_and_idempotent(
         state="ready",
         reason="A current EOD close is ready.",
         source_type="stock_price",
-        source_ref_id=77,
+        source_ref_id=price.id,
+        evidence_json={
+            "close": "100.0",
+            "currency": "USD",
+            "source": "yfinance",
+            "source_authorization_state": "authorized",
+            "price_date": price_date.isoformat(),
+        },
         freshness_policy_version="us-market-session-v1.0",
-        evaluated_at=datetime(2026, 7, 20, tzinfo=timezone.utc),
+        evaluated_at=evaluated_at,
         is_current=True,
     )
     db_session.add_all([case, requirement])
@@ -100,6 +131,7 @@ def test_open_case_coverage_ready_and_failed_events_are_durable_and_idempotent(
     requirement.reason_code = "provider_failed"
     requirement.reason = "The configured provider failed permanently."
     requirement.source_ref_id = None
+    requirement.evidence_json = {"close": None}
     requirement.evaluated_at = datetime(2026, 7, 21, tzinfo=timezone.utc)
     db_session.commit()
     assert materialize_research_coverage_changes(db_session) == 1
@@ -111,6 +143,106 @@ def test_open_case_coverage_ready_and_failed_events_are_durable_and_idempotent(
     ]
     assert [row.severity for row in rows] == ["info", "warning"]
     assert all(row.case_id == case.id for row in rows)
+
+
+def test_revoked_price_coverage_does_not_materialize_a_ready_notification(
+    db_session, user_factory, monkeypatch
+):
+    user = user_factory("coverage-notify-revoked@example.com")
+    stock = Stock(ticker="COVR", exchange="NYSE", company_name="Revoked Coverage")
+    db_session.add(stock)
+    db_session.flush()
+    case = ResearchCase(user_id=user.id, stock_id=stock.id, state="queued")
+    price = StockPrice(
+        stock_id=stock.id,
+        price_date=date(2026, 7, 17),
+        open=100,
+        high=101,
+        low=99,
+        close=100,
+        volume=1_000,
+        currency="USD",
+        source="yfinance",
+    )
+    db_session.add(price)
+    db_session.flush()
+    requirement = ResearchCoverageRequirement(
+        user_id=user.id,
+        stock_id=stock.id,
+        kind="eod_price",
+        priority_policy_version="research-coverage-priority-v1.0",
+        matched_rule="open_case_queued",
+        priority_rank=40,
+        state="ready",
+        reason="A current EOD close is ready.",
+        source_type="stock_price",
+        source_ref_id=price.id,
+        evidence_json={
+            "close": "100.0",
+            "source": "yfinance",
+            "source_authorization_state": "authorized",
+        },
+        freshness_policy_version="eod-freshness-v1.0",
+        evaluated_at=datetime(2026, 7, 20, tzinfo=timezone.utc),
+        is_current=True,
+    )
+    db_session.add_all([case, requirement])
+    db_session.commit()
+
+    monkeypatch.setattr(settings, "MARKET_DATA_PRIMARY", "none")
+    monkeypatch.setattr(settings, "MARKET_DATA_SECONDARY", "none")
+
+    assert materialize_research_coverage_changes(db_session) == 0
+    assert db_session.query(LogicalNotification).count() == 0
+
+
+def test_non_iso_price_coverage_does_not_materialize_a_ready_notification(
+    db_session, user_factory
+):
+    user = user_factory("coverage-notify-invalid-currency@example.com")
+    stock = Stock(ticker="COVZ", exchange="NYSE", company_name="Invalid Currency")
+    db_session.add(stock)
+    db_session.flush()
+    case = ResearchCase(user_id=user.id, stock_id=stock.id, state="queued")
+    price = StockPrice(
+        stock_id=stock.id,
+        price_date=date(2026, 7, 17),
+        open=100,
+        high=101,
+        low=99,
+        close=100,
+        volume=1_000,
+        currency="ZZZ",
+        source="yfinance",
+    )
+    db_session.add(price)
+    db_session.flush()
+    requirement = ResearchCoverageRequirement(
+        user_id=user.id,
+        stock_id=stock.id,
+        kind="eod_price",
+        priority_policy_version="research-coverage-priority-v1.0",
+        matched_rule="open_case_queued",
+        priority_rank=40,
+        state="ready",
+        reason="A legacy EOD close was marked ready.",
+        source_type="stock_price",
+        source_ref_id=price.id,
+        evidence_json={
+            "close": "100.0",
+            "currency": "ZZZ",
+            "source": "yfinance",
+            "source_authorization_state": "authorized",
+        },
+        freshness_policy_version="eod-freshness-v1.0",
+        evaluated_at=datetime(2026, 7, 20, tzinfo=timezone.utc),
+        is_current=True,
+    )
+    db_session.add_all([case, requirement])
+    db_session.commit()
+
+    assert materialize_research_coverage_changes(db_session) == 0
+    assert db_session.query(LogicalNotification).count() == 0
 
 
 def test_manager_follow_is_idempotent_and_user_scoped(db_session, user_factory):
@@ -558,8 +690,9 @@ def test_intrinsic_value_change_reinitializes_alert_without_false_crossing(
         high=90,
         low=90,
         close=90,
-        source="licensed_fixture",
+        source="yfinance",
         currency="USD",
+        created_at=datetime(2026, 7, 17, 22, tzinfo=timezone.utc),
     )
     db_session.add(first_price)
     db_session.commit()
@@ -598,8 +731,9 @@ def test_intrinsic_value_change_reinitializes_alert_without_false_crossing(
         high=90,
         low=90,
         close=90,
-        source="licensed_fixture",
+        source="yfinance",
         currency="USD",
+        created_at=datetime(2026, 7, 20, 22, tzinfo=timezone.utc),
     )
     db_session.add(second_price)
     db_session.commit()
@@ -625,8 +759,9 @@ def test_intrinsic_value_change_reinitializes_alert_without_false_crossing(
         high=130,
         low=130,
         close=130,
-        source="licensed_fixture",
+        source="yfinance",
         currency="USD",
+        created_at=datetime(2026, 7, 21, 22, tzinfo=timezone.utc),
     )
     db_session.add(third_price)
     db_session.commit()
@@ -642,6 +777,138 @@ def test_intrinsic_value_change_reinitializes_alert_without_false_crossing(
     ).one()
     assert notification.payload_json["price_id"] == third_price.id
     assert f"value-{second_value.id}" in notification.source_version
+
+
+def test_post_close_alert_evaluation_uses_same_day_completed_session(
+    db_session, user_factory
+):
+    user = user_factory("post-close-price@example.com")
+    stock = Stock(
+        ticker="AFTER",
+        exchange="NASDAQ",
+        company_name="After Close Corp",
+    )
+    db_session.add(stock)
+    db_session.flush()
+    db_session.add(
+        ResearchCase(
+            user_id=user.id,
+            stock_id=stock.id,
+            state="monitoring",
+            decision="watch",
+            next_review_on=date(2026, 10, 1),
+        )
+    )
+    db_session.add(
+        NotificationSubscription(
+            user_id=user.id,
+            event_family="intrinsic_value_threshold_crossed",
+            destination_id=None,
+            frequency="immediate",
+            timezone="UTC",
+            cooldown_minutes=60,
+            threshold_ratio=0.20,
+            hysteresis_ratio=0.02,
+            is_enabled=True,
+        )
+    )
+    publish_user_intrinsic_value(
+        db_session,
+        user_id=user.id,
+        stock_id=stock.id,
+        value_numeric=100,
+        as_of_date=date(2026, 7, 20),
+    )
+    same_day_price = StockPrice(
+        stock_id=stock.id,
+        price_date=date(2026, 7, 20),
+        open=75,
+        high=75,
+        low=75,
+        close=75,
+        source="yfinance",
+        currency="USD",
+        created_at=datetime(2026, 7, 20, 21, tzinfo=timezone.utc),
+    )
+    db_session.add(same_day_price)
+    db_session.commit()
+
+    created = materialize_intrinsic_value_crossings(
+        db_session,
+        as_of=datetime(2026, 7, 20, 22, tzinfo=timezone.utc),
+    )
+
+    assert created == 0
+    state = db_session.query(NotificationPriceAlertState).one()
+    assert state.last_price_id == same_day_price.id
+    assert state.last_side == "below"
+
+
+def test_historical_alert_evaluation_ignores_price_ingested_after_cutoff(
+    db_session, user_factory
+):
+    user = user_factory("late-price@example.com")
+    stock = Stock(
+        ticker="LATE",
+        exchange="NASDAQ",
+        company_name="Late Insert Corp",
+    )
+    db_session.add(stock)
+    db_session.flush()
+    db_session.add(
+        ResearchCase(
+            user_id=user.id,
+            stock_id=stock.id,
+            state="monitoring",
+            decision="watch",
+            next_review_on=date(2026, 10, 1),
+        )
+    )
+    db_session.add(
+        NotificationSubscription(
+            user_id=user.id,
+            event_family="intrinsic_value_threshold_crossed",
+            destination_id=None,
+            frequency="immediate",
+            timezone="UTC",
+            cooldown_minutes=60,
+            threshold_ratio=0.20,
+            hysteresis_ratio=0.02,
+            is_enabled=True,
+        )
+    )
+    publish_user_intrinsic_value(
+        db_session,
+        user_id=user.id,
+        stock_id=stock.id,
+        value_numeric=100,
+        as_of_date=date(2026, 7, 20),
+    )
+    db_session.add(
+        StockPrice(
+            stock_id=stock.id,
+            price_date=date(2026, 7, 20),
+            open=75,
+            high=75,
+            low=75,
+            close=75,
+            source="yfinance",
+            currency="USD",
+            created_at=datetime(2026, 7, 21, 12, tzinfo=timezone.utc),
+        )
+    )
+    db_session.commit()
+
+    created = materialize_intrinsic_value_crossings(
+        db_session,
+        as_of=datetime(2026, 7, 20, 22, tzinfo=timezone.utc),
+    )
+
+    assert created == 0
+    assert db_session.query(NotificationPriceAlertState).count() == 0
+    assert db_session.query(LogicalNotification).filter_by(
+        event_family="intrinsic_value_threshold_crossed"
+    ).count() == 0
 
 
 def test_new_monitoring_revision_reinitializes_alert_after_research_pause(
@@ -711,8 +978,9 @@ def test_new_monitoring_revision_reinitializes_alert_after_research_pause(
             high=90,
             low=90,
             close=90,
-            source="licensed_fixture",
+            source="yfinance",
             currency="USD",
+            created_at=datetime(2026, 7, 17, 22, tzinfo=timezone.utc),
         )
     )
     db_session.commit()
@@ -735,8 +1003,9 @@ def test_new_monitoring_revision_reinitializes_alert_after_research_pause(
             high=70,
             low=70,
             close=70,
-            source="licensed_fixture",
+            source="yfinance",
             currency="USD",
+            created_at=datetime(2026, 7, 20, 22, tzinfo=timezone.utc),
         )
     )
     db_session.commit()
@@ -830,8 +1099,9 @@ def test_intrinsic_value_policy_change_reinitializes_without_false_crossing(
             high=90,
             low=90,
             close=90,
-            source="licensed_fixture",
+            source="yfinance",
             currency="USD",
+            created_at=datetime(2026, 7, 17, 22, tzinfo=timezone.utc),
         )
     )
     db_session.commit()
@@ -861,8 +1131,9 @@ def test_intrinsic_value_policy_change_reinitializes_without_false_crossing(
         high=90,
         low=90,
         close=90,
-        source="licensed_fixture",
+        source="yfinance",
         currency="USD",
+        created_at=datetime(2026, 7, 20, 22, tzinfo=timezone.utc),
     )
     db_session.add(changed_policy_price)
     db_session.commit()
@@ -935,7 +1206,7 @@ def test_intrinsic_value_alert_ignores_currency_mismatch_and_stale_close(
                 high=70,
                 low=70,
                 close=70,
-                source="licensed_fixture",
+                source="yfinance",
                 currency=currency,
             )
         )

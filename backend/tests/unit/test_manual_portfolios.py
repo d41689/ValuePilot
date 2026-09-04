@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 
 import pytest
@@ -47,6 +47,18 @@ def _portfolio(db_session, user_id):
         user_id=user_id,
         payload=ManualPortfolioCreate(name="Long-term holdings"),
     )
+
+
+@pytest.mark.parametrize("currency", ["ZZZ", "XAU", "XDR", "CLF"])
+def test_manual_position_rejects_non_monetary_currency(currency):
+    with pytest.raises(ValueError, match="current ISO 4217"):
+        ManualPositionCreate(
+            stock_id=1,
+            quantity=Decimal("1"),
+            average_unit_cost=Decimal("100"),
+            currency=currency,
+            opened_on=date(2026, 9, 3),
+        )
 
 
 def test_open_resize_review_close_is_decimal_versioned_and_append_only(
@@ -291,55 +303,140 @@ def test_workspace_exposes_overdue_review_calendar_and_recorded_vs_current_thesi
     assert comparison["current_case"]["head_revision_number"] == 2
 
 
-def test_workspace_never_calculates_unknown_or_mismatched_currency(
-    db_session, user_factory
+def test_portfolio_api_uses_complete_canonical_price_contract_for_all_blockers(
+    client, db_session, user_factory, auth_headers, monkeypatch
 ):
-    user = user_factory("portfolio-currency@example.com")
-    usd_stock = _stock(db_session, "USD1")
-    mismatch_stock = _stock(db_session, "CAD1")
-    unknown_stock = _stock(db_session, "UNK1")
+    from app.services import market_data_service
+    from app.services.market_data_service import (
+        ET,
+        compute_target_date,
+        expected_session_on_or_before,
+    )
+
+    monkeypatch.setattr(market_data_service.settings, "MARKET_DATA_PRIMARY", "yfinance")
+    monkeypatch.setattr(
+        market_data_service.settings, "MARKET_DATA_ALLOW_DEVELOPMENT_PROVIDER", True
+    )
+    user = user_factory("portfolio-current-price-contract@example.com")
+    usd_stock = _stock(db_session, "VALID")
+    unauthorized_stock = _stock(db_session, "UNAUTH")
+    stale_stock = _stock(db_session, "STALE")
+    unknown_calendar_stock = _stock(db_session, "CALUNK")
+    unknown_calendar_stock.exchange = "OTC"
+    unknown_calendar_stock.listing_exchange = "OTC"
+    mismatch_stock = _stock(db_session, "MISMATCH")
     portfolio = _portfolio(db_session, user.id)
-    positions = []
-    for stock in [usd_stock, mismatch_stock, unknown_stock]:
-        positions.append(
-            create_position(
-                db_session,
-                user_id=user.id,
-                portfolio_id=portfolio.id,
-                payload=ManualPositionCreate(
-                    stock_id=stock.id,
-                    quantity=Decimal("2"),
-                    average_unit_cost=Decimal("50"),
-                    currency="USD",
-                    opened_on=date(2026, 7, 1),
-                ),
-            )
+    for stock in [
+        usd_stock,
+        unauthorized_stock,
+        stale_stock,
+        unknown_calendar_stock,
+        mismatch_stock,
+    ]:
+        create_position(
+            db_session,
+            user_id=user.id,
+            portfolio_id=portfolio.id,
+            payload=ManualPositionCreate(
+                stock_id=stock.id,
+                quantity=Decimal("2"),
+                average_unit_cost=Decimal("50"),
+                currency="USD",
+                opened_on=date(2026, 7, 1),
+            ),
         )
+    target_date = compute_target_date(datetime.now(timezone.utc).astimezone(ET))
+    stale_date = expected_session_on_or_before(
+        stale_stock.exchange, target_date - timedelta(days=1)
+    ).session_date
+    assert stale_date is not None
     db_session.add_all(
         [
-            StockPrice(stock_id=usd_stock.id, price_date=date(2026, 7, 17), open=75, high=75, low=75, close=75, currency="USD", source="fixture"),
-            StockPrice(stock_id=mismatch_stock.id, price_date=date(2026, 7, 17), open=75, high=75, low=75, close=75, currency="CAD", source="fixture"),
-            StockPrice(stock_id=unknown_stock.id, price_date=date(2026, 7, 17), open=75, high=75, low=75, close=75, currency=None, source="fixture"),
+            StockPrice(stock_id=usd_stock.id, price_date=target_date, open=75, high=75, low=75, close=75, currency="USD", source="yfinance"),
+            StockPrice(stock_id=unauthorized_stock.id, price_date=target_date, open=75, high=75, low=75, close=75, currency="USD", source="unapproved-feed"),
+            StockPrice(stock_id=stale_stock.id, price_date=stale_date, open=75, high=75, low=75, close=75, currency="USD", source="yfinance"),
+            StockPrice(stock_id=unknown_calendar_stock.id, price_date=target_date, open=75, high=75, low=75, close=75, currency="USD", source="yfinance"),
+            StockPrice(stock_id=mismatch_stock.id, price_date=target_date, open=75, high=75, low=75, close=75, currency="CAD", source="yfinance"),
         ]
     )
     db_session.commit()
 
-    workspace = get_portfolio_workspace(
-        db_session,
-        user_id=user.id,
-        portfolio_id=portfolio.id,
-        as_of=date.today(),
+    response = client.get(
+        f"/api/v1/portfolios/{portfolio.id}", headers=auth_headers(user)
     )
+    assert response.status_code == 200, response.text
+    workspace = response.json()
     by_ticker = {item["ticker"]: item for item in workspace["positions"]}
-    assert by_ticker["USD1"]["valuation_status"] == "available"
-    assert by_ticker["USD1"]["market_value"] == "150.000000"
-    assert by_ticker["USD1"]["unrealized_return"] == "0.500000"
-    assert by_ticker["CAD1"]["valuation_status"] == "currency_mismatch"
-    assert by_ticker["CAD1"]["market_value"] is None
-    assert by_ticker["UNK1"]["valuation_status"] == "price_currency_unavailable"
-    assert by_ticker["UNK1"]["unrealized_return"] is None
+    canonical_keys = {
+        "status",
+        "value",
+        "observation_value",
+        "price_id",
+        "price_date",
+        "currency",
+        "source",
+        "observed_at",
+        "freshness_state",
+        "source_authorization_state",
+        "reason_code",
+        "as_of_date",
+        "as_of_mode",
+        "expected_session_date",
+        "calendar_code",
+        "freshness_policy_version",
+        "calendar_policy_version",
+        "source_policy_version",
+    }
+    assert set(by_ticker["VALID"]["current_price"]) == canonical_keys
+    assert by_ticker["VALID"]["current_price"]["status"] == "available"
+    assert by_ticker["VALID"]["current_price"]["value"] == 75
+    assert by_ticker["VALID"]["current_price"]["as_of_mode"] == "latest_completed_session"
+    assert by_ticker["VALID"]["current_price"]["expected_session_date"] == target_date.isoformat()
+    assert by_ticker["VALID"]["valuation_status"] == "available"
+    assert by_ticker["VALID"]["market_value"] == "150.000000"
+    assert by_ticker["VALID"]["unrealized_return"] == "0.500000"
+
+    unauthorized = by_ticker["UNAUTH"]["current_price"]
+    assert unauthorized["status"] == "unavailable"
+    assert unauthorized["reason_code"] == "source_unavailable"
+    assert unauthorized["source_authorization_state"] == "unauthorized"
+    assert unauthorized["value"] is None
+    assert unauthorized["observation_value"] is None
+    assert by_ticker["UNAUTH"]["valuation_status"] == "source_unavailable"
+
+    stale = by_ticker["STALE"]["current_price"]
+    assert stale["status"] == "unavailable"
+    assert stale["reason_code"] == "price_older_than_expected_session"
+    assert stale["freshness_state"] == "stale"
+    assert stale["observation_value"] == 75
+    assert by_ticker["STALE"]["valuation_status"] == "price_older_than_expected_session"
+
+    unknown_calendar = by_ticker["CALUNK"]["current_price"]
+    assert unknown_calendar["status"] == "unavailable"
+    assert unknown_calendar["reason_code"] == "calendar_mapping_unavailable"
+    assert unknown_calendar["calendar_code"] is None
+    assert unknown_calendar["expected_session_date"] is None
+    assert by_ticker["CALUNK"]["valuation_status"] == "calendar_mapping_unavailable"
+
+    mismatch = by_ticker["MISMATCH"]["current_price"]
+    assert mismatch["status"] == "available"
+    assert mismatch["currency"] == "CAD"
+    assert by_ticker["MISMATCH"]["valuation_status"] == "currency_mismatch"
+    assert by_ticker["MISMATCH"]["market_value"] is None
     assert workspace["totals_by_currency"] == {"USD": "150.000000"}
     assert workspace["cross_currency_total"] is None
+
+    legacy_price_fields = {
+        "price",
+        "price_observation",
+        "price_date",
+        "price_currency",
+        "price_freshness_state",
+        "price_source",
+        "price_source_authorization_state",
+        "price_reason_code",
+    }
+    assert legacy_price_fields.isdisjoint(by_ticker["VALID"])
 
 
 def test_inactive_stock_is_retained_with_typed_limitation(db_session, user_factory):

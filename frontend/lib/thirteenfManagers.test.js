@@ -81,12 +81,17 @@ test('holdings normalizer preserves portfolio summary and explicitly dated local
         stock: { id: 3, ticker: 'AAPL', company_name: 'Apple' },
         implied_report_price: 100,
         market_context: {
+          status: 'available',
+          reason_code: null,
           latest_price: 120,
           latest_price_date: '2026-06-30',
           change_since_report_pct: 20,
           week_52_low: 70,
           week_52_high: 125,
-          source: 'test',
+          source: 'yfinance',
+          currency: 'USD',
+          freshness_state: 'fresh',
+          source_authorization_state: 'authorized',
         },
       },
     ],
@@ -99,6 +104,10 @@ test('holdings normalizer preserves portfolio summary and explicitly dated local
   assert.equal(result.commonHoldings[0].impliedReportPrice, 100);
   assert.equal(result.commonHoldings[0].marketContext.latestPrice, 120);
   assert.equal(result.commonHoldings[0].marketContext.latestPriceDate, '2026-06-30');
+  assert.equal(result.commonHoldings[0].marketContext.status, 'available');
+  assert.equal(result.commonHoldings[0].marketContext.currency, 'USD');
+  assert.equal(result.commonHoldings[0].marketContext.freshnessState, 'fresh');
+  assert.equal(result.commonHoldings[0].marketContext.sourceAuthorizationState, 'authorized');
 });
 
 test('changes sort by absolute portfolio-weight move before value fallback', () => {

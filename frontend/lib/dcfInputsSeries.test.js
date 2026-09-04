@@ -3,10 +3,16 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 
 const { resolveDcfComponentInputs } = require('./dcfInputsSeries');
+const currencyState = (currency = 'USD') => ({
+  status: 'available',
+  reason_code: null,
+  currency,
+});
 
 test('resolveDcfComponentInputs uses series values for selected year', () => {
   const payload = {
     dcf_inputs: {
+      currency_state: currencyState(),
       net_profit_per_share: { value: 1.111, source: 'fact' },
       depreciation_per_share: { value: 2.222, source: 'fact' },
       capital_spending_per_share: { value: 3.333, source: 'fact' },
@@ -14,12 +20,14 @@ test('resolveDcfComponentInputs uses series values for selected year', () => {
     dcf_inputs_series: [
       {
         year: 2026,
+        currency_state: currencyState(),
         net_profit_per_share: { value: 10, source: 'fact' },
         depreciation_per_share: { value: 20, source: 'fact' },
         capital_spending_per_share: { value: 30, source: 'fact' },
       },
       {
         year: 2025,
+        currency_state: currencyState(),
         net_profit_per_share: { value: 11, source: 'fact' },
         depreciation_per_share: { value: 21, source: 'fact' },
         capital_spending_per_share: { value: 31, source: 'fact' },
@@ -37,6 +45,7 @@ test('resolveDcfComponentInputs uses series values for selected year', () => {
 test('resolveDcfComponentInputs falls back to current dcf_inputs for norm selection', () => {
   const payload = {
     dcf_inputs: {
+      currency_state: currencyState(),
       net_profit_per_share: { value: 1.111, source: 'fact' },
       depreciation_per_share: { value: 2.222, source: 'fact' },
       capital_spending_per_share: { value: 3.333, source: 'fact' },
@@ -54,6 +63,7 @@ test('resolveDcfComponentInputs falls back to current dcf_inputs for norm select
 test('resolveDcfComponentInputs keeps based-on components aligned for norm selection', () => {
   const payload = {
     dcf_inputs: {
+      currency_state: currencyState(),
       net_profit_per_share: { value: 11.25, source: 'fact' },
       depreciation_per_share: { value: 2.195945945945946, source: 'computed' },
       capital_spending_per_share: { value: 8.75, source: 'fact' },
@@ -61,12 +71,14 @@ test('resolveDcfComponentInputs keeps based-on components aligned for norm selec
     dcf_inputs_series: [
       {
         year: 2026,
+        currency_state: currencyState(),
         net_profit_per_share: { value: 11.25, source: 'fact' },
         depreciation_per_share: { value: 2.195945945945946, source: 'computed' },
         capital_spending_per_share: { value: 8.75, source: 'fact' },
       },
       {
         year: 2025,
+        currency_state: currencyState(),
         net_profit_per_share: { value: 10.6, source: 'fact' },
         depreciation_per_share: { value: 1.8333333333333333, source: 'computed' },
         capital_spending_per_share: { value: 7.15, source: 'fact' },
@@ -86,4 +98,24 @@ test('resolveDcfComponentInputs keeps based-on components aligned for norm selec
     capexPerShare: '8.750',
   });
   assert.ok(Math.abs(basedOn - 4.696) < 0.001);
+});
+
+test('resolveDcfComponentInputs fails closed when input currency is unresolved', () => {
+  const payload = {
+    dcf_inputs: {
+      currency_state: {
+        status: 'unavailable',
+        reason_code: 'dcf_input_currency_mismatch',
+        currency: null,
+      },
+      net_profit_per_share: { value: 11, source: 'fact' },
+      depreciation_per_share: { value: 2, source: 'computed' },
+      capital_spending_per_share: { value: 3, source: 'fact' },
+    },
+  };
+  assert.deepEqual(resolveDcfComponentInputs(payload, 'norm'), {
+    netProfitPerShare: '',
+    depreciationPerShare: '',
+    capexPerShare: '',
+  });
 });

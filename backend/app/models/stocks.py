@@ -53,7 +53,7 @@ class StockPrice(Base):
     volume: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     source: Mapped[str] = mapped_column(String)
     # Nullable for legacy observations. New provider writes require a
-    # validated ISO-4217-shaped code and never infer it from the ticker.
+    # validated current ISO-4217 code and never infer it from the ticker.
     currency: Mapped[Optional[str]] = mapped_column(String(3), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 

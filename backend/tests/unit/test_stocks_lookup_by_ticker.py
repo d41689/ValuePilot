@@ -6,6 +6,45 @@ from app.models.artifacts import PdfDocument
 from app.models.facts import MetricFact
 from app.models.stocks import Stock, StockPrice
 from app.models.users import User
+from app.api.v1.endpoints import stocks as stocks_endpoint
+from app.services import dcf_inputs
+from app.services.dcf_inputs import DcfEvaluationClock
+
+
+def test_lookup_uses_one_et_effective_clock_for_all_method_gates(
+    client, db_session, auth_headers, monkeypatch
+):
+    user = User(email="ticker-clock@example.com")
+    stock = Stock(ticker="CLOCK", exchange="NYSE", company_name="Clock Inc")
+    db_session.add_all([user, stock])
+    db_session.commit()
+    evaluated_at = datetime(2026, 9, 4, 1, 30, tzinfo=timezone.utc)
+    effective_as_of = date(2026, 9, 3)
+    calls = []
+    original_gate = dcf_inputs.reviewed_method_gate
+
+    def capture_gate(session, **kwargs):
+        calls.append(kwargs)
+        return original_gate(session, **kwargs)
+
+    monkeypatch.setattr(
+        stocks_endpoint,
+        "dcf_evaluation_clock",
+        lambda: DcfEvaluationClock(evaluated_at, effective_as_of),
+    )
+    monkeypatch.setattr(dcf_inputs, "reviewed_method_gate", capture_gate)
+
+    response = client.get(
+        "/api/v1/stocks/by_ticker/CLOCK", headers=auth_headers(user)
+    )
+
+    assert response.status_code == 200, response.text
+    assert len(calls) == 4
+    assert {call["effective_as_of"] for call in calls} == {effective_as_of}
+    assert {call["knowledge_at"] for call in calls} == {evaluated_at}
+    for gate in response.json()["system_method_gates"].values():
+        assert gate["effective_as_of"] == "2026-09-03"
+        assert gate["knowledge_at"] == "2026-09-04T01:30:00+00:00"
 
 
 def _piotroski_fact(
@@ -730,6 +769,21 @@ def test_lookup_stock_by_ticker_returns_summary(client, db_session, auth_headers
         )
         .values(source_document_id=doc.id)
     )
+    db_session.execute(
+        update(MetricFact)
+        .where(
+            MetricFact.user_id == user.id,
+            MetricFact.stock_id == stock.id,
+            MetricFact.metric_key.in_(
+                [
+                    "per_share.eps",
+                    "is.depreciation",
+                    "per_share.capital_spending",
+                ]
+            ),
+        )
+        .values(currency="USD")
+    )
     db_session.commit()
 
     response = client.get(
@@ -741,16 +795,16 @@ def test_lookup_stock_by_ticker_returns_summary(client, db_session, auth_headers
     assert payload["ticker"] == "COCO_TEST"
     assert payload["exchange"] == "NDQ"
     assert payload["company_name"] == "VITA COCO"
-    assert payload["price"] == 54.52
-    assert isinstance(payload["price"], (int, float))
-    assert payload["latest_price"] == 55.25
-    assert isinstance(payload["latest_price"], (int, float))
-    assert payload["latest_price_date"] == "2026-01-10"
+    assert payload["report_price_reference"]["value"] == 54.52
+    assert payload["report_price_reference"]["as_of_date"] == "2026-01-09"
+    assert payload["report_price_reference"]["label"] == "report_reference"
+    assert payload["current_price"]["status"] == "unavailable"
+    assert payload["current_price"]["value"] is None
     assert payload["active_report_document_id"] == doc.id
     assert payload["active_report_date"] == "2026-01-09"
     assert payload["pe"] == 43.3
     assert isinstance(payload["pe"], (int, float))
-    assert payload["price_provenance"] == {
+    assert payload["report_price_reference"]["provenance"] == {
         "source_type": "parsed",
         "source_document_id": doc.id,
         "source_report_date": "2026-01-09",
@@ -845,7 +899,55 @@ def test_lookup_stock_by_ticker_returns_summary(client, db_session, auth_headers
         isinstance(entry["value"], (int, float))
         for entry in payload["oeps_series"]
     )
-    assert payload["dcf_inputs"] == {
+    assert payload["dcf_inputs"]["valuation_currency"] == "USD"
+    assert payload["dcf_inputs"]["currency_state"]["status"] == "available"
+    assert payload["dcf_inputs"]["currency_state"]["reason_code"] is None
+    assert len(payload["dcf_inputs"]["currency_state"]["provenance"]) == 3
+    assert payload["dcf_inputs"]["input_manifest"]["manifest_version"] == "dcf-input-manifest-v1"
+    assert payload["dcf_inputs"]["input_manifest"]["selection"] == "norm"
+    assert payload["dcf_inputs"]["input_manifest"]["selected_year"] == 2024
+    assert len(payload["dcf_inputs"]["input_manifest"]["facts"]) == 9
+    assert len(payload["dcf_inputs"]["input_manifest_token"]) == 64
+    assert {
+        "role",
+        "id",
+        "stock_id",
+        "metric_key",
+        "source_type",
+        "source_ref_id",
+        "source_document_id",
+        "period_type",
+        "period_end_date",
+        "value_numeric",
+        "unit",
+        "currency",
+        "created_at",
+    } == set(payload["dcf_inputs"]["input_manifest"]["facts"][0])
+    manifest_times = {
+        payload["dcf_inputs"]["input_manifest"]["evaluated_at"],
+        *(
+            entry["input_manifest"]["evaluated_at"]
+            for entry in payload["dcf_inputs_series"]
+        ),
+    }
+    assert len(manifest_times) == 1
+    dcf_inputs_without_currency = {
+        key: value
+        for key, value in payload["dcf_inputs"].items()
+        if key not in {
+            "valuation_currency",
+            "currency_state",
+            "input_manifest",
+            "input_manifest_token",
+        }
+    }
+    assert dcf_inputs_without_currency == {
+        "canonical_model_inputs": {
+            "net_profit_per_share": "4.800",
+            "depreciation_per_share": "0.900",
+            "capital_spending_per_share": "0.600",
+            "based_on_per_share": "5.100",
+        },
         "net_profit_per_share": {
             "value": 4.8,
             "source": "fact",
@@ -895,7 +997,28 @@ def test_lookup_stock_by_ticker_returns_summary(client, db_session, auth_headers
     }
     assert payload["dcf_inputs_series"][0]["net_profit_per_share"]["provenance"]["period_end_date"] == "2026-12-31"
     assert payload["dcf_inputs_series"][0]["depreciation_per_share"]["provenance"]["inputs"][0]["metric_key"] == "is.depreciation"
-    assert payload["dcf_inputs_series"] == [
+    assert all(
+        entry["valuation_currency"] == "USD"
+        and entry["currency_state"]["status"] == "available"
+        and entry["input_manifest"]["selection"] == entry["year"]
+        and len(entry["input_manifest"]["facts"]) == 5
+        for entry in payload["dcf_inputs_series"]
+    )
+    dcf_series_without_currency = [
+        {
+            key: value
+            for key, value in entry.items()
+            if key not in {
+                "valuation_currency",
+                "currency_state",
+                "input_manifest",
+                "input_manifest_token",
+                "canonical_model_inputs",
+            }
+        }
+        for entry in payload["dcf_inputs_series"]
+    ]
+    assert dcf_series_without_currency == [
         {
             "year": 2026,
             "net_profit_per_share": {
@@ -1348,7 +1471,7 @@ def test_lookup_stock_by_ticker_prefers_duplicate_with_active_report(
     payload = response.json()
     assert payload["id"] == active_stock.id
     assert payload["exchange"] == "NDQ"
-    assert payload["price"] == 429.99
+    assert payload["report_price_reference"]["value"] == 429.99
     assert payload["active_report_document_id"] == doc.id
 
 

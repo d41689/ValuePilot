@@ -2,6 +2,9 @@ from __future__ import annotations
 
 from datetime import date, datetime, timezone
 
+import pytest
+from sqlalchemy import event
+
 from app.models.stocks import Stock, StockPrice
 
 
@@ -93,7 +96,10 @@ def test_unknown_exchange_never_claims_freshness(db_session):
     )
 
     result = read_canonical_eod_price(
-        db_session, stock=stock, as_of=date(2026, 7, 20)
+        db_session,
+        stock=stock,
+        as_of=date(2026, 7, 20),
+        source_priority=("licensed_fixture",),
     )
 
     assert result.freshness_state == "unknown_freshness"
@@ -126,7 +132,10 @@ def test_canonical_read_prefers_source_priority_for_same_session(db_session):
     )
 
     result = read_canonical_eod_price(
-        db_session, stock=stock, as_of=date(2026, 7, 20)
+        db_session,
+        stock=stock,
+        as_of=date(2026, 7, 20),
+        source_priority=("twelvedata", "yfinance"),
     )
 
     assert result.price_id == preferred.id
@@ -134,6 +143,240 @@ def test_canonical_read_prefers_source_priority_for_same_session(db_session):
     assert result.source == "twelvedata"
     assert result.freshness_state == "fresh"
     assert result.expected_session_date == date(2026, 7, 17)
+
+
+def test_canonical_read_excludes_observations_ingested_after_knowledge_cutoff(
+    db_session,
+):
+    from app.services.market_data_service import read_canonical_eod_price
+
+    stock = _stock(db_session, "PIT")
+    known = _price(
+        db_session,
+        stock,
+        price_date=date(2026, 7, 17),
+        source="licensed_fixture",
+        currency="USD",
+        close=100,
+        created_at=datetime(2026, 7, 17, 22, tzinfo=timezone.utc),
+    )
+    _price(
+        db_session,
+        stock,
+        price_date=date(2026, 7, 17),
+        source="licensed_fixture",
+        currency="USD",
+        close=999,
+        created_at=datetime(2026, 7, 21, 12, tzinfo=timezone.utc),
+    )
+
+    result = read_canonical_eod_price(
+        db_session,
+        stock=stock,
+        as_of=date(2026, 7, 17),
+        include_as_of_session=True,
+        knowledge_cutoff=datetime(2026, 7, 17, 23, tzinfo=timezone.utc),
+        source_priority=("licensed_fixture",),
+    )
+
+    assert result.price_id == known.id
+    assert result.close == 100
+
+
+def test_canonical_point_read_preserves_created_at_microseconds_before_id(db_session):
+    from app.services.market_data_service import read_canonical_eod_price
+
+    stock = _stock(db_session, "POINTUS")
+    newer_lower_id = _price(
+        db_session,
+        stock,
+        price_date=date(2026, 7, 17),
+        source="licensed_fixture",
+        currency="USD",
+        close=200,
+        created_at=datetime(2026, 7, 17, 22, 0, 0, 900000, tzinfo=timezone.utc),
+    )
+    older_higher_id = _price(
+        db_session,
+        stock,
+        price_date=date(2026, 7, 17),
+        source="licensed_fixture",
+        currency="USD",
+        close=100,
+        created_at=datetime(2026, 7, 17, 22, 0, 0, 100000, tzinfo=timezone.utc),
+    )
+    assert newer_lower_id.id < older_higher_id.id
+
+    result = read_canonical_eod_price(
+        db_session,
+        stock=stock,
+        as_of=date(2026, 7, 20),
+        source_priority=("licensed_fixture",),
+    )
+
+    assert result.price_id == newer_lower_id.id
+    assert result.current_value == 200
+
+
+def test_canonical_series_excludes_late_inserted_history(db_session):
+    from app.services.market_data_service import read_canonical_eod_series
+
+    stock = _stock(db_session, "SERIESPIT")
+    known = _price(
+        db_session,
+        stock,
+        price_date=date(2026, 7, 17),
+        source="licensed_fixture",
+        currency="USD",
+        close=100,
+        created_at=datetime(2026, 7, 17, 22, tzinfo=timezone.utc),
+    )
+    _price(
+        db_session,
+        stock,
+        price_date=date(2026, 7, 16),
+        source="licensed_fixture",
+        currency="USD",
+        close=1,
+        created_at=datetime(2026, 7, 21, 12, tzinfo=timezone.utc),
+    )
+
+    rows = read_canonical_eod_series(
+        db_session,
+        stock_ids=[stock.id],
+        through=date(2026, 7, 17),
+        knowledge_cutoff=datetime(2026, 7, 17, 23, tzinfo=timezone.utc),
+        source_priority=("licensed_fixture",),
+    )[stock.id]
+
+    assert [row.id for row in rows] == [known.id]
+
+
+def test_canonical_series_preserves_created_at_microseconds_before_id(db_session):
+    from app.services.market_data_service import read_canonical_eod_series
+
+    stock = _stock(db_session, "SERIESUS")
+    newer_lower_id = _price(
+        db_session,
+        stock,
+        price_date=date(2026, 7, 17),
+        source="licensed_fixture",
+        currency="USD",
+        close=200,
+        created_at=datetime(2026, 7, 17, 22, 0, 0, 900000, tzinfo=timezone.utc),
+    )
+    older_higher_id = _price(
+        db_session,
+        stock,
+        price_date=date(2026, 7, 17),
+        source="licensed_fixture",
+        currency="USD",
+        close=100,
+        created_at=datetime(2026, 7, 17, 22, 0, 0, 100000, tzinfo=timezone.utc),
+    )
+    assert newer_lower_id.id < older_higher_id.id
+
+    rows = read_canonical_eod_series(
+        db_session,
+        stock_ids=[stock.id],
+        through=date(2026, 7, 17),
+        knowledge_cutoff=datetime(2026, 7, 17, 23, tzinfo=timezone.utc),
+        source_priority=("licensed_fixture",),
+    )[stock.id]
+
+    assert [row.id for row in rows] == [newer_lower_id.id]
+    assert float(rows[0].close) == 200
+
+
+def test_batch_point_current_and_context_readers_are_constant_query_and_one_clock(
+    db_session, monkeypatch
+):
+    from app.services import market_data_service
+    from app.services.market_data_service import (
+        read_canonical_eod_prices,
+        read_current_eod_contexts,
+        read_current_eod_prices,
+    )
+
+    monkeypatch.setattr(market_data_service.settings, "MARKET_DATA_PRIMARY", "yfinance")
+    monkeypatch.setattr(
+        market_data_service.settings,
+        "MARKET_DATA_ALLOW_DEVELOPMENT_PROVIDER",
+        True,
+    )
+    before_close = datetime(2026, 7, 20, 20, 29, tzinfo=timezone.utc)
+    after_close = datetime(2026, 7, 20, 20, 31, tzinfo=timezone.utc)
+    stocks = [_stock(db_session, f"B{i:03d}") for i in range(101)]
+    for stock in stocks:
+        _price(
+            db_session,
+            stock,
+            price_date=date(2026, 7, 17),
+            source="yahoo",
+            currency="USD",
+            close=100,
+            created_at=datetime(2026, 7, 17, 21, tzinfo=timezone.utc),
+        )
+        _price(
+            db_session,
+            stock,
+            price_date=date(2026, 7, 20),
+            source="yfinance",
+            currency="USD",
+            close=101,
+            created_at=datetime(2026, 7, 20, 20, 30, 30, tzinfo=timezone.utc),
+        )
+
+    statements: list[str] = []
+    connection = db_session.connection()
+
+    def capture(_conn, _cursor, statement, _params, _context, _executemany):
+        statements.append(statement)
+
+    event.listen(connection, "before_cursor_execute", capture)
+    try:
+        points = read_canonical_eod_prices(
+            db_session,
+            stocks=stocks,
+            as_of=date(2026, 7, 17),
+            include_as_of_session=True,
+            knowledge_cutoff=before_close,
+        )
+        point_queries = len(statements)
+        statements.clear()
+        current_before = read_current_eod_prices(
+            db_session,
+            stocks=stocks,
+            evaluated_at=before_close,
+        )
+        current_queries = len(statements)
+        statements.clear()
+        contexts = read_current_eod_contexts(
+            db_session,
+            stocks=stocks,
+            evaluated_at=after_close,
+            history_days=370,
+            required_currency_by_stock_id={stock.id: "USD" for stock in stocks},
+        )
+        context_queries = len(statements)
+    finally:
+        event.remove(connection, "before_cursor_execute", capture)
+
+    assert point_queries == 1
+    assert current_queries == 1
+    assert context_queries == 2
+    assert len(points) == len(current_before) == len(contexts) == 101
+    assert {item.as_of_date for item in current_before.values()} == {date(2026, 7, 20)}
+    assert {item.expected_session_date for item in current_before.values()} == {
+        date(2026, 7, 17)
+    }
+    assert {item.current_price.as_of_date for item in contexts.values()} == {
+        date(2026, 7, 20)
+    }
+    assert {item.current_price.expected_session_date for item in contexts.values()} == {
+        date(2026, 7, 20)
+    }
+    assert {item.current_price.current_value for item in contexts.values()} == {101}
 
 
 def test_missing_currency_is_typed_and_never_fresh(db_session):
@@ -151,9 +394,41 @@ def test_missing_currency_is_typed_and_never_fresh(db_session):
     )
 
     result = read_canonical_eod_price(
-        db_session, stock=stock, as_of=date(2026, 7, 20)
+        db_session,
+        stock=stock,
+        as_of=date(2026, 7, 20),
+        source_priority=("legacy",),
     )
 
+    assert result.freshness_state == "unknown_freshness"
+    assert result.reason_code == "price_currency_unavailable"
+
+
+@pytest.mark.parametrize("currency", ["ZZZ", "XAU", "XDR", "CLF"])
+def test_non_monetary_currency_is_typed_and_never_fresh(db_session, currency):
+    from app.services.market_data_service import read_canonical_eod_price
+
+    stock = _stock(db_session, "BADCCY")
+    _price(
+        db_session,
+        stock,
+        price_date=date(2026, 7, 17),
+        source="licensed_fixture",
+        currency=currency,
+        close=100,
+        created_at=datetime(2026, 7, 17, 22, tzinfo=timezone.utc),
+    )
+
+    result = read_canonical_eod_price(
+        db_session,
+        stock=stock,
+        as_of=date(2026, 7, 20),
+        source_priority=("licensed_fixture",),
+    )
+
+    assert result.status == "unavailable"
+    assert result.current_value is None
+    assert result.currency is None
     assert result.freshness_state == "unknown_freshness"
     assert result.reason_code == "price_currency_unavailable"
 
@@ -206,6 +481,32 @@ def test_provider_payload_without_currency_is_rejected(db_session):
     result = MarketDataService(
         db_session,
         provider=MissingCurrencyProvider(),
+        throttle_minutes=0,
+    ).refresh_stock_prices(
+        [stock.id],
+        reason="coverage_queue",
+        now=datetime(2026, 7, 20, 23, tzinfo=timezone.utc),
+    )
+
+    assert result[0]["status"] == "failed"
+    assert result[0]["reason"] == "provider_currency_missing"
+    assert db_session.query(StockPrice).filter_by(stock_id=stock.id).count() == 0
+
+
+def test_provider_payload_with_non_iso_currency_is_rejected(db_session):
+    from app.services.market_data_service import MarketDataService
+
+    class NonIsoCurrencyProvider(BatchProvider):
+        def fetch_daily(self, symbols: list[str], target_date: date):
+            payload = super().fetch_daily(symbols, target_date)
+            for row in payload.values():
+                row["currency"] = "ZZZ"
+            return payload
+
+    stock = _stock(db_session, "BADWRITE")
+    result = MarketDataService(
+        db_session,
+        provider=NonIsoCurrencyProvider(),
         throttle_minutes=0,
     ).refresh_stock_prices(
         [stock.id],

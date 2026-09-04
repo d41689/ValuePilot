@@ -19,7 +19,10 @@ from app.schemas.portfolios import (
     ManualPositionResize,
     ManualPositionReview,
 )
-from app.services.market_data_service import read_canonical_eod_price
+from app.services.market_data_service import (
+    read_current_eod_prices,
+    serialize_canonical_eod_price,
+)
 
 
 SIX_PLACES = Decimal("0.000001")
@@ -540,6 +543,11 @@ def get_portfolio_workspace(
         case = cases_by_id.get(revision.case_id)
         if case is not None and revision.revision_number == case.head_revision_number:
             current_revisions_by_case.setdefault(case.id, revision)
+    current_prices = read_current_eod_prices(
+        session,
+        stocks=[stock for _position, stock in rows],
+        evaluated_at=datetime.now(timezone.utc),
+    )
     positions: list[dict[str, Any]] = []
     totals: dict[str, Decimal] = {}
     for position, stock in rows:
@@ -571,26 +579,21 @@ def get_portfolio_workspace(
             next_review_on.isoformat() if next_review_on is not None else None
         )
         item["identity_state"] = "active" if stock.is_active else "stock_inactive"
-        price = read_canonical_eod_price(session, stock=stock, as_of=as_of)
-        item["price"] = str(price.close) if price.close is not None else None
-        item["price_date"] = price.price_date.isoformat() if price.price_date else None
-        item["price_currency"] = price.currency
-        item["price_freshness_state"] = price.freshness_state
+        price = current_prices[stock.id]
+        item["current_price"] = serialize_canonical_eod_price(price)
         item["market_value"] = None
         item["unrealized_return"] = None
         if not stock.is_active:
             valuation_status = "stock_inactive"
-        elif price.close is None:
-            valuation_status = "price_unavailable"
-        elif price.currency is None:
-            valuation_status = "price_currency_unavailable"
+        elif price.status != "available" or price.current_value is None:
+            valuation_status = price.reason_code or "price_unavailable"
         elif price.currency != position.currency:
             valuation_status = "currency_mismatch"
         elif position.state != "open":
             valuation_status = "position_closed"
         else:
             valuation_status = "available"
-            close = Decimal(str(price.close))
+            close = Decimal(str(price.current_value))
             market_value = (position.quantity * close).quantize(
                 SIX_PLACES, rounding=ROUND_HALF_UP
             )
